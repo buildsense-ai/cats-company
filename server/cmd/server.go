@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net"
 	"net/http"
@@ -67,13 +68,14 @@ func main() {
 	})
 
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
-		if db.IsConnected() {
+		health := db.HealthCheck()
+		if health["status"] == "healthy" {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("READY"))
 		} else {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte("NOT READY"))
 		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(health)
 	})
 
 	// Auth

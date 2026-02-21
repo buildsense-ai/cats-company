@@ -5,6 +5,9 @@ struct MessageBubble: View {
     let isMe: Bool
     var onReply: (() -> Void)?
 
+    @State private var showImagePreview = false
+    @State private var previewImageUrl: String?
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if isMe { Spacer(minLength: 60) }
@@ -55,6 +58,11 @@ struct MessageBubble: View {
 
             if !isMe { Spacer(minLength: 60) }
         }
+        .fullScreenCover(isPresented: $showImagePreview) {
+            ImagePreviewView(urlString: previewImageUrl) {
+                showImagePreview = false
+            }
+        }
     }
 
     @ViewBuilder
@@ -74,23 +82,16 @@ struct MessageBubble: View {
                             .scaledToFit()
                             .frame(maxWidth: 200, maxHeight: 200)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .onTapGesture {
+                                previewImageUrl = fullUrl
+                                showImagePreview = true
+                            }
                     } placeholder: {
                         ProgressView()
                             .frame(width: 100, height: 100)
                     }
                 } else if rich.type == "file" {
-                    HStack {
-                        Image(systemName: "doc.fill")
-                            .font(.title2)
-                        VStack(alignment: .leading) {
-                            Text(rich.fileName ?? "文件")
-                                .font(.subheadline.bold())
-                            if let size = rich.fileSize {
-                                Text(formatFileSize(size))
-                                    .font(.caption)
-                            }
-                        }
-                    }
+                    FileContentView(rich: rich)
                 } else if rich.type == "link" || rich.type == "card" {
                     VStack(alignment: .leading, spacing: 4) {
                         if let title = rich.title {
@@ -119,5 +120,135 @@ struct MessageBubble: View {
         if bytes < 1024 { return "\(bytes) B" }
         if bytes < 1024 * 1024 { return "\(bytes / 1024) KB" }
         return String(format: "%.1f MB", Double(bytes) / 1024.0 / 1024.0)
+    }
+}
+
+// MARK: - File Content View
+
+struct FileContentView: View {
+    let rich: RichContent
+    @State private var isDownloading = false
+    @State private var downloadProgress: Double = 0
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: fileIcon)
+                .font(.title)
+                .foregroundStyle(CatColor.primary)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(rich.fileName ?? "文件")
+                    .font(.subheadline.bold())
+                    .lineLimit(1)
+                if let size = rich.fileSize {
+                    Text(formatFileSize(size))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            if isDownloading {
+                ProgressView(value: downloadProgress) {
+                    Text("\(Int(downloadProgress * 100))%")
+                        .font(.caption2)
+                }
+                .frame(width: 50)
+            } else {
+                Button {
+                    downloadFile()
+                } label: {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(CatColor.primary)
+                }
+            }
+        }
+        .frame(minWidth: 180, maxWidth: 240)
+    }
+
+    private var fileIcon: String {
+        guard let name = rich.fileName?.lowercased() else { return "doc.fill" }
+        if name.hasSuffix(".pdf") { return "doc.text.fill" }
+        if name.hasSuffix(".zip") || name.hasSuffix(".rar") { return "doc.zipper" }
+        if name.hasSuffix(".mp3") || name.hasSuffix(".wav") { return "music.note" }
+        if name.hasSuffix(".mp4") || name.hasSuffix(".mov") { return "video.fill" }
+        return "doc.fill"
+    }
+
+    private func formatFileSize(_ bytes: Int) -> String {
+        if bytes < 1024 { return "\(bytes) B" }
+        if bytes < 1024 * 1024 { return "\(bytes / 1024) KB" }
+        return String(format: "%.1f MB", Double(bytes) / 1024.0 / 1024.0)
+    }
+
+    private func downloadFile() {
+        guard let urlStr = rich.url else { return }
+        let fullUrl = urlStr.hasPrefix("http") ? urlStr : APIClient.shared.baseURL + urlStr
+
+        guard let url = URL(string: fullUrl) else { return }
+
+        isDownloading = true
+        downloadProgress = 0
+
+        Task {
+            do {
+                let (localURL, _) = try await URLSession.shared.download(from: url)
+                isDownloading = false
+                // Save to Files app
+                let activityVC = UIActivityViewController(activityItems: [localURL], applicationActivities: nil)
+                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let rootVC = windowScene.windows.first?.rootViewController {
+                    rootVC.present(activityVC, animated: true)
+                }
+            } catch {
+                isDownloading = false
+                print("Download error: \(error)")
+            }
+        }
+    }
+}
+
+// MARK: - Image Preview View
+
+struct ImagePreviewView: View {
+    let urlString: String?
+    let onDismiss: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            if let urlStr = urlString, let url = URL(string: urlStr) {
+                AsyncImage(url: url) { image in
+                    image
+                        .resizable()
+                        .scaledToFit()
+                        .gesture(
+                            TapGesture(count: 1)
+                                .onEnded { onDismiss() }
+                        )
+                } placeholder: {
+                    ProgressView()
+                        .tint(.white)
+                }
+            }
+
+            VStack {
+                HStack {
+                    Spacer()
+                    Button {
+                        onDismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title)
+                            .foregroundStyle(.white)
+                            .padding()
+                    }
+                }
+                Spacer()
+            }
+        }
     }
 }
