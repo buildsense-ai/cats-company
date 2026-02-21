@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS \`groups\` (
     name VARCHAR(128) NOT NULL,
     owner_id BIGINT NOT NULL,
     avatar_url VARCHAR(512) DEFAULT NULL,
+    announcement TEXT DEFAULT NULL,
     max_members INT NOT NULL DEFAULT 200,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
@@ -124,6 +125,7 @@ CREATE TABLE IF NOT EXISTS group_members (
     group_id BIGINT NOT NULL,
     user_id BIGINT NOT NULL,
     role ENUM('owner','admin','member') NOT NULL DEFAULT 'member',
+    muted TINYINT(1) NOT NULL DEFAULT 0,
     joined_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_group_user (group_id, user_id),
     INDEX idx_gm_user (user_id),

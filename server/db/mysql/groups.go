@@ -57,15 +57,19 @@ func (a *Adapter) CreateGroup(name string, ownerID int64) (int64, error) {
 func (a *Adapter) GetGroup(groupID int64) (*types.Group, error) {
 	g := &types.Group{}
 	var avatarURL *string
+	var announcement *string
 	err := a.db.QueryRow(
-		"SELECT id, name, owner_id, avatar_url, max_members, created_at FROM `groups` WHERE id = ?",
+		"SELECT id, name, owner_id, avatar_url, announcement, max_members, created_at FROM `groups` WHERE id = ?",
 		groupID,
-	).Scan(&g.ID, &g.Name, &g.OwnerID, &avatarURL, &g.MaxMembers, &g.CreatedAt)
+	).Scan(&g.ID, &g.Name, &g.OwnerID, &avatarURL, &announcement, &g.MaxMembers, &g.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get group: %w", err)
 	}
 	if avatarURL != nil {
 		g.AvatarURL = *avatarURL
+	}
+	if announcement != nil {
+		g.Announcement = *announcement
 	}
 	return g, nil
 }
@@ -98,7 +102,8 @@ func (a *Adapter) RemoveGroupMember(groupID, userID int64) error {
 func (a *Adapter) GetGroupMembers(groupID int64) ([]*types.GroupMember, error) {
 	rows, err := a.db.Query(
 		`SELECT gm.id, gm.group_id, gm.user_id, gm.role, gm.joined_at,
-		        u.username, u.display_name, u.avatar_url
+		        u.username, u.display_name, u.avatar_url,
+		        u.account_type, COALESCE(u.bot_disclose, 0)
 		 FROM group_members gm
 		 JOIN users u ON u.id = gm.user_id
 		 WHERE gm.group_id = ?
@@ -114,12 +119,17 @@ func (a *Adapter) GetGroupMembers(groupID int64) ([]*types.GroupMember, error) {
 	for rows.Next() {
 		m := &types.GroupMember{}
 		var avatarURL *string
+		var acctType string
+		var botDisclose bool
 		if err := rows.Scan(&m.ID, &m.GroupID, &m.UserID, &m.Role, &m.JoinedAt,
-			&m.Username, &m.DisplayName, &avatarURL); err != nil {
+			&m.Username, &m.DisplayName, &avatarURL, &acctType, &botDisclose); err != nil {
 			return nil, fmt.Errorf("scan group member: %w", err)
 		}
 		if avatarURL != nil {
 			m.AvatarURL = *avatarURL
+		}
+		if botDisclose && acctType == "bot" {
+			m.IsBot = true
 		}
 		members = append(members, m)
 	}
@@ -245,6 +255,66 @@ func (a *Adapter) GetMemberRole(groupID, userID int64) (string, error) {
 		return "", err
 	}
 	return role, nil
+}
+
+// IsMemberMuted checks if a member is muted in a group.
+func (a *Adapter) IsMemberMuted(groupID, userID int64) (bool, error) {
+	var muted bool
+	err := a.db.QueryRow(
+		"SELECT COALESCE(muted, 0) FROM group_members WHERE group_id = ? AND user_id = ?",
+		groupID, userID,
+	).Scan(&muted)
+	if err != nil {
+		return false, err
+	}
+	return muted, nil
+}
+
+// SetMemberMuted sets the muted status for a group member.
+func (a *Adapter) SetMemberMuted(groupID, userID int64, muted bool) error {
+	_, err := a.db.Exec(
+		"UPDATE group_members SET muted = ? WHERE group_id = ? AND user_id = ?",
+		muted, groupID, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("set member muted: %w", err)
+	}
+	return nil
+}
+
+// CanManageMember checks if actor can manage target in a group.
+// Returns true if actor is owner, or if actor is admin and target is member.
+func (a *Adapter) CanManageMember(groupID, actorID, targetID int64) (bool, error) {
+	actorRole, err := a.GetMemberRole(groupID, actorID)
+	if err != nil {
+		return false, err
+	}
+	targetRole, err := a.GetMemberRole(groupID, targetID)
+	if err != nil {
+		return false, err
+	}
+
+	// Owner can manage anyone
+	if actorRole == "owner" {
+		return true, nil
+	}
+	// Admin can manage members (but not owner or other admins)
+	if actorRole == "admin" && targetRole == "member" {
+		return true, nil
+	}
+	return false, nil
+}
+
+// SetGroupAnnouncement sets the announcement text for a group.
+func (a *Adapter) SetGroupAnnouncement(groupID int64, announcement string) error {
+	_, err := a.db.Exec(
+		"UPDATE `groups` SET announcement = ? WHERE id = ?",
+		announcement, groupID,
+	)
+	if err != nil {
+		return fmt.Errorf("set group announcement: %w", err)
+	}
+	return nil
 }
 
 // IsUserBot checks if a user has account_type = 'bot'.

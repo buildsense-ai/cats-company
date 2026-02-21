@@ -127,5 +127,9 @@
 
   "online": "在线",
   "offline": "离线",
-  "typing": "对方正在输入..."
+  "typing": "对方正在输入...",
+
+  "bot_admin": "Bot 管理",
+  "no_bots": "暂无注册的 Bot",
+  "register_bot": "注册新 Bot"
 }

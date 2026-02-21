@@ -370,3 +370,99 @@ func (h *GroupHandler) notifyGroupEvent(groupID int64, event string, data map[st
 		h.hub.SendToUser(m.UserID, msg)
 	}
 }
+
+// HandleMuteMember handles POST /api/groups/mute
+func (h *GroupHandler) HandleMuteMember(w http.ResponseWriter, r *http.Request) {
+	uid := UIDFromContext(r.Context())
+
+	var req GroupActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+
+	// Check caller can manage target
+	canManage, err := h.db.CanManageMember(req.GroupID, uid, req.UserID)
+	if err != nil || !canManage {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "no permission to mute"})
+		return
+	}
+
+	if err := h.db.SetMemberMuted(req.GroupID, req.UserID, true); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to mute"})
+		return
+	}
+
+	h.notifyGroupEvent(req.GroupID, "member_muted", map[string]interface{}{
+		"group_id": req.GroupID,
+		"user_id":  req.UserID,
+		"by":       uid,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "muted"})
+}
+
+// HandleUnmuteMember handles POST /api/groups/unmute
+func (h *GroupHandler) HandleUnmuteMember(w http.ResponseWriter, r *http.Request) {
+	uid := UIDFromContext(r.Context())
+
+	var req GroupActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+
+	// Check caller can manage target
+	canManage, err := h.db.CanManageMember(req.GroupID, uid, req.UserID)
+	if err != nil || !canManage {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "no permission to unmute"})
+		return
+	}
+
+	if err := h.db.SetMemberMuted(req.GroupID, req.UserID, false); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to unmute"})
+		return
+	}
+
+	h.notifyGroupEvent(req.GroupID, "member_unmuted", map[string]interface{}{
+		"group_id": req.GroupID,
+		"user_id":  req.UserID,
+		"by":       uid,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "unmuted"})
+}
+
+// HandleSetAnnouncement handles POST /api/groups/announcement
+func (h *GroupHandler) HandleSetAnnouncement(w http.ResponseWriter, r *http.Request) {
+	uid := UIDFromContext(r.Context())
+
+	var req struct {
+		GroupID      int64  `json:"group_id"`
+		Announcement string `json:"announcement"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+
+	// Only owner or admin can set announcement
+	role, err := h.db.GetMemberRole(req.GroupID, uid)
+	if err != nil || (role != "owner" && role != "admin") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only owner or admin can set announcement"})
+		return
+	}
+
+	if err := h.db.SetGroupAnnouncement(req.GroupID, req.Announcement); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to set announcement"})
+		return
+	}
+
+	h.notifyGroupEvent(req.GroupID, "announcement_updated", map[string]interface{}{
+		"group_id":      req.GroupID,
+		"announcement":  req.Announcement,
+		"by":            uid,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}

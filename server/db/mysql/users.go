@@ -57,7 +57,8 @@ func (a *Adapter) GetUserByUsername(username string) (*types.User, error) {
 func (a *Adapter) SearchUsers(query string, limit int) ([]*types.User, error) {
 	pattern := "%" + query + "%"
 	rows, err := a.db.Query(
-		`SELECT id, username, display_name, COALESCE(avatar_url, ''), account_type
+		`SELECT id, username, display_name, COALESCE(avatar_url, ''),
+		        account_type, COALESCE(bot_disclose, 0)
 		 FROM users WHERE (username LIKE ? OR display_name LIKE ?) AND state = 0
 		 LIMIT ?`,
 		pattern, pattern, limit,
@@ -70,8 +71,14 @@ func (a *Adapter) SearchUsers(query string, limit int) ([]*types.User, error) {
 	var users []*types.User
 	for rows.Next() {
 		u := &types.User{}
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.AvatarURL, &u.AccountType); err != nil {
+		var acctType string
+		var botDisclose bool
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.AvatarURL, &acctType, &botDisclose); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		// Only disclose bot status if bot_disclose is true
+		if botDisclose && acctType == "bot" {
+			u.BotDisclose = true
 		}
 		users = append(users, u)
 	}

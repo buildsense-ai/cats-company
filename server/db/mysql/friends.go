@@ -87,7 +87,8 @@ func (a *Adapter) RemoveFriend(uid1, uid2 int64) error {
 // GetFriends returns all accepted friends for a user.
 func (a *Adapter) GetFriends(uid int64) ([]*types.User, error) {
 	rows, err := a.db.Query(
-		`SELECT u.id, u.username, u.display_name, COALESCE(u.avatar_url, '')
+		`SELECT u.id, u.username, u.display_name, COALESCE(u.avatar_url, ''),
+		        u.account_type, COALESCE(u.bot_disclose, 0)
 		 FROM friends f JOIN users u ON f.to_user_id = u.id
 		 WHERE f.from_user_id = ? AND f.status = 'accepted'
 		 ORDER BY u.display_name`,
@@ -101,8 +102,14 @@ func (a *Adapter) GetFriends(uid int64) ([]*types.User, error) {
 	var friends []*types.User
 	for rows.Next() {
 		u := &types.User{}
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.AvatarURL); err != nil {
+		var acctType string
+		var botDisclose bool
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.AvatarURL, &acctType, &botDisclose); err != nil {
 			return nil, fmt.Errorf("scan friend: %w", err)
+		}
+		// Only disclose bot status if bot_disclose is true
+		if botDisclose && acctType == "bot" {
+			u.BotDisclose = true
 		}
 		friends = append(friends, u)
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 
@@ -358,6 +359,15 @@ func (h *Hub) handleGroupPub(uid int64, msg *MsgClientPub, topic, content, msgTy
 		return
 	}
 
+	// Check if member is muted
+	isMuted, _ := h.db.IsMemberMuted(groupID, uid)
+	if isMuted {
+		h.SendToUser(uid, &ServerMessage{
+			Ctrl: &MsgServerCtrl{ID: msg.ID, Code: 403, Text: "you are muted in this group"},
+		})
+		return
+	}
+
 	// Save to database (with optional reply_to)
 	var msgID int64
 	if msg.ReplyTo > 0 {
@@ -387,18 +397,22 @@ func (h *Hub) handleGroupPub(uid int64, msg *MsgClientPub, topic, content, msgTy
 	})
 
 	// Build the data message
+	// Parse @mentions from content
+	mentions := parseMentions(content)
 	dataMsg := &ServerMessage{
 		Data: &MsgServerData{
-			Topic:   topic,
-			From:    formatUID(uid),
-			SeqID:   int(msgID),
-			Content: msg.Content,
-			ReplyTo: msg.ReplyTo,
+			Topic:    topic,
+			From:     formatUID(uid),
+			SeqID:    int(msgID),
+			Content:  msg.Content,
+			ReplyTo:  msg.ReplyTo,
+			Mentions: mentions,
 		},
 	}
 
 	// Broadcast to all group members (including sender for echo)
-	h.broadcastToGroup(groupID, dataMsg, 0)
+	// Pass mentions for Bot @trigger filtering
+	h.broadcastToGroupWithMentions(groupID, dataMsg, 0, mentions, uid)
 }
 
 // broadcastToGroup sends a message to all online members of a group.
@@ -625,4 +639,80 @@ func max64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// parseMentions extracts @usr123 style mentions from message content.
+func parseMentions(content interface{}) []string {
+	var text string
+	switch v := content.(type) {
+	case string:
+		text = v
+	case map[string]interface{}:
+		if t, ok := v["text"].(string); ok {
+			text = t
+		}
+	}
+
+	if text == "" {
+		return nil
+	}
+
+	// Match @usr123 pattern
+	re := regexp.MustCompile(`@usr(\d+)`)
+	matches := re.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	mentions := make([]string, 0, len(matches))
+	seen := make(map[string]bool)
+	for _, m := range matches {
+		if len(m) > 1 {
+			uid := "usr" + m[1]
+			if !seen[uid] {
+				seen[uid] = true
+				mentions = append(mentions, uid)
+			}
+		}
+	}
+	return mentions
+}
+
+// broadcastToGroupWithMentions sends a message to all online members with Bot @trigger filtering.
+// Bots only receive the message if they are mentioned or if there are no mentions at all.
+func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, excludeUID int64, mentions []string, senderUID int64) {
+	members, err := h.db.GetGroupMembers(groupID)
+	if err != nil {
+		log.Printf("broadcastToGroupWithMentions: failed to get members for group %d: %v", groupID, err)
+		return
+	}
+
+	// Convert mentions to a set for quick lookup
+	mentionSet := make(map[string]bool)
+	for _, m := range mentions {
+		mentionSet[m] = true
+	}
+
+	for _, m := range members {
+		if m.UserID == excludeUID {
+			continue
+		}
+
+		// Check if this is a Bot
+		client := h.getClient(m.UserID)
+		isBot := client != nil && client.accountType == types.AccountBot
+
+		if isBot {
+			// Bots only receive message if:
+			// 1. They are mentioned, OR
+			// 2. There are no mentions at all (broadcast to all)
+			userIDStr := formatUID(m.UserID)
+			if len(mentions) > 0 && !mentionSet[userIDStr] {
+				// Bot not mentioned and there are mentions - skip
+				continue
+			}
+		}
+
+		h.SendToUser(m.UserID, msg)
+	}
 }

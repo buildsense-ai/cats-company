@@ -104,11 +104,12 @@ type MsgServerCtrl struct {
 }
 
 type MsgServerData struct {
-	Topic   string      `json:"topic"`
-	From    string      `json:"from,omitempty"`
-	SeqID   int         `json:"seq"`
-	Content interface{} `json:"content"`
-	ReplyTo int         `json:"reply_to,omitempty"`
+	Topic    string      `json:"topic"`
+	From     string      `json:"from,omitempty"`
+	SeqID    int         `json:"seq"`
+	Content  interface{} `json:"content"`
+	ReplyTo  int         `json:"reply_to,omitempty"`
+	Mentions []string    `json:"mentions,omitempty"` // @mentioned user IDs (e.g., ["usr123"])
 }
 
 type MsgServerPres struct {

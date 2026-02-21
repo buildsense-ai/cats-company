@@ -132,6 +132,9 @@ func main() {
 	mux.HandleFunc("/api/groups/invite", server.AuthMiddleware(groupHandler.HandleInviteMembers))
 	mux.HandleFunc("/api/groups/leave", server.AuthMiddleware(groupHandler.HandleLeaveGroup))
 	mux.HandleFunc("/api/groups/kick", server.AuthMiddleware(groupHandler.HandleKickMember))
+	mux.HandleFunc("/api/groups/mute", server.AuthMiddleware(groupHandler.HandleMuteMember))
+	mux.HandleFunc("/api/groups/unmute", server.AuthMiddleware(groupHandler.HandleUnmuteMember))
+	mux.HandleFunc("/api/groups/announcement", server.AuthMiddleware(groupHandler.HandleSetAnnouncement))
 	mux.HandleFunc("/api/groups/disband", server.AuthMiddleware(groupHandler.HandleDisbandGroup))
 	mux.HandleFunc("/api/groups/role", server.AuthMiddleware(groupHandler.HandleUpdateRole))
 

@@ -130,12 +130,13 @@ type BotConfig struct {
 
 // Group represents a chat group.
 type Group struct {
-	ID         int64     `json:"id"`
-	Name       string    `json:"name"`
-	OwnerID    int64     `json:"owner_id"`
-	AvatarURL  string    `json:"avatar_url,omitempty"`
-	MaxMembers int       `json:"max_members"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID           int64     `json:"id"`
+	Name         string    `json:"name"`
+	OwnerID      int64     `json:"owner_id"`
+	AvatarURL    string    `json:"avatar_url,omitempty"`
+	Announcement string    `json:"announcement,omitempty"`
+	MaxMembers   int       `json:"max_members"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // GroupMember represents a member of a group.
@@ -149,6 +150,7 @@ type GroupMember struct {
 	Username    string `json:"username,omitempty"`
 	DisplayName string `json:"display_name,omitempty"`
 	AvatarURL   string `json:"avatar_url,omitempty"`
+	IsBot       bool   `json:"is_bot,omitempty"`
 }
 
 // RateLimitConfig defines rate limits per account type.
