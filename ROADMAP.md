@@ -6,21 +6,21 @@
 
 ## 当前版本状态
 
-**v0.4.0-alpha** — Phase 1-3 完成，准备 Production
+**v0.5.0-alpha** — Phase 1-4 完成，Bot 生态增强
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
 | Server (Go) | ✅ 可用 | HTTP API + WebSocket + 健康检查 |
-| Webapp (React) | ✅ 可用 | WeChat 风格 UI + 富媒体 |
+| Webapp (React) | ✅ 可用 | WeChat 风格 UI + 富媒体 + Bot 管理 |
 | iOS (SwiftUI) | ✅ 可用 | 品牌统一主题 + 富媒体预览 |
-| Bot SDK | ⚠️ 部分 | Go/Python (gRPC), TS (WS) |
+| Bot SDK | ✅ 可用 | Go/Python/TypeScript (全部 WebSocket) |
 | 部署 | ✅ 可用 | Docker Compose + HTTPS |
 
 ---
 
 ## 已完成功能 ✅
 
-### 核心通信 (Phase 1)
+### 核心通信 (Phase 1) - 完成
 - [x] WebSocket 消息路由（接收、路由、投递）
 - [x] P2P 实时聊天
 - [x] 离线消息存储与拉取
@@ -29,33 +29,40 @@
 - [x] 在线状态显示 — 全端完成
 - [x] 消息引用/回复
 
-### 用户系统
-- [x] 用户注册/登录
-- [x] Token 认证
-- [x] 好友管理（添加、接受、拒绝、列表）
-- [x] 用户资料页
+### Bot 生态 (Phase 2) - 完成
+- [x] WebSocket Bot 接口
+- [x] Go Bot SDK (WebSocket)
+- [x] Python Bot SDK (WebSocket)
+- [x] TypeScript Bot SDK (WebSocket)
+- [x] API Key 认证
+- [x] Bot 身份标识展示（bot_disclose）
+- [x] Bot 行为限流
+- [x] Bot-to-Bot 防护
+- [x] Bot 管理后台 UI
+- [x] AI Assistant Bot (LLM 对话)
+- [x] Xiaoba Bot (TypeScript)
 
-### 群聊 (Phase 4 基础)
-- [x] 群 topic 模型（`grp_{groupId}`）
-- [x] 创建群组
-- [x] 邀请成员
-- [x] 群消息广播
-- [x] 群成员管理
-
-### 富媒体消息 (Phase 3)
+### 富媒体消息 (Phase 3) - 完成
 - [x] 图片消息（上传、预览、全屏查看）
 - [x] 文件消息（上传、下载、分享）
 - [x] 链接预览卡片
 - [x] 结构化消息卡片
 
-### Bot 系统
-- [x] gRPC Bot 接口
-- [x] WebSocket Bot 接口
-- [x] Go Bot SDK (gRPC)
-- [x] Python Bot SDK (gRPC)
-- [x] TypeScript Bot SDK (WebSocket)
-- [x] AI Assistant Bot (LLM 对话)
-- [x] Xiaoba Bot (TypeScript)
+### 群聊增强 (Phase 4) - 完成
+- [x] 群 topic 模型（`grp_{groupId}`）
+- [x] 创建群组、邀请成员
+- [x] 群消息广播
+- [x] 群成员管理（踢人、角色）
+- [x] @提及解析与通知
+- [x] Bot @触发过滤（群聊 Bot 只在被 @ 时收到消息）
+- [x] 群管理员禁言/解禁
+- [x] 群公告
+
+### 用户系统
+- [x] 用户注册/登录
+- [x] Token 认证
+- [x] 好友管理（添加、接受、拒绝、列表）
+- [x] 用户资料页
 
 ### 前端
 - [x] React Webapp
@@ -86,27 +93,6 @@
 ---
 
 ## 计划中 📋
-
-### Phase 2 — Bot 生态增强
-
-统一协议接入：
-- [ ] Bot 全部迁移到 WebSocket 协议
-- [ ] API Key 认证支持
-- [ ] Go/Python SDK 重构为 WebSocket 版本
-- [ ] Bot 身份标识（AI 标签）
-
-平台管控：
-- [x] Bot 行为限流 ✅
-- [x] Bot-to-Bot 防护 ✅
-- [ ] Bot 流量监控 UI
-- [ ] 异常检测与自动封禁
-
-### Phase 4 — 群聊增强
-
-- [ ] @提及通知
-- [ ] Bot 只在被 @ 时响应
-- [ ] 群管理员（踢人、禁言）
-- [ ] 群公告
 
 ### Phase 5 — 安全与稳定性
 
@@ -168,11 +154,11 @@
 | 版本 | 目标 | 状态 |
 |------|------|------|
 | v0.3 | Alpha 优化 | ✅ 完成 |
-| v0.4 | Phase 1-3 完成 | ✅ 当前 |
-| v0.5 | Bot 增强 | 计划中 |
+| v0.4 | Phase 1-3 完成 | ✅ 完成 |
+| v0.5 | Phase 2-4 完成 | ✅ 当前 |
 | v0.6 | 经济系统 MVP | 计划中 |
-| v0.7 | 群聊增强 | 计划中 |
-| v0.8 | 安全加固 | 计划中 |
+| v0.7 | 安全加固 | 计划中 |
+| v0.8 | 多端支持 | 计划中 |
 | v0.9 | Beta | 计划中 |
 | v1.0 | 正式版 | 计划中 |
 
@@ -194,11 +180,15 @@
 
 ## 更新日志
 
-### 2026-02-21
+### 2026-02-21 (2)
+- Phase 2 Bot 生态完成：身份展示、管理后台、SDK 统一为 WebSocket
+- Phase 4 群聊增强完成：@提及、Bot @触发过滤、禁言、公告
+- 版本升级到 v0.5.0-alpha
+
+### 2026-02-21 (1)
 - Phase 1 完成：typing indicator、已读回执、在线状态全端实现
 - Phase 3 完成：图片/文件富媒体消息全端支持
 - Phase 5 基础：安全加固、HTTPS、健康检查、连接池优化
-- 版本升级到 v0.4.0-alpha
 
 ### 2026-02-20
 - 新增 iOS 原生 App (SwiftUI)
