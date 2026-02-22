@@ -37,6 +37,10 @@ struct ChatDetailView: View {
                     .padding(.vertical, 8)
                 }
                 .background(CatColor.chatBg)
+                .scrollDismissesKeyboard(.interactively)
+                .onTapGesture {
+                    hideKeyboard()
+                }
                 .onChange(of: messages.count) {
                     if let last = messages.last {
                         withAnimation {
@@ -203,5 +207,9 @@ struct ChatDetailView: View {
         ws.sendMessage(topic: topicId, content: text, replyTo: replyTo?.seq)
         inputText = ""
         replyTo = nil
+    }
+
+    private func hideKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 }
