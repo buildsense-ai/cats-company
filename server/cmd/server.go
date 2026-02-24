@@ -82,14 +82,15 @@ func main() {
 	mux.HandleFunc("/api/auth/register", userHandler.HandleRegister)
 	mux.HandleFunc("/api/auth/login", userHandler.HandleLogin)
 
-	// Friends (require auth)
-	mux.HandleFunc("/api/friends", server.AuthMiddleware(friendHandler.HandleGetFriends))
-	mux.HandleFunc("/api/friends/pending", server.AuthMiddleware(friendHandler.HandleGetPendingRequests))
-	mux.HandleFunc("/api/friends/request", server.AuthMiddleware(friendHandler.HandleSendRequest))
-	mux.HandleFunc("/api/friends/accept", server.AuthMiddleware(friendHandler.HandleAcceptRequest))
-	mux.HandleFunc("/api/friends/reject", server.AuthMiddleware(friendHandler.HandleRejectRequest))
-	mux.HandleFunc("/api/friends/block", server.AuthMiddleware(friendHandler.HandleBlock))
-	mux.HandleFunc("/api/friends/remove", server.AuthMiddleware(friendHandler.HandleRemoveFriend))
+	// Friends (require auth — JWT or API Key for bot access)
+	authWithDB := server.AuthMiddlewareWithDB(db)
+	mux.HandleFunc("/api/friends", authWithDB(friendHandler.HandleGetFriends))
+	mux.HandleFunc("/api/friends/pending", authWithDB(friendHandler.HandleGetPendingRequests))
+	mux.HandleFunc("/api/friends/request", authWithDB(friendHandler.HandleSendRequest))
+	mux.HandleFunc("/api/friends/accept", authWithDB(friendHandler.HandleAcceptRequest))
+	mux.HandleFunc("/api/friends/reject", authWithDB(friendHandler.HandleRejectRequest))
+	mux.HandleFunc("/api/friends/block", authWithDB(friendHandler.HandleBlock))
+	mux.HandleFunc("/api/friends/remove", authWithDB(friendHandler.HandleRemoveFriend))
 
 	// User search
 	mux.HandleFunc("/api/users/search", friendHandler.HandleSearchUsers)
@@ -139,7 +140,6 @@ func main() {
 	mux.HandleFunc("/api/groups/role", server.AuthMiddleware(groupHandler.HandleUpdateRole))
 
 	// File upload (accepts both JWT and API Key for bot uploads)
-	authWithDB := server.AuthMiddlewareWithDB(db)
 	mux.HandleFunc("/api/upload", authWithDB(uploadHandler.HandleUpload))
 	mux.HandleFunc("/uploads/", uploadHandler.HandleServeFile)
 

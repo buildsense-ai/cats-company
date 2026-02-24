@@ -119,9 +119,11 @@ func (a *Adapter) GetFriends(uid int64) ([]*types.User, error) {
 // GetPendingRequests returns pending friend requests sent to a user.
 func (a *Adapter) GetPendingRequests(uid int64) ([]*types.FriendRequest, error) {
 	rows, err := a.db.Query(
-		`SELECT id, from_user_id, to_user_id, status, message, created_at
-		 FROM friends WHERE to_user_id = ? AND status = 'pending'
-		 ORDER BY created_at DESC`,
+		`SELECT f.id, f.from_user_id, f.to_user_id, f.status, f.message, f.created_at,
+		        u.username, COALESCE(u.display_name, '')
+		 FROM friends f JOIN users u ON f.from_user_id = u.id
+		 WHERE f.to_user_id = ? AND f.status = 'pending'
+		 ORDER BY f.created_at DESC`,
 		uid,
 	)
 	if err != nil {
@@ -132,7 +134,8 @@ func (a *Adapter) GetPendingRequests(uid int64) ([]*types.FriendRequest, error) 
 	var requests []*types.FriendRequest
 	for rows.Next() {
 		r := &types.FriendRequest{}
-		if err := rows.Scan(&r.ID, &r.FromUserID, &r.ToUserID, &r.Status, &r.Message, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.FromUserID, &r.ToUserID, &r.Status, &r.Message, &r.CreatedAt,
+			&r.FromUsername, &r.DisplayName); err != nil {
 			return nil, fmt.Errorf("scan request: %w", err)
 		}
 		requests = append(requests, r)

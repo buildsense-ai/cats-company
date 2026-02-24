@@ -42,13 +42,15 @@ const (
 
 // FriendRequest represents a friend relationship between two users.
 type FriendRequest struct {
-	ID         int64        `json:"id"`
-	FromUserID int64        `json:"from_user_id"`
-	ToUserID   int64        `json:"to_user_id"`
-	Status     FriendStatus `json:"status"`
-	Message    string       `json:"message,omitempty"`
-	CreatedAt  time.Time    `json:"created_at"`
-	UpdatedAt  time.Time    `json:"updated_at"`
+	ID           int64        `json:"id"`
+	FromUserID   int64        `json:"from_user_id"`
+	ToUserID     int64        `json:"to_user_id"`
+	FromUsername string       `json:"from_username,omitempty"`
+	DisplayName  string       `json:"display_name,omitempty"`
+	Status       FriendStatus `json:"status"`
+	Message      string       `json:"message,omitempty"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
 }
 
 // Topic represents a chat topic (conversation).
