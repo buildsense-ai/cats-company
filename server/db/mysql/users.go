@@ -54,12 +54,16 @@ func (a *Adapter) GetUserByUsername(username string) (*types.User, error) {
 }
 
 // SearchUsers searches for users by username or display name (for adding friends).
+// Private bots are excluded from search results.
 func (a *Adapter) SearchUsers(query string, limit int) ([]*types.User, error) {
 	pattern := "%" + query + "%"
 	rows, err := a.db.Query(
-		`SELECT id, username, display_name, COALESCE(avatar_url, ''),
-		        account_type, COALESCE(bot_disclose, 0)
-		 FROM users WHERE (username LIKE ? OR display_name LIKE ?) AND state = 0
+		`SELECT u.id, u.username, u.display_name, COALESCE(u.avatar_url, ''),
+		        u.account_type, COALESCE(u.bot_disclose, 0)
+		 FROM users u
+		 LEFT JOIN bot_config b ON u.id = b.user_id AND u.account_type = 'bot'
+		 WHERE (u.username LIKE ? OR u.display_name LIKE ?) AND u.state = 0
+		   AND (u.account_type != 'bot' OR COALESCE(b.visibility, 'public') = 'public')
 		 LIMIT ?`,
 		pattern, pattern, limit,
 	)
@@ -76,7 +80,6 @@ func (a *Adapter) SearchUsers(query string, limit int) ([]*types.User, error) {
 		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.AvatarURL, &acctType, &botDisclose); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
-		// Only disclose bot status if bot_disclose is true
 		if botDisclose && acctType == "bot" {
 			u.BotDisclose = true
 		}

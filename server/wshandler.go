@@ -331,13 +331,10 @@ func (h *Hub) handlePub(uid int64, msg *MsgClientPub) {
 		},
 	}
 
-	// Deliver to the other participant(s)
+	// Deliver to the peer only (sender already got ctrl with seq)
 	if peerUID > 0 {
-		// P2P: deliver to the peer
 		h.SendToUser(peerUID, dataMsg)
 	}
-	// Also echo back to sender so they see the server-confirmed message
-	h.SendToUser(uid, dataMsg)
 }
 
 // handleGroupPub handles publishing a message to a group topic.
@@ -410,9 +407,9 @@ func (h *Hub) handleGroupPub(uid int64, msg *MsgClientPub, topic, content, msgTy
 		},
 	}
 
-	// Broadcast to all group members (including sender for echo)
+	// Broadcast to all group members except sender (sender already got ctrl with seq)
 	// Pass mentions for Bot @trigger filtering
-	h.broadcastToGroupWithMentions(groupID, dataMsg, 0, mentions, uid)
+	h.broadcastToGroupWithMentions(groupID, dataMsg, uid, mentions, uid)
 }
 
 // broadcastToGroup sends a message to all online members of a group.

@@ -121,12 +121,22 @@ type CardButton struct {
 	Value  string `json:"value"`
 }
 
+// BotVisibility controls whether a bot is discoverable via search.
+type BotVisibility string
+
+const (
+	BotPublic  BotVisibility = "public"
+	BotPrivate BotVisibility = "private"
+)
+
 // BotConfig holds configuration for a registered bot.
 type BotConfig struct {
 	UserID      int64             `json:"user_id"`
+	OwnerID     int64             `json:"owner_id"`
 	APIEndpoint string            `json:"api_endpoint,omitempty"`
 	Model       string            `json:"model,omitempty"`
 	Enabled     bool              `json:"enabled"`
+	Visibility  BotVisibility     `json:"visibility"`
 	Config      map[string]string `json:"config,omitempty"`
 }
 

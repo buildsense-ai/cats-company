@@ -5,19 +5,26 @@ struct CatsCompanyApp: App {
     @StateObject private var auth = AuthManager.shared
 
     init() {
+        print("🐱 [APP] init start")
         configureTabBarAppearance()
+        print("🐱 [APP] init done")
     }
 
     var body: some Scene {
         WindowGroup {
             SwiftUI.Group {
+                let _ = print("🐱 [APP] body eval — isLoggedIn=\(auth.isLoggedIn)")
                 if auth.isLoggedIn {
                     MainTabView()
                         .onAppear {
+                            print("🐱 [APP] MainTabView appeared")
                             WebSocketManager.shared.connect()
                         }
                 } else {
                     LoginView()
+                        .onAppear {
+                            print("🐱 [APP] LoginView appeared")
+                        }
                 }
             }
             .tint(CatColor.primary)

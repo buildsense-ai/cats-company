@@ -117,13 +117,17 @@ func main() {
 		server.WriteJSONPublic(w, http.StatusOK, map[string]interface{}{"users": result})
 	}))
 
-	// Bot management (admin)
+	// Bot management (admin — legacy)
 	mux.HandleFunc("/api/admin/bots", botHandler.HandleListBots)
 	mux.HandleFunc("/api/admin/bots/register", botHandler.HandleRegisterBot)
 	mux.HandleFunc("/api/admin/bots/toggle", botHandler.HandleToggleBot)
 	mux.HandleFunc("/api/admin/bots/rotate-key", botHandler.HandleRotateAPIKey)
 	mux.HandleFunc("/api/admin/bots/stats", botHandler.HandleBotStats)
 	mux.HandleFunc("/api/admin/bots/debug", botHandler.HandleBotDebugLog)
+
+	// Bot management (user-facing — owner creates/manages their bots)
+	mux.HandleFunc("/api/bots", authWithDB(botHandler.HandleBotsRouter))
+	mux.HandleFunc("/api/bots/visibility", authWithDB(botHandler.HandleSetBotVisibility))
 
 	// Groups (require auth)
 	groupHandler := server.NewGroupHandler(db, hub)

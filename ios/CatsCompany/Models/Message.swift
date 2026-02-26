@@ -5,7 +5,7 @@ struct Message: Codable, Identifiable, Equatable {
     let topicId: String
     let fromUid: String
     var content: MessageContent
-    let seq: Int
+    var seq: Int
     var replyTo: Int?
     var createdAt: String?
     var msgType: String?

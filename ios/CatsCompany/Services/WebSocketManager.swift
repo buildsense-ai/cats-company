@@ -94,9 +94,12 @@ class WebSocketManager: ObservableObject {
         }
     }
 
-    func sendMessage(topic: String, content: String, replyTo: Int? = nil) {
-        let pub = WSPub(id: nextId(), topic: topic, content: content, replyTo: replyTo)
+    @discardableResult
+    func sendMessage(topic: String, content: String, replyTo: Int? = nil) -> String {
+        let msgId = nextId()
+        let pub = WSPub(id: msgId, topic: topic, content: content, replyTo: replyTo)
         send(ClientMessage(pub: pub))
+        return msgId
     }
 
     func sendTyping(topic: String) {

@@ -26,6 +26,8 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddAPIKey,
 		migrateUsersAddBotDisclose,
 		migrateMessagesAddReplyTo,
+		migrateBotConfigAddOwnerID,
+		migrateBotConfigAddVisibility,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -182,4 +184,14 @@ CREATE TABLE IF NOT EXISTS group_members (
 // Migration: add reply_to column to messages table.
 const migrateMessagesAddReplyTo = `
 ALTER TABLE messages ADD COLUMN reply_to BIGINT DEFAULT NULL;
+`
+
+// Migration: add owner_id column to bot_config table.
+const migrateBotConfigAddOwnerID = `
+ALTER TABLE bot_config ADD COLUMN owner_id BIGINT DEFAULT NULL;
+`
+
+// Migration: add visibility column to bot_config table.
+const migrateBotConfigAddVisibility = `
+ALTER TABLE bot_config ADD COLUMN visibility ENUM('public','private') NOT NULL DEFAULT 'public';
 `

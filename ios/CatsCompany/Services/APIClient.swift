@@ -5,11 +5,11 @@ import Foundation
 class APIClient {
     static let shared = APIClient()
 
-    /// Simulator → localhost; real device → Mac's LAN IP.
+    /// Simulator → localhost; real device → cloud server.
     #if targetEnvironment(simulator)
     var baseURL = "http://localhost:6061"
     #else
-    var baseURL = "http://192.168.31.15:6061"
+    var baseURL = "http://118.145.116.152:6061"
     #endif
 
     private var token: String? { AuthManager.shared.token }

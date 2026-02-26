@@ -12,6 +12,8 @@ struct ChatDetailView: View {
     @State private var isTyping = false
     @State private var typingUser: String?
     @State private var isLoading = true
+    @State private var pendingMsgIds: [String: Int] = [:] // wsId -> index in messages
+    @State private var tempSeqCounter = -1
 
     var body: some View {
         VStack(spacing: 0) {
@@ -124,6 +126,20 @@ struct ChatDetailView: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button(role: .destructive) {
+                        MessageStore.shared.clearMessages(for: topicId)
+                        messages = []
+                    } label: {
+                        Label("清空本地记录", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            }
+        }
         .task { await loadMessages() }
         .onAppear { setupWSHandlers() }
         .onDisappear { clearWSHandlers() }
@@ -149,9 +165,25 @@ struct ChatDetailView: View {
             )
             if !messages.contains(where: { $0.seq == msg.seq }) {
                 messages.append(msg)
+                MessageStore.shared.appendMessage(msg, for: topicId)
             }
+            ws.updateTopicSeq(topicId, seq: data.seq)
             ws.sendRead(topic: topicId, seq: data.seq)
             typingUser = nil
+        }
+        ws.onCtrl = { ctrl in
+            guard ctrl.topic == topicId, ctrl.code == 200,
+                  let ctrlId = ctrl.id,
+                  let idx = pendingMsgIds[ctrlId] else { return }
+            if let params = ctrl.params?.value as? [String: Any],
+               let realSeq = params["seq"] as? Int,
+               idx < messages.count, messages[idx].seq < 0 {
+                let oldSeq = messages[idx].seq
+                messages[idx].seq = realSeq
+                ws.updateTopicSeq(topicId, seq: realSeq)
+                MessageStore.shared.updateMessageSeq(in: topicId, oldSeq: oldSeq, newSeq: realSeq)
+            }
+            pendingMsgIds.removeValue(forKey: ctrlId)
         }
         ws.onInfo = { info in
             guard info.topic == topicId else { return }
@@ -170,13 +202,25 @@ struct ChatDetailView: View {
     private func clearWSHandlers() {
         ws.onData = nil
         ws.onInfo = nil
+        ws.onCtrl = nil
     }
 
     private func loadMessages() async {
+        // Load cached messages first for instant display
+        let cached = MessageStore.shared.loadMessages(for: topicId)
+        if !cached.isEmpty {
+            messages = cached
+            isLoading = false
+        }
+
+        // Then fetch from server and merge
         do {
-            let msgs = try await APIClient.shared.getMessages(topicId: topicId, limit: 50)
-            messages = msgs
-            if let last = msgs.last {
+            let serverMsgs = try await APIClient.shared.getMessages(topicId: topicId, limit: 50)
+            // Server is source of truth — replace, but keep pending (negative seq) messages
+            let pending = messages.filter { $0.seq < 0 }
+            messages = serverMsgs + pending
+            MessageStore.shared.saveMessages(serverMsgs, for: topicId)
+            if let last = serverMsgs.last {
                 ws.updateTopicSeq(topicId, seq: last.seq)
                 ws.sendRead(topic: topicId, seq: last.seq)
             }
@@ -192,19 +236,21 @@ struct ChatDetailView: View {
         guard !text.isEmpty else { return }
 
         let myUid = String(auth.currentUser?.id ?? 0)
-        let seq = (messages.last?.seq ?? 0) + 1
+        let tempSeq = tempSeqCounter
+        tempSeqCounter -= 1
 
         let msg = Message(
             id: nil,
             topicId: topicId,
             fromUid: myUid,
             content: .text(text),
-            seq: seq,
+            seq: tempSeq,
             replyTo: replyTo?.seq
         )
         messages.append(msg)
 
-        ws.sendMessage(topic: topicId, content: text, replyTo: replyTo?.seq)
+        let wsId = ws.sendMessage(topic: topicId, content: text, replyTo: replyTo?.seq)
+        pendingMsgIds[wsId] = messages.count - 1
         inputText = ""
         replyTo = nil
     }

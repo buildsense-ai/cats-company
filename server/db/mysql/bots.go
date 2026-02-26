@@ -7,13 +7,24 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
-// SaveBotConfig saves or updates bot configuration.
+// SaveBotConfig saves or updates bot configuration with owner.
 func (a *Adapter) SaveBotConfig(uid int64, apiEndpoint, model string) error {
 	_, err := a.db.Exec(
 		`INSERT INTO bot_config (user_id, api_endpoint, model, enabled)
 		 VALUES (?, ?, ?, 1)
 		 ON DUPLICATE KEY UPDATE api_endpoint = ?, model = ?, updated_at = CURRENT_TIMESTAMP`,
 		uid, apiEndpoint, model, apiEndpoint, model,
+	)
+	return err
+}
+
+// SaveBotConfigWithOwner saves bot configuration with owner_id.
+func (a *Adapter) SaveBotConfigWithOwner(uid, ownerID int64, apiEndpoint, model string) error {
+	_, err := a.db.Exec(
+		`INSERT INTO bot_config (user_id, owner_id, api_endpoint, model, enabled)
+		 VALUES (?, ?, ?, ?, 1)
+		 ON DUPLICATE KEY UPDATE api_endpoint = ?, model = ?, updated_at = CURRENT_TIMESTAMP`,
+		uid, ownerID, apiEndpoint, model, apiEndpoint, model,
 	)
 	return err
 }
@@ -124,4 +135,87 @@ func (a *Adapter) GetBotByAPIKey(apiKey string) (int64, error) {
 		return 0, fmt.Errorf("get bot by api key: %w", err)
 	}
 	return uid, nil
+}
+
+// ListBotsByOwner returns bots owned by a specific user.
+func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, error) {
+	rows, err := a.db.Query(
+		`SELECT u.id, u.username, u.display_name, u.avatar_url, u.state,
+		        COALESCE(b.api_endpoint, '') as api_endpoint,
+		        COALESCE(b.model, '') as model,
+		        COALESCE(b.enabled, 1) as enabled,
+		        COALESCE(b.visibility, 'public') as visibility
+		 FROM users u LEFT JOIN bot_config b ON u.id = b.user_id
+		 WHERE u.account_type = 'bot' AND b.owner_id = ?
+		 ORDER BY u.created_at`,
+		ownerID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list bots by owner: %w", err)
+	}
+	defer rows.Close()
+
+	var bots []map[string]interface{}
+	for rows.Next() {
+		var id int64
+		var username, displayName, avatarURL, apiEndpoint, model, visibility string
+		var state int
+		var enabled bool
+		if err := rows.Scan(&id, &username, &displayName, &avatarURL, &state,
+			&apiEndpoint, &model, &enabled, &visibility); err != nil {
+			return nil, err
+		}
+		bots = append(bots, map[string]interface{}{
+			"id":           id,
+			"username":     username,
+			"display_name": displayName,
+			"avatar_url":   avatarURL,
+			"state":        state,
+			"api_endpoint": apiEndpoint,
+			"model":        model,
+			"enabled":      enabled,
+			"visibility":   visibility,
+		})
+	}
+	return bots, rows.Err()
+}
+
+// GetBotOwner returns the owner_id for a bot.
+func (a *Adapter) GetBotOwner(botUID int64) (int64, error) {
+	var ownerID int64
+	err := a.db.QueryRow(
+		`SELECT COALESCE(owner_id, 0) FROM bot_config WHERE user_id = ?`, botUID,
+	).Scan(&ownerID)
+	if err != nil {
+		return 0, fmt.Errorf("get bot owner: %w", err)
+	}
+	return ownerID, nil
+}
+
+// DeleteBot removes a bot's config and disables the user account.
+func (a *Adapter) DeleteBot(botUID int64) error {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Delete bot config
+	if _, err := tx.Exec(`DELETE FROM bot_config WHERE user_id = ?`, botUID); err != nil {
+		return fmt.Errorf("delete bot config: %w", err)
+	}
+	// Disable the user account (state=1 means disabled)
+	if _, err := tx.Exec(`UPDATE users SET state = 1 WHERE id = ?`, botUID); err != nil {
+		return fmt.Errorf("disable bot user: %w", err)
+	}
+	return tx.Commit()
+}
+
+// SetBotVisibility updates the visibility of a bot.
+func (a *Adapter) SetBotVisibility(botUID int64, visibility string) error {
+	_, err := a.db.Exec(
+		`UPDATE bot_config SET visibility = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?`,
+		visibility, botUID,
+	)
+	return err
 }

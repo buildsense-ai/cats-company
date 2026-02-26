@@ -22,6 +22,20 @@ func NewBotHandler(db *mysql.Adapter) *BotHandler {
 	return &BotHandler{db: db}
 }
 
+// HandleBotsRouter routes /api/bots by HTTP method.
+func (h *BotHandler) HandleBotsRouter(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.HandleListMyBots(w, r)
+	case http.MethodPost:
+		h.HandleCreateBot(w, r)
+	case http.MethodDelete:
+		h.HandleDeleteBot(w, r)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
 // BotRegisterRequest is the JSON body for bot registration.
 type BotRegisterRequest struct {
 	Username    string `json:"username"`
@@ -195,6 +209,197 @@ func (h *BotHandler) HandleBotDebugLog(w http.ResponseWriter, r *http.Request) {
 		"uid":      uid,
 		"count":    len(msgs),
 		"messages": msgs,
+	})
+}
+
+// HandleCreateBot handles POST /api/bots — authenticated user creates a bot they own.
+func (h *BotHandler) HandleCreateBot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	ownerUID := UIDFromContext(r.Context())
+	if ownerUID == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	var req BotRegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+
+	if len(req.Username) < 3 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "username min 3 chars"})
+		return
+	}
+
+	existing, err := h.db.GetUserByUsername(req.Username)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
+		return
+	}
+	if existing != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "username taken"})
+		return
+	}
+
+	// Bot accounts use a random password (not user-facing)
+	randPass := GenerateAPIKey(0) // just need random bytes
+	hash, err := bcrypt.GenerateFromPassword([]byte(randPass), bcrypt.DefaultCost)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+
+	displayName := req.DisplayName
+	if displayName == "" {
+		displayName = req.Username
+	}
+
+	user := &types.User{
+		Username:    req.Username,
+		DisplayName: displayName,
+		AccountType: types.AccountBot,
+		PassHash:    hash,
+	}
+
+	uid, err := h.db.CreateUser(user)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "registration failed"})
+		return
+	}
+
+	if err := h.db.SaveBotConfigWithOwner(uid, ownerUID, req.APIEndpoint, req.Model); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config save failed"})
+		return
+	}
+
+	apiKey := GenerateAPIKey(uid)
+	if err := h.db.SaveAPIKey(uid, apiKey); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "api key save failed"})
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"uid":      uid,
+		"username": req.Username,
+		"type":     "bot",
+		"owner_id": ownerUID,
+		"api_key":  apiKey,
+	})
+}
+
+// HandleListMyBots handles GET /api/bots — list bots owned by the authenticated user.
+func (h *BotHandler) HandleListMyBots(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	ownerUID := UIDFromContext(r.Context())
+	if ownerUID == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	bots, err := h.db.ListBotsByOwner(ownerUID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list bots"})
+		return
+	}
+	if bots == nil {
+		bots = []map[string]interface{}{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"bots": bots})
+}
+
+// HandleDeleteBot handles DELETE /api/bots?uid=xxx — owner deletes their bot.
+func (h *BotHandler) HandleDeleteBot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	ownerUID := UIDFromContext(r.Context())
+	if ownerUID == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	uidStr := r.URL.Query().Get("uid")
+	botUID, err := strconv.ParseInt(uidStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
+		return
+	}
+
+	// Verify ownership
+	actualOwner, err := h.db.GetBotOwner(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+		return
+	}
+	if actualOwner != ownerUID {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not your bot"})
+		return
+	}
+
+	if err := h.db.DeleteBot(botUID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "delete failed"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// HandleSetBotVisibility handles PATCH /api/bots/visibility?uid=xxx&v=public|private
+func (h *BotHandler) HandleSetBotVisibility(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch && r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	ownerUID := UIDFromContext(r.Context())
+	if ownerUID == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	uidStr := r.URL.Query().Get("uid")
+	botUID, err := strconv.ParseInt(uidStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
+		return
+	}
+
+	vis := r.URL.Query().Get("v")
+	if vis != "public" && vis != "private" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "v must be public or private"})
+		return
+	}
+
+	// Verify ownership
+	actualOwner, err := h.db.GetBotOwner(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+		return
+	}
+	if actualOwner != ownerUID {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not your bot"})
+		return
+	}
+
+	if err := h.db.SetBotVisibility(botUID, vis); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "update failed"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"uid":        botUID,
+		"visibility": vis,
 	})
 }
 

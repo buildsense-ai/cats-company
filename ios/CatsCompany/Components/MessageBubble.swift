@@ -1,4 +1,5 @@
 import SwiftUI
+import QuickLook
 
 struct MessageBubble: View {
     let message: Message
@@ -129,21 +130,30 @@ struct FileContentView: View {
     let rich: RichContent
     @State private var isDownloading = false
     @State private var downloadProgress: Double = 0
+    @State private var previewURL: URL?
+    @State private var showPreview = false
 
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: fileIcon)
                 .font(.title)
-                .foregroundStyle(CatColor.primary)
+                .foregroundStyle(iconColor)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(rich.fileName ?? "文件")
                     .font(.subheadline.bold())
                     .lineLimit(1)
-                if let size = rich.fileSize {
-                    Text(formatFileSize(size))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    if let size = rich.fileSize {
+                        Text(formatFileSize(size))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if isPreviewable {
+                        Text("· 可预览")
+                            .font(.caption)
+                            .foregroundStyle(CatColor.primary)
+                    }
                 }
             }
 
@@ -157,24 +167,55 @@ struct FileContentView: View {
                 .frame(width: 50)
             } else {
                 Button {
-                    downloadFile()
+                    if isPreviewable {
+                        downloadAndPreview()
+                    } else {
+                        downloadFile()
+                    }
                 } label: {
-                    Image(systemName: "arrow.down.circle.fill")
+                    Image(systemName: isPreviewable ? "eye.circle.fill" : "arrow.down.circle.fill")
                         .font(.title2)
                         .foregroundStyle(CatColor.primary)
                 }
             }
         }
         .frame(minWidth: 180, maxWidth: 240)
+        .onTapGesture {
+            if isPreviewable && !isDownloading {
+                downloadAndPreview()
+            }
+        }
+        .quickLookPreview($previewURL)
+    }
+
+    private var isPreviewable: Bool {
+        guard let name = rich.fileName?.lowercased() else { return false }
+        let exts = [".pdf", ".docx", ".doc", ".xlsx", ".xls",
+                    ".pptx", ".ppt", ".csv", ".rtf", ".txt",
+                    ".png", ".jpg", ".jpeg", ".gif", ".heic"]
+        return exts.contains(where: { name.hasSuffix($0) })
     }
 
     private var fileIcon: String {
         guard let name = rich.fileName?.lowercased() else { return "doc.fill" }
         if name.hasSuffix(".pdf") { return "doc.text.fill" }
+        if name.hasSuffix(".docx") || name.hasSuffix(".doc") { return "doc.richtext.fill" }
+        if name.hasSuffix(".xlsx") || name.hasSuffix(".xls") || name.hasSuffix(".csv") { return "tablecells.fill" }
+        if name.hasSuffix(".pptx") || name.hasSuffix(".ppt") { return "rectangle.fill.on.rectangle.fill" }
         if name.hasSuffix(".zip") || name.hasSuffix(".rar") { return "doc.zipper" }
         if name.hasSuffix(".mp3") || name.hasSuffix(".wav") { return "music.note" }
         if name.hasSuffix(".mp4") || name.hasSuffix(".mov") { return "video.fill" }
+        if name.hasSuffix(".txt") || name.hasSuffix(".rtf") { return "doc.plaintext.fill" }
         return "doc.fill"
+    }
+
+    private var iconColor: Color {
+        guard let name = rich.fileName?.lowercased() else { return CatColor.primary }
+        if name.hasSuffix(".pdf") { return .red }
+        if name.hasSuffix(".docx") || name.hasSuffix(".doc") { return .blue }
+        if name.hasSuffix(".xlsx") || name.hasSuffix(".xls") || name.hasSuffix(".csv") { return .green }
+        if name.hasSuffix(".pptx") || name.hasSuffix(".ppt") { return .orange }
+        return CatColor.primary
     }
 
     private func formatFileSize(_ bytes: Int) -> String {
@@ -183,12 +224,34 @@ struct FileContentView: View {
         return String(format: "%.1f MB", Double(bytes) / 1024.0 / 1024.0)
     }
 
+    private func resolveFullURL() -> URL? {
+        guard let urlStr = rich.url else { return nil }
+        let full = urlStr.hasPrefix("http") ? urlStr : APIClient.shared.baseURL + urlStr
+        return URL(string: full)
+    }
+
+    private func downloadAndPreview() {
+        guard let url = resolveFullURL() else { return }
+        isDownloading = true
+
+        Task {
+            do {
+                let (tempURL, _) = try await URLSession.shared.download(from: url)
+                let fileName = rich.fileName ?? url.lastPathComponent
+                let dest = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+                try? FileManager.default.removeItem(at: dest)
+                try FileManager.default.moveItem(at: tempURL, to: dest)
+                isDownloading = false
+                previewURL = dest
+            } catch {
+                isDownloading = false
+                print("Preview download error: \(error)")
+            }
+        }
+    }
+
     private func downloadFile() {
-        guard let urlStr = rich.url else { return }
-        let fullUrl = urlStr.hasPrefix("http") ? urlStr : APIClient.shared.baseURL + urlStr
-
-        guard let url = URL(string: fullUrl) else { return }
-
+        guard let url = resolveFullURL() else { return }
         isDownloading = true
         downloadProgress = 0
 
@@ -196,7 +259,6 @@ struct FileContentView: View {
             do {
                 let (localURL, _) = try await URLSession.shared.download(from: url)
                 isDownloading = false
-                // Save to Files app
                 let activityVC = UIActivityViewController(activityItems: [localURL], applicationActivities: nil)
                 if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                    let rootVC = windowScene.windows.first?.rootViewController {

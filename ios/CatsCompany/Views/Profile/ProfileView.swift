@@ -64,6 +64,21 @@ struct ProfileView: View {
                     .background(CatColor.cardBg)
                     .clipShape(RoundedRectangle(cornerRadius: CatLayout.radius))
 
+                    // Clear cache button
+                    Button {
+                        MessageStore.shared.clearAllMessages()
+                    } label: {
+                        HStack {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                            Text("清除聊天缓存")
+                        }
+                        .foregroundStyle(CatColor.textPrimary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                    }
+                    .background(CatColor.cardBg)
+                    .clipShape(RoundedRectangle(cornerRadius: CatLayout.radius))
+
                     // Logout button
                     Button {
                         ws.disconnect()
