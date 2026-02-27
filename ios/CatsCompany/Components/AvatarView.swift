@@ -15,8 +15,9 @@ struct AvatarView: View {
         if isBot { return CatColor.primary }
         if isGroup { return CatColor.primary }
         let colors: [Color] = [.orange, .pink, .teal, CatColor.primary, .mint, .cyan, .indigo, .brown]
-        let hash = abs(name.hashValue)
-        return colors[hash % colors.count]
+        // 用确定性 hash，避免 Swift 随机 seed 导致颜色每次启动都变
+        let hash = name.utf8.reduce(5381) { ($0 &<< 5) &+ $0 &+ Int($1) }
+        return colors[abs(hash) % colors.count]
     }
 
     private var icon: String? {
