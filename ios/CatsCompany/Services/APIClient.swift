@@ -75,6 +75,27 @@ class APIClient {
         try await request(.post, "/api/friends/accept", body: ["user_id": userId])
     }
 
+    /// Accept a friend request using bot's ApiKey auth (not Bearer token).
+    func acceptFriendAsBot(apiKey: String, userId: Int64) async throws {
+        guard let url = URL(string: baseURL + "/api/friends/accept") else {
+            throw APIError.invalidURL
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("ApiKey \(apiKey)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["user_id": userId])
+
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else { throw APIError.unknown }
+        if http.statusCode >= 400 {
+            if let err = try? JSONDecoder().decode(ErrorResponse.self, from: data) {
+                throw APIError.server(err.error)
+            }
+            throw APIError.httpError(http.statusCode)
+        }
+    }
+
     func rejectFriend(userId: Int64) async throws -> EmptyResponse {
         try await request(.post, "/api/friends/reject", body: ["user_id": userId])
     }
@@ -160,11 +181,13 @@ class APIClient {
     struct CreateBotResponse: Decodable {
         let uid: Int64
         let username: String
+        let displayName: String?
         let apiKey: String?
         let ownerId: Int64?
 
         enum CodingKeys: String, CodingKey {
             case uid, username
+            case displayName = "display_name"
             case apiKey = "api_key"
             case ownerId = "owner_id"
         }
