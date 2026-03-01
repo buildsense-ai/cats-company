@@ -28,6 +28,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateMessagesAddReplyTo,
 		migrateBotConfigAddOwnerID,
 		migrateBotConfigAddVisibility,
+		migrateBotConfigAddTenantName,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -194,4 +195,10 @@ ALTER TABLE bot_config ADD COLUMN owner_id BIGINT DEFAULT NULL;
 // Migration: add visibility column to bot_config table.
 const migrateBotConfigAddVisibility = `
 ALTER TABLE bot_config ADD COLUMN visibility ENUM('public','private') NOT NULL DEFAULT 'public';
+`
+
+// Migration: add tenant_name column to bot_config table.
+// NULL = self-hosted (third-party), non-NULL = platform-managed deployment.
+const migrateBotConfigAddTenantName = `
+ALTER TABLE bot_config ADD COLUMN tenant_name VARCHAR(128) DEFAULT NULL;
 `

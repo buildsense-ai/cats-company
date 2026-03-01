@@ -144,7 +144,8 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 		        COALESCE(b.api_endpoint, '') as api_endpoint,
 		        COALESCE(b.model, '') as model,
 		        COALESCE(b.enabled, 1) as enabled,
-		        COALESCE(b.visibility, 'public') as visibility
+		        COALESCE(b.visibility, 'public') as visibility,
+		        b.tenant_name
 		 FROM users u LEFT JOIN bot_config b ON u.id = b.user_id
 		 WHERE u.account_type = 'bot' AND b.owner_id = ?
 		 ORDER BY u.created_at`,
@@ -159,13 +160,14 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 	for rows.Next() {
 		var id int64
 		var username, displayName, avatarURL, apiEndpoint, model, visibility string
+		var tenantName *string
 		var state int
 		var enabled bool
 		if err := rows.Scan(&id, &username, &displayName, &avatarURL, &state,
-			&apiEndpoint, &model, &enabled, &visibility); err != nil {
+			&apiEndpoint, &model, &enabled, &visibility, &tenantName); err != nil {
 			return nil, err
 		}
-		bots = append(bots, map[string]interface{}{
+		bot := map[string]interface{}{
 			"id":           id,
 			"username":     username,
 			"display_name": displayName,
@@ -175,7 +177,11 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 			"model":        model,
 			"enabled":      enabled,
 			"visibility":   visibility,
-		})
+		}
+		if tenantName != nil {
+			bot["tenant_name"] = *tenantName
+		}
+		bots = append(bots, bot)
 	}
 	return bots, rows.Err()
 }
@@ -216,6 +222,30 @@ func (a *Adapter) DeleteBot(botUID int64) error {
 		return fmt.Errorf("disable bot user: %w", err)
 	}
 	return tx.Commit()
+}
+
+// SetTenantName sets the tenant_name for a bot (platform-managed deployment).
+func (a *Adapter) SetTenantName(botUID int64, tenantName string) error {
+	_, err := a.db.Exec(
+		`UPDATE bot_config SET tenant_name = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?`,
+		tenantName, botUID,
+	)
+	return err
+}
+
+// GetTenantName returns the tenant_name for a bot. Empty string means self-hosted.
+func (a *Adapter) GetTenantName(botUID int64) (string, error) {
+	var tenantName *string
+	err := a.db.QueryRow(
+		`SELECT tenant_name FROM bot_config WHERE user_id = ?`, botUID,
+	).Scan(&tenantName)
+	if err != nil {
+		return "", fmt.Errorf("get tenant name: %w", err)
+	}
+	if tenantName == nil {
+		return "", nil
+	}
+	return *tenantName, nil
 }
 
 // SetBotVisibility updates the visibility of a bot.

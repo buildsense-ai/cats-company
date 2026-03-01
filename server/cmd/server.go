@@ -52,9 +52,16 @@ func main() {
 
 	server.SetBotStats(hub.BotStats())
 
+	// Initialize deployer (optional — only if DEPLOY_API_URL is set)
+	var deployer *server.Deployer
+	if deployURL := os.Getenv("DEPLOY_API_URL"); deployURL != "" {
+		deployer = server.NewDeployer(deployURL)
+		log.Printf("Deploy API enabled: %s", deployURL)
+	}
+
 	userHandler := server.NewUserHandler(db)
 	friendHandler := server.NewFriendHandler(db)
-	botHandler := server.NewBotHandler(db)
+	botHandler := server.NewBotHandler(db, deployer)
 	msgHandler := server.NewMessageHandler(db)
 	uploadHandler := server.NewUploadHandler("./uploads", "/uploads")
 
@@ -130,6 +137,7 @@ func main() {
 
 	// Bot management (user-facing — owner creates/manages their bots)
 	mux.HandleFunc("/api/bots", authWithDB(botHandler.HandleBotsRouter))
+	mux.HandleFunc("/api/bots/deploy", authWithDB(botHandler.HandleDeployBot))
 	mux.HandleFunc("/api/bots/visibility", authWithDB(botHandler.HandleSetBotVisibility))
 
 	// Groups (require auth)

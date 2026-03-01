@@ -2,7 +2,10 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -14,12 +17,13 @@ import (
 
 // BotHandler handles bot management API requests.
 type BotHandler struct {
-	db *mysql.Adapter
+	db       *mysql.Adapter
+	deployer *Deployer // nil = deploy functionality not available
 }
 
 // NewBotHandler creates a new BotHandler.
-func NewBotHandler(db *mysql.Adapter) *BotHandler {
-	return &BotHandler{db: db}
+func NewBotHandler(db *mysql.Adapter, deployer *Deployer) *BotHandler {
+	return &BotHandler{db: db, deployer: deployer}
 }
 
 // HandleBotsRouter routes /api/bots by HTTP method.
@@ -212,6 +216,62 @@ func (h *BotHandler) HandleBotDebugLog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// createBotResult holds the result of bot account creation.
+type createBotResult struct {
+	UID      int64
+	Username string
+	APIKey   string
+}
+
+// createBotAccount is the shared logic for creating a bot account with owner.
+func (h *BotHandler) createBotAccount(ownerUID int64, req BotRegisterRequest) (*createBotResult, int, error) {
+	if len(req.Username) < 3 {
+		return nil, http.StatusBadRequest, fmt.Errorf("username min 3 chars")
+	}
+
+	existing, err := h.db.GetUserByUsername(req.Username)
+	if err != nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("database error")
+	}
+	if existing != nil {
+		return nil, http.StatusConflict, fmt.Errorf("username taken")
+	}
+
+	randPass := GenerateAPIKey(0)
+	hash, err := bcrypt.GenerateFromPassword([]byte(randPass), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("internal error")
+	}
+
+	displayName := req.DisplayName
+	if displayName == "" {
+		displayName = req.Username
+	}
+
+	user := &types.User{
+		Username:    req.Username,
+		DisplayName: displayName,
+		AccountType: types.AccountBot,
+		PassHash:    hash,
+	}
+
+	uid, err := h.db.CreateUser(user)
+	if err != nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("registration failed")
+	}
+
+	if err := h.db.SaveBotConfigWithOwner(uid, ownerUID, req.APIEndpoint, req.Model); err != nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("config save failed")
+	}
+
+	apiKey := GenerateAPIKey(uid)
+	if err := h.db.SaveAPIKey(uid, apiKey); err != nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("api key save failed")
+	}
+
+	return &createBotResult{UID: uid, Username: req.Username, APIKey: apiKey}, 0, nil
+}
+
 // HandleCreateBot handles POST /api/bots — authenticated user creates a bot they own.
 func (h *BotHandler) HandleCreateBot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -231,65 +291,72 @@ func (h *BotHandler) HandleCreateBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.Username) < 3 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "username min 3 chars"})
-		return
-	}
-
-	existing, err := h.db.GetUserByUsername(req.Username)
+	result, status, err := h.createBotAccount(ownerUID, req)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
-		return
-	}
-	if existing != nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "username taken"})
-		return
-	}
-
-	// Bot accounts use a random password (not user-facing)
-	randPass := GenerateAPIKey(0) // just need random bytes
-	hash, err := bcrypt.GenerateFromPassword([]byte(randPass), bcrypt.DefaultCost)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
-		return
-	}
-
-	displayName := req.DisplayName
-	if displayName == "" {
-		displayName = req.Username
-	}
-
-	user := &types.User{
-		Username:    req.Username,
-		DisplayName: displayName,
-		AccountType: types.AccountBot,
-		PassHash:    hash,
-	}
-
-	uid, err := h.db.CreateUser(user)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "registration failed"})
-		return
-	}
-
-	if err := h.db.SaveBotConfigWithOwner(uid, ownerUID, req.APIEndpoint, req.Model); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config save failed"})
-		return
-	}
-
-	apiKey := GenerateAPIKey(uid)
-	if err := h.db.SaveAPIKey(uid, apiKey); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "api key save failed"})
+		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"uid":      uid,
-		"username": req.Username,
+		"uid":      result.UID,
+		"username": result.Username,
 		"type":     "bot",
 		"owner_id": ownerUID,
-		"api_key":  apiKey,
+		"api_key":  result.APIKey,
 	})
+}
+
+// HandleDeployBot handles POST /api/bots/deploy — create bot + deploy container via gauz-platform.
+func (h *BotHandler) HandleDeployBot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	if h.deployer == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "deploy not available"})
+		return
+	}
+
+	ownerUID := UIDFromContext(r.Context())
+	if ownerUID == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	var req BotRegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+
+	result, status, err := h.createBotAccount(ownerUID, req)
+	if err != nil {
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+
+	tenantName := fmt.Sprintf("bot-%s", result.Username)
+
+	// Deploy container — failure is logged but does not block bot creation
+	if err := h.deployer.Deploy(r.Context(), tenantName, result.APIKey); err != nil {
+		log.Printf("[deploy] failed for tenant %s: %v", tenantName, err)
+	} else {
+		// Only record tenant_name if deploy succeeded
+		if err := h.db.SetTenantName(result.UID, tenantName); err != nil {
+			log.Printf("[deploy] failed to save tenant_name for uid %d: %v", result.UID, err)
+		}
+	}
+
+	resp := map[string]interface{}{
+		"uid":         result.UID,
+		"username":    result.Username,
+		"type":        "bot",
+		"owner_id":    ownerUID,
+		"api_key":     result.APIKey,
+		"tenant_name": tenantName,
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 // HandleListMyBots handles GET /api/bots — list bots owned by the authenticated user.
@@ -347,9 +414,21 @@ func (h *BotHandler) HandleDeleteBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if this bot has a managed deployment
+	tenantName, _ := h.db.GetTenantName(botUID)
+
 	if err := h.db.DeleteBot(botUID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "delete failed"})
 		return
+	}
+
+	// Async container cleanup after successful DB delete
+	if tenantName != "" && h.deployer != nil {
+		go func() {
+			if err := h.deployer.Remove(context.Background(), tenantName, ""); err != nil {
+				log.Printf("[deploy] async remove %s failed: %v", tenantName, err)
+			}
+		}()
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
