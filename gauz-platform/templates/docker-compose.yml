@@ -3,10 +3,10 @@ services:
     image: ${XIAOBA_BASE_IMAGE:-xiaoba-base:latest}
     container_name: xiaoba-${TENANT}
     privileged: true
+    network_mode: bridge
     env_file:
       - ${TENANTS_DIR:-/opt/services/xiaoba/tenants}/${TENANT}/.env
     volumes:
-      - ${TENANTS_DIR:-/opt/services/xiaoba/tenants}/${TENANT}/app:/app
       - ${TENANTS_DIR:-/opt/services/xiaoba/tenants}/${TENANT}/data:/data
       - ${TEMPLATES_DIR:-/opt/services/gauz-platform/templates}/entrypoint.sh:/entrypoint.sh:ro
     entrypoint: ["/bin/sh", "/entrypoint.sh"]

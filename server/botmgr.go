@@ -2,7 +2,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -338,14 +337,25 @@ func (h *BotHandler) HandleDeployBot(w http.ResponseWriter, r *http.Request) {
 
 	tenantName := fmt.Sprintf("bot-%s", result.Username)
 
-	// Deploy container — failure is logged but does not block bot creation
 	if err := h.deployer.Deploy(r.Context(), tenantName, result.APIKey); err != nil {
 		log.Printf("[deploy] failed for tenant %s: %v", tenantName, err)
-	} else {
-		// Only record tenant_name if deploy succeeded
-		if err := h.db.SetTenantName(result.UID, tenantName); err != nil {
-			log.Printf("[deploy] failed to save tenant_name for uid %d: %v", result.UID, err)
+		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
+			log.Printf("[deploy] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
 		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to deploy managed bot"})
+		return
+	}
+
+	if err := h.db.SetTenantName(result.UID, tenantName); err != nil {
+		log.Printf("[deploy] failed to save tenant_name for uid %d: %v", result.UID, err)
+		if removeErr := h.deployer.Remove(r.Context(), tenantName, result.APIKey); removeErr != nil {
+			log.Printf("[deploy] rollback remove for tenant %s failed: %v", tenantName, removeErr)
+		}
+		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
+			log.Printf("[deploy] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize managed bot"})
+		return
 	}
 
 	resp := map[string]interface{}{
@@ -416,19 +426,23 @@ func (h *BotHandler) HandleDeleteBot(w http.ResponseWriter, r *http.Request) {
 
 	// Check if this bot has a managed deployment
 	tenantName, _ := h.db.GetTenantName(botUID)
+	apiKey, _ := h.db.GetBotAPIKey(botUID)
+
+	if tenantName != "" && h.deployer != nil {
+		if apiKey == "" {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "managed bot missing api key"})
+			return
+		}
+		if err := h.deployer.Remove(r.Context(), tenantName, apiKey); err != nil {
+			log.Printf("[deploy] remove %s failed before delete: %v", tenantName, err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to remove managed deployment"})
+			return
+		}
+	}
 
 	if err := h.db.DeleteBot(botUID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "delete failed"})
 		return
-	}
-
-	// Async container cleanup after successful DB delete
-	if tenantName != "" && h.deployer != nil {
-		go func() {
-			if err := h.deployer.Remove(context.Background(), tenantName, ""); err != nil {
-				log.Printf("[deploy] async remove %s failed: %v", tenantName, err)
-			}
-		}()
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})

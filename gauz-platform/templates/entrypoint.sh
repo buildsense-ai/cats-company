@@ -3,17 +3,22 @@ set -e
 
 echo "[entrypoint] Starting XiaoBa tenant container..."
 
-if [ ! -d "/app/.git" ] && [ -n "${GIT_REPO_URL}" ]; then
-  echo "[entrypoint] No .git found, cloning ${GIT_REPO_URL} (branch: ${GIT_BRANCH:-main})..."
-  git clone --branch "${GIT_BRANCH:-main}" --single-branch "${GIT_REPO_URL}" /app/src
-  mv /app/src/.git /app/.git
-  mv /app/src/* /app/ 2>/dev/null || true
-  mv /app/src/.* /app/ 2>/dev/null || true
-  rm -rf /app/src
-  echo "[entrypoint] Clone complete."
+if [ ! -f "/app/package.json" ] && [ ! -d "/app/.git" ] && [ -n "${GIT_REPO_URL}" ]; then
+  if command -v git >/dev/null 2>&1; then
+    echo "[entrypoint] No app source found, cloning ${GIT_REPO_URL} (branch: ${GIT_BRANCH:-main})..."
+    git clone --branch "${GIT_BRANCH:-main}" --single-branch "${GIT_REPO_URL}" /app/src
+    mv /app/src/.git /app/.git
+    mv /app/src/* /app/ 2>/dev/null || true
+    mv /app/src/.* /app/ 2>/dev/null || true
+    rm -rf /app/src
+    echo "[entrypoint] Clone complete."
+  else
+    echo "[entrypoint] git is unavailable and no bundled app source was found."
+    exit 1
+  fi
 fi
 
-if [ "${AUTO_PULL}" = "true" ] && [ -d "/app/.git" ]; then
+if [ "${AUTO_PULL}" = "true" ] && [ -d "/app/.git" ] && command -v git >/dev/null 2>&1; then
   echo "[entrypoint] AUTO_PULL enabled, pulling latest..."
   cd /app && git pull --ff-only || echo "[entrypoint] git pull failed, continuing with current code"
 fi

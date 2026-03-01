@@ -229,7 +229,29 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId 
       if (type === 'image') {
         content.payload.thumbnail = data.url;
       }
-      wsSendMessage(topic, content);
+      await wsSendMessage(topic, content);
+
+      // Rich messages are not always echoed back with a shape the live view can merge reliably.
+      // Refresh history after send so uploads appear immediately without a manual reopen.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await new Promise((resolve) => window.setTimeout(resolve, 400));
+        const history = await api.getMessages(topic);
+        if (history.messages) {
+          setMessages(history.messages);
+          const matched = history.messages.some((msg) => {
+            if (typeof msg.content === 'string') {
+              try {
+                const parsed = JSON.parse(msg.content);
+                return parsed?.payload?.file_key === data.file_key;
+              } catch (parseErr) {
+                return false;
+              }
+            }
+            return msg.content?.payload?.file_key === data.file_key;
+          });
+          if (matched) break;
+        }
+      }
     } catch (err) {
       console.error('Upload failed:', err);
     }

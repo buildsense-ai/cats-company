@@ -38,6 +38,8 @@ services:
     environment:
       OC_DB_DSN: "${MYSQL_USER:-openchat}:${MYSQL_PASSWORD:-changeme}@tcp(mysql:3306)/openchat?parseTime=true&charset=utf8mb4"
       DEPLOY_API_URL: "${DEPLOY_API_URL:-}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - uploads_data:/app/uploads
     healthcheck:
@@ -99,7 +101,7 @@ services:
       - server
       - webapp
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/health"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/health"]
       interval: 30s
       timeout: 5s
       retries: 3

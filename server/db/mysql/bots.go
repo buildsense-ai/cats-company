@@ -137,6 +137,21 @@ func (a *Adapter) GetBotByAPIKey(apiKey string) (int64, error) {
 	return uid, nil
 }
 
+// GetBotAPIKey returns the API key for a bot.
+func (a *Adapter) GetBotAPIKey(botUID int64) (string, error) {
+	var apiKey *string
+	err := a.db.QueryRow(
+		`SELECT api_key FROM bot_config WHERE user_id = ?`, botUID,
+	).Scan(&apiKey)
+	if err != nil {
+		return "", fmt.Errorf("get bot api key: %w", err)
+	}
+	if apiKey == nil {
+		return "", nil
+	}
+	return *apiKey, nil
+}
+
 // ListBotsByOwner returns bots owned by a specific user.
 func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, error) {
 	rows, err := a.db.Query(
