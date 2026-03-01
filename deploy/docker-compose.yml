@@ -26,6 +26,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.server
+      args:
+        GOPROXY: "${GOPROXY:-https://proxy.golang.org,direct}"
     container_name: catscompany-server
     ports:
       - "6061:6061"
@@ -35,6 +37,7 @@ services:
         condition: service_healthy
     environment:
       OC_DB_DSN: "${MYSQL_USER:-openchat}:${MYSQL_PASSWORD:-changeme}@tcp(mysql:3306)/openchat?parseTime=true&charset=utf8mb4"
+      DEPLOY_API_URL: "${DEPLOY_API_URL:-}"
     volumes:
       - uploads_data:/app/uploads
     healthcheck:
