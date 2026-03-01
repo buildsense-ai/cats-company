@@ -184,12 +184,14 @@ class APIClient {
         let displayName: String?
         let apiKey: String?
         let ownerId: Int64?
+        let tenantName: String?
 
         enum CodingKeys: String, CodingKey {
             case uid, username
             case displayName = "display_name"
             case apiKey = "api_key"
             case ownerId = "owner_id"
+            case tenantName = "tenant_name"
         }
     }
 
@@ -198,8 +200,13 @@ class APIClient {
         return resp.bots ?? []
     }
 
-    func createBot(username: String, displayName: String) async throws -> CreateBotResponse {
-        try await request(.post, "/api/bots", body: [
+    func createBot(
+        username: String,
+        displayName: String,
+        deployToCloud: Bool = false
+    ) async throws -> CreateBotResponse {
+        let path = deployToCloud ? "/api/bots/deploy" : "/api/bots"
+        return try await request(.post, path, body: [
             "username": username,
             "display_name": displayName
         ])

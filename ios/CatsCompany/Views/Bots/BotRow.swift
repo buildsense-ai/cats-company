@@ -21,6 +21,15 @@ struct BotRow: View {
                     Text("@\(bot.username)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if bot.isManaged {
+                        Text("云端托管")
+                            .font(.caption2.weight(.medium))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(CatColor.primary.opacity(0.12))
+                            .foregroundStyle(CatColor.primary)
+                            .clipShape(Capsule())
+                    }
                 }
                 Spacer()
                 Text(bot.isPublic ? "公开" : "私有")

@@ -1,0 +1,19 @@
+services:
+  xiaoba:
+    image: ${XIAOBA_BASE_IMAGE:-xiaoba-base:latest}
+    container_name: xiaoba-${TENANT}
+    privileged: true
+    env_file:
+      - ${TENANTS_DIR:-/opt/services/xiaoba/tenants}/${TENANT}/.env
+    volumes:
+      - ${TENANTS_DIR:-/opt/services/xiaoba/tenants}/${TENANT}/app:/app
+      - ${TENANTS_DIR:-/opt/services/xiaoba/tenants}/${TENANT}/data:/data
+      - ${TEMPLATES_DIR:-/opt/services/gauz-platform/templates}/entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "${TENANT_CPUS:-0.4}"
+          memory: ${TENANT_MEM_LIMIT:-1g}
+          pids: ${TENANT_PIDS_LIMIT:-512}

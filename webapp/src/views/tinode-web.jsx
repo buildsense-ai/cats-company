@@ -4,6 +4,7 @@ import t from '../i18n';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
 import MessagesView from './messages-view';
+import BotAdminView from './bot-admin-view';
 import '../css/openchat-theme.css';
 
 const TABS = {
@@ -16,6 +17,7 @@ export default function TinodeWeb() {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
   const [activeTopic, setActiveTopic] = useState(null);
+  const [meScreen, setMeScreen] = useState('profile');
   const [authMode, setAuthMode] = useState('login');
   const [onlineUsers, setOnlineUsers] = useState({});
   const [wsStatus, setWsStatus] = useState('disconnected');
@@ -99,6 +101,7 @@ export default function TinodeWeb() {
     setUser(null);
     setOnlineUsers({});
     setActiveTopic(null);
+    setMeScreen('profile');
   };
 
   if (!user) {
@@ -114,6 +117,9 @@ export default function TinodeWeb() {
           onSelectTopic={setActiveTopic}
           user={user}
           onLogout={handleLogout}
+          meScreen={meScreen}
+          onOpenBots={() => setMeScreen('bots')}
+          onBackFromBots={() => setMeScreen('profile')}
           onlineUsers={onlineUsers}
           wsStatus={wsStatus}
         />
@@ -138,12 +144,26 @@ export default function TinodeWeb() {
   );
 }
 
-function SidebarContent({ activeTab, activeTopic, onSelectTopic, user, onLogout, onlineUsers, wsStatus }) {
+function SidebarContent({
+  activeTab,
+  activeTopic,
+  onSelectTopic,
+  user,
+  onLogout,
+  meScreen,
+  onOpenBots,
+  onBackFromBots,
+  onlineUsers,
+  wsStatus,
+}) {
   switch (activeTab) {
     case TABS.CONTACTS:
       return <FriendsView onSelectUser={onSelectTopic} user={user} />;
     case TABS.ME:
-      return <ProfileView user={user} onLogout={onLogout} wsStatus={wsStatus} />;
+      if (meScreen === 'bots') {
+        return <BotAdminView onBack={onBackFromBots} user={user} />;
+      }
+      return <ProfileView user={user} onLogout={onLogout} onOpenBots={onOpenBots} wsStatus={wsStatus} />;
     default:
       return <ChatListView activeTopic={activeTopic} onSelectTopic={onSelectTopic} user={user} onlineUsers={onlineUsers} />;
   }
@@ -172,7 +192,7 @@ function TabBar({ activeTab, onTabChange }) {
   );
 }
 
-function ProfileView({ user, onLogout, wsStatus }) {
+function ProfileView({ user, onLogout, onOpenBots, wsStatus }) {
   const statusText = wsStatus === 'connected' ? t('online') : t('offline');
   const statusClass = wsStatus === 'connected' ? 'online' : '';
 
@@ -189,6 +209,9 @@ function ProfileView({ user, onLogout, wsStatus }) {
             {statusText}
           </div>
         </div>
+      </div>
+      <div className="oc-contact-item" onClick={onOpenBots}>
+        {t('bot_admin')}
       </div>
       <div className="oc-contact-item" onClick={onLogout} style={{ color: '#FA5151', cursor: 'pointer' }}>
         {t('logout')}

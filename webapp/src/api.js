@@ -31,6 +31,10 @@ export function getToken() {
   return token;
 }
 
+export function getWebSocketURL() {
+  return WS_URL;
+}
+
 export function isWSConnected() {
   return wsConnected;
 }
@@ -88,6 +92,26 @@ export const api = {
   kickMember: (groupId, userId) => request('POST', '/api/groups/kick', { group_id: groupId, user_id: userId }),
   disbandGroup: (groupId) => request('POST', '/api/groups/disband', { group_id: groupId }),
   updateMemberRole: (groupId, userId, role) => request('POST', '/api/groups/role', { group_id: groupId, user_id: userId, role }),
+
+  // Bot management
+  getMyBots: () => request('GET', '/api/bots'),
+  createBot: ({ username, display_name }, deployToCloud = false) =>
+    request('POST', deployToCloud ? '/api/bots/deploy' : '/api/bots', { username, display_name }),
+  deleteBot: (uid) => request('DELETE', `/api/bots?uid=${uid}`),
+  setBotVisibility: (uid, visibility) => request('PATCH', `/api/bots/visibility?uid=${uid}&v=${visibility}`),
+  acceptFriendAsBot: async (apiKey, userId) => {
+    const res = await fetch(`${API_BASE}/api/friends/accept`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `ApiKey ${apiKey}`,
+      },
+      body: JSON.stringify({ user_id: userId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Request failed');
+    return data;
+  },
 };
 
 // --- WebSocket ---

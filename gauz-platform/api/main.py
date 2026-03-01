@@ -4,6 +4,7 @@ import re
 import secrets
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -12,8 +13,12 @@ from sqlalchemy.orm import Session
 from auth import create_token, decode_token
 from models import init_db, get_db, User, Agent, InviteCode, AgentMetrics, AgentQuota
 from config import (
+    CATSCOMPANY_URL,
+    CATSCOMPANY_WS_URL,
+    DEFAULT_BRANCH,
+    DEFAULT_REPO_URL,
+    GAUZMEM_URL,
     LLM_PROXY_PROVIDER, LLM_PROXY_API_BASE, LLM_PROXY_API_KEY, LLM_PROXY_MODEL,
-    GAUZMEM_URL, CATSCOMPANY_URL,
 )
 import orchestrator
 import services
@@ -51,6 +56,21 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     return user
 
 
+async def verify_api_key(request: Request) -> dict:
+    """Verify caller via CatsCompany ApiKey. Returns the caller profile."""
+    auth = request.headers.get("authorization", "")
+    if not auth.startswith("ApiKey "):
+        raise HTTPException(401, "Missing or invalid Authorization header")
+    try:
+        async with httpx.AsyncClient(base_url=CATSCOMPANY_URL, timeout=10) as c:
+            resp = await c.get("/api/me", headers={"Authorization": auth})
+            if resp.status_code >= 400:
+                raise HTTPException(401, "Invalid API key")
+            return resp.json()
+    except httpx.HTTPError:
+        raise HTTPException(502, "Failed to verify API key with CatsCompany")
+
+
 # ── Schemas ──────────────────────────────────────────
 
 class RegisterReq(BaseModel):
@@ -85,6 +105,14 @@ class SetQuotaReq(BaseModel):
     daily_token_limit: int = 100000
     monthly_token_limit: int = 2000000
     daily_message_limit: int = 500
+
+
+class DeployReq(BaseModel):
+    tenant: str
+    cc_api_key: str = ""
+    repo_url: str = ""
+    branch: str = ""
+    auto_pull: bool = True
 
 
 # ── Auth endpoints ───────────────────────────────────
@@ -181,6 +209,11 @@ def _make_tenant_name(user_id: int, agent_name: str) -> str:
     return f"u{user_id}-{slug}-{suffix}"
 
 
+def _validate_tenant(tenant: str) -> None:
+    if not TENANT_RE.match(tenant):
+        raise HTTPException(400, "Invalid tenant name (lowercase alphanumeric, 2-32 chars)")
+
+
 def _generate_tenant_env(
     tenant: str, user: User, agent_name: str,
     cc_api_key: str = "",
@@ -200,13 +233,62 @@ def _generate_tenant_env(
         f"GAUZ_MEM_PROJECT_ID={project_id}",
         f"GAUZ_MEM_USER_ID={user.username}",
         "",
-        f"CATSCOMPANY_SERVER_URL=ws://172.17.0.1:6061/v0/channels",
+        f"CATSCOMPANY_SERVER_URL={CATSCOMPANY_WS_URL}",
         f"CATSCOMPANY_API_KEY={cc_api_key}",
         "",
         "GAUZ_TOOL_ALLOW=",
         "",
     ]
     return "\n".join(lines) + "\n"
+
+
+@app.post("/api/deploy")
+async def deploy(req: DeployReq, request: Request):
+    await verify_api_key(request)
+    _validate_tenant(req.tenant)
+
+    env_content = orchestrator.build_tenant_env(
+        tenant=req.tenant,
+        cc_api_key=req.cc_api_key,
+        repo_url=req.repo_url or DEFAULT_REPO_URL,
+        branch=req.branch or DEFAULT_BRANCH,
+        auto_pull=req.auto_pull,
+        llm_provider=LLM_PROXY_PROVIDER,
+        llm_api_base=LLM_PROXY_API_BASE,
+        llm_api_key=LLM_PROXY_API_KEY,
+        llm_model=LLM_PROXY_MODEL,
+    )
+    orchestrator.scaffold_tenant(req.tenant, env_content)
+    ok, msg = orchestrator.start_managed_tenant(req.tenant)
+    if not ok:
+        raise HTTPException(500, msg)
+    return {"tenant": req.tenant, "status": "started"}
+
+
+@app.delete("/api/deploy/{tenant}")
+async def undeploy(tenant: str, request: Request):
+    await verify_api_key(request)
+    _validate_tenant(tenant)
+    orchestrator.remove_managed_tenant(tenant)
+    return {"tenant": tenant, "status": "removed"}
+
+
+@app.get("/api/deploy/{tenant}/status")
+async def deploy_status(tenant: str, request: Request):
+    await verify_api_key(request)
+    _validate_tenant(tenant)
+    return {"tenant": tenant, "status": orchestrator.tenant_status(tenant)}
+
+
+@app.post("/api/deploy/{tenant}/restart")
+async def restart_deploy(tenant: str, request: Request):
+    await verify_api_key(request)
+    _validate_tenant(tenant)
+    orchestrator.stop_managed_tenant(tenant)
+    ok, msg = orchestrator.start_managed_tenant(tenant)
+    if not ok:
+        raise HTTPException(500, msg)
+    return {"tenant": tenant, "status": "restarted"}
 
 
 @app.post("/api/agents")

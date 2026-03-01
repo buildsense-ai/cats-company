@@ -1,9 +1,35 @@
 import SwiftUI
 
 struct CreateBotSheet: View {
+    private enum CreateMode: String, CaseIterable, Identifiable {
+        case selfHosted
+        case managed
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .selfHosted:
+                return "仅创建"
+            case .managed:
+                return "创建并部署"
+            }
+        }
+
+        var description: String {
+            switch self {
+            case .selfHosted:
+                return "获取 API Key 和 WebSocket 地址，适合第三方 SDK / 自己部署"
+            case .managed:
+                return "创建 Bot 后立即接入 Gauz Platform 云端运行时"
+            }
+        }
+    }
+
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var auth = AuthManager.shared
     @State private var displayName = ""
+    @State private var createMode: CreateMode = .selfHosted
     @State private var isCreating = false
     @State private var errorMessage: String?
     @State private var createdBot: APIClient.CreateBotResponse?
@@ -61,12 +87,19 @@ struct CreateBotSheet: View {
     @ViewBuilder
     private var createSection: some View {
         Section {
+            Picker("创建方式", selection: $createMode) {
+                ForEach(CreateMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
             TextField("机器人名称", text: $displayName)
                 .textInputAutocapitalization(.never)
         } header: {
             Text("基本信息")
         } footer: {
-            Text("名称将作为机器人的显示名，用户名会自动生成")
+            Text(createMode.description)
         }
 
         if let err = errorMessage {
@@ -86,6 +119,10 @@ struct CreateBotSheet: View {
             LabeledContent("名称", value: bot.displayName ?? bot.username)
             LabeledContent("用户名", value: "@\(bot.username)")
             LabeledContent("UID", value: "\(bot.uid)")
+            LabeledContent("创建方式", value: createMode.title)
+            if let tenant = bot.tenantName, !tenant.isEmpty {
+                LabeledContent("租户", value: tenant)
+            }
         } header: {
             Text("机器人信息")
         }
@@ -97,8 +134,21 @@ struct CreateBotSheet: View {
             } header: {
                 Text("连接凭证")
             } footer: {
-                Text("API Key 仅在创建时显示一次，请妥善保存。")
+                Text(createMode == .managed
+                     ? "即使选择云端部署，API Key 和 WebSocket 仍可用于后续接入或迁移。"
+                     : "API Key 仅在创建时显示一次，请妥善保存。")
                     .foregroundStyle(CatColor.danger)
+            }
+        }
+
+        if createMode == .managed {
+            Section {
+                Label("已请求云端部署", systemImage: "cloud.fill")
+                    .foregroundStyle(CatColor.primary)
+            } header: {
+                Text("云端运行")
+            } footer: {
+                Text("Gauz Platform 将使用同一个 Bot 凭证启动托管运行时。")
             }
         }
 
@@ -159,7 +209,11 @@ struct CreateBotSheet: View {
         let username = "bot-\(slug.prefix(16))-\(Int.random(in: 1000...9999))"
 
         do {
-            let resp = try await APIClient.shared.createBot(username: username, displayName: name)
+            let resp = try await APIClient.shared.createBot(
+                username: username,
+                displayName: name,
+                deployToCloud: createMode == .managed
+            )
             createdBot = resp
             createdApiKey = resp.apiKey
 

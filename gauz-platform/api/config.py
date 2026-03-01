@@ -18,15 +18,24 @@ JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "168"))  # 7 days
 
 # Downstream services
 CATSCOMPANY_URL = os.getenv("CATSCOMPANY_URL", "http://localhost:6061")
+CATSCOMPANY_WS_URL = os.getenv("CATSCOMPANY_WS_URL", "ws://localhost:6061/v0/channels")
 GAUZMEM_URL = os.getenv("GAUZMEM_URL", "http://localhost:1235")
 
-# Container orchestration
+# Legacy multitenant orchestration
 XIAOBA_COMPOSE_FILE = os.getenv("XIAOBA_COMPOSE_FILE", "/opt/services/xiaoba/deploy/docker-compose.multitenant.yml")
 XIAOBA_REPO_ROOT = os.getenv("XIAOBA_REPO_ROOT", "/opt/services/xiaoba")
+
+# Managed deploy service orchestration
+XIAOBA_BASE_IMAGE = os.getenv("XIAOBA_BASE_IMAGE", "xiaoba-base:latest")
 TENANTS_DIR = os.getenv("TENANTS_DIR", "/opt/services/xiaoba/tenants")
+TEMPLATES_DIR = os.getenv("TEMPLATES_DIR", "/opt/services/gauz-platform/templates")
 
 # LLM proxy (provided to tenants)
 LLM_PROXY_PROVIDER = os.getenv("LLM_PROXY_PROVIDER", "anthropic")
 LLM_PROXY_API_BASE = os.getenv("LLM_PROXY_API_BASE", "")
 LLM_PROXY_API_KEY = os.getenv("LLM_PROXY_API_KEY", "")
 LLM_PROXY_MODEL = os.getenv("LLM_PROXY_MODEL", "claude-sonnet-4-20250514")
+
+# Default git repo for managed bot tenants
+DEFAULT_REPO_URL = os.getenv("DEFAULT_REPO_URL", "https://github.com/buildsense-ai/XiaoBa-CLI.git")
+DEFAULT_BRANCH = os.getenv("DEFAULT_BRANCH", "main")

@@ -8,6 +8,7 @@ struct Bot: Codable, Identifiable {
     let visibility: String?
     let ownerId: Int64?
     let apiKey: String?
+    let tenantName: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -17,6 +18,7 @@ struct Bot: Codable, Identifiable {
         case visibility
         case ownerId = "owner_id"
         case apiKey = "api_key"
+        case tenantName = "tenant_name"
     }
 
     var label: String {
@@ -25,5 +27,12 @@ struct Bot: Codable, Identifiable {
 
     var isPublic: Bool {
         visibility == "public"
+    }
+
+    var isManaged: Bool {
+        if let tenantName, !tenantName.isEmpty {
+            return true
+        }
+        return false
     }
 }
