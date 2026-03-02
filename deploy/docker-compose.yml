@@ -92,8 +92,8 @@ services:
     image: nginx:alpine
     container_name: catscompany-nginx
     ports:
+      - "80:80"
       - "8081:80"
-      - "8443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/ssl:/etc/nginx/ssl:ro
