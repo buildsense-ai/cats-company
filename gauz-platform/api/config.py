@@ -30,9 +30,29 @@ XIAOBA_BASE_IMAGE = os.getenv("XIAOBA_BASE_IMAGE", "xiaoba-base:latest")
 TENANTS_DIR = os.getenv("TENANTS_DIR", "/opt/services/xiaoba/tenants")
 TEMPLATES_DIR = os.getenv("TEMPLATES_DIR", "/opt/services/gauz-platform/templates")
 
+def _normalize_llm_api_base(provider: str, api_base: str) -> str:
+    api_base = api_base.strip()
+    if not api_base:
+        return api_base
+
+    normalized = api_base.rstrip("/")
+    # XiaoBa's openai-compatible runtime expects a full chat completions URL.
+    if provider.lower() == "openai":
+        if normalized.endswith("/chat/completions"):
+            return normalized
+        if normalized.endswith("/v1"):
+            return f"{normalized}/chat/completions"
+        return f"{normalized}/v1/chat/completions"
+
+    return api_base
+
+
 # LLM proxy (provided to tenants)
 LLM_PROXY_PROVIDER = os.getenv("LLM_PROXY_PROVIDER", "anthropic")
-LLM_PROXY_API_BASE = os.getenv("LLM_PROXY_API_BASE", "")
+LLM_PROXY_API_BASE = _normalize_llm_api_base(
+    LLM_PROXY_PROVIDER,
+    os.getenv("LLM_PROXY_API_BASE", ""),
+)
 LLM_PROXY_API_KEY = os.getenv("LLM_PROXY_API_KEY", "")
 LLM_PROXY_MODEL = os.getenv("LLM_PROXY_MODEL", "claude-sonnet-4-20250514")
 
