@@ -133,7 +133,10 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 	// Try JWT token first
 	tokenStr := r.URL.Query().Get("token")
-	apiKeyStr := r.URL.Query().Get("api_key")
+	apiKeyStr := r.Header.Get("X-API-Key")
+	if apiKeyStr == "" {
+		apiKeyStr = r.URL.Query().Get("api_key")
+	}
 
 	if tokenStr != "" {
 		claims, err := ParseToken(tokenStr)
