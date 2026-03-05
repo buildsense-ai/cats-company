@@ -62,9 +62,7 @@ struct MessageBubble: View {
         HStack(alignment: .top, spacing: 8) {
             if isMe { Spacer(minLength: sideInset) }
 
-            if !isMe {
-                AvatarView(name: senderName, avatarURL: senderAvatarURL, isBot: senderIsBot, size: 32)
-            }
+            AvatarView(name: senderName, avatarURL: senderAvatarURL, isBot: senderIsBot, size: 32)
 
             VStack(alignment: isMe ? .trailing : .leading, spacing: 4) {
                 if !isMe {

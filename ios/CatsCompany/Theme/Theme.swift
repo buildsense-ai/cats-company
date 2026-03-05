@@ -78,14 +78,18 @@ struct DateSeparator: View {
     let date: Date
 
     var body: some View {
-        Text(formatDate(date))
-            .font(.system(size: 12))
-            .foregroundStyle(CatColor.textSecondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(Color.black.opacity(0.06))
-            .clipShape(Capsule())
-            .padding(.vertical, 8)
+        HStack {
+            Spacer()
+            Text(formatDate(date))
+                .font(.system(size: 12))
+                .foregroundStyle(CatColor.textSecondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Color.black.opacity(0.06))
+                .clipShape(Capsule())
+            Spacer()
+        }
+        .padding(.vertical, 8)
     }
 
     private func formatDate(_ date: Date) -> String {

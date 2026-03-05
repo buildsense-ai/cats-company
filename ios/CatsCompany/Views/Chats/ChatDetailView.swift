@@ -37,7 +37,7 @@ struct ChatDetailView: View {
     @State private var messageListRefreshID = 0
     @FocusState private var isComposerFocused: Bool
 
-    private let pageSize = 200
+    private let pageSize = 50
     private let bottomAnchorID = "chat-bottom-anchor"
 
     private var resolvedTitle: String {
