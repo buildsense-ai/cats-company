@@ -20,9 +20,9 @@ struct Conversation: Identifiable {
 }
 
 struct ChatListView: View {
+    @Binding var pendingTopicId: String?
+
     @ObservedObject var ws = WebSocketManager.shared
-    @ObservedObject var auth = AuthManager.shared
-    @ObservedObject private var identities = IdentityStore.shared
     @State private var conversations: [Conversation] = []
     @State private var selectedTopic: Conversation?
     @State private var isLoading = true
@@ -66,6 +66,18 @@ struct ChatListView: View {
             .task { await loadConversations() }
             .onAppear { setupWSHandlers() }
             .onDisappear { clearWSHandlers() }
+            .onChange(of: pendingTopicId) {
+                if let topicId = pendingTopicId {
+                    // Find or create conversation for this topic
+                    if let conv = conversations.first(where: { $0.id == topicId }) {
+                        selectedTopic = conv
+                    } else {
+                        // Create a temporary conversation
+                        selectedTopic = Conversation(id: topicId, name: topicId, isGroup: topicId.hasPrefix("grp_"))
+                    }
+                    pendingTopicId = nil
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .botDeleted)) { _ in
                 Task { await loadConversations() }
             }
@@ -116,37 +128,26 @@ struct ChatListView: View {
 
     private func loadConversations() async {
         do {
-            async let summariesTask = APIClient.shared.getConversations()
-            async let friendsTask = APIClient.shared.getFriends()
-            async let groupsTask = APIClient.shared.getGroups()
-
-            let summaries = try await summariesTask
-            let friends = try await friendsTask
-            let groups = try await groupsTask
-
-            identities.upsertCurrentUser(auth.currentUser)
-            identities.upsertUsers(friends)
-            identities.upsertGroups(groups)
-
-            var convsByID: [String: Conversation] = [:]
+            let summaries = try await APIClient.shared.getConversations()
+            var visibleConversations: [Conversation] = []
+            var hiddenConversations: [APIClient.ConversationSummary] = []
 
             for summary in summaries {
                 if MessageStore.shared.isConversationHidden(topic: summary.id) {
+                    hiddenConversations.append(summary)
                     continue
                 }
-                convsByID[summary.id] = makeConversation(from: summary)
+                visibleConversations.append(makeConversation(from: summary))
             }
 
-            for topicID in MessageStore.shared.storedTopics() {
-                guard !MessageStore.shared.isConversationHidden(topic: topicID) else { continue }
-                if let existing = convsByID[topicID] {
-                    convsByID[topicID] = mergedWithLocalState(existing)
-                } else if let localConversation = makeLocalConversation(topicID: topicID) {
-                    convsByID[topicID] = localConversation
+            if visibleConversations.isEmpty && !hiddenConversations.isEmpty {
+                for summary in hiddenConversations {
+                    MessageStore.shared.unhideConversation(topic: summary.id)
+                    visibleConversations.append(makeConversation(from: summary))
                 }
             }
 
-            conversations = convsByID.values.sorted(by: conversationSort)
+            conversations = visibleConversations
             isLoading = false
         } catch {
             print("Load conversations error: \(error)")
@@ -161,103 +162,18 @@ struct ChatListView: View {
     }
 
     private func makeConversation(from summary: APIClient.ConversationSummary) -> Conversation {
-        let localMessages = MessageStore.shared.loadMessages(for: summary.id)
-        let localLastMessage = localMessages.last
-
-        return Conversation(
+        Conversation(
             id: summary.id,
             name: summary.name,
             isGroup: summary.isGroup,
             isBot: summary.isBot,
-            lastMessage: summary.preview ?? localLastMessage?.content.displayText,
-            lastTime: summary.lastTime ?? localLastMessage?.timestamp,
+            lastMessage: summary.preview,
+            lastTime: summary.lastTime,
             isOnline: summary.isOnline,
-            avatarUrl: summary.avatarUrl ?? localAvatarURL(for: summary.id),
-            peerUid: summary.friendId ?? peerID(for: summary.id),
-            latestSeq: summary.latestSeq ?? localLastMessage?.seq
+            avatarUrl: summary.avatarUrl,
+            peerUid: summary.friendId,
+            latestSeq: summary.latestSeq
         )
-    }
-
-    private func mergedWithLocalState(_ conversation: Conversation) -> Conversation {
-        let localMessages = MessageStore.shared.loadMessages(for: conversation.id)
-        guard let localLastMessage = localMessages.last else { return conversation }
-
-        return Conversation(
-            id: conversation.id,
-            name: conversation.name,
-            isGroup: conversation.isGroup,
-            isBot: conversation.isBot,
-            lastMessage: conversation.lastMessage ?? localLastMessage.content.displayText,
-            lastTime: conversation.lastTime ?? localLastMessage.timestamp,
-            isOnline: conversation.isOnline,
-            avatarUrl: conversation.avatarUrl ?? localAvatarURL(for: conversation.id),
-            peerUid: conversation.peerUid ?? peerID(for: conversation.id),
-            latestSeq: conversation.latestSeq ?? localLastMessage.seq
-        )
-    }
-
-    private func makeLocalConversation(topicID: String) -> Conversation? {
-        let localMessages = MessageStore.shared.loadMessages(for: topicID)
-        guard let localLastMessage = localMessages.last else { return nil }
-
-        let isGroup = topicID.hasPrefix("grp_")
-        let peerUid = peerID(for: topicID)
-
-        return Conversation(
-            id: topicID,
-            name: localConversationName(for: topicID, peerUid: peerUid),
-            isGroup: isGroup,
-            isBot: isGroup ? false : (peerUid.flatMap { identities.usersById[$0]?.isBot } ?? false),
-            lastMessage: localLastMessage.content.displayText,
-            lastTime: localLastMessage.timestamp,
-            isOnline: false,
-            avatarUrl: localAvatarURL(for: topicID),
-            peerUid: peerUid,
-            latestSeq: localLastMessage.seq
-        )
-    }
-
-    private func localConversationName(for topicID: String, peerUid: Int64?) -> String {
-        if topicID.hasPrefix("grp_") {
-            return identities.groupName(forTopic: topicID, fallback: topicID)
-        }
-        if let peerUid, let user = identities.usersById[peerUid] {
-            return user.label
-        }
-        if let peerUid {
-            return "用户 \(peerUid)"
-        }
-        return topicID
-    }
-
-    private func localAvatarURL(for topicID: String) -> String? {
-        if topicID.hasPrefix("grp_") {
-            return identities.groupAvatarURL(forTopic: topicID)
-        }
-        guard let peerUid = peerID(for: topicID) else { return nil }
-        return identities.usersById[peerUid]?.avatarUrl
-    }
-
-    private func peerID(for topicID: String) -> Int64? {
-        guard !topicID.hasPrefix("grp_"), let myID = auth.currentUser?.id else { return nil }
-        let ids = topicID
-            .replacingOccurrences(of: "p2p_", with: "")
-            .split(separator: "_")
-            .compactMap { Int64($0) }
-        return ids.first(where: { $0 != myID })
-    }
-
-    private func conversationSort(_ lhs: Conversation, _ rhs: Conversation) -> Bool {
-        switch (lhs.lastTime, rhs.lastTime) {
-        case let (l?, r?):
-            return l == r ? lhs.name < rhs.name : l > r
-        case (.some, nil):
-            return true
-        case (nil, .some):
-            return false
-        case (nil, nil):
-            return lhs.name < rhs.name
-        }
     }
 }
 

@@ -40,22 +40,31 @@ struct CatsCompanyApp: App {
 }
 
 struct MainTabView: View {
+    @State private var selectedTab = 0
+    @State private var pendingTopicId: String?
+
     var body: some View {
-        TabView {
-            ChatListView()
+        TabView(selection: $selectedTab) {
+            ChatListView(pendingTopicId: $pendingTopicId)
                 .tabItem {
                     Label("消息", systemImage: "bubble.left.and.bubble.right")
                 }
+                .tag(0)
 
-            ContactsView()
+            ContactsView(onOpenChat: { topicId in
+                pendingTopicId = topicId
+                selectedTab = 0
+            })
                 .tabItem {
                     Label("通讯录", systemImage: "person.2")
                 }
+                .tag(1)
 
             ProfileView()
                 .tabItem {
                     Label("我", systemImage: "person.circle")
                 }
+                .tag(2)
         }
     }
 }

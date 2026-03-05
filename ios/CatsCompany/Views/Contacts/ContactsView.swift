@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct ContactsView: View {
+    var onOpenChat: ((String) -> Void)?
+
     @ObservedObject var auth = AuthManager.shared
     @ObservedObject private var identities = IdentityStore.shared
     @State private var friends: [User] = []
@@ -35,10 +37,13 @@ struct ContactsView: View {
                 if !groups.isEmpty {
                     Section {
                         ForEach(groups) { group in
-                            NavigationLink(value: group.topicId) {
+                            Button {
+                                onOpenChat?(group.topicId)
+                            } label: {
                                 HStack(spacing: 12) {
                                     AvatarView(name: group.name, avatarURL: group.avatarUrl, isBot: false, isGroup: true, size: 40)
                                     Text(group.name)
+                                        .foregroundStyle(CatColor.textPrimary)
                                 }
                             }
                         }
@@ -58,12 +63,15 @@ struct ContactsView: View {
                     }
                     ForEach(friends) { friend in
                         let topicId = makeP2PTopicId(friend.id)
-                        NavigationLink(value: topicId) {
+                        Button {
+                            onOpenChat?(topicId)
+                        } label: {
                             HStack(spacing: 12) {
                                 AvatarView(name: friend.label, avatarURL: friend.avatarUrl, isBot: friend.isBot, isGroup: false, size: 40)
                                 VStack(alignment: .leading) {
                                     HStack {
                                         Text(friend.label)
+                                            .foregroundStyle(CatColor.textPrimary)
                                         if friend.isBot {
                                             Image(systemName: "cpu")
                                                 .font(.caption)
