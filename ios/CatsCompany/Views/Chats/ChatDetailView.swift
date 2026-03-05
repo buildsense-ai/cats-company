@@ -32,6 +32,7 @@ struct ChatDetailView: View {
     @State private var attachmentErrorMessage: String?
     @State private var showGroupSettings = false
     @State private var historyOffset = 0
+    @State private var lastSeenSeq = 0
     @State private var hasMoreHistory = false
     @State private var isLoadingOlder = false
     @State private var messageListRefreshID = 0
@@ -149,7 +150,11 @@ struct ChatDetailView: View {
             }
             .onChange(of: messages.count) {
                 guard !isLoadingOlder else { return }
-                scrollToBottom(proxy)
+                // Only scroll if there's a new message (higher seq)
+                if let lastMsg = messages.last, lastMsg.seq > lastSeenSeq {
+                    lastSeenSeq = lastMsg.seq
+                    scrollToBottom(proxy)
+                }
             }
             .onChange(of: isComposerFocused) {
                 refreshMessageListLayout(proxy, keepBottomVisible: isComposerFocused)
