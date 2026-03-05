@@ -26,6 +26,11 @@ interface PendingAck {
   timer: ReturnType<typeof setTimeout>;
 }
 
+interface ConversationCursor {
+  id: string;
+  latest_seq?: number;
+}
+
 export class CatsBot {
   public uid = '';
   public name = '';
@@ -34,12 +39,15 @@ export class CatsBot {
   private readonly emitter = new EventEmitter();
   private readonly uploader: FileUploader;
   private readonly pendingAcks = new Map<string, PendingAck>();
+  private readonly topicLastSeq = new Map<string, number>();
 
   private ws: WebSocket | null = null;
   private msgId = 0;
   private reconnectAttempt = 0;
   private closed = false;
   private pingTimer: ReturnType<typeof setTimeout> | null = null;
+  private hasConversationBaseline = false;
+  private recoveryPromise: Promise<void> | null = null;
 
   private closeSocket(reason = 'bot disconnect'): void {
     if (!this.ws) return;
@@ -284,7 +292,7 @@ export class CatsBot {
       const timer = setTimeout(() => {
         this.pendingAcks.delete(id);
         reject(new ProtocolError(0, 'Ack timeout'));
-      }, 10000);
+      }, 30000);
 
       this.pendingAcks.set(id, { resolve, reject, timer });
       try {
@@ -307,6 +315,9 @@ export class CatsBot {
 
     if (ctrl.code === 200) {
       const seq = (ctrl.params as any)?.seq ?? 0;
+      if (ctrl.topic && typeof seq === 'number' && seq > 0) {
+        this.noteTopicSeq(ctrl.topic, seq);
+      }
       pending.resolve(typeof seq === 'number' ? seq : 0);
     } else if (ctrl.code === 429) {
       pending.reject(new RateLimitError(ctrl.text));
@@ -407,6 +418,7 @@ export class CatsBot {
             this.reconnectAttempt = 0;
             this.emit('ready', this.uid, this.name);
             resolve();
+            void this.recoverMissedMessages();
             return;
           } else {
             failConnect(new HandshakeError(`Handshake failed: code ${msg.ctrl.code}`));
@@ -468,6 +480,8 @@ export class CatsBot {
     }
 
     if (msg.data) {
+      this.noteTopicSeq(msg.data.topic, msg.data.seq);
+
       // Self-echo filter: skip messages from ourselves
       if (msg.data.from === this.uid) return;
 
@@ -505,6 +519,88 @@ export class CatsBot {
       clearTimeout(this.pingTimer);
       this.pingTimer = null;
     }
+  }
+
+  private noteTopicSeq(topic: string | undefined, seq: number | undefined): void {
+    if (!topic || typeof seq !== 'number' || seq <= 0) {
+      return;
+    }
+
+    const prev = this.topicLastSeq.get(topic) ?? 0;
+    if (seq > prev) {
+      this.topicLastSeq.set(topic, seq);
+    }
+  }
+
+  private async recoverMissedMessages(): Promise<void> {
+    if (this.recoveryPromise) {
+      return this.recoveryPromise;
+    }
+
+    this.recoveryPromise = (async () => {
+      const conversations = await this.fetchConversationCursors();
+      if (!this.hasConversationBaseline) {
+        for (const convo of conversations) {
+          this.noteTopicSeq(convo.id, convo.latest_seq ?? 0);
+        }
+        this.hasConversationBaseline = true;
+        return;
+      }
+
+      for (const convo of conversations) {
+        const latestSeq = convo.latest_seq ?? 0;
+        const lastSeen = this.topicLastSeq.get(convo.id);
+        if (latestSeq <= 0) {
+          continue;
+        }
+
+        if (lastSeen == null) {
+          await this.getHistory(convo.id, 0);
+          this.noteTopicSeq(convo.id, latestSeq);
+          continue;
+        }
+
+        if (latestSeq > lastSeen) {
+          await this.getHistory(convo.id, lastSeen);
+          this.noteTopicSeq(convo.id, latestSeq);
+        }
+      }
+    })()
+      .catch((err: any) => {
+        this.emit('error', new ConnectionError(`Conversation recovery failed: ${err.message}`));
+      })
+      .finally(() => {
+        this.recoveryPromise = null;
+      });
+
+    return this.recoveryPromise;
+  }
+
+  private async fetchConversationCursors(): Promise<ConversationCursor[]> {
+    const url = `${this.config.httpBaseUrl}/api/conversations`;
+    let res: Response;
+
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `ApiKey ${this.config.apiKey}`,
+        },
+      });
+    } catch (err: any) {
+      throw new ConnectionError(`Conversation sync request failed: ${err.message}`);
+    }
+
+    if (!res.ok) {
+      if (res.status === 401) {
+        return [];
+      }
+      const text = await res.text().catch(() => '');
+      throw new ConnectionError(`Conversation sync failed (${res.status}): ${text}`);
+    }
+
+    const data = (await res.json()) as { conversations?: ConversationCursor[] };
+    return Array.isArray(data.conversations) ? data.conversations : [];
   }
 
   // --- Auto-reconnect ---

@@ -17,11 +17,14 @@ class CatsBot {
     emitter = new events_1.EventEmitter();
     uploader;
     pendingAcks = new Map();
+    topicLastSeq = new Map();
     ws = null;
     msgId = 0;
     reconnectAttempt = 0;
     closed = false;
     pingTimer = null;
+    hasConversationBaseline = false;
+    recoveryPromise = null;
     closeSocket(reason = 'bot disconnect') {
         if (!this.ws)
             return;
@@ -220,7 +223,7 @@ class CatsBot {
             const timer = setTimeout(() => {
                 this.pendingAcks.delete(id);
                 reject(new errors_1.ProtocolError(0, 'Ack timeout'));
-            }, 10000);
+            }, 30000);
             this.pendingAcks.set(id, { resolve, reject, timer });
             try {
                 this.sendRaw(msg);
@@ -242,6 +245,9 @@ class CatsBot {
         this.pendingAcks.delete(ctrl.id);
         if (ctrl.code === 200) {
             const seq = ctrl.params?.seq ?? 0;
+            if (ctrl.topic && typeof seq === 'number' && seq > 0) {
+                this.noteTopicSeq(ctrl.topic, seq);
+            }
             pending.resolve(typeof seq === 'number' ? seq : 0);
         }
         else if (ctrl.code === 429) {
@@ -334,6 +340,7 @@ class CatsBot {
                         this.reconnectAttempt = 0;
                         this.emit('ready', this.uid, this.name);
                         resolve();
+                        void this.recoverMissedMessages();
                         return;
                     }
                     else {
@@ -387,6 +394,7 @@ class CatsBot {
             }
         }
         if (msg.data) {
+            this.noteTopicSeq(msg.data.topic, msg.data.seq);
             // Self-echo filter: skip messages from ourselves
             if (msg.data.from === this.uid)
                 return;
@@ -420,6 +428,77 @@ class CatsBot {
             clearTimeout(this.pingTimer);
             this.pingTimer = null;
         }
+    }
+    noteTopicSeq(topic, seq) {
+        if (!topic || typeof seq !== 'number' || seq <= 0) {
+            return;
+        }
+        const prev = this.topicLastSeq.get(topic) ?? 0;
+        if (seq > prev) {
+            this.topicLastSeq.set(topic, seq);
+        }
+    }
+    async recoverMissedMessages() {
+        if (this.recoveryPromise) {
+            return this.recoveryPromise;
+        }
+        this.recoveryPromise = (async () => {
+            const conversations = await this.fetchConversationCursors();
+            if (!this.hasConversationBaseline) {
+                for (const convo of conversations) {
+                    this.noteTopicSeq(convo.id, convo.latest_seq ?? 0);
+                }
+                this.hasConversationBaseline = true;
+                return;
+            }
+            for (const convo of conversations) {
+                const latestSeq = convo.latest_seq ?? 0;
+                const lastSeen = this.topicLastSeq.get(convo.id);
+                if (latestSeq <= 0) {
+                    continue;
+                }
+                if (lastSeen == null) {
+                    await this.getHistory(convo.id, 0);
+                    this.noteTopicSeq(convo.id, latestSeq);
+                    continue;
+                }
+                if (latestSeq > lastSeen) {
+                    await this.getHistory(convo.id, lastSeen);
+                    this.noteTopicSeq(convo.id, latestSeq);
+                }
+            }
+        })()
+            .catch((err) => {
+            this.emit('error', new errors_1.ConnectionError(`Conversation recovery failed: ${err.message}`));
+        })
+            .finally(() => {
+            this.recoveryPromise = null;
+        });
+        return this.recoveryPromise;
+    }
+    async fetchConversationCursors() {
+        const url = `${this.config.httpBaseUrl}/api/conversations`;
+        let res;
+        try {
+            res = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `ApiKey ${this.config.apiKey}`,
+                },
+            });
+        }
+        catch (err) {
+            throw new errors_1.ConnectionError(`Conversation sync request failed: ${err.message}`);
+        }
+        if (!res.ok) {
+            if (res.status === 401) {
+                return [];
+            }
+            const text = await res.text().catch(() => '');
+            throw new errors_1.ConnectionError(`Conversation sync failed (${res.status}): ${text}`);
+        }
+        const data = (await res.json());
+        return Array.isArray(data.conversations) ? data.conversations : [];
     }
     // --- Auto-reconnect ---
     scheduleReconnect() {

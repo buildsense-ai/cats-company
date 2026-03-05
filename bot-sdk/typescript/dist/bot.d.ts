@@ -6,11 +6,14 @@ export declare class CatsBot {
     private readonly emitter;
     private readonly uploader;
     private readonly pendingAcks;
+    private readonly topicLastSeq;
     private ws;
     private msgId;
     private reconnectAttempt;
     private closed;
     private pingTimer;
+    private hasConversationBaseline;
+    private recoveryPromise;
     private closeSocket;
     constructor(config: CatsBotConfig);
     on<K extends keyof BotEventMap>(event: K, listener: BotEventMap[K]): this;
@@ -64,6 +67,9 @@ export declare class CatsBot {
     private dispatch;
     private resetPingTimer;
     private clearPingTimer;
+    private noteTopicSeq;
+    private recoverMissedMessages;
+    private fetchConversationCursors;
     private scheduleReconnect;
 }
 //# sourceMappingURL=bot.d.ts.map

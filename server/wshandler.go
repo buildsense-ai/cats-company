@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,6 +46,7 @@ type Client struct {
 	hub         *Hub
 	conn        *websocket.Conn
 	uid         int64
+	remoteAddr  string
 	displayName string
 	accountType types.AccountType
 	send        chan []byte
@@ -79,7 +81,7 @@ func (h *Hub) Run() {
 		select {
 		case client := <-h.register:
 			firstConn, deviceCount, onlineUsers := h.addClient(client)
-			log.Printf("client connected: uid=%d (devices: %d, online users: %d)", client.uid, deviceCount, onlineUsers)
+			log.Printf("client connected: uid=%d addr=%s account=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, deviceCount, onlineUsers)
 			if firstConn {
 				h.enqueuePresence(client.uid, "on")
 			}
@@ -90,7 +92,7 @@ func (h *Hub) Run() {
 				continue
 			}
 			client.closeSend()
-			log.Printf("client disconnected: uid=%d (devices: %d, online users: %d)", client.uid, remaining, onlineUsers)
+			log.Printf("client disconnected: uid=%d addr=%s account=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, remaining, onlineUsers)
 			if lastConn {
 				h.enqueuePresence(client.uid, "off")
 			}
@@ -231,13 +233,12 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if tokenStr != "" {
-		usr, _ := hub.db.GetUser(uid)
-		if usr != nil {
-			acctType = usr.AccountType
-			if usr.DisplayName != "" {
-				displayName = usr.DisplayName
-			}
+	// Get user info for both JWT and API Key
+	usr, _ := hub.db.GetUser(uid)
+	if usr != nil {
+		acctType = usr.AccountType
+		if usr.DisplayName != "" {
+			displayName = usr.DisplayName
 		}
 	}
 
@@ -251,6 +252,7 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		hub:         hub,
 		conn:        conn,
 		uid:         uid,
+		remoteAddr:  requestRemoteAddr(r),
 		displayName: displayName,
 		accountType: acctType,
 		send:        make(chan []byte, 256),
@@ -260,6 +262,27 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 	go client.WritePump()
 	go client.ReadPump(hub.handleMessage)
+}
+
+func requestRemoteAddr(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		return realIP
+	}
+
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		if len(parts) > 0 {
+			if addr := strings.TrimSpace(parts[0]); addr != "" {
+				return addr
+			}
+		}
+	}
+
+	return r.RemoteAddr
 }
 
 // handleMessage dispatches incoming client messages.
