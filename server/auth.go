@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/openchat/openchat/server/db/mysql"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // jwtSecret is the signing key. In production, load from env/config.
@@ -106,6 +108,13 @@ func ParseAPIKey(key string) (int64, error) {
 type contextKey string
 
 const uidKey contextKey = "uid"
+const usernameKey contextKey = "username"
+
+func contextWithClaims(ctx context.Context, claims *JWTClaims) context.Context {
+	ctx = context.WithValue(ctx, uidKey, claims.UID)
+	ctx = context.WithValue(ctx, usernameKey, claims.Username)
+	return ctx
+}
 
 // AuthMiddleware extracts the JWT token and sets uid in context.
 func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -122,7 +131,7 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), uidKey, claims.UID)
+		ctx := contextWithClaims(r.Context(), claims)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -137,7 +146,7 @@ func AuthMiddlewareWithDB(db *mysql.Adapter) func(http.HandlerFunc) http.Handler
 			if tokenStr != "" {
 				claims, err := ParseToken(tokenStr)
 				if err == nil {
-					ctx := context.WithValue(r.Context(), uidKey, claims.UID)
+					ctx := contextWithClaims(r.Context(), claims)
 					next(w, r.WithContext(ctx))
 					return
 				}
@@ -162,10 +171,81 @@ func AuthMiddlewareWithDB(db *mysql.Adapter) func(http.HandlerFunc) http.Handler
 	}
 }
 
+func ownerClaimsFromRequest(r *http.Request, lookupUser func(int64) (*types.User, error)) (*JWTClaims, int, string) {
+	tokenStr := extractToken(r)
+	if tokenStr == "" {
+		return nil, http.StatusUnauthorized, "unauthorized"
+	}
+
+	claims, err := ParseToken(tokenStr)
+	if err != nil {
+		return nil, http.StatusUnauthorized, "invalid or expired token"
+	}
+
+	user, err := lookupUser(claims.UID)
+	if err != nil || user == nil {
+		return nil, http.StatusUnauthorized, "invalid or expired token"
+	}
+
+	if user.AccountType != types.AccountHuman {
+		return nil, http.StatusForbidden, "owner access requires a human user token"
+	}
+
+	return claims, 0, ""
+}
+
+// OwnerMiddlewareWithDB requires a valid human-user JWT.
+// It is intended for owner-management endpoints, not bot runtime endpoints.
+func OwnerMiddlewareWithDB(db *mysql.Adapter) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			claims, status, msg := ownerClaimsFromRequest(r, db.GetUser)
+			if status != 0 {
+				writeJSON(w, status, map[string]string{"error": msg})
+				return
+			}
+
+			ctx := contextWithClaims(r.Context(), claims)
+			next(w, r.WithContext(ctx))
+		}
+	}
+}
+
+// AdminMiddleware requires a valid JWT and a username listed in OC_ADMIN_USERNAMES.
+func AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tokenStr := extractToken(r)
+		if tokenStr == "" {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+
+		claims, err := ParseToken(tokenStr)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
+			return
+		}
+
+		if !isAdminUsername(claims.Username) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin access required"})
+			return
+		}
+
+		ctx := contextWithClaims(r.Context(), claims)
+		next(w, r.WithContext(ctx))
+	}
+}
+
 // UIDFromContext extracts the user ID from the request context.
 func UIDFromContext(ctx context.Context) int64 {
 	uid, _ := ctx.Value(uidKey).(int64)
 	return uid
+}
+
+// UsernameFromContext extracts the username from the request context.
+func UsernameFromContext(ctx context.Context) string {
+	username, _ := ctx.Value(usernameKey).(string)
+	return username
 }
 
 // extractToken gets the token from Authorization header or query param.
@@ -184,4 +264,22 @@ func extractAPIKey(r *http.Request) string {
 		return strings.TrimPrefix(auth, "ApiKey ")
 	}
 	return r.URL.Query().Get("api_key")
+}
+
+func isAdminUsername(username string) bool {
+	if username == "" {
+		return false
+	}
+
+	allowed := os.Getenv("OC_ADMIN_USERNAMES")
+	if allowed == "" {
+		return false
+	}
+
+	for _, candidate := range strings.Split(allowed, ",") {
+		if strings.TrimSpace(candidate) == username {
+			return true
+		}
+	}
+	return false
 }
