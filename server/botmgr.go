@@ -581,7 +581,7 @@ func (h *BotHandler) HandleBotStats(w http.ResponseWriter, r *http.Request) {
 
 // HandleUpdateBotAvatar handles POST /api/bots/avatar
 func (h *BotHandler) HandleUpdateBotAvatar(w http.ResponseWriter, r *http.Request) {
-	if r.Method \!= http.MethodPost {
+	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
@@ -594,20 +594,20 @@ func (h *BotHandler) HandleUpdateBotAvatar(w http.ResponseWriter, r *http.Reques
 
 	uidStr := r.URL.Query().Get("uid")
 	botUID, err := strconv.ParseInt(uidStr, 10, 64)
-	if err \!= nil {
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
 		return
 	}
 
 	// Verify ownership
 	actualOwner, err := h.db.GetBotOwner(botUID)
-	if err \!= nil || actualOwner \!= ownerUID {
+	if err != nil || actualOwner != ownerUID {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not your bot"})
 		return
 	}
 
 	// Parse multipart form
-	if err := r.ParseMultipartForm(10 << 20); err \!= nil {
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid form"})
 		return
 	}
@@ -619,7 +619,7 @@ func (h *BotHandler) HandleUpdateBotAvatar(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Update avatar
-	if err := h.db.UpdateUserAvatar(botUID, avatarURL); err \!= nil {
+	if err := h.db.UpdateUserAvatar(botUID, avatarURL); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "update failed"})
 		return
 	}
