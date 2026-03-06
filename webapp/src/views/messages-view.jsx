@@ -6,6 +6,7 @@ import GroupSettings from '../widgets/group-settings';
 import Avatar from '../widgets/avatar';
 
 const PAGE_SIZE = 200;
+const TYPING_TIMEOUT_MS = 10000;
 
 export default function MessagesView({ topic, topicName, user, isGroup, groupId, topicAvatarUrl, onTopicUpdated }) {
   const [input, setInput] = useState('');
@@ -117,7 +118,7 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
         if (fromUid !== user.uid) {
           setPeerTyping(true);
           clearTimeout(peerTypingTimer.current);
-          peerTypingTimer.current = setTimeout(() => setPeerTyping(false), 3000);
+          peerTypingTimer.current = setTimeout(() => setPeerTyping(false), TYPING_TIMEOUT_MS);
         }
       }
 

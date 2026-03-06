@@ -35,11 +35,13 @@ struct ChatDetailView: View {
     @State private var lastSeenSeq = 0
     @State private var hasMoreHistory = false
     @State private var isLoadingOlder = false
-    @State private var messageListRefreshID = 0
+    @State private var pendingBottomScrollTask: Task<Void, Never>?
+    @State private var typingResetTask: Task<Void, Never>?
     @FocusState private var isComposerFocused: Bool
 
     private let pageSize = 50
     private let bottomAnchorID = "chat-bottom-anchor"
+    private let typingIndicatorTimeoutNanos: UInt64 = 10_000_000_000
 
     private var resolvedTitle: String {
         if topicId.hasPrefix("grp_") {
@@ -97,7 +99,6 @@ struct ChatDetailView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .id(messageListRefreshID)
             }
             .contentShape(Rectangle())
             .background(CatColor.chatBg)
@@ -141,7 +142,13 @@ struct ChatDetailView: View {
                 await loadIdentityContext()
             }
             .onAppear { setupWSHandlers() }
-            .onDisappear { clearWSHandlers() }
+            .onDisappear {
+                clearWSHandlers()
+                pendingBottomScrollTask?.cancel()
+                pendingBottomScrollTask = nil
+                typingResetTask?.cancel()
+                typingResetTask = nil
+            }
             .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhotoItem, matching: .images)
             .onChange(of: selectedPhotoItem) {
                 guard let item = selectedPhotoItem else { return }
@@ -150,21 +157,32 @@ struct ChatDetailView: View {
             }
             .onChange(of: messages.count) {
                 guard !isLoadingOlder else { return }
-                // Only scroll if there's a new message (higher seq)
-                if let lastMsg = messages.last, lastMsg.seq > lastSeenSeq {
+                guard let lastMsg = messages.last else { return }
+
+                // New persisted message from server
+                if lastMsg.seq > lastSeenSeq {
                     lastSeenSeq = lastMsg.seq
-                    scrollToBottom(proxy)
+                    stabilizeBottomPosition(proxy)
+                    return
+                }
+
+                // Optimistic local echo while waiting for server seq
+                let myUid = String(auth.currentUser?.id ?? 0)
+                if lastMsg.seq < 0, lastMsg.fromUid == myUid {
+                    stabilizeBottomPosition(proxy)
                 }
             }
             .onChange(of: isComposerFocused) {
-                refreshMessageListLayout(proxy, keepBottomVisible: isComposerFocused)
+                guard isComposerFocused else { return }
+                stabilizeBottomPosition(proxy)
             }
             .onChange(of: replyTo?.seq) {
                 guard replyTo != nil else { return }
-                scrollToBottom(proxy)
+                stabilizeBottomPosition(proxy)
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { _ in
-                refreshMessageListLayout(proxy, keepBottomVisible: isComposerFocused)
+                guard isComposerFocused else { return }
+                stabilizeBottomPosition(proxy)
             }
             .sheet(isPresented: $showDocumentPicker) {
                 DocumentPickerView { urls in
@@ -333,6 +351,8 @@ struct ChatDetailView: View {
             ws.updateTopicSeq(topicId, seq: data.seq)
             ws.sendRead(topic: topicId, seq: data.seq)
             typingUser = nil
+            typingResetTask?.cancel()
+            typingResetTask = nil
         }
 
         ctrlListenerID = ws.addCtrlListener { ctrl in
@@ -354,18 +374,19 @@ struct ChatDetailView: View {
             guard info.topic == topicId else { return }
             if info.what == "kp" {
                 typingUser = info.from
-                Task {
-                    // 30s timeout — bot processing can take a while
-                    try? await Task.sleep(nanoseconds: 30_000_000_000)
-                    if typingUser == info.from {
-                        typingUser = nil
-                    }
+                typingResetTask?.cancel()
+                typingResetTask = Task {
+                    try? await Task.sleep(nanoseconds: typingIndicatorTimeoutNanos)
+                    guard !Task.isCancelled, typingUser == info.from else { return }
+                    typingUser = nil
                 }
             }
         }
     }
 
     private func clearWSHandlers() {
+        typingResetTask?.cancel()
+        typingResetTask = nil
         ws.removeDataListener(dataListenerID)
         ws.removeInfoListener(infoListenerID)
         ws.removeCtrlListener(ctrlListenerID)
@@ -507,20 +528,17 @@ struct ChatDetailView: View {
         }
     }
 
-    private func refreshMessageListLayout(_ proxy: ScrollViewProxy, keepBottomVisible: Bool) {
-        messageListRefreshID += 1
-        guard keepBottomVisible else { return }
+    private func stabilizeBottomPosition(_ proxy: ScrollViewProxy) {
+        pendingBottomScrollTask?.cancel()
+        scrollToBottom(proxy, animated: false)
 
-        Task { @MainActor in
-            await Task.yield()
+        pendingBottomScrollTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(90))
+            guard !Task.isCancelled else { return }
             scrollToBottom(proxy, animated: false)
-            scheduleScrollToBottom(proxy)
-        }
-    }
 
-    private func scheduleScrollToBottom(_ proxy: ScrollViewProxy) {
-        Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
             scrollToBottom(proxy)
         }
     }

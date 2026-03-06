@@ -749,29 +749,30 @@ private enum FilePreviewError: LocalizedError {
 private struct TextFilePreviewSheet: View {
     let file: TextPreviewFile
     let onShare: () -> Void
-
-    private var markdownContent: AttributedString? {
-        guard file.isMarkdown else { return nil }
-        return try? AttributedString(markdown: file.text)
-    }
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    if let markdownContent {
-                        Text(markdownContent)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
+            VStack(spacing: 0) {
+                if file.isMarkdown {
+                    MarkdownDetailWebView(
+                        html: MarkdownHTMLRenderer.document(
+                            for: file.text,
+                            colorScheme: colorScheme
+                        )
+                    )
+                    .background(CatColor.chatBg)
+                } else {
+                    ScrollView {
                         Text(file.text)
                             .font(.system(.body, design: .monospaced))
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .padding(16)
                     }
+                    .background(CatColor.chatBg)
                 }
-                .textSelection(.enabled)
-                .padding(16)
             }
-            .background(CatColor.chatBg)
             .navigationTitle(file.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
