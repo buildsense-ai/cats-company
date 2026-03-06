@@ -1,6 +1,10 @@
 import type { CatsBot } from './bot';
 import type { MsgServerData, MessageContent } from './types';
 import { type TopicInfo } from './topic';
+export interface TypingHeartbeatOptions {
+    /** Interval between typing pings. Default: 2500ms */
+    intervalMs?: number;
+}
 export declare class MessageContext {
     readonly bot: CatsBot;
     readonly topic: string;
@@ -21,6 +25,11 @@ export declare class MessageContext {
     reply(content: MessageContent): Promise<number>;
     /** Send typing indicator, wait, then reply. */
     replyWithTyping(content: MessageContent, delay?: number): Promise<number>;
+    /**
+     * Keep typing active while an async task runs.
+     * Sends an immediate typing ping, then heartbeats until the task settles.
+     */
+    withTyping<T>(task: () => Promise<T>, options?: TypingHeartbeatOptions): Promise<T>;
     /** Send a typing indicator to this topic. */
     sendTyping(): Promise<void>;
     /** Mark messages up to this seq as read. */

@@ -1,5 +1,6 @@
 export { CatsBot } from './bot';
 export { MessageContext } from './context';
+export type { TypingHeartbeatOptions } from './context';
 export { FileUploader } from './uploader';
 export { parseTopic, buildP2PTopic, uidToNumber, numberToUid, type TopicInfo, } from './topic';
 export { CatsBotError, ConnectionError, HandshakeError, ProtocolError, RateLimitError, UploadError, } from './errors';

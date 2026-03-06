@@ -48,6 +48,23 @@ class MessageContext {
         await new Promise((r) => setTimeout(r, delay));
         return this.reply(content);
     }
+    /**
+     * Keep typing active while an async task runs.
+     * Sends an immediate typing ping, then heartbeats until the task settles.
+     */
+    async withTyping(task, options) {
+        const intervalMs = Math.max(800, options?.intervalMs ?? 2500);
+        await this.sendTyping();
+        const timer = setInterval(() => {
+            this.bot.sendTyping(this.topic);
+        }, intervalMs);
+        try {
+            return await task();
+        }
+        finally {
+            clearInterval(timer);
+        }
+    }
     /** Send a typing indicator to this topic. */
     async sendTyping() {
         this.bot.sendTyping(this.topic);

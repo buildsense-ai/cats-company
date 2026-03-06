@@ -97,10 +97,11 @@ function main() {
     bot.on('message', async (ctx) => {
         console.log(`[msg] from=${ctx.from} topic=${ctx.topic} text="${ctx.text}"`);
         try {
-            ctx.sendTyping();
-            const reply = await callLLM(ctx.topic, ctx.text);
-            console.log(`[reply] → ${ctx.topic}: ${reply.slice(0, 80)}${reply.length > 80 ? '...' : ''}`);
-            await ctx.reply(reply);
+            await ctx.withTyping(async () => {
+                const reply = await callLLM(ctx.topic, ctx.text);
+                console.log(`[reply] → ${ctx.topic}: ${reply.slice(0, 80)}${reply.length > 80 ? '...' : ''}`);
+                await ctx.reply(reply);
+            });
         }
         catch (err) {
             console.error(`[error] reply failed: ${err.message}`);

@@ -2,6 +2,7 @@
 
 export { CatsBot } from './bot';
 export { MessageContext } from './context';
+export type { TypingHeartbeatOptions } from './context';
 export { FileUploader } from './uploader';
 
 export {
