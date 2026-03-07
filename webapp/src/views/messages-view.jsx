@@ -5,7 +5,7 @@ import ChatMessage from '../widgets/chat-message';
 import GroupSettings from '../widgets/group-settings';
 import Avatar from '../widgets/avatar';
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 10;
 const TYPING_TIMEOUT_MS = 10000;
 
 export default function MessagesView({ topic, topicName, user, isGroup, groupId, topicAvatarUrl, onTopicUpdated }) {
@@ -133,7 +133,7 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
 
   // Auto-scroll on new messages
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    bottomRef.current?.scrollIntoView({ behavior: 'auto' });
   }, [messages.length, peerTyping]);
 
   const loadHistory = async () => {
