@@ -190,7 +190,13 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
     if (wsId === null) {
       // REST fallback was used -- reload history to get server-assigned ID
       const res = await api.getMessages(topic, PAGE_SIZE, 0, true);
-      if (res.messages) setMessages(res.messages);
+      if (res.messages) {
+        setMessages((prev) => {
+          // Remove pending message and merge with server messages
+          const withoutPending = prev.filter(m => !m._pending);
+          return mergeMessages(withoutPending, res.messages);
+        });
+      }
     }
   }, [input, topic, user.uid, replyTo]);
 
