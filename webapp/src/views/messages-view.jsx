@@ -173,7 +173,7 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
     setReplyTo(null);
 
     // Optimistic local append
-    const tempId = Date.now();
+    const tempId = -Date.now();
     setMessages((prev) => [...prev, {
       id: tempId,
       topic_id: topic,
