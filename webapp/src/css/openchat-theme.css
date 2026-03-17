@@ -1543,6 +1543,7 @@ body {
 /* Markdown styles */
 .oc-markdown {
   line-height: 1.6;
+  white-space: normal;
 }
 .oc-markdown p { margin: 4px 0; }
 .oc-markdown code {
@@ -1567,7 +1568,11 @@ body {
 .oc-markdown strong { font-weight: 600; }
 .oc-markdown em { font-style: italic; }
 .oc-markdown a { color: #07C160; text-decoration: underline; }
-.oc-markdown ul, .oc-markdown ol { margin-left: 20px; }
+.oc-markdown ul, .oc-markdown ol { margin: 4px 0; padding-left: 0; list-style-position: inside; }
+.oc-markdown ul { list-style-type: disc; }
+.oc-markdown ol { list-style-type: decimal; }
+.oc-markdown li { margin: 0; padding: 0; line-height: 1.4; }
+.oc-markdown li p { margin: 0; }
 .oc-markdown h1, .oc-markdown h2, .oc-markdown h3 {
   font-weight: 600;
   margin: 8px 0 4px;
