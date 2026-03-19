@@ -1687,3 +1687,107 @@ body {
   background: #fef2f2;
   color: #991b1b;
 }
+
+
+/* Working process - outside bubble */
+.oc-working-process {
+  margin-bottom: 4px;
+  max-width: 360px;
+}
+.oc-wp-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #888;
+  border-radius: 8px;
+  user-select: none;
+}
+.oc-wp-header:hover {
+  background: rgba(0,0,0,0.04);
+}
+.oc-wp-icon { font-size: 13px; }
+.oc-wp-title { flex: 1; }
+.oc-wp-chevron { font-size: 10px; color: #aaa; }
+.oc-wp-content {
+  padding: 4px 8px 8px;
+  font-size: 12px;
+  background: rgba(0,0,0,0.02);
+  border-radius: 8px;
+  margin-top: 2px;
+}
+
+/* === Thinking toggle button === */
+.oc-thinking-toggle {
+  font-size: 16px;
+  opacity: 0.4;
+  transition: opacity 0.2s;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.oc-thinking-toggle:hover {
+  opacity: 0.7;
+  background: rgba(0,0,0,0.04);
+}
+.oc-thinking-toggle.active {
+  opacity: 1;
+}
+
+/* === Flat content block styles (v0.6) === */
+.oc-cb-thinking {
+  color: #888;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  padding: 2px 0;
+}
+.oc-cb-tool-use {
+  font-size: 12px;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  padding: 2px 0;
+  color: #555;
+}
+.oc-cb-tool-name {
+  color: #2563eb;
+  font-weight: 500;
+}
+.oc-cb-tool-args {
+  color: #666;
+}
+.oc-cb-tool-result {
+  display: flex;
+  gap: 4px;
+  font-size: 11px;
+  padding: 1px 0 4px;
+  color: #777;
+}
+.oc-cb-tool-result.error {
+  color: #dc2626;
+}
+.oc-cb-result-icon {
+  flex-shrink: 0;
+  color: #aaa;
+}
+.oc-cb-tool-result.error .oc-cb-result-icon {
+  color: #dc2626;
+}
+.oc-cb-result-content {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  max-height: 120px;
+  overflow-y: auto;
+  flex: 1;
+}
+.oc-cb-text {
+  font-size: 12px;
+  white-space: pre-wrap;
+  padding: 2px 0;
+}

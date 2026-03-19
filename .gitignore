@@ -53,3 +53,8 @@ SECURITY_CLEANUP.md
 # 临时文件
 *.log
 server.log
+server/server
+server/server.bak
+server/nohup.out
+server/uploads/
+.env.test

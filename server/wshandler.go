@@ -378,10 +378,16 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 	// Ensure topic exists
 	h.db.CreateTopic(topic, "p2p", uid)
 
-	// Save to database (with optional reply_to)
+	// Save to database (with optional reply_to, content_blocks)
 	var msgID int64
 	var err error
-	if msg.ReplyTo > 0 {
+	if len(msg.ContentBlocks) > 0 {
+		mode := msg.Mode
+		if mode == "" {
+			mode = "code"
+		}
+		msgID, err = h.db.SaveMessageWithBlocks(topic, uid, content, msg.ContentBlocks, mode, msg.Role, msgType)
+	} else if msg.ReplyTo > 0 {
 		msgID, err = h.db.SaveMessageWithReply(topic, uid, content, msgType, int64(msg.ReplyTo))
 	} else {
 		msgID, err = h.db.SaveMessage(topic, uid, content, msgType)
@@ -418,11 +424,14 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 	// Build the data message to deliver
 	dataMsg := &ServerMessage{
 		Data: &MsgServerData{
-			Topic:   topic,
-			From:    formatUID(uid),
-			SeqID:   int(msgID),
-			Content: msg.Content, // preserve original structure
-			ReplyTo: msg.ReplyTo,
+			Topic:         topic,
+			From:          formatUID(uid),
+			SeqID:         int(msgID),
+			Content:       msg.Content, // preserve original structure
+			ReplyTo:       msg.ReplyTo,
+			ContentBlocks: msg.ContentBlocks,
+			Mode:          msg.Mode,
+			Role:          msg.Role,
 		},
 	}
 

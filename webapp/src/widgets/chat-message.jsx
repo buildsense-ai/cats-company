@@ -7,11 +7,14 @@ import CodeModeMessage from './code-mode-message';
 
 marked.setOptions({ breaks: false, gfm: true });
 
-export default function ChatMessage({ message, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, onReply }) {
+export default function ChatMessage({ message, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, onReply, showThinking }) {
   const content = message.content;
 
   // Check if this is a code mode message
   if (message.content_blocks && message.content_blocks.length > 0) {
+    const workingBlocks = message.content_blocks.filter(b => b.type !== 'text');
+    const textBlocks = message.content_blocks.filter(b => b.type === 'text');
+    const finalText = textBlocks.map(b => b.text).join('\n') || message.content || '';
     return (
       <div className={`oc-msg ${isSelf ? 'self' : ''}`}>
         {!isSelf && (
@@ -27,9 +30,14 @@ export default function ChatMessage({ message, isSelf, isGroup, senderName, send
           {isGroup && !isSelf && senderName && (
             <div className="oc-msg-sender">{senderName}</div>
           )}
-          <div className="oc-msg-bubble">
-            <CodeModeMessage message={message} />
-          </div>
+          {showThinking && workingBlocks.length > 0 && (
+            <CodeModeMessage blocks={workingBlocks} />
+          )}
+          {finalText && (
+            <div className="oc-msg-bubble">
+              <div dangerouslySetInnerHTML={{ __html: marked.parse(finalText) }} />
+            </div>
+          )}
         </div>
       </div>
     );
@@ -40,7 +48,6 @@ export default function ChatMessage({ message, isSelf, isGroup, senderName, send
   if (typeof content === 'object' && content !== null && content.type) {
     parsed = content;
   } else if (typeof content === 'string') {
-    // Try to parse JSON rich content from server
     try {
       const obj = JSON.parse(content);
       if (obj && obj.type) parsed = obj;
@@ -61,12 +68,10 @@ export default function ChatMessage({ message, isSelf, isGroup, senderName, send
         />
       )}
       <div className="oc-msg-body">
-        {/* Sender name in group chats */}
         {isGroup && !isSelf && senderName && (
           <div className="oc-msg-sender">{senderName}</div>
         )}
 
-        {/* Reply quote */}
         {replyMessage && (
           <div className="oc-msg-reply-quote">
             <span className="oc-msg-reply-text">
@@ -79,7 +84,6 @@ export default function ChatMessage({ message, isSelf, isGroup, senderName, send
 
         <div className="oc-msg-bubble">
           {parsed ? <RichContent content={parsed} /> : <TextContent content={content} isGroup={isGroup} />}
-          {/* Reply button */}
           {onReply && (
             <button className="oc-msg-reply-btn" onClick={onReply} title={t('chat_reply')}>
               &#8617;
@@ -94,7 +98,6 @@ export default function ChatMessage({ message, isSelf, isGroup, senderName, send
 function TextContent({ content, isGroup }) {
   const text = typeof content === 'string' ? content : content?.text || String(content || '');
 
-  // Check if text has markdown syntax
   const hasMarkdown = /(\*\*|__|`|#{1,6}\s|^\s*[-*+]\s|^\s*\d+\.\s|\[.*\]\(.*\))/m.test(text);
 
   if (hasMarkdown) {
