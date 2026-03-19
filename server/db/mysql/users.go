@@ -105,3 +105,9 @@ func (a *Adapter) UpdateUserAvatar(id int64, avatarURL string) error {
 	)
 	return err
 }
+
+// UpdateUserDisplayName updates only the display name of a user.
+func (a *Adapter) UpdateUserDisplayName(id int64, displayName string) error {
+_, err := a.db.Exec("UPDATE users SET display_name = ? WHERE id = ?", displayName, id)
+return err
+}

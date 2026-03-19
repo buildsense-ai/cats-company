@@ -93,7 +93,7 @@ func main() {
 	friendHandler := server.NewFriendHandler(db)
 	conversationHandler := server.NewConversationHandler(db, hub)
 	botHandler := server.NewBotHandler(db, deployer)
-	msgHandler := server.NewMessageHandler(db)
+	msgHandler := server.NewMessageHandler(db, hub)
 	uploadHandler := server.NewUploadHandler("./uploads", "/uploads")
 	usageHandler := server.NewUsageHandler(db)
 

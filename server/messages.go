@@ -3,8 +3,10 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/openchat/openchat/server/db/mysql"
 	"github.com/openchat/openchat/server/store/types"
@@ -12,12 +14,13 @@ import (
 
 // MessageHandler handles message-related API requests.
 type MessageHandler struct {
-	db *mysql.Adapter
+	db  *mysql.Adapter
+	hub *Hub
 }
 
 // NewMessageHandler creates a new MessageHandler.
-func NewMessageHandler(db *mysql.Adapter) *MessageHandler {
-	return &MessageHandler{db: db}
+func NewMessageHandler(db *mysql.Adapter, hub *Hub) *MessageHandler {
+	return &MessageHandler{db: db, hub: hub}
 }
 
 // SendMessageRequest is the JSON body for sending a message.
@@ -87,6 +90,29 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+
+	// Broadcast via WebSocket to online users in this topic
+	if h.hub != nil {
+		dataMsg := &ServerMessage{
+			Data: &MsgServerData{
+				Topic:         req.TopicID,
+				From:          fmt.Sprintf("usr%d", uid),
+				SeqID:         int(id),
+				Content:       req.Content,
+				ContentBlocks: req.ContentBlocks,
+				Mode:          req.Mode,
+				Role:          req.Role,
+			},
+		}
+		// For p2p topics, send to both users
+		if strings.HasPrefix(req.TopicID, "p2p") {
+			h.hub.SendToUser(uid, dataMsg) // sender's other devices
+			peerUID := extractPeerUID(req.TopicID, uid)
+			if peerUID > 0 {
+				h.hub.SendToUser(peerUID, dataMsg)
+			}
+		}
+	}
 }
 
 // HandleGetMessages handles GET /api/messages?topic_id=xxx&limit=50&offset=0

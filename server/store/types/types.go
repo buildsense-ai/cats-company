@@ -83,6 +83,7 @@ type ContentBlock struct {
 	Name      string                 `json:"name,omitempty"`
 	Input     map[string]interface{} `json:"input,omitempty"`
 	ToolUseID string                 `json:"tool_use_id,omitempty"`
+	Content   interface{}            `json:"content,omitempty"`
 	IsError   bool                   `json:"is_error,omitempty"`
 }
 

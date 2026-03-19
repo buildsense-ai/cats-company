@@ -206,3 +206,14 @@ func (c *Client) WritePump() {
 		}
 	}
 }
+
+// Shutdown gracefully closes all WebSocket connections.
+func (h *Hub) Shutdown() {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, clients := range h.clients {
+		for client := range clients {
+			client.conn.Close()
+		}
+	}
+}
