@@ -22,6 +22,8 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [showGroupSettings, setShowGroupSettings] = useState(false);
+  const [showThinking, setShowThinking] = useState(() => localStorage.getItem('cc_show_thinking') !== 'false');
+  const toggleThinking = () => setShowThinking(prev => { const next = !prev; localStorage.setItem('cc_show_thinking', String(next)); return next; });
   const bottomRef = useRef(null);
   const lastTypingSent = useRef(0);
   const peerTypingTimer = useRef(null);
@@ -427,6 +429,13 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
             ({members.length})
           </span>
         )}
+        <button
+          className={"oc-header-action oc-thinking-toggle" + (showThinking ? " active" : "")}
+          onClick={toggleThinking}
+          title={showThinking ? "隐藏思考过程" : "显示思考过程"}
+        >
+          💭
+        </button>
         {isGroup && (
           <button className="oc-header-action" onClick={() => setShowGroupSettings(true)} title={t('group_settings')}>
             ⋯
@@ -454,6 +463,7 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
               senderIsBot={sender.isBot}
               replyMessage={getReplyMessage(msg.reply_to)}
               onReply={() => setReplyTo(msg)}
+              showThinking={showThinking}
             />
           );
         })}

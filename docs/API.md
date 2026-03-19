@@ -1,6 +1,6 @@
 # Cats Company API 接入文档
 
-> 版本：v0.5.0-alpha | 更新：2026-02-26
+> 版本：v0.6.0-alpha | 更新：2026-03-19
 
 ## 概述
 
@@ -134,16 +134,24 @@ Authorization: ApiKey <api_key>
 
 #### POST /api/messages/send
 
-REST 备用通道（推荐使用 WebSocket）。
+REST 备用通道（推荐使用 WebSocket）。支持普通文本和 Code Mode 消息。
 
 ```json
-// Request
+// Request — 普通文本
 { "topic_id": "p2p_1_2", "content": "Hello!" }
 
-// Response 200
-{ "seq": 42 }
-```
+// Request — Code Mode（带 content_blocks，详见 3.8 节）
+{
+  "topic_id": "p2p_1_2",
+  "content": "最终回复",
+  "content_blocks": [ ... ],
+  "mode": "code",
+  "role": "assistant"
+}
 
+// Response 200
+{ "id": 42, "topic_id": "p2p_1_2", "from_uid": 10, "msg_type": "text" }
+```
 #### GET /api/messages?topic_id={id}&limit={n}&offset={n}
 
 获取消息历史。
@@ -451,6 +459,118 @@ ws://118.145.116.152/v0/channels?api_key=<api_key>
 - Bot 之间互相不投递消息（防止循环）
 
 ---
+
+
+### 3.8 Code Mode — ContentBlock 结构（v0.6.0 新增）
+
+Code Mode 用于展示 AI Agent 的推理过程（thinking、工具调用、工具结果）。
+消息通过 `content_blocks` 字段携带过程数据，`content` 字段携带最终回复文本。
+
+#### ContentBlock 类型定义
+
+```json
+// type: "thinking" — AI 推理/思考过程
+{ "type": "thinking", "thinking": "让我分析一下这个问题..." }
+
+// type: "tool_use" — 工具调用
+{
+  "type": "tool_use",
+  "id": "call_abc123",
+  "name": "execute_shell",
+  "input": { "command": "ls -la" }
+}
+
+// type: "tool_result" — 工具执行结果
+{
+  "type": "tool_result",
+  "tool_use_id": "call_abc123",
+  "content": "total 42\ndrwxr-xr-x 5 root root 4096 ...",
+  "is_error": false
+}
+
+// type: "text" — 普通文本块
+{ "type": "text", "text": "这是一段文本" }
+```
+
+#### ContentBlock 字段说明
+
+| 字段 | 类型 | 适用 type | 说明 |
+|------|------|-----------|------|
+| `type` | string | 所有 | `"thinking"` / `"tool_use"` / `"tool_result"` / `"text"` |
+| `thinking` | string | thinking | 思考内容 |
+| `text` | string | text | 文本内容 |
+| `id` | string | tool_use | 工具调用 ID |
+| `name` | string | tool_use | 工具名称 |
+| `input` | object | tool_use | 工具参数 |
+| `tool_use_id` | string | tool_result | 对应的 tool_use ID |
+| `content` | any | tool_result | 执行结果（通常为字符串） |
+| `is_error` | boolean | tool_result | 是否执行出错 |
+
+#### REST API 发送 Code Mode 消息
+
+```
+POST /api/messages/send
+```
+
+```json
+{
+  "topic_id": "p2p_1_10",
+  "content": "分析完成，共发现 3 个问题。",
+  "content_blocks": [
+    { "type": "thinking", "thinking": "用户要我检查代码..." },
+    { "type": "tool_use", "id": "call_1", "name": "execute_shell", "input": { "command": "grep -rn 'TODO' src/" } },
+    { "type": "tool_result", "tool_use_id": "call_1", "content": "src/main.ts:42: // TODO: fix\nsrc/utils.ts:10: // TODO: refactor" }
+  ],
+  "mode": "code",
+  "role": "assistant"
+}
+```
+
+#### WebSocket 发送 Code Mode 消息
+
+```json
+{
+  "pub": {
+    "id": "5",
+    "topic": "p2p_1_10",
+    "content": "分析完成。",
+    "content_blocks": [
+      { "type": "thinking", "thinking": "..." },
+      { "type": "tool_use", "id": "call_1", "name": "grep", "input": { "pattern": "TODO" } },
+      { "type": "tool_result", "tool_use_id": "call_1", "content": "found 3 matches" }
+    ],
+    "mode": "code",
+    "role": "assistant"
+  }
+}
+```
+
+#### WebSocket 接收 Code Mode 消息
+
+```json
+{
+  "data": {
+    "topic": "p2p_1_10",
+    "from": "usr10",
+    "seq": 99,
+    "content": "分析完成。",
+    "content_blocks": [
+      { "type": "thinking", "thinking": "..." },
+      { "type": "tool_use", "id": "call_1", "name": "grep", "input": { "pattern": "TODO" } },
+      { "type": "tool_result", "tool_use_id": "call_1", "content": "found 3 matches" }
+    ],
+    "mode": "code",
+    "role": "assistant"
+  }
+}
+```
+
+#### 前端展示建议
+
+- `content` 字段作为消息气泡的主文本
+- `content_blocks` 在气泡外以可折叠区域展示（如 "Thinking" / "思考过程"）
+- 用户可通过 toggle 控制是否显示过程数据
+- `mode` 为空或非 `"code"` 的消息按普通消息渲染
 
 ## 4. Bot SDK 快速接入
 
