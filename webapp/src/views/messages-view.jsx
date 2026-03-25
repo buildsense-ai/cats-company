@@ -5,7 +5,7 @@ import ChatMessage from '../widgets/chat-message';
 import GroupSettings from '../widgets/group-settings';
 import Avatar from '../widgets/avatar';
 
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 50;
 const TYPING_TIMEOUT_MS = 10000;
 
 export default function MessagesView({ topic, topicName, user, isGroup, groupId, topicAvatarUrl, onTopicUpdated }) {
@@ -22,9 +22,15 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [showGroupSettings, setShowGroupSettings] = useState(false);
+  const [showThinking, setShowThinking] = useState(() => {
+    const saved = localStorage.getItem('cc_show_thinking');
+    return saved === null ? true : saved === 'true';
+  });
   const bottomRef = useRef(null);
   const lastTypingSent = useRef(0);
   const peerTypingTimer = useRef(null);
+  const timelineRef = useRef(null);
+  const previousScrollRef = useRef(null);
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const textareaRef = useRef(null);
@@ -81,64 +87,46 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
       // New message from server
       if (msg.data && msg.data.topic === topic) {
         const fromUid = parseUid(msg.data.from);
+        const serverMsg = {
+          id: msg.data.seq_id || msg.data.seq,
+          seq_id: msg.data.seq_id || msg.data.seq,
+          topic_id: msg.data.topic,
+          from_uid: fromUid,
+          from_name: msg.data.from,
+          content: msg.data.content,
+          type: msg.data.type || 'text',
+          metadata: msg.data.metadata || null,
+          msg_type: 'text',
+          reply_to: msg.data.reply_to || 0,
+          created_at: new Date().toISOString(),
+        };
+
+        console.log('[WS收到消息]', 'seq:', serverMsg.id, 'seq_id:', serverMsg.seq_id, 'type:', serverMsg.type, 'content:', serverMsg.content?.substring(0, 30));
+
         setMessages((prev) => {
+          console.log('[WS合并前] 当前消息数:', prev.length, '最后3条seq:', prev.slice(-3).map(m => m.seq_id || m.id));
           // Deduplicate by seq ID
-          if (prev.some((m) => m.id === msg.data.seq)) return prev;
-          const serverMsg = {
-            id: msg.data.seq,
-            topic_id: msg.data.topic,
-            from_uid: fromUid,
-            from_name: msg.data.from,
-            content: msg.data.content,
-            msg_type: 'text',
-            reply_to: msg.data.reply_to || 0,
-            created_at: new Date().toISOString(),
-          };
+          if (prev.some((m) => m.id === serverMsg.id)) {
+            console.log('[WS去重] 消息已存在:', serverMsg.id);
+            return prev;
+          }
           // If this is our own message echoed back, replace the optimistic entry
           if (fromUid === user.uid) {
-            // Find pending message with matching content
-            const pendingIdx = prev.findIndex((m) => {
-              if (!m._pending) return false;
-              const match = m.content.trim() === serverMsg.content.trim();
-              console.log('[DEBUG] Matching pending:', { pending: m.content, server: serverMsg.content, match });
-              return match;
-            });
+            const pendingIdx = prev.findIndex((m) => m._pending && m.content.trim() === serverMsg.content.trim());
             if (pendingIdx !== -1) {
-              console.log('[DEBUG] Replacing pending message at index', pendingIdx);
               const next = [...prev];
               next[pendingIdx] = serverMsg;
               return next;
-            } else {
-              console.log('[DEBUG] No matching pending message found');
             }
           }
           return mergeMessages(prev, [serverMsg]);
         });
-        updateTopicSeq(topic, msg.data.seq);
+        updateTopicSeq(topic, serverMsg.id);
+
         // Send read receipt if message is from peer
         if (fromUid !== user.uid) {
-          wsSendRead(topic, msg.data.seq);
+          wsSendRead(topic, serverMsg.id);
         }
-      }
-
-      // Handle ctrl message (server confirmation with seq)
-      if (msg.ctrl && msg.ctrl.params && msg.ctrl.params.seq) {
-        setMessages((prev) => {
-          // Find the first pending message (should be the one we just sent)
-          const pendingIdx = prev.findIndex((m) => m._pending);
-          if (pendingIdx !== -1) {
-            const next = [...prev];
-            // Replace temporary ID with server seq, remove _pending flag
-            next[pendingIdx] = {
-              ...next[pendingIdx],
-              id: msg.ctrl.params.seq,
-              _pending: false
-            };
-            return next;
-          }
-          return prev;
-        });
-        updateTopicSeq(topic, msg.ctrl.params.seq);
       }
 
       // Typing indicator from peer
@@ -160,9 +148,18 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
     return () => unsub();
   }, [topic, user.uid]);
 
-  // Auto-scroll on new messages
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+  // Auto-scroll to bottom or restore scroll anchor depending on state
+  React.useLayoutEffect(() => {
+    if (previousScrollRef.current && timelineRef.current) {
+      // Anchoring condition: We just prepended older history.
+      const { scrollHeight, scrollTop } = previousScrollRef.current;
+      const newScrollHeight = timelineRef.current.scrollHeight;
+      timelineRef.current.scrollTop = scrollTop + (newScrollHeight - scrollHeight);
+      previousScrollRef.current = null; // Clear atomic lock
+    } else {
+      // Standard condition: New message arrived or initial load. Scroll to bottom.
+      bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+    }
   }, [messages.length, peerTyping]);
 
   const loadHistory = async () => {
@@ -180,6 +177,15 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
 
   const loadOlderHistory = async () => {
     if (loadingOlder || !hasMoreHistory) return;
+    
+    // Capture the absolute scroll geometry BEFORE rendering the older batch
+    if (timelineRef.current) {
+      previousScrollRef.current = {
+        scrollHeight: timelineRef.current.scrollHeight,
+        scrollTop: timelineRef.current.scrollTop,
+      };
+    }
+    
     setLoadingOlder(true);
     try {
       const res = await api.getMessages(topic, PAGE_SIZE, historyOffset, true);
@@ -202,30 +208,46 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
     setReplyTo(null);
 
     // Optimistic local append
-    const tempId = -Date.now();
+    const tempId = Date.now(); // Provide a large positive seq_id so it sorts to the bottom
     setMessages((prev) => [...prev, {
       id: tempId,
+      seq_id: tempId,
       topic_id: topic,
       from_uid: user.uid,
       content: text,
+      type: 'text',
       msg_type: 'text',
       reply_to: currentReplyTo ? currentReplyTo.id : 0,
       created_at: new Date().toISOString(),
       _pending: true,
     }]);
 
-    // Send via WebSocket (falls back to REST if WS not connected)
-    const wsId = await wsSendMessage(topic, text, currentReplyTo ? currentReplyTo.id : undefined);
-    if (wsId === null) {
-      // REST fallback was used -- reload history to get server-assigned ID
-      const res = await api.getMessages(topic, PAGE_SIZE, 0, true);
-      if (res.messages) {
+    // Send via REST API (unified with Code Mode)
+    try {
+      console.log('[发送消息] 使用REST API:', topic, text.substring(0, 30));
+      const result = await api.sendMessage(topic, text, currentReplyTo ? currentReplyTo.id : undefined);
+      console.log('[发送成功]', result);
+      
+      // Update optimistic message with real database sequence ID
+      if (result && (result.seq_id || result.id)) {
         setMessages((prev) => {
-          // Remove pending message and merge with server messages
-          const withoutPending = prev.filter(m => !m._pending);
-          return mergeMessages(withoutPending, res.messages);
+          const idx = prev.findIndex(m => m.id === tempId);
+          if (idx !== -1) {
+            const next = [...prev];
+            next[idx] = {
+              ...next[idx],
+              id: result.seq_id || result.id,
+              seq_id: result.seq_id || result.id,
+              _pending: false
+            };
+            // Re-sort to position appropriately
+            return next.sort((a, b) => (a.seq_id || a.id) - (b.seq_id || b.id));
+          }
+          return prev;
         });
       }
+    } catch (err) {
+      console.error('[发送失败]', err);
     }
   }, [input, topic, user.uid, replyTo]);
 
@@ -287,6 +309,12 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
     if (!file) return;
     e.target.value = ''; // reset input
 
+    const MAX_SIZE = 100 * 1024 * 1024; // 100MB
+    if (file.size > MAX_SIZE) {
+      window.alert(`Upload failed: File is too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum supported size is 100MB.`);
+      return;
+    }
+
     const formData = new FormData();
     formData.append('file', file);
 
@@ -299,7 +327,7 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      // Send rich content message via WebSocket
+      // Send rich content message via REST API (unified with Code Mode)
       const content = {
         type,
         payload: {
@@ -312,31 +340,49 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
       if (type === 'image') {
         content.payload.thumbnail = data.url;
       }
-      await wsSendMessage(topic, content);
 
-      // Rich messages are not always echoed back with a shape the live view can merge reliably.
-      // Refresh history after send so uploads appear immediately without a manual reopen.
-      for (let attempt = 0; attempt < 3; attempt++) {
-        await new Promise((resolve) => window.setTimeout(resolve, 400));
-        const history = await api.getMessages(topic, PAGE_SIZE, 0, true);
-        if (history.messages) {
-          setMessages(history.messages);
-          const matched = history.messages.some((msg) => {
-            if (typeof msg.content === 'string') {
-              try {
-                const parsed = JSON.parse(msg.content);
-                return parsed?.payload?.file_key === data.file_key;
-              } catch (parseErr) {
-                return false;
-              }
-            }
-            return msg.content?.payload?.file_key === data.file_key;
-          });
-          if (matched) break;
-        }
+      // Optimistic local append for rich media
+      const tempId = Date.now();
+      setMessages((prev) => [...prev, {
+        id: tempId,
+        seq_id: tempId,
+        topic_id: topic,
+        from_uid: user.uid,
+        content: content,
+        type: type,
+        msg_type: type,
+        reply_to: 0,
+        created_at: new Date().toISOString(),
+        _pending: true,
+      }]);
+
+      const result = await api.sendMessage(topic, content);
+      
+      // Update optimistic message with real database sequence ID
+      if (result && (result.seq_id || result.id)) {
+        setMessages((prev) => {
+          const idx = prev.findIndex(m => m.id === tempId);
+          if (idx !== -1) {
+            const next = [...prev];
+            next[idx] = {
+              ...next[idx],
+              id: result.seq_id || result.id,
+              seq_id: result.seq_id || result.id,
+              _pending: false
+            };
+            return next.sort((a, b) => (a.seq_id || a.id) - (b.seq_id || b.id));
+          }
+          return prev;
+        });
       }
     } catch (err) {
       console.error('Upload failed:', err);
+      // Fallback: If the server returns a raw Nginx HTML 413 instead of JSON, 
+      // res.json() will throw a generic SyntaxError. We explicitly alert the user.
+      const errorMsg = err.message.includes('Unexpected token') || err.message.includes('JSON')
+        ? 'Upload failed: Server rejected the file (likely Payload Too Large / 413).'
+        : `Upload failed: ${err.message}`;
+      window.alert(errorMsg);
     }
   };
 
@@ -394,6 +440,45 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
     };
   };
 
+  // Group messages into working areas and text messages with consecutive checking
+  const groupedMessages = useMemo(() => {
+    const groups = [];
+    let currentWorking = null;
+    let prevSenderUid = null;
+    let prevTime = 0;
+
+    messages.forEach(msg => {
+      const msgTime = new Date(msg.created_at || Date.now()).getTime();
+      const senderUid = msg.from_uid;
+      const isConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
+
+      if (msg.type === 'thinking' || msg.type === 'tool_use' || msg.type === 'tool_result') {
+        if (!currentWorking) {
+          currentWorking = { type: 'working', messages: [], sender: getSender(msg), isConsecutive: isConsecutive };
+        }
+        currentWorking.messages.push(msg);
+        prevSenderUid = senderUid;
+        prevTime = msgTime;
+      } else {
+        if (currentWorking) {
+          groups.push(currentWorking);
+          currentWorking = null;
+        }
+        // Recalculate isConsecutive in case a working block just processed
+        const textIsConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
+        groups.push({ type: 'text', message: msg, sender: getSender(msg), isConsecutive: textIsConsecutive });
+        prevSenderUid = senderUid;
+        prevTime = msgTime;
+      }
+    });
+
+    if (currentWorking) {
+      groups.push(currentWorking);
+    }
+
+    return groups;
+  }, [messages, user.uid, isGroup, memberMap, peerProfile, topicName, topic, topicAvatarUrl]);
+
   const handleGroupSaved = (updatedGroup) => {
     setShowGroupSettings(false);
     if (updatedGroup) {
@@ -412,57 +497,86 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
     window.dispatchEvent(new Event('cc:data-changed'));
   };
 
+  const handleTimelineScroll = (e) => {
+    const el = e.target;
+    // Trigger infinite fetch when within 100 pixels of the top
+    if (el.scrollTop < 100 && hasMoreHistory && !loadingOlder) {
+      loadOlderHistory();
+    }
+  };
+
   return (
     <>
-      <div className="oc-header">
-        <div className="oc-chat-header-main">
-          <Avatar name={displayName} src={displayAvatarUrl} size={36} isGroup={isGroup} className="oc-chat-header-avatar" />
-          <span>{displayName}</span>
+      <div className="v3-header">
+        <div className="v3-header-left">
+          <div style={{display: 'flex', flexDirection: 'column'}}>
+            <span className="v3-header-title" style={{ fontSize: 17, letterSpacing: '-0.3px' }}>{displayName}</span>
+            {isGroup && members.length > 0 && <span className="v3-header-desc">{members.length} members</span>}
+          </div>
         </div>
-        {isGroup && members.length > 0 && (
-          <span style={{ fontSize: 12, color: '#888', marginLeft: 8 }}>
-            ({members.length})
-          </span>
-        )}
-        {isGroup && (
-          <button className="oc-header-action" onClick={() => setShowGroupSettings(true)} title={t('group_settings')}>
-            ⋯
-          </button>
-        )}
+        <div className="v3-header-actions">
+          {isGroup && (
+            <button className="v3-action-btn" onClick={() => setShowGroupSettings(true)} title={t('group_settings')}>
+              ⋯
+            </button>
+          )}
+        </div>
       </div>
-      <div className="oc-messages">
+      <div className="v3-timeline" ref={timelineRef} onScroll={handleTimelineScroll}>
+        <div style={{ maxWidth: 900, margin: '0 auto', width: '100%', display: 'flex', flexDirection: 'column' }}>
+          <div className="v3-date-divider">
+            <span>Chat History</span>
+          </div>
+        
         {hasMoreHistory && (
-          <div className="oc-history-load">
-            <button className="oc-btn oc-btn-default" onClick={loadOlderHistory} disabled={loadingOlder}>
+          <div className="oc-history-load" style={{textAlign:'center', padding:'10px 0 24px 0'}}>
+            <button className="v3-btn-secondary" onClick={loadOlderHistory} disabled={loadingOlder}>
               {loadingOlder ? t('loading') : t('chat_load_older')}
             </button>
           </div>
         )}
-        {messages.map((msg, i) => {
-          const sender = getSender(msg);
+        
+        {groupedMessages.map((group, i) => {
+          if (group.type === 'working') {
+            if (!showThinking) return null;
+            return (
+              <div key={i} className="oc-working-group">
+                <ChatMessage
+                  message={{ ...group.messages[0], _working: group.messages }}
+                  isSelf={group.messages[0].from_uid === user.uid}
+                  isGroup={isGroup}
+                  senderName={group.sender.name}
+                  senderAvatarUrl={group.sender.avatarUrl}
+                  senderIsBot={group.sender.isBot}
+                  showThinking={showThinking}
+                  isConsecutive={group.isConsecutive}
+                />
+              </div>
+            );
+          }
           return (
             <ChatMessage
-              key={msg.id || i}
-              message={msg}
-              isSelf={msg.from_uid === user.uid}
+              key={group.message.id || i}
+              message={group.message}
+              isSelf={group.message.from_uid === user.uid}
               isGroup={isGroup}
-              senderName={sender.name}
-              senderAvatarUrl={sender.avatarUrl}
-              senderIsBot={sender.isBot}
-              replyMessage={getReplyMessage(msg.reply_to)}
-              onReply={() => setReplyTo(msg)}
+              senderName={group.sender.name}
+              senderAvatarUrl={group.sender.avatarUrl}
+              senderIsBot={group.sender.isBot}
+              replyMessage={getReplyMessage(group.message.reply_to)}
+              onReply={() => setReplyTo(group.message)}
+              showThinking={showThinking}
+              isConsecutive={group.isConsecutive}
             />
           );
         })}
-        {peerTyping && (
-          <div className="oc-typing-indicator">
-            <span className="oc-typing-dots">
-              <span /><span /><span />
-            </span>
-            {t('typing')}
-          </div>
-        )}
-        <div ref={bottomRef} />
+          {peerTyping && (
+            <div style={{padding:'4px 20px', fontSize:'12px', color:'var(--v3-text-muted)'}}>
+              {t('typing')}...
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
       </div>
 
       {/* Reply preview bar */}
@@ -478,48 +592,62 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
         </div>
       )}
 
-      <div className="oc-input-bar" style={{ position: 'relative' }}>
+      <div className="v3-composer">
         {/* @mention picker */}
         {showMentionPicker && isGroup && filteredMembers.length > 0 && (
-          <div className="oc-mention-picker">
+          <div className="oc-mention-picker" style={{position:'absolute', bottom: '100%', left: 20, zIndex: 100}}>
             {filteredMembers.map((m) => (
               <div
                 key={m.user_id}
                 className="oc-mention-item"
                 onClick={() => insertMention(m)}
+                style={{display:'flex', alignItems:'center', padding:'8px', cursor:'pointer', background:'var(--v3-bg-app)', border:'1px solid var(--v3-border)'}}
               >
-                <Avatar name={m.display_name || m.username} src={m.avatar_url} size={24} isBot={m.is_bot} className="oc-contact-avatar" />
+                <Avatar name={m.display_name || m.username} src={m.avatar_url} size={24} isBot={m.is_bot} style={{marginRight:8}} />
                 <span>{m.display_name || m.username}</span>
               </div>
             ))}
           </div>
         )}
 
-        <div className="oc-input-actions">
-          <button className="oc-upload-btn" onClick={() => imageInputRef.current?.click()} title={t('chat_image')}>
-            {'\uD83D\uDDBC'}
-          </button>
-          <button className="oc-upload-btn" onClick={() => fileInputRef.current?.click()} title={t('chat_file')}>
-            {'\uD83D\uDCCE'}
-          </button>
+        <div className="v3-composer-box">
+          
+          <div className="v3-composer-toolbar">
+            <button className="v3-tool" onClick={() => imageInputRef.current?.click()} title="Upload Image">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+            </button>
+            <button className="v3-tool" onClick={() => fileInputRef.current?.click()} title="Upload File">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+            </button>
+            <div style={{flex:1}}></div>
+            <button className="v3-tool" style={{ fontWeight: 600 }} onClick={() => { if(isGroup && textareaRef.current) { const pos = textareaRef.current.selectionStart; setInput(input.slice(0,pos) + '@' + input.slice(pos)); textareaRef.current.focus(); } }} title="Mention">@</button>
+          </div>
+
+          <textarea
+            ref={textareaRef}
+            className="v3-composer-input"
+            rows={1}
+            placeholder={t('chat_input_placeholder')}
+            value={input}
+            onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+          />
+          
+          <div className="v3-composer-footer">
+            <span><strong>Return</strong> to send, <strong>Shift + Return</strong> to add a new line</span>
+            <button
+              className="v3-send"
+              disabled={!input.trim()}
+              onClick={handleSend}
+            >
+              <svg width="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"></path></svg>
+              <span>{t('chat_send')}</span>
+            </button>
+          </div>
+          
+          <input ref={imageInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => handleFileUpload(e, 'image')} />
+          <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={(e) => handleFileUpload(e, 'file')} />
         </div>
-        <textarea
-          ref={textareaRef}
-          rows={1}
-          placeholder={t('chat_input_placeholder')}
-          value={input}
-          onChange={handleInputChange}
-          onKeyDown={handleKeyDown}
-        />
-        <button
-          className="oc-send-btn"
-          disabled={!input.trim()}
-          onClick={handleSend}
-        >
-          {t('chat_send')}
-        </button>
-        <input ref={imageInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => handleFileUpload(e, 'image')} />
-        <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={(e) => handleFileUpload(e, 'file')} />
       </div>
       {showGroupSettings && isGroup && groupId && (
         <GroupSettings
@@ -546,5 +674,10 @@ function mergeMessages(primary, secondary) {
   [...primary, ...secondary].forEach((message) => {
     byId.set(message.id, message);
   });
-  return Array.from(byId.values()).sort((a, b) => a.id - b.id);
+  // Sort by seq_id (now unified for all messages)
+  return Array.from(byId.values()).sort((a, b) => {
+    const aSeq = a.seq_id || a.id;
+    const bSeq = b.seq_id || b.id;
+    return aSeq - bSeq;
+  });
 }

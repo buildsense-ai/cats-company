@@ -1,25 +1,33 @@
 import React from 'react';
+import { marked } from 'marked';
 import CollapsibleBlock from './collapsible-block';
 
+marked.setOptions({ breaks: false, gfm: true });
+
 function TextBlock({ block }) {
-  return <div className="oc-text-block">{block.text}</div>;
+  const text = block.text || '';
+  const hasMarkdown = /(\*\*|__|`|#{1,6}\s|^\s*[-*+]\s|^\s*\d+\.\s|\[.*\]\(.*\))/m.test(text);
+  if (hasMarkdown) {
+    try {
+      const html = marked.parse(text);
+      return <div className="oc-text-block oc-markdown" dangerouslySetInnerHTML={{ __html: html }} />;
+    } catch (e) { /* fall through */ }
+  }
+  return <div className="oc-text-block" style={{ whiteSpace: 'pre-wrap' }}>{text}</div>;
 }
 
 function ThinkingBlock({ block }) {
   return (
-    <CollapsibleBlock title="Thinking" icon="💭" defaultExpanded={false}>
-      <pre className="oc-thinking-content">{block.thinking}</pre>
-    </CollapsibleBlock>
+    <div className="oc-thinking-block">
+      {block.thinking}
+    </div>
   );
 }
 
 function ToolUseBlock({ block }) {
   return (
-    <CollapsibleBlock title={`Tool: ${block.name}`} icon="🔧" defaultExpanded={false}>
-      <div className="oc-tool-use">
-        <div className="oc-tool-id">ID: {block.id}</div>
-        <pre className="oc-tool-input">{JSON.stringify(block.input, null, 2)}</pre>
-      </div>
+    <CollapsibleBlock title={block.name} icon="🔧" defaultExpanded={false}>
+      <pre className="oc-tool-input">{JSON.stringify(block.input, null, 2)}</pre>
     </CollapsibleBlock>
   );
 }

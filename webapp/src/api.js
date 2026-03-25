@@ -84,8 +84,15 @@ export const api = {
   searchUsers: (q) => request('GET', `/api/users/search?q=${encodeURIComponent(q)}`),
 
   // Send message via REST
-  sendMessage: (topicId, content) =>
-    request('POST', '/api/messages/send', { topic_id: topicId, content, msg_type: 'text' }),
+  sendMessage: (topicId, content, replyTo) => {
+    const payload = {
+      topic_id: topicId,
+      type: 'text',
+      content: typeof content === 'string' ? content : JSON.stringify(content),
+    };
+    if (replyTo) payload.reply_to = replyTo;
+    return request('POST', '/api/messages/send', payload);
+  },
 
   // REST fallback for message history
   getMessages: (topicId, limit, offset, latest = false) =>

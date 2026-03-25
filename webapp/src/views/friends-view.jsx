@@ -6,7 +6,7 @@ import AddFriend from '../widgets/add-friend';
 import CreateGroup from '../widgets/create-group';
 import Avatar from '../widgets/avatar';
 
-export default function FriendsView({ onSelectUser, user }) {
+export default function FriendsView({ onSelectUser, user, onClose }) {
   const [friends, setFriends] = useState([]);
   const [groups, setGroups] = useState([]);
   const [pending, setPending] = useState([]);
@@ -72,121 +72,93 @@ export default function FriendsView({ onSelectUser, user }) {
     loadGroups();
   };
 
+  // Search filter
+  const [search, setSearch] = useState('');
+  const filteredFriends = friends.filter(f => (f.display_name || f.username).toLowerCase().includes(search.toLowerCase()));
+  const filteredGroups = groups.filter(g => g.name.toLowerCase().includes(search.toLowerCase()));
+
   return (
-    <>
-      <div className="oc-header">
-        {t('contacts_title')}
-        <button className="oc-header-action" onClick={() => setShowAdd(true)}>+</button>
-      </div>
-      <div className="oc-search">
-        <input placeholder={t('contacts_search_placeholder')} />
-      </div>
-      <div className="oc-contacts">
-        {/* New Friends Section */}
-        <div className="oc-contact-item" onClick={() => setShowPending(!showPending)}>
-          <div className="oc-contact-avatar" style={{ background: '#FF9500', borderRadius: 6 }} />
-          <span className="oc-contact-name">
-            {t('contacts_new_friends')}
-            {pending.length > 0 && (
-              <span style={{
-                background: '#FA5151', color: '#fff', borderRadius: 10,
-                padding: '1px 6px', fontSize: 11, marginLeft: 8
-              }}>
-                {pending.length}
-              </span>
-            )}
-          </span>
+    <div className="oc-modal-overlay" onClick={onClose} style={{ zIndex: 1000 }}>
+      <div className="oc-modal v3-directory-modal" onClick={e => e.stopPropagation()} style={{ width: 600, maxWidth: '90vw', maxHeight: '85vh', display: 'flex', flexDirection: 'column', background: '#191B1F', borderRadius: 12, border: '1px solid var(--v3-border)', overflow: 'hidden' }}>
+        
+        {/* Header / Search */}
+        <div style={{ padding: '24px 24px 16px', borderBottom: '1px solid var(--v3-border)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <h2 style={{ margin: 0, fontSize: 18, color: '#fff', fontWeight: 600 }}>Directory & New Chat</h2>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 24, lineHeight: 1 }}>×</button>
+          </div>
+          <input 
+            autoFocus
+            type="text"
+            placeholder="Search users or groups..." 
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            style={{ width: '100%', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', padding: '12px 16px', borderRadius: 8, outline: 'none', fontSize: 15 }}
+          />
         </div>
 
-        {showPending && pending.map((req) => (
-          <FriendRequest
-            key={req.id}
-            request={req}
-            onAccept={() => handleAccept(req.from_user_id)}
-            onReject={() => handleReject(req.from_user_id)}
-          />
-        ))}
-
-        {/* Groups Section */}
-        <div className="oc-contact-section">
-          <div className="oc-contact-section-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span>{t('contacts_groups')}</span>
-            <button
-              onClick={() => setShowCreateGroup(true)}
-              style={{
-                background: 'none', border: 'none', color: '#07C160',
-                fontSize: 13, cursor: 'pointer', padding: '0 4px',
-              }}
-            >
-              {t('group_create')}
+        {/* Content area */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 24 }}>
+          
+          {/* Quick Actions */}
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button className="v3-btn-secondary" style={{ flex: 1, padding: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }} onClick={() => setShowCreateGroup(true)}>
+              <span style={{ fontSize: 16 }}>🌍</span> Create New Group
+            </button>
+            <button className="v3-btn-secondary" style={{ flex: 1, padding: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }} onClick={() => setShowAdd(true)}>
+              <span style={{ fontSize: 16 }}>👤</span> Add Friend by ID
             </button>
           </div>
-          {groups.length === 0 ? (
-            <div style={{ padding: 12, textAlign: 'center', color: '#888', fontSize: 13 }}>
-              {t('group_no_groups')}
-            </div>
-          ) : (
-            groups.map((group) => (
-              <div
-                key={group.id}
-                className="oc-contact-item"
-                onClick={() => onSelectUser({
-                  topicId: `grp_${group.id}`,
-                  name: group.name,
-                  isGroup: true,
-                  groupId: group.id,
-                  avatar_url: group.avatar_url,
-                })}
-              >
-                <Avatar name={group.name} src={group.avatar_url} size={40} isGroup className="oc-contact-avatar oc-group-avatar" />
-                <span className="oc-contact-name">{group.name}</span>
+
+          {/* Pending Requests (Only shows if there are any) */}
+          {pending.length > 0 && !search && (
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--v3-primary)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>
+                New Friend Requests ({pending.length})
               </div>
-            ))
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {pending.map((req) => (
+                  <FriendRequest key={req.id} request={req} onAccept={() => handleAccept(req.from_user_id)} onReject={() => handleReject(req.from_user_id)} />
+                ))}
+              </div>
+            </div>
           )}
+
+          {/* Combined Directory */}
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--v3-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 12 }}>
+              Groups & Friends
+            </div>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {filteredGroups.map(group => (
+                <div key={group.id} className="v3-dir-item" onClick={() => onSelectUser({ topicId: `grp_${group.id}`, name: group.name, isGroup: true, groupId: group.id, avatar_url: group.avatar_url })}>
+                  <Avatar name={group.name} src={group.avatar_url} size={36} isGroup className="v3-avatar" style={{ marginRight: 12 }} />
+                  <span style={{ color: '#E1E2E3', fontWeight: 500, fontSize: 15 }}>{group.name}</span>
+                </div>
+              ))}
+              
+              {filteredFriends.map(friend => (
+                <div key={friend.id} className="v3-dir-item" onClick={() => onSelectUser({ topicId: p2pTopicId(user.uid, friend.id), name: friend.display_name || friend.username, isGroup: false, avatar_url: friend.avatar_url, friendId: friend.id })}>
+                  <Avatar name={friend.display_name || friend.username} src={friend.avatar_url} size={36} isBot={friend.account_type === 'bot'} className={`v3-avatar ${friend.account_type === 'bot' ? 'bot' : ''}`} style={{ marginRight: 12 }} />
+                  <span style={{ color: '#E1E2E3', fontWeight: 500, fontSize: 15 }}>{friend.display_name || friend.username}</span>
+                </div>
+              ))}
+
+              {filteredGroups.length === 0 && filteredFriends.length === 0 && (
+                <div style={{ padding: 20, textAlign: 'center', color: '#666', fontSize: 14 }}>
+                  No matches found.
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
-        {/* Friends List */}
-        <div className="oc-contact-section">
-          <div className="oc-contact-section-title">{t('contacts_friends')}</div>
-          {friends.length === 0 ? (
-            <div style={{ padding: 20, textAlign: 'center', color: '#888', fontSize: 13 }}>
-              {t('contacts_empty')}
-            </div>
-          ) : (
-            friends.map((friend) => (
-              <div
-                key={friend.id}
-                className="oc-contact-item"
-                onClick={() => onSelectUser({
-                  topicId: p2pTopicId(user.uid, friend.id),
-                  name: friend.display_name || friend.username,
-                  isGroup: false,
-                  avatar_url: friend.avatar_url,
-                  friendId: friend.id,
-                })}
-              >
-                <Avatar
-                  name={friend.display_name || friend.username}
-                  src={friend.avatar_url}
-                  size={40}
-                  isBot={friend.account_type === 'bot'}
-                  className="oc-contact-avatar"
-                />
-                <span className="oc-contact-name">{friend.display_name || friend.username}</span>
-              </div>
-            ))
-          )}
-        </div>
       </div>
 
       {showAdd && <AddFriend onClose={() => setShowAdd(false)} onSent={loadPending} />}
-      {showCreateGroup && (
-        <CreateGroup
-          onClose={() => setShowCreateGroup(false)}
-          onCreated={handleGroupCreated}
-        />
-      )}
-    </>
+      {showCreateGroup && <CreateGroup onClose={() => setShowCreateGroup(false)} onCreated={handleGroupCreated} />}
+    </div>
   );
 }
 

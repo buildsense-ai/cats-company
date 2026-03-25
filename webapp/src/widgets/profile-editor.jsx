@@ -7,6 +7,10 @@ export default function ProfileEditor({ user, onClose, onSaved }) {
   const fileInputRef = useRef(null);
   const [displayName, setDisplayName] = useState(user?.display_name || user?.username || '');
   const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url || '');
+  const [showThinking, setShowThinking] = useState(() => {
+    const saved = localStorage.getItem('cc_show_thinking');
+    return saved === null ? true : saved === 'true';
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -33,6 +37,7 @@ export default function ProfileEditor({ user, onClose, onSaved }) {
     setSaving(true);
     setError('');
     try {
+      localStorage.setItem('cc_show_thinking', String(showThinking));
       const updated = await api.updateMe(displayName.trim(), avatarUrl || '');
       if (onSaved) onSaved(updated);
       onClose();
@@ -66,6 +71,17 @@ export default function ProfileEditor({ user, onClose, onSaved }) {
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
         />
+        <div style={{ padding: '16px 0', marginTop: '16px', borderTop: '1px solid var(--v3-border)', borderBottom: '1px solid var(--v3-border)' }}>
+          <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={showThinking}
+              onChange={(e) => setShowThinking(e.target.checked)}
+              style={{ marginRight: '10px', width: '16px', height: '16px', accentColor: 'var(--v3-primary)' }}
+            />
+            <span style={{ color: 'var(--v3-text-main)' }}>显示 AI 思考过程 (Code Mode)</span>
+          </label>
+        </div>
         {error && <div className="oc-form-error">{error}</div>}
         <div className="oc-settings-actions">
           <button className="oc-btn oc-btn-default" onClick={onClose}>{t('cancel')}</button>
