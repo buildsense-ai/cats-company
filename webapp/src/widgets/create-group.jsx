@@ -62,7 +62,7 @@ export default function CreateGroup({ onClose, onCreated }) {
           onChange={(e) => setName(e.target.value)}
           style={{ marginBottom: 12 }}
         />
-        <div style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>
+        <div style={{ fontSize: 13, color: 'var(--v3-text-muted)', marginBottom: 8 }}>
           {t('group_select_members')} ({selected.size})
         </div>
         <div style={{ maxHeight: 280, overflowY: 'auto', marginBottom: 16 }}>
@@ -79,7 +79,7 @@ export default function CreateGroup({ onClose, onCreated }) {
                 type="checkbox"
                 checked={selected.has(f.id)}
                 onChange={() => toggleMember(f.id)}
-                style={{ width: 18, height: 18, accentColor: '#07C160' }}
+                style={{ width: 18, height: 18, accentColor: 'var(--v3-primary)' }}
               />
               <Avatar
                 name={f.display_name || f.username}
@@ -88,11 +88,11 @@ export default function CreateGroup({ onClose, onCreated }) {
                 isBot={f.account_type === 'bot'}
                 className="oc-contact-avatar"
               />
-              <span style={{ fontSize: 14 }}>{f.display_name || f.username}</span>
+              <span style={{ fontSize: 14, color: 'var(--v3-text-name)' }}>{f.display_name || f.username}</span>
             </label>
           ))}
           {friends.length === 0 && (
-            <div style={{ padding: 20, textAlign: 'center', color: '#888', fontSize: 13 }}>
+            <div style={{ padding: 20, textAlign: 'center', color: 'var(--v3-text-muted)', fontSize: 13 }}>
               {t('contacts_empty')}
             </div>
           )}

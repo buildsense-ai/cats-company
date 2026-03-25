@@ -4,26 +4,32 @@ import t from '../i18n';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
 import MessagesView from './messages-view';
-import BotAdminView from './bot-admin-view';
 import ProfileEditor from '../widgets/profile-editor';
-import Avatar from '../widgets/avatar';
+import { Settings, LogOut } from 'lucide-react';
 import '../css/openchat-theme.css';
 
 const TABS = {
-  CHATS: 'chats',
-  CONTACTS: 'contacts',
-  ME: 'me',
+  CHATS: 'chats'
 };
 
 export default function TinodeWeb() {
   const [user, setUser] = useState(null);
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
-  const [activeTopic, setActiveTopic] = useState(null);
-  const [meScreen, setMeScreen] = useState('profile');
+  const [activeTopic, _setActiveTopic] = useState(() => localStorage.getItem('v3_last_topic') || null);
+
+  const setActiveTopic = useCallback((topicId) => {
+    _setActiveTopic(topicId);
+    if (topicId) {
+      localStorage.setItem('v3_last_topic', topicId);
+    } else {
+      localStorage.removeItem('v3_last_topic');
+    }
+  }, []);
   const [authMode, setAuthMode] = useState('login');
   const [onlineUsers, setOnlineUsers] = useState({});
   const [wsStatus, setWsStatus] = useState('disconnected');
   const [showProfileEditor, setShowProfileEditor] = useState(false);
+  const [showProfilePopover, setShowProfilePopover] = useState(false);
 
   // Restore session
   useEffect(() => {
@@ -41,7 +47,6 @@ export default function TinodeWeb() {
 
   // WebSocket message handler
   const handleWSMessage = useCallback((msg) => {
-    // Internal events
     if (msg._type === 'ws_open') {
       setWsStatus('connected');
       return;
@@ -51,7 +56,6 @@ export default function TinodeWeb() {
       return;
     }
 
-    // Online status response from {get what="online"}
     if (msg.meta && msg.meta.sub) {
       const online = {};
       for (const u of msg.meta.sub) {
@@ -62,7 +66,6 @@ export default function TinodeWeb() {
       setOnlineUsers((prev) => ({ ...prev, ...online }));
     }
 
-    // Presence notifications (friend came online/offline)
     if (msg.pres) {
       const uid = parseUid(msg.pres.src);
       if (uid > 0) {
@@ -79,7 +82,6 @@ export default function TinodeWeb() {
     }
   }, []);
 
-  // Connect WebSocket when user logs in
   useEffect(() => {
     if (user) {
       connectWS(handleWSMessage);
@@ -113,7 +115,6 @@ export default function TinodeWeb() {
     setUser(null);
     setOnlineUsers({});
     setActiveTopic(null);
-    setMeScreen('profile');
   };
 
   const handleUserUpdated = (nextUser) => {
@@ -139,24 +140,40 @@ export default function TinodeWeb() {
   }
 
   return (
-    <div className="oc-app">
-      <div className="oc-sidebar">
+    <div className="v3-app">
+      <div className="v3-sidebar">
+        <div className="v3-sidebar-header">
+          <div className="v3-brand-title">CatsCo</div>
+        </div>
+        
         <SidebarContent
-          activeTab={activeTab}
           activeTopic={activeTopic ? activeTopic.topicId : null}
-          onSelectTopic={setActiveTopic}
+          onSelectTopic={(topic) => {
+            setActiveTopic(topic);
+          }}
           user={user}
-          onLogout={handleLogout}
-          meScreen={meScreen}
-          onOpenBots={() => setMeScreen('bots')}
-          onOpenProfile={() => setShowProfileEditor(true)}
-          onBackFromBots={() => setMeScreen('profile')}
           onlineUsers={onlineUsers}
-          wsStatus={wsStatus}
         />
-        <TabBar activeTab={activeTab} onTabChange={setActiveTab} />
+        
+        <ProfileFooter 
+          user={user} 
+          wsStatus={wsStatus} 
+          onTogglePopover={() => setShowProfilePopover(!showProfilePopover)}
+        />
+
+        {showProfilePopover && (
+          <div className="v3-profile-popover">
+            <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowProfileEditor(true); }}>
+              <Settings size={16} style={{marginRight: 10}} /> Settings & Profile
+            </div>
+            <div className="v3-popover-item danger" onClick={() => { localStorage.clear(); window.location.reload(); }}>
+              <LogOut size={16} style={{marginRight: 10}} /> Sign Out
+            </div>
+          </div>
+        )}
       </div>
-      <div className="oc-main">
+      
+      <div className="v3-main">
         {activeTopic ? (
           <MessagesView
             topic={activeTopic.topicId}
@@ -173,6 +190,7 @@ export default function TinodeWeb() {
           </div>
         )}
       </div>
+
       {showProfileEditor && (
         <ProfileEditor
           user={user}
@@ -184,87 +202,26 @@ export default function TinodeWeb() {
   );
 }
 
-function SidebarContent({
-  activeTab,
-  activeTopic,
-  onSelectTopic,
-  user,
-  onLogout,
-  meScreen,
-  onOpenBots,
-  onOpenProfile,
-  onBackFromBots,
-  onlineUsers,
-  wsStatus,
-}) {
-  switch (activeTab) {
-    case TABS.CONTACTS:
-      return <FriendsView onSelectUser={onSelectTopic} user={user} />;
-    case TABS.ME:
-      if (meScreen === 'bots') {
-        return <BotAdminView onBack={onBackFromBots} user={user} />;
-      }
-      return <ProfileView user={user} onLogout={onLogout} onOpenBots={onOpenBots} onOpenProfile={onOpenProfile} wsStatus={wsStatus} />;
-    default:
-      return <ChatListView activeTopic={activeTopic} onSelectTopic={onSelectTopic} user={user} onlineUsers={onlineUsers} />;
-  }
+function SidebarContent({ activeTopic, onSelectTopic, user, onlineUsers }) {
+  return <ChatListView activeTopic={activeTopic} onSelectTopic={onSelectTopic} user={user} onlineUsers={onlineUsers} />;
 }
 
-function TabBar({ activeTab, onTabChange }) {
-  const tabs = [
-    { key: TABS.CHATS, label: t('tab_chats'), icon: '\u{1F4AC}' },
-    { key: TABS.CONTACTS, label: t('tab_contacts'), icon: '\u{1F464}' },
-    { key: TABS.ME, label: t('tab_me'), icon: '\u{1F9D1}' },
-  ];
-
+function ProfileFooter({ user, wsStatus, onTogglePopover }) {
+  const statusClass = wsStatus === 'connected' ? 'online' : 'offline';
   return (
-    <div className="oc-tabs">
-      {tabs.map((tab) => (
-        <button
-          key={tab.key}
-          className={`oc-tab ${activeTab === tab.key ? 'active' : ''}`}
-          onClick={() => onTabChange(tab.key)}
-        >
-          <span className="oc-tab-icon">{tab.icon}</span>
-          {tab.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function ProfileView({ user, onLogout, onOpenBots, onOpenProfile, wsStatus }) {
-  const statusText = wsStatus === 'connected' ? t('online') : t('offline');
-  const statusClass = wsStatus === 'connected' ? 'online' : '';
-
-  return (
-    <div className="oc-profile">
-      <div className="oc-header">{t('me_title')}</div>
-      <div className="oc-profile-card">
-        <Avatar
-          name={user.display_name || user.username}
-          src={user.avatar_url}
-          size={64}
-          isBot={user.account_type === 'bot'}
-          className="oc-profile-avatar"
-        />
-        <div>
-          <div className="oc-profile-name">{user.display_name || user.username}</div>
-          <div className="oc-profile-id">ID: {user.username}</div>
-          <div className="oc-profile-status">
-            <span className={`oc-online-dot ${statusClass}`} />
-            {statusText}
-          </div>
+    <div className="v3-profile-footer" onClick={onTogglePopover} style={{cursor: 'pointer'}}>
+      <div className="v3-profile-avatar">
+        {user.display_name ? user.display_name.charAt(0).toUpperCase() : 'U'}
+      </div>
+      <div className="v3-profile-info">
+        <div className="v3-profile-name">{user.display_name || user.username}</div>
+        <div className="v3-profile-roles">
+           <span className={`v3-status-dot ${statusClass}`} style={{marginLeft: 0, marginRight: 6}}></span>
+           {wsStatus === 'connected' ? 'Online' : 'Offline'}
         </div>
       </div>
-      <div className="oc-contact-item" onClick={onOpenProfile}>
-        {t('me_profile_edit')}
-      </div>
-      <div className="oc-contact-item" onClick={onOpenBots}>
-        {t('bot_admin')}
-      </div>
-      <div className="oc-contact-item" onClick={onLogout} style={{ color: '#FA5151', cursor: 'pointer' }}>
-        {t('logout')}
+      <div className="v3-profile-settings" style={{color: '#888'}}>
+        <Settings size={18} />
       </div>
     </div>
   );
@@ -293,7 +250,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
   return (
     <div className="oc-auth">
       <form className="oc-auth-card" onSubmit={handleSubmit}>
-        <div className="oc-auth-logo">Cats Company</div>
+        <div className="oc-auth-logo">CatsCo</div>
         {error && <div style={{ color: '#FA5151', marginBottom: 12, fontSize: 13 }}>{error}</div>}
         <input
           className="oc-auth-input"
