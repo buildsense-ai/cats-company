@@ -3,7 +3,9 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -28,11 +30,18 @@ type RegisterRequest struct {
 	DisplayName string `json:"display_name"`
 	Email       string `json:"email,omitempty"`
 	Phone       string `json:"phone,omitempty"`
+	Code        string `json:"code,omitempty"`
+	InviteCode  string `json:"inviteCode,omitempty"`
+}
+
+// SendCodeRequest is the JSON body for sending verification code.
+type SendCodeRequest struct {
+	Email string `json:"email"`
 }
 
 // LoginRequest is the JSON body for login.
 type LoginRequest struct {
-	Username string `json:"username"`
+	Account  string `json:"account"`  // 支持用户名或邮箱
 	Password string `json:"password"`
 }
 
@@ -40,6 +49,42 @@ type LoginRequest struct {
 type UpdateProfileRequest struct {
 	DisplayName string `json:"display_name"`
 	AvatarURL   string `json:"avatar_url"`
+}
+
+// HandleSendCode handles POST /api/auth/send-code
+func (h *UserHandler) HandleSendCode(w http.ResponseWriter, r *http.Request) {
+	var req SendCodeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+
+	if req.Email == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email required"})
+		return
+	}
+
+	// Check if email already registered
+	existingUser, err := h.db.GetUserByEmail(req.Email)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
+		return
+	}
+	if existingUser != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email already registered"})
+		return
+	}
+
+	code, err := sendVerificationCode(req.Email)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to send code"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"devCode": code,
+	})
 }
 
 // HandleRegister handles POST /api/auth/register
@@ -50,6 +95,75 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 邮箱注册模式
+	if req.Email != "" {
+		if req.Code == "" || !verifyCode(req.Email, req.Code) {
+			fmt.Printf("[REGISTER_ERROR] Invalid code for %s\n", req.Email)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired verification code"})
+			return
+		}
+
+		if req.InviteCode != "" {
+			valid, err := validateInvitationCode(h.db, req.InviteCode)
+			if err != nil || !valid {
+				fmt.Printf("[REGISTER_ERROR] Invalid invite code: %s, err: %v\n", req.InviteCode, err)
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid invitation code"})
+				return
+			}
+		}
+
+		if len(req.Password) < 6 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password min 6 chars"})
+			return
+		}
+
+		username := req.Email
+		if req.Username != "" {
+			username = req.Username
+		} else {
+			// 从邮箱提取用户名
+			atIndex := 0
+			for i, c := range req.Email {
+				if c == '@' {
+					atIndex = i
+					break
+				}
+			}
+			if atIndex > 0 {
+				username = req.Email[:atIndex]
+			}
+		}
+
+		displayName := req.DisplayName
+		if displayName == "" {
+			displayName = username
+		}
+
+		hash, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+
+		user := &types.User{
+			Username:    username,
+			Email:       req.Email,
+			DisplayName: displayName,
+			AccountType: types.AccountHuman,
+			PassHash:    hash,
+		}
+
+		uid, err := h.db.CreateUser(user)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email already exists"})
+			return
+		}
+
+		if req.InviteCode != "" {
+			markInvitationUsed(h.db, req.InviteCode, uid)
+		}
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+		return
+	}
+
+	// 原有的用户名注册模式
 	if len(req.Username) < 3 || len(req.Password) < 6 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "username min 3 chars, password min 6 chars"})
 		return
@@ -92,7 +206,7 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := GenerateToken(uid, req.Username)
+	token, err := GenerateToken(uid, req.Username, req.Email)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
 		return
@@ -119,18 +233,28 @@ func (h *UserHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.db.GetUserByUsername(req.Username)
+	// 判断是邮箱还是用户名
+	var user *types.User
+	var err error
+	if strings.Contains(req.Account, "@") {
+		user, err = h.db.GetUserByEmail(req.Account)
+	} else {
+		user, err = h.db.GetUserByUsername(req.Account)
+	}
+
 	if err != nil || user == nil {
+		fmt.Printf("[LOGIN_ERROR] User not found: %s, err: %v\n", req.Account, err)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword(user.PassHash, []byte(req.Password)); err != nil {
+		fmt.Printf("[LOGIN_ERROR] Password mismatch for %s: %v\n", req.Account, err)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
 
-	token, err := GenerateToken(user.ID, user.Username)
+	token, err := GenerateToken(user.ID, user.Username, user.Email)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
 		return
@@ -140,6 +264,7 @@ func (h *UserHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		"token":        token,
 		"uid":          user.ID,
 		"username":     user.Username,
+		"email":        user.Email,
 		"display_name": user.DisplayName,
 		"avatar_url":   user.AvatarURL,
 		"account_type": user.AccountType,

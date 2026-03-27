@@ -53,6 +53,28 @@ func (a *Adapter) GetUserByUsername(username string) (*types.User, error) {
 	return u, nil
 }
 
+// GetUserByEmail retrieves a user by email.
+func (a *Adapter) GetUserByEmail(email string) (*types.User, error) {
+	u := &types.User{}
+	err := a.db.QueryRow(
+		`SELECT id, username, COALESCE(email,''), COALESCE(phone,''), display_name, COALESCE(avatar_url,''), account_type, pass_hash, state, created_at, updated_at
+		 FROM users WHERE email = ?`, email,
+	).Scan(&u.ID, &u.Username, &u.Email, &u.Phone, &u.DisplayName, &u.AvatarURL, &u.AccountType, &u.PassHash, &u.State, &u.CreatedAt, &u.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user by email: %w", err)
+	}
+	return u, nil
+}
+
+// UpdateUserDisplayName updates a user's display name.
+func (a *Adapter) UpdateUserDisplayName(uid int64, displayName string) error {
+	_, err := a.db.Exec(`UPDATE users SET display_name = ? WHERE id = ?`, displayName, uid)
+	return err
+}
+
 // SearchUsers searches for users by username or display name (for adding friends).
 // Private bots are excluded from search results.
 func (a *Adapter) SearchUsers(query string, limit int) ([]*types.User, error) {

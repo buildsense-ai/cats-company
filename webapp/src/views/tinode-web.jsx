@@ -6,6 +6,7 @@ import FriendsView from './friends-view';
 import MessagesView from './messages-view';
 import ProfileEditor from '../widgets/profile-editor';
 import { Settings, LogOut } from 'lucide-react';
+import CatOrb from '../components/CatOrb/CatOrb';
 import '../css/openchat-theme.css';
 
 const TABS = {
@@ -91,8 +92,8 @@ export default function TinodeWeb() {
     };
   }, [user, handleWSMessage]);
 
-  const handleLogin = async (username, password) => {
-    const res = await api.login({ username, password });
+  const handleLogin = async (account, password) => {
+    const res = await api.login({ account, password });
     setToken(res.token);
     persistUser({
       uid: res.uid,
@@ -103,9 +104,9 @@ export default function TinodeWeb() {
     });
   };
 
-  const handleRegister = async (username, password, displayName) => {
-    await api.register({ username, password, display_name: displayName });
-    await handleLogin(username, password);
+  const handleRegister = async (email, password, displayName, code, inviteCode) => {
+    await api.register({ email, password, display_name: displayName, code, inviteCode });
+    await handleLogin(email, password);
   };
 
   const handleLogout = () => {
@@ -229,9 +230,36 @@ function ProfileFooter({ user, wsStatus, onTogglePopover }) {
 
 function AuthView({ mode, setMode, onLogin, onRegister }) {
   const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [code, setCode] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState('');
+  const [codeSent, setCodeSent] = useState(false);
+  const [countdown, setCountdown] = useState(0);
+
+  useEffect(() => {
+    if (countdown > 0) {
+      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [countdown]);
+
+  const handleSendCode = async () => {
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setError('请输入有效的邮箱地址');
+      return;
+    }
+    try {
+      await api.sendVerificationCode(email);
+      setCodeSent(true);
+      setCountdown(60);
+      setError('');
+    } catch (err) {
+      setError('发送验证码失败');
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -240,7 +268,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
       if (mode === 'login') {
         await onLogin(username, password);
       } else {
-        await onRegister(username, password, displayName);
+        await onRegister(email, password, displayName, code, inviteCode);
       }
     } catch (err) {
       setError(err.message);
@@ -249,38 +277,86 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
 
   return (
     <div className="oc-auth">
+      <div className="oc-auth-cat">
+        <CatOrb hue={0} backgroundColor="#050505" hoverIntensity={0.3} rotateOnHover={false} />
+      </div>
       <form className="oc-auth-card" onSubmit={handleSubmit}>
         <div className="oc-auth-logo">CatsCo</div>
         {error && <div style={{ color: '#FA5151', marginBottom: 12, fontSize: 13 }}>{error}</div>}
-        <input
-          className="oc-auth-input"
-          placeholder={t('username')}
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-        />
-        {mode === 'register' && (
-          <input
-            className="oc-auth-input"
-            placeholder={t('display_name')}
-            value={displayName}
-            onChange={(e) => setDisplayName(e.target.value)}
-          />
+
+        {mode === 'login' ? (
+          <>
+            <input
+              className="oc-auth-input"
+              placeholder={t('username')}
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+            />
+            <input
+              className="oc-auth-input"
+              type="password"
+              placeholder={t('password')}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </>
+        ) : (
+          <>
+            <input
+              className="oc-auth-input"
+              type="email"
+              placeholder="邮箱地址"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input
+                className="oc-auth-input"
+                placeholder="邮箱验证码"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                style={{ flex: 1 }}
+              />
+              <button
+                type="button"
+                className="oc-auth-btn"
+                onClick={handleSendCode}
+                disabled={countdown > 0}
+                style={{ width: '120px', fontSize: '13px' }}
+              >
+                {countdown > 0 ? `${countdown}秒` : '发送验证码'}
+              </button>
+            </div>
+            <input
+              className="oc-auth-input"
+              placeholder="邀请码"
+              value={inviteCode}
+              onChange={(e) => setInviteCode(e.target.value)}
+            />
+            <input
+              className="oc-auth-input"
+              placeholder="显示名称"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+            />
+            <input
+              className="oc-auth-input"
+              type="password"
+              placeholder="设置密码（至少6位）"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </>
         )}
-        <input
-          className="oc-auth-input"
-          type="password"
-          placeholder={t('password')}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
+
         <button className="oc-auth-btn" type="submit">
           {mode === 'login' ? t('login') : t('register')}
         </button>
         <div className="oc-auth-link">
           {mode === 'login' ? (
-            <span>{t('register')} <a href="#" onClick={(e) => { e.preventDefault(); setMode('register'); }}>{t('register')}</a></span>
+            <span>还没有账号？<a href="#" onClick={(e) => { e.preventDefault(); setMode('register'); }}>立即注册</a></span>
           ) : (
-            <span>{t('login')} <a href="#" onClick={(e) => { e.preventDefault(); setMode('login'); }}>{t('login')}</a></span>
+            <span>已有账号？<a href="#" onClick={(e) => { e.preventDefault(); setMode('login'); }}>立即登录</a></span>
           )}
         </div>
       </form>

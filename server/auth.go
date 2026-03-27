@@ -37,16 +37,18 @@ func SetJWTSecret(secret string) {
 
 // JWTClaims defines the claims stored in the token.
 type JWTClaims struct {
-	UID      int64  `json:"uid"`
+	UID      int64  `json:"userId"`   // 改为 userId 与 Token 项目统一
 	Username string `json:"username"`
+	Email    string `json:"email"`    // 添加 email
 	jwt.RegisteredClaims
 }
 
 // GenerateToken creates a signed JWT for the given user.
-func GenerateToken(uid int64, username string) (string, error) {
+func GenerateToken(uid int64, username string, email string) (string, error) {
 	claims := JWTClaims{
 		UID:      uid,
 		Username: username,
+		Email:    email,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

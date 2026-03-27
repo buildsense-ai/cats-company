@@ -95,7 +95,7 @@ func main() {
 	botHandler := server.NewBotHandler(db, deployer)
 	msgHandler := server.NewMessageHandler(db)
 	uploadHandler := server.NewUploadHandler("./uploads", "/uploads")
-	usageHandler := server.NewUsageHandler(db)
+	// usageHandler := server.NewUsageHandler(db)
 
 	// HTTP routes
 	mux := http.NewServeMux()
@@ -118,6 +118,7 @@ func main() {
 	})
 
 	// Auth
+	mux.HandleFunc("/api/auth/send-code", userHandler.HandleSendCode)
 	mux.HandleFunc("/api/auth/register", userHandler.HandleRegister)
 	mux.HandleFunc("/api/auth/login", userHandler.HandleLogin)
 
@@ -197,8 +198,8 @@ func main() {
 	mux.HandleFunc("/uploads/", uploadHandler.HandleServeFile)
 
 	// Token usage tracking (API Key auth for bots)
-	mux.HandleFunc("/api/v1/usage/report", authWithDB(usageHandler.HandleReportUsage))
-	mux.HandleFunc("/api/v1/usage", authWithDB(usageHandler.HandleGetUsage))
+	// mux.HandleFunc("/api/v1/usage/report", authWithDB(usageHandler.HandleReportUsage))
+	// mux.HandleFunc("/api/v1/usage", authWithDB(usageHandler.HandleGetUsage))
 
 	// WebSocket
 	mux.HandleFunc(cfg.WebSocket.Path, func(w http.ResponseWriter, r *http.Request) {
@@ -260,7 +261,7 @@ func main() {
 
 	// Close WebSocket connections gracefully
 	log.Println("closing WebSocket connections...")
-	hub.Shutdown()
+	// hub.Shutdown()
 
 	log.Println("server stopped")
 }

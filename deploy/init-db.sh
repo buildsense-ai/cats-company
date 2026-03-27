@@ -31,19 +31,22 @@ mysql -u root -p"${MYSQL_ROOT_PASSWORD}" openchat <<EOF
 CREATE TABLE IF NOT EXISTS users (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(64) NOT NULL UNIQUE,
-    email VARCHAR(255) DEFAULT NULL,
+    email VARCHAR(255) DEFAULT NULL UNIQUE,
     phone VARCHAR(32) DEFAULT NULL,
     display_name VARCHAR(128) NOT NULL DEFAULT '',
     avatar_url VARCHAR(512) DEFAULT NULL,
     account_type ENUM('human','bot','service') NOT NULL DEFAULT 'human',
     bot_disclose TINYINT(1) NOT NULL DEFAULT 0,
     pass_hash VARBINARY(128) NOT NULL,
+    is_admin TINYINT(1) NOT NULL DEFAULT 0,
+    balance DECIMAL(10,2) NOT NULL DEFAULT 0.00,
     state TINYINT NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_users_account_type (account_type),
     INDEX idx_users_phone (phone),
-    INDEX idx_users_email (email)
+    INDEX idx_users_email (email),
+    INDEX idx_users_is_admin (is_admin)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Friends table

@@ -1,24 +1,24 @@
 /* Cats Company Theme - Shadcn Style */
 
 :root {
-  /* Primary colors */
-  --oc-green: #07C160;
-  --oc-green-dark: #06AD56;
-  --oc-green-light: #95EC69;
+  /* Primary colors - Black & Gold */
+  --oc-green: #D4A853;
+  --oc-green-dark: #C49B3A;
+  --oc-green-light: #F5D799;
 
-  /* Backgrounds */
-  --oc-bg: #EDEDED;
-  --oc-bg-dark: #111111;
-  --oc-sidebar-bg: #F7F7F7;
-  --oc-chat-bg: #F0F0F0;
+  /* Backgrounds - Dark theme */
+  --oc-bg: #050505;
+  --oc-bg-dark: #0a0a0a;
+  --oc-sidebar-bg: #0a0a0a;
+  --oc-chat-bg: #050505;
 
   /* Neutrals */
-  --oc-white: #FFFFFF;
-  --oc-black: #111111;
-  --oc-gray: #888888;
-  --oc-gray-light: #D9D9D9;
-  --oc-gray-dark: #333333;
-  --oc-border: #E6E6E6;
+  --oc-white: #f0f0f5;
+  --oc-black: #050505;
+  --oc-gray: #b8b8c8;
+  --oc-gray-light: #6e6e80;
+  --oc-gray-dark: #1a1a1a;
+  --oc-border: #1a1a1a;
 
   /* Message bubbles */
   --oc-bubble-self: #95EC69;
@@ -516,48 +516,87 @@ body {
   justify-content: center;
   height: 100vh;
   background: var(--oc-bg);
+  position: relative;
+  overflow: hidden;
+}
+
+.oc-auth-cat {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  opacity: 0.8;
+  pointer-events: none;
 }
 
 .oc-auth-card {
-  background: var(--oc-white);
+  background: var(--oc-bg-dark);
+  border: 1px solid var(--oc-border);
   border-radius: var(--oc-radius-lg);
   padding: 40px;
-  width: 360px;
+  width: 400px;
   text-align: center;
+  box-shadow: 0 8px 32px rgba(212, 168, 83, 0.1);
+  position: relative;
+  z-index: 1;
 }
 
 .oc-auth-logo {
-  font-size: 28px;
+  font-size: 32px;
   font-weight: 700;
-  color: var(--oc-green);
+  background: linear-gradient(135deg, var(--oc-green-light), var(--oc-green));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
   margin-bottom: 32px;
+  font-family: 'Bricolage Grotesque', -apple-system, sans-serif;
 }
 
 .oc-auth-input {
   width: 100%;
-  height: 44px;
+  height: 48px;
+  background: var(--oc-black);
   border: 1px solid var(--oc-border);
-  border-radius: 6px;
-  padding: 0 14px;
+  border-radius: 8px;
+  padding: 0 16px;
   font-size: 15px;
   margin-bottom: 12px;
   outline: none;
+  color: var(--oc-white);
+  transition: all 0.2s;
 }
 
 .oc-auth-input:focus {
   border-color: var(--oc-green);
+  box-shadow: 0 0 0 3px rgba(212, 168, 83, 0.1);
+}
+
+.oc-auth-input::placeholder {
+  color: var(--oc-gray-light);
 }
 
 .oc-auth-btn {
   width: 100%;
-  height: 44px;
-  background: var(--oc-green);
-  color: white;
+  height: 48px;
+  background: linear-gradient(135deg, var(--oc-green), var(--oc-green-dark));
+  color: var(--oc-black);
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   font-size: 16px;
+  font-weight: 600;
   cursor: pointer;
   margin-top: 8px;
+  transition: all 0.2s;
+}
+
+.oc-auth-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(212, 168, 83, 0.3);
+}
+
+.oc-auth-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .oc-auth-link {

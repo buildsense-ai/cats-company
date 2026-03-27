@@ -1,4 +1,5 @@
 const API_BASE = process.env.REACT_APP_API_BASE || '';
+const TOKEN_API_BASE = process.env.REACT_APP_TOKEN_API_BASE || 'https://buildsense.asia';
 const DEFAULT_WS_SCHEME = window.location.protocol === 'https:' ? 'wss' : 'ws';
 const WS_URL = process.env.REACT_APP_WS_URL || `${DEFAULT_WS_SCHEME}://${window.location.host}/v0/channels`;
 
@@ -61,7 +62,21 @@ async function request(method, path, body) {
   return data;
 }
 
+async function tokenRequest(method, path, body) {
+  const headers = { 'Content-Type': 'application/json' };
+  const res = await fetch(`${TOKEN_API_BASE}${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
 export const api = {
+  sendVerificationCode: (email) => request('POST', '/api/auth/send-code', { email }),
   register: (data) => request('POST', '/api/auth/register', data),
   login: (data) => request('POST', '/api/auth/login', data),
   getMe: () => request('GET', '/api/me'),
