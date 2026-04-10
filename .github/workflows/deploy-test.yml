@@ -21,7 +21,7 @@ jobs:
 
       - name: Prepare archive
         run: |
-          tar --exclude-vcs --exclude='.git' -czf "cats-company-${GITHUB_SHA}.tar.gz" .
+          git archive --format=tar.gz --output "$RUNNER_TEMP/cats-company-${GITHUB_SHA}.tar.gz" HEAD
 
       - name: Prepare SSH key
         env:
@@ -36,7 +36,7 @@ jobs:
       - name: Upload test stack files
         run: |
           ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "mkdir -p /root/text/catscompany-docker-test/releases /root/text/catscompany-docker-test/app/releases /root/text/catscompany-docker-test/compose /root/text/catscompany-docker-test/env /root/text/catscompany-docker-test/data/mysql /root/text/catscompany-docker-test/data/uploads /root/text/catscompany-docker-test/logs /root/text/bin"
-          scp "cats-company-${GITHUB_SHA}.tar.gz" "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/releases/"
+          scp "$RUNNER_TEMP/cats-company-${GITHUB_SHA}.tar.gz" "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/releases/"
           scp deploy/text-test/bootstrap-server.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
           scp deploy/text-test/remote-deploy.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
           scp deploy/text-test/remote-status.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
@@ -56,5 +56,12 @@ jobs:
 
       - name: Dump remote status on failure
         if: failure()
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
           ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "bash /root/text/catscompany-docker-test/compose/remote-status.sh /root/text/catscompany-docker-test || true"
