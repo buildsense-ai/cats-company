@@ -1,0 +1,93 @@
+name: Deploy Docker Prod
+
+on:
+  workflow_run:
+    workflows: ["Deploy Docker Test"]
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cats-company-deploy-prod
+  cancel-in-progress: true
+
+jobs:
+  deploy-prod:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.event == 'push' }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      PROD_STACK_ROOT: /srv/catscompany-prod
+      IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
+
+    steps:
+      - name: Checkout tested revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Prepare SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload prod stack files
+        run: |
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "mkdir -p ${PROD_STACK_ROOT}/compose ${PROD_STACK_ROOT}/env ${PROD_STACK_ROOT}/data/mysql ${PROD_STACK_ROOT}/data/uploads ${PROD_STACK_ROOT}/logs /usr/local/bin"
+          scp deploy/prod/bootstrap-server.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/compose/"
+          scp deploy/prod/remote-deploy.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/compose/"
+          scp deploy/prod/remote-rollback.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/compose/"
+          scp deploy/prod/remote-status.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/compose/"
+          scp deploy/prod/docker-compose.yml "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/compose/"
+          scp deploy/prod/tinode.prod.conf "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/compose/"
+          scp deploy/init-db.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/compose/"
+          scp deploy/prod/env.prod.example "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/env/"
+
+      - name: Deploy prod stack
+        env:
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "IMAGE_TAG=${IMAGE_TAG} PROD_STACK_ROOT=${PROD_STACK_ROOT} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} bash -s" <<'EOF'
+          set -euo pipefail
+
+          root="${PROD_STACK_ROOT}"
+          revision="${IMAGE_TAG}"
+          chmod +x "$root/compose/bootstrap-server.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh"
+          "$root/compose/bootstrap-server.sh" "$root"
+          "$root/compose/remote-deploy.sh" "$root" "$revision"
+          "$root/compose/remote-status.sh" "$root"
+          EOF
+
+      - name: Roll back prod stack on failure
+        if: failure()
+        env:
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} bash ${PROD_STACK_ROOT}/compose/remote-rollback.sh ${PROD_STACK_ROOT} || true"
+
+      - name: Dump prod status on failure
+        if: failure()
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "bash ${PROD_STACK_ROOT}/compose/remote-status.sh ${PROD_STACK_ROOT} || true"

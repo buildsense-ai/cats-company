@@ -45,6 +45,9 @@ jobs:
       - name: Validate test compose
         run: docker compose -f deploy/test/docker-compose.yml --env-file deploy/test/env.test.example config
 
+      - name: Validate prod compose
+        run: docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/env.prod.example config
+
       - name: Build server image
         run: docker build -f deploy/Dockerfile.server -t cats-company-server-ci .
 
