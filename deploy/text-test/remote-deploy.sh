@@ -60,7 +60,8 @@ fi
 python3 - <<PY
 from pathlib import Path
 p = Path(r"$env_file")
-p.write_text(p.read_text(encoding="utf-8-sig"), encoding="utf-8")
+text = p.read_text(encoding="utf-8", errors="replace").replace("\ufeff", "")
+p.write_text(text, encoding="utf-8")
 PY
 
 cd "$compose_dir"
