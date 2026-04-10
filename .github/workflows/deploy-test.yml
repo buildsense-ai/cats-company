@@ -37,8 +37,9 @@ jobs:
         run: |
           ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "mkdir -p /root/text/catscompany-docker-test/releases /root/text/catscompany-docker-test/app/releases /root/text/catscompany-docker-test/compose /root/text/catscompany-docker-test/env /root/text/catscompany-docker-test/data/mysql /root/text/catscompany-docker-test/data/uploads /root/text/catscompany-docker-test/logs /root/text/bin"
           scp "cats-company-${GITHUB_SHA}.tar.gz" "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/releases/"
-          scp deploy/text-test/docker-compose.yml "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
-          scp deploy/text-test/text-test.env.example "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/env/"
+          scp deploy/text-test/bootstrap-server.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
+          scp deploy/text-test/remote-deploy.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
+          scp deploy/text-test/remote-status.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
 
       - name: Deploy isolated text stack
         run: |
@@ -47,32 +48,13 @@ jobs:
 
           root="/root/text/catscompany-docker-test"
           revision="${GITHUB_SHA}"
-          archive="$root/releases/cats-company-${GITHUB_SHA}.tar.gz"
-          release_dir="$root/app/releases/$revision"
-          current_dir="$root/app/current"
-          compose_bin="/root/text/bin/docker-compose"
-          env_file="$root/env/text-test.env"
-
-          if [ ! -x "$compose_bin" ]; then
-            curl -L --fail https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o "$compose_bin"
-            chmod +x "$compose_bin"
-          fi
-
-          if [ ! -f "$env_file" ]; then
-            echo "missing $env_file"
-            echo "create it from $root/env/text-test.env.example before running this workflow"
-            exit 1
-          fi
-
-          rm -rf "$release_dir"
-          mkdir -p "$release_dir"
-          tar -xzf "$archive" -C "$release_dir"
-          ln -sfn "$release_dir" "$current_dir"
-          printf '%s\n' "$revision" > "$root/CURRENT_REVISION"
-
-          cd "$root/compose"
-          "$compose_bin" -f docker-compose.yml --env-file "$env_file" up -d --build
-
-          curl -fsS http://127.0.0.1:16061/health >/dev/null
-          curl -fsS http://127.0.0.1:18080/health >/dev/null
+          chmod +x "$root/compose/bootstrap-server.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-status.sh"
+          "$root/compose/bootstrap-server.sh" "$root"
+          "$root/compose/remote-deploy.sh" "$root" "$revision"
+          "$root/compose/remote-status.sh" "$root"
           EOF
+
+      - name: Dump remote status on failure
+        if: failure()
+        run: |
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "bash /root/text/catscompany-docker-test/compose/remote-status.sh /root/text/catscompany-docker-test || true"
