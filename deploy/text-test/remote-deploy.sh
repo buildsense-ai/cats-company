@@ -57,6 +57,12 @@ if [ ! -f "$env_file" ]; then
   exit 1
 fi
 
+python3 - <<PY
+from pathlib import Path
+p = Path(r"$env_file")
+p.write_text(p.read_text(encoding="utf-8-sig"), encoding="utf-8")
+PY
+
 cd "$compose_dir"
 "$compose_bin" -f "$compose_file" --env-file "$env_file" up -d --build
 "$compose_bin" -f "$compose_file" --env-file "$env_file" ps
