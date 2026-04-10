@@ -6,7 +6,6 @@ compose_bin="/root/text/bin/docker-compose"
 
 mkdir -p \
   "$root/releases" \
-  "$root/app/releases" \
   "$root/compose" \
   "$root/env" \
   "$root/data/mysql" \
@@ -21,8 +20,8 @@ if [ ! -x "$compose_bin" ]; then
   chmod +x "$compose_bin"
 fi
 
-if [ -L "$root/app/current" ] && [ -f "$root/app/current/deploy/text-test/text-test.env.example" ] && [ ! -f "$root/env/text-test.env" ]; then
-  cp "$root/app/current/deploy/text-test/text-test.env.example" "$root/env/text-test.env"
+if [ -f "$root/env/text-test.env.example" ] && [ ! -f "$root/env/text-test.env" ]; then
+  cp "$root/env/text-test.env.example" "$root/env/text-test.env"
 fi
 
 echo "Bootstrap ready:"

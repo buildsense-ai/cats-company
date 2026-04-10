@@ -17,7 +17,7 @@ services:
       - "${TEXT_MYSQL_HOST_PORT:-13306}:3306"
     volumes:
       - "${TEXT_STACK_ROOT}/data/mysql:/var/lib/mysql"
-      - "${TEXT_STACK_ROOT}/app/current/deploy/init-db.sh:/docker-entrypoint-initdb.d/01-init.sh:ro"
+      - "${TEXT_STACK_ROOT}/compose/init-db.sh:/docker-entrypoint-initdb.d/01-init.sh:ro"
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
@@ -27,11 +27,7 @@ services:
       - textnet
 
   server:
-    build:
-      context: "${TEXT_STACK_ROOT}/app/current"
-      dockerfile: deploy/Dockerfile.server
-      args:
-        GOPROXY: "${GOPROXY:-https://proxy.golang.org,direct}"
+    image: "${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER}/cats-company-server:${IMAGE_TAG}"
     restart: unless-stopped
     depends_on:
       mysql:
@@ -46,7 +42,7 @@ services:
       - "${TEXT_GRPC_HOST_PORT:-16062}:6062"
     volumes:
       - "${TEXT_STACK_ROOT}/data/uploads:/app/uploads"
-      - "${TEXT_STACK_ROOT}/app/current/deploy/text-test/tinode.text-test.conf:/app/tinode.conf:ro"
+      - "${TEXT_STACK_ROOT}/compose/tinode.text-test.conf:/app/tinode.conf:ro"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:6061/health"]
       interval: 15s
@@ -56,11 +52,7 @@ services:
       - textnet
 
   web:
-    build:
-      context: "${TEXT_STACK_ROOT}/app/current"
-      dockerfile: deploy/Dockerfile.nginx
-      args:
-        REACT_APP_API_BASE: ""
+    image: "${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER}/cats-company-web:${IMAGE_TAG}"
     restart: unless-stopped
     depends_on:
       server:

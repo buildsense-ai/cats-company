@@ -1,38 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ $# -ne 2 ]; then
-  echo "usage: $0 <stack-root> <revision>" >&2
-  exit 1
-fi
-
-root="$1"
-revision="$2"
-archive="$root/releases/cats-company-$revision.tar.gz"
-release_dir="$root/app/releases/$revision"
-current_dir="$root/app/current"
+root="${1:-/root/text/catscompany-docker-test}"
+revision="${2:-}"
+compose_bin="/root/text/bin/docker-compose"
 compose_dir="$root/compose"
 env_dir="$root/env"
-compose_bin="/root/text/bin/docker-compose"
 env_file="$env_dir/text-test.env"
 compose_file="$compose_dir/docker-compose.yml"
 health_api="${TEXT_TEST_HEALTH_API:-http://127.0.0.1:16061/health}"
 health_web="${TEXT_TEST_HEALTH_WEB:-http://127.0.0.1:18080/health}"
 
+if [ -z "$revision" ]; then
+  echo "usage: $0 <stack-root> <revision>" >&2
+  exit 1
+fi
+
 mkdir -p \
   "$root/releases" \
-  "$root/app/releases" \
   "$compose_dir" \
   "$env_dir" \
   "$root/data/mysql" \
   "$root/data/uploads" \
   "$root/logs" \
   "/root/text/bin"
-
-if [ ! -f "$archive" ]; then
-  echo "missing release archive: $archive" >&2
-  exit 1
-fi
 
 if [ ! -x "$compose_bin" ]; then
   curl -L --fail \
@@ -41,32 +32,62 @@ if [ ! -x "$compose_bin" ]; then
   chmod +x "$compose_bin"
 fi
 
-rm -rf "$release_dir"
-mkdir -p "$release_dir"
-tar -xzf "$archive" -C "$release_dir"
-ln -sfn "$release_dir" "$current_dir"
-printf '%s\n' "$revision" > "$root/CURRENT_REVISION"
-
-ln -sfn "$current_dir/deploy/text-test/docker-compose.yml" "$compose_file"
-ln -sfn "$current_dir/deploy/text-test/text-test.env.example" "$env_dir/text-test.env.example"
+if [ ! -f "$compose_file" ]; then
+  echo "missing compose file: $compose_file" >&2
+  exit 1
+fi
 
 if [ ! -f "$env_file" ]; then
-  cp "$env_dir/text-test.env.example" "$env_file"
-  echo "created template env file at $env_file" >&2
-  echo "fill real secrets, then rerun deploy" >&2
+  if [ -f "$env_dir/text-test.env.example" ]; then
+    cp "$env_dir/text-test.env.example" "$env_file"
+    echo "created template env file at $env_file" >&2
+    echo "fill real secrets, then rerun deploy" >&2
+  else
+    echo "missing env file: $env_file" >&2
+  fi
   exit 1
 fi
 
 python3 - <<PY
 from pathlib import Path
+
 p = Path(r"$env_file")
 text = p.read_text(encoding="utf-8", errors="replace").replace("\ufeff", "")
-p.write_text(text, encoding="utf-8")
+
+updates = {
+    "GHCR_REGISTRY": "ghcr.io",
+    "GHCR_OWNER": "${GHCR_OWNER:-}",
+    "IMAGE_TAG": "$revision",
+}
+
+lines = []
+seen = set()
+for raw_line in text.splitlines():
+    line = raw_line
+    if "=" in line and not line.lstrip().startswith("#"):
+        key, _, value = line.partition("=")
+        if key in updates and updates[key]:
+            line = f"{key}={updates[key]}"
+            seen.add(key)
+    lines.append(line)
+
+for key, value in updates.items():
+    if value and key not in seen:
+        lines.append(f"{key}={value}")
+
+p.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 
+if [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
+  printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin >/dev/null
+fi
+
 cd "$compose_dir"
-"$compose_bin" -f "$compose_file" --env-file "$env_file" up -d --build
+"$compose_bin" -f "$compose_file" --env-file "$env_file" pull server web
+"$compose_bin" -f "$compose_file" --env-file "$env_file" up -d
 "$compose_bin" -f "$compose_file" --env-file "$env_file" ps
+
+printf '%s\n' "$revision" > "$root/CURRENT_REVISION"
 
 curl -fsS "$health_api" >/dev/null
 curl -fsS "$health_web" >/dev/null

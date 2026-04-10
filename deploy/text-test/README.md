@@ -7,12 +7,15 @@ It is intentionally separated from production:
 
 - data lives under `/root/text/catscompany-docker-test/data`
 - compose runtime files live under `/root/text/catscompany-docker-test/compose`
-- app releases live under `/root/text/catscompany-docker-test/app/releases`
 - ports are isolated:
   - MySQL: `13306`
   - API: `16061`
   - gRPC: `16062`
   - Web: `18080`
+
+The test deploy workflow now builds images in GitHub Actions, pushes them to
+GHCR, and lets the server pull and run those images. The server no longer
+builds the application source for this test stack.
 
 ## Required server files
 
@@ -28,8 +31,8 @@ Before running the deploy workflow for the first time:
 The deploy workflow only touches `/root/text/...` and uses:
 
 - `/root/text/bin/docker-compose`
-- `/root/text/catscompany-docker-test/releases`
-- `/root/text/catscompany-docker-test/app/releases`
+- `/root/text/catscompany-docker-test/compose`
+- `/root/text/catscompany-docker-test/env`
 - `/root/text/catscompany-docker-test/data`
 
 It does not touch production directories.
@@ -41,6 +44,13 @@ The current workflow expects:
 - `SSH_HOST`
 - `SSH_USER`
 - `SSH_PRIVATE_KEY`
+- `GHCR_USERNAME`
+- `GHCR_TOKEN`
+
+`GHCR_USERNAME` / `GHCR_TOKEN` should be able to pull packages from
+`ghcr.io/<owner>/cats-company-*`. A PAT with `read:packages` is enough for the
+server side pull. The workflow itself pushes images with the repository
+`GITHUB_TOKEN`.
 
 ## Manual start
 
@@ -48,7 +58,8 @@ Run on the server:
 
 ```bash
 cd /root/text/catscompany-docker-test/compose
-/root/text/bin/docker-compose --env-file /root/text/catscompany-docker-test/env/text-test.env up -d --build
+/root/text/bin/docker-compose --env-file /root/text/catscompany-docker-test/env/text-test.env pull
+/root/text/bin/docker-compose --env-file /root/text/catscompany-docker-test/env/text-test.env up -d
 ```
 
 ## Manual stop
@@ -60,10 +71,9 @@ cd /root/text/catscompany-docker-test/compose
 
 ## Manual deploy of a revision
 
-After uploading `cats-company-<sha>.tar.gz` into `releases/`:
-
 ```bash
-bash deploy/text-test/remote-deploy.sh /root/text/catscompany-docker-test <sha>
+GHCR_OWNER=<github-owner> GHCR_USERNAME=<ghcr-user> GHCR_TOKEN=<ghcr-token> \
+  bash deploy/text-test/remote-deploy.sh /root/text/catscompany-docker-test <sha>
 ```
 
 ## Check current status

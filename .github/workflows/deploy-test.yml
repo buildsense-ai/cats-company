@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 concurrency:
   group: cats-company-text-test
@@ -19,9 +20,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare archive
-        run: |
-          git archive --format=tar.gz --output "$RUNNER_TEMP/cats-company-${GITHUB_SHA}.tar.gz" HEAD
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.server
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/cats-company-server:${{ github.sha }}
+
+      - name: Build and push web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.nginx
+          push: true
+          build-args: |
+            REACT_APP_API_BASE=
+          tags: ghcr.io/${{ github.repository_owner }}/cats-company-web:${{ github.sha }}
 
       - name: Prepare SSH key
         env:
@@ -35,15 +60,21 @@ jobs:
 
       - name: Upload test stack files
         run: |
-          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "mkdir -p /root/text/catscompany-docker-test/releases /root/text/catscompany-docker-test/app/releases /root/text/catscompany-docker-test/compose /root/text/catscompany-docker-test/env /root/text/catscompany-docker-test/data/mysql /root/text/catscompany-docker-test/data/uploads /root/text/catscompany-docker-test/logs /root/text/bin"
-          scp "$RUNNER_TEMP/cats-company-${GITHUB_SHA}.tar.gz" "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/releases/"
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "mkdir -p /root/text/catscompany-docker-test/compose /root/text/catscompany-docker-test/env /root/text/catscompany-docker-test/data/mysql /root/text/catscompany-docker-test/data/uploads /root/text/catscompany-docker-test/logs /root/text/bin"
           scp deploy/text-test/bootstrap-server.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
           scp deploy/text-test/remote-deploy.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
           scp deploy/text-test/remote-status.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
+          scp deploy/text-test/docker-compose.yml "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
+          scp deploy/text-test/tinode.text-test.conf "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
+          scp deploy/init-db.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
+          scp deploy/text-test/text-test.env.example "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/env/"
 
       - name: Deploy isolated text stack
+        env:
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
-          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "GITHUB_SHA=${GITHUB_SHA} bash -s" <<'EOF'
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "GITHUB_SHA=${GITHUB_SHA} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} bash -s" <<'EOF'
           set -euo pipefail
 
           root="/root/text/catscompany-docker-test"
