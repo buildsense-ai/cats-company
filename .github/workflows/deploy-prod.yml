@@ -40,14 +40,13 @@ jobs:
 
       - name: Upload prod stack files
         run: |
-          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "mkdir -p ${PROD_STACK_ROOT}/compose ${PROD_STACK_ROOT}/env ${PROD_STACK_ROOT}/data/mysql ${PROD_STACK_ROOT}/data/uploads ${PROD_STACK_ROOT}/logs /usr/local/bin"
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "mkdir -p ${PROD_STACK_ROOT}/compose ${PROD_STACK_ROOT}/env ${PROD_STACK_ROOT}/data/uploads ${PROD_STACK_ROOT}/logs /usr/local/bin"
           scp deploy/prod/bootstrap-server.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/compose/"
           scp deploy/prod/remote-deploy.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/compose/"
           scp deploy/prod/remote-rollback.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/compose/"
           scp deploy/prod/remote-status.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/compose/"
           scp deploy/prod/docker-compose.yml "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/compose/"
           scp deploy/prod/tinode.prod.conf "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/compose/"
-          scp deploy/init-db.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/compose/"
           scp deploy/prod/env.prod.example "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${PROD_STACK_ROOT}/env/"
 
       - name: Deploy prod stack

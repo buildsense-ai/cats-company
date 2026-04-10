@@ -6,16 +6,22 @@ server path such as `/srv/catscompany-prod`.
 It is designed to deploy the exact same GHCR image tag that has already passed
 the test deployment workflow.
 
+This production scaffold is designed to reuse the existing production MySQL so
+application data stays consistent. Only the application layer is containerized
+here.
+
 Default ports are intentionally non-conflicting so the first rollout can run as
 an isolated shadow stack:
 
-- MySQL: `23306`
 - API: `26061`
 - gRPC: `26062`
 - Web: `28080`
 
 The main repository can later change these values in `prod.env` or move traffic
 through the host nginx once the production cutover plan is confirmed.
+
+The default `OC_DB_DSN` example points to `host.docker.internal:3306`, which is
+appropriate when the existing production MySQL is already published on the host.
 
 ## Required server files
 
@@ -27,6 +33,7 @@ Before enabling automatic production deploys:
 3. Copy values from `deploy/prod/env.prod.example`
 4. Keep `PROD_STACK_ROOT=<prod-stack-root>`
 5. Fill real secrets in `prod.env`
+6. Point `OC_DB_DSN` at the existing production MySQL
 
 ## Manual start
 

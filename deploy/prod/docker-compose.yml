@@ -1,39 +1,9 @@
 services:
-  mysql:
-    image: mysql:8.0
-    restart: unless-stopped
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: openchat
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      BOT_ASSISTANT_PASSWORD: ${BOT_ASSISTANT_PASSWORD}
-      TZ: Asia/Shanghai
-    command: >
-      --character-set-server=utf8mb4
-      --collation-server=utf8mb4_unicode_ci
-      --default-authentication-plugin=mysql_native_password
-    ports:
-      - "${PROD_MYSQL_HOST_PORT:-23306}:3306"
-    volumes:
-      - "${PROD_STACK_ROOT}/data/mysql:/var/lib/mysql"
-      - "${PROD_STACK_ROOT}/compose/init-db.sh:/docker-entrypoint-initdb.d/01-init.sh:ro"
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    networks:
-      - prodnet
-
   server:
     image: "${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER}/cats-company-server:${IMAGE_TAG}"
     restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
     environment:
-      OC_DB_DSN: "${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/openchat?parseTime=true&charset=utf8mb4"
+      OC_DB_DSN: "${OC_DB_DSN}"
       OC_JWT_SECRET: "${OC_JWT_SECRET}"
       APP_ENV: production
       TZ: Asia/Shanghai
@@ -43,6 +13,8 @@ services:
     volumes:
       - "${PROD_STACK_ROOT}/data/uploads:/app/uploads"
       - "${PROD_STACK_ROOT}/compose/tinode.prod.conf:/app/tinode.conf:ro"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:6061/health"]
       interval: 15s

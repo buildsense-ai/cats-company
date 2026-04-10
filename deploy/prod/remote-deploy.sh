@@ -20,7 +20,6 @@ mkdir -p \
   "$root/releases" \
   "$compose_dir" \
   "$env_dir" \
-  "$root/data/mysql" \
   "$root/data/uploads" \
   "$root/logs" \
   "/usr/local/bin"
