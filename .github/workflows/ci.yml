@@ -42,8 +42,8 @@ jobs:
         working-directory: webapp
         run: npm run build
 
-      - name: Validate text-test compose
-        run: docker compose -f deploy/text-test/docker-compose.yml --env-file deploy/text-test/text-test.env.example config
+      - name: Validate test compose
+        run: docker compose -f deploy/test/docker-compose.yml --env-file deploy/test/env.test.example config
 
       - name: Build server image
         run: docker build -f deploy/Dockerfile.server -t cats-company-server-ci .

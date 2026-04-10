@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-root="${1:-/root/text/catscompany-docker-test}"
+root="${1:-/srv/catscompany-test}"
 revision="${2:-}"
-compose_bin="/root/text/bin/docker-compose"
+compose_bin="/usr/local/bin/docker-compose"
 compose_dir="$root/compose"
 env_dir="$root/env"
-env_file="$env_dir/text-test.env"
+env_file="$env_dir/test.env"
 compose_file="$compose_dir/docker-compose.yml"
-health_api="${TEXT_TEST_HEALTH_API:-http://127.0.0.1:16061/health}"
-health_web="${TEXT_TEST_HEALTH_WEB:-http://127.0.0.1:18080/health}"
+health_api="${TEST_HEALTH_API:-http://127.0.0.1:16061/health}"
+health_web="${TEST_HEALTH_WEB:-http://127.0.0.1:18080/health}"
 
 if [ -z "$revision" ]; then
   echo "usage: $0 <stack-root> <revision>" >&2
@@ -23,7 +23,7 @@ mkdir -p \
   "$root/data/mysql" \
   "$root/data/uploads" \
   "$root/logs" \
-  "/root/text/bin"
+  "/usr/local/bin"
 
 if [ ! -x "$compose_bin" ]; then
   curl -L --fail \
@@ -38,8 +38,8 @@ if [ ! -f "$compose_file" ]; then
 fi
 
 if [ ! -f "$env_file" ]; then
-  if [ -f "$env_dir/text-test.env.example" ]; then
-    cp "$env_dir/text-test.env.example" "$env_file"
+  if [ -f "$env_dir/env.test.example" ]; then
+    cp "$env_dir/env.test.example" "$env_file"
     echo "created template env file at $env_file" >&2
     echo "fill real secrets, then rerun deploy" >&2
   else

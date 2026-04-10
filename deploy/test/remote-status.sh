@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-root="${1:-/root/text/catscompany-docker-test}"
-compose_bin="/root/text/bin/docker-compose"
+root="${1:-/srv/catscompany-test}"
+compose_bin="/usr/local/bin/docker-compose"
 compose_file="$root/compose/docker-compose.yml"
-env_file="$root/env/text-test.env"
+env_file="$root/env/test.env"
 
 echo "stack root: $root"
 if [ -f "$root/CURRENT_REVISION" ]; then

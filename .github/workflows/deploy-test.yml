@@ -1,4 +1,4 @@
-name: Deploy Text Docker Test
+name: Deploy Docker Test
 
 on:
   workflow_dispatch:
@@ -8,13 +8,15 @@ permissions:
   packages: write
 
 concurrency:
-  group: cats-company-text-test
+  group: cats-company-deploy-test
   cancel-in-progress: true
 
 jobs:
-  deploy-text-test:
+  deploy-test:
     runs-on: ubuntu-latest
     environment: test
+    env:
+      TEST_STACK_ROOT: /srv/catscompany-test
 
     steps:
       - name: Checkout
@@ -60,24 +62,24 @@ jobs:
 
       - name: Upload test stack files
         run: |
-          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "mkdir -p /root/text/catscompany-docker-test/compose /root/text/catscompany-docker-test/env /root/text/catscompany-docker-test/data/mysql /root/text/catscompany-docker-test/data/uploads /root/text/catscompany-docker-test/logs /root/text/bin"
-          scp deploy/text-test/bootstrap-server.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
-          scp deploy/text-test/remote-deploy.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
-          scp deploy/text-test/remote-status.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
-          scp deploy/text-test/docker-compose.yml "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
-          scp deploy/text-test/tinode.text-test.conf "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
-          scp deploy/init-db.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/compose/"
-          scp deploy/text-test/text-test.env.example "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/root/text/catscompany-docker-test/env/"
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "mkdir -p ${TEST_STACK_ROOT}/compose ${TEST_STACK_ROOT}/env ${TEST_STACK_ROOT}/data/mysql ${TEST_STACK_ROOT}/data/uploads ${TEST_STACK_ROOT}/logs /usr/local/bin"
+          scp deploy/test/bootstrap-server.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${TEST_STACK_ROOT}/compose/"
+          scp deploy/test/remote-deploy.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${TEST_STACK_ROOT}/compose/"
+          scp deploy/test/remote-status.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${TEST_STACK_ROOT}/compose/"
+          scp deploy/test/docker-compose.yml "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${TEST_STACK_ROOT}/compose/"
+          scp deploy/test/tinode.test.conf "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${TEST_STACK_ROOT}/compose/"
+          scp deploy/init-db.sh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${TEST_STACK_ROOT}/compose/"
+          scp deploy/test/env.test.example "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${TEST_STACK_ROOT}/env/"
 
-      - name: Deploy isolated text stack
+      - name: Deploy isolated test stack
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
         run: |
-          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "GITHUB_SHA=${GITHUB_SHA} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} bash -s" <<'EOF'
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "GITHUB_SHA=${GITHUB_SHA} TEST_STACK_ROOT=${TEST_STACK_ROOT} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} bash -s" <<'EOF'
           set -euo pipefail
 
-          root="/root/text/catscompany-docker-test"
+          root="${TEST_STACK_ROOT}"
           revision="${GITHUB_SHA}"
           chmod +x "$root/compose/bootstrap-server.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-status.sh"
           "$root/compose/bootstrap-server.sh" "$root"
@@ -95,4 +97,4 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
-          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "bash /root/text/catscompany-docker-test/compose/remote-status.sh /root/text/catscompany-docker-test || true"
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "bash ${TEST_STACK_ROOT}/compose/remote-status.sh ${TEST_STACK_ROOT} || true"
