@@ -17,7 +17,7 @@ jobs:
   deploy-prod:
     if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.event == 'push' }}
     runs-on: ubuntu-latest
-    environment: production
+    environment: prod
     env:
       PROD_STACK_ROOT: /srv/catscompany-prod
       IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
