@@ -77,6 +77,24 @@ for key, value in updates.items():
 p.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 
+allow_shared_db_user="$(sed -n 's/^ALLOW_SHARED_DB_USER=//p' "$env_file" | tail -n 1)"
+db_dsn="$(sed -n 's/^OC_DB_DSN=//p' "$env_file" | tail -n 1)"
+db_user="${db_dsn%%:*}"
+
+if [ "${allow_shared_db_user:-0}" != "1" ] && [ "$db_user" = "openchat" ]; then
+  cat >&2 <<EOF
+refusing deploy: OC_DB_DSN is using the legacy shared DB user "openchat"
+while ALLOW_SHARED_DB_USER is not enabled.
+
+For a shadow prod rollout, use a dedicated DB user such as "openchat_shadow"
+so the live legacy app and the shadow stack do not share DB credentials.
+
+If traffic has fully cut over and sharing the DB user is intentional, set:
+ALLOW_SHARED_DB_USER=1
+EOF
+  exit 1
+fi
+
 if [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
   printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin >/dev/null
 fi

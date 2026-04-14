@@ -22,6 +22,8 @@ through the host nginx once the production cutover plan is confirmed.
 
 The default `OC_DB_DSN` example points to `host.docker.internal:3306`, which is
 appropriate when the existing production MySQL is already published on the host.
+For the shadow-prod phase, use a dedicated DB user such as `openchat_shadow`
+instead of reusing the legacy `openchat` account.
 
 ## Required server files
 
@@ -34,6 +36,8 @@ Before enabling automatic production deploys:
 4. Keep `PROD_STACK_ROOT=<prod-stack-root>`
 5. Fill real secrets in `prod.env`
 6. Point `OC_DB_DSN` at the existing production MySQL
+7. For the shadow rollout, do not reuse the legacy live-app DB user unless the
+   traffic has fully cut over
 
 ## Manual start
 
