@@ -80,9 +80,15 @@ func (h *Hub) Run() {
 	for {
 		select {
 		case client := <-h.register:
-			firstConn, deviceCount, onlineUsers := h.addClient(client)
-			log.Printf("client connected: uid=%d addr=%s account=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, deviceCount, onlineUsers)
-			if firstConn {
+			registration := h.registerClient(client)
+			if !registration.accepted {
+				log.Printf("client connection rejected: uid=%d addr=%s account=%s reason=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, registration.reason, registration.deviceCount, registration.onlineUsers)
+				rejectWebSocketConnection(client.conn, registration.reason)
+				continue
+			}
+
+			log.Printf("client connected: uid=%d addr=%s account=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, registration.deviceCount, registration.onlineUsers)
+			if registration.firstConn {
 				h.enqueuePresence(client.uid, "on")
 			}
 
@@ -174,6 +180,54 @@ func mapID(value interface{}) int64 {
 	default:
 		return 0
 	}
+}
+
+type clientRegistration struct {
+	accepted    bool
+	reason      string
+	firstConn   bool
+	deviceCount int
+	onlineUsers int
+}
+
+func (h *Hub) registerClient(client *Client) clientRegistration {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	clients := h.clients[client.uid]
+	if client.accountType == types.AccountBot && len(clients) > 0 {
+		return clientRegistration{
+			accepted:    false,
+			reason:      "bot already connected",
+			deviceCount: len(clients),
+			onlineUsers: len(h.clients),
+		}
+	}
+
+	firstConn := len(clients) == 0
+	if clients == nil {
+		clients = make(map[*Client]struct{})
+		h.clients[client.uid] = clients
+	}
+	clients[client] = struct{}{}
+
+	return clientRegistration{
+		accepted:    true,
+		firstConn:   firstConn,
+		deviceCount: len(clients),
+		onlineUsers: len(h.clients),
+	}
+}
+
+func rejectWebSocketConnection(conn *websocket.Conn, reason string) {
+	if conn == nil {
+		return
+	}
+	if reason == "" {
+		reason = "connection rejected"
+	}
+	_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, reason), time.Now().Add(writeWait))
+	_ = conn.Close()
 }
 
 func (h *Hub) addClient(client *Client) (firstConn bool, deviceCount int, onlineUsers int) {
@@ -323,7 +377,17 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		send:        make(chan []byte, 256),
 	}
 
-	hub.register <- client
+	registration := hub.registerClient(client)
+	if !registration.accepted {
+		log.Printf("client connection rejected: uid=%d addr=%s account=%s reason=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, registration.reason, registration.deviceCount, registration.onlineUsers)
+		rejectWebSocketConnection(conn, registration.reason)
+		return
+	}
+
+	log.Printf("client connected: uid=%d addr=%s account=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, registration.deviceCount, registration.onlineUsers)
+	if registration.firstConn {
+		hub.enqueuePresence(client.uid, "on")
+	}
 
 	go client.WritePump()
 	go client.ReadPump(hub.handleMessage)
