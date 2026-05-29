@@ -978,6 +978,7 @@ func (h *Hub) handleGet(client *Client, msg *MsgClientGet) {
 					Content:       decodeStoredContent(m.Content),
 					Type:          inferDisplayTypeFromStoredMessage(m.MsgType, m.Content, m.ContentBlocks),
 					MsgType:       m.MsgType,
+					Metadata:      withCatscoIdentityMetadata(nil, h.buildCatscoIdentityMetadata(m.FromUID, client.uid, m.TopicID, m.ID)),
 					ContentBlocks: m.ContentBlocks,
 					Mode:          m.Mode,
 					Role:          m.Role,

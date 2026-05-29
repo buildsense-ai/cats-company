@@ -283,10 +283,62 @@ func TestGroupFanoutAddsRecipientBotIdentity(t *testing.T) {
 	}
 }
 
+func TestHistoryMessagesIncludeCanonicalCatscoIdentityForBotRecipient(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
+			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
+		},
+		history: []*types.Message{{
+			ID:      31,
+			TopicID: "p2p_7_42",
+			FromUID: 7,
+			Content: "missed message",
+			MsgType: "text",
+		}},
+	}
+	hub := NewHub(store, nil)
+	botClient := &Client{
+		uid:         42,
+		accountType: types.AccountBot,
+		bodyID:      "body-mac",
+		displayName: "Dev Agent Runtime",
+		send:        make(chan []byte, 2),
+	}
+	hub.addClient(botClient)
+
+	hub.handleGet(botClient, &MsgClientGet{
+		ID:    "history-1",
+		Topic: "p2p_7_42",
+		What:  "history",
+		SeqID: 0,
+	})
+
+	var msg ServerMessage
+	decodeQueuedServerMessage(t, botClient.send, &msg)
+	identity := metadataMapFromServerMessage(t, &msg, "catsco_identity")
+	agent := nestedMap(t, identity, "agent")
+	topic := nestedMap(t, identity, "topic")
+
+	if agent["agent_id"] != "usr42" || agent["body_id"] != "body-mac" {
+		t.Fatalf("unexpected history recipient agent identity: %#v", agent)
+	}
+	if topic["topic_id"] != "p2p_7_42" || topic["type"] != "p2p" || topic["channel_seq"] != float64(31) {
+		t.Fatalf("unexpected history topic identity: %#v", topic)
+	}
+
+	var ctrl ServerMessage
+	decodeQueuedServerMessage(t, botClient.send, &ctrl)
+	if ctrl.Ctrl == nil || ctrl.Ctrl.Code != 200 || ctrl.Ctrl.Text != "history complete" {
+		t.Fatalf("unexpected history completion ctrl: %#v", ctrl.Ctrl)
+	}
+}
+
 type identityMessageStore struct {
 	store.Store
 	users        map[int64]*types.User
 	groupMembers []*types.GroupMember
+	history      []*types.Message
 }
 
 func (s *identityMessageStore) GetUser(id int64) (*types.User, error) {
@@ -304,6 +356,16 @@ func (s *identityMessageStore) GetGroupMembers(groupID int64) ([]*types.GroupMem
 		}
 	}
 	return members, nil
+}
+
+func (s *identityMessageStore) GetMessagesSince(topicID string, sinceID int64, limit int) ([]*types.Message, error) {
+	var messages []*types.Message
+	for _, message := range s.history {
+		if message.TopicID == topicID && message.ID > sinceID {
+			messages = append(messages, message)
+		}
+	}
+	return messages, nil
 }
 
 func decodeQueuedServerMessage(t *testing.T, ch <-chan []byte, msg *ServerMessage) {
