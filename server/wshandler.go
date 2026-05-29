@@ -900,6 +900,22 @@ func (h *Hub) broadcastToGroup(groupID int64, msg *ServerMessage, excludeUID int
 	}
 }
 
+func cloneDataMessageWithMetadata(msg *ServerMessage, metadata map[string]interface{}) *ServerMessage {
+	if msg == nil || msg.Data == nil {
+		return msg
+	}
+	data := *msg.Data
+	data.Metadata = metadata
+	return &ServerMessage{
+		Ctrl:   msg.Ctrl,
+		Data:   &data,
+		Pres:   msg.Pres,
+		Meta:   msg.Meta,
+		Info:   msg.Info,
+		Friend: msg.Friend,
+	}
+}
+
 // isGroupTopic checks if a topic ID is a group topic.
 func isGroupTopic(topic string) bool {
 	return len(topic) > 4 && topic[:4] == "grp_"
@@ -1188,6 +1204,16 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			}
 		}
 
-		h.SendToUser(m.UserID, msg)
+		out := msg
+		if msg != nil && msg.Data != nil && senderUID > 0 {
+			out = cloneDataMessageWithMetadata(
+				msg,
+				withCatscoIdentityMetadata(
+					msg.Data.Metadata,
+					h.buildCatscoIdentityMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID)),
+				),
+			)
+		}
+		h.SendToUser(m.UserID, out)
 	}
 }

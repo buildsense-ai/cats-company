@@ -186,20 +186,9 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 	if h == nil || payload == nil {
 		return
 	}
-	dataMsg := &ServerMessage{
-		Data: &MsgServerData{
-			Topic:         topicID,
-			From:          formatUID(uid),
-			SeqID:         int(msgID),
-			Content:       payload.DisplayContent,
-			Type:          payload.DisplayType,
-			MsgType:       payload.StoredType,
-			Metadata:      payload.Metadata,
-			ContentBlocks: payload.ContentBlocks,
-			Mode:          payload.Mode,
-			Role:          payload.Role,
-			ReplyTo:       replyTo,
-		},
+	dataMsg := h.messageForRecipient(uid, 0, topicID, replyTo, payload, msgID)
+	if dataMsg == nil {
+		return
 	}
 
 	if isGroupTopic(topicID) {
@@ -220,7 +209,7 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 	}
 
 	h.SendToUserExcept(uid, dataMsg, exclude)
-	h.SendToUser(peerUID, dataMsg)
+	h.SendToUser(peerUID, h.messageForRecipient(uid, peerUID, topicID, replyTo, payload, msgID))
 
 	if senderClient := h.getClient(uid); senderClient != nil && senderClient.accountType == types.AccountBot {
 		h.botStats.RecordSent(uid, topicID)
@@ -228,6 +217,105 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 	if peerClient := h.getClient(peerUID); peerClient != nil && peerClient.accountType == types.AccountBot {
 		h.botStats.RecordRecv(peerUID)
 	}
+}
+
+func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string, replyTo int, payload *normalizedMessagePayload, msgID int64) *ServerMessage {
+	if payload == nil {
+		return nil
+	}
+	metadata := withCatscoIdentityMetadata(payload.Metadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID))
+	return &ServerMessage{
+		Data: &MsgServerData{
+			Topic:         topicID,
+			From:          formatUID(uid),
+			SeqID:         int(msgID),
+			Content:       payload.DisplayContent,
+			Type:          payload.DisplayType,
+			MsgType:       payload.StoredType,
+			Metadata:      metadata,
+			ContentBlocks: payload.ContentBlocks,
+			Mode:          payload.Mode,
+			Role:          payload.Role,
+			ReplyTo:       replyTo,
+		},
+	}
+}
+
+func withCatscoIdentityMetadata(metadata map[string]interface{}, identity map[string]interface{}) map[string]interface{} {
+	if metadata == nil && identity == nil {
+		return nil
+	}
+	next := make(map[string]interface{}, len(metadata)+1)
+	for key, value := range metadata {
+		next[key] = value
+	}
+	if identity != nil {
+		next["catsco_identity"] = identity
+	}
+	return next
+}
+
+func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, topicID string, msgID int64) map[string]interface{} {
+	identity := map[string]interface{}{
+		"schema_version": 1,
+		"actor": map[string]interface{}{
+			"user_id": formatUID(actorUID),
+		},
+		"topic": map[string]interface{}{
+			"topic_id": topicID,
+			"type":     topicTypeForID(topicID),
+		},
+		"permissions": map[string]interface{}{
+			"source": "server_canonical_message",
+		},
+	}
+	if msgID > 0 {
+		identity["topic"].(map[string]interface{})["channel_seq"] = msgID
+	}
+	if h != nil && h.db != nil {
+		if actor, err := h.db.GetUser(actorUID); err == nil && actor != nil {
+			actorMap := identity["actor"].(map[string]interface{})
+			if actor.DisplayName != "" {
+				actorMap["display_name"] = actor.DisplayName
+			}
+			if actor.Username != "" {
+				actorMap["username"] = actor.Username
+			}
+		}
+	}
+	if recipientUID <= 0 {
+		return identity
+	}
+	agent := map[string]interface{}{
+		"agent_id": formatUID(recipientUID),
+	}
+	if h != nil && h.db != nil {
+		if user, err := h.db.GetUser(recipientUID); err == nil && user != nil {
+			if user.DisplayName != "" {
+				agent["display_name"] = user.DisplayName
+			}
+			if user.Username != "" {
+				agent["username"] = user.Username
+			}
+		}
+	}
+	if client := h.getClient(recipientUID); client != nil && client.accountType == types.AccountBot {
+		if client.bodyID != "" {
+			agent["body_id"] = client.bodyID
+		}
+		if client.displayName != "" {
+			agent["display_name"] = client.displayName
+		}
+	}
+	identity["agent"] = agent
+	return identity
+}
+
+func topicTypeForID(topicID string) string {
+	if isGroupTopic(topicID) {
+		return "group"
+	}
+	return "p2p"
 }
 
 // HandleGetMessages handles GET /api/messages?topic_id=xxx&limit=50&offset=0

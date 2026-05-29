@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -179,6 +180,163 @@ func TestExtractPeerUIDRequiresSenderInTopic(t *testing.T) {
 	if got := extractPeerUID("p2p_1_2", 3); got != 0 {
 		t.Fatalf("extractPeerUID for non-member uid = %d, want 0", got)
 	}
+}
+
+func TestFanoutMessageAddsCanonicalCatscoIdentityForBotRecipient(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
+			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
+		},
+	}
+	hub := NewHub(store, nil)
+	botClient := &Client{
+		uid:         42,
+		accountType: types.AccountBot,
+		bodyID:      "body-mac",
+		displayName: "Dev Agent Runtime",
+		send:        make(chan []byte, 1),
+	}
+	hub.addClient(botClient)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "p2p_7_42",
+		Content: json.RawMessage(`"hello"`),
+		Metadata: map[string]interface{}{
+			"keep":            "yes",
+			"catsco_identity": map[string]interface{}{"spoofed": true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	hub.fanoutNormalizedMessage(7, "p2p_7_42", 0, payload, 15, nil)
+
+	var msg ServerMessage
+	decodeQueuedServerMessage(t, botClient.send, &msg)
+	identity := metadataMapFromServerMessage(t, &msg, "catsco_identity")
+	actor := nestedMap(t, identity, "actor")
+	agent := nestedMap(t, identity, "agent")
+	topic := nestedMap(t, identity, "topic")
+	permissions := nestedMap(t, identity, "permissions")
+
+	if msg.Data.Metadata["keep"] != "yes" {
+		t.Fatalf("expected original metadata to be preserved: %#v", msg.Data.Metadata)
+	}
+	if actor["user_id"] != "usr7" || actor["display_name"] != "Alice" {
+		t.Fatalf("unexpected actor identity: %#v", actor)
+	}
+	if agent["agent_id"] != "usr42" || agent["body_id"] != "body-mac" || agent["display_name"] != "Dev Agent Runtime" {
+		t.Fatalf("unexpected agent identity: %#v", agent)
+	}
+	if topic["topic_id"] != "p2p_7_42" || topic["type"] != "p2p" || topic["channel_seq"] != float64(15) {
+		t.Fatalf("unexpected topic identity: %#v", topic)
+	}
+	if permissions["source"] != "server_canonical_message" {
+		t.Fatalf("unexpected permissions snapshot: %#v", permissions)
+	}
+}
+
+func TestGroupFanoutAddsRecipientBotIdentity(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
+			42: {ID: 42, Username: "review_agent", DisplayName: "Review Agent", AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 42},
+		},
+	}
+	hub := NewHub(store, nil)
+	botClient := &Client{
+		uid:         42,
+		accountType: types.AccountBot,
+		bodyID:      "body-review",
+		displayName: "Review Runtime",
+		send:        make(chan []byte, 1),
+	}
+	hub.addClient(botClient)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "grp_80",
+		Content: json.RawMessage(`"@usr42 请看一下"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 22, nil)
+
+	var msg ServerMessage
+	decodeQueuedServerMessage(t, botClient.send, &msg)
+	identity := metadataMapFromServerMessage(t, &msg, "catsco_identity")
+	agent := nestedMap(t, identity, "agent")
+	topic := nestedMap(t, identity, "topic")
+
+	if agent["agent_id"] != "usr42" || agent["body_id"] != "body-review" {
+		t.Fatalf("unexpected group recipient agent identity: %#v", agent)
+	}
+	if topic["topic_id"] != "grp_80" || topic["type"] != "group" || topic["channel_seq"] != float64(22) {
+		t.Fatalf("unexpected group topic identity: %#v", topic)
+	}
+}
+
+type identityMessageStore struct {
+	store.Store
+	users        map[int64]*types.User
+	groupMembers []*types.GroupMember
+}
+
+func (s *identityMessageStore) GetUser(id int64) (*types.User, error) {
+	if user, ok := s.users[id]; ok {
+		return user, nil
+	}
+	return nil, errors.New("user not found")
+}
+
+func (s *identityMessageStore) GetGroupMembers(groupID int64) ([]*types.GroupMember, error) {
+	var members []*types.GroupMember
+	for _, member := range s.groupMembers {
+		if member.GroupID == groupID {
+			members = append(members, member)
+		}
+	}
+	return members, nil
+}
+
+func decodeQueuedServerMessage(t *testing.T, ch <-chan []byte, msg *ServerMessage) {
+	t.Helper()
+	select {
+	case raw := <-ch:
+		if err := json.Unmarshal(raw, msg); err != nil {
+			t.Fatalf("decode server message: %v", err)
+		}
+	default:
+		t.Fatal("expected queued server message")
+	}
+}
+
+func metadataMapFromServerMessage(t *testing.T, msg *ServerMessage, key string) map[string]interface{} {
+	t.Helper()
+	if msg.Data == nil {
+		t.Fatal("expected data message")
+	}
+	value, ok := msg.Data.Metadata[key].(map[string]interface{})
+	if !ok {
+		t.Fatalf("metadata[%s] = %#v, want object", key, msg.Data.Metadata[key])
+	}
+	return value
+}
+
+func nestedMap(t *testing.T, values map[string]interface{}, key string) map[string]interface{} {
+	t.Helper()
+	value, ok := values[key].(map[string]interface{})
+	if !ok {
+		t.Fatalf("%s = %#v, want object", key, values[key])
+	}
+	return value
 }
 
 type idempotentMessageStore struct {
