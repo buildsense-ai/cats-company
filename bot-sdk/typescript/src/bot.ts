@@ -67,9 +67,15 @@ export class CatsBot {
 
   constructor(config: CatsBotConfig) {
     const httpBase = config.httpBaseUrl ?? deriveHttpBase(config.serverUrl);
+    const bodyId = config.bodyId.trim();
+    if (!bodyId) {
+      throw new ConnectionError('bodyId is required');
+    }
     this.config = {
       serverUrl: config.serverUrl,
       apiKey: config.apiKey,
+      bodyId,
+      installationId: config.installationId?.trim() ?? '',
       httpBaseUrl: httpBase,
       reconnectDelay: config.reconnectDelay ?? 3000,
       connectTimeout: config.connectTimeout ?? 15000,
@@ -361,8 +367,15 @@ export class CatsBot {
       };
 
       try {
+        const headers: Record<string, string> = {
+          'X-API-Key': this.config.apiKey,
+          'X-CatsCo-Body-ID': this.config.bodyId,
+        };
+        if (this.config.installationId) {
+          headers['X-CatsCo-Installation-ID'] = this.config.installationId;
+        }
         this.ws = new WebSocket(this.config.serverUrl, {
-          headers: { 'X-API-Key': this.config.apiKey },
+          headers,
         });
       } catch (err: any) {
         reject(new ConnectionError(`Failed to create WebSocket: ${err.message}`));

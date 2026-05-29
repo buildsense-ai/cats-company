@@ -19,11 +19,16 @@ import (
 type BotHandler struct {
 	db       store.Store
 	deployer *Deployer // nil = deploy functionality not available
+	hub      *Hub
 }
 
 // NewBotHandler creates a new BotHandler.
 func NewBotHandler(db store.Store, deployer *Deployer) *BotHandler {
 	return &BotHandler{db: db, deployer: deployer}
+}
+
+func (h *BotHandler) SetHub(hub *Hub) {
+	h.hub = hub
 }
 
 // HandleBotsRouter routes /api/bots by HTTP method.
@@ -600,6 +605,55 @@ func (h *BotHandler) HandleGetBotAPIKey(w http.ResponseWriter, r *http.Request) 
 		"uid":     botUID,
 		"api_key": apiKey,
 	})
+}
+
+// HandleGetBotBodyStatus handles GET /api/bots/body-status?uid=xxx.
+// It exposes only the bound/active body id for the bot owner; connection ids
+// and API keys stay server-internal.
+func (h *BotHandler) HandleGetBotBodyStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	ownerUID := UIDFromContext(r.Context())
+	if ownerUID == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	uidStr := r.URL.Query().Get("uid")
+	botUID, err := strconv.ParseInt(uidStr, 10, 64)
+	if err != nil || botUID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
+		return
+	}
+
+	actualOwner, err := h.db.GetBotOwner(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+		return
+	}
+	if actualOwner != ownerUID {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not your bot"})
+		return
+	}
+
+	boundBodyID, err := h.db.GetBotBodyID(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to read bot body binding"})
+		return
+	}
+
+	status := BotBodyStatus{BotUID: botUID, Active: false, BodyID: boundBodyID, Bound: boundBodyID != ""}
+	if h.hub != nil {
+		activeStatus := h.hub.BotBodyStatus(botUID)
+		if activeStatus.Active {
+			status = activeStatus
+			status.Bound = status.Bound || boundBodyID != ""
+		}
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 var globalBotStats *BotStats

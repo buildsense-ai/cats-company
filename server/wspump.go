@@ -78,6 +78,7 @@ func (h *Hub) disconnectClient(client *Client, reason string) {
 		return
 	}
 
+	h.releaseBotBodyLease(client)
 	if reason == "" {
 		log.Printf("client disconnected: uid=%d (devices: %d, online users: %d)", client.uid, remaining, onlineUsers)
 	} else {

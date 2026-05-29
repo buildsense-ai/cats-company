@@ -34,6 +34,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddOwnerID,
 		migrateBotConfigAddVisibility,
 		migrateBotConfigAddTenantName,
+		migrateBotConfigAddBodyID,
 		migrateMessagesAddCodeMode,
 		migrateMessagesAddClientMsgID,
 		migrateMessagesAddClientMsgIDIndex,
@@ -140,6 +141,7 @@ CREATE TABLE IF NOT EXISTS bot_config (
     model VARCHAR(128) DEFAULT '',
     enabled TINYINT(1) NOT NULL DEFAULT 1,
     config JSON DEFAULT NULL,
+    body_id VARCHAR(128) DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -248,6 +250,11 @@ ALTER TABLE bot_config ADD COLUMN visibility ENUM('public','private') NOT NULL D
 // NULL = self-hosted (third-party), non-NULL = platform-managed deployment.
 const migrateBotConfigAddTenantName = `
 ALTER TABLE bot_config ADD COLUMN tenant_name VARCHAR(128) DEFAULT NULL;
+`
+
+// Migration: add persistent bot body binding.
+const migrateBotConfigAddBodyID = `
+ALTER TABLE bot_config ADD COLUMN body_id VARCHAR(128) DEFAULT NULL;
 `
 
 // Migration: add code mode support to messages table.

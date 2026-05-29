@@ -40,9 +40,15 @@ class CatsBot {
     }
     constructor(config) {
         const httpBase = config.httpBaseUrl ?? deriveHttpBase(config.serverUrl);
+        const bodyId = config.bodyId.trim();
+        if (!bodyId) {
+            throw new errors_1.ConnectionError('bodyId is required');
+        }
         this.config = {
             serverUrl: config.serverUrl,
             apiKey: config.apiKey,
+            bodyId,
+            installationId: config.installationId?.trim() ?? '',
             httpBaseUrl: httpBase,
             reconnectDelay: config.reconnectDelay ?? 3000,
             connectTimeout: config.connectTimeout ?? 15000,
@@ -289,8 +295,15 @@ class CatsBot {
                 reject(err);
             };
             try {
+                const headers = {
+                    'X-API-Key': this.config.apiKey,
+                    'X-CatsCo-Body-ID': this.config.bodyId,
+                };
+                if (this.config.installationId) {
+                    headers['X-CatsCo-Installation-ID'] = this.config.installationId;
+                }
                 this.ws = new ws_1.default(this.config.serverUrl, {
-                    headers: { 'X-API-Key': this.config.apiKey },
+                    headers,
                 });
             }
             catch (err) {

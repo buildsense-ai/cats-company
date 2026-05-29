@@ -165,6 +165,10 @@ export interface CatsBotConfig {
     serverUrl: string;
     /** Bot API key, e.g. "cc_1a_abc123..." */
     apiKey: string;
+    /** Stable id of this bot runtime/body. One bot can only bind to one body. */
+    bodyId: string;
+    /** Optional install/instance id for diagnostics. */
+    installationId?: string;
     /** HTTP base URL for REST endpoints (upload). Defaults to deriving from serverUrl. */
     httpBaseUrl?: string;
     /** Delay in ms before reconnecting after disconnect. Default: 3000 */

@@ -208,6 +208,7 @@ type BotConfig struct {
 	Model       string            `json:"model,omitempty"`
 	Enabled     bool              `json:"enabled"`
 	Visibility  BotVisibility     `json:"visibility"`
+	BodyID      string            `json:"body_id,omitempty"`
 	Config      map[string]string `json:"config,omitempty"`
 }
 

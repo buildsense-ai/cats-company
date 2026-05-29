@@ -34,6 +34,7 @@ type Hub struct {
 	rateLimiter *RateLimiter
 	botStats    *BotStats
 	botConvo    botConvoTracker
+	bodyLeases  *botBodyLeaseManager
 }
 
 type presenceEvent struct {
@@ -43,15 +44,17 @@ type presenceEvent struct {
 
 // Client represents a single WebSocket connection.
 type Client struct {
-	hub         *Hub
-	conn        *websocket.Conn
-	uid         int64
-	remoteAddr  string
-	displayName string
-	accountType types.AccountType
-	send        chan []byte
-	sendMu      sync.RWMutex
-	sendClosed  bool
+	hub          *Hub
+	conn         *websocket.Conn
+	uid          int64
+	remoteAddr   string
+	displayName  string
+	accountType  types.AccountType
+	bodyID       string
+	connectionID string
+	send         chan []byte
+	sendMu       sync.RWMutex
+	sendClosed   bool
 }
 
 // NewHub creates a new Hub.
@@ -65,6 +68,7 @@ func NewHub(db store.Store, rl *RateLimiter) *Hub {
 		rateLimiter: rl,
 		botStats:    NewBotStats(),
 		botConvo:    botConvoTracker{counters: make(map[string]*botConvoCount)},
+		bodyLeases:  newBotBodyLeaseManager(defaultBotBodyLeaseTTL),
 	}
 	go hub.runPresence()
 	return hub
@@ -75,16 +79,29 @@ func (h *Hub) BotStats() *BotStats {
 	return h.botStats
 }
 
+func (h *Hub) BotBodyStatus(botUID int64) BotBodyStatus {
+	status := BotBodyStatus{BotUID: botUID, Active: false}
+	if h == nil || h.bodyLeases == nil || botUID <= 0 {
+		return status
+	}
+	lease, ok := h.bodyLeases.status(botUID)
+	if !ok {
+		return status
+	}
+	connectedAt := lease.acquiredAt
+	status.Active = true
+	status.BodyID = lease.bodyID
+	status.Bound = lease.bodyID != ""
+	status.ConnectedAt = &connectedAt
+	return status
+}
+
 // Run starts the hub's main loop.
 func (h *Hub) Run() {
 	for {
 		select {
 		case client := <-h.register:
-			firstConn, deviceCount, onlineUsers := h.addClient(client)
-			log.Printf("client connected: uid=%d addr=%s account=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, deviceCount, onlineUsers)
-			if firstConn {
-				h.enqueuePresence(client.uid, "on")
-			}
+			h.registerClient(client)
 
 		case client := <-h.unregister:
 			removed, lastConn, remaining, onlineUsers := h.removeClient(client)
@@ -92,6 +109,7 @@ func (h *Hub) Run() {
 				continue
 			}
 			client.closeSend()
+			h.releaseBotBodyLease(client)
 			log.Printf("client disconnected: uid=%d addr=%s account=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, remaining, onlineUsers)
 			if lastConn {
 				h.enqueuePresence(client.uid, "off")
@@ -191,6 +209,57 @@ func (h *Hub) addClient(client *Client) (firstConn bool, deviceCount int, online
 	return firstConn, len(clients), len(h.clients)
 }
 
+func (h *Hub) registerClient(client *Client) bool {
+	if client == nil {
+		return false
+	}
+	if client.accountType == types.AccountBot && !h.bodyLeases.isCurrent(client.uid, client.bodyID, client.connectionID) {
+		client.closeSend()
+		if client.conn != nil {
+			_ = client.conn.Close()
+		}
+		return false
+	}
+
+	firstConn, deviceCount, onlineUsers, replaced := h.addRegisteredClient(client)
+	for _, stale := range replaced {
+		stale.closeSend()
+		if stale.conn != nil {
+			_ = stale.conn.Close()
+		}
+	}
+
+	log.Printf("client connected: uid=%d addr=%s account=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, deviceCount, onlineUsers)
+	if firstConn {
+		h.enqueuePresence(client.uid, "on")
+	}
+	return true
+}
+
+func (h *Hub) addRegisteredClient(client *Client) (firstConn bool, deviceCount int, onlineUsers int, replaced []*Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	clients := h.clients[client.uid]
+	firstConn = len(clients) == 0
+	if clients == nil {
+		clients = make(map[*Client]struct{})
+		h.clients[client.uid] = clients
+	}
+
+	if client.accountType == types.AccountBot && client.bodyID != "" {
+		for existing := range clients {
+			if existing.accountType == types.AccountBot && existing.bodyID == client.bodyID {
+				delete(clients, existing)
+				replaced = append(replaced, existing)
+			}
+		}
+	}
+	clients[client] = struct{}{}
+
+	return firstConn, len(clients), len(h.clients), replaced
+}
+
 func (h *Hub) removeClient(client *Client) (removed bool, lastConn bool, remaining int, onlineUsers int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -212,6 +281,13 @@ func (h *Hub) removeClient(client *Client) (removed bool, lastConn bool, remaini
 	}
 
 	return removed, lastConn, remaining, len(h.clients)
+}
+
+func (h *Hub) releaseBotBodyLease(client *Client) {
+	if client == nil || client.accountType != types.AccountBot {
+		return
+	}
+	h.bodyLeases.release(client.uid, client.bodyID, client.connectionID)
 }
 
 // broadcastPresence notifies friends and, for bots, their owner of online/offline status.
@@ -262,6 +338,9 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	var uid int64
 	acctType := types.AccountHuman
 	displayName := ""
+	isBotAPIKey := false
+	bodyID := ""
+	connectionID := ""
 
 	// Try JWT token first
 	tokenStr := r.URL.Query().Get("token")
@@ -292,13 +371,11 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 			displayName = usr.DisplayName
 		}
 	} else if apiKeyStr != "" {
-		// API Key authentication for bots
 		parsedUID, err := ParseAPIKey(apiKeyStr)
 		if err != nil {
 			http.Error(w, "invalid api key format", http.StatusUnauthorized)
 			return
 		}
-		// Verify the API key exists in database
 		botUID, err := hub.db.GetBotByAPIKey(apiKeyStr)
 		if err != nil || botUID != parsedUID {
 			http.Error(w, "invalid api key", http.StatusUnauthorized)
@@ -314,8 +391,8 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		uid = parsedUID
-		acctType = types.AccountBot
 		acctType = usr.AccountType
+		isBotAPIKey = true
 		if usr.DisplayName != "" {
 			displayName = usr.DisplayName
 		}
@@ -324,26 +401,80 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if tokenStr != "" && acctType == types.AccountBot {
+		http.Error(w, "bot websocket connections must use api key authentication", http.StatusForbidden)
+		return
+	}
+
+	if isBotAPIKey {
+		var err error
+		bodyID, err = normalizeBotBodyID(r.Header.Get(botBodyIDHeader))
+		if err != nil {
+			http.Error(w, "missing or invalid bot body id", http.StatusBadRequest)
+			return
+		}
+		boundBodyID, allowed, err := hub.db.EnsureBotBodyBinding(uid, bodyID)
+		if err != nil {
+			log.Printf("bot body binding failed: uid=%d body=%s err=%v", uid, bodyID, err)
+			http.Error(w, "failed to verify bot body binding", http.StatusInternalServerError)
+			return
+		}
+		if !allowed {
+			http.Error(w, fmt.Sprintf("bot is bound to body %s", boundBodyID), http.StatusConflict)
+			return
+		}
+		if existing, ok := hub.bodyLeases.conflicts(uid, bodyID); ok {
+			http.Error(w, fmt.Sprintf("bot already connected from body %s", existing.bodyID), http.StatusConflict)
+			return
+		}
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("ws upgrade error: %v", err)
 		return
 	}
-
-	client := &Client{
-		hub:         hub,
-		conn:        conn,
-		uid:         uid,
-		remoteAddr:  requestRemoteAddr(r),
-		displayName: displayName,
-		accountType: acctType,
-		send:        make(chan []byte, 256),
+	if isBotAPIKey {
+		connectionID = newBotBodyConnectionID()
+		result, err := hub.bodyLeases.acquire(uid, bodyID, connectionID)
+		if err != nil {
+			closeBotBodyRejectedConn(conn, result.Lease)
+			return
+		}
 	}
 
-	hub.register <- client
+	client := &Client{
+		hub:          hub,
+		conn:         conn,
+		uid:          uid,
+		remoteAddr:   requestRemoteAddr(r),
+		displayName:  displayName,
+		accountType:  acctType,
+		bodyID:       bodyID,
+		connectionID: connectionID,
+		send:         make(chan []byte, 256),
+	}
+
+	if !hub.registerClient(client) {
+		hub.bodyLeases.release(uid, bodyID, connectionID)
+		return
+	}
 
 	go client.WritePump()
 	go client.ReadPump(hub.handleMessage)
+}
+
+func closeBotBodyRejectedConn(conn *websocket.Conn, lease botBodyLease) {
+	reason := "bot already connected"
+	if lease.bodyID != "" {
+		reason = fmt.Sprintf("bot already connected from body %s", lease.bodyID)
+	}
+	_ = conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.ClosePolicyViolation, reason),
+		time.Now().Add(writeWait),
+	)
+	_ = conn.Close()
 }
 
 func requestRemoteAddr(r *http.Request) string {

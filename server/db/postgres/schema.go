@@ -22,6 +22,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddOwnerID,
 		migrateBotConfigAddVisibility,
 		migrateBotConfigAddTenantName,
+		migrateBotConfigAddBodyID,
 		migrateMessagesAddCodeMode,
 		migrateMessagesAddClientMsgID,
 		migrateGroupsAddCreatedAtColumn,
@@ -125,6 +126,7 @@ CREATE TABLE IF NOT EXISTS bot_config (
     api_key VARCHAR(128) DEFAULT NULL,
     visibility VARCHAR(16) NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','private')),
     tenant_name VARCHAR(128) DEFAULT NULL,
+    body_id VARCHAR(128) DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -200,6 +202,7 @@ const migrateBotConfigAddAPIKey = `ALTER TABLE bot_config ADD COLUMN IF NOT EXIS
 const migrateBotConfigAddOwnerID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS owner_id BIGINT DEFAULT NULL;`
 const migrateBotConfigAddVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'public';`
 const migrateBotConfigAddTenantName = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(128) DEFAULT NULL;`
+const migrateBotConfigAddBodyID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS body_id VARCHAR(128) DEFAULT NULL;`
 const migrateMessagesAddCodeMode = `
 ALTER TABLE messages
   ADD COLUMN IF NOT EXISTS content_blocks JSONB DEFAULT NULL,

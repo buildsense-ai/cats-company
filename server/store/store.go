@@ -78,6 +78,8 @@ type BotStore interface {
 	GetBotDebugMessages(uid int64, limit int) ([]*types.Message, error)
 	GetBotByAPIKey(apiKey string) (int64, error)
 	GetBotAPIKey(botUID int64) (string, error)
+	EnsureBotBodyBinding(botUID int64, bodyID string) (string, bool, error)
+	GetBotBodyID(botUID int64) (string, error)
 	ListBotsByOwner(ownerID int64) ([]map[string]interface{}, error)
 	GetBotOwner(botUID int64) (int64, error)
 	DeleteBot(botUID int64) error
