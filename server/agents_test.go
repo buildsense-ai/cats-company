@@ -62,6 +62,14 @@ func (s *agentTestStore) CreateTopic(id, topicType string, ownerID int64) error 
 	return nil
 }
 
+func (s *agentTestStore) IsGroupMember(groupID, userID int64) (bool, error) {
+	return false, nil
+}
+
+func (s *agentTestStore) IsMemberMuted(groupID, userID int64) (bool, error) {
+	return false, nil
+}
+
 func TestHandleListAgentsIncludesOwnedAndFriendBots(t *testing.T) {
 	store := &agentTestStore{
 		ownerBots: []map[string]interface{}{
@@ -191,6 +199,90 @@ func TestHandleOpenAgentRejectsUnavailableAgent(t *testing.T) {
 	}
 	if len(store.createdTopics) != 0 {
 		t.Fatalf("created topics = %#v, want none", store.createdTopics)
+	}
+}
+
+func TestValidateMessagePublishRejectsUnavailableAgentTopic(t *testing.T) {
+	store := &agentTestStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman},
+			43: {ID: 43, Username: "review-agent", DisplayName: "Review Agent", AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{
+			43: 99,
+		},
+		friendPairs: map[string]bool{},
+	}
+	hub := NewHub(store, nil)
+
+	code, text := hub.validateMessagePublish(7, types.AccountHuman, "p2p_7_43", false)
+
+	if code != http.StatusForbidden || text != "agent is not available to this user" {
+		t.Fatalf("code=%d text=%q, want 403 agent unavailable", code, text)
+	}
+}
+
+func TestValidateMessagePublishAllowsAccessibleAgentTopic(t *testing.T) {
+	store := &agentTestStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman},
+			43: {ID: 43, Username: "review-agent", DisplayName: "Review Agent", AccountType: types.AccountBot},
+			44: {ID: 44, Username: "dev-agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{
+			43: 99,
+			44: 7,
+		},
+		friendPairs: map[string]bool{
+			agentPairKey(7, 43): true,
+		},
+	}
+	hub := NewHub(store, nil)
+
+	if code, text := hub.validateMessagePublish(7, types.AccountHuman, "p2p_7_43", false); code != 0 || text != "" {
+		t.Fatalf("friend agent publish code=%d text=%q, want allowed", code, text)
+	}
+	if code, text := hub.validateMessagePublish(7, types.AccountHuman, "p2p_7_44", false); code != 0 || text != "" {
+		t.Fatalf("owner agent publish code=%d text=%q, want allowed", code, text)
+	}
+}
+
+func TestValidateMessagePublishDoesNotBlockBotReplyToHuman(t *testing.T) {
+	store := &agentTestStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman},
+			43: {ID: 43, Username: "review-agent", DisplayName: "Review Agent", AccountType: types.AccountBot},
+		},
+	}
+	hub := NewHub(store, nil)
+
+	if code, text := hub.validateMessagePublish(43, types.AccountBot, "p2p_7_43", false); code != 0 || text != "" {
+		t.Fatalf("bot reply code=%d text=%q, want allowed", code, text)
+	}
+}
+
+func TestValidateMessagePublishDoesNotBlockHumanP2P(t *testing.T) {
+	store := &agentTestStore{
+		users: map[int64]*types.User{
+			7: {ID: 7, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman},
+			8: {ID: 8, Username: "bob", DisplayName: "Bob", AccountType: types.AccountHuman},
+		},
+	}
+	hub := NewHub(store, nil)
+
+	if code, text := hub.validateMessagePublish(7, types.AccountHuman, "p2p_7_8", false); code != 0 || text != "" {
+		t.Fatalf("human p2p code=%d text=%q, want allowed", code, text)
+	}
+}
+
+func TestValidateMessagePublishChecksGroupBeforeAgentAccess(t *testing.T) {
+	store := &agentTestStore{}
+	hub := NewHub(store, nil)
+
+	code, text := hub.validateMessagePublish(7, types.AccountHuman, "grp_80", false)
+
+	if code != http.StatusForbidden || text != "not a group member" {
+		t.Fatalf("group publish code=%d text=%q, want group membership failure", code, text)
 	}
 }
 

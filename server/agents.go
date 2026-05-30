@@ -139,36 +139,61 @@ func (h *AgentHandler) visibleAgents(uid int64) ([]AgentSummary, error) {
 }
 
 func (h *AgentHandler) accessibleAgent(uid, agentUID int64) (AgentSummary, int, error) {
-	if agentUID <= 0 {
-		return AgentSummary{}, http.StatusBadRequest, errInvalidAgentUID{}
+	user, relation, status, err := accessibleAgentUser(h.db, uid, agentUID)
+	if err != nil {
+		return AgentSummary{}, status, err
 	}
 
-	user, err := h.db.GetUser(agentUID)
+	return h.agentFromUser(uid, user, relation), 0, nil
+}
+
+func accessibleAgentUser(db store.Store, uid, agentUID int64) (*types.User, string, int, error) {
+	if agentUID <= 0 {
+		return nil, "", http.StatusBadRequest, errInvalidAgentUID{}
+	}
+	if db == nil {
+		return nil, "", http.StatusInternalServerError, errAgentAccessCheck{}
+	}
+
+	user, err := db.GetUser(agentUID)
 	if err != nil || user == nil {
-		return AgentSummary{}, http.StatusNotFound, errAgentNotFound{}
+		return nil, "", http.StatusNotFound, errAgentNotFound{}
 	}
 	if user.AccountType != types.AccountBot {
-		return AgentSummary{}, http.StatusBadRequest, errNotAgent{}
+		return nil, "", http.StatusBadRequest, errNotAgent{}
 	}
 
 	relation := ""
-	if ownerUID, err := h.db.GetBotOwner(agentUID); err == nil && ownerUID == uid {
+	if ownerUID, err := db.GetBotOwner(agentUID); err == nil && ownerUID == uid {
 		relation = "owner"
 	}
 	if relation == "" {
-		areFriends, err := h.db.AreFriends(uid, agentUID)
+		areFriends, err := db.AreFriends(uid, agentUID)
 		if err != nil {
-			return AgentSummary{}, http.StatusInternalServerError, errAgentAccessCheck{}
+			return nil, "", http.StatusInternalServerError, errAgentAccessCheck{}
 		}
 		if areFriends {
 			relation = "friend"
 		}
 	}
 	if relation == "" {
-		return AgentSummary{}, http.StatusForbidden, errAgentForbidden{}
+		return nil, "", http.StatusForbidden, errAgentForbidden{}
 	}
+	return user, relation, 0, nil
+}
 
-	return h.agentFromUser(uid, user, relation), 0, nil
+func validateAgentP2PMessageAccess(db store.Store, uid int64, accountType types.AccountType, peerUID int64) (int, string) {
+	if db == nil || uid <= 0 || peerUID <= 0 || accountType == types.AccountBot {
+		return 0, ""
+	}
+	peer, err := db.GetUser(peerUID)
+	if err != nil || peer == nil || peer.AccountType != types.AccountBot {
+		return 0, ""
+	}
+	if _, _, status, err := accessibleAgentUser(db, uid, peerUID); err != nil {
+		return status, err.Error()
+	}
+	return 0, ""
 }
 
 func (h *AgentHandler) agentFromBotMap(viewerUID int64, bot map[string]interface{}, relation string) (AgentSummary, bool) {

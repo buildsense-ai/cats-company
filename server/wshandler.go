@@ -562,6 +562,9 @@ func (h *Hub) validateMessagePublish(uid int64, accountType types.AccountType, t
 	if peerUID == 0 {
 		return http.StatusBadRequest, "invalid p2p topic"
 	}
+	if code, text := validateAgentP2PMessageAccess(h.db, uid, accountType, peerUID); code != 0 {
+		return code, text
+	}
 	if !h.checkBotToBot(uid, peerUID) {
 		return http.StatusTooManyRequests, "bot-to-bot conversation limit reached"
 	}
@@ -723,6 +726,12 @@ func (h *Hub) handleStreamPub(client *Client, msg *MsgClientPub, topic string) {
 	if peerUID == 0 {
 		h.SendToClient(client, &ServerMessage{
 			Ctrl: &MsgServerCtrl{ID: msg.ID, Code: 400, Text: "invalid p2p topic"},
+		})
+		return
+	}
+	if code, text := h.validateMessagePublish(uid, client.accountType, topic, false); code != 0 {
+		h.SendToClient(client, &ServerMessage{
+			Ctrl: &MsgServerCtrl{ID: msg.ID, Code: code, Text: text},
 		})
 		return
 	}
