@@ -107,6 +107,7 @@ func (a *Adapter) GetFriends(uid int64) ([]*types.User, error) {
 		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.AvatarURL, &acctType, &botDisclose); err != nil {
 			return nil, fmt.Errorf("scan friend: %w", err)
 		}
+		u.AccountType = types.AccountType(acctType)
 		// Only disclose bot status if bot_disclose is true
 		if botDisclose && acctType == "bot" {
 			u.BotDisclose = true

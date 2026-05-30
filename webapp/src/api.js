@@ -131,6 +131,10 @@ export const api = {
 
   getOnlineStatus: () => request('GET', '/api/users/online'),
 
+  // Virtual employee roster
+  getAgents: () => request('GET', '/api/agents'),
+  openAgent: (agentUid) => request('POST', '/api/agents/open', { agent_uid: agentUid }),
+
   // Groups
   createGroup: (name, memberIds) => request('POST', '/api/groups/create', { name, member_ids: memberIds }),
   getGroups: () => request('GET', '/api/groups'),

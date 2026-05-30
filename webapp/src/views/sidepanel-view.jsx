@@ -12,7 +12,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
   const [friends, setFriends] = useState([]);
   const [groups, setGroups] = useState([]);
   const [pending, setPending] = useState([]);
-  const [bots, setBots] = useState([]);
+  const [agents, setAgents] = useState([]);
   const [search, setSearch] = useState('');
   const [deletingTopicId, setDeletingTopicId] = useState('');
   const [showCreateGroup, setShowCreateGroup] = useState(false);
@@ -21,12 +21,12 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
 
   const loadAll = async () => {
     try {
-      const [resC, resF, resG, resP, resB] = await Promise.all([
+      const [resC, resF, resG, resP, resA] = await Promise.all([
         api.getConversations().catch((error) => ({ error })),
         api.getFriends().catch(()=>({})),
         api.getGroups().catch(()=>({})),
         api.getPendingRequests().catch(()=>({})),
-        api.getMyBots().catch(()=>({}))
+        api.getAgents().catch(()=>({}))
       ]);
       const groups = resG.groups || [];
       const conversationItems = resC.conversations || [];
@@ -54,7 +54,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
         console.error('Failed to load conversations, falling back to groups:', resC.error);
       }
       setPending(resP.requests || []);
-      setBots(resB.bots || []);
+      setAgents(resA.agents || []);
     } catch (e) {
       console.error('Failed to load sidebar data:', e);
     }
@@ -159,18 +159,48 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
     }
   };
 
+  const handleSelectAgent = async (agent) => {
+    const agentId = agent.uid || agent.id;
+    if (!agentId) return;
+
+    const fallbackTopicId = agent.topic_id || p2pTopicId(user.uid, agentId);
+    const fallbackTopic = {
+      topicId: fallbackTopicId,
+      name: agent.display_name || agent.username,
+      isGroup: false,
+      avatar_url: agent.avatar_url,
+      friendId: agentId,
+      isBot: true,
+    };
+
+    try {
+      const res = await api.openAgent(agentId);
+      const opened = res.agent || {};
+      onSelectTopic({
+        ...fallbackTopic,
+        topicId: opened.topic_id || res.topic || fallbackTopicId,
+        name: opened.display_name || fallbackTopic.name,
+        avatar_url: opened.avatar_url || fallbackTopic.avatar_url,
+      });
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (err) {
+      console.error('Failed to open agent:', err);
+      window.alert(err.message || 'Unable to open this agent.');
+    }
+  };
+
   const lowerSearch = search.toLowerCase();
   const filteredChats = chats.filter(c => c.name.toLowerCase().includes(lowerSearch));
   const filteredFriends = friends.filter(f => (f.display_name || f.username).toLowerCase().includes(lowerSearch));
   const filteredGroups = groups.filter(g => g.name.toLowerCase().includes(lowerSearch));
-  const filteredBots = bots.filter(b => (b.display_name || b.username).toLowerCase().includes(lowerSearch));
+  const filteredAgents = agents.filter(a => (a.display_name || a.username).toLowerCase().includes(lowerSearch));
 
   return (
     <>
       <div style={{padding: '12px 16px', borderBottom: '1px solid var(--v3-border)'}}>
         <input
           style={{width: '100%', background: 'rgba(255,255,255,0.05)', border: 'none', color: '#fff', padding: '8px 12px', borderRadius: '6px', outline: 'none', fontSize: '14px'}}
-          placeholder="Search chats, groups, friends..."
+          placeholder="Search chats, virtual employees, groups, friends..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -244,33 +274,28 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           })
         )}
 
-        {(!search || filteredBots.length > 0) && (
+        {(!search || filteredAgents.length > 0) && (
           <>
             <div className="v3-chat-section" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16}}>
-              <div style={{display:'flex', alignItems:'center'}}><Zap size={14} fill="currentColor" style={{marginRight:6, color:'var(--v3-primary)'}} /> AI Apps</div>
+              <div style={{display:'flex', alignItems:'center'}}><Zap size={14} fill="currentColor" style={{marginRight:6, color:'var(--v3-primary)'}} /> Virtual Employees</div>
               {!search && <span style={{cursor:'pointer', fontSize:14}} onClick={()=>setShowAgentStore(true)} title="Agent Store">＋</span>}
             </div>
             
-            {filteredBots.length === 0 ? (
-               <div style={{ padding: '20px', textAlign: 'center', color: '#888', fontSize: '13px' }}>Workspace has no agents.</div>
+            {filteredAgents.length === 0 ? (
+               <div style={{ padding: '20px', textAlign: 'center', color: '#888', fontSize: '13px' }}>No virtual employees available.</div>
             ) : (
-              filteredBots.map((bot) => {
-                const topicId = p2pTopicId(user.uid, bot.id);
-                const isOnline = Boolean((onlineUsers && onlineUsers[bot.id]) || bot.is_online);
+              filteredAgents.map((agent) => {
+                const agentId = agent.uid || agent.id;
+                const topicId = agent.topic_id || p2pTopicId(user.uid, agentId);
+                const isOnline = Boolean((onlineUsers && onlineUsers[agentId]) || agent.is_online);
                 return (
                   <div
-                    key={bot.id}
+                    key={agentId}
                     className={`v3-chat-item ${activeTopic === topicId ? 'active' : ''}`}
-                    onClick={() => onSelectTopic({
-                      topicId,
-                      name: bot.display_name || bot.username,
-                      isGroup: false,
-                      avatar_url: bot.avatar_url,
-                      friendId: bot.id,
-                    })}
+                    onClick={() => handleSelectAgent(agent)}
                   >
                     <span className="prefix" style={{display:'flex', alignItems:'center'}}><Bot size={18} /></span>
-                    <span className="v3-chat-item-label">{bot.display_name || bot.username}</span>
+                    <span className="v3-chat-item-label">{agent.display_name || agent.username}</span>
                     <span
                       className={`v3-status-dot ${isOnline ? 'online' : 'offline'}`}
                       style={{marginLeft: 'auto'}}
@@ -320,7 +345,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           </>
         )}
 
-        {search && filteredChats.length === 0 && filteredGroups.length === 0 && filteredFriends.length === 0 && filteredBots.length === 0 && (
+        {search && filteredChats.length === 0 && filteredGroups.length === 0 && filteredFriends.length === 0 && filteredAgents.length === 0 && (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)', fontSize: '13px' }}>No matches found.</div>
         )}
 
