@@ -133,6 +133,42 @@ func TestHandleOpenAgentCreatesP2PTopicForAccessibleAgent(t *testing.T) {
 	}
 }
 
+func TestHandleOpenAgentKeepsDifferentActorsOnDistinctTopics(t *testing.T) {
+	store := &agentTestStore{
+		users: map[int64]*types.User{
+			43: {ID: 43, Username: "school-agent", DisplayName: "School Agent", AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{
+			43: 99,
+		},
+		friendPairs: map[string]bool{
+			agentPairKey(7, 43): true,
+			agentPairKey(8, 43): true,
+		},
+	}
+	handler := NewAgentHandler(store, nil)
+
+	for _, actorUID := range []int64{7, 8} {
+		req := httptest.NewRequest(http.MethodPost, "/api/agents/open", bytes.NewBufferString(`{"agent_uid":43}`))
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, actorUID))
+		rec := httptest.NewRecorder()
+		handler.HandleOpenAgent(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("actor %d status=%d body=%s", actorUID, rec.Code, rec.Body.String())
+		}
+	}
+
+	want := []string{"p2p_7_43", "p2p_8_43"}
+	if len(store.createdTopics) != len(want) {
+		t.Fatalf("created topics = %#v, want %#v", store.createdTopics, want)
+	}
+	for i := range want {
+		if store.createdTopics[i] != want[i] {
+			t.Fatalf("created topics = %#v, want %#v", store.createdTopics, want)
+		}
+	}
+}
+
 func TestHandleOpenAgentRejectsUnavailableAgent(t *testing.T) {
 	store := &agentTestStore{
 		users: map[int64]*types.User{

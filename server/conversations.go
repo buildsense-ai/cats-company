@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"sort"
 
@@ -36,9 +37,27 @@ func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	topicIDs := make([]string, 0, len(friends)+len(groups))
+	ownedBots, err := h.db.ListBotsByOwner(uid)
+	if err != nil {
+		log.Printf("conversations: failed to list owner bots for uid=%d: %v", uid, err)
+		ownedBots = nil
+	}
+	ownerBotUsers := ownerBotUsersFromMaps(ownedBots)
+
+	topicIDs := make([]string, 0, len(friends)+len(groups)+len(ownerBotUsers))
+	seenP2P := make(map[int64]struct{})
+	ownerConversationBots := make([]*types.User, 0, len(ownerBotUsers))
 	for _, friend := range friends {
+		seenP2P[friend.ID] = struct{}{}
 		topicIDs = append(topicIDs, p2pTopicID(uid, friend.ID))
+	}
+	for _, bot := range ownerBotUsers {
+		if _, ok := seenP2P[bot.ID]; ok {
+			continue
+		}
+		seenP2P[bot.ID] = struct{}{}
+		ownerConversationBots = append(ownerConversationBots, bot)
+		topicIDs = append(topicIDs, p2pTopicID(uid, bot.ID))
 	}
 	for _, group := range groups {
 		topicIDs = append(topicIDs, "grp_"+formatInt64(group.ID))
@@ -54,6 +73,11 @@ func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request)
 	for _, friend := range friends {
 		topicID := p2pTopicID(uid, friend.ID)
 		summary := buildFriendConversationSummary(topicID, friend, latestByTopic[topicID], h.hub)
+		conversations = append(conversations, summary)
+	}
+	for _, bot := range ownerConversationBots {
+		topicID := p2pTopicID(uid, bot.ID)
+		summary := buildFriendConversationSummary(topicID, bot, latestByTopic[topicID], h.hub)
 		conversations = append(conversations, summary)
 	}
 	for _, group := range groups {
@@ -74,11 +98,32 @@ func buildFriendConversationSummary(topicID string, friend *types.User, latest *
 		IsGroup:   false,
 		FriendID:  friend.ID,
 		AvatarURL: friend.AvatarURL,
-		IsBot:     friend.BotDisclose,
+		IsBot:     friend.BotDisclose || friend.AccountType == types.AccountBot,
 		IsOnline:  hub != nil && hub.IsOnline(friend.ID),
 	}
 	applyLatestMessage(summary, latest)
 	return summary
+}
+
+func ownerBotUsersFromMaps(bots []map[string]interface{}) []*types.User {
+	users := make([]*types.User, 0, len(bots))
+	for _, bot := range bots {
+		uid := mapID(bot["id"])
+		if uid <= 0 {
+			continue
+		}
+		username := mapString(bot["username"])
+		displayName := mapString(bot["display_name"])
+		users = append(users, &types.User{
+			ID:          uid,
+			Username:    username,
+			DisplayName: displayName,
+			AvatarURL:   mapString(bot["avatar_url"]),
+			AccountType: types.AccountBot,
+			BotDisclose: true,
+		})
+	}
+	return users
 }
 
 func buildGroupConversationSummary(topicID string, group *types.Group, latest *types.Message) *types.ConversationSummary {

@@ -1,10 +1,15 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"sort"
 	"testing"
 	"time"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -12,7 +17,7 @@ import (
 // 当群组没有消息时，使用 created_at 作为排序时间
 func TestBuildGroupConversationSummary_FallbackToCreatedAt(t *testing.T) {
 	now := time.Now()
-	createdAt := now.Add(-1 * time.Hour) // 群组1小时前创建
+	createdAt := now.Add(-1 * time.Hour)
 
 	group := &types.Group{
 		ID:        1,
@@ -21,19 +26,14 @@ func TestBuildGroupConversationSummary_FallbackToCreatedAt(t *testing.T) {
 		CreatedAt: createdAt,
 	}
 
-	// 没有消息
 	summary := buildGroupConversationSummary("grp_1", group, nil)
 
 	if summary.LastTime == nil {
 		t.Fatal("LastTime should not be nil when group has no messages")
 	}
-
-	// 验证 LastTime 等于 group.CreatedAt
 	if !summary.LastTime.Equal(createdAt) {
 		t.Fatalf("expected LastTime=%v, got %v", createdAt, summary.LastTime)
 	}
-
-	// 验证其他字段
 	if summary.ID != "grp_1" {
 		t.Fatalf("expected ID=grp_1, got %s", summary.ID)
 	}
@@ -52,7 +52,7 @@ func TestBuildGroupConversationSummary_FallbackToCreatedAt(t *testing.T) {
 // 当群组有消息时，使用最新消息时间而不是 created_at
 func TestBuildGroupConversationSummary_UsesLatestMessageWhenAvailable(t *testing.T) {
 	groupCreatedAt := time.Now().Add(-2 * time.Hour)
-	messageTime := time.Now().Add(-10 * time.Minute) // 消息更新
+	messageTime := time.Now().Add(-10 * time.Minute)
 
 	group := &types.Group{
 		ID:        2,
@@ -73,13 +73,9 @@ func TestBuildGroupConversationSummary_UsesLatestMessageWhenAvailable(t *testing
 	if summary.LastTime == nil {
 		t.Fatal("LastTime should not be nil when group has messages")
 	}
-
-	// 验证 LastTime 等于消息时间（不是创建时间）
 	if !summary.LastTime.Equal(messageTime) {
 		t.Fatalf("expected LastTime=%v (message time), got %v", messageTime, summary.LastTime)
 	}
-
-	// 消息预览
 	if summary.Preview != "Hello" {
 		t.Fatalf("expected Preview=Hello, got %s", summary.Preview)
 	}
@@ -129,7 +125,6 @@ func TestBuildGroupConversationSummary_UsesCreatedAtWhenLatestIsOlder(t *testing
 func TestConversationLess_NoMessagesGroupAtTop(t *testing.T) {
 	now := time.Now()
 
-	// 创建两个群：一个早，一个晚
 	olderGroup := &types.Group{
 		ID:        10,
 		Name:      "Older Group",
@@ -140,27 +135,22 @@ func TestConversationLess_NoMessagesGroupAtTop(t *testing.T) {
 		ID:        11,
 		Name:      "Newer Group",
 		OwnerID:   100,
-		CreatedAt: now.Add(-1 * time.Hour), // 更晚创建
+		CreatedAt: now.Add(-1 * time.Hour),
 	}
 
-	// 两个群都没有消息
 	olderSummary := buildGroupConversationSummary("grp_10", olderGroup, nil)
 	newerSummary := buildGroupConversationSummary("grp_11", newerGroup, nil)
 
 	if olderSummary.LastTime == nil || newerSummary.LastTime == nil {
 		t.Fatal("both groups should have LastTime")
 	}
-
-	// 验证：新群的时间 > 老群的时间
 	if !newerSummary.LastTime.After(*olderSummary.LastTime) {
 		t.Fatal("newer group should have later LastTime")
 	}
 
-	// 使用实际排序函数
 	conversations := []*types.ConversationSummary{olderSummary, newerSummary}
 	sort.SliceStable(conversations, conversationLess(conversations))
 
-	// 验证排序结果：新群在前
 	if conversations[0].GroupID != 11 {
 		t.Fatalf("expected newer group first, got groupID=%d", conversations[0].GroupID)
 	}
@@ -228,7 +218,6 @@ func TestConversationLess_SameTimePrefersGroup(t *testing.T) {
 func TestConversationLess_MixedWithP2P(t *testing.T) {
 	now := time.Now()
 
-	// 无消息群组
 	group := &types.Group{
 		ID:        20,
 		Name:      "Empty Group",
@@ -237,7 +226,6 @@ func TestConversationLess_MixedWithP2P(t *testing.T) {
 	}
 	groupSummary := buildGroupConversationSummary("grp_20", group, nil)
 
-	// 无消息 P2P 好友（模拟）
 	friend := &types.User{
 		ID:          200,
 		DisplayName: "Friend",
@@ -245,22 +233,129 @@ func TestConversationLess_MixedWithP2P(t *testing.T) {
 	}
 	friendSummary := buildFriendConversationSummary("p2p_100_200", friend, nil, nil)
 
-	// 验证群组的 LastTime 不为 nil（使用 created_at）
 	if groupSummary.LastTime == nil {
 		t.Fatal("group LastTime should use created_at")
 	}
-
-	// 验证 P2P 的 LastTime 为 nil（无消息时没有 fallback）
 	if friendSummary.LastTime != nil {
 		t.Fatal("P2P LastTime should be nil when no messages")
 	}
 
-	// 使用实际排序函数
 	conversations := []*types.ConversationSummary{friendSummary, groupSummary}
 	sort.SliceStable(conversations, conversationLess(conversations))
 
-	// 验证群组排在 P2P 前面（因为 P2P 的 LastTime 为 nil，会沉到底部）
 	if conversations[0].GroupID != 20 {
 		t.Fatalf("expected empty group first, got GroupID=%d", conversations[0].GroupID)
+	}
+}
+
+type conversationTestStore struct {
+	store.Store
+	friends       []*types.User
+	groups        []*types.Group
+	ownerBots     []map[string]interface{}
+	latestByTopic map[string]*types.Message
+	requestedIDs  []string
+}
+
+func (s *conversationTestStore) GetFriends(uid int64) ([]*types.User, error) {
+	return s.friends, nil
+}
+
+func (s *conversationTestStore) GetUserGroups(userID int64) ([]*types.Group, error) {
+	return s.groups, nil
+}
+
+func (s *conversationTestStore) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, error) {
+	return s.ownerBots, nil
+}
+
+func (s *conversationTestStore) GetLatestMessagesForTopics(topicIDs []string) (map[string]*types.Message, error) {
+	s.requestedIDs = append([]string(nil), topicIDs...)
+	if s.latestByTopic == nil {
+		return map[string]*types.Message{}, nil
+	}
+	return s.latestByTopic, nil
+}
+
+func TestConversationsIncludeOwnedAgentsWithoutFriendRelationship(t *testing.T) {
+	now := time.Date(2026, 5, 30, 8, 0, 0, 0, time.UTC)
+	store := &conversationTestStore{
+		ownerBots: []map[string]interface{}{
+			{
+				"id":           int64(42),
+				"username":     "dev-agent",
+				"display_name": "Dev Agent",
+				"avatar_url":   "/uploads/dev.png",
+			},
+		},
+		latestByTopic: map[string]*types.Message{
+			"p2p_7_42": {ID: 9, TopicID: "p2p_7_42", FromUID: 7, Content: "hello dev", MsgType: "text", CreatedAt: now},
+		},
+	}
+	handler := NewConversationHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Conversations []*types.ConversationSummary `json:"conversations"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Conversations) != 1 {
+		t.Fatalf("conversation count=%d, want 1: %+v", len(body.Conversations), body.Conversations)
+	}
+	got := body.Conversations[0]
+	if got.ID != "p2p_7_42" || got.Name != "Dev Agent" || got.FriendID != 42 || !got.IsBot {
+		t.Fatalf("unexpected owner agent conversation: %+v", got)
+	}
+	if got.Preview != "hello dev" || got.LatestSeq != 9 {
+		t.Fatalf("unexpected latest message fields: %+v", got)
+	}
+	if len(store.requestedIDs) != 1 || store.requestedIDs[0] != "p2p_7_42" {
+		t.Fatalf("requested topic ids = %#v, want p2p_7_42", store.requestedIDs)
+	}
+}
+
+func TestConversationsDeduplicateOwnedAgentThatIsAlreadyFriend(t *testing.T) {
+	store := &conversationTestStore{
+		friends: []*types.User{
+			{ID: 42, Username: "dev-agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
+		},
+		ownerBots: []map[string]interface{}{
+			{
+				"id":           int64(42),
+				"username":     "dev-agent",
+				"display_name": "Dev Agent",
+			},
+		},
+	}
+	handler := NewConversationHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Conversations []*types.ConversationSummary `json:"conversations"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Conversations) != 1 {
+		t.Fatalf("conversation count=%d, want 1: %+v", len(body.Conversations), body.Conversations)
+	}
+	if !body.Conversations[0].IsBot {
+		t.Fatalf("friend bot conversation should be marked is_bot: %+v", body.Conversations[0])
 	}
 }
