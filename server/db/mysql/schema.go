@@ -14,6 +14,7 @@ func (a *Adapter) CreateSchema() error {
 		createTopicsTable,
 		createMessagesTable,
 		createBotConfigTable,
+		createAgentChannelBindingsTable,
 		createRateLimitTable,
 		createGroupsTable,
 		createGroupMembersTable,
@@ -145,6 +146,26 @@ CREATE TABLE IF NOT EXISTS bot_config (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createAgentChannelBindingsTable = `
+CREATE TABLE IF NOT EXISTS agent_channel_bindings (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    agent_uid BIGINT NOT NULL,
+    channel VARCHAR(32) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'configured',
+    secret_token TEXT DEFAULT NULL,
+    token_hash VARCHAR(64) DEFAULT '',
+    token_last4 VARCHAR(16) DEFAULT '',
+    bound_by_uid BIGINT DEFAULT NULL,
+    metadata JSON DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_agent_channel (agent_uid, channel),
+    INDEX idx_agent_channel_bound_by (bound_by_uid),
+    FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (bound_by_uid) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 

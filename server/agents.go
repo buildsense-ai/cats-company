@@ -11,8 +11,9 @@ import (
 
 // AgentHandler exposes the user-facing virtual employee roster.
 type AgentHandler struct {
-	db  store.Store
-	hub *Hub
+	db             store.Store
+	hub            *Hub
+	weixinProvider WeixinChannelProvider
 }
 
 // NewAgentHandler creates an AgentHandler.

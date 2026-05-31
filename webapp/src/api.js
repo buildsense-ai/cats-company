@@ -134,6 +134,11 @@ export const api = {
   // Virtual employee roster
   getAgents: () => request('GET', '/api/agents'),
   openAgent: (agentUid) => request('POST', '/api/agents/open', { agent_uid: agentUid }),
+  getAgentChannels: (agentUid) => request('GET', `/api/agents/channels?agent_uid=${encodeURIComponent(agentUid)}`),
+  deleteAgentChannel: (agentUid, channel) => request('DELETE', `/api/agents/channels?agent_uid=${encodeURIComponent(agentUid)}&channel=${encodeURIComponent(channel)}`),
+  getWeixinChannelQRCode: (agentUid) => request('POST', '/api/agents/channels/weixin/qrcode', { agent_uid: agentUid }),
+  getWeixinChannelQRCodeStatus: (agentUid, qrcode) =>
+    request('GET', `/api/agents/channels/weixin/qrcode-status?agent_uid=${encodeURIComponent(agentUid)}&qrcode=${encodeURIComponent(qrcode)}`),
 
   // Groups
   createGroup: (name, memberIds) => request('POST', '/api/groups/create', { name, member_ids: memberIds }),

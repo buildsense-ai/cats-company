@@ -5,7 +5,8 @@ import CreateGroup from '../widgets/create-group';
 import AddFriend from '../widgets/add-friend';
 import FriendRequest from '../widgets/friend-request';
 import AgentStoreModal from '../widgets/agent-store-modal';
-import { Users, UserPlus, Zap, Bot, Trash2 } from 'lucide-react';
+import WeixinChannelModal from '../widgets/weixin-channel-modal';
+import { Users, UserPlus, Zap, Bot, Trash2, QrCode } from 'lucide-react';
 
 export default function ChatListView({ activeTopic, onSelectTopic, user, onlineUsers }) {
   const [chats, setChats] = useState([]);
@@ -18,6 +19,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [showAddFriend, setShowAddFriend] = useState(false);
   const [showAgentStore, setShowAgentStore] = useState(false);
+  const [weixinAgent, setWeixinAgent] = useState(null);
 
   const loadAll = async () => {
     try {
@@ -296,9 +298,35 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
                   >
                     <span className="prefix" style={{display:'flex', alignItems:'center'}}><Bot size={18} /></span>
                     <span className="v3-chat-item-label">{agent.display_name || agent.username}</span>
+                    {agent.relation === 'owner' && (
+                      <button
+                        type="button"
+                        title="绑定微信通道"
+                        aria-label="绑定微信通道"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setWeixinAgent(agent);
+                        }}
+                        style={{
+                          marginLeft: 'auto',
+                          width: 28,
+                          height: 28,
+                          borderRadius: 6,
+                          border: '1px solid var(--v3-border)',
+                          background: 'rgba(255,255,255,0.04)',
+                          color: 'var(--v3-text-muted)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <QrCode size={15} />
+                      </button>
+                    )}
                     <span
                       className={`v3-status-dot ${isOnline ? 'online' : 'offline'}`}
-                      style={{marginLeft: 'auto'}}
+                      style={{marginLeft: agent.relation === 'owner' ? 8 : 'auto'}}
                       title={isOnline ? 'Online' : 'Offline'}
                       aria-label={isOnline ? 'Online' : 'Offline'}
                     />
@@ -354,6 +382,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
       {showCreateGroup && <CreateGroup onClose={() => setShowCreateGroup(false)} onCreated={handleGroupCreated} />}
       {showAddFriend && <AddFriend currentUser={user} onClose={() => setShowAddFriend(false)} onSent={() => loadAll()} />}
       {showAgentStore && <AgentStoreModal onClose={() => setShowAgentStore(false)} user={user} onBotsChanged={() => loadAll()} />}
+      {weixinAgent && <WeixinChannelModal agent={weixinAgent} onClose={() => setWeixinAgent(null)} onBound={() => loadAll()} />}
     </>
   );
 }

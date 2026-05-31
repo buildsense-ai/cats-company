@@ -15,12 +15,13 @@ import (
 
 type agentTestStore struct {
 	store.Store
-	ownerBots     []map[string]interface{}
-	friends       []*types.User
-	users         map[int64]*types.User
-	owners        map[int64]int64
-	friendPairs   map[string]bool
-	createdTopics []string
+	ownerBots       []map[string]interface{}
+	friends         []*types.User
+	users           map[int64]*types.User
+	owners          map[int64]int64
+	friendPairs     map[string]bool
+	createdTopics   []string
+	channelBindings map[string]*types.AgentChannelBinding
 }
 
 func (s *agentTestStore) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, error) {
@@ -68,6 +69,37 @@ func (s *agentTestStore) IsGroupMember(groupID, userID int64) (bool, error) {
 
 func (s *agentTestStore) IsMemberMuted(groupID, userID int64) (bool, error) {
 	return false, nil
+}
+
+func (s *agentTestStore) GetAgentChannelBinding(agentUID int64, channel string) (*types.AgentChannelBinding, error) {
+	return s.channelBindings[agentChannelTestKey(agentUID, channel)], nil
+}
+
+func (s *agentTestStore) UpsertAgentChannelBinding(binding *types.AgentChannelBinding) error {
+	if s.channelBindings == nil {
+		s.channelBindings = make(map[string]*types.AgentChannelBinding)
+	}
+	copied := *binding
+	s.channelBindings[agentChannelTestKey(binding.AgentUID, binding.Channel)] = &copied
+	return nil
+}
+
+func (s *agentTestStore) DeleteAgentChannelBinding(agentUID int64, channel string) error {
+	delete(s.channelBindings, agentChannelTestKey(agentUID, channel))
+	return nil
+}
+
+type fakeWeixinChannelProvider struct {
+	qr     map[string]interface{}
+	status map[string]interface{}
+}
+
+func (p fakeWeixinChannelProvider) RequestQRCode(context.Context) (map[string]interface{}, error) {
+	return p.qr, nil
+}
+
+func (p fakeWeixinChannelProvider) RequestQRCodeStatus(context.Context, string) (map[string]interface{}, error) {
+	return p.status, nil
 }
 
 func TestHandleListAgentsIncludesOwnedAndFriendBots(t *testing.T) {
@@ -202,6 +234,109 @@ func TestHandleOpenAgentRejectsUnavailableAgent(t *testing.T) {
 	}
 }
 
+func TestHandleAgentChannelsReturnsOwnerWeixinStatus(t *testing.T) {
+	store := &agentTestStore{
+		users: map[int64]*types.User{
+			43: {ID: 43, Username: "school-agent", DisplayName: "School Agent", AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{43: 7},
+		channelBindings: map[string]*types.AgentChannelBinding{
+			agentChannelTestKey(43, agentChannelWeixin): {
+				AgentUID:   43,
+				Channel:    agentChannelWeixin,
+				Status:     "configured",
+				TokenHash:  "hashed-token",
+				TokenLast4: "1234",
+				BoundByUID: 7,
+			},
+		},
+	}
+	handler := NewAgentHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/channels?agent_uid=43", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleAgentChannels(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	channels := body["channels"].(map[string]interface{})
+	weixin := channels[agentChannelWeixin].(map[string]interface{})
+	if weixin["configured"] != true || weixin["token_last4"] != "1234" {
+		t.Fatalf("weixin channel = %#v, want configured token_last4", weixin)
+	}
+	if _, ok := weixin["token_hash"]; ok {
+		t.Fatalf("weixin channel leaked token hash: %#v", weixin)
+	}
+}
+
+func TestHandleWeixinChannelQRCodeRequiresOwner(t *testing.T) {
+	store := &agentTestStore{
+		users: map[int64]*types.User{
+			43: {ID: 43, Username: "school-agent", DisplayName: "School Agent", AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{43: 99},
+		friendPairs: map[string]bool{
+			agentPairKey(7, 43): true,
+		},
+	}
+	handler := NewAgentHandler(store, nil)
+	handler.SetWeixinChannelProvider(fakeWeixinChannelProvider{qr: map[string]interface{}{"qrcode": "qr-1"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/agents/channels/weixin/qrcode", bytes.NewBufferString(`{"agent_uid":43}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleWeixinChannelQRCode(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s, want forbidden", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleWeixinChannelQRCodeStatusSavesBindingWithoutLeakingToken(t *testing.T) {
+	store := &agentTestStore{
+		users: map[int64]*types.User{
+			43: {ID: 43, Username: "school-agent", DisplayName: "School Agent", AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{43: 7},
+	}
+	handler := NewAgentHandler(store, nil)
+	handler.SetWeixinChannelProvider(fakeWeixinChannelProvider{
+		status: map[string]interface{}{"status": "confirmed", "bot_token": "wx-token-1234"},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/channels/weixin/qrcode-status?agent_uid=43&qrcode=qr-1", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleWeixinChannelQRCodeStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, ok := body["bot_token"]; ok {
+		t.Fatalf("response leaked bot_token: %#v", body)
+	}
+	if body["token_saved"] != true {
+		t.Fatalf("response = %#v, want token_saved", body)
+	}
+	binding := store.channelBindings[agentChannelTestKey(43, agentChannelWeixin)]
+	if binding == nil {
+		t.Fatalf("binding was not saved")
+	}
+	if binding.SecretToken != "wx-token-1234" || binding.TokenHash == "" || binding.TokenLast4 != "1234" || binding.BoundByUID != 7 {
+		t.Fatalf("binding = %#v, want token and owner metadata", binding)
+	}
+}
+
 func TestValidateMessagePublishRejectsUnavailableAgentTopic(t *testing.T) {
 	store := &agentTestStore{
 		users: map[int64]*types.User{
@@ -291,4 +426,8 @@ func agentPairKey(a, b int64) string {
 		a, b = b, a
 	}
 	return p2pTopicID(a, b)
+}
+
+func agentChannelTestKey(agentUID int64, channel string) string {
+	return p2pTopicID(agentUID, agentUID) + ":" + channel
 }

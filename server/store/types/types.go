@@ -212,6 +212,21 @@ type BotConfig struct {
 	Config      map[string]string `json:"config,omitempty"`
 }
 
+// AgentChannelBinding records that an external channel belongs to one agent.
+type AgentChannelBinding struct {
+	ID          int64                  `json:"id,omitempty"`
+	AgentUID    int64                  `json:"agent_uid"`
+	Channel     string                 `json:"channel"`
+	Status      string                 `json:"status"`
+	SecretToken string                 `json:"-"`
+	TokenHash   string                 `json:"-"`
+	TokenLast4  string                 `json:"token_last4,omitempty"`
+	BoundByUID  int64                  `json:"bound_by_uid,omitempty"`
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+	CreatedAt   time.Time              `json:"created_at"`
+	UpdatedAt   time.Time              `json:"updated_at"`
+}
+
 // Group represents a chat group.
 type Group struct {
 	ID           int64     `json:"id"`

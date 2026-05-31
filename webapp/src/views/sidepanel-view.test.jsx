@@ -18,6 +18,10 @@ jest.mock('../widgets/agent-store-modal', () => function MockAgentStoreModal() {
   return null;
 });
 
+jest.mock('../widgets/weixin-channel-modal', () => function MockWeixinChannelModal({ agent }) {
+  return <div data-testid="weixin-channel-modal">微信通道 {agent.display_name || agent.username}</div>;
+});
+
 jest.mock('../api', () => ({
   api: {
     getConversations: jest.fn(),
@@ -26,6 +30,9 @@ jest.mock('../api', () => ({
     getPendingRequests: jest.fn(),
     getAgents: jest.fn(),
     openAgent: jest.fn(),
+    getAgentChannels: jest.fn(),
+    getWeixinChannelQRCode: jest.fn(),
+    getWeixinChannelQRCodeStatus: jest.fn(),
     acceptFriend: jest.fn(),
     rejectFriend: jest.fn(),
     disbandGroup: jest.fn(),
@@ -64,6 +71,7 @@ describe('ChatListView virtual employees', () => {
           avatar_url: '/uploads/dev.png',
           topic_id: 'p2p_7_42',
           is_online: true,
+          relation: 'owner',
         },
       ],
     });
@@ -126,5 +134,20 @@ describe('ChatListView virtual employees', () => {
       friendId: 42,
       isBot: true,
     });
+  });
+
+  it('opens Weixin channel binding for owned agents without selecting the chat', async () => {
+    await mount();
+
+    const button = container.querySelector('button[aria-label="绑定微信通道"]');
+    expect(button).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(button);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('微信通道 Dev Agent');
+    expect(api.openAgent).not.toHaveBeenCalled();
   });
 });

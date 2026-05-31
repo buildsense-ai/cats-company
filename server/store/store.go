@@ -88,6 +88,13 @@ type BotStore interface {
 	SetBotVisibility(botUID int64, visibility string) error
 }
 
+// AgentChannelStore contains external channel bindings for virtual employees.
+type AgentChannelStore interface {
+	GetAgentChannelBinding(agentUID int64, channel string) (*types.AgentChannelBinding, error)
+	UpsertAgentChannelBinding(binding *types.AgentChannelBinding) error
+	DeleteAgentChannelBinding(agentUID int64, channel string) error
+}
+
 // FeedbackStore contains user feedback persistence operations.
 type FeedbackStore interface {
 	CreateFeedbackReport(report *types.FeedbackReport) (int64, error)
@@ -109,6 +116,7 @@ type Store interface {
 	GroupStore
 	MessageStore
 	BotStore
+	AgentChannelStore
 	FeedbackStore
 	AuthServiceStore
 	CreateSchema() error

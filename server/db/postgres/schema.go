@@ -11,6 +11,7 @@ func (a *Adapter) CreateSchema() error {
 		createTopicsTable,
 		createMessagesTable,
 		createBotConfigTable,
+		createAgentChannelBindingsTable,
 		createRateLimitTable,
 		createGroupsTable,
 		createGroupMembersTable,
@@ -132,6 +133,23 @@ CREATE TABLE IF NOT EXISTS bot_config (
 );
 `
 
+const createAgentChannelBindingsTable = `
+CREATE TABLE IF NOT EXISTS agent_channel_bindings (
+    id BIGSERIAL PRIMARY KEY,
+    agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    channel VARCHAR(32) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'configured',
+    secret_token TEXT DEFAULT NULL,
+    token_hash VARCHAR(64) DEFAULT '',
+    token_last4 VARCHAR(16) DEFAULT '',
+    bound_by_uid BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
+    metadata JSONB DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_agent_channel UNIQUE (agent_uid, channel)
+);
+`
+
 const createRateLimitTable = `
 CREATE TABLE IF NOT EXISTS rate_limits (
     account_type VARCHAR(16) PRIMARY KEY CHECK (account_type IN ('human','bot','service')),
@@ -248,6 +266,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_messages_client_msg_id ON messages (topic_i
 const createBotConfigIndexes = `
 CREATE UNIQUE INDEX IF NOT EXISTS uk_bot_config_api_key ON bot_config (api_key) WHERE api_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_bot_config_owner ON bot_config (owner_id);
+CREATE INDEX IF NOT EXISTS idx_agent_channel_bound_by ON agent_channel_bindings (bound_by_uid);
 `
 const createGroupMembersIndexes = `
 CREATE INDEX IF NOT EXISTS idx_gm_user ON group_members (user_id);
