@@ -44,6 +44,16 @@ func (s *wsBotBodyStore) EnsureBotBodyBinding(botUID int64, bodyID string) (stri
 	return s.bodyID, s.bodyID == bodyID, nil
 }
 
+func (s *wsBotBodyStore) GetBotBodyID(botUID int64) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if botUID != s.botUID {
+		return "", errors.New("bot not found")
+	}
+	return s.bodyID, nil
+}
+
 func (s *wsBotBodyStore) GetUser(id int64) (*types.User, error) {
 	if id != s.botUID {
 		return nil, errors.New("not found")
@@ -65,6 +75,7 @@ func (s *wsBotBodyStore) GetBotOwner(botUID int64) (int64, error) {
 }
 
 func TestServeWSRequiresBotBodyIDForAPIKeyConnections(t *testing.T) {
+	t.Setenv("CATSCO_REQUIRE_BOT_BODY_ID", "1")
 	botUID := int64(42)
 	apiKey := GenerateAPIKey(botUID)
 	wsURL, _, cleanup := newBotBodyTestServer(apiKey, botUID)
@@ -83,6 +94,86 @@ func TestServeWSRequiresBotBodyIDForAPIKeyConnections(t *testing.T) {
 	}
 	if resp == nil || resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("missing body id status = %v, want 400", responseStatus(resp))
+	}
+}
+
+func TestServeWSAllowsLegacyBotBodyWithoutHeaderTemporarily(t *testing.T) {
+	botUID := int64(40)
+	apiKey := GenerateAPIKey(botUID)
+	wsURL, hub, cleanup := newBotBodyTestServer(apiKey, botUID)
+	defer cleanup()
+
+	first, resp, err := dialBotWithoutBody(wsURL, apiKey)
+	closeResponse(resp)
+	if err != nil {
+		t.Fatalf("legacy bot body dial failed: %v", err)
+	}
+	waitForClientCount(t, hub, botUID, 1)
+
+	reconnect, resp, err := dialBotWithoutBody(wsURL, apiKey)
+	closeResponse(resp)
+	if err != nil {
+		first.Close()
+		t.Fatalf("legacy bot reconnect failed: %v", err)
+	}
+	defer reconnect.Close()
+	waitForClientCount(t, hub, botUID, 1)
+	first.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := first.ReadMessage(); err == nil {
+		t.Fatal("expected stale legacy bot connection to be closed")
+	}
+}
+
+func TestServeWSRejectsLegacyBotAfterPersistentBodyBinding(t *testing.T) {
+	botUID := int64(46)
+	apiKey := GenerateAPIKey(botUID)
+	wsURL, _, cleanup := newBotBodyTestServer(apiKey, botUID)
+	defer cleanup()
+
+	current, resp, err := dialBotBody(wsURL, apiKey, "body-a")
+	closeResponse(resp)
+	if err != nil {
+		t.Fatalf("body-bound bot dial failed: %v", err)
+	}
+	current.Close()
+
+	legacy, resp, err := dialBotWithoutBody(wsURL, apiKey)
+	if legacy != nil {
+		legacy.Close()
+	}
+	closeResponse(resp)
+	if err == nil {
+		t.Fatal("expected legacy bot to be rejected after persistent body binding")
+	}
+	if resp == nil || resp.StatusCode != http.StatusConflict {
+		t.Fatalf("legacy after binding status = %v, want 409", responseStatus(resp))
+	}
+}
+
+func TestServeWSExplicitBodyReplacesActiveLegacyBody(t *testing.T) {
+	botUID := int64(47)
+	apiKey := GenerateAPIKey(botUID)
+	wsURL, hub, cleanup := newBotBodyTestServer(apiKey, botUID)
+	defer cleanup()
+
+	legacy, resp, err := dialBotWithoutBody(wsURL, apiKey)
+	closeResponse(resp)
+	if err != nil {
+		t.Fatalf("legacy bot body dial failed: %v", err)
+	}
+	waitForClientCount(t, hub, botUID, 1)
+
+	current, resp, err := dialBotBody(wsURL, apiKey, "body-a")
+	closeResponse(resp)
+	if err != nil {
+		legacy.Close()
+		t.Fatalf("explicit body should replace active legacy body: %v", err)
+	}
+	defer current.Close()
+	waitForClientCount(t, hub, botUID, 1)
+	legacy.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := legacy.ReadMessage(); err == nil {
+		t.Fatal("expected active legacy bot connection to be closed")
 	}
 }
 
@@ -230,6 +321,12 @@ func dialBotBody(wsURL string, apiKey string, bodyID string) (*websocket.Conn, *
 	headers := http.Header{}
 	headers.Set("X-API-Key", apiKey)
 	headers.Set(botBodyIDHeader, bodyID)
+	return websocket.DefaultDialer.Dial(wsURL, headers)
+}
+
+func dialBotWithoutBody(wsURL string, apiKey string) (*websocket.Conn, *http.Response, error) {
+	headers := http.Header{}
+	headers.Set("X-API-Key", apiKey)
 	return websocket.DefaultDialer.Dial(wsURL, headers)
 }
 

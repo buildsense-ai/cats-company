@@ -249,7 +249,11 @@ func (h *Hub) addRegisteredClient(client *Client) (firstConn bool, deviceCount i
 
 	if client.accountType == types.AccountBot && client.bodyID != "" {
 		for existing := range clients {
-			if existing.accountType == types.AccountBot && existing.bodyID == client.bodyID {
+			shouldReplace := existing.accountType == types.AccountBot && existing.bodyID == client.bodyID
+			if existing.accountType == types.AccountBot && isLegacyBotBodyID(existing.bodyID) && !isLegacyBotBodyID(client.bodyID) {
+				shouldReplace = true
+			}
+			if shouldReplace {
 				delete(clients, existing)
 				replaced = append(replaced, existing)
 			}
@@ -410,18 +414,33 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		var err error
 		bodyID, err = normalizeBotBodyID(r.Header.Get(botBodyIDHeader))
 		if err != nil {
-			http.Error(w, "missing or invalid bot body id", http.StatusBadRequest)
-			return
-		}
-		boundBodyID, allowed, err := hub.db.EnsureBotBodyBinding(uid, bodyID)
-		if err != nil {
-			log.Printf("bot body binding failed: uid=%d body=%s err=%v", uid, bodyID, err)
-			http.Error(w, "failed to verify bot body binding", http.StatusInternalServerError)
-			return
-		}
-		if !allowed {
-			http.Error(w, fmt.Sprintf("bot is bound to body %s", boundBodyID), http.StatusConflict)
-			return
+			if strings.TrimSpace(r.Header.Get(botBodyIDHeader)) != "" || botBodyIDStrictMode() {
+				http.Error(w, "missing or invalid bot body id", http.StatusBadRequest)
+				return
+			}
+			bodyID = legacyBotBodyID(uid)
+			boundBodyID, err := hub.db.GetBotBodyID(uid)
+			if err != nil {
+				log.Printf("legacy bot body lookup failed: uid=%d err=%v", uid, err)
+				http.Error(w, "failed to verify bot body binding", http.StatusInternalServerError)
+				return
+			}
+			if boundBodyID != "" {
+				http.Error(w, fmt.Sprintf("bot is bound to body %s; update agent to send %s", boundBodyID, botBodyIDHeader), http.StatusConflict)
+				return
+			}
+			log.Printf("legacy bot websocket without %s accepted temporarily: uid=%d addr=%s", botBodyIDHeader, uid, requestRemoteAddr(r))
+		} else {
+			boundBodyID, allowed, err := hub.db.EnsureBotBodyBinding(uid, bodyID)
+			if err != nil {
+				log.Printf("bot body binding failed: uid=%d body=%s err=%v", uid, bodyID, err)
+				http.Error(w, "failed to verify bot body binding", http.StatusInternalServerError)
+				return
+			}
+			if !allowed {
+				http.Error(w, fmt.Sprintf("bot is bound to body %s", boundBodyID), http.StatusConflict)
+				return
+			}
 		}
 		if existing, ok := hub.bodyLeases.conflicts(uid, bodyID); ok {
 			http.Error(w, fmt.Sprintf("bot already connected from body %s", existing.bodyID), http.StatusConflict)

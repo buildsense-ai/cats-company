@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -75,6 +76,23 @@ func normalizeBotBodyID(value string) (string, error) {
 	return bodyID, nil
 }
 
+func legacyBotBodyID(botUID int64) string {
+	return fmt.Sprintf("legacy:%d", botUID)
+}
+
+func isLegacyBotBodyID(bodyID string) bool {
+	return strings.HasPrefix(bodyID, "legacy:")
+}
+
+func botBodyIDStrictMode() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("CATSCO_REQUIRE_BOT_BODY_ID"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *botBodyLeaseManager) acquire(botUID int64, bodyID string, connectionID string) (botBodyLeaseResult, error) {
 	if m == nil {
 		return botBodyLeaseResult{}, nil
@@ -89,6 +107,17 @@ func (m *botBodyLeaseManager) acquire(botUID int64, bodyID string, connectionID 
 	now := m.now()
 	if existing, ok := m.leases[botUID]; ok {
 		if existing.bodyID != bodyID {
+			if isLegacyBotBodyID(existing.bodyID) && !isLegacyBotBodyID(bodyID) {
+				next := botBodyLease{
+					botUID:       botUID,
+					bodyID:       bodyID,
+					connectionID: connectionID,
+					acquiredAt:   now,
+					expiresAt:    now.Add(m.ttl),
+				}
+				m.leases[botUID] = next
+				return botBodyLeaseResult{Lease: next, Replaced: true}, nil
+			}
 			return botBodyLeaseResult{Lease: existing}, errBotBodyLeaseConflict
 		}
 
@@ -124,6 +153,9 @@ func (m *botBodyLeaseManager) conflicts(botUID int64, bodyID string) (botBodyLea
 
 	existing, ok := m.leases[botUID]
 	if !ok || existing.bodyID == bodyID {
+		return botBodyLease{}, false
+	}
+	if isLegacyBotBodyID(existing.bodyID) && !isLegacyBotBodyID(bodyID) {
 		return botBodyLease{}, false
 	}
 	return existing, true
