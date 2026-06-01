@@ -50,6 +50,35 @@ export default function CreateGroup({ onClose, onCreated }) {
     }
   };
 
+  const userFriends = friends.filter(f => !f.bot);
+  const botFriends = friends.filter(f => f.bot);
+
+  const renderMember = (f) => (
+    <label
+      key={f.id}
+      className="oc-group-member-check"
+      style={{
+        display: 'flex', alignItems: 'center', padding: '8px 0',
+        cursor: 'pointer', gap: 10,
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={selected.has(f.id)}
+        onChange={() => toggleMember(f.id)}
+        style={{ width: 18, height: 18, accentColor: 'var(--v3-primary)' }}
+      />
+      <Avatar
+        name={f.display_name || f.username}
+        src={f.avatar_url}
+        size={32}
+        isBot={f.bot}
+        className="oc-contact-avatar"
+      />
+      <span style={{ fontSize: 14, color: 'var(--v3-text-name)' }}>{f.display_name || f.username}</span>
+    </label>
+  );
+
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <div className="oc-modal" onClick={(e) => e.stopPropagation()}>
@@ -57,7 +86,7 @@ export default function CreateGroup({ onClose, onCreated }) {
         {error && <div style={{ color: '#FA5151', fontSize: 13, marginBottom: 8 }}>{error}</div>}
         <input
           className="oc-auth-input"
-          placeholder={t('group_name_placeholder')}
+          placeholder={t('group_topic_placeholder')}
           value={name}
           onChange={(e) => setName(e.target.value)}
           style={{ marginBottom: 12 }}
@@ -66,31 +95,18 @@ export default function CreateGroup({ onClose, onCreated }) {
           {t('group_select_members')} ({selected.size})
         </div>
         <div style={{ maxHeight: 280, overflowY: 'auto', marginBottom: 16 }}>
-          {friends.map((f) => (
-            <label
-              key={f.id}
-              className="oc-group-member-check"
-              style={{
-                display: 'flex', alignItems: 'center', padding: '8px 0',
-                cursor: 'pointer', gap: 10,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={selected.has(f.id)}
-                onChange={() => toggleMember(f.id)}
-                style={{ width: 18, height: 18, accentColor: 'var(--v3-primary)' }}
-              />
-              <Avatar
-                name={f.display_name || f.username}
-                src={f.avatar_url}
-                size={32}
-                isBot={f.account_type === 'bot'}
-                className="oc-contact-avatar"
-              />
-              <span style={{ fontSize: 14, color: 'var(--v3-text-name)' }}>{f.display_name || f.username}</span>
-            </label>
-          ))}
+          {userFriends.length > 0 && (
+            <>
+              <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 4 }}>{t('group_friends_label')}</div>
+              {userFriends.map(renderMember)}
+            </>
+          )}
+          {botFriends.length > 0 && (
+            <>
+              <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 4, marginTop: 8 }}>{t('group_bots_label')}</div>
+              {botFriends.map(renderMember)}
+            </>
+          )}
           {friends.length === 0 && (
             <div style={{ padding: 20, textAlign: 'center', color: 'var(--v3-text-muted)', fontSize: 13 }}>
               {t('contacts_empty')}

@@ -2,6 +2,7 @@
 package mysql
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -47,6 +48,75 @@ func (a *Adapter) SaveMessageWithBlocks(topicID string, fromUID int64, content s
 	)
 	if err != nil {
 		return 0, fmt.Errorf("save message with blocks: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// SaveMessageIdempotent inserts a message once for a client-generated id.
+func (a *Adapter) SaveMessageIdempotent(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string) (int64, bool, error) {
+	if clientMsgID == "" {
+		id, err := a.saveMessageNormalized(topicID, fromUID, content, blocks, mode, role, msgType, replyTo, "")
+		return id, false, err
+	}
+
+	var id int64
+	err := a.db.QueryRow(
+		`SELECT id FROM messages WHERE topic_id = ? AND from_uid = ? AND client_msg_id = ?`,
+		topicID, fromUID, clientMsgID,
+	).Scan(&id)
+	if err == nil {
+		return id, true, nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return 0, false, fmt.Errorf("lookup idempotent message: %w", err)
+	}
+
+	id, err = a.saveMessageNormalized(topicID, fromUID, content, blocks, mode, role, msgType, replyTo, clientMsgID)
+	if err == nil {
+		return id, false, nil
+	}
+
+	lookupErr := a.db.QueryRow(
+		`SELECT id FROM messages WHERE topic_id = ? AND from_uid = ? AND client_msg_id = ?`,
+		topicID, fromUID, clientMsgID,
+	).Scan(&id)
+	if lookupErr == nil {
+		return id, true, nil
+	}
+	return 0, false, fmt.Errorf("save idempotent message: %w", err)
+}
+
+func (a *Adapter) saveMessageNormalized(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string) (int64, error) {
+	var blocksJSON []byte
+	var err error
+	if len(blocks) > 0 {
+		if mode == "" {
+			mode = "code"
+		}
+		blocksJSON, err = json.Marshal(blocks)
+		if err != nil {
+			return 0, fmt.Errorf("marshal content blocks: %w", err)
+		}
+	} else if mode == "" {
+		mode = "normal"
+	}
+
+	var res interface{ LastInsertId() (int64, error) }
+	if replyTo > 0 {
+		res, err = a.db.Exec(
+			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, mode, role, msg_type, reply_to, client_msg_id)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))`,
+			topicID, fromUID, content, blocksJSON, mode, role, msgType, replyTo, clientMsgID,
+		)
+	} else {
+		res, err = a.db.Exec(
+			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, mode, role, msg_type, client_msg_id)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))`,
+			topicID, fromUID, content, blocksJSON, mode, role, msgType, clientMsgID,
+		)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("save normalized message: %w", err)
 	}
 	return res.LastInsertId()
 }

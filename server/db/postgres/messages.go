@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -76,6 +77,68 @@ func (a *Adapter) SaveMessageWithReply(topicID string, fromUID int64, content, m
 	}
 	if err != nil {
 		return 0, fmt.Errorf("save message with reply: %w", err)
+	}
+	return id, nil
+}
+
+// SaveMessageIdempotent inserts a message once for a client-generated id.
+func (a *Adapter) SaveMessageIdempotent(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string) (int64, bool, error) {
+	if clientMsgID == "" {
+		id, err := a.saveMessageNormalized(topicID, fromUID, content, blocks, mode, role, msgType, replyTo, "")
+		return id, false, err
+	}
+
+	var id int64
+	err := a.db.QueryRow(
+		`SELECT id FROM messages WHERE topic_id = $1 AND from_uid = $2 AND client_msg_id = $3`,
+		topicID, fromUID, clientMsgID,
+	).Scan(&id)
+	if err == nil {
+		return id, true, nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return 0, false, fmt.Errorf("lookup idempotent message: %w", err)
+	}
+
+	id, err = a.saveMessageNormalized(topicID, fromUID, content, blocks, mode, role, msgType, replyTo, clientMsgID)
+	if err == nil {
+		return id, false, nil
+	}
+
+	lookupErr := a.db.QueryRow(
+		`SELECT id FROM messages WHERE topic_id = $1 AND from_uid = $2 AND client_msg_id = $3`,
+		topicID, fromUID, clientMsgID,
+	).Scan(&id)
+	if lookupErr == nil {
+		return id, true, nil
+	}
+	return 0, false, fmt.Errorf("save idempotent message: %w", err)
+}
+
+func (a *Adapter) saveMessageNormalized(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string) (int64, error) {
+	var blocksJSON interface{}
+	if len(blocks) > 0 {
+		if mode == "" {
+			mode = "code"
+		}
+		raw, err := json.Marshal(blocks)
+		if err != nil {
+			return 0, fmt.Errorf("marshal content blocks: %w", err)
+		}
+		blocksJSON = string(raw)
+	} else if mode == "" {
+		mode = "normal"
+	}
+
+	var id int64
+	err := a.db.QueryRow(
+		`INSERT INTO messages (topic_id, from_uid, content, content_blocks, mode, role, msg_type, reply_to, client_msg_id)
+		 VALUES ($1, $2, $3, CAST($4 AS jsonb), $5, $6, $7, NULLIF($8, 0), NULLIF($9, ''))
+		 RETURNING id`,
+		topicID, fromUID, content, blocksJSON, mode, role, msgType, replyTo, clientMsgID,
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("save normalized message: %w", err)
 	}
 	return id, nil
 }

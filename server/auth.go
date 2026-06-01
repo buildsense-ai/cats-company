@@ -118,6 +118,21 @@ func contextWithClaims(ctx context.Context, claims *JWTClaims) context.Context {
 	return ctx
 }
 
+func activeUserFromClaims(claims *JWTClaims, lookupUser func(int64) (*types.User, error)) (*types.User, int, string) {
+	return activeUserByID(claims.UID, lookupUser)
+}
+
+func activeUserByID(uid int64, lookupUser func(int64) (*types.User, error)) (*types.User, int, string) {
+	user, err := lookupUser(uid)
+	if err != nil || user == nil {
+		return nil, http.StatusUnauthorized, "invalid or expired token"
+	}
+	if user.State != 0 {
+		return nil, http.StatusForbidden, "user account is disabled"
+	}
+	return user, 0, ""
+}
+
 // AuthMiddleware extracts the JWT token and sets uid in context.
 func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +153,32 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// JWTAuthMiddlewareWithDB requires a valid, active user JWT.
+func JWTAuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			tokenStr := extractToken(r)
+			if tokenStr == "" {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				return
+			}
+
+			claims, err := ParseToken(tokenStr)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
+				return
+			}
+			if _, status, msg := activeUserFromClaims(claims, db.GetUser); status != 0 {
+				writeJSON(w, status, map[string]string{"error": msg})
+				return
+			}
+
+			ctx := contextWithClaims(r.Context(), claims)
+			next(w, r.WithContext(ctx))
+		}
+	}
+}
+
 // AuthMiddlewareWithDB returns an auth middleware that accepts both JWT and API Key.
 // JWT is tried first; on failure, it falls back to API Key authentication.
 func AuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFunc {
@@ -148,6 +189,10 @@ func AuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFun
 			if tokenStr != "" {
 				claims, err := ParseToken(tokenStr)
 				if err == nil {
+					if _, status, msg := activeUserFromClaims(claims, db.GetUser); status != 0 {
+						writeJSON(w, status, map[string]string{"error": msg})
+						return
+					}
 					ctx := contextWithClaims(r.Context(), claims)
 					next(w, r.WithContext(ctx))
 					return
@@ -161,6 +206,10 @@ func AuthMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFun
 				if err == nil {
 					botUID, err := db.GetBotByAPIKey(apiKey)
 					if err == nil && botUID == parsedUID {
+						if _, status, msg := activeUserByID(parsedUID, db.GetUser); status != 0 {
+							writeJSON(w, status, map[string]string{"error": msg})
+							return
+						}
 						ctx := context.WithValue(r.Context(), uidKey, parsedUID)
 						next(w, r.WithContext(ctx))
 						return
@@ -184,9 +233,9 @@ func ownerClaimsFromRequest(r *http.Request, lookupUser func(int64) (*types.User
 		return nil, http.StatusUnauthorized, "invalid or expired token"
 	}
 
-	user, err := lookupUser(claims.UID)
-	if err != nil || user == nil {
-		return nil, http.StatusUnauthorized, "invalid or expired token"
+	user, status, msg := activeUserFromClaims(claims, lookupUser)
+	if status != 0 {
+		return nil, status, msg
 	}
 
 	if user.AccountType != types.AccountHuman {
@@ -235,6 +284,38 @@ func AdminMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx := contextWithClaims(r.Context(), claims)
 		next(w, r.WithContext(ctx))
+	}
+}
+
+// AdminMiddlewareWithDB requires an active user JWT and a username listed in OC_ADMIN_USERNAMES.
+func AdminMiddlewareWithDB(db store.Store) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			tokenStr := extractToken(r)
+			if tokenStr == "" {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				return
+			}
+
+			claims, err := ParseToken(tokenStr)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired token"})
+				return
+			}
+
+			if _, status, msg := activeUserFromClaims(claims, db.GetUser); status != 0 {
+				writeJSON(w, status, map[string]string{"error": msg})
+				return
+			}
+
+			if !isAdminUsername(claims.Username) {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin access required"})
+				return
+			}
+
+			ctx := contextWithClaims(r.Context(), claims)
+			next(w, r.WithContext(ctx))
+		}
 	}
 }
 

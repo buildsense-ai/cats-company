@@ -208,6 +208,7 @@ type BotConfig struct {
 	Model       string            `json:"model,omitempty"`
 	Enabled     bool              `json:"enabled"`
 	Visibility  BotVisibility     `json:"visibility"`
+	BodyID      string            `json:"body_id,omitempty"`
 	Config      map[string]string `json:"config,omitempty"`
 }
 
@@ -251,6 +252,7 @@ type AgentAccess struct {
 // AgentRosterItem is the user-facing list entry for accessible virtual employees.
 type AgentRosterItem struct {
 	ID          int64             `json:"id"`
+	UID         int64             `json:"uid"`
 	Username    string            `json:"username"`
 	DisplayName string            `json:"display_name"`
 	AvatarURL   string            `json:"avatar_url,omitempty"`
@@ -259,8 +261,11 @@ type AgentRosterItem struct {
 	Status      AgentAccessStatus `json:"access_status"`
 	Permission  AgentPermission   `json:"permission"`
 	Source      string            `json:"source"`
+	Relation    string            `json:"relation,omitempty"`
 	CanChat     bool              `json:"can_chat"`
 	CanManage   bool              `json:"can_manage"`
+	IsBot       bool              `json:"is_bot"`
+	IsOnline    bool              `json:"is_online"`
 	TopicID     string            `json:"topic_id,omitempty"`
 }
 

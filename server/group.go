@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/openchat/openchat/server/store"
 )
@@ -92,6 +93,28 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 	}
 
 	topicID := fmt.Sprintf("grp_%d", groupID)
+	group, groupErr := h.db.GetGroup(groupID)
+	createdAt := time.Now()
+	avatarURL := ""
+	responseGroup := map[string]interface{}{
+		"id":         groupID,
+		"name":       req.Name,
+		"owner_id":   uid,
+		"avatar_url": avatarURL,
+		"created_at": createdAt,
+	}
+	if groupErr == nil && group != nil {
+		createdAt = group.CreatedAt
+		avatarURL = group.AvatarURL
+		responseGroup = map[string]interface{}{
+			"id":          group.ID,
+			"name":        group.Name,
+			"owner_id":    group.OwnerID,
+			"avatar_url":  group.AvatarURL,
+			"max_members": group.MaxMembers,
+			"created_at":  group.CreatedAt,
+		}
+	}
 
 	// Notify all members via WebSocket
 	h.notifyGroupEvent(groupID, "group_created", map[string]interface{}{
@@ -100,11 +123,15 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 		"topic":    topicID,
 	})
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"group_id": groupID,
-		"topic":    topicID,
-		"name":     req.Name,
-	})
+	response := map[string]interface{}{
+		"group_id":   groupID,
+		"topic":      topicID,
+		"name":       req.Name,
+		"group":      responseGroup,
+		"created_at": createdAt,
+		"avatar_url": avatarURL,
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // HandleUpdateGroup handles POST /api/groups/update

@@ -81,7 +81,7 @@ jobs:
           ssh ${SSH_OPTS} "${REMOTE}" "cat > ${TEST_STACK_ROOT}/releases/cats-company-source-${{ github.sha }}.tar.gz" < "cats-company-source-${{ github.sha }}.tar.gz"
 
       - name: Deploy isolated test stack
-        timeout-minutes: 15
+        timeout-minutes: 25
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}

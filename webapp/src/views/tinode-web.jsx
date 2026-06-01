@@ -7,9 +7,10 @@ import MessagesView from './messages-view';
 import ProfileEditor from '../widgets/profile-editor';
 import FeedbackModal from '../widgets/feedback-modal';
 import CatsCoDownloadModal from '../widgets/catsco-download-modal';
+import RelayAccessModal from '../widgets/relay-access-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import Avatar from '../widgets/avatar';
-import { Bug, Download, Settings, LogOut } from 'lucide-react';
+import { Bug, Download, KeyRound, Settings, LogOut } from 'lucide-react';
 import CatOrb from '../components/CatOrb/CatOrb';
 import '../css/openchat-theme.css';
 
@@ -122,6 +123,7 @@ export default function TinodeWeb() {
   const [showProfilePopover, setShowProfilePopover] = useState(false);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [showDownloadModal, setShowDownloadModal] = useState(false);
+  const [showRelayModal, setShowRelayModal] = useState(false);
 
 
 
@@ -205,6 +207,41 @@ export default function TinodeWeb() {
     };
   }, [user?.uid, persistUser]);
 
+  useEffect(() => {
+    if (!user?.uid) return;
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('relay_login') !== '1') return;
+
+    let cancelled = false;
+    const fallBackToRelayPanel = () => {
+      params.delete('relay_login');
+      const nextSearch = params.toString();
+      const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
+      window.history.replaceState(null, '', nextUrl);
+      setShowRelayModal(true);
+    };
+
+    api.createRelaySession()
+      .then((session) => {
+        if (!cancelled && session?.url) {
+          window.location.href = session.url;
+        } else if (!cancelled) {
+          fallBackToRelayPanel();
+        }
+      })
+      .catch((error) => {
+        console.warn('Failed to create relay login session:', error);
+        if (!cancelled) {
+          fallBackToRelayPanel();
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid]);
+
   const handleLogin = async (account, password) => {
     const res = await api.login({ account, password });
     setToken(res.token);
@@ -283,6 +320,9 @@ export default function TinodeWeb() {
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDownloadModal(true); }}>
               <Download size={16} style={{marginRight: 10}} /> 下载 CatsCo 桌面端
             </div>
+            <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowRelayModal(true); }}>
+              <KeyRound size={16} style={{marginRight: 10}} /> CatsCo 中转站
+            </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowProfileEditor(true); }}>
               <Settings size={16} style={{marginRight: 10}} /> Settings & Profile
             </div>
@@ -316,6 +356,7 @@ export default function TinodeWeb() {
           user={user}
           onClose={() => setShowProfileEditor(false)}
           onSaved={handleUserUpdated}
+          onOpenRelay={() => setShowRelayModal(true)}
         />
       )}
 
@@ -325,6 +366,10 @@ export default function TinodeWeb() {
 
       {showDownloadModal && (
         <CatsCoDownloadModal onClose={() => setShowDownloadModal(false)} />
+      )}
+
+      {showRelayModal && (
+        <RelayAccessModal onClose={() => setShowRelayModal(false)} />
       )}
     </div>
   );

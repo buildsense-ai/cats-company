@@ -105,13 +105,12 @@ db_user="${db_dsn%%:*}"
 
 if [ "${db_driver:-mysql}" = "mysql" ] && [ "${allow_shared_db_user:-0}" != "1" ] && [ "$db_user" = "openchat" ]; then
   cat >&2 <<EOF
-refusing deploy: OC_DB_DSN is using the legacy shared DB user "openchat"
+refusing deploy: OC_DB_DSN is using the shared MySQL DB user "openchat"
 while ALLOW_SHARED_DB_USER is not enabled.
 
-For a shadow prod rollout, use a dedicated DB user such as "openchat_shadow"
-so the live legacy app and the shadow stack do not share DB credentials.
+Use a dedicated database user for production containers when possible.
 
-If traffic has fully cut over and sharing the DB user is intentional, set:
+If sharing this user is intentional, set:
 ALLOW_SHARED_DB_USER=1
 EOF
   exit 1

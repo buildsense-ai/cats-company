@@ -95,6 +95,11 @@
       grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
     }
 
+    #search-form {
+      grid-template-columns: minmax(220px, 1fr) auto auto;
+      margin-bottom: 12px;
+    }
+
     input {
       width: 100%;
       height: 44px;
@@ -263,6 +268,87 @@
       overflow: hidden;
     }
 
+    .user-list {
+      display: none;
+      margin-top: 18px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .user-list.visible {
+      display: block;
+    }
+
+    .user-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .user-pager {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .user-pager button,
+    .user-action {
+      height: 34px;
+      padding: 0 12px;
+      font-size: 13px;
+    }
+
+    .user-item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 14px;
+      align-items: center;
+      padding: 14px;
+      border-top: 1px solid var(--border);
+    }
+
+    .user-item:first-child {
+      border-top: 0;
+    }
+
+    .user-meta {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+    }
+
+    .secondary-button {
+      height: 34px;
+      background: transparent;
+      color: var(--accent-2);
+      border: 1px solid rgba(214, 168, 79, 0.38);
+      padding: 0 12px;
+    }
+
+    .secondary-button:hover {
+      background: rgba(214, 168, 79, 0.12);
+    }
+
+    .danger-button {
+      height: 34px;
+      background: transparent;
+      color: var(--danger);
+      border: 1px solid rgba(255, 123, 114, 0.42);
+      padding: 0 12px;
+    }
+
+    .danger-button:hover {
+      background: rgba(255, 123, 114, 0.12);
+    }
+
     .service-item {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -338,6 +424,21 @@
         grid-template-columns: 1fr;
       }
 
+      .user-item {
+        grid-template-columns: 1fr;
+      }
+
+      .user-toolbar,
+      .user-pager {
+        display: block;
+      }
+
+      .user-pager {
+        display: grid;
+        gap: 8px;
+        text-align: center;
+      }
+
       .row {
         grid-template-columns: 1fr;
         gap: 4px;
@@ -352,16 +453,28 @@
         <h1>CatsCo Account Admin</h1>
         <p>本页面只用于 SSH 隧道后的本机管理，不走公网入口。</p>
       </div>
-      <div class="badge">Local only</div>
+      <div class="badge">Tunnel only</div>
     </header>
 
     <section>
-      <h2>按 UID 查询账号</h2>
+      <h2>账号管理</h2>
+      <form id="search-form">
+        <input id="user-query" name="q" autocomplete="off" placeholder="搜索 UID、用户名、邮箱或昵称；留空显示全部" />
+        <button id="search-button" type="submit">搜索</button>
+        <button id="clear-search-button" type="button">显示全部</button>
+      </form>
+      <div class="hint">默认按 UID 倒序分页展示。禁用账号后，用户 JWT introspect 会变为不可用，登录链路会拒绝该账号。</div>
+      <div id="search-error" class="error"></div>
+      <div id="user-toolbar" class="user-toolbar"></div>
+      <div id="search-result" class="user-list" aria-live="polite"></div>
+      <div id="user-pager" class="user-pager"></div>
+
+      <h2 style="margin-top: 24px;">按 UID 精确查询</h2>
       <form id="lookup-form">
         <input id="uid" name="uid" inputmode="numeric" autocomplete="off" placeholder="输入用户 UID，例如 2" />
         <button id="lookup-button" type="submit">查询</button>
       </form>
-      <div class="hint">第一版先做只读查询，避免后台误操作；service token 仍从服务端环境变量配置。</div>
+      <div class="hint">精确查询用于快速确认单个账号信息和状态；资料字段仍保持只读，避免误操作。</div>
       <div id="error" class="error"></div>
       <div id="result" class="result" aria-live="polite"></div>
     </section>
@@ -369,11 +482,11 @@
     <section>
       <h2>Service Token</h2>
       <form id="service-form">
-        <input id="service-slug" name="slug" autocomplete="off" placeholder="服务标识，例如 bifrost-gateway" />
-        <input id="service-name" name="name" autocomplete="off" placeholder="显示名称，例如 Bifrost 中转" />
-        <button id="service-button" type="submit">生成</button>
+        <input id="service-slug" name="slug" autocomplete="off" placeholder="服务标识，例如 internal-tool" />
+        <input id="service-name" name="name" autocomplete="off" placeholder="显示名称，例如 内部工具" />
+        <button id="service-button" type="submit">创建/轮换</button>
         <div class="scope-panel">
-          <div class="scope-title">权限范围（可选）：不确定就先不选，后续可以用同一个服务标识重新生成。</div>
+          <div class="scope-title">Service Token 是内部服务访问账号中心的凭证，不属于某个用户；不确定权限时可以先不选。同一服务标识再次提交会轮换 token，并让旧 token 失效。</div>
           <div class="scope-options">
             <label class="scope-option">
               <input type="checkbox" data-scope="account.introspect" />
@@ -383,15 +496,11 @@
               <input type="checkbox" data-scope="account.users.read" />
               <span><strong>读取用户资料</strong>按 UID 查询用户名、邮箱、头像等基础资料。</span>
             </label>
-            <label class="scope-option">
-              <input type="checkbox" data-scope="bifrost.gateway" />
-              <span><strong>Bifrost 中转接入</strong>给模型中转服务做用户映射。</span>
-            </label>
           </div>
           <input class="scope-custom" id="service-scopes" name="scopes" autocomplete="off" placeholder="高级：自定义 scope，可留空，用逗号分隔" />
         </div>
       </form>
-      <div class="hint">token 明文只在创建或轮换时展示一次。重新使用同一个服务标识会轮换旧 token。</div>
+      <div class="hint">token 明文只在创建或轮换时展示一次。它应该只放在业务服务端 secret 或环境变量里，不能下发给浏览器。</div>
       <div id="service-error" class="error"></div>
       <div id="service-token" class="token-box"></div>
       <div id="service-list" class="service-list"></div>
@@ -407,6 +516,14 @@ http://127.0.0.1:26061/local/account-admin</code>
 
   <script>
     const form = document.querySelector('#lookup-form');
+    const searchForm = document.querySelector('#search-form');
+    const userQueryInput = document.querySelector('#user-query');
+    const searchButton = document.querySelector('#search-button');
+    const clearSearchButton = document.querySelector('#clear-search-button');
+    const searchResult = document.querySelector('#search-result');
+    const searchError = document.querySelector('#search-error');
+    const userToolbar = document.querySelector('#user-toolbar');
+    const userPager = document.querySelector('#user-pager');
     const uidInput = document.querySelector('#uid');
     const button = document.querySelector('#lookup-button');
     const result = document.querySelector('#result');
@@ -416,12 +533,23 @@ http://127.0.0.1:26061/local/account-admin</code>
     const serviceError = document.querySelector('#service-error');
     const serviceToken = document.querySelector('#service-token');
     const serviceList = document.querySelector('#service-list');
+    let currentUserPage = 1;
+    let currentUserQuery = '';
+    const userPageSize = 20;
+    const pendingUserStateUIDs = new Set();
 
     function showError(message) {
       error.textContent = message;
       error.classList.add('visible');
       result.classList.remove('visible');
       result.innerHTML = '';
+    }
+
+    function showSearchError(message) {
+      searchError.textContent = message;
+      searchError.classList.add('visible');
+      searchResult.classList.remove('visible');
+      searchResult.innerHTML = '';
     }
 
     function escapeHTML(value) {
@@ -442,9 +570,21 @@ http://127.0.0.1:26061/local/account-admin</code>
       return `<div class="row"><div class="label">${label}</div><div class="value">${formatValue(value)}</div></div>`;
     }
 
+    function stateLabel(state) {
+      return Number(state || 0) === 0 ? '正常' : `已禁用(${state})`;
+    }
+
+    function stateActionButton(user) {
+      const active = Number(user.state || 0) === 0;
+      const disabledAttr = pendingUserStateUIDs.has(String(user.uid)) ? ' disabled' : '';
+      if (active) {
+        return `<button class="danger-button user-action" data-state-uid="${escapeHTML(user.uid)}" data-state-value="1"${disabledAttr}>禁用账号</button>`;
+      }
+      return `<button class="secondary-button user-action" data-state-uid="${escapeHTML(user.uid)}" data-state-value="0"${disabledAttr}>恢复账号</button>`;
+    }
+
     function render(payload) {
       const user = payload.user || {};
-      const accountCenter = payload.account_center || {};
       result.innerHTML = [
         row('UID', user.uid),
         row('用户名', user.username),
@@ -452,13 +592,156 @@ http://127.0.0.1:26061/local/account-admin</code>
         row('显示名', user.display_name),
         row('头像', user.avatar_url),
         row('账号类型', user.account_type),
-        row('状态', user.state),
+        row('状态', stateLabel(user.state)),
         row('创建时间', user.created_at),
-        row('Service Token 管理', accountCenter.service_tokens_configured ? '可用' : '不可用'),
+        `<div class="row"><div class="label">账号操作</div><div class="value">${stateActionButton(user)}</div></div>`,
       ].join('');
       error.classList.remove('visible');
       result.classList.add('visible');
     }
+
+    function renderUserItem(user) {
+      const title = `${user.display_name || user.username || '未命名用户'} · UID ${user.uid}`;
+      const meta = [
+        `用户名=${user.username || '-'}`,
+        `邮箱=${user.email || '-'}`,
+        `类型=${user.account_type || '-'}`,
+        `状态=${stateLabel(user.state)}`,
+        `创建=${user.created_at || '-'}`,
+      ].join(' · ');
+      return `<div class="user-item">
+        <div>
+          <strong>${escapeHTML(title)}</strong>
+          <div class="user-meta">${escapeHTML(meta)}</div>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end;">
+          <button class="secondary-button user-action" data-lookup-uid="${escapeHTML(user.uid)}">查看</button>
+          ${stateActionButton(user)}
+        </div>
+      </div>`;
+    }
+
+    function renderSearch(payload) {
+      const users = Array.isArray(payload.users) ? payload.users : [];
+      if (!users.length) {
+        searchResult.innerHTML = '<div class="user-item"><div><strong>没有匹配账号</strong><div class="user-meta">换 UID、用户名、邮箱或昵称再试一次。</div></div></div>';
+      } else {
+        searchResult.innerHTML = users.map(renderUserItem).join('');
+      }
+      const count = Number(payload.count || 0);
+      const page = Number(payload.page || currentUserPage || 1);
+      const totalPage = Number(payload.total_page || 0);
+      userToolbar.textContent = `共 ${count} 个账号${currentUserQuery ? `，当前搜索：${currentUserQuery}` : ''}`;
+      userPager.innerHTML = totalPage > 1 ? `
+        <button type="button" data-page="${Math.max(1, page - 1)}" ${page <= 1 ? 'disabled' : ''}>上一页</button>
+        <span>第 ${page} / ${totalPage} 页</span>
+        <button type="button" data-page="${Math.min(totalPage, page + 1)}" ${page >= totalPage ? 'disabled' : ''}>下一页</button>
+      ` : '';
+      searchError.classList.remove('visible');
+      searchResult.classList.add('visible');
+    }
+
+    async function loadUsersList(page = 1, query = currentUserQuery) {
+      currentUserPage = page;
+      currentUserQuery = query.trim();
+      searchButton.disabled = true;
+      clearSearchButton.disabled = true;
+      try {
+        const params = new URLSearchParams({
+          page: String(currentUserPage),
+          page_size: String(userPageSize),
+        });
+        if (currentUserQuery) params.set('q', currentUserQuery);
+        const resp = await fetch(`/local/account-admin/users/list?${params.toString()}`, {
+          headers: { Accept: 'application/json' },
+        });
+        const payload = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          showSearchError(payload.error || `账号列表加载失败：HTTP ${resp.status}`);
+          return;
+        }
+        renderSearch(payload);
+      } catch (err) {
+        showSearchError(err && err.message ? err.message : '账号列表加载失败。');
+      } finally {
+        searchButton.disabled = false;
+        clearSearchButton.disabled = false;
+      }
+    }
+
+    function setUserStateButtons(uid, disabled) {
+      document.querySelectorAll('[data-state-uid]').forEach((item) => {
+        if (item.dataset.stateUid === String(uid)) item.disabled = disabled;
+      });
+    }
+
+    async function updateUserState(uid, state, source = 'list') {
+      uid = String(uid);
+      if (pendingUserStateUIDs.has(uid)) return;
+      const action = Number(state) === 0 ? '恢复' : '禁用';
+      if (!window.confirm(`确定${action} UID ${uid} 吗？`)) return;
+      pendingUserStateUIDs.add(uid);
+      setUserStateButtons(uid, true);
+      try {
+        const resp = await fetch('/local/account-admin/users/state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ uid: Number(uid), state: Number(state) }),
+        });
+        const payload = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          const message = payload.error || `${action}失败：HTTP ${resp.status}`;
+          if (source === 'lookup') showError(message);
+          else showSearchError(message);
+          return;
+        }
+        await loadUsersList(currentUserPage, currentUserQuery);
+        if (uidInput.value.trim() === String(uid)) {
+          form.requestSubmit();
+        }
+      } catch (err) {
+        const message = err && err.message ? err.message : `${action}失败。`;
+        if (source === 'lookup') showError(message);
+        else showSearchError(message);
+      } finally {
+        pendingUserStateUIDs.delete(uid);
+        setUserStateButtons(uid, false);
+      }
+    }
+
+    searchForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await loadUsersList(1, userQueryInput.value);
+    });
+
+    clearSearchButton.addEventListener('click', async () => {
+      userQueryInput.value = '';
+      await loadUsersList(1, '');
+    });
+
+    userPager.addEventListener('click', async (event) => {
+      const target = event.target.closest('[data-page]');
+      if (!target || !userPager.contains(target) || target.disabled) return;
+      await loadUsersList(Number(target.dataset.page), currentUserQuery);
+    });
+
+    searchResult.addEventListener('click', (event) => {
+      const target = event.target.closest('[data-lookup-uid], [data-state-uid]');
+      if (!target || !searchResult.contains(target)) return;
+      if (target.dataset.lookupUid) {
+        uidInput.value = target.dataset.lookupUid;
+        form.requestSubmit();
+      }
+      if (target.dataset.stateUid) {
+        updateUserState(target.dataset.stateUid, target.dataset.stateValue, 'list');
+      }
+    });
+
+    result.addEventListener('click', (event) => {
+      const target = event.target.closest('[data-state-uid]');
+      if (!target || !result.contains(target)) return;
+      updateUserState(target.dataset.stateUid, target.dataset.stateValue, 'lookup');
+    });
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -509,7 +792,6 @@ http://127.0.0.1:26061/local/account-admin</code>
     const scopeLabels = {
       'account.introspect': '验证用户登录',
       'account.users.read': '读取用户资料',
-      'bifrost.gateway': 'Bifrost 中转接入',
     };
 
     function formatScope(scope) {
@@ -591,8 +873,8 @@ http://127.0.0.1:26061/local/account-admin</code>
     });
 
     serviceList.addEventListener('click', async (event) => {
-      const target = event.target;
-      if (!target || !target.dataset || !target.dataset.revoke) return;
+      const target = event.target.closest('[data-revoke]');
+      if (!target || !serviceList.contains(target)) return;
       clearServiceError();
       target.disabled = true;
       try {
@@ -614,6 +896,7 @@ http://127.0.0.1:26061/local/account-admin</code>
       }
     });
 
+    loadUsersList();
     loadServices();
   </script>
 </body>

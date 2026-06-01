@@ -29,7 +29,7 @@ if [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
 fi
 
 web_image="ghcr.io/${owner}/cats-company-web:${revision}"
-pull_timeout="${REMOTE_WEB_PULL_TIMEOUT_SECONDS:-420}"
+pull_timeout="${REMOTE_WEB_PULL_TIMEOUT_SECONDS:-900}"
 pull_heartbeat="${REMOTE_WEB_PULL_HEARTBEAT_SECONDS:-20}"
 
 echo "Pulling web image: ${web_image}"

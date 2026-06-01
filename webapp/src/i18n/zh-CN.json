@@ -128,6 +128,9 @@
   "group_avatar_pick": "选择群头像",
   "group_add_members": "添加成员",
   "group_no_invitable_members": "没有可添加的好友",
+  "group_topic_placeholder": "#新的话题",
+  "group_friends_label": "好友",
+  "group_bots_label": "机器人",
   "chat_load_older": "加载更早消息",
 
   "confirm_logout": "确定要退出登录吗？",

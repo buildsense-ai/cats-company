@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"sort"
 
@@ -36,9 +37,27 @@ func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	topicIDs := make([]string, 0, len(friends)+len(groups))
+	ownedBots, err := h.db.ListBotsByOwner(uid)
+	if err != nil {
+		log.Printf("conversations: failed to list owner bots for uid=%d: %v", uid, err)
+		ownedBots = nil
+	}
+	ownerBotUsers := ownerBotUsersFromMaps(ownedBots)
+
+	topicIDs := make([]string, 0, len(friends)+len(groups)+len(ownerBotUsers))
+	seenP2P := make(map[int64]struct{})
+	ownerConversationBots := make([]*types.User, 0, len(ownerBotUsers))
 	for _, friend := range friends {
+		seenP2P[friend.ID] = struct{}{}
 		topicIDs = append(topicIDs, p2pTopicID(uid, friend.ID))
+	}
+	for _, bot := range ownerBotUsers {
+		if _, ok := seenP2P[bot.ID]; ok {
+			continue
+		}
+		seenP2P[bot.ID] = struct{}{}
+		ownerConversationBots = append(ownerConversationBots, bot)
+		topicIDs = append(topicIDs, p2pTopicID(uid, bot.ID))
 	}
 	for _, group := range groups {
 		topicIDs = append(topicIDs, "grp_"+formatInt64(group.ID))
@@ -56,26 +75,18 @@ func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request)
 		summary := buildFriendConversationSummary(topicID, friend, latestByTopic[topicID], h.hub)
 		conversations = append(conversations, summary)
 	}
+	for _, bot := range ownerConversationBots {
+		topicID := p2pTopicID(uid, bot.ID)
+		summary := buildFriendConversationSummary(topicID, bot, latestByTopic[topicID], h.hub)
+		conversations = append(conversations, summary)
+	}
 	for _, group := range groups {
 		topicID := "grp_" + formatInt64(group.ID)
 		summary := buildGroupConversationSummary(topicID, group, latestByTopic[topicID])
 		conversations = append(conversations, summary)
 	}
 
-	sort.SliceStable(conversations, func(i, j int) bool {
-		left := conversations[i].LastTime
-		right := conversations[j].LastTime
-		switch {
-		case left == nil && right == nil:
-			return conversations[i].Name < conversations[j].Name
-		case left == nil:
-			return false
-		case right == nil:
-			return true
-		default:
-			return left.After(*right)
-		}
-	})
+	sort.SliceStable(conversations, conversationLess(conversations))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"conversations": conversations})
 }
@@ -87,11 +98,32 @@ func buildFriendConversationSummary(topicID string, friend *types.User, latest *
 		IsGroup:   false,
 		FriendID:  friend.ID,
 		AvatarURL: friend.AvatarURL,
-		IsBot:     friend.BotDisclose,
+		IsBot:     friend.BotDisclose || friend.AccountType == types.AccountBot,
 		IsOnline:  hub != nil && hub.IsOnline(friend.ID),
 	}
 	applyLatestMessage(summary, latest)
 	return summary
+}
+
+func ownerBotUsersFromMaps(bots []map[string]interface{}) []*types.User {
+	users := make([]*types.User, 0, len(bots))
+	for _, bot := range bots {
+		uid := mapID(bot["id"])
+		if uid <= 0 {
+			continue
+		}
+		username := mapString(bot["username"])
+		displayName := mapString(bot["display_name"])
+		users = append(users, &types.User{
+			ID:          uid,
+			Username:    username,
+			DisplayName: displayName,
+			AvatarURL:   mapString(bot["avatar_url"]),
+			AccountType: types.AccountBot,
+			BotDisclose: true,
+		})
+	}
+	return users
 }
 
 func buildGroupConversationSummary(topicID string, group *types.Group, latest *types.Message) *types.ConversationSummary {
@@ -103,7 +135,19 @@ func buildGroupConversationSummary(topicID string, group *types.Group, latest *t
 		AvatarURL: group.AvatarURL,
 	}
 	applyLatestMessage(summary, latest)
+	applyGroupCreatedTime(summary, group)
 	return summary
+}
+
+func applyGroupCreatedTime(summary *types.ConversationSummary, group *types.Group) {
+	if summary == nil || group == nil || group.CreatedAt.IsZero() {
+		return
+	}
+	if summary.LastTime != nil && !group.CreatedAt.After(*summary.LastTime) {
+		return
+	}
+	t := group.CreatedAt
+	summary.LastTime = &t
 }
 
 func applyLatestMessage(summary *types.ConversationSummary, latest *types.Message) {
@@ -179,6 +223,44 @@ func displayNameOrUsername(displayName, username string) string {
 		return displayName
 	}
 	return username
+}
+
+// conversationLess returns a sort comparison function for ConversationSummary slices.
+// Conversations are sorted by LastTime descending; nil LastTime items sink to the bottom.
+func conversationLess(items []*types.ConversationSummary) func(int, int) bool {
+	return func(i, j int) bool {
+		left := items[i].LastTime
+		right := items[j].LastTime
+		switch {
+		case left == nil && right == nil:
+			return items[i].Name < items[j].Name
+		case left == nil:
+			return false
+		case right == nil:
+			return true
+		default:
+			if left.Equal(*right) {
+				return conversationTieLess(items[i], items[j])
+			}
+			return left.After(*right)
+		}
+	}
+}
+
+func conversationTieLess(left, right *types.ConversationSummary) bool {
+	if left == nil || right == nil {
+		return right != nil
+	}
+	if left.IsGroup != right.IsGroup {
+		return left.IsGroup
+	}
+	if left.IsGroup {
+		return left.GroupID > right.GroupID
+	}
+	if left.FriendID != right.FriendID {
+		return left.FriendID > right.FriendID
+	}
+	return left.ID > right.ID
 }
 
 func formatInt64(v int64) string {

@@ -12,7 +12,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
   const [friends, setFriends] = useState([]);
   const [groups, setGroups] = useState([]);
   const [pending, setPending] = useState([]);
-  const [bots, setBots] = useState([]);
+  const [agents, setAgents] = useState([]);
   const [search, setSearch] = useState('');
   const [deletingTopicId, setDeletingTopicId] = useState('');
   const [showCreateGroup, setShowCreateGroup] = useState(false);
@@ -21,14 +21,16 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
 
   const loadAll = async () => {
     try {
-      const [resC, resF, resG, resP, resB] = await Promise.all([
-        api.getConversations().catch(()=>({})),
+      const [resC, resF, resG, resP, resA] = await Promise.all([
+        api.getConversations().catch((error) => ({ error })),
         api.getFriends().catch(()=>({})),
         api.getGroups().catch(()=>({})),
         api.getPendingRequests().catch(()=>({})),
         api.getAgents().catch(()=>({}))
       ]);
-      const conversations = (resC.conversations || []).map((item) => ({
+      const groups = resG.groups || [];
+      const conversationItems = resC.conversations || [];
+      const conversations = conversationItems.map((item) => ({
         id: item.id,
         friendId: item.friend_id,
         groupId: item.group_id,
@@ -41,11 +43,18 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
         isOnline: item.is_online,
         seq: item.latest_seq || 0,
       }));
-      setChats(conversations);
-      setFriends(resF.friends || []);
-      setGroups(resG.groups || []);
+      const friends = resF.friends || [];
+      const fallbackConversations = resC.error
+        ? [...groups.map(groupToConversation), ...friends.map((friend) => friendToConversation(user.uid, friend))]
+        : [];
+      setChats(resC.error ? fallbackConversations : conversations);
+      setFriends(friends);
+      setGroups(groups);
+      if (resC.error) {
+        console.error('Failed to load conversations, falling back to groups:', resC.error);
+      }
       setPending(resP.requests || []);
-      setBots(resB.agents || resB.bots || []);
+      setAgents(resA.agents || resA.bots || []);
     } catch (e) {
       console.error('Failed to load sidebar data:', e);
     }
@@ -102,26 +111,29 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
     return () => unsub();
   }, []);
 
-  const handleGroupCreated = () => loadAll();
+  const handleGroupCreated = (created) => {
+    const group = normalizeCreatedGroup(created);
+    if (group) {
+      const topicId = created.topic || `grp_${group.id}`;
+      setChats((prev) => [
+        {
+          id: topicId,
+          groupId: group.id,
+          name: group.name,
+          preview: '',
+          time: formatTime(new Date(group.created_at || Date.now())),
+          isGroup: true,
+          avatar_url: group.avatar_url,
+          seq: 0,
+        },
+        ...prev.filter((chat) => chat.id !== topicId),
+      ]);
+      setGroups((prev) => [group, ...prev.filter((item) => String(item.id) !== String(group.id))]);
+    }
+    loadAll();
+  };
   const handleAccept = async (userId) => { await api.acceptFriend(userId); loadAll(); };
   const handleReject = async (userId) => { await api.rejectFriend(userId); loadAll(); };
-  const handleOpenAgent = async (bot) => {
-    if (!bot?.can_chat) return;
-    try {
-      const result = await api.openAgent(bot.id);
-      const topicId = result.topic_id || bot.topic_id || p2pTopicId(user.uid, bot.id);
-      onSelectTopic({
-        topicId,
-        name: bot.display_name || bot.username,
-        isGroup: false,
-        avatar_url: bot.avatar_url,
-        friendId: bot.id,
-        catscoIdentity: result.catsco_identity,
-      });
-    } catch (err) {
-      window.alert(err.message || 'Failed to open agent.');
-    }
-  };
   const handleAcceptAgentInvite = async (event, bot) => {
     event.stopPropagation();
     try {
@@ -157,18 +169,49 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
     }
   };
 
+  const handleSelectAgent = async (agent) => {
+    const agentId = agent.uid || agent.id;
+    if (!agentId) return;
+    if (agent.can_chat === false) return;
+
+    const fallbackTopicId = agent.topic_id || p2pTopicId(user.uid, agentId);
+    const fallbackTopic = {
+      topicId: fallbackTopicId,
+      name: agent.display_name || agent.username,
+      isGroup: false,
+      avatar_url: agent.avatar_url,
+      friendId: agentId,
+      isBot: true,
+    };
+
+    try {
+      const res = await api.openAgent(agentId);
+      const opened = res.agent || {};
+      onSelectTopic({
+        ...fallbackTopic,
+        topicId: opened.topic_id || res.topic || fallbackTopicId,
+        name: opened.display_name || fallbackTopic.name,
+        avatar_url: opened.avatar_url || fallbackTopic.avatar_url,
+      });
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (err) {
+      console.error('Failed to open agent:', err);
+      window.alert(err.message || 'Unable to open this agent.');
+    }
+  };
+
   const lowerSearch = search.toLowerCase();
   const filteredChats = chats.filter(c => c.name.toLowerCase().includes(lowerSearch));
   const filteredFriends = friends.filter(f => (f.display_name || f.username).toLowerCase().includes(lowerSearch));
   const filteredGroups = groups.filter(g => g.name.toLowerCase().includes(lowerSearch));
-  const filteredBots = bots.filter(b => (b.display_name || b.username).toLowerCase().includes(lowerSearch));
+  const filteredAgents = agents.filter(a => (a.display_name || a.username).toLowerCase().includes(lowerSearch));
 
   return (
     <>
       <div style={{padding: '12px 16px', borderBottom: '1px solid var(--v3-border)'}}>
         <input
           style={{width: '100%', background: 'rgba(255,255,255,0.05)', border: 'none', color: '#fff', padding: '8px 12px', borderRadius: '6px', outline: 'none', fontSize: '14px'}}
-          placeholder="Search chats, groups, friends..."
+          placeholder="Search chats, virtual employees, groups, friends..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -242,36 +285,37 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           })
         )}
 
-        {(!search || filteredBots.length > 0) && (
+        {(!search || filteredAgents.length > 0) && (
           <>
             <div className="v3-chat-section" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 16}}>
-              <div style={{display:'flex', alignItems:'center'}}><Zap size={14} fill="currentColor" style={{marginRight:6, color:'var(--v3-primary)'}} /> AI Apps</div>
+              <div style={{display:'flex', alignItems:'center'}}><Zap size={14} fill="currentColor" style={{marginRight:6, color:'var(--v3-primary)'}} /> Virtual Employees</div>
               {!search && <span style={{cursor:'pointer', fontSize:14}} onClick={()=>setShowAgentStore(true)} title="Agent Store">＋</span>}
             </div>
             
-            {filteredBots.length === 0 ? (
-               <div style={{ padding: '20px', textAlign: 'center', color: '#888', fontSize: '13px' }}>Workspace has no agents.</div>
+            {filteredAgents.length === 0 ? (
+               <div style={{ padding: '20px', textAlign: 'center', color: '#888', fontSize: '13px' }}>No virtual employees available.</div>
             ) : (
-              filteredBots.map((bot) => {
-                const topicId = bot.topic_id || p2pTopicId(user.uid, bot.id);
-                const isOnline = Boolean((onlineUsers && onlineUsers[bot.id]) || bot.is_online);
-                const statusLabel = agentStatusLabel(bot);
-                const canChat = Boolean(bot.can_chat);
+              filteredAgents.map((agent) => {
+                const agentId = agent.uid || agent.id;
+                const topicId = agent.topic_id || p2pTopicId(user.uid, agentId);
+                const isOnline = Boolean((onlineUsers && onlineUsers[agentId]) || agent.is_online);
+                const statusLabel = agentStatusLabel(agent);
+                const canChat = agent.can_chat !== false;
                 return (
                   <div
-                    key={bot.id}
+                    key={agentId}
                     className={`v3-chat-item ${activeTopic === topicId ? 'active' : ''}`}
-                    onClick={() => handleOpenAgent(bot)}
+                    onClick={() => handleSelectAgent(agent)}
                     style={{ opacity: canChat ? 1 : 0.72, cursor: canChat ? 'pointer' : 'default' }}
                   >
                     <span className="prefix" style={{display:'flex', alignItems:'center'}}><Bot size={18} /></span>
-                    <span className="v3-chat-item-label">{bot.display_name || bot.username}</span>
-                    {bot.access_status === 'pending_accept' ? (
+                    <span className="v3-chat-item-label">{agent.display_name || agent.username}</span>
+                    {agent.access_status === 'pending_accept' ? (
                       <button
                         type="button"
                         className="oc-btn oc-btn-default"
                         style={{ marginLeft: 'auto', padding: '3px 8px', borderRadius: 6, fontSize: 11 }}
-                        onClick={(event) => handleAcceptAgentInvite(event, bot)}
+                        onClick={(event) => handleAcceptAgentInvite(event, agent)}
                       >
                         Accept
                       </button>
@@ -336,7 +380,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           </>
         )}
 
-        {search && filteredChats.length === 0 && filteredGroups.length === 0 && filteredFriends.length === 0 && filteredBots.length === 0 && (
+        {search && filteredChats.length === 0 && filteredGroups.length === 0 && filteredFriends.length === 0 && filteredAgents.length === 0 && (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)', fontSize: '13px' }}>No matches found.</div>
         )}
 
@@ -370,6 +414,49 @@ function formatTime(date) {
   const h = date.getHours().toString().padStart(2, '0');
   const m = date.getMinutes().toString().padStart(2, '0');
   return `${h}:${m}`;
+}
+
+function normalizeCreatedGroup(created) {
+  if (!created) return null;
+  const rawGroup = created.group || {};
+  const id = rawGroup.id || created.group_id;
+  const name = rawGroup.name || created.name;
+  if (!id || !name) return null;
+  return {
+    ...rawGroup,
+    id,
+    name,
+    owner_id: rawGroup.owner_id,
+    avatar_url: rawGroup.avatar_url || created.avatar_url || '',
+    created_at: rawGroup.created_at || created.created_at || new Date().toISOString(),
+  };
+}
+
+function groupToConversation(group) {
+  return {
+    id: `grp_${group.id}`,
+    groupId: group.id,
+    name: group.name,
+    preview: '',
+    time: group.created_at ? formatTime(new Date(group.created_at)) : '',
+    isGroup: true,
+    avatar_url: group.avatar_url,
+    seq: 0,
+  };
+}
+
+function friendToConversation(currentUid, friend) {
+  return {
+    id: p2pTopicId(currentUid, friend.id),
+    friendId: friend.id,
+    name: friend.display_name || friend.username,
+    preview: '',
+    time: '',
+    isGroup: false,
+    avatar_url: friend.avatar_url,
+    isBot: friend.bot,
+    seq: 0,
+  };
 }
 
 function summarizeMessage(message) {

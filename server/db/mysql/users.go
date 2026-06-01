@@ -37,6 +37,64 @@ func (a *Adapter) GetUser(id int64) (*types.User, error) {
 	return u, nil
 }
 
+// ListAdminUsers returns users for local account administration.
+func (a *Adapter) ListAdminUsers(query string, limit, offset int) ([]*types.User, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	pattern := "%" + query + "%"
+	rows, err := a.db.Query(
+		`SELECT id, username, COALESCE(email,''), COALESCE(phone,''), display_name, COALESCE(avatar_url,''), account_type, state, created_at, updated_at
+		 FROM users
+		 WHERE (? = '' OR CAST(id AS CHAR) = ? OR username LIKE ? OR COALESCE(email, '') LIKE ? OR display_name LIKE ?)
+		 ORDER BY id DESC
+		 LIMIT ? OFFSET ?`,
+		query, query, pattern, pattern, pattern, limit, offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list admin users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []*types.User
+	for rows.Next() {
+		u := &types.User{}
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Phone, &u.DisplayName, &u.AvatarURL, &u.AccountType, &u.State, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan admin user: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+// CountAdminUsers returns the number of users matching the local admin query.
+func (a *Adapter) CountAdminUsers(query string) (int, error) {
+	pattern := "%" + query + "%"
+	var count int
+	err := a.db.QueryRow(
+		`SELECT COUNT(*)
+		 FROM users
+		 WHERE (? = '' OR CAST(id AS CHAR) = ? OR username LIKE ? OR COALESCE(email, '') LIKE ? OR display_name LIKE ?)`,
+		query, query, pattern, pattern, pattern,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count admin users: %w", err)
+	}
+	return count, nil
+}
+
+// UpdateUserState enables or disables a user account.
+func (a *Adapter) UpdateUserState(uid int64, state int) error {
+	_, err := a.db.Exec(`UPDATE users SET state = ? WHERE id = ?`, state, uid)
+	return err
+}
+
 // GetUserByUsername retrieves a user by username.
 func (a *Adapter) GetUserByUsername(username string) (*types.User, error) {
 	u := &types.User{}

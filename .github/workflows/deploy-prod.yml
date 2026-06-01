@@ -63,7 +63,7 @@ jobs:
           ssh ${SSH_OPTS} "${REMOTE}" "cat > ${PROD_STACK_ROOT}/releases/cats-company-source-${IMAGE_TAG}.tar.gz" < "cats-company-source-${IMAGE_TAG}.tar.gz"
 
       - name: Deploy prod stack
-        timeout-minutes: 15
+        timeout-minutes: 25
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}

@@ -37,24 +37,22 @@ The deploy workflow only touches the configured test stack root and uses:
 
 It does not touch production directories.
 
-## PostgreSQL cutover test
+## PostgreSQL test
 
-For Tencent Cloud migration rehearsal, the test stack should run against the
-same PostgreSQL service as production will use. Copy
-`deploy/test/env.test.postgres.example` to `<test-stack-root>/env/test.env`,
-then fill real secrets.
+To run the test stack against PostgreSQL, copy
+`deploy/test/env.test.postgres.example` to `<test-stack-root>/env/test.env` and
+fill real secrets.
 
 Important values:
 
 ```env
 COMPOSE_PROFILES=
 OC_DB_DRIVER=postgres
-OC_DB_DSN=postgres://catsco:***@172.16.16.14:5432/catsco?sslmode=prefer
+OC_DB_DSN=postgres://catsco:***@postgres.internal:5432/catsco?sslmode=prefer
 ```
 
 Leaving `COMPOSE_PROFILES` empty prevents the local MySQL profile from starting.
-The default `env.test.example` keeps the legacy MySQL profile only for local or
-legacy isolated tests.
+The default `env.test.example` keeps the MySQL profile for local isolated tests.
 
 ## GitHub secrets
 

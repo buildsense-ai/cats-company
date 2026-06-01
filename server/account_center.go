@@ -218,7 +218,12 @@ func (h *AccountCenterHandler) HandleIntrospect(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if _, ok := h.requireService(w, r); !ok {
+	service, ok := h.requireService(w, r)
+	if !ok {
+		return
+	}
+	if !accountServiceAllowsScope(service, "account.introspect") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "service scope denied"})
 		return
 	}
 
@@ -267,7 +272,12 @@ func (h *AccountCenterHandler) HandleGetUser(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if _, ok := h.requireService(w, r); !ok {
+	service, ok := h.requireService(w, r)
+	if !ok {
+		return
+	}
+	if !accountServiceAllowsScope(service, "account.users.read") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "service scope denied"})
 		return
 	}
 
@@ -311,6 +321,21 @@ func extractServiceToken(r *http.Request) string {
 		return strings.TrimSpace(strings.TrimPrefix(auth, "Service "))
 	}
 	return ""
+}
+
+func accountServiceAllowsScope(service AccountService, scope string) bool {
+	// Empty scopes keep legacy/internal tokens compatible and mean the service
+	// can use all current account-center endpoints. Once scopes are configured,
+	// they are enforced per endpoint.
+	if len(service.Scopes) == 0 {
+		return true
+	}
+	for _, item := range service.Scopes {
+		if strings.EqualFold(strings.TrimSpace(item), scope) {
+			return true
+		}
+	}
+	return false
 }
 
 func jwtTime(t *jwt.NumericDate) interface{} {

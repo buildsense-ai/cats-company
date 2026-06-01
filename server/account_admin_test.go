@@ -42,6 +42,37 @@ func TestAccountAdminRejectsPublicAddress(t *testing.T) {
 	}
 }
 
+func TestAccountAdminRejectsForwardedPublicAddressFromLocalProxy(t *testing.T) {
+	handler := NewAccountAdminHandler(accountTestUserLookup{users: map[int64]*types.User{}}, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/local/account-admin", nil)
+	req.RemoteAddr = "127.0.0.1:40200"
+	req.Header.Set("X-Forwarded-For", "203.0.113.20")
+	req.Header.Set("X-Real-IP", "203.0.113.20")
+	rec := httptest.NewRecorder()
+
+	handler.HandlePage(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAccountAdminRejectsForwardedHeaderPublicAddress(t *testing.T) {
+	handler := NewAccountAdminHandler(accountTestUserLookup{users: map[int64]*types.User{}}, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/local/account-admin", nil)
+	req.RemoteAddr = "127.0.0.1:40200"
+	req.Header.Set("Forwarded", `for=203.0.113.20;proto=https`)
+	rec := httptest.NewRecorder()
+
+	handler.HandlePage(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAccountAdminUserLookup(t *testing.T) {
 	verifier, err := NewEnvAccountServiceVerifier("relay=service-secret")
 	if err != nil {
@@ -72,9 +103,6 @@ func TestAccountAdminUserLookup(t *testing.T) {
 			UID      int64  `json:"uid"`
 			Username string `json:"username"`
 		} `json:"user"`
-		AccountCenter struct {
-			ServiceTokensConfigured bool `json:"service_tokens_configured"`
-		} `json:"account_center"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -82,8 +110,156 @@ func TestAccountAdminUserLookup(t *testing.T) {
 	if body.User.UID != 9 || body.User.Username != "carol" {
 		t.Fatalf("unexpected user payload: %+v", body.User)
 	}
-	if !body.AccountCenter.ServiceTokensConfigured {
-		t.Fatal("expected configured service token flag")
+}
+
+func TestAccountAdminUserListSupportsPaginationAndSearch(t *testing.T) {
+	handler := NewAccountAdminHandler(accountTestUserLookup{users: map[int64]*types.User{
+		1:  {ID: 1, Username: "alice", Email: "alice@example.com", DisplayName: "Alice", AccountType: types.AccountHuman, State: 0},
+		2:  {ID: 2, Username: "bob", Email: "bob@example.com", DisplayName: "Bob", AccountType: types.AccountHuman, State: 0},
+		30: {ID: 30, Username: "carol", Email: "carol@example.com", DisplayName: "Carol", AccountType: types.AccountHuman, State: 1},
+	}}, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/local/account-admin/users/list?page=1&page_size=2&q=car", nil)
+	req.RemoteAddr = "127.0.0.1:40200"
+	rec := httptest.NewRecorder()
+	handler.HandleUserList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Users []struct {
+			UID   int64 `json:"uid"`
+			State int   `json:"state"`
+		} `json:"users"`
+		Count     int `json:"count"`
+		Page      int `json:"page"`
+		TotalPage int `json:"total_page"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Count != 1 || body.Page != 1 || body.TotalPage != 1 || len(body.Users) != 1 {
+		t.Fatalf("unexpected list response: %+v", body)
+	}
+	if body.Users[0].UID != 30 || body.Users[0].State != 1 {
+		t.Fatalf("expected disabled matching user first, got %+v", body.Users)
+	}
+}
+
+func TestAccountAdminUserStateCanDisableAndRestore(t *testing.T) {
+	users := map[int64]*types.User{
+		7: {ID: 7, Username: "erin", Email: "erin@example.com", DisplayName: "Erin", AccountType: types.AccountHuman, State: 0},
+	}
+	handler := NewAccountAdminHandler(accountTestUserLookup{users: users}, nil, nil)
+
+	disableReq := httptest.NewRequest(http.MethodPost, "/local/account-admin/users/state", strings.NewReader(`{"uid":7,"state":1}`))
+	disableReq.RemoteAddr = "127.0.0.1:40200"
+	disableRec := httptest.NewRecorder()
+	handler.HandleUserState(disableRec, disableReq)
+	if disableRec.Code != http.StatusOK {
+		t.Fatalf("disable status=%d body=%s", disableRec.Code, disableRec.Body.String())
+	}
+	if users[7].State != 1 {
+		t.Fatalf("expected disabled state, got %d", users[7].State)
+	}
+
+	restoreReq := httptest.NewRequest(http.MethodPost, "/local/account-admin/users/state", strings.NewReader(`{"uid":7,"state":0}`))
+	restoreReq.RemoteAddr = "127.0.0.1:40200"
+	restoreRec := httptest.NewRecorder()
+	handler.HandleUserState(restoreRec, restoreReq)
+	if restoreRec.Code != http.StatusOK {
+		t.Fatalf("restore status=%d body=%s", restoreRec.Code, restoreRec.Body.String())
+	}
+	if users[7].State != 0 {
+		t.Fatalf("expected restored state, got %d", users[7].State)
+	}
+}
+
+func TestAccountAdminUserSearchByEmail(t *testing.T) {
+	handler := NewAccountAdminHandler(accountTestUserLookup{users: map[int64]*types.User{
+		12: {
+			ID:          12,
+			Username:    "dora",
+			Email:       "dora@example.com",
+			DisplayName: "Dora",
+			AccountType: types.AccountHuman,
+			State:       0,
+		},
+	}}, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/local/account-admin/users/search?q=dora@example.com", nil)
+	req.RemoteAddr = "127.0.0.1:40200"
+	rec := httptest.NewRecorder()
+	handler.HandleUserSearch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Users []struct {
+			UID   int64  `json:"uid"`
+			Email string `json:"email"`
+		} `json:"users"`
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Count != 1 || len(body.Users) != 1 || body.Users[0].UID != 12 || body.Users[0].Email != "dora@example.com" {
+		t.Fatalf("unexpected search response: %+v", body)
+	}
+}
+
+func TestAccountAdminUserSearchDeduplicatesUsernameAndFuzzyMatches(t *testing.T) {
+	handler := NewAccountAdminHandler(accountTestUserLookup{users: map[int64]*types.User{
+		21: {
+			ID:          21,
+			Username:    "carol",
+			Email:       "carol@example.com",
+			DisplayName: "Carol",
+			AccountType: types.AccountHuman,
+			State:       0,
+		},
+		22: {
+			ID:          22,
+			Username:    "carol-helper",
+			Email:       "helper@example.com",
+			DisplayName: "Carol Helper",
+			AccountType: types.AccountHuman,
+			State:       0,
+		},
+	}}, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/local/account-admin/users/search?q=carol", nil)
+	req.RemoteAddr = "127.0.0.1:40200"
+	rec := httptest.NewRecorder()
+	handler.HandleUserSearch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Users []struct {
+			UID int64 `json:"uid"`
+		} `json:"users"`
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Count != 2 || len(body.Users) != 2 {
+		t.Fatalf("expected two deduplicated users, got %+v", body)
+	}
+	seen := map[int64]bool{}
+	for _, user := range body.Users {
+		if seen[user.UID] {
+			t.Fatalf("duplicate uid in search response: %+v", body)
+		}
+		seen[user.UID] = true
+	}
+	if !seen[21] || !seen[22] {
+		t.Fatalf("missing expected users: %+v", body)
 	}
 }
 

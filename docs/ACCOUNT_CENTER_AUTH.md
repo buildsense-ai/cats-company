@@ -1,81 +1,43 @@
 # CatsCo 账号中心接入文档
 
-本文面向 CatsCompany、CatsCo relay/Bifrost、内部工具以及后续业务服务。当前版本的目标很简单：所有业务共用 CatsCo 账号登录，但各业务仍然独立部署、独立授权、独立管理自己的业务凭证。
+本文面向公司内部业务服务。目标是让多个产品共用同一套 CatsCo 用户账号：用户只需要用 CatsCompany 账号登录，业务服务通过账号中心确认“这个用户是谁、账号是否可用”，再决定自己的业务权限。
 
-当前账号中心内置在 CatsCompany 中。后续如果业务数量变多，再拆成独立 `auth.catsco.cc` 或 OAuth/OIDC 服务。
+当前账号中心暂时内置在 CatsCompany 服务里。代码边界已经尽量保持独立，后续可以拆成独立认证服务。
 
-## 当前版本能做什么
+## 一句话理解
 
-已支持：
+- 用户登录凭证：用户自己的 JWT，来自 CatsCompany 登录接口。
+- Service Token：内部业务服务访问账号中心的服务端凭证，不属于某个用户。
+- 业务服务不要直连 CatsCompany 数据库，也不要在前端保存 Service Token。
 
-- 用户登录、注册、重置密码仍走 CatsCompany 现有接口。
-- 业务服务可以用 `Service Token` 调账号中心验证用户 JWT。
-- 业务服务可以按 UID 查询用户基础资料。
-- 本地后台可以通过 SSH 隧道创建、撤销 `Service Token`。
-- 数据库只保存 service token hash，不保存明文。
+## 账号状态
 
-当前版本不做：
+用户资料里的 `state` 用于限制账号：
 
-- 不做完整 OAuth 授权码流程。
-- 不做 refresh token / 设备管理。
-- 不在 CatsCompany 里管理 relay/Bifrost 的 Virtual Key。
-- 不在 CatsCompany 里保存模型供应商 key、模型路由、预算和限流策略。
-- 不让其他业务直接连 CatsCompany 数据库。
+- `0`：正常，可登录、可通过账号中心校验。
+- `1`：已禁用，不能登录；已有 JWT 访问 CatsCompany API 会被拒绝；机器人 API Key 和 WebSocket 连接会被拒绝；账号中心 introspect 会返回不可用，业务服务应拒绝访问。
 
-## 核心边界
+本地账号后台可以禁用或恢复用户账号。这个能力用于风控、测试账号隔离、异常账号处理。
 
-### CatsCompany 账号中心
-
-负责回答：
-
-- 这个用户 JWT 是否有效？
-- 这个用户是谁？
-- 这个用户账号状态是否正常？
-- 这个内部服务是否有资格查询账号中心？
-
-### 业务服务
-
-例如 relay/Bifrost、写作工具、监控后台、内部管理工具。
-
-负责自己业务内的：
-
-- 权限模型。
-- 业务角色。
-- 业务 API Key。
-- 业务限流和配额。
-- 业务数据。
-
-### Relay / Bifrost
-
-Bifrost 自己有 Virtual Keys / governance 机制，适合管理：
-
-- 用户或应用调用中转的 key。
-- provider key。
-- OpenAI / Anthropic 兼容层。
-- 模型路由。
-- 预算、限流、team/customer 映射。
-
-CatsCompany 账号中心只提供 CatsCo 用户身份。relay/Bifrost 用返回的 `uid` 去映射自己的 customer、team 或 Virtual Key。
-
-## 接入总流程
+## 接入链路
 
 ```text
-用户登录 CatsCompany
-  -> 拿到用户 JWT
-  -> 业务前端或客户端请求自己的业务后端
-  -> 业务后端带 Service Token 调账号中心 introspect
-  -> 账号中心返回 active + user
-  -> 业务后端按 uid/account_type/state 放行或拒绝
+用户在 CatsCompany 登录
+  -> 得到用户 JWT
+  -> 用户访问某个业务服务
+  -> 业务服务后端携带 Service Token 调账号中心
+  -> 账号中心验证用户 JWT 并返回用户资料
+  -> 业务服务按 uid / account_type / state / 自己的业务角色放行或拒绝
 ```
 
-不要让前端直接拿 `Service Token`。`Service Token` 只能放在业务服务端环境变量或 secret 里。
+## 第一步：创建 Service Token
 
-## 第一步：给业务服务创建 Service Token
+Service Token 是业务服务调用账号中心的内部凭证。它只放在服务端环境变量、Secret Manager 或 CI/CD Secret 中，不能放到浏览器、桌面客户端或公开仓库。
 
-当前版本推荐通过本地后台创建 service token。后台不走公网入口，只通过 SSH 隧道访问。
+后台入口仅供 SSH 隧道访问，不能暴露到公网。生产 nginx 配置应显式拦截 `/local` 和 `/local/` 路径；后端也会拒绝带公网 `X-Forwarded-For` / `X-Real-IP` / `Forwarded` 的代理请求。因为 Docker 端口转发可能让 SSH 隧道在容器内表现为私网 bridge 地址，所以后台页面仍允许本机和私网 bridge 来源；不要把后端端口绑定到公网或内网负载均衡。
 
 ```bash
-ssh -L 26061:127.0.0.1:26061 <server-alias>
+ssh -N -L 26061:127.0.0.1:26061 <server-alias>
 ```
 
 然后在本机浏览器打开：
@@ -84,38 +46,24 @@ ssh -L 26061:127.0.0.1:26061 <server-alias>
 http://127.0.0.1:26061/local/account-admin
 ```
 
-在后台里创建服务，例如：
+在 `Service Token` 区域创建一个服务：
 
-- `cats-relay`
-- `writing-app`
-- `ops-dashboard`
+- 服务标识：稳定的机器名，例如 `writing-app`、`ops-tool`、`internal-api`。
+- 显示名称：给人看的名称，例如 `写作平台`、`运维工具`。
+- 权限范围：可选。留空表示允许使用当前全部账号中心接口；一旦选择了权限，账号中心会按接口强制检查。
 
-权限范围是可选项。当前 V0 主要用于记录和后续扩展，不确定时可以先不选。常用权限含义：
+常用权限：
 
-- 验证用户登录：底层 scope 是 `account.introspect`
-- 读取用户资料：底层 scope 是 `account.users.read`
-- Bifrost 中转接入：底层 scope 是 `bifrost.gateway`
+- `account.introspect`：验证用户登录状态。
+- `account.users.read`：按 UID 读取用户基础资料。
 
-创建后会显示一次性明文 token。立刻保存到对应服务的 secret 或环境变量里。CatsCompany 数据库只保存 hash 和 prefix，后续无法找回明文；如果丢失或怀疑泄露，就在本地后台重新生成并替换到对应服务。
+创建后会显示一次性明文 token。请立刻保存到对应业务服务的 secret 或环境变量里。数据库只保存 hash 和 token 前缀，后续无法找回明文；丢失或疑似泄露时，在后台重新生成并替换业务服务配置。
 
-这里即使后台只通过 SSH 隧道访问，也不建议支持重复查看明文 token。原因不是 SSH 不安全，而是账号中心不保存明文本身，后续即使数据库或后台页面被误读，也不会直接泄露可用的 service token。
+兼容旧部署时，也可以通过环境变量预置 service token，格式为 `slug=plain-token` 或 `slug=sha256:<hex-encoded-sha256>`，多个条目可用逗号、分号或换行分隔。优先推荐用后台创建数据库 token，便于撤销和轮换。
 
-也可以用环境变量配置固定 service token：
+## 第二步：用户登录
 
-```bash
-OC_ACCOUNT_SERVICE_TOKENS="cats-relay=replace-with-secret;internal-tool=sha256:<hex-sha256>"
-```
-
-支持两种形式：
-
-- `service=plain-token`：启动时在内存里计算 hash。
-- `service=sha256:<hex>`：只把 token 的 SHA-256 hash 放进环境变量。
-
-生产更推荐用本地后台生成并落库管理，方便撤销。
-
-## 第二步：用户登录并拿到 JWT
-
-用户仍然使用 CatsCompany 登录。
+用户仍然走 CatsCompany 登录接口：
 
 ```http
 POST /api/auth/login
@@ -133,21 +81,21 @@ Content-Type: application/json
 {
   "token": "<user_jwt>",
   "uid": 2,
-  "username": "zhy8882",
-  "email": "user@example.com",
-  "display_name": "布鲁斯",
+  "username": "demo-user",
+  "email": "demo@example.com",
+  "display_name": "Demo User",
   "avatar_url": "/uploads/avatar.png",
   "account_type": "human"
 }
 ```
 
-业务前端或客户端保存用户 JWT，请求自己的业务后端时带上：
+业务前端或客户端访问自己的业务后端时，携带用户 JWT：
 
 ```http
 Authorization: Bearer <user_jwt>
 ```
 
-## 第三步：业务后端验证用户 JWT
+## 第三步：业务后端验证用户
 
 业务后端收到用户 JWT 后，调用账号中心：
 
@@ -161,29 +109,29 @@ Content-Type: application/json
 }
 ```
 
-成功返回：
+有效用户返回：
 
 ```json
 {
   "active": true,
   "user": {
     "uid": 2,
-    "username": "zhy8882",
-    "email": "user@example.com",
-    "display_name": "布鲁斯",
+    "username": "demo-user",
+    "email": "demo@example.com",
+    "display_name": "Demo User",
     "avatar_url": "/uploads/avatar.png",
     "account_type": "human",
     "state": 0
   },
   "claims": {
     "issuer": "catscompany",
-    "expires_at": "2026-05-28T12:00:00Z",
-    "issued_at": "2026-05-21T12:00:00Z"
+    "issued_at": "2026-05-21T12:00:00Z",
+    "expires_at": "2026-05-28T12:00:00Z"
   }
 }
 ```
 
-无效或过期 token 返回：
+用户 JWT 无效或过期时返回：
 
 ```json
 {
@@ -192,12 +140,21 @@ Content-Type: application/json
 }
 ```
 
+账号不存在或已禁用时返回：
+
+```json
+{
+  "active": false,
+  "error": "user_not_available"
+}
+```
+
 业务服务建议：
 
 - `active=true` 且 `user.state=0` 才放行。
-- `active=false` 返回 401，让用户重新登录。
-- 本地短缓存验证结果 30-120 秒，减少账号中心压力。
-- 不要把用户密码、CatsCompany 数据库连接、service token 下发到浏览器。
+- `active=false` 时，业务服务应该向自己的调用方返回 401 或 403。用户 JWT 无效或过期时引导重新登录；账号被禁用时展示“账号不可用”。
+- 账号中心验证结果可以短缓存 30-120 秒，减少重复请求。
+- 自己业务里的角色、套餐、配额、权限仍然由业务服务自己管理。
 
 ## 第四步：按 UID 查询用户资料
 
@@ -213,9 +170,9 @@ Authorization: Service <service_token>
 ```json
 {
   "uid": 2,
-  "username": "zhy8882",
-  "email": "user@example.com",
-  "display_name": "布鲁斯",
+  "username": "demo-user",
+  "email": "demo@example.com",
+  "display_name": "Demo User",
   "avatar_url": "/uploads/avatar.png",
   "account_type": "human",
   "state": 0,
@@ -223,26 +180,14 @@ Authorization: Service <service_token>
 }
 ```
 
-普通前端不要直接调用这个接口。普通前端查询自己资料仍然用：
+普通前端不要直接调用这个接口。普通用户查看自己的资料仍然使用：
 
 ```http
 GET /api/me
 Authorization: Bearer <user_jwt>
 ```
 
-## Relay / Bifrost 推荐接法
-
-relay/Bifrost 不需要 CatsCompany 帮它生成用户中转 key。
-
-推荐流程：
-
-1. 用户登录 CatsCompany，拿到 CatsCo 用户 JWT。
-2. relay/Bifrost 后端用自己的 `Service Token` 调 `/api/account/introspect`。
-3. 账号中心返回 `uid`。
-4. relay/Bifrost 用 `uid` 查或创建自己的 customer/team/Virtual Key。
-5. relay/Bifrost 自己处理 provider key、模型权限、预算、限流、OpenAI/Anthropic 兼容。
-
-这样以后即使 relay 从 Bifrost 换成别的网关，账号中心接口也不用大改。
+注意：`GET /api/account/users/{uid}` 是资料补全接口，不等于鉴权结论。它会返回用户当前状态字段；业务鉴权仍应以 `/api/account/introspect` 为准。
 
 ## 接入方伪代码
 
@@ -253,7 +198,7 @@ async function verifyCatsUser(userToken: string) {
   const resp = await fetch(`${process.env.CATS_ACCOUNT_CENTER_URL}/api/account/introspect`, {
     method: 'POST',
     headers: {
-      'Authorization': `Service ${process.env.CATS_SERVICE_TOKEN}`,
+      Authorization: `Service ${process.env.CATS_SERVICE_TOKEN}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ token: userToken }),
@@ -276,8 +221,8 @@ async function verifyCatsUser(userToken: string) {
 
 ```go
 func verifyCatsUser(ctx context.Context, accountURL, serviceToken, userToken string) (*CatsUser, error) {
-	body := strings.NewReader(fmt.Sprintf(`{"token":%q}`, userToken))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, accountURL+"/api/account/introspect", body)
+	body, _ := json.Marshal(map[string]string{"token": userToken})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, accountURL+"/api/account/introspect", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -309,7 +254,7 @@ func verifyCatsUser(ctx context.Context, accountURL, serviceToken, userToken str
 
 ## 错误处理
 
-### Service Token 未配置
+### Service Token 验证器不可用
 
 ```http
 HTTP/1.1 503 Service Unavailable
@@ -321,7 +266,7 @@ HTTP/1.1 503 Service Unavailable
 }
 ```
 
-说明 CatsCompany 服务端还没有配置 `OC_ACCOUNT_SERVICE_TOKENS`，也没有可用的数据库 service token。
+说明账号中心的 service token 验证器或数据库存储不可用。正常部署里，如果只是还没有创建 token、token 填错或 token 已撤销，通常会返回下面的 401。
 
 ### Service Token 无效
 
@@ -337,6 +282,25 @@ HTTP/1.1 401 Unauthorized
 
 说明业务服务端传错了 `Authorization: Service <service_token>`。
 
+### Service Token 权限不足
+
+```http
+HTTP/1.1 403 Forbidden
+```
+
+```json
+{
+  "error": "service scope denied"
+}
+```
+
+说明该 service token 已配置权限范围，但缺少当前接口需要的 scope：
+
+- `POST /api/account/introspect` 需要 `account.introspect`。
+- `GET /api/account/users/{uid}` 需要 `account.users.read`。
+
+如果 token 没有配置任何 scope，则兼容为允许使用当前全部账号中心接口。
+
 ### 用户 JWT 无效
 
 ```http
@@ -350,31 +314,45 @@ HTTP/1.1 200 OK
 }
 ```
 
-说明用户需要重新登录。
+说明用户 token 格式不对、签名无效或已经过期。业务服务通常让用户重新登录。
+
+### 用户不存在或账号已禁用
+
+```http
+HTTP/1.1 200 OK
+```
+
+```json
+{
+  "active": false,
+  "error": "user_not_available"
+}
+```
+
+说明用户账号不存在或已被后台禁用。业务服务应该拒绝访问，并按产品需要提示“账号不可用”。
 
 ## 安全要求
 
-- `Service Token` 只能放在服务端，不进前端，不进客户端，不进 Git。
-- `Service Token` 明文只在创建时显示一次。
+- Service Token 只能放在业务服务端。
+- Service Token 不进前端、不进桌面客户端、不进 Git。
 - 业务服务不要直连 CatsCompany 数据库。
 - 业务服务不要保存用户密码。
-- 业务服务验证用户身份时必须走 `/api/account/introspect`。
-- relay/Bifrost 的 Virtual Key、provider key、预算和限流留在 relay/Bifrost。
+- 业务服务必须通过 `/api/account/introspect` 验证用户身份。
 - 生产环境必须配置固定 `OC_JWT_SECRET`。
-- URL query 中的 `token`、`api_key` 后续应逐步废弃，优先 header。
+- 业务服务自己维护业务角色、业务授权和业务数据。
 
-## 同事接入清单
-
-接入一个新服务时，只需要完成这些事：
+## 新服务接入清单
 
 1. 确定服务标识，例如 `writing-app`。
 2. 通过本地后台创建 service token。
 3. 把 service token 放入该服务的 secret 或环境变量。
-4. 前端让用户使用 CatsCompany 登录，拿到用户 JWT。
-5. 后端收到用户 JWT 后调用 `/api/account/introspect`。
-6. 后端按返回的 `uid`、`account_type`、`state` 做本业务权限判断。
+4. 前端或客户端让用户使用 CatsCompany 登录。
+5. 客户端请求业务后端时带 `Authorization: Bearer <user_jwt>`。
+6. 业务后端调用 `/api/account/introspect`。
+7. 业务后端按 `uid`、`account_type`、`state` 和自己的业务权限放行或拒绝。
+8. 需要展示用户资料时，业务后端调用 `/api/account/users/{uid}`。
 
-后续如果要拆成独立账号中心，优先保持这两个接口兼容：
+后续如果账号中心拆成独立服务，优先保持这两个接口兼容：
 
 - `POST /api/account/introspect`
 - `GET /api/account/users/{uid}`

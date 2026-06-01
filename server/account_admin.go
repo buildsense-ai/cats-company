@@ -19,9 +19,19 @@ var accountAdminAssets embed.FS
 // center. It intentionally lives outside /api so public nginx routes do not
 // expose it.
 type AccountAdminHandler struct {
-	users        AccountUserLookup
+	users        AccountAdminUserLookup
 	services     AccountServiceVerifier
 	serviceStore AccountAdminServiceStore
+}
+
+type AccountAdminUserLookup interface {
+	AccountUserLookup
+	GetUserByUsername(username string) (*types.User, error)
+	GetUserByEmail(email string) (*types.User, error)
+	ListAdminUsers(query string, limit, offset int) ([]*types.User, error)
+	CountAdminUsers(query string) (int, error)
+	SearchUsers(query string, limit int) ([]*types.User, error)
+	UpdateUserState(uid int64, state int) error
 }
 
 type AccountAdminServiceStore interface {
@@ -30,7 +40,7 @@ type AccountAdminServiceStore interface {
 	RevokeAuthService(id int64) error
 }
 
-func NewAccountAdminHandler(users AccountUserLookup, services AccountServiceVerifier, serviceStore AccountAdminServiceStore) *AccountAdminHandler {
+func NewAccountAdminHandler(users AccountAdminUserLookup, services AccountServiceVerifier, serviceStore AccountAdminServiceStore) *AccountAdminHandler {
 	return &AccountAdminHandler{users: users, services: services, serviceStore: serviceStore}
 }
 
@@ -81,10 +91,191 @@ func (h *AccountAdminHandler) HandleUserLookup(w http.ResponseWriter, r *http.Re
 
 	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{
 		"user": accountUserPayload(user),
-		"account_center": map[string]interface{}{
-			"service_tokens_configured": h.services != nil && h.services.Configured(),
-		},
 	})
+}
+
+func (h *AccountAdminHandler) HandleUserList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAccountAdminJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !h.requireLocal(w, r) {
+		return
+	}
+
+	page := parseAccountAdminPositiveInt(r.URL.Query().Get("page"), 1)
+	pageSize := parseAccountAdminPositiveInt(r.URL.Query().Get("page_size"), 20)
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	offset := (page - 1) * pageSize
+
+	users, err := h.users.ListAdminUsers(query, pageSize, offset)
+	if err != nil {
+		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
+		return
+	}
+	count, err := h.users.CountAdminUsers(query)
+	if err != nil {
+		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
+		return
+	}
+	payload := make([]accountUserResponse, 0, len(users))
+	for _, user := range users {
+		payload = append(payload, accountUserPayload(user))
+	}
+	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{
+		"users":      payload,
+		"count":      count,
+		"page":       page,
+		"page_size":  pageSize,
+		"total_page": accountAdminTotalPages(count, pageSize),
+		"query":      query,
+	})
+}
+
+func (h *AccountAdminHandler) HandleUserSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeAccountAdminJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !h.requireLocal(w, r) {
+		return
+	}
+
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "empty query"})
+		return
+	}
+
+	users, err := h.searchUsers(query)
+	if err != nil {
+		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
+		return
+	}
+
+	payload := make([]accountUserResponse, 0, len(users))
+	for _, user := range users {
+		payload = append(payload, accountUserPayload(user))
+	}
+	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{
+		"users": payload,
+		"count": len(payload),
+	})
+}
+
+func (h *AccountAdminHandler) HandleUserState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAccountAdminJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !h.requireLocal(w, r) {
+		return
+	}
+
+	var req struct {
+		UID   int64 `json:"uid"`
+		State int   `json:"state"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UID <= 0 {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid user state request"})
+		return
+	}
+	if req.State != 0 && req.State != 1 {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported user state"})
+		return
+	}
+	user, err := h.users.GetUser(req.UID)
+	if err != nil {
+		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
+		return
+	}
+	if user == nil {
+		writeAccountAdminJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+		return
+	}
+	if err := h.users.UpdateUserState(req.UID, req.State); err != nil {
+		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to update user state"})
+		return
+	}
+	user.State = req.State
+	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":   true,
+		"user": accountUserPayload(user),
+	})
+}
+
+func (h *AccountAdminHandler) searchUsers(query string) ([]*types.User, error) {
+	const limit = 20
+
+	seen := map[int64]bool{}
+	var out []*types.User
+	add := func(user *types.User) {
+		if user == nil || seen[user.ID] {
+			return
+		}
+		seen[user.ID] = true
+		out = append(out, user)
+	}
+
+	if uid, err := strconv.ParseInt(query, 10, 64); err == nil && uid > 0 {
+		user, err := h.users.GetUser(uid)
+		if err != nil {
+			return nil, err
+		}
+		add(user)
+		return out, nil
+	}
+
+	if strings.Contains(query, "@") {
+		user, err := h.users.GetUserByEmail(query)
+		if err != nil {
+			return nil, err
+		}
+		add(user)
+	}
+
+	user, err := h.users.GetUserByUsername(query)
+	if err != nil {
+		return nil, err
+	}
+	add(user)
+
+	matches, err := h.users.SearchUsers(query, limit)
+	if err != nil {
+		return nil, err
+	}
+	for _, match := range matches {
+		if match == nil || seen[match.ID] {
+			continue
+		}
+		full, err := h.users.GetUser(match.ID)
+		if err != nil {
+			return nil, err
+		}
+		add(full)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func parseAccountAdminPositiveInt(raw string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+func accountAdminTotalPages(count, pageSize int) int {
+	if count <= 0 || pageSize <= 0 {
+		return 0
+	}
+	return (count + pageSize - 1) / pageSize
 }
 
 func (h *AccountAdminHandler) HandleServices(w http.ResponseWriter, r *http.Request) {
@@ -208,11 +399,24 @@ func (h *AccountAdminHandler) requireLocal(w http.ResponseWriter, r *http.Reques
 }
 
 func isLocalAdminRequest(r *http.Request) bool {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
+	if !isLocalAdminAddress(r.RemoteAddr) {
+		return false
 	}
-	ip := net.ParseIP(strings.TrimSpace(host))
+	for _, raw := range forwardedAdminAddresses(r) {
+		if !isLocalAdminAddress(raw) {
+			return false
+		}
+	}
+	return true
+}
+
+func isLocalAdminAddress(raw string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(raw))
+	if err != nil {
+		host = raw
+	}
+	host = strings.Trim(strings.TrimSpace(host), `"[]`)
+	ip := net.ParseIP(host)
 	if ip == nil {
 		return false
 	}
@@ -220,6 +424,30 @@ func isLocalAdminRequest(r *http.Request) bool {
 	// or a private bridge address inside the container. Public clients are not
 	// accepted here, and the route is not exposed by public nginx config.
 	return ip.IsLoopback() || ip.IsPrivate()
+}
+
+func forwardedAdminAddresses(r *http.Request) []string {
+	var out []string
+	for _, item := range strings.Split(r.Header.Get("X-Forwarded-For"), ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		out = append(out, realIP)
+	}
+	for _, forwarded := range r.Header.Values("Forwarded") {
+		for _, section := range strings.Split(forwarded, ",") {
+			for _, part := range strings.Split(section, ";") {
+				key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+				if ok && strings.EqualFold(key, "for") {
+					out = append(out, strings.TrimSpace(value))
+				}
+			}
+		}
+	}
+	return out
 }
 
 var authServiceSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$`)

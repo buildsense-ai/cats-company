@@ -33,12 +33,15 @@ func (a *Adapter) SaveBotConfigWithOwner(uid, ownerID int64, apiEndpoint, model 
 // GetBotConfig retrieves bot configuration by user ID.
 func (a *Adapter) GetBotConfig(uid int64) (*types.BotConfig, error) {
 	bc := &types.BotConfig{}
+	var visibility string
 	err := a.db.QueryRow(
-		`SELECT user_id, api_endpoint, model, enabled FROM bot_config WHERE user_id = $1`, uid,
-	).Scan(&bc.UserID, &bc.APIEndpoint, &bc.Model, &bc.Enabled)
+		`SELECT user_id, COALESCE(owner_id, 0), api_endpoint, model, enabled, COALESCE(visibility, 'public'), COALESCE(body_id, '')
+		 FROM bot_config WHERE user_id = $1`, uid,
+	).Scan(&bc.UserID, &bc.OwnerID, &bc.APIEndpoint, &bc.Model, &bc.Enabled, &visibility, &bc.BodyID)
 	if err != nil {
 		return nil, fmt.Errorf("get bot config: %w", err)
 	}
+	bc.Visibility = types.BotVisibility(visibility)
 	return bc, nil
 }
 
@@ -142,6 +145,40 @@ func (a *Adapter) GetBotAPIKey(botUID int64) (string, error) {
 		return "", nil
 	}
 	return *apiKey, nil
+}
+
+// EnsureBotBodyBinding binds a bot to a body if it is not bound yet.
+func (a *Adapter) EnsureBotBodyBinding(botUID int64, bodyID string) (string, bool, error) {
+	if botUID <= 0 || bodyID == "" {
+		return "", false, fmt.Errorf("invalid bot body binding")
+	}
+	if _, err := a.db.Exec(
+		`UPDATE bot_config
+		 SET body_id = $1
+		 WHERE user_id = $2 AND (body_id IS NULL OR body_id = '' OR body_id = $1)`,
+		bodyID, botUID,
+	); err != nil {
+		return "", false, fmt.Errorf("ensure bot body binding: %w", err)
+	}
+
+	boundBodyID, err := a.GetBotBodyID(botUID)
+	if err != nil {
+		return "", false, err
+	}
+	return boundBodyID, boundBodyID == bodyID, nil
+}
+
+// GetBotBodyID returns the persistent body binding for a bot.
+func (a *Adapter) GetBotBodyID(botUID int64) (string, error) {
+	var bodyID string
+	err := a.db.QueryRow(
+		`SELECT COALESCE(body_id, '') FROM bot_config WHERE user_id = $1`,
+		botUID,
+	).Scan(&bodyID)
+	if err != nil {
+		return "", fmt.Errorf("get bot body id: %w", err)
+	}
+	return bodyID, nil
 }
 
 // ListBotsByOwner returns bots owned by a specific user.

@@ -23,7 +23,7 @@ npm install file:../../bot-sdk/typescript
 import { CatsBot } from '@catscompany/bot-sdk';
 
 const bot = new CatsBot({
-  serverUrl: 'ws://118.145.116.152:6061/v0/channels',
+  serverUrl: 'wss://app.catsco.cc/v0/channels',
   apiKey: 'your-bot-api-key',
 });
 

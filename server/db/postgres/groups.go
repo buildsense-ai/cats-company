@@ -134,7 +134,7 @@ func (a *Adapter) GetUserGroups(userID int64) ([]*types.Group, error) {
 		 FROM "groups" g
 		 JOIN group_members gm ON gm.group_id = g.id
 		 WHERE gm.user_id = $1
-		 ORDER BY g.created_at DESC`,
+		 ORDER BY g.created_at DESC, g.id DESC`,
 		userID,
 	)
 	if err != nil {

@@ -34,6 +34,7 @@ type Hub struct {
 	rateLimiter *RateLimiter
 	botStats    *BotStats
 	botConvo    botConvoTracker
+	bodyLeases  *botBodyLeaseManager
 }
 
 type presenceEvent struct {
@@ -43,15 +44,17 @@ type presenceEvent struct {
 
 // Client represents a single WebSocket connection.
 type Client struct {
-	hub         *Hub
-	conn        *websocket.Conn
-	uid         int64
-	remoteAddr  string
-	displayName string
-	accountType types.AccountType
-	send        chan []byte
-	sendMu      sync.RWMutex
-	sendClosed  bool
+	hub          *Hub
+	conn         *websocket.Conn
+	uid          int64
+	remoteAddr   string
+	displayName  string
+	accountType  types.AccountType
+	bodyID       string
+	connectionID string
+	send         chan []byte
+	sendMu       sync.RWMutex
+	sendClosed   bool
 }
 
 // NewHub creates a new Hub.
@@ -65,6 +68,7 @@ func NewHub(db store.Store, rl *RateLimiter) *Hub {
 		rateLimiter: rl,
 		botStats:    NewBotStats(),
 		botConvo:    botConvoTracker{counters: make(map[string]*botConvoCount)},
+		bodyLeases:  newBotBodyLeaseManager(defaultBotBodyLeaseTTL),
 	}
 	go hub.runPresence()
 	return hub
@@ -75,22 +79,29 @@ func (h *Hub) BotStats() *BotStats {
 	return h.botStats
 }
 
+func (h *Hub) BotBodyStatus(botUID int64) BotBodyStatus {
+	status := BotBodyStatus{BotUID: botUID, Active: false}
+	if h == nil || h.bodyLeases == nil || botUID <= 0 {
+		return status
+	}
+	lease, ok := h.bodyLeases.status(botUID)
+	if !ok {
+		return status
+	}
+	connectedAt := lease.acquiredAt
+	status.Active = true
+	status.BodyID = lease.bodyID
+	status.Bound = lease.bodyID != ""
+	status.ConnectedAt = &connectedAt
+	return status
+}
+
 // Run starts the hub's main loop.
 func (h *Hub) Run() {
 	for {
 		select {
 		case client := <-h.register:
-			registration := h.registerClient(client)
-			if !registration.accepted {
-				log.Printf("client connection rejected: uid=%d addr=%s account=%s reason=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, registration.reason, registration.deviceCount, registration.onlineUsers)
-				rejectWebSocketConnection(client.conn, registration.reason)
-				continue
-			}
-
-			log.Printf("client connected: uid=%d addr=%s account=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, registration.deviceCount, registration.onlineUsers)
-			if registration.firstConn {
-				h.enqueuePresence(client.uid, "on")
-			}
+			h.registerClient(client)
 
 		case client := <-h.unregister:
 			removed, lastConn, remaining, onlineUsers := h.removeClient(client)
@@ -98,6 +109,7 @@ func (h *Hub) Run() {
 				continue
 			}
 			client.closeSend()
+			h.releaseBotBodyLease(client)
 			log.Printf("client disconnected: uid=%d addr=%s account=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, remaining, onlineUsers)
 			if lastConn {
 				h.enqueuePresence(client.uid, "off")
@@ -182,54 +194,6 @@ func mapID(value interface{}) int64 {
 	}
 }
 
-type clientRegistration struct {
-	accepted    bool
-	reason      string
-	firstConn   bool
-	deviceCount int
-	onlineUsers int
-}
-
-func (h *Hub) registerClient(client *Client) clientRegistration {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	clients := h.clients[client.uid]
-	if client.accountType == types.AccountBot && len(clients) > 0 {
-		return clientRegistration{
-			accepted:    false,
-			reason:      "bot already connected",
-			deviceCount: len(clients),
-			onlineUsers: len(h.clients),
-		}
-	}
-
-	firstConn := len(clients) == 0
-	if clients == nil {
-		clients = make(map[*Client]struct{})
-		h.clients[client.uid] = clients
-	}
-	clients[client] = struct{}{}
-
-	return clientRegistration{
-		accepted:    true,
-		firstConn:   firstConn,
-		deviceCount: len(clients),
-		onlineUsers: len(h.clients),
-	}
-}
-
-func rejectWebSocketConnection(conn *websocket.Conn, reason string) {
-	if conn == nil {
-		return
-	}
-	if reason == "" {
-		reason = "connection rejected"
-	}
-	_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, reason), time.Now().Add(writeWait))
-	_ = conn.Close()
-}
-
 func (h *Hub) addClient(client *Client) (firstConn bool, deviceCount int, onlineUsers int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -243,6 +207,61 @@ func (h *Hub) addClient(client *Client) (firstConn bool, deviceCount int, online
 	clients[client] = struct{}{}
 
 	return firstConn, len(clients), len(h.clients)
+}
+
+func (h *Hub) registerClient(client *Client) bool {
+	if client == nil {
+		return false
+	}
+	if client.accountType == types.AccountBot && !h.bodyLeases.isCurrent(client.uid, client.bodyID, client.connectionID) {
+		client.closeSend()
+		if client.conn != nil {
+			_ = client.conn.Close()
+		}
+		return false
+	}
+
+	firstConn, deviceCount, onlineUsers, replaced := h.addRegisteredClient(client)
+	for _, stale := range replaced {
+		stale.closeSend()
+		if stale.conn != nil {
+			_ = stale.conn.Close()
+		}
+	}
+
+	log.Printf("client connected: uid=%d addr=%s account=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, deviceCount, onlineUsers)
+	if firstConn {
+		h.enqueuePresence(client.uid, "on")
+	}
+	return true
+}
+
+func (h *Hub) addRegisteredClient(client *Client) (firstConn bool, deviceCount int, onlineUsers int, replaced []*Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	clients := h.clients[client.uid]
+	firstConn = len(clients) == 0
+	if clients == nil {
+		clients = make(map[*Client]struct{})
+		h.clients[client.uid] = clients
+	}
+
+	if client.accountType == types.AccountBot && client.bodyID != "" {
+		for existing := range clients {
+			shouldReplace := existing.accountType == types.AccountBot && existing.bodyID == client.bodyID
+			if existing.accountType == types.AccountBot && isLegacyBotBodyID(existing.bodyID) && !isLegacyBotBodyID(client.bodyID) {
+				shouldReplace = true
+			}
+			if shouldReplace {
+				delete(clients, existing)
+				replaced = append(replaced, existing)
+			}
+		}
+	}
+	clients[client] = struct{}{}
+
+	return firstConn, len(clients), len(h.clients), replaced
 }
 
 func (h *Hub) removeClient(client *Client) (removed bool, lastConn bool, remaining int, onlineUsers int) {
@@ -266,6 +285,13 @@ func (h *Hub) removeClient(client *Client) (removed bool, lastConn bool, remaini
 	}
 
 	return removed, lastConn, remaining, len(h.clients)
+}
+
+func (h *Hub) releaseBotBodyLease(client *Client) {
+	if client == nil || client.accountType != types.AccountBot {
+		return
+	}
+	h.bodyLeases.release(client.uid, client.bodyID, client.connectionID)
 }
 
 // broadcastPresence notifies friends and, for bots, their owner of online/offline status.
@@ -316,6 +342,9 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	var uid int64
 	acctType := types.AccountHuman
 	displayName := ""
+	isBotAPIKey := false
+	bodyID := ""
+	connectionID := ""
 
 	// Try JWT token first
 	tokenStr := r.URL.Query().Get("token")
@@ -332,32 +361,90 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		}
 		uid = claims.UID
 		displayName = claims.Username
+		usr, err := hub.db.GetUser(uid)
+		if err != nil || usr == nil {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+		if usr.State != 0 {
+			http.Error(w, "user account is disabled", http.StatusForbidden)
+			return
+		}
+		acctType = usr.AccountType
+		if usr.DisplayName != "" {
+			displayName = usr.DisplayName
+		}
 	} else if apiKeyStr != "" {
-		// API Key authentication for bots
 		parsedUID, err := ParseAPIKey(apiKeyStr)
 		if err != nil {
 			http.Error(w, "invalid api key format", http.StatusUnauthorized)
 			return
 		}
-		// Verify the API key exists in database
 		botUID, err := hub.db.GetBotByAPIKey(apiKeyStr)
 		if err != nil || botUID != parsedUID {
 			http.Error(w, "invalid api key", http.StatusUnauthorized)
 			return
 		}
+		usr, err := hub.db.GetUser(parsedUID)
+		if err != nil || usr == nil {
+			http.Error(w, "invalid api key", http.StatusUnauthorized)
+			return
+		}
+		if usr.State != 0 {
+			http.Error(w, "user account is disabled", http.StatusForbidden)
+			return
+		}
 		uid = parsedUID
-		acctType = types.AccountBot
+		acctType = usr.AccountType
+		isBotAPIKey = true
+		if usr.DisplayName != "" {
+			displayName = usr.DisplayName
+		}
 	} else {
 		http.Error(w, "missing token or api_key", http.StatusUnauthorized)
 		return
 	}
 
-	// Get user info for both JWT and API Key
-	usr, _ := hub.db.GetUser(uid)
-	if usr != nil {
-		acctType = usr.AccountType
-		if usr.DisplayName != "" {
-			displayName = usr.DisplayName
+	if tokenStr != "" && acctType == types.AccountBot {
+		http.Error(w, "bot websocket connections must use api key authentication", http.StatusForbidden)
+		return
+	}
+
+	if isBotAPIKey {
+		var err error
+		bodyID, err = normalizeBotBodyID(r.Header.Get(botBodyIDHeader))
+		if err != nil {
+			if strings.TrimSpace(r.Header.Get(botBodyIDHeader)) != "" || botBodyIDStrictMode() {
+				http.Error(w, "missing or invalid bot body id", http.StatusBadRequest)
+				return
+			}
+			bodyID = legacyBotBodyID(uid)
+			boundBodyID, err := hub.db.GetBotBodyID(uid)
+			if err != nil {
+				log.Printf("legacy bot body lookup failed: uid=%d err=%v", uid, err)
+				http.Error(w, "failed to verify bot body binding", http.StatusInternalServerError)
+				return
+			}
+			if boundBodyID != "" {
+				http.Error(w, fmt.Sprintf("bot is bound to body %s; update agent to send %s", boundBodyID, botBodyIDHeader), http.StatusConflict)
+				return
+			}
+			log.Printf("legacy bot websocket without %s accepted temporarily: uid=%d addr=%s", botBodyIDHeader, uid, requestRemoteAddr(r))
+		} else {
+			boundBodyID, allowed, err := hub.db.EnsureBotBodyBinding(uid, bodyID)
+			if err != nil {
+				log.Printf("bot body binding failed: uid=%d body=%s err=%v", uid, bodyID, err)
+				http.Error(w, "failed to verify bot body binding", http.StatusInternalServerError)
+				return
+			}
+			if !allowed {
+				http.Error(w, fmt.Sprintf("bot is bound to body %s", boundBodyID), http.StatusConflict)
+				return
+			}
+		}
+		if existing, ok := hub.bodyLeases.conflicts(uid, bodyID); ok {
+			http.Error(w, fmt.Sprintf("bot already connected from body %s", existing.bodyID), http.StatusConflict)
+			return
 		}
 	}
 
@@ -366,31 +453,47 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		log.Printf("ws upgrade error: %v", err)
 		return
 	}
+	if isBotAPIKey {
+		connectionID = newBotBodyConnectionID()
+		result, err := hub.bodyLeases.acquire(uid, bodyID, connectionID)
+		if err != nil {
+			closeBotBodyRejectedConn(conn, result.Lease)
+			return
+		}
+	}
 
 	client := &Client{
-		hub:         hub,
-		conn:        conn,
-		uid:         uid,
-		remoteAddr:  requestRemoteAddr(r),
-		displayName: displayName,
-		accountType: acctType,
-		send:        make(chan []byte, 256),
+		hub:          hub,
+		conn:         conn,
+		uid:          uid,
+		remoteAddr:   requestRemoteAddr(r),
+		displayName:  displayName,
+		accountType:  acctType,
+		bodyID:       bodyID,
+		connectionID: connectionID,
+		send:         make(chan []byte, 256),
 	}
 
-	registration := hub.registerClient(client)
-	if !registration.accepted {
-		log.Printf("client connection rejected: uid=%d addr=%s account=%s reason=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, registration.reason, registration.deviceCount, registration.onlineUsers)
-		rejectWebSocketConnection(conn, registration.reason)
+	if !hub.registerClient(client) {
+		hub.bodyLeases.release(uid, bodyID, connectionID)
 		return
-	}
-
-	log.Printf("client connected: uid=%d addr=%s account=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, registration.deviceCount, registration.onlineUsers)
-	if registration.firstConn {
-		hub.enqueuePresence(client.uid, "on")
 	}
 
 	go client.WritePump()
 	go client.ReadPump(hub.handleMessage)
+}
+
+func closeBotBodyRejectedConn(conn *websocket.Conn, lease botBodyLease) {
+	reason := "bot already connected"
+	if lease.bodyID != "" {
+		reason = fmt.Sprintf("bot already connected from body %s", lease.bodyID)
+	}
+	_ = conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.ClosePolicyViolation, reason),
+		time.Now().Add(writeWait),
+	)
+	_ = conn.Close()
 }
 
 func requestRemoteAddr(r *http.Request) string {
@@ -438,13 +541,53 @@ func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
 			Code: 200,
 			Text: "ok",
 			Params: map[string]interface{}{
-				"ver":   "0.1.0",
-				"build": "catscompany",
-				"uid":   formatUID(client.uid),
-				"name":  displayName,
+				"ver":      "0.1.0",
+				"build":    "catscompany",
+				"features": []string{"client_msg_id"},
+				"uid":      formatUID(client.uid),
+				"name":     displayName,
 			},
 		},
 	})
+}
+
+func (h *Hub) validateMessagePublish(uid int64, accountType types.AccountType, topic string, applyRateLimit bool) (int, string) {
+	if h == nil {
+		return 0, ""
+	}
+	if applyRateLimit && h.rateLimiter != nil {
+		if !h.rateLimiter.Allow(uid, accountType) {
+			return http.StatusTooManyRequests, "rate limit exceeded"
+		}
+	}
+
+	if isGroupTopic(topic) {
+		groupID := extractGroupID(topic)
+		if groupID == 0 {
+			return http.StatusBadRequest, "invalid group topic"
+		}
+		isMember, err := h.db.IsGroupMember(groupID, uid)
+		if err != nil || !isMember {
+			return http.StatusForbidden, "not a group member"
+		}
+		isMuted, _ := h.db.IsMemberMuted(groupID, uid)
+		if isMuted {
+			return http.StatusForbidden, "you are muted in this group"
+		}
+		return 0, ""
+	}
+
+	peerUID := extractPeerUID(topic, uid)
+	if peerUID == 0 {
+		return http.StatusBadRequest, "invalid p2p topic"
+	}
+	if code, text := validateAgentP2PMessageAccess(h.db, uid, accountType, peerUID); code != 0 {
+		return code, text
+	}
+	if !h.checkBotToBot(uid, peerUID) {
+		return http.StatusTooManyRequests, "bot-to-bot conversation limit reached"
+	}
+	return 0, ""
 }
 
 // handlePub handles a publish (send message) request.
@@ -475,6 +618,19 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 		return
 	}
 
+	if code, text := h.validateMessagePublish(uid, client.accountType, topic, false); code != 0 {
+		h.SendToClient(client, &ServerMessage{
+			Ctrl: &MsgServerCtrl{ID: msg.ID, Code: code, Text: text},
+		})
+		return
+	}
+	if status, message := prepareAgentP2PMessage(h.db, uid, topic, payload); status != 0 {
+		h.SendToClient(client, &ServerMessage{
+			Ctrl: &MsgServerCtrl{ID: msg.ID, Code: status, Text: message},
+		})
+		return
+	}
+
 	// Route based on topic type
 	if isGroupTopic(topic) {
 		h.handleGroupPub(client, msg, topic, payload)
@@ -482,22 +638,6 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 	}
 
 	// --- P2P message handling ---
-
-	// Bot-to-Bot loop protection
-	peerUID := extractPeerUID(topic, uid)
-	if peerUID > 0 && !h.checkBotToBot(uid, peerUID) {
-		h.SendToClient(client, &ServerMessage{
-			Ctrl: &MsgServerCtrl{ID: msg.ID, Code: 429, Text: "bot-to-bot conversation limit reached"},
-		})
-		return
-	}
-
-	if status, message := prepareAgentP2PMessage(h.db, uid, topic, payload); status != 0 {
-		h.SendToClient(client, &ServerMessage{
-			Ctrl: &MsgServerCtrl{ID: msg.ID, Code: status, Text: message},
-		})
-		return
-	}
 
 	// Ensure topic exists
 	h.db.CreateTopic(topic, "p2p", uid)
@@ -518,7 +658,7 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 		return
 	}
 
-	msgID, err := saveNormalizedMessage(h.db, topic, uid, msg.ReplyTo, payload)
+	result, err := saveNormalizedMessage(h.db, topic, uid, msg.ReplyTo, payload)
 	if err != nil {
 		log.Printf("save message error: %v", err)
 		h.SendToClient(client, &ServerMessage{
@@ -535,12 +675,16 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 			Code:  200,
 			Text:  "ok",
 			Params: map[string]interface{}{
-				"seq": msgID,
+				"seq":           result.ID,
+				"duplicate":     result.Duplicate,
+				"client_msg_id": payload.ClientMsgID,
 			},
 		},
 	})
 
-	h.fanoutNormalizedMessage(uid, topic, msg.ReplyTo, payload, msgID, client)
+	if !result.Duplicate {
+		h.fanoutNormalizedMessage(uid, topic, msg.ReplyTo, payload, result.ID, client)
+	}
 }
 
 func isStreamPub(msg *MsgClientPub) bool {
@@ -607,6 +751,12 @@ func (h *Hub) handleStreamPub(client *Client, msg *MsgClientPub, topic string) {
 	if peerUID == 0 {
 		h.SendToClient(client, &ServerMessage{
 			Ctrl: &MsgServerCtrl{ID: msg.ID, Code: 400, Text: "invalid p2p topic"},
+		})
+		return
+	}
+	if code, text := h.validateMessagePublish(uid, client.accountType, topic, false); code != 0 {
+		h.SendToClient(client, &ServerMessage{
+			Ctrl: &MsgServerCtrl{ID: msg.ID, Code: code, Text: text},
 		})
 		return
 	}
@@ -721,7 +871,7 @@ func (h *Hub) handleGroupPub(client *Client, msg *MsgClientPub, topic string, pa
 		return
 	}
 
-	msgID, err := saveNormalizedMessage(h.db, topic, uid, msg.ReplyTo, payload)
+	result, err := saveNormalizedMessage(h.db, topic, uid, msg.ReplyTo, payload)
 	if err != nil {
 		log.Printf("save group message error: %v", err)
 		h.SendToClient(client, &ServerMessage{
@@ -738,12 +888,16 @@ func (h *Hub) handleGroupPub(client *Client, msg *MsgClientPub, topic string, pa
 			Code:  200,
 			Text:  "ok",
 			Params: map[string]interface{}{
-				"seq": msgID,
+				"seq":           result.ID,
+				"duplicate":     result.Duplicate,
+				"client_msg_id": payload.ClientMsgID,
 			},
 		},
 	})
 
-	h.fanoutNormalizedMessage(uid, topic, msg.ReplyTo, payload, msgID, client)
+	if !result.Duplicate {
+		h.fanoutNormalizedMessage(uid, topic, msg.ReplyTo, payload, result.ID, client)
+	}
 }
 
 func messageRequestFromPub(msg *MsgClientPub) *SendMessageRequest {
@@ -752,6 +906,7 @@ func messageRequestFromPub(msg *MsgClientPub) *SendMessageRequest {
 	}
 	return &SendMessageRequest{
 		TopicID:       msg.Topic,
+		ClientMsgID:   msg.ClientMsgID,
 		Content:       msg.Content,
 		ContentBlocks: msg.ContentBlocks,
 		Metadata:      msg.Metadata,
@@ -776,6 +931,22 @@ func (h *Hub) broadcastToGroup(groupID int64, msg *ServerMessage, excludeUID int
 			continue
 		}
 		h.SendToUser(m.UserID, msg)
+	}
+}
+
+func cloneDataMessageWithMetadata(msg *ServerMessage, metadata map[string]interface{}) *ServerMessage {
+	if msg == nil || msg.Data == nil {
+		return msg
+	}
+	data := *msg.Data
+	data.Metadata = metadata
+	return &ServerMessage{
+		Ctrl:   msg.Ctrl,
+		Data:   &data,
+		Pres:   msg.Pres,
+		Meta:   msg.Meta,
+		Info:   msg.Info,
+		Friend: msg.Friend,
 	}
 }
 
@@ -847,6 +1018,7 @@ func (h *Hub) handleGet(client *Client, msg *MsgClientGet) {
 					Content:       decodeStoredContent(m.Content),
 					Type:          inferDisplayTypeFromStoredMessage(m.MsgType, m.Content, m.ContentBlocks),
 					MsgType:       m.MsgType,
+					Metadata:      withCatscoIdentityMetadata(nil, h.buildCatscoIdentityMetadata(m.FromUID, client.uid, m.TopicID, m.ID)),
 					ContentBlocks: m.ContentBlocks,
 					Mode:          m.Mode,
 					Role:          m.Role,
@@ -914,7 +1086,10 @@ func extractPeerUID(topic string, selfUID int64) int64 {
 			if uid1 == selfUID {
 				return uid2
 			}
-			return uid1
+			if uid2 == selfUID {
+				return uid1
+			}
+			return 0
 		}
 	}
 	return 0
@@ -1070,6 +1245,16 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			}
 		}
 
-		h.SendToUser(m.UserID, msg)
+		out := msg
+		if msg != nil && msg.Data != nil && senderUID > 0 {
+			out = cloneDataMessageWithMetadata(
+				msg,
+				withCatscoIdentityMetadata(
+					msg.Data.Metadata,
+					h.buildCatscoIdentityMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID)),
+				),
+			)
+		}
+		h.SendToUser(m.UserID, out)
 	}
 }

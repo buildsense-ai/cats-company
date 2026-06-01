@@ -14,6 +14,7 @@ const MAX_ATTACHMENT_SIZE_MB = 300;
 const MAX_ATTACHMENT_SIZE = MAX_ATTACHMENT_SIZE_MB * 1024 * 1024;
 const MAX_DROPPED_FILES = 200;
 const HISTORY_AUTO_LOAD_THRESHOLD = 120;
+const STICK_TO_BOTTOM_THRESHOLD = 96;
 const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.heic', '.heif']);
 
 export default function MessagesView({ topic, topicName, user, isGroup, groupId, topicAvatarUrl, onTopicUpdated }) {
@@ -43,6 +44,7 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
   const peerTypingTimer = useRef(null);
   const timelineRef = useRef(null);
   const previousScrollRef = useRef(null);
+  const stickToBottomRef = useRef(true);
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const textareaRef = useRef(null);
@@ -52,6 +54,21 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
   const historyOffsetRef = useRef(0);
   const hasMoreHistoryRef = useRef(false);
   const loadingOlderRef = useRef(false);
+  const activeTopicRef = useRef(topic);
+
+  const resizeComposerInput = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const maxHeight = 220;
+    textarea.style.height = 'auto';
+    const nextHeight = Math.min(Math.max(textarea.scrollHeight, 44), maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, []);
+
+  useEffect(() => {
+    resizeComposerInput();
+  }, [input, resizeComposerInput]);
 
   const clearRuntimePlan = useCallback(() => {
     if (runtimePlanClearTimer.current) {
@@ -66,6 +83,11 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
     if (runtimePlanClearTimer.current) {
       clearTimeout(runtimePlanClearTimer.current);
       runtimePlanClearTimer.current = null;
+    }
+    if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) {
+      runtimePlanRef.current = null;
+      setRuntimePlan(null);
+      return;
     }
     runtimePlanRef.current = plan;
     setRuntimePlan(plan);
@@ -92,12 +114,16 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
   // Load message history and group members when topic changes
   useEffect(() => {
     if (!topic) return;
+    activeTopicRef.current = topic;
+    setInput('');
     setMessages([]);
     setPendingAttachments([]);
     setIsUploadingAttachment(false);
     setIsDragActive(false);
     dragDepthRef.current = 0;
     setPeerTyping(false);
+    setShowMentionPicker(false);
+    setMentionFilter('');
     clearRuntimePlan();
     setReplyTo(null);
     setMembers([]);
@@ -106,6 +132,7 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
     historyOffsetRef.current = 0;
     hasMoreHistoryRef.current = false;
     loadingOlderRef.current = false;
+    stickToBottomRef.current = true;
     setHasMoreHistory(false);
     setLoadingOlder(false);
     setIsStopRequested(false);
@@ -282,17 +309,21 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
 
   // Auto-scroll to bottom or restore scroll anchor depending on state
   React.useLayoutEffect(() => {
-    if (previousScrollRef.current && timelineRef.current) {
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+
+    if (previousScrollRef.current) {
       // Anchoring condition: We just prepended older history.
       const { scrollHeight, scrollTop } = previousScrollRef.current;
-      const newScrollHeight = timelineRef.current.scrollHeight;
-      timelineRef.current.scrollTop = scrollTop + (newScrollHeight - scrollHeight);
+      const newScrollHeight = timeline.scrollHeight;
+      timeline.scrollTop = scrollTop + (newScrollHeight - scrollHeight);
       previousScrollRef.current = null; // Clear atomic lock
-    } else {
-      // Standard condition: New message arrived or initial load. Scroll to bottom.
+      stickToBottomRef.current = isTimelineNearBottom(timeline);
+    } else if (stickToBottomRef.current) {
+      // Only follow fresh messages while the user is already near the bottom.
       bottomRef.current?.scrollIntoView({ behavior: 'auto' });
     }
-  }, [messages.length, peerTyping]);
+  }, [messages, runtimePlan, peerTyping]);
 
   const loadHistory = async () => {
     try {
@@ -397,6 +428,7 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
     if (!text && pendingAttachments.length === 0) return;
     if (isUploadingAttachment) return;
 
+    const sendTopic = topic;
     clearRuntimePlan();
     const attachmentsToSend = pendingAttachments;
     setInput('');
@@ -415,10 +447,11 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
       : text;
 
     const tempId = Date.now();
+    stickToBottomRef.current = true;
     setMessages((prev) => mergeMessages(prev, [{
       id: tempId,
       seq_id: tempId,
-      topic_id: topic,
+      topic_id: sendTopic,
       from_uid: user.uid,
       content: displayContent,
       content_blocks: attachmentsToSend.length > 0 ? contentBlocks : undefined,
@@ -430,10 +463,11 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
     }]));
 
     try {
-      const result = await api.sendMessage(topic, payload, currentReplyTo ? currentReplyTo.id : undefined);
+      const result = await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined);
       finalizeOptimisticMessage(tempId, result);
     } catch (err) {
       removeOptimisticMessage(tempId);
+      if (activeTopicRef.current !== sendTopic) return;
       setInput(text);
       setPendingAttachments(attachmentsToSend);
       setReplyTo(currentReplyTo);
@@ -504,6 +538,7 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
   };
 
   const uploadAttachmentFile = async (file, requestedType) => {
+    const uploadTopic = activeTopicRef.current;
     const type = inferAttachmentType(file, requestedType);
     if (file.size > MAX_ATTACHMENT_SIZE) {
       window.alert(`文件过大：${(file.size / 1024 / 1024).toFixed(1)}MB。当前最多支持 ${MAX_ATTACHMENT_SIZE_MB}MB。`);
@@ -552,6 +587,7 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
         size: data.size,
         content,
       };
+      if (activeTopicRef.current !== uploadTopic) return attachment;
       setPendingAttachments((prev) => [...prev, attachment]);
       setTimeout(() => textareaRef.current?.focus(), 0);
       return attachment;
@@ -775,6 +811,7 @@ export default function MessagesView({ topic, topicName, user, isGroup, groupId,
 
   const handleTimelineScroll = (e) => {
     const el = e.target;
+    stickToBottomRef.current = isTimelineNearBottom(el);
     if (el.scrollTop <= HISTORY_AUTO_LOAD_THRESHOLD) {
       loadOlderHistory();
     }
@@ -1229,7 +1266,6 @@ function normalizeRuntimePlan(content) {
       status: normalizePlanStatus(step?.status),
     }))
     .filter((step) => step.text);
-  if (steps.length === 0) return null;
   return {
     revision: Number(value.revision || 0),
     updatedAt: Number(value.updatedAt || value.updated_at || Date.now()),
@@ -1308,6 +1344,11 @@ function RuntimePlanCard({ plan }) {
 function getStreamId(message) {
   const id = message?.metadata?.stream_id || message?._stream_id;
   return typeof id === 'string' && id.trim() ? id.trim() : '';
+}
+
+function isTimelineNearBottom(el) {
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_TO_BOTTOM_THRESHOLD;
 }
 
 function streamDeltaText(content) {

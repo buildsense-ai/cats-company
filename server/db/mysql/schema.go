@@ -36,7 +36,13 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddVisibility,
 		migrateBotConfigAddTenantName,
 		migrateAgentAccessAddInvitedBy,
+		migrateBotConfigAddBodyID,
 		migrateMessagesAddCodeMode,
+		migrateMessagesAddClientMsgID,
+		migrateMessagesAddClientMsgIDIndex,
+		migrateGroupsAddCreatedAtColumn,
+		migrateGroupsBackfillCreatedAt,
+		migrateGroupsCreatedAtNotNull,
 		migrateGroupsAddAnnouncement,
 		migrateGroupMembersAddMuted,
 		migrateFriendsAddFromStatusIndex,
@@ -120,9 +126,11 @@ CREATE TABLE IF NOT EXISTS messages (
     from_uid BIGINT NOT NULL,
     content TEXT NOT NULL,
     msg_type ENUM('text','image','voice','file') NOT NULL DEFAULT 'text',
+    client_msg_id VARCHAR(128) DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_messages_topic (topic_id, created_at),
     INDEX idx_messages_topic_id (topic_id, id),
+    UNIQUE KEY uk_messages_client_msg_id (topic_id, from_uid, client_msg_id),
     FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
     FOREIGN KEY (from_uid) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -135,6 +143,7 @@ CREATE TABLE IF NOT EXISTS bot_config (
     model VARCHAR(128) DEFAULT '',
     enabled TINYINT(1) NOT NULL DEFAULT 1,
     config JSON DEFAULT NULL,
+    body_id VARCHAR(128) DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -271,12 +280,48 @@ const migrateAgentAccessAddInvitedBy = `
 ALTER TABLE agent_access ADD COLUMN invited_by BIGINT DEFAULT NULL;
 `
 
+// Migration: add persistent bot body binding.
+const migrateBotConfigAddBodyID = `
+ALTER TABLE bot_config ADD COLUMN body_id VARCHAR(128) DEFAULT NULL;
+`
+
 // Migration: add code mode support to messages table.
 const migrateMessagesAddCodeMode = `
 ALTER TABLE messages
   ADD COLUMN content_blocks JSON DEFAULT NULL,
   ADD COLUMN mode VARCHAR(20) DEFAULT 'normal',
   ADD COLUMN role VARCHAR(20) DEFAULT NULL;
+`
+
+// Migration: add a client-generated id for safe retry deduplication.
+const migrateMessagesAddClientMsgID = `
+ALTER TABLE messages ADD COLUMN client_msg_id VARCHAR(128) DEFAULT NULL;
+`
+
+// Migration: add a retry deduplication index for client-generated ids.
+const migrateMessagesAddClientMsgIDIndex = `
+ALTER TABLE messages ADD UNIQUE KEY uk_messages_client_msg_id (topic_id, from_uid, client_msg_id);
+`
+
+// Migration: add and backfill created_at for legacy groups tables.
+const migrateGroupsAddCreatedAtColumn = `
+ALTER TABLE ` + "`groups`" + ` ADD COLUMN created_at TIMESTAMP NULL DEFAULT NULL;
+`
+
+const migrateGroupsBackfillCreatedAt = `
+UPDATE ` + "`groups`" + ` g
+LEFT JOIN topics t ON t.id = CONCAT('grp_', g.id)
+LEFT JOIN (
+    SELECT group_id, MIN(joined_at) AS first_joined_at
+    FROM group_members
+    GROUP BY group_id
+) gm ON gm.group_id = g.id
+SET g.created_at = COALESCE(g.created_at, t.created_at, gm.first_joined_at, CURRENT_TIMESTAMP)
+WHERE g.created_at IS NULL;
+`
+
+const migrateGroupsCreatedAtNotNull = `
+ALTER TABLE ` + "`groups`" + ` MODIFY COLUMN created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
 `
 
 // Migration: add group announcement support.

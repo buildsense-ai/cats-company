@@ -1,5 +1,4 @@
 const API_BASE = process.env.REACT_APP_API_BASE || '';
-const TOKEN_API_BASE = process.env.REACT_APP_TOKEN_API_BASE || 'https://buildsense.asia';
 const DEFAULT_WS_SCHEME = window.location.protocol === 'https:' ? 'wss' : 'ws';
 const WS_URL = process.env.REACT_APP_WS_URL || `${DEFAULT_WS_SCHEME}://${window.location.host}/v0/channels`;
 
@@ -53,19 +52,6 @@ async function request(method, path, body) {
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
   const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Request failed');
-  return data;
-}
-
-async function tokenRequest(method, path, body) {
-  const headers = { 'Content-Type': 'application/json' };
-  const res = await fetch(`${TOKEN_API_BASE}${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
@@ -136,8 +122,18 @@ export const api = {
   getMessages: (topicId, limit, offset, latest = false) =>
     request('GET', `/api/messages?topic_id=${encodeURIComponent(topicId)}&limit=${limit || 50}&offset=${offset || 0}${latest ? '&latest=1' : ''}`),
   getConversations: () => request('GET', '/api/conversations'),
+  getRelayConfig: () => request('GET', '/api/relay/config'),
+  createRelaySession: () => request('POST', '/api/relay/session', {}),
+  getRelayKey: () => request('GET', '/api/relay/key'),
+  createRelayKey: (name) => request('POST', '/api/relay/key', name ? { name } : {}),
+  rotateRelayKey: () => request('POST', '/api/relay/key/rotate', {}),
+  revokeRelayKey: () => request('DELETE', '/api/relay/key'),
 
   getOnlineStatus: () => request('GET', '/api/users/online'),
+
+  // Virtual employee roster
+  getAgents: () => request('GET', '/api/agents'),
+  openAgent: (agentUid) => request('POST', '/api/agents/open', { agent_uid: agentUid }),
 
   // Groups
   createGroup: (name, memberIds) => request('POST', '/api/groups/create', { name, member_ids: memberIds }),

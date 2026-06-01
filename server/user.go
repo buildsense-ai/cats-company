@@ -351,6 +351,10 @@ func (h *UserHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
+	if user.State != 0 {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "user account is disabled"})
+		return
+	}
 
 	token, err := GenerateToken(user.ID, user.Username, user.Email)
 	if err != nil {

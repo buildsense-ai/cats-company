@@ -13,22 +13,31 @@ import (
 
 // AgentHandler serves organization-style virtual employee discovery and access.
 type AgentHandler struct {
-	db store.Store
+	db  store.Store
+	hub *Hub
 }
 
 // NewAgentHandler creates an AgentHandler.
-func NewAgentHandler(db store.Store) *AgentHandler {
-	return &AgentHandler{db: db}
+func NewAgentHandler(db store.Store, hub *Hub) *AgentHandler {
+	return &AgentHandler{db: db, hub: hub}
 }
 
-// HandleList handles GET /api/agents.
-func (h *AgentHandler) HandleList(w http.ResponseWriter, r *http.Request) {
+// AgentSummary keeps compatibility with the roster tests and WebApp naming.
+type AgentSummary = types.AgentRosterItem
+
+// HandleListAgents handles GET /api/agents.
+func (h *AgentHandler) HandleListAgents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
 
 	uid := UIDFromContext(r.Context())
+	if uid == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
 	agents, err := h.db.ListAccessibleAgents(uid)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list agents"})
@@ -37,6 +46,7 @@ func (h *AgentHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	if agents == nil {
 		agents = []*types.AgentRosterItem{}
 	}
+	h.enrichAgentRoster(agents)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"agents": agents})
 }
 
@@ -47,14 +57,19 @@ type openAgentRequest struct {
 	Username      string `json:"username"`
 }
 
-// HandleOpen handles POST /api/agents/open.
-func (h *AgentHandler) HandleOpen(w http.ResponseWriter, r *http.Request) {
+// HandleOpenAgent handles POST /api/agents/open.
+func (h *AgentHandler) HandleOpenAgent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
 
 	uid := UIDFromContext(r.Context())
+	if uid == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
 	var req openAgentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
@@ -90,10 +105,12 @@ func (h *AgentHandler) HandleOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent.TopicID = topicID
+	h.enrichAgentRoster([]*types.AgentRosterItem{agent})
 
 	actor, _ := h.db.GetUser(uid)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"agent":           agent,
+		"topic":           topicID,
 		"topic_id":        topicID,
 		"catsco_identity": buildCatsCoIdentity(actor, agent, topicID),
 	})
@@ -295,6 +312,20 @@ func (h *AgentHandler) handleRevokeAgentAccess(w http.ResponseWriter, agentUID, 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
+func (h *AgentHandler) enrichAgentRoster(agents []*types.AgentRosterItem) {
+	for _, agent := range agents {
+		if agent == nil {
+			continue
+		}
+		agent.UID = agent.ID
+		agent.Relation = agent.Source
+		agent.IsBot = true
+		if h != nil && h.hub != nil {
+			agent.IsOnline = h.hub.IsOnline(agent.ID)
+		}
+	}
 }
 
 func (h *AgentHandler) resolveTargetUser(req agentAccessInviteRequest) (*types.User, error) {
@@ -517,6 +548,33 @@ func ensureAgentP2PTopicAccess(db store.Store, uid int64, topicID string) (int, 
 	return 0, ""
 }
 
+func validateAgentP2PMessageAccess(db store.Store, uid int64, accountType types.AccountType, peerUID int64) (int, string) {
+	if db == nil || uid <= 0 || peerUID <= 0 {
+		return 0, ""
+	}
+
+	peer, err := db.GetUser(peerUID)
+	if err != nil || peer == nil || peer.AccountType != types.AccountBot {
+		return 0, ""
+	}
+
+	agentUID := peerUID
+	humanUID := uid
+	if accountType == types.AccountBot {
+		agentUID = uid
+		humanUID = peerUID
+	}
+
+	agent, err := db.GetAccessibleAgent(agentUID, humanUID)
+	if err != nil {
+		return http.StatusInternalServerError, "failed to check agent access"
+	}
+	if agent == nil || !agent.CanChat {
+		return http.StatusForbidden, "agent is not usable for this user"
+	}
+	return 0, ""
+}
+
 func mergeMessageMetadata(existing, patch map[string]interface{}) map[string]interface{} {
 	if len(existing) == 0 {
 		existing = map[string]interface{}{}
@@ -543,4 +601,22 @@ func firstNonBlank(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func agentPairKey(uid1, uid2 int64) string {
+	if uid1 > uid2 {
+		uid1, uid2 = uid2, uid1
+	}
+	return fmt.Sprintf("%d:%d", uid1, uid2)
+}
+
+func mapString(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	default:
+		return ""
+	}
 }

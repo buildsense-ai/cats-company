@@ -1,10 +1,6 @@
 package server
 
-import (
-	"testing"
-
-	"github.com/openchat/openchat/server/store/types"
-)
+import "testing"
 
 func TestHubTracksMultipleConnectionsPerUser(t *testing.T) {
 	hub := NewHub(nil, nil)
@@ -43,43 +39,6 @@ func TestHubTracksMultipleConnectionsPerUser(t *testing.T) {
 
 	if hub.IsOnline(42) {
 		t.Fatal("expected uid 42 to be offline after removing all connections")
-	}
-}
-
-func TestHubRegisterClientRejectsSecondBotConnection(t *testing.T) {
-	hub := NewHub(nil, nil)
-	botA := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
-	botB := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
-	userA := &Client{uid: 99, accountType: types.AccountHuman, send: make(chan []byte, 1)}
-	userB := &Client{uid: 99, accountType: types.AccountHuman, send: make(chan []byte, 1)}
-
-	registered := hub.registerClient(botA)
-	if !registered.accepted || !registered.firstConn || registered.deviceCount != 1 || registered.onlineUsers != 1 {
-		t.Fatalf("first bot registration = %+v, want accepted first connection", registered)
-	}
-
-	registered = hub.registerClient(botB)
-	if registered.accepted || registered.reason != "bot already connected" || registered.deviceCount != 1 || registered.onlineUsers != 1 {
-		t.Fatalf("second bot registration = %+v, want duplicate rejection", registered)
-	}
-
-	removed, last, remaining, online := hub.removeClient(botA)
-	if !removed || !last || remaining != 0 || online != 0 {
-		t.Fatalf("remove first bot = (%v, %v, %d, %d), want (true, true, 0, 0)", removed, last, remaining, online)
-	}
-
-	registered = hub.registerClient(botB)
-	if !registered.accepted || !registered.firstConn || registered.deviceCount != 1 || registered.onlineUsers != 1 {
-		t.Fatalf("bot registration after disconnect = %+v, want accepted", registered)
-	}
-
-	registered = hub.registerClient(userA)
-	if !registered.accepted || !registered.firstConn || registered.deviceCount != 1 || registered.onlineUsers != 2 {
-		t.Fatalf("first human registration = %+v, want accepted", registered)
-	}
-	registered = hub.registerClient(userB)
-	if !registered.accepted || registered.firstConn || registered.deviceCount != 2 || registered.onlineUsers != 2 {
-		t.Fatalf("second human registration = %+v, want accepted second device", registered)
 	}
 }
 

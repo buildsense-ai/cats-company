@@ -9,7 +9,7 @@ class APIClient {
     #if targetEnvironment(simulator)
     var baseURL = "http://localhost:6061"
     #else
-    var baseURL = "http://118.145.116.152:6061"
+    var baseURL = "https://app.catsco.cc"
     #endif
 
     private var token: String? { AuthManager.shared.token }

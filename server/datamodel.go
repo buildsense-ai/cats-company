@@ -62,6 +62,7 @@ type MsgClientSub struct {
 type MsgClientPub struct {
 	ID            string                 `json:"id,omitempty"`
 	Topic         string                 `json:"topic"`
+	ClientMsgID   string                 `json:"client_msg_id,omitempty"`
 	Content       json.RawMessage        `json:"content,omitempty"`
 	ContentBlocks []types.ContentBlock   `json:"content_blocks,omitempty"`
 	Metadata      map[string]interface{} `json:"metadata,omitempty"`

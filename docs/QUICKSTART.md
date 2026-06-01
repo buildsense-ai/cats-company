@@ -6,7 +6,7 @@
 
 - Node.js 18+
 - iOS 设备或模拟器（安装猫猫公司 App）
-- 服务端地址：`http://118.145.116.152:6061`
+- 服务端地址：`https://app.catsco.cc`
 
 ---
 
@@ -24,7 +24,7 @@
 也可以用 API 注册：
 
 ```bash
-curl -X POST http://118.145.116.152:6061/api/auth/register \
+curl -X POST https://app.catsco.cc/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{"username":"alice","password":"mypassword","display_name":"Alice"}'
 ```
@@ -56,7 +56,7 @@ curl -X POST http://118.145.116.152:6061/api/auth/register \
 ### 方式 B：API 创建
 
 ```bash
-curl -X POST http://118.145.116.152:6061/api/bots \
+curl -X POST https://app.catsco.cc/api/bots \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <你的token>" \
   -d '{"username":"my-bot","display_name":"我的助手"}'
@@ -84,7 +84,7 @@ Bot 创建后，你需要和它互加好友才能聊天。
 ### 1. 用户发送好友请求
 
 ```bash
-curl -X POST http://118.145.116.152:6061/api/friends/request \
+curl -X POST https://app.catsco.cc/api/friends/request \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <你的token>" \
   -d '{"user_id": <bot的uid>}'
@@ -93,7 +93,7 @@ curl -X POST http://118.145.116.152:6061/api/friends/request \
 ### 2. Bot 接受好友请求
 
 ```bash
-curl -X POST http://118.145.116.152:6061/api/friends/accept \
+curl -X POST https://app.catsco.cc/api/friends/accept \
   -H "Content-Type: application/json" \
   -H "Authorization: ApiKey <bot的api_key>" \
   -d '{"user_id": <你的uid>}'
@@ -128,7 +128,7 @@ npm install @catscompany/bot-sdk
 import { CatsBot } from '@catscompany/bot-sdk';
 
 const bot = new CatsBot({
-  serverUrl: 'ws://118.145.116.152/v0/channels',
+  serverUrl: 'wss://app.catsco.cc/v0/channels',
   apiKey: '<你的bot api_key>',
   connectTimeout: 15000,
   handshakeTimeout: 10000,
@@ -154,7 +154,7 @@ bot.connect();
 
 说明：
 
-- 外部 Bot 建议统一走 `ws://118.145.116.152/v0/channels`，不要直接依赖 `:6061`
+- 外部 Bot 建议统一走 `wss://app.catsco.cc/v0/channels`，不要直接依赖 `:6061`
 - `connectTimeout` 是建连超时，`handshakeTimeout` 是握手超时
 - 如果 API key 无效或升级被拒绝，SDK 会直接返回明确错误，而不是统一表现成握手超时
 
@@ -231,7 +231,7 @@ A: 确认已互加好友。检查 Bot 进程是否在运行，终端有无错误
 **Q: 如何让 Bot 公开可见？**
 A: App 内「我的机器人」列表中操作，或调用 API：
 ```bash
-curl -X POST "http://118.145.116.152:6061/api/bots/visibility?uid=<bot_uid>&v=public" \
+curl -X POST "https://app.catsco.cc/api/bots/visibility?uid=<bot_uid>&v=public" \
   -H "Authorization: Bearer <你的token>"
 ```
 

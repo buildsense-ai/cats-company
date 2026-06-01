@@ -68,8 +68,12 @@ export default function FriendsView({ onSelectUser, user, onClose }) {
     loadPending();
   };
 
-  const handleGroupCreated = () => {
-    loadGroups();
+  const handleGroupCreated = (created) => {
+    const group = normalizeCreatedGroup(created);
+    if (group) {
+      setGroups((prev) => [group, ...prev.filter((item) => String(item.id) !== String(group.id))]);
+    }
+    window.dispatchEvent(new Event('cc:data-changed'));
   };
 
   // Search filter
@@ -165,4 +169,19 @@ export default function FriendsView({ onSelectUser, user, onClose }) {
 function p2pTopicId(uid1, uid2) {
   if (uid1 > uid2) [uid1, uid2] = [uid2, uid1];
   return `p2p_${uid1}_${uid2}`;
+}
+
+function normalizeCreatedGroup(created) {
+  if (!created) return null;
+  const rawGroup = created.group || {};
+  const id = rawGroup.id || created.group_id;
+  const name = rawGroup.name || created.name;
+  if (!id || !name) return null;
+  return {
+    ...rawGroup,
+    id,
+    name,
+    avatar_url: rawGroup.avatar_url || created.avatar_url || '',
+    created_at: rawGroup.created_at || created.created_at || new Date().toISOString(),
+  };
 }

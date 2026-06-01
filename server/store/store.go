@@ -9,8 +9,11 @@ type UserStore interface {
 	GetUser(id int64) (*types.User, error)
 	GetUserByUsername(username string) (*types.User, error)
 	GetUserByEmail(email string) (*types.User, error)
+	ListAdminUsers(query string, limit, offset int) ([]*types.User, error)
+	CountAdminUsers(query string) (int, error)
 	UpdateUserDisplayName(uid int64, displayName string) error
 	UpdateUserPasswordHash(uid int64, passHash []byte) error
+	UpdateUserState(uid int64, state int) error
 	SearchUsers(query string, limit int) ([]*types.User, error)
 	UpdateUser(id int64, displayName, avatarURL string) error
 	UpdateUserAvatar(id int64, avatarURL string) error
@@ -57,6 +60,7 @@ type MessageStore interface {
 	SaveMessage(topicID string, fromUID int64, content, msgType string) (int64, error)
 	SaveMessageWithBlocks(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string) (int64, error)
 	SaveMessageWithReply(topicID string, fromUID int64, content, msgType string, replyTo int64) (int64, error)
+	SaveMessageIdempotent(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string) (id int64, duplicate bool, err error)
 	GetMessagesSince(topicID string, sinceID int64, limit int) ([]*types.Message, error)
 	GetMessages(topicID string, limit, offset int) ([]*types.Message, error)
 	GetLatestMessages(topicID string, limit, offset int) ([]*types.Message, error)
@@ -74,6 +78,8 @@ type BotStore interface {
 	GetBotDebugMessages(uid int64, limit int) ([]*types.Message, error)
 	GetBotByAPIKey(apiKey string) (int64, error)
 	GetBotAPIKey(botUID int64) (string, error)
+	EnsureBotBodyBinding(botUID int64, bodyID string) (string, bool, error)
+	GetBotBodyID(botUID int64) (string, error)
 	ListBotsByOwner(ownerID int64) ([]map[string]interface{}, error)
 	GetBotOwner(botUID int64) (int64, error)
 	DeleteBot(botUID int64) error
