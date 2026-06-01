@@ -492,6 +492,13 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 		return
 	}
 
+	if status, message := prepareAgentP2PMessage(h.db, uid, topic, payload); status != 0 {
+		h.SendToClient(client, &ServerMessage{
+			Ctrl: &MsgServerCtrl{ID: msg.ID, Code: status, Text: message},
+		})
+		return
+	}
+
 	// Ensure topic exists
 	h.db.CreateTopic(topic, "p2p", uid)
 
@@ -817,6 +824,12 @@ func (h *Hub) handleGet(client *Client, msg *MsgClientGet) {
 		})
 
 	case "history":
+		if status, message := ensureAgentP2PTopicAccess(h.db, uid, msg.Topic); status != 0 {
+			h.SendToClient(client, &ServerMessage{
+				Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: msg.Topic, Code: status, Text: message},
+			})
+			return
+		}
 		// Fetch messages after a given seq ID for reconnection
 		sinceID := int64(msg.SeqID)
 		msgs, err := h.db.GetMessagesSince(msg.Topic, sinceID, 100)

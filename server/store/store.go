@@ -82,6 +82,18 @@ type BotStore interface {
 	SetBotVisibility(botUID int64, visibility string) error
 }
 
+// AgentAccessStore contains organization-style virtual employee access records.
+type AgentAccessStore interface {
+	ListAccessibleAgents(userUID int64) ([]*types.AgentRosterItem, error)
+	GetAccessibleAgent(agentUID, userUID int64) (*types.AgentRosterItem, error)
+	ListAgentAccess(agentUID int64) ([]*types.AgentAccess, error)
+	GetAgentAccess(agentUID, userUID int64) (*types.AgentAccess, error)
+	UpsertAgentAccess(agentUID, userUID, invitedBy int64, permission, status, source string) (*types.AgentAccess, error)
+	UpdateAgentAccess(accessID, agentUID int64, permission, status string) (*types.AgentAccess, error)
+	RevokeAgentAccess(accessID, agentUID int64) error
+	AcceptAgentInvite(agentUID, userUID int64) (*types.AgentAccess, error)
+}
+
 // FeedbackStore contains user feedback persistence operations.
 type FeedbackStore interface {
 	CreateFeedbackReport(report *types.FeedbackReport) (int64, error)
@@ -103,6 +115,7 @@ type Store interface {
 	GroupStore
 	MessageStore
 	BotStore
+	AgentAccessStore
 	FeedbackStore
 	AuthServiceStore
 	CreateSchema() error

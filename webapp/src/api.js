@@ -165,6 +165,13 @@ export const api = {
   deleteBot: (uid) => request('DELETE', `/api/bots?uid=${uid}`),
   setBotVisibility: (uid, visibility) => request('PATCH', `/api/bots/visibility?uid=${uid}&v=${visibility}`),
   getBotFriends: (uid) => request('GET', `/api/bots/friends?uid=${uid}`),
+  getAgents: () => request('GET', '/api/agents'),
+  openAgent: (agentUid) => request('POST', '/api/agents/open', { agent_uid: agentUid }),
+  getAgentAccess: (agentUid) => request('GET', `/api/agents/${agentUid}/access`),
+  inviteAgentAccess: (agentUid, payload) => request('POST', `/api/agents/${agentUid}/access/invite`, payload),
+  updateAgentAccess: (agentUid, accessId, payload) => request('PATCH', `/api/agents/${agentUid}/access/${accessId}`, payload),
+  revokeAgentAccess: (agentUid, accessId) => request('DELETE', `/api/agents/${agentUid}/access/${accessId}`),
+  acceptAgentInvite: (agentUid) => request('POST', '/api/agents/access/accept', { agent_uid: agentUid }),
   acceptFriendAsBot: async (apiKey, userId) => {
     const res = await fetch(`${API_BASE}/api/friends/accept`, {
       method: 'POST',

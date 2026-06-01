@@ -220,6 +220,7 @@ func main() {
 	friendHandler := server.NewFriendHandler(db)
 	conversationHandler := server.NewConversationHandler(db, hub)
 	botHandler := server.NewBotHandler(db, deployer)
+	agentHandler := server.NewAgentHandler(db)
 	msgHandler := server.NewMessageHandler(db, hub)
 	uploadHandler := server.NewUploadHandler("./uploads", "/uploads")
 	readerHandler := server.NewReaderProxyHandlerFromEnv()
@@ -331,6 +332,12 @@ func main() {
 	// User profile (require auth — JWT or API Key)
 	mux.HandleFunc("/api/me", authWithDB(userHandler.HandleMe))
 	mux.HandleFunc("/api/me/update", server.AuthMiddleware(userHandler.HandleUpdateMe))
+
+	// Virtual employee roster and access management.
+	mux.HandleFunc("/api/agents", ownerAuthWithDB(agentHandler.HandleList))
+	mux.HandleFunc("/api/agents/open", ownerAuthWithDB(agentHandler.HandleOpen))
+	mux.HandleFunc("/api/agents/access/accept", ownerAuthWithDB(agentHandler.HandleAcceptInvite))
+	mux.HandleFunc("/api/agents/", ownerAuthWithDB(agentHandler.HandleAgentSubroute))
 
 	// Messages (require auth — JWT or API Key for bot access)
 	mux.HandleFunc("/api/messages/send", authWithDB(msgHandler.HandleSendMessage))

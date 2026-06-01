@@ -26,10 +26,19 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
   const [copiedField, setCopiedField] = useState('');
   const [copyingBotKey, setCopyingBotKey] = useState(null);
   const [editingBot, setEditingBot] = useState(null);
+  const [accessRecords, setAccessRecords] = useState([]);
+  const [accessLoading, setAccessLoading] = useState(false);
+  const [inviteForm, setInviteForm] = useState({ target: '', permission: 'use' });
+  const [accessSaving, setAccessSaving] = useState(false);
   const avatarFileRef = useRef(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
 
   useEffect(() => { loadBots(); }, []);
+  useEffect(() => {
+    if (tab === 'manage' && editingBot?.id) {
+      loadAgentAccess(editingBot.id);
+    }
+  }, [tab, editingBot?.id]);
 
   const loadBots = async ({ silent = false } = {}) => {
     try {
@@ -134,6 +143,77 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
       setTab('hub');
     } catch (e) {
       setError(e.message || t('error_server'));
+    }
+  };
+
+  const loadAgentAccess = async (agentId) => {
+    if (!agentId) return;
+    try {
+      setAccessLoading(true);
+      const result = await api.getAgentAccess(agentId);
+      setAccessRecords(result.access || []);
+    } catch (e) {
+      setError(e.message || 'Failed to load access list');
+    } finally {
+      setAccessLoading(false);
+    }
+  };
+
+  const handleInviteAccess = async () => {
+    if (!editingBot?.id) return;
+    const target = inviteForm.target.trim();
+    if (!target) {
+      setError('Enter a teammate username or user ID');
+      return;
+    }
+    const payload = /^\d+$/.test(target)
+      ? { target_user_id: Number(target), permission: inviteForm.permission }
+      : { target_username: target, permission: inviteForm.permission };
+    try {
+      setError('');
+      setAccessSaving(true);
+      await api.inviteAgentAccess(editingBot.id, payload);
+      setInviteForm({ target: '', permission: 'use' });
+      await loadAgentAccess(editingBot.id);
+      if (onBotsChanged) onBotsChanged();
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (e) {
+      setError(e.message || 'Failed to invite teammate');
+    } finally {
+      setAccessSaving(false);
+    }
+  };
+
+  const handleUpdateAccess = async (record, patch) => {
+    if (!editingBot?.id || !record?.id) return;
+    try {
+      setError('');
+      setAccessSaving(true);
+      await api.updateAgentAccess(editingBot.id, record.id, {
+        permission: patch.permission || record.permission,
+        status: patch.status || record.status,
+      });
+      await loadAgentAccess(editingBot.id);
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (e) {
+      setError(e.message || 'Failed to update access');
+    } finally {
+      setAccessSaving(false);
+    }
+  };
+
+  const handleRevokeAccess = async (record) => {
+    if (!editingBot?.id || !record?.id) return;
+    try {
+      setError('');
+      setAccessSaving(true);
+      await api.revokeAgentAccess(editingBot.id, record.id);
+      await loadAgentAccess(editingBot.id);
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (e) {
+      setError(e.message || 'Failed to revoke access');
+    } finally {
+      setAccessSaving(false);
     }
   };
 
@@ -330,7 +410,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
 
           {/* MANAGE / EDIT TAB */}
           {tab === 'manage' && editingBot && (
-            <form onSubmit={handleSaveEdit} style={{ maxWidth: 460, margin: '0 auto' }}>
+            <form onSubmit={handleSaveEdit} style={{ maxWidth: 620, margin: '0 auto' }}>
               <h2 style={{ margin: '0 0 24px 0', fontSize: 20, color: 'var(--v3-text-name)' }}>Manage Configuration</h2>
 
               <div className="oc-form-group" style={{ marginBottom: 16 }}>
@@ -427,6 +507,89 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                   </div>
                 </div>
               )}
+
+              <div style={{ border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 13, color: 'var(--v3-text-name)', fontWeight: 600 }}>Teammate Access</div>
+                    <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginTop: 4 }}>Invite teammates and control who can use this agent.</div>
+                  </div>
+                  <button type="button" className="oc-btn oc-btn-default" style={{ padding: '6px 10px', borderRadius: 8 }} onClick={() => loadAgentAccess(editingBot.id)} disabled={accessLoading}>
+                    {accessLoading ? 'Loading...' : 'Refresh'}
+                  </button>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 120px 96px', gap: 8, marginBottom: 14 }}>
+                  <input
+                    type="text"
+                    value={inviteForm.target}
+                    onChange={(e) => setInviteForm({ ...inviteForm, target: e.target.value })}
+                    placeholder="Username or user ID"
+                    className="oc-auth-input"
+                    style={{ padding: '10px 12px', fontSize: 14 }}
+                    disabled={accessSaving}
+                  />
+                  <select
+                    value={inviteForm.permission}
+                    onChange={(e) => setInviteForm({ ...inviteForm, permission: e.target.value })}
+                    className="oc-auth-input"
+                    style={{ padding: '10px 12px', fontSize: 14 }}
+                    disabled={accessSaving}
+                  >
+                    <option value="use">Use</option>
+                    <option value="view">View</option>
+                    <option value="manage">Manage</option>
+                  </select>
+                  <button type="button" className="oc-btn oc-btn-primary" style={{ borderRadius: 8 }} onClick={handleInviteAccess} disabled={accessSaving}>
+                    Invite
+                  </button>
+                </div>
+
+                {accessLoading ? (
+                  <div style={{ padding: 20, textAlign: 'center', color: 'var(--v3-text-muted)', fontSize: 13 }}>Loading access list...</div>
+                ) : accessRecords.length === 0 ? (
+                  <div style={{ padding: 16, color: 'var(--v3-text-muted)', fontSize: 13, borderTop: '1px solid var(--v3-border)' }}>No teammates have been invited yet.</div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--v3-border)' }}>
+                    {accessRecords.map((record) => (
+                      <div key={record.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 108px 132px 72px', gap: 8, alignItems: 'center', padding: '10px 0', borderBottom: '1px solid var(--v3-border)' }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ color: 'var(--v3-text-name)', fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {record.display_name || record.username || `User ${record.user_uid}`}
+                          </div>
+                          <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>@{record.username || record.user_uid}</div>
+                        </div>
+                        <select
+                          value={record.permission}
+                          onChange={(e) => handleUpdateAccess(record, { permission: e.target.value })}
+                          className="oc-auth-input"
+                          style={{ padding: '8px 10px', fontSize: 13 }}
+                          disabled={accessSaving}
+                        >
+                          <option value="use">Use</option>
+                          <option value="view">View</option>
+                          <option value="manage">Manage</option>
+                        </select>
+                        <select
+                          value={record.status}
+                          onChange={(e) => handleUpdateAccess(record, { status: e.target.value })}
+                          className="oc-auth-input"
+                          style={{ padding: '8px 10px', fontSize: 13 }}
+                          disabled={accessSaving}
+                        >
+                          <option value="pending_accept">Pending</option>
+                          <option value="active">Ready</option>
+                          <option value="blocked">Blocked</option>
+                          <option value="revoked">Revoked</option>
+                        </select>
+                        <button type="button" className="oc-btn oc-btn-default" style={{ padding: '8px 0', borderRadius: 8, color: '#FA5151' }} onClick={() => handleRevokeAccess(record)} disabled={accessSaving}>
+                          Revoke
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               <div style={{ display: 'flex', gap: 12 }}>
                 <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '14px 0', borderRadius: 8 }} onClick={() => setTab('hub')}>

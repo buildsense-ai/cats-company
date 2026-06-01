@@ -26,7 +26,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
         api.getFriends().catch(()=>({})),
         api.getGroups().catch(()=>({})),
         api.getPendingRequests().catch(()=>({})),
-        api.getMyBots().catch(()=>({}))
+        api.getAgents().catch(()=>({}))
       ]);
       const conversations = (resC.conversations || []).map((item) => ({
         id: item.id,
@@ -45,7 +45,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
       setFriends(resF.friends || []);
       setGroups(resG.groups || []);
       setPending(resP.requests || []);
-      setBots(resB.bots || []);
+      setBots(resB.agents || resB.bots || []);
     } catch (e) {
       console.error('Failed to load sidebar data:', e);
     }
@@ -105,6 +105,33 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
   const handleGroupCreated = () => loadAll();
   const handleAccept = async (userId) => { await api.acceptFriend(userId); loadAll(); };
   const handleReject = async (userId) => { await api.rejectFriend(userId); loadAll(); };
+  const handleOpenAgent = async (bot) => {
+    if (!bot?.can_chat) return;
+    try {
+      const result = await api.openAgent(bot.id);
+      const topicId = result.topic_id || bot.topic_id || p2pTopicId(user.uid, bot.id);
+      onSelectTopic({
+        topicId,
+        name: bot.display_name || bot.username,
+        isGroup: false,
+        avatar_url: bot.avatar_url,
+        friendId: bot.id,
+        catscoIdentity: result.catsco_identity,
+      });
+    } catch (err) {
+      window.alert(err.message || 'Failed to open agent.');
+    }
+  };
+  const handleAcceptAgentInvite = async (event, bot) => {
+    event.stopPropagation();
+    try {
+      await api.acceptAgentInvite(bot.id);
+      await loadAll();
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (err) {
+      window.alert(err.message || 'Failed to accept invite.');
+    }
+  };
   const groupOwnerById = new Map(groups.map((group) => [String(group.id), String(group.owner_id)]));
 
   const handleDeleteGroup = async ({ groupId, topicId, name }) => {
@@ -226,25 +253,43 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
                <div style={{ padding: '20px', textAlign: 'center', color: '#888', fontSize: '13px' }}>Workspace has no agents.</div>
             ) : (
               filteredBots.map((bot) => {
-                const topicId = p2pTopicId(user.uid, bot.id);
+                const topicId = bot.topic_id || p2pTopicId(user.uid, bot.id);
                 const isOnline = Boolean((onlineUsers && onlineUsers[bot.id]) || bot.is_online);
+                const statusLabel = agentStatusLabel(bot);
+                const canChat = Boolean(bot.can_chat);
                 return (
                   <div
                     key={bot.id}
                     className={`v3-chat-item ${activeTopic === topicId ? 'active' : ''}`}
-                    onClick={() => onSelectTopic({
-                      topicId,
-                      name: bot.display_name || bot.username,
-                      isGroup: false,
-                      avatar_url: bot.avatar_url,
-                      friendId: bot.id,
-                    })}
+                    onClick={() => handleOpenAgent(bot)}
+                    style={{ opacity: canChat ? 1 : 0.72, cursor: canChat ? 'pointer' : 'default' }}
                   >
                     <span className="prefix" style={{display:'flex', alignItems:'center'}}><Bot size={18} /></span>
                     <span className="v3-chat-item-label">{bot.display_name || bot.username}</span>
+                    {bot.access_status === 'pending_accept' ? (
+                      <button
+                        type="button"
+                        className="oc-btn oc-btn-default"
+                        style={{ marginLeft: 'auto', padding: '3px 8px', borderRadius: 6, fontSize: 11 }}
+                        onClick={(event) => handleAcceptAgentInvite(event, bot)}
+                      >
+                        Accept
+                      </button>
+                    ) : (
+                      <span
+                        style={{
+                          marginLeft: 'auto',
+                          fontSize: 11,
+                          color: canChat ? 'var(--v3-primary)' : 'var(--v3-text-muted)',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {statusLabel}
+                      </span>
+                    )}
                     <span
                       className={`v3-status-dot ${isOnline ? 'online' : 'offline'}`}
-                      style={{marginLeft: 'auto'}}
+                      style={{marginLeft: 8}}
                       title={isOnline ? 'Online' : 'Offline'}
                       aria-label={isOnline ? 'Online' : 'Offline'}
                     />
@@ -309,6 +354,16 @@ function p2pTopicId(uid1, uid2) {
   let u2 = parseInt(uid2, 10);
   if (u1 > u2) [u1, u2] = [u2, u1];
   return `p2p_${u1}_${u2}`;
+}
+
+function agentStatusLabel(agent) {
+  if (!agent) return '';
+  if (agent.access_status === 'blocked') return 'Blocked';
+  if (agent.access_status === 'pending_accept') return 'Pending';
+  if (agent.access_status === 'revoked') return 'Unavailable';
+  if (agent.can_manage) return 'Manage';
+  if (agent.can_chat) return 'Ready';
+  return 'Unavailable';
 }
 
 function formatTime(date) {

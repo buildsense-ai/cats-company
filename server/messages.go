@@ -63,6 +63,11 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if status, message := prepareAgentP2PMessage(h.db, uid, req.TopicID, payload); status != 0 {
+		writeJSON(w, status, map[string]string{"error": message})
+		return
+	}
+
 	if isTransientRuntimePayload(payload) {
 		h.fanoutMessage(uid, req.TopicID, req.ReplyTo, payload, 0)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -184,11 +189,15 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 
 // HandleGetMessages handles GET /api/messages?topic_id=xxx&limit=50&offset=0
 func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Request) {
-	_ = UIDFromContext(r.Context())
+	uid := UIDFromContext(r.Context())
 
 	topicID := r.URL.Query().Get("topic_id")
 	if topicID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "topic_id required"})
+		return
+	}
+	if status, message := ensureAgentP2PTopicAccess(h.db, uid, topicID); status != 0 {
+		writeJSON(w, status, map[string]string{"error": message})
 		return
 	}
 

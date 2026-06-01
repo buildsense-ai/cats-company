@@ -14,6 +14,7 @@ func (a *Adapter) CreateSchema() error {
 		createTopicsTable,
 		createMessagesTable,
 		createBotConfigTable,
+		createAgentAccessTable,
 		createRateLimitTable,
 		createGroupsTable,
 		createGroupMembersTable,
@@ -34,6 +35,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddOwnerID,
 		migrateBotConfigAddVisibility,
 		migrateBotConfigAddTenantName,
+		migrateAgentAccessAddInvitedBy,
 		migrateMessagesAddCodeMode,
 		migrateGroupsAddAnnouncement,
 		migrateGroupMembersAddMuted,
@@ -139,6 +141,27 @@ CREATE TABLE IF NOT EXISTS bot_config (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
+const createAgentAccessTable = `
+CREATE TABLE IF NOT EXISTS agent_access (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    agent_uid BIGINT NOT NULL,
+    user_uid BIGINT NOT NULL,
+    status ENUM('pending_accept','active','blocked','revoked') NOT NULL DEFAULT 'pending_accept',
+    permission ENUM('view','use','manage') NOT NULL DEFAULT 'use',
+    source VARCHAR(32) NOT NULL DEFAULT 'admin_invite',
+    invited_by BIGINT DEFAULT NULL,
+    accepted_at TIMESTAMP NULL DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_agent_access_user (agent_uid, user_uid),
+    INDEX idx_agent_access_user_status (user_uid, status),
+    INDEX idx_agent_access_agent_status (agent_uid, status),
+    FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_uid) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (invited_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
 const createRateLimitTable = `
 CREATE TABLE IF NOT EXISTS rate_limits (
     account_type ENUM('human','bot','service') PRIMARY KEY,
@@ -241,6 +264,11 @@ ALTER TABLE bot_config ADD COLUMN visibility ENUM('public','private') NOT NULL D
 // NULL = self-hosted (third-party), non-NULL = platform-managed deployment.
 const migrateBotConfigAddTenantName = `
 ALTER TABLE bot_config ADD COLUMN tenant_name VARCHAR(128) DEFAULT NULL;
+`
+
+// Migration: add inviter metadata to agent access records created by older beta builds.
+const migrateAgentAccessAddInvitedBy = `
+ALTER TABLE agent_access ADD COLUMN invited_by BIGINT DEFAULT NULL;
 `
 
 // Migration: add code mode support to messages table.

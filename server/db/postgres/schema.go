@@ -11,6 +11,7 @@ func (a *Adapter) CreateSchema() error {
 		createTopicsTable,
 		createMessagesTable,
 		createBotConfigTable,
+		createAgentAccessTable,
 		createRateLimitTable,
 		createGroupsTable,
 		createGroupMembersTable,
@@ -22,6 +23,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddOwnerID,
 		migrateBotConfigAddVisibility,
 		migrateBotConfigAddTenantName,
+		migrateAgentAccessAddStatus,
 		migrateMessagesAddCodeMode,
 		migrateGroupsAddAnnouncement,
 		migrateGroupMembersAddMuted,
@@ -30,6 +32,7 @@ func (a *Adapter) CreateSchema() error {
 		createTopicsIndexes,
 		createMessagesIndexes,
 		createBotConfigIndexes,
+		createAgentAccessIndexes,
 		createGroupMembersIndexes,
 		createFeedbackIndexes,
 		createAuthServicesIndexes,
@@ -124,6 +127,22 @@ CREATE TABLE IF NOT EXISTS bot_config (
 );
 `
 
+const createAgentAccessTable = `
+CREATE TABLE IF NOT EXISTS agent_access (
+    id BIGSERIAL PRIMARY KEY,
+    agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status VARCHAR(24) NOT NULL DEFAULT 'pending_accept' CHECK (status IN ('pending_accept','active','blocked','revoked')),
+    permission VARCHAR(16) NOT NULL DEFAULT 'use' CHECK (permission IN ('view','use','manage')),
+    source VARCHAR(32) NOT NULL DEFAULT 'admin_invite',
+    invited_by BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
+    accepted_at TIMESTAMPTZ DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_agent_access_user UNIQUE (agent_uid, user_uid)
+);
+`
+
 const createRateLimitTable = `
 CREATE TABLE IF NOT EXISTS rate_limits (
     account_type VARCHAR(16) PRIMARY KEY CHECK (account_type IN ('human','bot','service')),
@@ -194,6 +213,14 @@ const migrateBotConfigAddAPIKey = `ALTER TABLE bot_config ADD COLUMN IF NOT EXIS
 const migrateBotConfigAddOwnerID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS owner_id BIGINT DEFAULT NULL;`
 const migrateBotConfigAddVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'public';`
 const migrateBotConfigAddTenantName = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(128) DEFAULT NULL;`
+const migrateAgentAccessAddStatus = `
+ALTER TABLE agent_access
+  ADD COLUMN IF NOT EXISTS status VARCHAR(24) NOT NULL DEFAULT 'pending_accept',
+  ADD COLUMN IF NOT EXISTS permission VARCHAR(16) NOT NULL DEFAULT 'use',
+  ADD COLUMN IF NOT EXISTS source VARCHAR(32) NOT NULL DEFAULT 'admin_invite',
+  ADD COLUMN IF NOT EXISTS invited_by BIGINT DEFAULT NULL,
+  ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ DEFAULT NULL;
+`
 const migrateMessagesAddCodeMode = `
 ALTER TABLE messages
   ADD COLUMN IF NOT EXISTS content_blocks JSONB DEFAULT NULL,
@@ -225,6 +252,10 @@ const createBotConfigIndexes = `
 CREATE UNIQUE INDEX IF NOT EXISTS uk_bot_config_api_key ON bot_config (api_key) WHERE api_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_bot_config_owner ON bot_config (owner_id);
 `
+const createAgentAccessIndexes = `
+CREATE INDEX IF NOT EXISTS idx_agent_access_user_status ON agent_access (user_uid, status);
+CREATE INDEX IF NOT EXISTS idx_agent_access_agent_status ON agent_access (agent_uid, status);
+`
 const createGroupMembersIndexes = `
 CREATE INDEX IF NOT EXISTS idx_gm_user ON group_members (user_id);
 CREATE INDEX IF NOT EXISTS idx_gm_group_joined ON group_members (group_id, joined_at);
@@ -245,6 +276,8 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_friends_updated_at BEFORE UPDATE ON friends
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_bot_config_updated_at BEFORE UPDATE ON bot_config
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_agent_access_updated_at BEFORE UPDATE ON agent_access
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_feedback_reports_updated_at BEFORE UPDATE ON feedback_reports
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();

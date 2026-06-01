@@ -211,6 +211,59 @@ type BotConfig struct {
 	Config      map[string]string `json:"config,omitempty"`
 }
 
+// AgentAccessStatus describes whether a user can use an agent.
+type AgentAccessStatus string
+
+const (
+	AgentAccessPending AgentAccessStatus = "pending_accept"
+	AgentAccessActive  AgentAccessStatus = "active"
+	AgentAccessBlocked AgentAccessStatus = "blocked"
+	AgentAccessRevoked AgentAccessStatus = "revoked"
+)
+
+// AgentPermission describes what a user can do with an agent.
+type AgentPermission string
+
+const (
+	AgentPermissionView   AgentPermission = "view"
+	AgentPermissionUse    AgentPermission = "use"
+	AgentPermissionManage AgentPermission = "manage"
+)
+
+// AgentAccess is one user's permission record for one virtual employee.
+type AgentAccess struct {
+	ID            int64             `json:"id"`
+	AgentUID      int64             `json:"agent_uid"`
+	UserUID       int64             `json:"user_uid"`
+	Username      string            `json:"username,omitempty"`
+	DisplayName   string            `json:"display_name,omitempty"`
+	AvatarURL     string            `json:"avatar_url,omitempty"`
+	Status        AgentAccessStatus `json:"status"`
+	Permission    AgentPermission   `json:"permission"`
+	Source        string            `json:"source"`
+	InvitedBy     int64             `json:"invited_by,omitempty"`
+	InvitedByName string            `json:"invited_by_name,omitempty"`
+	AcceptedAt    *time.Time        `json:"accepted_at,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+}
+
+// AgentRosterItem is the user-facing list entry for accessible virtual employees.
+type AgentRosterItem struct {
+	ID          int64             `json:"id"`
+	Username    string            `json:"username"`
+	DisplayName string            `json:"display_name"`
+	AvatarURL   string            `json:"avatar_url,omitempty"`
+	OwnerID     int64             `json:"owner_id,omitempty"`
+	Visibility  BotVisibility     `json:"visibility"`
+	Status      AgentAccessStatus `json:"access_status"`
+	Permission  AgentPermission   `json:"permission"`
+	Source      string            `json:"source"`
+	CanChat     bool              `json:"can_chat"`
+	CanManage   bool              `json:"can_manage"`
+	TopicID     string            `json:"topic_id,omitempty"`
+}
+
 // Group represents a chat group.
 type Group struct {
 	ID           int64     `json:"id"`
