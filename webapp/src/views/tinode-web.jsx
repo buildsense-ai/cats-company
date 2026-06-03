@@ -401,6 +401,8 @@ function ProfileFooter({ user, wsStatus, onTogglePopover }) {
 
 function formatAuthError(message) {
   const text = String(message || '').toLowerCase();
+  if (text.includes('user not found')) return '账号不存在，请检查用户名或邮箱';
+  if (text.includes('password mismatch')) return '密码错误，请重试';
   if (text.includes('username taken')) return '登录名称已被占用，请换一个';
   if (text.includes('email already')) return '该邮箱已经注册，请直接登录';
   if (text.includes('invalid or expired verification code')) return '验证码无效或已过期';
@@ -414,6 +416,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loginName, setLoginName] = useState('');
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
@@ -493,13 +496,22 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
             value={username}
             onChange={(e) => setUsername(e.target.value)}
           />
-          <input
-            className="oc-auth-input"
-            type="password"
-            placeholder={t('password')}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+          <div style={{ position: 'relative' }}>
+            <input
+              className="oc-auth-input"
+              type={showPassword ? 'text' : 'password'}
+              placeholder={t('password')}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              style={{ paddingRight: 48 }}
+            />
+            <span
+              onClick={() => setShowPassword(!showPassword)}
+              style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', cursor: 'pointer', color: '#888', fontSize: 13, userSelect: 'none' }}
+            >
+              {showPassword ? '隐藏' : '显示'}
+            </span>
+          </div>
         </>
       ) : (
         <>
@@ -534,13 +546,22 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
             value={loginName}
             onChange={(e) => setLoginName(e.target.value)}
           />
-          <input
-            className="oc-auth-input"
-            type="password"
-            placeholder="设置密码（至少6位）"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+          <div style={{ position: 'relative' }}>
+            <input
+              className="oc-auth-input"
+              type={showPassword ? 'text' : 'password'}
+              placeholder="设置密码（至少6位）"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              style={{ paddingRight: 48 }}
+            />
+            <span
+              onClick={() => setShowPassword(!showPassword)}
+              style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', cursor: 'pointer', color: '#888', fontSize: 13, userSelect: 'none' }}
+            >
+              {showPassword ? '隐藏' : '显示'}
+            </span>
+          </div>
         </>
       )}
 

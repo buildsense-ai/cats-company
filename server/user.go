@@ -342,13 +342,13 @@ func (h *UserHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil || user == nil {
 		fmt.Printf("[LOGIN_ERROR] User not found: %s, err: %v\n", req.Account, err)
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user not found"})
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword(user.PassHash, []byte(req.Password)); err != nil {
 		fmt.Printf("[LOGIN_ERROR] Password mismatch for %s: %v\n", req.Account, err)
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "password mismatch"})
 		return
 	}
 	if user.State != 0 {
