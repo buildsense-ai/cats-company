@@ -126,7 +126,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
   };
 
   const handleDelete = async (bot) => {
-    if (!window.confirm(`Are you sure you want to permanently delete ${bot.display_name}?`)) return;
+    if (!window.confirm(`确定要永久删除 ${bot.display_name} 吗？`)) return;
     try {
       await api.deleteBot(bot.id);
       await loadBots({ silent: true });
@@ -164,20 +164,20 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
         <div className="oc-modal-header" style={{ padding: '20px 24px', borderBottom: '1px solid var(--v3-border)' }}>
           <div style={{ display: 'flex', gap: 24, alignItems: 'center' }}>
             <h3 style={{ margin: 0, fontSize: 18, fontWeight: 600, display: 'flex', alignItems: 'center', color: 'var(--v3-text-name)' }}>
-              <Zap size={20} style={{marginRight: 8, color: 'var(--v3-primary)'}} fill="currentColor" /> Agent Workspace
+              <Zap size={20} style={{marginRight: 8, color: 'var(--v3-primary)'}} fill="currentColor" /> AI 助手管理
             </h3>
             <div style={{ display: 'flex', gap: 16 }}>
               <button
                 style={{ background: 'none', border: 'none', color: tab === 'hub' ? 'var(--v3-text-name)' : 'var(--v3-text-muted)', fontWeight: tab === 'hub' ? 600 : 400, cursor: 'pointer', outline: 'none' }}
                 onClick={() => setTab('hub')}
               >
-                My Agents
+                我的助手
               </button>
               <button
                 style={{ background: 'none', border: 'none', color: tab === 'create' ? 'var(--v3-text-name)' : 'var(--v3-text-muted)', fontWeight: tab === 'create' ? 600 : 400, cursor: 'pointer', outline: 'none' }}
                 onClick={() => setTab('create')}
               >
-                Create New
+                创建新助手
               </button>
             </div>
           </div>
@@ -192,12 +192,12 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
           {tab === 'hub' && (
             <>
               {loading ? (
-                <div style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)' }}>Retrieving agents...</div>
+                <div style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)' }}>加载中...</div>
               ) : bots.length === 0 ? (
                 <div style={{ padding: 60, textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
                   <div style={{ color: 'var(--v3-text-muted)' }}><Bot size={48} strokeWidth={1.5} /></div>
-                  <div style={{ color: 'var(--v3-text-main)' }}>Your workspace has no active agents.</div>
-                  <button className="oc-btn oc-btn-primary" style={{ padding: '8px 16px', borderRadius: 8 }} onClick={() => setTab('create')}>Deploy First Agent</button>
+                  <div style={{ color: 'var(--v3-text-main)' }}>还没有 AI 助手</div>
+                  <button className="oc-btn oc-btn-primary" style={{ padding: '8px 16px', borderRadius: 8 }} onClick={() => setTab('create')}>创建第一个助手</button>
                 </div>
               ) : (
                 <div className="v3-agent-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
@@ -213,14 +213,14 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                         </div>
                       </div>
                       <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 16, marginTop: 12 }}>
-                        {bot.tenant_name ? 'Cloud Managed' : 'Self-hosted (API Key)'}
+                        {bot.tenant_name ? '云托管' : '自托管 (API Key)'}
                       </div>
                       <div className="v3-agent-actions" style={{ display: 'flex', gap: 8 }}>
                         <button className="oc-btn oc-btn-default" style={{ flex: 1, padding: '8px 0', borderRadius: 8 }} onClick={() => {
                           setEditingBot({ ...bot, newDisplayName: bot.display_name, newAvatarUrl: bot.avatar_url || '' });
                           setTab('manage');
                         }}>
-                          Manage
+                          管理
                         </button>
                         {!bot.tenant_name && (
                           <button
@@ -229,11 +229,11 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                             onClick={() => handleCopyBotAPIKey(bot, `api_${bot.id}`)}
                             disabled={copyingBotKey === bot.id}
                           >
-                            {copiedField === `api_${bot.id}` ? 'Copied!' : copyingBotKey === bot.id ? 'Loading...' : 'Copy Key'}
+                            {copiedField === `api_${bot.id}` ? '已复制' : copyingBotKey === bot.id ? '加载中...' : '复制 Key'}
                           </button>
                         )}
                         <button className="oc-btn oc-btn-default" style={{ padding: '8px 16px', borderRadius: 8, borderColor: 'rgba(250,81,81,0.3)' }} onClick={() => handleDelete(bot)}>
-                          <span style={{ color: '#FA5151' }}>Del</span>
+                          <span style={{ color: '#FA5151' }}>删除</span>
                         </button>
                       </div>
                     </div>
@@ -248,8 +248,8 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
             <form onSubmit={handleCreate} style={{ maxWidth: 460, margin: '0 auto' }}>
               <div style={{ textAlign: 'center', marginBottom: 24, color: 'var(--v3-primary)' }}>
                 <Zap size={32} fill="currentColor" style={{ marginBottom: 8 }} />
-                <h2 style={{ margin: '0 0 8px 0', fontSize: 20, color: 'var(--v3-text-name)' }}>Issue new API Key</h2>
-                <p style={{ margin: 0, color: 'var(--v3-text-muted)', fontSize: 14 }}>Deploy a new intelligent agent to the workspace.</p>
+                <h2 style={{ margin: '0 0 8px 0', fontSize: 20, color: 'var(--v3-text-name)' }}>创建 AI 助手</h2>
+                <p style={{ margin: 0, color: 'var(--v3-text-muted)', fontSize: 14 }}>创建一个新的 AI 助手并获取 API Key。</p>
               </div>
 
               <div className="oc-mode-switch" style={{ marginBottom: 24, display: 'flex', gap: 12 }}>
@@ -258,26 +258,26 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                   onClick={() => setCreateMode(CREATE_MODES.SELF_HOSTED)}
                   style={{ flex: 1, padding: 16, border: createMode === CREATE_MODES.SELF_HOSTED ? '1px solid var(--v3-primary)' : '1px solid var(--v3-border)', borderRadius: 8, cursor: 'pointer', background: createMode === CREATE_MODES.SELF_HOSTED ? 'rgba(16,185,129,0.05)' : 'var(--v3-bg-app)' }}
                 >
-                  <div style={{ fontWeight: 600, color: 'var(--v3-text-name)', marginBottom: 4 }}>Self-Hosted</div>
-                  <div style={{ fontSize: 12, color: 'var(--v3-text-muted)' }}>You bring your own server. We provide the API Key and WebSocket tunnel.</div>
+                  <div style={{ fontWeight: 600, color: 'var(--v3-text-name)', marginBottom: 4 }}>自托管</div>
+                  <div style={{ fontSize: 12, color: 'var(--v3-text-muted)' }}>自行部署服务器，通过 API Key 和 WebSocket 连接。</div>
                 </div>
                 <div
                   className={`oc-mode-option ${createMode === CREATE_MODES.MANAGED ? 'active' : ''}`}
                   onClick={() => setCreateMode(CREATE_MODES.MANAGED)}
                   style={{ flex: 1, padding: 16, border: '1px solid var(--v3-border)', borderRadius: 8, cursor: 'pointer', opacity: 0.5, background: 'var(--v3-bg-app)' }}
                 >
-                  <div style={{ fontWeight: 600, color: 'var(--v3-text-name)', marginBottom: 4 }}>Cloud Managed</div>
-                  <div style={{ fontSize: 12, color: 'var(--v3-text-muted)' }}>Auto-deployed stateless agents. (Coming soon)</div>
+                  <div style={{ fontWeight: 600, color: 'var(--v3-text-name)', marginBottom: 4 }}>云托管</div>
+                  <div style={{ fontSize: 12, color: 'var(--v3-text-muted)' }}>自动部署无状态助手（即将推出）</div>
                 </div>
               </div>
 
               <div className="oc-form-group" style={{ marginBottom: 24 }}>
-                <label style={{ display: 'block', marginBottom: 8, fontSize: 13, color: 'var(--v3-text-muted)' }}>AGENT DISPLAY NAME</label>
+                <label style={{ display: 'block', marginBottom: 8, fontSize: 13, color: 'var(--v3-text-muted)' }}>助手名称</label>
                 <input
                   type="text"
                   value={createForm.display_name}
                   onChange={(e) => setCreateForm({ ...createForm, display_name: e.target.value })}
-                  placeholder="e.g. Code Reviewer Bot"
+                  placeholder="例如：代码审查助手"
                   className="oc-auth-input"
                   style={{ width: '100%', padding: '12px 16px', fontSize: 15 }}
                   required
@@ -286,7 +286,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
               </div>
 
               <button type="submit" className="oc-btn oc-btn-primary" style={{ width: '100%', padding: '14px 0', fontSize: 15, borderRadius: 8 }} disabled={isSubmitting || createMode === CREATE_MODES.MANAGED}>
-                {isSubmitting ? 'Generating Identity...' : 'Generate API Key & Deploy'}
+                {isSubmitting ? '创建中...' : '生成 API Key 并创建'}
               </button>
             </form>
           )}
@@ -295,8 +295,8 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
           {tab === 'success' && createdBot && (
             <div style={{ maxWidth: 460, margin: '0 auto', textAlign: 'center' }}>
               <div style={{ width: 64, height: 64, background: 'rgba(16, 185, 129, 0.1)', color: 'var(--v3-primary)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32, margin: '0 auto 20px' }}>✓</div>
-              <h2 style={{ margin: '0 0 8px 0', color: 'var(--v3-text-name)' }}>Agent Provisioned</h2>
-              <p style={{ margin: '0 0 24px 0', color: 'var(--v3-text-muted)', fontSize: 14 }}>Your self-hosted agent <b style={{color: 'var(--v3-text-name)'}}>{createdBot.display_name}</b> is ready to connect.</p>
+              <h2 style={{ margin: '0 0 8px 0', color: 'var(--v3-text-name)' }}>创建成功</h2>
+              <p style={{ margin: '0 0 24px 0', color: 'var(--v3-text-muted)', fontSize: 14 }}>AI 助手 <b style={{color: 'var(--v3-text-name)'}}>{createdBot.display_name}</b> 已准备好连接。</p>
 
               <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 16 }}>
                 <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>API KEY</div>
@@ -305,25 +305,25 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                     {createdBot.api_key}
                   </code>
                   <button className="oc-btn oc-btn-default" onClick={() => handleCopy('api', createdBot.api_key)}>
-                    {copiedField === 'api' ? 'Copied!' : 'Copy'}
+                    {copiedField === 'api' ? '已复制' : '复制'}
                   </button>
                 </div>
               </div>
 
               <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
-                <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>WEBSOCKET TUNNEL URL</div>
+                <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>WebSocket 连接地址</div>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-text-main)', fontFamily: 'monospace', fontSize: 13, userSelect: 'all' }}>
                     {wsUrl}
                   </code>
                   <button className="oc-btn oc-btn-default" onClick={() => handleCopy('ws', wsUrl)}>
-                    {copiedField === 'ws' ? 'Copied!' : 'Copy'}
+                    {copiedField === 'ws' ? '已复制' : '复制'}
                   </button>
                 </div>
               </div>
 
               <button className="oc-btn oc-btn-default" style={{ width: '100%', padding: '12px 0', borderRadius: 8 }} onClick={() => setTab('hub')}>
-                Return to Hub
+                返回列表
               </button>
             </div>
           )}
@@ -331,10 +331,10 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
           {/* MANAGE / EDIT TAB */}
           {tab === 'manage' && editingBot && (
             <form onSubmit={handleSaveEdit} style={{ maxWidth: 460, margin: '0 auto' }}>
-              <h2 style={{ margin: '0 0 24px 0', fontSize: 20, color: 'var(--v3-text-name)' }}>Manage Configuration</h2>
+              <h2 style={{ margin: '0 0 24px 0', fontSize: 20, color: 'var(--v3-text-name)' }}>管理助手</h2>
 
               <div className="oc-form-group" style={{ marginBottom: 16 }}>
-                <label style={{ display: 'block', marginBottom: 8, fontSize: 13, color: 'var(--v3-text-muted)' }}>Display Name</label>
+                <label style={{ display: 'block', marginBottom: 8, fontSize: 13, color: 'var(--v3-text-muted)' }}>名称</label>
                 <input
                   type="text"
                   value={editingBot.newDisplayName}
@@ -346,7 +346,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
               </div>
 
               <div className="oc-form-group" style={{ marginBottom: 24 }}>
-                <label style={{ display: 'block', marginBottom: 8, fontSize: 13, color: 'var(--v3-text-muted)' }}>AGENT AVATAR</label>
+                <label style={{ display: 'block', marginBottom: 8, fontSize: 13, color: 'var(--v3-text-muted)' }}>头像</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
                   <Avatar
                     name={editingBot.newDisplayName || editingBot.display_name}
@@ -363,7 +363,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                       disabled={avatarUploading}
                     >
                       <Upload size={14} />
-                      {avatarUploading ? 'Uploading...' : 'Choose Avatar'}
+                      {avatarUploading ? '上传中...' : '选择头像'}
                     </button>
                     {editingBot.newAvatarUrl && (
                       <button
@@ -371,7 +371,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                         style={{ background: 'none', border: 'none', color: 'var(--v3-text-muted)', fontSize: 12, cursor: 'pointer', textAlign: 'left', padding: 0 }}
                         onClick={() => setEditingBot({ ...editingBot, newAvatarUrl: '' })}
                       >
-                        Remove avatar
+                        移除头像
                       </button>
                     )}
                   </div>
@@ -401,28 +401,28 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
 
               {!editingBot.tenant_name && (
                 <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
-                  <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>AUTHORIZATION (API KEY)</div>
+                  <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>API Key</div>
                   <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
                     <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: editingBot.api_key ? 'var(--v3-primary)' : 'var(--v3-text-muted)', fontFamily: 'monospace', fontSize: 13, userSelect: 'all' }}>
-                      {editingBot.api_key || 'Click Copy to load API Key'}
+                      {editingBot.api_key || '点击复制加载 API Key'}
                     </code>
-                    <button 
-                      type="button" 
-                      className="oc-btn oc-btn-default" 
+                    <button
+                      type="button"
+                      className="oc-btn oc-btn-default"
                       onClick={() => handleCopyBotAPIKey(editingBot, 'api_edit')}
                       disabled={copyingBotKey === editingBot.id}
                     >
-                      {copiedField === 'api_edit' ? 'Copied!' : copyingBotKey === editingBot.id ? 'Loading...' : 'Copy'}
+                      {copiedField === 'api_edit' ? '已复制' : copyingBotKey === editingBot.id ? '加载中...' : '复制'}
                     </button>
                   </div>
 
-                  <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>WEBSOCKET TUNNEL URL</div>
+                  <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>WebSocket 连接地址</div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-text-main)', fontFamily: 'monospace', fontSize: 13, userSelect: 'all' }}>
                       {wsUrl}
                     </code>
                     <button type="button" className="oc-btn oc-btn-default" onClick={() => handleCopy('ws_edit', wsUrl)}>
-                      {copiedField === 'ws_edit' ? 'Copied!' : 'Copy'}
+                      {copiedField === 'ws_edit' ? '已复制' : '复制'}
                     </button>
                   </div>
                 </div>
@@ -430,10 +430,10 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
 
               <div style={{ display: 'flex', gap: 12 }}>
                 <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '14px 0', borderRadius: 8 }} onClick={() => setTab('hub')}>
-                  Cancel
+                  取消
                 </button>
                 <button type="submit" className="oc-btn oc-btn-primary" style={{ flex: 1, padding: '14px 0', borderRadius: 8 }}>
-                  Save Changes
+                  保存
                 </button>
               </div>
             </form>

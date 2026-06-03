@@ -294,7 +294,7 @@ export default function TinodeWeb() {
     <div className="v3-app">
       <div className="v3-sidebar">
         <div className="v3-sidebar-header">
-          <div className="v3-brand-title">CatsCo</div>
+          <div className="v3-brand-title" style={{fontSize: 20, fontWeight: 700}}>CatsCo</div>
         </div>
         
         <SidebarContent
