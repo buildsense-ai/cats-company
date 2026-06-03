@@ -268,6 +268,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
         ) : (
           aiChats.map((chat) => {
             const canDelete = chat.isGroup && groupOwnerById.get(String(chat.groupId)) === String(user.uid);
+            const isOnline = !chat.isGroup && ((onlineUsers && onlineUsers[chat.friendId]) || chat.isOnline);
             return (
               <div key={chat.id} className={`v3-chat-item ${activeTopic === chat.id ? 'active' : ''}`}
                 onClick={() => onSelectTopic({ topicId: chat.id, name: chat.name, isGroup: chat.isGroup, groupId: chat.groupId, avatar_url: chat.avatar_url, friendId: chat.friendId })}>
@@ -277,6 +278,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
                   {chat.preview && <div style={{fontSize: 12, color: '#555', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{chat.preview}</div>}
                 </div>
                 {chat.time && <span style={{fontSize: 11, color: '#555', flexShrink: 0}}>{chat.time}</span>}
+                {!chat.isGroup && <span className={`v3-status-dot ${isOnline ? 'online' : 'offline'}`} style={{marginLeft: 4}} />}
                 {canDelete && (
                   <button type="button" className="v3-chat-item-delete" disabled={deletingTopicId === chat.id}
                     onClick={(e) => { e.stopPropagation(); handleDeleteGroup({ groupId: chat.groupId, topicId: chat.id, name: chat.name }); }} title="删除">
