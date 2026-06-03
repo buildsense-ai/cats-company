@@ -10,7 +10,7 @@ import CatsCoDownloadModal from '../widgets/catsco-download-modal';
 import RelayAccessModal from '../widgets/relay-access-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import Avatar from '../widgets/avatar';
-import { Bug, Download, KeyRound, Settings, LogOut } from 'lucide-react';
+import { Bug, Download, KeyRound, Settings, LogOut, Eye, EyeOff } from 'lucide-react';
 import CatOrb from '../components/CatOrb/CatOrb';
 import '../css/openchat-theme.css';
 
@@ -507,9 +507,9 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
             />
             <span
               onClick={() => setShowPassword(!showPassword)}
-              style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', cursor: 'pointer', color: '#888', fontSize: 13, userSelect: 'none' }}
+              style={{ position: 'absolute', right: 12, top: '40%', transform: 'translateY(-50%)', cursor: 'pointer', color: '#888', userSelect: 'none', display: 'flex', alignItems: 'center' }}
             >
-              {showPassword ? '隐藏' : '显示'}
+              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
             </span>
           </div>
         </>
@@ -557,9 +557,9 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
             />
             <span
               onClick={() => setShowPassword(!showPassword)}
-              style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', cursor: 'pointer', color: '#888', fontSize: 13, userSelect: 'none' }}
+              style={{ position: 'absolute', right: 12, top: '40%', transform: 'translateY(-50%)', cursor: 'pointer', color: '#888', userSelect: 'none', display: 'flex', alignItems: 'center' }}
             >
-              {showPassword ? '隐藏' : '显示'}
+              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
             </span>
           </div>
         </>
