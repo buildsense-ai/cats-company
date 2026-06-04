@@ -81,6 +81,32 @@ func TestBotBodyLeaseDoesNotExpireActiveConnectionByWallClock(t *testing.T) {
 	}
 }
 
+func TestSharedRuntimeBotBodyLeaseRejectsDifferentBodyAcrossHubs(t *testing.T) {
+	shared := newSharedMemoryRuntimeState()
+	now := time.Unix(300, 0)
+	hubA := NewHubWithRuntime(nil, nil, shared, "node-a")
+	hubB := NewHubWithRuntime(nil, nil, shared, "node-b")
+	hubA.bodyLeases.now = func() time.Time { return now }
+	hubB.bodyLeases.now = func() time.Time { return now }
+
+	if _, err := hubA.bodyLeases.acquire(42, "body-a", "conn-a"); err != nil {
+		t.Fatalf("node-a acquire failed: %v", err)
+	}
+	if _, err := hubB.bodyLeases.acquire(42, "body-b", "conn-b"); !errors.Is(err, errBotBodyLeaseConflict) {
+		t.Fatalf("node-b different body acquire error = %v, want conflict", err)
+	}
+
+	if _, err := hubB.bodyLeases.acquire(42, "body-a", "conn-b2"); err != nil {
+		t.Fatalf("same body reconnect from node-b failed: %v", err)
+	}
+	if hubA.bodyLeases.release(42, "body-a", "conn-a") {
+		t.Fatal("stale node-a connection must not release node-b replacement lease")
+	}
+	if !hubB.bodyLeases.isCurrent(42, "body-a", "conn-b2") {
+		t.Fatal("node-b replacement lease should be current")
+	}
+}
+
 func TestBotBodyLeaseStatus(t *testing.T) {
 	now := time.Date(2026, 5, 26, 10, 0, 0, 0, time.UTC)
 	leases := newBotBodyLeaseManager(time.Minute)

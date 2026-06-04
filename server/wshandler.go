@@ -27,6 +27,7 @@ var upgrader = websocket.Upgrader{
 type Hub struct {
 	mu            sync.RWMutex
 	clients       map[int64]map[*Client]struct{}
+	clientsByConn map[string]*Client
 	register      chan *Client
 	unregister    chan *Client
 	presence      chan presenceEvent
@@ -34,6 +35,8 @@ type Hub struct {
 	rateLimiter   *RateLimiter
 	botStats      *BotStats
 	botConvo      botConvoTracker
+	nodeID        string
+	sharedRuntime sharedRuntimeState
 	bodyLeases    *botBodyLeaseManager
 	userDevices   *userDeviceRegistry
 	deviceClients map[int64]map[string]*Client
@@ -67,8 +70,16 @@ type Client struct {
 
 // NewHub creates a new Hub.
 func NewHub(db store.Store, rl *RateLimiter) *Hub {
+	return NewHubWithRuntime(db, rl, nil, "")
+}
+
+func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeState, nodeID string) *Hub {
+	if strings.TrimSpace(nodeID) == "" {
+		nodeID = newRuntimeNodeID()
+	}
 	hub := &Hub{
 		clients:       make(map[int64]map[*Client]struct{}),
+		clientsByConn: make(map[string]*Client),
 		register:      make(chan *Client, 256),
 		unregister:    make(chan *Client, 256),
 		presence:      make(chan presenceEvent, 256),
@@ -76,10 +87,15 @@ func NewHub(db store.Store, rl *RateLimiter) *Hub {
 		rateLimiter:   rl,
 		botStats:      NewBotStats(),
 		botConvo:      botConvoTracker{counters: make(map[string]*botConvoCount)},
-		bodyLeases:    newBotBodyLeaseManager(defaultBotBodyLeaseTTL),
-		userDevices:   newUserDeviceRegistry(defaultUserDeviceTTL),
+		nodeID:        nodeID,
+		sharedRuntime: shared,
+		bodyLeases:    newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
+		userDevices:   newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
 		deviceClients: make(map[int64]map[string]*Client),
-		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL),
+		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
+	}
+	if shared != nil {
+		shared.registerRuntimeNode(nodeID, hub)
 	}
 	go hub.runPresence()
 	go hub.runDeviceRPCTimeouts()
@@ -96,6 +112,8 @@ func (h *Hub) BotBodyStatus(botUID int64) BotBodyStatus {
 	if h == nil || h.bodyLeases == nil || botUID <= 0 {
 		return status
 	}
+	status.RuntimeMode = h.RuntimeMode()
+	status.RouteState = h.RuntimeRouteState()
 	lease, ok := h.bodyLeases.status(botUID)
 	if !ok {
 		return status
@@ -120,6 +138,23 @@ func (h *Hub) BotBodyStatus(botUID int64) BotBodyStatus {
 	status.LeaseExpiresAt = &expiresAt
 	status.LeaseTTLMS = ttl
 	return status
+}
+
+func (h *Hub) RuntimeMode() string {
+	if h != nil && h.bodyLeases != nil {
+		return h.bodyLeases.runtimeMode()
+	}
+	return "process"
+}
+
+func (h *Hub) RuntimeRouteState() string {
+	if h == nil {
+		return "unavailable"
+	}
+	if h.sharedRuntime != nil {
+		return "ready"
+	}
+	return "process_local"
 }
 
 // Run starts the hub's main loop.
@@ -222,6 +257,7 @@ func mapID(value interface{}) int64 {
 }
 
 func (h *Hub) addClient(client *Client) (firstConn bool, deviceCount int, onlineUsers int) {
+	h.ensureClientRuntimeRoute(client)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -232,6 +268,9 @@ func (h *Hub) addClient(client *Client) (firstConn bool, deviceCount int, online
 		h.clients[client.uid] = clients
 	}
 	clients[client] = struct{}{}
+	if client.connectionID != "" {
+		h.clientsByConn[client.connectionID] = client
+	}
 
 	return firstConn, len(clients), len(h.clients)
 }
@@ -265,6 +304,7 @@ func (h *Hub) registerClient(client *Client) bool {
 }
 
 func (h *Hub) addRegisteredClient(client *Client) (firstConn bool, deviceCount int, onlineUsers int, replaced []*Client) {
+	h.ensureClientRuntimeRoute(client)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -288,8 +328,34 @@ func (h *Hub) addRegisteredClient(client *Client) (firstConn bool, deviceCount i
 		}
 	}
 	clients[client] = struct{}{}
+	if client.connectionID != "" {
+		h.clientsByConn[client.connectionID] = client
+	}
 
 	return firstConn, len(clients), len(h.clients), replaced
+}
+
+func (h *Hub) ensureClientRuntimeRoute(client *Client) {
+	if h == nil || client == nil {
+		return
+	}
+	if client.hub == nil {
+		client.hub = h
+	}
+	if client.connectionID == "" {
+		client.connectionID = newBotBodyConnectionID()
+	}
+}
+
+func (h *Hub) clientRoute(client *Client) runtimeRoute {
+	if h == nil || client == nil || client.connectionID == "" {
+		return runtimeRoute{}
+	}
+	return runtimeRoute{
+		NodeID:       h.nodeID,
+		ConnectionID: client.connectionID,
+		ExpiresAt:    nowForRoute(h).Add(defaultUserDeviceTTL),
+	}
 }
 
 func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client) {
@@ -326,6 +392,11 @@ func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client
 	client.deviceID = device.DeviceID
 	client.deviceBodyID = device.BodyID
 	client.deviceInstallationID = device.InstallationID
+	if h.sharedRuntime != nil {
+		route := h.clientRoute(client)
+		route.ExpiresAt = nowForRoute(h).Add(defaultUserDeviceTTL)
+		h.sharedRuntime.bindUserDeviceRoute(ownerUID, device, route)
+	}
 }
 
 func (h *Hub) unbindDeviceClient(client *Client) {
@@ -341,6 +412,9 @@ func (h *Hub) unbindDeviceClient(client *Client) {
 		if len(ownerDevices) == 0 {
 			delete(h.deviceClients, client.deviceOwnerUID)
 		}
+	}
+	if h.sharedRuntime != nil {
+		h.sharedRuntime.clearUserDeviceRoute(client.deviceOwnerUID, client.deviceID, h.clientRoute(client))
 	}
 	client.deviceOwnerUID = 0
 	client.deviceID = ""
@@ -370,6 +444,9 @@ func (h *Hub) removeClient(client *Client) (removed bool, lastConn bool, remaini
 	}
 
 	delete(clients, client)
+	if client.connectionID != "" && h.clientsByConn[client.connectionID] == client {
+		delete(h.clientsByConn, client.connectionID)
+	}
 	removed = true
 	remaining = len(clients)
 	if remaining == 0 {
@@ -385,6 +462,34 @@ func (h *Hub) releaseBotBodyLease(client *Client) {
 		return
 	}
 	h.bodyLeases.release(client.uid, client.bodyID, client.connectionID)
+}
+
+func (h *Hub) renewBotBodyLease(client *Client) {
+	if h == nil || client == nil || client.accountType != types.AccountBot {
+		return
+	}
+	h.bodyLeases.renew(client.uid, client.bodyID, client.connectionID)
+}
+
+func (h *Hub) getClientByConnectionID(connectionID string) *Client {
+	if h == nil || connectionID == "" {
+		return nil
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.clientsByConn[connectionID]
+}
+
+func (h *Hub) sendDeviceRPCToLocalRoute(route runtimeRoute, msg *MsgDeviceRPC) bool {
+	if h == nil || route.ConnectionID == "" {
+		return false
+	}
+	client := h.getClientByConnectionID(route.ConnectionID)
+	if client == nil {
+		return false
+	}
+	h.SendToClient(client, &ServerMessage{DeviceRPC: msg})
+	return true
 }
 
 // broadcastPresence notifies friends and, for bots, their owner of online/offline status.

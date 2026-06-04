@@ -145,6 +145,7 @@ type userDeviceRegistry struct {
 	grantTT       time.Duration
 	preferenceTTL time.Duration
 	now           func() time.Time
+	shared        sharedRuntimeState
 	devices       map[int64]map[string]UserDevice
 	preferences   map[int64]map[string]deviceSelectionPreference
 	grants        map[string]ScopedDeviceGrant
@@ -165,9 +166,20 @@ func newUserDeviceRegistry(ttl time.Duration) *userDeviceRegistry {
 	}
 }
 
+func (r *userDeviceRegistry) withSharedRuntime(shared sharedRuntimeState) *userDeviceRegistry {
+	if r == nil {
+		return r
+	}
+	r.shared = shared
+	return r
+}
+
 func (r *userDeviceRegistry) register(ownerUID int64, req RegisterUserDeviceRequest) (UserDevice, error) {
 	if r == nil || ownerUID <= 0 {
 		return UserDevice{}, fmt.Errorf("invalid owner")
+	}
+	if r.shared != nil {
+		return r.shared.registerUserDevice(ownerUID, req, r.now())
 	}
 	deviceID, err := normalizeUserDeviceID(req.DeviceID)
 	if err != nil {
@@ -208,6 +220,9 @@ func (r *userDeviceRegistry) list(ownerUID int64) []UserDevice {
 	if r == nil || ownerUID <= 0 {
 		return nil
 	}
+	if r.shared != nil {
+		return r.shared.listUserDevices(ownerUID)
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -245,6 +260,9 @@ func (r *userDeviceRegistry) activeDevice(ownerUID int64, deviceID string) (User
 	if r == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
 		return UserDevice{}, false
 	}
+	if r.shared != nil {
+		return r.shared.activeUserDevice(ownerUID, deviceID, r.now(), r.ttl)
+	}
 	normalizedDeviceID, err := normalizeUserDeviceID(deviceID)
 	if err != nil {
 		return UserDevice{}, false
@@ -264,6 +282,10 @@ func (r *userDeviceRegistry) activeDevice(ownerUID int64, deviceID string) (User
 
 func (r *userDeviceRegistry) touch(ownerUID int64, deviceID string) {
 	if r == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
+		return
+	}
+	if r.shared != nil {
+		r.shared.touchUserDevice(ownerUID, deviceID, r.now())
 		return
 	}
 	normalizedDeviceID, err := normalizeUserDeviceID(deviceID)
@@ -363,6 +385,10 @@ func (r *userDeviceRegistry) rememberGrants(grants []ScopedDeviceGrant) {
 		return
 	}
 	now := unixMillis(r.now())
+	if r.shared != nil {
+		r.shared.rememberDeviceGrants(grants, now)
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cleanupExpiredGrantsLocked(now)
@@ -379,6 +405,9 @@ func (r *userDeviceRegistry) lookupGrant(grantID string) (ScopedDeviceGrant, boo
 		return ScopedDeviceGrant{}, false
 	}
 	now := unixMillis(r.now())
+	if r.shared != nil {
+		return r.shared.lookupDeviceGrant(strings.TrimSpace(grantID), now)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cleanupExpiredGrantsLocked(now)
@@ -474,6 +503,9 @@ func (r *userDeviceRegistry) deviceSelectionPreference(actorUID int64, sessionKe
 		return "", false
 	}
 	now := unixMillis(r.now())
+	if r.shared != nil {
+		return r.shared.deviceSelectionPreference(actorUID, sessionKey, now)
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	actorPreferences := r.preferences[actorUID]
@@ -497,6 +529,10 @@ func (r *userDeviceRegistry) rememberDeviceSelection(actorUID int64, sessionKey 
 		Source:    source,
 		UpdatedAt: unixMillis(now),
 		ExpiresAt: unixMillis(now.Add(r.preferenceTTL)),
+	}
+	if r.shared != nil {
+		r.shared.rememberDeviceSelection(actorUID, sessionKey, preference)
+		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -761,6 +797,9 @@ func (h *DeviceHandler) HandleDeviceRPCStatus(w http.ResponseWriter, r *http.Req
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"state":         "ok",
+		"runtime_mode":  h.hubRuntimeMode(),
+		"route_state":   h.hubRouteState(),
 		"pending":       pending,
 		"pending_count": len(pending),
 		"checked_at":    unixMillis(time.Now()),
@@ -808,4 +847,18 @@ func (h *DeviceHandler) registry() *userDeviceRegistry {
 		return nil
 	}
 	return h.hub.userDevices
+}
+
+func (h *DeviceHandler) hubRuntimeMode() string {
+	if h == nil || h.hub == nil {
+		return "unavailable"
+	}
+	return h.hub.RuntimeMode()
+}
+
+func (h *DeviceHandler) hubRouteState() string {
+	if h == nil || h.hub == nil {
+		return "unavailable"
+	}
+	return h.hub.RuntimeRouteState()
 }
