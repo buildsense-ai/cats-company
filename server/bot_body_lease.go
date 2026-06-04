@@ -35,11 +35,14 @@ type botBodyLease struct {
 }
 
 type BotBodyStatus struct {
-	BotUID      int64      `json:"bot_uid"`
-	Active      bool       `json:"active"`
-	BodyID      string     `json:"body_id,omitempty"`
-	Bound       bool       `json:"bound"`
-	ConnectedAt *time.Time `json:"connected_at,omitempty"`
+	BotUID         int64      `json:"bot_uid"`
+	State          string     `json:"state"`
+	Active         bool       `json:"active"`
+	BodyID         string     `json:"body_id,omitempty"`
+	Bound          bool       `json:"bound"`
+	ConnectedAt    *time.Time `json:"connected_at,omitempty"`
+	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
+	LeaseTTLMS     int64      `json:"lease_ttl_ms,omitempty"`
 }
 
 type botBodyLeaseResult struct {

@@ -42,6 +42,17 @@ func TestDeviceRPCRoutesRequestToSelectedDeviceAndReturnsResult(t *testing.T) {
 	if ack.Ctrl == nil || ack.Ctrl.Code != 200 {
 		t.Fatalf("unexpected request ack: %#v", ack.Ctrl)
 	}
+	paramsJSON, _ := json.Marshal(ack.Ctrl.Params)
+	if !containsJSONText(paramsJSON, "expires_at") || !containsJSONText(paramsJSON, "read_file") {
+		t.Fatalf("request ack missing routing metadata: %s", paramsJSON)
+	}
+	pending := hub.DeviceRPCStatus(7)
+	if len(pending) != 1 || pending[0].RequestID != "rpc-1" || pending[0].DeviceID != "alice-laptop" {
+		t.Fatalf("unexpected pending status: %#v", pending)
+	}
+	if !pending[0].RequesterConnected || !pending[0].TargetConnected {
+		t.Fatalf("pending status should include live route flags: %#v", pending[0])
+	}
 
 	hub.handleDeviceRPC(target, &MsgDeviceRPC{
 		ID:        "rpc-result-1",
@@ -67,6 +78,9 @@ func TestDeviceRPCRoutesRequestToSelectedDeviceAndReturnsResult(t *testing.T) {
 	resultMap, ok := result.DeviceRPC.Result.(map[string]interface{})
 	if !ok || resultMap["ok"] != true {
 		t.Fatalf("unexpected result payload: %#v", result.DeviceRPC.Result)
+	}
+	if pending := hub.DeviceRPCStatus(7); len(pending) != 0 {
+		t.Fatalf("finished rpc should not remain pending: %#v", pending)
 	}
 }
 
@@ -156,6 +170,57 @@ func TestDeviceRPCRejectsOfflineDevice(t *testing.T) {
 	decodeQueuedServerMessage(t, agent.send, &ack)
 	if ack.Ctrl == nil || ack.Ctrl.Code != 404 {
 		t.Fatalf("offline device ack = %#v, want 404", ack.Ctrl)
+	}
+}
+
+func TestDeviceRPCRejectsNonReadonlyOperationEvenWhenGranted(t *testing.T) {
+	hub, agent, _, _, grant := newDeviceRPCTestFixture(t, true)
+
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-1",
+		Type:      "request",
+		RequestID: "rpc-send-file",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "send_file",
+	})
+
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != 403 || !strings.Contains(ack.Ctrl.Text, "not supported") {
+		t.Fatalf("unsupported rpc operation ack = %#v, want 403 unsupported", ack.Ctrl)
+	}
+}
+
+func TestDeviceRPCTimeoutNotifiesRequesterAndClearsPending(t *testing.T) {
+	hub, agent, target, _, grant := newDeviceRPCTestFixture(t, true)
+
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-1",
+		Type:      "request",
+		RequestID: "rpc-timeout",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+	})
+	decodeQueuedServerMessage(t, target.send, &ServerMessage{})
+	decodeQueuedServerMessage(t, agent.send, &ServerMessage{})
+
+	expiredAt := time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC).Add(defaultDeviceRPCTTL + time.Millisecond)
+	hub.deviceRPC.now = func() time.Time { return expiredAt }
+	if status := hub.DeviceRPCStatus(7); len(status) != 1 || status[0].RequestID != "rpc-timeout" {
+		t.Fatalf("status query must not silently delete expired pending rpc: %#v", status)
+	}
+	if got := hub.expireDeviceRPCRequests(expiredAt); got != 1 {
+		t.Fatalf("expired requests = %d, want 1", got)
+	}
+	var result ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &result)
+	if result.DeviceRPC == nil || result.DeviceRPC.Error == nil || result.DeviceRPC.Error.Code != "device_rpc_timeout" {
+		t.Fatalf("agent timeout result = %#v, want device_rpc_timeout", result.DeviceRPC)
+	}
+	if pending := hub.DeviceRPCStatus(7); len(pending) != 0 {
+		t.Fatalf("timeout should clear pending status: %#v", pending)
 	}
 }
 

@@ -327,7 +327,7 @@ func (r *userDeviceRegistry) grantsForDevices(actorUID int64, topicID string, to
 
 	grants := make([]ScopedDeviceGrant, 0, len(devices))
 	for _, device := range devices {
-		ops := append([]DeviceGrantOperation(nil), device.Capabilities...)
+		ops := deviceRPCGrantOperations(device.Capabilities)
 		if len(ops) == 0 {
 			continue
 		}
@@ -563,7 +563,7 @@ func deviceSelectionDevice(device UserDevice) *DeviceSelectionDevice {
 		DisplayName:    device.DisplayName,
 		BodyID:         device.BodyID,
 		InstallationID: device.InstallationID,
-		Operations:     append([]DeviceGrantOperation(nil), device.Capabilities...),
+		Operations:     deviceRPCGrantOperations(device.Capabilities),
 		LastSeenAt:     device.LastSeenAt,
 	}
 }
@@ -577,9 +577,28 @@ func deviceSelectionCandidates(devices []UserDevice) []DeviceSelectionCandidate 
 		out = append(out, DeviceSelectionCandidate{
 			DeviceID:    device.DeviceID,
 			DisplayName: device.DisplayName,
-			Operations:  append([]DeviceGrantOperation(nil), device.Capabilities...),
+			Operations:  deviceRPCGrantOperations(device.Capabilities),
 			LastSeenAt:  device.LastSeenAt,
 		})
+	}
+	return out
+}
+
+func deviceRPCGrantOperations(capabilities []DeviceGrantOperation) []DeviceGrantOperation {
+	if len(capabilities) == 0 {
+		return nil
+	}
+	out := make([]DeviceGrantOperation, 0, len(capabilities))
+	seen := make(map[DeviceGrantOperation]struct{}, len(capabilities))
+	for _, operation := range capabilities {
+		if !isAllowedDeviceRPCOperation(operation) {
+			continue
+		}
+		if _, ok := seen[operation]; ok {
+			continue
+		}
+		seen[operation] = struct{}{}
+		out = append(out, operation)
 	}
 	return out
 }
@@ -724,6 +743,30 @@ func (h *DeviceHandler) HandleListDevices(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]interface{}{"devices": h.registry().list(ownerUID)})
 }
 
+func (h *DeviceHandler) HandleDeviceRPCStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	ownerUID, status, msg := h.resolveDeviceOwnerUID(r)
+	if status != 0 {
+		writeJSON(w, status, map[string]string{"error": msg})
+		return
+	}
+	pending := []DeviceRPCPendingStatus{}
+	if h != nil && h.hub != nil {
+		pending = h.hub.DeviceRPCStatus(ownerUID, normalizeDeviceRPCStatusAgentID(r.URL.Query().Get("agent_id")))
+		if pending == nil {
+			pending = []DeviceRPCPendingStatus{}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"pending":       pending,
+		"pending_count": len(pending),
+		"checked_at":    unixMillis(time.Now()),
+	})
+}
+
 func (h *DeviceHandler) resolveDeviceOwnerUID(r *http.Request) (int64, int, string) {
 	if h == nil || h.db == nil || h.registry() == nil {
 		return 0, http.StatusInternalServerError, "device registry unavailable"
@@ -744,6 +787,20 @@ func (h *DeviceHandler) resolveDeviceOwnerUID(r *http.Request) (int64, int, stri
 		return uid, 0, ""
 	}
 	return ownerUID, 0, ""
+}
+
+func normalizeDeviceRPCStatusAgentID(value string) string {
+	agentID := strings.TrimSpace(value)
+	if agentID == "" {
+		return ""
+	}
+	if strings.HasPrefix(agentID, "usr") {
+		return agentID
+	}
+	if uid := parseInt64(agentID); uid > 0 {
+		return formatUID(uid)
+	}
+	return agentID
 }
 
 func (h *DeviceHandler) registry() *userDeviceRegistry {

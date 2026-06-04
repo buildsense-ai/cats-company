@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -11,10 +12,12 @@ import (
 )
 
 const (
-	defaultDeviceRPCTTL         = 60 * time.Second
-	maxDeviceRPCRequestIDLength = 128
-	deviceRPCTypeRequest        = "request"
-	deviceRPCTypeResult         = "result"
+	defaultDeviceRPCTTL          = 60 * time.Second
+	maxDeviceRPCRequestIDLength  = 128
+	maxDeviceRPCPendingPerAgent  = 64
+	maxDeviceRPCPendingPerDevice = 32
+	deviceRPCTypeRequest         = "request"
+	deviceRPCTypeResult          = "result"
 )
 
 type deviceRPCPending struct {
@@ -32,8 +35,32 @@ type deviceRPCPending struct {
 	deviceID        string
 	deviceBodyID    string
 	deviceInstallID string
+	operation       string
+	toolName        string
+	createdAt       time.Time
 	target          *Client
 	expiresAt       time.Time
+}
+
+type DeviceRPCPendingStatus struct {
+	RequestID            string `json:"request_id"`
+	AgentID              string `json:"agent_id,omitempty"`
+	AgentBodyID          string `json:"agent_body_id,omitempty"`
+	ActorUserID          string `json:"actor_user_id,omitempty"`
+	SessionKey           string `json:"session_key,omitempty"`
+	TopicID              string `json:"topic_id,omitempty"`
+	TopicType            string `json:"topic_type,omitempty"`
+	GrantID              string `json:"grant_id,omitempty"`
+	DeviceID             string `json:"device_id,omitempty"`
+	DeviceBodyID         string `json:"device_body_id,omitempty"`
+	DeviceInstallationID string `json:"device_installation_id,omitempty"`
+	Operation            string `json:"operation,omitempty"`
+	ToolName             string `json:"tool_name,omitempty"`
+	CreatedAt            int64  `json:"created_at,omitempty"`
+	ExpiresAt            int64  `json:"expires_at,omitempty"`
+	TTLMS                int64  `json:"ttl_ms,omitempty"`
+	RequesterConnected   bool   `json:"requester_connected"`
+	TargetConnected      bool   `json:"target_connected"`
 }
 
 type deviceRPCRouter struct {
@@ -54,18 +81,36 @@ func newDeviceRPCRouter(ttl time.Duration) *deviceRPCRouter {
 	}
 }
 
-func (r *deviceRPCRouter) add(pending deviceRPCPending) bool {
+func (r *deviceRPCRouter) add(pending deviceRPCPending) (bool, string) {
 	if r == nil || pending.requestID == "" || pending.expiresAt.IsZero() {
-		return false
+		return false, "invalid"
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.cleanupLocked(r.now())
 	if _, exists := r.pending[pending.requestID]; exists {
-		return false
+		return false, "duplicate"
+	}
+	now := r.now()
+	var agentCount, deviceCount int
+	for _, item := range r.pending {
+		if !now.Before(item.expiresAt) {
+			continue
+		}
+		if item.agentUID == pending.agentUID {
+			agentCount++
+		}
+		if item.actorUID == pending.actorUID && item.deviceID == pending.deviceID {
+			deviceCount++
+		}
+	}
+	if agentCount >= maxDeviceRPCPendingPerAgent {
+		return false, "agent_limit"
+	}
+	if deviceCount >= maxDeviceRPCPendingPerDevice {
+		return false, "device_limit"
 	}
 	r.pending[pending.requestID] = pending
-	return true
+	return true, ""
 }
 
 func (r *deviceRPCRouter) get(requestID string) (deviceRPCPending, bool) {
@@ -75,10 +120,8 @@ func (r *deviceRPCRouter) get(requestID string) (deviceRPCPending, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.now()
-	r.cleanupLocked(now)
 	pending, ok := r.pending[requestID]
 	if !ok || !now.Before(pending.expiresAt) {
-		delete(r.pending, requestID)
 		return deviceRPCPending{}, false
 	}
 	return pending, true
@@ -91,6 +134,40 @@ func (r *deviceRPCRouter) finish(requestID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.pending, requestID)
+}
+
+func (r *deviceRPCRouter) listByActor(actorUID int64) []deviceRPCPending {
+	if r == nil || actorUID <= 0 {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]deviceRPCPending, 0)
+	for _, pending := range r.pending {
+		if pending.actorUID == actorUID {
+			out = append(out, pending)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].createdAt.Before(out[j].createdAt)
+	})
+	return out
+}
+
+func (r *deviceRPCRouter) expire(now time.Time) []deviceRPCPending {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var expired []deviceRPCPending
+	for requestID, pending := range r.pending {
+		if !now.Before(pending.expiresAt) {
+			expired = append(expired, pending)
+			delete(r.pending, requestID)
+		}
+	}
+	return expired
 }
 
 func (r *deviceRPCRouter) cleanupLocked(now time.Time) {
@@ -177,6 +254,10 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusBadRequest, "operation required", map[string]interface{}{"request_id": requestID})
 		return
 	}
+	if !isAllowedDeviceRPCOperation(operation) {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "operation is not supported by device rpc", map[string]interface{}{"request_id": requestID})
+		return
+	}
 	grant, ok := h.userDevices.lookupGrant(grantID)
 	if !ok {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "device grant is not active", map[string]interface{}{"request_id": requestID})
@@ -240,10 +321,17 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		deviceID:        device.DeviceID,
 		deviceBodyID:    forward.DeviceBodyID,
 		deviceInstallID: forward.DeviceInstallationID,
+		operation:       string(operation),
+		toolName:        strings.TrimSpace(msg.ToolName),
+		createdAt:       now,
 		target:          target,
 		expiresAt:       expiresAt,
 	}
-	if !h.deviceRPC.add(pending) {
+	if ok, reason := h.deviceRPC.add(pending); !ok {
+		if reason == "agent_limit" || reason == "device_limit" {
+			h.sendDeviceRPCAck(client, msg.ID, http.StatusTooManyRequests, "too many pending device rpc requests", map[string]interface{}{"request_id": requestID})
+			return
+		}
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusConflict, "request_id is already pending", map[string]interface{}{"request_id": requestID})
 		return
 	}
@@ -254,6 +342,9 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		"device_id":              device.DeviceID,
 		"device_body_id":         forward.DeviceBodyID,
 		"device_installation_id": forward.DeviceInstallationID,
+		"operation":              string(operation),
+		"tool_name":              forward.ToolName,
+		"expires_at":             unixMillis(expiresAt),
 	})
 }
 
@@ -352,6 +443,121 @@ func validateDeviceRPCGrant(client *Client, msg *MsgDeviceRPC, grant ScopedDevic
 		}
 	}
 	return fmt.Errorf("operation is not allowed by grant")
+}
+
+func isAllowedDeviceRPCOperation(operation DeviceGrantOperation) bool {
+	switch operation {
+	case DeviceGrantReadFile, DeviceGrantGlob, DeviceGrantGrep:
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *Hub) DeviceRPCStatus(ownerUID int64, agentIDFilter ...string) []DeviceRPCPendingStatus {
+	if h == nil || h.deviceRPC == nil || ownerUID <= 0 {
+		return nil
+	}
+	filterAgentID := ""
+	if len(agentIDFilter) > 0 {
+		filterAgentID = strings.TrimSpace(agentIDFilter[0])
+	}
+	now := time.Now()
+	if h.deviceRPC.now != nil {
+		now = h.deviceRPC.now()
+	}
+	pending := h.deviceRPC.listByActor(ownerUID)
+	out := make([]DeviceRPCPendingStatus, 0, len(pending))
+	for _, item := range pending {
+		if filterAgentID != "" && item.agentID != filterAgentID {
+			continue
+		}
+		ttl := item.expiresAt.Sub(now).Milliseconds()
+		if ttl < 0 {
+			ttl = 0
+		}
+		out = append(out, DeviceRPCPendingStatus{
+			RequestID:            item.requestID,
+			AgentID:              item.agentID,
+			AgentBodyID:          item.agentBodyID,
+			ActorUserID:          item.actorUserID,
+			SessionKey:           item.sessionKey,
+			TopicID:              item.topicID,
+			TopicType:            item.topicType,
+			GrantID:              item.grantID,
+			DeviceID:             item.deviceID,
+			DeviceBodyID:         item.deviceBodyID,
+			DeviceInstallationID: item.deviceInstallID,
+			Operation:            item.operation,
+			ToolName:             item.toolName,
+			CreatedAt:            unixMillis(item.createdAt),
+			ExpiresAt:            unixMillis(item.expiresAt),
+			TTLMS:                ttl,
+			RequesterConnected:   h.isClientRegistered(item.requester) || h.findAgentRPCClient(item.agentUID, item.agentBodyID) != nil,
+			TargetConnected:      h.pendingMatchesDeviceClient(item, item.target),
+		})
+	}
+	return out
+}
+
+func (h *Hub) runDeviceRPCTimeouts() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		if h != nil && h.deviceRPC != nil && h.deviceRPC.now != nil {
+			now = h.deviceRPC.now()
+		}
+		h.expireDeviceRPCRequests(now)
+	}
+}
+
+func (h *Hub) expireDeviceRPCRequests(now time.Time) int {
+	if h == nil || h.deviceRPC == nil {
+		return 0
+	}
+	expired := h.deviceRPC.expire(now)
+	for _, pending := range expired {
+		h.notifyDeviceRPCTimeout(pending)
+	}
+	return len(expired)
+}
+
+func (h *Hub) notifyDeviceRPCTimeout(pending deviceRPCPending) {
+	if h == nil || pending.requestID == "" {
+		return
+	}
+	requester := pending.requester
+	if !h.isClientRegistered(requester) {
+		requester = h.findAgentRPCClient(pending.agentUID, pending.agentBodyID)
+	}
+	if requester == nil {
+		return
+	}
+	h.SendToClient(requester, &ServerMessage{
+		DeviceRPC: &MsgDeviceRPC{
+			Type:                 deviceRPCTypeResult,
+			RequestID:            pending.requestID,
+			GrantID:              pending.grantID,
+			SessionKey:           pending.sessionKey,
+			TopicID:              pending.topicID,
+			TopicType:            pending.topicType,
+			ActorUserID:          pending.actorUserID,
+			AgentID:              pending.agentID,
+			AgentBodyID:          pending.agentBodyID,
+			DeviceID:             pending.deviceID,
+			DeviceBodyID:         pending.deviceBodyID,
+			DeviceInstallationID: pending.deviceInstallID,
+			Operation:            pending.operation,
+			ToolName:             pending.toolName,
+			Error: &MsgDeviceRPCError{
+				Code:    "device_rpc_timeout",
+				Message: "device did not return a result before the request expired",
+			},
+			CreatedAt: unixMillis(pending.createdAt),
+			ExpiresAt: unixMillis(pending.expiresAt),
+		},
+	})
 }
 
 func (h *Hub) findDeviceRPCClient(ownerUID int64, device UserDevice) *Client {
