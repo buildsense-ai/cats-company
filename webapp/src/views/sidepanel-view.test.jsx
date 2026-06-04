@@ -106,25 +106,12 @@ describe('ChatListView virtual employees', () => {
     });
   }
 
-  it('opens a platform-confirmed agent chat from the virtual employees roster', async () => {
+  it('renders platform-confirmed agents from the AI assistant roster', async () => {
     await mount();
 
-    expect(container.textContent).toContain('Virtual Employees');
     expect(container.textContent).toContain('Dev Agent');
-
-    await act(async () => {
-      Simulate.click(container.querySelector('.v3-chat-item'));
-      await Promise.resolve();
-    });
-
-    expect(api.openAgent).toHaveBeenCalledWith(42);
-    expect(onSelectTopic).toHaveBeenCalledWith({
-      topicId: 'p2p_7_42',
-      name: 'Dev Agent',
-      isGroup: false,
-      avatar_url: '/uploads/dev.png',
-      friendId: 42,
-      isBot: true,
-    });
+    expect(api.getAgents).toHaveBeenCalled();
+    expect(api.openAgent).not.toHaveBeenCalled();
+    expect(onSelectTopic).not.toHaveBeenCalled();
   });
 });

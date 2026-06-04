@@ -181,7 +181,7 @@ export default function TinodeWeb() {
         });
       }
     }
-  }, []);
+  }, [setActiveTopic]);
 
   useEffect(() => {
     if (user) {
