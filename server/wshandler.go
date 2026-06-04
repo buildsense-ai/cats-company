@@ -1150,7 +1150,7 @@ func (h *Hub) handleGet(client *Client, msg *MsgClientGet) {
 					Content:       displayContent,
 					Type:          inferDisplayTypeFromStoredMessage(m.MsgType, m.Content, m.ContentBlocks),
 					MsgType:       m.MsgType,
-					Metadata:      withCatscoIdentityMetadata(nil, h.buildCatscoIdentityMetadata(m.FromUID, client.uid, m.TopicID, m.ID, normalizeContentText(displayContent))),
+					Metadata:      withCatscoIdentityMetadata(nil, h.buildCatscoIdentityMetadata(m.FromUID, client.uid, m.TopicID, m.ID, normalizeContentText(displayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: true, Replay: true})),
 					ContentBlocks: m.ContentBlocks,
 					Mode:          m.Mode,
 					Role:          m.Role,
