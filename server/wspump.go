@@ -79,6 +79,7 @@ func (h *Hub) disconnectClient(client *Client, reason string) {
 	}
 
 	h.releaseBotBodyLease(client)
+	h.unbindDeviceClient(client)
 	if reason == "" {
 		log.Printf("client disconnected: uid=%d (devices: %d, online users: %d)", client.uid, remaining, onlineUsers)
 	} else {
@@ -150,6 +151,7 @@ func (c *Client) ReadPump(handler func(client *Client, msg *ClientMessage)) {
 	c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.conn.SetPongHandler(func(string) error {
 		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		c.touchBoundDevice()
 		return nil
 	})
 
@@ -166,8 +168,16 @@ func (c *Client) ReadPump(handler func(client *Client, msg *ClientMessage)) {
 			continue
 		}
 
+		c.touchBoundDevice()
 		handler(c, &msg)
 	}
+}
+
+func (c *Client) touchBoundDevice() {
+	if c == nil || c.hub == nil || c.hub.userDevices == nil || c.deviceOwnerUID <= 0 || c.deviceID == "" {
+		return
+	}
+	c.hub.userDevices.touch(c.deviceOwnerUID, c.deviceID)
 }
 
 // WritePump pumps messages from the hub to the WebSocket connection.

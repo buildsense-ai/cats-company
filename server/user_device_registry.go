@@ -147,6 +147,7 @@ type userDeviceRegistry struct {
 	now           func() time.Time
 	devices       map[int64]map[string]UserDevice
 	preferences   map[int64]map[string]deviceSelectionPreference
+	grants        map[string]ScopedDeviceGrant
 }
 
 func newUserDeviceRegistry(ttl time.Duration) *userDeviceRegistry {
@@ -160,6 +161,7 @@ func newUserDeviceRegistry(ttl time.Duration) *userDeviceRegistry {
 		now:           time.Now,
 		devices:       make(map[int64]map[string]UserDevice),
 		preferences:   make(map[int64]map[string]deviceSelectionPreference),
+		grants:        make(map[string]ScopedDeviceGrant),
 	}
 }
 
@@ -239,6 +241,50 @@ func (r *userDeviceRegistry) activeDevices(ownerUID int64) []UserDevice {
 	return out
 }
 
+func (r *userDeviceRegistry) activeDevice(ownerUID int64, deviceID string) (UserDevice, bool) {
+	if r == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
+		return UserDevice{}, false
+	}
+	normalizedDeviceID, err := normalizeUserDeviceID(deviceID)
+	if err != nil {
+		return UserDevice{}, false
+	}
+	now := r.now()
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	ownerDevices := r.devices[ownerUID]
+	device, ok := ownerDevices[normalizedDeviceID]
+	if !ok || !isActiveDevice(device, now, r.ttl) {
+		return UserDevice{}, false
+	}
+	return device, true
+}
+
+func (r *userDeviceRegistry) touch(ownerUID int64, deviceID string) {
+	if r == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
+		return
+	}
+	normalizedDeviceID, err := normalizeUserDeviceID(deviceID)
+	if err != nil {
+		return
+	}
+	now := unixMillis(r.now())
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	ownerDevices := r.devices[ownerUID]
+	device, ok := ownerDevices[normalizedDeviceID]
+	if !ok {
+		return
+	}
+	device.Status = "online"
+	device.LastSeenAt = now
+	ownerDevices[normalizedDeviceID] = device
+}
+
 func (r *userDeviceRegistry) grantsForTurn(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string) []ScopedDeviceGrant {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {
 		return nil
@@ -308,7 +354,47 @@ func (r *userDeviceRegistry) grantsForDevices(actorUID int64, topicID string, to
 			ExpiresAt:            expiresAt,
 		})
 	}
+	r.rememberGrants(grants)
 	return grants
+}
+
+func (r *userDeviceRegistry) rememberGrants(grants []ScopedDeviceGrant) {
+	if r == nil || len(grants) == 0 {
+		return
+	}
+	now := unixMillis(r.now())
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cleanupExpiredGrantsLocked(now)
+	for _, grant := range grants {
+		if grant.GrantID == "" || grant.ExpiresAt <= now {
+			continue
+		}
+		r.grants[grant.GrantID] = grant
+	}
+}
+
+func (r *userDeviceRegistry) lookupGrant(grantID string) (ScopedDeviceGrant, bool) {
+	if r == nil || strings.TrimSpace(grantID) == "" {
+		return ScopedDeviceGrant{}, false
+	}
+	now := unixMillis(r.now())
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cleanupExpiredGrantsLocked(now)
+	grant, ok := r.grants[strings.TrimSpace(grantID)]
+	if !ok || grant.Status != "active" || grant.ExpiresAt <= now {
+		return ScopedDeviceGrant{}, false
+	}
+	return grant, true
+}
+
+func (r *userDeviceRegistry) cleanupExpiredGrantsLocked(now int64) {
+	for grantID, grant := range r.grants {
+		if grant.ExpiresAt <= now {
+			delete(r.grants, grantID)
+		}
+	}
 }
 
 func (r *userDeviceRegistry) selectDeviceForTurn(
