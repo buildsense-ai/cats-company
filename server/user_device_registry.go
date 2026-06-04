@@ -17,6 +17,7 @@ import (
 const (
 	defaultUserDeviceTTL       = 5 * time.Minute
 	defaultDeviceGrantTTL      = 10 * time.Minute
+	defaultDevicePreferenceTTL = 30 * time.Minute
 	maxUserDeviceIDLength      = 128
 	deviceGrantIDRandomLength  = 12
 	userDeviceGrantIdentitySrc = "metadata.catsco_identity"
@@ -76,6 +77,59 @@ type ScopedDeviceGrant struct {
 	ExpiresAt            int64                  `json:"expiresAt"`
 }
 
+type DeviceSelectionStatus string
+
+const (
+	DeviceSelectionSelected       DeviceSelectionStatus = "selected"
+	DeviceSelectionNeedsSelection DeviceSelectionStatus = "needs_selection"
+	DeviceSelectionUnavailable    DeviceSelectionStatus = "unavailable"
+)
+
+type DeviceSelection struct {
+	Kind            string                     `json:"kind"`
+	Source          string                     `json:"source"`
+	SchemaVersion   int                        `json:"schemaVersion"`
+	Status          DeviceSelectionStatus      `json:"status"`
+	SelectionSource string                     `json:"selectionSource,omitempty"`
+	SessionKey      string                     `json:"sessionKey"`
+	TopicID         string                     `json:"topicId"`
+	TopicType       string                     `json:"topicType"`
+	ActorUserID     string                     `json:"actorUserId"`
+	AgentID         string                     `json:"agentId,omitempty"`
+	SelectedDevice  *DeviceSelectionDevice     `json:"selectedDevice,omitempty"`
+	Candidates      []DeviceSelectionCandidate `json:"candidates,omitempty"`
+	CandidateCount  int                        `json:"candidateCount,omitempty"`
+	CreatedAt       int64                      `json:"createdAt"`
+}
+
+type DeviceSelectionDevice struct {
+	DeviceID       string                 `json:"deviceId"`
+	DisplayName    string                 `json:"displayName,omitempty"`
+	BodyID         string                 `json:"bodyId,omitempty"`
+	InstallationID string                 `json:"installationId,omitempty"`
+	Operations     []DeviceGrantOperation `json:"operations,omitempty"`
+	LastSeenAt     int64                  `json:"lastSeenAt,omitempty"`
+}
+
+type DeviceSelectionCandidate struct {
+	DeviceID    string                 `json:"deviceId"`
+	DisplayName string                 `json:"displayName,omitempty"`
+	Operations  []DeviceGrantOperation `json:"operations,omitempty"`
+	LastSeenAt  int64                  `json:"lastSeenAt,omitempty"`
+}
+
+type DeviceTurnContext struct {
+	Grants    []ScopedDeviceGrant
+	Selection *DeviceSelection
+}
+
+type deviceSelectionPreference struct {
+	DeviceID  string
+	Source    string
+	UpdatedAt int64
+	ExpiresAt int64
+}
+
 type RegisterUserDeviceRequest struct {
 	DeviceID       string   `json:"device_id"`
 	DisplayName    string   `json:"display_name,omitempty"`
@@ -86,11 +140,13 @@ type RegisterUserDeviceRequest struct {
 }
 
 type userDeviceRegistry struct {
-	mu      sync.RWMutex
-	ttl     time.Duration
-	grantTT time.Duration
-	now     func() time.Time
-	devices map[int64]map[string]UserDevice
+	mu            sync.RWMutex
+	ttl           time.Duration
+	grantTT       time.Duration
+	preferenceTTL time.Duration
+	now           func() time.Time
+	devices       map[int64]map[string]UserDevice
+	preferences   map[int64]map[string]deviceSelectionPreference
 }
 
 func newUserDeviceRegistry(ttl time.Duration) *userDeviceRegistry {
@@ -98,10 +154,12 @@ func newUserDeviceRegistry(ttl time.Duration) *userDeviceRegistry {
 		ttl = defaultUserDeviceTTL
 	}
 	return &userDeviceRegistry{
-		ttl:     ttl,
-		grantTT: defaultDeviceGrantTTL,
-		now:     time.Now,
-		devices: make(map[int64]map[string]UserDevice),
+		ttl:           ttl,
+		grantTT:       defaultDeviceGrantTTL,
+		preferenceTTL: defaultDevicePreferenceTTL,
+		now:           time.Now,
+		devices:       make(map[int64]map[string]UserDevice),
+		preferences:   make(map[int64]map[string]deviceSelectionPreference),
 	}
 }
 
@@ -189,7 +247,29 @@ func (r *userDeviceRegistry) grantsForTurn(actorUID int64, topicID string, topic
 	if len(operationsByDevice) == 0 {
 		return nil
 	}
+	return r.grantsForDevices(actorUID, topicID, topicType, agentUID, agentBodyID, operationsByDevice)
+}
 
+func (r *userDeviceRegistry) turnContext(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, messageText string) DeviceTurnContext {
+	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {
+		return DeviceTurnContext{}
+	}
+	devices := r.activeDevices(actorUID)
+	selection, selected := r.selectDeviceForTurn(actorUID, topicID, topicType, agentUID, devices, messageText)
+	var grants []ScopedDeviceGrant
+	if selected != nil && selection != nil && selection.Status == DeviceSelectionSelected {
+		grants = r.grantsForDevices(actorUID, topicID, topicType, agentUID, agentBodyID, []UserDevice{*selected})
+	}
+	return DeviceTurnContext{
+		Grants:    grants,
+		Selection: selection,
+	}
+}
+
+func (r *userDeviceRegistry) grantsForDevices(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice) []ScopedDeviceGrant {
+	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" || len(devices) == 0 {
+		return nil
+	}
 	createdAt := unixMillis(r.now())
 	expiresAt := unixMillis(r.now().Add(r.grantTT))
 	actorUserID := formatUID(actorUID)
@@ -199,8 +279,8 @@ func (r *userDeviceRegistry) grantsForTurn(actorUID int64, topicID string, topic
 	}
 	sessionKey := buildCatsCoSessionKey(topicID, topicType, agentID)
 
-	grants := make([]ScopedDeviceGrant, 0, len(operationsByDevice))
-	for _, device := range operationsByDevice {
+	grants := make([]ScopedDeviceGrant, 0, len(devices))
+	for _, device := range devices {
 		ops := append([]DeviceGrantOperation(nil), device.Capabilities...)
 		if len(ops) == 0 {
 			continue
@@ -229,6 +309,193 @@ func (r *userDeviceRegistry) grantsForTurn(actorUID int64, topicID string, topic
 		})
 	}
 	return grants
+}
+
+func (r *userDeviceRegistry) selectDeviceForTurn(
+	actorUID int64,
+	topicID string,
+	topicType string,
+	agentUID int64,
+	devices []UserDevice,
+	messageText string,
+) (*DeviceSelection, *UserDevice) {
+	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {
+		return nil, nil
+	}
+	createdAt := unixMillis(r.now())
+	actorUserID := formatUID(actorUID)
+	agentID := ""
+	if agentUID > 0 {
+		agentID = formatUID(agentUID)
+	}
+	sessionKey := buildCatsCoSessionKey(topicID, topicType, agentID)
+	base := DeviceSelection{
+		Kind:           "user_device_selection",
+		Source:         "catscompany",
+		SchemaVersion:  1,
+		SessionKey:     sessionKey,
+		TopicID:        topicID,
+		TopicType:      topicType,
+		ActorUserID:    actorUserID,
+		AgentID:        agentID,
+		CandidateCount: len(devices),
+		CreatedAt:      createdAt,
+	}
+	if len(devices) == 0 {
+		base.Status = DeviceSelectionUnavailable
+		base.SelectionSource = "no_active_devices"
+		return &base, nil
+	}
+
+	if explicitMatches := matchMentionedDevices(devices, messageText); len(explicitMatches) == 1 {
+		selected := explicitMatches[0]
+		base.Status = DeviceSelectionSelected
+		base.SelectionSource = "explicit_mention"
+		base.SelectedDevice = deviceSelectionDevice(selected)
+		r.rememberDeviceSelection(actorUID, sessionKey, selected.DeviceID, "explicit_mention")
+		return &base, &selected
+	} else if len(explicitMatches) > 1 {
+		base.Status = DeviceSelectionNeedsSelection
+		base.SelectionSource = "explicit_ambiguous"
+		base.Candidates = deviceSelectionCandidates(explicitMatches)
+		return &base, nil
+	}
+
+	if preferredDeviceID, ok := r.deviceSelectionPreference(actorUID, sessionKey); ok {
+		if selected, ok := findDeviceByID(devices, preferredDeviceID); ok {
+			base.Status = DeviceSelectionSelected
+			base.SelectionSource = "conversation_preference"
+			base.SelectedDevice = deviceSelectionDevice(selected)
+			return &base, &selected
+		}
+	}
+
+	selected := devices[0]
+	base.Status = DeviceSelectionSelected
+	if len(devices) == 1 {
+		base.SelectionSource = "single_active_device"
+	} else {
+		base.SelectionSource = "most_recent_online"
+		base.Candidates = deviceSelectionCandidates(devices)
+	}
+	base.SelectedDevice = deviceSelectionDevice(selected)
+	r.rememberDeviceSelection(actorUID, sessionKey, selected.DeviceID, base.SelectionSource)
+	return &base, &selected
+}
+
+func (r *userDeviceRegistry) deviceSelectionPreference(actorUID int64, sessionKey string) (string, bool) {
+	if r == nil || actorUID <= 0 || sessionKey == "" {
+		return "", false
+	}
+	now := unixMillis(r.now())
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	actorPreferences := r.preferences[actorUID]
+	if len(actorPreferences) == 0 {
+		return "", false
+	}
+	preference, ok := actorPreferences[sessionKey]
+	if !ok || preference.DeviceID == "" || preference.ExpiresAt <= now {
+		return "", false
+	}
+	return preference.DeviceID, true
+}
+
+func (r *userDeviceRegistry) rememberDeviceSelection(actorUID int64, sessionKey string, deviceID string, source string) {
+	if r == nil || actorUID <= 0 || sessionKey == "" || deviceID == "" {
+		return
+	}
+	now := r.now()
+	preference := deviceSelectionPreference{
+		DeviceID:  deviceID,
+		Source:    source,
+		UpdatedAt: unixMillis(now),
+		ExpiresAt: unixMillis(now.Add(r.preferenceTTL)),
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	actorPreferences := r.preferences[actorUID]
+	if actorPreferences == nil {
+		actorPreferences = make(map[string]deviceSelectionPreference)
+		r.preferences[actorUID] = actorPreferences
+	}
+	actorPreferences[sessionKey] = preference
+}
+
+func matchMentionedDevices(devices []UserDevice, messageText string) []UserDevice {
+	normalizedText := normalizeDeviceSelectionText(messageText)
+	if normalizedText == "" {
+		return nil
+	}
+	matches := make([]UserDevice, 0, 1)
+	seen := make(map[string]struct{}, len(devices))
+	for _, device := range devices {
+		if device.DeviceID == "" {
+			continue
+		}
+		if deviceMentioned(device, normalizedText) {
+			if _, ok := seen[device.DeviceID]; ok {
+				continue
+			}
+			seen[device.DeviceID] = struct{}{}
+			matches = append(matches, device)
+		}
+	}
+	return matches
+}
+
+func deviceMentioned(device UserDevice, normalizedText string) bool {
+	candidates := []string{device.DisplayName, device.DeviceID, device.InstallationID}
+	for _, candidate := range candidates {
+		normalizedCandidate := normalizeDeviceSelectionText(candidate)
+		if normalizedCandidate == "" {
+			continue
+		}
+		if strings.Contains(normalizedText, normalizedCandidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeDeviceSelectionText(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func findDeviceByID(devices []UserDevice, deviceID string) (UserDevice, bool) {
+	for _, device := range devices {
+		if device.DeviceID == deviceID {
+			return device, true
+		}
+	}
+	return UserDevice{}, false
+}
+
+func deviceSelectionDevice(device UserDevice) *DeviceSelectionDevice {
+	return &DeviceSelectionDevice{
+		DeviceID:       device.DeviceID,
+		DisplayName:    device.DisplayName,
+		BodyID:         device.BodyID,
+		InstallationID: device.InstallationID,
+		Operations:     append([]DeviceGrantOperation(nil), device.Capabilities...),
+		LastSeenAt:     device.LastSeenAt,
+	}
+}
+
+func deviceSelectionCandidates(devices []UserDevice) []DeviceSelectionCandidate {
+	if len(devices) == 0 {
+		return nil
+	}
+	out := make([]DeviceSelectionCandidate, 0, len(devices))
+	for _, device := range devices {
+		out = append(out, DeviceSelectionCandidate{
+			DeviceID:    device.DeviceID,
+			DisplayName: device.DisplayName,
+			Operations:  append([]DeviceGrantOperation(nil), device.Capabilities...),
+			LastSeenAt:  device.LastSeenAt,
+		})
+	}
+	return out
 }
 
 func isActiveDevice(device UserDevice, now time.Time, ttl time.Duration) bool {

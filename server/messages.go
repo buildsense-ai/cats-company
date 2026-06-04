@@ -223,7 +223,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 	if payload == nil {
 		return nil
 	}
-	metadata := withCatscoIdentityMetadata(payload.Metadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID))
+	metadata := withCatscoIdentityMetadata(payload.Metadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID, normalizeContentText(payload.DisplayContent)))
 	return &ServerMessage{
 		Data: &MsgServerData{
 			Topic:         topicID,
@@ -255,7 +255,7 @@ func withCatscoIdentityMetadata(metadata map[string]interface{}, identity map[st
 	return next
 }
 
-func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, topicID string, msgID int64) map[string]interface{} {
+func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, topicID string, msgID int64, messageText string) map[string]interface{} {
 	topicType := topicTypeForID(topicID)
 	identity := map[string]interface{}{
 		"schema_version": 1,
@@ -308,8 +308,12 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 			agent["display_name"] = client.displayName
 		}
 		if h != nil && h.userDevices != nil {
-			if grants := h.userDevices.grantsForTurn(actorUID, topicID, topicType, recipientUID, client.bodyID); len(grants) > 0 {
-				identity["device_grants"] = grants
+			deviceContext := h.userDevices.turnContext(actorUID, topicID, topicType, recipientUID, client.bodyID, messageText)
+			if len(deviceContext.Grants) > 0 {
+				identity["device_grants"] = deviceContext.Grants
+			}
+			if deviceContext.Selection != nil {
+				identity["device_selection"] = deviceContext.Selection
 			}
 		}
 	}
