@@ -95,6 +95,12 @@ export interface MsgServerData {
   from?: string;
   seq: number;
   content: unknown;
+  type?: string;
+  msg_type?: string;
+  metadata?: Record<string, unknown>;
+  content_blocks?: unknown[];
+  mode?: string;
+  role?: string;
   reply_to?: number;
 }
 
