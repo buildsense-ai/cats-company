@@ -64,6 +64,56 @@ func TestUserDeviceRegistryRegistersAndIssuesScopedGrants(t *testing.T) {
 	}
 }
 
+func TestUserDeviceRegistrySelectsMentionedDeviceAndRemembersPreference(t *testing.T) {
+	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	registry := newUserDeviceRegistry(10 * time.Minute)
+	registry.now = func() time.Time { return now }
+	if _, err := registry.register(7, RegisterUserDeviceRequest{
+		DeviceID:     "alice-laptop",
+		DisplayName:  "Alice Laptop",
+		BodyID:       "body-laptop",
+		Capabilities: []string{"read_file"},
+	}); err != nil {
+		t.Fatalf("register laptop: %v", err)
+	}
+	registry.now = func() time.Time { return now.Add(time.Second) }
+	if _, err := registry.register(7, RegisterUserDeviceRequest{
+		DeviceID:     "alice-desktop",
+		DisplayName:  "Alice Desktop",
+		BodyID:       "body-desktop",
+		Capabilities: []string{"read_file", "send_file"},
+	}); err != nil {
+		t.Fatalf("register desktop: %v", err)
+	}
+
+	ctx := registry.turnContext(7, "p2p_7_42", "p2p", 42, "body-agent", "请在 Alice Laptop 上读取文件")
+	if ctx.Selection == nil || ctx.Selection.Status != DeviceSelectionSelected || ctx.Selection.SelectionSource != "explicit_mention" {
+		t.Fatalf("unexpected explicit selection: %#v", ctx.Selection)
+	}
+	if ctx.Selection.SelectedDevice == nil || ctx.Selection.SelectedDevice.DeviceID != "alice-laptop" {
+		t.Fatalf("selected device = %#v, want alice-laptop", ctx.Selection.SelectedDevice)
+	}
+	if len(ctx.Grants) != 1 || ctx.Grants[0].DeviceID != "alice-laptop" {
+		t.Fatalf("grants should be scoped to explicit selected device: %#v", ctx.Grants)
+	}
+
+	followup := registry.turnContext(7, "p2p_7_42", "p2p", 42, "body-agent", "继续读取")
+	if followup.Selection == nil || followup.Selection.SelectionSource != "conversation_preference" {
+		t.Fatalf("unexpected follow-up selection: %#v", followup.Selection)
+	}
+	if followup.Selection.SelectedDevice == nil || followup.Selection.SelectedDevice.DeviceID != "alice-laptop" {
+		t.Fatalf("follow-up selected device = %#v, want alice-laptop", followup.Selection.SelectedDevice)
+	}
+
+	otherTopic := registry.turnContext(7, "p2p_7_99", "p2p", 99, "body-agent", "继续读取")
+	if otherTopic.Selection == nil || otherTopic.Selection.SelectionSource != "most_recent_online" {
+		t.Fatalf("unexpected other topic selection: %#v", otherTopic.Selection)
+	}
+	if otherTopic.Selection.SelectedDevice == nil || otherTopic.Selection.SelectedDevice.DeviceID != "alice-desktop" {
+		t.Fatalf("other topic selected device = %#v, want alice-desktop", otherTopic.Selection.SelectedDevice)
+	}
+}
+
 func TestDeviceHandlerRegistersHumanAndBotOwnerDevices(t *testing.T) {
 	store := &deviceHandlerStore{
 		users: map[int64]*types.User{
@@ -171,11 +221,22 @@ func TestBotRecipientIdentityIncludesCurrentActorDeviceGrants(t *testing.T) {
 	if grant["deviceId"] != "alice-laptop" || grant["deviceBodyId"] != "body-device" {
 		t.Fatalf("unexpected grant device: %#v", grant)
 	}
+	selection := deviceSelectionMap(t, identity)
+	if selection["status"] != "selected" || selection["selectionSource"] != "single_active_device" {
+		t.Fatalf("unexpected device selection: %#v", selection)
+	}
+	selectedDevice, ok := selection["selectedDevice"].(map[string]interface{})
+	if !ok || selectedDevice["deviceId"] != "alice-laptop" {
+		t.Fatalf("unexpected selected device: %#v", selection["selectedDevice"])
+	}
 
 	humanMsg := hub.messageForRecipient(7, 50, "p2p_7_50", 0, payload, 100)
 	humanIdentity := metadataMapFromServerMessage(t, humanMsg, "catsco_identity")
 	if _, ok := humanIdentity["device_grants"]; ok {
 		t.Fatalf("human recipient should not receive device grants: %#v", humanIdentity["device_grants"])
+	}
+	if _, ok := humanIdentity["device_selection"]; ok {
+		t.Fatalf("human recipient should not receive device selection: %#v", humanIdentity["device_selection"])
 	}
 }
 
@@ -222,6 +283,10 @@ func TestHistoryMessagesReissueDeviceGrantsForBotRecipient(t *testing.T) {
 	if grant["topicId"] != "p2p_7_42" || grant["actorUserId"] != "usr7" || grant["agentBodyId"] != "body-agent" {
 		t.Fatalf("unexpected history grant: %#v", grant)
 	}
+	selection := deviceSelectionMap(t, identity)
+	if selection["status"] != "selected" {
+		t.Fatalf("unexpected history device selection: %#v", selection)
+	}
 
 	var ctrl ServerMessage
 	decodeQueuedServerMessage(t, botClient.send, &ctrl)
@@ -241,6 +306,15 @@ func firstDeviceGrantMap(t *testing.T, identity map[string]interface{}) map[stri
 		t.Fatalf("first device grant = %#v, want object", grants[0])
 	}
 	return grant
+}
+
+func deviceSelectionMap(t *testing.T, identity map[string]interface{}) map[string]interface{} {
+	t.Helper()
+	selection, ok := identity["device_selection"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("device_selection = %#v, want object", identity["device_selection"])
+	}
+	return selection
 }
 
 type deviceHandlerStore struct {

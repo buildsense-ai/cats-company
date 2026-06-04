@@ -1008,15 +1008,16 @@ func (h *Hub) handleGet(client *Client, msg *MsgClientGet) {
 		}
 		// Send each message as a data message
 		for _, m := range msgs {
+			displayContent := decodeStoredContent(m.Content)
 			h.SendToClient(client, &ServerMessage{
 				Data: &MsgServerData{
 					Topic:         m.TopicID,
 					From:          formatUID(m.FromUID),
 					SeqID:         int(m.ID),
-					Content:       decodeStoredContent(m.Content),
+					Content:       displayContent,
 					Type:          inferDisplayTypeFromStoredMessage(m.MsgType, m.Content, m.ContentBlocks),
 					MsgType:       m.MsgType,
-					Metadata:      withCatscoIdentityMetadata(nil, h.buildCatscoIdentityMetadata(m.FromUID, client.uid, m.TopicID, m.ID)),
+					Metadata:      withCatscoIdentityMetadata(nil, h.buildCatscoIdentityMetadata(m.FromUID, client.uid, m.TopicID, m.ID, normalizeContentText(displayContent))),
 					ContentBlocks: m.ContentBlocks,
 					Mode:          m.Mode,
 					Role:          m.Role,
@@ -1249,7 +1250,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 				msg,
 				withCatscoIdentityMetadata(
 					msg.Data.Metadata,
-					h.buildCatscoIdentityMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID)),
+					h.buildCatscoIdentityMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID), normalizeContentText(msg.Data.Content)),
 				),
 			)
 		}
