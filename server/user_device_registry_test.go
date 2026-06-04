@@ -240,7 +240,7 @@ func TestBotRecipientIdentityIncludesCurrentActorDeviceGrants(t *testing.T) {
 	}
 }
 
-func TestHistoryMessagesReissueDeviceGrantsForBotRecipient(t *testing.T) {
+func TestHistoryMessagesDoNotReissueDeviceGrantsForBotRecipient(t *testing.T) {
 	store := &identityMessageStore{
 		users: map[int64]*types.User{
 			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
@@ -279,13 +279,18 @@ func TestHistoryMessagesReissueDeviceGrantsForBotRecipient(t *testing.T) {
 	var msg ServerMessage
 	decodeQueuedServerMessage(t, botClient.send, &msg)
 	identity := metadataMapFromServerMessage(t, &msg, "catsco_identity")
-	grant := firstDeviceGrantMap(t, identity)
-	if grant["topicId"] != "p2p_7_42" || grant["actorUserId"] != "usr7" || grant["agentBodyId"] != "body-agent" {
-		t.Fatalf("unexpected history grant: %#v", grant)
+	if _, ok := identity["device_grants"]; ok {
+		t.Fatalf("history message should not receive executable device grants: %#v", identity["device_grants"])
 	}
-	selection := deviceSelectionMap(t, identity)
-	if selection["status"] != "selected" {
-		t.Fatalf("unexpected history device selection: %#v", selection)
+	if _, ok := identity["device_selection"]; ok {
+		t.Fatalf("history message should not receive executable device selection: %#v", identity["device_selection"])
+	}
+	permissions, ok := identity["permissions"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("permissions = %#v, want object", identity["permissions"])
+	}
+	if permissions["replay"] != true || permissions["device_access"] != "non_executable_history" {
+		t.Fatalf("unexpected history permissions: %#v", permissions)
 	}
 
 	var ctrl ServerMessage

@@ -255,7 +255,16 @@ func withCatscoIdentityMetadata(metadata map[string]interface{}, identity map[st
 	return next
 }
 
-func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, topicID string, msgID int64, messageText string) map[string]interface{} {
+type catscoIdentityMetadataOptions struct {
+	OmitDeviceAccess bool
+	Replay           bool
+}
+
+func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, topicID string, msgID int64, messageText string, options ...catscoIdentityMetadataOptions) map[string]interface{} {
+	opts := catscoIdentityMetadataOptions{}
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	topicType := topicTypeForID(topicID)
 	identity := map[string]interface{}{
 		"schema_version": 1,
@@ -269,6 +278,11 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 		"permissions": map[string]interface{}{
 			"source": "server_canonical_message",
 		},
+	}
+	if opts.Replay {
+		permissions := identity["permissions"].(map[string]interface{})
+		permissions["replay"] = true
+		permissions["device_access"] = "non_executable_history"
 	}
 	if msgID > 0 {
 		identity["topic"].(map[string]interface{})["channel_seq"] = msgID
@@ -307,7 +321,7 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 		if client.displayName != "" {
 			agent["display_name"] = client.displayName
 		}
-		if h != nil && h.userDevices != nil {
+		if !opts.OmitDeviceAccess && h != nil && h.userDevices != nil {
 			deviceContext := h.userDevices.turnContext(actorUID, topicID, topicType, recipientUID, client.bodyID, messageText)
 			if len(deviceContext.Grants) > 0 {
 				identity["device_grants"] = deviceContext.Grants
