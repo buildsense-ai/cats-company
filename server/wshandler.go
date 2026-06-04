@@ -82,6 +82,7 @@ func NewHub(db store.Store, rl *RateLimiter) *Hub {
 		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL),
 	}
 	go hub.runPresence()
+	go hub.runDeviceRPCTimeouts()
 	return hub
 }
 
@@ -91,7 +92,7 @@ func (h *Hub) BotStats() *BotStats {
 }
 
 func (h *Hub) BotBodyStatus(botUID int64) BotBodyStatus {
-	status := BotBodyStatus{BotUID: botUID, Active: false}
+	status := BotBodyStatus{BotUID: botUID, State: "offline", Active: false}
 	if h == nil || h.bodyLeases == nil || botUID <= 0 {
 		return status
 	}
@@ -107,10 +108,24 @@ func (h *Hub) BotBodyStatus(botUID int64) BotBodyStatus {
 	}
 
 	connectedAt := lease.acquiredAt
+	expiresAt := lease.expiresAt
+	ttl := time.Until(expiresAt).Milliseconds()
+	if ttl < 0 {
+		ttl = 0
+	}
+	if h.bodyLeases != nil && h.bodyLeases.now != nil {
+		ttl = expiresAt.Sub(h.bodyLeases.now()).Milliseconds()
+		if ttl < 0 {
+			ttl = 0
+		}
+	}
+	status.State = "online"
 	status.Active = true
 	status.BodyID = lease.bodyID
 	status.Bound = lease.bodyID != ""
 	status.ConnectedAt = &connectedAt
+	status.LeaseExpiresAt = &expiresAt
+	status.LeaseTTLMS = ttl
 	return status
 }
 
@@ -680,6 +695,9 @@ func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
 		"features": []string{"client_msg_id", "device_rpc"},
 		"uid":      formatUID(client.uid),
 		"name":     displayName,
+	}
+	if client.accountType == types.AccountBot && client.bodyID != "" {
+		params["body_lease"] = h.BotBodyStatus(client.uid)
 	}
 	if deviceParams != nil {
 		params["device"] = deviceParams

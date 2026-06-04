@@ -165,11 +165,14 @@ func TestHandleGetBotBodyStatus(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !body.Active || !body.Bound || body.BotUID != 42 || body.BodyID != "body-a" {
+	if body.State != "online" || !body.Active || !body.Bound || body.BotUID != 42 || body.BodyID != "body-a" {
 		t.Fatalf("unexpected body status: %+v", body)
 	}
 	if body.ConnectedAt == nil || !body.ConnectedAt.Equal(now) {
 		t.Fatalf("unexpected connected_at: %+v", body.ConnectedAt)
+	}
+	if body.LeaseExpiresAt == nil || !body.LeaseExpiresAt.Equal(now.Add(defaultBotBodyLeaseTTL)) || body.LeaseTTLMS != int64(defaultBotBodyLeaseTTL/time.Millisecond) {
+		t.Fatalf("unexpected lease fields: %+v", body)
 	}
 }
 
@@ -215,7 +218,7 @@ func TestHandleGetBotBodyStatusReturnsOfflineBinding(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Active || !body.Bound || body.BotUID != 42 || body.BodyID != "body-a" || body.ConnectedAt != nil {
+	if body.State != "offline" || body.Active || !body.Bound || body.BotUID != 42 || body.BodyID != "body-a" || body.ConnectedAt != nil {
 		t.Fatalf("unexpected offline body status: %+v", body)
 	}
 }

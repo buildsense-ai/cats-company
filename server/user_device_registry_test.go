@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,9 @@ func TestUserDeviceRegistryRegistersAndIssuesScopedGrants(t *testing.T) {
 	if grant.DeviceID != "laptop-main" || grant.DeviceBodyID != "body-main" || grant.DeviceInstallationID != "install-main" {
 		t.Fatalf("unexpected grant device: %#v", grant)
 	}
+	if len(grant.Operations) != 1 || grant.Operations[0] != DeviceGrantReadFile {
+		t.Fatalf("grant should expose only PR10 readonly RPC operations, got %#v", grant.Operations)
+	}
 	if grant.CreatedAt != unixMillis(now) || grant.ExpiresAt != unixMillis(now.Add(2*time.Minute)) {
 		t.Fatalf("unexpected grant times: %#v", grant)
 	}
@@ -92,6 +96,9 @@ func TestUserDeviceRegistrySelectsMentionedDeviceAndRemembersPreference(t *testi
 	}
 	if ctx.Selection.SelectedDevice == nil || ctx.Selection.SelectedDevice.DeviceID != "alice-laptop" {
 		t.Fatalf("selected device = %#v, want alice-laptop", ctx.Selection.SelectedDevice)
+	}
+	if got := ctx.Selection.SelectedDevice.Operations; len(got) != 1 || got[0] != DeviceGrantReadFile {
+		t.Fatalf("selection should expose only PR10 readonly RPC operations: %#v", got)
 	}
 	if len(ctx.Grants) != 1 || ctx.Grants[0].DeviceID != "alice-laptop" {
 		t.Fatalf("grants should be scoped to explicit selected device: %#v", ctx.Grants)
@@ -168,6 +175,69 @@ func TestDeviceHandlerRegistersHumanAndBotOwnerDevices(t *testing.T) {
 		if device.OwnerUserID != "usr7" {
 			t.Fatalf("device registered to wrong owner: %#v", device)
 		}
+	}
+}
+
+func TestDeviceHandlerReportsOwnerScopedDeviceRPCStatus(t *testing.T) {
+	store := &deviceHandlerStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice"},
+			42: {ID: 42, Username: "agent", AccountType: types.AccountBot},
+		},
+		botOwners: map[int64]int64{42: 7},
+	}
+	hub, agent, target, _, grant := newDeviceRPCTestFixture(t, true)
+	hub.db = store
+	handler := NewDeviceHandler(store, hub)
+
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-1",
+		Type:      "request",
+		RequestID: "rpc-status",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+		Payload:   map[string]interface{}{"path": "redacted-from-status"},
+	})
+	decodeQueuedServerMessage(t, target.send, &ServerMessage{})
+	decodeQueuedServerMessage(t, agent.send, &ServerMessage{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/devices/rpc-status", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleDeviceRPCStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rpc status response = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Pending []DeviceRPCPendingStatus `json:"pending"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode rpc status: %v", err)
+	}
+	if len(out.Pending) != 1 || out.Pending[0].RequestID != "rpc-status" || out.Pending[0].DeviceID != "alice-laptop" {
+		t.Fatalf("unexpected rpc status: %#v", out.Pending)
+	}
+	if strings.Contains(rec.Body.String(), "redacted-from-status") {
+		t.Fatalf("rpc status must not expose payload: %s", rec.Body.String())
+	}
+
+	filteredReq := httptest.NewRequest(http.MethodGet, "/api/devices/rpc-status?agent_id=usr99", nil)
+	filteredReq = filteredReq.WithContext(context.WithValue(filteredReq.Context(), uidKey, int64(7)))
+	filteredRec := httptest.NewRecorder()
+	handler.HandleDeviceRPCStatus(filteredRec, filteredReq)
+	if filteredRec.Code != http.StatusOK {
+		t.Fatalf("filtered rpc status response = %d, body=%s", filteredRec.Code, filteredRec.Body.String())
+	}
+	var filtered struct {
+		Pending []DeviceRPCPendingStatus `json:"pending"`
+	}
+	if err := json.Unmarshal(filteredRec.Body.Bytes(), &filtered); err != nil {
+		t.Fatalf("decode filtered rpc status: %v", err)
+	}
+	if len(filtered.Pending) != 0 {
+		t.Fatalf("agent filter should hide other agent pending rpc: %#v", filtered.Pending)
 	}
 }
 
