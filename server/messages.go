@@ -256,6 +256,7 @@ func withCatscoIdentityMetadata(metadata map[string]interface{}, identity map[st
 }
 
 func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, topicID string, msgID int64) map[string]interface{} {
+	topicType := topicTypeForID(topicID)
 	identity := map[string]interface{}{
 		"schema_version": 1,
 		"actor": map[string]interface{}{
@@ -263,7 +264,7 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 		},
 		"topic": map[string]interface{}{
 			"topic_id": topicID,
-			"type":     topicTypeForID(topicID),
+			"type":     topicType,
 		},
 		"permissions": map[string]interface{}{
 			"source": "server_canonical_message",
@@ -305,6 +306,11 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 		}
 		if client.displayName != "" {
 			agent["display_name"] = client.displayName
+		}
+		if h != nil && h.userDevices != nil {
+			if grants := h.userDevices.grantsForTurn(actorUID, topicID, topicType, recipientUID, client.bodyID); len(grants) > 0 {
+				identity["device_grants"] = grants
+			}
 		}
 	}
 	identity["agent"] = agent

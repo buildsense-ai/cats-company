@@ -35,6 +35,7 @@ type Hub struct {
 	botStats    *BotStats
 	botConvo    botConvoTracker
 	bodyLeases  *botBodyLeaseManager
+	userDevices *userDeviceRegistry
 }
 
 type presenceEvent struct {
@@ -69,6 +70,7 @@ func NewHub(db store.Store, rl *RateLimiter) *Hub {
 		botStats:    NewBotStats(),
 		botConvo:    botConvoTracker{counters: make(map[string]*botConvoCount)},
 		bodyLeases:  newBotBodyLeaseManager(defaultBotBodyLeaseTTL),
+		userDevices: newUserDeviceRegistry(defaultUserDeviceTTL),
 	}
 	go hub.runPresence()
 	return hub

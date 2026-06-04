@@ -223,6 +223,7 @@ func main() {
 	botHandler := server.NewBotHandler(db, deployer)
 	botHandler.SetHub(hub)
 	msgHandler := server.NewMessageHandler(db, hub)
+	deviceHandler := server.NewDeviceHandler(db, hub)
 	uploadHandler := server.NewUploadHandler("./uploads", "/uploads")
 	readerHandler := server.NewReaderProxyHandlerFromEnv()
 	feedbackHandler := server.NewFeedbackHandler(db)
@@ -353,6 +354,8 @@ func main() {
 	mux.HandleFunc("/api/relay/key", ownerAuthWithDB(relayKeyHandler.HandleKey))
 	mux.HandleFunc("/api/relay/key/rotate", ownerAuthWithDB(relayKeyHandler.HandleRotate))
 	mux.HandleFunc("/api/relay/key/reveal", ownerAuthWithDB(relayKeyHandler.HandleReveal))
+	mux.HandleFunc("/api/devices", authWithDB(deviceHandler.HandleListDevices))
+	mux.HandleFunc("/api/devices/register", authWithDB(deviceHandler.HandleRegisterDevice))
 
 	// Online status API
 	mux.HandleFunc("/api/users/online", jwtAuthWithDB(func(w http.ResponseWriter, r *http.Request) {
