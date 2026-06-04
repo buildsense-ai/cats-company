@@ -287,6 +287,54 @@ func (h *Hub) removeClient(client *Client) (removed bool, lastConn bool, remaini
 	return removed, lastConn, remaining, len(h.clients)
 }
 
+// DisconnectUser forcibly closes every active WebSocket connection for a user.
+// Before closing, it queues a force_logout control frame so the client clears
+// its session and returns to the login screen instead of silently reconnecting.
+// This is invoked when an account is disabled or deleted, so a revoked session
+// cannot keep using an already-open socket. Returns the number of connections
+// that were torn down.
+func (h *Hub) DisconnectUser(uid int64, reason string) int {
+	if h == nil {
+		return 0
+	}
+	clients := h.getClients(uid)
+	if len(clients) == 0 {
+		return 0
+	}
+
+	var notice []byte
+	if data, err := json.Marshal(&ServerMessage{Ctrl: &MsgServerCtrl{
+		Code: http.StatusUnauthorized,
+		Text: "force_logout",
+		Params: map[string]interface{}{
+			"action": "force_logout",
+			"reason": reason,
+		},
+	}}); err == nil {
+		notice = data
+	}
+
+	for _, client := range clients {
+		if notice != nil {
+			client.trySend(notice)
+		}
+		removed, lastConn, _, _ := h.removeClient(client)
+		// Closing send lets WritePump flush the queued notice, emit a close
+		// frame, then shut the connection. The later ReadPump unregister is a
+		// no-op because removeClient is idempotent.
+		client.closeSend()
+		if !removed {
+			continue
+		}
+		h.releaseBotBodyLease(client)
+		log.Printf("client force-disconnected: uid=%d reason=%s", client.uid, reason)
+		if lastConn {
+			h.enqueuePresence(client.uid, "off")
+		}
+	}
+	return len(clients)
+}
+
 func (h *Hub) releaseBotBodyLease(client *Client) {
 	if client == nil || client.accountType != types.AccountBot {
 		return

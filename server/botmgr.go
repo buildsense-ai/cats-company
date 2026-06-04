@@ -509,6 +509,12 @@ func (h *BotHandler) HandleDeleteBot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// DeleteBot disables the bot's account; drop any live bot session so a
+	// deleted bot cannot keep using an already-open WebSocket.
+	if h.hub != nil {
+		h.hub.DisconnectUser(botUID, "bot_deleted")
+	}
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

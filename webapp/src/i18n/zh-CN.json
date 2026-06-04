@@ -134,6 +134,8 @@
   "chat_load_older": "加载更早消息",
 
   "confirm_logout": "确定要退出登录吗？",
+  "session_revoked": "你的账号已被停用，请重新登录或联系管理员。",
+  "session_ended": "登录状态已失效，请重新登录。",
   "confirm_delete_friend": "确定要删除该好友吗？",
   "confirm_block_user": "确定要拉黑该用户吗？",
   "confirm_leave_group": "确定要退出该群聊吗？",

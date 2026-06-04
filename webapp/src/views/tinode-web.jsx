@@ -124,6 +124,7 @@ export default function TinodeWeb() {
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [showRelayModal, setShowRelayModal] = useState(false);
+  const [forcedLogoutNotice, setForcedLogoutNotice] = useState('');
 
 
 
@@ -140,6 +141,19 @@ export default function TinodeWeb() {
     }
     if (msg._type === 'ws_close') {
       setWsStatus('reconnecting');
+      return;
+    }
+    if (msg._type === 'force_logout') {
+      disconnectWS();
+      setToken(null);
+      localStorage.removeItem('oc_user');
+      setUser(null);
+      setOnlineUsers({});
+      setActiveTopic(null);
+      const reason = msg.reason === 'bot_deleted' || msg.reason === 'account_disabled'
+        ? t('session_revoked')
+        : t('session_ended');
+      setForcedLogoutNotice(reason);
       return;
     }
 
@@ -287,7 +301,7 @@ export default function TinodeWeb() {
   };
 
   if (!user) {
-    return <AuthView mode={authMode} setMode={setAuthMode} onLogin={handleLogin} onRegister={handleRegister} />;
+    return <AuthView mode={authMode} setMode={setAuthMode} onLogin={handleLogin} onRegister={handleRegister} notice={forcedLogoutNotice} onClearNotice={() => setForcedLogoutNotice('')} />;
   }
 
   return (
@@ -412,7 +426,7 @@ function formatAuthError(message) {
   return message || '操作失败，请稍后再试';
 }
 
-function AuthView({ mode, setMode, onLogin, onRegister }) {
+function AuthView({ mode, setMode, onLogin, onRegister, notice, onClearNotice }) {
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -486,6 +500,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
   return authShell(
     <form className="oc-auth-card" onSubmit={handleSubmit}>
       <div className="oc-auth-logo">CatsCo</div>
+      {notice && <div style={{ color: '#FA9D3B', marginBottom: 12, fontSize: 13 }}>{notice}</div>}
       {error && <div style={{ color: '#FA5151', marginBottom: 12, fontSize: 13 }}>{error}</div>}
 
       {mode === 'login' ? (

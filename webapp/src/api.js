@@ -263,6 +263,18 @@ export function connectWS(onMessage) {
     if (!isCurrent()) return;
     try {
       const msg = JSON.parse(evt.data);
+      // Server forces a logout when the account is disabled or deleted: stop
+      // reconnecting and let the app clear its session.
+      if (msg.ctrl && msg.ctrl.text === 'force_logout') {
+        if (wsReconnectTimer) {
+          clearTimeout(wsReconnectTimer);
+          wsReconnectTimer = null;
+        }
+        wsGeneration += 1;
+        const reason = (msg.ctrl.params && msg.ctrl.params.reason) || '';
+        onMessage({ _type: 'force_logout', reason });
+        return;
+      }
       onMessage(msg);
       msgHandlers.forEach((h) => h(msg));
     } catch (e) {

@@ -217,6 +217,7 @@ func main() {
 	}
 	accountCenterHandler := server.NewAccountCenterHandler(db, accountServiceVerifier)
 	accountAdminHandler := server.NewAccountAdminHandler(db, accountServiceVerifier, db)
+	accountAdminHandler.SetHub(hub)
 	friendHandler := server.NewFriendHandler(db)
 	conversationHandler := server.NewConversationHandler(db, hub)
 	agentHandler := server.NewAgentHandler(db, hub)

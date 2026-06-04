@@ -22,6 +22,7 @@ type AccountAdminHandler struct {
 	users        AccountAdminUserLookup
 	services     AccountServiceVerifier
 	serviceStore AccountAdminServiceStore
+	hub          *Hub
 }
 
 type AccountAdminUserLookup interface {
@@ -42,6 +43,12 @@ type AccountAdminServiceStore interface {
 
 func NewAccountAdminHandler(users AccountAdminUserLookup, services AccountServiceVerifier, serviceStore AccountAdminServiceStore) *AccountAdminHandler {
 	return &AccountAdminHandler{users: users, services: services, serviceStore: serviceStore}
+}
+
+// SetHub wires the WebSocket hub so disabling an account can force-disconnect
+// any live sessions it still holds.
+func (h *AccountAdminHandler) SetHub(hub *Hub) {
+	h.hub = hub
 }
 
 func (h *AccountAdminHandler) HandlePage(w http.ResponseWriter, r *http.Request) {
@@ -207,6 +214,11 @@ func (h *AccountAdminHandler) HandleUserState(w http.ResponseWriter, r *http.Req
 		return
 	}
 	user.State = req.State
+	// Disabling an account must also drop any live WebSocket sessions, otherwise
+	// an already-connected client keeps sending until it happens to disconnect.
+	if req.State == 1 && h.hub != nil {
+		h.hub.DisconnectUser(req.UID, "account_disabled")
+	}
 	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":   true,
 		"user": accountUserPayload(user),
