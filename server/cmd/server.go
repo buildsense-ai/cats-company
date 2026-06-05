@@ -164,6 +164,18 @@ func chainHTTP(handler http.HandlerFunc, middlewares ...func(http.HandlerFunc) h
 	return handler
 }
 
+func useRedisRuntime(cfg RuntimeConfig) bool {
+	store := strings.ToLower(strings.TrimSpace(cfg.Store))
+	return store == "redis" || (store == "" && strings.TrimSpace(cfg.RedisURL) != "")
+}
+
+func openRedisRuntimeState(ctx context.Context, cfg RuntimeConfig) (*server.RedisRuntimeState, error) {
+	return server.NewRedisRuntimeState(ctx, server.RedisRuntimeOptions{
+		URL:       cfg.RedisURL,
+		KeyPrefix: cfg.RedisKeyPrefix,
+	})
+}
+
 func main() {
 	cfgPath := "tinode.conf"
 	if len(os.Args) > 1 {
@@ -198,7 +210,19 @@ func main() {
 	// Initialize components
 	rateLimiter := server.NewRateLimiter(server.DefaultRateLimits())
 	httpLimiter := server.NewHTTPRateLimiter()
+	var redisRuntime *server.RedisRuntimeState
+	if useRedisRuntime(cfg.Runtime) {
+		redisRuntime, err = openRedisRuntimeState(context.Background(), cfg.Runtime)
+		if err != nil {
+			log.Fatalf("redis runtime initialization failed: %v", err)
+		}
+		defer redisRuntime.Close()
+		log.Printf("runtime state initialized: mode=redis")
+	}
 	hub := server.NewHub(db, rateLimiter)
+	if redisRuntime != nil {
+		hub = server.NewHubWithRuntime(db, rateLimiter, redisRuntime, envString("CATSCO_NODE_ID"))
+	}
 	go hub.Run()
 
 	server.SetBotStats(hub.BotStats())

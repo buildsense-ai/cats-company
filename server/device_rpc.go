@@ -516,7 +516,11 @@ func validateDeviceRPCGrant(client *Client, msg *MsgDeviceRPC, grant ScopedDevic
 
 func isAllowedDeviceRPCOperation(operation DeviceGrantOperation) bool {
 	switch operation {
-	case DeviceGrantReadFile, DeviceGrantGlob, DeviceGrantGrep:
+	case DeviceGrantReadFile,
+		DeviceGrantGlob,
+		DeviceGrantGrep,
+		DeviceGrantWriteFile,
+		DeviceGrantExecuteShell:
 		return true
 	default:
 		return false
@@ -567,6 +571,78 @@ func (h *Hub) DeviceRPCStatus(ownerUID int64, agentIDFilter ...string) []DeviceR
 		})
 	}
 	return out
+}
+
+func (h *Hub) userDeviceRouteCandidates(ownerUID int64) ([]UserDevice, []UserDevice) {
+	if h == nil || h.userDevices == nil || ownerUID <= 0 {
+		return nil, nil
+	}
+	devices := h.userDevices.activeDevices(ownerUID)
+	routable, unavailable := h.classifyUserDevices(ownerUID, devices)
+	return routableDevices(routable), unavailableDevices(unavailable)
+}
+
+func (h *Hub) classifyUserDevices(ownerUID int64, devices []UserDevice) ([]UserDevice, []UserDevice) {
+	if h == nil || ownerUID <= 0 || len(devices) == 0 {
+		return devices, nil
+	}
+	routeNow := nowForRoute(h)
+	deviceNow := routeNow
+	if h.userDevices != nil && h.userDevices.now != nil {
+		deviceNow = h.userDevices.now()
+	}
+	classified := make([]UserDevice, 0, len(devices))
+	unavailable := make([]UserDevice, 0)
+	for _, device := range devices {
+		device.Active = isActiveDevice(device, deviceNow, h.userDevicesTTL())
+		route, target := h.findDeviceRPCTarget(ownerUID, device)
+		device.RouteConnected = route.validAt(routeNow) && (h.routeConnected(route) || target != nil)
+		device.Routable = device.Active && device.RouteConnected
+		device.UnavailableReason = ""
+		if !device.Active {
+			device.UnavailableReason = "not_active"
+		} else if !device.RouteConnected {
+			device.UnavailableReason = "route_unavailable"
+		}
+		classified = append(classified, device)
+		if !device.Routable {
+			unavailable = append(unavailable, device)
+		}
+	}
+	return classified, unavailable
+}
+
+func routableDevices(devices []UserDevice) []UserDevice {
+	if len(devices) == 0 {
+		return nil
+	}
+	out := make([]UserDevice, 0, len(devices))
+	for _, device := range devices {
+		if device.Routable {
+			out = append(out, device)
+		}
+	}
+	return out
+}
+
+func unavailableDevices(devices []UserDevice) []UserDevice {
+	if len(devices) == 0 {
+		return nil
+	}
+	out := make([]UserDevice, 0, len(devices))
+	for _, device := range devices {
+		if !device.Routable {
+			out = append(out, device)
+		}
+	}
+	return out
+}
+
+func (h *Hub) userDevicesTTL() time.Duration {
+	if h == nil || h.userDevices == nil || h.userDevices.ttl <= 0 {
+		return defaultUserDeviceTTL
+	}
+	return h.userDevices.ttl
 }
 
 func (h *Hub) runDeviceRPCTimeouts() {

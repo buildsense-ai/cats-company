@@ -50,7 +50,10 @@ type deviceRPCPendingRecord struct {
 
 type sharedRuntimeState interface {
 	runtimeMode() string
+	runtimeRouteState() string
 	registerRuntimeNode(nodeID string, hub *Hub)
+	bindRuntimeRoute(route runtimeRoute)
+	clearRuntimeRoute(route runtimeRoute)
 	deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC) bool
 	routeConnected(route runtimeRoute) bool
 
@@ -112,6 +115,13 @@ func (s *sharedMemoryRuntimeState) runtimeMode() string {
 	return "shared_memory"
 }
 
+func (s *sharedMemoryRuntimeState) runtimeRouteState() string {
+	if s == nil {
+		return "unavailable"
+	}
+	return "ready"
+}
+
 func (s *sharedMemoryRuntimeState) registerRuntimeNode(nodeID string, hub *Hub) {
 	if s == nil || nodeID == "" || hub == nil {
 		return
@@ -121,8 +131,14 @@ func (s *sharedMemoryRuntimeState) registerRuntimeNode(nodeID string, hub *Hub) 
 	s.nodes[nodeID] = hub
 }
 
+func (s *sharedMemoryRuntimeState) bindRuntimeRoute(route runtimeRoute) {
+}
+
+func (s *sharedMemoryRuntimeState) clearRuntimeRoute(route runtimeRoute) {
+}
+
 func (s *sharedMemoryRuntimeState) deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC) bool {
-	if s == nil || !route.validAt(time.Now()) {
+	if s == nil || route.NodeID == "" || route.ConnectionID == "" {
 		return false
 	}
 	s.mu.Lock()
@@ -135,7 +151,7 @@ func (s *sharedMemoryRuntimeState) deliverDeviceRPC(route runtimeRoute, msg *Msg
 }
 
 func (s *sharedMemoryRuntimeState) routeConnected(route runtimeRoute) bool {
-	if s == nil || !route.validAt(time.Now()) {
+	if s == nil || route.NodeID == "" || route.ConnectionID == "" {
 		return false
 	}
 	s.mu.Lock()
@@ -340,7 +356,7 @@ func (s *sharedMemoryRuntimeState) touchUserDevice(ownerUID int64, deviceID stri
 }
 
 func (s *sharedMemoryRuntimeState) bindUserDeviceRoute(ownerUID int64, device UserDevice, route runtimeRoute) {
-	if s == nil || ownerUID <= 0 || device.DeviceID == "" || !route.validAt(time.Now()) {
+	if s == nil || ownerUID <= 0 || device.DeviceID == "" || route.NodeID == "" || route.ConnectionID == "" {
 		return
 	}
 	s.mu.Lock()

@@ -40,18 +40,22 @@ const (
 )
 
 type UserDevice struct {
-	Kind           string                 `json:"kind"`
-	Source         string                 `json:"source"`
-	OwnerUID       int64                  `json:"-"`
-	OwnerUserID    string                 `json:"ownerUserId"`
-	DeviceID       string                 `json:"deviceId"`
-	DisplayName    string                 `json:"displayName,omitempty"`
-	BodyID         string                 `json:"bodyId,omitempty"`
-	InstallationID string                 `json:"installationId,omitempty"`
-	Status         string                 `json:"status"`
-	Capabilities   []DeviceGrantOperation `json:"capabilities,omitempty"`
-	RegisteredAt   int64                  `json:"registeredAt"`
-	LastSeenAt     int64                  `json:"lastSeenAt,omitempty"`
+	Kind              string                 `json:"kind"`
+	Source            string                 `json:"source"`
+	OwnerUID          int64                  `json:"-"`
+	OwnerUserID       string                 `json:"ownerUserId"`
+	DeviceID          string                 `json:"deviceId"`
+	DisplayName       string                 `json:"displayName,omitempty"`
+	BodyID            string                 `json:"bodyId,omitempty"`
+	InstallationID    string                 `json:"installationId,omitempty"`
+	Status            string                 `json:"status"`
+	Active            bool                   `json:"active"`
+	RouteConnected    bool                   `json:"routeConnected"`
+	Routable          bool                   `json:"routable"`
+	UnavailableReason string                 `json:"unavailableReason,omitempty"`
+	Capabilities      []DeviceGrantOperation `json:"capabilities,omitempty"`
+	RegisteredAt      int64                  `json:"registeredAt"`
+	LastSeenAt        int64                  `json:"lastSeenAt,omitempty"`
 }
 
 type ScopedDeviceGrant struct {
@@ -65,6 +69,9 @@ type ScopedDeviceGrant struct {
 	DeviceDisplayName    string                 `json:"deviceDisplayName,omitempty"`
 	DeviceBodyID         string                 `json:"deviceBodyId,omitempty"`
 	DeviceInstallationID string                 `json:"deviceInstallationId,omitempty"`
+	DeviceActive         bool                   `json:"deviceActive"`
+	DeviceRouteConnected bool                   `json:"deviceRouteConnected"`
+	DeviceRoutable       bool                   `json:"deviceRoutable"`
 	OwnerUserID          string                 `json:"ownerUserId"`
 	SessionKey           string                 `json:"sessionKey"`
 	TopicID              string                 `json:"topicId"`
@@ -103,19 +110,29 @@ type DeviceSelection struct {
 }
 
 type DeviceSelectionDevice struct {
-	DeviceID       string                 `json:"deviceId"`
-	DisplayName    string                 `json:"displayName,omitempty"`
-	BodyID         string                 `json:"bodyId,omitempty"`
-	InstallationID string                 `json:"installationId,omitempty"`
-	Operations     []DeviceGrantOperation `json:"operations,omitempty"`
-	LastSeenAt     int64                  `json:"lastSeenAt,omitempty"`
+	DeviceID          string                 `json:"deviceId"`
+	DisplayName       string                 `json:"displayName,omitempty"`
+	BodyID            string                 `json:"bodyId,omitempty"`
+	InstallationID    string                 `json:"installationId,omitempty"`
+	Status            string                 `json:"status,omitempty"`
+	Active            bool                   `json:"active"`
+	RouteConnected    bool                   `json:"routeConnected"`
+	Routable          bool                   `json:"routable"`
+	UnavailableReason string                 `json:"unavailableReason,omitempty"`
+	Operations        []DeviceGrantOperation `json:"operations,omitempty"`
+	LastSeenAt        int64                  `json:"lastSeenAt,omitempty"`
 }
 
 type DeviceSelectionCandidate struct {
-	DeviceID    string                 `json:"deviceId"`
-	DisplayName string                 `json:"displayName,omitempty"`
-	Operations  []DeviceGrantOperation `json:"operations,omitempty"`
-	LastSeenAt  int64                  `json:"lastSeenAt,omitempty"`
+	DeviceID          string                 `json:"deviceId"`
+	DisplayName       string                 `json:"displayName,omitempty"`
+	Status            string                 `json:"status,omitempty"`
+	Active            bool                   `json:"active"`
+	RouteConnected    bool                   `json:"routeConnected"`
+	Routable          bool                   `json:"routable"`
+	UnavailableReason string                 `json:"unavailableReason,omitempty"`
+	Operations        []DeviceGrantOperation `json:"operations,omitempty"`
+	LastSeenAt        int64                  `json:"lastSeenAt,omitempty"`
 }
 
 type DeviceTurnContext struct {
@@ -323,6 +340,18 @@ func (r *userDeviceRegistry) turnContext(actorUID int64, topicID string, topicTy
 		return DeviceTurnContext{}
 	}
 	devices := r.activeDevices(actorUID)
+	return r.turnContextForDevices(actorUID, topicID, topicType, agentUID, agentBodyID, messageText, devices, nil)
+}
+
+func (r *userDeviceRegistry) turnContextForDevices(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, messageText string, devices []UserDevice, unavailableCandidates []UserDevice) DeviceTurnContext {
+	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {
+		return DeviceTurnContext{}
+	}
+	if len(devices) == 0 && len(unavailableCandidates) > 0 {
+		return DeviceTurnContext{
+			Selection: r.unavailableDeviceSelection(actorUID, topicID, topicType, agentUID, "no_routable_devices", unavailableCandidates),
+		}
+	}
 	selection, selected := r.selectDeviceForTurn(actorUID, topicID, topicType, agentUID, devices, messageText)
 	var grants []ScopedDeviceGrant
 	if selected != nil && selection != nil && selection.Status == DeviceSelectionSelected {
@@ -331,6 +360,31 @@ func (r *userDeviceRegistry) turnContext(actorUID int64, topicID string, topicTy
 	return DeviceTurnContext{
 		Grants:    grants,
 		Selection: selection,
+	}
+}
+
+func (r *userDeviceRegistry) unavailableDeviceSelection(actorUID int64, topicID string, topicType string, agentUID int64, reason string, candidates []UserDevice) *DeviceSelection {
+	createdAt := unixMillis(r.now())
+	actorUserID := formatUID(actorUID)
+	agentID := ""
+	if agentUID > 0 {
+		agentID = formatUID(agentUID)
+	}
+	sessionKey := buildCatsCoSessionKey(topicID, topicType, agentID)
+	return &DeviceSelection{
+		Kind:            "user_device_selection",
+		Source:          "catscompany",
+		SchemaVersion:   1,
+		Status:          DeviceSelectionUnavailable,
+		SelectionSource: reason,
+		SessionKey:      sessionKey,
+		TopicID:         topicID,
+		TopicType:       topicType,
+		ActorUserID:     actorUserID,
+		AgentID:         agentID,
+		Candidates:      deviceSelectionCandidates(candidates),
+		CandidateCount:  len(candidates),
+		CreatedAt:       createdAt,
 	}
 }
 
@@ -364,6 +418,8 @@ func (r *userDeviceRegistry) grantsForDevices(actorUID int64, topicID string, to
 			DeviceDisplayName:    device.DisplayName,
 			DeviceBodyID:         device.BodyID,
 			DeviceInstallationID: device.InstallationID,
+			DeviceRouteConnected: device.RouteConnected,
+			DeviceRoutable:       device.Routable,
 			OwnerUserID:          actorUserID,
 			SessionKey:           sessionKey,
 			TopicID:              topicID,
@@ -595,12 +651,16 @@ func findDeviceByID(devices []UserDevice, deviceID string) (UserDevice, bool) {
 
 func deviceSelectionDevice(device UserDevice) *DeviceSelectionDevice {
 	return &DeviceSelectionDevice{
-		DeviceID:       device.DeviceID,
-		DisplayName:    device.DisplayName,
-		BodyID:         device.BodyID,
-		InstallationID: device.InstallationID,
-		Operations:     deviceRPCGrantOperations(device.Capabilities),
-		LastSeenAt:     device.LastSeenAt,
+		DeviceID:          device.DeviceID,
+		DisplayName:       device.DisplayName,
+		BodyID:            device.BodyID,
+		InstallationID:    device.InstallationID,
+		Status:            device.Status,
+		RouteConnected:    device.RouteConnected,
+		Routable:          device.Routable,
+		UnavailableReason: device.UnavailableReason,
+		Operations:        deviceRPCGrantOperations(device.Capabilities),
+		LastSeenAt:        device.LastSeenAt,
 	}
 }
 
@@ -611,10 +671,14 @@ func deviceSelectionCandidates(devices []UserDevice) []DeviceSelectionCandidate 
 	out := make([]DeviceSelectionCandidate, 0, len(devices))
 	for _, device := range devices {
 		out = append(out, DeviceSelectionCandidate{
-			DeviceID:    device.DeviceID,
-			DisplayName: device.DisplayName,
-			Operations:  deviceRPCGrantOperations(device.Capabilities),
-			LastSeenAt:  device.LastSeenAt,
+			DeviceID:          device.DeviceID,
+			DisplayName:       device.DisplayName,
+			Status:            device.Status,
+			RouteConnected:    device.RouteConnected,
+			Routable:          device.Routable,
+			UnavailableReason: device.UnavailableReason,
+			Operations:        deviceRPCGrantOperations(device.Capabilities),
+			LastSeenAt:        device.LastSeenAt,
 		})
 	}
 	return out
@@ -776,7 +840,14 @@ func (h *DeviceHandler) HandleListDevices(w http.ResponseWriter, r *http.Request
 		writeJSON(w, status, map[string]string{"error": msg})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"devices": h.registry().list(ownerUID)})
+	devices := h.registry().list(ownerUID)
+	if h.hub != nil {
+		devices, _ = h.hub.classifyUserDevices(ownerUID, devices)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"devices":    devices,
+		"checked_at": unixMillis(time.Now()),
+	})
 }
 
 func (h *DeviceHandler) HandleDeviceRPCStatus(w http.ResponseWriter, r *http.Request) {

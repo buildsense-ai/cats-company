@@ -176,6 +176,9 @@ func (c *Client) ReadPump(handler func(client *Client, msg *ClientMessage)) {
 }
 
 func (c *Client) touchRuntimeRoute() {
+	if c != nil && c.hub != nil {
+		c.hub.bindClientRuntimeRoute(c)
+	}
 	c.touchBotBodyLease()
 	c.touchBoundDevice()
 }
@@ -195,6 +198,7 @@ func (c *Client) touchBoundDevice() {
 	if c.hub.sharedRuntime != nil {
 		route := c.hub.clientRoute(c)
 		route.ExpiresAt = nowForRoute(c.hub).Add(defaultUserDeviceTTL)
+		c.hub.sharedRuntime.bindRuntimeRoute(route)
 		c.hub.sharedRuntime.bindUserDeviceRoute(c.deviceOwnerUID, UserDevice{
 			DeviceID:       c.deviceID,
 			BodyID:         c.deviceBodyID,

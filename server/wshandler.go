@@ -152,7 +152,7 @@ func (h *Hub) RuntimeRouteState() string {
 		return "unavailable"
 	}
 	if h.sharedRuntime != nil {
-		return "ready"
+		return h.sharedRuntime.runtimeRouteState()
 	}
 	return "process_local"
 }
@@ -171,6 +171,7 @@ func (h *Hub) Run() {
 			}
 			client.closeSend()
 			h.releaseBotBodyLease(client)
+			h.clearClientRuntimeRoute(client)
 			h.unbindDeviceClient(client)
 			log.Printf("client disconnected: uid=%d addr=%s account=%s (devices: %d, online users: %d)", client.uid, client.remoteAddr, client.accountType, remaining, onlineUsers)
 			if lastConn {
@@ -289,6 +290,7 @@ func (h *Hub) registerClient(client *Client) bool {
 
 	firstConn, deviceCount, onlineUsers, replaced := h.addRegisteredClient(client)
 	for _, stale := range replaced {
+		h.clearClientRuntimeRoute(stale)
 		h.unbindDeviceClient(stale)
 		stale.closeSend()
 		if stale.conn != nil {
@@ -300,6 +302,7 @@ func (h *Hub) registerClient(client *Client) bool {
 	if firstConn {
 		h.enqueuePresence(client.uid, "on")
 	}
+	h.bindClientRuntimeRoute(client)
 	return true
 }
 
@@ -358,6 +361,22 @@ func (h *Hub) clientRoute(client *Client) runtimeRoute {
 	}
 }
 
+func (h *Hub) bindClientRuntimeRoute(client *Client) {
+	if h == nil || client == nil || h.sharedRuntime == nil {
+		return
+	}
+	route := h.clientRoute(client)
+	route.ExpiresAt = nowForRoute(h).Add(defaultUserDeviceTTL)
+	h.sharedRuntime.bindRuntimeRoute(route)
+}
+
+func (h *Hub) clearClientRuntimeRoute(client *Client) {
+	if h == nil || client == nil || h.sharedRuntime == nil {
+		return
+	}
+	h.sharedRuntime.clearRuntimeRoute(h.clientRoute(client))
+}
+
 func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client) {
 	if h == nil || client == nil || ownerUID <= 0 || device.DeviceID == "" {
 		return
@@ -395,6 +414,7 @@ func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client
 	if h.sharedRuntime != nil {
 		route := h.clientRoute(client)
 		route.ExpiresAt = nowForRoute(h).Add(defaultUserDeviceTTL)
+		h.sharedRuntime.bindRuntimeRoute(route)
 		h.sharedRuntime.bindUserDeviceRoute(ownerUID, device, route)
 	}
 }
@@ -819,6 +839,35 @@ func (h *Hub) validateMessagePublish(uid int64, accountType types.AccountType, t
 	return 0, ""
 }
 
+func (h *Hub) validateTopicReadAccess(uid int64, accountType types.AccountType, topic string) (int, string) {
+	if h == nil {
+		return 0, ""
+	}
+	if h.db == nil {
+		return http.StatusInternalServerError, "topic access unavailable"
+	}
+	if isGroupTopic(topic) {
+		groupID := extractGroupID(topic)
+		if groupID == 0 {
+			return http.StatusBadRequest, "invalid group topic"
+		}
+		isMember, err := h.db.IsGroupMember(groupID, uid)
+		if err != nil || !isMember {
+			return http.StatusForbidden, "not a group member"
+		}
+		return 0, ""
+	}
+
+	peerUID := extractPeerUID(topic, uid)
+	if peerUID == 0 {
+		return http.StatusBadRequest, "invalid p2p topic"
+	}
+	if code, text := validateAgentP2PMessageAccess(h.db, uid, accountType, peerUID); code != 0 {
+		return code, text
+	}
+	return 0, ""
+}
+
 // handlePub handles a publish (send message) request.
 func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 	uid := client.uid
@@ -1188,6 +1237,17 @@ func extractGroupID(topic string) int64 {
 
 // handleSub handles a subscribe request (join a topic).
 func (h *Hub) handleSub(client *Client, msg *MsgClientSub) {
+	if code, text := h.validateTopicReadAccess(client.uid, client.accountType, msg.Topic); code != 0 {
+		h.SendToClient(client, &ServerMessage{
+			Ctrl: &MsgServerCtrl{
+				ID:    msg.ID,
+				Topic: msg.Topic,
+				Code:  code,
+				Text:  text,
+			},
+		})
+		return
+	}
 	// For now, just acknowledge the subscription
 	h.SendToClient(client, &ServerMessage{
 		Ctrl: &MsgServerCtrl{
@@ -1218,6 +1278,17 @@ func (h *Hub) handleGet(client *Client, msg *MsgClientGet) {
 		})
 
 	case "history":
+		if code, text := h.validateTopicReadAccess(uid, client.accountType, msg.Topic); code != 0 {
+			h.SendToClient(client, &ServerMessage{
+				Ctrl: &MsgServerCtrl{
+					ID:    msg.ID,
+					Topic: msg.Topic,
+					Code:  code,
+					Text:  text,
+				},
+			})
+			return
+		}
 		// Fetch messages after a given seq ID for reconnection
 		sinceID := int64(msg.SeqID)
 		msgs, err := h.db.GetMessagesSince(msg.Topic, sinceID, 100)
@@ -1227,20 +1298,12 @@ func (h *Hub) handleGet(client *Client, msg *MsgClientGet) {
 		}
 		// Send each message as a data message
 		for _, m := range msgs {
-			displayContent := decodeStoredContent(m.Content)
+			data := h.historyMessageDataForRecipient(client.uid, m)
+			if data == nil {
+				continue
+			}
 			h.SendToClient(client, &ServerMessage{
-				Data: &MsgServerData{
-					Topic:         m.TopicID,
-					From:          formatUID(m.FromUID),
-					SeqID:         int(m.ID),
-					Content:       displayContent,
-					Type:          inferDisplayTypeFromStoredMessage(m.MsgType, m.Content, m.ContentBlocks),
-					MsgType:       m.MsgType,
-					Metadata:      withCatscoIdentityMetadata(nil, h.buildCatscoIdentityMetadata(m.FromUID, client.uid, m.TopicID, m.ID, normalizeContentText(displayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: true, Replay: true})),
-					ContentBlocks: m.ContentBlocks,
-					Mode:          m.Mode,
-					Role:          m.Role,
-				},
+				Data: data,
 			})
 		}
 		// Send ctrl to indicate history is complete
