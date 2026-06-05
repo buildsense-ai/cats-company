@@ -65,6 +65,7 @@ type sharedRuntimeState interface {
 	renewBotBodyLease(botUID int64, bodyID string, connectionID string, nodeID string, now time.Time, ttl time.Duration) bool
 
 	registerUserDevice(ownerUID int64, req RegisterUserDeviceRequest, now time.Time) (UserDevice, error)
+	unregisterUserDevice(ownerUID int64, deviceID string)
 	listUserDevices(ownerUID int64) []UserDevice
 	activeUserDevice(ownerUID int64, deviceID string, now time.Time, ttl time.Duration) (UserDevice, bool)
 	touchUserDevice(ownerUID int64, deviceID string, now time.Time)
@@ -84,6 +85,17 @@ type sharedRuntimeState interface {
 	expireDeviceRPCPending(now time.Time) []deviceRPCPendingRecord
 }
 
+type deviceConnectorRuntimeState interface {
+	saveDeviceConnectorPairing(pairing deviceConnectorPairing, ttl time.Duration) error
+	getDeviceConnectorPairing(pairingID string, now time.Time) (deviceConnectorPairing, bool)
+	consumeDeviceConnectorPairing(code string, now time.Time) (deviceConnectorPairing, bool)
+	appendDeviceAudit(ownerUID int64, event DeviceAuditEvent)
+	listDeviceAudit(ownerUID int64, limit int) []DeviceAuditEvent
+	revokeDeviceConnectorDevice(ownerUID int64, deviceID string, revokedAt time.Time)
+	revokeDeviceConnectorToken(tokenID string, expiresAt time.Time)
+	isDeviceConnectorRevoked(claims *DeviceConnectorClaims, now time.Time) bool
+}
+
 type sharedMemoryRuntimeState struct {
 	mu sync.Mutex
 
@@ -97,17 +109,27 @@ type sharedMemoryRuntimeState struct {
 	preferences  map[int64]map[string]deviceSelectionPreference
 
 	deviceRPC map[string]deviceRPCPendingRecord
+
+	connectorPairingsByID   map[string]deviceConnectorPairing
+	connectorPairingCodeIDs map[string]string
+	deviceAuditEvents       []DeviceAuditEvent
+	revokedConnectorDevices map[int64]map[string]time.Time
+	revokedConnectorTokens  map[string]time.Time
 }
 
 func newSharedMemoryRuntimeState() *sharedMemoryRuntimeState {
 	return &sharedMemoryRuntimeState{
-		nodes:        make(map[string]*Hub),
-		botLeases:    make(map[int64]botBodyLease),
-		devices:      make(map[int64]map[string]UserDevice),
-		deviceRoutes: make(map[int64]map[string]runtimeRoute),
-		grants:       make(map[string]ScopedDeviceGrant),
-		preferences:  make(map[int64]map[string]deviceSelectionPreference),
-		deviceRPC:    make(map[string]deviceRPCPendingRecord),
+		nodes:                   make(map[string]*Hub),
+		botLeases:               make(map[int64]botBodyLease),
+		devices:                 make(map[int64]map[string]UserDevice),
+		deviceRoutes:            make(map[int64]map[string]runtimeRoute),
+		grants:                  make(map[string]ScopedDeviceGrant),
+		preferences:             make(map[int64]map[string]deviceSelectionPreference),
+		deviceRPC:               make(map[string]deviceRPCPendingRecord),
+		connectorPairingsByID:   make(map[string]deviceConnectorPairing),
+		connectorPairingCodeIDs: make(map[string]string),
+		revokedConnectorDevices: make(map[int64]map[string]time.Time),
+		revokedConnectorTokens:  make(map[string]time.Time),
 	}
 }
 
@@ -293,6 +315,30 @@ func (s *sharedMemoryRuntimeState) registerUserDevice(ownerUID int64, req Regist
 	}
 	ownerDevices[deviceID] = device
 	return device, nil
+}
+
+func (s *sharedMemoryRuntimeState) unregisterUserDevice(ownerUID int64, deviceID string) {
+	if s == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
+		return
+	}
+	normalizedDeviceID, err := normalizeUserDeviceID(deviceID)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ownerDevices := s.devices[ownerUID]; ownerDevices != nil {
+		delete(ownerDevices, normalizedDeviceID)
+		if len(ownerDevices) == 0 {
+			delete(s.devices, ownerUID)
+		}
+	}
+	if ownerRoutes := s.deviceRoutes[ownerUID]; ownerRoutes != nil {
+		delete(ownerRoutes, normalizedDeviceID)
+		if len(ownerRoutes) == 0 {
+			delete(s.deviceRoutes, ownerUID)
+		}
+	}
 }
 
 func (s *sharedMemoryRuntimeState) listUserDevices(ownerUID int64) []UserDevice {
@@ -547,6 +593,148 @@ func (s *sharedMemoryRuntimeState) expireDeviceRPCPending(now time.Time) []devic
 		}
 	}
 	return expired
+}
+
+func (s *sharedMemoryRuntimeState) saveDeviceConnectorPairing(pairing deviceConnectorPairing, ttl time.Duration) error {
+	if s == nil || pairing.PairingID == "" || pairing.PairingCode == "" {
+		return fmt.Errorf("invalid pairing")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupConnectorPairingsLocked(time.Now())
+	s.connectorPairingsByID[pairing.PairingID] = pairing
+	s.connectorPairingCodeIDs[pairing.PairingCode] = pairing.PairingID
+	return nil
+}
+
+func (s *sharedMemoryRuntimeState) getDeviceConnectorPairing(pairingID string, now time.Time) (deviceConnectorPairing, bool) {
+	if s == nil || pairingID == "" {
+		return deviceConnectorPairing{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupConnectorPairingsLocked(now)
+	pairing, ok := s.connectorPairingsByID[pairingID]
+	if !ok || !now.Before(pairing.ExpiresAt) {
+		return deviceConnectorPairing{}, false
+	}
+	return pairing, true
+}
+
+func (s *sharedMemoryRuntimeState) consumeDeviceConnectorPairing(code string, now time.Time) (deviceConnectorPairing, bool) {
+	if s == nil || code == "" {
+		return deviceConnectorPairing{}, false
+	}
+	normalized := strings.ToUpper(strings.TrimSpace(code))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupConnectorPairingsLocked(now)
+	pairingID := s.connectorPairingCodeIDs[normalized]
+	pairing, ok := s.connectorPairingsByID[pairingID]
+	if !ok || !now.Before(pairing.ExpiresAt) || !pairing.ConsumedAt.IsZero() {
+		return deviceConnectorPairing{}, false
+	}
+	pairing.ConsumedAt = now
+	s.connectorPairingsByID[pairing.PairingID] = pairing
+	delete(s.connectorPairingCodeIDs, normalized)
+	return pairing, true
+}
+
+func (s *sharedMemoryRuntimeState) cleanupConnectorPairingsLocked(now time.Time) {
+	for pairingID, pairing := range s.connectorPairingsByID {
+		if now.Before(pairing.ExpiresAt) {
+			continue
+		}
+		delete(s.connectorPairingsByID, pairingID)
+		delete(s.connectorPairingCodeIDs, pairing.PairingCode)
+	}
+}
+
+func (s *sharedMemoryRuntimeState) appendDeviceAudit(ownerUID int64, event DeviceAuditEvent) {
+	if s == nil || ownerUID <= 0 {
+		return
+	}
+	event.OwnerUserID = formatUID(ownerUID)
+	if event.CreatedAt == 0 {
+		event.CreatedAt = unixMillis(time.Now())
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deviceAuditEvents = append(s.deviceAuditEvents, event)
+	if len(s.deviceAuditEvents) > maxDeviceAuditEvents {
+		s.deviceAuditEvents = append([]DeviceAuditEvent(nil), s.deviceAuditEvents[len(s.deviceAuditEvents)-maxDeviceAuditEvents:]...)
+	}
+}
+
+func (s *sharedMemoryRuntimeState) listDeviceAudit(ownerUID int64, limit int) []DeviceAuditEvent {
+	if s == nil || ownerUID <= 0 {
+		return nil
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	ownerUserID := formatUID(ownerUID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]DeviceAuditEvent, 0, limit)
+	for i := len(s.deviceAuditEvents) - 1; i >= 0 && len(out) < limit; i-- {
+		if s.deviceAuditEvents[i].OwnerUserID == ownerUserID {
+			out = append(out, s.deviceAuditEvents[i])
+		}
+	}
+	return out
+}
+
+func (s *sharedMemoryRuntimeState) revokeDeviceConnectorDevice(ownerUID int64, deviceID string, revokedAt time.Time) {
+	if s == nil || ownerUID <= 0 || deviceID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ownerDevices := s.revokedConnectorDevices[ownerUID]
+	if ownerDevices == nil {
+		ownerDevices = make(map[string]time.Time)
+		s.revokedConnectorDevices[ownerUID] = ownerDevices
+	}
+	ownerDevices[deviceID] = revokedAt
+}
+
+func (s *sharedMemoryRuntimeState) revokeDeviceConnectorToken(tokenID string, expiresAt time.Time) {
+	if s == nil || tokenID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.revokedConnectorTokens[tokenID] = expiresAt
+	s.cleanupConnectorTokenRevokesLocked(time.Now())
+}
+
+func (s *sharedMemoryRuntimeState) isDeviceConnectorRevoked(claims *DeviceConnectorClaims, now time.Time) bool {
+	if s == nil || claims == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupConnectorTokenRevokesLocked(now)
+	if expiresAt, ok := s.revokedConnectorTokens[claims.ID]; ok && now.Before(expiresAt) {
+		return true
+	}
+	revokedAt, ok := s.revokedConnectorDevices[claims.UID][claims.DeviceID]
+	if !ok {
+		return false
+	}
+	if claims.IssuedAt == nil {
+		return true
+	}
+	return !claims.IssuedAt.Time.After(revokedAt)
+}
+
+func (s *sharedMemoryRuntimeState) cleanupConnectorTokenRevokesLocked(now time.Time) {
+	for tokenID, expiresAt := range s.revokedConnectorTokens {
+		if !expiresAt.IsZero() && now.After(expiresAt) {
+			delete(s.revokedConnectorTokens, tokenID)
+		}
+	}
 }
 
 func buildSharedBotBodyLease(botUID int64, bodyID string, connectionID string, nodeID string, now time.Time, ttl time.Duration) botBodyLease {

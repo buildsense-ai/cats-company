@@ -132,6 +132,17 @@ export const api = {
 
   getOnlineStatus: () => request('GET', '/api/users/online'),
 
+  createDeviceConnectorPairing: (deviceName) =>
+    request('POST', '/api/device-connectors/pairings', {
+      device_name: deviceName || '',
+      capabilities: ['read_file', 'glob', 'grep'],
+    }),
+  getDeviceConnectorPairing: (pairingId) =>
+    request('GET', `/api/device-connectors/pairings/${encodeURIComponent(pairingId)}`),
+  getDevices: () => request('GET', '/api/devices'),
+  unlinkDevice: (deviceId) => request('DELETE', `/api/devices/${encodeURIComponent(deviceId)}`),
+  getDeviceAudit: (limit = 20) => request('GET', `/api/devices/audit?limit=${limit}`),
+
   // Virtual employee roster
   getAgents: () => request('GET', '/api/agents'),
   openAgent: (agentUid) => request('POST', '/api/agents/open', { agent_uid: agentUid }),

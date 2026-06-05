@@ -248,6 +248,7 @@ func main() {
 	botHandler.SetHub(hub)
 	msgHandler := server.NewMessageHandler(db, hub)
 	deviceHandler := server.NewDeviceHandler(db, hub)
+	deviceConnectorHandler := server.NewDeviceConnectorHandler(db, hub)
 	uploadHandler := server.NewUploadHandler("./uploads", "/uploads")
 	readerHandler := server.NewReaderProxyHandlerFromEnv()
 	feedbackHandler := server.NewFeedbackHandler(db)
@@ -305,6 +306,9 @@ func main() {
 	})
 	feedbackUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "feedback_user", Limit: 10, Window: 10 * time.Minute, Burst: 3,
+	})
+	deviceConnectorEnrollIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
+		Name: "device_connector_enroll_ip", Limit: 20, Window: time.Minute, Burst: 5,
 	})
 
 	// HTTP routes
@@ -379,8 +383,16 @@ func main() {
 	mux.HandleFunc("/api/relay/key/rotate", ownerAuthWithDB(relayKeyHandler.HandleRotate))
 	mux.HandleFunc("/api/relay/key/reveal", ownerAuthWithDB(relayKeyHandler.HandleReveal))
 	mux.HandleFunc("/api/devices", authWithDB(deviceHandler.HandleListDevices))
+	mux.HandleFunc("/api/devices/", jwtAuthWithDB(deviceHandler.HandleDeviceByID))
 	mux.HandleFunc("/api/devices/register", authWithDB(deviceHandler.HandleRegisterDevice))
 	mux.HandleFunc("/api/devices/rpc-status", jwtAuthWithDB(deviceHandler.HandleDeviceRPCStatus))
+	mux.HandleFunc("/api/devices/audit", jwtAuthWithDB(deviceConnectorHandler.HandleAudit))
+	mux.HandleFunc("/api/device-connectors/pairings", ownerAuthWithDB(deviceConnectorHandler.HandleCreatePairing))
+	mux.HandleFunc("/api/device-connectors/pairings/", ownerAuthWithDB(deviceConnectorHandler.HandlePairingByID))
+	mux.HandleFunc("/api/device-connectors/enroll", chainHTTP(deviceConnectorHandler.HandleEnroll, deviceConnectorEnrollIPLimit))
+	mux.HandleFunc("/api/device-connectors/token/refresh", deviceConnectorHandler.HandleRefreshToken)
+	mux.HandleFunc("/api/device-connectors/register", deviceConnectorHandler.HandleRegisterDevice)
+	mux.HandleFunc("/api/device-connectors/releases", deviceConnectorHandler.HandleReleases)
 
 	// Online status API
 	mux.HandleFunc("/api/users/online", jwtAuthWithDB(func(w http.ResponseWriter, r *http.Request) {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -294,6 +295,120 @@ func TestDeviceRPCRejectsResultFromSupersededDeviceConnection(t *testing.T) {
 	decodeQueuedServerMessage(t, oldTarget.send, &staleAck)
 	if staleAck.Ctrl == nil || staleAck.Ctrl.Code != 403 {
 		t.Fatalf("stale device ack = %#v, want 403", staleAck.Ctrl)
+	}
+}
+
+func TestDeviceRPCRejectsConnectorResultWithoutScope(t *testing.T) {
+	hub, agent, target, _, grant := newDeviceRPCTestFixture(t, true)
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-1",
+		Type:      "request",
+		RequestID: "rpc-no-result-scope",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+	})
+	decodeQueuedServerMessage(t, target.send, &ServerMessage{})
+	decodeQueuedServerMessage(t, agent.send, &ServerMessage{})
+
+	target.deviceConnector = &DeviceConnectorClaims{
+		UID:      7,
+		DeviceID: grant.DeviceID,
+		Scopes:   []string{"device:ws", "device:register"},
+	}
+	hub.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "rpc-result-msg-1",
+		Type:      "result",
+		RequestID: "rpc-no-result-scope",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Result:    map[string]interface{}{"ok": true},
+	})
+
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, target.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusForbidden {
+		t.Fatalf("connector result ack = %#v, want 403", ack.Ctrl)
+	}
+	if pending := hub.DeviceRPCStatus(7); len(pending) != 1 || pending[0].RequestID != "rpc-no-result-scope" {
+		t.Fatalf("request should remain pending after forbidden result: %#v", pending)
+	}
+}
+
+func TestDeviceRPCRejectsRevokedConnectorResult(t *testing.T) {
+	hub, agent, target, _, grant := newDeviceRPCTestFixture(t, true)
+	target.uid = 7
+	target.accountType = types.AccountHuman
+	target.deviceConnector = &DeviceConnectorClaims{
+		UID:            7,
+		DeviceID:       grant.DeviceID,
+		InstallationID: target.deviceInstallationID,
+		Scopes:         []string{"device:ws", "device:register", "device:rpc_result"},
+	}
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-1",
+		Type:      "request",
+		RequestID: "rpc-revoked-connector",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+	})
+	decodeQueuedServerMessage(t, target.send, &ServerMessage{})
+	decodeQueuedServerMessage(t, agent.send, &ServerMessage{})
+
+	hub.revokeDeviceConnectorDevice(7, grant.DeviceID)
+	hub.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "rpc-result-msg-1",
+		Type:      "result",
+		RequestID: "rpc-revoked-connector",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Result:    map[string]interface{}{"ok": true},
+	})
+
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, target.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusForbidden {
+		t.Fatalf("revoked connector result ack = %#v, want 403", ack.Ctrl)
+	}
+	if pending := hub.DeviceRPCStatus(7); len(pending) != 1 || pending[0].RequestID != "rpc-revoked-connector" {
+		t.Fatalf("request should remain pending after revoked result: %#v", pending)
+	}
+}
+
+func TestHiRejectsRevokedConnectorRegistration(t *testing.T) {
+	hub := NewHub(nil, nil)
+	client := &Client{
+		hub:         hub,
+		uid:         7,
+		accountType: types.AccountHuman,
+		send:        make(chan []byte, 1),
+		deviceConnector: &DeviceConnectorClaims{
+			UID:            7,
+			DeviceID:       "alice-laptop",
+			InstallationID: "install-device",
+			Scopes:         []string{"device:ws", "device:register", "device:rpc_result"},
+		},
+	}
+	hub.addClient(client)
+	hub.revokeDeviceConnectorDevice(7, "alice-laptop")
+
+	hub.handleHi(client, "Alice Laptop", &MsgClientHi{
+		ID: "hi-revoked",
+		Device: &MsgClientHiDevice{
+			DeviceID:       "alice-laptop",
+			InstallationID: "install-device",
+			Capabilities:   []string{"read_file"},
+		},
+	})
+
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, client.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusBadRequest {
+		t.Fatalf("revoked connector hi ack = %#v, want 400", ack.Ctrl)
+	}
+	if got := hub.getDeviceClient(7, "alice-laptop"); got != nil {
+		t.Fatalf("revoked connector should not bind device client: %#v", got)
 	}
 }
 

@@ -233,6 +233,28 @@ func (r *userDeviceRegistry) register(ownerUID int64, req RegisterUserDeviceRequ
 	return device, nil
 }
 
+func (r *userDeviceRegistry) unregister(ownerUID int64, deviceID string) {
+	if r == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
+		return
+	}
+	if r.shared != nil {
+		r.shared.unregisterUserDevice(ownerUID, deviceID)
+		return
+	}
+	normalizedDeviceID, err := normalizeUserDeviceID(deviceID)
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ownerDevices := r.devices[ownerUID]; ownerDevices != nil {
+		delete(ownerDevices, normalizedDeviceID)
+		if len(ownerDevices) == 0 {
+			delete(r.devices, ownerUID)
+		}
+	}
+}
+
 func (r *userDeviceRegistry) list(ownerUID int64) []UserDevice {
 	if r == nil || ownerUID <= 0 {
 		return nil
@@ -874,6 +896,46 @@ func (h *DeviceHandler) HandleDeviceRPCStatus(w http.ResponseWriter, r *http.Req
 		"pending":       pending,
 		"pending_count": len(pending),
 		"checked_at":    unixMillis(time.Now()),
+	})
+}
+
+func (h *DeviceHandler) HandleDeviceByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if h == nil || h.db == nil || h.registry() == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "device registry unavailable"})
+		return
+	}
+	uid := UIDFromContext(r.Context())
+	user, status, msg := activeUserByID(uid, h.db.GetUser)
+	if status != 0 {
+		writeJSON(w, status, map[string]string{"error": msg})
+		return
+	}
+	if user.AccountType != types.AccountHuman {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "device unlink requires a human user token"})
+		return
+	}
+	deviceID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/devices/"), "/")
+	if _, err := normalizeUserDeviceID(deviceID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid device_id"})
+		return
+	}
+	h.registry().unregister(uid, deviceID)
+	if h.hub != nil {
+		h.hub.revokeDeviceConnectorDevice(uid, deviceID)
+		h.hub.disconnectDeviceConnector(uid, deviceID, "device connector revoked")
+		h.hub.addDeviceAudit(uid, DeviceAuditEvent{
+			DeviceID: deviceID,
+			Phase:    "device_unlinked",
+			Result:   "ok",
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":        true,
+		"device_id": deviceID,
 	})
 }
 

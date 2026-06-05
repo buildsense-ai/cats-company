@@ -39,6 +39,8 @@ type Hub struct {
 	sharedRuntime sharedRuntimeState
 	bodyLeases    *botBodyLeaseManager
 	userDevices   *userDeviceRegistry
+	deviceAudit   *deviceAuditLog
+	deviceRevokes *deviceConnectorRevocationList
 	deviceClients map[int64]map[string]*Client
 	deviceRPC     *deviceRPCRouter
 }
@@ -63,6 +65,7 @@ type Client struct {
 	deviceID             string
 	deviceBodyID         string
 	deviceInstallationID string
+	deviceConnector      *DeviceConnectorClaims
 	send                 chan []byte
 	sendMu               sync.RWMutex
 	sendClosed           bool
@@ -91,6 +94,8 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		sharedRuntime: shared,
 		bodyLeases:    newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
 		userDevices:   newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
+		deviceAudit:   newDeviceAuditLog(),
+		deviceRevokes: newDeviceConnectorRevocationList(),
 		deviceClients: make(map[int64]map[string]*Client),
 		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
 	}
@@ -296,7 +301,7 @@ func (h *Hub) addClient(client *Client) (firstConn bool, deviceCount int, online
 	defer h.mu.Unlock()
 
 	clients := h.clients[client.uid]
-	firstConn = len(clients) == 0
+	firstConn = client.deviceConnector == nil && !hasMessagingClient(clients)
 	if clients == nil {
 		clients = make(map[*Client]struct{})
 		h.clients[client.uid] = clients
@@ -349,7 +354,7 @@ func (h *Hub) addRegisteredClient(client *Client) (firstConn bool, deviceCount i
 	defer h.mu.Unlock()
 
 	clients := h.clients[client.uid]
-	firstConn = len(clients) == 0
+	firstConn = client.deviceConnector == nil && !hasMessagingClient(clients)
 	if clients == nil {
 		clients = make(map[*Client]struct{})
 		h.clients[client.uid] = clients
@@ -458,6 +463,22 @@ func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client
 	}
 }
 
+func (h *Hub) disconnectDeviceConnector(ownerUID int64, deviceID string, reason string) {
+	if h == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
+		return
+	}
+	var client *Client
+	h.mu.RLock()
+	if ownerDevices := h.deviceClients[ownerUID]; ownerDevices != nil {
+		client = ownerDevices[deviceID]
+	}
+	h.mu.RUnlock()
+	if client == nil || client.deviceConnector == nil {
+		return
+	}
+	h.disconnectClient(client, reason)
+}
+
 func (h *Hub) unbindDeviceClient(client *Client) {
 	if h == nil || client == nil || client.deviceOwnerUID <= 0 || client.deviceID == "" {
 		return
@@ -510,10 +531,21 @@ func (h *Hub) removeClient(client *Client) (removed bool, lastConn bool, remaini
 	remaining = len(clients)
 	if remaining == 0 {
 		delete(h.clients, client.uid)
+		lastConn = client.deviceConnector == nil
+	} else if client.deviceConnector == nil && !hasMessagingClient(clients) {
 		lastConn = true
 	}
 
 	return removed, lastConn, remaining, len(h.clients)
+}
+
+func hasMessagingClient(clients map[*Client]struct{}) bool {
+	for client := range clients {
+		if client != nil && client.deviceConnector == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Hub) releaseBotBodyLease(client *Client) {
@@ -600,18 +632,53 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	acctType := types.AccountHuman
 	displayName := ""
 	isBotAPIKey := false
+	var connectorClaims *DeviceConnectorClaims
 	bodyID := ""
 	installationID := ""
 	connectionID := ""
 
 	// Try JWT token first
 	tokenStr := r.URL.Query().Get("token")
+	connectorTokenStr := extractDeviceConnectorToken(r)
 	apiKeyStr := r.Header.Get("X-API-Key")
 	if apiKeyStr == "" {
 		apiKeyStr = r.URL.Query().Get("api_key")
 	}
 
-	if tokenStr != "" {
+	if connectorTokenStr != "" {
+		claims, err := ParseDeviceConnectorToken(connectorTokenStr)
+		if err != nil {
+			http.Error(w, "invalid device connector token", http.StatusUnauthorized)
+			return
+		}
+		if !deviceConnectorHasScope(claims, "device:ws") {
+			http.Error(w, "device connector token cannot open websocket", http.StatusForbidden)
+			return
+		}
+		if hub.isDeviceConnectorRevoked(claims) {
+			http.Error(w, "device connector token has been revoked", http.StatusForbidden)
+			return
+		}
+		uid = claims.UID
+		displayName = firstNonEmpty(claims.DisplayName, claims.Username, claims.DeviceID)
+		usr, err := hub.db.GetUser(uid)
+		if err != nil || usr == nil {
+			http.Error(w, "invalid device connector token", http.StatusUnauthorized)
+			return
+		}
+		if usr.State != 0 {
+			http.Error(w, "user account is disabled", http.StatusForbidden)
+			return
+		}
+		if usr.AccountType != types.AccountHuman {
+			http.Error(w, "device connector requires a human owner", http.StatusForbidden)
+			return
+		}
+		acctType = types.AccountHuman
+		connectorClaims = claims
+		bodyID = claims.DeviceID
+		installationID = firstNonEmpty(claims.InstallationID, claims.DeviceID)
+	} else if tokenStr != "" {
 		claims, err := ParseToken(tokenStr)
 		if err != nil {
 			http.Error(w, "invalid token", http.StatusUnauthorized)
@@ -730,16 +797,17 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &Client{
-		hub:            hub,
-		conn:           conn,
-		uid:            uid,
-		remoteAddr:     requestRemoteAddr(r),
-		displayName:    displayName,
-		accountType:    acctType,
-		bodyID:         bodyID,
-		installationID: installationID,
-		connectionID:   connectionID,
-		send:           make(chan []byte, 256),
+		hub:             hub,
+		conn:            conn,
+		uid:             uid,
+		remoteAddr:      requestRemoteAddr(r),
+		displayName:     displayName,
+		accountType:     acctType,
+		bodyID:          bodyID,
+		installationID:  installationID,
+		connectionID:    connectionID,
+		deviceConnector: connectorClaims,
+		send:            make(chan []byte, 256),
 	}
 
 	if !hub.registerClient(client) {
@@ -787,6 +855,15 @@ func requestRemoteAddr(r *http.Request) string {
 
 // handleMessage dispatches incoming client messages.
 func (h *Hub) handleMessage(client *Client, msg *ClientMessage) {
+	if client != nil && client.deviceConnector != nil && !deviceConnectorMessageAllowed(msg) {
+		h.SendToClient(client, &ServerMessage{
+			Ctrl: &MsgServerCtrl{
+				Code: http.StatusForbidden,
+				Text: "device connector connections may only register a device and return device_rpc results",
+			},
+		})
+		return
+	}
 	switch {
 	case msg.Pub != nil:
 		h.handlePub(client, msg.Pub)
@@ -801,6 +878,26 @@ func (h *Hub) handleMessage(client *Client, msg *ClientMessage) {
 	case msg.DeviceRPC != nil:
 		h.handleDeviceRPC(client, msg.DeviceRPC)
 	}
+}
+
+func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
+	if msg == nil {
+		return false
+	}
+	if msg.Acc != nil || msg.Login != nil || msg.Sub != nil || msg.Pub != nil || msg.Get != nil || msg.Set != nil || msg.Del != nil || msg.Note != nil || msg.Friend != nil {
+		return false
+	}
+	actions := 0
+	if msg.Hi != nil {
+		actions++
+	}
+	if msg.DeviceRPC != nil {
+		actions++
+		if strings.ToLower(strings.TrimSpace(msg.DeviceRPC.Type)) != deviceRPCTypeResult {
+			return false
+		}
+	}
+	return actions == 1
 }
 
 // handleHi responds to the handshake message.
@@ -1430,6 +1527,9 @@ func (h *Hub) getClient(uid int64) *Client {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for client := range h.clients[uid] {
+		if client.deviceConnector != nil {
+			continue
+		}
 		return client
 	}
 	return nil
