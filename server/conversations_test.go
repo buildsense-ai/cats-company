@@ -359,3 +359,43 @@ func TestConversationsDeduplicateOwnedAgentThatIsAlreadyFriend(t *testing.T) {
 		t.Fatalf("friend bot conversation should be marked is_bot: %+v", body.Conversations[0])
 	}
 }
+
+func TestConversationsMarkGroupsContainingBots(t *testing.T) {
+	store := &conversationTestStore{
+		groups: []*types.Group{
+			{
+				ID:        9,
+				Name:      "Bot Room",
+				OwnerID:   7,
+				HasBot:    true,
+				CreatedAt: time.Date(2026, 6, 4, 8, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	handler := NewConversationHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Conversations []*types.ConversationSummary `json:"conversations"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Conversations) != 1 {
+		t.Fatalf("conversation count=%d, want 1: %+v", len(body.Conversations), body.Conversations)
+	}
+	got := body.Conversations[0]
+	if got.ID != "grp_9" || !got.IsGroup || got.GroupID != 9 {
+		t.Fatalf("unexpected group conversation: %+v", got)
+	}
+	if !got.HasBot {
+		t.Fatalf("bot group conversation should be marked has_bot: %+v", got)
+	}
+}

@@ -113,6 +113,7 @@ type ConversationSummary struct {
 	FriendID  int64      `json:"friend_id,omitempty"`
 	AvatarURL string     `json:"avatar_url,omitempty"`
 	IsBot     bool       `json:"is_bot,omitempty"`
+	HasBot    bool       `json:"has_bot,omitempty"`
 	IsOnline  bool       `json:"is_online,omitempty"`
 	LastTime  *time.Time `json:"last_time,omitempty"`
 	LatestSeq int64      `json:"latest_seq,omitempty"`
@@ -219,6 +220,7 @@ type Group struct {
 	OwnerID      int64     `json:"owner_id"`
 	AvatarURL    string    `json:"avatar_url,omitempty"`
 	Announcement string    `json:"announcement,omitempty"`
+	HasBot       bool      `json:"has_bot,omitempty"`
 	MaxMembers   int       `json:"max_members"`
 	CreatedAt    time.Time `json:"created_at"`
 }

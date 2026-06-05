@@ -44,6 +44,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
         isGroup: item.is_group,
         avatar_url: item.avatar_url,
         isBot: item.is_bot,
+        hasBot: Boolean(item.has_bot || item.is_agent_group),
         isOnline: item.is_online,
         seq: item.latest_seq || 0,
       }));
@@ -128,6 +129,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           time: formatTime(new Date(group.created_at || Date.now())),
           isGroup: true,
           avatar_url: group.avatar_url,
+          hasBot: Boolean(group.has_bot),
           seq: 0,
         },
         ...prev.filter((chat) => chat.id !== topicId),
@@ -208,10 +210,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
       const group = normalizeCreatedGroup(res);
       if (group) {
         const topicId = res.topic || `grp_${group.id}`;
-        const stored = JSON.parse(localStorage.getItem('cc_bot_groups') || '[]');
-        stored.push(topicId);
-        localStorage.setItem('cc_bot_groups', JSON.stringify(stored));
-        onSelectTopic({ topicId, name: group.name, isGroup: true, groupId: group.id, avatar_url: group.avatar_url });
+        onSelectTopic({ topicId, name: group.name, isGroup: true, groupId: group.id, avatar_url: group.avatar_url, hasBot: true });
       }
       setNamingAgent(null);
       setNewChatName('');
@@ -223,16 +222,20 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
     }
   };
 
-  const lowerSearch = search.toLowerCase();
+  const trimmedSearch = search.trim();
+  const lowerSearch = trimmedSearch.toLowerCase();
+  const isSearching = trimmedSearch.length > 0;
   const filteredChats = chats.filter(c => c.name.toLowerCase().includes(lowerSearch));
   const filteredFriends = friends.filter(f => (f.display_name || f.username).toLowerCase().includes(lowerSearch));
   const filteredGroups = groups.filter(g => g.name.toLowerCase().includes(lowerSearch));
   const filteredAgents = agents.filter(a => (a.display_name || a.username).toLowerCase().includes(lowerSearch));
 
-  const botGroupIds = new Set(JSON.parse(localStorage.getItem('cc_bot_groups') || '[]'));
-  const aiChats = filteredChats.filter(c => (c.isBot && !c.isGroup) || (c.isGroup && botGroupIds.has(c.id)));
+  const botGroupIds = readStoredBotGroupIds();
+  const isAIGroupChat = (chat) => chat.isGroup && (chat.hasBot || chat.isAgentGroup || botGroupIds.has(chat.id));
+  const aiChats = filteredChats.filter(c => (c.isBot && !c.isGroup) || isAIGroupChat(c));
   const friendChats = filteredChats.filter(c => !c.isGroup && !c.isBot);
-  const groupChats = filteredChats.filter(c => c.isGroup && !botGroupIds.has(c.id));
+  const groupChats = filteredChats.filter(c => c.isGroup && !isAIGroupChat(c));
+  const hasSearchResults = aiChats.length > 0 || friendChats.length > 0 || groupChats.length > 0 || filteredAgents.length > 0;
 
   return (
     <>
@@ -247,7 +250,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
 
       <div className="v3-chat-list">
 
-        {!search && pending.length > 0 && (
+        {!isSearching && pending.length > 0 && (
           <div style={{ padding: '0 16px', marginBottom: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--v3-primary)', textTransform: 'uppercase', marginBottom: 8 }}>
               好友请求 ({pending.length})
@@ -263,7 +266,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           <span style={{display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer'}} onClick={() => setCollapsed(p => ({...p, ai: !p.ai}))}><span style={{fontSize: 12, color: '#666'}}>{collapsed.ai ? '▶' : '▼'}</span><Bot size={20} style={{color: 'var(--v3-primary)'}} /> AI 对话</span>
           <span onClick={() => setShowNewChat(true)} style={{cursor: 'pointer', fontSize: 25, color: '#888', lineHeight: 1}} title="新对话">+</span>
         </div>
-        {!collapsed.ai && (aiChats.length === 0 && !search ? (
+        {(isSearching || !collapsed.ai) && (aiChats.length === 0 && !isSearching ? (
           <div style={{ padding: '12px 20px', color: '#666', fontSize: '13px' }}>点击 + 开始新对话</div>
         ) : (
           aiChats.map((chat) => {
@@ -295,7 +298,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           <span style={{display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer'}} onClick={() => setCollapsed(p => ({...p, friends: !p.friends}))}><span style={{fontSize: 12, color: '#666'}}>{collapsed.friends ? '▶' : '▼'}</span><MessageSquare size={20} style={{color: '#888'}} /> 好友</span>
           <span onClick={() => setShowAddFriend(true)} style={{cursor: 'pointer', fontSize: 25, color: '#888', lineHeight: 1}} title="添加好友">+</span>
         </div>
-        {!collapsed.friends && (friendChats.length === 0 && !search ? (
+        {(isSearching || !collapsed.friends) && (friendChats.length === 0 && !isSearching ? (
           <div style={{ padding: '12px 20px', color: '#666', fontSize: '13px' }}>暂无好友对话</div>
         ) : (
           friendChats.map((chat) => {
@@ -319,7 +322,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           <span style={{display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer'}} onClick={() => setCollapsed(p => ({...p, groups: !p.groups}))}><span style={{fontSize: 12, color: '#666'}}>{collapsed.groups ? '▶' : '▼'}</span><Users size={20} style={{color: '#888'}} /> 群聊</span>
           <span onClick={() => setShowCreateGroup(true)} style={{cursor: 'pointer', fontSize: 25, color: '#888', lineHeight: 1}} title="创建群聊">+</span>
         </div>
-        {!collapsed.groups && (groupChats.length === 0 && !search ? (
+        {(isSearching || !collapsed.groups) && (groupChats.length === 0 && !isSearching ? (
           <div style={{ padding: '12px 20px', color: '#666', fontSize: '13px' }}>暂无群聊</div>
         ) : (
           groupChats.map((chat) => {
@@ -349,7 +352,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           <span style={{display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer'}} onClick={() => setCollapsed(p => ({...p, agents: !p.agents}))}><span style={{fontSize: 12, color: '#666'}}>{collapsed.agents ? '▶' : '▼'}</span><Zap size={20} fill="currentColor" style={{color: 'var(--v3-primary)'}} /> AI 助手</span>
           <span onClick={() => setShowAgentStore(true)} style={{cursor: 'pointer', fontSize: 25, color: '#888', lineHeight: 1}} title="管理 AI 助手">+</span>
         </div>
-        {!collapsed.agents && (filteredAgents.length === 0 ? (
+        {(isSearching || !collapsed.agents) && (filteredAgents.length === 0 ? (
           <div style={{ padding: '12px 20px', color: '#666', fontSize: '13px' }}>暂无 AI 助手，点击 + 创建</div>
         ) : (
           filteredAgents.map((agent) => {
@@ -365,7 +368,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           })
         ))}
 
-        {search && filteredChats.length === 0 && filteredAgents.length === 0 && (
+        {isSearching && !hasSearchResults && (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)', fontSize: '13px' }}>没有匹配结果</div>
         )}
 
@@ -452,6 +455,7 @@ function normalizeCreatedGroup(created) {
     owner_id: rawGroup.owner_id,
     avatar_url: rawGroup.avatar_url || created.avatar_url || '',
     created_at: rawGroup.created_at || created.created_at || new Date().toISOString(),
+    has_bot: rawGroup.has_bot || created.has_bot || false,
   };
 }
 
@@ -464,6 +468,7 @@ function groupToConversation(group) {
     time: group.created_at ? formatTime(new Date(group.created_at)) : '',
     isGroup: true,
     avatar_url: group.avatar_url,
+    hasBot: Boolean(group.has_bot || group.is_agent_group),
     seq: 0,
   };
 }
@@ -497,4 +502,12 @@ function summarizeMessage(message) {
   if (message.content?.type === 'file') return message.content?.payload?.name || '[文件]';
   if (message.content?.type === 'image') return '[图片]';
   return message.content?.text || '';
+}
+
+function readStoredBotGroupIds() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem('cc_bot_groups') || '[]'));
+  } catch (err) {
+    return new Set();
+  }
 }

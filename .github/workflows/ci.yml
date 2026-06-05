@@ -57,6 +57,10 @@ jobs:
         working-directory: webapp
         run: npm ci
 
+      - name: Test webapp
+        working-directory: webapp
+        run: npm test -- --watchAll=false --runInBand
+
       - name: Build webapp
         working-directory: webapp
         run: npm run build

@@ -43,13 +43,14 @@ const user = {
   display_name: '布鲁斯',
 };
 
-describe('ChatListView virtual employees', () => {
+describe('ChatListView sidebar sections', () => {
   let container;
   let root;
   let onSelectTopic;
 
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
+    localStorage.clear();
     api.getConversations.mockResolvedValue({ conversations: [] });
     api.getFriends.mockResolvedValue({ friends: [] });
     api.getGroups.mockResolvedValue({ groups: [] });
@@ -106,10 +107,17 @@ describe('ChatListView virtual employees', () => {
     });
   }
 
-  it('opens a platform-confirmed agent chat from the virtual employees roster', async () => {
+  function clickSection(label) {
+    const section = Array.from(container.querySelectorAll('.v3-chat-section span'))
+      .find((node) => node.textContent.includes(label));
+    expect(section).toBeTruthy();
+    Simulate.click(section);
+  }
+
+  it('renders agents as a non-chat assistant roster', async () => {
     await mount();
 
-    expect(container.textContent).toContain('Virtual Employees');
+    expect(container.textContent).toContain('AI 助手');
     expect(container.textContent).toContain('Dev Agent');
 
     await act(async () => {
@@ -117,14 +125,65 @@ describe('ChatListView virtual employees', () => {
       await Promise.resolve();
     });
 
-    expect(api.openAgent).toHaveBeenCalledWith(42);
-    expect(onSelectTopic).toHaveBeenCalledWith({
-      topicId: 'p2p_7_42',
-      name: 'Dev Agent',
-      isGroup: false,
-      avatar_url: '/uploads/dev.png',
-      friendId: 42,
-      isBot: true,
+    expect(api.openAgent).not.toHaveBeenCalled();
+    expect(onSelectTopic).not.toHaveBeenCalled();
+  });
+
+  it('classifies server-confirmed bot groups into the AI conversations section', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'grp_9',
+          group_id: 9,
+          name: 'Bot Room',
+          is_group: true,
+          has_bot: true,
+          last_time: '2026-06-04T08:00:00Z',
+        },
+      ],
     });
+    api.getGroups.mockResolvedValue({
+      groups: [{ id: 9, name: 'Bot Room', owner_id: 7, created_at: '2026-06-04T08:00:00Z' }],
+    });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mount();
+
+    const text = container.textContent;
+    expect(text).toContain('Bot Room');
+    expect(text.indexOf('AI 对话')).toBeLessThan(text.indexOf('Bot Room'));
+    expect(text.indexOf('Bot Room')).toBeLessThan(text.indexOf('好友'));
+  });
+
+  it('shows matches from collapsed sections while searching', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_8',
+          friend_id: 8,
+          name: 'Alice',
+          is_group: false,
+          is_bot: false,
+        },
+      ],
+    });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mount();
+
+    expect(container.textContent).toContain('Alice');
+    await act(async () => {
+      clickSection('好友');
+    });
+    expect(container.textContent).not.toContain('Alice');
+
+    const input = container.querySelector('input');
+    await act(async () => {
+      input.value = 'Alice';
+      Simulate.change(input, { target: { value: 'Alice' } });
+    });
+
+    expect(container.textContent).toContain('Alice');
+    expect(container.textContent).not.toContain('没有匹配结果');
   });
 });
