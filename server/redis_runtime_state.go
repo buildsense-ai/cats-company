@@ -366,6 +366,22 @@ func (s *RedisRuntimeState) registerUserDevice(ownerUID int64, req RegisterUserD
 	return device, nil
 }
 
+func (s *RedisRuntimeState) unregisterUserDevice(ownerUID int64, deviceID string) {
+	if s == nil || s.client == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
+		return
+	}
+	normalizedDeviceID, err := normalizeUserDeviceID(deviceID)
+	if err != nil {
+		return
+	}
+	_, _ = s.client.Pipelined(s.ctx, func(pipe redis.Pipeliner) error {
+		pipe.Del(s.ctx, s.userDeviceKey(ownerUID, normalizedDeviceID))
+		pipe.Del(s.ctx, s.userDeviceRouteKey(ownerUID, normalizedDeviceID))
+		pipe.SRem(s.ctx, s.userDeviceSetKey(ownerUID), normalizedDeviceID)
+		return nil
+	})
+}
+
 func (s *RedisRuntimeState) listUserDevices(ownerUID int64) []UserDevice {
 	if s == nil || ownerUID <= 0 {
 		return nil
@@ -681,6 +697,172 @@ func (s *RedisRuntimeState) expireDeviceRPCPending(now time.Time) []deviceRPCPen
 	return expired
 }
 
+func (s *RedisRuntimeState) saveDeviceConnectorPairing(pairing deviceConnectorPairing, ttl time.Duration) error {
+	if s == nil || s.client == nil || pairing.PairingID == "" || pairing.PairingCode == "" {
+		return fmt.Errorf("invalid pairing")
+	}
+	if ttl <= 0 {
+		ttl = ttlUntil(time.Now(), pairing.ExpiresAt)
+	}
+	if ttl <= 0 {
+		return fmt.Errorf("invalid pairing ttl")
+	}
+	payload, err := json.Marshal(pairing)
+	if err != nil {
+		return err
+	}
+	_, err = s.client.Pipelined(s.ctx, func(pipe redis.Pipeliner) error {
+		pipe.Set(s.ctx, s.deviceConnectorPairingIDKey(pairing.PairingID), payload, ttl)
+		pipe.Set(s.ctx, s.deviceConnectorPairingCodeKey(pairing.PairingCode), pairing.PairingID, ttl)
+		return nil
+	})
+	return err
+}
+
+func (s *RedisRuntimeState) getDeviceConnectorPairing(pairingID string, now time.Time) (deviceConnectorPairing, bool) {
+	if s == nil || strings.TrimSpace(pairingID) == "" {
+		return deviceConnectorPairing{}, false
+	}
+	raw, err := s.client.Get(s.ctx, s.deviceConnectorPairingIDKey(strings.TrimSpace(pairingID))).Result()
+	if err != nil {
+		return deviceConnectorPairing{}, false
+	}
+	var pairing deviceConnectorPairing
+	if err := json.Unmarshal([]byte(raw), &pairing); err != nil {
+		return deviceConnectorPairing{}, false
+	}
+	if !now.Before(pairing.ExpiresAt) {
+		return deviceConnectorPairing{}, false
+	}
+	return pairing, true
+}
+
+func (s *RedisRuntimeState) consumeDeviceConnectorPairing(code string, now time.Time) (deviceConnectorPairing, bool) {
+	if s == nil || strings.TrimSpace(code) == "" {
+		return deviceConnectorPairing{}, false
+	}
+	normalized := strings.ToUpper(strings.TrimSpace(code))
+	codeKey := s.deviceConnectorPairingCodeKey(normalized)
+	var out deviceConnectorPairing
+	consumed := false
+	_ = s.client.Watch(s.ctx, func(tx *redis.Tx) error {
+		pairingID, err := tx.Get(s.ctx, codeKey).Result()
+		if err != nil || pairingID == "" {
+			return nil
+		}
+		idKey := s.deviceConnectorPairingIDKey(pairingID)
+		raw, err := tx.Get(s.ctx, idKey).Result()
+		if err != nil {
+			return nil
+		}
+		var pairing deviceConnectorPairing
+		if err := json.Unmarshal([]byte(raw), &pairing); err != nil {
+			return nil
+		}
+		if !now.Before(pairing.ExpiresAt) || !pairing.ConsumedAt.IsZero() {
+			return nil
+		}
+		pairing.ConsumedAt = now
+		payload, err := json.Marshal(pairing)
+		if err != nil {
+			return err
+		}
+		ttl := ttlUntil(now, pairing.ExpiresAt)
+		if ttl <= 0 {
+			return nil
+		}
+		_, err = tx.TxPipelined(s.ctx, func(pipe redis.Pipeliner) error {
+			pipe.Set(s.ctx, idKey, payload, ttl)
+			pipe.Del(s.ctx, codeKey)
+			return nil
+		})
+		if err == nil {
+			out = pairing
+			consumed = true
+		}
+		return err
+	}, codeKey)
+	return out, consumed
+}
+
+func (s *RedisRuntimeState) appendDeviceAudit(ownerUID int64, event DeviceAuditEvent) {
+	if s == nil || s.client == nil || ownerUID <= 0 {
+		return
+	}
+	event.OwnerUserID = formatUID(ownerUID)
+	if event.CreatedAt == 0 {
+		event.CreatedAt = unixMillis(time.Now())
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	key := s.deviceAuditKey(ownerUID)
+	_, _ = s.client.Pipelined(s.ctx, func(pipe redis.Pipeliner) error {
+		pipe.LPush(s.ctx, key, payload)
+		pipe.LTrim(s.ctx, key, 0, maxDeviceAuditEvents-1)
+		pipe.Expire(s.ctx, key, 30*24*time.Hour)
+		return nil
+	})
+}
+
+func (s *RedisRuntimeState) listDeviceAudit(ownerUID int64, limit int) []DeviceAuditEvent {
+	if s == nil || s.client == nil || ownerUID <= 0 {
+		return nil
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	raw, err := s.client.LRange(s.ctx, s.deviceAuditKey(ownerUID), 0, int64(limit-1)).Result()
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	out := make([]DeviceAuditEvent, 0, len(raw))
+	for _, item := range raw {
+		var event DeviceAuditEvent
+		if err := json.Unmarshal([]byte(item), &event); err == nil {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
+func (s *RedisRuntimeState) revokeDeviceConnectorDevice(ownerUID int64, deviceID string, revokedAt time.Time) {
+	if s == nil || s.client == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
+		return
+	}
+	_ = s.client.Set(s.ctx, s.deviceConnectorRevokedDeviceKey(ownerUID, deviceID), unixMillis(revokedAt), deviceConnectorTokenTTL).Err()
+}
+
+func (s *RedisRuntimeState) revokeDeviceConnectorToken(tokenID string, expiresAt time.Time) {
+	if s == nil || s.client == nil || strings.TrimSpace(tokenID) == "" {
+		return
+	}
+	ttl := ttlUntil(time.Now(), expiresAt)
+	if ttl <= 0 {
+		ttl = deviceConnectorTokenTTL
+	}
+	_ = s.client.Set(s.ctx, s.deviceConnectorRevokedTokenKey(tokenID), "1", ttl).Err()
+}
+
+func (s *RedisRuntimeState) isDeviceConnectorRevoked(claims *DeviceConnectorClaims, now time.Time) bool {
+	if s == nil || s.client == nil || claims == nil {
+		return false
+	}
+	if exists, err := s.client.Exists(s.ctx, s.deviceConnectorRevokedTokenKey(claims.ID)).Result(); err == nil && exists > 0 {
+		return true
+	}
+	raw, err := s.client.Get(s.ctx, s.deviceConnectorRevokedDeviceKey(claims.UID, claims.DeviceID)).Result()
+	if err != nil || raw == "" {
+		return false
+	}
+	revokedAt := time.UnixMilli(parseInt64(raw))
+	if claims.IssuedAt == nil {
+		return true
+	}
+	return !claims.IssuedAt.Time.After(revokedAt)
+}
+
 func (s *RedisRuntimeState) localHub(nodeID string) *Hub {
 	if s == nil || nodeID == "" {
 		return nil
@@ -945,6 +1127,26 @@ func (s *RedisRuntimeState) deviceRPCPendingActorKey(actorUID int64) string {
 
 func (s *RedisRuntimeState) deviceRPCPendingDeviceKey(actorUID int64, deviceID string) string {
 	return s.key("device_rpc_device", fmt.Sprintf("%d", actorUID), keyPart(deviceID))
+}
+
+func (s *RedisRuntimeState) deviceConnectorPairingIDKey(pairingID string) string {
+	return s.key("device_connector_pairing", keyPart(pairingID))
+}
+
+func (s *RedisRuntimeState) deviceConnectorPairingCodeKey(code string) string {
+	return s.key("device_connector_pairing_code", keyPart(strings.ToUpper(strings.TrimSpace(code))))
+}
+
+func (s *RedisRuntimeState) deviceAuditKey(ownerUID int64) string {
+	return s.key("device_audit", fmt.Sprintf("%d", ownerUID))
+}
+
+func (s *RedisRuntimeState) deviceConnectorRevokedDeviceKey(ownerUID int64, deviceID string) string {
+	return s.key("device_connector_revoked_device", fmt.Sprintf("%d", ownerUID), keyPart(deviceID))
+}
+
+func (s *RedisRuntimeState) deviceConnectorRevokedTokenKey(tokenID string) string {
+	return s.key("device_connector_revoked_token", keyPart(tokenID))
 }
 
 func keyPart(value string) string {

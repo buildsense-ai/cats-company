@@ -227,6 +227,28 @@ func (h *Hub) bindClientDeviceFromHi(client *Client, msg *MsgClientHi) (map[stri
 	if ownerUID <= 0 || h.userDevices == nil {
 		return nil, false
 	}
+	if client.deviceConnector != nil {
+		if h.isDeviceConnectorRevoked(client.deviceConnector) {
+			return nil, false
+		}
+		if !deviceConnectorHasScope(client.deviceConnector, "device:register") {
+			return nil, false
+		}
+		if ownerUID != client.deviceConnector.UID {
+			return nil, false
+		}
+		msg.Device.DeviceID = client.deviceConnector.DeviceID
+		msg.Device.BodyID = client.deviceConnector.DeviceID
+		msg.Device.InstallationID = firstNonEmpty(client.deviceConnector.InstallationID, client.deviceConnector.DeviceID)
+		if strings.TrimSpace(msg.Device.DisplayName) == "" {
+			msg.Device.DisplayName = client.deviceConnector.DisplayName
+		}
+		if len(msg.Device.Capabilities) == 0 {
+			msg.Device.Capabilities = client.deviceConnector.Capabilities
+		} else {
+			msg.Device.Capabilities = limitConnectorCapabilities(msg.Device.Capabilities, client.deviceConnector.Capabilities)
+		}
+	}
 	req := RegisterUserDeviceRequest{
 		DeviceID:       msg.Device.DeviceID,
 		DisplayName:    msg.Device.DisplayName,
@@ -305,21 +327,25 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		return
 	}
 	if err := validateDeviceRPCGrant(client, msg, grant, operation); err != nil {
+		h.auditDeviceRPC(parseFormattedUID(grant.ActorUserID), "rpc_rejected", "denied", err.Error(), msg, grant)
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, err.Error(), map[string]interface{}{"request_id": requestID})
 		return
 	}
 	actorUID := parseFormattedUID(grant.ActorUserID)
 	if actorUID <= 0 {
+		h.auditDeviceRPC(0, "rpc_rejected", "denied", "invalid actor user", msg, grant)
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "invalid actor user", map[string]interface{}{"request_id": requestID})
 		return
 	}
 	device, ok := h.userDevices.activeDevice(actorUID, grant.DeviceID)
 	if !ok {
+		h.auditDeviceRPC(actorUID, "rpc_rejected", "offline", "device offline", msg, grant)
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusNotFound, "device offline", map[string]interface{}{"request_id": requestID, "device_id": grant.DeviceID})
 		return
 	}
 	targetRoute, target := h.findDeviceRPCTarget(actorUID, device)
 	if !targetRoute.validAt(nowForRoute(h)) {
+		h.auditDeviceRPC(actorUID, "rpc_rejected", "unavailable", "device connection unavailable", msg, grant)
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusNotFound, "device connection unavailable", map[string]interface{}{"request_id": requestID, "device_id": grant.DeviceID})
 		return
 	}
@@ -374,18 +400,22 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 	}
 	if ok, reason := h.deviceRPC.add(pending); !ok {
 		if reason == "agent_limit" || reason == "device_limit" {
+			h.auditDeviceRPC(actorUID, "rpc_rejected", "rate_limited", "too many pending device rpc requests", msg, grant)
 			h.sendDeviceRPCAck(client, msg.ID, http.StatusTooManyRequests, "too many pending device rpc requests", map[string]interface{}{"request_id": requestID})
 			return
 		}
+		h.auditDeviceRPC(actorUID, "rpc_rejected", "duplicate", "request_id is already pending", msg, grant)
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusConflict, "request_id is already pending", map[string]interface{}{"request_id": requestID})
 		return
 	}
 
 	if !h.sendDeviceRPCToRoute(targetRoute, &forward) {
 		h.deviceRPC.finish(requestID)
+		h.auditDeviceRPC(actorUID, "rpc_rejected", "unavailable", "device connection unavailable", msg, grant)
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusNotFound, "device connection unavailable", map[string]interface{}{"request_id": requestID, "device_id": grant.DeviceID})
 		return
 	}
+	h.auditDeviceRPC(actorUID, "rpc_forwarded", "ok", "", &forward, grant)
 	h.sendDeviceRPCAck(client, msg.ID, http.StatusOK, "ok", map[string]interface{}{
 		"request_id":             requestID,
 		"device_id":              device.DeviceID,
@@ -402,6 +432,14 @@ func (h *Hub) handleDeviceRPCResult(client *Client, msg *MsgDeviceRPC) {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusServiceUnavailable, "device rpc unavailable", nil)
 		return
 	}
+	if client != nil && client.deviceConnector != nil && !deviceConnectorHasScope(client.deviceConnector, "device:rpc_result") {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "device connector token does not allow device_rpc results", nil)
+		return
+	}
+	if client != nil && client.deviceConnector != nil && h.isDeviceConnectorRevoked(client.deviceConnector) {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "device connector token has been revoked", nil)
+		return
+	}
 	requestID, ok := normalizeDeviceRPCRequestID(msg.RequestID)
 	if !ok {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusBadRequest, "request_id required", nil)
@@ -413,6 +451,13 @@ func (h *Hub) handleDeviceRPCResult(client *Client, msg *MsgDeviceRPC) {
 		return
 	}
 	if !h.pendingMatchesDeviceClient(pending, client) {
+		h.auditDeviceRPC(pending.actorUID, "rpc_result_rejected", "denied", "result source does not match target device", msg, ScopedDeviceGrant{
+			GrantID:     pending.grantID,
+			SessionKey:  pending.sessionKey,
+			ActorUserID: pending.actorUserID,
+			AgentID:     pending.agentID,
+			DeviceID:    pending.deviceID,
+		})
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "result source does not match target device", map[string]interface{}{"request_id": requestID})
 		return
 	}
@@ -451,10 +496,47 @@ func (h *Hub) handleDeviceRPCResult(client *Client, msg *MsgDeviceRPC) {
 	forward.DeviceInstallationID = pending.deviceInstallID
 
 	if !h.sendDeviceRPCToRoute(requesterRoute, &forward) {
+		h.auditDeviceRPC(pending.actorUID, "rpc_result_rejected", "gone", "requester offline", &forward, ScopedDeviceGrant{
+			GrantID:     pending.grantID,
+			SessionKey:  pending.sessionKey,
+			ActorUserID: pending.actorUserID,
+			AgentID:     pending.agentID,
+			DeviceID:    pending.deviceID,
+		})
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusGone, "requester offline", map[string]interface{}{"request_id": requestID})
 		return
 	}
+	result := "ok"
+	reason := ""
+	if forward.Error != nil {
+		result = "error"
+		reason = forward.Error.Code
+	}
+	h.auditDeviceRPC(pending.actorUID, "rpc_result", result, reason, &forward, ScopedDeviceGrant{
+		GrantID:     pending.grantID,
+		SessionKey:  pending.sessionKey,
+		ActorUserID: pending.actorUserID,
+		AgentID:     pending.agentID,
+		DeviceID:    pending.deviceID,
+	})
 	h.sendDeviceRPCAck(client, msg.ID, http.StatusOK, "ok", map[string]interface{}{"request_id": requestID})
+}
+
+func (h *Hub) auditDeviceRPC(ownerUID int64, phase string, result string, reason string, msg *MsgDeviceRPC, grant ScopedDeviceGrant) {
+	if h == nil || ownerUID <= 0 || msg == nil {
+		return
+	}
+	h.addDeviceAudit(ownerUID, DeviceAuditEvent{
+		ActorUserID: grant.ActorUserID,
+		AgentID:     grant.AgentID,
+		DeviceID:    firstNonEmpty(grant.DeviceID, msg.DeviceID),
+		SessionKey:  firstNonEmpty(grant.SessionKey, msg.SessionKey),
+		Operation:   firstNonEmpty(msg.Operation, string(DeviceGrantOperation(msg.Operation))),
+		ToolName:    strings.TrimSpace(msg.ToolName),
+		Phase:       phase,
+		Result:      result,
+		Reason:      reason,
+	})
 }
 
 func (h *Hub) pendingMatchesDeviceClient(pending deviceRPCPending, client *Client) bool {

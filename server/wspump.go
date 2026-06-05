@@ -40,6 +40,9 @@ func (h *Hub) SendToUserExcept(uid int64, msg *ServerMessage, exclude *Client) {
 		if client == exclude {
 			continue
 		}
+		if client.deviceConnector != nil {
+			continue
+		}
 		h.sendRawToClient(client, data)
 	}
 }
@@ -112,7 +115,7 @@ func (h *Hub) getClients(uid int64) []*Client {
 func (h *Hub) IsOnline(uid int64) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return len(h.clients[uid]) > 0
+	return hasMessagingClient(h.clients[uid])
 }
 
 func (c *Client) trySend(message []byte) bool {

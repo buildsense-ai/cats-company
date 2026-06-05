@@ -1620,6 +1620,27 @@ body {
   color: var(--v3-accent);
 }
 
+button.catsco-download-action {
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+button.catsco-download-action:hover:not(:disabled) {
+  background: rgba(52, 199, 89, 0.12);
+  border-color: rgba(52, 199, 89, 0.28);
+}
+
+button.catsco-download-action:disabled {
+  color: var(--v3-text-muted);
+  cursor: wait;
+  opacity: 0.68;
+}
+
 .catsco-download-icon {
   width: 40px;
   height: 40px;
