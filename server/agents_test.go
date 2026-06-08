@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/openchat/openchat/server/store"
@@ -20,6 +21,8 @@ type agentTestStore struct {
 	users         map[int64]*types.User
 	owners        map[int64]int64
 	friendPairs   map[string]bool
+	groupMembers  map[string]bool
+	groupMuted    map[string]bool
 	createdTopics []string
 }
 
@@ -63,11 +66,11 @@ func (s *agentTestStore) CreateTopic(id, topicType string, ownerID int64) error 
 }
 
 func (s *agentTestStore) IsGroupMember(groupID, userID int64) (bool, error) {
-	return false, nil
+	return s.groupMembers[groupMemberKey(groupID, userID)], nil
 }
 
 func (s *agentTestStore) IsMemberMuted(groupID, userID int64) (bool, error) {
-	return false, nil
+	return s.groupMuted[groupMemberKey(groupID, userID)], nil
 }
 
 func TestHandleListAgentsIncludesOwnedAndFriendBots(t *testing.T) {
@@ -381,9 +384,46 @@ func TestValidateMessagePublishChecksGroupBeforeAgentAccess(t *testing.T) {
 	}
 }
 
+func TestValidateTopicReadAccessUsesPublishIdentityWithoutMutedCheck(t *testing.T) {
+	store := &agentTestStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", AccountType: types.AccountHuman},
+			43: {ID: 43, Username: "agent", AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{
+			43: 99,
+		},
+		friendPairs: map[string]bool{},
+		groupMembers: map[string]bool{
+			groupMemberKey(80, 7): true,
+		},
+		groupMuted: map[string]bool{
+			groupMemberKey(80, 7): true,
+		},
+	}
+	hub := NewHub(store, nil)
+
+	if code, text := hub.validateTopicReadAccess(7, types.AccountHuman, "grp_80"); code != 0 || text != "" {
+		t.Fatalf("muted group member read code=%d text=%q, want allowed", code, text)
+	}
+	if code, text := hub.validateMessagePublish(7, types.AccountHuman, "grp_80", false); code != http.StatusForbidden || text != "you are muted in this group" {
+		t.Fatalf("muted group publish code=%d text=%q, want muted", code, text)
+	}
+	if code, text := hub.validateTopicReadAccess(8, types.AccountHuman, "grp_80"); code != http.StatusForbidden || text != "not a group member" {
+		t.Fatalf("non-member read code=%d text=%q, want not member", code, text)
+	}
+	if code, text := hub.validateTopicReadAccess(7, types.AccountHuman, "p2p_7_43"); code != http.StatusForbidden || text != "agent is not available to this user" {
+		t.Fatalf("unavailable agent read code=%d text=%q, want forbidden", code, text)
+	}
+}
+
 func agentPairKey(a, b int64) string {
 	if a > b {
 		a, b = b, a
 	}
 	return p2pTopicID(a, b)
+}
+
+func groupMemberKey(groupID, userID int64) string {
+	return strconv.FormatInt(groupID, 10) + ":" + strconv.FormatInt(userID, 10)
 }

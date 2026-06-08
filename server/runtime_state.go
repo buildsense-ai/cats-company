@@ -50,7 +50,10 @@ type deviceRPCPendingRecord struct {
 
 type sharedRuntimeState interface {
 	runtimeMode() string
+	runtimeRouteState() string
 	registerRuntimeNode(nodeID string, hub *Hub)
+	bindRuntimeRoute(route runtimeRoute, now time.Time)
+	clearRuntimeRoute(route runtimeRoute)
 	deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC, now time.Time) bool
 	routeConnected(route runtimeRoute, now time.Time) bool
 
@@ -112,6 +115,13 @@ func (s *sharedMemoryRuntimeState) runtimeMode() string {
 	return "shared_memory"
 }
 
+func (s *sharedMemoryRuntimeState) runtimeRouteState() string {
+	if s == nil {
+		return "unavailable"
+	}
+	return "ready"
+}
+
 func (s *sharedMemoryRuntimeState) registerRuntimeNode(nodeID string, hub *Hub) {
 	if s == nil || nodeID == "" || hub == nil {
 		return
@@ -119,6 +129,12 @@ func (s *sharedMemoryRuntimeState) registerRuntimeNode(nodeID string, hub *Hub) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nodes[nodeID] = hub
+}
+
+func (s *sharedMemoryRuntimeState) bindRuntimeRoute(route runtimeRoute, now time.Time) {
+}
+
+func (s *sharedMemoryRuntimeState) clearRuntimeRoute(route runtimeRoute) {
 }
 
 func (s *sharedMemoryRuntimeState) deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC, now time.Time) bool {

@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 
@@ -397,6 +400,64 @@ func TestHistoryMessagesIncludeCanonicalCatscoIdentityForBotRecipient(t *testing
 	}
 }
 
+func TestHandleGetMessagesAuthorizesAndMarksReplayHistory(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
+			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
+		},
+		history: []*types.Message{{
+			ID:      31,
+			TopicID: "p2p_7_42",
+			FromUID: 7,
+			Content: "missed message",
+			MsgType: "text",
+		}},
+	}
+	hub := NewHub(store, nil)
+	handler := NewMessageHandler(store, hub)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=p2p_7_42", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
+	rec := httptest.NewRecorder()
+	handler.HandleGetMessages(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get messages status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode get messages response: %v", err)
+	}
+	if len(body.Messages) != 1 {
+		t.Fatalf("messages len=%d, want 1", len(body.Messages))
+	}
+	metadata, ok := body.Messages[0]["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("metadata = %#v, want object", body.Messages[0]["metadata"])
+	}
+	identity, ok := metadata["catsco_identity"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("catsco_identity = %#v, want object", metadata["catsco_identity"])
+	}
+	permissions, ok := identity["permissions"].(map[string]interface{})
+	if !ok || permissions["replay"] != true || permissions["device_access"] != "non_executable_history" {
+		t.Fatalf("unexpected replay permissions: %#v", permissions)
+	}
+	if _, ok := identity["device_grants"]; ok {
+		t.Fatalf("REST history must not reissue grants: %#v", identity["device_grants"])
+	}
+
+	forbiddenReq := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=p2p_7_42", nil)
+	forbiddenReq = forbiddenReq.WithContext(context.WithValue(forbiddenReq.Context(), uidKey, int64(99)))
+	forbiddenRec := httptest.NewRecorder()
+	handler.HandleGetMessages(forbiddenRec, forbiddenReq)
+	if forbiddenRec.Code != http.StatusBadRequest {
+		t.Fatalf("forbidden get messages status=%d body=%s, want invalid p2p topic", forbiddenRec.Code, forbiddenRec.Body.String())
+	}
+}
+
 type identityMessageStore struct {
 	store.Store
 	users        map[int64]*types.User
@@ -429,6 +490,20 @@ func (s *identityMessageStore) GetMessagesSince(topicID string, sinceID int64, l
 		}
 	}
 	return messages, nil
+}
+
+func (s *identityMessageStore) GetMessages(topicID string, limit, offset int) ([]*types.Message, error) {
+	var messages []*types.Message
+	for _, message := range s.history {
+		if message.TopicID == topicID {
+			messages = append(messages, message)
+		}
+	}
+	return messages, nil
+}
+
+func (s *identityMessageStore) GetLatestMessages(topicID string, limit, offset int) ([]*types.Message, error) {
+	return s.GetMessages(topicID, limit, offset)
 }
 
 func decodeQueuedServerMessage(t *testing.T, ch <-chan []byte, msg *ServerMessage) {
