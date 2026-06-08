@@ -1,5 +1,5 @@
 import type { CatsBot } from './bot';
-import type { MsgServerData, MessageContent } from './types';
+import type { CatsCoIdentityMetadata, DeviceSelection, MsgServerData, MessageContent, ScopedDeviceGrant } from './types';
 import { type TopicInfo } from './topic';
 export interface TypingHeartbeatOptions {
     /** Interval between typing pings. Default: 2500ms */
@@ -11,6 +11,7 @@ export declare class MessageContext {
     readonly from: string;
     readonly seq: number;
     readonly content: unknown;
+    readonly metadata: Record<string, unknown> | undefined;
     readonly replyTo: number | undefined;
     constructor(bot: CatsBot, data: MsgServerData);
     /** Extract plain text from content (returns stringified JSON for rich content). */
@@ -21,6 +22,12 @@ export declare class MessageContext {
     get isGroup(): boolean;
     /** Parsed topic info with peer/group identification. */
     get topicInfo(): TopicInfo;
+    /** Server-canonical CatsCo identity metadata attached to this turn. */
+    get catscoIdentity(): CatsCoIdentityMetadata | undefined;
+    /** Device grants the bot can use for this exact turn, if any. */
+    get deviceGrants(): ScopedDeviceGrant[];
+    /** Server-selected device context for this turn, if available. */
+    get deviceSelection(): DeviceSelection | undefined;
     /** Reply with content to the same topic. */
     reply(content: MessageContent): Promise<number>;
     /** Send typing indicator, wait, then reply. */

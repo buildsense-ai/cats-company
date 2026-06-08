@@ -6,7 +6,9 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "node --test test/device-rpc.test.cjs",
+    "test:types": "tsc -p test/tsconfig.json"
   },
   "dependencies": {
     "ws": "^8.16.0"

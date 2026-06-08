@@ -9,6 +9,7 @@ class MessageContext {
     from;
     seq;
     content;
+    metadata;
     replyTo;
     constructor(bot, data) {
         this.bot = bot;
@@ -16,6 +17,7 @@ class MessageContext {
         this.from = data.from ?? '';
         this.seq = data.seq;
         this.content = data.content;
+        this.metadata = data.metadata;
         this.replyTo = data.reply_to;
     }
     /** Extract plain text from content (returns stringified JSON for rich content). */
@@ -37,6 +39,19 @@ class MessageContext {
     /** Parsed topic info with peer/group identification. */
     get topicInfo() {
         return (0, topic_1.parseTopic)(this.topic, (0, topic_1.uidToNumber)(this.bot.uid));
+    }
+    /** Server-canonical CatsCo identity metadata attached to this turn. */
+    get catscoIdentity() {
+        return this.metadata?.catsco_identity;
+    }
+    /** Device grants the bot can use for this exact turn, if any. */
+    get deviceGrants() {
+        const grants = this.catscoIdentity?.device_grants;
+        return Array.isArray(grants) ? grants : [];
+    }
+    /** Server-selected device context for this turn, if available. */
+    get deviceSelection() {
+        return this.catscoIdentity?.device_selection;
     }
     /** Reply with content to the same topic. */
     async reply(content) {

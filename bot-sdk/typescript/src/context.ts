@@ -1,7 +1,13 @@
 // MessageContext — convenience wrapper around an incoming data message.
 
 import type { CatsBot } from './bot';
-import type { MsgServerData, MessageContent } from './types';
+import type {
+  CatsCoIdentityMetadata,
+  DeviceSelection,
+  MsgServerData,
+  MessageContent,
+  ScopedDeviceGrant,
+} from './types';
 import { parseTopic, uidToNumber, type TopicInfo } from './topic';
 
 export interface TypingHeartbeatOptions {
@@ -15,6 +21,7 @@ export class MessageContext {
   public readonly from: string;
   public readonly seq: number;
   public readonly content: unknown;
+  public readonly metadata: Record<string, unknown> | undefined;
   public readonly replyTo: number | undefined;
 
   constructor(bot: CatsBot, data: MsgServerData) {
@@ -23,6 +30,7 @@ export class MessageContext {
     this.from = data.from ?? '';
     this.seq = data.seq;
     this.content = data.content;
+    this.metadata = data.metadata;
     this.replyTo = data.reply_to;
   }
 
@@ -46,6 +54,22 @@ export class MessageContext {
   /** Parsed topic info with peer/group identification. */
   get topicInfo(): TopicInfo {
     return parseTopic(this.topic, uidToNumber(this.bot.uid));
+  }
+
+  /** Server-canonical CatsCo identity metadata attached to this turn. */
+  get catscoIdentity(): CatsCoIdentityMetadata | undefined {
+    return this.metadata?.catsco_identity as CatsCoIdentityMetadata | undefined;
+  }
+
+  /** Device grants the bot can use for this exact turn, if any. */
+  get deviceGrants(): ScopedDeviceGrant[] {
+    const grants = this.catscoIdentity?.device_grants;
+    return Array.isArray(grants) ? grants : [];
+  }
+
+  /** Server-selected device context for this turn, if available. */
+  get deviceSelection(): DeviceSelection | undefined {
+    return this.catscoIdentity?.device_selection;
   }
 
   /** Reply with content to the same topic. */

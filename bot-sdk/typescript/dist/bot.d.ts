@@ -1,4 +1,4 @@
-import type { CatsBotConfig, BotEventMap, MsgServerData, MessageContent, RichContentLinkPreview, RichContentCard, UploadResult } from './types';
+import type { CatsBotConfig, BotEventMap, MsgServerData, MsgDeviceRPC, DeviceRPCAckParams, DeviceRPCRequestAck, DeviceRPCRequestInput, DeviceRPCResultInput, MessageContent, RichContentLinkPreview, RichContentCard, UploadResult } from './types';
 export declare class CatsBot {
     uid: string;
     name: string;
@@ -52,6 +52,21 @@ export declare class CatsBot {
     sendTyping(topic: string): void;
     /** Send a read receipt for messages up to seq. */
     sendReadReceipt(topic: string, seq: number): void;
+    /**
+     * Send a raw device_rpc envelope. Resolves when the server acknowledges
+     * accepting or rejecting the envelope; device results arrive via the
+     * `device_rpc` event.
+     */
+    sendDeviceRPC(msg: Omit<MsgDeviceRPC, 'id'> & {
+        id?: string;
+    }): Promise<DeviceRPCAckParams>;
+    /**
+     * Request execution on the currently selected device grant. The returned
+     * request_id can be matched with a later `device_rpc` result event.
+     */
+    sendDeviceRPCRequest(input: DeviceRPCRequestInput): Promise<DeviceRPCRequestAck>;
+    /** Send a result for a device_rpc request routed to this connection. */
+    sendDeviceRPCResult(input: DeviceRPCResultInput): Promise<DeviceRPCAckParams>;
     /** Fetch message history for a topic since a given seq. */
     getHistory(topic: string, sinceSeq?: number): Promise<MsgServerData[]>;
     /** Upload a file from disk path. */
@@ -59,8 +74,10 @@ export declare class CatsBot {
     /** Upload a buffer. */
     uploadBuffer(buffer: Buffer, filename: string, type?: 'image' | 'file'): Promise<UploadResult>;
     private nextId;
+    private nextDeviceRPCRequestId;
     private sendRaw;
     private sendWithAck;
+    private sendWithCtrlAck;
     private resolveAck;
     private rejectAllPending;
     private doConnect;

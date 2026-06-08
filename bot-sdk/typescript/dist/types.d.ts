@@ -53,6 +53,62 @@ export interface MsgClientFriend {
     user_id: number;
     msg?: string;
 }
+export type DeviceRPCType = 'request' | 'result';
+export type DeviceRPCOperation = 'read_file' | 'glob' | 'grep';
+export interface MsgDeviceRPCError {
+    code: string;
+    message: string;
+}
+export interface MsgDeviceRPC {
+    id?: string;
+    type: DeviceRPCType;
+    request_id: string;
+    grant_id?: string;
+    session_key?: string;
+    topic_id?: string;
+    topic_type?: string;
+    actor_user_id?: string;
+    agent_id?: string;
+    agent_body_id?: string;
+    device_id?: string;
+    device_body_id?: string;
+    device_installation_id?: string;
+    operation?: DeviceRPCOperation;
+    tool_name?: string;
+    payload?: Record<string, unknown>;
+    result?: unknown;
+    error?: MsgDeviceRPCError;
+    created_at?: number;
+    expires_at?: number;
+}
+export interface DeviceRPCRequestInput {
+    request_id?: string;
+    grant_id: string;
+    operation: DeviceRPCOperation;
+    payload?: Record<string, unknown>;
+    tool_name?: string;
+    session_key?: string;
+    topic_id?: string;
+    topic_type?: string;
+}
+export interface DeviceRPCResultInput {
+    request_id: string;
+    result?: unknown;
+    error?: MsgDeviceRPCError;
+}
+export interface DeviceRPCAckParams {
+    request_id?: string;
+    device_id?: string;
+    device_body_id?: string;
+    device_installation_id?: string;
+    operation?: DeviceRPCOperation;
+    tool_name?: string;
+    expires_at?: number;
+    [key: string]: unknown;
+}
+export interface DeviceRPCRequestAck extends DeviceRPCAckParams {
+    request_id: string;
+}
 export interface ClientMessage {
     hi?: MsgClientHi;
     acc?: MsgClientAcc;
@@ -64,6 +120,7 @@ export interface ClientMessage {
     del?: MsgClientDel;
     note?: MsgClientNote;
     friend?: MsgClientFriend;
+    device_rpc?: MsgDeviceRPC;
 }
 export interface MsgServerCtrl {
     id?: string;
@@ -77,6 +134,12 @@ export interface MsgServerData {
     from?: string;
     seq: number;
     content: unknown;
+    type?: string;
+    msg_type?: string;
+    metadata?: Record<string, unknown>;
+    content_blocks?: unknown[];
+    mode?: string;
+    role?: string;
     reply_to?: number;
 }
 export interface MsgServerPres {
@@ -102,6 +165,69 @@ export interface MsgServerFriend {
     to: number;
     msg?: string;
 }
+export interface ScopedDeviceGrant {
+    kind: string;
+    source: string;
+    grantId: string;
+    status: string;
+    identityTrust: string;
+    identitySource?: string;
+    deviceId: string;
+    deviceDisplayName?: string;
+    deviceBodyId?: string;
+    deviceInstallationId?: string;
+    ownerUserId: string;
+    sessionKey: string;
+    topicId: string;
+    topicType: string;
+    actorUserId: string;
+    agentId?: string;
+    agentBodyId?: string;
+    operations: DeviceRPCOperation[];
+    createdAt: number;
+    expiresAt: number;
+}
+export type DeviceSelectionStatus = 'selected' | 'needs_selection' | 'unavailable';
+export interface DeviceSelectionDevice {
+    deviceId: string;
+    displayName?: string;
+    bodyId?: string;
+    installationId?: string;
+    operations?: DeviceRPCOperation[];
+    lastSeenAt?: number;
+}
+export interface DeviceSelectionCandidate {
+    deviceId: string;
+    displayName?: string;
+    operations?: DeviceRPCOperation[];
+    lastSeenAt?: number;
+}
+export interface DeviceSelection {
+    kind: 'user_device_selection' | string;
+    source: string;
+    schemaVersion: number;
+    status: DeviceSelectionStatus;
+    selectionSource?: string;
+    sessionKey: string;
+    topicId: string;
+    topicType: string;
+    actorUserId: string;
+    agentId?: string;
+    selectedDevice?: DeviceSelectionDevice;
+    candidates?: DeviceSelectionCandidate[];
+    candidateCount?: number;
+    createdAt: number;
+}
+export interface CatsCoIdentityMetadata {
+    schema_version?: number;
+    actor?: Record<string, unknown>;
+    topic?: Record<string, unknown>;
+    permissions?: Record<string, unknown>;
+    agent?: Record<string, unknown>;
+    device_grants?: ScopedDeviceGrant[];
+    device_selection?: DeviceSelection;
+    [key: string]: unknown;
+}
 export interface ServerMessage {
     ctrl?: MsgServerCtrl;
     data?: MsgServerData;
@@ -109,6 +235,7 @@ export interface ServerMessage {
     meta?: MsgServerMeta;
     info?: MsgServerInfo;
     friend?: MsgServerFriend;
+    device_rpc?: MsgDeviceRPC;
 }
 export interface RichContentImage {
     type: 'image';
@@ -184,6 +311,7 @@ import type { MessageContext } from './context';
 export interface BotEventMap {
     ready: (uid: string, name: string) => void;
     message: (ctx: MessageContext) => void;
+    device_rpc: (msg: MsgDeviceRPC) => void;
     presence: (pres: MsgServerPres) => void;
     typing: (info: MsgServerInfo) => void;
     read: (info: MsgServerInfo) => void;

@@ -9,6 +9,11 @@ import type {
   ServerMessage,
   MsgServerCtrl,
   MsgServerData,
+  MsgDeviceRPC,
+  DeviceRPCAckParams,
+  DeviceRPCRequestAck,
+  DeviceRPCRequestInput,
+  DeviceRPCResultInput,
   MessageContent,
   RichContentImage,
   RichContentFile,
@@ -21,7 +26,7 @@ import { MessageContext } from './context';
 import { FileUploader } from './uploader';
 
 interface PendingAck {
-  resolve: (seq: number) => void;
+  resolve: (ctrl: MsgServerCtrl) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -215,6 +220,57 @@ export class CatsBot {
     this.sendRaw({ note: { topic, what: 'read', seq } });
   }
 
+  // --- Device RPC ---
+
+  /**
+   * Send a raw device_rpc envelope. Resolves when the server acknowledges
+   * accepting or rejecting the envelope; device results arrive via the
+   * `device_rpc` event.
+   */
+  async sendDeviceRPC(msg: Omit<MsgDeviceRPC, 'id'> & { id?: string }): Promise<DeviceRPCAckParams> {
+    const id = msg.id?.trim() || this.nextId();
+    const ctrl = await this.sendWithCtrlAck(id, {
+      device_rpc: {
+        ...msg,
+        id,
+      },
+    });
+    return deviceRPCAckParams(ctrl);
+  }
+
+  /**
+   * Request execution on the currently selected device grant. The returned
+   * request_id can be matched with a later `device_rpc` result event.
+   */
+  async sendDeviceRPCRequest(input: DeviceRPCRequestInput): Promise<DeviceRPCRequestAck> {
+    const requestID = input.request_id?.trim() || this.nextDeviceRPCRequestId();
+    const ack = await this.sendDeviceRPC({
+      type: 'request',
+      request_id: requestID,
+      grant_id: input.grant_id,
+      operation: input.operation,
+      payload: input.payload,
+      tool_name: input.tool_name,
+      session_key: input.session_key,
+      topic_id: input.topic_id,
+      topic_type: input.topic_type,
+    });
+    return {
+      ...ack,
+      request_id: String(ack.request_id ?? requestID),
+    };
+  }
+
+  /** Send a result for a device_rpc request routed to this connection. */
+  sendDeviceRPCResult(input: DeviceRPCResultInput): Promise<DeviceRPCAckParams> {
+    return this.sendDeviceRPC({
+      type: 'result',
+      request_id: input.request_id,
+      result: input.result,
+      error: input.error,
+    });
+  }
+
   // --- History ---
 
   /** Fetch message history for a topic since a given seq. */
@@ -286,6 +342,10 @@ export class CatsBot {
     return String(++this.msgId);
   }
 
+  private nextDeviceRPCRequestId(): string {
+    return `rpc_${Date.now()}_${this.nextId()}`;
+  }
+
   private sendRaw(msg: ClientMessage): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new ConnectionError('WebSocket is not connected');
@@ -294,7 +354,11 @@ export class CatsBot {
   }
 
   private sendWithAck(id: string, msg: ClientMessage): Promise<number> {
-    return new Promise<number>((resolve, reject) => {
+    return this.sendWithCtrlAck(id, msg).then((ctrl) => ctrlSeq(ctrl));
+  }
+
+  private sendWithCtrlAck(id: string, msg: ClientMessage): Promise<MsgServerCtrl> {
+    return new Promise<MsgServerCtrl>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingAcks.delete(id);
         reject(new ProtocolError(0, 'Ack timeout'));
@@ -320,11 +384,11 @@ export class CatsBot {
     this.pendingAcks.delete(ctrl.id);
 
     if (ctrl.code === 200) {
-      const seq = (ctrl.params as any)?.seq ?? 0;
+      const seq = ctrlSeq(ctrl);
       if (ctrl.topic && typeof seq === 'number' && seq > 0) {
         this.noteTopicSeq(ctrl.topic, seq);
       }
-      pending.resolve(typeof seq === 'number' ? seq : 0);
+      pending.resolve(ctrl);
     } else if (ctrl.code === 429) {
       pending.reject(new RateLimitError(ctrl.text));
     } else {
@@ -502,6 +566,10 @@ export class CatsBot {
       this.emit('message', ctx);
     }
 
+    if (msg.device_rpc) {
+      this.emit('device_rpc', msg.device_rpc);
+    }
+
     if (msg.pres) {
       this.emit('presence', msg.pres);
     }
@@ -642,4 +710,16 @@ function deriveHttpBase(wsUrl: string): string {
   u.pathname = '';
   u.search = '';
   return u.origin;
+}
+
+function ctrlSeq(ctrl: MsgServerCtrl): number {
+  const seq = (ctrl.params as any)?.seq ?? 0;
+  return typeof seq === 'number' ? seq : 0;
+}
+
+function deviceRPCAckParams(ctrl: MsgServerCtrl): DeviceRPCAckParams {
+  if (ctrl.params && typeof ctrl.params === 'object') {
+    return ctrl.params as DeviceRPCAckParams;
+  }
+  return {};
 }
