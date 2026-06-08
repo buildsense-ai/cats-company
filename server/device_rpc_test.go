@@ -1,0 +1,345 @@
+package server
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/openchat/openchat/server/store/types"
+)
+
+func TestDeviceRPCRoutesRequestToSelectedDeviceAndReturnsResult(t *testing.T) {
+	hub, agent, target, _, grant := newDeviceRPCTestFixture(t, true)
+
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-1",
+		Type:      "request",
+		RequestID: "rpc-1",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+		Payload:   map[string]interface{}{"path": "catsco://opaque"},
+	})
+
+	var forwarded ServerMessage
+	decodeQueuedServerMessage(t, target.send, &forwarded)
+	if forwarded.DeviceRPC == nil {
+		t.Fatalf("target received %#v, want device_rpc request", forwarded)
+	}
+	if forwarded.DeviceRPC.Type != "request" || forwarded.DeviceRPC.RequestID != "rpc-1" {
+		t.Fatalf("unexpected request envelope: %#v", forwarded.DeviceRPC)
+	}
+	if forwarded.DeviceRPC.GrantID != grant.GrantID || forwarded.DeviceRPC.ActorUserID != "usr7" || forwarded.DeviceRPC.AgentBodyID != "body-agent" {
+		t.Fatalf("request was not canonicalized from grant: %#v", forwarded.DeviceRPC)
+	}
+	if forwarded.DeviceRPC.DeviceBodyID != "body-device" || forwarded.DeviceRPC.DeviceInstallationID != "install-device" {
+		t.Fatalf("request missing target device identity: %#v", forwarded.DeviceRPC)
+	}
+
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != 200 {
+		t.Fatalf("unexpected request ack: %#v", ack.Ctrl)
+	}
+
+	hub.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "rpc-result-1",
+		Type:      "result",
+		RequestID: "rpc-1",
+		Result:    map[string]interface{}{"ok": true},
+	})
+
+	var targetAck ServerMessage
+	decodeQueuedServerMessage(t, target.send, &targetAck)
+	if targetAck.Ctrl == nil || targetAck.Ctrl.Code != 200 {
+		t.Fatalf("unexpected result ack: %#v", targetAck.Ctrl)
+	}
+
+	var result ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &result)
+	if result.DeviceRPC == nil || result.DeviceRPC.Type != "result" || result.DeviceRPC.RequestID != "rpc-1" {
+		t.Fatalf("agent received %#v, want device_rpc result", result)
+	}
+	if result.DeviceRPC.DeviceID != "alice-laptop" || result.DeviceRPC.GrantID != grant.GrantID {
+		t.Fatalf("result missing canonical scope: %#v", result.DeviceRPC)
+	}
+	resultMap, ok := result.DeviceRPC.Result.(map[string]interface{})
+	if !ok || resultMap["ok"] != true {
+		t.Fatalf("unexpected result payload: %#v", result.DeviceRPC.Result)
+	}
+}
+
+func TestDeviceRPCDoesNotBroadcastToSiblingConnections(t *testing.T) {
+	hub, agent, target, sibling, grant := newDeviceRPCTestFixture(t, true)
+
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-1",
+		Type:      "request",
+		RequestID: "rpc-1",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+	})
+
+	var targetMsg ServerMessage
+	decodeQueuedServerMessage(t, target.send, &targetMsg)
+	if targetMsg.DeviceRPC == nil {
+		t.Fatalf("target received %#v, want device_rpc", targetMsg)
+	}
+	if drainOne(sibling.send) {
+		t.Fatal("sibling connection should not receive selected-device RPC")
+	}
+}
+
+func TestDeviceRPCRejectsResultFromWrongDeviceConnection(t *testing.T) {
+	hub, agent, target, _, grant := newDeviceRPCTestFixture(t, true)
+	wrong := &Client{
+		uid:         88,
+		accountType: types.AccountBot,
+		bodyID:      "body-other",
+		send:        make(chan []byte, 2),
+	}
+	hub.addClient(wrong)
+
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-1",
+		Type:      "request",
+		RequestID: "rpc-1",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+	})
+	decodeQueuedServerMessage(t, target.send, &ServerMessage{})
+	decodeQueuedServerMessage(t, agent.send, &ServerMessage{})
+
+	hub.handleDeviceRPC(wrong, &MsgDeviceRPC{
+		ID:        "wrong-result",
+		Type:      "result",
+		RequestID: "rpc-1",
+		Result:    map[string]interface{}{"ok": true},
+	})
+
+	var wrongAck ServerMessage
+	decodeQueuedServerMessage(t, wrong.send, &wrongAck)
+	if wrongAck.Ctrl == nil || wrongAck.Ctrl.Code != 403 {
+		t.Fatalf("wrong client ack = %#v, want 403", wrongAck.Ctrl)
+	}
+
+	hub.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "right-result",
+		Type:      "result",
+		RequestID: "rpc-1",
+		Result:    map[string]interface{}{"ok": true},
+	})
+	decodeQueuedServerMessage(t, target.send, &ServerMessage{})
+	var result ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &result)
+	if result.DeviceRPC == nil || result.DeviceRPC.RequestID != "rpc-1" {
+		t.Fatalf("expected original pending request to remain for target result, got %#v", result)
+	}
+}
+
+func TestDeviceRPCRejectsOfflineDevice(t *testing.T) {
+	hub, agent, _, _, grant := newDeviceRPCTestFixture(t, false)
+
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-1",
+		Type:      "request",
+		RequestID: "rpc-offline",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+	})
+
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != 404 {
+		t.Fatalf("offline device ack = %#v, want 404", ack.Ctrl)
+	}
+}
+
+func TestDeviceRPCDoesNotRouteByBareBodyOrInstallationID(t *testing.T) {
+	hub, agent, _, _, grant := newDeviceRPCTestFixture(t, false)
+	collision := &Client{
+		hub:            hub,
+		uid:            99,
+		accountType:    types.AccountBot,
+		bodyID:         "body-device",
+		installationID: "install-device",
+		send:           make(chan []byte, 2),
+	}
+	hub.addClient(collision)
+
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-1",
+		Type:      "request",
+		RequestID: "rpc-collision",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+	})
+
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != 404 {
+		t.Fatalf("bare body collision ack = %#v, want 404", ack.Ctrl)
+	}
+	if drainOne(collision.send) {
+		t.Fatal("bare body/install collision should not receive selected-device RPC")
+	}
+}
+
+func TestDeviceRPCRejectsResultFromSupersededDeviceConnection(t *testing.T) {
+	hub, agent, oldTarget, _, grant := newDeviceRPCTestFixture(t, true)
+
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-1",
+		Type:      "request",
+		RequestID: "rpc-rebind",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+	})
+	decodeQueuedServerMessage(t, oldTarget.send, &ServerMessage{})
+	decodeQueuedServerMessage(t, agent.send, &ServerMessage{})
+
+	device, ok := hub.userDevices.activeDevice(7, grant.DeviceID)
+	if !ok {
+		t.Fatal("expected active device")
+	}
+	newTarget := &Client{
+		hub:         hub,
+		uid:         78,
+		accountType: types.AccountBot,
+		bodyID:      "body-device-new",
+		send:        make(chan []byte, 2),
+	}
+	hub.addClient(newTarget)
+	hub.bindDeviceClient(7, device, newTarget)
+
+	hub.handleDeviceRPC(oldTarget, &MsgDeviceRPC{
+		ID:        "stale-result",
+		Type:      "result",
+		RequestID: "rpc-rebind",
+		Result:    map[string]interface{}{"ok": true},
+	})
+
+	var staleAck ServerMessage
+	decodeQueuedServerMessage(t, oldTarget.send, &staleAck)
+	if staleAck.Ctrl == nil || staleAck.Ctrl.Code != 403 {
+		t.Fatalf("stale device ack = %#v, want 403", staleAck.Ctrl)
+	}
+}
+
+func TestBoundDeviceTouchKeepsLiveConnectionActive(t *testing.T) {
+	hub, _, target, _, grant := newDeviceRPCTestFixture(t, true)
+	now := time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC).Add(defaultUserDeviceTTL + time.Minute)
+	hub.userDevices.now = func() time.Time { return now }
+
+	if _, ok := hub.userDevices.activeDevice(7, grant.DeviceID); ok {
+		t.Fatal("expected device to expire before live websocket touch")
+	}
+	target.touchBoundDevice()
+	if _, ok := hub.userDevices.activeDevice(7, grant.DeviceID); !ok {
+		t.Fatal("expected live websocket touch to refresh bound device")
+	}
+}
+
+func TestHiCanBindLiveDeviceConnection(t *testing.T) {
+	hub := NewHub(nil, nil)
+	client := &Client{
+		hub:         hub,
+		uid:         7,
+		accountType: types.AccountHuman,
+		remoteAddr:  "test",
+		displayName: "Alice",
+		send:        make(chan []byte, 1),
+	}
+	hub.addClient(client)
+
+	hub.handleHi(client, "Alice", &MsgClientHi{
+		ID: "hi-1",
+		Device: &MsgClientHiDevice{
+			DeviceID:       "alice-laptop",
+			DisplayName:    "Alice Laptop",
+			BodyID:         "body-device",
+			InstallationID: "install-device",
+			Capabilities:   []string{"read_file"},
+		},
+	})
+
+	if got := hub.getDeviceClient(7, "alice-laptop"); got != client {
+		t.Fatalf("bound device client = %#v, want current client", got)
+	}
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, client.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != 200 {
+		t.Fatalf("unexpected hi ack: %#v", ack.Ctrl)
+	}
+	paramsJSON, _ := json.Marshal(ack.Ctrl.Params)
+	if !json.Valid(paramsJSON) || !containsJSONText(paramsJSON, "device_rpc") {
+		t.Fatalf("hi ack params missing device_rpc feature: %s", paramsJSON)
+	}
+}
+
+func newDeviceRPCTestFixture(t *testing.T, bindTarget bool) (*Hub, *Client, *Client, *Client, ScopedDeviceGrant) {
+	t.Helper()
+	hub := NewHub(nil, nil)
+	now := time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC)
+	hub.userDevices.now = func() time.Time { return now }
+	hub.deviceRPC.now = func() time.Time { return now }
+
+	device, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID:       "alice-laptop",
+		DisplayName:    "Alice Laptop",
+		BodyID:         "body-device",
+		InstallationID: "install-device",
+		Capabilities:   []string{"read_file", "send_file"},
+	})
+	if err != nil {
+		t.Fatalf("register device: %v", err)
+	}
+	grants := hub.userDevices.grantsForDevices(7, "p2p_7_42", "p2p", 42, "body-agent", []UserDevice{device})
+	if len(grants) != 1 {
+		t.Fatalf("grantsForDevices returned %d grants", len(grants))
+	}
+
+	agent := &Client{
+		hub:         hub,
+		uid:         42,
+		accountType: types.AccountBot,
+		bodyID:      "body-agent",
+		send:        make(chan []byte, 4),
+	}
+	target := &Client{
+		hub:                  hub,
+		uid:                  77,
+		accountType:          types.AccountBot,
+		bodyID:               "body-device",
+		installationID:       "install-device",
+		deviceOwnerUID:       7,
+		deviceID:             "alice-laptop",
+		deviceBodyID:         "body-device",
+		deviceInstallationID: "install-device",
+		send:                 make(chan []byte, 4),
+	}
+	sibling := &Client{
+		hub:         hub,
+		uid:         77,
+		accountType: types.AccountBot,
+		bodyID:      "body-sibling",
+		send:        make(chan []byte, 4),
+	}
+	hub.addClient(agent)
+	if bindTarget {
+		hub.addClient(target)
+		hub.bindDeviceClient(7, device, target)
+	}
+	hub.addClient(sibling)
+	return hub, agent, target, sibling, grants[0]
+}
+
+func containsJSONText(raw []byte, text string) bool {
+	return strings.Contains(string(raw), text)
+}
