@@ -36,6 +36,10 @@ export default function AgentEntryBindView({ sceneKey }) {
   }, [sceneKey]);
 
   const handleConfirm = async () => {
+    if (preview?.entry?.channel === 'feishu' && !channelUserId.trim()) {
+      window.location.href = `/api/channel-agent-bindings/oauth/feishu/start?scene_key=${encodeURIComponent(sceneKey)}`;
+      return;
+    }
     const userId = channelUserId.trim();
     if (!userId) {
       setError('当前渠道身份缺失，请从微信/飞书入口打开，或填写测试身份。');
@@ -91,7 +95,7 @@ export default function AgentEntryBindView({ sceneKey }) {
               </div>
             </div>
 
-            {!channelUserId && (
+            {!channelUserId && preview?.entry?.channel !== 'feishu' && (
               <div style={{ marginBottom: 16 }}>
                 <label style={{ display: 'block', color: 'var(--v3-text-muted)', fontSize: 12, marginBottom: 8 }}>渠道用户 ID</label>
                 <input
@@ -116,7 +120,7 @@ export default function AgentEntryBindView({ sceneKey }) {
               onClick={handleConfirm}
               disabled={binding}
             >
-              {binding ? '正在确认...' : `进入${agent.display_name || '虚拟员工'}`}
+              {binding ? '正在确认...' : preview?.entry?.channel === 'feishu' && !channelUserId.trim() ? '用飞书授权进入' : `进入${agent.display_name || '虚拟员工'}`}
             </button>
           </>
         )}

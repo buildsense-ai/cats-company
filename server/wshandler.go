@@ -43,6 +43,7 @@ type Hub struct {
 	deviceRevokes *deviceConnectorRevocationList
 	deviceClients map[int64]map[string]*Client
 	deviceRPC     *deviceRPCRouter
+	channelOut    *ChannelOutboundDispatcher
 }
 
 type presenceEvent struct {

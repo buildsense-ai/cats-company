@@ -296,6 +296,8 @@ type channelAgentTestStore struct {
 	bodyIDs  map[int64]string
 	entries  map[int64]*types.ChannelAgentEntry
 	bindings map[string]*types.ChannelAgentBinding
+	messages []*types.Message
+	topics   []string
 	nextID   int64
 }
 
@@ -306,12 +308,37 @@ func newChannelAgentTestStore() *channelAgentTestStore {
 		bodyIDs:  map[int64]string{},
 		entries:  map[int64]*types.ChannelAgentEntry{},
 		bindings: map[string]*types.ChannelAgentBinding{},
+		messages: []*types.Message{},
+		topics:   []string{},
 		nextID:   1,
 	}
 }
 
+func (s *channelAgentTestStore) CreateUser(u *types.User) (int64, error) {
+	next := *u
+	next.ID = s.nextID
+	s.nextID++
+	if next.AccountType == "" {
+		next.AccountType = types.AccountHuman
+	}
+	now := time.Now()
+	next.CreatedAt = now
+	next.UpdatedAt = now
+	s.users[next.ID] = &next
+	return next.ID, nil
+}
+
 func (s *channelAgentTestStore) GetUser(id int64) (*types.User, error) {
 	return s.users[id], nil
+}
+
+func (s *channelAgentTestStore) GetUserByUsername(username string) (*types.User, error) {
+	for _, user := range s.users {
+		if user.Username == username {
+			return user, nil
+		}
+	}
+	return nil, nil
 }
 
 func (s *channelAgentTestStore) GetBotOwner(botUID int64) (int64, error) {
@@ -320,6 +347,43 @@ func (s *channelAgentTestStore) GetBotOwner(botUID int64) (int64, error) {
 
 func (s *channelAgentTestStore) GetBotBodyID(botUID int64) (string, error) {
 	return s.bodyIDs[botUID], nil
+}
+
+func (s *channelAgentTestStore) CreateTopic(id, topicType string, ownerID int64) error {
+	s.topics = append(s.topics, id)
+	return nil
+}
+
+func (s *channelAgentTestStore) SaveMessage(topicID string, fromUID int64, content, msgType string) (int64, error) {
+	id := s.nextID
+	s.nextID++
+	s.messages = append(s.messages, &types.Message{ID: id, TopicID: topicID, FromUID: fromUID, Content: content, MsgType: msgType, CreatedAt: time.Now()})
+	return id, nil
+}
+
+func (s *channelAgentTestStore) SaveMessageWithBlocks(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string) (int64, error) {
+	id, err := s.SaveMessage(topicID, fromUID, content, msgType)
+	if err != nil {
+		return 0, err
+	}
+	s.messages[len(s.messages)-1].ContentBlocks = blocks
+	s.messages[len(s.messages)-1].Mode = mode
+	s.messages[len(s.messages)-1].Role = role
+	return id, nil
+}
+
+func (s *channelAgentTestStore) SaveMessageWithReply(topicID string, fromUID int64, content, msgType string, replyTo int64) (int64, error) {
+	return s.SaveMessage(topicID, fromUID, content, msgType)
+}
+
+func (s *channelAgentTestStore) SaveMessageIdempotent(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string) (int64, bool, error) {
+	for _, message := range s.messages {
+		if message.TopicID == topicID && message.FromUID == fromUID && message.Content == content {
+			return message.ID, true, nil
+		}
+	}
+	id, err := s.SaveMessageWithBlocks(topicID, fromUID, content, blocks, mode, role, msgType)
+	return id, false, err
 }
 
 func (s *channelAgentTestStore) EnsureChannelAgentEntry(entry *types.ChannelAgentEntry) (*types.ChannelAgentEntry, error) {
@@ -394,14 +458,13 @@ func (s *channelAgentTestStore) ResolveChannelAgentBinding(query types.ChannelAg
 			return cloneBinding(binding), nil
 		}
 	}
-	if query.ChannelAppID != "" {
-		if binding := s.bindings[bindingKey(query.Channel, "", query.ChannelUserID, query.ChannelConversationID)]; binding != nil {
+	return nil, nil
+}
+
+func (s *channelAgentTestStore) ResolveChannelAgentBindingForActor(channel, channelAppID string, actorUID, agentUID int64) (*types.ChannelAgentBinding, error) {
+	for _, binding := range s.bindings {
+		if binding.Channel == channel && binding.ChannelAppID == channelAppID && binding.ActorUID == actorUID && binding.AgentUID == agentUID && binding.Status == "active" {
 			return cloneBinding(binding), nil
-		}
-		if query.ChannelConversationID != "" {
-			if binding := s.bindings[bindingKey(query.Channel, "", query.ChannelUserID, "")]; binding != nil {
-				return cloneBinding(binding), nil
-			}
 		}
 	}
 	return nil, nil

@@ -237,6 +237,7 @@ type ChannelAgentBinding struct {
 	ChannelUserID           string     `json:"channel_user_id"`
 	ChannelConversationID   string     `json:"channel_conversation_id,omitempty"`
 	ChannelConversationType string     `json:"channel_conversation_type,omitempty"`
+	ActorUID                int64      `json:"actor_uid,omitempty"`
 	OwnerUID                int64      `json:"owner_uid"`
 	AgentUID                int64      `json:"agent_uid"`
 	EntryID                 int64      `json:"entry_id,omitempty"`

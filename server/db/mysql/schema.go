@@ -48,8 +48,10 @@ func (a *Adapter) CreateSchema() error {
 		migrateFriendsAddFromStatusIndex,
 		migrateMessagesAddTopicIDIndex,
 		migrateChannelAgentEntriesAddAppID,
+		migrateChannelAgentBindingsAddActorUID,
 		migrateChannelAgentEntriesOwnerAgentIndex,
 		migrateChannelAgentBindingsLookupIndex,
+		migrateChannelAgentBindingsActorAgentIndex,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -262,6 +264,7 @@ CREATE TABLE IF NOT EXISTS channel_agent_bindings (
     channel_user_id VARCHAR(128) NOT NULL,
     channel_conversation_id VARCHAR(128) NOT NULL DEFAULT '',
     channel_conversation_type VARCHAR(32) NOT NULL DEFAULT 'p2p',
+    actor_uid BIGINT DEFAULT NULL,
     owner_uid BIGINT NOT NULL,
     agent_uid BIGINT NOT NULL,
     entry_id BIGINT DEFAULT NULL,
@@ -272,6 +275,8 @@ CREATE TABLE IF NOT EXISTS channel_agent_bindings (
     UNIQUE KEY uk_channel_agent_binding_identity (channel, channel_app_id, channel_user_id, channel_conversation_id),
     INDEX idx_channel_agent_bindings_lookup (channel, channel_app_id, channel_user_id, status),
     INDEX idx_channel_agent_bindings_agent (owner_uid, agent_uid, status),
+    INDEX idx_channel_agent_bindings_actor_agent (channel, channel_app_id, actor_uid, agent_uid, status),
+    FOREIGN KEY (actor_uid) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (owner_uid) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (entry_id) REFERENCES channel_agent_entries(id) ON DELETE SET NULL
@@ -367,10 +372,18 @@ const migrateChannelAgentEntriesAddAppID = `
 ALTER TABLE channel_agent_entries ADD COLUMN channel_app_id VARCHAR(128) NOT NULL DEFAULT '';
 `
 
+const migrateChannelAgentBindingsAddActorUID = `
+ALTER TABLE channel_agent_bindings ADD COLUMN actor_uid BIGINT DEFAULT NULL;
+`
+
 const migrateChannelAgentEntriesOwnerAgentIndex = `
 ALTER TABLE channel_agent_entries ADD INDEX idx_channel_agent_entries_owner_agent (owner_uid, agent_uid, channel, channel_app_id, status);
 `
 
 const migrateChannelAgentBindingsLookupIndex = `
 ALTER TABLE channel_agent_bindings ADD INDEX idx_channel_agent_bindings_lookup (channel, channel_app_id, channel_user_id, status);
+`
+
+const migrateChannelAgentBindingsActorAgentIndex = `
+ALTER TABLE channel_agent_bindings ADD INDEX idx_channel_agent_bindings_actor_agent (channel, channel_app_id, actor_uid, agent_uid, status);
 `

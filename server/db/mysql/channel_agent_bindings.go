@@ -140,10 +140,11 @@ func (a *Adapter) UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) 
 	_, err := a.db.Exec(
 		`INSERT INTO channel_agent_bindings (
 		     channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
-		     owner_uid, agent_uid, entry_id, status, bound_at, last_used_at
+		     actor_uid, owner_uid, agent_uid, entry_id, status, bound_at, last_used_at
 		 )
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		 ON DUPLICATE KEY UPDATE
+		     actor_uid = VALUES(actor_uid),
 		     owner_uid = VALUES(owner_uid),
 		     agent_uid = VALUES(agent_uid),
 		     entry_id = VALUES(entry_id),
@@ -157,6 +158,7 @@ func (a *Adapter) UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) 
 		binding.ChannelUserID,
 		binding.ChannelConversationID,
 		conversationType,
+		nullableInt64(binding.ActorUID),
 		binding.OwnerUID,
 		binding.AgentUID,
 		nullableInt64(binding.EntryID),
@@ -187,18 +189,32 @@ func (a *Adapter) ResolveChannelAgentBinding(query types.ChannelAgentBindingQuer
 			return binding, err
 		}
 	}
-	if query.ChannelAppID != "" {
-		fallback := query
-		fallback.ChannelAppID = ""
-		binding, err = a.getChannelAgentBinding(fallback, query.ChannelConversationID)
-		if err != nil || binding != nil {
-			return binding, err
-		}
-		if query.ChannelConversationID != "" {
-			return a.getChannelAgentBinding(fallback, "")
-		}
-	}
 	return nil, nil
+}
+
+func (a *Adapter) ResolveChannelAgentBindingForActor(channel, channelAppID string, actorUID, agentUID int64) (*types.ChannelAgentBinding, error) {
+	if channel == "" || actorUID <= 0 || agentUID <= 0 {
+		return nil, fmt.Errorf("invalid channel agent actor query")
+	}
+	row := a.db.QueryRow(
+		`SELECT id, channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
+		        COALESCE(actor_uid, 0), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
+		 FROM channel_agent_bindings
+		 WHERE channel = ? AND channel_app_id = ? AND actor_uid = ? AND agent_uid = ? AND status = 'active'
+		 ORDER BY updated_at DESC LIMIT 1`,
+		channel, channelAppID, actorUID, agentUID,
+	)
+	binding, err := scanChannelAgentBinding(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve channel agent actor binding: %w", err)
+	}
+	if _, err := a.db.Exec(`UPDATE channel_agent_bindings SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?`, binding.ID); err != nil {
+		return nil, fmt.Errorf("touch channel agent actor binding: %w", err)
+	}
+	return binding, nil
 }
 
 func (a *Adapter) getActiveChannelAgentEntry(ownerUID, agentUID int64, channel, channelAppID string) (*types.ChannelAgentEntry, error) {
@@ -222,7 +238,7 @@ func (a *Adapter) getActiveChannelAgentEntry(ownerUID, agentUID int64, channel, 
 func (a *Adapter) getChannelAgentBinding(query types.ChannelAgentBindingQuery, conversationID string) (*types.ChannelAgentBinding, error) {
 	row := a.db.QueryRow(
 		`SELECT id, channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
-		        owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
+		        COALESCE(actor_uid, 0), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
 		 FROM channel_agent_bindings
 		 WHERE channel = ? AND channel_app_id = ? AND channel_user_id = ? AND channel_conversation_id = ? AND status = 'active'
 		 ORDER BY updated_at DESC LIMIT 1`,
@@ -282,6 +298,7 @@ func scanChannelAgentBinding(row channelAgentBindingScanner) (*types.ChannelAgen
 		&binding.ChannelUserID,
 		&binding.ChannelConversationID,
 		&binding.ChannelConversationType,
+		&binding.ActorUID,
 		&binding.OwnerUID,
 		&binding.AgentUID,
 		&binding.EntryID,
