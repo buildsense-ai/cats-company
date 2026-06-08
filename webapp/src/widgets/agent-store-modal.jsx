@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, getWebSocketURL } from '../api';
 import t from '../i18n';
-import { Zap, Bot, Upload } from 'lucide-react';
+import { Copy, QrCode, RefreshCw, Zap, Bot, Upload } from 'lucide-react';
 import Avatar from './avatar';
+import QRCode from './qr-code';
 
 const CREATE_MODES = {
   SELF_HOSTED: 'self_hosted',
@@ -26,6 +27,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
   const [copiedField, setCopiedField] = useState('');
   const [copyingBotKey, setCopyingBotKey] = useState(null);
   const [editingBot, setEditingBot] = useState(null);
+  const [entryBot, setEntryBot] = useState(null);
   const avatarFileRef = useRef(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
 
@@ -221,6 +223,15 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                           setTab('manage');
                         }}>
                           管理
+                        </button>
+                        <button
+                          className="oc-btn oc-btn-default"
+                          style={{ padding: '8px 12px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 6 }}
+                          onClick={() => setEntryBot(bot)}
+                          title="入口码"
+                        >
+                          <QrCode size={14} />
+                          入口码
                         </button>
                         {!bot.tenant_name && (
                           <button
@@ -432,6 +443,9 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                 <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '14px 0', borderRadius: 8 }} onClick={() => setTab('hub')}>
                   取消
                 </button>
+                <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '14px 0', borderRadius: 8 }} onClick={() => setEntryBot(editingBot)}>
+                  入口码
+                </button>
                 <button type="submit" className="oc-btn oc-btn-primary" style={{ flex: 1, padding: '14px 0', borderRadius: 8 }}>
                   保存
                 </button>
@@ -441,6 +455,190 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
 
         </div>
       </div>
+      {entryBot && (
+        <AgentEntryModal
+          bot={entryBot}
+          onClose={() => setEntryBot(null)}
+          onCopy={handleCopy}
+          copiedField={copiedField}
+        />
+      )}
     </div>
   );
+}
+
+function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
+  const [channel, setChannel] = useState('weixin');
+  const [channelAppIds, setChannelAppIds] = useState({ weixin: '', feishu: '' });
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const botId = bot?.id || bot?.uid;
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    api.getAgentEntries(botId)
+      .then((res) => {
+        if (!cancelled) setEntries(res.entries || []);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message || 'Failed to load entry codes');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [botId]);
+
+  const channelAppId = channelAppIds[channel] || '';
+  const normalizedChannelAppId = channelAppId.trim();
+  const selected = entries.find((entry) => (
+    entry.channel === channel && (entry.channel_app_id || '') === normalizedChannelAppId
+  ));
+  const entryUrl = selected?.entry_url || '';
+  const usesLocalEntryUrl = isPotentiallyPrivateEntryUrl(entryUrl);
+
+  const handleGenerate = async () => {
+    try {
+      setSaving(true);
+      setError('');
+      const res = await api.createAgentEntry(botId, channel, normalizedChannelAppId);
+      const next = res.entry;
+      setEntries((prev) => [next, ...prev.filter((entry) => (
+        !(entry.channel === next.channel && (entry.channel_app_id || '') === (next.channel_app_id || ''))
+      ))]);
+    } catch (err) {
+      setError(err.message || 'Failed to generate entry code');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRegenerate = async () => {
+    if (!selected) return;
+    if (!window.confirm('重新生成后，旧入口码会失效。继续吗？')) return;
+    try {
+      setSaving(true);
+      setError('');
+      const res = await api.regenerateAgentEntry(selected.id);
+      const next = res.entry;
+      setEntries((prev) => [next, ...prev.filter((entry) => (
+        entry.id !== selected.id
+        && !(entry.channel === next.channel && (entry.channel_app_id || '') === (next.channel_app_id || ''))
+      ))]);
+    } catch (err) {
+      setError(err.message || 'Failed to regenerate entry code');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="oc-modal-overlay" onClick={onClose} style={{ zIndex: 1200 }}>
+      <div className="oc-modal" onClick={e => e.stopPropagation()} style={{ width: 520, maxWidth: '94vw' }}>
+        <div className="oc-modal-header" style={{ padding: '18px 22px', borderBottom: '1px solid var(--v3-border)' }}>
+          <h3 style={{ margin: 0, fontSize: 17, color: 'var(--v3-text-name)', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <QrCode size={18} /> {bot.display_name} 入口码
+          </h3>
+          <button className="oc-btn-default" style={{ width: 28, height: 28, padding: 0, border: 'none', background: 'transparent' }} onClick={onClose}>×</button>
+        </div>
+
+        <div className="oc-modal-body" style={{ padding: 22 }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
+            {[
+              ['weixin', '微信'],
+              ['feishu', '飞书'],
+            ].map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                className={`oc-btn ${channel === value ? 'oc-btn-primary' : 'oc-btn-default'}`}
+                style={{ flex: 1, padding: '9px 0', borderRadius: 8 }}
+                onClick={() => setChannel(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', color: 'var(--v3-text-muted)', fontSize: 12, marginBottom: 8 }}>
+              {channel === 'feishu' ? '飞书 App ID（可选）' : '微信 AppID（可选）'}
+            </label>
+            <input
+              value={channelAppId}
+              onChange={(event) => setChannelAppIds((prev) => ({ ...prev, [channel]: event.target.value }))}
+              className="oc-auth-input"
+              placeholder="留空为通用入口码"
+              style={{ width: '100%', padding: '10px 12px', fontSize: 13 }}
+            />
+          </div>
+
+          {error && (
+            <div style={{ background: 'rgba(250,81,81,0.1)', color: '#FA5151', padding: 12, borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
+              {error}
+            </div>
+          )}
+
+          {loading ? (
+            <div style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)' }}>正在读取入口码...</div>
+          ) : selected ? (
+            <div style={{ display: 'grid', gridTemplateColumns: '196px 1fr', gap: 18, alignItems: 'center' }}>
+              <QRCode value={entryUrl} size={196} />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 8 }}>入口链接</div>
+                <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10, color: 'var(--v3-text-main)', fontSize: 12, lineHeight: 1.5, wordBreak: 'break-all', marginBottom: 14 }}>
+                  {entryUrl}
+                </div>
+                {usesLocalEntryUrl && (
+                  <div style={{ background: 'rgba(245,158,11,0.12)', color: '#d97706', padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
+                    当前入口链接不是公网 HTTPS 地址，手机扫码前需要配置公网访问地址。
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '9px 0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={() => onCopy(`entry_${selected.id}`, entryUrl)}>
+                    <Copy size={14} /> {copiedField === `entry_${selected.id}` ? 'Copied!' : '复制'}
+                  </button>
+                  <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '9px 0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={handleRegenerate} disabled={saving}>
+                    <RefreshCw size={14} /> 重新生成
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div style={{ padding: 36, textAlign: 'center', border: '1px dashed var(--v3-border)', borderRadius: 8 }}>
+              <div style={{ color: 'var(--v3-text-name)', marginBottom: 12 }}>还没有该渠道的入口码</div>
+              <button type="button" className="oc-btn oc-btn-primary" style={{ padding: '10px 18px', borderRadius: 8 }} onClick={handleGenerate} disabled={saving}>
+                {saving ? '正在生成...' : '生成入口码'}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function isPotentiallyPrivateEntryUrl(value) {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    return url.protocol !== 'https:'
+      || hostname === 'localhost'
+      || hostname === '0.0.0.0'
+      || hostname === '::1'
+      || hostname.startsWith('127.')
+      || hostname.startsWith('10.')
+      || hostname.startsWith('192.168.')
+      || /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)
+      || !hostname.includes('.');
+  } catch {
+    return false;
+  }
 }

@@ -146,6 +146,19 @@ export const api = {
   // Virtual employee roster
   getAgents: () => request('GET', '/api/agents'),
   openAgent: (agentUid) => request('POST', '/api/agents/open', { agent_uid: agentUid }),
+  getAgentEntries: (agentUid) => request('GET', `/api/agent-entries?agent_uid=${encodeURIComponent(agentUid)}`),
+  createAgentEntry: (agentUid, channel, channelAppId = '') =>
+    request('POST', '/api/agent-entries', {
+      agent_uid: agentUid,
+      channel,
+      ...(channelAppId ? { channel_app_id: channelAppId } : {}),
+    }),
+  regenerateAgentEntry: (entryId) =>
+    request('POST', `/api/agent-entries/${encodeURIComponent(entryId)}/regenerate`, {}),
+  getChannelAgentEntryPreview: (sceneKey) =>
+    request('GET', `/api/channel-agent-entry/preview?scene_key=${encodeURIComponent(sceneKey)}`),
+  confirmChannelAgentBinding: (payload) =>
+    request('POST', '/api/channel-agent-bindings/confirm', payload),
 
   // Groups
   createGroup: (name, memberIds) => request('POST', '/api/groups/create', { name, member_ids: memberIds }),
