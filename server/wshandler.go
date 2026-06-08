@@ -431,8 +431,9 @@ func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client
 	client.deviceInstallationID = device.InstallationID
 	if h.sharedRuntime != nil {
 		route := h.clientRoute(client)
-		route.ExpiresAt = nowForRoute(h).Add(defaultUserDeviceTTL)
-		h.sharedRuntime.bindUserDeviceRoute(ownerUID, device, route)
+		now := nowForRoute(h)
+		route.ExpiresAt = now.Add(defaultUserDeviceTTL)
+		h.sharedRuntime.bindUserDeviceRoute(ownerUID, device, route, now)
 	}
 }
 

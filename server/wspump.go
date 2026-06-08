@@ -194,12 +194,13 @@ func (c *Client) touchBoundDevice() {
 	c.hub.userDevices.touch(c.deviceOwnerUID, c.deviceID)
 	if c.hub.sharedRuntime != nil {
 		route := c.hub.clientRoute(c)
-		route.ExpiresAt = nowForRoute(c.hub).Add(defaultUserDeviceTTL)
+		now := nowForRoute(c.hub)
+		route.ExpiresAt = now.Add(defaultUserDeviceTTL)
 		c.hub.sharedRuntime.bindUserDeviceRoute(c.deviceOwnerUID, UserDevice{
 			DeviceID:       c.deviceID,
 			BodyID:         c.deviceBodyID,
 			InstallationID: c.deviceInstallationID,
-		}, route)
+		}, route, now)
 	}
 }
 

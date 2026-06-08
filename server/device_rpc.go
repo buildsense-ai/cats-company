@@ -666,7 +666,7 @@ func (h *Hub) sendDeviceRPCToRoute(route runtimeRoute, msg *MsgDeviceRPC) bool {
 		return h.sendDeviceRPCToLocalRoute(route, msg)
 	}
 	if h.sharedRuntime != nil {
-		return h.sharedRuntime.deliverDeviceRPC(route, msg)
+		return h.sharedRuntime.deliverDeviceRPC(route, msg, nowForRoute(h))
 	}
 	return false
 }
@@ -679,7 +679,7 @@ func (h *Hub) routeConnected(route runtimeRoute) bool {
 		return h.getClientByConnectionID(route.ConnectionID) != nil
 	}
 	if h.sharedRuntime != nil {
-		return h.sharedRuntime.routeConnected(route)
+		return h.sharedRuntime.routeConnected(route, nowForRoute(h))
 	}
 	return false
 }

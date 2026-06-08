@@ -51,8 +51,8 @@ type deviceRPCPendingRecord struct {
 type sharedRuntimeState interface {
 	runtimeMode() string
 	registerRuntimeNode(nodeID string, hub *Hub)
-	deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC) bool
-	routeConnected(route runtimeRoute) bool
+	deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC, now time.Time) bool
+	routeConnected(route runtimeRoute, now time.Time) bool
 
 	acquireBotBodyLease(botUID int64, bodyID string, connectionID string, nodeID string, now time.Time, ttl time.Duration) (botBodyLeaseResult, error)
 	botBodyLeaseConflict(botUID int64, bodyID string, now time.Time) (botBodyLease, bool)
@@ -65,7 +65,7 @@ type sharedRuntimeState interface {
 	listUserDevices(ownerUID int64) []UserDevice
 	activeUserDevice(ownerUID int64, deviceID string, now time.Time, ttl time.Duration) (UserDevice, bool)
 	touchUserDevice(ownerUID int64, deviceID string, now time.Time)
-	bindUserDeviceRoute(ownerUID int64, device UserDevice, route runtimeRoute)
+	bindUserDeviceRoute(ownerUID int64, device UserDevice, route runtimeRoute, now time.Time)
 	clearUserDeviceRoute(ownerUID int64, deviceID string, route runtimeRoute)
 	userDeviceRoute(ownerUID int64, deviceID string, now time.Time) (runtimeRoute, bool)
 
@@ -121,8 +121,8 @@ func (s *sharedMemoryRuntimeState) registerRuntimeNode(nodeID string, hub *Hub) 
 	s.nodes[nodeID] = hub
 }
 
-func (s *sharedMemoryRuntimeState) deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC) bool {
-	if s == nil || !route.validAt(time.Now()) {
+func (s *sharedMemoryRuntimeState) deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC, now time.Time) bool {
+	if s == nil || !route.validAt(now) {
 		return false
 	}
 	s.mu.Lock()
@@ -134,8 +134,8 @@ func (s *sharedMemoryRuntimeState) deliverDeviceRPC(route runtimeRoute, msg *Msg
 	return hub.sendDeviceRPCToLocalRoute(route, msg)
 }
 
-func (s *sharedMemoryRuntimeState) routeConnected(route runtimeRoute) bool {
-	if s == nil || !route.validAt(time.Now()) {
+func (s *sharedMemoryRuntimeState) routeConnected(route runtimeRoute, now time.Time) bool {
+	if s == nil || !route.validAt(now) {
 		return false
 	}
 	s.mu.Lock()
@@ -339,8 +339,8 @@ func (s *sharedMemoryRuntimeState) touchUserDevice(ownerUID int64, deviceID stri
 	ownerDevices[normalizedDeviceID] = device
 }
 
-func (s *sharedMemoryRuntimeState) bindUserDeviceRoute(ownerUID int64, device UserDevice, route runtimeRoute) {
-	if s == nil || ownerUID <= 0 || device.DeviceID == "" || !route.validAt(time.Now()) {
+func (s *sharedMemoryRuntimeState) bindUserDeviceRoute(ownerUID int64, device UserDevice, route runtimeRoute, now time.Time) {
+	if s == nil || ownerUID <= 0 || device.DeviceID == "" || !route.validAt(now) {
 		return
 	}
 	s.mu.Lock()
