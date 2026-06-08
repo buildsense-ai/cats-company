@@ -4,6 +4,7 @@ import t from '../i18n';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
 import MessagesView from './messages-view';
+import AgentEntryBindView from './agent-entry-bind-view';
 import ProfileEditor from '../widgets/profile-editor';
 import FeedbackModal from '../widgets/feedback-modal';
 import CatsCoDownloadModal from '../widgets/catsco-download-modal';
@@ -104,6 +105,8 @@ function writeStoredTopic(uid, topic) {
 }
 
 export default function TinodeWeb() {
+  const entryMatch = window.location.pathname.match(/^\/e\/([^/]+)$/);
+  const entrySceneKey = entryMatch ? decodeURIComponent(entryMatch[1]) : '';
   const [user, setUser] = useState(() => getInitialUser());
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
   const [activeTopic, _setActiveTopic] = useState(null);
@@ -285,6 +288,10 @@ export default function TinodeWeb() {
       return { ...prev, ...nextTopic };
     });
   };
+
+  if (entrySceneKey) {
+    return <AgentEntryBindView sceneKey={entrySceneKey} />;
+  }
 
   if (!user) {
     return <AuthView mode={authMode} setMode={setAuthMode} onLogin={handleLogin} onRegister={handleRegister} />;

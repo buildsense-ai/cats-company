@@ -103,6 +103,17 @@ type AuthServiceStore interface {
 	TouchAuthServiceLastUsed(id int64) error
 }
 
+// ChannelAgentBindingStore contains the optional persistence boundary for
+// channel QR entries and external-user-to-agent bindings.
+type ChannelAgentBindingStore interface {
+	EnsureChannelAgentEntry(entry *types.ChannelAgentEntry) (*types.ChannelAgentEntry, error)
+	ListChannelAgentEntries(ownerUID, agentUID int64) ([]*types.ChannelAgentEntry, error)
+	RegenerateChannelAgentEntry(id, ownerUID int64, sceneKey string) (*types.ChannelAgentEntry, error)
+	GetChannelAgentEntryBySceneKey(sceneKey string) (*types.ChannelAgentEntry, error)
+	UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) (*types.ChannelAgentBinding, error)
+	ResolveChannelAgentBinding(query types.ChannelAgentBindingQuery) (*types.ChannelAgentBinding, error)
+}
+
 // Store is the complete persistence boundary required by the current server.
 type Store interface {
 	UserStore
