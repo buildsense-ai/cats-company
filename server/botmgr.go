@@ -650,6 +650,8 @@ func (h *BotHandler) HandleGetBotBodyStatus(w http.ResponseWriter, r *http.Reque
 		status.State = "unbound"
 	}
 	if h.hub != nil {
+		status.RuntimeMode = h.hub.RuntimeMode()
+		status.RouteState = h.hub.RuntimeRouteState()
 		activeStatus := h.hub.BotBodyStatus(botUID)
 		if activeStatus.Active {
 			status = activeStatus

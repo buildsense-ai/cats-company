@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/openchat/openchat/server/store/types"
 )
 
 const (
@@ -151,7 +153,7 @@ func (c *Client) ReadPump(handler func(client *Client, msg *ClientMessage)) {
 	c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.conn.SetPongHandler(func(string) error {
 		c.conn.SetReadDeadline(time.Now().Add(pongWait))
-		c.touchBoundDevice()
+		c.touchRuntimeRoute()
 		return nil
 	})
 
@@ -168,9 +170,21 @@ func (c *Client) ReadPump(handler func(client *Client, msg *ClientMessage)) {
 			continue
 		}
 
-		c.touchBoundDevice()
+		c.touchRuntimeRoute()
 		handler(c, &msg)
 	}
+}
+
+func (c *Client) touchRuntimeRoute() {
+	c.touchBotBodyLease()
+	c.touchBoundDevice()
+}
+
+func (c *Client) touchBotBodyLease() {
+	if c == nil || c.hub == nil || c.accountType != types.AccountBot {
+		return
+	}
+	c.hub.renewBotBodyLease(c)
 }
 
 func (c *Client) touchBoundDevice() {
@@ -178,6 +192,15 @@ func (c *Client) touchBoundDevice() {
 		return
 	}
 	c.hub.userDevices.touch(c.deviceOwnerUID, c.deviceID)
+	if c.hub.sharedRuntime != nil {
+		route := c.hub.clientRoute(c)
+		route.ExpiresAt = nowForRoute(c.hub).Add(defaultUserDeviceTTL)
+		c.hub.sharedRuntime.bindUserDeviceRoute(c.deviceOwnerUID, UserDevice{
+			DeviceID:       c.deviceID,
+			BodyID:         c.deviceBodyID,
+			InstallationID: c.deviceInstallationID,
+		}, route)
+	}
 }
 
 // WritePump pumps messages from the hub to the WebSocket connection.

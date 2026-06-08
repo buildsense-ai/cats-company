@@ -297,6 +297,95 @@ func TestDeviceRPCRejectsResultFromSupersededDeviceConnection(t *testing.T) {
 	}
 }
 
+func TestSharedRuntimeRoutesDeviceRPCAcrossHubs(t *testing.T) {
+	shared := newSharedMemoryRuntimeState()
+	hubAgent := NewHubWithRuntime(nil, nil, shared, "node-agent")
+	hubDevice := NewHubWithRuntime(nil, nil, shared, "node-device")
+	now := time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC)
+	hubAgent.userDevices.now = func() time.Time { return now }
+	hubAgent.deviceRPC.now = func() time.Time { return now }
+	hubDevice.userDevices.now = func() time.Time { return now }
+	hubDevice.deviceRPC.now = func() time.Time { return now }
+
+	device, err := hubDevice.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID:       "alice-laptop",
+		DisplayName:    "Alice Laptop",
+		BodyID:         "body-device",
+		InstallationID: "install-device",
+		Capabilities:   []string{"read_file", "grep"},
+	})
+	if err != nil {
+		t.Fatalf("register device on node-device: %v", err)
+	}
+	grants := hubAgent.userDevices.grantsForDevices(7, "p2p_7_42", "p2p", 42, "body-agent", []UserDevice{device})
+	if len(grants) != 1 {
+		t.Fatalf("shared grantsForDevices returned %d grants", len(grants))
+	}
+
+	agent := &Client{
+		hub:         hubAgent,
+		uid:         42,
+		accountType: types.AccountBot,
+		bodyID:      "body-agent",
+		send:        make(chan []byte, 4),
+	}
+	target := &Client{
+		hub:         hubDevice,
+		uid:         77,
+		accountType: types.AccountHuman,
+		bodyID:      "body-device",
+		send:        make(chan []byte, 4),
+	}
+	hubAgent.addClient(agent)
+	hubDevice.addClient(target)
+	hubDevice.bindDeviceClient(7, device, target)
+
+	hubAgent.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-1",
+		Type:      "request",
+		RequestID: "rpc-cross-node",
+		GrantID:   grants[0].GrantID,
+		DeviceID:  device.DeviceID,
+		Operation: "read_file",
+		ToolName:  "read_file",
+	})
+
+	var forwarded ServerMessage
+	decodeQueuedServerMessage(t, target.send, &forwarded)
+	if forwarded.DeviceRPC == nil || forwarded.DeviceRPC.RequestID != "rpc-cross-node" {
+		t.Fatalf("target on node-device received %#v, want cross-node rpc request", forwarded)
+	}
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != 200 {
+		t.Fatalf("agent request ack = %#v, want 200", ack.Ctrl)
+	}
+	if pending := hubDevice.DeviceRPCStatus(7, "usr42"); len(pending) != 1 || !pending[0].RequesterConnected || !pending[0].TargetConnected {
+		t.Fatalf("shared pending status from node-device = %#v, want connected request/target", pending)
+	}
+
+	hubDevice.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "rpc-result-1",
+		Type:      "result",
+		RequestID: "rpc-cross-node",
+		Result:    map[string]interface{}{"ok": true},
+	})
+
+	var targetAck ServerMessage
+	decodeQueuedServerMessage(t, target.send, &targetAck)
+	if targetAck.Ctrl == nil || targetAck.Ctrl.Code != 200 {
+		t.Fatalf("target result ack = %#v, want 200", targetAck.Ctrl)
+	}
+	var result ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &result)
+	if result.DeviceRPC == nil || result.DeviceRPC.Type != "result" || result.DeviceRPC.RequestID != "rpc-cross-node" {
+		t.Fatalf("agent on node-agent received %#v, want cross-node rpc result", result)
+	}
+	if pending := hubAgent.DeviceRPCStatus(7, "usr42"); len(pending) != 0 {
+		t.Fatalf("shared pending should be cleared from node-agent: %#v", pending)
+	}
+}
+
 func TestBoundDeviceTouchKeepsLiveConnectionActive(t *testing.T) {
 	hub, _, target, _, grant := newDeviceRPCTestFixture(t, true)
 	now := time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC).Add(defaultUserDeviceTTL + time.Minute)
