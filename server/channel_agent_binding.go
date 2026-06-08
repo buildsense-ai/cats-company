@@ -332,7 +332,7 @@ func (h *ChannelAgentBindingHandler) handleCreateAgentEntry(w http.ResponseWrite
 	entry, err := bindings.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
 		SceneKey:     mustGenerateSceneKey(),
 		Channel:      channel,
-		ChannelAppID: strings.TrimSpace(req.ChannelAppID),
+		ChannelAppID: canonicalEntryChannelAppID(channel, req.ChannelAppID),
 		OwnerUID:     uid,
 		AgentUID:     req.AgentUID,
 		Status:       "active",
@@ -379,6 +379,15 @@ func (h *ChannelAgentBindingHandler) entryResponse(r *http.Request, entry *types
 		ChannelAgentEntry: entry,
 		EntryURL:          entryURL(r, entry.SceneKey),
 	}
+}
+
+func canonicalEntryChannelAppID(channel, requested string) string {
+	if normalizeChannel(channel) == "feishu" {
+		if appID := strings.TrimSpace(firstEnv("CATSCO_FEISHU_APP_ID", "FEISHU_APP_ID")); appID != "" {
+			return appID
+		}
+	}
+	return strings.TrimSpace(requested)
 }
 
 func normalizeChannel(value string) string {

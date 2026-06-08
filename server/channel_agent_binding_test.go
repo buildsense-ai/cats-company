@@ -201,6 +201,32 @@ func TestChannelAgentBindingUsesEntryChannelAppID(t *testing.T) {
 	}
 }
 
+func TestChannelAgentBindingUsesConfiguredFeishuAppID(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_APP_ID", "cloud_feishu_app")
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	handler := NewChannelAgentBindingHandler(db, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/agent-entries", bytes.NewBufferString(`{"agent_uid":43,"channel":"feishu","channel_app_id":"operator_input"}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleAgentEntries(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		Entry channelAgentEntryResponse `json:"entry"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if created.Entry.ChannelAppID != "cloud_feishu_app" {
+		t.Fatalf("expected configured Feishu app id, got %+v", created.Entry)
+	}
+}
+
 func TestChannelAgentBindingRejectsEntryAppIDMismatch(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}

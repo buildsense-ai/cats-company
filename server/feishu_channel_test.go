@@ -124,6 +124,70 @@ func TestFeishuOAuthCallbackBindsActor(t *testing.T) {
 	}
 }
 
+func TestFeishuOAuthCallbackUsesConfiguredAppID(t *testing.T) {
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	entry, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+		SceneKey:     "scene-feishu-legacy",
+		Channel:      "feishu",
+		ChannelAppID: "legacy_app",
+		OwnerUID:     7,
+		AgentUID:     43,
+		Status:       "active",
+	})
+	if err != nil {
+		t.Fatalf("seed entry: %v", err)
+	}
+	api := &fakeFeishuAPI{
+		appID: "cloud_app",
+		identity: &FeishuUserIdentity{
+			OpenID: "ou_user",
+			Name:   "Feishu Alice",
+		},
+	}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{
+		AppID:            "cloud_app",
+		AppSecret:        "secret",
+		OAuthRedirectURI: "https://app.catsco.cc/api/channel-agent-bindings/oauth/feishu/callback",
+	}, api)
+	state, err := handler.signOAuthState(feishuOAuthState{
+		SceneKey:  entry.SceneKey,
+		ExpiresAt: time.Now().Add(time.Minute).Unix(),
+		Nonce:     "nonce",
+	})
+	if err != nil {
+		t.Fatalf("sign state: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/channel-agent-bindings/oauth/feishu/callback?code=code-1&state="+state, nil)
+	rec := httptest.NewRecorder()
+	handler.HandleOAuthCallback(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	binding, err := db.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
+		Channel:       "feishu",
+		ChannelAppID:  "cloud_app",
+		ChannelUserID: "ou_user",
+	})
+	if err != nil || binding == nil {
+		t.Fatalf("cloud app binding=%+v err=%v", binding, err)
+	}
+	legacy, err := db.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
+		Channel:       "feishu",
+		ChannelAppID:  "legacy_app",
+		ChannelUserID: "ou_user",
+	})
+	if err != nil {
+		t.Fatalf("legacy resolve: %v", err)
+	}
+	if legacy != nil {
+		t.Fatalf("legacy app should not receive OAuth binding: %+v", legacy)
+	}
+}
+
 func TestFeishuMessageEventDeliversToBoundAgent(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}

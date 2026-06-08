@@ -496,10 +496,12 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
   }, [botId]);
 
   const channelAppId = channelAppIds[channel] || '';
-  const normalizedChannelAppId = channelAppId.trim();
-  const selected = entries.find((entry) => (
-    entry.channel === channel && (entry.channel_app_id || '') === normalizedChannelAppId
-  ));
+  const normalizedChannelAppId = channel === 'feishu' ? '' : channelAppId.trim();
+  const entryScopeMatches = (entry, targetChannel = channel, targetAppId = normalizedChannelAppId) => (
+    entry.channel === targetChannel
+    && (targetChannel === 'feishu' || (entry.channel_app_id || '') === targetAppId)
+  );
+  const selected = entries.find((entry) => entryScopeMatches(entry));
   const entryUrl = selected?.entry_url || '';
   const usesLocalEntryUrl = isPotentiallyPrivateEntryUrl(entryUrl);
 
@@ -510,7 +512,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
       const res = await api.createAgentEntry(botId, channel, normalizedChannelAppId);
       const next = res.entry;
       setEntries((prev) => [next, ...prev.filter((entry) => (
-        !(entry.channel === next.channel && (entry.channel_app_id || '') === (next.channel_app_id || ''))
+        !entryScopeMatches(entry, next.channel, next.channel === 'feishu' ? '' : (next.channel_app_id || ''))
       ))]);
     } catch (err) {
       setError(err.message || 'Failed to generate entry code');
@@ -529,7 +531,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
       const next = res.entry;
       setEntries((prev) => [next, ...prev.filter((entry) => (
         entry.id !== selected.id
-        && !(entry.channel === next.channel && (entry.channel_app_id || '') === (next.channel_app_id || ''))
+        && !entryScopeMatches(entry, next.channel, next.channel === 'feishu' ? '' : (next.channel_app_id || ''))
       ))]);
     } catch (err) {
       setError(err.message || 'Failed to regenerate entry code');
@@ -566,18 +568,20 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
             ))}
           </div>
 
-          <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', color: 'var(--v3-text-muted)', fontSize: 12, marginBottom: 8 }}>
-              {channel === 'feishu' ? '飞书 App ID（可选）' : '微信 AppID（可选）'}
-            </label>
-            <input
-              value={channelAppId}
-              onChange={(event) => setChannelAppIds((prev) => ({ ...prev, [channel]: event.target.value }))}
-              className="oc-auth-input"
-              placeholder="留空为通用入口码"
-              style={{ width: '100%', padding: '10px 12px', fontSize: 13 }}
-            />
-          </div>
+          {channel !== 'feishu' && (
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ display: 'block', color: 'var(--v3-text-muted)', fontSize: 12, marginBottom: 8 }}>
+                微信 AppID（可选）
+              </label>
+              <input
+                value={channelAppId}
+                onChange={(event) => setChannelAppIds((prev) => ({ ...prev, [channel]: event.target.value }))}
+                className="oc-auth-input"
+                placeholder="留空为通用入口码"
+                style={{ width: '100%', padding: '10px 12px', fontSize: 13 }}
+              />
+            </div>
+          )}
 
           {error && (
             <div style={{ background: 'rgba(250,81,81,0.1)', color: '#FA5151', padding: 12, borderRadius: 8, marginBottom: 16, fontSize: 13 }}>

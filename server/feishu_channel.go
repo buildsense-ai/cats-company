@@ -198,7 +198,7 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 		writeHTML(w, http.StatusBadGateway, oauthResultHTML("绑定失败", "飞书没有返回可绑定的用户身份。"))
 		return
 	}
-	actorUID, err := h.ensureChannelActor("feishu", h.effectiveAppID(entry.ChannelAppID), channelUserID, identity)
+	actorUID, err := h.ensureChannelActor("feishu", h.effectiveAppID(""), channelUserID, identity)
 	if err != nil {
 		log.Printf("ensure feishu actor failed: %v", err)
 		writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "创建用户身份失败，请稍后重试。"))
@@ -401,7 +401,7 @@ func (h *FeishuChannelHandler) bindFeishuIdentity(entry *types.ChannelAgentEntry
 	}
 	return bindings.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:                 "feishu",
-		ChannelAppID:            h.effectiveAppID(entry.ChannelAppID),
+		ChannelAppID:            h.effectiveAppID(""),
 		ChannelUserID:           channelUserID,
 		ChannelConversationID:   strings.TrimSpace(conversationID),
 		ChannelConversationType: normalizeConversationType(conversationType),
