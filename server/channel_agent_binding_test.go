@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -285,6 +286,43 @@ func TestChannelAgentBindingResolveAuth(t *testing.T) {
 	}
 }
 
+func TestChannelAgentBindingConfirmAuth(t *testing.T) {
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	entry, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+		SceneKey: "scene-weixin",
+		Channel:  "weixin",
+		OwnerUID: 7,
+		AgentUID: 43,
+		Status:   "active",
+	})
+	if err != nil {
+		t.Fatalf("seed entry: %v", err)
+	}
+	handler := NewChannelAgentBindingHandler(db, nil)
+	body := `{"scene_key":"` + entry.SceneKey + `","channel_user_id":"openid-7"}`
+
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("CATSCO_CHANNEL_BINDING_TOKEN", "")
+	openReq := httptest.NewRequest(http.MethodPost, "/api/channel-agent-bindings/confirm", strings.NewReader(body))
+	openRec := httptest.NewRecorder()
+	handler.HandleConfirmChannelAgentBinding(openRec, openReq)
+	if openRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected production confirm without token to be unauthorized, got status=%d body=%s", openRec.Code, openRec.Body.String())
+	}
+
+	t.Setenv("CATSCO_CHANNEL_BINDING_TOKEN", "secret")
+	bearerReq := httptest.NewRequest(http.MethodPost, "/api/channel-agent-bindings/confirm", strings.NewReader(body))
+	bearerReq.Header.Set("Authorization", "Bearer secret")
+	bearerRec := httptest.NewRecorder()
+	handler.HandleConfirmChannelAgentBinding(bearerRec, bearerReq)
+	if bearerRec.Code != http.StatusOK {
+		t.Fatalf("expected bearer token to be accepted, got status=%d body=%s", bearerRec.Code, bearerRec.Body.String())
+	}
+}
+
 func TestChannelAgentEntryRegenerateRequiresActiveEntry(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
@@ -317,26 +355,28 @@ func TestChannelAgentEntryRegenerateRequiresActiveEntry(t *testing.T) {
 
 type channelAgentTestStore struct {
 	store.Store
-	users    map[int64]*types.User
-	owners   map[int64]int64
-	bodyIDs  map[int64]string
-	entries  map[int64]*types.ChannelAgentEntry
-	bindings map[string]*types.ChannelAgentBinding
-	messages []*types.Message
-	topics   []string
-	nextID   int64
+	users     map[int64]*types.User
+	owners    map[int64]int64
+	bodyIDs   map[int64]string
+	entries   map[int64]*types.ChannelAgentEntry
+	bindings  map[string]*types.ChannelAgentBinding
+	messages  []*types.Message
+	clientIDs map[string]int64
+	topics    []string
+	nextID    int64
 }
 
 func newChannelAgentTestStore() *channelAgentTestStore {
 	return &channelAgentTestStore{
-		users:    map[int64]*types.User{},
-		owners:   map[int64]int64{},
-		bodyIDs:  map[int64]string{},
-		entries:  map[int64]*types.ChannelAgentEntry{},
-		bindings: map[string]*types.ChannelAgentBinding{},
-		messages: []*types.Message{},
-		topics:   []string{},
-		nextID:   1,
+		users:     map[int64]*types.User{},
+		owners:    map[int64]int64{},
+		bodyIDs:   map[int64]string{},
+		entries:   map[int64]*types.ChannelAgentEntry{},
+		bindings:  map[string]*types.ChannelAgentBinding{},
+		messages:  []*types.Message{},
+		clientIDs: map[string]int64{},
+		topics:    []string{},
+		nextID:    1,
 	}
 }
 
@@ -403,10 +443,17 @@ func (s *channelAgentTestStore) SaveMessageWithReply(topicID string, fromUID int
 }
 
 func (s *channelAgentTestStore) SaveMessageIdempotent(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string) (int64, bool, error) {
-	for _, message := range s.messages {
-		if message.TopicID == topicID && message.FromUID == fromUID && message.Content == content {
-			return message.ID, true, nil
+	if strings.TrimSpace(clientMsgID) != "" {
+		key := topicID + "\x00" + strconv.FormatInt(fromUID, 10) + "\x00" + clientMsgID
+		if id := s.clientIDs[key]; id > 0 {
+			return id, true, nil
 		}
+		id, err := s.SaveMessageWithBlocks(topicID, fromUID, content, blocks, mode, role, msgType)
+		if err != nil {
+			return 0, false, err
+		}
+		s.clientIDs[key] = id
+		return id, false, nil
 	}
 	id, err := s.SaveMessageWithBlocks(topicID, fromUID, content, blocks, mode, role, msgType)
 	return id, false, err

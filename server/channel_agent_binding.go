@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -43,7 +44,8 @@ type channelAgentConfirmRequest struct {
 
 type channelAgentEntryResponse struct {
 	*types.ChannelAgentEntry
-	EntryURL string `json:"entry_url"`
+	EntryURL     string `json:"entry_url"`
+	ChannelQRURL string `json:"channel_qr_url,omitempty"`
 }
 
 // HandleAgentEntries handles authenticated owner entry management.
@@ -375,15 +377,28 @@ func (h *ChannelAgentBindingHandler) bindingStore(w http.ResponseWriter) (store.
 }
 
 func (h *ChannelAgentBindingHandler) entryResponse(r *http.Request, entry *types.ChannelAgentEntry) channelAgentEntryResponse {
-	return channelAgentEntryResponse{
+	resp := channelAgentEntryResponse{
 		ChannelAgentEntry: entry,
 		EntryURL:          entryURL(r, entry.SceneKey),
 	}
+	if entry != nil && entry.Channel == "weixin" && weixinQRCodeConfiguredFromEnv() && entry.ChannelAppID == configuredWeixinAppID() {
+		resp.ChannelQRURL = publicBaseURL(r) + weixinQRCodePath(entry.SceneKey)
+	}
+	return resp
+}
+
+func configuredWeixinAppID() string {
+	return strings.TrimSpace(firstEnv("CATSCO_WEIXIN_APP_ID", "CATSCO_WECHAT_APP_ID", "WEIXIN_APP_ID", "WECHAT_APP_ID"))
 }
 
 func canonicalEntryChannelAppID(channel, requested string) string {
 	if normalizeChannel(channel) == "feishu" {
 		if appID := strings.TrimSpace(firstEnv("CATSCO_FEISHU_APP_ID", "FEISHU_APP_ID")); appID != "" {
+			return appID
+		}
+	}
+	if normalizeChannel(channel) == "weixin" {
+		if appID := configuredWeixinAppID(); appID != "" {
 			return appID
 		}
 	}
@@ -447,7 +462,7 @@ func authorizedChannelResolve(r *http.Request) bool {
 		return !isProductionLikeEnv()
 	}
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	if strings.HasPrefix(auth, "Bearer ") && strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == required {
+	if strings.HasPrefix(auth, "Bearer ") && constantTimeStringEqual(strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")), required) {
 		return true
 	}
 	return false
@@ -456,16 +471,23 @@ func authorizedChannelResolve(r *http.Request) bool {
 func authorizedChannelConfirm(r *http.Request, payloadToken string) bool {
 	required := strings.TrimSpace(os.Getenv("CATSCO_CHANNEL_BINDING_TOKEN"))
 	if required == "" {
-		return true
+		return !isProductionLikeEnv()
 	}
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	if strings.HasPrefix(auth, "Bearer ") && strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == required {
+	if strings.HasPrefix(auth, "Bearer ") && constantTimeStringEqual(strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")), required) {
 		return true
 	}
-	if strings.TrimSpace(payloadToken) == required {
+	if constantTimeStringEqual(strings.TrimSpace(payloadToken), required) {
 		return true
 	}
-	return strings.TrimSpace(r.URL.Query().Get("confirm_token")) == required
+	return constantTimeStringEqual(strings.TrimSpace(r.URL.Query().Get("confirm_token")), required)
+}
+
+func constantTimeStringEqual(got, expected string) bool {
+	if got == "" || expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
 }
 
 func userDisplayName(user *types.User) string {

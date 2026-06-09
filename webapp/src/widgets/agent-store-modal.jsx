@@ -474,6 +474,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [qrImageError, setQrImageError] = useState(false);
   const botId = bot?.id || bot?.uid;
 
   useEffect(() => {
@@ -496,14 +497,23 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
   }, [botId]);
 
   const channelAppId = channelAppIds[channel] || '';
-  const normalizedChannelAppId = channel === 'feishu' ? '' : channelAppId.trim();
+  const managedChannelAppID = channel === 'feishu' || channel === 'weixin';
+  const normalizedChannelAppId = managedChannelAppID ? '' : channelAppId.trim();
   const entryScopeMatches = (entry, targetChannel = channel, targetAppId = normalizedChannelAppId) => (
     entry.channel === targetChannel
-    && (targetChannel === 'feishu' || (entry.channel_app_id || '') === targetAppId)
+    && (targetChannel === 'feishu' || targetChannel === 'weixin' || (entry.channel_app_id || '') === targetAppId)
   );
   const selected = entries.find((entry) => entryScopeMatches(entry));
   const entryUrl = selected?.entry_url || '';
-  const usesLocalEntryUrl = isPotentiallyPrivateEntryUrl(entryUrl);
+  const channelQrUrl = selected?.channel_qr_url || '';
+  const displayQrUrl = channel === 'weixin' && channelQrUrl ? channelQrUrl : '';
+  const displayUrl = displayQrUrl || entryUrl;
+  const usesLocalEntryUrl = isPotentiallyPrivateEntryUrl(displayUrl);
+  const needsWeixinConfig = channel === 'weixin' && selected && !displayQrUrl;
+
+  useEffect(() => {
+    setQrImageError(false);
+  }, [displayQrUrl]);
 
   const handleGenerate = async () => {
     try {
@@ -512,7 +522,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
       const res = await api.createAgentEntry(botId, channel, normalizedChannelAppId);
       const next = res.entry;
       setEntries((prev) => [next, ...prev.filter((entry) => (
-        !entryScopeMatches(entry, next.channel, next.channel === 'feishu' ? '' : (next.channel_app_id || ''))
+        !entryScopeMatches(entry, next.channel, next.channel === 'feishu' || next.channel === 'weixin' ? '' : (next.channel_app_id || ''))
       ))]);
     } catch (err) {
       setError(err.message || 'Failed to generate entry code');
@@ -531,7 +541,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
       const next = res.entry;
       setEntries((prev) => [next, ...prev.filter((entry) => (
         entry.id !== selected.id
-        && !entryScopeMatches(entry, next.channel, next.channel === 'feishu' ? '' : (next.channel_app_id || ''))
+        && !entryScopeMatches(entry, next.channel, next.channel === 'feishu' || next.channel === 'weixin' ? '' : (next.channel_app_id || ''))
       ))]);
     } catch (err) {
       setError(err.message || 'Failed to regenerate entry code');
@@ -553,7 +563,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
         <div className="oc-modal-body" style={{ padding: 22 }}>
           <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
             {[
-              ['weixin', '微信'],
+              ['weixin', '微信公众号'],
               ['feishu', '飞书'],
             ].map(([value, label]) => (
               <button
@@ -568,7 +578,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
             ))}
           </div>
 
-          {channel !== 'feishu' && (
+          {!managedChannelAppID && (
             <div style={{ marginBottom: 16 }}>
               <label style={{ display: 'block', color: 'var(--v3-text-muted)', fontSize: 12, marginBottom: 8 }}>
                 微信 AppID（可选）
@@ -591,21 +601,59 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
 
           {loading ? (
             <div style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)' }}>正在读取入口码...</div>
+          ) : selected && needsWeixinConfig ? (
+            <div style={{ padding: 24, border: '1px dashed var(--v3-border)', borderRadius: 8 }}>
+              <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, marginBottom: 10 }}>微信公众号入口码尚不可用</div>
+              <div style={{ color: 'var(--v3-text-muted)', fontSize: 13, lineHeight: 1.7, marginBottom: 14 }}>
+                配置公众号 AppID、AppSecret 和服务器回调后，这里会显示可扫码关注并绑定虚拟员工的公众号参数二维码。
+              </div>
+              <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10, color: 'var(--v3-text-main)', fontSize: 12, lineHeight: 1.6, marginBottom: 14 }}>
+                公众号后台 URL：/api/channels/weixin/events<br />
+                Token：CATSCO_WEIXIN_EVENT_TOKEN<br />
+                消息加解密：明文或兼容模式
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '9px 0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={() => onCopy(`entry_${selected.id}`, entryUrl)}>
+                  <Copy size={14} /> {copiedField === `entry_${selected.id}` ? 'Copied!' : '复制测试链接'}
+                </button>
+                <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '9px 0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={handleRegenerate} disabled={saving}>
+                  <RefreshCw size={14} /> 重新生成
+                </button>
+              </div>
+            </div>
           ) : selected ? (
             <div style={{ display: 'grid', gridTemplateColumns: '196px 1fr', gap: 18, alignItems: 'center' }}>
-              <QRCode value={entryUrl} size={196} />
+              {displayQrUrl && !qrImageError ? (
+                <img
+                  src={displayQrUrl}
+                  alt="微信入口码"
+                  width={196}
+                  height={196}
+                  onError={() => setQrImageError(true)}
+                  style={{ borderRadius: 8, background: '#fff', border: '1px solid var(--v3-border)', objectFit: 'contain' }}
+                />
+              ) : (
+                <QRCode value={entryUrl} size={196} />
+              )}
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 8 }}>入口链接</div>
-                <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10, color: 'var(--v3-text-main)', fontSize: 12, lineHeight: 1.5, wordBreak: 'break-all', marginBottom: 14 }}>
-                  {entryUrl}
+                <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 8 }}>
+                  {displayQrUrl ? '二维码图片跳转地址' : '入口链接'}
                 </div>
+                <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10, color: 'var(--v3-text-main)', fontSize: 12, lineHeight: 1.5, wordBreak: 'break-all', marginBottom: 14 }}>
+                  {displayUrl}
+                </div>
+                {channel === 'weixin' && qrImageError && (
+                  <div style={{ background: 'rgba(250,81,81,0.1)', color: '#FA5151', padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
+                    微信二维码加载失败，请检查 AppID/AppSecret、公众号接口权限、服务器 IP 白名单和微信后台消息加解密模式。
+                  </div>
+                )}
                 {usesLocalEntryUrl && (
                   <div style={{ background: 'rgba(245,158,11,0.12)', color: '#d97706', padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
                     当前入口链接不是公网 HTTPS 地址，手机扫码前需要配置公网访问地址。
                   </div>
                 )}
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '9px 0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={() => onCopy(`entry_${selected.id}`, entryUrl)}>
+                  <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '9px 0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={() => onCopy(`entry_${selected.id}`, displayUrl)}>
                     <Copy size={14} /> {copiedField === `entry_${selected.id}` ? 'Copied!' : '复制'}
                   </button>
                   <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '9px 0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={handleRegenerate} disabled={saving}>
