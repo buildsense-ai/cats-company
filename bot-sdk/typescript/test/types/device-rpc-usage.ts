@@ -27,8 +27,20 @@ const input: DeviceRPCRequestInput = {
   operation: 'read_file',
   payload: { path: 'quote.xlsx' },
 };
+const writeInput: DeviceRPCRequestInput = {
+  grant_id: 'grant-write',
+  operation: 'write_file',
+  payload: { path: 'quote.xlsx', content: 'updated' },
+};
+const shellInput: DeviceRPCRequestInput = {
+  grant_id: 'grant-shell',
+  operation: 'execute_shell',
+  payload: { command: 'echo ok' },
+};
 
 void bot.sendDeviceRPCRequest(input).then((ack: DeviceRPCRequestAck) => ack.request_id);
+void bot.sendDeviceRPCRequest(writeInput).then((ack: DeviceRPCRequestAck) => ack.request_id);
+void bot.sendDeviceRPCRequest(shellInput).then((ack: DeviceRPCRequestAck) => ack.request_id);
 void bot.sendDeviceRPC({
   type: 'result',
   request_id: 'rpc-1',

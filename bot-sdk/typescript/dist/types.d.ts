@@ -54,7 +54,7 @@ export interface MsgClientFriend {
     msg?: string;
 }
 export type DeviceRPCType = 'request' | 'result';
-export type DeviceRPCOperation = 'read_file' | 'glob' | 'grep';
+export type DeviceRPCOperation = 'read_file' | 'glob' | 'grep' | 'write_file' | 'execute_shell';
 export interface MsgDeviceRPCError {
     code: string;
     message: string;
