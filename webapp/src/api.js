@@ -159,6 +159,8 @@ export const api = {
     request('GET', `/api/channel-agent-entry/preview?scene_key=${encodeURIComponent(sceneKey)}`),
   confirmChannelAgentBinding: (payload) =>
     request('POST', '/api/channel-agent-bindings/confirm', payload),
+  linkChannelAgentBindingUser: (payload) =>
+    request('POST', '/api/channel-agent-bindings/link-user', payload),
 
   // Groups
   createGroup: (name, memberIds) => request('POST', '/api/groups/create', { name, member_ids: memberIds }),

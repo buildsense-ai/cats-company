@@ -35,6 +35,8 @@ type deviceRPCPendingRecord struct {
 	agentBodyID     string
 	actorUID        int64
 	actorUserID     string
+	ownerUID        int64
+	ownerUserID     string
 	sessionKey      string
 	topicID         string
 	topicType       string
@@ -81,7 +83,7 @@ type sharedRuntimeState interface {
 	addDeviceRPCPending(pending deviceRPCPendingRecord, now time.Time) (bool, string)
 	getDeviceRPCPending(requestID string, now time.Time) (deviceRPCPendingRecord, bool)
 	finishDeviceRPCPending(requestID string)
-	listDeviceRPCPendingByActor(actorUID int64) []deviceRPCPendingRecord
+	listDeviceRPCPendingByOwner(ownerUID int64) []deviceRPCPendingRecord
 	expireDeviceRPCPending(now time.Time) []deviceRPCPendingRecord
 }
 
@@ -525,7 +527,7 @@ func (s *sharedMemoryRuntimeState) addDeviceRPCPending(pending deviceRPCPendingR
 		if item.agentUID == pending.agentUID {
 			agentCount++
 		}
-		if item.actorUID == pending.actorUID && item.deviceID == pending.deviceID {
+		if item.ownerUID == pending.ownerUID && item.deviceID == pending.deviceID {
 			deviceCount++
 		}
 	}
@@ -561,15 +563,15 @@ func (s *sharedMemoryRuntimeState) finishDeviceRPCPending(requestID string) {
 	delete(s.deviceRPC, requestID)
 }
 
-func (s *sharedMemoryRuntimeState) listDeviceRPCPendingByActor(actorUID int64) []deviceRPCPendingRecord {
-	if s == nil || actorUID <= 0 {
+func (s *sharedMemoryRuntimeState) listDeviceRPCPendingByOwner(ownerUID int64) []deviceRPCPendingRecord {
+	if s == nil || ownerUID <= 0 {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]deviceRPCPendingRecord, 0)
 	for _, pending := range s.deviceRPC {
-		if pending.actorUID == actorUID {
+		if pending.ownerUID == ownerUID {
 			out = append(out, pending)
 		}
 	}
@@ -772,6 +774,8 @@ func deviceRPCRecordFromPending(pending deviceRPCPending) deviceRPCPendingRecord
 		agentBodyID:     pending.agentBodyID,
 		actorUID:        pending.actorUID,
 		actorUserID:     pending.actorUserID,
+		ownerUID:        pending.ownerUID,
+		ownerUserID:     pending.ownerUserID,
 		sessionKey:      pending.sessionKey,
 		topicID:         pending.topicID,
 		topicType:       pending.topicType,
@@ -796,6 +800,8 @@ func pendingFromDeviceRPCRecord(record deviceRPCPendingRecord) deviceRPCPending 
 		agentBodyID:     record.agentBodyID,
 		actorUID:        record.actorUID,
 		actorUserID:     record.actorUserID,
+		ownerUID:        record.ownerUID,
+		ownerUserID:     record.ownerUserID,
 		sessionKey:      record.sessionKey,
 		topicID:         record.topicID,
 		topicType:       record.topicType,

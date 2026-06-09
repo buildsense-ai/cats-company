@@ -27,6 +27,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddBodyID,
 		migrateChannelAgentEntriesAddAppID,
 		migrateChannelAgentBindingsAddActorUID,
+		migrateChannelAgentBindingsAddCanonicalUID,
 		migrateMessagesAddCodeMode,
 		migrateMessagesAddClientMsgID,
 		migrateGroupsAddCreatedAtColumn,
@@ -225,6 +226,7 @@ CREATE TABLE IF NOT EXISTS channel_agent_bindings (
 	channel_conversation_id VARCHAR(128) NOT NULL DEFAULT '',
 	channel_conversation_type VARCHAR(32) NOT NULL DEFAULT 'p2p',
 	actor_uid BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
+	canonical_uid BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
 	owner_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     entry_id BIGINT DEFAULT NULL REFERENCES channel_agent_entries(id) ON DELETE SET NULL,
@@ -245,6 +247,7 @@ const migrateBotConfigAddTenantName = `ALTER TABLE bot_config ADD COLUMN IF NOT 
 const migrateBotConfigAddBodyID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS body_id VARCHAR(128) DEFAULT NULL;`
 const migrateChannelAgentEntriesAddAppID = `ALTER TABLE channel_agent_entries ADD COLUMN IF NOT EXISTS channel_app_id VARCHAR(128) NOT NULL DEFAULT '';`
 const migrateChannelAgentBindingsAddActorUID = `ALTER TABLE channel_agent_bindings ADD COLUMN IF NOT EXISTS actor_uid BIGINT DEFAULT NULL;`
+const migrateChannelAgentBindingsAddCanonicalUID = `ALTER TABLE channel_agent_bindings ADD COLUMN IF NOT EXISTS canonical_uid BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL;`
 const migrateMessagesAddCodeMode = `
 ALTER TABLE messages
   ADD COLUMN IF NOT EXISTS content_blocks JSONB DEFAULT NULL,
@@ -310,6 +313,7 @@ CREATE INDEX IF NOT EXISTS idx_channel_agent_entries_owner_agent ON channel_agen
 CREATE INDEX IF NOT EXISTS idx_channel_agent_bindings_lookup ON channel_agent_bindings (channel, channel_app_id, channel_user_id, status);
 CREATE INDEX IF NOT EXISTS idx_channel_agent_bindings_agent ON channel_agent_bindings (owner_uid, agent_uid, status);
 CREATE INDEX IF NOT EXISTS idx_channel_agent_bindings_actor_agent ON channel_agent_bindings (channel, channel_app_id, actor_uid, agent_uid, status);
+CREATE INDEX IF NOT EXISTS idx_channel_agent_bindings_actor_any ON channel_agent_bindings (actor_uid, agent_uid, status);
 `
 
 const createUpdatedAtTriggers = `
