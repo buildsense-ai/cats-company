@@ -127,6 +127,242 @@ func TestChannelAgentBindingResolveFallsBackToUserDefault(t *testing.T) {
 	}
 }
 
+func TestChannelAgentBindingConfirmRequiresTokenInProduction(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("CATSCO_CHANNEL_BINDING_TOKEN", "")
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	_, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+		SceneKey: "scene-prod-token",
+		Channel:  "feishu",
+		OwnerUID: 7,
+		AgentUID: 43,
+		Status:   "active",
+	})
+	if err != nil {
+		t.Fatalf("seed entry: %v", err)
+	}
+	handler := NewChannelAgentBindingHandler(db, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/channel-agent-bindings/confirm", bytes.NewBufferString(`{"scene_key":"scene-prod-token","channel_user_id":"ou_user"}`))
+	rec := httptest.NewRecorder()
+	handler.HandleConfirmChannelAgentBinding(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(db.bindings) != 0 {
+		t.Fatalf("confirm without token should not create binding: %+v", db.bindings)
+	}
+}
+
+func TestChannelAgentBindingLinkUser(t *testing.T) {
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.users[100] = &types.User{ID: 100, Username: "ch_feishu_user", DisplayName: "Feishu User", AccountType: types.AccountHuman}
+	db.owners[43] = 7
+	db.bodyIDs[43] = "body-contract"
+	handler := NewChannelAgentBindingHandler(db, nil)
+
+	binding, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:       "feishu",
+		ChannelAppID:  "cli_app",
+		ChannelUserID: "ou_user",
+		ActorUID:      100,
+		OwnerUID:      7,
+		AgentUID:      43,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	linkURL := channelBindingDeviceLinkURL(httptest.NewRequest(http.MethodGet, "https://app.catsco.cc/e/demo", nil), binding)
+	if linkURL == "" {
+		t.Fatalf("device link url is empty")
+	}
+	token, err := signChannelBindingLinkToken(channelAgentLinkTokenPayload{
+		BindingID: binding.ID,
+		ActorUID:  binding.ActorUID,
+		AgentUID:  binding.AgentUID,
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign link token: %v", err)
+	}
+	body := `{"binding_id":` + strconv.FormatInt(binding.ID, 10) + `,"link_token":"` + token + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/channel-agent-bindings/link-user", strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleLinkChannelAgentBindingUser(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("link status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var linked struct {
+		Status        string                    `json:"status"`
+		Binding       types.ChannelAgentBinding `json:"binding"`
+		CanonicalUID  int64                     `json:"canonical_uid"`
+		DeviceLinked  bool                      `json:"device_linked"`
+		DeviceOwnerID int64                     `json:"device_owner_uid"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &linked); err != nil {
+		t.Fatalf("decode link response: %v", err)
+	}
+	if linked.Status != "linked" || linked.CanonicalUID != 7 || linked.Binding.CanonicalUID != 7 || !linked.DeviceLinked || linked.DeviceOwnerID != 7 {
+		t.Fatalf("unexpected link response: %+v", linked)
+	}
+}
+
+func TestChannelAgentBindingLinkUserRejectsInvalidTokensBeforeStoreUpdate(t *testing.T) {
+	db, handler, binding := newChannelAgentLinkHarness(t)
+
+	expiredToken, err := signChannelBindingLinkToken(channelAgentLinkTokenPayload{
+		BindingID: binding.ID,
+		ActorUID:  binding.ActorUID,
+		AgentUID:  binding.AgentUID,
+		ExpiresAt: time.Now().Add(-time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign expired token: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		bindingID int64
+		token     string
+	}{
+		{name: "expired", bindingID: binding.ID, token: expiredToken},
+		{name: "tampered", bindingID: binding.ID, token: validChannelAgentLinkToken(t, binding) + "x"},
+		{name: "binding mismatch", bindingID: binding.ID + 1, token: validChannelAgentLinkToken(t, binding)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"binding_id":` + strconv.FormatInt(tc.bindingID, 10) + `,"link_token":"` + tc.token + `"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/channel-agent-bindings/link-user", strings.NewReader(body))
+			req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+			rec := httptest.NewRecorder()
+			handler.HandleLinkChannelAgentBindingUser(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if len(db.linkCalls) != 0 {
+				t.Fatalf("invalid token should not call store: %+v", db.linkCalls)
+			}
+			if binding.CanonicalUID != 0 {
+				t.Fatalf("invalid token changed canonical uid: %+v", binding)
+			}
+		})
+	}
+}
+
+func TestChannelAgentBindingLinkUserIsIdempotentForSameUser(t *testing.T) {
+	db, handler, binding := newChannelAgentLinkHarness(t)
+	token := validChannelAgentLinkToken(t, binding)
+
+	for i := 0; i < 2; i++ {
+		body := `{"binding_id":` + strconv.FormatInt(binding.ID, 10) + `,"link_token":"` + token + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/channel-agent-bindings/link-user", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+		rec := httptest.NewRecorder()
+		handler.HandleLinkChannelAgentBindingUser(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("attempt %d status=%d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+
+	if binding.CanonicalUID != 7 {
+		t.Fatalf("canonical uid changed: %+v", binding)
+	}
+	if len(db.linkCalls) != 2 {
+		t.Fatalf("expected two idempotent link calls, got %+v", db.linkCalls)
+	}
+}
+
+func TestChannelAgentBindingLinkUserRejectsAlreadyLinkedDifferentUser(t *testing.T) {
+	db, handler, binding := newChannelAgentLinkHarness(t)
+	db.users[8] = &types.User{ID: 8, Username: "bob", DisplayName: "Bob", AccountType: types.AccountHuman}
+	binding.CanonicalUID = 7
+	token := validChannelAgentLinkToken(t, binding)
+
+	body := `{"binding_id":` + strconv.FormatInt(binding.ID, 10) + `,"link_token":"` + token + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/channel-agent-bindings/link-user", strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(8)))
+	rec := httptest.NewRecorder()
+	handler.HandleLinkChannelAgentBindingUser(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if binding.CanonicalUID != 7 {
+		t.Fatalf("conflict overwrote canonical uid: %+v", binding)
+	}
+}
+
+func TestChannelAgentBindingLinkUserRejectsBotOrServiceAccount(t *testing.T) {
+	db, handler, binding := newChannelAgentLinkHarness(t)
+	db.users[9] = &types.User{ID: 9, Username: "bot-owner", AccountType: types.AccountBot}
+	token := validChannelAgentLinkToken(t, binding)
+
+	body := `{"binding_id":` + strconv.FormatInt(binding.ID, 10) + `,"link_token":"` + token + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/channel-agent-bindings/link-user", strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(9)))
+	rec := httptest.NewRecorder()
+	handler.HandleLinkChannelAgentBindingUser(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(db.linkCalls) != 0 {
+		t.Fatalf("forbidden account should not call store: %+v", db.linkCalls)
+	}
+	if binding.CanonicalUID != 0 {
+		t.Fatalf("forbidden account changed canonical uid: %+v", binding)
+	}
+}
+
+func newChannelAgentLinkHarness(t *testing.T) (*channelAgentTestStore, *ChannelAgentBindingHandler, *types.ChannelAgentBinding) {
+	t.Helper()
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.users[100] = &types.User{ID: 100, Username: "ch_feishu_user", DisplayName: "Feishu User", AccountType: types.AccountHuman}
+	db.owners[43] = 7
+	binding, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:       "feishu",
+		ChannelAppID:  "cli_app",
+		ChannelUserID: "ou_user",
+		ActorUID:      100,
+		OwnerUID:      7,
+		AgentUID:      43,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	stored := db.bindings[bindingKey(binding.Channel, binding.ChannelAppID, binding.ChannelUserID, binding.ChannelConversationID)]
+	if stored == nil {
+		t.Fatalf("seeded binding missing from fake store")
+	}
+	return db, NewChannelAgentBindingHandler(db, nil), stored
+}
+
+func validChannelAgentLinkToken(t *testing.T, binding *types.ChannelAgentBinding) string {
+	t.Helper()
+	token, err := signChannelBindingLinkToken(channelAgentLinkTokenPayload{
+		BindingID: binding.ID,
+		ActorUID:  binding.ActorUID,
+		AgentUID:  binding.AgentUID,
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign link token: %v", err)
+	}
+	return token
+}
+
 func TestChannelAgentBindingUsesEntryChannelAppID(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
@@ -363,7 +599,16 @@ type channelAgentTestStore struct {
 	messages  []*types.Message
 	clientIDs map[string]int64
 	topics    []string
+	linkCalls []channelAgentLinkCall
+	linkErr   error
 	nextID    int64
+}
+
+type channelAgentLinkCall struct {
+	BindingID    int64
+	ActorUID     int64
+	AgentUID     int64
+	CanonicalUID int64
 }
 
 func newChannelAgentTestStore() *channelAgentTestStore {
@@ -376,6 +621,7 @@ func newChannelAgentTestStore() *channelAgentTestStore {
 		messages:  []*types.Message{},
 		clientIDs: map[string]int64{},
 		topics:    []string{},
+		linkCalls: []channelAgentLinkCall{},
 		nextID:    1,
 	}
 }
@@ -513,12 +759,27 @@ func (s *channelAgentTestStore) GetChannelAgentEntryBySceneKey(sceneKey string) 
 func (s *channelAgentTestStore) UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) (*types.ChannelAgentBinding, error) {
 	now := time.Now()
 	next := cloneBinding(binding)
-	next.ID = s.nextID
-	s.nextID++
+	key := bindingKey(next.Channel, next.ChannelAppID, next.ChannelUserID, next.ChannelConversationID)
+	if existing := s.bindings[key]; existing != nil {
+		next.ID = existing.ID
+		if next.ActorUID <= 0 {
+			next.ActorUID = existing.ActorUID
+		}
+		if next.CanonicalUID <= 0 {
+			next.CanonicalUID = existing.CanonicalUID
+		}
+		if next.EntryID <= 0 {
+			next.EntryID = existing.EntryID
+		}
+		next.BoundAt = existing.BoundAt
+	} else {
+		next.ID = s.nextID
+		s.nextID++
+		next.BoundAt = now
+	}
 	next.Status = "active"
-	next.BoundAt = now
 	next.UpdatedAt = now
-	s.bindings[bindingKey(next.Channel, next.ChannelAppID, next.ChannelUserID, next.ChannelConversationID)] = next
+	s.bindings[key] = next
 	return cloneBinding(next), nil
 }
 
@@ -537,6 +798,38 @@ func (s *channelAgentTestStore) ResolveChannelAgentBinding(query types.ChannelAg
 func (s *channelAgentTestStore) ResolveChannelAgentBindingForActor(channel, channelAppID string, actorUID, agentUID int64) (*types.ChannelAgentBinding, error) {
 	for _, binding := range s.bindings {
 		if binding.Channel == channel && binding.ChannelAppID == channelAppID && binding.ActorUID == actorUID && binding.AgentUID == agentUID && binding.Status == "active" {
+			return cloneBinding(binding), nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *channelAgentTestStore) ResolveChannelAgentBindingForActorAny(actorUID, agentUID int64) (*types.ChannelAgentBinding, error) {
+	for _, binding := range s.bindings {
+		if binding.ActorUID == actorUID && binding.AgentUID == agentUID && binding.Status == "active" {
+			return cloneBinding(binding), nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *channelAgentTestStore) LinkChannelAgentBindingCanonicalUser(bindingID, actorUID, agentUID, canonicalUID int64) (*types.ChannelAgentBinding, error) {
+	s.linkCalls = append(s.linkCalls, channelAgentLinkCall{
+		BindingID:    bindingID,
+		ActorUID:     actorUID,
+		AgentUID:     agentUID,
+		CanonicalUID: canonicalUID,
+	})
+	if s.linkErr != nil {
+		return nil, s.linkErr
+	}
+	for _, binding := range s.bindings {
+		if binding.ID == bindingID && binding.ActorUID == actorUID && binding.AgentUID == agentUID && binding.Status == "active" {
+			if binding.CanonicalUID > 0 && binding.CanonicalUID != canonicalUID {
+				return nil, store.ErrChannelAgentBindingAlreadyLinked
+			}
+			binding.CanonicalUID = canonicalUID
+			binding.UpdatedAt = time.Now()
 			return cloneBinding(binding), nil
 		}
 	}

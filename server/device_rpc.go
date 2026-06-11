@@ -29,6 +29,8 @@ type deviceRPCPending struct {
 	agentBodyID     string
 	actorUID        int64
 	actorUserID     string
+	ownerUID        int64
+	ownerUserID     string
 	sessionKey      string
 	topicID         string
 	topicType       string
@@ -49,6 +51,7 @@ type DeviceRPCPendingStatus struct {
 	AgentID              string `json:"agent_id,omitempty"`
 	AgentBodyID          string `json:"agent_body_id,omitempty"`
 	ActorUserID          string `json:"actor_user_id,omitempty"`
+	OwnerUserID          string `json:"owner_user_id,omitempty"`
 	SessionKey           string `json:"session_key,omitempty"`
 	TopicID              string `json:"topic_id,omitempty"`
 	TopicType            string `json:"topic_type,omitempty"`
@@ -113,7 +116,7 @@ func (r *deviceRPCRouter) add(pending deviceRPCPending) (bool, string) {
 		if item.agentUID == pending.agentUID {
 			agentCount++
 		}
-		if item.actorUID == pending.actorUID && item.deviceID == pending.deviceID {
+		if item.ownerUID == pending.ownerUID && item.deviceID == pending.deviceID {
 			deviceCount++
 		}
 	}
@@ -161,12 +164,12 @@ func (r *deviceRPCRouter) finish(requestID string) {
 	delete(r.pending, requestID)
 }
 
-func (r *deviceRPCRouter) listByActor(actorUID int64) []deviceRPCPending {
-	if r == nil || actorUID <= 0 {
+func (r *deviceRPCRouter) listByOwner(ownerUID int64) []deviceRPCPending {
+	if r == nil || ownerUID <= 0 {
 		return nil
 	}
 	if r.shared != nil {
-		records := r.shared.listDeviceRPCPendingByActor(actorUID)
+		records := r.shared.listDeviceRPCPendingByOwner(ownerUID)
 		out := make([]deviceRPCPending, 0, len(records))
 		for _, record := range records {
 			out = append(out, pendingFromDeviceRPCRecord(record))
@@ -177,7 +180,7 @@ func (r *deviceRPCRouter) listByActor(actorUID int64) []deviceRPCPending {
 	defer r.mu.Unlock()
 	out := make([]deviceRPCPending, 0)
 	for _, pending := range r.pending {
-		if pending.actorUID == actorUID {
+		if pending.ownerUID == ownerUID {
 			out = append(out, pending)
 		}
 	}
@@ -326,26 +329,35 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "device grant is not active", map[string]interface{}{"request_id": requestID})
 		return
 	}
-	if err := validateDeviceRPCGrant(client, msg, grant, operation); err != nil {
-		h.auditDeviceRPC(parseFormattedUID(grant.ActorUserID), "rpc_rejected", "denied", err.Error(), msg, grant)
-		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, err.Error(), map[string]interface{}{"request_id": requestID})
-		return
-	}
 	actorUID := parseFormattedUID(grant.ActorUserID)
 	if actorUID <= 0 {
 		h.auditDeviceRPC(0, "rpc_rejected", "denied", "invalid actor user", msg, grant)
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "invalid actor user", map[string]interface{}{"request_id": requestID})
 		return
 	}
-	device, ok := h.userDevices.activeDevice(actorUID, grant.DeviceID)
+	ownerUID := parseFormattedUID(grant.OwnerUserID)
+	if ownerUID <= 0 {
+		ownerUID = actorUID
+	}
+	ownerUserID := strings.TrimSpace(grant.OwnerUserID)
+	if ownerUserID == "" {
+		ownerUserID = formatUID(ownerUID)
+		grant.OwnerUserID = ownerUserID
+	}
+	if err := validateDeviceRPCGrant(client, msg, grant, operation); err != nil {
+		h.auditDeviceRPC(ownerUID, "rpc_rejected", "denied", err.Error(), msg, grant)
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, err.Error(), map[string]interface{}{"request_id": requestID})
+		return
+	}
+	device, ok := h.userDevices.activeDevice(ownerUID, grant.DeviceID)
 	if !ok {
-		h.auditDeviceRPC(actorUID, "rpc_rejected", "offline", "device offline", msg, grant)
+		h.auditDeviceRPC(ownerUID, "rpc_rejected", "offline", "device offline", msg, grant)
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusNotFound, "device offline", map[string]interface{}{"request_id": requestID, "device_id": grant.DeviceID})
 		return
 	}
-	targetRoute, target := h.findDeviceRPCTarget(actorUID, device)
+	targetRoute, target := h.findDeviceRPCTarget(ownerUID, device)
 	if !targetRoute.validAt(nowForRoute(h)) {
-		h.auditDeviceRPC(actorUID, "rpc_rejected", "unavailable", "device connection unavailable", msg, grant)
+		h.auditDeviceRPC(ownerUID, "rpc_rejected", "unavailable", "device connection unavailable", msg, grant)
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusNotFound, "device connection unavailable", map[string]interface{}{"request_id": requestID, "device_id": grant.DeviceID})
 		return
 	}
@@ -384,6 +396,8 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		agentBodyID:     grant.AgentBodyID,
 		actorUID:        actorUID,
 		actorUserID:     grant.ActorUserID,
+		ownerUID:        ownerUID,
+		ownerUserID:     ownerUserID,
 		sessionKey:      grant.SessionKey,
 		topicID:         grant.TopicID,
 		topicType:       grant.TopicType,
@@ -400,22 +414,22 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 	}
 	if ok, reason := h.deviceRPC.add(pending); !ok {
 		if reason == "agent_limit" || reason == "device_limit" {
-			h.auditDeviceRPC(actorUID, "rpc_rejected", "rate_limited", "too many pending device rpc requests", msg, grant)
+			h.auditDeviceRPC(ownerUID, "rpc_rejected", "rate_limited", "too many pending device rpc requests", msg, grant)
 			h.sendDeviceRPCAck(client, msg.ID, http.StatusTooManyRequests, "too many pending device rpc requests", map[string]interface{}{"request_id": requestID})
 			return
 		}
-		h.auditDeviceRPC(actorUID, "rpc_rejected", "duplicate", "request_id is already pending", msg, grant)
+		h.auditDeviceRPC(ownerUID, "rpc_rejected", "duplicate", "request_id is already pending", msg, grant)
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusConflict, "request_id is already pending", map[string]interface{}{"request_id": requestID})
 		return
 	}
 
 	if !h.sendDeviceRPCToRoute(targetRoute, &forward) {
 		h.deviceRPC.finish(requestID)
-		h.auditDeviceRPC(actorUID, "rpc_rejected", "unavailable", "device connection unavailable", msg, grant)
+		h.auditDeviceRPC(ownerUID, "rpc_rejected", "unavailable", "device connection unavailable", msg, grant)
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusNotFound, "device connection unavailable", map[string]interface{}{"request_id": requestID, "device_id": grant.DeviceID})
 		return
 	}
-	h.auditDeviceRPC(actorUID, "rpc_forwarded", "ok", "", &forward, grant)
+	h.auditDeviceRPC(ownerUID, "rpc_forwarded", "ok", "", &forward, grant)
 	h.sendDeviceRPCAck(client, msg.ID, http.StatusOK, "ok", map[string]interface{}{
 		"request_id":             requestID,
 		"device_id":              device.DeviceID,
@@ -451,10 +465,11 @@ func (h *Hub) handleDeviceRPCResult(client *Client, msg *MsgDeviceRPC) {
 		return
 	}
 	if !h.pendingMatchesDeviceClient(pending, client) {
-		h.auditDeviceRPC(pending.actorUID, "rpc_result_rejected", "denied", "result source does not match target device", msg, ScopedDeviceGrant{
+		h.auditDeviceRPC(pending.ownerUID, "rpc_result_rejected", "denied", "result source does not match target device", msg, ScopedDeviceGrant{
 			GrantID:     pending.grantID,
 			SessionKey:  pending.sessionKey,
 			ActorUserID: pending.actorUserID,
+			OwnerUserID: pending.ownerUserID,
 			AgentID:     pending.agentID,
 			DeviceID:    pending.deviceID,
 		})
@@ -496,10 +511,11 @@ func (h *Hub) handleDeviceRPCResult(client *Client, msg *MsgDeviceRPC) {
 	forward.DeviceInstallationID = pending.deviceInstallID
 
 	if !h.sendDeviceRPCToRoute(requesterRoute, &forward) {
-		h.auditDeviceRPC(pending.actorUID, "rpc_result_rejected", "gone", "requester offline", &forward, ScopedDeviceGrant{
+		h.auditDeviceRPC(pending.ownerUID, "rpc_result_rejected", "gone", "requester offline", &forward, ScopedDeviceGrant{
 			GrantID:     pending.grantID,
 			SessionKey:  pending.sessionKey,
 			ActorUserID: pending.actorUserID,
+			OwnerUserID: pending.ownerUserID,
 			AgentID:     pending.agentID,
 			DeviceID:    pending.deviceID,
 		})
@@ -512,10 +528,11 @@ func (h *Hub) handleDeviceRPCResult(client *Client, msg *MsgDeviceRPC) {
 		result = "error"
 		reason = forward.Error.Code
 	}
-	h.auditDeviceRPC(pending.actorUID, "rpc_result", result, reason, &forward, ScopedDeviceGrant{
+	h.auditDeviceRPC(pending.ownerUID, "rpc_result", result, reason, &forward, ScopedDeviceGrant{
 		GrantID:     pending.grantID,
 		SessionKey:  pending.sessionKey,
 		ActorUserID: pending.actorUserID,
+		OwnerUserID: pending.ownerUserID,
 		AgentID:     pending.agentID,
 		DeviceID:    pending.deviceID,
 	})
@@ -540,20 +557,20 @@ func (h *Hub) auditDeviceRPC(ownerUID int64, phase string, result string, reason
 }
 
 func (h *Hub) pendingMatchesDeviceClient(pending deviceRPCPending, client *Client) bool {
-	if h == nil || client == nil || pending.actorUID <= 0 || pending.deviceID == "" {
+	if h == nil || client == nil || pending.ownerUID <= 0 || pending.deviceID == "" {
 		return false
 	}
 	if pending.targetRoute.NodeID != "" || pending.targetRoute.ConnectionID != "" {
 		if !pending.targetRoute.matches(h.clientRoute(client)) {
 			return false
 		}
-		if current, _ := h.findDeviceRPCTarget(pending.actorUID, UserDevice{DeviceID: pending.deviceID}); current.validAt(nowForRoute(h)) && !current.matches(h.clientRoute(client)) {
+		if current, _ := h.findDeviceRPCTarget(pending.ownerUID, UserDevice{DeviceID: pending.deviceID}); current.validAt(nowForRoute(h)) && !current.matches(h.clientRoute(client)) {
 			return false
 		}
-		return client.deviceOwnerUID == pending.actorUID && client.deviceID == pending.deviceID
+		return client.deviceOwnerUID == pending.ownerUID && client.deviceID == pending.deviceID
 	}
-	current := h.getDeviceClient(pending.actorUID, pending.deviceID)
-	return current == client && client.deviceOwnerUID == pending.actorUID && client.deviceID == pending.deviceID
+	current := h.getDeviceClient(pending.ownerUID, pending.deviceID)
+	return current == client && client.deviceOwnerUID == pending.ownerUID && client.deviceID == pending.deviceID
 }
 
 func validateDeviceRPCGrant(client *Client, msg *MsgDeviceRPC, grant ScopedDeviceGrant, operation DeviceGrantOperation) error {
@@ -621,7 +638,7 @@ func (h *Hub) DeviceRPCStatus(ownerUID int64, agentIDFilter ...string) []DeviceR
 	if h.deviceRPC.now != nil {
 		now = h.deviceRPC.now()
 	}
-	pending := h.deviceRPC.listByActor(ownerUID)
+	pending := h.deviceRPC.listByOwner(ownerUID)
 	out := make([]DeviceRPCPendingStatus, 0, len(pending))
 	for _, item := range pending {
 		if filterAgentID != "" && item.agentID != filterAgentID {
@@ -636,6 +653,7 @@ func (h *Hub) DeviceRPCStatus(ownerUID int64, agentIDFilter ...string) []DeviceR
 			AgentID:              item.agentID,
 			AgentBodyID:          item.agentBodyID,
 			ActorUserID:          item.actorUserID,
+			OwnerUserID:          item.ownerUserID,
 			SessionKey:           item.sessionKey,
 			TopicID:              item.topicID,
 			TopicType:            item.topicType,

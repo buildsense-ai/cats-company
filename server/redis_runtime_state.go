@@ -560,8 +560,8 @@ func (s *RedisRuntimeState) addDeviceRPCPending(pending deviceRPCPendingRecord, 
 	}
 	key := s.deviceRPCPendingKey(pending.requestID)
 	allKey := s.deviceRPCPendingAllKey()
-	actorKey := s.deviceRPCPendingActorKey(pending.actorUID)
-	deviceKey := s.deviceRPCPendingDeviceKey(pending.actorUID, pending.deviceID)
+	ownerKey := s.deviceRPCPendingOwnerKey(pending.ownerUID)
+	deviceKey := s.deviceRPCPendingDeviceKey(pending.ownerUID, pending.deviceID)
 	record := redisDeviceRPCPendingFromRuntime(pending)
 	payload, err := json.Marshal(record)
 	if err != nil {
@@ -583,7 +583,7 @@ func (s *RedisRuntimeState) addDeviceRPCPending(pending deviceRPCPendingRecord, 
 				if item.agentUID == pending.agentUID {
 					agentCount++
 				}
-				if item.actorUID == pending.actorUID && item.deviceID == pending.deviceID {
+				if item.ownerUID == pending.ownerUID && item.deviceID == pending.deviceID {
 					deviceCount++
 				}
 			}
@@ -603,10 +603,10 @@ func (s *RedisRuntimeState) addDeviceRPCPending(pending deviceRPCPendingRecord, 
 			_, err = tx.TxPipelined(s.ctx, func(pipe redis.Pipeliner) error {
 				pipe.Set(s.ctx, key, payload, ttl)
 				pipe.SAdd(s.ctx, allKey, pending.requestID)
-				pipe.SAdd(s.ctx, actorKey, pending.requestID)
+				pipe.SAdd(s.ctx, ownerKey, pending.requestID)
 				pipe.SAdd(s.ctx, deviceKey, pending.requestID)
 				pipe.Expire(s.ctx, allKey, defaultDeviceRPCTTL*4)
-				pipe.Expire(s.ctx, actorKey, defaultDeviceRPCTTL*4)
+				pipe.Expire(s.ctx, ownerKey, defaultDeviceRPCTTL*4)
 				pipe.Expire(s.ctx, deviceKey, defaultDeviceRPCTTL*4)
 				return nil
 			})
@@ -650,11 +650,11 @@ func (s *RedisRuntimeState) finishDeviceRPCPending(requestID string) {
 	s.removeDeviceRPCPending(record)
 }
 
-func (s *RedisRuntimeState) listDeviceRPCPendingByActor(actorUID int64) []deviceRPCPendingRecord {
-	if s == nil || actorUID <= 0 {
+func (s *RedisRuntimeState) listDeviceRPCPendingByOwner(ownerUID int64) []deviceRPCPendingRecord {
+	if s == nil || ownerUID <= 0 {
 		return nil
 	}
-	ids, err := s.client.SMembers(s.ctx, s.deviceRPCPendingActorKey(actorUID)).Result()
+	ids, err := s.client.SMembers(s.ctx, s.deviceRPCPendingOwnerKey(ownerUID)).Result()
 	if err != nil || len(ids) == 0 {
 		return nil
 	}
@@ -666,7 +666,7 @@ func (s *RedisRuntimeState) listDeviceRPCPendingByActor(actorUID int64) []device
 			if ok {
 				s.removeDeviceRPCPending(record)
 			} else {
-				_ = s.client.SRem(s.ctx, s.deviceRPCPendingActorKey(actorUID), requestID).Err()
+				_ = s.client.SRem(s.ctx, s.deviceRPCPendingOwnerKey(ownerUID), requestID).Err()
 			}
 			continue
 		}
@@ -1041,8 +1041,8 @@ func (s *RedisRuntimeState) claimExpiredDeviceRPCPending(requestID string, now t
 		_, err := tx.TxPipelined(s.ctx, func(pipe redis.Pipeliner) error {
 			pipe.Del(s.ctx, key)
 			pipe.SRem(s.ctx, s.deviceRPCPendingAllKey(), requestID)
-			pipe.SRem(s.ctx, s.deviceRPCPendingActorKey(record.actorUID), requestID)
-			pipe.SRem(s.ctx, s.deviceRPCPendingDeviceKey(record.actorUID, record.deviceID), requestID)
+			pipe.SRem(s.ctx, s.deviceRPCPendingOwnerKey(record.ownerUID), requestID)
+			pipe.SRem(s.ctx, s.deviceRPCPendingDeviceKey(record.ownerUID, record.deviceID), requestID)
 			return nil
 		})
 		if err == nil {
@@ -1058,8 +1058,8 @@ func (s *RedisRuntimeState) removeDeviceRPCPending(record deviceRPCPendingRecord
 	_, _ = s.client.Pipelined(s.ctx, func(pipe redis.Pipeliner) error {
 		pipe.Del(s.ctx, s.deviceRPCPendingKey(record.requestID))
 		pipe.SRem(s.ctx, s.deviceRPCPendingAllKey(), record.requestID)
-		pipe.SRem(s.ctx, s.deviceRPCPendingActorKey(record.actorUID), record.requestID)
-		pipe.SRem(s.ctx, s.deviceRPCPendingDeviceKey(record.actorUID, record.deviceID), record.requestID)
+		pipe.SRem(s.ctx, s.deviceRPCPendingOwnerKey(record.ownerUID), record.requestID)
+		pipe.SRem(s.ctx, s.deviceRPCPendingDeviceKey(record.ownerUID, record.deviceID), record.requestID)
 		return nil
 	})
 }
@@ -1120,12 +1120,12 @@ func (s *RedisRuntimeState) deviceRPCPendingAllKey() string {
 	return s.key("device_rpc_pending")
 }
 
-func (s *RedisRuntimeState) deviceRPCPendingActorKey(actorUID int64) string {
-	return s.key("device_rpc_actor", fmt.Sprintf("%d", actorUID))
+func (s *RedisRuntimeState) deviceRPCPendingOwnerKey(ownerUID int64) string {
+	return s.key("device_rpc_owner", fmt.Sprintf("%d", ownerUID))
 }
 
-func (s *RedisRuntimeState) deviceRPCPendingDeviceKey(actorUID int64, deviceID string) string {
-	return s.key("device_rpc_device", fmt.Sprintf("%d", actorUID), keyPart(deviceID))
+func (s *RedisRuntimeState) deviceRPCPendingDeviceKey(ownerUID int64, deviceID string) string {
+	return s.key("device_rpc_device", fmt.Sprintf("%d", ownerUID), keyPart(deviceID))
 }
 
 func (s *RedisRuntimeState) deviceConnectorPairingIDKey(pairingID string) string {
@@ -1230,6 +1230,8 @@ type redisDeviceRPCPending struct {
 	AgentBodyID     string       `json:"agent_body_id"`
 	ActorUID        int64        `json:"actor_uid"`
 	ActorUserID     string       `json:"actor_user_id"`
+	OwnerUID        int64        `json:"owner_uid"`
+	OwnerUserID     string       `json:"owner_user_id"`
 	SessionKey      string       `json:"session_key"`
 	TopicID         string       `json:"topic_id"`
 	TopicType       string       `json:"topic_type"`
@@ -1253,6 +1255,8 @@ func redisDeviceRPCPendingFromRuntime(record deviceRPCPendingRecord) redisDevice
 		AgentBodyID:     record.agentBodyID,
 		ActorUID:        record.actorUID,
 		ActorUserID:     record.actorUserID,
+		OwnerUID:        record.ownerUID,
+		OwnerUserID:     record.ownerUserID,
 		SessionKey:      record.sessionKey,
 		TopicID:         record.topicID,
 		TopicType:       record.topicType,
@@ -1268,6 +1272,14 @@ func redisDeviceRPCPendingFromRuntime(record deviceRPCPendingRecord) redisDevice
 }
 
 func (r redisDeviceRPCPending) toRuntimeRecord() deviceRPCPendingRecord {
+	ownerUID := r.OwnerUID
+	if ownerUID <= 0 {
+		ownerUID = r.ActorUID
+	}
+	ownerUserID := r.OwnerUserID
+	if ownerUserID == "" && ownerUID > 0 {
+		ownerUserID = formatUID(ownerUID)
+	}
 	return deviceRPCPendingRecord{
 		requestID:       r.RequestID,
 		requesterRoute:  r.RequesterRoute,
@@ -1277,6 +1289,8 @@ func (r redisDeviceRPCPending) toRuntimeRecord() deviceRPCPendingRecord {
 		agentBodyID:     r.AgentBodyID,
 		actorUID:        r.ActorUID,
 		actorUserID:     r.ActorUserID,
+		ownerUID:        ownerUID,
+		ownerUserID:     ownerUserID,
 		sessionKey:      r.SessionKey,
 		topicID:         r.TopicID,
 		topicType:       r.TopicType,

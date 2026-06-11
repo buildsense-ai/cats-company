@@ -236,7 +236,8 @@ func (h *WeixinChannelHandler) handleScanEvent(w http.ResponseWriter, ctx contex
 		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "创建微信用户身份失败，请稍后重试。")
 		return
 	}
-	if _, err := h.bindWeixinIdentity(entry, actorUID, appID, openID, "", "p2p"); err != nil {
+	binding, err := h.bindWeixinIdentity(entry, actorUID, appID, openID, "", "p2p")
+	if err != nil {
 		log.Printf("bind weixin identity failed: %v", err)
 		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "保存虚拟员工绑定失败，请稍后重试。")
 		return
@@ -249,7 +250,11 @@ func (h *WeixinChannelHandler) handleScanEvent(w http.ResponseWriter, ctx contex
 	if agent != nil {
 		name = displayNameOrUsername(agent.DisplayName, agent.Username)
 	}
-	writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, fmt.Sprintf("已绑定「%s」。你现在可以直接在公众号聊天框里提问。", name))
+	reply := fmt.Sprintf("已绑定「%s」。你现在可以直接在公众号聊天框里提问。", name)
+	if link := channelBindingDeviceLinkURL(nil, binding); link != "" {
+		reply += "\n\n如需让我使用你的电脑文件，请登录 CatsCo 完成设备授权：\n" + link
+	}
+	writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, reply)
 }
 
 func (h *WeixinChannelHandler) handleTextMessage(w http.ResponseWriter, ctx context.Context, msg *weixinEventMessage) {

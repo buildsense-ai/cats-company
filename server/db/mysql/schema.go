@@ -49,9 +49,11 @@ func (a *Adapter) CreateSchema() error {
 		migrateMessagesAddTopicIDIndex,
 		migrateChannelAgentEntriesAddAppID,
 		migrateChannelAgentBindingsAddActorUID,
+		migrateChannelAgentBindingsAddCanonicalUID,
 		migrateChannelAgentEntriesOwnerAgentIndex,
 		migrateChannelAgentBindingsLookupIndex,
 		migrateChannelAgentBindingsActorAgentIndex,
+		migrateChannelAgentBindingsActorAnyIndex,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -265,6 +267,7 @@ CREATE TABLE IF NOT EXISTS channel_agent_bindings (
     channel_conversation_id VARCHAR(128) NOT NULL DEFAULT '',
     channel_conversation_type VARCHAR(32) NOT NULL DEFAULT 'p2p',
     actor_uid BIGINT DEFAULT NULL,
+    canonical_uid BIGINT DEFAULT NULL,
     owner_uid BIGINT NOT NULL,
     agent_uid BIGINT NOT NULL,
     entry_id BIGINT DEFAULT NULL,
@@ -276,7 +279,9 @@ CREATE TABLE IF NOT EXISTS channel_agent_bindings (
     INDEX idx_channel_agent_bindings_lookup (channel, channel_app_id, channel_user_id, status),
     INDEX idx_channel_agent_bindings_agent (owner_uid, agent_uid, status),
     INDEX idx_channel_agent_bindings_actor_agent (channel, channel_app_id, actor_uid, agent_uid, status),
+    INDEX idx_channel_agent_bindings_actor_any (actor_uid, agent_uid, status),
     FOREIGN KEY (actor_uid) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (canonical_uid) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (owner_uid) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (entry_id) REFERENCES channel_agent_entries(id) ON DELETE SET NULL
@@ -376,6 +381,10 @@ const migrateChannelAgentBindingsAddActorUID = `
 ALTER TABLE channel_agent_bindings ADD COLUMN actor_uid BIGINT DEFAULT NULL;
 `
 
+const migrateChannelAgentBindingsAddCanonicalUID = `
+ALTER TABLE channel_agent_bindings ADD COLUMN canonical_uid BIGINT DEFAULT NULL;
+`
+
 const migrateChannelAgentEntriesOwnerAgentIndex = `
 ALTER TABLE channel_agent_entries ADD INDEX idx_channel_agent_entries_owner_agent (owner_uid, agent_uid, channel, channel_app_id, status);
 `
@@ -386,4 +395,8 @@ ALTER TABLE channel_agent_bindings ADD INDEX idx_channel_agent_bindings_lookup (
 
 const migrateChannelAgentBindingsActorAgentIndex = `
 ALTER TABLE channel_agent_bindings ADD INDEX idx_channel_agent_bindings_actor_agent (channel, channel_app_id, actor_uid, agent_uid, status);
+`
+
+const migrateChannelAgentBindingsActorAnyIndex = `
+ALTER TABLE channel_agent_bindings ADD INDEX idx_channel_agent_bindings_actor_any (actor_uid, agent_uid, status);
 `

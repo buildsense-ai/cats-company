@@ -140,14 +140,15 @@ func (a *Adapter) UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) 
 	_, err := a.db.Exec(
 		`INSERT INTO channel_agent_bindings (
 		     channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
-		     actor_uid, owner_uid, agent_uid, entry_id, status, bound_at, last_used_at
+		     actor_uid, canonical_uid, owner_uid, agent_uid, entry_id, status, bound_at, last_used_at
 		 )
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		 ON DUPLICATE KEY UPDATE
-		     actor_uid = VALUES(actor_uid),
+		     actor_uid = COALESCE(VALUES(actor_uid), actor_uid),
+		     canonical_uid = COALESCE(VALUES(canonical_uid), canonical_uid),
 		     owner_uid = VALUES(owner_uid),
 		     agent_uid = VALUES(agent_uid),
-		     entry_id = VALUES(entry_id),
+		     entry_id = COALESCE(VALUES(entry_id), entry_id),
 		     channel_conversation_type = VALUES(channel_conversation_type),
 		     status = 'active',
 		     bound_at = CURRENT_TIMESTAMP,
@@ -159,6 +160,7 @@ func (a *Adapter) UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) 
 		binding.ChannelConversationID,
 		conversationType,
 		nullableInt64(binding.ActorUID),
+		nullableInt64(binding.CanonicalUID),
 		binding.OwnerUID,
 		binding.AgentUID,
 		nullableInt64(binding.EntryID),
@@ -198,7 +200,7 @@ func (a *Adapter) ResolveChannelAgentBindingForActor(channel, channelAppID strin
 	}
 	row := a.db.QueryRow(
 		`SELECT id, channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
-		        COALESCE(actor_uid, 0), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
+		        COALESCE(actor_uid, 0), COALESCE(canonical_uid, 0), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
 		 FROM channel_agent_bindings
 		 WHERE channel = ? AND channel_app_id = ? AND actor_uid = ? AND agent_uid = ? AND status = 'active'
 		 ORDER BY updated_at DESC LIMIT 1`,
@@ -213,6 +215,82 @@ func (a *Adapter) ResolveChannelAgentBindingForActor(channel, channelAppID strin
 	}
 	if _, err := a.db.Exec(`UPDATE channel_agent_bindings SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?`, binding.ID); err != nil {
 		return nil, fmt.Errorf("touch channel agent actor binding: %w", err)
+	}
+	return binding, nil
+}
+
+func (a *Adapter) ResolveChannelAgentBindingForActorAny(actorUID, agentUID int64) (*types.ChannelAgentBinding, error) {
+	if actorUID <= 0 || agentUID <= 0 {
+		return nil, fmt.Errorf("invalid channel agent actor query")
+	}
+	row := a.db.QueryRow(
+		`SELECT id, channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
+		        COALESCE(actor_uid, 0), COALESCE(canonical_uid, 0), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
+		 FROM channel_agent_bindings
+		 WHERE actor_uid = ? AND agent_uid = ? AND status = 'active'
+		 ORDER BY updated_at DESC LIMIT 1`,
+		actorUID, agentUID,
+	)
+	binding, err := scanChannelAgentBinding(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve channel agent actor binding: %w", err)
+	}
+	if _, err := a.db.Exec(`UPDATE channel_agent_bindings SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?`, binding.ID); err != nil {
+		return nil, fmt.Errorf("touch channel agent actor binding: %w", err)
+	}
+	return binding, nil
+}
+
+func (a *Adapter) LinkChannelAgentBindingCanonicalUser(bindingID, actorUID, agentUID, canonicalUID int64) (*types.ChannelAgentBinding, error) {
+	if bindingID <= 0 || actorUID <= 0 || agentUID <= 0 || canonicalUID <= 0 {
+		return nil, fmt.Errorf("invalid channel agent link")
+	}
+	result, err := a.db.Exec(
+		`UPDATE channel_agent_bindings
+		 SET canonical_uid = ?, last_used_at = CURRENT_TIMESTAMP
+		 WHERE id = ? AND actor_uid = ? AND agent_uid = ? AND status = 'active'
+		   AND (canonical_uid IS NULL OR canonical_uid = 0 OR canonical_uid = ?)`,
+		canonicalUID, bindingID, actorUID, agentUID, canonicalUID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("link channel agent binding: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		row := a.db.QueryRow(
+			`SELECT id, channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
+			        COALESCE(actor_uid, 0), COALESCE(canonical_uid, 0), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
+			 FROM channel_agent_bindings
+			 WHERE id = ? AND actor_uid = ? AND agent_uid = ? AND status = 'active'`,
+			bindingID, actorUID, agentUID,
+		)
+		existing, lookupErr := scanChannelAgentBinding(row)
+		if lookupErr == nil && existing.CanonicalUID > 0 && existing.CanonicalUID != canonicalUID {
+			return nil, store.ErrChannelAgentBindingAlreadyLinked
+		}
+		if lookupErr == nil && existing.CanonicalUID == canonicalUID {
+			return existing, nil
+		}
+		if lookupErr != nil && lookupErr != sql.ErrNoRows {
+			return nil, fmt.Errorf("check channel agent binding link conflict: %w", lookupErr)
+		}
+		return nil, nil
+	}
+	row := a.db.QueryRow(
+		`SELECT id, channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
+		        COALESCE(actor_uid, 0), COALESCE(canonical_uid, 0), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
+		 FROM channel_agent_bindings
+		 WHERE id = ?`,
+		bindingID,
+	)
+	binding, err := scanChannelAgentBinding(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get linked channel agent binding: %w", err)
 	}
 	return binding, nil
 }
@@ -238,7 +316,7 @@ func (a *Adapter) getActiveChannelAgentEntry(ownerUID, agentUID int64, channel, 
 func (a *Adapter) getChannelAgentBinding(query types.ChannelAgentBindingQuery, conversationID string) (*types.ChannelAgentBinding, error) {
 	row := a.db.QueryRow(
 		`SELECT id, channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
-		        COALESCE(actor_uid, 0), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
+		        COALESCE(actor_uid, 0), COALESCE(canonical_uid, 0), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
 		 FROM channel_agent_bindings
 		 WHERE channel = ? AND channel_app_id = ? AND channel_user_id = ? AND channel_conversation_id = ? AND status = 'active'
 		 ORDER BY updated_at DESC LIMIT 1`,
@@ -299,6 +377,7 @@ func scanChannelAgentBinding(row channelAgentBindingScanner) (*types.ChannelAgen
 		&binding.ChannelConversationID,
 		&binding.ChannelConversationType,
 		&binding.ActorUID,
+		&binding.CanonicalUID,
 		&binding.OwnerUID,
 		&binding.AgentUID,
 		&binding.EntryID,

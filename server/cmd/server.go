@@ -387,6 +387,7 @@ func main() {
 	mux.HandleFunc("/api/channel-agent-entry/preview", channelAgentBindingHandler.HandleAgentEntryPreview)
 	mux.HandleFunc("/api/channel-agent-bindings/confirm", channelAgentBindingHandler.HandleConfirmChannelAgentBinding)
 	mux.HandleFunc("/api/channel-agent-bindings/resolve", channelAgentBindingHandler.HandleResolveChannelAgentBinding)
+	mux.HandleFunc("/api/channel-agent-bindings/link-user", jwtAuthWithDB(channelAgentBindingHandler.HandleLinkChannelAgentBindingUser))
 	mux.HandleFunc("/api/channel-agent-bindings/oauth/feishu/start", feishuChannelHandler.HandleOAuthStart)
 	mux.HandleFunc("/api/channel-agent-bindings/oauth/feishu/callback", feishuChannelHandler.HandleOAuthCallback)
 	mux.HandleFunc("/api/channels/feishu/events", feishuChannelHandler.HandleEvents)

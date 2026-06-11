@@ -5,6 +5,7 @@ import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
 import MessagesView from './messages-view';
 import AgentEntryBindView from './agent-entry-bind-view';
+import ChannelDeviceLinkView from './channel-device-link-view';
 import ProfileEditor from '../widgets/profile-editor';
 import FeedbackModal from '../widgets/feedback-modal';
 import CatsCoDownloadModal from '../widgets/catsco-download-modal';
@@ -107,6 +108,7 @@ function writeStoredTopic(uid, topic) {
 export default function TinodeWeb() {
   const entryMatch = window.location.pathname.match(/^\/e\/([^/]+)$/);
   const entrySceneKey = entryMatch ? decodeURIComponent(entryMatch[1]) : '';
+  const channelDeviceLink = window.location.pathname === '/channel-device-link';
   const [user, setUser] = useState(() => getInitialUser());
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
   const [activeTopic, _setActiveTopic] = useState(null);
@@ -205,6 +207,13 @@ export default function TinodeWeb() {
       })
       .catch((error) => {
         console.warn('Failed to refresh current user profile:', error);
+        if (!cancelled && error?.status === 401) {
+          disconnectWS();
+          setToken(null);
+          localStorage.removeItem('oc_user');
+          setUser(null);
+          setActiveTopic(null);
+        }
       });
 
     return () => {
@@ -293,6 +302,17 @@ export default function TinodeWeb() {
 
   if (entrySceneKey) {
     return <AgentEntryBindView sceneKey={entrySceneKey} />;
+  }
+
+  if (channelDeviceLink && user) {
+    const params = new URLSearchParams(window.location.search);
+    return (
+      <ChannelDeviceLinkView
+        bindingId={params.get('binding_id') || ''}
+        linkToken={params.get('link_token') || ''}
+        user={user}
+      />
+    );
   }
 
   if (!user) {

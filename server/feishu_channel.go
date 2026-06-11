@@ -210,7 +210,8 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 		writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "创建用户身份失败，请稍后重试。"))
 		return
 	}
-	if _, err := h.bindFeishuIdentity(entry, actorUID, channelUserID, "", "p2p"); err != nil {
+	binding, err := h.bindFeishuIdentity(entry, actorUID, channelUserID, "", "p2p")
+	if err != nil {
 		log.Printf("bind feishu identity failed: %v", err)
 		writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "保存虚拟员工绑定失败，请稍后重试。"))
 		return
@@ -223,7 +224,11 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 	if agent != nil {
 		name = displayNameOrUsername(agent.DisplayName, agent.Username)
 	}
-	writeHTML(w, http.StatusOK, oauthResultHTML("绑定完成", fmt.Sprintf("你已进入「%s」，可以回到飞书聊天框直接提问。", name)))
+	message := fmt.Sprintf("你已进入「%s」，可以回到飞书聊天框直接提问。", name)
+	if link := channelBindingDeviceLinkURL(r, binding); link != "" {
+		message += " 如需让我使用你的电脑文件，请登录 CatsCo 完成设备授权：" + link
+	}
+	writeHTML(w, http.StatusOK, oauthResultHTML("绑定完成", message))
 }
 
 // HandleEvents receives Feishu URL verification and message events.
