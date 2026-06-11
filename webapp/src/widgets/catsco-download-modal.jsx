@@ -155,7 +155,12 @@ export default function CatsCoDownloadModal({ onClose }) {
     const timer = setInterval(async () => {
       try {
         const next = await api.getDeviceConnectorPairing(pairing.pairing_id);
-        setPairing((prev) => ({ ...(prev || {}), ...next }));
+        if (!next) return;
+        setPairing((prev) => ({
+          ...(prev || {}),
+          ...next,
+          pairing_code: next.status === 'consumed' ? '' : (prev?.pairing_code || ''),
+        }));
         if (next.status === 'consumed') {
           setLaunchMessage('本机设备已连接，桌面端会在后台保持运行。');
           loadDeviceState();
@@ -232,11 +237,13 @@ export default function CatsCoDownloadModal({ onClose }) {
             <span className="catsco-download-copy">
               <span className="catsco-download-title">连接这台电脑</span>
               <span className="catsco-download-desc">
-                {pairing?.pairing_code
+                {pairing?.status === 'consumed'
+                  ? '这台电脑已连接，桌面端会在后台保持运行'
+                  : pairing?.pairing_code
                   ? `配对码 ${pairing.pairing_code} · ${pairing.status || 'pending'}`
                   : '一键打开 CatsCo 桌面端并完成设备配对'}
               </span>
-              {pairing?.pairing_code && (
+              {pairing?.pairing_code && pairing.status !== 'consumed' && (
                 <span className="catsco-download-meta">备用命令：{pairCommand(pairing)}</span>
               )}
               {launchMessage && <span className="catsco-download-meta">{launchMessage}</span>}

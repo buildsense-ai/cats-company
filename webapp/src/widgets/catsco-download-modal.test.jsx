@@ -109,4 +109,38 @@ describe('CatsCoDownloadModal', () => {
     expect(container.textContent).toContain('设备已连接');
     expect(container.textContent).toContain('office-pc');
   });
+
+  test('hides the stale pairing code after the desktop connector consumes it', async () => {
+    api.createDeviceConnectorPairing.mockResolvedValue({
+      pairing_id: 'pair-consumed',
+      pairing_code: 'CONSUMED123',
+      status: 'pending',
+    });
+    api.getDeviceConnectorPairing.mockResolvedValue({
+      pairing_id: 'pair-consumed',
+      status: 'consumed',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(CatsCoDownloadModal, { onClose: jest.fn() }));
+      await Promise.resolve();
+    });
+
+    const button = container.querySelector('button[title="打开 CatsCo 桌面端连接"]');
+    await act(async () => {
+      Simulate.click(button);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('CONSUMED123');
+
+    await act(async () => {
+      jest.advanceTimersByTime(3000);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('这台电脑已连接');
+    expect(container.textContent).not.toContain('CONSUMED123');
+    expect(container.textContent).not.toContain('备用命令');
+  });
 });
