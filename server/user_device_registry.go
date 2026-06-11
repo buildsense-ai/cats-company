@@ -15,12 +15,13 @@ import (
 )
 
 const (
-	defaultUserDeviceTTL       = 5 * time.Minute
-	defaultDeviceGrantTTL      = 10 * time.Minute
-	defaultDevicePreferenceTTL = 30 * time.Minute
-	maxUserDeviceIDLength      = 128
-	deviceGrantIDRandomLength  = 12
-	userDeviceGrantIdentitySrc = "metadata.catsco_identity"
+	defaultUserDeviceTTL          = 5 * time.Minute
+	defaultDeviceGrantTTL         = 10 * time.Minute
+	defaultDevicePreferenceTTL    = 30 * time.Minute
+	maxUserDeviceIDLength         = 128
+	deviceGrantIDRandomLength     = 12
+	userDeviceGrantIdentitySrc    = "metadata.catsco_identity"
+	channelDeviceGrantIdentitySrc = "channel_identity_link"
 )
 
 var userDeviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
@@ -102,6 +103,7 @@ type DeviceSelection struct {
 	TopicID         string                     `json:"topicId"`
 	TopicType       string                     `json:"topicType"`
 	ActorUserID     string                     `json:"actorUserId"`
+	OwnerUserID     string                     `json:"ownerUserId,omitempty"`
 	AgentID         string                     `json:"agentId,omitempty"`
 	SelectedDevice  *DeviceSelectionDevice     `json:"selectedDevice,omitempty"`
 	Candidates      []DeviceSelectionCandidate `json:"candidates,omitempty"`
@@ -366,18 +368,28 @@ func (r *userDeviceRegistry) turnContext(actorUID int64, topicID string, topicTy
 }
 
 func (r *userDeviceRegistry) turnContextForDevices(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, messageText string, devices []UserDevice, unavailableCandidates []UserDevice) DeviceTurnContext {
+	return r.turnContextForOwnerDevices(actorUID, actorUID, topicID, topicType, agentUID, agentBodyID, messageText, devices, unavailableCandidates)
+}
+
+func (r *userDeviceRegistry) turnContextForOwnerDevices(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, messageText string, devices []UserDevice, unavailableCandidates []UserDevice) DeviceTurnContext {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {
 		return DeviceTurnContext{}
 	}
+	if ownerUID <= 0 {
+		ownerUID = actorUID
+	}
 	if len(devices) == 0 && len(unavailableCandidates) > 0 {
 		return DeviceTurnContext{
-			Selection: r.unavailableDeviceSelection(actorUID, topicID, topicType, agentUID, "no_routable_devices", unavailableCandidates),
+			Selection: r.unavailableDeviceSelectionForOwner(actorUID, ownerUID, topicID, topicType, agentUID, "no_routable_devices", unavailableCandidates),
 		}
 	}
 	selection, selected := r.selectDeviceForTurn(actorUID, topicID, topicType, agentUID, devices, messageText)
+	if selection != nil {
+		selection.OwnerUserID = formatUID(ownerUID)
+	}
 	var grants []ScopedDeviceGrant
 	if selected != nil && selection != nil && selection.Status == DeviceSelectionSelected {
-		grants = r.grantsForDevices(actorUID, topicID, topicType, agentUID, agentBodyID, []UserDevice{*selected})
+		grants = r.grantsForOwnerDevices(actorUID, ownerUID, topicID, topicType, agentUID, agentBodyID, []UserDevice{*selected})
 	}
 	return DeviceTurnContext{
 		Grants:    grants,
@@ -386,8 +398,13 @@ func (r *userDeviceRegistry) turnContextForDevices(actorUID int64, topicID strin
 }
 
 func (r *userDeviceRegistry) unavailableDeviceSelection(actorUID int64, topicID string, topicType string, agentUID int64, reason string, candidates []UserDevice) *DeviceSelection {
+	return r.unavailableDeviceSelectionForOwner(actorUID, actorUID, topicID, topicType, agentUID, reason, candidates)
+}
+
+func (r *userDeviceRegistry) unavailableDeviceSelectionForOwner(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, reason string, candidates []UserDevice) *DeviceSelection {
 	createdAt := unixMillis(r.now())
 	actorUserID := formatUID(actorUID)
+	ownerUserID := formatUID(ownerUID)
 	agentID := ""
 	if agentUID > 0 {
 		agentID = formatUID(agentUID)
@@ -403,6 +420,7 @@ func (r *userDeviceRegistry) unavailableDeviceSelection(actorUID int64, topicID 
 		TopicID:         topicID,
 		TopicType:       topicType,
 		ActorUserID:     actorUserID,
+		OwnerUserID:     ownerUserID,
 		AgentID:         agentID,
 		Candidates:      deviceSelectionCandidates(candidates),
 		CandidateCount:  len(candidates),
@@ -411,12 +429,24 @@ func (r *userDeviceRegistry) unavailableDeviceSelection(actorUID int64, topicID 
 }
 
 func (r *userDeviceRegistry) grantsForDevices(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice) []ScopedDeviceGrant {
+	return r.grantsForOwnerDevices(actorUID, actorUID, topicID, topicType, agentUID, agentBodyID, devices)
+}
+
+func (r *userDeviceRegistry) grantsForOwnerDevices(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice) []ScopedDeviceGrant {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" || len(devices) == 0 {
 		return nil
+	}
+	if ownerUID <= 0 {
+		ownerUID = actorUID
 	}
 	createdAt := unixMillis(r.now())
 	expiresAt := unixMillis(r.now().Add(r.grantTT))
 	actorUserID := formatUID(actorUID)
+	ownerUserID := formatUID(ownerUID)
+	identitySource := userDeviceGrantIdentitySrc
+	if ownerUID != actorUID {
+		identitySource = channelDeviceGrantIdentitySrc
+	}
 	agentID := ""
 	if agentUID > 0 {
 		agentID = formatUID(agentUID)
@@ -435,14 +465,14 @@ func (r *userDeviceRegistry) grantsForDevices(actorUID int64, topicID string, to
 			GrantID:              "device_grant_" + randomDeviceGrantIDSuffix(),
 			Status:               "active",
 			IdentityTrust:        "server_canonical",
-			IdentitySource:       userDeviceGrantIdentitySrc,
+			IdentitySource:       identitySource,
 			DeviceID:             device.DeviceID,
 			DeviceDisplayName:    device.DisplayName,
 			DeviceBodyID:         device.BodyID,
 			DeviceInstallationID: device.InstallationID,
 			DeviceRouteConnected: device.RouteConnected,
 			DeviceRoutable:       device.Routable,
-			OwnerUserID:          actorUserID,
+			OwnerUserID:          ownerUserID,
 			SessionKey:           sessionKey,
 			TopicID:              topicID,
 			TopicType:            topicType,

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -244,6 +245,11 @@ func main() {
 	friendHandler := server.NewFriendHandler(db)
 	conversationHandler := server.NewConversationHandler(db, hub)
 	agentHandler := server.NewAgentHandler(db, hub)
+	channelAgentBindingHandler := server.NewChannelAgentBindingHandler(db, hub)
+	feishuChannelHandler := server.NewFeishuChannelHandlerFromEnv(db, hub)
+	weixinChannelHandler := server.NewWeixinChannelHandlerFromEnv(db, hub)
+	feishuChannelHandler.InstallOutboundDispatcher()
+	weixinChannelHandler.InstallOutboundDispatcher()
 	botHandler := server.NewBotHandler(db, deployer)
 	botHandler.SetHub(hub)
 	msgHandler := server.NewMessageHandler(db, hub)
@@ -376,6 +382,17 @@ func main() {
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.HandleList))
 	mux.HandleFunc("/api/agents", jwtAuthWithDB(agentHandler.HandleListAgents))
 	mux.HandleFunc("/api/agents/open", jwtAuthWithDB(agentHandler.HandleOpenAgent))
+	mux.HandleFunc("/api/agent-entries", ownerAuthWithDB(channelAgentBindingHandler.HandleAgentEntries))
+	mux.HandleFunc("/api/agent-entries/", ownerAuthWithDB(channelAgentBindingHandler.HandleAgentEntryByID))
+	mux.HandleFunc("/api/channel-agent-entry/preview", channelAgentBindingHandler.HandleAgentEntryPreview)
+	mux.HandleFunc("/api/channel-agent-bindings/confirm", channelAgentBindingHandler.HandleConfirmChannelAgentBinding)
+	mux.HandleFunc("/api/channel-agent-bindings/resolve", channelAgentBindingHandler.HandleResolveChannelAgentBinding)
+	mux.HandleFunc("/api/channel-agent-bindings/link-user", jwtAuthWithDB(channelAgentBindingHandler.HandleLinkChannelAgentBindingUser))
+	mux.HandleFunc("/api/channel-agent-bindings/oauth/feishu/start", feishuChannelHandler.HandleOAuthStart)
+	mux.HandleFunc("/api/channel-agent-bindings/oauth/feishu/callback", feishuChannelHandler.HandleOAuthCallback)
+	mux.HandleFunc("/api/channels/feishu/events", feishuChannelHandler.HandleEvents)
+	mux.HandleFunc("/api/channel-agent-entry/weixin-qrcode", weixinChannelHandler.HandleQRCode)
+	mux.HandleFunc("/api/channels/weixin/events", weixinChannelHandler.HandleEvents)
 	mux.HandleFunc("/api/feedback", chainHTTP(feedbackHandler.HandleCreateFeedback, feedbackIPLimit, authWithDB, feedbackUserLimit))
 	mux.HandleFunc("/api/relay/config", ownerAuthWithDB(relayConfigHandler.HandleConfig))
 	mux.HandleFunc("/api/relay/session", ownerAuthWithDB(relayConfigHandler.HandleSession))
@@ -458,6 +475,13 @@ func main() {
 	// Static files
 	if cfg.Static.Dir != "" {
 		fs := http.FileServer(http.Dir(cfg.Static.Dir))
+		mux.HandleFunc("/e/", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				server.WriteJSONPublic(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			}
+			http.ServeFile(w, r, filepath.Join(cfg.Static.Dir, "index.html"))
+		})
 		mux.Handle("/", fs)
 	}
 

@@ -85,6 +85,80 @@ func TestDeviceRPCRoutesRequestToSelectedDeviceAndReturnsResult(t *testing.T) {
 	}
 }
 
+func TestDeviceRPCRoutesDelegatedChannelActorGrantToDeviceOwner(t *testing.T) {
+	hub := NewHub(nil, nil)
+	now := time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC)
+	hub.userDevices.now = func() time.Time { return now }
+	hub.deviceRPC.now = func() time.Time { return now }
+	device, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID:       "alice-laptop",
+		DisplayName:    "Alice Laptop",
+		BodyID:         "body-device",
+		InstallationID: "install-device",
+		Capabilities:   []string{"read_file"},
+	})
+	if err != nil {
+		t.Fatalf("register device: %v", err)
+	}
+	grants := hub.userDevices.grantsForOwnerDevices(100, 7, "p2p_100_42", "p2p", 42, "body-agent", []UserDevice{device})
+	if len(grants) != 1 {
+		t.Fatalf("grantsForOwnerDevices returned %d grants", len(grants))
+	}
+	grant := grants[0]
+	if grant.OwnerUserID != "usr7" || grant.ActorUserID != "usr100" {
+		t.Fatalf("unexpected delegated grant: %#v", grant)
+	}
+	agent := &Client{
+		hub:         hub,
+		uid:         42,
+		accountType: types.AccountBot,
+		bodyID:      "body-agent",
+		send:        make(chan []byte, 4),
+	}
+	target := &Client{
+		hub:                  hub,
+		uid:                  77,
+		accountType:          types.AccountBot,
+		bodyID:               "body-device",
+		installationID:       "install-device",
+		deviceOwnerUID:       7,
+		deviceID:             "alice-laptop",
+		deviceBodyID:         "body-device",
+		deviceInstallationID: "install-device",
+		send:                 make(chan []byte, 4),
+	}
+	hub.addClient(agent)
+	hub.addClient(target)
+	hub.bindDeviceClient(7, device, target)
+
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-delegated",
+		Type:      "request",
+		RequestID: "rpc-delegated",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+	})
+
+	var forwarded ServerMessage
+	decodeQueuedServerMessage(t, target.send, &forwarded)
+	if forwarded.DeviceRPC == nil || forwarded.DeviceRPC.ActorUserID != "usr100" || forwarded.DeviceRPC.DeviceID != "alice-laptop" {
+		t.Fatalf("unexpected delegated request: %#v", forwarded.DeviceRPC)
+	}
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusOK {
+		t.Fatalf("unexpected delegated ack: %#v", ack.Ctrl)
+	}
+	if pending := hub.DeviceRPCStatus(100); len(pending) != 0 {
+		t.Fatalf("channel actor should not own device pending status: %#v", pending)
+	}
+	pending := hub.DeviceRPCStatus(7)
+	if len(pending) != 1 || pending[0].ActorUserID != "usr100" || pending[0].OwnerUserID != "usr7" {
+		t.Fatalf("unexpected owner-scoped pending: %#v", pending)
+	}
+}
+
 func TestDeviceRPCDoesNotBroadcastToSiblingConnections(t *testing.T) {
 	hub, agent, target, sibling, grant := newDeviceRPCTestFixture(t, true)
 
