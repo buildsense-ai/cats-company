@@ -37,6 +37,15 @@ export function getWebSocketURL() {
   return WS_URL;
 }
 
+export function getApiBaseURL() {
+  if (!API_BASE) return window.location.origin.replace(/\/+$/, '');
+  try {
+    return new URL(API_BASE, window.location.origin).toString().replace(/\/+$/, '');
+  } catch {
+    return window.location.origin.replace(/\/+$/, '');
+  }
+}
+
 export function resolveMediaURL(url) {
   if (!url) return '';
   if (/^https?:\/\//.test(url)) return url;
@@ -58,7 +67,12 @@ async function request(method, path, body) {
   });
 
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+  if (!res.ok) {
+    const error = new Error(data.error || 'Request failed');
+    error.status = res.status;
+    error.data = data;
+    throw error;
+  }
   return data;
 }
 

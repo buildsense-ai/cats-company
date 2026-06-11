@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Apple, Copy, Download, Laptop, Monitor, RefreshCw, Trash2, X } from 'lucide-react';
-import { api } from '../api';
+import { Apple, Copy, Download, ExternalLink, Laptop, Monitor, RefreshCw, Trash2, X } from 'lucide-react';
+import { api, getApiBaseURL, getWebSocketURL } from '../api';
 
 const RELEASE_VERSION = '1.2.0';
 const TOS_BASE_URL = 'https://github-release.tos-cn-guangzhou.volces.com/update';
@@ -55,12 +55,29 @@ function deviceStatusLabel(device) {
   return device.unavailableReason || device.status || '离线';
 }
 
+export function buildDeviceConnectorDeepLink(pairing) {
+  const code = String(pairing?.pairing_code || '').trim();
+  if (!code) return '';
+  const params = new URLSearchParams({
+    code,
+    http_base_url: getApiBaseURL(),
+    server_url: getWebSocketURL(),
+  });
+  return `catsco://device-connector/pair?${params.toString()}`;
+}
+
+function pairCommand(pairing) {
+  const code = String(pairing?.pairing_code || '').trim();
+  return code ? `catsco device-connector --pair ${code}` : '';
+}
+
 export default function CatsCoDownloadModal({ onClose }) {
   const [pairing, setPairing] = useState(null);
   const [devices, setDevices] = useState([]);
   const [audit, setAudit] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [launchMessage, setLaunchMessage] = useState('');
 
   const loadDeviceState = useCallback(async () => {
     try {
@@ -86,7 +103,10 @@ export default function CatsCoDownloadModal({ onClose }) {
         const next = await api.getDeviceConnectorPairing(pairing.pairing_id);
         setPairing((prev) => ({ ...(prev || {}), ...next }));
         if (next.status === 'consumed') {
+          setLaunchMessage('本机设备已连接，桌面端会在后台保持运行。');
           loadDeviceState();
+        } else if (next.status === 'expired') {
+          setLaunchMessage('配对码已过期，请重新连接。');
         }
       } catch {
         // Pairing may have expired; the next manual refresh will create a fresh one.
@@ -95,14 +115,26 @@ export default function CatsCoDownloadModal({ onClose }) {
     return () => clearInterval(timer);
   }, [pairing?.pairing_id, pairing?.status, loadDeviceState]);
 
-  const handleCreatePairing = async () => {
+  const handleOpenConnector = async () => {
     setLoading(true);
     setError('');
     try {
-      const next = await api.createDeviceConnectorPairing();
-      setPairing({ ...next, status: 'pending' });
+      let activePairing = pairing;
+      if (!activePairing?.pairing_code || activePairing.status === 'expired' || activePairing.status === 'consumed') {
+        activePairing = await api.createDeviceConnectorPairing();
+        activePairing = { ...activePairing, status: 'pending' };
+        setPairing(activePairing);
+      }
+
+      const deepLink = buildDeviceConnectorDeepLink(activePairing);
+      if (!deepLink) throw new Error('配对码生成失败，请重试');
+      setLaunchMessage('正在打开 CatsCo 桌面端...');
+      window.open(deepLink, '_self');
+      window.setTimeout(() => {
+        setLaunchMessage('已尝试打开 CatsCo 桌面端；如果没有响应，请先安装桌面端，或复制备用命令。');
+      }, 500);
     } catch (err) {
-      setError(err.message || '配对码生成失败');
+      setError(err.message || '连接本机设备失败');
     } finally {
       setLoading(false);
     }
@@ -119,8 +151,10 @@ export default function CatsCoDownloadModal({ onClose }) {
   };
 
   const copyPairCommand = () => {
-    if (!pairing?.pairing_code) return;
-    navigator.clipboard?.writeText(`catsco device-connector --pair ${pairing.pairing_code}`).catch(() => {});
+    const command = pairCommand(pairing);
+    if (!command) return;
+    navigator.clipboard?.writeText(command).catch(() => {});
+    setLaunchMessage('已复制备用命令。');
   };
 
   return (
@@ -142,20 +176,28 @@ export default function CatsCoDownloadModal({ onClose }) {
               <Laptop size={20} />
             </span>
             <span className="catsco-download-copy">
-              <span className="catsco-download-title">Device Connector</span>
+              <span className="catsco-download-title">连接这台电脑</span>
               <span className="catsco-download-desc">
                 {pairing?.pairing_code
                   ? `配对码 ${pairing.pairing_code} · ${pairing.status || 'pending'}`
-                  : '生成一次性配对码'}
+                  : '一键打开 CatsCo 桌面端并完成设备配对'}
               </span>
               {pairing?.pairing_code && (
-                <span className="catsco-download-meta">catsco device-connector --pair {pairing.pairing_code}</span>
+                <span className="catsco-download-meta">备用命令：{pairCommand(pairing)}</span>
               )}
+              {launchMessage && <span className="catsco-download-meta">{launchMessage}</span>}
               {error && <span className="catsco-download-meta">{error}</span>}
             </span>
-            <button type="button" className="catsco-download-action" onClick={pairing?.pairing_code ? copyPairCommand : handleCreatePairing} disabled={loading}>
-              {pairing?.pairing_code ? <Copy size={16} /> : <RefreshCw size={16} />}
-            </button>
+            <span className="catsco-download-actions">
+              <button type="button" className="catsco-download-action" onClick={handleOpenConnector} disabled={loading} title="打开 CatsCo 桌面端连接">
+                {loading ? <RefreshCw size={16} /> : <ExternalLink size={16} />}
+              </button>
+              {pairing?.pairing_code && (
+                <button type="button" className="catsco-download-action" onClick={copyPairCommand} title="复制备用命令">
+                  <Copy size={16} />
+                </button>
+              )}
+            </span>
           </div>
 
           {devices.map((device) => (
