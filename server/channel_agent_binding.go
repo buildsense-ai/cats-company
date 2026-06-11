@@ -1,14 +1,19 @@
 package server
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
@@ -41,9 +46,22 @@ type channelAgentConfirmRequest struct {
 	ConfirmToken            string `json:"confirm_token,omitempty"`
 }
 
+type channelAgentLinkRequest struct {
+	BindingID int64  `json:"binding_id"`
+	LinkToken string `json:"link_token"`
+}
+
+type channelAgentLinkTokenPayload struct {
+	BindingID int64 `json:"binding_id"`
+	ActorUID  int64 `json:"actor_uid"`
+	AgentUID  int64 `json:"agent_uid"`
+	ExpiresAt int64 `json:"expires_at"`
+}
+
 type channelAgentEntryResponse struct {
 	*types.ChannelAgentEntry
-	EntryURL string `json:"entry_url"`
+	EntryURL     string `json:"entry_url"`
+	ChannelQRURL string `json:"channel_qr_url,omitempty"`
 }
 
 // HandleAgentEntries handles authenticated owner entry management.
@@ -212,8 +230,9 @@ func (h *ChannelAgentBindingHandler) HandleConfirmChannelAgentBinding(w http.Res
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":  "bound",
-		"binding": binding,
+		"status":          "bound",
+		"binding":         binding,
+		"device_link_url": channelBindingDeviceLinkURL(r, binding),
 		"agent": map[string]interface{}{
 			"uid":          agent.ID,
 			"username":     agent.Username,
@@ -264,12 +283,16 @@ func (h *ChannelAgentBindingHandler) HandleResolveChannelAgentBinding(w http.Res
 	}
 	bodyID, _ := h.db.GetBotBodyID(binding.AgentUID)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"bound":         true,
-		"binding":       binding,
-		"agent_uid":     binding.AgentUID,
-		"agent_id":      fmt.Sprintf("usr%d", binding.AgentUID),
-		"agent_body_id": bodyID,
-		"owner_uid":     binding.OwnerUID,
+		"bound":            true,
+		"binding":          binding,
+		"agent_uid":        binding.AgentUID,
+		"agent_id":         fmt.Sprintf("usr%d", binding.AgentUID),
+		"agent_body_id":    bodyID,
+		"owner_uid":        binding.OwnerUID,
+		"canonical_uid":    binding.CanonicalUID,
+		"device_link_url":  channelBindingDeviceLinkURL(r, binding),
+		"device_linked":    binding.CanonicalUID > 0,
+		"device_owner_uid": binding.CanonicalUID,
 		"agent": map[string]interface{}{
 			"uid":          agent.ID,
 			"username":     agent.Username,
@@ -279,6 +302,62 @@ func (h *ChannelAgentBindingHandler) HandleResolveChannelAgentBinding(w http.Res
 		},
 		"identity_trust":  "server_canonical",
 		"identity_source": "channel_agent_binding",
+	})
+}
+
+// HandleLinkChannelAgentBindingUser links a channel actor to the currently
+// authenticated CatsCo user so device grants can target that user's devices
+// while preserving the channel actor as the task initiator.
+func (h *ChannelAgentBindingHandler) HandleLinkChannelAgentBindingUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	bindings, ok := h.bindingStore(w)
+	if !ok {
+		return
+	}
+	var req channelAgentLinkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	payload, err := verifyChannelBindingLinkToken(req.LinkToken)
+	if err != nil || payload == nil || payload.BindingID != req.BindingID {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired link token"})
+		return
+	}
+	canonicalUID := UIDFromContext(r.Context())
+	if canonicalUID <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "login required"})
+		return
+	}
+	canonicalUser, err := h.db.GetUser(canonicalUID)
+	if err != nil || canonicalUser == nil || canonicalUser.AccountType != types.AccountHuman || canonicalUser.State != 0 {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only active human CatsCo users can link channel device authorization"})
+		return
+	}
+	binding, err := bindings.LinkChannelAgentBindingCanonicalUser(payload.BindingID, payload.ActorUID, payload.AgentUID, canonicalUID)
+	if err != nil {
+		if errors.Is(err, store.ErrChannelAgentBindingAlreadyLinked) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "channel identity already linked to another CatsCo user"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to link channel identity"})
+		return
+	}
+	if binding == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "binding not found or expired"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":           "linked",
+		"binding":          binding,
+		"actor_uid":        binding.ActorUID,
+		"agent_uid":        binding.AgentUID,
+		"canonical_uid":    binding.CanonicalUID,
+		"device_owner_uid": binding.CanonicalUID,
+		"device_linked":    binding.CanonicalUID > 0,
 	})
 }
 
@@ -375,15 +454,28 @@ func (h *ChannelAgentBindingHandler) bindingStore(w http.ResponseWriter) (store.
 }
 
 func (h *ChannelAgentBindingHandler) entryResponse(r *http.Request, entry *types.ChannelAgentEntry) channelAgentEntryResponse {
-	return channelAgentEntryResponse{
+	resp := channelAgentEntryResponse{
 		ChannelAgentEntry: entry,
 		EntryURL:          entryURL(r, entry.SceneKey),
 	}
+	if entry != nil && entry.Channel == "weixin" && weixinQRCodeConfiguredFromEnv() && entry.ChannelAppID == configuredWeixinAppID() {
+		resp.ChannelQRURL = publicBaseURL(r) + weixinQRCodePath(entry.SceneKey)
+	}
+	return resp
+}
+
+func configuredWeixinAppID() string {
+	return strings.TrimSpace(firstEnv("CATSCO_WEIXIN_APP_ID", "CATSCO_WECHAT_APP_ID", "WEIXIN_APP_ID", "WECHAT_APP_ID"))
 }
 
 func canonicalEntryChannelAppID(channel, requested string) string {
 	if normalizeChannel(channel) == "feishu" {
 		if appID := strings.TrimSpace(firstEnv("CATSCO_FEISHU_APP_ID", "FEISHU_APP_ID")); appID != "" {
+			return appID
+		}
+	}
+	if normalizeChannel(channel) == "weixin" {
+		if appID := configuredWeixinAppID(); appID != "" {
 			return appID
 		}
 	}
@@ -441,13 +533,90 @@ func entryURL(r *http.Request, sceneKey string) string {
 	return base + "/e/" + sceneKey
 }
 
+func channelBindingDeviceLinkURL(r *http.Request, binding *types.ChannelAgentBinding) string {
+	if binding == nil || binding.ID <= 0 || binding.ActorUID <= 0 || binding.AgentUID <= 0 {
+		return ""
+	}
+	token, err := signChannelBindingLinkToken(channelAgentLinkTokenPayload{
+		BindingID: binding.ID,
+		ActorUID:  binding.ActorUID,
+		AgentUID:  binding.AgentUID,
+		ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
+	})
+	if err != nil || token == "" {
+		return ""
+	}
+	return publicBaseURL(r) + "/channel-device-link?binding_id=" + strconv.FormatInt(binding.ID, 10) + "&link_token=" + token
+}
+
+func signChannelBindingLinkToken(payload channelAgentLinkTokenPayload) (string, error) {
+	secret := channelBindingLinkSecret()
+	if secret == "" || payload.BindingID <= 0 || payload.ActorUID <= 0 || payload.AgentUID <= 0 || payload.ExpiresAt <= 0 {
+		return "", fmt.Errorf("invalid channel binding link token")
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	payloadB64 := base64.RawURLEncoding.EncodeToString(raw)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payloadB64))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return payloadB64 + "." + sig, nil
+}
+
+func verifyChannelBindingLinkToken(raw string) (*channelAgentLinkTokenPayload, error) {
+	secret := channelBindingLinkSecret()
+	parts := strings.Split(strings.TrimSpace(raw), ".")
+	if secret == "" || len(parts) != 2 {
+		return nil, fmt.Errorf("invalid channel binding link token")
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(parts[0]))
+	expected := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(expected), []byte(parts[1])) {
+		return nil, fmt.Errorf("invalid channel binding link token")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, err
+	}
+	var out channelAgentLinkTokenPayload
+	if err := json.Unmarshal(payload, &out); err != nil {
+		return nil, err
+	}
+	if out.BindingID <= 0 || out.ActorUID <= 0 || out.AgentUID <= 0 || time.Now().Unix() > out.ExpiresAt {
+		return nil, fmt.Errorf("expired channel binding link token")
+	}
+	return &out, nil
+}
+
+func channelBindingLinkSecret() string {
+	if secret := strings.TrimSpace(firstEnv(
+		"CATSCO_CHANNEL_BINDING_LINK_SECRET",
+		"CATSCO_CHANNEL_BINDING_TOKEN",
+		"CATSCO_FEISHU_APP_SECRET",
+		"FEISHU_APP_SECRET",
+		"CATSCO_WEIXIN_APP_SECRET",
+		"CATSCO_WECHAT_APP_SECRET",
+		"WEIXIN_APP_SECRET",
+		"WECHAT_APP_SECRET",
+	)); secret != "" {
+		return secret
+	}
+	if !isProductionLikeEnv() {
+		return "catsco-dev-channel-binding-link-secret"
+	}
+	return ""
+}
+
 func authorizedChannelResolve(r *http.Request) bool {
 	required := strings.TrimSpace(os.Getenv("CATSCO_CHANNEL_BINDING_TOKEN"))
 	if required == "" {
 		return !isProductionLikeEnv()
 	}
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	if strings.HasPrefix(auth, "Bearer ") && strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == required {
+	if strings.HasPrefix(auth, "Bearer ") && constantTimeStringEqual(strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")), required) {
 		return true
 	}
 	return false
@@ -456,16 +625,23 @@ func authorizedChannelResolve(r *http.Request) bool {
 func authorizedChannelConfirm(r *http.Request, payloadToken string) bool {
 	required := strings.TrimSpace(os.Getenv("CATSCO_CHANNEL_BINDING_TOKEN"))
 	if required == "" {
-		return true
+		return !isProductionLikeEnv()
 	}
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	if strings.HasPrefix(auth, "Bearer ") && strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == required {
+	if strings.HasPrefix(auth, "Bearer ") && constantTimeStringEqual(strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")), required) {
 		return true
 	}
-	if strings.TrimSpace(payloadToken) == required {
+	if constantTimeStringEqual(strings.TrimSpace(payloadToken), required) {
 		return true
 	}
-	return strings.TrimSpace(r.URL.Query().Get("confirm_token")) == required
+	return constantTimeStringEqual(strings.TrimSpace(r.URL.Query().Get("confirm_token")), required)
+}
+
+func constantTimeStringEqual(got, expected string) bool {
+	if got == "" || expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
 }
 
 func userDisplayName(user *types.User) string {

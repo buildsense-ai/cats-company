@@ -374,8 +374,14 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 			agent["display_name"] = client.displayName
 		}
 		if !opts.OmitDeviceAccess && h != nil && h.userDevices != nil {
-			routableDevices, unavailableDevices := h.userDeviceRouteCandidates(actorUID)
-			deviceContext := h.userDevices.turnContextForDevices(actorUID, topicID, topicType, recipientUID, client.bodyID, messageText, routableDevices, unavailableDevices)
+			deviceOwnerUID, deviceOwnerSource := h.deviceAccessOwnerUID(actorUID, recipientUID)
+			if deviceOwnerUID > 0 {
+				permissions := identity["permissions"].(map[string]interface{})
+				permissions["device_owner_user_id"] = formatUID(deviceOwnerUID)
+				permissions["device_owner_source"] = deviceOwnerSource
+			}
+			routableDevices, unavailableDevices := h.userDeviceRouteCandidates(deviceOwnerUID)
+			deviceContext := h.userDevices.turnContextForOwnerDevices(actorUID, deviceOwnerUID, topicID, topicType, recipientUID, client.bodyID, messageText, routableDevices, unavailableDevices)
 			if len(deviceContext.Grants) > 0 {
 				identity["device_grants"] = deviceContext.Grants
 			}
@@ -386,6 +392,21 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 	}
 	identity["agent"] = agent
 	return identity
+}
+
+func (h *Hub) deviceAccessOwnerUID(actorUID, agentUID int64) (int64, string) {
+	if h == nil || actorUID <= 0 || agentUID <= 0 {
+		return actorUID, "actor"
+	}
+	if h.db != nil {
+		if bindings, ok := h.db.(store.ChannelAgentBindingStore); ok {
+			binding, err := bindings.ResolveChannelAgentBindingForActorAny(actorUID, agentUID)
+			if err == nil && binding != nil && binding.CanonicalUID > 0 {
+				return binding.CanonicalUID, "channel_identity_link"
+			}
+		}
+	}
+	return actorUID, "actor"
 }
 
 func topicTypeForID(topicID string) string {

@@ -1641,6 +1641,13 @@ button.catsco-download-action:disabled {
   opacity: 0.68;
 }
 
+.catsco-download-actions {
+  grid-column: 4;
+  display: inline-flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .catsco-download-icon {
   width: 40px;
   height: 40px;
@@ -2065,6 +2072,10 @@ button.catsco-download-action:disabled {
 
   .catsco-download-meta {
     grid-column: 2 / 4;
+  }
+
+  .catsco-download-actions {
+    grid-column: 3;
   }
 
   .relay-access-hero {
