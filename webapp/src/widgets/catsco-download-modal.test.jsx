@@ -15,13 +15,14 @@ jest.mock('../api', () => ({
 }));
 
 const CatsCoDownloadModal = require('./catsco-download-modal').default;
-const { buildDeviceConnectorDeepLink } = require('./catsco-download-modal');
+const { buildDeviceConnectorDeepLink, visibleDeviceAuditEvents } = require('./catsco-download-modal');
 const { api, getApiBaseURL, getWebSocketURL } = require('../api');
 
 describe('CatsCoDownloadModal', () => {
   let container;
   let root;
-  let originalOpen;
+  let clickSpy;
+  let clickedHref;
 
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
@@ -32,8 +33,10 @@ describe('CatsCoDownloadModal', () => {
     api.getDeviceAudit.mockResolvedValue({ events: [] });
     getApiBaseURL.mockReturnValue('https://app.catsco.cc');
     getWebSocketURL.mockReturnValue('wss://app.catsco.cc/v0/channels');
-    originalOpen = window.open;
-    window.open = jest.fn();
+    clickedHref = '';
+    clickSpy = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function click() {
+      clickedHref = this.href;
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -44,7 +47,7 @@ describe('CatsCoDownloadModal', () => {
       root.unmount();
     });
     container.remove();
-    window.open = originalOpen;
+    clickSpy.mockRestore();
     jest.useRealTimers();
   });
 
@@ -78,14 +81,32 @@ describe('CatsCoDownloadModal', () => {
     });
 
     expect(api.createDeviceConnectorPairing).toHaveBeenCalledTimes(1);
-    expect(window.open).toHaveBeenCalledWith(
-      expect.stringContaining('catsco://device-connector/pair?code=PAIRCODE123'),
-      '_self',
-    );
+    expect(clickedHref).toContain('catsco://device-connector/pair?code=PAIRCODE123');
 
     await act(async () => {
       jest.runOnlyPendingTimers();
     });
-    expect(container.textContent).toContain('如果没有响应');
+    expect(container.textContent).toContain('如果桌面端没有弹出');
+  });
+
+  test('hides routine pairing audit rows and keeps useful device activity', async () => {
+    const events = [
+      { id: 'audit-pair-1', phase: 'pairing_created', result: 'ok', reason: 'pair-1' },
+      { id: 'audit-pair-2', phase: 'pairing_created', result: 'ok', reason: 'pair-2' },
+      { id: 'audit-device-1', phase: 'device_enrolled', result: 'ok', device_id: 'office-pc' },
+    ];
+    expect(visibleDeviceAuditEvents(events).map((event) => event.id)).toEqual(['audit-device-1']);
+
+    api.getDeviceAudit.mockResolvedValue({ events });
+
+    await act(async () => {
+      root.render(React.createElement(CatsCoDownloadModal, { onClose: jest.fn() }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).not.toContain('pairing_created');
+    expect(container.textContent).not.toContain('audit-pair');
+    expect(container.textContent).toContain('设备已连接');
+    expect(container.textContent).toContain('office-pc');
   });
 });

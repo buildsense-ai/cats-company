@@ -71,6 +71,60 @@ function pairCommand(pairing) {
   return code ? `catsco device-connector --pair ${code}` : '';
 }
 
+const HIDDEN_AUDIT_PHASES = new Set(['pairing_created']);
+
+const AUDIT_PHASE_LABELS = {
+  device_enrolled: '设备已连接',
+  device_unlinked: '设备已解绑',
+  rpc_forwarded: '任务已发送到设备',
+  rpc_result: '设备任务完成',
+  rpc_rejected: '设备任务未执行',
+  rpc_result_rejected: '设备结果未接收',
+};
+
+const AUDIT_RESULT_LABELS = {
+  denied: '已拒绝',
+  duplicate: '重复请求',
+  gone: '会话已断开',
+  offline: '设备离线',
+  rate_limited: '请求过多',
+  unavailable: '设备不可用',
+};
+
+export function visibleDeviceAuditEvents(events) {
+  return (Array.isArray(events) ? events : [])
+    .filter((event) => event && !HIDDEN_AUDIT_PHASES.has(event.phase))
+    .slice(0, 3);
+}
+
+export function openDeviceConnectorDeepLink(deepLink) {
+  if (!deepLink) return;
+  if (typeof document === 'undefined') {
+    window.location.href = deepLink;
+    return;
+  }
+  const link = document.createElement('a');
+  link.href = deepLink;
+  link.rel = 'noopener noreferrer';
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function auditTitle(event) {
+  return AUDIT_PHASE_LABELS[event.phase] || event.phase || '设备活动';
+}
+
+function auditDescription(event) {
+  return event.device_id || event.operation || event.reason || AUDIT_RESULT_LABELS[event.result] || '设备活动';
+}
+
+function auditMeta(event) {
+  if (!event.result || event.result === 'ok') return '';
+  return AUDIT_RESULT_LABELS[event.result] || event.result;
+}
+
 export default function CatsCoDownloadModal({ onClose }) {
   const [pairing, setPairing] = useState(null);
   const [devices, setDevices] = useState([]);
@@ -129,9 +183,9 @@ export default function CatsCoDownloadModal({ onClose }) {
       const deepLink = buildDeviceConnectorDeepLink(activePairing);
       if (!deepLink) throw new Error('配对码生成失败，请重试');
       setLaunchMessage('正在打开 CatsCo 桌面端...');
-      window.open(deepLink, '_self');
+      openDeviceConnectorDeepLink(deepLink);
       window.setTimeout(() => {
-        setLaunchMessage('已尝试打开 CatsCo 桌面端；如果没有响应，请先安装桌面端，或复制备用命令。');
+        setLaunchMessage('如果桌面端没有弹出，请先安装并打开一次 CatsCo 桌面端；已安装时也可以复制备用命令。');
       }, 500);
     } catch (err) {
       setError(err.message || '连接本机设备失败');
@@ -216,16 +270,16 @@ export default function CatsCoDownloadModal({ onClose }) {
             </div>
           ))}
 
-          {audit.slice(0, 3).map((event) => (
+          {visibleDeviceAuditEvents(audit).map((event) => (
             <div key={event.id} className="catsco-download-card">
               <span className="catsco-download-icon">
                 <RefreshCw size={18} />
               </span>
               <span className="catsco-download-copy">
-                <span className="catsco-download-title">{event.phase}</span>
-                <span className="catsco-download-desc">{event.device_id || event.operation || event.result || '-'}</span>
+                <span className="catsco-download-title">{auditTitle(event)}</span>
+                <span className="catsco-download-desc">{auditDescription(event)}</span>
               </span>
-              <span className="catsco-download-meta">{event.result || ''}</span>
+              <span className="catsco-download-meta">{auditMeta(event)}</span>
             </div>
           ))}
         </div>
