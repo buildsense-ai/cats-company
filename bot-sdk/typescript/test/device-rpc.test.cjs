@@ -123,6 +123,48 @@ test('sendDeviceRPCRequest generates a request_id and preserves request fields',
   });
 });
 
+test('sendDeviceRPCRequest preserves write_file and execute_shell operations used by device RPC agents', async () => {
+  await withBot((ws, msg) => ack(ws, msg, 200, 'ok', {
+    request_id: msg.device_rpc.request_id,
+    operation: msg.device_rpc.operation,
+    device_id: 'alice-laptop',
+    device_body_id: 'body-alice-laptop',
+    device_installation_id: 'install-alice-laptop',
+  }), async ({ bot, messages }) => {
+    const writeAck = await bot.sendDeviceRPCRequest({
+      grant_id: 'grant-write',
+      operation: 'write_file',
+      tool_name: 'write_file',
+      payload: { path: 'quote.xlsx', content: 'updated' },
+      session_key: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+      topic_id: 'p2p_7_43',
+      topic_type: 'p2p',
+    });
+    const shellAck = await bot.sendDeviceRPCRequest({
+      grant_id: 'grant-shell',
+      operation: 'execute_shell',
+      tool_name: 'execute_shell',
+      payload: { command: 'echo ok' },
+      session_key: 'session:v2:catscompany:p2p:p2p_7_43:agent:usr43',
+      topic_id: 'p2p_7_43',
+      topic_type: 'p2p',
+    });
+
+    assert.equal(writeAck.operation, 'write_file');
+    assert.equal(shellAck.operation, 'execute_shell');
+    assert.equal(writeAck.device_id, 'alice-laptop');
+    assert.equal(shellAck.device_body_id, 'body-alice-laptop');
+
+    const envelopes = messages.filter((item) => item.device_rpc).map((item) => item.device_rpc);
+    assert.equal(envelopes.at(-2).operation, 'write_file');
+    assert.equal(envelopes.at(-2).tool_name, 'write_file');
+    assert.deepEqual(envelopes.at(-2).payload, { path: 'quote.xlsx', content: 'updated' });
+    assert.equal(envelopes.at(-1).operation, 'execute_shell');
+    assert.equal(envelopes.at(-1).tool_name, 'execute_shell');
+    assert.deepEqual(envelopes.at(-1).payload, { command: 'echo ok' });
+  });
+});
+
 test('sendDeviceRPCResult sends result and error payloads', async () => {
   await withBot((ws, msg) => ack(ws, msg), async ({ bot, messages }) => {
     await bot.sendDeviceRPCResult({

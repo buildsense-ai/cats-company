@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -164,6 +165,18 @@ func chainHTTP(handler http.HandlerFunc, middlewares ...func(http.HandlerFunc) h
 	return handler
 }
 
+func useRedisRuntime(cfg RuntimeConfig) bool {
+	store := strings.ToLower(strings.TrimSpace(cfg.Store))
+	return store == "redis" || (store == "" && strings.TrimSpace(cfg.RedisURL) != "")
+}
+
+func openRedisRuntimeState(ctx context.Context, cfg RuntimeConfig) (*server.RedisRuntimeState, error) {
+	return server.NewRedisRuntimeState(ctx, server.RedisRuntimeOptions{
+		URL:       cfg.RedisURL,
+		KeyPrefix: cfg.RedisKeyPrefix,
+	})
+}
+
 func main() {
 	cfgPath := "tinode.conf"
 	if len(os.Args) > 1 {
@@ -198,7 +211,19 @@ func main() {
 	// Initialize components
 	rateLimiter := server.NewRateLimiter(server.DefaultRateLimits())
 	httpLimiter := server.NewHTTPRateLimiter()
+	var redisRuntime *server.RedisRuntimeState
+	if useRedisRuntime(cfg.Runtime) {
+		redisRuntime, err = openRedisRuntimeState(context.Background(), cfg.Runtime)
+		if err != nil {
+			log.Fatalf("redis runtime initialization failed: %v", err)
+		}
+		defer redisRuntime.Close()
+		log.Printf("runtime state initialized: mode=redis")
+	}
 	hub := server.NewHub(db, rateLimiter)
+	if redisRuntime != nil {
+		hub = server.NewHubWithRuntime(db, rateLimiter, redisRuntime, envString("CATSCO_NODE_ID"))
+	}
 	go hub.Run()
 
 	server.SetBotStats(hub.BotStats())
@@ -220,10 +245,16 @@ func main() {
 	friendHandler := server.NewFriendHandler(db)
 	conversationHandler := server.NewConversationHandler(db, hub)
 	agentHandler := server.NewAgentHandler(db, hub)
+	channelAgentBindingHandler := server.NewChannelAgentBindingHandler(db, hub)
+	feishuChannelHandler := server.NewFeishuChannelHandlerFromEnv(db, hub)
+	weixinChannelHandler := server.NewWeixinChannelHandlerFromEnv(db, hub)
+	feishuChannelHandler.InstallOutboundDispatcher()
+	weixinChannelHandler.InstallOutboundDispatcher()
 	botHandler := server.NewBotHandler(db, deployer)
 	botHandler.SetHub(hub)
 	msgHandler := server.NewMessageHandler(db, hub)
 	deviceHandler := server.NewDeviceHandler(db, hub)
+	deviceConnectorHandler := server.NewDeviceConnectorHandler(db, hub)
 	uploadHandler := server.NewUploadHandler("./uploads", "/uploads")
 	readerHandler := server.NewReaderProxyHandlerFromEnv()
 	feedbackHandler := server.NewFeedbackHandler(db)
@@ -281,6 +312,9 @@ func main() {
 	})
 	feedbackUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "feedback_user", Limit: 10, Window: 10 * time.Minute, Burst: 3,
+	})
+	deviceConnectorEnrollIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
+		Name: "device_connector_enroll_ip", Limit: 20, Window: time.Minute, Burst: 5,
 	})
 
 	// HTTP routes
@@ -348,6 +382,17 @@ func main() {
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.HandleList))
 	mux.HandleFunc("/api/agents", jwtAuthWithDB(agentHandler.HandleListAgents))
 	mux.HandleFunc("/api/agents/open", jwtAuthWithDB(agentHandler.HandleOpenAgent))
+	mux.HandleFunc("/api/agent-entries", ownerAuthWithDB(channelAgentBindingHandler.HandleAgentEntries))
+	mux.HandleFunc("/api/agent-entries/", ownerAuthWithDB(channelAgentBindingHandler.HandleAgentEntryByID))
+	mux.HandleFunc("/api/channel-agent-entry/preview", channelAgentBindingHandler.HandleAgentEntryPreview)
+	mux.HandleFunc("/api/channel-agent-bindings/confirm", channelAgentBindingHandler.HandleConfirmChannelAgentBinding)
+	mux.HandleFunc("/api/channel-agent-bindings/resolve", channelAgentBindingHandler.HandleResolveChannelAgentBinding)
+	mux.HandleFunc("/api/channel-agent-bindings/link-user", jwtAuthWithDB(channelAgentBindingHandler.HandleLinkChannelAgentBindingUser))
+	mux.HandleFunc("/api/channel-agent-bindings/oauth/feishu/start", feishuChannelHandler.HandleOAuthStart)
+	mux.HandleFunc("/api/channel-agent-bindings/oauth/feishu/callback", feishuChannelHandler.HandleOAuthCallback)
+	mux.HandleFunc("/api/channels/feishu/events", feishuChannelHandler.HandleEvents)
+	mux.HandleFunc("/api/channel-agent-entry/weixin-qrcode", weixinChannelHandler.HandleQRCode)
+	mux.HandleFunc("/api/channels/weixin/events", weixinChannelHandler.HandleEvents)
 	mux.HandleFunc("/api/feedback", chainHTTP(feedbackHandler.HandleCreateFeedback, feedbackIPLimit, authWithDB, feedbackUserLimit))
 	mux.HandleFunc("/api/relay/config", ownerAuthWithDB(relayConfigHandler.HandleConfig))
 	mux.HandleFunc("/api/relay/session", ownerAuthWithDB(relayConfigHandler.HandleSession))
@@ -355,8 +400,16 @@ func main() {
 	mux.HandleFunc("/api/relay/key/rotate", ownerAuthWithDB(relayKeyHandler.HandleRotate))
 	mux.HandleFunc("/api/relay/key/reveal", ownerAuthWithDB(relayKeyHandler.HandleReveal))
 	mux.HandleFunc("/api/devices", authWithDB(deviceHandler.HandleListDevices))
+	mux.HandleFunc("/api/devices/", jwtAuthWithDB(deviceHandler.HandleDeviceByID))
 	mux.HandleFunc("/api/devices/register", authWithDB(deviceHandler.HandleRegisterDevice))
 	mux.HandleFunc("/api/devices/rpc-status", jwtAuthWithDB(deviceHandler.HandleDeviceRPCStatus))
+	mux.HandleFunc("/api/devices/audit", jwtAuthWithDB(deviceConnectorHandler.HandleAudit))
+	mux.HandleFunc("/api/device-connectors/pairings", ownerAuthWithDB(deviceConnectorHandler.HandleCreatePairing))
+	mux.HandleFunc("/api/device-connectors/pairings/", ownerAuthWithDB(deviceConnectorHandler.HandlePairingByID))
+	mux.HandleFunc("/api/device-connectors/enroll", chainHTTP(deviceConnectorHandler.HandleEnroll, deviceConnectorEnrollIPLimit))
+	mux.HandleFunc("/api/device-connectors/token/refresh", deviceConnectorHandler.HandleRefreshToken)
+	mux.HandleFunc("/api/device-connectors/register", deviceConnectorHandler.HandleRegisterDevice)
+	mux.HandleFunc("/api/device-connectors/releases", deviceConnectorHandler.HandleReleases)
 
 	// Online status API
 	mux.HandleFunc("/api/users/online", jwtAuthWithDB(func(w http.ResponseWriter, r *http.Request) {
@@ -422,6 +475,13 @@ func main() {
 	// Static files
 	if cfg.Static.Dir != "" {
 		fs := http.FileServer(http.Dir(cfg.Static.Dir))
+		mux.HandleFunc("/e/", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				server.WriteJSONPublic(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			}
+			http.ServeFile(w, r, filepath.Join(cfg.Static.Dir, "index.html"))
+		})
 		mux.Handle("/", fs)
 	}
 

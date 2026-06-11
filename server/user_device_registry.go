@@ -15,12 +15,13 @@ import (
 )
 
 const (
-	defaultUserDeviceTTL       = 5 * time.Minute
-	defaultDeviceGrantTTL      = 10 * time.Minute
-	defaultDevicePreferenceTTL = 30 * time.Minute
-	maxUserDeviceIDLength      = 128
-	deviceGrantIDRandomLength  = 12
-	userDeviceGrantIdentitySrc = "metadata.catsco_identity"
+	defaultUserDeviceTTL          = 5 * time.Minute
+	defaultDeviceGrantTTL         = 10 * time.Minute
+	defaultDevicePreferenceTTL    = 30 * time.Minute
+	maxUserDeviceIDLength         = 128
+	deviceGrantIDRandomLength     = 12
+	userDeviceGrantIdentitySrc    = "metadata.catsco_identity"
+	channelDeviceGrantIdentitySrc = "channel_identity_link"
 )
 
 var userDeviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
@@ -40,18 +41,22 @@ const (
 )
 
 type UserDevice struct {
-	Kind           string                 `json:"kind"`
-	Source         string                 `json:"source"`
-	OwnerUID       int64                  `json:"-"`
-	OwnerUserID    string                 `json:"ownerUserId"`
-	DeviceID       string                 `json:"deviceId"`
-	DisplayName    string                 `json:"displayName,omitempty"`
-	BodyID         string                 `json:"bodyId,omitempty"`
-	InstallationID string                 `json:"installationId,omitempty"`
-	Status         string                 `json:"status"`
-	Capabilities   []DeviceGrantOperation `json:"capabilities,omitempty"`
-	RegisteredAt   int64                  `json:"registeredAt"`
-	LastSeenAt     int64                  `json:"lastSeenAt,omitempty"`
+	Kind              string                 `json:"kind"`
+	Source            string                 `json:"source"`
+	OwnerUID          int64                  `json:"-"`
+	OwnerUserID       string                 `json:"ownerUserId"`
+	DeviceID          string                 `json:"deviceId"`
+	DisplayName       string                 `json:"displayName,omitempty"`
+	BodyID            string                 `json:"bodyId,omitempty"`
+	InstallationID    string                 `json:"installationId,omitempty"`
+	Status            string                 `json:"status"`
+	Active            bool                   `json:"active"`
+	RouteConnected    bool                   `json:"routeConnected"`
+	Routable          bool                   `json:"routable"`
+	UnavailableReason string                 `json:"unavailableReason,omitempty"`
+	Capabilities      []DeviceGrantOperation `json:"capabilities,omitempty"`
+	RegisteredAt      int64                  `json:"registeredAt"`
+	LastSeenAt        int64                  `json:"lastSeenAt,omitempty"`
 }
 
 type ScopedDeviceGrant struct {
@@ -65,6 +70,9 @@ type ScopedDeviceGrant struct {
 	DeviceDisplayName    string                 `json:"deviceDisplayName,omitempty"`
 	DeviceBodyID         string                 `json:"deviceBodyId,omitempty"`
 	DeviceInstallationID string                 `json:"deviceInstallationId,omitempty"`
+	DeviceActive         bool                   `json:"deviceActive"`
+	DeviceRouteConnected bool                   `json:"deviceRouteConnected"`
+	DeviceRoutable       bool                   `json:"deviceRoutable"`
 	OwnerUserID          string                 `json:"ownerUserId"`
 	SessionKey           string                 `json:"sessionKey"`
 	TopicID              string                 `json:"topicId"`
@@ -95,6 +103,7 @@ type DeviceSelection struct {
 	TopicID         string                     `json:"topicId"`
 	TopicType       string                     `json:"topicType"`
 	ActorUserID     string                     `json:"actorUserId"`
+	OwnerUserID     string                     `json:"ownerUserId,omitempty"`
 	AgentID         string                     `json:"agentId,omitempty"`
 	SelectedDevice  *DeviceSelectionDevice     `json:"selectedDevice,omitempty"`
 	Candidates      []DeviceSelectionCandidate `json:"candidates,omitempty"`
@@ -103,19 +112,29 @@ type DeviceSelection struct {
 }
 
 type DeviceSelectionDevice struct {
-	DeviceID       string                 `json:"deviceId"`
-	DisplayName    string                 `json:"displayName,omitempty"`
-	BodyID         string                 `json:"bodyId,omitempty"`
-	InstallationID string                 `json:"installationId,omitempty"`
-	Operations     []DeviceGrantOperation `json:"operations,omitempty"`
-	LastSeenAt     int64                  `json:"lastSeenAt,omitempty"`
+	DeviceID          string                 `json:"deviceId"`
+	DisplayName       string                 `json:"displayName,omitempty"`
+	BodyID            string                 `json:"bodyId,omitempty"`
+	InstallationID    string                 `json:"installationId,omitempty"`
+	Status            string                 `json:"status,omitempty"`
+	Active            bool                   `json:"active"`
+	RouteConnected    bool                   `json:"routeConnected"`
+	Routable          bool                   `json:"routable"`
+	UnavailableReason string                 `json:"unavailableReason,omitempty"`
+	Operations        []DeviceGrantOperation `json:"operations,omitempty"`
+	LastSeenAt        int64                  `json:"lastSeenAt,omitempty"`
 }
 
 type DeviceSelectionCandidate struct {
-	DeviceID    string                 `json:"deviceId"`
-	DisplayName string                 `json:"displayName,omitempty"`
-	Operations  []DeviceGrantOperation `json:"operations,omitempty"`
-	LastSeenAt  int64                  `json:"lastSeenAt,omitempty"`
+	DeviceID          string                 `json:"deviceId"`
+	DisplayName       string                 `json:"displayName,omitempty"`
+	Status            string                 `json:"status,omitempty"`
+	Active            bool                   `json:"active"`
+	RouteConnected    bool                   `json:"routeConnected"`
+	Routable          bool                   `json:"routable"`
+	UnavailableReason string                 `json:"unavailableReason,omitempty"`
+	Operations        []DeviceGrantOperation `json:"operations,omitempty"`
+	LastSeenAt        int64                  `json:"lastSeenAt,omitempty"`
 }
 
 type DeviceTurnContext struct {
@@ -214,6 +233,28 @@ func (r *userDeviceRegistry) register(ownerUID int64, req RegisterUserDeviceRequ
 	}
 	ownerDevices[deviceID] = device
 	return device, nil
+}
+
+func (r *userDeviceRegistry) unregister(ownerUID int64, deviceID string) {
+	if r == nil || ownerUID <= 0 || strings.TrimSpace(deviceID) == "" {
+		return
+	}
+	if r.shared != nil {
+		r.shared.unregisterUserDevice(ownerUID, deviceID)
+		return
+	}
+	normalizedDeviceID, err := normalizeUserDeviceID(deviceID)
+	if err != nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ownerDevices := r.devices[ownerUID]; ownerDevices != nil {
+		delete(ownerDevices, normalizedDeviceID)
+		if len(ownerDevices) == 0 {
+			delete(r.devices, ownerUID)
+		}
+	}
 }
 
 func (r *userDeviceRegistry) list(ownerUID int64) []UserDevice {
@@ -323,10 +364,32 @@ func (r *userDeviceRegistry) turnContext(actorUID int64, topicID string, topicTy
 		return DeviceTurnContext{}
 	}
 	devices := r.activeDevices(actorUID)
+	return r.turnContextForDevices(actorUID, topicID, topicType, agentUID, agentBodyID, messageText, devices, nil)
+}
+
+func (r *userDeviceRegistry) turnContextForDevices(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, messageText string, devices []UserDevice, unavailableCandidates []UserDevice) DeviceTurnContext {
+	return r.turnContextForOwnerDevices(actorUID, actorUID, topicID, topicType, agentUID, agentBodyID, messageText, devices, unavailableCandidates)
+}
+
+func (r *userDeviceRegistry) turnContextForOwnerDevices(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, messageText string, devices []UserDevice, unavailableCandidates []UserDevice) DeviceTurnContext {
+	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {
+		return DeviceTurnContext{}
+	}
+	if ownerUID <= 0 {
+		ownerUID = actorUID
+	}
+	if len(devices) == 0 && len(unavailableCandidates) > 0 {
+		return DeviceTurnContext{
+			Selection: r.unavailableDeviceSelectionForOwner(actorUID, ownerUID, topicID, topicType, agentUID, "no_routable_devices", unavailableCandidates),
+		}
+	}
 	selection, selected := r.selectDeviceForTurn(actorUID, topicID, topicType, agentUID, devices, messageText)
+	if selection != nil {
+		selection.OwnerUserID = formatUID(ownerUID)
+	}
 	var grants []ScopedDeviceGrant
 	if selected != nil && selection != nil && selection.Status == DeviceSelectionSelected {
-		grants = r.grantsForDevices(actorUID, topicID, topicType, agentUID, agentBodyID, []UserDevice{*selected})
+		grants = r.grantsForOwnerDevices(actorUID, ownerUID, topicID, topicType, agentUID, agentBodyID, []UserDevice{*selected})
 	}
 	return DeviceTurnContext{
 		Grants:    grants,
@@ -334,13 +397,56 @@ func (r *userDeviceRegistry) turnContext(actorUID int64, topicID string, topicTy
 	}
 }
 
+func (r *userDeviceRegistry) unavailableDeviceSelection(actorUID int64, topicID string, topicType string, agentUID int64, reason string, candidates []UserDevice) *DeviceSelection {
+	return r.unavailableDeviceSelectionForOwner(actorUID, actorUID, topicID, topicType, agentUID, reason, candidates)
+}
+
+func (r *userDeviceRegistry) unavailableDeviceSelectionForOwner(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, reason string, candidates []UserDevice) *DeviceSelection {
+	createdAt := unixMillis(r.now())
+	actorUserID := formatUID(actorUID)
+	ownerUserID := formatUID(ownerUID)
+	agentID := ""
+	if agentUID > 0 {
+		agentID = formatUID(agentUID)
+	}
+	sessionKey := buildCatsCoSessionKey(topicID, topicType, agentID)
+	return &DeviceSelection{
+		Kind:            "user_device_selection",
+		Source:          "catscompany",
+		SchemaVersion:   1,
+		Status:          DeviceSelectionUnavailable,
+		SelectionSource: reason,
+		SessionKey:      sessionKey,
+		TopicID:         topicID,
+		TopicType:       topicType,
+		ActorUserID:     actorUserID,
+		OwnerUserID:     ownerUserID,
+		AgentID:         agentID,
+		Candidates:      deviceSelectionCandidates(candidates),
+		CandidateCount:  len(candidates),
+		CreatedAt:       createdAt,
+	}
+}
+
 func (r *userDeviceRegistry) grantsForDevices(actorUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice) []ScopedDeviceGrant {
+	return r.grantsForOwnerDevices(actorUID, actorUID, topicID, topicType, agentUID, agentBodyID, devices)
+}
+
+func (r *userDeviceRegistry) grantsForOwnerDevices(actorUID int64, ownerUID int64, topicID string, topicType string, agentUID int64, agentBodyID string, devices []UserDevice) []ScopedDeviceGrant {
 	if r == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" || len(devices) == 0 {
 		return nil
+	}
+	if ownerUID <= 0 {
+		ownerUID = actorUID
 	}
 	createdAt := unixMillis(r.now())
 	expiresAt := unixMillis(r.now().Add(r.grantTT))
 	actorUserID := formatUID(actorUID)
+	ownerUserID := formatUID(ownerUID)
+	identitySource := userDeviceGrantIdentitySrc
+	if ownerUID != actorUID {
+		identitySource = channelDeviceGrantIdentitySrc
+	}
 	agentID := ""
 	if agentUID > 0 {
 		agentID = formatUID(agentUID)
@@ -359,12 +465,14 @@ func (r *userDeviceRegistry) grantsForDevices(actorUID int64, topicID string, to
 			GrantID:              "device_grant_" + randomDeviceGrantIDSuffix(),
 			Status:               "active",
 			IdentityTrust:        "server_canonical",
-			IdentitySource:       userDeviceGrantIdentitySrc,
+			IdentitySource:       identitySource,
 			DeviceID:             device.DeviceID,
 			DeviceDisplayName:    device.DisplayName,
 			DeviceBodyID:         device.BodyID,
 			DeviceInstallationID: device.InstallationID,
-			OwnerUserID:          actorUserID,
+			DeviceRouteConnected: device.RouteConnected,
+			DeviceRoutable:       device.Routable,
+			OwnerUserID:          ownerUserID,
 			SessionKey:           sessionKey,
 			TopicID:              topicID,
 			TopicType:            topicType,
@@ -595,12 +703,16 @@ func findDeviceByID(devices []UserDevice, deviceID string) (UserDevice, bool) {
 
 func deviceSelectionDevice(device UserDevice) *DeviceSelectionDevice {
 	return &DeviceSelectionDevice{
-		DeviceID:       device.DeviceID,
-		DisplayName:    device.DisplayName,
-		BodyID:         device.BodyID,
-		InstallationID: device.InstallationID,
-		Operations:     deviceRPCGrantOperations(device.Capabilities),
-		LastSeenAt:     device.LastSeenAt,
+		DeviceID:          device.DeviceID,
+		DisplayName:       device.DisplayName,
+		BodyID:            device.BodyID,
+		InstallationID:    device.InstallationID,
+		Status:            device.Status,
+		RouteConnected:    device.RouteConnected,
+		Routable:          device.Routable,
+		UnavailableReason: device.UnavailableReason,
+		Operations:        deviceRPCGrantOperations(device.Capabilities),
+		LastSeenAt:        device.LastSeenAt,
 	}
 }
 
@@ -611,10 +723,14 @@ func deviceSelectionCandidates(devices []UserDevice) []DeviceSelectionCandidate 
 	out := make([]DeviceSelectionCandidate, 0, len(devices))
 	for _, device := range devices {
 		out = append(out, DeviceSelectionCandidate{
-			DeviceID:    device.DeviceID,
-			DisplayName: device.DisplayName,
-			Operations:  deviceRPCGrantOperations(device.Capabilities),
-			LastSeenAt:  device.LastSeenAt,
+			DeviceID:          device.DeviceID,
+			DisplayName:       device.DisplayName,
+			Status:            device.Status,
+			RouteConnected:    device.RouteConnected,
+			Routable:          device.Routable,
+			UnavailableReason: device.UnavailableReason,
+			Operations:        deviceRPCGrantOperations(device.Capabilities),
+			LastSeenAt:        device.LastSeenAt,
 		})
 	}
 	return out
@@ -776,7 +892,14 @@ func (h *DeviceHandler) HandleListDevices(w http.ResponseWriter, r *http.Request
 		writeJSON(w, status, map[string]string{"error": msg})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"devices": h.registry().list(ownerUID)})
+	devices := h.registry().list(ownerUID)
+	if h.hub != nil {
+		devices, _ = h.hub.classifyUserDevices(ownerUID, devices)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"devices":    devices,
+		"checked_at": unixMillis(time.Now()),
+	})
 }
 
 func (h *DeviceHandler) HandleDeviceRPCStatus(w http.ResponseWriter, r *http.Request) {
@@ -803,6 +926,46 @@ func (h *DeviceHandler) HandleDeviceRPCStatus(w http.ResponseWriter, r *http.Req
 		"pending":       pending,
 		"pending_count": len(pending),
 		"checked_at":    unixMillis(time.Now()),
+	})
+}
+
+func (h *DeviceHandler) HandleDeviceByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if h == nil || h.db == nil || h.registry() == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "device registry unavailable"})
+		return
+	}
+	uid := UIDFromContext(r.Context())
+	user, status, msg := activeUserByID(uid, h.db.GetUser)
+	if status != 0 {
+		writeJSON(w, status, map[string]string{"error": msg})
+		return
+	}
+	if user.AccountType != types.AccountHuman {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "device unlink requires a human user token"})
+		return
+	}
+	deviceID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/devices/"), "/")
+	if _, err := normalizeUserDeviceID(deviceID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid device_id"})
+		return
+	}
+	h.registry().unregister(uid, deviceID)
+	if h.hub != nil {
+		h.hub.revokeDeviceConnectorDevice(uid, deviceID)
+		h.hub.disconnectDeviceConnector(uid, deviceID, "device connector revoked")
+		h.hub.addDeviceAudit(uid, DeviceAuditEvent{
+			DeviceID: deviceID,
+			Phase:    "device_unlinked",
+			Result:   "ok",
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":        true,
+		"device_id": deviceID,
 	})
 }
 

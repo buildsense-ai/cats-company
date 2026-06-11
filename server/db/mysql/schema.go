@@ -19,6 +19,8 @@ func (a *Adapter) CreateSchema() error {
 		createGroupMembersTable,
 		createFeedbackReportsTable,
 		createAuthServicesTable,
+		createChannelAgentEntriesTable,
+		createChannelAgentBindingsTable,
 	}
 	for _, q := range tables {
 		if _, err := a.db.Exec(q); err != nil {
@@ -45,6 +47,13 @@ func (a *Adapter) CreateSchema() error {
 		migrateGroupMembersAddMuted,
 		migrateFriendsAddFromStatusIndex,
 		migrateMessagesAddTopicIDIndex,
+		migrateChannelAgentEntriesAddAppID,
+		migrateChannelAgentBindingsAddActorUID,
+		migrateChannelAgentBindingsAddCanonicalUID,
+		migrateChannelAgentEntriesOwnerAgentIndex,
+		migrateChannelAgentBindingsLookupIndex,
+		migrateChannelAgentBindingsActorAgentIndex,
+		migrateChannelAgentBindingsActorAnyIndex,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -231,6 +240,54 @@ CREATE TABLE IF NOT EXISTS auth_services (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
+const createChannelAgentEntriesTable = `
+CREATE TABLE IF NOT EXISTS channel_agent_entries (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    scene_key VARCHAR(64) NOT NULL UNIQUE,
+    channel VARCHAR(32) NOT NULL,
+    channel_app_id VARCHAR(128) NOT NULL DEFAULT '',
+    owner_uid BIGINT NOT NULL,
+    agent_uid BIGINT NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    last_used_at TIMESTAMP NULL DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_channel_agent_entries_owner_agent (owner_uid, agent_uid, channel, channel_app_id, status),
+    FOREIGN KEY (owner_uid) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createChannelAgentBindingsTable = `
+CREATE TABLE IF NOT EXISTS channel_agent_bindings (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    channel VARCHAR(32) NOT NULL,
+    channel_app_id VARCHAR(128) NOT NULL DEFAULT '',
+    channel_user_id VARCHAR(128) NOT NULL,
+    channel_conversation_id VARCHAR(128) NOT NULL DEFAULT '',
+    channel_conversation_type VARCHAR(32) NOT NULL DEFAULT 'p2p',
+    actor_uid BIGINT DEFAULT NULL,
+    canonical_uid BIGINT DEFAULT NULL,
+    owner_uid BIGINT NOT NULL,
+    agent_uid BIGINT NOT NULL,
+    entry_id BIGINT DEFAULT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    bound_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMP NULL DEFAULT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_channel_agent_binding_identity (channel, channel_app_id, channel_user_id, channel_conversation_id),
+    INDEX idx_channel_agent_bindings_lookup (channel, channel_app_id, channel_user_id, status),
+    INDEX idx_channel_agent_bindings_agent (owner_uid, agent_uid, status),
+    INDEX idx_channel_agent_bindings_actor_agent (channel, channel_app_id, actor_uid, agent_uid, status),
+    INDEX idx_channel_agent_bindings_actor_any (actor_uid, agent_uid, status),
+    FOREIGN KEY (actor_uid) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (canonical_uid) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (owner_uid) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (entry_id) REFERENCES channel_agent_entries(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
 // Migration: add reply_to column to messages table.
 const migrateMessagesAddReplyTo = `
 ALTER TABLE messages ADD COLUMN reply_to BIGINT DEFAULT NULL;
@@ -314,4 +371,32 @@ ALTER TABLE friends ADD INDEX idx_friends_from_status (from_user_id, status);
 // Migration: speed up latest-message and missed-message lookups by topic.
 const migrateMessagesAddTopicIDIndex = `
 ALTER TABLE messages ADD INDEX idx_messages_topic_id (topic_id, id);
+`
+
+const migrateChannelAgentEntriesAddAppID = `
+ALTER TABLE channel_agent_entries ADD COLUMN channel_app_id VARCHAR(128) NOT NULL DEFAULT '';
+`
+
+const migrateChannelAgentBindingsAddActorUID = `
+ALTER TABLE channel_agent_bindings ADD COLUMN actor_uid BIGINT DEFAULT NULL;
+`
+
+const migrateChannelAgentBindingsAddCanonicalUID = `
+ALTER TABLE channel_agent_bindings ADD COLUMN canonical_uid BIGINT DEFAULT NULL;
+`
+
+const migrateChannelAgentEntriesOwnerAgentIndex = `
+ALTER TABLE channel_agent_entries ADD INDEX idx_channel_agent_entries_owner_agent (owner_uid, agent_uid, channel, channel_app_id, status);
+`
+
+const migrateChannelAgentBindingsLookupIndex = `
+ALTER TABLE channel_agent_bindings ADD INDEX idx_channel_agent_bindings_lookup (channel, channel_app_id, channel_user_id, status);
+`
+
+const migrateChannelAgentBindingsActorAgentIndex = `
+ALTER TABLE channel_agent_bindings ADD INDEX idx_channel_agent_bindings_actor_agent (channel, channel_app_id, actor_uid, agent_uid, status);
+`
+
+const migrateChannelAgentBindingsActorAnyIndex = `
+ALTER TABLE channel_agent_bindings ADD INDEX idx_channel_agent_bindings_actor_any (actor_uid, agent_uid, status);
 `

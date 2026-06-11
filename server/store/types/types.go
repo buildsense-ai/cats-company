@@ -213,6 +213,51 @@ type BotConfig struct {
 	Config      map[string]string `json:"config,omitempty"`
 }
 
+// ChannelAgentEntry is a shareable QR/link entry for a virtual employee on an
+// external chat channel such as Weixin or Feishu.
+type ChannelAgentEntry struct {
+	ID           int64      `json:"id"`
+	SceneKey     string     `json:"scene_key"`
+	Channel      string     `json:"channel"`
+	ChannelAppID string     `json:"channel_app_id,omitempty"`
+	OwnerUID     int64      `json:"owner_uid"`
+	AgentUID     int64      `json:"agent_uid"`
+	Status       string     `json:"status"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+}
+
+// ChannelAgentBinding records which external-channel identity should talk to
+// which virtual employee by default.
+type ChannelAgentBinding struct {
+	ID                      int64      `json:"id"`
+	Channel                 string     `json:"channel"`
+	ChannelAppID            string     `json:"channel_app_id,omitempty"`
+	ChannelUserID           string     `json:"channel_user_id"`
+	ChannelConversationID   string     `json:"channel_conversation_id,omitempty"`
+	ChannelConversationType string     `json:"channel_conversation_type,omitempty"`
+	ActorUID                int64      `json:"actor_uid,omitempty"`
+	CanonicalUID            int64      `json:"canonical_uid,omitempty"`
+	OwnerUID                int64      `json:"owner_uid"`
+	AgentUID                int64      `json:"agent_uid"`
+	EntryID                 int64      `json:"entry_id,omitempty"`
+	Status                  string     `json:"status"`
+	BoundAt                 time.Time  `json:"bound_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
+	LastUsedAt              *time.Time `json:"last_used_at,omitempty"`
+}
+
+// ChannelAgentBindingQuery is the normalized lookup key used by channel
+// adapters before they create a model session route.
+type ChannelAgentBindingQuery struct {
+	Channel                 string
+	ChannelAppID            string
+	ChannelUserID           string
+	ChannelConversationID   string
+	ChannelConversationType string
+}
+
 // Group represents a chat group.
 type Group struct {
 	ID           int64     `json:"id"`

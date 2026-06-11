@@ -16,6 +16,8 @@ func (a *Adapter) CreateSchema() error {
 		createGroupMembersTable,
 		createFeedbackReportsTable,
 		createAuthServicesTable,
+		createChannelAgentEntriesTable,
+		createChannelAgentBindingsTable,
 		migrateUsersAddBotDisclose,
 		migrateMessagesAddReplyTo,
 		migrateBotConfigAddAPIKey,
@@ -23,6 +25,9 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddVisibility,
 		migrateBotConfigAddTenantName,
 		migrateBotConfigAddBodyID,
+		migrateChannelAgentEntriesAddAppID,
+		migrateChannelAgentBindingsAddActorUID,
+		migrateChannelAgentBindingsAddCanonicalUID,
 		migrateMessagesAddCodeMode,
 		migrateMessagesAddClientMsgID,
 		migrateGroupsAddCreatedAtColumn,
@@ -39,6 +44,7 @@ func (a *Adapter) CreateSchema() error {
 		createGroupMembersIndexes,
 		createFeedbackIndexes,
 		createAuthServicesIndexes,
+		createChannelAgentIndexes,
 		createUpdatedAtTriggers,
 	}
 	for _, statement := range statements {
@@ -196,6 +202,42 @@ CREATE TABLE IF NOT EXISTS auth_services (
 );
 `
 
+const createChannelAgentEntriesTable = `
+CREATE TABLE IF NOT EXISTS channel_agent_entries (
+    id BIGSERIAL PRIMARY KEY,
+    scene_key VARCHAR(64) NOT NULL UNIQUE,
+    channel VARCHAR(32) NOT NULL,
+    channel_app_id VARCHAR(128) NOT NULL DEFAULT '',
+    owner_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    last_used_at TIMESTAMPTZ DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+`
+
+const createChannelAgentBindingsTable = `
+CREATE TABLE IF NOT EXISTS channel_agent_bindings (
+    id BIGSERIAL PRIMARY KEY,
+    channel VARCHAR(32) NOT NULL,
+    channel_app_id VARCHAR(128) NOT NULL DEFAULT '',
+    channel_user_id VARCHAR(128) NOT NULL,
+	channel_conversation_id VARCHAR(128) NOT NULL DEFAULT '',
+	channel_conversation_type VARCHAR(32) NOT NULL DEFAULT 'p2p',
+	actor_uid BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
+	canonical_uid BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
+	owner_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    entry_id BIGINT DEFAULT NULL REFERENCES channel_agent_entries(id) ON DELETE SET NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    bound_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMPTZ DEFAULT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_channel_agent_binding_identity UNIQUE (channel, channel_app_id, channel_user_id, channel_conversation_id)
+);
+`
+
 const migrateUsersAddBotDisclose = `ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_disclose BOOLEAN NOT NULL DEFAULT FALSE;`
 const migrateMessagesAddReplyTo = `ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to BIGINT DEFAULT NULL;`
 const migrateBotConfigAddAPIKey = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS api_key VARCHAR(128) DEFAULT NULL;`
@@ -203,6 +245,9 @@ const migrateBotConfigAddOwnerID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXI
 const migrateBotConfigAddVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'public';`
 const migrateBotConfigAddTenantName = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(128) DEFAULT NULL;`
 const migrateBotConfigAddBodyID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS body_id VARCHAR(128) DEFAULT NULL;`
+const migrateChannelAgentEntriesAddAppID = `ALTER TABLE channel_agent_entries ADD COLUMN IF NOT EXISTS channel_app_id VARCHAR(128) NOT NULL DEFAULT '';`
+const migrateChannelAgentBindingsAddActorUID = `ALTER TABLE channel_agent_bindings ADD COLUMN IF NOT EXISTS actor_uid BIGINT DEFAULT NULL;`
+const migrateChannelAgentBindingsAddCanonicalUID = `ALTER TABLE channel_agent_bindings ADD COLUMN IF NOT EXISTS canonical_uid BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL;`
 const migrateMessagesAddCodeMode = `
 ALTER TABLE messages
   ADD COLUMN IF NOT EXISTS content_blocks JSONB DEFAULT NULL,
@@ -263,6 +308,14 @@ CREATE INDEX IF NOT EXISTS idx_auth_services_state ON auth_services (state);
 CREATE INDEX IF NOT EXISTS idx_auth_services_slug ON auth_services (slug);
 `
 
+const createChannelAgentIndexes = `
+CREATE INDEX IF NOT EXISTS idx_channel_agent_entries_owner_agent ON channel_agent_entries (owner_uid, agent_uid, channel, channel_app_id, status);
+CREATE INDEX IF NOT EXISTS idx_channel_agent_bindings_lookup ON channel_agent_bindings (channel, channel_app_id, channel_user_id, status);
+CREATE INDEX IF NOT EXISTS idx_channel_agent_bindings_agent ON channel_agent_bindings (owner_uid, agent_uid, status);
+CREATE INDEX IF NOT EXISTS idx_channel_agent_bindings_actor_agent ON channel_agent_bindings (channel, channel_app_id, actor_uid, agent_uid, status);
+CREATE INDEX IF NOT EXISTS idx_channel_agent_bindings_actor_any ON channel_agent_bindings (actor_uid, agent_uid, status);
+`
+
 const createUpdatedAtTriggers = `
 CREATE OR REPLACE TRIGGER trg_users_updated_at BEFORE UPDATE ON users
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -273,5 +326,9 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_feedback_reports_updated_at BEFORE UPDATE ON feedback_reports
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_auth_services_updated_at BEFORE UPDATE ON auth_services
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_channel_agent_entries_updated_at BEFORE UPDATE ON channel_agent_entries
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_channel_agent_bindings_updated_at BEFORE UPDATE ON channel_agent_bindings
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 `

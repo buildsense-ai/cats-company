@@ -11,11 +11,12 @@ import (
 
 // Config holds the server configuration.
 type Config struct {
-	Listen    string       `json:"listen"`
-	GRPCPort  string       `json:"grpc_port"`
-	Database  DBConfig     `json:"database"`
-	WebSocket WSConfig     `json:"websocket"`
-	Static    StaticConfig `json:"static"`
+	Listen    string        `json:"listen"`
+	GRPCPort  string        `json:"grpc_port"`
+	Database  DBConfig      `json:"database"`
+	WebSocket WSConfig      `json:"websocket"`
+	Static    StaticConfig  `json:"static"`
+	Runtime   RuntimeConfig `json:"runtime"`
 }
 
 type DBConfig struct {
@@ -33,6 +34,12 @@ type WSConfig struct {
 
 type StaticConfig struct {
 	Dir string `json:"dir"`
+}
+
+type RuntimeConfig struct {
+	Store          string `json:"store"`
+	RedisURL       string `json:"redis_url"`
+	RedisKeyPrefix string `json:"redis_key_prefix"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -76,6 +83,9 @@ func applyEnvOverrides(cfg *Config) {
 	applyEnvInt("OC_DB_MAX_IDLE_CONNS", &cfg.Database.MaxIdleConns)
 	applyEnvString("OC_DB_CONN_MAX_LIFETIME", &cfg.Database.ConnMaxLifetime)
 	applyEnvString("OC_DB_CONN_MAX_IDLE_TIME", &cfg.Database.ConnMaxIdleTime)
+	applyEnvString("OC_RUNTIME_STORE", &cfg.Runtime.Store)
+	applyEnvString("OC_REDIS_URL", &cfg.Runtime.RedisURL)
+	applyEnvString("OC_REDIS_KEY_PREFIX", &cfg.Runtime.RedisKeyPrefix)
 }
 
 func applyEnvInt(name string, target *int) {

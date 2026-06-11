@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +82,80 @@ func TestDeviceRPCRoutesRequestToSelectedDeviceAndReturnsResult(t *testing.T) {
 	}
 	if pending := hub.DeviceRPCStatus(7); len(pending) != 0 {
 		t.Fatalf("finished rpc should not remain pending: %#v", pending)
+	}
+}
+
+func TestDeviceRPCRoutesDelegatedChannelActorGrantToDeviceOwner(t *testing.T) {
+	hub := NewHub(nil, nil)
+	now := time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC)
+	hub.userDevices.now = func() time.Time { return now }
+	hub.deviceRPC.now = func() time.Time { return now }
+	device, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID:       "alice-laptop",
+		DisplayName:    "Alice Laptop",
+		BodyID:         "body-device",
+		InstallationID: "install-device",
+		Capabilities:   []string{"read_file"},
+	})
+	if err != nil {
+		t.Fatalf("register device: %v", err)
+	}
+	grants := hub.userDevices.grantsForOwnerDevices(100, 7, "p2p_100_42", "p2p", 42, "body-agent", []UserDevice{device})
+	if len(grants) != 1 {
+		t.Fatalf("grantsForOwnerDevices returned %d grants", len(grants))
+	}
+	grant := grants[0]
+	if grant.OwnerUserID != "usr7" || grant.ActorUserID != "usr100" {
+		t.Fatalf("unexpected delegated grant: %#v", grant)
+	}
+	agent := &Client{
+		hub:         hub,
+		uid:         42,
+		accountType: types.AccountBot,
+		bodyID:      "body-agent",
+		send:        make(chan []byte, 4),
+	}
+	target := &Client{
+		hub:                  hub,
+		uid:                  77,
+		accountType:          types.AccountBot,
+		bodyID:               "body-device",
+		installationID:       "install-device",
+		deviceOwnerUID:       7,
+		deviceID:             "alice-laptop",
+		deviceBodyID:         "body-device",
+		deviceInstallationID: "install-device",
+		send:                 make(chan []byte, 4),
+	}
+	hub.addClient(agent)
+	hub.addClient(target)
+	hub.bindDeviceClient(7, device, target)
+
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-delegated",
+		Type:      "request",
+		RequestID: "rpc-delegated",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+	})
+
+	var forwarded ServerMessage
+	decodeQueuedServerMessage(t, target.send, &forwarded)
+	if forwarded.DeviceRPC == nil || forwarded.DeviceRPC.ActorUserID != "usr100" || forwarded.DeviceRPC.DeviceID != "alice-laptop" {
+		t.Fatalf("unexpected delegated request: %#v", forwarded.DeviceRPC)
+	}
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusOK {
+		t.Fatalf("unexpected delegated ack: %#v", ack.Ctrl)
+	}
+	if pending := hub.DeviceRPCStatus(100); len(pending) != 0 {
+		t.Fatalf("channel actor should not own device pending status: %#v", pending)
+	}
+	pending := hub.DeviceRPCStatus(7)
+	if len(pending) != 1 || pending[0].ActorUserID != "usr100" || pending[0].OwnerUserID != "usr7" {
+		t.Fatalf("unexpected owner-scoped pending: %#v", pending)
 	}
 }
 
@@ -294,6 +369,120 @@ func TestDeviceRPCRejectsResultFromSupersededDeviceConnection(t *testing.T) {
 	decodeQueuedServerMessage(t, oldTarget.send, &staleAck)
 	if staleAck.Ctrl == nil || staleAck.Ctrl.Code != 403 {
 		t.Fatalf("stale device ack = %#v, want 403", staleAck.Ctrl)
+	}
+}
+
+func TestDeviceRPCRejectsConnectorResultWithoutScope(t *testing.T) {
+	hub, agent, target, _, grant := newDeviceRPCTestFixture(t, true)
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-1",
+		Type:      "request",
+		RequestID: "rpc-no-result-scope",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+	})
+	decodeQueuedServerMessage(t, target.send, &ServerMessage{})
+	decodeQueuedServerMessage(t, agent.send, &ServerMessage{})
+
+	target.deviceConnector = &DeviceConnectorClaims{
+		UID:      7,
+		DeviceID: grant.DeviceID,
+		Scopes:   []string{"device:ws", "device:register"},
+	}
+	hub.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "rpc-result-msg-1",
+		Type:      "result",
+		RequestID: "rpc-no-result-scope",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Result:    map[string]interface{}{"ok": true},
+	})
+
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, target.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusForbidden {
+		t.Fatalf("connector result ack = %#v, want 403", ack.Ctrl)
+	}
+	if pending := hub.DeviceRPCStatus(7); len(pending) != 1 || pending[0].RequestID != "rpc-no-result-scope" {
+		t.Fatalf("request should remain pending after forbidden result: %#v", pending)
+	}
+}
+
+func TestDeviceRPCRejectsRevokedConnectorResult(t *testing.T) {
+	hub, agent, target, _, grant := newDeviceRPCTestFixture(t, true)
+	target.uid = 7
+	target.accountType = types.AccountHuman
+	target.deviceConnector = &DeviceConnectorClaims{
+		UID:            7,
+		DeviceID:       grant.DeviceID,
+		InstallationID: target.deviceInstallationID,
+		Scopes:         []string{"device:ws", "device:register", "device:rpc_result"},
+	}
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-1",
+		Type:      "request",
+		RequestID: "rpc-revoked-connector",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+	})
+	decodeQueuedServerMessage(t, target.send, &ServerMessage{})
+	decodeQueuedServerMessage(t, agent.send, &ServerMessage{})
+
+	hub.revokeDeviceConnectorDevice(7, grant.DeviceID)
+	hub.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "rpc-result-msg-1",
+		Type:      "result",
+		RequestID: "rpc-revoked-connector",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Result:    map[string]interface{}{"ok": true},
+	})
+
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, target.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusForbidden {
+		t.Fatalf("revoked connector result ack = %#v, want 403", ack.Ctrl)
+	}
+	if pending := hub.DeviceRPCStatus(7); len(pending) != 1 || pending[0].RequestID != "rpc-revoked-connector" {
+		t.Fatalf("request should remain pending after revoked result: %#v", pending)
+	}
+}
+
+func TestHiRejectsRevokedConnectorRegistration(t *testing.T) {
+	hub := NewHub(nil, nil)
+	client := &Client{
+		hub:         hub,
+		uid:         7,
+		accountType: types.AccountHuman,
+		send:        make(chan []byte, 1),
+		deviceConnector: &DeviceConnectorClaims{
+			UID:            7,
+			DeviceID:       "alice-laptop",
+			InstallationID: "install-device",
+			Scopes:         []string{"device:ws", "device:register", "device:rpc_result"},
+		},
+	}
+	hub.addClient(client)
+	hub.revokeDeviceConnectorDevice(7, "alice-laptop")
+
+	hub.handleHi(client, "Alice Laptop", &MsgClientHi{
+		ID: "hi-revoked",
+		Device: &MsgClientHiDevice{
+			DeviceID:       "alice-laptop",
+			InstallationID: "install-device",
+			Capabilities:   []string{"read_file"},
+		},
+	})
+
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, client.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusBadRequest {
+		t.Fatalf("revoked connector hi ack = %#v, want 400", ack.Ctrl)
+	}
+	if got := hub.getDeviceClient(7, "alice-laptop"); got != nil {
+		t.Fatalf("revoked connector should not bind device client: %#v", got)
 	}
 }
 
