@@ -3,6 +3,7 @@ import { api } from '../api';
 import t from '../i18n';
 import Avatar from './avatar';
 import PasswordResetForm from './password-reset-form';
+import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
 
 export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
   const fileInputRef = useRef(null);
@@ -21,6 +22,13 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
     const file = event.target.files?.[0];
     if (!file) return;
 
+    const validationError = validateImageUpload(file);
+    if (validationError) {
+      setError(validationError);
+      event.target.value = '';
+      return;
+    }
+
     setError('');
     try {
       const uploaded = await api.uploadFile(file, 'image');
@@ -31,7 +39,6 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
       event.target.value = '';
     }
   };
-
   const handleSave = async () => {
     setSaving(true);
     setError('');
@@ -60,7 +67,7 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*"
+              accept={IMAGE_UPLOAD_ACCEPT}
               style={{ display: 'none' }}
               onChange={handleSelectAvatar}
             />

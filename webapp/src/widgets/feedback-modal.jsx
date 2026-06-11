@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
+import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
 
 const MAX_ATTACHMENTS = 5;
 const FEEDBACK_DRAFT_VERSION = 1;
@@ -81,13 +82,24 @@ export default function FeedbackModal({ onClose, user }) {
     const files = Array.from(fileList || []);
     if (files.length === 0) return;
 
-    const images = files.filter((file) => file.type && file.type.startsWith('image/'));
-    if (images.length === 0) {
-      setError('请上传图片截图，支持 PNG、JPG、GIF、WebP。');
+    const validImages = [];
+    let rejectedMessage = '';
+    for (const file of files) {
+      const validationError = validateImageUpload(file, {
+        unsupportedTypeMessage: '请上传图片截图，支持 PNG、JPG、GIF、WebP。',
+      });
+      if (validationError) {
+        rejectedMessage = rejectedMessage || validationError;
+        continue;
+      }
+      validImages.push(file);
+    }
+    if (validImages.length === 0) {
+      setError(rejectedMessage || '请上传图片截图，支持 PNG、JPG、GIF、WebP。');
       return;
     }
 
-    const nextImages = images.slice(0, remainingSlots);
+    const nextImages = validImages.slice(0, remainingSlots);
     if (nextImages.length === 0) {
       setError(`最多上传 ${MAX_ATTACHMENTS} 张截图。`);
       return;
@@ -101,7 +113,7 @@ export default function FeedbackModal({ onClose, user }) {
         previewUrl: URL.createObjectURL(file),
       })),
     ]);
-    setError(images.length > nextImages.length ? `最多上传 ${MAX_ATTACHMENTS} 张截图，已保留前 ${MAX_ATTACHMENTS} 张。` : '');
+    setError(validImages.length > nextImages.length ? `最多上传 ${MAX_ATTACHMENTS} 张截图，已保留前 ${MAX_ATTACHMENTS} 张。` : rejectedMessage);
   };
 
   const removeAttachment = (id) => {
@@ -246,7 +258,7 @@ export default function FeedbackModal({ onClose, user }) {
               >
                 <input
                   type="file"
-                  accept="image/*"
+                  accept={IMAGE_UPLOAD_ACCEPT}
                   multiple
                   onChange={(event) => addFiles(event.target.files)}
                 />

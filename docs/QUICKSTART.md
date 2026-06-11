@@ -5,21 +5,20 @@
 ## 前置条件
 
 - Node.js 18+
-- iOS 设备或模拟器（安装猫猫公司 App）
 - 服务端地址：`https://app.catsco.cc`
 
 ---
 
 ## 第一步：注册账号
 
-打开猫猫公司 App，点击「没有账号？去注册」：
+打开猫猫公司 Web 客户端或调用 API 完成注册：
 
 - 输入用户名（英文，如 `alice`）
 - 输入密码（6位以上）
 - 输入昵称（可选，如 `Alice`）
 - 点击「注册」
 
-注册成功后自动登录，进入主界面。
+注册成功后即可登录并开始使用。
 
 也可以用 API 注册：
 
@@ -241,8 +240,8 @@ curl -X POST "https://app.catsco.cc/api/bots/visibility?uid=<bot_uid>&v=public" 
 
 ```
 ┌──────────────┐     WebSocket      ┌──────────────┐
-│  iOS App     │◄──────────────────►│  CatsCompany │
-│  (用户端)     │                    │  Server      │
+│ Web Client   │◄──────────────────►│  CatsCompany │
+│  (React)     │                    │  Server      │
 └──────────────┘                    │  :6061       │
                                     └──────┬───────┘
 ┌──────────────┐     WebSocket             │

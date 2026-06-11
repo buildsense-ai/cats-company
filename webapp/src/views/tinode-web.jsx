@@ -11,6 +11,7 @@ import FeedbackModal from '../widgets/feedback-modal';
 import CatsCoDownloadModal from '../widgets/catsco-download-modal';
 import RelayAccessModal from '../widgets/relay-access-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
+import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
 import { Bug, Download, KeyRound, Settings, LogOut, Eye, EyeOff } from 'lucide-react';
 import CatOrb from '../components/CatOrb/CatOrb';
@@ -106,6 +107,16 @@ function writeStoredTopic(uid, topic) {
 }
 
 export default function TinodeWeb() {
+  const demoParams = new URLSearchParams(window.location.search);
+  const showWorkflowDemo = demoParams.get('workflow_demo') === '1';
+  if (showWorkflowDemo) {
+    return <WorkflowRichMediaDemo />;
+  }
+
+  return <TinodeWebApp />;
+}
+
+function TinodeWebApp() {
   const entryMatch = window.location.pathname.match(/^\/e\/([^/]+)$/);
   const entrySceneKey = entryMatch ? decodeURIComponent(entryMatch[1]) : '';
   const channelDeviceLink = window.location.pathname === '/channel-device-link';

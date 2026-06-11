@@ -1,0 +1,11 @@
+student,subject,score,missing,comment
+S01,math,92,false,stable
+S02,math,78,false,needs review on geometry
+S03,math,88,false,good trend
+S04,math,61,false,low score outlier
+S05,math,95,false,strong
+S06,math,84,false,stable
+S07,math,0,true,missing exam record
+S08,math,73,false,needs practice
+S09,math,89,false,good
+S10,math,97,false,strong

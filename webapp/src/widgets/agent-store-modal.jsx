@@ -4,6 +4,7 @@ import t from '../i18n';
 import { Copy, QrCode, RefreshCw, Zap, Bot, Upload } from 'lucide-react';
 import Avatar from './avatar';
 import QRCode from './qr-code';
+import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
 
 const CREATE_MODES = {
   SELF_HOSTED: 'self_hosted',
@@ -389,11 +390,17 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                   <input
                     ref={avatarFileRef}
                     type="file"
-                    accept="image/*"
+                    accept={IMAGE_UPLOAD_ACCEPT}
                     style={{ display: 'none' }}
                     onChange={async (event) => {
                       const file = event.target.files?.[0];
                       if (!file) return;
+                      const validationError = validateImageUpload(file);
+                      if (validationError) {
+                        setError(validationError);
+                        event.target.value = '';
+                        return;
+                      }
                       setAvatarUploading(true);
                       setError('');
                       try {

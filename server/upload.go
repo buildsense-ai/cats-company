@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	urlpath "path"
@@ -41,6 +42,17 @@ var allowedImageTypes = map[string]bool{
 	"image/png":  true,
 	"image/gif":  true,
 	"image/webp": true,
+}
+
+func isAllowedImageContentType(contentType string) bool {
+	if strings.TrimSpace(contentType) == "" {
+		return true
+	}
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	return allowedImageTypes[strings.ToLower(mediaType)]
 }
 
 // Allowed file extensions (whitelist)
@@ -111,7 +123,7 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	// For images, also validate MIME type
 	if isImageUpload {
 		contentType := header.Header.Get("Content-Type")
-		if !allowedImageTypes[contentType] {
+		if !isAllowedImageContentType(contentType) {
 			writeUploadJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid image type"})
 			return
 		}
@@ -149,11 +161,12 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	url := fmt.Sprintf("%s/%s/%s", h.baseURL, subDir, fileKey)
 
 	writeUploadJSON(w, http.StatusOK, map[string]interface{}{
-		"file_key": fileKey,
-		"url":      url,
-		"name":     header.Filename,
-		"size":     written,
-		"type":     uploadType,
+		"file_key":  fileKey,
+		"url":       url,
+		"name":      header.Filename,
+		"size":      written,
+		"type":      uploadType,
+		"mime_type": normalizedUploadMimeType(ext, header.Header.Get("Content-Type")),
 	})
 }
 
@@ -203,7 +216,7 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cache-Control", cacheControlForUpload(subDir))
 	if subDir == "files" {
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fileName))
+		w.Header().Set("Content-Disposition", contentDispositionForUploadFile(fileName, ext))
 	}
 	http.ServeFile(w, r, fullPath)
 }
@@ -213,6 +226,39 @@ func cacheControlForUpload(subDir string) string {
 		return "public, max-age=31536000, immutable"
 	}
 	return "private, max-age=86400"
+}
+
+func contentDispositionForUploadFile(fileName, ext string) string {
+	disposition := "attachment"
+	if strings.EqualFold(ext, ".pdf") {
+		disposition = "inline"
+	}
+	return fmt.Sprintf("%s; filename=%q", disposition, fileName)
+}
+
+func normalizedUploadMimeType(ext, headerType string) string {
+	switch strings.ToLower(ext) {
+	case ".md":
+		return "text/markdown"
+	case ".csv":
+		return "text/csv"
+	case ".json":
+		return "application/json"
+	case ".xml":
+		return "application/xml"
+	}
+
+	if extType := mime.TypeByExtension(strings.ToLower(ext)); extType != "" {
+		if mediaType, _, err := mime.ParseMediaType(extType); err == nil && mediaType != "" {
+			return mediaType
+		}
+	}
+
+	if mediaType, _, err := mime.ParseMediaType(headerType); err == nil && mediaType != "" {
+		return mediaType
+	}
+
+	return "application/octet-stream"
 }
 
 func generateFileKey(ext string) string {

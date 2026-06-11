@@ -223,8 +223,23 @@ export const api = {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       body: formData,
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Upload failed');
+
+    const raw = await res.text();
+    let data = {};
+    if (raw) {
+      try {
+        data = JSON.parse(raw);
+      } catch (err) {
+        if (res.status === 413 || raw.includes('413') || raw.includes('Payload Too Large')) {
+          throw new Error('Payload Too Large');
+        }
+        if (!res.ok) {
+          throw new Error(`Upload failed with HTTP ${res.status}`);
+        }
+        throw new Error('Upload failed: invalid server response');
+      }
+    }
+    if (!res.ok) throw new Error(data.error || `Upload failed with HTTP ${res.status}`);
     return data;
   },
   uploadFeedbackImage: (file) => api.uploadFile(file, 'feedback'),

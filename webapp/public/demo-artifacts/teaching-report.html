@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>教研报告协作 Demo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: #172033;
+      background: #f5f7fb;
+    }
+    body {
+      margin: 0;
+      padding: 32px;
+    }
+    .report {
+      max-width: 920px;
+      margin: 0 auto;
+      background: #fff;
+      border: 1px solid #e3e9f3;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 18px 45px rgba(42, 52, 77, 0.12);
+    }
+    header {
+      padding: 30px 34px;
+      background: linear-gradient(135deg, #0f766e, #2563eb);
+      color: #fff;
+    }
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: 0;
+    }
+    header p {
+      margin: 8px 0 0;
+      opacity: 0.86;
+    }
+    section {
+      padding: 26px 34px;
+      border-bottom: 1px solid #edf1f7;
+    }
+    section:last-child {
+      border-bottom: 0;
+    }
+    h2 {
+      margin: 0 0 16px;
+      font-size: 18px;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .metric {
+      padding: 16px;
+      border: 1px solid #e7edf6;
+      border-radius: 10px;
+      background: #f8fbff;
+    }
+    .metric strong {
+      display: block;
+      font-size: 24px;
+      margin-bottom: 4px;
+    }
+    .metric span {
+      color: #667085;
+      font-size: 13px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 18px;
+    }
+    ul {
+      margin: 0;
+      padding-left: 20px;
+      line-height: 1.8;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      padding: 11px 10px;
+      border-bottom: 1px solid #edf1f7;
+      text-align: left;
+    }
+    th {
+      color: #475467;
+      background: #f8fbff;
+    }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 9px;
+      background: #ecfdf5;
+      color: #047857;
+      font-weight: 700;
+      font-size: 12px;
+    }
+    .tag.warn {
+      background: #fff7ed;
+      color: #c2410c;
+    }
+    @media (max-width: 760px) {
+      body { padding: 14px; }
+      .metrics, .grid { grid-template-columns: 1fr; }
+      header, section { padding: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <article class="report">
+    <header>
+      <h1>教研报告协作 Demo</h1>
+      <p>由 CatsCo 工作流消息生成：数据表、工具读取、分析结论和 HTML 报告保持在同一条上下文里。</p>
+    </header>
+    <section>
+      <h2>核心指标</h2>
+      <div class="metrics">
+        <div class="metric"><strong>48</strong><span>学生记录</span></div>
+        <div class="metric"><strong>82.6</strong><span>平均分</span></div>
+        <div class="metric"><strong>3</strong><span>缺失字段</span></div>
+        <div class="metric"><strong>2</strong><span>异常样本</span></div>
+      </div>
+    </section>
+    <section class="grid">
+      <div>
+        <h2>结论摘要</h2>
+        <ul>
+          <li>整体分布稳定，70-90 分区间人数最多。</li>
+          <li>几何题型失分集中，适合做一次短专题复盘。</li>
+          <li>异常低分样本需要先排除缺考、录入错误或请假情况。</li>
+        </ul>
+      </div>
+      <div>
+        <h2>后续动作</h2>
+        <ul>
+          <li>班主任复核异常项。</li>
+          <li>任课老师补一次几何专题练习。</li>
+          <li>三天后重新导入数据并生成对比报告。</li>
+        </ul>
+      </div>
+    </section>
+    <section>
+      <h2>可复查样本</h2>
+      <table>
+        <thead>
+          <tr><th>样本</th><th>状态</th><th>建议</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>S04</td><td><span class="tag warn">异常低分</span></td><td>复核答题卡和缺题情况</td></tr>
+          <tr><td>S07</td><td><span class="tag warn">缺失记录</span></td><td>确认是否缺考或导入失败</td></tr>
+          <tr><td>S10</td><td><span class="tag">优秀样本</span></td><td>可作为解题过程示例</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </article>
+</body>
+</html>

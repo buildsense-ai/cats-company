@@ -12,7 +12,6 @@
 |------|------|------|
 | Server (Go) | ✅ 可用 | HTTP API + WebSocket + 健康检查 |
 | Webapp (React) | ✅ 可用 | WeChat 风格 UI + 富媒体 + Bot 管理 |
-| iOS (SwiftUI) | ✅ 可用 | 品牌统一主题 + 富媒体预览 |
 | Bot SDK | ✅ 可用 | Go/Python/TypeScript (全部 WebSocket) |
 | 部署 | ✅ 可用 | Docker Compose + HTTPS |
 
@@ -67,8 +66,6 @@
 ### 前端
 - [x] React Webapp
 - [x] WeChat 风格绿色主题
-- [x] iOS 原生 App (SwiftUI)
-- [x] 深色模式支持（iOS）
 - [x] 图片全屏预览
 - [x] 文件下载分享
 
@@ -174,7 +171,6 @@
 | ~~无 HTTPS~~ | 🔴 高 | ✅ 已修复 |
 | 删号/封号后旧 JWT 仍可继续调用 API / WS，客户端不会强制退出 | 🔴 高 | 待处理 |
 | 无测试覆盖 | 🔴 高 | 待处理 |
-| iOS DEVELOPMENT_TEAM 空 | 🟡 中 | 待用户配置 |
 | 无 API 文档 | 🟡 中 | 待处理 |
 | 无 CI/CD | 🟢 低 | 待处理 |
 
@@ -193,7 +189,6 @@
 - Phase 5 基础：安全加固、HTTPS、健康检查、连接池优化
 
 ### 2026-02-20
-- 新增 iOS 原生 App (SwiftUI)
 - 统一品牌主题（WeChat 绿）
 - 新增 Phase 6 Agent 经济系统规划
 

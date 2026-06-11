@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import t from '../i18n';
 import Avatar from './avatar';
+import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
 
 export default function GroupSettings({ groupId, currentUser, onClose, onSaved }) {
   const fileInputRef = useRef(null);
@@ -76,6 +77,13 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
     const file = event.target.files?.[0];
     if (!file) return;
 
+    const validationError = validateImageUpload(file);
+    if (validationError) {
+      setError(validationError);
+      event.target.value = '';
+      return;
+    }
+
     setError('');
     try {
       const uploaded = await api.uploadFile(file, 'image');
@@ -96,7 +104,6 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
       setError(t('group_name_placeholder'));
       return;
     }
-
     setSaving(true);
     setError('');
     try {
@@ -212,7 +219,7 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*"
+              accept={IMAGE_UPLOAD_ACCEPT}
               style={{ display: 'none' }}
               onChange={handleSelectAvatar}
             />

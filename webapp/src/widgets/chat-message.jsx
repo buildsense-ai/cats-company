@@ -1,17 +1,18 @@
-import React, { memo, useMemo, useState } from 'react';
-import { marked } from 'marked';
-import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, CornerUpLeft, MoreHorizontal, SmilePlus, X } from 'lucide-react';
+import React, { memo, useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, CornerUpLeft, MoreHorizontal, SmilePlus, X, Eye } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
-
-marked.setOptions({ breaks: false, gfm: true });
+import { markdownPreviewDocument, renderSafeMarkdown } from './markdown-utils';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
   'send_text',
   'send_file',
 ]);
+const HTML_FILE_EXTENSIONS = new Set(['HTML', 'HTM', 'XHTML']);
+const TEXT_FILE_EXTENSIONS = new Set(['TXT', 'JSON', 'MD', 'CSV', 'JS', 'PY', 'GO', 'HTML', 'HTM', 'CSS', 'XML']);
+const PREVIEW_FILE_EXTENSIONS = new Set(['PDF', ...TEXT_FILE_EXTENSIONS]);
 
 function shouldHideToolProgressName(name) {
   return HIDDEN_TOOL_PROGRESS_NAMES.has(String(name || '').trim());
@@ -376,13 +377,6 @@ function groupWorkingMessages(messages) {
   return groupContentBlocks(blocks);
 }
 
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
 function subAgentStatusText(status, isError) {
   if (isError) return '失败';
   switch (status) {
@@ -539,7 +533,7 @@ function WorkingProcess({ blocks }) {
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, onReply, showThinking = true, isConsecutive }) {
+function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, onReply, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
   const content = message.content;
   const effectiveWorkingMessages = workingMessages || message._working || [];
   const storedBlocks = useMemo(() => Array.isArray(message.content_blocks) ? message.content_blocks : [], [message.content_blocks]);
@@ -642,9 +636,20 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
 
         {(hasText || richBlocks.length > 0) && (
           <div style={{lineHeight: 1.46}}>
-            {hasText && (parsed ? <RichContent content={parsed} /> : <TextContent content={renderedTextContent} isGroup={isGroup} />)}
+            {hasText && (parsed ? (
+              <RichContent
+                content={parsed}
+                onPreviewFile={onPreviewFile}
+                activePreviewFile={activePreviewFile}
+              />
+            ) : <TextContent content={renderedTextContent} isGroup={isGroup} />)}
             {richBlocks.map((block, index) => (
-              <RichContent key={`${block.type}-${index}`} content={block} />
+              <RichContent
+                key={`${block.type}-${index}`}
+                content={block}
+                onPreviewFile={onPreviewFile}
+                activePreviewFile={activePreviewFile}
+              />
             ))}
             {message._streaming && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
           </div>
@@ -664,7 +669,9 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.senderIsBot === nextProps.senderIsBot &&
     prevProps.replyMessage === nextProps.replyMessage &&
     prevProps.showThinking === nextProps.showThinking &&
-    prevProps.isConsecutive === nextProps.isConsecutive;
+    prevProps.isConsecutive === nextProps.isConsecutive &&
+    prevProps.onPreviewFile === nextProps.onPreviewFile &&
+    prevProps.activePreviewFile === nextProps.activePreviewFile;
 });
 
 export default ChatMessage;
@@ -676,7 +683,7 @@ function TextContent({ content, isGroup }) {
     const hasMarkdown = /(\*\*|__|`|#{1,6}\s|^\s*[-*+]\s|^\s*\d+\.\s|\[.*\]\(.*\))/m.test(text);
     if (!hasMarkdown) return null;
     try {
-      return marked.parse(escapeHtml(text));
+      return renderSafeMarkdown(text);
     } catch (e) {
       console.error('Markdown parse error:', e);
       return null;
@@ -705,12 +712,12 @@ function TextContent({ content, isGroup }) {
   return <span style={{ whiteSpace: 'pre-wrap' }}>{text}</span>;
 }
 
-function RichContent({ content }) {
+function RichContent({ content, onPreviewFile, activePreviewFile }) {
   switch (content.type) {
     case 'image':
       return <ImageContent payload={content.payload} />;
     case 'file':
-      return <FileContent payload={content.payload} />;
+      return <FileContent payload={content.payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
     case 'link_preview':
       return <LinkPreviewContent payload={content.payload} />;
     case 'card':
@@ -742,111 +749,292 @@ function ImageContent({ payload }) {
   );
 }
 
-function FileContent({ payload }) {
-  const [preview, setPreview] = useState(false);
-  const [textContent, setTextContent] = useState(null);
-  const [loadingText, setLoadingText] = useState(false);
+function fileExtension(payload) {
+  const name = payload?.name || payload?.url || '';
+  const raw = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : '';
+  return raw ? raw.toUpperCase() : 'FILE';
+}
 
+function fileMimeType(payload) {
+  return String(payload?.mime_type || payload?.mime || payload?.content_type || '').toLowerCase();
+}
+
+function isHtmlFile(payload, ext = fileExtension(payload)) {
+  const mime = fileMimeType(payload);
+  return HTML_FILE_EXTENSIONS.has(ext) || mime === 'text/html' || mime === 'application/xhtml+xml';
+}
+
+function isMarkdownFile(payload, ext = fileExtension(payload)) {
+  const mime = fileMimeType(payload);
+  return ext === 'MD' || mime === 'text/markdown' || mime === 'text/x-markdown';
+}
+
+function isPdfFile(payload, ext = fileExtension(payload)) {
+  return ext === 'PDF' || fileMimeType(payload) === 'application/pdf';
+}
+
+function isDocxFile(payload, ext = fileExtension(payload)) {
+  const mime = fileMimeType(payload);
+  return ext === 'DOCX' ||
+    mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+}
+
+function isPreviewableFile(payload, ext = fileExtension(payload)) {
+  const mime = fileMimeType(payload);
+  if (PREVIEW_FILE_EXTENSIONS.has(ext) || isPdfFile(payload, ext)) return true;
+  return mime.startsWith('text/') || mime === 'application/json' || mime === 'application/xml';
+}
+
+function artifactMeta(payload, ext = fileExtension(payload)) {
+  if (isHtmlFile(payload, ext)) {
+    return {
+      label: 'HTML',
+      className: 'report',
+      subtitle: '可预览的工作流产物',
+    };
+  }
+  if (isPdfFile(payload, ext)) {
+    return {
+      label: 'PDF',
+      className: 'report',
+      subtitle: '报告文件',
+    };
+  }
+  if (isDocxFile(payload, ext)) {
+    return {
+      label: 'Word',
+      className: 'document',
+      subtitle: '可下载的文档',
+    };
+  }
+  if (isMarkdownFile(payload, ext)) {
+    return {
+      label: 'Markdown',
+      className: 'document',
+      subtitle: '文档产物',
+    };
+  }
+  if (ext === 'CSV' || fileMimeType(payload) === 'text/csv') {
+    return {
+      label: 'CSV',
+      className: 'dataset',
+      subtitle: '表格数据',
+    };
+  }
+  return {
+    label: ext,
+    className: 'document',
+    subtitle: '文件',
+  };
+}
+
+function fetchableMediaURL(url) {
+  if (!url) return '';
+  try {
+    const urlObj = new URL(url, window.location.origin);
+    return urlObj.pathname + urlObj.search;
+  } catch (e) {
+    return url;
+  }
+}
+
+function isTrustedPreviewURL(url) {
+  if (!url) return false;
+  try {
+    const urlObj = new URL(url, window.location.origin);
+    const mediaOrigin = new URL(resolveMediaURL('/'), window.location.origin).origin;
+    const host = window.location.hostname;
+    const isLocalDev = host === 'localhost' || host === '127.0.0.1';
+    const trustedOrigin = (
+      urlObj.origin === window.location.origin ||
+      urlObj.origin === mediaOrigin ||
+      (isLocalDev && urlObj.hostname.endsWith('catsco.cc'))
+    );
+    const trustedPath = /^\/uploads\/(files|images|feedback)\//.test(urlObj.pathname) ||
+      (isLocalDev && urlObj.pathname.startsWith('/demo-artifacts/'));
+    return trustedOrigin && trustedPath;
+  } catch (e) {
+    return String(url).startsWith('/uploads/') || String(url).startsWith('/demo-artifacts/');
+  }
+}
+
+function previewFileDescriptor(payload) {
   if (!payload) return null;
-  const sizeStr = payload.size ? formatFileSize(payload.size) : '';
   const url = resolveMediaURL(payload.url);
-  const ext = payload.name?.split('.').pop()?.toUpperCase() || 'FILE';
-  const canPreview = ['PDF', 'TXT', 'JSON', 'MD', 'CSV', 'JS', 'PY', 'GO', 'HTML', 'CSS'].includes(ext);
-  
-  const subtitle = `${sizeStr}${sizeStr ? ' \u2022 ' : ''}${ext} Document`;
+  const ext = fileExtension(payload);
+  const meta = artifactMeta(payload, ext);
+  const isPdf = isPdfFile(payload, ext);
+  const isHtml = isHtmlFile(payload, ext);
+  const isMarkdown = isMarkdownFile(payload, ext);
+  const canPreview = isPreviewableFile(payload, ext) && isTrustedPreviewURL(url);
+  return {
+    payload,
+    url,
+    ext,
+    meta,
+    isPdf,
+    isHtml,
+    isMarkdown,
+    canPreview,
+    sizeStr: payload.size ? formatFileSize(payload.size) : '',
+    key: `${url}|${payload.name || ''}|${payload.size || ''}`,
+  };
+}
 
-  const handleOpenPreview = async () => {
-    setPreview(true);
-    if (ext !== 'PDF') {
-      setLoadingText(true);
-      setTextContent(null);
-      try {
-        // [CORS Fix]: Strip the absolute domain from the URL strings so that 
-        // the XHR cleanly pipes through the Webpack proxy, avoiding browser CORS blocks.
-        let fetchUrl = url;
-        try {
-          const urlObj = new URL(url);
-          fetchUrl = urlObj.pathname + urlObj.search;
-        } catch (e) {}
-
-        const res = await fetch(fetchUrl);
-        if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
-        const text = await res.text();
-        setTextContent(text);
-      } catch (err) {
-        setTextContent('Error loading file preview: ' + err.message);
-      } finally {
-        setLoadingText(false);
-      }
-    }
+function FileContent({ payload, onPreviewFile, activePreviewFile }) {
+  if (!payload) return null;
+  const descriptor = previewFileDescriptor(payload);
+  const { url, ext, canPreview, meta, sizeStr, key } = descriptor;
+  const activeKey = activePreviewFile ? previewFileDescriptor(activePreviewFile)?.key : '';
+  const isActive = canPreview && activeKey === key;
+  const subtitle = [meta.label, meta.subtitle, sizeStr, fileMimeType(payload) || ext].filter(Boolean).join(' · ');
+  const openFile = () => {
+    if (canPreview && onPreviewFile) onPreviewFile(payload);
+    else if (url) window.open(url, '_blank');
   };
 
   return (
-    <>
-      <div 
-        className="v3-attachment-card" 
-        onClick={() => {
-          if (canPreview) handleOpenPreview();
-          else if (url) window.open(url, '_blank');
-        }}
-        title={canPreview ? "Click to Preview" : "Click to Open/Download"}
+    <div
+      className={`v3-attachment-card v3-artifact-card ${meta.className}${isActive ? ' active' : ''}`}
+    >
+      <button
+        className="v3-artifact-main"
+        onClick={openFile}
+        title={canPreview ? '预览文件' : '打开或下载文件'}
+        type="button"
       >
         <div className="v3-attachment-icon">
           <FileText size={18} strokeWidth={1.5} />
         </div>
         <div className="v3-attachment-info">
-          <span className="v3-attachment-name">{payload.name || 'File'}</span>
+          <span className="v3-attachment-name" title={payload.name || 'File'}>{payload.name || 'File'}</span>
           <span className="v3-attachment-size">{subtitle}</span>
         </div>
-        {!canPreview && payload.url && (
-           <div style={{ marginLeft: 16, opacity: 0.4 }}>
-             <Download size={14} />
-           </div>
-        )}
+      </button>
+      <div className="v3-artifact-actions">
+        <button
+          className="v3-artifact-action"
+          disabled={!canPreview}
+          onClick={openFile}
+          title={canPreview ? '预览' : '暂不支持预览'}
+          type="button"
+        >
+          <Eye size={15} />
+          <span>预览</span>
+        </button>
+        <a
+          className="v3-artifact-action"
+          href={url || undefined}
+          download
+          onClick={(event) => event.stopPropagation()}
+          rel="noopener noreferrer"
+          target="_blank"
+          title="下载"
+        >
+          <Download size={15} />
+          <span>下载</span>
+        </a>
       </div>
-      {preview && (
-        <div className="oc-modal-overlay" onClick={() => setPreview(false)} style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}>
-          <div className="oc-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '90vw', width: ext === 'PDF' ? '90vw' : 800, maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column', background: 'var(--v3-bg-sidebar)', border: '1px solid var(--v3-border)', borderRadius: '12px', boxShadow: '0 24px 48px rgba(0,0,0,0.5)', color: 'var(--v3-text-name)' }}>
-            <div className="oc-modal-header" style={{ padding: '16px 24px', borderBottom: '1px solid var(--v3-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center' }}>
-                <FileText size={18} style={{ marginRight: 12, opacity: 0.7 }} />
-                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{payload.name}</h3>
-              </div>
-              <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                <a href={url} download title="Download Original" style={{ color: 'var(--v3-text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center' }} target="_blank" rel="noopener noreferrer">
-                  <Download size={18} />
-                </a>
-                <button
-                  aria-label="Close preview"
-                  onClick={() => setPreview(false)}
-                  style={{ background: 'transparent', border: 'none', color: 'var(--v3-text-muted)', fontSize: 26, cursor: 'pointer', display: 'flex', alignItems: 'center', margin: '-4px 0 -4px 8px' }}
-                  type="button"
-                >
-                  <X size={18} />
-                </button>
-              </div>
-            </div>
-            <div className="oc-modal-body" style={{ flex: 1, padding: 0, overflow: 'hidden' }}>
-              {ext === 'PDF' ? (
-                <iframe src={url} style={{ width: '100%', height: '75vh', border: 'none', display: 'block' }} title="PDF Preview" />
-              ) : (
-                <div 
-                   className={ext === 'MD' ? 'oc-markdown' : ''} 
-                   style={{ width: '100%', height: '75vh', overflow: 'auto', background: 'var(--v3-bg-app)', color: 'var(--v3-text-main)', padding: '32px 40px', boxSizing: 'border-box', fontFamily: ext === 'MD' ? 'inherit' : '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace', whiteSpace: ext === 'MD' ? 'normal' : 'pre-wrap', fontSize: 14, lineHeight: 1.6 }}
-                   dangerouslySetInnerHTML={ext === 'MD' && textContent ? { __html: marked.parse(textContent) } : undefined}
-                >
-                  {loadingText ? (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.5 }}>Loading preview...</div>
-                  ) : ext !== 'MD' ? (
-                    textContent || 'No content available.'
-                  ) : null}
-                </div>
-              )}
-            </div>
+    </div>
+  );
+}
+
+export function FilePreviewPanel({ file, onClose }) {
+  const [preview, setPreview] = useState(false);
+  const [textContent, setTextContent] = useState(null);
+  const [loadingText, setLoadingText] = useState(false);
+  const [previewError, setPreviewError] = useState('');
+
+  const descriptor = useMemo(() => previewFileDescriptor(file), [file]);
+  const url = descriptor?.url || '';
+  const isPdf = descriptor?.isPdf || false;
+  const isHtml = descriptor?.isHtml || false;
+  const isMarkdown = descriptor?.isMarkdown || false;
+  const meta = descriptor?.meta || artifactMeta(file || {});
+  const sizeStr = descriptor?.sizeStr || '';
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreview(Boolean(file));
+    setTextContent(null);
+    setPreviewError('');
+    if (!file || !descriptor?.canPreview || isPdf) {
+      setLoadingText(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const load = async () => {
+      setLoadingText(true);
+      try {
+        const res = await fetch(fetchableMediaURL(url));
+        if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
+        const text = await res.text();
+        if (!cancelled) setTextContent(text);
+      } catch (err) {
+        if (!cancelled) setPreviewError(`预览加载失败：${err.message}`);
+      } finally {
+        if (!cancelled) setLoadingText(false);
+      }
+    };
+    load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [descriptor?.canPreview, file, isPdf, url]);
+
+  if (!preview || !file) return null;
+  if (!descriptor?.canPreview) return null;
+
+  return (
+    <aside className={`v3-file-preview-panel ${isHtml || isPdf ? 'wide' : ''}`} aria-label="文件预览">
+      <div className="v3-file-preview-header">
+        <div className="v3-file-preview-title">
+          <FileText size={18} />
+          <div>
+            <h3>{file.name}</h3>
+            <span>{meta.label}{sizeStr ? ` · ${sizeStr}` : ''}</span>
           </div>
         </div>
-      )}
-    </>
+        <div className="v3-file-preview-actions">
+          <a href={url} download title="下载原文件" target="_blank" rel="noopener noreferrer">
+            <Download size={18} />
+          </a>
+          <button aria-label="关闭预览" onClick={onClose} type="button">
+            <X size={18} />
+          </button>
+        </div>
+      </div>
+      <div className="v3-file-preview-body">
+        {isPdf ? (
+          <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />
+        ) : loadingText ? (
+          <div className="v3-file-preview-state">加载中...</div>
+        ) : previewError ? (
+          <div className="v3-file-preview-state error">{previewError}</div>
+        ) : isHtml ? (
+          <iframe
+            className="v3-file-preview-frame"
+            title="HTML Report Preview"
+            sandbox=""
+            referrerPolicy="no-referrer"
+            srcDoc={textContent || '<!doctype html><meta charset="utf-8"><body></body>'}
+          />
+        ) : isMarkdown ? (
+          <iframe
+            className="v3-file-preview-frame"
+            title="Markdown Preview"
+            sandbox=""
+            referrerPolicy="no-referrer"
+            srcDoc={markdownPreviewDocument(textContent || '')}
+          />
+        ) : (
+          <pre className="v3-file-preview-text">{textContent || '暂无可预览内容。'}</pre>
+        )}
+      </div>
+    </aside>
   );
 }
 

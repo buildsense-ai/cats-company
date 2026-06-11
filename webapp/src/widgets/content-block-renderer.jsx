@@ -1,15 +1,13 @@
 import React from 'react';
-import { marked } from 'marked';
 import CollapsibleBlock from './collapsible-block';
-
-marked.setOptions({ breaks: false, gfm: true });
+import { renderSafeMarkdown } from './markdown-utils';
 
 function TextBlock({ block }) {
   const text = block.text || '';
   const hasMarkdown = /(\*\*|__|`|#{1,6}\s|^\s*[-*+]\s|^\s*\d+\.\s|\[.*\]\(.*\))/m.test(text);
   if (hasMarkdown) {
     try {
-      const html = marked.parse(text);
+      const html = renderSafeMarkdown(text);
       return <div className="oc-text-block oc-markdown" dangerouslySetInnerHTML={{ __html: html }} />;
     } catch (e) { /* fall through */ }
   }

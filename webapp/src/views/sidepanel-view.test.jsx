@@ -243,6 +243,182 @@ describe('ChatListView sidebar sections', () => {
     });
   });
 
+  it('orders each chat section by recent activity and new group creation time', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Old Agent',
+          is_group: false,
+          is_bot: true,
+          last_time: '2026-06-04T08:00:00Z',
+          latest_seq: 999,
+        },
+        {
+          id: 'p2p_7_43',
+          friend_id: 43,
+          name: 'New Agent',
+          is_group: false,
+          is_bot: true,
+          last_time: '2026-06-06T08:00:00Z',
+          latest_seq: 10,
+        },
+        {
+          id: 'p2p_7_8',
+          friend_id: 8,
+          name: 'Old Friend',
+          is_group: false,
+          is_bot: false,
+          last_time: '2026-06-03T08:00:00Z',
+          latest_seq: 50,
+        },
+        {
+          id: 'p2p_7_9',
+          friend_id: 9,
+          name: 'New Friend',
+          is_group: false,
+          is_bot: false,
+          last_time: '2026-06-05T08:00:00Z',
+          latest_seq: 1,
+        },
+        {
+          id: 'grp_20',
+          group_id: 20,
+          name: 'Old Group',
+          is_group: true,
+          last_time: '2026-06-02T08:00:00Z',
+          latest_seq: 1000,
+        },
+      ],
+    });
+    api.getGroups.mockResolvedValue({
+      groups: [
+        {
+          id: 20,
+          name: 'Old Group',
+          owner_id: 7,
+          created_at: '2026-06-02T08:00:00Z',
+        },
+        {
+          id: 21,
+          name: 'New Empty Group',
+          owner_id: 7,
+          created_at: '2026-06-07T08:00:00Z',
+        },
+      ],
+    });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mount();
+
+    const text = container.textContent;
+    expect(text.indexOf('New Agent')).toBeLessThan(text.indexOf('Old Agent'));
+    expect(text.indexOf('New Friend')).toBeLessThan(text.indexOf('Old Friend'));
+    expect(text.indexOf('New Empty Group')).toBeLessThan(text.indexOf('Old Group'));
+  });
+
+  it('falls back to created_at when direct conversations have no last_time', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Older Agent',
+          is_group: false,
+          is_bot: true,
+          created_at: '2026-06-04T08:00:00Z',
+          latest_seq: 999,
+        },
+        {
+          id: 'p2p_7_43',
+          friend_id: 43,
+          name: 'Newer Agent',
+          is_group: false,
+          is_bot: true,
+          created_at: '2026-06-06T08:00:00Z',
+          latest_seq: 1,
+        },
+      ],
+    });
+    api.getGroups.mockResolvedValue({ groups: [] });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mount();
+
+    const text = container.textContent;
+    expect(text.indexOf('Newer Agent')).toBeLessThan(text.indexOf('Older Agent'));
+  });
+
+  it('falls back to latest_seq when timestamps are equal', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_8',
+          friend_id: 8,
+          name: 'Higher Seq Friend',
+          is_group: false,
+          is_bot: false,
+          last_time: '2026-06-05T08:00:00Z',
+          latest_seq: 20,
+        },
+        {
+          id: 'p2p_7_9',
+          friend_id: 9,
+          name: 'Lower Seq Friend',
+          is_group: false,
+          is_bot: false,
+          last_time: '2026-06-05T08:00:00Z',
+          latest_seq: 10,
+        },
+      ],
+    });
+    api.getGroups.mockResolvedValue({ groups: [] });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mount();
+
+    const text = container.textContent;
+    expect(text.indexOf('Higher Seq Friend')).toBeLessThan(text.indexOf('Lower Seq Friend'));
+  });
+
+  it('preserves group metadata time when conversation payload has no usable timestamp', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'grp_20',
+          group_id: 20,
+          name: 'Older Group',
+          is_group: true,
+          latest_seq: 999,
+          last_time: 'not-a-date',
+        },
+      ],
+    });
+    api.getGroups.mockResolvedValue({
+      groups: [
+        {
+          id: 20,
+          name: 'Older Group',
+          owner_id: 7,
+          created_at: '2026-06-02T08:00:00Z',
+        },
+        {
+          id: 21,
+          name: 'Newer Empty Group',
+          owner_id: 7,
+          created_at: '2026-06-07T08:00:00Z',
+        },
+      ],
+    });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mount();
+
+    const text = container.textContent;
+    expect(text.indexOf('Newer Empty Group')).toBeLessThan(text.indexOf('Older Group'));
+  });
+
   it('lets live offline status override stale agent API online state', async () => {
     await mount({ onlineUsers: { 42: false } });
 

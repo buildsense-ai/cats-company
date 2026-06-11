@@ -34,20 +34,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
       ]);
       const groups = resG.groups || [];
       const conversationItems = resC.conversations || [];
-      const conversations = conversationItems.map((item) => ({
-        id: item.id,
-        friendId: item.friend_id,
-        groupId: item.group_id,
-        name: item.name,
-        preview: item.preview || '',
-        time: item.last_time ? formatTime(new Date(item.last_time)) : '',
-        isGroup: item.is_group,
-        avatar_url: item.avatar_url,
-        isBot: item.is_bot,
-        hasBot: Boolean(item.has_bot || item.is_agent_group),
-        isOnline: item.is_online,
-        seq: item.latest_seq || 0,
-      }));
+      const conversations = conversationItems.map(conversationSummaryToChat);
       const friends = resF.friends || [];
       const fallbackConversations = resC.error
         ? [...groups.map(groupToConversation), ...friends.map((friend) => friendToConversation(user.uid, friend))]
@@ -86,6 +73,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
               ...prev[idx],
               preview: summarizeMessage({ content: msg.data.content }),
               time: formatTime(new Date()),
+              lastTimeMs: Date.now(),
               seq,
             };
             return [updated, ...prev.filter((c) => c.id !== topicId)];
@@ -120,13 +108,16 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
     const group = normalizeCreatedGroup(created);
     if (group) {
       const topicId = created.topic || `grp_${group.id}`;
+      const createdAtMs = toTimeMs(group.created_at) || Date.now();
       setChats((prev) => [
         {
           id: topicId,
           groupId: group.id,
           name: group.name,
           preview: '',
-          time: formatTime(new Date(group.created_at || Date.now())),
+          time: formatTime(new Date(createdAtMs)),
+          lastTimeMs: createdAtMs,
+          createdAtMs,
           isGroup: true,
           avatar_url: group.avatar_url,
           hasBot: Boolean(group.has_bot),
@@ -225,7 +216,8 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
   const trimmedSearch = search.trim();
   const lowerSearch = trimmedSearch.toLowerCase();
   const isSearching = trimmedSearch.length > 0;
-  const filteredChats = chats.filter(c => c.name.toLowerCase().includes(lowerSearch));
+  const recentChats = sortConversationsByRecent(chats);
+  const filteredChats = recentChats.filter(c => c.name.toLowerCase().includes(lowerSearch));
   const directChats = filteredChats.filter(c => !c.isGroup);
   const mergedGroups = mergeGroupsWithConversations(groups, chats.filter(c => c.isGroup));
   const filteredFriends = friends.filter(f => (f.display_name || f.username).toLowerCase().includes(lowerSearch));
@@ -454,6 +446,27 @@ function onlineStatusFor(onlineUsers, uid, fallback = false) {
   return Boolean(fallback);
 }
 
+function conversationSummaryToChat(item) {
+  const createdAtMs = toTimeMs(item.created_at);
+  const lastTimeMs = toTimeMs(item.last_time) || createdAtMs;
+  return {
+    id: item.id,
+    friendId: item.friend_id,
+    groupId: item.group_id,
+    name: item.name,
+    preview: item.preview || '',
+    time: lastTimeMs ? formatTime(new Date(lastTimeMs)) : '',
+    lastTimeMs,
+    createdAtMs,
+    isGroup: item.is_group,
+    avatar_url: item.avatar_url,
+    isBot: item.is_bot,
+    hasBot: Boolean(item.has_bot || item.is_agent_group),
+    isOnline: item.is_online,
+    seq: item.latest_seq || 0,
+  };
+}
+
 function mergeGroupsWithConversations(groups, groupConversations) {
   const byTopic = new Map();
   for (const group of groups || []) {
@@ -464,14 +477,20 @@ function mergeGroupsWithConversations(groups, groupConversations) {
     const normalized = normalizeGroupListItem(chat);
     if (!normalized) continue;
     const existing = byTopic.get(normalized.id) || {};
+    const normalizedSortTime = conversationSortTime(normalized);
+    const existingSortTime = conversationSortTime(existing);
+    const preserveExistingTime = !normalizedSortTime && existingSortTime;
     byTopic.set(normalized.id, {
       ...existing,
       ...normalized,
       owner_id: normalized.owner_id ?? existing.owner_id,
       avatar_url: normalized.avatar_url ?? existing.avatar_url,
+      time: normalized.time || existing.time || '',
+      lastTimeMs: preserveExistingTime ? existing.lastTimeMs : normalized.lastTimeMs,
+      createdAtMs: normalized.createdAtMs || existing.createdAtMs,
     });
   }
-  return Array.from(byTopic.values()).sort(groupConversationLess);
+  return sortConversationsByRecent(Array.from(byTopic.values()));
 }
 
 function normalizeGroupListItem(item) {
@@ -480,6 +499,8 @@ function normalizeGroupListItem(item) {
   const name = item.name;
   if (!groupId || !name) return null;
   const id = String(item.id || '').startsWith('grp_') ? item.id : `grp_${groupId}`;
+  const createdAtMs = toTimeMs(item.createdAtMs || item.created_at);
+  const lastTimeMs = toTimeMs(item.lastTimeMs || item.last_time) || createdAtMs;
   return {
     ...item,
     id,
@@ -488,7 +509,9 @@ function normalizeGroupListItem(item) {
     name,
     avatar_url: item.avatar_url,
     preview: item.preview || '',
-    time: item.time || (item.created_at ? formatTime(new Date(item.created_at)) : ''),
+    time: item.time || (lastTimeMs ? formatTime(new Date(lastTimeMs)) : ''),
+    lastTimeMs,
+    createdAtMs,
     seq: item.seq || 0,
   };
 }
@@ -498,11 +521,42 @@ function numericGroupIdFromTopic(topicId) {
   return match ? Number(match[1]) : 0;
 }
 
-function groupConversationLess(left, right) {
+function sortConversationsByRecent(items) {
+  return [...items].sort(conversationRecentLess);
+}
+
+function conversationRecentLess(left, right) {
+  const leftTime = conversationSortTime(left);
+  const rightTime = conversationSortTime(right);
+  if (leftTime !== rightTime) return rightTime - leftTime;
+
   const leftSeq = Number(left.seq || 0);
   const rightSeq = Number(right.seq || 0);
   if (leftSeq !== rightSeq) return rightSeq - leftSeq;
+
+  if (Boolean(left.isGroup) !== Boolean(right.isGroup)) {
+    return left.isGroup ? -1 : 1;
+  }
+  if (left.groupId && right.groupId && String(left.groupId) !== String(right.groupId)) {
+    return Number(right.groupId) - Number(left.groupId);
+  }
+  if (left.friendId && right.friendId && String(left.friendId) !== String(right.friendId)) {
+    return Number(right.friendId) - Number(left.friendId);
+  }
   return String(left.name || '').localeCompare(String(right.name || ''));
+}
+
+function conversationSortTime(item) {
+  return toTimeMs(item?.lastTimeMs || item?.last_time || item?.createdAtMs || item?.created_at);
+}
+
+function toTimeMs(value) {
+  if (!value) return 0;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : 0;
+  }
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function p2pTopicId(uid1, uid2) {
@@ -536,12 +590,15 @@ function normalizeCreatedGroup(created) {
 }
 
 function groupToConversation(group) {
+  const createdAtMs = toTimeMs(group.created_at);
   return {
     id: `grp_${group.id}`,
     groupId: group.id,
     name: group.name,
     preview: '',
-    time: group.created_at ? formatTime(new Date(group.created_at)) : '',
+    time: createdAtMs ? formatTime(new Date(createdAtMs)) : '',
+    lastTimeMs: createdAtMs,
+    createdAtMs,
     isGroup: true,
     avatar_url: group.avatar_url,
     hasBot: Boolean(group.has_bot || group.is_agent_group),
