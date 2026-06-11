@@ -388,6 +388,9 @@ func TestBotRecipientIdentityUsesLinkedChannelDeviceOwner(t *testing.T) {
 	if grant["ownerUserId"] != "usr7" || grant["actorUserId"] != "usr100" || grant["deviceId"] != "alice-laptop" {
 		t.Fatalf("unexpected delegated grant: %#v", grant)
 	}
+	if grant["identitySource"] != "channel_identity_link" {
+		t.Fatalf("delegated grant must be explicitly marked as channel delegated: %#v", grant)
+	}
 	selection := deviceSelectionMap(t, identity)
 	if selection["ownerUserId"] != "usr7" || selection["actorUserId"] != "usr100" {
 		t.Fatalf("unexpected delegated selection: %#v", selection)

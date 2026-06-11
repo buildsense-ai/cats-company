@@ -3,46 +3,47 @@ import { api } from '../api';
 import '../css/openchat-theme.css';
 
 export default function ChannelDeviceLinkView({ bindingId, linkToken, user }) {
-  const [status, setStatus] = useState('linking');
+  const [status, setStatus] = useState('ready');
   const [error, setError] = useState('');
 
   useEffect(() => {
-    let cancelled = false;
     if (!bindingId || !linkToken) {
       setStatus('error');
       setError('授权链接缺少必要信息，请重新从微信/飞书打开。');
-      return () => {
-        cancelled = true;
-      };
     }
+  }, [bindingId, linkToken]);
+
+  const confirmLink = () => {
+    if (!bindingId || !linkToken || status === 'linking') return;
+    setStatus('linking');
+    setError('');
     api.linkChannelAgentBindingUser({
       binding_id: Number(bindingId),
       link_token: linkToken,
     })
       .then(() => {
-        if (!cancelled) setStatus('linked');
+        setStatus('linked');
       })
       .catch((err) => {
-        if (!cancelled) {
-          setStatus('error');
-          setError(err.message || '设备授权绑定失败，请重新打开链接。');
-        }
+        setStatus('error');
+        setError(err.message || '设备授权绑定失败，请重新打开链接。');
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [bindingId, linkToken]);
+  };
 
   const title = status === 'linked'
     ? '设备授权已绑定'
     : status === 'error'
       ? '授权链接不可用'
-      : '正在绑定设备授权';
+      : status === 'linking'
+        ? '正在绑定设备授权'
+        : '确认绑定设备授权';
   const message = status === 'linked'
     ? `已把当前微信/飞书身份关联到 CatsCo 账号 ${user?.display_name || user?.displayName || user?.username || ''}。以后该虚拟员工需要访问你的本地设备时，会使用你已授权且在线的设备。`
     : status === 'error'
       ? error
-      : '请稍候，正在确认当前账号与渠道身份。';
+      : status === 'linking'
+        ? '请稍候，正在确认当前账号与渠道身份。'
+        : `将把当前微信/飞书身份关联到 CatsCo 账号 ${user?.display_name || user?.displayName || user?.username || ''}。确认后，虚拟员工需要访问你的本地设备时，会使用你已授权且在线的设备。`;
 
   return (
     <div className="v3-app" style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
@@ -52,6 +53,15 @@ export default function ChannelDeviceLinkView({ bindingId, linkToken, user }) {
         </div>
         <div style={{ color: 'var(--v3-text-name)', fontSize: 18, fontWeight: 700, marginBottom: 8 }}>{title}</div>
         <div style={{ color: 'var(--v3-text-muted)', fontSize: 14, lineHeight: 1.6 }}>{message}</div>
+        {status === 'ready' && (
+          <button
+            type="button"
+            onClick={confirmLink}
+            style={{ marginTop: 20, width: '100%', height: 42, borderRadius: 8, border: 0, background: 'var(--v3-primary)', color: '#fff', fontWeight: 700, cursor: 'pointer' }}
+          >
+            确认绑定
+          </button>
+        )}
       </div>
     </div>
   );

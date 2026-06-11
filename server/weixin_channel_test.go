@@ -127,6 +127,9 @@ func TestWeixinScanEventBindsActor(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "Contract Agent") {
 		t.Fatalf("reply=%s", rec.Body.String())
 	}
+	if body := rec.Body.String(); !strings.Contains(body, "设备授权") || !strings.Contains(body, "/channel-device-link") || !strings.Contains(body, "binding_id=") || !strings.Contains(body, "link_token=") {
+		t.Fatalf("scan reply should include device link guidance, body=%s", body)
+	}
 }
 
 func TestWeixinScanEventForExistingSubscriberBindsActor(t *testing.T) {

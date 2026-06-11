@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -331,8 +332,17 @@ func (h *ChannelAgentBindingHandler) HandleLinkChannelAgentBindingUser(w http.Re
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "login required"})
 		return
 	}
+	canonicalUser, err := h.db.GetUser(canonicalUID)
+	if err != nil || canonicalUser == nil || canonicalUser.AccountType != types.AccountHuman || canonicalUser.State != 0 {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only active human CatsCo users can link channel device authorization"})
+		return
+	}
 	binding, err := bindings.LinkChannelAgentBindingCanonicalUser(payload.BindingID, payload.ActorUID, payload.AgentUID, canonicalUID)
 	if err != nil {
+		if errors.Is(err, store.ErrChannelAgentBindingAlreadyLinked) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "channel identity already linked to another CatsCo user"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to link channel identity"})
 		return
 	}

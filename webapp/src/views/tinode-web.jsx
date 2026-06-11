@@ -207,6 +207,13 @@ export default function TinodeWeb() {
       })
       .catch((error) => {
         console.warn('Failed to refresh current user profile:', error);
+        if (!cancelled && error?.status === 401) {
+          disconnectWS();
+          setToken(null);
+          localStorage.removeItem('oc_user');
+          setUser(null);
+          setActiveTopic(null);
+        }
       });
 
     return () => {

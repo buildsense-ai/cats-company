@@ -251,13 +251,31 @@ func (a *Adapter) LinkChannelAgentBindingCanonicalUser(bindingID, actorUID, agen
 	result, err := a.db.Exec(
 		`UPDATE channel_agent_bindings
 		 SET canonical_uid = ?, last_used_at = CURRENT_TIMESTAMP
-		 WHERE id = ? AND actor_uid = ? AND agent_uid = ? AND status = 'active'`,
-		canonicalUID, bindingID, actorUID, agentUID,
+		 WHERE id = ? AND actor_uid = ? AND agent_uid = ? AND status = 'active'
+		   AND (canonical_uid IS NULL OR canonical_uid = 0 OR canonical_uid = ?)`,
+		canonicalUID, bindingID, actorUID, agentUID, canonicalUID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("link channel agent binding: %w", err)
 	}
 	if affected, _ := result.RowsAffected(); affected == 0 {
+		row := a.db.QueryRow(
+			`SELECT id, channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
+			        COALESCE(actor_uid, 0), COALESCE(canonical_uid, 0), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
+			 FROM channel_agent_bindings
+			 WHERE id = ? AND actor_uid = ? AND agent_uid = ? AND status = 'active'`,
+			bindingID, actorUID, agentUID,
+		)
+		existing, lookupErr := scanChannelAgentBinding(row)
+		if lookupErr == nil && existing.CanonicalUID > 0 && existing.CanonicalUID != canonicalUID {
+			return nil, store.ErrChannelAgentBindingAlreadyLinked
+		}
+		if lookupErr == nil && existing.CanonicalUID == canonicalUID {
+			return existing, nil
+		}
+		if lookupErr != nil && lookupErr != sql.ErrNoRows {
+			return nil, fmt.Errorf("check channel agent binding link conflict: %w", lookupErr)
+		}
 		return nil, nil
 	}
 	row := a.db.QueryRow(

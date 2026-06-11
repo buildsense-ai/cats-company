@@ -15,12 +15,13 @@ import (
 )
 
 const (
-	defaultUserDeviceTTL       = 5 * time.Minute
-	defaultDeviceGrantTTL      = 10 * time.Minute
-	defaultDevicePreferenceTTL = 30 * time.Minute
-	maxUserDeviceIDLength      = 128
-	deviceGrantIDRandomLength  = 12
-	userDeviceGrantIdentitySrc = "metadata.catsco_identity"
+	defaultUserDeviceTTL          = 5 * time.Minute
+	defaultDeviceGrantTTL         = 10 * time.Minute
+	defaultDevicePreferenceTTL    = 30 * time.Minute
+	maxUserDeviceIDLength         = 128
+	deviceGrantIDRandomLength     = 12
+	userDeviceGrantIdentitySrc    = "metadata.catsco_identity"
+	channelDeviceGrantIdentitySrc = "channel_identity_link"
 )
 
 var userDeviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
@@ -442,6 +443,10 @@ func (r *userDeviceRegistry) grantsForOwnerDevices(actorUID int64, ownerUID int6
 	expiresAt := unixMillis(r.now().Add(r.grantTT))
 	actorUserID := formatUID(actorUID)
 	ownerUserID := formatUID(ownerUID)
+	identitySource := userDeviceGrantIdentitySrc
+	if ownerUID != actorUID {
+		identitySource = channelDeviceGrantIdentitySrc
+	}
 	agentID := ""
 	if agentUID > 0 {
 		agentID = formatUID(agentUID)
@@ -460,7 +465,7 @@ func (r *userDeviceRegistry) grantsForOwnerDevices(actorUID int64, ownerUID int6
 			GrantID:              "device_grant_" + randomDeviceGrantIDSuffix(),
 			Status:               "active",
 			IdentityTrust:        "server_canonical",
-			IdentitySource:       userDeviceGrantIdentitySrc,
+			IdentitySource:       identitySource,
 			DeviceID:             device.DeviceID,
 			DeviceDisplayName:    device.DisplayName,
 			DeviceBodyID:         device.BodyID,

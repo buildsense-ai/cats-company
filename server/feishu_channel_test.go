@@ -107,6 +107,9 @@ func TestFeishuOAuthCallbackBindsActor(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	if body := rec.Body.String(); !strings.Contains(body, "设备授权") || !strings.Contains(body, "/channel-device-link") || !strings.Contains(body, "binding_id=") || !strings.Contains(body, "link_token=") {
+		t.Fatalf("oauth success page should include device link guidance, body=%s", body)
+	}
 	binding, err := db.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
 		Channel:       "feishu",
 		ChannelAppID:  "cli_app",

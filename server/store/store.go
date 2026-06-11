@@ -1,7 +1,13 @@
 // Package store defines the database boundary used by Cats Company services.
 package store
 
-import "github.com/openchat/openchat/server/store/types"
+import (
+	"errors"
+
+	"github.com/openchat/openchat/server/store/types"
+)
+
+var ErrChannelAgentBindingAlreadyLinked = errors.New("channel agent binding already linked to another canonical user")
 
 // UserStore contains user and profile persistence operations.
 type UserStore interface {
