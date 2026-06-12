@@ -111,8 +111,8 @@ func TestFeishuOAuthCallbackBindsActor(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "设备授权") || !strings.Contains(body, "/channel-device-link") || !strings.Contains(body, "binding_id=") || !strings.Contains(body, "link_token=") {
-		t.Fatalf("oauth success page should include device link guidance, body=%s", body)
+	if body := rec.Body.String(); !strings.Contains(body, "登录 CatsCo") || !strings.Contains(body, "/channel-device-link") || !strings.Contains(body, "binding_id=") || !strings.Contains(body, "link_token=") {
+		t.Fatalf("oauth success page should require CatsCo account link, body=%s", body)
 	}
 	binding, err := db.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
 		Channel:       "feishu",
@@ -122,7 +122,7 @@ func TestFeishuOAuthCallbackBindsActor(t *testing.T) {
 	if err != nil || binding == nil {
 		t.Fatalf("binding=%+v err=%v", binding, err)
 	}
-	if binding.ActorUID <= 0 || binding.AgentUID != 43 || binding.OwnerUID != 7 {
+	if binding.ActorUID <= 0 || binding.AgentUID != 43 || binding.OwnerUID != 7 || binding.CanonicalUID != 0 {
 		t.Fatalf("unexpected binding: %+v", binding)
 	}
 	actor := db.users[binding.ActorUID]
@@ -205,6 +205,8 @@ func TestFeishuMessageEventDeliversToBoundAgent(t *testing.T) {
 	db.users[8] = &types.User{ID: 8, Username: "feishu-alice", DisplayName: "Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
 	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
 	_, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:                 "feishu",
 		ChannelAppID:            "cli_app",
@@ -212,6 +214,7 @@ func TestFeishuMessageEventDeliversToBoundAgent(t *testing.T) {
 		ChannelConversationID:   "oc_chat_1",
 		ChannelConversationType: "p2p",
 		ActorUID:                8,
+		CanonicalUID:            8,
 		OwnerUID:                7,
 		AgentUID:                43,
 		Status:                  "active",

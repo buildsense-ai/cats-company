@@ -122,17 +122,17 @@ func TestWeixinScanEventBindsActor(t *testing.T) {
 	if err != nil || binding == nil {
 		t.Fatalf("binding=%+v err=%v", binding, err)
 	}
-	if binding.ActorUID <= 0 || binding.AgentUID != 43 || binding.OwnerUID != 7 {
+	if binding.ActorUID <= 0 || binding.AgentUID != 43 || binding.OwnerUID != 7 || binding.CanonicalUID != 0 {
 		t.Fatalf("unexpected binding: %+v", binding)
 	}
-	if len(db.topics) != 1 || db.topics[0] != "p2p_"+itoa(binding.ActorUID)+"_43" {
+	if len(db.topics) != 0 {
 		t.Fatalf("topics=%+v binding=%+v", db.topics, binding)
 	}
 	if !strings.Contains(rec.Body.String(), "Contract Agent") {
 		t.Fatalf("reply=%s", rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "设备授权") || !strings.Contains(body, "/channel-device-link") || !strings.Contains(body, "binding_id=") || !strings.Contains(body, "link_token=") {
-		t.Fatalf("scan reply should include device link guidance, body=%s", body)
+	if body := rec.Body.String(); !strings.Contains(body, "登录 CatsCo") || !strings.Contains(body, "/channel-device-link") || !strings.Contains(body, "binding_id=") || !strings.Contains(body, "link_token=") {
+		t.Fatalf("scan reply should require CatsCo account link, body=%s", body)
 	}
 }
 
@@ -172,22 +172,22 @@ func TestWeixinApprovalRequiredScanCreatesPendingAccess(t *testing.T) {
 		Channel:       "weixin",
 		ChannelAppID:  "wx_app",
 		ChannelUserID: "openid-private",
-	}); err != nil || binding != nil {
-		t.Fatalf("private scan should not create binding yet, binding=%+v err=%v", binding, err)
+	}); err != nil || binding == nil || binding.CanonicalUID != 0 {
+		t.Fatalf("private scan should only create login placeholder binding=%+v err=%v", binding, err)
 	}
 	access, err := db.ResolveChannelAgentAccessRequest(types.ChannelAgentBindingQuery{
 		Channel:       "weixin",
 		ChannelAppID:  "wx_app",
 		ChannelUserID: "openid-private",
 	})
-	if err != nil || access == nil || access.Status != "pending" || access.AgentUID != 43 {
-		t.Fatalf("expected pending access request, access=%+v err=%v", access, err)
+	if err != nil || access != nil {
+		t.Fatalf("unlinked scan should not create access request, access=%+v err=%v", access, err)
 	}
 	if len(db.topics) != 0 {
 		t.Fatalf("private scan should not create chat topic before approval: %+v", db.topics)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "好友申请") || strings.Contains(body, "/channel-device-link") {
-		t.Fatalf("private scan reply should request approval without device link, body=%s", body)
+	if body := rec.Body.String(); !strings.Contains(body, "登录 CatsCo") || !strings.Contains(body, "/channel-device-link") {
+		t.Fatalf("private scan reply should request CatsCo account link, body=%s", body)
 	}
 }
 
@@ -195,6 +195,7 @@ func TestWeixinApprovedPrivateBindingProvidesDeviceLinkOnRequest(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
 	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("weixin", "wx_app", "openid-1"), DisplayName: "Weixin Alice", AccountType: types.AccountHuman}
+	db.users[9] = &types.User{ID: 9, Username: "bob", DisplayName: "Bob", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
 	db.owners[43] = 7
 	db.friends[friendKey(8, 43)] = types.FriendAccepted
@@ -222,19 +223,28 @@ func TestWeixinApprovedPrivateBindingProvidesDeviceLinkOnRequest(t *testing.T) {
 	if scanRec.Code != http.StatusOK {
 		t.Fatalf("scan status=%d body=%s", scanRec.Code, scanRec.Body.String())
 	}
-	access, err := db.ResolveChannelAgentAccessRequest(types.ChannelAgentBindingQuery{
+	binding, err := db.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
 		Channel:       "weixin",
 		ChannelAppID:  "wx_app",
 		ChannelUserID: "openid-private",
 	})
-	if err != nil || access == nil || access.ActorUID <= 0 {
-		t.Fatalf("expected pending access, access=%+v err=%v", access, err)
+	if err != nil || binding == nil || binding.CanonicalUID != 0 {
+		t.Fatalf("expected login placeholder binding=%+v err=%v", binding, err)
 	}
-	if _, err := db.ApproveChannelAgentAccessRequestsForActor(access.ActorUID, 43, 7); err != nil {
-		t.Fatalf("approve access: %v", err)
+	token := validChannelAgentLinkToken(t, binding)
+	linkBody := `{"binding_id":` + strconv.FormatInt(binding.ID, 10) + `,"link_token":"` + token + `"}`
+	linkReq := httptest.NewRequest(http.MethodPost, "/api/channel-agent-bindings/link-user", strings.NewReader(linkBody))
+	linkReq = linkReq.WithContext(context.WithValue(linkReq.Context(), uidKey, int64(9)))
+	linkRec := httptest.NewRecorder()
+	NewChannelAgentBindingHandler(db, nil).HandleLinkChannelAgentBindingUser(linkRec, linkReq)
+	if linkRec.Code != http.StatusOK || !strings.Contains(linkRec.Body.String(), "pending_approval") {
+		t.Fatalf("link status=%d body=%s", linkRec.Code, linkRec.Body.String())
+	}
+	if err := db.AcceptFriendRequest(9, 43); err != nil {
+		t.Fatalf("accept friend: %v", err)
 	}
 
-	textBody := `<xml><ToUserName><![CDATA[gh_app]]></ToUserName><FromUserName><![CDATA[openid-private]]></FromUserName><CreateTime>2</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[设备授权]]></Content><MsgId>msg-1</MsgId></xml>`
+	textBody := `<xml><ToUserName><![CDATA[gh_app]]></ToUserName><FromUserName><![CDATA[openid-private]]></FromUserName><CreateTime>2</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[查一下合同进度]]></Content><MsgId>msg-1</MsgId></xml>`
 	textReq := httptest.NewRequest(http.MethodPost, "/api/channels/weixin/events?timestamp=2&nonce=3&signature="+weixinTestSignature("token-1", "2", "3"), strings.NewReader(textBody))
 	textRec := httptest.NewRecorder()
 	handler.HandleEvents(textRec, textReq)
@@ -242,11 +252,11 @@ func TestWeixinApprovedPrivateBindingProvidesDeviceLinkOnRequest(t *testing.T) {
 	if textRec.Code != http.StatusOK {
 		t.Fatalf("text status=%d body=%s", textRec.Code, textRec.Body.String())
 	}
-	if body := textRec.Body.String(); !strings.Contains(body, "设备授权") || !strings.Contains(body, "/channel-device-link") || !strings.Contains(body, "binding_id=") || !strings.Contains(body, "link_token=") {
-		t.Fatalf("device authorization request should return link guidance, body=%s", body)
+	if strings.TrimSpace(textRec.Body.String()) != "success" {
+		t.Fatalf("approved text should be delivered, body=%s", textRec.Body.String())
 	}
-	if len(db.messages) != 0 {
-		t.Fatalf("device authorization command should not be delivered to model messages: %+v", db.messages)
+	if len(db.messages) != 1 || db.messages[0].FromUID != binding.ActorUID {
+		t.Fatalf("approved channel user should deliver as channel actor: %+v", db.messages)
 	}
 }
 
@@ -393,11 +403,14 @@ func TestWeixinTextMessageDeliversToBoundAgent(t *testing.T) {
 	db.users[8] = &types.User{ID: 8, Username: "weixin-alice", DisplayName: "Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
 	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
 	_, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:       "weixin",
 		ChannelAppID:  "wx_app",
 		ChannelUserID: "openid-1",
 		ActorUID:      8,
+		CanonicalUID:  8,
 		OwnerUID:      7,
 		AgentUID:      43,
 		Status:        "active",
@@ -430,11 +443,15 @@ func TestWeixinTextMessageDeduplicatesRetry(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[8] = &types.User{ID: 8, Username: "weixin-alice", DisplayName: "Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
 	_, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:       "weixin",
 		ChannelAppID:  "wx_app",
 		ChannelUserID: "openid-1",
 		ActorUID:      8,
+		CanonicalUID:  8,
 		OwnerUID:      7,
 		AgentUID:      43,
 		Status:        "active",

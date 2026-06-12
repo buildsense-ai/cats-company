@@ -251,6 +251,18 @@ func (h *WeixinChannelHandler) handleScanEvent(w http.ResponseWriter, ctx contex
 		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, fmt.Sprintf("已向「%s」发送好友申请。管理员通过后，你就可以在这里直接提问；如果需要使用你的电脑文件，可以发送「设备授权」获取绑定链接。", name))
 		return
 	}
+	if channelBindingNeedsCatsCoLogin(binding) {
+		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, fmt.Sprintf("你已通过微信确认身份。请继续登录 CatsCo 账号并申请添加「%s」；管理员通过后，你就可以在公众号聊天框提问。\n\n%s", name, channelBindingDeviceLinkGuidance(nil, binding)))
+		return
+	}
+	if pending, err := channelBindingPendingFriendApproval(h.db, binding); err != nil {
+		log.Printf("check weixin channel access failed: %v", err)
+		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "检查虚拟员工好友关系失败，请稍后重试。")
+		return
+	} else if pending {
+		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, fmt.Sprintf("已向「%s」发送好友申请。管理员通过后，你就可以在这里直接提问。", name))
+		return
+	}
 	if err := h.db.CreateTopic(p2pTopicID(actorUID, entry.AgentUID), "p2p", actorUID); err != nil {
 		log.Printf("create weixin agent topic failed: %v", err)
 	}
@@ -307,8 +319,16 @@ func (h *WeixinChannelHandler) handleTextMessage(w http.ResponseWriter, ctx cont
 			return
 		}
 	}
-	if binding.CanonicalUID <= 0 && isChannelDeviceLinkRequest(text) {
+	if channelBindingNeedsCatsCoLogin(binding) {
 		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, channelBindingDeviceLinkGuidance(nil, binding))
+		return
+	}
+	if pending, err := channelBindingPendingFriendApproval(h.db, binding); err != nil {
+		log.Printf("check weixin channel access failed: %v", err)
+		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "检查虚拟员工好友关系失败，请稍后重试。")
+		return
+	} else if pending {
+		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "你的好友申请正在等待管理员通过。通过后，我会在这里继续为你服务。")
 		return
 	}
 	clientMsgID := weixinClientMsgID(msg)

@@ -401,8 +401,11 @@ func (h *Hub) deviceAccessOwnerUID(actorUID, agentUID int64) (int64, string) {
 	if h.db != nil {
 		if bindings, ok := h.db.(store.ChannelAgentBindingStore); ok {
 			binding, err := bindings.ResolveChannelAgentBindingForActorAny(actorUID, agentUID)
-			if err == nil && binding != nil && binding.CanonicalUID > 0 {
-				return binding.CanonicalUID, "channel_identity_link"
+			if err == nil && binding != nil {
+				if binding.CanonicalUID > 0 {
+					return binding.CanonicalUID, "channel_identity_link"
+				}
+				return 0, "channel_identity_unlinked"
 			}
 		}
 	}

@@ -72,6 +72,25 @@ func TestChannelAgentEntryAndBindingFlow(t *testing.T) {
 	if confirmRec.Code != http.StatusOK {
 		t.Fatalf("confirm status=%d body=%s", confirmRec.Code, confirmRec.Body.String())
 	}
+	var confirmed struct {
+		Status  string                    `json:"status"`
+		Binding types.ChannelAgentBinding `json:"binding"`
+	}
+	if err := json.Unmarshal(confirmRec.Body.Bytes(), &confirmed); err != nil {
+		t.Fatalf("decode confirm response: %v", err)
+	}
+	if confirmed.Status != "needs_catsco_login" || confirmed.Binding.ID <= 0 || confirmed.Binding.CanonicalUID != 0 {
+		t.Fatalf("confirm should only create account-link placeholder: %+v", confirmed)
+	}
+	token := validChannelAgentLinkToken(t, &confirmed.Binding)
+	linkBody := `{"binding_id":` + strconv.FormatInt(confirmed.Binding.ID, 10) + `,"link_token":"` + token + `"}`
+	linkReq := httptest.NewRequest(http.MethodPost, "/api/channel-agent-bindings/link-user", strings.NewReader(linkBody))
+	linkReq = linkReq.WithContext(context.WithValue(linkReq.Context(), uidKey, int64(8)))
+	linkRec := httptest.NewRecorder()
+	handler.HandleLinkChannelAgentBindingUser(linkRec, linkReq)
+	if linkRec.Code != http.StatusOK {
+		t.Fatalf("link status=%d body=%s", linkRec.Code, linkRec.Body.String())
+	}
 
 	resolveReq := httptest.NewRequest(http.MethodGet, "/api/channel-agent-bindings/resolve?channel=weixin&channel_user_id=openid-7", nil)
 	resolveRec := httptest.NewRecorder()
@@ -127,15 +146,16 @@ func TestChannelAgentEntryApprovalRequiredCreatesPendingAccess(t *testing.T) {
 	if confirmRec.Code != http.StatusOK {
 		t.Fatalf("confirm status=%d body=%s", confirmRec.Code, confirmRec.Body.String())
 	}
-	var pending struct {
-		Status        string                          `json:"status"`
-		AccessRequest types.ChannelAgentAccessRequest `json:"access_request"`
+	var pendingLogin struct {
+		Status         string                    `json:"status"`
+		Binding        types.ChannelAgentBinding `json:"binding"`
+		AccountLinkURL string                    `json:"account_link_url"`
 	}
-	if err := json.Unmarshal(confirmRec.Body.Bytes(), &pending); err != nil {
+	if err := json.Unmarshal(confirmRec.Body.Bytes(), &pendingLogin); err != nil {
 		t.Fatalf("decode pending response: %v", err)
 	}
-	if pending.Status != "pending_approval" || pending.AccessRequest.ActorUID <= 0 || pending.AccessRequest.AgentUID != 43 {
-		t.Fatalf("unexpected pending response: %+v", pending)
+	if pendingLogin.Status != "needs_catsco_login" || pendingLogin.Binding.ID <= 0 || pendingLogin.AccountLinkURL == "" {
+		t.Fatalf("unexpected login-required response: %+v", pendingLogin)
 	}
 
 	resolveReq := httptest.NewRequest(http.MethodGet, "/api/channel-agent-bindings/resolve?channel=weixin&channel_user_id=openid-visitor", nil)
@@ -151,8 +171,30 @@ func TestChannelAgentEntryApprovalRequiredCreatesPendingAccess(t *testing.T) {
 	if err := json.Unmarshal(resolveRec.Body.Bytes(), &unresolved); err != nil {
 		t.Fatalf("decode unresolved response: %v", err)
 	}
-	if unresolved.Bound || unresolved.Status != "pending" || len(db.bindings) != 0 {
-		t.Fatalf("pending access should not create an active binding: %+v bindings=%+v", unresolved, db.bindings)
+	if unresolved.Bound || unresolved.Status != "needs_catsco_login" || len(db.bindings) != 1 {
+		t.Fatalf("unlinked channel identity should only resolve to login gate: %+v bindings=%+v", unresolved, db.bindings)
+	}
+
+	db.users[9] = &types.User{ID: 9, Username: "bob", DisplayName: "Bob", AccountType: types.AccountHuman}
+	token := validChannelAgentLinkToken(t, &pendingLogin.Binding)
+	linkBody := `{"binding_id":` + strconv.FormatInt(pendingLogin.Binding.ID, 10) + `,"link_token":"` + token + `"}`
+	linkReq := httptest.NewRequest(http.MethodPost, "/api/channel-agent-bindings/link-user", strings.NewReader(linkBody))
+	linkReq = linkReq.WithContext(context.WithValue(linkReq.Context(), uidKey, int64(9)))
+	linkRec := httptest.NewRecorder()
+	handler.HandleLinkChannelAgentBindingUser(linkRec, linkReq)
+	if linkRec.Code != http.StatusOK {
+		t.Fatalf("link status=%d body=%s", linkRec.Code, linkRec.Body.String())
+	}
+	var linkedPending struct {
+		Status       string                    `json:"status"`
+		Binding      types.ChannelAgentBinding `json:"binding"`
+		CanonicalUID int64                     `json:"canonical_uid"`
+	}
+	if err := json.Unmarshal(linkRec.Body.Bytes(), &linkedPending); err != nil {
+		t.Fatalf("decode link response: %v", err)
+	}
+	if linkedPending.Status != "pending_approval" || linkedPending.CanonicalUID != 9 || linkedPending.Binding.ActorUID == 9 {
+		t.Fatalf("link should keep channel actor but request approval for canonical user: %+v", linkedPending)
 	}
 
 	friendHandler := NewFriendHandler(db)
@@ -169,11 +211,11 @@ func TestChannelAgentEntryApprovalRequiredCreatesPendingAccess(t *testing.T) {
 	if err := json.Unmarshal(pendingRec.Body.Bytes(), &pendingFriends); err != nil {
 		t.Fatalf("decode pending friends: %v", err)
 	}
-	if len(pendingFriends.Requests) != 1 || pendingFriends.Requests[0].FromUserID != pending.AccessRequest.ActorUID {
+	if len(pendingFriends.Requests) != 1 || pendingFriends.Requests[0].FromUserID != 9 {
 		t.Fatalf("owner should see bot pending friend request: %+v", pendingFriends.Requests)
 	}
 
-	acceptReq := httptest.NewRequest(http.MethodPost, "/api/friends/accept", bytes.NewBufferString(`{"agent_uid":43,"user_id":`+strconv.FormatInt(pending.AccessRequest.ActorUID, 10)+`}`))
+	acceptReq := httptest.NewRequest(http.MethodPost, "/api/friends/accept", bytes.NewBufferString(`{"agent_uid":43,"user_id":9}`))
 	acceptReq = acceptReq.WithContext(context.WithValue(acceptReq.Context(), uidKey, int64(7)))
 	acceptRec := httptest.NewRecorder()
 	friendHandler.HandleAcceptRequest(acceptRec, acceptReq)
@@ -585,13 +627,14 @@ func TestChannelAgentBindingUsesEntryChannelAppID(t *testing.T) {
 		t.Fatalf("resolve status=%d body=%s", resolveRec.Code, resolveRec.Body.String())
 	}
 	var resolved struct {
-		Bound    bool  `json:"bound"`
-		AgentUID int64 `json:"agent_uid"`
+		Bound    bool   `json:"bound"`
+		Status   string `json:"status"`
+		AgentUID int64  `json:"agent_uid"`
 	}
 	if err := json.Unmarshal(resolveRec.Body.Bytes(), &resolved); err != nil {
 		t.Fatalf("decode resolve response: %v", err)
 	}
-	if !resolved.Bound || resolved.AgentUID != 43 {
+	if resolved.Bound || resolved.Status != "needs_catsco_login" || resolved.AgentUID != 43 {
 		t.Fatalf("unexpected resolution: %+v", resolved)
 	}
 

@@ -400,6 +400,83 @@ func TestBotRecipientIdentityUsesLinkedChannelDeviceOwner(t *testing.T) {
 	}
 }
 
+func TestBotRecipientIdentityUsesCanonicalUserDeviceNotAgentOwnerDevice(t *testing.T) {
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	db.users[9] = &types.User{ID: 9, Username: "bob", DisplayName: "Bob", AccountType: types.AccountHuman}
+	db.users[42] = &types.User{ID: 42, Username: "agent", DisplayName: "Agent", AccountType: types.AccountBot}
+	db.users[100] = &types.User{ID: 100, Username: "ch_weixin_user", DisplayName: "Weixin User", AccountType: types.AccountHuman}
+	db.owners[42] = 7
+	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:       "weixin",
+		ChannelAppID:  "wx_app",
+		ChannelUserID: "openid-100",
+		ActorUID:      100,
+		CanonicalUID:  9,
+		OwnerUID:      7,
+		AgentUID:      42,
+		Status:        "active",
+	}); err != nil {
+		t.Fatalf("seed channel binding: %v", err)
+	}
+
+	hub := NewHub(db, nil)
+	hub.userDevices.now = func() time.Time { return time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC) }
+	ownerDevice, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID:       "owner-laptop",
+		DisplayName:    "Owner Laptop",
+		BodyID:         "body-owner",
+		InstallationID: "install-owner",
+		Capabilities:   []string{"read_file", "write_file"},
+	})
+	if err != nil {
+		t.Fatalf("register owner device: %v", err)
+	}
+	bobDevice, err := hub.userDevices.register(9, RegisterUserDeviceRequest{
+		DeviceID:       "bob-laptop",
+		DisplayName:    "Bob Laptop",
+		BodyID:         "body-bob",
+		InstallationID: "install-bob",
+		Capabilities:   []string{"read_file", "write_file"},
+	})
+	if err != nil {
+		t.Fatalf("register bob device: %v", err)
+	}
+	ownerClient := &Client{uid: 7, accountType: types.AccountHuman, deviceOwnerUID: 7, deviceID: "owner-laptop", deviceBodyID: "body-owner", deviceInstallationID: "install-owner", send: make(chan []byte, 1)}
+	bobClient := &Client{uid: 9, accountType: types.AccountHuman, deviceOwnerUID: 9, deviceID: "bob-laptop", deviceBodyID: "body-bob", deviceInstallationID: "install-bob", send: make(chan []byte, 1)}
+	botClient := &Client{uid: 42, accountType: types.AccountBot, bodyID: "body-agent", send: make(chan []byte, 1)}
+	hub.addClient(ownerClient)
+	hub.addClient(bobClient)
+	hub.addClient(botClient)
+	hub.bindDeviceClient(7, ownerDevice, ownerClient)
+	hub.bindDeviceClient(9, bobDevice, bobClient)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "p2p_100_42",
+		Content: json.RawMessage(`"在我的电脑上写一个文件"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+	hub.fanoutNormalizedMessage(100, "p2p_100_42", 0, payload, 201, nil)
+
+	var msg ServerMessage
+	decodeQueuedServerMessage(t, botClient.send, &msg)
+	identity := metadataMapFromServerMessage(t, &msg, "catsco_identity")
+	permissions, ok := identity["permissions"].(map[string]interface{})
+	if !ok || permissions["device_owner_user_id"] != "usr9" || permissions["device_owner_source"] != "channel_identity_link" {
+		t.Fatalf("unexpected permissions: %#v", identity["permissions"])
+	}
+	grant := firstDeviceGrantMap(t, identity)
+	if grant["ownerUserId"] != "usr9" || grant["actorUserId"] != "usr100" || grant["deviceId"] != "bob-laptop" {
+		t.Fatalf("delegated channel grant must target Bob's device, not owner device: %#v", grant)
+	}
+	selection := deviceSelectionMap(t, identity)
+	if selection["ownerUserId"] != "usr9" || selection["actorUserId"] != "usr100" {
+		t.Fatalf("unexpected delegated selection: %#v", selection)
+	}
+}
+
 func TestBotRecipientIdentityDoesNotUseAgentOwnerDeviceWithoutChannelLink(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman}
@@ -462,15 +539,17 @@ func TestBotRecipientIdentityDoesNotUseAgentOwnerDeviceWithoutChannelLink(t *tes
 	decodeQueuedServerMessage(t, botClient.send, &msg)
 	identity := metadataMapFromServerMessage(t, &msg, "catsco_identity")
 	permissions, ok := identity["permissions"].(map[string]interface{})
-	if !ok || permissions["device_owner_user_id"] != "usr100" || permissions["device_owner_source"] != "actor" {
-		t.Fatalf("unlinked channel actor must not inherit agent owner device permissions: %#v", identity["permissions"])
+	if !ok {
+		t.Fatalf("missing permissions: %#v", identity)
+	}
+	if _, ok := permissions["device_owner_user_id"]; ok {
+		t.Fatalf("unlinked channel actor must not receive device owner permissions: %#v", permissions)
 	}
 	if _, ok := identity["device_grants"]; ok {
 		t.Fatalf("unlinked channel actor should not receive owner device grants: %#v", identity["device_grants"])
 	}
-	selection := deviceSelectionMap(t, identity)
-	if selection["ownerUserId"] != "usr100" || selection["actorUserId"] != "usr100" || selection["status"] != string(DeviceSelectionUnavailable) {
-		t.Fatalf("unlinked channel actor selection must stay scoped to the actor, not the agent owner: %#v", selection)
+	if _, ok := identity["device_selection"]; ok {
+		t.Fatalf("unlinked channel actor should not receive device selection: %#v", identity["device_selection"])
 	}
 }
 

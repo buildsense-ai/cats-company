@@ -248,6 +248,36 @@ func (h *ChannelAgentBindingHandler) HandleConfirmChannelAgentBinding(w http.Res
 		})
 		return
 	}
+	if channelBindingNeedsCatsCoLogin(binding) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":           "needs_catsco_login",
+			"binding":          binding,
+			"account_link_url": channelBindingDeviceLinkURL(r, binding),
+			"agent": map[string]interface{}{
+				"uid":          agent.ID,
+				"username":     agent.Username,
+				"display_name": displayNameOrUsername(agent.DisplayName, agent.Username),
+				"is_online":    h.hub != nil && h.hub.IsOnline(agent.ID),
+			},
+		})
+		return
+	}
+	if pending, err := channelBindingPendingFriendApproval(h.db, binding); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check channel access"})
+		return
+	} else if pending {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":  "pending_approval",
+			"binding": binding,
+			"agent": map[string]interface{}{
+				"uid":          agent.ID,
+				"username":     agent.Username,
+				"display_name": displayNameOrUsername(agent.DisplayName, agent.Username),
+				"is_online":    h.hub != nil && h.hub.IsOnline(agent.ID),
+			},
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":          "bound",
 		"binding":         binding,
@@ -306,6 +336,33 @@ func (h *ChannelAgentBindingHandler) HandleResolveChannelAgentBinding(w http.Res
 	agent, err := h.db.GetUser(binding.AgentUID)
 	if err != nil || agent == nil || agent.AccountType != types.AccountBot || agent.State != 0 {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"bound": false, "error": "agent unavailable"})
+		return
+	}
+	if channelBindingNeedsCatsCoLogin(binding) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"bound":            false,
+			"status":           "needs_catsco_login",
+			"binding":          binding,
+			"agent_uid":        binding.AgentUID,
+			"owner_uid":        binding.OwnerUID,
+			"account_link_url": channelBindingDeviceLinkURL(r, binding),
+			"device_link_url":  channelBindingDeviceLinkURL(r, binding),
+			"device_linked":    false,
+		})
+		return
+	}
+	if pending, err := channelBindingPendingFriendApproval(h.db, binding); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check channel access"})
+		return
+	} else if pending {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"bound":         false,
+			"status":        "pending_approval",
+			"binding":       binding,
+			"agent_uid":     binding.AgentUID,
+			"owner_uid":     binding.OwnerUID,
+			"canonical_uid": binding.CanonicalUID,
+		})
 		return
 	}
 	bodyID, _ := h.db.GetBotBodyID(binding.AgentUID)
@@ -377,8 +434,19 @@ func (h *ChannelAgentBindingHandler) HandleLinkChannelAgentBindingUser(w http.Re
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "binding not found or expired"})
 		return
 	}
+	status := "linked"
+	if pending, err := channelBindingPendingFriendApproval(h.db, binding); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check channel access"})
+		return
+	} else if pending {
+		if _, err := h.db.CreateFriendRequest(canonicalUID, binding.AgentUID, channelAgentAccessFriendMessage(binding.Channel)); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to request virtual employee access"})
+			return
+		}
+		status = "pending_approval"
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":           "linked",
+		"status":           status,
 		"binding":          binding,
 		"actor_uid":        binding.ActorUID,
 		"agent_uid":        binding.AgentUID,
@@ -568,31 +636,21 @@ func bindOrRequestChannelAgentAccess(
 	}
 	conversationID = strings.TrimSpace(conversationID)
 	conversationType = normalizeConversationType(conversationType)
-	if entry.AccessMode == types.ChannelAgentAccessApprovalRequired {
-		allowed, err := db.AreFriends(actorUID, entry.AgentUID)
-		if err != nil {
-			return nil, nil, err
-		}
-		if !allowed {
-			if _, err := db.CreateFriendRequest(actorUID, entry.AgentUID, channelAgentAccessFriendMessage(channel)); err != nil {
-				return nil, nil, err
-			}
-			request, err := bindings.RequestChannelAgentAccess(&types.ChannelAgentAccessRequest{
-				EntryID:                 entry.ID,
-				Channel:                 channel,
-				ChannelAppID:            strings.TrimSpace(channelAppID),
-				ChannelUserID:           strings.TrimSpace(channelUserID),
-				ChannelConversationID:   conversationID,
-				ChannelConversationType: conversationType,
-				ActorUID:                actorUID,
-				OwnerUID:                entry.OwnerUID,
-				AgentUID:                entry.AgentUID,
-				Status:                  "pending",
-			})
-			return nil, request, err
-		}
+	query := types.ChannelAgentBindingQuery{
+		Channel:                 channel,
+		ChannelAppID:            strings.TrimSpace(channelAppID),
+		ChannelUserID:           strings.TrimSpace(channelUserID),
+		ChannelConversationID:   conversationID,
+		ChannelConversationType: conversationType,
 	}
-	binding, err := bindings.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+	binding, err := bindings.ResolveChannelAgentBinding(query)
+	if err != nil {
+		return nil, nil, err
+	}
+	if binding != nil {
+		return binding, nil, nil
+	}
+	binding, err = bindings.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:                 channel,
 		ChannelAppID:            strings.TrimSpace(channelAppID),
 		ChannelUserID:           strings.TrimSpace(channelUserID),
@@ -691,9 +749,29 @@ func channelBindingDeviceLinkGuidance(r *http.Request, binding *types.ChannelAge
 	}
 	link := channelBindingDeviceLinkURL(r, binding)
 	if link == "" {
-		return "你还没有绑定 CatsCo 账号和本机设备。请联系管理员检查设备授权链接配置。"
+		return "你还没有登录绑定 CatsCo 账号。请联系管理员检查账号绑定链接配置。"
 	}
-	return "如需让我使用你的电脑文件或操作你的本机设备，请登录 CatsCo 完成设备授权：\n" + link
+	return "请先登录 CatsCo 账号并申请添加该虚拟员工。通过后，我才能在这里继续为你服务；如果后续需要操作你的电脑，也只会使用你自己账号名下授权的设备：\n" + link
+}
+
+func channelBindingNeedsCatsCoLogin(binding *types.ChannelAgentBinding) bool {
+	return binding != nil && binding.CanonicalUID <= 0
+}
+
+func channelBindingPendingFriendApproval(db store.Store, binding *types.ChannelAgentBinding) (bool, error) {
+	if db == nil || binding == nil || binding.CanonicalUID <= 0 || binding.AgentUID <= 0 {
+		return false, nil
+	}
+	if ownerUID, err := db.GetBotOwner(binding.AgentUID); err == nil && ownerUID == binding.CanonicalUID {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	allowed, err := db.AreFriends(binding.CanonicalUID, binding.AgentUID)
+	if err != nil {
+		return false, err
+	}
+	return !allowed, nil
 }
 
 func isChannelDeviceLinkRequest(text string) bool {
