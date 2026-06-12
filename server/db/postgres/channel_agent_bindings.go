@@ -185,12 +185,6 @@ func (a *Adapter) ResolveChannelAgentAccessRequest(query types.ChannelAgentBindi
 	if err != nil || request != nil {
 		return request, err
 	}
-	if query.ChannelConversationID != "" {
-		request, err = a.getChannelAgentAccessRequest(query, "")
-		if err != nil || request != nil {
-			return request, err
-		}
-	}
 	return nil, nil
 }
 
@@ -360,12 +354,6 @@ func (a *Adapter) ResolveChannelAgentBinding(query types.ChannelAgentBindingQuer
 	binding, err := a.getChannelAgentBinding(query, query.ChannelConversationID)
 	if err != nil || binding != nil {
 		return binding, err
-	}
-	if query.ChannelConversationID != "" {
-		binding, err = a.getChannelAgentBinding(query, "")
-		if err != nil || binding != nil {
-			return binding, err
-		}
 	}
 	return nil, nil
 }

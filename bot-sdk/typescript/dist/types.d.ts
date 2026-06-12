@@ -54,7 +54,7 @@ export interface MsgClientFriend {
     msg?: string;
 }
 export type DeviceRPCType = 'request' | 'result';
-export type DeviceRPCOperation = 'read_file' | 'glob' | 'grep' | 'write_file' | 'execute_shell';
+export type DeviceRPCOperation = 'read_file' | 'glob' | 'grep' | 'write_file' | 'edit_file';
 export interface MsgDeviceRPCError {
     code: string;
     message: string;
@@ -68,6 +68,8 @@ export interface MsgDeviceRPC {
     topic_id?: string;
     topic_type?: string;
     actor_user_id?: string;
+    owner_user_id?: string;
+    identity_source?: string;
     agent_id?: string;
     agent_body_id?: string;
     device_id?: string;
@@ -90,9 +92,31 @@ export interface DeviceRPCRequestInput {
     session_key?: string;
     topic_id?: string;
     topic_type?: string;
+    actor_user_id?: string;
+    owner_user_id?: string;
+    identity_source?: string;
+    agent_id?: string;
+    agent_body_id?: string;
+    device_id?: string;
+    device_body_id?: string;
+    device_installation_id?: string;
 }
 export interface DeviceRPCResultInput {
     request_id: string;
+    grant_id?: string;
+    session_key?: string;
+    topic_id?: string;
+    topic_type?: string;
+    actor_user_id?: string;
+    owner_user_id?: string;
+    identity_source?: string;
+    agent_id?: string;
+    agent_body_id?: string;
+    device_id?: string;
+    device_body_id?: string;
+    device_installation_id?: string;
+    operation?: DeviceRPCOperation;
+    tool_name?: string;
     result?: unknown;
     error?: MsgDeviceRPCError;
 }

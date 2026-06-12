@@ -1232,6 +1232,7 @@ type redisDeviceRPCPending struct {
 	ActorUserID     string       `json:"actor_user_id"`
 	OwnerUID        int64        `json:"owner_uid"`
 	OwnerUserID     string       `json:"owner_user_id"`
+	IdentitySource  string       `json:"identity_source"`
 	SessionKey      string       `json:"session_key"`
 	TopicID         string       `json:"topic_id"`
 	TopicType       string       `json:"topic_type"`
@@ -1257,6 +1258,7 @@ func redisDeviceRPCPendingFromRuntime(record deviceRPCPendingRecord) redisDevice
 		ActorUserID:     record.actorUserID,
 		OwnerUID:        record.ownerUID,
 		OwnerUserID:     record.ownerUserID,
+		IdentitySource:  record.identitySource,
 		SessionKey:      record.sessionKey,
 		TopicID:         record.topicID,
 		TopicType:       record.topicType,
@@ -1291,6 +1293,7 @@ func (r redisDeviceRPCPending) toRuntimeRecord() deviceRPCPendingRecord {
 		actorUserID:     r.ActorUserID,
 		ownerUID:        ownerUID,
 		ownerUserID:     ownerUserID,
+		identitySource:  r.IdentitySource,
 		sessionKey:      r.SessionKey,
 		topicID:         r.TopicID,
 		topicType:       r.TopicType,

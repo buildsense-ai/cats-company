@@ -130,6 +130,8 @@ type MsgDeviceRPC struct {
 	TopicID              string                 `json:"topic_id,omitempty"`
 	TopicType            string                 `json:"topic_type,omitempty"`
 	ActorUserID          string                 `json:"actor_user_id,omitempty"`
+	OwnerUserID          string                 `json:"owner_user_id,omitempty"`
+	IdentitySource       string                 `json:"identity_source,omitempty"`
 	AgentID              string                 `json:"agent_id,omitempty"`
 	AgentBodyID          string                 `json:"agent_body_id,omitempty"`
 	DeviceID             string                 `json:"device_id,omitempty"`

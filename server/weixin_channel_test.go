@@ -85,12 +85,16 @@ func TestWeixinURLVerificationRequiresTokenInProduction(t *testing.T) {
 func TestWeixinScanEventBindsActor(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("weixin", "wx_app", "openid-1"), DisplayName: "Weixin Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
 	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
 	_, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
 		SceneKey:     "scene-weixin",
 		Channel:      "weixin",
 		ChannelAppID: "wx_app",
+		AccessMode:   types.ChannelAgentAccessPublic,
 		OwnerUID:     7,
 		AgentUID:     43,
 		Status:       "active",
@@ -135,8 +139,11 @@ func TestWeixinScanEventBindsActor(t *testing.T) {
 func TestWeixinApprovalRequiredScanCreatesPendingAccess(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("weixin", "wx_app", "openid-1"), DisplayName: "Weixin Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
 	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
 	_, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
 		SceneKey:     "scene-private-weixin",
 		Channel:      "weixin",
@@ -187,8 +194,11 @@ func TestWeixinApprovalRequiredScanCreatesPendingAccess(t *testing.T) {
 func TestWeixinApprovedPrivateBindingProvidesDeviceLinkOnRequest(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("weixin", "wx_app", "openid-1"), DisplayName: "Weixin Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
 	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
 	_, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
 		SceneKey:     "scene-private-weixin",
 		Channel:      "weixin",
@@ -243,12 +253,16 @@ func TestWeixinApprovedPrivateBindingProvidesDeviceLinkOnRequest(t *testing.T) {
 func TestWeixinScanEventForExistingSubscriberBindsActor(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("weixin", "wx_app", "openid-1"), DisplayName: "Weixin Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
 	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
 	_, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
 		SceneKey:     "scene-weixin",
 		Channel:      "weixin",
 		ChannelAppID: "wx_app",
+		AccessMode:   types.ChannelAgentAccessPublic,
 		OwnerUID:     7,
 		AgentUID:     43,
 		Status:       "active",

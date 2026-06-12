@@ -120,7 +120,7 @@ func TestDeviceConnectorPairingEnrollmentAndScopedRegistration(t *testing.T) {
 	if !ok {
 		t.Fatal("expected token-bound device to be active")
 	}
-	if len(device.Capabilities) != 2 || device.Capabilities[0] != DeviceGrantReadFile || device.Capabilities[1] != DeviceGrantGlob {
+	if len(device.Capabilities) != 1 || device.Capabilities[0] != DeviceGrantReadFile {
 		t.Fatalf("registration should be limited to token capabilities, got %#v", device.Capabilities)
 	}
 

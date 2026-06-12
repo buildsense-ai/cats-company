@@ -50,6 +50,8 @@ func (a *Adapter) CreateSchema() error {
 		migrateMessagesAddTopicIDIndex,
 		migrateChannelAgentEntriesAddAppID,
 		migrateChannelAgentEntriesAddAccessMode,
+		migrateChannelAgentEntriesDefaultAccessMode,
+		migrateChannelAgentEntriesPublicToApprovalRequired,
 		migrateChannelAgentBindingsAddActorUID,
 		migrateChannelAgentBindingsAddCanonicalUID,
 		migrateChannelAgentEntriesOwnerAgentIndex,
@@ -251,7 +253,7 @@ CREATE TABLE IF NOT EXISTS channel_agent_entries (
     scene_key VARCHAR(64) NOT NULL UNIQUE,
     channel VARCHAR(32) NOT NULL,
     channel_app_id VARCHAR(128) NOT NULL DEFAULT '',
-    access_mode VARCHAR(32) NOT NULL DEFAULT 'public',
+    access_mode VARCHAR(32) NOT NULL DEFAULT 'approval_required',
     owner_uid BIGINT NOT NULL,
     agent_uid BIGINT NOT NULL,
     status VARCHAR(16) NOT NULL DEFAULT 'active',
@@ -413,7 +415,15 @@ ALTER TABLE channel_agent_entries ADD COLUMN channel_app_id VARCHAR(128) NOT NUL
 `
 
 const migrateChannelAgentEntriesAddAccessMode = `
-ALTER TABLE channel_agent_entries ADD COLUMN access_mode VARCHAR(32) NOT NULL DEFAULT 'public';
+ALTER TABLE channel_agent_entries ADD COLUMN access_mode VARCHAR(32) NOT NULL DEFAULT 'approval_required';
+`
+
+const migrateChannelAgentEntriesDefaultAccessMode = `
+ALTER TABLE channel_agent_entries ALTER COLUMN access_mode SET DEFAULT 'approval_required';
+`
+
+const migrateChannelAgentEntriesPublicToApprovalRequired = `
+UPDATE channel_agent_entries SET access_mode = 'approval_required' WHERE access_mode = 'public';
 `
 
 const migrateChannelAgentBindingsAddActorUID = `

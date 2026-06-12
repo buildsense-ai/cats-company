@@ -37,6 +37,7 @@ type deviceRPCPendingRecord struct {
 	actorUserID     string
 	ownerUID        int64
 	ownerUserID     string
+	identitySource  string
 	sessionKey      string
 	topicID         string
 	topicType       string
@@ -776,6 +777,7 @@ func deviceRPCRecordFromPending(pending deviceRPCPending) deviceRPCPendingRecord
 		actorUserID:     pending.actorUserID,
 		ownerUID:        pending.ownerUID,
 		ownerUserID:     pending.ownerUserID,
+		identitySource:  pending.identitySource,
 		sessionKey:      pending.sessionKey,
 		topicID:         pending.topicID,
 		topicType:       pending.topicType,
@@ -802,6 +804,7 @@ func pendingFromDeviceRPCRecord(record deviceRPCPendingRecord) deviceRPCPending 
 		actorUserID:     record.actorUserID,
 		ownerUID:        record.ownerUID,
 		ownerUserID:     record.ownerUserID,
+		identitySource:  record.identitySource,
 		sessionKey:      record.sessionKey,
 		topicID:         record.topicID,
 		topicType:       record.topicType,

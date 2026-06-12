@@ -32,18 +32,22 @@ const writeInput: DeviceRPCRequestInput = {
   operation: 'write_file',
   payload: { path: 'quote.xlsx', content: 'updated' },
 };
-const shellInput: DeviceRPCRequestInput = {
-  grant_id: 'grant-shell',
-  operation: 'execute_shell',
-  payload: { command: 'echo ok' },
+const editInput: DeviceRPCRequestInput = {
+  grant_id: 'grant-edit',
+  operation: 'edit_file',
+  owner_user_id: 'usr7',
+  identity_source: 'metadata.catsco_identity',
+  payload: { path: 'quote.xlsx', old_string: 'old', new_string: 'new' },
 };
 
 void bot.sendDeviceRPCRequest(input).then((ack: DeviceRPCRequestAck) => ack.request_id);
 void bot.sendDeviceRPCRequest(writeInput).then((ack: DeviceRPCRequestAck) => ack.request_id);
-void bot.sendDeviceRPCRequest(shellInput).then((ack: DeviceRPCRequestAck) => ack.request_id);
+void bot.sendDeviceRPCRequest(editInput).then((ack: DeviceRPCRequestAck) => ack.request_id);
 void bot.sendDeviceRPC({
   type: 'result',
   request_id: 'rpc-1',
+  owner_user_id: 'usr7',
+  identity_source: 'metadata.catsco_identity',
   result: { ok: true },
 });
 

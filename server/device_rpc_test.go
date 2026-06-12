@@ -34,6 +34,9 @@ func TestDeviceRPCRoutesRequestToSelectedDeviceAndReturnsResult(t *testing.T) {
 	if forwarded.DeviceRPC.GrantID != grant.GrantID || forwarded.DeviceRPC.ActorUserID != "usr7" || forwarded.DeviceRPC.AgentBodyID != "body-agent" {
 		t.Fatalf("request was not canonicalized from grant: %#v", forwarded.DeviceRPC)
 	}
+	if forwarded.DeviceRPC.OwnerUserID != "usr7" || forwarded.DeviceRPC.IdentitySource != userDeviceGrantIdentitySrc {
+		t.Fatalf("request missing owner identity: %#v", forwarded.DeviceRPC)
+	}
 	if forwarded.DeviceRPC.DeviceBodyID != "body-device" || forwarded.DeviceRPC.DeviceInstallationID != "install-device" {
 		t.Fatalf("request missing target device identity: %#v", forwarded.DeviceRPC)
 	}
@@ -145,6 +148,9 @@ func TestDeviceRPCRoutesDelegatedChannelActorGrantToDeviceOwner(t *testing.T) {
 	if forwarded.DeviceRPC == nil || forwarded.DeviceRPC.ActorUserID != "usr100" || forwarded.DeviceRPC.DeviceID != "alice-laptop" {
 		t.Fatalf("unexpected delegated request: %#v", forwarded.DeviceRPC)
 	}
+	if forwarded.DeviceRPC.OwnerUserID != "usr7" || forwarded.DeviceRPC.IdentitySource != channelDeviceGrantIdentitySrc {
+		t.Fatalf("delegated request missing owner identity: %#v", forwarded.DeviceRPC)
+	}
 	var ack ServerMessage
 	decodeQueuedServerMessage(t, agent.send, &ack)
 	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusOK {
@@ -156,6 +162,35 @@ func TestDeviceRPCRoutesDelegatedChannelActorGrantToDeviceOwner(t *testing.T) {
 	pending := hub.DeviceRPCStatus(7)
 	if len(pending) != 1 || pending[0].ActorUserID != "usr100" || pending[0].OwnerUserID != "usr7" {
 		t.Fatalf("unexpected owner-scoped pending: %#v", pending)
+	}
+}
+
+func TestDeviceRPCRoutesWriteFileOperationToSelectedDevice(t *testing.T) {
+	hub, agent, target, _, grant := newDeviceRPCTestFixture(t, true)
+
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-msg-write",
+		Type:      "request",
+		RequestID: "rpc-write",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "write_file",
+		ToolName:  "write_file",
+		Payload:   map[string]interface{}{"args": map[string]interface{}{"file_path": "draft.txt", "content": "hello"}},
+	})
+
+	var forwarded ServerMessage
+	decodeQueuedServerMessage(t, target.send, &forwarded)
+	if forwarded.DeviceRPC == nil || forwarded.DeviceRPC.Operation != "write_file" || forwarded.DeviceRPC.ToolName != "write_file" {
+		t.Fatalf("target received %#v, want write_file device_rpc request", forwarded.DeviceRPC)
+	}
+	if forwarded.DeviceRPC.OwnerUserID != "usr7" || forwarded.DeviceRPC.IdentitySource != userDeviceGrantIdentitySrc {
+		t.Fatalf("write request missing owner identity: %#v", forwarded.DeviceRPC)
+	}
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusOK {
+		t.Fatalf("unexpected write request ack: %#v", ack.Ctrl)
 	}
 }
 
@@ -248,16 +283,16 @@ func TestDeviceRPCRejectsOfflineDevice(t *testing.T) {
 	}
 }
 
-func TestDeviceRPCRejectsNonReadonlyOperationEvenWhenGranted(t *testing.T) {
+func TestDeviceRPCRejectsShellOperationEvenWhenGranted(t *testing.T) {
 	hub, agent, _, _, grant := newDeviceRPCTestFixture(t, true)
 
 	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
 		ID:        "rpc-msg-1",
 		Type:      "request",
-		RequestID: "rpc-send-file",
+		RequestID: "rpc-shell",
 		GrantID:   grant.GrantID,
 		DeviceID:  grant.DeviceID,
-		Operation: "send_file",
+		Operation: "execute_shell",
 	})
 
 	var ack ServerMessage
@@ -293,6 +328,9 @@ func TestDeviceRPCTimeoutNotifiesRequesterAndClearsPending(t *testing.T) {
 	decodeQueuedServerMessage(t, agent.send, &result)
 	if result.DeviceRPC == nil || result.DeviceRPC.Error == nil || result.DeviceRPC.Error.Code != "device_rpc_timeout" {
 		t.Fatalf("agent timeout result = %#v, want device_rpc_timeout", result.DeviceRPC)
+	}
+	if result.DeviceRPC.OwnerUserID != grant.OwnerUserID || result.DeviceRPC.IdentitySource != grant.IdentitySource {
+		t.Fatalf("timeout result missing owner identity: %#v", result.DeviceRPC)
 	}
 	if pending := hub.DeviceRPCStatus(7); len(pending) != 0 {
 		t.Fatalf("timeout should clear pending status: %#v", pending)
@@ -544,6 +582,9 @@ func TestSharedRuntimeRoutesDeviceRPCAcrossHubs(t *testing.T) {
 	if forwarded.DeviceRPC == nil || forwarded.DeviceRPC.RequestID != "rpc-cross-node" {
 		t.Fatalf("target on node-device received %#v, want cross-node rpc request", forwarded)
 	}
+	if forwarded.DeviceRPC.OwnerUserID != grants[0].OwnerUserID || forwarded.DeviceRPC.IdentitySource != grants[0].IdentitySource {
+		t.Fatalf("cross-node request missing owner identity: %#v", forwarded.DeviceRPC)
+	}
 	var ack ServerMessage
 	decodeQueuedServerMessage(t, agent.send, &ack)
 	if ack.Ctrl == nil || ack.Ctrl.Code != 200 {
@@ -569,6 +610,9 @@ func TestSharedRuntimeRoutesDeviceRPCAcrossHubs(t *testing.T) {
 	decodeQueuedServerMessage(t, agent.send, &result)
 	if result.DeviceRPC == nil || result.DeviceRPC.Type != "result" || result.DeviceRPC.RequestID != "rpc-cross-node" {
 		t.Fatalf("agent on node-agent received %#v, want cross-node rpc result", result)
+	}
+	if result.DeviceRPC.OwnerUserID != grants[0].OwnerUserID || result.DeviceRPC.IdentitySource != grants[0].IdentitySource {
+		t.Fatalf("cross-node result missing owner identity: %#v", result.DeviceRPC)
 	}
 	if pending := hubAgent.DeviceRPCStatus(7, "usr42"); len(pending) != 0 {
 		t.Fatalf("shared pending should be cleared from node-agent: %#v", pending)
@@ -638,7 +682,7 @@ func newDeviceRPCTestFixture(t *testing.T, bindTarget bool) (*Hub, *Client, *Cli
 		DisplayName:    "Alice Laptop",
 		BodyID:         "body-device",
 		InstallationID: "install-device",
-		Capabilities:   []string{"read_file", "send_file"},
+		Capabilities:   []string{"read_file", "write_file", "send_file"},
 	})
 	if err != nil {
 		t.Fatalf("register device: %v", err)

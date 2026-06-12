@@ -65,12 +65,16 @@ func TestFeishuEventURLVerification(t *testing.T) {
 func TestFeishuOAuthCallbackBindsActor(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_user"), DisplayName: "Feishu Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
 	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
 	entry, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
 		SceneKey:     "scene-feishu",
 		Channel:      "feishu",
 		ChannelAppID: "cli_app",
+		AccessMode:   types.ChannelAgentAccessPublic,
 		OwnerUID:     7,
 		AgentUID:     43,
 		Status:       "active",
@@ -130,12 +134,16 @@ func TestFeishuOAuthCallbackBindsActor(t *testing.T) {
 func TestFeishuOAuthCallbackUsesConfiguredAppID(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cloud_app", "ou_user"), DisplayName: "Feishu Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
 	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
 	entry, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
 		SceneKey:     "scene-feishu-legacy",
 		Channel:      "feishu",
 		ChannelAppID: "legacy_app",
+		AccessMode:   types.ChannelAgentAccessPublic,
 		OwnerUID:     7,
 		AgentUID:     43,
 		Status:       "active",
@@ -198,13 +206,15 @@ func TestFeishuMessageEventDeliversToBoundAgent(t *testing.T) {
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
 	db.owners[43] = 7
 	_, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
-		Channel:       "feishu",
-		ChannelAppID:  "cli_app",
-		ChannelUserID: "ou_user",
-		ActorUID:      8,
-		OwnerUID:      7,
-		AgentUID:      43,
-		Status:        "active",
+		Channel:                 "feishu",
+		ChannelAppID:            "cli_app",
+		ChannelUserID:           "ou_user",
+		ChannelConversationID:   "oc_chat_1",
+		ChannelConversationType: "p2p",
+		ActorUID:                8,
+		OwnerUID:                7,
+		AgentUID:                43,
+		Status:                  "active",
 	})
 	if err != nil {
 		t.Fatalf("seed binding: %v", err)

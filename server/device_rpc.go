@@ -31,6 +31,7 @@ type deviceRPCPending struct {
 	actorUserID     string
 	ownerUID        int64
 	ownerUserID     string
+	identitySource  string
 	sessionKey      string
 	topicID         string
 	topicType       string
@@ -378,6 +379,8 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 	forward.TopicID = grant.TopicID
 	forward.TopicType = grant.TopicType
 	forward.ActorUserID = grant.ActorUserID
+	forward.OwnerUserID = ownerUserID
+	forward.IdentitySource = grant.IdentitySource
 	forward.AgentID = grant.AgentID
 	forward.AgentBodyID = grant.AgentBodyID
 	forward.DeviceID = device.DeviceID
@@ -398,6 +401,7 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		actorUserID:     grant.ActorUserID,
 		ownerUID:        ownerUID,
 		ownerUserID:     ownerUserID,
+		identitySource:  grant.IdentitySource,
 		sessionKey:      grant.SessionKey,
 		topicID:         grant.TopicID,
 		topicType:       grant.TopicType,
@@ -504,6 +508,8 @@ func (h *Hub) handleDeviceRPCResult(client *Client, msg *MsgDeviceRPC) {
 	forward.TopicID = pending.topicID
 	forward.TopicType = pending.topicType
 	forward.ActorUserID = pending.actorUserID
+	forward.OwnerUserID = pending.ownerUserID
+	forward.IdentitySource = pending.identitySource
 	forward.AgentID = pending.agentID
 	forward.AgentBodyID = pending.agentBodyID
 	forward.DeviceID = pending.deviceID
@@ -619,7 +625,7 @@ func isAllowedDeviceRPCOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantGlob,
 		DeviceGrantGrep,
 		DeviceGrantWriteFile,
-		DeviceGrantExecuteShell:
+		DeviceGrantEditFile:
 		return true
 	default:
 		return false
@@ -795,6 +801,8 @@ func (h *Hub) notifyDeviceRPCTimeout(pending deviceRPCPending) {
 		TopicID:              pending.topicID,
 		TopicType:            pending.topicType,
 		ActorUserID:          pending.actorUserID,
+		OwnerUserID:          pending.ownerUserID,
+		IdentitySource:       pending.identitySource,
 		AgentID:              pending.agentID,
 		AgentBodyID:          pending.agentBodyID,
 		DeviceID:             pending.deviceID,

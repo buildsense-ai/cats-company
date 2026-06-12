@@ -105,6 +105,9 @@ func TestRedisRuntimeRoutesDeviceRPCAcrossStates(t *testing.T) {
 	if forwarded.DeviceRPC == nil || forwarded.DeviceRPC.RequestID != "rpc-cross-redis" {
 		t.Fatalf("target on node-device received %#v, want cross-node rpc request", forwarded)
 	}
+	if forwarded.DeviceRPC.OwnerUserID != grants[0].OwnerUserID || forwarded.DeviceRPC.IdentitySource != grants[0].IdentitySource {
+		t.Fatalf("redis cross-node request missing owner identity: %#v", forwarded.DeviceRPC)
+	}
 	var ack ServerMessage
 	decodeQueuedServerMessage(t, agent.send, &ack)
 	if ack.Ctrl == nil || ack.Ctrl.Code != 200 {
@@ -130,6 +133,9 @@ func TestRedisRuntimeRoutesDeviceRPCAcrossStates(t *testing.T) {
 	decodeQueuedServerMessageEventually(t, agent.send, &result)
 	if result.DeviceRPC == nil || result.DeviceRPC.Type != "result" || result.DeviceRPC.RequestID != "rpc-cross-redis" {
 		t.Fatalf("agent on node-agent received %#v, want cross-node rpc result", result)
+	}
+	if result.DeviceRPC.OwnerUserID != grants[0].OwnerUserID || result.DeviceRPC.IdentitySource != grants[0].IdentitySource {
+		t.Fatalf("redis cross-node result missing owner identity: %#v", result.DeviceRPC)
 	}
 	if pending := hubAgent.DeviceRPCStatus(7, "usr42"); len(pending) != 0 {
 		t.Fatalf("redis pending should be cleared from node-agent: %#v", pending)

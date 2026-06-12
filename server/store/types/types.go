@@ -224,10 +224,8 @@ func NormalizeChannelAgentAccessMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case ChannelAgentAccessApprovalRequired:
 		return ChannelAgentAccessApprovalRequired
-	case ChannelAgentAccessPublic:
-		return ChannelAgentAccessPublic
 	default:
-		return ChannelAgentAccessPublic
+		return ChannelAgentAccessApprovalRequired
 	}
 }
 
