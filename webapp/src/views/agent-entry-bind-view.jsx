@@ -58,6 +58,24 @@ export default function AgentEntryBindView({ sceneKey }) {
       });
       if (res.status === 'pending_approval') {
         setStatus('好友申请已提交。管理员通过后，你就可以回到微信/飞书聊天框继续提问。');
+      } else if (res.status === 'needs_catsco_login' && res.account_link_url) {
+        const link = parseChannelLink(res.account_link_url);
+        if (!link) {
+          setStatus('已确认渠道身份，但账号绑定链接不可用。请联系虚拟员工管理员重新生成入口。');
+          return;
+        }
+        const linked = await api.linkChannelAgentBindingUser(link);
+        if (linked.status === 'pending_approval') {
+          setStatus('好友申请已提交。管理员通过后，你就可以回到微信/飞书聊天框继续提问。');
+        } else if (linked.status === 'rejected') {
+          setStatus('你的好友申请暂未通过，请联系虚拟员工管理员。');
+        } else {
+          setStatus('已进入该虚拟员工，请回到微信/飞书聊天框继续提问。');
+        }
+      } else if (res.status === 'needs_catsco_login') {
+        setStatus('已确认渠道身份，但还需要绑定 CatsCo 账号。请从微信/飞书收到的账号绑定链接继续。');
+      } else if (res.status === 'rejected') {
+        setStatus('你的好友申请暂未通过，请联系虚拟员工管理员。');
       } else {
         setStatus('已进入该虚拟员工，请回到微信/飞书聊天框继续提问。');
       }
@@ -131,4 +149,19 @@ export default function AgentEntryBindView({ sceneKey }) {
       </div>
     </div>
   );
+}
+
+function parseChannelLink(value) {
+  try {
+    const url = new URL(value, window.location.origin);
+    const bindingId = url.searchParams.get('binding_id');
+    const linkToken = url.searchParams.get('link_token');
+    if (!bindingId || !linkToken) return null;
+    return {
+      binding_id: Number(bindingId),
+      link_token: linkToken,
+    };
+  } catch {
+    return null;
+  }
 }

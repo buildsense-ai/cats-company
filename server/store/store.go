@@ -117,10 +117,13 @@ type ChannelAgentBindingStore interface {
 	ListChannelAgentEntries(ownerUID, agentUID int64) ([]*types.ChannelAgentEntry, error)
 	RegenerateChannelAgentEntry(id, ownerUID int64, sceneKey string) (*types.ChannelAgentEntry, error)
 	GetChannelAgentEntryBySceneKey(sceneKey string) (*types.ChannelAgentEntry, error)
+	ListChannelAgentBindingsForAgent(ownerUID, agentUID int64) ([]*types.ChannelAgentBinding, error)
 	RequestChannelAgentAccess(request *types.ChannelAgentAccessRequest) (*types.ChannelAgentAccessRequest, error)
 	ResolveChannelAgentAccessRequest(query types.ChannelAgentBindingQuery) (*types.ChannelAgentAccessRequest, error)
 	ApproveChannelAgentAccessRequestsForActor(actorUID, agentUID, reviewerUID int64) ([]*types.ChannelAgentBinding, error)
 	RejectChannelAgentAccessRequestsForActor(actorUID, agentUID, reviewerUID int64) error
+	ActivateChannelAgentBindingsForCanonicalUser(canonicalUID, agentUID, reviewerUID int64) ([]*types.ChannelAgentBinding, error)
+	RejectChannelAgentBindingsForCanonicalUser(canonicalUID, agentUID, reviewerUID int64) error
 	UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) (*types.ChannelAgentBinding, error)
 	ResolveChannelAgentBinding(query types.ChannelAgentBindingQuery) (*types.ChannelAgentBinding, error)
 	ResolveChannelAgentBindingForActor(channel, channelAppID string, actorUID, agentUID int64) (*types.ChannelAgentBinding, error)

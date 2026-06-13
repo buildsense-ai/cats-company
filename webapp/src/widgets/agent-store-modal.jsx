@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, getWebSocketURL } from '../api';
 import t from '../i18n';
 import { CheckCircle, Copy, QrCode, RefreshCw, XCircle, Zap, Bot, Upload } from 'lucide-react';
@@ -484,6 +484,8 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
   const [error, setError] = useState('');
   const [qrImageError, setQrImageError] = useState(false);
   const [pendingRequests, setPendingRequests] = useState([]);
+  const [managedBindings, setManagedBindings] = useState([]);
+  const [accessTab, setAccessTab] = useState('pending');
   const [pendingLoading, setPendingLoading] = useState(false);
   const [reviewingUID, setReviewingUID] = useState(null);
   const botId = bot?.id || bot?.uid;
@@ -511,8 +513,12 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
     if (!botId) return;
     try {
       setPendingLoading(true);
-      const res = await api.getPendingRequests(botId);
-      setPendingRequests(res.requests || []);
+      const [pendingRes, bindingsRes] = await Promise.all([
+        api.getPendingRequests(botId),
+        api.getAgentChannelBindings(botId),
+      ]);
+      setPendingRequests(pendingRes.requests || []);
+      setManagedBindings(bindingsRes.bindings || []);
     } catch (err) {
       console.warn('load agent pending requests:', err);
       setPendingRequests([]);
@@ -535,10 +541,17 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
   const selected = entries.find((entry) => entryScopeMatches(entry));
   const entryUrl = selected?.entry_url || '';
   const channelQrUrl = selected?.channel_qr_url || '';
+  const qrValue = selected?.qr_value || '';
+  const qrKind = selected?.qr_kind || '';
+  const feishuOAuthUrl = selected?.feishu_oauth_url || '';
+  const feishuEntryStatus = selected?.feishu_entry_status || null;
+  const feishuEntryReasons = Array.isArray(feishuEntryStatus?.reasons) ? feishuEntryStatus.reasons : [];
+  const isFeishuNativeEntry = channel === 'feishu' && qrKind === 'feishu_native_entry' && qrValue;
   const displayQrUrl = channel === 'weixin' && channelQrUrl ? channelQrUrl : '';
-  const displayUrl = displayQrUrl || entryUrl;
+  const displayUrl = displayQrUrl || (isFeishuNativeEntry ? qrValue : (channel === 'feishu' ? '' : qrValue || entryUrl));
   const usesLocalEntryUrl = isPotentiallyPrivateEntryUrl(displayUrl);
   const needsWeixinConfig = channel === 'weixin' && selected && !displayQrUrl;
+  const needsFeishuNativeConfig = channel === 'feishu' && selected && !isFeishuNativeEntry;
 
   useEffect(() => {
     setQrImageError(false);
@@ -561,6 +574,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
       setEntries((prev) => [next, ...prev.filter((entry) => (
         !entryScopeMatches(entry, next.channel, next.channel === 'feishu' || next.channel === 'weixin' ? '' : (next.channel_app_id || ''))
       ))]);
+      await loadPendingRequests();
     } catch (err) {
       setError(err.message || 'Failed to generate entry code');
     } finally {
@@ -621,6 +635,25 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
     }
   };
 
+  const bindingsByStatus = useMemo(() => {
+    const buckets = { approved: [], rejected: [], needs_login: [], pending: [] };
+    (managedBindings || []).forEach((item) => {
+      const status = item.status || item.binding?.status || '';
+      if (status === 'approved' || status === 'active') buckets.approved.push(item);
+      else if (status === 'rejected') buckets.rejected.push(item);
+      else if (status === 'needs_login' || status === 'pending_login') buckets.needs_login.push(item);
+      else if (status === 'pending' || status === 'pending_approval') buckets.pending.push(item);
+    });
+    return buckets;
+  }, [managedBindings]);
+
+  const accessTabs = [
+    ['pending', '待处理', pendingRequests.length + bindingsByStatus.pending.length],
+    ['approved', '已通过', bindingsByStatus.approved.length],
+    ['rejected', '未通过', bindingsByStatus.rejected.length],
+    ['needs_login', '待登录', bindingsByStatus.needs_login.length],
+  ];
+
   return (
     <div className="oc-modal-overlay" onClick={onClose} style={{ zIndex: 1200 }}>
       <div className="oc-modal" onClick={e => e.stopPropagation()} style={{ width: 520, maxWidth: '94vw' }}>
@@ -666,26 +699,20 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
 
           <div style={{ marginBottom: 16 }}>
             <div style={{ color: 'var(--v3-text-muted)', fontSize: 12, marginBottom: 8 }}>访问方式</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              {[
-                ['approval_required', '好友申请'],
-                ['public', '公开入口'],
-              ].map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={`oc-btn ${accessMode === value ? 'oc-btn-primary' : 'oc-btn-default'}`}
-                  style={{ padding: '9px 0', borderRadius: 8 }}
-                  onClick={() => setAccessMode(value)}
-                >
-                  {label}
-                </button>
-              ))}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
+              <button
+                type="button"
+                className="oc-btn oc-btn-primary"
+                style={{ padding: '9px 0', borderRadius: 8 }}
+                onClick={() => setAccessMode('approval_required')}
+              >
+                好友申请
+              </button>
             </div>
             <div style={{ color: 'var(--v3-text-muted)', fontSize: 12, lineHeight: 1.6, marginTop: 8 }}>
-              {accessMode === 'approval_required'
-                ? '扫码后先发送好友申请，通过后才能对话。'
-                : '扫码后可直接与该虚拟员工对话。'}
+              {channel === 'feishu'
+                ? '用户用飞书扫码后会打开该虚拟员工的飞书应用或机器人入口；首次进入会提交好友申请，通过后可直接在飞书对话。需要账号或设备授权时，再按提示完成绑定。'
+                : '扫码后需要登录 CatsCo 并发送好友申请，通过后才能对话；设备操作只会使用申请人自己授权的设备。'}
             </div>
             {selected && selected.access_mode !== accessMode && (
               <button
@@ -728,6 +755,45 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
                 </button>
               </div>
             </div>
+          ) : selected && needsFeishuNativeConfig ? (
+              <div style={{ padding: 24, border: '1px dashed var(--v3-border)', borderRadius: 8 }}>
+              <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, marginBottom: 10 }}>飞书原生入口尚未配置</div>
+              <div style={{ color: 'var(--v3-text-muted)', fontSize: 13, lineHeight: 1.7, marginBottom: 14 }}>
+                飞书扫码入口必须先打开飞书原生应用或机器人入口，并把 scene 带回 CatsCo 登录/申请流程。当前配置没有闭环，因此不会生成可投放二维码。
+              </div>
+              {feishuEntryReasons.length > 0 && (
+                <div style={{ display: 'grid', gap: 6, marginBottom: 14 }}>
+                  {feishuEntryReasons.map((reason, index) => (
+                    <div key={`${reason}-${index}`} style={{ background: 'rgba(250,81,81,0.1)', color: '#fca5a5', border: '1px solid rgba(250,81,81,0.18)', borderRadius: 8, padding: '8px 10px', fontSize: 12, lineHeight: 1.45 }}>
+                      {reason}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10, color: 'var(--v3-text-main)', fontSize: 12, lineHeight: 1.6, marginBottom: 14 }}>
+                必填环境变量：CATSCO_FEISHU_APP_ID、CATSCO_FEISHU_APP_SECRET、CATSCO_FEISHU_ENTRY_URL_TEMPLATE<br />
+                模板建议把飞书原生入口最终指向 {'{landing_url_encoded}'}；也可以使用 {'{oauth_url_encoded}'} 或 {'{scene_key}'}。
+              </div>
+              {feishuEntryStatus?.oauth_callback_url && (
+                <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10, color: 'var(--v3-text-muted)', fontSize: 12, lineHeight: 1.6, marginBottom: 14, wordBreak: 'break-all' }}>
+                  飞书 OAuth 回调：{feishuEntryStatus.oauth_callback_url}<br />
+                  飞书事件回调：{feishuEntryStatus.events_callback_url || '/api/channels/feishu/events'}
+                </div>
+              )}
+              {feishuOAuthUrl && (
+                <div style={{ background: 'rgba(59,130,246,0.12)', color: '#93c5fd', padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
+                  OAuth 辅助链接可以用于调试身份绑定，但它不是飞书原生入口；请不要把它作为正式投放二维码。
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '9px 0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={() => onCopy(`feishu_oauth_${selected.id}`, feishuOAuthUrl)} disabled={!feishuOAuthUrl}>
+                  <Copy size={14} /> {copiedField === `feishu_oauth_${selected.id}` ? 'Copied!' : '复制 OAuth 辅助链接'}
+                </button>
+                <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '9px 0', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }} onClick={handleRegenerate} disabled={saving}>
+                  <RefreshCw size={14} /> 重新生成
+                </button>
+              </div>
+            </div>
           ) : selected ? (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: '196px 1fr', gap: 18, alignItems: 'center' }}>
@@ -741,11 +807,11 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
                     style={{ borderRadius: 8, background: '#fff', border: '1px solid var(--v3-border)', objectFit: 'contain' }}
                   />
                 ) : (
-                  <QRCode value={entryUrl} size={196} />
+                  <QRCode value={displayUrl} size={205} />
                 )}
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 8 }}>
-                    {displayQrUrl ? '二维码图片跳转地址' : '入口链接'}
+                    {qrKind === 'feishu_native_entry' ? '飞书应用入口码' : displayQrUrl ? '微信公众号参数二维码' : '网页入口链接'}
                   </div>
                   <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10, color: 'var(--v3-text-main)', fontSize: 12, lineHeight: 1.5, wordBreak: 'break-all', marginBottom: 14 }}>
                     {displayUrl}
@@ -753,6 +819,16 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
                   {channel === 'weixin' && qrImageError && (
                     <div style={{ background: 'rgba(250,81,81,0.1)', color: '#FA5151', padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
                       微信二维码加载失败，请检查 AppID/AppSecret、公众号接口权限、服务器 IP 白名单和微信后台消息加解密模式。
+                    </div>
+                  )}
+                  {channel === 'feishu' && qrKind === 'feishu_native_entry' && (
+                    <div style={{ background: 'rgba(59,130,246,0.12)', color: '#93c5fd', padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
+                      这个短链会跳转到已配置的飞书原生入口。用户扫码后需要完成 CatsCo 登录/好友申请；通过后才能在飞书聊天，设备操作只会使用申请人自己授权的设备。
+                    </div>
+                  )}
+                  {channel === 'feishu' && qrKind === 'feishu_native_entry' && feishuEntryStatus?.native_url && (
+                    <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10, color: 'var(--v3-text-muted)', fontSize: 12, lineHeight: 1.5, wordBreak: 'break-all', marginBottom: 14 }}>
+                      飞书原生入口：{feishuEntryStatus.native_url}
                     </div>
                   )}
                   {usesLocalEntryUrl && (
@@ -773,14 +849,25 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
               {selected.access_mode === 'approval_required' && (
                 <div style={{ marginTop: 18, borderTop: '1px solid var(--v3-border)', paddingTop: 16 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                    <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, fontSize: 13 }}>待通过好友申请</div>
+                    <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, fontSize: 13 }}>访问管理</div>
                     <button type="button" className="oc-btn oc-btn-default" style={{ padding: '5px 9px', borderRadius: 8, fontSize: 12 }} onClick={loadPendingRequests} disabled={pendingLoading}>
                       {pendingLoading ? '刷新中' : '刷新'}
                     </button>
                   </div>
-                  {pendingRequests.length === 0 ? (
-                    <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>暂无新的扫码申请。</div>
-                  ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 10 }}>
+                    {accessTabs.map(([value, label, count]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        className={`oc-btn ${accessTab === value ? 'oc-btn-primary' : 'oc-btn-default'}`}
+                        style={{ padding: '7px 0', borderRadius: 8, fontSize: 12 }}
+                        onClick={() => setAccessTab(value)}
+                      >
+                        {label}{count ? ` ${count}` : ''}
+                      </button>
+                    ))}
+                  </div>
+                  {accessTab === 'pending' && (pendingRequests.length > 0 || bindingsByStatus.pending.length > 0) ? (
                     <div style={{ display: 'grid', gap: 8 }}>
                       {pendingRequests.map((request) => (
                         <div key={`${request.from_user_id}-${request.created_at || ''}`} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', alignItems: 'center', gap: 8, border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10 }}>
@@ -798,7 +885,24 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
                           </button>
                         </div>
                       ))}
+                      {bindingsByStatus.pending.map((item) => (
+                        <BindingStatusRow key={`pending-${item.binding?.id}`} item={item} note="已绑定 CatsCo，等待好友申请通过" />
+                      ))}
                     </div>
+                  ) : accessTab === 'pending' ? (
+                    <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>暂无待处理申请。</div>
+                  ) : bindingsByStatus[accessTab]?.length ? (
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      {bindingsByStatus[accessTab].map((item) => (
+                        <BindingStatusRow
+                          key={`${accessTab}-${item.binding?.id}`}
+                          item={item}
+                          note={accessTab === 'approved' ? '已通过，可从对应渠道对话' : accessTab === 'rejected' ? '已拒绝，不能继续对话' : '已扫码，等待登录 CatsCo'}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>暂无记录。</div>
                   )}
                 </div>
               )}
@@ -812,6 +916,28 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function BindingStatusRow({ item, note }) {
+  const binding = item?.binding || {};
+  const user = item?.user || {};
+  const name = user.display_name || user.username || binding.channel_user_id || `绑定 ${binding.id || ''}`;
+  const channel = binding.channel === 'feishu' ? '飞书' : binding.channel === 'weixin' ? '微信' : binding.channel || '渠道';
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'center', gap: 8, border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10 }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {name}
+        </div>
+        <div style={{ color: 'var(--v3-text-muted)', fontSize: 12, lineHeight: 1.5 }}>
+          {channel} · {note}
+        </div>
+      </div>
+      <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>
+        {item?.status || binding.status || ''}
       </div>
     </div>
   );

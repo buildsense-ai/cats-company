@@ -408,10 +408,6 @@ function TinodeWebApp() {
     }
   };
 
-  if (entrySceneKey) {
-    return <AgentEntryBindView sceneKey={entrySceneKey} />;
-  }
-
   if (channelDeviceLink && user) {
     const params = new URLSearchParams(window.location.search);
     return (
@@ -425,6 +421,10 @@ function TinodeWebApp() {
 
   if (!user) {
     return <AuthView mode={authMode} setMode={setAuthMode} onLogin={handleLogin} onRegister={handleRegister} />;
+  }
+
+  if (entrySceneKey) {
+    return <AgentEntryBindView sceneKey={entrySceneKey} />;
   }
 
   return (

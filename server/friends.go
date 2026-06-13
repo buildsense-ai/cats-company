@@ -97,6 +97,10 @@ func (h *FriendHandler) HandleAcceptRequest(w http.ResponseWriter, r *http.Reque
 	}
 	if user, err := h.db.GetUser(targetUID); err == nil && user != nil && user.AccountType == types.AccountBot {
 		if bindings, ok := h.db.(store.ChannelAgentBindingStore); ok {
+			if _, err := bindings.ActivateChannelAgentBindingsForCanonicalUser(req.UserID, targetUID, uid); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to activate channel binding"})
+				return
+			}
 			if _, err := bindings.ApproveChannelAgentAccessRequestsForActor(req.UserID, targetUID, uid); err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to activate channel access"})
 				return
@@ -134,6 +138,10 @@ func (h *FriendHandler) HandleRejectRequest(w http.ResponseWriter, r *http.Reque
 	}
 	if user, err := h.db.GetUser(targetUID); err == nil && user != nil && user.AccountType == types.AccountBot {
 		if bindings, ok := h.db.(store.ChannelAgentBindingStore); ok {
+			if err := bindings.RejectChannelAgentBindingsForCanonicalUser(req.UserID, targetUID, uid); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to reject channel binding"})
+				return
+			}
 			if err := bindings.RejectChannelAgentAccessRequestsForActor(req.UserID, targetUID, uid); err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to reject channel access"})
 				return

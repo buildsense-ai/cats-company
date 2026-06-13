@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -61,8 +62,30 @@ type channelAgentLinkTokenPayload struct {
 
 type channelAgentEntryResponse struct {
 	*types.ChannelAgentEntry
-	EntryURL     string `json:"entry_url"`
-	ChannelQRURL string `json:"channel_qr_url,omitempty"`
+	EntryURL          string                   `json:"entry_url"`
+	ChannelQRURL      string                   `json:"channel_qr_url,omitempty"`
+	FeishuOAuthURL    string                   `json:"feishu_oauth_url,omitempty"`
+	FeishuEntryStatus *feishuEntryConfigStatus `json:"feishu_entry_status,omitempty"`
+	QRValue           string                   `json:"qr_value,omitempty"`
+	QRKind            string                   `json:"qr_kind,omitempty"`
+}
+
+type feishuEntryConfigStatus struct {
+	Ready                      bool     `json:"ready"`
+	Status                     string   `json:"status"`
+	Reasons                    []string `json:"reasons,omitempty"`
+	AppIDConfigured            bool     `json:"app_id_configured"`
+	AppSecretConfigured        bool     `json:"app_secret_configured"`
+	EntryAppIDMatches          bool     `json:"entry_app_id_matches"`
+	NativeTemplateConfigured   bool     `json:"native_template_configured"`
+	NativeTemplateCarriesScene bool     `json:"native_template_carries_scene"`
+	NativeURLValid             bool     `json:"native_url_valid"`
+	NativeShortURL             string   `json:"native_short_url,omitempty"`
+	NativeURL                  string   `json:"native_url,omitempty"`
+	LandingURL                 string   `json:"landing_url,omitempty"`
+	OAuthURL                   string   `json:"oauth_url,omitempty"`
+	OAuthCallbackURL           string   `json:"oauth_callback_url,omitempty"`
+	EventsCallbackURL          string   `json:"events_callback_url,omitempty"`
 }
 
 // HandleAgentEntries handles authenticated owner entry management.
@@ -262,6 +285,19 @@ func (h *ChannelAgentBindingHandler) HandleConfirmChannelAgentBinding(w http.Res
 		})
 		return
 	}
+	if channelBindingRejected(binding) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":  "rejected",
+			"binding": binding,
+			"agent": map[string]interface{}{
+				"uid":          agent.ID,
+				"username":     agent.Username,
+				"display_name": displayNameOrUsername(agent.DisplayName, agent.Username),
+				"is_online":    h.hub != nil && h.hub.IsOnline(agent.ID),
+			},
+		})
+		return
+	}
 	if pending, err := channelBindingPendingFriendApproval(h.db, binding); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check channel access"})
 		return
@@ -351,6 +387,17 @@ func (h *ChannelAgentBindingHandler) HandleResolveChannelAgentBinding(w http.Res
 		})
 		return
 	}
+	if channelBindingRejected(binding) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"bound":         false,
+			"status":        "rejected",
+			"binding":       binding,
+			"agent_uid":     binding.AgentUID,
+			"owner_uid":     binding.OwnerUID,
+			"canonical_uid": binding.CanonicalUID,
+		})
+		return
+	}
 	if pending, err := channelBindingPendingFriendApproval(h.db, binding); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check channel access"})
 		return
@@ -434,6 +481,18 @@ func (h *ChannelAgentBindingHandler) HandleLinkChannelAgentBindingUser(w http.Re
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "binding not found or expired"})
 		return
 	}
+	if channelBindingRejected(binding) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":           "rejected",
+			"binding":          binding,
+			"actor_uid":        binding.ActorUID,
+			"agent_uid":        binding.AgentUID,
+			"canonical_uid":    binding.CanonicalUID,
+			"device_owner_uid": binding.CanonicalUID,
+			"device_linked":    false,
+		})
+		return
+	}
 	status := "linked"
 	if pending, err := channelBindingPendingFriendApproval(h.db, binding); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check channel access"})
@@ -443,7 +502,38 @@ func (h *ChannelAgentBindingHandler) HandleLinkChannelAgentBindingUser(w http.Re
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to request virtual employee access"})
 			return
 		}
+		if updater, ok := h.db.(store.ChannelAgentBindingStore); ok {
+			if refreshed, err := updater.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+				Channel:                 binding.Channel,
+				ChannelAppID:            binding.ChannelAppID,
+				ChannelUserID:           binding.ChannelUserID,
+				ChannelConversationID:   binding.ChannelConversationID,
+				ChannelConversationType: binding.ChannelConversationType,
+				ActorUID:                binding.ActorUID,
+				CanonicalUID:            binding.CanonicalUID,
+				OwnerUID:                binding.OwnerUID,
+				AgentUID:                binding.AgentUID,
+				EntryID:                 binding.EntryID,
+				Status:                  types.ChannelAgentBindingPendingApproval,
+			}); err == nil && refreshed != nil {
+				binding = refreshed
+			}
+		}
 		status = "pending_approval"
+	} else if activator, ok := h.db.(store.ChannelAgentBindingStore); ok {
+		if _, err := activator.ActivateChannelAgentBindingsForCanonicalUser(canonicalUID, binding.AgentUID, canonicalUID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to activate channel access"})
+			return
+		}
+		if refreshed, err := activator.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
+			Channel:                 binding.Channel,
+			ChannelAppID:            binding.ChannelAppID,
+			ChannelUserID:           binding.ChannelUserID,
+			ChannelConversationID:   binding.ChannelConversationID,
+			ChannelConversationType: binding.ChannelConversationType,
+		}); err == nil && refreshed != nil {
+			binding = refreshed
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":           status,
@@ -483,6 +573,55 @@ func (h *ChannelAgentBindingHandler) handleListAgentEntries(w http.ResponseWrite
 	writeJSON(w, http.StatusOK, map[string]interface{}{"entries": resp})
 }
 
+func (h *ChannelAgentBindingHandler) HandleListAgentChannelBindings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	bindings, ok := h.bindingStore(w)
+	if !ok {
+		return
+	}
+	uid := UIDFromContext(r.Context())
+	agentUID, err := strconv.ParseInt(r.URL.Query().Get("agent_uid"), 10, 64)
+	if err != nil || agentUID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid agent_uid"})
+		return
+	}
+	if _, status, err := h.requireAgentOwner(uid, agentUID); err != nil {
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	rows, err := bindings.ListChannelAgentBindingsForAgent(uid, agentUID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list channel bindings"})
+		return
+	}
+	items := make([]map[string]interface{}, 0, len(rows))
+	for _, binding := range rows {
+		item := map[string]interface{}{
+			"binding":       binding,
+			"status":        channelBindingManagementStatus(binding),
+			"channel":       binding.Channel,
+			"channel_user":  binding.ChannelUserID,
+			"canonical_uid": binding.CanonicalUID,
+			"updated_at":    binding.UpdatedAt,
+		}
+		if binding.CanonicalUID > 0 {
+			if user, err := h.db.GetUser(binding.CanonicalUID); err == nil && user != nil {
+				item["user"] = map[string]interface{}{
+					"uid":          user.ID,
+					"username":     user.Username,
+					"display_name": displayNameOrUsername(user.DisplayName, user.Username),
+					"avatar_url":   user.AvatarURL,
+				}
+			}
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"bindings": items})
+}
+
 func (h *ChannelAgentBindingHandler) handleCreateAgentEntry(w http.ResponseWriter, r *http.Request) {
 	bindings, ok := h.bindingStore(w)
 	if !ok {
@@ -517,6 +656,24 @@ func (h *ChannelAgentBindingHandler) handleCreateAgentEntry(w http.ResponseWrite
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"entry": h.entryResponse(r, entry)})
+}
+
+func channelBindingManagementStatus(binding *types.ChannelAgentBinding) string {
+	if binding == nil {
+		return ""
+	}
+	switch binding.Status {
+	case types.ChannelAgentBindingActive:
+		return "approved"
+	case types.ChannelAgentBindingPendingApproval:
+		return "pending"
+	case types.ChannelAgentBindingPendingLogin:
+		return "needs_login"
+	case types.ChannelAgentBindingRejected:
+		return "rejected"
+	default:
+		return binding.Status
+	}
 }
 
 func (h *ChannelAgentBindingHandler) ensureChannelActor(channel, appID, channelUserID string) (int64, error) {
@@ -583,11 +740,204 @@ func (h *ChannelAgentBindingHandler) entryResponse(r *http.Request, entry *types
 	resp := channelAgentEntryResponse{
 		ChannelAgentEntry: entry,
 		EntryURL:          entryURL(r, entry.SceneKey),
+		QRValue:           entryURL(r, entry.SceneKey),
+		QRKind:            "web_entry",
 	}
 	if entry != nil && entry.Channel == "weixin" && weixinQRCodeConfiguredFromEnv() && entry.ChannelAppID == configuredWeixinAppID() {
 		resp.ChannelQRURL = publicBaseURL(r) + weixinQRCodePath(entry.SceneKey)
+		resp.QRValue = resp.ChannelQRURL
+		resp.QRKind = "weixin_official_qr"
+	}
+	if entry != nil && entry.Channel == "feishu" {
+		resp.QRValue = ""
+		resp.QRKind = "feishu_native_unconfigured"
+		feishuStatus := buildFeishuEntryConfigStatus(r, entry)
+		resp.FeishuEntryStatus = feishuStatus
+		appID := configuredFeishuAppID()
+		resp.FeishuOAuthURL = feishuOAuthStartURL(r, entry.SceneKey)
+		if feishuStatus.Ready {
+			resp.ChannelQRURL = feishuStatus.NativeShortURL
+			resp.QRValue = resp.ChannelQRURL
+			resp.QRKind = "feishu_native_entry"
+		}
+		if appID == "" {
+			resp.FeishuOAuthURL = ""
+		}
 	}
 	return resp
+}
+
+func configuredFeishuAppID() string {
+	return strings.TrimSpace(firstEnv("CATSCO_FEISHU_APP_ID", "FEISHU_APP_ID"))
+}
+
+func configuredFeishuAppSecret() string {
+	return strings.TrimSpace(firstEnv("CATSCO_FEISHU_APP_SECRET", "FEISHU_APP_SECRET"))
+}
+
+func configuredFeishuEventVerificationToken() string {
+	return strings.TrimSpace(firstEnv("CATSCO_FEISHU_EVENT_VERIFICATION_TOKEN", "FEISHU_EVENT_VERIFICATION_TOKEN"))
+}
+
+func configuredFeishuEntryURLTemplate() string {
+	return strings.TrimSpace(firstEnv(
+		"CATSCO_FEISHU_ENTRY_URL_TEMPLATE",
+		"CATSCO_FEISHU_NATIVE_ENTRY_URL_TEMPLATE",
+		"FEISHU_ENTRY_URL_TEMPLATE",
+	))
+}
+
+func buildFeishuEntryConfigStatus(r *http.Request, entry *types.ChannelAgentEntry) *feishuEntryConfigStatus {
+	status := &feishuEntryConfigStatus{
+		Status:                   "unconfigured",
+		LandingURL:               entryURL(r, safeEntrySceneKey(entry)),
+		OAuthURL:                 feishuOAuthStartURL(r, safeEntrySceneKey(entry)),
+		OAuthCallbackURL:         publicBaseURL(r) + "/api/channel-agent-bindings/oauth/feishu/callback",
+		EventsCallbackURL:        publicBaseURL(r) + "/api/channels/feishu/events",
+		NativeTemplateConfigured: configuredFeishuEntryURLTemplate() != "",
+	}
+	if entry == nil {
+		status.Reasons = append(status.Reasons, "入口不存在")
+		return status
+	}
+	appID := configuredFeishuAppID()
+	status.AppIDConfigured = appID != ""
+	status.AppSecretConfigured = configuredFeishuAppSecret() != ""
+	status.EntryAppIDMatches = feishuEntryMatchesAppID(entry, appID)
+	status.NativeTemplateCarriesScene = feishuEntryTemplateCarriesScene(configuredFeishuEntryURLTemplate())
+	if appID == "" {
+		status.Status = "missing_app_id"
+		status.Reasons = append(status.Reasons, "缺少 CATSCO_FEISHU_APP_ID")
+	}
+	if !status.AppSecretConfigured {
+		if status.Status == "unconfigured" {
+			status.Status = "missing_app_secret"
+		}
+		status.Reasons = append(status.Reasons, "缺少 CATSCO_FEISHU_APP_SECRET，飞书 OAuth 无法确认用户身份")
+	}
+	if !status.EntryAppIDMatches {
+		if status.Status == "unconfigured" {
+			status.Status = "app_mismatch"
+		}
+		status.Reasons = append(status.Reasons, "入口所属飞书 AppID 与当前服务配置不一致，请重新生成飞书入口码")
+	}
+	if !status.NativeTemplateConfigured {
+		if status.Status == "unconfigured" {
+			status.Status = "missing_native_template"
+		}
+		status.Reasons = append(status.Reasons, "缺少 CATSCO_FEISHU_ENTRY_URL_TEMPLATE，无法生成飞书原生应用入口")
+	}
+	if status.NativeTemplateConfigured && !status.NativeTemplateCarriesScene {
+		if status.Status == "unconfigured" {
+			status.Status = "native_template_missing_scene"
+		}
+		status.Reasons = append(status.Reasons, "飞书原生入口模板必须包含 {landing_url_encoded}、{oauth_url_encoded} 或 {scene_key}，否则扫码后无法知道要添加哪个虚拟员工")
+	}
+	if isProductionLikeEnv() && configuredFeishuEventVerificationToken() == "" {
+		if status.Status == "unconfigured" {
+			status.Status = "missing_event_token"
+		}
+		status.Reasons = append(status.Reasons, "生产环境缺少 CATSCO_FEISHU_EVENT_VERIFICATION_TOKEN，飞书消息回调应 fail-closed")
+	}
+	nativeURL := feishuNativeEntryURL(r, entry)
+	status.NativeURL = nativeURL
+	status.NativeURLValid = nativeURL == "" || isUsableRedirectURL(nativeURL)
+	if nativeURL != "" && !status.NativeURLValid {
+		if status.Status == "unconfigured" {
+			status.Status = "invalid_native_url"
+		}
+		status.Reasons = append(status.Reasons, "CATSCO_FEISHU_ENTRY_URL_TEMPLATE 渲染后不是有效入口 URL")
+	}
+	if len(status.Reasons) == 0 {
+		status.Ready = true
+		status.Status = "ready"
+		status.NativeShortURL = feishuNativeEntryShortURL(r, entry.SceneKey)
+	}
+	return status
+}
+
+func feishuEntryMatchesAppID(entry *types.ChannelAgentEntry, appID string) bool {
+	if entry == nil {
+		return false
+	}
+	return strings.TrimSpace(entry.ChannelAppID) != "" && strings.TrimSpace(entry.ChannelAppID) == strings.TrimSpace(appID)
+}
+
+func safeEntrySceneKey(entry *types.ChannelAgentEntry) string {
+	if entry == nil {
+		return ""
+	}
+	return entry.SceneKey
+}
+
+func feishuNativeEntryURL(r *http.Request, entry *types.ChannelAgentEntry) string {
+	template := configuredFeishuEntryURLTemplate()
+	if template == "" || entry == nil {
+		return ""
+	}
+	entryURLValue := entryURL(r, entry.SceneKey)
+	oauthURLValue := feishuOAuthStartURL(r, entry.SceneKey)
+	shortURLValue := feishuNativeEntryShortURL(r, entry.SceneKey)
+	appID := strings.TrimSpace(entry.ChannelAppID)
+	if appID == "" {
+		appID = configuredFeishuAppID()
+	}
+	replacer := strings.NewReplacer(
+		"{scene_key}", entry.SceneKey,
+		"{scene_key_encoded}", url.QueryEscape(entry.SceneKey),
+		"{app_id}", appID,
+		"{app_id_encoded}", url.QueryEscape(appID),
+		"{agent_uid}", strconv.FormatInt(entry.AgentUID, 10),
+		"{owner_uid}", strconv.FormatInt(entry.OwnerUID, 10),
+		"{entry_url}", entryURLValue,
+		"{entry_url_encoded}", url.QueryEscape(entryURLValue),
+		"{landing_url}", entryURLValue,
+		"{landing_url_encoded}", url.QueryEscape(entryURLValue),
+		"{oauth_url}", oauthURLValue,
+		"{oauth_url_encoded}", url.QueryEscape(oauthURLValue),
+		"{native_short_url}", shortURLValue,
+		"{native_short_url_encoded}", url.QueryEscape(shortURLValue),
+	)
+	return strings.TrimSpace(replacer.Replace(template))
+}
+
+func feishuEntryTemplateCarriesScene(template string) bool {
+	template = strings.TrimSpace(template)
+	if template == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"{scene_key}",
+		"{scene_key_encoded}",
+		"{entry_url}",
+		"{entry_url_encoded}",
+		"{landing_url}",
+		"{landing_url_encoded}",
+		"{oauth_url}",
+		"{oauth_url_encoded}",
+	} {
+		if strings.Contains(template, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isUsableRedirectURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed == nil || parsed.Scheme == "" {
+		return false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "https", "http", "lark", "feishu":
+		return true
+	default:
+		return false
+	}
+}
+
+func feishuNativeEntryShortURL(r *http.Request, sceneKey string) string {
+	return publicBaseURL(r) + "/api/fn/" + url.PathEscape(sceneKey)
 }
 
 func configuredWeixinAppID() string {
@@ -647,8 +997,23 @@ func bindOrRequestChannelAgentAccess(
 	if err != nil {
 		return nil, nil, err
 	}
-	if binding != nil {
+	if channelBindingTargetsEntry(binding, entry) {
 		return binding, nil, nil
+	}
+	status := types.ChannelAgentBindingPendingLogin
+	canonicalUID := int64(0)
+	if binding != nil && binding.CanonicalUID > 0 {
+		canonicalUID = binding.CanonicalUID
+		nextStatus, createFriendRequest, err := channelBindingStatusForCanonicalUser(db, canonicalUID, entry.AgentUID)
+		if err != nil {
+			return nil, nil, err
+		}
+		status = nextStatus
+		if createFriendRequest {
+			if _, err := db.CreateFriendRequest(canonicalUID, entry.AgentUID, channelAgentAccessFriendMessage(channel)); err != nil {
+				return nil, nil, err
+			}
+		}
 	}
 	binding, err = bindings.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:                 channel,
@@ -657,12 +1022,53 @@ func bindOrRequestChannelAgentAccess(
 		ChannelConversationID:   conversationID,
 		ChannelConversationType: conversationType,
 		ActorUID:                actorUID,
+		CanonicalUID:            canonicalUID,
 		OwnerUID:                entry.OwnerUID,
 		AgentUID:                entry.AgentUID,
 		EntryID:                 entry.ID,
-		Status:                  "active",
+		Status:                  status,
 	})
 	return binding, nil, err
+}
+
+func channelBindingTargetsEntry(binding *types.ChannelAgentBinding, entry *types.ChannelAgentEntry) bool {
+	if binding == nil || entry == nil {
+		return false
+	}
+	if binding.AgentUID != entry.AgentUID || binding.OwnerUID != entry.OwnerUID {
+		return false
+	}
+	if entry.ID > 0 && binding.EntryID > 0 && binding.EntryID != entry.ID {
+		return false
+	}
+	if entry.Channel != "" && normalizeChannel(binding.Channel) != normalizeChannel(entry.Channel) {
+		return false
+	}
+	if strings.TrimSpace(entry.ChannelAppID) != "" && strings.TrimSpace(binding.ChannelAppID) != strings.TrimSpace(entry.ChannelAppID) {
+		return false
+	}
+	return true
+}
+
+func channelBindingStatusForCanonicalUser(db store.Store, canonicalUID, agentUID int64) (string, bool, error) {
+	if db == nil || canonicalUID <= 0 || agentUID <= 0 {
+		return types.ChannelAgentBindingPendingLogin, false, nil
+	}
+	ownerUID, err := db.GetBotOwner(agentUID)
+	if err != nil {
+		return "", false, err
+	}
+	if ownerUID == canonicalUID {
+		return types.ChannelAgentBindingActive, false, nil
+	}
+	allowed, err := db.AreFriends(canonicalUID, agentUID)
+	if err != nil {
+		return "", false, err
+	}
+	if allowed {
+		return types.ChannelAgentBindingActive, false, nil
+	}
+	return types.ChannelAgentBindingPendingApproval, true, nil
 }
 
 func channelAgentAccessFriendMessage(channel string) string {
@@ -755,7 +1161,61 @@ func channelBindingDeviceLinkGuidance(r *http.Request, binding *types.ChannelAge
 }
 
 func channelBindingNeedsCatsCoLogin(binding *types.ChannelAgentBinding) bool {
-	return binding != nil && binding.CanonicalUID <= 0
+	return binding != nil && (binding.CanonicalUID <= 0 || binding.Status == types.ChannelAgentBindingPendingLogin)
+}
+
+func channelBindingRejected(binding *types.ChannelAgentBinding) bool {
+	return binding != nil && binding.Status == types.ChannelAgentBindingRejected
+}
+
+func resolveDeliverableChannelBinding(db store.Store, actorUID, agentUID int64) (*types.ChannelAgentBinding, error) {
+	if db == nil || actorUID <= 0 || agentUID <= 0 {
+		return nil, errors.New("invalid channel binding scope")
+	}
+	bindings, ok := db.(store.ChannelAgentBindingStore)
+	if !ok {
+		return nil, errors.New("channel binding store not configured")
+	}
+	binding, err := bindings.ResolveChannelAgentBindingForActorAny(actorUID, agentUID)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateDeliverableChannelBinding(db, binding); err != nil {
+		return nil, err
+	}
+	return binding, nil
+}
+
+func validateDeliverableChannelBinding(db store.Store, binding *types.ChannelAgentBinding) error {
+	if db == nil || binding == nil {
+		return errors.New("channel binding not approved")
+	}
+	if binding.Status != types.ChannelAgentBindingActive {
+		return fmt.Errorf("channel binding is %s", binding.Status)
+	}
+	if binding.CanonicalUID <= 0 {
+		return errors.New("channel binding is not linked to a CatsCo user")
+	}
+	canonical, err := db.GetUser(binding.CanonicalUID)
+	if err != nil {
+		return err
+	}
+	if canonical == nil || canonical.AccountType != types.AccountHuman || canonical.State != 0 {
+		return errors.New("channel binding user is not an active human account")
+	}
+	if ownerUID, err := db.GetBotOwner(binding.AgentUID); err == nil && ownerUID == binding.CanonicalUID {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	allowed, err := db.AreFriends(binding.CanonicalUID, binding.AgentUID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return errors.New("channel binding is waiting for virtual employee approval")
+	}
+	return nil
 }
 
 func channelBindingPendingFriendApproval(db store.Store, binding *types.ChannelAgentBinding) (bool, error) {
@@ -770,6 +1230,9 @@ func channelBindingPendingFriendApproval(db store.Store, binding *types.ChannelA
 	allowed, err := db.AreFriends(binding.CanonicalUID, binding.AgentUID)
 	if err != nil {
 		return false, err
+	}
+	if allowed {
+		return false, nil
 	}
 	return !allowed, nil
 }

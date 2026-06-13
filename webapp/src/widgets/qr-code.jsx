@@ -2,11 +2,13 @@ import React, { useMemo } from 'react';
 
 const VERSION = 4;
 const SIZE = 17 + VERSION * 4;
+const QUIET_ZONE = 4;
+const VIEWBOX_SIZE = SIZE + QUIET_ZONE * 2;
 const DATA_CODEWORDS = 80;
 const EC_CODEWORDS = 20;
 const MAX_BYTES = 78;
 
-export default function QRCode({ value, size = 196 }) {
+export default function QRCode({ value, size = 205 }) {
   const matrix = useMemo(() => {
     try {
       return createQRCodeMatrix(value || '');
@@ -24,13 +26,13 @@ export default function QRCode({ value, size = 196 }) {
   }
 
   const path = matrix
-    .map((row, r) => row.map((dark, c) => (dark ? `M${c},${r}h1v1h-1z` : '')).join(''))
+    .map((row, r) => row.map((dark, c) => (dark ? `M${c + QUIET_ZONE},${r + QUIET_ZONE}h1v1h-1z` : '')).join(''))
     .join('');
 
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${SIZE} ${SIZE}`} role="img" aria-label="QR code" style={{ background: '#fff', borderRadius: 8 }}>
-      <rect width={SIZE} height={SIZE} fill="#fff" />
-      <path d={path} fill="#111" />
+    <svg width={size} height={size} viewBox={`0 0 ${VIEWBOX_SIZE} ${VIEWBOX_SIZE}`} role="img" aria-label="QR code" shapeRendering="crispEdges" style={{ background: '#fff', borderRadius: 8 }}>
+      <rect width={VIEWBOX_SIZE} height={VIEWBOX_SIZE} fill="#fff" />
+      <path d={path} fill="#111" shapeRendering="crispEdges" />
     </svg>
   );
 }
@@ -118,16 +120,17 @@ function gfMultiply(a, b) {
 }
 
 function reedSolomonGenerator(degree) {
-  let poly = [1];
+  const poly = new Array(degree).fill(0);
+  poly[degree - 1] = 1;
+  let root = 1;
   for (let i = 0; i < degree; i++) {
-    const next = new Array(poly.length + 1).fill(0);
     for (let j = 0; j < poly.length; j++) {
-      next[j] ^= gfMultiply(poly[j], EXP[i]);
-      next[j + 1] ^= poly[j];
+      poly[j] = gfMultiply(poly[j], root);
+      if (j + 1 < poly.length) poly[j] ^= poly[j + 1];
     }
-    poly = next;
+    root = gfMultiply(root, 2);
   }
-  return poly.slice(1);
+  return poly;
 }
 
 function reedSolomonRemainder(data, degree) {
@@ -184,8 +187,8 @@ function reserveFormat(reserved) {
   reserved[7][8] = true;
   reserved[8][7] = true;
   reserved[8][8] = true;
-  for (let i = 0; i < 8; i++) reserved[SIZE - 1 - i][8] = true;
-  for (let i = 0; i < 7; i++) reserved[8][SIZE - 1 - i] = true;
+  for (let i = 0; i < 7; i++) reserved[SIZE - 1 - i][8] = true;
+  for (let i = 0; i < 8; i++) reserved[8][SIZE - 1 - i] = true;
 }
 
 function placeData(modules, reserved, bits) {
@@ -217,15 +220,19 @@ function writeFormat(modules, reserved, maskId) {
     modules[row][col] = dark;
     reserved[row][col] = true;
   };
+
   for (let i = 0; i < 15; i++) {
     const dark = ((format >>> i) & 1) === 1;
     if (i < 6) set(i, 8, dark);
-    else if (i < 8) set(i + 1, 8, dark);
+    else if (i === 6) set(7, 8, dark);
+    else if (i === 7) set(8, 8, dark);
+    else if (i === 8) set(8, 7, dark);
     else set(8, 14 - i, dark);
 
-    if (i < 8) set(SIZE - 1 - i, 8, dark);
-    else set(8, SIZE - 15 + i, dark);
+    if (i < 8) set(8, SIZE - 1 - i, dark);
+    else set(SIZE - 15 + i, 8, dark);
   }
+  set(SIZE - 8, 8, true);
 }
 
 function formatBits(maskId) {

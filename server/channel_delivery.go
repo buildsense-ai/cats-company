@@ -13,6 +13,9 @@ func deliverInboundChannelTextToAgent(db store.Store, hub *Hub, actorUID, agentU
 	if actorUID <= 0 || agentUID <= 0 {
 		return errors.New("invalid actor or agent")
 	}
+	if _, err := resolveDeliverableChannelBinding(db, actorUID, agentUID); err != nil {
+		return err
+	}
 	agent, err := db.GetUser(agentUID)
 	if err != nil || agent == nil || agent.AccountType != types.AccountBot || agent.State != 0 {
 		return errors.New("agent unavailable")

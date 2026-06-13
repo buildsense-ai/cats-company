@@ -243,6 +243,9 @@ func TestWeixinApprovedPrivateBindingProvidesDeviceLinkOnRequest(t *testing.T) {
 	if err := db.AcceptFriendRequest(9, 43); err != nil {
 		t.Fatalf("accept friend: %v", err)
 	}
+	if _, err := db.ActivateChannelAgentBindingsForCanonicalUser(9, 43, 7); err != nil {
+		t.Fatalf("activate binding: %v", err)
+	}
 
 	textBody := `<xml><ToUserName><![CDATA[gh_app]]></ToUserName><FromUserName><![CDATA[openid-private]]></FromUserName><CreateTime>2</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[查一下合同进度]]></Content><MsgId>msg-1</MsgId></xml>`
 	textReq := httptest.NewRequest(http.MethodPost, "/api/channels/weixin/events?timestamp=2&nonce=3&signature="+weixinTestSignature("token-1", "2", "3"), strings.NewReader(textBody))
@@ -257,6 +260,58 @@ func TestWeixinApprovedPrivateBindingProvidesDeviceLinkOnRequest(t *testing.T) {
 	}
 	if len(db.messages) != 1 || db.messages[0].FromUID != binding.ActorUID {
 		t.Fatalf("approved channel user should deliver as channel actor: %+v", db.messages)
+	}
+}
+
+func TestWeixinRejectedChannelBindingCannotChat(t *testing.T) {
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("weixin", "wx_app", "openid-reject"), DisplayName: "Weixin Alice", AccountType: types.AccountHuman}
+	db.users[9] = &types.User{ID: 9, Username: "bob", DisplayName: "Bob", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.friends[friendKey(9, 43)] = types.FriendPending
+	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:       "weixin",
+		ChannelAppID:  "wx_app",
+		ChannelUserID: "openid-reject",
+		ActorUID:      8,
+		CanonicalUID:  9,
+		OwnerUID:      7,
+		AgentUID:      43,
+		Status:        types.ChannelAgentBindingPendingApproval,
+	}); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	friendHandler := NewFriendHandler(db)
+	rejectReq := httptest.NewRequest(http.MethodPost, "/api/friends/reject", strings.NewReader(`{"agent_uid":43,"user_id":9}`))
+	rejectReq = rejectReq.WithContext(context.WithValue(rejectReq.Context(), uidKey, int64(7)))
+	rejectRec := httptest.NewRecorder()
+	friendHandler.HandleRejectRequest(rejectRec, rejectReq)
+	if rejectRec.Code != http.StatusOK {
+		t.Fatalf("reject status=%d body=%s", rejectRec.Code, rejectRec.Body.String())
+	}
+	binding, err := db.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
+		Channel:       "weixin",
+		ChannelAppID:  "wx_app",
+		ChannelUserID: "openid-reject",
+	})
+	if err != nil || binding == nil || binding.Status != types.ChannelAgentBindingRejected {
+		t.Fatalf("binding should be rejected: binding=%+v err=%v", binding, err)
+	}
+	handler := NewWeixinChannelHandler(db, nil, WeixinChannelConfig{
+		AppID:      "wx_app",
+		EventToken: "token-1",
+	}, &fakeWeixinAPI{appID: "wx_app"})
+	body := `<xml><ToUserName><![CDATA[gh_app]]></ToUserName><FromUserName><![CDATA[openid-reject]]></FromUserName><CreateTime>1</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[你好]]></Content><MsgId>msg-1</MsgId></xml>`
+	req := httptest.NewRequest(http.MethodPost, "/api/channels/weixin/events?timestamp=1&nonce=2&signature="+weixinTestSignature("token-1", "1", "2"), strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.HandleEvents(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "暂未通过") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(db.messages) != 0 {
+		t.Fatalf("rejected channel user should not deliver messages: %+v", db.messages)
 	}
 }
 
@@ -619,11 +674,15 @@ func TestWeixinOutboundForwardsBotReply(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[8] = &types.User{ID: 8, Username: "weixin-alice", DisplayName: "Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
 	_, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:       "weixin",
 		ChannelAppID:  "wx_app",
 		ChannelUserID: "openid-1",
 		ActorUID:      8,
+		CanonicalUID:  8,
 		OwnerUID:      7,
 		AgentUID:      43,
 		Status:        "active",
@@ -650,11 +709,17 @@ func TestChannelOutboundDispatcherPreservesFeishuAndWeixin(t *testing.T) {
 	db.users[8] = &types.User{ID: 8, Username: "feishu-alice", DisplayName: "Feishu Alice", AccountType: types.AccountHuman}
 	db.users[9] = &types.User{ID: 9, Username: "weixin-alice", DisplayName: "Weixin Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
+	db.friends[friendKey(9, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 9)] = types.FriendAccepted
 	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:       "feishu",
 		ChannelAppID:  "feishu_app",
 		ChannelUserID: "ou_user",
 		ActorUID:      8,
+		CanonicalUID:  8,
 		OwnerUID:      7,
 		AgentUID:      43,
 		Status:        "active",
@@ -666,6 +731,7 @@ func TestChannelOutboundDispatcherPreservesFeishuAndWeixin(t *testing.T) {
 		ChannelAppID:  "wx_app",
 		ChannelUserID: "openid-1",
 		ActorUID:      9,
+		CanonicalUID:  9,
 		OwnerUID:      7,
 		AgentUID:      43,
 		Status:        "active",
@@ -704,6 +770,118 @@ func TestWeixinEntryResponseUsesConfiguredQRCode(t *testing.T) {
 	})
 	if resp.ChannelQRURL != "https://app.catsco.cc/api/channel-agent-entry/weixin-qrcode?scene_key=scene-weixin" {
 		t.Fatalf("channel_qr_url=%s", resp.ChannelQRURL)
+	}
+	if resp.QRKind != "weixin_official_qr" || resp.QRValue != resp.ChannelQRURL {
+		t.Fatalf("unexpected qr metadata kind=%s value=%s", resp.QRKind, resp.QRValue)
+	}
+}
+
+func TestFeishuEntryResponseRequiresNativeEntryTemplate(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_APP_ID", "cli_app")
+	t.Setenv("CATSCO_FEISHU_APP_SECRET", "secret")
+	handler := NewChannelAgentBindingHandler(newChannelAgentTestStore(), nil)
+	req := httptest.NewRequest(http.MethodGet, "https://app.catsco.cc/api/agent-entries", nil)
+	resp := handler.entryResponse(req, &types.ChannelAgentEntry{
+		SceneKey:     "scene-feishu",
+		Channel:      "feishu",
+		ChannelAppID: "cli_app",
+	})
+	if resp.FeishuOAuthURL != "https://app.catsco.cc/api/channel-agent-bindings/oauth/feishu/start?scene_key=scene-feishu" {
+		t.Fatalf("feishu_oauth_url=%s", resp.FeishuOAuthURL)
+	}
+	if resp.QRKind != "feishu_native_unconfigured" || resp.QRValue != "" {
+		t.Fatalf("unexpected qr metadata kind=%s value=%s", resp.QRKind, resp.QRValue)
+	}
+	if resp.FeishuEntryStatus == nil || resp.FeishuEntryStatus.Ready || resp.FeishuEntryStatus.Status != "missing_native_template" {
+		t.Fatalf("unexpected feishu status: %+v", resp.FeishuEntryStatus)
+	}
+}
+
+func TestFeishuEntryResponseWithoutAppIDDoesNotFallBackToWebQRCode(t *testing.T) {
+	handler := NewChannelAgentBindingHandler(newChannelAgentTestStore(), nil)
+	req := httptest.NewRequest(http.MethodGet, "https://app.catsco.cc/api/agent-entries", nil)
+	resp := handler.entryResponse(req, &types.ChannelAgentEntry{
+		SceneKey: "scene-feishu",
+		Channel:  "feishu",
+	})
+	if resp.FeishuOAuthURL != "" || resp.ChannelQRURL != "" || resp.QRValue != "" {
+		t.Fatalf("feishu entry should not expose web/oauth qr without app id: %+v", resp)
+	}
+	if resp.QRKind != "feishu_native_unconfigured" {
+		t.Fatalf("qr_kind=%s", resp.QRKind)
+	}
+	if resp.FeishuEntryStatus == nil || resp.FeishuEntryStatus.Status != "missing_app_id" {
+		t.Fatalf("unexpected feishu status: %+v", resp.FeishuEntryStatus)
+	}
+}
+
+func TestFeishuEntryResponseUsesNativeEntryTemplate(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_APP_ID", "cli_app")
+	t.Setenv("CATSCO_FEISHU_APP_SECRET", "secret")
+	t.Setenv("CATSCO_FEISHU_ENTRY_URL_TEMPLATE", "https://applink.feishu.cn/client/app/open?app_id={app_id}&scene={scene_key}&landing={landing_url_encoded}")
+	handler := NewChannelAgentBindingHandler(newChannelAgentTestStore(), nil)
+	req := httptest.NewRequest(http.MethodGet, "https://app.catsco.cc/api/agent-entries", nil)
+	resp := handler.entryResponse(req, &types.ChannelAgentEntry{
+		SceneKey:     "scene-feishu",
+		Channel:      "feishu",
+		ChannelAppID: "cli_app",
+	})
+	if resp.FeishuOAuthURL != "https://app.catsco.cc/api/channel-agent-bindings/oauth/feishu/start?scene_key=scene-feishu" {
+		t.Fatalf("feishu_oauth_url=%s", resp.FeishuOAuthURL)
+	}
+	want := "https://app.catsco.cc/api/fn/scene-feishu"
+	if resp.ChannelQRURL != want {
+		t.Fatalf("channel_qr_url=%s", resp.ChannelQRURL)
+	}
+	if resp.QRKind != "feishu_native_entry" || resp.QRValue != want {
+		t.Fatalf("unexpected qr metadata kind=%s value=%s", resp.QRKind, resp.QRValue)
+	}
+	if resp.FeishuEntryStatus == nil || !resp.FeishuEntryStatus.Ready || resp.FeishuEntryStatus.NativeShortURL != want {
+		t.Fatalf("unexpected feishu status: %+v", resp.FeishuEntryStatus)
+	}
+	if resp.FeishuEntryStatus.NativeURL != "https://applink.feishu.cn/client/app/open?app_id=cli_app&scene=scene-feishu&landing=https%3A%2F%2Fapp.catsco.cc%2Fe%2Fscene-feishu" {
+		t.Fatalf("native_url=%s", resp.FeishuEntryStatus.NativeURL)
+	}
+}
+
+func TestFeishuEntryResponseRejectsNativeEntryForAppIDMismatch(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_APP_ID", "cli_app")
+	t.Setenv("CATSCO_FEISHU_APP_SECRET", "secret")
+	t.Setenv("CATSCO_FEISHU_ENTRY_URL_TEMPLATE", "https://applink.feishu.cn/client/app/open?app_id={app_id}&scene={scene_key}")
+	handler := NewChannelAgentBindingHandler(newChannelAgentTestStore(), nil)
+	req := httptest.NewRequest(http.MethodGet, "https://app.catsco.cc/api/agent-entries", nil)
+	resp := handler.entryResponse(req, &types.ChannelAgentEntry{
+		SceneKey:     "scene-feishu",
+		Channel:      "feishu",
+		ChannelAppID: "legacy_app",
+	})
+	if resp.ChannelQRURL != "" || resp.QRValue != "" || resp.QRKind != "feishu_native_unconfigured" {
+		t.Fatalf("mismatched feishu app should not expose native qr: %+v", resp)
+	}
+	if resp.FeishuOAuthURL == "" {
+		t.Fatalf("oauth auxiliary link should remain available")
+	}
+	if resp.FeishuEntryStatus == nil || resp.FeishuEntryStatus.Ready || resp.FeishuEntryStatus.Status != "app_mismatch" {
+		t.Fatalf("unexpected feishu status: %+v", resp.FeishuEntryStatus)
+	}
+}
+
+func TestFeishuEntryResponseRejectsTemplateWithoutSceneCarrier(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_APP_ID", "cli_app")
+	t.Setenv("CATSCO_FEISHU_APP_SECRET", "secret")
+	t.Setenv("CATSCO_FEISHU_ENTRY_URL_TEMPLATE", "https://applink.feishu.cn/client/app/open?app_id={app_id}")
+	handler := NewChannelAgentBindingHandler(newChannelAgentTestStore(), nil)
+	req := httptest.NewRequest(http.MethodGet, "https://app.catsco.cc/api/agent-entries", nil)
+	resp := handler.entryResponse(req, &types.ChannelAgentEntry{
+		SceneKey:     "scene-feishu",
+		Channel:      "feishu",
+		ChannelAppID: "cli_app",
+	})
+	if resp.ChannelQRURL != "" || resp.QRValue != "" || resp.QRKind != "feishu_native_unconfigured" {
+		t.Fatalf("template without scene carrier should not expose native qr: %+v", resp)
+	}
+	if resp.FeishuEntryStatus == nil || resp.FeishuEntryStatus.Ready || resp.FeishuEntryStatus.Status != "native_template_missing_scene" {
+		t.Fatalf("unexpected feishu status: %+v", resp.FeishuEntryStatus)
 	}
 }
 

@@ -3,6 +3,7 @@ package mysql
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
@@ -134,6 +135,36 @@ func (a *Adapter) GetChannelAgentEntryBySceneKey(sceneKey string) (*types.Channe
 		return nil, fmt.Errorf("get channel agent entry by scene: %w", err)
 	}
 	return entry, nil
+}
+
+func (a *Adapter) ListChannelAgentBindingsForAgent(ownerUID, agentUID int64) ([]*types.ChannelAgentBinding, error) {
+	if ownerUID <= 0 || agentUID <= 0 {
+		return nil, fmt.Errorf("invalid channel agent binding list")
+	}
+	rows, err := a.db.Query(
+		`SELECT id, channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
+		        COALESCE(actor_uid, 0), COALESCE(canonical_uid, 0), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
+		 FROM channel_agent_bindings
+		 WHERE owner_uid = ? AND agent_uid = ? AND status IN ('active', 'pending_login', 'pending_approval', 'rejected')
+		 ORDER BY updated_at DESC`,
+		ownerUID, agentUID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list channel agent bindings: %w", err)
+	}
+	defer rows.Close()
+	var bindings []*types.ChannelAgentBinding
+	for rows.Next() {
+		binding, scanErr := scanChannelAgentBinding(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		bindings = append(bindings, binding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return bindings, nil
 }
 
 func (a *Adapter) RequestChannelAgentAccess(request *types.ChannelAgentAccessRequest) (*types.ChannelAgentAccessRequest, error) {
@@ -309,6 +340,59 @@ func (a *Adapter) RejectChannelAgentAccessRequestsForActor(actorUID, agentUID, r
 	return nil
 }
 
+func (a *Adapter) ActivateChannelAgentBindingsForCanonicalUser(canonicalUID, agentUID, reviewerUID int64) ([]*types.ChannelAgentBinding, error) {
+	if canonicalUID <= 0 || agentUID <= 0 || reviewerUID <= 0 {
+		return nil, fmt.Errorf("invalid channel agent canonical approval")
+	}
+	if _, err := a.db.Exec(
+		`UPDATE channel_agent_bindings
+		 SET status = 'active', bound_at = CURRENT_TIMESTAMP, last_used_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		 WHERE canonical_uid = ? AND agent_uid = ? AND status IN ('pending_approval', 'active')`,
+		canonicalUID, agentUID,
+	); err != nil {
+		return nil, fmt.Errorf("activate channel agent binding: %w", err)
+	}
+	rows, err := a.db.Query(
+		`SELECT id, channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
+		        COALESCE(actor_uid, 0), COALESCE(canonical_uid, 0), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
+		 FROM channel_agent_bindings
+		 WHERE canonical_uid = ? AND agent_uid = ? AND status = 'active'
+		 ORDER BY updated_at DESC`,
+		canonicalUID, agentUID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list activated channel agent bindings: %w", err)
+	}
+	defer rows.Close()
+	var bindings []*types.ChannelAgentBinding
+	for rows.Next() {
+		binding, scanErr := scanChannelAgentBinding(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		bindings = append(bindings, binding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return bindings, nil
+}
+
+func (a *Adapter) RejectChannelAgentBindingsForCanonicalUser(canonicalUID, agentUID, reviewerUID int64) error {
+	if canonicalUID <= 0 || agentUID <= 0 || reviewerUID <= 0 {
+		return fmt.Errorf("invalid channel agent canonical rejection")
+	}
+	if _, err := a.db.Exec(
+		`UPDATE channel_agent_bindings
+		 SET status = 'rejected', updated_at = CURRENT_TIMESTAMP
+		 WHERE canonical_uid = ? AND agent_uid = ? AND status IN ('pending_approval', 'active', 'pending_login')`,
+		canonicalUID, agentUID,
+	); err != nil {
+		return fmt.Errorf("reject channel agent binding: %w", err)
+	}
+	return nil
+}
+
 func (a *Adapter) UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) (*types.ChannelAgentBinding, error) {
 	if binding == nil || binding.Channel == "" || binding.ChannelUserID == "" || binding.OwnerUID <= 0 || binding.AgentUID <= 0 {
 		return nil, fmt.Errorf("invalid channel agent binding")
@@ -317,12 +401,16 @@ func (a *Adapter) UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) 
 	if conversationType == "" {
 		conversationType = "p2p"
 	}
+	status := strings.TrimSpace(binding.Status)
+	if status == "" {
+		status = types.ChannelAgentBindingActive
+	}
 	_, err := a.db.Exec(
 		`INSERT INTO channel_agent_bindings (
 		     channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
 		     actor_uid, canonical_uid, owner_uid, agent_uid, entry_id, status, bound_at, last_used_at
 		 )
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		 ON DUPLICATE KEY UPDATE
 		     actor_uid = COALESCE(VALUES(actor_uid), actor_uid),
 		     canonical_uid = COALESCE(VALUES(canonical_uid), canonical_uid),
@@ -330,9 +418,9 @@ func (a *Adapter) UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) 
 		     agent_uid = VALUES(agent_uid),
 		     entry_id = COALESCE(VALUES(entry_id), entry_id),
 		     channel_conversation_type = VALUES(channel_conversation_type),
-		     status = 'active',
-		     bound_at = CURRENT_TIMESTAMP,
-		     last_used_at = CURRENT_TIMESTAMP,
+		     status = VALUES(status),
+		     bound_at = IF(VALUES(status) = 'active', CURRENT_TIMESTAMP, bound_at),
+		     last_used_at = IF(VALUES(status) = 'active', CURRENT_TIMESTAMP, last_used_at),
 		     updated_at = CURRENT_TIMESTAMP`,
 		binding.Channel,
 		binding.ChannelAppID,
@@ -344,6 +432,7 @@ func (a *Adapter) UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) 
 		binding.OwnerUID,
 		binding.AgentUID,
 		nullableInt64(binding.EntryID),
+		status,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("upsert channel agent binding: %w", err)
@@ -424,8 +513,11 @@ func (a *Adapter) LinkChannelAgentBindingCanonicalUser(bindingID, actorUID, agen
 	}
 	result, err := a.db.Exec(
 		`UPDATE channel_agent_bindings
-		 SET canonical_uid = ?, last_used_at = CURRENT_TIMESTAMP
-		 WHERE id = ? AND actor_uid = ? AND agent_uid = ? AND status = 'active'
+		 SET canonical_uid = ?,
+		     status = CASE WHEN status = 'active' THEN 'active' ELSE 'pending_approval' END,
+		     last_used_at = CASE WHEN status = 'active' THEN CURRENT_TIMESTAMP ELSE last_used_at END,
+		     updated_at = CURRENT_TIMESTAMP
+		 WHERE id = ? AND actor_uid = ? AND agent_uid = ? AND status IN ('pending_login', 'pending_approval', 'active')
 		   AND (canonical_uid IS NULL OR canonical_uid = 0 OR canonical_uid = ?)`,
 		canonicalUID, bindingID, actorUID, agentUID, canonicalUID,
 	)
@@ -437,7 +529,7 @@ func (a *Adapter) LinkChannelAgentBindingCanonicalUser(bindingID, actorUID, agen
 			`SELECT id, channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
 			        COALESCE(actor_uid, 0), COALESCE(canonical_uid, 0), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
 			 FROM channel_agent_bindings
-			 WHERE id = ? AND actor_uid = ? AND agent_uid = ? AND status = 'active'`,
+			 WHERE id = ? AND actor_uid = ? AND agent_uid = ? AND status IN ('pending_login', 'pending_approval', 'active', 'rejected')`,
 			bindingID, actorUID, agentUID,
 		)
 		existing, lookupErr := scanChannelAgentBinding(row)
@@ -529,7 +621,8 @@ func (a *Adapter) getChannelAgentBinding(query types.ChannelAgentBindingQuery, c
 		`SELECT id, channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
 		        COALESCE(actor_uid, 0), COALESCE(canonical_uid, 0), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
 		 FROM channel_agent_bindings
-		 WHERE channel = ? AND channel_app_id = ? AND channel_user_id = ? AND channel_conversation_id = ? AND status = 'active'
+		 WHERE channel = ? AND channel_app_id = ? AND channel_user_id = ? AND channel_conversation_id = ?
+		   AND status IN ('active', 'pending_login', 'pending_approval', 'rejected')
 		 ORDER BY updated_at DESC LIMIT 1`,
 		query.Channel, query.ChannelAppID, query.ChannelUserID, conversationID,
 	)

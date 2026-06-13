@@ -327,6 +327,8 @@ func TestBotRecipientIdentityUsesLinkedChannelDeviceOwner(t *testing.T) {
 	db.users[42] = &types.User{ID: 42, Username: "agent", DisplayName: "Agent", AccountType: types.AccountBot}
 	db.users[100] = &types.User{ID: 100, Username: "ch_weixin_user", DisplayName: "Weixin User", AccountType: types.AccountHuman}
 	db.owners[42] = 7
+	db.friends[friendKey(9, 42)] = types.FriendAccepted
+	db.friends[friendKey(42, 9)] = types.FriendAccepted
 	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:       "weixin",
 		ChannelAppID:  "wx_app",
@@ -407,6 +409,8 @@ func TestBotRecipientIdentityUsesCanonicalUserDeviceNotAgentOwnerDevice(t *testi
 	db.users[42] = &types.User{ID: 42, Username: "agent", DisplayName: "Agent", AccountType: types.AccountBot}
 	db.users[100] = &types.User{ID: 100, Username: "ch_weixin_user", DisplayName: "Weixin User", AccountType: types.AccountHuman}
 	db.owners[42] = 7
+	db.friends[friendKey(9, 42)] = types.FriendAccepted
+	db.friends[friendKey(42, 9)] = types.FriendAccepted
 	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:       "weixin",
 		ChannelAppID:  "wx_app",

@@ -240,6 +240,31 @@ func TestChannelAgentEntryApprovalRequiredCreatesPendingAccess(t *testing.T) {
 	}
 }
 
+func TestChannelAgentDeliveryRejectsUnlinkedActiveBinding(t *testing.T) {
+	db := newChannelAgentTestStore()
+	db.users[8] = &types.User{ID: 8, Username: "channel-user", DisplayName: "Channel User", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:       "weixin",
+		ChannelAppID:  "wx_app",
+		ChannelUserID: "openid-legacy",
+		ActorUID:      8,
+		OwnerUID:      7,
+		AgentUID:      43,
+		Status:        types.ChannelAgentBindingActive,
+	}); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	err := deliverInboundChannelTextToAgent(db, nil, 8, 43, "你好", "msg-1", "weixin", nil)
+	if err == nil {
+		t.Fatalf("expected unlinked channel binding to be rejected")
+	}
+	if len(db.messages) != 0 || len(db.topics) != 0 {
+		t.Fatalf("unlinked delivery should not create side effects messages=%+v topics=%+v", db.messages, db.topics)
+	}
+}
+
 func TestChannelAgentEntryRejectsNonOwner(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
@@ -652,6 +677,84 @@ func TestChannelAgentBindingUsesEntryChannelAppID(t *testing.T) {
 	}
 	if other.Bound {
 		t.Fatalf("expected other app id to stay unbound")
+	}
+}
+
+func TestChannelAgentBindingRescanSwitchesToCurrentEntry(t *testing.T) {
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: "visitor", DisplayName: "Visitor", AccountType: types.AccountHuman}
+	db.users[80] = &types.User{ID: 80, Username: channelActorUsername("weixin", "wx_app", "openid-7"), DisplayName: "Weixin Visitor", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "sales-agent", DisplayName: "Sales Agent", AccountType: types.AccountBot}
+	db.users[44] = &types.User{ID: 44, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.owners[44] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
+	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:                 "weixin",
+		ChannelAppID:            "wx_app",
+		ChannelUserID:           "openid-7",
+		ChannelConversationType: "p2p",
+		ActorUID:                80,
+		CanonicalUID:            8,
+		OwnerUID:                7,
+		AgentUID:                43,
+		EntryID:                 101,
+		Status:                  types.ChannelAgentBindingActive,
+	}); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	entry, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+		SceneKey:     "scene-contract-agent",
+		Channel:      "weixin",
+		ChannelAppID: "wx_app",
+		OwnerUID:     7,
+		AgentUID:     44,
+		Status:       "active",
+	})
+	if err != nil {
+		t.Fatalf("seed entry: %v", err)
+	}
+	handler := NewChannelAgentBindingHandler(db, nil)
+
+	body := `{"scene_key":"` + entry.SceneKey + `","channel":"weixin","channel_app_id":"wx_app","channel_user_id":"openid-7"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/channel-agent-bindings/confirm", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.HandleConfirmChannelAgentBinding(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirm status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var confirmed struct {
+		Status  string                    `json:"status"`
+		Binding types.ChannelAgentBinding `json:"binding"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &confirmed); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if confirmed.Status != "pending_approval" || confirmed.Binding.AgentUID != 44 || confirmed.Binding.EntryID != entry.ID {
+		t.Fatalf("expected current entry pending approval, got status=%s binding=%+v", confirmed.Status, confirmed.Binding)
+	}
+	if confirmed.Binding.CanonicalUID != 8 || confirmed.Binding.Status != types.ChannelAgentBindingPendingApproval {
+		t.Fatalf("expected existing CatsCo user to be preserved as pending approval, got %+v", confirmed.Binding)
+	}
+	if db.friends[friendKey(8, 44)] != types.FriendPending {
+		t.Fatalf("expected a friend request for the newly scanned virtual employee, friends=%+v", db.friends)
+	}
+	resolved, err := db.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
+		Channel:                 "weixin",
+		ChannelAppID:            "wx_app",
+		ChannelUserID:           "openid-7",
+		ChannelConversationType: "p2p",
+	})
+	if err != nil {
+		t.Fatalf("resolve binding: %v", err)
+	}
+	if resolved == nil || resolved.AgentUID != 44 {
+		t.Fatalf("expected channel route to point at current entry agent, got %+v", resolved)
+	}
+	if err := deliverInboundChannelTextToAgent(db, nil, 80, 43, "hello old agent", "msg-old", "weixin", nil); err == nil {
+		t.Fatalf("old agent should no longer be deliverable after scanning a different entry")
 	}
 }
 
@@ -1127,6 +1230,30 @@ func (s *channelAgentTestStore) RejectChannelAgentAccessRequestsForActor(actorUI
 	return nil
 }
 
+func (s *channelAgentTestStore) ActivateChannelAgentBindingsForCanonicalUser(canonicalUID, agentUID, reviewerUID int64) ([]*types.ChannelAgentBinding, error) {
+	var out []*types.ChannelAgentBinding
+	for _, binding := range s.bindings {
+		if binding.CanonicalUID == canonicalUID && binding.AgentUID == agentUID && (binding.Status == types.ChannelAgentBindingPendingApproval || binding.Status == types.ChannelAgentBindingActive) {
+			binding.Status = types.ChannelAgentBindingActive
+			binding.BoundAt = time.Now()
+			binding.LastUsedAt = &binding.BoundAt
+			binding.UpdatedAt = binding.BoundAt
+			out = append(out, cloneBinding(binding))
+		}
+	}
+	return out, nil
+}
+
+func (s *channelAgentTestStore) RejectChannelAgentBindingsForCanonicalUser(canonicalUID, agentUID, reviewerUID int64) error {
+	for _, binding := range s.bindings {
+		if binding.CanonicalUID == canonicalUID && binding.AgentUID == agentUID && (binding.Status == types.ChannelAgentBindingPendingApproval || binding.Status == types.ChannelAgentBindingActive || binding.Status == types.ChannelAgentBindingPendingLogin) {
+			binding.Status = types.ChannelAgentBindingRejected
+			binding.UpdatedAt = time.Now()
+		}
+	}
+	return nil
+}
+
 func (s *channelAgentTestStore) GetChannelAgentEntryBySceneKey(sceneKey string) (*types.ChannelAgentEntry, error) {
 	for _, entry := range s.entries {
 		if entry.SceneKey == sceneKey {
@@ -1134,6 +1261,16 @@ func (s *channelAgentTestStore) GetChannelAgentEntryBySceneKey(sceneKey string) 
 		}
 	}
 	return nil, nil
+}
+
+func (s *channelAgentTestStore) ListChannelAgentBindingsForAgent(ownerUID, agentUID int64) ([]*types.ChannelAgentBinding, error) {
+	var out []*types.ChannelAgentBinding
+	for _, binding := range s.bindings {
+		if binding.OwnerUID == ownerUID && binding.AgentUID == agentUID {
+			out = append(out, cloneBinding(binding))
+		}
+	}
+	return out, nil
 }
 
 func (s *channelAgentTestStore) UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) (*types.ChannelAgentBinding, error) {
@@ -1157,7 +1294,12 @@ func (s *channelAgentTestStore) UpsertChannelAgentBinding(binding *types.Channel
 		s.nextID++
 		next.BoundAt = now
 	}
-	next.Status = "active"
+	if next.Status == "" {
+		next.Status = types.ChannelAgentBindingActive
+	}
+	if next.Status == types.ChannelAgentBindingActive {
+		next.LastUsedAt = &now
+	}
 	next.UpdatedAt = now
 	s.bindings[key] = next
 	return cloneBinding(next), nil
@@ -1199,11 +1341,17 @@ func (s *channelAgentTestStore) LinkChannelAgentBindingCanonicalUser(bindingID, 
 		return nil, s.linkErr
 	}
 	for _, binding := range s.bindings {
-		if binding.ID == bindingID && binding.ActorUID == actorUID && binding.AgentUID == agentUID && binding.Status == "active" {
+		if binding.ID == bindingID && binding.ActorUID == actorUID && binding.AgentUID == agentUID && (binding.Status == types.ChannelAgentBindingPendingLogin || binding.Status == types.ChannelAgentBindingPendingApproval || binding.Status == types.ChannelAgentBindingActive || binding.Status == types.ChannelAgentBindingRejected) {
 			if binding.CanonicalUID > 0 && binding.CanonicalUID != canonicalUID {
 				return nil, store.ErrChannelAgentBindingAlreadyLinked
 			}
+			if binding.Status == types.ChannelAgentBindingRejected {
+				return cloneBinding(binding), nil
+			}
 			binding.CanonicalUID = canonicalUID
+			if binding.Status != types.ChannelAgentBindingActive {
+				binding.Status = types.ChannelAgentBindingPendingApproval
+			}
 			binding.UpdatedAt = time.Now()
 			return cloneBinding(binding), nil
 		}

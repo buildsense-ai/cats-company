@@ -131,7 +131,113 @@ func TestFeishuOAuthCallbackBindsActor(t *testing.T) {
 	}
 }
 
-func TestFeishuOAuthCallbackUsesConfiguredAppID(t *testing.T) {
+func TestFeishuOAuthShortLinkRedirectsToStart(t *testing.T) {
+	handler := NewFeishuChannelHandler(newChannelAgentTestStore(), nil, FeishuChannelConfig{
+		AppID: "cli_app",
+	}, &fakeFeishuAPI{appID: "cli_app"})
+	req := httptest.NewRequest(http.MethodGet, "https://app.catsco.cc/api/f/scene-feishu", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleOAuthShortLink(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "https://app.catsco.cc/api/channel-agent-bindings/oauth/feishu/start?scene_key=scene-feishu" {
+		t.Fatalf("redirect=%s", got)
+	}
+}
+
+func TestFeishuNativeEntryShortLinkRedirectsToNativeEntry(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_APP_ID", "cli_app")
+	t.Setenv("CATSCO_FEISHU_APP_SECRET", "secret")
+	t.Setenv("CATSCO_FEISHU_ENTRY_URL_TEMPLATE", "https://applink.feishu.cn/client/app/open?app_id={app_id}&scene={scene_key}&oauth={oauth_url_encoded}")
+	db := newChannelAgentTestStore()
+	if _, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+		SceneKey:     "scene-feishu",
+		Channel:      "feishu",
+		ChannelAppID: "cli_app",
+		AccessMode:   types.ChannelAgentAccessApprovalRequired,
+		OwnerUID:     7,
+		AgentUID:     43,
+		Status:       "active",
+	}); err != nil {
+		t.Fatalf("seed entry: %v", err)
+	}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{
+		AppID: "cli_app",
+	}, &fakeFeishuAPI{appID: "cli_app"})
+	req := httptest.NewRequest(http.MethodGet, "https://app.catsco.cc/api/fn/scene-feishu", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleNativeEntryShortLink(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	want := "https://applink.feishu.cn/client/app/open?app_id=cli_app&scene=scene-feishu&oauth=https%3A%2F%2Fapp.catsco.cc%2Fapi%2Fchannel-agent-bindings%2Foauth%2Ffeishu%2Fstart%3Fscene_key%3Dscene-feishu"
+	if got := rec.Header().Get("Location"); got != want {
+		t.Fatalf("redirect=%s", got)
+	}
+}
+
+func TestFeishuNativeEntryShortLinkRequiresTemplate(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_APP_ID", "cli_app")
+	t.Setenv("CATSCO_FEISHU_APP_SECRET", "secret")
+	db := newChannelAgentTestStore()
+	if _, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+		SceneKey:     "scene-feishu",
+		Channel:      "feishu",
+		ChannelAppID: "cli_app",
+		AccessMode:   types.ChannelAgentAccessApprovalRequired,
+		OwnerUID:     7,
+		AgentUID:     43,
+		Status:       "active",
+	}); err != nil {
+		t.Fatalf("seed entry: %v", err)
+	}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{
+		AppID: "cli_app",
+	}, &fakeFeishuAPI{appID: "cli_app"})
+	req := httptest.NewRequest(http.MethodGet, "https://app.catsco.cc/api/fn/scene-feishu", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleNativeEntryShortLink(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "feishu native entry is not ready") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestFeishuNativeEntryShortLinkRejectsAppIDMismatch(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_APP_ID", "cli_app")
+	t.Setenv("CATSCO_FEISHU_APP_SECRET", "secret")
+	t.Setenv("CATSCO_FEISHU_ENTRY_URL_TEMPLATE", "https://applink.feishu.cn/client/app/open?app_id={app_id}&scene={scene_key}")
+	db := newChannelAgentTestStore()
+	if _, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+		SceneKey:     "scene-feishu",
+		Channel:      "feishu",
+		ChannelAppID: "legacy_app",
+		AccessMode:   types.ChannelAgentAccessApprovalRequired,
+		OwnerUID:     7,
+		AgentUID:     43,
+		Status:       "active",
+	}); err != nil {
+		t.Fatalf("seed entry: %v", err)
+	}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{
+		AppID: "cli_app",
+	}, &fakeFeishuAPI{appID: "cli_app"})
+	req := httptest.NewRequest(http.MethodGet, "https://app.catsco.cc/api/fn/scene-feishu", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleNativeEntryShortLink(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestFeishuOAuthCallbackRejectsEntryAppIDMismatch(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
 	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cloud_app", "ou_user"), DisplayName: "Feishu Alice", AccountType: types.AccountHuman}
@@ -175,7 +281,7 @@ func TestFeishuOAuthCallbackUsesConfiguredAppID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/channel-agent-bindings/oauth/feishu/callback?code=code-1&state="+state, nil)
 	rec := httptest.NewRecorder()
 	handler.HandleOAuthCallback(rec, req)
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	binding, err := db.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
@@ -183,19 +289,11 @@ func TestFeishuOAuthCallbackUsesConfiguredAppID(t *testing.T) {
 		ChannelAppID:  "cloud_app",
 		ChannelUserID: "ou_user",
 	})
-	if err != nil || binding == nil {
-		t.Fatalf("cloud app binding=%+v err=%v", binding, err)
-	}
-	legacy, err := db.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
-		Channel:       "feishu",
-		ChannelAppID:  "legacy_app",
-		ChannelUserID: "ou_user",
-	})
 	if err != nil {
-		t.Fatalf("legacy resolve: %v", err)
+		t.Fatalf("cloud app resolve: %v", err)
 	}
-	if legacy != nil {
-		t.Fatalf("legacy app should not receive OAuth binding: %+v", legacy)
+	if binding != nil {
+		t.Fatalf("mismatched entry should not receive OAuth binding: %+v", binding)
 	}
 }
 
@@ -270,11 +368,15 @@ func TestFeishuOutboundForwardsBotReply(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[8] = &types.User{ID: 8, Username: "feishu-alice", DisplayName: "Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
 	_, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:       "feishu",
 		ChannelAppID:  "cli_app",
 		ChannelUserID: "ou_user",
 		ActorUID:      8,
+		CanonicalUID:  8,
 		OwnerUID:      7,
 		AgentUID:      43,
 		Status:        "active",

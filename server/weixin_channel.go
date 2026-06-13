@@ -255,6 +255,10 @@ func (h *WeixinChannelHandler) handleScanEvent(w http.ResponseWriter, ctx contex
 		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, fmt.Sprintf("你已通过微信确认身份。请继续登录 CatsCo 账号并申请添加「%s」；管理员通过后，你就可以在公众号聊天框提问。\n\n%s", name, channelBindingDeviceLinkGuidance(nil, binding)))
 		return
 	}
+	if channelBindingRejected(binding) {
+		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, fmt.Sprintf("你添加「%s」的申请暂未通过，请联系虚拟员工管理员。", name))
+		return
+	}
 	if pending, err := channelBindingPendingFriendApproval(h.db, binding); err != nil {
 		log.Printf("check weixin channel access failed: %v", err)
 		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "检查虚拟员工好友关系失败，请稍后重试。")
@@ -321,6 +325,10 @@ func (h *WeixinChannelHandler) handleTextMessage(w http.ResponseWriter, ctx cont
 	}
 	if channelBindingNeedsCatsCoLogin(binding) {
 		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, channelBindingDeviceLinkGuidance(nil, binding))
+		return
+	}
+	if channelBindingRejected(binding) {
+		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "你的好友申请暂未通过，请联系虚拟员工管理员。")
 		return
 	}
 	if pending, err := channelBindingPendingFriendApproval(h.db, binding); err != nil {

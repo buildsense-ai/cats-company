@@ -133,6 +133,10 @@ func (h *FeishuChannelHandler) HandleOAuthStart(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "entry not found or expired"})
 		return
 	}
+	if !feishuEntryMatchesAppID(entry, h.effectiveAppID("")) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "entry not found or expired"})
+		return
+	}
 	state, err := h.signOAuthState(feishuOAuthState{
 		SceneKey:  entry.SceneKey,
 		ExpiresAt: time.Now().Add(feishuOAuthStateTTL).Unix(),
@@ -154,6 +158,61 @@ func (h *FeishuChannelHandler) HandleOAuthStart(w http.ResponseWriter, r *http.R
 	q.Set("state", state)
 	authURL.RawQuery = q.Encode()
 	http.Redirect(w, r, authURL.String(), http.StatusFound)
+}
+
+// HandleOAuthShortLink keeps Feishu entry QR payloads short enough for the
+// built-in QR renderer, then delegates to the normal OAuth start endpoint.
+func (h *FeishuChannelHandler) HandleOAuthShortLink(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	sceneKey := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/f/"), "/")
+	if sceneKey == "" || strings.Contains(sceneKey, "/") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing scene_key"})
+		return
+	}
+	http.Redirect(w, r, feishuOAuthStartURL(r, sceneKey), http.StatusFound)
+}
+
+// HandleNativeEntryShortLink keeps Feishu Dashboard QR payloads short, then
+// redirects to the configured native Feishu app/bot entry.
+func (h *FeishuChannelHandler) HandleNativeEntryShortLink(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	sceneKey := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/fn/"), "/")
+	if sceneKey == "" || strings.Contains(sceneKey, "/") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing scene_key"})
+		return
+	}
+	if strings.TrimSpace(h.config.AppID) == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "feishu app is not configured"})
+		return
+	}
+	entry, err := h.activeFeishuEntry(sceneKey)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load entry"})
+		return
+	}
+	if entry == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "entry not found or expired"})
+		return
+	}
+	if !feishuEntryMatchesAppID(entry, h.effectiveAppID("")) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "entry not found or expired"})
+		return
+	}
+	configStatus := buildFeishuEntryConfigStatus(r, entry)
+	if configStatus == nil || !configStatus.Ready {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"error":  "feishu native entry is not ready",
+			"status": configStatus,
+		})
+		return
+	}
+	http.Redirect(w, r, configStatus.NativeURL, http.StatusFound)
 }
 
 // HandleOAuthCallback binds the Feishu OAuth identity to the scanned entry.
@@ -183,6 +242,10 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 		return
 	}
 	if entry == nil {
+		writeHTML(w, http.StatusNotFound, oauthResultHTML("入口不可用", "这个虚拟员工入口不存在或已失效。"))
+		return
+	}
+	if !feishuEntryMatchesAppID(entry, h.effectiveAppID("")) {
 		writeHTML(w, http.StatusNotFound, oauthResultHTML("入口不可用", "这个虚拟员工入口不存在或已失效。"))
 		return
 	}
@@ -227,6 +290,10 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 	}
 	if channelBindingNeedsCatsCoLogin(binding) {
 		writeHTML(w, http.StatusOK, oauthResultHTML("需要登录 CatsCo", fmt.Sprintf("你已通过飞书确认身份。请继续登录 CatsCo 账号并申请添加「%s」；管理员通过后，你就可以回到飞书聊天框提问。\n\n%s", name, channelBindingDeviceLinkGuidance(r, binding))))
+		return
+	}
+	if channelBindingRejected(binding) {
+		writeHTML(w, http.StatusOK, oauthResultHTML("申请未通过", fmt.Sprintf("你添加「%s」的申请暂未通过，请联系虚拟员工管理员。", name)))
 		return
 	}
 	if pending, err := channelBindingPendingFriendApproval(h.db, binding); err != nil {
@@ -351,6 +418,9 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 	if channelBindingNeedsCatsCoLogin(binding) {
 		return h.replyToFeishu(ctx, "open_id", channelUserID, channelBindingDeviceLinkGuidance(nil, binding))
 	}
+	if channelBindingRejected(binding) {
+		return h.replyToFeishu(ctx, "open_id", channelUserID, "你的好友申请暂未通过，请联系虚拟员工管理员。")
+	}
 	if pending, err := channelBindingPendingFriendApproval(h.db, binding); err != nil {
 		return err
 	} else if pending {
@@ -378,12 +448,38 @@ func (h *FeishuChannelHandler) resolveFeishuBinding(appID, channelUserID, conver
 	if !ok {
 		return nil, errors.New("channel binding store not configured")
 	}
-	return bindings.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
+	query := types.ChannelAgentBindingQuery{
 		Channel:                 "feishu",
 		ChannelAppID:            appID,
 		ChannelUserID:           channelUserID,
 		ChannelConversationID:   conversationID,
 		ChannelConversationType: conversationType,
+	}
+	binding, err := bindings.ResolveChannelAgentBinding(query)
+	if err != nil || binding != nil || conversationType != "p2p" || strings.TrimSpace(conversationID) == "" {
+		return binding, err
+	}
+	baseBinding, err := bindings.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
+		Channel:                 "feishu",
+		ChannelAppID:            appID,
+		ChannelUserID:           channelUserID,
+		ChannelConversationType: "p2p",
+	})
+	if err != nil || baseBinding == nil {
+		return baseBinding, err
+	}
+	return bindings.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:                 baseBinding.Channel,
+		ChannelAppID:            baseBinding.ChannelAppID,
+		ChannelUserID:           baseBinding.ChannelUserID,
+		ChannelConversationID:   conversationID,
+		ChannelConversationType: "p2p",
+		ActorUID:                baseBinding.ActorUID,
+		CanonicalUID:            baseBinding.CanonicalUID,
+		OwnerUID:                baseBinding.OwnerUID,
+		AgentUID:                baseBinding.AgentUID,
+		EntryID:                 baseBinding.EntryID,
+		Status:                  baseBinding.Status,
 	})
 }
 
@@ -492,6 +588,14 @@ func (h *FeishuChannelHandler) oauthRedirectURI(r *http.Request) string {
 		return uri
 	}
 	return publicBaseURL(r) + "/api/channel-agent-bindings/oauth/feishu/callback"
+}
+
+func feishuOAuthStartURL(r *http.Request, sceneKey string) string {
+	return publicBaseURL(r) + "/api/channel-agent-bindings/oauth/feishu/start?scene_key=" + url.QueryEscape(sceneKey)
+}
+
+func feishuOAuthShortURL(r *http.Request, sceneKey string) string {
+	return publicBaseURL(r) + "/api/f/" + url.PathEscape(sceneKey)
 }
 
 func publicBaseURL(r *http.Request) string {
@@ -947,6 +1051,9 @@ func (d *ChannelOutboundDispatcher) ForwardBotReply(ctx context.Context, actorUI
 			return err
 		}
 		if binding != nil {
+			if err := validateDeliverableChannelBinding(d.db, binding); err != nil {
+				return nil
+			}
 			receiveIDType := "open_id"
 			receiveID := binding.ChannelUserID
 			if binding.ChannelConversationType == "group" && binding.ChannelConversationID != "" {
@@ -969,6 +1076,9 @@ func (d *ChannelOutboundDispatcher) ForwardBotReply(ctx context.Context, actorUI
 			return err
 		}
 		if binding != nil && binding.ChannelUserID != "" {
+			if err := validateDeliverableChannelBinding(d.db, binding); err != nil {
+				return nil
+			}
 			if err := d.weixin.SendTextMessage(ctx, binding.ChannelUserID, text); err != nil {
 				log.Printf("weixin outbound reply failed topic=%s actor=%d agent=%d: %v", topicID, actorUID, agentUID, err)
 				return err

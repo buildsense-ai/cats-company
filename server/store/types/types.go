@@ -219,6 +219,14 @@ const (
 	ChannelAgentAccessApprovalRequired = "approval_required"
 )
 
+const (
+	ChannelAgentBindingActive          = "active"
+	ChannelAgentBindingPendingLogin    = "pending_login"
+	ChannelAgentBindingPendingApproval = "pending_approval"
+	ChannelAgentBindingRejected        = "rejected"
+	ChannelAgentBindingRevoked         = "revoked"
+)
+
 // NormalizeChannelAgentAccessMode returns the persisted entry access mode.
 func NormalizeChannelAgentAccessMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
