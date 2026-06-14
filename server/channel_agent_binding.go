@@ -258,6 +258,21 @@ func (h *ChannelAgentBindingHandler) HandleConfirmChannelAgentBinding(w http.Res
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save binding"})
 		return
 	}
+	if binding != nil {
+		if _, err := bindings.UpsertChannelAgentRoute(&types.ChannelAgentRoute{
+			Channel:                 channel,
+			ChannelAppID:            channelAppID,
+			ChannelUserID:           strings.TrimSpace(req.ChannelUserID),
+			ChannelConversationID:   strings.TrimSpace(req.ChannelConversationID),
+			ChannelConversationType: normalizeConversationType(req.ChannelConversationType),
+			ActorUID:                actorUID,
+			AgentUID:                binding.AgentUID,
+			Source:                  "entry_confirm",
+		}); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save channel route"})
+			return
+		}
+	}
 	if accessRequest != nil && binding == nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"status":         "pending_approval",
@@ -347,6 +362,8 @@ func (h *ChannelAgentBindingHandler) HandleResolveChannelAgentBinding(w http.Res
 		ChannelUserID:           strings.TrimSpace(r.URL.Query().Get("channel_user_id")),
 		ChannelConversationID:   strings.TrimSpace(r.URL.Query().Get("channel_conversation_id")),
 		ChannelConversationType: normalizeConversationType(r.URL.Query().Get("channel_conversation_type")),
+		AgentUID:                parseOptionalInt64(r.URL.Query().Get("agent_uid")),
+		ActorUID:                parseOptionalInt64(r.URL.Query().Get("actor_uid")),
 	}
 	if query.Channel == "" || query.ChannelUserID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing channel or channel_user_id"})
@@ -992,6 +1009,7 @@ func bindOrRequestChannelAgentAccess(
 		ChannelUserID:           strings.TrimSpace(channelUserID),
 		ChannelConversationID:   conversationID,
 		ChannelConversationType: conversationType,
+		AgentUID:                entry.AgentUID,
 	}
 	binding, err := bindings.ResolveChannelAgentBinding(query)
 	if err != nil {
@@ -1004,6 +1022,51 @@ func bindOrRequestChannelAgentAccess(
 	canonicalUID := int64(0)
 	if binding != nil && binding.CanonicalUID > 0 {
 		canonicalUID = binding.CanonicalUID
+	} else if conversationID != "" {
+		baseBinding, err := bindings.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
+			Channel:                 channel,
+			ChannelAppID:            strings.TrimSpace(channelAppID),
+			ChannelUserID:           strings.TrimSpace(channelUserID),
+			ChannelConversationType: conversationType,
+			AgentUID:                entry.AgentUID,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		if baseBinding != nil && baseBinding.CanonicalUID > 0 {
+			canonicalUID = baseBinding.CanonicalUID
+		}
+	}
+	if canonicalUID == 0 {
+		identityBinding, err := bindings.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
+			Channel:                 channel,
+			ChannelAppID:            strings.TrimSpace(channelAppID),
+			ChannelUserID:           strings.TrimSpace(channelUserID),
+			ChannelConversationID:   conversationID,
+			ChannelConversationType: conversationType,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		if identityBinding != nil && identityBinding.CanonicalUID > 0 {
+			canonicalUID = identityBinding.CanonicalUID
+		}
+	}
+	if canonicalUID == 0 && conversationID != "" {
+		identityBinding, err := bindings.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
+			Channel:                 channel,
+			ChannelAppID:            strings.TrimSpace(channelAppID),
+			ChannelUserID:           strings.TrimSpace(channelUserID),
+			ChannelConversationType: conversationType,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		if identityBinding != nil && identityBinding.CanonicalUID > 0 {
+			canonicalUID = identityBinding.CanonicalUID
+		}
+	}
+	if canonicalUID > 0 {
 		nextStatus, createFriendRequest, err := channelBindingStatusForCanonicalUser(db, canonicalUID, entry.AgentUID)
 		if err != nil {
 			return nil, nil, err
@@ -1100,6 +1163,14 @@ func normalizeConversationType(value string) string {
 	default:
 		return "p2p"
 	}
+}
+
+func parseOptionalInt64(value string) int64 {
+	n, _ := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 func mustGenerateSceneKey() string {

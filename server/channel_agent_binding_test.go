@@ -580,7 +580,7 @@ func newChannelAgentLinkHarness(t *testing.T) (*channelAgentTestStore, *ChannelA
 	if err != nil {
 		t.Fatalf("seed binding: %v", err)
 	}
-	stored := db.bindings[bindingKey(binding.Channel, binding.ChannelAppID, binding.ChannelUserID, binding.ChannelConversationID)]
+	stored := db.bindings[bindingKey(binding.Channel, binding.ChannelAppID, binding.ChannelUserID, binding.ChannelConversationID, binding.AgentUID)]
 	if stored == nil {
 		t.Fatalf("seeded binding missing from fake store")
 	}
@@ -741,20 +741,27 @@ func TestChannelAgentBindingRescanSwitchesToCurrentEntry(t *testing.T) {
 	if db.friends[friendKey(8, 44)] != types.FriendPending {
 		t.Fatalf("expected a friend request for the newly scanned virtual employee, friends=%+v", db.friends)
 	}
-	resolved, err := db.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
+	route, err := db.ResolveChannelAgentRoute(types.ChannelAgentRouteQuery{
 		Channel:                 "weixin",
 		ChannelAppID:            "wx_app",
 		ChannelUserID:           "openid-7",
 		ChannelConversationType: "p2p",
 	})
 	if err != nil {
-		t.Fatalf("resolve binding: %v", err)
+		t.Fatalf("resolve route: %v", err)
 	}
-	if resolved == nil || resolved.AgentUID != 44 {
-		t.Fatalf("expected channel route to point at current entry agent, got %+v", resolved)
+	if route == nil || route.AgentUID != 44 {
+		t.Fatalf("expected channel route to point at current entry agent, got %+v", route)
 	}
-	if err := deliverInboundChannelTextToAgent(db, nil, 80, 43, "hello old agent", "msg-old", "weixin", nil); err == nil {
-		t.Fatalf("old agent should no longer be deliverable after scanning a different entry")
+	oldBinding, err := db.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
+		Channel:                 "weixin",
+		ChannelAppID:            "wx_app",
+		ChannelUserID:           "openid-7",
+		ChannelConversationType: "p2p",
+		AgentUID:                43,
+	})
+	if err != nil || oldBinding == nil || oldBinding.AgentUID != 43 {
+		t.Fatalf("old binding should remain available for explicit switch-back, got %+v err=%v", oldBinding, err)
 	}
 }
 
@@ -917,6 +924,7 @@ type channelAgentTestStore struct {
 	entries        map[int64]*types.ChannelAgentEntry
 	accessRequests map[string]*types.ChannelAgentAccessRequest
 	bindings       map[string]*types.ChannelAgentBinding
+	routes         map[string]*types.ChannelAgentRoute
 	friends        map[string]types.FriendStatus
 	messages       []*types.Message
 	clientIDs      map[string]int64
@@ -941,6 +949,7 @@ func newChannelAgentTestStore() *channelAgentTestStore {
 		entries:        map[int64]*types.ChannelAgentEntry{},
 		accessRequests: map[string]*types.ChannelAgentAccessRequest{},
 		bindings:       map[string]*types.ChannelAgentBinding{},
+		routes:         map[string]*types.ChannelAgentRoute{},
 		friends:        map[string]types.FriendStatus{},
 		messages:       []*types.Message{},
 		clientIDs:      map[string]int64{},
@@ -1129,6 +1138,16 @@ func (s *channelAgentTestStore) ListChannelAgentEntries(ownerUID, agentUID int64
 	return out, nil
 }
 
+func (s *channelAgentTestStore) ListChannelAgentEntriesByChannelApp(channel, channelAppID string) ([]*types.ChannelAgentEntry, error) {
+	var out []*types.ChannelAgentEntry
+	for _, entry := range s.entries {
+		if entry.Channel == channel && entry.ChannelAppID == channelAppID && entry.Status == "active" {
+			out = append(out, cloneEntry(entry))
+		}
+	}
+	return out, nil
+}
+
 func (s *channelAgentTestStore) RegenerateChannelAgentEntry(id, ownerUID int64, sceneKey string) (*types.ChannelAgentEntry, error) {
 	entry := s.entries[id]
 	if entry == nil || entry.OwnerUID != ownerUID || entry.Status != "active" {
@@ -1180,6 +1199,12 @@ func (s *channelAgentTestStore) ResolveChannelAgentAccessRequest(query types.Cha
 func (s *channelAgentTestStore) accessRequestsByConversation(query types.ChannelAgentBindingQuery, conversationID string) *types.ChannelAgentAccessRequest {
 	for _, request := range s.accessRequests {
 		if request.Channel == query.Channel && request.ChannelAppID == query.ChannelAppID && request.ChannelUserID == query.ChannelUserID && request.ChannelConversationID == conversationID && (request.Status == "pending" || request.Status == "rejected") {
+			if query.AgentUID > 0 && request.AgentUID != query.AgentUID {
+				continue
+			}
+			if query.ActorUID > 0 && request.ActorUID != query.ActorUID {
+				continue
+			}
 			return request
 		}
 	}
@@ -1276,7 +1301,7 @@ func (s *channelAgentTestStore) ListChannelAgentBindingsForAgent(ownerUID, agent
 func (s *channelAgentTestStore) UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) (*types.ChannelAgentBinding, error) {
 	now := time.Now()
 	next := cloneBinding(binding)
-	key := bindingKey(next.Channel, next.ChannelAppID, next.ChannelUserID, next.ChannelConversationID)
+	key := bindingKey(next.Channel, next.ChannelAppID, next.ChannelUserID, next.ChannelConversationID, next.AgentUID)
 	if existing := s.bindings[key]; existing != nil {
 		next.ID = existing.ID
 		if next.ActorUID <= 0 {
@@ -1306,8 +1331,26 @@ func (s *channelAgentTestStore) UpsertChannelAgentBinding(binding *types.Channel
 }
 
 func (s *channelAgentTestStore) ResolveChannelAgentBinding(query types.ChannelAgentBindingQuery) (*types.ChannelAgentBinding, error) {
-	if binding := s.bindings[bindingKey(query.Channel, query.ChannelAppID, query.ChannelUserID, query.ChannelConversationID)]; binding != nil {
-		return cloneBinding(binding), nil
+	if query.AgentUID > 0 {
+		if binding := s.bindings[bindingKey(query.Channel, query.ChannelAppID, query.ChannelUserID, query.ChannelConversationID, query.AgentUID)]; binding != nil && (query.ActorUID <= 0 || binding.ActorUID == query.ActorUID) {
+			return cloneBinding(binding), nil
+		}
+		return nil, nil
+	}
+	var selected *types.ChannelAgentBinding
+	for _, binding := range s.bindings {
+		if binding.Channel != query.Channel || binding.ChannelAppID != query.ChannelAppID || binding.ChannelUserID != query.ChannelUserID || binding.ChannelConversationID != query.ChannelConversationID {
+			continue
+		}
+		if query.ActorUID > 0 && binding.ActorUID != query.ActorUID {
+			continue
+		}
+		if selected == nil || binding.UpdatedAt.After(selected.UpdatedAt) {
+			selected = binding
+		}
+	}
+	if selected != nil {
+		return cloneBinding(selected), nil
 	}
 	return nil, nil
 }
@@ -1359,6 +1402,49 @@ func (s *channelAgentTestStore) LinkChannelAgentBindingCanonicalUser(bindingID, 
 	return nil, nil
 }
 
+func (s *channelAgentTestStore) UpsertChannelAgentRoute(route *types.ChannelAgentRoute) (*types.ChannelAgentRoute, error) {
+	now := time.Now()
+	next := cloneRoute(route)
+	key := routeKey(next.Channel, next.ChannelAppID, next.ChannelUserID, next.ChannelConversationID, next.ChannelConversationType)
+	if existing := s.routes[key]; existing != nil {
+		next.ID = existing.ID
+		if next.ActorUID <= 0 {
+			next.ActorUID = existing.ActorUID
+		}
+	} else {
+		next.ID = s.nextID
+		s.nextID++
+	}
+	if next.ChannelConversationType == "" {
+		next.ChannelConversationType = "p2p"
+	}
+	if next.Source == "" {
+		next.Source = "manual"
+	}
+	next.SelectedAt = now
+	next.UpdatedAt = now
+	next.LastUsedAt = &now
+	s.routes[key] = next
+	return cloneRoute(next), nil
+}
+
+func (s *channelAgentTestStore) ResolveChannelAgentRoute(query types.ChannelAgentRouteQuery) (*types.ChannelAgentRoute, error) {
+	if query.ChannelConversationType == "" {
+		query.ChannelConversationType = "p2p"
+	}
+	route := s.routes[routeKey(query.Channel, query.ChannelAppID, query.ChannelUserID, query.ChannelConversationID, query.ChannelConversationType)]
+	if route == nil {
+		return nil, nil
+	}
+	if query.ActorUID > 0 && route.ActorUID > 0 && route.ActorUID != query.ActorUID {
+		return nil, nil
+	}
+	now := time.Now()
+	route.LastUsedAt = &now
+	route.UpdatedAt = now
+	return cloneRoute(route), nil
+}
+
 func cloneEntry(entry *types.ChannelAgentEntry) *types.ChannelAgentEntry {
 	if entry == nil {
 		return nil
@@ -1375,6 +1461,14 @@ func cloneBinding(binding *types.ChannelAgentBinding) *types.ChannelAgentBinding
 	return &next
 }
 
+func cloneRoute(route *types.ChannelAgentRoute) *types.ChannelAgentRoute {
+	if route == nil {
+		return nil
+	}
+	next := *route
+	return &next
+}
+
 func cloneAccessRequest(request *types.ChannelAgentAccessRequest) *types.ChannelAgentAccessRequest {
 	if request == nil {
 		return nil
@@ -1383,12 +1477,23 @@ func cloneAccessRequest(request *types.ChannelAgentAccessRequest) *types.Channel
 	return &next
 }
 
-func bindingKey(channel, appID, userID, conversationID string) string {
+func channelIdentityKey(channel, appID, userID, conversationID string) string {
 	return channel + "\x00" + appID + "\x00" + userID + "\x00" + conversationID
 }
 
+func bindingKey(channel, appID, userID, conversationID string, agentUID int64) string {
+	return channelIdentityKey(channel, appID, userID, conversationID) + "\x00" + strconv.FormatInt(agentUID, 10)
+}
+
+func routeKey(channel, appID, userID, conversationID, conversationType string) string {
+	if conversationType == "" {
+		conversationType = "p2p"
+	}
+	return channelIdentityKey(channel, appID, userID, conversationID) + "\x00" + conversationType
+}
+
 func accessRequestKey(entryID int64, channel, appID, userID, conversationID string) string {
-	return strconv.FormatInt(entryID, 10) + "\x00" + bindingKey(channel, appID, userID, conversationID)
+	return strconv.FormatInt(entryID, 10) + "\x00" + channelIdentityKey(channel, appID, userID, conversationID)
 }
 
 func friendKey(fromUID, toUID int64) string {

@@ -1,6 +1,9 @@
 package postgres
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // CreateSchema creates all required database tables and idempotent indexes.
 func (a *Adapter) CreateSchema() error {
@@ -19,6 +22,7 @@ func (a *Adapter) CreateSchema() error {
 		createChannelAgentEntriesTable,
 		createChannelAgentAccessRequestsTable,
 		createChannelAgentBindingsTable,
+		createChannelAgentRoutesTable,
 		migrateUsersAddBotDisclose,
 		migrateMessagesAddReplyTo,
 		migrateBotConfigAddAPIKey,
@@ -55,6 +59,32 @@ func (a *Adapter) CreateSchema() error {
 		if _, err := a.db.Exec(statement); err != nil {
 			return fmt.Errorf("postgres schema statement failed: %w", err)
 		}
+	}
+	if err := a.ensureChannelAgentBindingUniqueIncludesAgent(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (a *Adapter) ensureChannelAgentBindingUniqueIncludesAgent() error {
+	row := a.db.QueryRow(
+		`SELECT COALESCE(string_agg(att.attname, ',' ORDER BY cols.ord), '')
+		 FROM pg_constraint con
+		 JOIN unnest(con.conkey) WITH ORDINALITY AS cols(attnum, ord) ON true
+		 JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = cols.attnum
+		 WHERE con.conrelid = 'channel_agent_bindings'::regclass
+		   AND con.conname = 'uk_channel_agent_binding_identity'`,
+	)
+	var columns string
+	if err := row.Scan(&columns); err != nil {
+		return fmt.Errorf("inspect channel agent binding unique constraint: %w", err)
+	}
+	expected := "channel,channel_app_id,channel_user_id,channel_conversation_id,agent_uid"
+	if strings.TrimSpace(columns) == expected {
+		return nil
+	}
+	if _, err := a.db.Exec(migrateChannelAgentBindingsUniqueIncludesAgent); err != nil {
+		return fmt.Errorf("migrate channel agent binding unique constraint: %w", err)
 	}
 	return nil
 }
@@ -260,7 +290,25 @@ CREATE TABLE IF NOT EXISTS channel_agent_bindings (
     bound_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_used_at TIMESTAMPTZ DEFAULT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT uk_channel_agent_binding_identity UNIQUE (channel, channel_app_id, channel_user_id, channel_conversation_id)
+    CONSTRAINT uk_channel_agent_binding_identity UNIQUE (channel, channel_app_id, channel_user_id, channel_conversation_id, agent_uid)
+);
+`
+
+const createChannelAgentRoutesTable = `
+CREATE TABLE IF NOT EXISTS channel_agent_routes (
+    id BIGSERIAL PRIMARY KEY,
+    channel VARCHAR(32) NOT NULL,
+    channel_app_id VARCHAR(128) NOT NULL DEFAULT '',
+    channel_user_id VARCHAR(128) NOT NULL,
+    channel_conversation_id VARCHAR(128) NOT NULL DEFAULT '',
+    channel_conversation_type VARCHAR(32) NOT NULL DEFAULT 'p2p',
+    actor_uid BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
+    agent_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source VARCHAR(32) NOT NULL DEFAULT '',
+    selected_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMPTZ DEFAULT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_channel_agent_route_identity UNIQUE (channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type)
 );
 `
 
@@ -277,6 +325,10 @@ const migrateChannelAgentEntriesDefaultAccessMode = `ALTER TABLE channel_agent_e
 const migrateChannelAgentEntriesPublicToApprovalRequired = `UPDATE channel_agent_entries SET access_mode = 'approval_required' WHERE access_mode = 'public';`
 const migrateChannelAgentBindingsAddActorUID = `ALTER TABLE channel_agent_bindings ADD COLUMN IF NOT EXISTS actor_uid BIGINT DEFAULT NULL;`
 const migrateChannelAgentBindingsAddCanonicalUID = `ALTER TABLE channel_agent_bindings ADD COLUMN IF NOT EXISTS canonical_uid BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL;`
+const migrateChannelAgentBindingsUniqueIncludesAgent = `
+ALTER TABLE channel_agent_bindings DROP CONSTRAINT IF EXISTS uk_channel_agent_binding_identity;
+ALTER TABLE channel_agent_bindings ADD CONSTRAINT uk_channel_agent_binding_identity UNIQUE (channel, channel_app_id, channel_user_id, channel_conversation_id, agent_uid);
+`
 const migrateMessagesAddCodeMode = `
 ALTER TABLE messages
   ADD COLUMN IF NOT EXISTS content_blocks JSONB DEFAULT NULL,
@@ -343,6 +395,8 @@ CREATE INDEX IF NOT EXISTS idx_channel_agent_bindings_lookup ON channel_agent_bi
 CREATE INDEX IF NOT EXISTS idx_channel_agent_bindings_agent ON channel_agent_bindings (owner_uid, agent_uid, status);
 CREATE INDEX IF NOT EXISTS idx_channel_agent_bindings_actor_agent ON channel_agent_bindings (channel, channel_app_id, actor_uid, agent_uid, status);
 CREATE INDEX IF NOT EXISTS idx_channel_agent_bindings_actor_any ON channel_agent_bindings (actor_uid, agent_uid, status);
+CREATE INDEX IF NOT EXISTS idx_channel_agent_routes_lookup ON channel_agent_routes (channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type);
+CREATE INDEX IF NOT EXISTS idx_channel_agent_routes_actor ON channel_agent_routes (channel, channel_app_id, actor_uid, agent_uid);
 CREATE INDEX IF NOT EXISTS idx_channel_agent_access_owner_agent ON channel_agent_access_requests (owner_uid, agent_uid, status);
 CREATE INDEX IF NOT EXISTS idx_channel_agent_access_actor_agent ON channel_agent_access_requests (actor_uid, agent_uid, status);
 CREATE INDEX IF NOT EXISTS idx_channel_agent_access_lookup ON channel_agent_access_requests (channel, channel_app_id, channel_user_id, status);
@@ -362,6 +416,8 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_channel_agent_entries_updated_at BEFORE UPDATE ON channel_agent_entries
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_channel_agent_bindings_updated_at BEFORE UPDATE ON channel_agent_bindings
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_channel_agent_routes_updated_at BEFORE UPDATE ON channel_agent_routes
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_channel_agent_access_requests_updated_at BEFORE UPDATE ON channel_agent_access_requests
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();

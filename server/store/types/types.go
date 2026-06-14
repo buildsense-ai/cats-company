@@ -301,6 +301,37 @@ type ChannelAgentBindingQuery struct {
 	ChannelUserID           string
 	ChannelConversationID   string
 	ChannelConversationType string
+	AgentUID                int64
+	ActorUID                int64
+}
+
+// ChannelAgentRoute records the current virtual employee selected inside one
+// external-channel conversation. It is deliberately separate from bindings:
+// bindings are access relationships, routes are the latest user choice.
+type ChannelAgentRoute struct {
+	ID                      int64      `json:"id"`
+	Channel                 string     `json:"channel"`
+	ChannelAppID            string     `json:"channel_app_id,omitempty"`
+	ChannelUserID           string     `json:"channel_user_id"`
+	ChannelConversationID   string     `json:"channel_conversation_id,omitempty"`
+	ChannelConversationType string     `json:"channel_conversation_type,omitempty"`
+	ActorUID                int64      `json:"actor_uid,omitempty"`
+	AgentUID                int64      `json:"agent_uid"`
+	Source                  string     `json:"source,omitempty"`
+	SelectedAt              time.Time  `json:"selected_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
+	LastUsedAt              *time.Time `json:"last_used_at,omitempty"`
+}
+
+// ChannelAgentRouteQuery is the normalized lookup key for current-agent
+// selection in an external-channel conversation.
+type ChannelAgentRouteQuery struct {
+	Channel                 string
+	ChannelAppID            string
+	ChannelUserID           string
+	ChannelConversationID   string
+	ChannelConversationType string
+	ActorUID                int64
 }
 
 // Group represents a chat group.

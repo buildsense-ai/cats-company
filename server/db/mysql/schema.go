@@ -22,6 +22,7 @@ func (a *Adapter) CreateSchema() error {
 		createChannelAgentEntriesTable,
 		createChannelAgentAccessRequestsTable,
 		createChannelAgentBindingsTable,
+		createChannelAgentRoutesTable,
 	}
 	for _, q := range tables {
 		if _, err := a.db.Exec(q); err != nil {
@@ -58,6 +59,8 @@ func (a *Adapter) CreateSchema() error {
 		migrateChannelAgentBindingsLookupIndex,
 		migrateChannelAgentBindingsActorAgentIndex,
 		migrateChannelAgentBindingsActorAnyIndex,
+		migrateChannelAgentRoutesLookupIndex,
+		migrateChannelAgentRoutesActorIndex,
 		migrateChannelAgentAccessOwnerAgentIndex,
 		migrateChannelAgentAccessActorAgentIndex,
 		migrateChannelAgentAccessLookupIndex,
@@ -70,6 +73,43 @@ func (a *Adapter) CreateSchema() error {
 			}
 		}
 	}
+	if err := a.ensureChannelAgentBindingUniqueIncludesAgent(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (a *Adapter) ensureChannelAgentBindingUniqueIncludesAgent() error {
+	rows, err := a.db.Query(
+		`SELECT COLUMN_NAME
+		 FROM INFORMATION_SCHEMA.STATISTICS
+		 WHERE TABLE_SCHEMA = DATABASE()
+		   AND TABLE_NAME = 'channel_agent_bindings'
+		   AND INDEX_NAME = 'uk_channel_agent_binding_identity'
+		 ORDER BY SEQ_IN_INDEX`,
+	)
+	if err != nil {
+		return fmt.Errorf("inspect channel agent binding unique index: %w", err)
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			return fmt.Errorf("scan channel agent binding unique index: %w", err)
+		}
+		columns = append(columns, column)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	expected := "channel,channel_app_id,channel_user_id,channel_conversation_id,agent_uid"
+	if strings.Join(columns, ",") == expected {
+		return nil
+	}
+	if _, err := a.db.Exec(migrateChannelAgentBindingsUniqueIncludesAgent); err != nil {
+		return fmt.Errorf("migrate channel agent binding unique index: %w", err)
+	}
 	return nil
 }
 
@@ -81,7 +121,9 @@ func isIgnorableMigrationError(err error) bool {
 	return strings.Contains(msg, "1060") ||
 		strings.Contains(msg, "Duplicate column") ||
 		strings.Contains(msg, "1061") ||
-		strings.Contains(msg, "Duplicate key name")
+		strings.Contains(msg, "Duplicate key name") ||
+		strings.Contains(msg, "1091") ||
+		strings.Contains(msg, "check that column/key exists")
 }
 
 const createUsersTable = `
@@ -312,7 +354,7 @@ CREATE TABLE IF NOT EXISTS channel_agent_bindings (
     bound_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_used_at TIMESTAMP NULL DEFAULT NULL,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_channel_agent_binding_identity (channel, channel_app_id, channel_user_id, channel_conversation_id),
+    UNIQUE KEY uk_channel_agent_binding_identity (channel, channel_app_id, channel_user_id, channel_conversation_id, agent_uid),
     INDEX idx_channel_agent_bindings_lookup (channel, channel_app_id, channel_user_id, status),
     INDEX idx_channel_agent_bindings_agent (owner_uid, agent_uid, status),
     INDEX idx_channel_agent_bindings_actor_agent (channel, channel_app_id, actor_uid, agent_uid, status),
@@ -322,6 +364,28 @@ CREATE TABLE IF NOT EXISTS channel_agent_bindings (
     FOREIGN KEY (owner_uid) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (entry_id) REFERENCES channel_agent_entries(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createChannelAgentRoutesTable = `
+CREATE TABLE IF NOT EXISTS channel_agent_routes (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    channel VARCHAR(32) NOT NULL,
+    channel_app_id VARCHAR(128) NOT NULL DEFAULT '',
+    channel_user_id VARCHAR(128) NOT NULL,
+    channel_conversation_id VARCHAR(128) NOT NULL DEFAULT '',
+    channel_conversation_type VARCHAR(32) NOT NULL DEFAULT 'p2p',
+    actor_uid BIGINT DEFAULT NULL,
+    agent_uid BIGINT NOT NULL,
+    source VARCHAR(32) NOT NULL DEFAULT '',
+    selected_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMP NULL DEFAULT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_channel_agent_route_identity (channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type),
+    INDEX idx_channel_agent_routes_lookup (channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type),
+    INDEX idx_channel_agent_routes_actor (channel, channel_app_id, actor_uid, agent_uid),
+    FOREIGN KEY (actor_uid) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (agent_uid) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
@@ -434,6 +498,12 @@ const migrateChannelAgentBindingsAddCanonicalUID = `
 ALTER TABLE channel_agent_bindings ADD COLUMN canonical_uid BIGINT DEFAULT NULL;
 `
 
+const migrateChannelAgentBindingsUniqueIncludesAgent = `
+ALTER TABLE channel_agent_bindings
+  DROP INDEX uk_channel_agent_binding_identity,
+  ADD UNIQUE KEY uk_channel_agent_binding_identity (channel, channel_app_id, channel_user_id, channel_conversation_id, agent_uid);
+`
+
 const migrateChannelAgentEntriesOwnerAgentIndex = `
 ALTER TABLE channel_agent_entries ADD INDEX idx_channel_agent_entries_owner_agent (owner_uid, agent_uid, channel, channel_app_id, status);
 `
@@ -448,6 +518,14 @@ ALTER TABLE channel_agent_bindings ADD INDEX idx_channel_agent_bindings_actor_ag
 
 const migrateChannelAgentBindingsActorAnyIndex = `
 ALTER TABLE channel_agent_bindings ADD INDEX idx_channel_agent_bindings_actor_any (actor_uid, agent_uid, status);
+`
+
+const migrateChannelAgentRoutesLookupIndex = `
+ALTER TABLE channel_agent_routes ADD INDEX idx_channel_agent_routes_lookup (channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type);
+`
+
+const migrateChannelAgentRoutesActorIndex = `
+ALTER TABLE channel_agent_routes ADD INDEX idx_channel_agent_routes_actor (channel, channel_app_id, actor_uid, agent_uid);
 `
 
 const migrateChannelAgentAccessOwnerAgentIndex = `
