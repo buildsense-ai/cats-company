@@ -821,11 +821,6 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
                       微信二维码加载失败，请检查 AppID/AppSecret、公众号接口权限、服务器 IP 白名单和微信后台消息加解密模式。
                     </div>
                   )}
-                  {channel === 'feishu' && qrKind === 'feishu_native_entry' && (
-                    <div style={{ background: 'rgba(59,130,246,0.12)', color: '#93c5fd', padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
-                      这个短链会跳转到已配置的飞书原生入口。用户扫码后需要完成 CatsCo 登录/好友申请；通过后才能在飞书聊天，设备操作只会使用申请人自己授权的设备。
-                    </div>
-                  )}
                   {channel === 'feishu' && qrKind === 'feishu_native_entry' && feishuEntryStatus?.native_url && (
                     <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10, color: 'var(--v3-text-muted)', fontSize: 12, lineHeight: 1.5, wordBreak: 'break-all', marginBottom: 14 }}>
                       飞书原生入口：{feishuEntryStatus.native_url}
