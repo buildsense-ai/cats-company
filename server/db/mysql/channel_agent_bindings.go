@@ -90,7 +90,7 @@ func (a *Adapter) ListChannelAgentEntriesByChannelApp(channel, channelAppID stri
 	return entries, rows.Err()
 }
 
-func (a *Adapter) RegenerateChannelAgentEntry(id, ownerUID int64, sceneKey string) (*types.ChannelAgentEntry, error) {
+func (a *Adapter) RegenerateChannelAgentEntry(id, ownerUID int64, sceneKey, nextChannelAppID string) (*types.ChannelAgentEntry, error) {
 	if id <= 0 || ownerUID <= 0 || sceneKey == "" {
 		return nil, fmt.Errorf("invalid channel agent entry")
 	}
@@ -107,6 +107,9 @@ func (a *Adapter) RegenerateChannelAgentEntry(id, ownerUID int64, sceneKey strin
 		id, ownerUID,
 	).Scan(&channel, &channelAppID, &accessMode, &agentUID); err != nil {
 		return nil, fmt.Errorf("get channel agent entry: %w", err)
+	}
+	if strings.TrimSpace(nextChannelAppID) != "" {
+		channelAppID = strings.TrimSpace(nextChannelAppID)
 	}
 	if _, err := tx.Exec(
 		`UPDATE channel_agent_entries SET status = 'revoked', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_uid = ?`,

@@ -903,7 +903,7 @@ func TestChannelAgentEntryRegenerateRequiresActiveEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed entry: %v", err)
 	}
-	if _, err := db.RegenerateChannelAgentEntry(entry.ID, 7, "scene-new"); err != nil {
+	if _, err := db.RegenerateChannelAgentEntry(entry.ID, 7, "scene-new", ""); err != nil {
 		t.Fatalf("first regenerate: %v", err)
 	}
 
@@ -913,6 +913,49 @@ func TestChannelAgentEntryRegenerateRequiresActiveEntry(t *testing.T) {
 	handler.HandleAgentEntryByID(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChannelAgentEntryRegenerateRefreshesConfiguredFeishuAppID(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_APP_ID", "cli_current")
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "dev-agent", DisplayName: "Dev Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	handler := NewChannelAgentBindingHandler(db, nil)
+
+	entry, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+		SceneKey:     "scene-old",
+		Channel:      "feishu",
+		ChannelAppID: "cli_legacy",
+		AccessMode:   types.ChannelAgentAccessApprovalRequired,
+		OwnerUID:     7,
+		AgentUID:     43,
+		Status:       "active",
+	})
+	if err != nil {
+		t.Fatalf("seed entry: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/agent-entries/"+strconv.FormatInt(entry.ID, 10)+"/regenerate", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleAgentEntryByID(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Entry channelAgentEntryResponse `json:"entry"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Entry.ChannelAppID != "cli_current" {
+		t.Fatalf("regenerated channel app id = %q, want cli_current", resp.Entry.ChannelAppID)
+	}
+	if old := db.entries[entry.ID]; old == nil || old.Status != "revoked" {
+		t.Fatalf("old entry status = %#v, want revoked", old)
 	}
 }
 
@@ -1148,20 +1191,28 @@ func (s *channelAgentTestStore) ListChannelAgentEntriesByChannelApp(channel, cha
 	return out, nil
 }
 
-func (s *channelAgentTestStore) RegenerateChannelAgentEntry(id, ownerUID int64, sceneKey string) (*types.ChannelAgentEntry, error) {
+func (s *channelAgentTestStore) RegenerateChannelAgentEntry(id, ownerUID int64, sceneKey, nextChannelAppID string) (*types.ChannelAgentEntry, error) {
 	entry := s.entries[id]
 	if entry == nil || entry.OwnerUID != ownerUID || entry.Status != "active" {
 		return nil, nil
+	}
+	channelAppID := entry.ChannelAppID
+	if strings.TrimSpace(nextChannelAppID) != "" {
+		channelAppID = strings.TrimSpace(nextChannelAppID)
 	}
 	entry.Status = "revoked"
 	return s.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
 		SceneKey:     sceneKey,
 		Channel:      entry.Channel,
-		ChannelAppID: entry.ChannelAppID,
+		ChannelAppID: channelAppID,
 		AccessMode:   entry.AccessMode,
 		OwnerUID:     ownerUID,
 		AgentUID:     entry.AgentUID,
 	})
+}
+
+func (s *channelAgentTestStore) GetChannelAgentEntryByID(id int64) (*types.ChannelAgentEntry, error) {
+	return cloneEntry(s.entries[id]), nil
 }
 
 func (s *channelAgentTestStore) RequestChannelAgentAccess(request *types.ChannelAgentAccessRequest) (*types.ChannelAgentAccessRequest, error) {

@@ -122,7 +122,12 @@ func (h *ChannelAgentBindingHandler) HandleAgentEntryByID(w http.ResponseWriter,
 		return
 	}
 	uid := UIDFromContext(r.Context())
-	entry, err := bindings.RegenerateChannelAgentEntry(id, uid, mustGenerateSceneKey())
+	current, err := bindings.GetChannelAgentEntryByID(id)
+	if err != nil || current == nil || current.OwnerUID != uid || current.Status != "active" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "entry not found"})
+		return
+	}
+	entry, err := bindings.RegenerateChannelAgentEntry(id, uid, mustGenerateSceneKey(), channelEntryAppIDForRegeneration(current))
 	if err != nil || entry == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "entry not found"})
 		return
@@ -130,6 +135,23 @@ func (h *ChannelAgentBindingHandler) HandleAgentEntryByID(w http.ResponseWriter,
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"entry": h.entryResponse(r, entry),
 	})
+}
+
+func channelEntryAppIDForRegeneration(entry *types.ChannelAgentEntry) string {
+	if entry == nil {
+		return ""
+	}
+	switch entry.Channel {
+	case "feishu":
+		if appID := configuredFeishuAppID(); appID != "" {
+			return appID
+		}
+	case "weixin":
+		if appID := configuredWeixinAppID(); appID != "" {
+			return appID
+		}
+	}
+	return entry.ChannelAppID
 }
 
 // HandleAgentEntryPreview handles unauthenticated QR landing previews.
