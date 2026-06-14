@@ -22,6 +22,12 @@ const normalizeChannelAgentAccessMode = (value) => (
     : CHANNEL_AGENT_ACCESS_MODES.APPROVAL_REQUIRED
 );
 
+const normalizeChannel = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'wechat') return 'weixin';
+  return normalized;
+};
+
 const initialForm = {
   display_name: '',
 };
