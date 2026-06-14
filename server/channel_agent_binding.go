@@ -451,6 +451,17 @@ func (h *ChannelAgentBindingHandler) HandleResolveChannelAgentBinding(w http.Res
 		})
 		return
 	}
+	if err := validateDeliverableChannelBinding(h.db, binding); err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"bound":         false,
+			"status":        "not_allowed",
+			"binding":       binding,
+			"agent_uid":     binding.AgentUID,
+			"owner_uid":     binding.OwnerUID,
+			"canonical_uid": binding.CanonicalUID,
+		})
+		return
+	}
 	bodyID, _ := h.db.GetBotBodyID(binding.AgentUID)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"bound":            true,
@@ -532,6 +543,11 @@ func (h *ChannelAgentBindingHandler) HandleLinkChannelAgentBindingUser(w http.Re
 		})
 		return
 	}
+	publicAccess, err := channelBindingEntryAllowsPublicAccess(h.db, binding)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check channel access"})
+		return
+	}
 	status := "linked"
 	if pending, err := channelBindingPendingFriendApproval(h.db, binding); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check channel access"})
@@ -560,18 +576,39 @@ func (h *ChannelAgentBindingHandler) HandleLinkChannelAgentBindingUser(w http.Re
 		}
 		status = "pending_approval"
 	} else if activator, ok := h.db.(store.ChannelAgentBindingStore); ok {
-		if _, err := activator.ActivateChannelAgentBindingsForCanonicalUser(canonicalUID, binding.AgentUID, canonicalUID); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to activate channel access"})
-			return
-		}
-		if refreshed, err := activator.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
-			Channel:                 binding.Channel,
-			ChannelAppID:            binding.ChannelAppID,
-			ChannelUserID:           binding.ChannelUserID,
-			ChannelConversationID:   binding.ChannelConversationID,
-			ChannelConversationType: binding.ChannelConversationType,
-		}); err == nil && refreshed != nil {
-			binding = refreshed
+		if publicAccess {
+			if refreshed, err := activator.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+				Channel:                 binding.Channel,
+				ChannelAppID:            binding.ChannelAppID,
+				ChannelUserID:           binding.ChannelUserID,
+				ChannelConversationID:   binding.ChannelConversationID,
+				ChannelConversationType: binding.ChannelConversationType,
+				ActorUID:                binding.ActorUID,
+				CanonicalUID:            binding.CanonicalUID,
+				OwnerUID:                binding.OwnerUID,
+				AgentUID:                binding.AgentUID,
+				EntryID:                 binding.EntryID,
+				Status:                  types.ChannelAgentBindingActive,
+			}); err == nil && refreshed != nil {
+				binding = refreshed
+			} else if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to activate channel access"})
+				return
+			}
+		} else {
+			if _, err := activator.ActivateChannelAgentBindingsForCanonicalUser(canonicalUID, binding.AgentUID, canonicalUID); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to activate channel access"})
+				return
+			}
+			if refreshed, err := activator.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
+				Channel:                 binding.Channel,
+				ChannelAppID:            binding.ChannelAppID,
+				ChannelUserID:           binding.ChannelUserID,
+				ChannelConversationID:   binding.ChannelConversationID,
+				ChannelConversationType: binding.ChannelConversationType,
+			}); err == nil && refreshed != nil {
+				binding = refreshed
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -638,11 +675,18 @@ func (h *ChannelAgentBindingHandler) HandleListAgentChannelBindings(w http.Respo
 	}
 	items := make([]map[string]interface{}, 0, len(rows))
 	for _, binding := range rows {
+		accessMode := types.ChannelAgentAccessApprovalRequired
+		if binding.EntryID > 0 {
+			if entry, err := bindings.GetChannelAgentEntryByID(binding.EntryID); err == nil && entry != nil {
+				accessMode = types.NormalizeChannelAgentAccessMode(entry.AccessMode)
+			}
+		}
 		item := map[string]interface{}{
 			"binding":       binding,
 			"status":        channelBindingManagementStatus(binding),
 			"channel":       binding.Channel,
 			"channel_user":  binding.ChannelUserID,
+			"access_mode":   accessMode,
 			"canonical_uid": binding.CanonicalUID,
 			"updated_at":    binding.UpdatedAt,
 		}
@@ -1037,6 +1081,9 @@ func bindOrRequestChannelAgentAccess(
 	if err != nil {
 		return nil, nil, err
 	}
+	if binding != nil && binding.Status == types.ChannelAgentBindingRejected {
+		return binding, nil, nil
+	}
 	if channelBindingTargetsEntry(binding, entry) {
 		return binding, nil, nil
 	}
@@ -1089,7 +1136,7 @@ func bindOrRequestChannelAgentAccess(
 		}
 	}
 	if canonicalUID > 0 {
-		nextStatus, createFriendRequest, err := channelBindingStatusForCanonicalUser(db, canonicalUID, entry.AgentUID)
+		nextStatus, createFriendRequest, err := channelBindingStatusForEntryCanonicalUser(db, entry, canonicalUID)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1154,6 +1201,19 @@ func channelBindingStatusForCanonicalUser(db store.Store, canonicalUID, agentUID
 		return types.ChannelAgentBindingActive, false, nil
 	}
 	return types.ChannelAgentBindingPendingApproval, true, nil
+}
+
+func channelBindingStatusForEntryCanonicalUser(db store.Store, entry *types.ChannelAgentEntry, canonicalUID int64) (string, bool, error) {
+	if entry != nil && types.NormalizeChannelAgentAccessMode(entry.AccessMode) == types.ChannelAgentAccessPublic {
+		if canonicalUID > 0 {
+			return types.ChannelAgentBindingActive, false, nil
+		}
+		return types.ChannelAgentBindingPendingLogin, false, nil
+	}
+	if entry == nil {
+		return types.ChannelAgentBindingPendingLogin, false, nil
+	}
+	return channelBindingStatusForCanonicalUser(db, canonicalUID, entry.AgentUID)
 }
 
 func channelAgentAccessFriendMessage(channel string) string {
@@ -1242,13 +1302,16 @@ func channelBindingDeviceLinkURL(r *http.Request, binding *types.ChannelAgentBin
 	return publicBaseURL(r) + "/channel-device-link?binding_id=" + strconv.FormatInt(binding.ID, 10) + "&link_token=" + token
 }
 
-func channelBindingDeviceLinkGuidance(r *http.Request, binding *types.ChannelAgentBinding) string {
+func channelBindingDeviceLinkGuidance(db store.Store, r *http.Request, binding *types.ChannelAgentBinding) string {
 	if binding == nil || binding.CanonicalUID > 0 {
 		return ""
 	}
 	link := channelBindingDeviceLinkURL(r, binding)
 	if link == "" {
 		return "你还没有登录绑定 CatsCo 账号。请联系管理员检查账号绑定链接配置。"
+	}
+	if ok, err := channelBindingEntryAllowsPublicAccess(db, binding); err == nil && ok {
+		return "请先登录 CatsCo 账号完成身份验证。验证后就可以继续和该虚拟员工对话；如果后续需要操作你的电脑，也只会使用你自己账号名下授权的设备：\n" + link
 	}
 	return "请先登录 CatsCo 账号并申请添加该虚拟员工。通过后，我才能在这里继续为你服务；如果后续需要操作你的电脑，也只会使用你自己账号名下授权的设备：\n" + link
 }
@@ -1301,6 +1364,11 @@ func validateDeliverableChannelBinding(db store.Store, binding *types.ChannelAge
 	} else if err != nil {
 		return err
 	}
+	if ok, err := channelBindingEntryAllowsPublicAccess(db, binding); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
 	allowed, err := db.AreFriends(binding.CanonicalUID, binding.AgentUID)
 	if err != nil {
 		return err
@@ -1320,6 +1388,11 @@ func channelBindingPendingFriendApproval(db store.Store, binding *types.ChannelA
 	} else if err != nil {
 		return false, err
 	}
+	if ok, err := channelBindingEntryAllowsPublicAccess(db, binding); err != nil {
+		return false, err
+	} else if ok {
+		return false, nil
+	}
 	allowed, err := db.AreFriends(binding.CanonicalUID, binding.AgentUID)
 	if err != nil {
 		return false, err
@@ -1328,6 +1401,33 @@ func channelBindingPendingFriendApproval(db store.Store, binding *types.ChannelA
 		return false, nil
 	}
 	return !allowed, nil
+}
+
+func channelBindingEntryAllowsPublicAccess(db store.Store, binding *types.ChannelAgentBinding) (bool, error) {
+	if db == nil || binding == nil || binding.EntryID <= 0 {
+		return false, nil
+	}
+	bindings, ok := db.(store.ChannelAgentBindingStore)
+	if !ok {
+		return false, nil
+	}
+	entry, err := bindings.GetChannelAgentEntryByID(binding.EntryID)
+	if err != nil {
+		return false, err
+	}
+	if entry == nil || entry.Status != "active" {
+		return false, nil
+	}
+	if entry.OwnerUID != binding.OwnerUID || entry.AgentUID != binding.AgentUID {
+		return false, nil
+	}
+	if normalizeChannel(entry.Channel) != normalizeChannel(binding.Channel) {
+		return false, nil
+	}
+	if strings.TrimSpace(entry.ChannelAppID) != "" && strings.TrimSpace(entry.ChannelAppID) != strings.TrimSpace(binding.ChannelAppID) {
+		return false, nil
+	}
+	return types.NormalizeChannelAgentAccessMode(entry.AccessMode) == types.ChannelAgentAccessPublic, nil
 }
 
 func isChannelDeviceLinkRequest(text string) bool {

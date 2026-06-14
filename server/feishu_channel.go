@@ -295,7 +295,11 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 		return
 	}
 	if channelBindingNeedsCatsCoLogin(binding) {
-		writeHTML(w, http.StatusOK, oauthResultHTML("需要登录 CatsCo", fmt.Sprintf("你已通过飞书确认身份。请继续登录 CatsCo 账号并申请添加「%s」；管理员通过后，你就可以回到飞书聊天框提问。\n\n%s", name, channelBindingDeviceLinkGuidance(r, binding))))
+		if ok, err := channelBindingEntryAllowsPublicAccess(h.db, binding); err == nil && ok {
+			writeHTML(w, http.StatusOK, oauthResultHTML("需要登录 CatsCo", fmt.Sprintf("你已通过飞书确认身份。请继续登录 CatsCo 账号完成验证；验证后，你就可以回到飞书和「%s」对话。\n\n%s", name, channelBindingDeviceLinkGuidance(h.db, r, binding))))
+		} else {
+			writeHTML(w, http.StatusOK, oauthResultHTML("需要登录 CatsCo", fmt.Sprintf("你已通过飞书确认身份。请继续登录 CatsCo 账号并申请添加「%s」；管理员通过后，你就可以回到飞书聊天框提问。\n\n%s", name, channelBindingDeviceLinkGuidance(h.db, r, binding))))
+		}
 		return
 	}
 	if channelBindingRejected(binding) {
@@ -809,7 +813,7 @@ func (h *FeishuChannelHandler) formatFeishuAccountBindingReply(appID, channelUse
 		return "请先选择一个虚拟员工，再绑定 CatsCo 账号。\n" + h.formatFeishuRosterReply(appID)
 	}
 	if channelBindingNeedsCatsCoLogin(binding) {
-		return channelBindingDeviceLinkGuidance(nil, binding)
+		return channelBindingDeviceLinkGuidance(h.db, nil, binding)
 	}
 	return "你已经完成 CatsCo 账号绑定。如需使用自己的电脑文件，请发送「设备授权」。"
 }
@@ -820,7 +824,7 @@ func (h *FeishuChannelHandler) formatFeishuDeviceBindingReply(appID, channelUser
 		return "请先选择一个虚拟员工，再进行设备授权。\n" + h.formatFeishuRosterReply(appID)
 	}
 	if channelBindingNeedsCatsCoLogin(binding) {
-		return channelBindingDeviceLinkGuidance(nil, binding)
+		return channelBindingDeviceLinkGuidance(h.db, nil, binding)
 	}
 	if link := channelBindingDeviceLinkURL(nil, binding); link != "" {
 		return "设备授权只会绑定你自己的 CatsCo 账号和设备，不会授权虚拟员工 owner 的电脑。\n请打开链接完成授权：" + link
@@ -833,7 +837,7 @@ func (h *FeishuChannelHandler) feishuBindingDeliverableMessage(binding *types.Ch
 		return "请先选择一个虚拟员工。", false, nil
 	}
 	if channelBindingNeedsCatsCoLogin(binding) {
-		return channelBindingDeviceLinkGuidance(nil, binding), false, nil
+		return channelBindingDeviceLinkGuidance(h.db, nil, binding), false, nil
 	}
 	if channelBindingRejected(binding) {
 		return "你添加该虚拟员工的申请未通过，暂时不能对话。", false, nil

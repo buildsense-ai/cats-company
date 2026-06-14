@@ -16,17 +16,11 @@ func (a *Adapter) EnsureChannelAgentEntry(entry *types.ChannelAgentEntry) (*type
 		return nil, fmt.Errorf("invalid channel agent entry")
 	}
 	accessMode := types.NormalizeChannelAgentAccessMode(entry.AccessMode)
-	existing, err := a.getActiveChannelAgentEntry(entry.OwnerUID, entry.AgentUID, entry.Channel, entry.ChannelAppID)
+	existing, err := a.getActiveChannelAgentEntry(entry.OwnerUID, entry.AgentUID, entry.Channel, entry.ChannelAppID, accessMode)
 	if err != nil {
 		return nil, err
 	}
 	if existing != nil {
-		if existing.AccessMode != accessMode {
-			if _, err := a.db.Exec(`UPDATE channel_agent_entries SET access_mode = $1 WHERE id = $2`, accessMode, existing.ID); err != nil {
-				return nil, fmt.Errorf("update channel agent entry access mode: %w", err)
-			}
-			return a.GetChannelAgentEntryByID(existing.ID)
-		}
 		return existing, nil
 	}
 
@@ -634,13 +628,13 @@ func (a *Adapter) ResolveChannelAgentRoute(query types.ChannelAgentRouteQuery) (
 	return route, nil
 }
 
-func (a *Adapter) getActiveChannelAgentEntry(ownerUID, agentUID int64, channel, channelAppID string) (*types.ChannelAgentEntry, error) {
+func (a *Adapter) getActiveChannelAgentEntry(ownerUID, agentUID int64, channel, channelAppID, accessMode string) (*types.ChannelAgentEntry, error) {
 	row := a.db.QueryRow(
 		`SELECT id, scene_key, channel, channel_app_id, access_mode, owner_uid, agent_uid, status, created_at, updated_at, last_used_at
 		 FROM channel_agent_entries
-		 WHERE owner_uid = $1 AND agent_uid = $2 AND channel = $3 AND channel_app_id = $4 AND status = 'active'
+		 WHERE owner_uid = $1 AND agent_uid = $2 AND channel = $3 AND channel_app_id = $4 AND access_mode = $5 AND status = 'active'
 		 ORDER BY created_at DESC LIMIT 1`,
-		ownerUID, agentUID, channel, channelAppID,
+		ownerUID, agentUID, channel, channelAppID, types.NormalizeChannelAgentAccessMode(accessMode),
 	)
 	entry, err := scanChannelAgentEntry(row)
 	if err == sql.ErrNoRows {

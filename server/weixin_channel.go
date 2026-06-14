@@ -252,7 +252,11 @@ func (h *WeixinChannelHandler) handleScanEvent(w http.ResponseWriter, ctx contex
 		return
 	}
 	if channelBindingNeedsCatsCoLogin(binding) {
-		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, fmt.Sprintf("你已通过微信确认身份。请继续登录 CatsCo 账号并申请添加「%s」；管理员通过后，你就可以在公众号聊天框提问。\n\n%s", name, channelBindingDeviceLinkGuidance(nil, binding)))
+		if ok, err := channelBindingEntryAllowsPublicAccess(h.db, binding); err == nil && ok {
+			writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, fmt.Sprintf("你已通过微信确认身份。请继续登录 CatsCo 账号完成验证；验证后，你就可以和「%s」对话。\n\n%s", name, channelBindingDeviceLinkGuidance(h.db, nil, binding)))
+		} else {
+			writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, fmt.Sprintf("你已通过微信确认身份。请继续登录 CatsCo 账号并申请添加「%s」；管理员通过后，你就可以在公众号聊天框提问。\n\n%s", name, channelBindingDeviceLinkGuidance(h.db, nil, binding)))
+		}
 		return
 	}
 	if channelBindingRejected(binding) {
@@ -324,7 +328,7 @@ func (h *WeixinChannelHandler) handleTextMessage(w http.ResponseWriter, ctx cont
 		}
 	}
 	if channelBindingNeedsCatsCoLogin(binding) {
-		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, channelBindingDeviceLinkGuidance(nil, binding))
+		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, channelBindingDeviceLinkGuidance(h.db, nil, binding))
 		return
 	}
 	if channelBindingRejected(binding) {

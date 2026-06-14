@@ -230,6 +230,8 @@ const (
 // NormalizeChannelAgentAccessMode returns the persisted entry access mode.
 func NormalizeChannelAgentAccessMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case ChannelAgentAccessPublic:
+		return ChannelAgentAccessPublic
 	case ChannelAgentAccessApprovalRequired:
 		return ChannelAgentAccessApprovalRequired
 	default:

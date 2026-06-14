@@ -52,7 +52,6 @@ func (a *Adapter) CreateSchema() error {
 		migrateChannelAgentEntriesAddAppID,
 		migrateChannelAgentEntriesAddAccessMode,
 		migrateChannelAgentEntriesDefaultAccessMode,
-		migrateChannelAgentEntriesPublicToApprovalRequired,
 		migrateChannelAgentBindingsAddActorUID,
 		migrateChannelAgentBindingsAddCanonicalUID,
 		migrateChannelAgentEntriesOwnerAgentIndex,
@@ -484,10 +483,6 @@ ALTER TABLE channel_agent_entries ADD COLUMN access_mode VARCHAR(32) NOT NULL DE
 
 const migrateChannelAgentEntriesDefaultAccessMode = `
 ALTER TABLE channel_agent_entries ALTER COLUMN access_mode SET DEFAULT 'approval_required';
-`
-
-const migrateChannelAgentEntriesPublicToApprovalRequired = `
-UPDATE channel_agent_entries SET access_mode = 'approval_required' WHERE access_mode = 'public';
 `
 
 const migrateChannelAgentBindingsAddActorUID = `

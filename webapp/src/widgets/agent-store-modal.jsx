@@ -11,6 +11,17 @@ const CREATE_MODES = {
   MANAGED: 'managed',
 };
 
+const CHANNEL_AGENT_ACCESS_MODES = {
+  APPROVAL_REQUIRED: 'approval_required',
+  PUBLIC: 'public',
+};
+
+const normalizeChannelAgentAccessMode = (value) => (
+  value === CHANNEL_AGENT_ACCESS_MODES.PUBLIC
+    ? CHANNEL_AGENT_ACCESS_MODES.PUBLIC
+    : CHANNEL_AGENT_ACCESS_MODES.APPROVAL_REQUIRED
+);
+
 const initialForm = {
   display_name: '',
 };
@@ -478,7 +489,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
   const [channel, setChannel] = useState('weixin');
   const [channelAppIds, setChannelAppIds] = useState({ weixin: '', feishu: '' });
   const [entries, setEntries] = useState([]);
-  const [accessMode, setAccessMode] = useState('approval_required');
+  const [accessMode, setAccessMode] = useState(CHANNEL_AGENT_ACCESS_MODES.APPROVAL_REQUIRED);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -538,7 +549,10 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
     entry.channel === targetChannel
     && (targetChannel === 'feishu' || targetChannel === 'weixin' || (entry.channel_app_id || '') === targetAppId)
   );
-  const selected = entries.find((entry) => entryScopeMatches(entry));
+  const selected = entries.find((entry) => (
+    entryScopeMatches(entry)
+    && normalizeChannelAgentAccessMode(entry.access_mode) === accessMode
+  ));
   const entryUrl = selected?.entry_url || '';
   const channelQrUrl = selected?.channel_qr_url || '';
   const qrValue = selected?.qr_value || '';
@@ -557,14 +571,6 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
     setQrImageError(false);
   }, [displayQrUrl]);
 
-  useEffect(() => {
-    if (selected?.access_mode) {
-      setAccessMode(selected.access_mode);
-    } else {
-      setAccessMode('approval_required');
-    }
-  }, [selected?.id, selected?.access_mode]);
-
   const handleGenerate = async () => {
     try {
       setSaving(true);
@@ -572,26 +578,14 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
       const res = await api.createAgentEntry(botId, channel, normalizedChannelAppId, accessMode);
       const next = res.entry;
       setEntries((prev) => [next, ...prev.filter((entry) => (
-        !entryScopeMatches(entry, next.channel, next.channel === 'feishu' || next.channel === 'weixin' ? '' : (next.channel_app_id || ''))
+        !(
+          entryScopeMatches(entry, next.channel, next.channel === 'feishu' || next.channel === 'weixin' ? '' : (next.channel_app_id || ''))
+          && normalizeChannelAgentAccessMode(entry.access_mode) === normalizeChannelAgentAccessMode(next.access_mode)
+        )
       ))]);
       await loadPendingRequests();
     } catch (err) {
       setError(err.message || 'Failed to generate entry code');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleSaveAccessMode = async () => {
-    if (!selected || selected.access_mode === accessMode) return;
-    try {
-      setSaving(true);
-      setError('');
-      const res = await api.createAgentEntry(botId, channel, normalizedChannelAppId, accessMode);
-      const next = res.entry;
-      setEntries((prev) => [next, ...prev.filter((entry) => entry.id !== next.id)]);
-    } catch (err) {
-      setError(err.message || 'Failed to save access mode');
     } finally {
       setSaving(false);
     }
@@ -607,7 +601,10 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
       const next = res.entry;
       setEntries((prev) => [next, ...prev.filter((entry) => (
         entry.id !== selected.id
-        && !entryScopeMatches(entry, next.channel, next.channel === 'feishu' || next.channel === 'weixin' ? '' : (next.channel_app_id || ''))
+        && !(
+          entryScopeMatches(entry, next.channel, next.channel === 'feishu' || next.channel === 'weixin' ? '' : (next.channel_app_id || ''))
+          && normalizeChannelAgentAccessMode(entry.access_mode) === normalizeChannelAgentAccessMode(next.access_mode)
+        )
       ))]);
     } catch (err) {
       setError(err.message || 'Failed to regenerate entry code');
@@ -637,7 +634,11 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
 
   const bindingsByStatus = useMemo(() => {
     const buckets = { approved: [], rejected: [], needs_login: [], pending: [] };
-    (managedBindings || []).forEach((item) => {
+    (managedBindings || []).filter((item) => (
+      normalizeChannelAgentAccessMode(item.access_mode || item.entry_access_mode) === accessMode
+      && normalizeChannel(item.channel || item.binding?.channel) === channel
+      && (!selected?.id || Number(item.binding?.entry_id || item.entry_id || 0) === Number(selected.id))
+    )).forEach((item) => {
       const status = item.status || item.binding?.status || '';
       if (status === 'approved' || status === 'active') buckets.approved.push(item);
       else if (status === 'rejected') buckets.rejected.push(item);
@@ -645,7 +646,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
       else if (status === 'pending' || status === 'pending_approval') buckets.pending.push(item);
     });
     return buckets;
-  }, [managedBindings]);
+  }, [managedBindings, accessMode, channel, selected]);
 
   const accessTabs = [
     ['pending', '待处理', pendingRequests.length + bindingsByStatus.pending.length],
@@ -699,32 +700,29 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
 
           <div style={{ marginBottom: 16 }}>
             <div style={{ color: 'var(--v3-text-muted)', fontSize: 12, marginBottom: 8 }}>访问方式</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8 }}>
-              <button
-                type="button"
-                className="oc-btn oc-btn-primary"
-                style={{ padding: '9px 0', borderRadius: 8 }}
-                onClick={() => setAccessMode('approval_required')}
-              >
-                好友申请
-              </button>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+              {[
+                [CHANNEL_AGENT_ACCESS_MODES.APPROVAL_REQUIRED, '好友申请'],
+                [CHANNEL_AGENT_ACCESS_MODES.PUBLIC, '公开访问'],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`oc-btn ${accessMode === value ? 'oc-btn-primary' : 'oc-btn-default'}`}
+                  style={{ padding: '9px 0', borderRadius: 8 }}
+                  onClick={() => setAccessMode(value)}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
             <div style={{ color: 'var(--v3-text-muted)', fontSize: 12, lineHeight: 1.6, marginTop: 8 }}>
-              {channel === 'feishu'
-                ? '用户用飞书扫码后会打开该虚拟员工的飞书应用或机器人入口；首次进入会提交好友申请，通过后可直接在飞书对话。需要账号或设备授权时，再按提示完成绑定。'
-                : '扫码后需要登录 CatsCo 并发送好友申请，通过后才能对话；设备操作只会使用申请人自己授权的设备。'}
+              {accessMode === CHANNEL_AGENT_ACCESS_MODES.PUBLIC
+                ? '扫码后仍需登录 CatsCo 账号；账号验证通过后可直接对话，不需要管理员审批。设备操作只会使用申请人自己授权的设备。'
+                : channel === 'feishu'
+                  ? '用户用飞书扫码后会打开该虚拟员工的飞书应用或机器人入口；首次进入会提交好友申请，通过后可直接在飞书对话。需要账号或设备授权时，再按提示完成绑定。'
+                  : '扫码后需要登录 CatsCo 并发送好友申请，通过后才能对话；设备操作只会使用申请人自己授权的设备。'}
             </div>
-            {selected && selected.access_mode !== accessMode && (
-              <button
-                type="button"
-                className="oc-btn oc-btn-default"
-                style={{ width: '100%', padding: '8px 0', borderRadius: 8, marginTop: 10 }}
-                onClick={handleSaveAccessMode}
-                disabled={saving}
-              >
-                {saving ? '正在保存...' : '保存访问方式'}
-              </button>
-            )}
           </div>
 
           {error && (
@@ -841,7 +839,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
                   </div>
                 </div>
               </div>
-              {selected.access_mode === 'approval_required' && (
+              {normalizeChannelAgentAccessMode(selected.access_mode) === CHANNEL_AGENT_ACCESS_MODES.APPROVAL_REQUIRED && (
                 <div style={{ marginTop: 18, borderTop: '1px solid var(--v3-border)', paddingTop: 16 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
                     <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, fontSize: 13 }}>访问管理</div>
