@@ -220,7 +220,8 @@ func (h *WeixinChannelHandler) handleScanEvent(w http.ResponseWriter, ctx contex
 		return
 	}
 	appID := h.effectiveAppID(msg.ToUserName)
-	entry, canonicalUIDHint, err := h.resolveWeixinEntryScene(sceneKey, appID, true)
+	isMobileIdentityLink := strings.HasPrefix(strings.TrimSpace(sceneKey), "m.")
+	entry, canonicalUIDHint, err := h.resolveWeixinEntryScene(sceneKey, appID, false)
 	if err != nil {
 		log.Printf("weixin scan entry lookup failed: %v", err)
 		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "读取虚拟员工入口失败，请稍后重试。")
@@ -239,8 +240,17 @@ func (h *WeixinChannelHandler) handleScanEvent(w http.ResponseWriter, ctx contex
 	binding, accessRequest, err := h.bindOrRequestWeixinIdentityWithCanonical(entry, actorUID, appID, openID, "", "p2p", canonicalUIDHint)
 	if err != nil {
 		log.Printf("bind weixin identity failed: %v", err)
+		if errors.Is(err, store.ErrChannelAgentBindingAlreadyLinked) {
+			writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "这个微信身份已经绑定到另一个 CatsCo 账号。请使用原 CatsCo 账号生成移动端二维码，或先解绑后再绑定。")
+			return
+		}
 		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "保存虚拟员工绑定失败，请稍后重试。")
 		return
+	}
+	if isMobileIdentityLink && canonicalUIDHint > 0 {
+		if _, _, err := h.resolveWeixinEntryScene(sceneKey, appID, true); err != nil {
+			log.Printf("consume weixin mobile link failed: %v", err)
+		}
 	}
 	agent, _ := h.db.GetUser(entry.AgentUID)
 	name := "该虚拟员工"

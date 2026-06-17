@@ -237,7 +237,8 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 		writeHTML(w, http.StatusBadRequest, oauthResultHTML("绑定失败", "授权状态已失效，请重新扫码。"))
 		return
 	}
-	entry, canonicalUIDHint, err := h.resolveFeishuEntryScene(state.SceneKey, true)
+	isMobileIdentityLink := strings.HasPrefix(strings.TrimSpace(state.SceneKey), "m.")
+	entry, canonicalUIDHint, err := h.resolveFeishuEntryScene(state.SceneKey, false)
 	if err != nil {
 		writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "读取虚拟员工入口失败。"))
 		return
@@ -277,8 +278,17 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 	binding, accessRequest, err := h.bindOrRequestFeishuIdentityWithCanonical(entry, actorUID, channelUserID, "", "p2p", canonicalUIDHint)
 	if err != nil {
 		log.Printf("bind feishu identity failed: %v", err)
+		if errors.Is(err, store.ErrChannelAgentBindingAlreadyLinked) {
+			writeHTML(w, http.StatusConflict, oauthResultHTML("绑定失败", "这个飞书身份已经绑定到另一个 CatsCo 账号。请使用原 CatsCo 账号生成移动端二维码，或先解绑后再绑定。"))
+			return
+		}
 		writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "保存虚拟员工绑定失败，请稍后重试。"))
 		return
+	}
+	if isMobileIdentityLink && canonicalUIDHint > 0 {
+		if _, _, err := h.resolveFeishuEntryScene(state.SceneKey, true); err != nil {
+			log.Printf("consume feishu mobile link failed: %v", err)
+		}
 	}
 	if binding != nil {
 		if _, err := h.upsertFeishuRoute(h.effectiveAppID(""), channelUserID, "", "p2p", actorUID, binding.AgentUID, "oauth"); err != nil {

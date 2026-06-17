@@ -221,6 +221,75 @@ func TestWeixinMobileIdentityLinkReusesExistingCatsCoFriend(t *testing.T) {
 	}
 }
 
+func TestWeixinMobileIdentityLinkRejectsDifferentCatsCoUserWithoutConsuming(t *testing.T) {
+	t.Setenv("CATSCO_CHANNEL_BINDING_TOKEN", "mobile-link-test-secret")
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	db.users[9] = &types.User{ID: 9, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman}
+	db.users[10] = &types.User{ID: 10, Username: "bob", DisplayName: "Bob", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.users[100] = &types.User{ID: 100, Username: channelActorUsername("weixin", "wx_app", "openid-mobile"), DisplayName: "Weixin Mobile", AccountType: types.AccountHuman}
+	db.owners[43] = 7
+	db.friends[friendKey(9, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 9)] = types.FriendAccepted
+	entry, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+		SceneKey:     "scene-private-weixin",
+		Channel:      "weixin",
+		ChannelAppID: "wx_app",
+		AccessMode:   types.ChannelAgentAccessApprovalRequired,
+		OwnerUID:     7,
+		AgentUID:     43,
+		Status:       "active",
+	})
+	if err != nil {
+		t.Fatalf("seed entry: %v", err)
+	}
+	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:                 "weixin",
+		ChannelAppID:            "wx_app",
+		ChannelUserID:           "openid-mobile",
+		ChannelConversationType: "p2p",
+		ActorUID:                100,
+		CanonicalUID:            10,
+		OwnerUID:                7,
+		AgentUID:                43,
+		EntryID:                 entry.ID,
+		Status:                  types.ChannelAgentBindingActive,
+	}); err != nil {
+		t.Fatalf("seed existing channel identity: %v", err)
+	}
+	mobileLink, err := db.CreateChannelIdentityMobileLink(&types.ChannelIdentityMobileLink{
+		SceneKey:     "m.weixin-conflict",
+		EntryID:      entry.ID,
+		Channel:      "weixin",
+		ChannelAppID: "wx_app",
+		CanonicalUID: 9,
+		ExpiresAt:    time.Now().Add(10 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("create mobile link: %v", err)
+	}
+
+	handler := NewWeixinChannelHandler(db, nil, WeixinChannelConfig{
+		AppID:      "wx_app",
+		EventToken: "token-1",
+	}, &fakeWeixinAPI{appID: "wx_app"})
+	body := `<xml><ToUserName><![CDATA[gh_app]]></ToUserName><FromUserName><![CDATA[openid-mobile]]></FromUserName><CreateTime>1</CreateTime><MsgType><![CDATA[event]]></MsgType><Event><![CDATA[subscribe]]></Event><EventKey><![CDATA[qrscene_` + mobileLink.SceneKey + `]]></EventKey></xml>`
+	req := httptest.NewRequest(http.MethodPost, "/api/channels/weixin/events?timestamp=1&nonce=2&signature="+weixinTestSignature("token-1", "1", "2"), strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.HandleEvents(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("scan status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "已经绑定到另一个 CatsCo 账号") {
+		t.Fatalf("expected account conflict guidance, body=%s", body)
+	}
+	if got := db.mobileLinks[mobileLink.SceneKey]; got == nil || got.Status != "active" {
+		t.Fatalf("mobile link should remain active after failed binding, got=%+v", got)
+	}
+}
+
 func TestWeixinApprovalRequiredScanCreatesPendingAccess(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
