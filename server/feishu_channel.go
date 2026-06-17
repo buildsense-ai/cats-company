@@ -327,11 +327,7 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 	if err := h.db.CreateTopic(p2pTopicID(actorUID, entry.AgentUID), "p2p", actorUID); err != nil {
 		log.Printf("create feishu agent topic failed: %v", err)
 	}
-	message := fmt.Sprintf("你已进入「%s」，可以回到飞书聊天框直接提问。", name)
-	if link := channelBindingDeviceLinkURL(r, binding); link != "" {
-		message += " 如需让我使用你的电脑文件，请登录 CatsCo 完成设备授权：" + link
-	}
-	writeHTML(w, http.StatusOK, oauthResultHTML("绑定完成", message))
+	writeHTML(w, http.StatusOK, oauthResultHTML("绑定完成", fmt.Sprintf("你已进入「%s」，可以回到飞书聊天框直接提问。", name)))
 }
 
 // HandleEvents receives Feishu URL verification and message events.

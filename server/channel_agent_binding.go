@@ -1340,7 +1340,10 @@ func bindOrRequestChannelAgentAccessWithCanonical(
 			}
 		}
 	}
-	deviceAccessEnabled := canonicalUID > 0 && canonicalUID == entry.OwnerUID
+	// Device access follows the canonical CatsCo speaker, not the virtual
+	// employee owner. The owner controls who may chat with the agent; tool
+	// execution stays scoped to the requesting user's own devices.
+	deviceAccessEnabled := canonicalUID > 0
 	binding, err = bindings.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:                 channel,
 		ChannelAppID:            strings.TrimSpace(channelAppID),

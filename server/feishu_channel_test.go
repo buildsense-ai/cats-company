@@ -192,7 +192,7 @@ func TestFeishuOAuthCallbackMobileIdentityLinkReusesExistingCatsCoFriend(t *test
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); strings.Contains(body, "需要登录") || strings.Contains(body, "好友申请") || strings.Contains(body, "管理员通过") {
+	if body := rec.Body.String(); strings.Contains(body, "需要登录") || strings.Contains(body, "好友申请") || strings.Contains(body, "管理员通过") || strings.Contains(body, "channel-device-link") || strings.Contains(body, "设备授权") {
 		t.Fatalf("mobile link should bind directly, body=%s", body)
 	}
 	binding, err := db.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{

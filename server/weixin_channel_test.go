@@ -209,7 +209,7 @@ func TestWeixinMobileIdentityLinkReusesExistingCatsCoFriend(t *testing.T) {
 	if len(db.accessRequests) != 0 {
 		t.Fatalf("mobile link should not create a new approval request: %+v", db.accessRequests)
 	}
-	if body := rec.Body.String(); strings.Contains(body, "需要登录") || strings.Contains(body, "好友申请") || strings.Contains(body, "管理员通过") {
+	if body := rec.Body.String(); strings.Contains(body, "需要登录") || strings.Contains(body, "好友申请") || strings.Contains(body, "管理员通过") || strings.Contains(body, "channel-device-link") || strings.Contains(body, "设备授权") {
 		t.Fatalf("mobile link should bind directly, reply=%s", body)
 	}
 	reused, _, err := resolveChannelIdentityMobileLink(db, sceneKey, "weixin", "wx_app", true)

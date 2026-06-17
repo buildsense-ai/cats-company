@@ -367,7 +367,7 @@ func TestChannelIdentityMobileLinkRejectsInvalidOrRevokedAccess(t *testing.T) {
 	}
 }
 
-func TestMobileChannelBindingDeviceAccessFollowsAgentOwnership(t *testing.T) {
+func TestMobileChannelBindingDeviceAccessFollowsCanonicalSpeaker(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
 	db.users[9] = &types.User{ID: 9, Username: "friend", DisplayName: "Friend", AccountType: types.AccountHuman}
@@ -394,8 +394,8 @@ func TestMobileChannelBindingDeviceAccessFollowsAgentOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind friend mobile identity: %v", err)
 	}
-	if friendBinding == nil || friendBinding.Status != types.ChannelAgentBindingActive || friendBinding.DeviceAccessEnabled {
-		t.Fatalf("friend mobile binding should chat without device access: %+v", friendBinding)
+	if friendBinding == nil || friendBinding.Status != types.ChannelAgentBindingActive || !friendBinding.DeviceAccessEnabled {
+		t.Fatalf("friend mobile binding should use canonical speaker device access: %+v", friendBinding)
 	}
 	hub := NewHub(db, nil)
 	friendMetadata := map[string]interface{}{
@@ -404,8 +404,8 @@ func TestMobileChannelBindingDeviceAccessFollowsAgentOwnership(t *testing.T) {
 		"channel_user_id":           "openid-friend",
 		"channel_conversation_type": "p2p",
 	}
-	if ownerUID, source := hub.deviceAccessOwnerUID(100, 43, friendMetadata); ownerUID != 0 || source != "channel_identity_unlinked" {
-		t.Fatalf("friend mobile binding should not expose device access, owner=%d source=%s", ownerUID, source)
+	if ownerUID, source := hub.deviceAccessOwnerUID(100, 43, friendMetadata); ownerUID != 9 || source != "channel_identity_link" {
+		t.Fatalf("friend mobile binding should expose the speaker's own device access, owner=%d source=%s", ownerUID, source)
 	}
 
 	ownerBinding, _, err := bindOrRequestChannelAgentAccessWithCanonical(db, db, entry, 101, "weixin", "wx_app", "openid-owner", "", "p2p", 7)
