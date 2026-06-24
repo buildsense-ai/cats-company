@@ -1186,7 +1186,7 @@ func TestFeishuEntryResponseWithoutAppIDDoesNotFallBackToWebQRCode(t *testing.T)
 	}
 }
 
-func TestFeishuEntryResponseUsesNativeEntryTemplate(t *testing.T) {
+func TestFeishuEntryResponseUsesOAuthShortLinkForQRCode(t *testing.T) {
 	t.Setenv("CATSCO_FEISHU_APP_ID", "cli_app")
 	t.Setenv("CATSCO_FEISHU_APP_SECRET", "secret")
 	t.Setenv("CATSCO_FEISHU_ENTRY_URL_TEMPLATE", "https://applink.feishu.cn/client/app/open?app_id={app_id}&scene={scene_key}&landing={landing_url_encoded}")
@@ -1200,14 +1200,14 @@ func TestFeishuEntryResponseUsesNativeEntryTemplate(t *testing.T) {
 	if resp.FeishuOAuthURL != "https://app.catsco.cc/api/channel-agent-bindings/oauth/feishu/start?scene_key=scene-feishu" {
 		t.Fatalf("feishu_oauth_url=%s", resp.FeishuOAuthURL)
 	}
-	want := "https://app.catsco.cc/api/fn/scene-feishu"
+	want := "https://app.catsco.cc/api/f/scene-feishu"
 	if resp.ChannelQRURL != want {
 		t.Fatalf("channel_qr_url=%s", resp.ChannelQRURL)
 	}
-	if resp.QRKind != "feishu_native_entry" || resp.QRValue != want {
+	if resp.QRKind != "feishu_oauth_entry" || resp.QRValue != want {
 		t.Fatalf("unexpected qr metadata kind=%s value=%s", resp.QRKind, resp.QRValue)
 	}
-	if resp.FeishuEntryStatus == nil || !resp.FeishuEntryStatus.Ready || resp.FeishuEntryStatus.NativeShortURL != want {
+	if resp.FeishuEntryStatus == nil || !resp.FeishuEntryStatus.Ready || resp.FeishuEntryStatus.NativeShortURL != "https://app.catsco.cc/api/fn/scene-feishu" {
 		t.Fatalf("unexpected feishu status: %+v", resp.FeishuEntryStatus)
 	}
 	if resp.FeishuEntryStatus.NativeURL != "https://applink.feishu.cn/client/app/open?app_id=cli_app&scene=scene-feishu&landing=https%3A%2F%2Fapp.catsco.cc%2Fe%2Fscene-feishu" {

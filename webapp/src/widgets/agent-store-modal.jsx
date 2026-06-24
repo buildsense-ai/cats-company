@@ -654,12 +654,14 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
   const feishuOAuthUrl = selected?.feishu_oauth_url || '';
   const feishuEntryStatus = selected?.feishu_entry_status || null;
   const feishuEntryReasons = Array.isArray(feishuEntryStatus?.reasons) ? feishuEntryStatus.reasons : [];
+  const isFeishuOAuthEntry = channel === 'feishu' && qrKind === 'feishu_oauth_entry' && qrValue;
   const isFeishuNativeEntry = channel === 'feishu' && qrKind === 'feishu_native_entry' && qrValue;
+  const hasFeishuEntryQRCode = isFeishuOAuthEntry || isFeishuNativeEntry;
   const displayQrUrl = channel === 'weixin' && channelQrUrl ? channelQrUrl : '';
-  const displayUrl = displayQrUrl || (isFeishuNativeEntry ? qrValue : (channel === 'feishu' ? '' : qrValue || entryUrl));
+  const displayUrl = displayQrUrl || (hasFeishuEntryQRCode ? qrValue : (channel === 'feishu' ? '' : qrValue || entryUrl));
   const usesLocalEntryUrl = isPotentiallyPrivateEntryUrl(displayUrl);
   const needsWeixinConfig = channel === 'weixin' && selected && !displayQrUrl;
-  const needsFeishuNativeConfig = channel === 'feishu' && selected && !isFeishuNativeEntry;
+  const needsFeishuNativeConfig = channel === 'feishu' && selected && !hasFeishuEntryQRCode;
 
   useEffect(() => {
     setQrImageError(false);
@@ -874,7 +876,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
               )}
               {feishuOAuthUrl && (
                 <div style={{ background: 'rgba(59,130,246,0.12)', color: '#93c5fd', padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
-                  OAuth 辅助链接可以用于调试身份绑定，但它不是飞书原生入口；请不要把它作为正式投放二维码。
+                  OAuth 链接可以用于调试身份绑定；正式二维码会优先使用短链版本，确保扫码先完成 CatsCo 绑定。
                 </div>
               )}
               <div style={{ display: 'flex', gap: 8 }}>
@@ -903,7 +905,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
                 )}
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 8 }}>
-                    {qrKind === 'feishu_native_entry' ? '飞书应用入口码' : displayQrUrl ? '微信公众号参数二维码' : '网页入口链接'}
+                    {qrKind === 'feishu_oauth_entry' ? '飞书 OAuth 绑定入口' : qrKind === 'feishu_native_entry' ? '飞书应用入口码' : displayQrUrl ? '微信公众号参数二维码' : '网页入口链接'}
                   </div>
                   <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10, color: 'var(--v3-text-main)', fontSize: 12, lineHeight: 1.5, wordBreak: 'break-all', marginBottom: 14 }}>
                     {displayUrl}
@@ -913,7 +915,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
                       微信二维码加载失败，请检查 AppID/AppSecret、公众号接口权限、服务器 IP 白名单和微信后台消息加解密模式。
                     </div>
                   )}
-                  {channel === 'feishu' && qrKind === 'feishu_native_entry' && feishuEntryStatus?.native_url && (
+                  {channel === 'feishu' && hasFeishuEntryQRCode && feishuEntryStatus?.native_url && (
                     <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10, color: 'var(--v3-text-muted)', fontSize: 12, lineHeight: 1.5, wordBreak: 'break-all', marginBottom: 14 }}>
                       飞书原生入口：{feishuEntryStatus.native_url}
                     </div>

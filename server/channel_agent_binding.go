@@ -1091,9 +1091,9 @@ func (h *ChannelAgentBindingHandler) entryResponseWithScene(r *http.Request, ent
 		appID := configuredFeishuAppID()
 		resp.FeishuOAuthURL = feishuOAuthStartURL(r, sceneKey)
 		if feishuStatus.Ready {
-			resp.ChannelQRURL = feishuStatus.NativeShortURL
+			resp.ChannelQRURL = feishuOAuthShortURL(r, sceneKey)
 			resp.QRValue = resp.ChannelQRURL
-			resp.QRKind = "feishu_native_entry"
+			resp.QRKind = "feishu_oauth_entry"
 		}
 		if appID == "" {
 			resp.FeishuOAuthURL = ""
@@ -1615,9 +1615,9 @@ func (h *ChannelAgentBindingHandler) groupMobileLinkResponse(r *http.Request, li
 		feishuStatus := buildFeishuEntryConfigStatusForScene(r, groupFeishuPseudoEntry(link), link.SceneKey)
 		resp.FeishuEntryStatus = feishuStatus
 		if feishuStatus.Ready {
-			resp.ChannelQRURL = feishuStatus.NativeShortURL
+			resp.ChannelQRURL = feishuOAuthShortURL(r, link.SceneKey)
 			resp.QRValue = resp.ChannelQRURL
-			resp.QRKind = "feishu_native_entry"
+			resp.QRKind = "feishu_oauth_entry"
 		}
 	}
 	return resp
