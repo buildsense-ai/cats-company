@@ -540,6 +540,8 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		return h.replyToFeishu(ctx, replyIDType, replyID, h.formatFeishuRosterReply(appID))
 	case "current":
 		return h.replyToFeishuSafely(ctx, channelUserID, event.Message.ChatID, chatType, h.formatFeishuCurrentReply(appID, channelUserID, event.Message.ChatID, chatType, actorUID))
+	case "chat_id":
+		return h.replyToFeishu(ctx, replyIDType, replyID, h.formatFeishuChatIDReply(event.Message.ChatID, chatType))
 	case "bind":
 		return h.replyToFeishuSafely(ctx, channelUserID, event.Message.ChatID, chatType, h.formatFeishuAccountBindingReply(appID, channelUserID, event.Message.ChatID, chatType, actorUID))
 	case "device":
@@ -722,6 +724,8 @@ func parseFeishuGatewayCommand(text string) feishuGatewayCommand {
 		return feishuGatewayCommand{Kind: "list", Trigger: true}
 	case "当前员工", "当前虚拟员工", "current", "/current":
 		return feishuGatewayCommand{Kind: "current", Trigger: true}
+	case "群id", "群 id", "群聊id", "群聊 id", "chat_id", "/chat_id":
+		return feishuGatewayCommand{Kind: "chat_id", Trigger: true}
 	case "绑定账号", "绑定catsco", "绑定 catsco", "/bind":
 		return feishuGatewayCommand{Kind: "bind", Trigger: true}
 	case "设备授权", "绑定设备", "/device":
@@ -736,7 +740,18 @@ func parseFeishuGatewayCommand(text string) feishuGatewayCommand {
 }
 
 func feishuGatewayHelpText() string {
-	return "我是 CatsCo 飞书虚拟员工入口。\n\n常用命令：\n- 员工列表：查看可用虚拟员工\n- 切换到 员工名：选择当前员工\n- 当前员工：查看当前会话服务者\n- 绑定账号：绑定 CatsCo 账号\n- 设备授权：授权我使用你自己的设备\n\n未选择员工、未绑定账号、申请未通过或设备未授权时，我不会把消息交给模型或操作设备。"
+	return "我是 CatsCo 飞书虚拟员工入口。\n\n常用命令：\n- 员工列表：查看可用虚拟员工\n- 切换到 员工名：选择当前员工\n- 当前员工：查看当前会话服务者\n- 群ID：查看当前飞书群 chat_id\n- 绑定账号：绑定 CatsCo 账号\n- 设备授权：授权我使用你自己的设备\n\n未选择员工、未绑定账号、申请未通过或设备未授权时，我不会把消息交给模型或操作设备。"
+}
+
+func (h *FeishuChannelHandler) formatFeishuChatIDReply(chatID, chatType string) string {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return "当前会话没有可用的飞书 chat_id。"
+	}
+	if normalizeFeishuChatType(chatType) == "group" {
+		return "当前飞书群 chat_id：\n" + chatID
+	}
+	return "当前飞书会话 chat_id：\n" + chatID
 }
 
 func feishuReplyTarget(channelUserID, chatID, chatType string) (string, string) {

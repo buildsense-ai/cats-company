@@ -979,6 +979,24 @@ func TestFeishuGroupMentionToOtherUserDoesNotTrigger(t *testing.T) {
 	}
 }
 
+func TestFeishuGroupChatIDCommandRepliesWithoutSelectedAgent(t *testing.T) {
+	db := newChannelAgentTestStore()
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_user"), DisplayName: "Alice", AccountType: types.AccountHuman}
+	api := &fakeFeishuAPI{appID: "cli_app"}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{AppID: "cli_app"}, api)
+
+	rec := sendFeishuTextEvent(t, handler, "cli_app", "ou_user", "oc_group_real", "group", "om_group_chat_id", "群ID")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(api.sends) != 1 || api.sends[0].ReceiveIDType != "chat_id" || api.sends[0].ReceiveID != "oc_group_real" || !strings.Contains(api.sends[0].Text, "oc_group_real") {
+		t.Fatalf("send=%+v", api.sends)
+	}
+	if len(db.messages) != 0 {
+		t.Fatalf("chat id command should not deliver to model: %+v", db.messages)
+	}
+}
+
 func TestFeishuGroupMentionDeliversToCoordinatorAgent(t *testing.T) {
 	t.Setenv("CATSCO_FEISHU_GROUP_BOT_ALIASES", "CoordinatorBot")
 	t.Setenv("CATSCO_FEISHU_GROUP_TEAMMATES", "甲同事|规划角色|范围判断;乙同事|交付角色|落地风险")
