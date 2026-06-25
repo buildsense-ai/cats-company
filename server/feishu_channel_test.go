@@ -1057,9 +1057,33 @@ func TestFeishuGroupMentionDeliversToCoordinatorAgent(t *testing.T) {
 	}
 }
 
-func TestFeishuGroupMentionFansOutToConfiguredAgentSpeakers(t *testing.T) {
+func TestFeishuGroupMentionStartsSequentialAgentDiscussion(t *testing.T) {
 	t.Setenv("CATSCO_FEISHU_GROUP_BOT_ALIASES", "CoordinatorBot")
-	t.Setenv("CATSCO_FEISHU_GROUP_AGENT_WEBHOOKS", "oc_group_1|43|https://example.test/dev;oc_group_1|44|https://example.test/test")
+	var devWebhookText string
+	devWebhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Content map[string]string `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode dev webhook body: %v", err)
+		}
+		devWebhookText = body.Content["text"]
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer devWebhook.Close()
+	var testWebhookText string
+	testWebhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Content map[string]string `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode test webhook body: %v", err)
+		}
+		testWebhookText = body.Content["text"]
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer testWebhook.Close()
+	t.Setenv("CATSCO_FEISHU_GROUP_AGENT_WEBHOOKS", "oc_group_1|43|"+devWebhook.URL+";oc_group_1|44|"+testWebhook.URL)
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
 	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_user"), DisplayName: "Alice", AccountType: types.AccountHuman}
@@ -1108,7 +1132,10 @@ func TestFeishuGroupMentionFansOutToConfiguredAgentSpeakers(t *testing.T) {
 		t.Fatalf("seed route: %v", err)
 	}
 	api := &fakeFeishuAPI{appID: "cli_app"}
-	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{AppID: "cli_app"}, api)
+	hub := NewHub(db, nil)
+	dispatcher := NewChannelOutboundDispatcher(db, api, "cli_app").WithHub(hub)
+	hub.SetChannelOutboundDispatcher(dispatcher)
+	handler := NewFeishuChannelHandler(db, hub, FeishuChannelConfig{AppID: "cli_app"}, api)
 
 	rec := sendFeishuTextEvent(t, handler, "cli_app", "ou_user", "oc_group_1", "group", "om_group_task", "@CoordinatorBot 帮我拆一下这个需求")
 	if rec.Code != http.StatusOK {
@@ -1117,24 +1144,47 @@ func TestFeishuGroupMentionFansOutToConfiguredAgentSpeakers(t *testing.T) {
 	if len(api.sends) != 0 {
 		t.Fatalf("group multi-agent task should not send an immediate gateway reply: %+v", api.sends)
 	}
+	if len(db.messages) != 1 || db.messages[0].TopicID != "p2p_8_43" {
+		t.Fatalf("expected first discussion turn only, got %+v", db.messages)
+	}
+	firstContent := db.messages[0].Content
+	if !strings.Contains(firstContent, "[飞书群聊多机器人协作上下文]") || !strings.Contains(firstContent, "你的群聊发言身份：Dev Agent") || !strings.Contains(firstContent, "帮我拆一下这个需求") {
+		t.Fatalf("first discussion turn not routed to dev agent:\n%s", firstContent)
+	}
+	if strings.Contains(firstContent, "群聊里前面已经发出的同事观点") || strings.Contains(firstContent, "@CoordinatorBot") {
+		t.Fatalf("first turn should not include previous replies or leading mention:\n%s", firstContent)
+	}
+
+	if err := dispatcher.ForwardBotReply(context.Background(), 8, 43, "p2p_8_43", "我先从研发风险看。"); err != nil {
+		t.Fatalf("forward dev reply: %v", err)
+	}
+	if devWebhookText != "我先从研发风险看。" {
+		t.Fatalf("dev webhook text=%q", devWebhookText)
+	}
+	if len(api.sends) != 0 {
+		t.Fatalf("custom agent webhook should handle group reply, app sends=%+v", api.sends)
+	}
+	if len(db.messages) != 2 || db.messages[1].TopicID != "p2p_8_44" {
+		t.Fatalf("expected second discussion turn after first reply, got %+v", db.messages)
+	}
+	secondContent := db.messages[1].Content
+	for _, want := range []string{"你的群聊发言身份：Test Agent", "群聊里前面已经发出的同事观点", "Dev Agent：我先从研发风险看。", "帮我拆一下这个需求"} {
+		if !strings.Contains(secondContent, want) {
+			t.Fatalf("second discussion turn missing %q:\n%s", want, secondContent)
+		}
+	}
+	if strings.Contains(secondContent, "@CoordinatorBot") {
+		t.Fatalf("leading bot mention should be stripped before second turn:\n%s", secondContent)
+	}
+
+	if err := dispatcher.ForwardBotReply(context.Background(), 8, 44, "p2p_8_44", "测试角度补充验收标准。"); err != nil {
+		t.Fatalf("forward test reply: %v", err)
+	}
+	if testWebhookText != "测试角度补充验收标准。" {
+		t.Fatalf("test webhook text=%q", testWebhookText)
+	}
 	if len(db.messages) != 2 {
-		t.Fatalf("expected two agent deliveries, got %+v", db.messages)
-	}
-	topics := map[string]string{}
-	for _, msg := range db.messages {
-		topics[msg.TopicID] = msg.Content
-	}
-	for topic, wantAgent := range map[string]string{
-		"p2p_8_43": "Dev Agent",
-		"p2p_8_44": "Test Agent",
-	} {
-		content := topics[topic]
-		if !strings.Contains(content, "[飞书群聊多机器人协作上下文]") || !strings.Contains(content, wantAgent) || !strings.Contains(content, "帮我拆一下这个需求") {
-			t.Fatalf("topic %s content not routed to %s:\n%s", topic, wantAgent, content)
-		}
-		if strings.Contains(content, "@CoordinatorBot") {
-			t.Fatalf("leading bot mention should be stripped before multi-agent delivery:\n%s", content)
-		}
+		t.Fatalf("discussion should finish after configured speakers reply, got %+v", db.messages)
 	}
 }
 

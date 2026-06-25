@@ -64,7 +64,7 @@ func deliverInboundChannelMessageToAgent(db store.Store, hub *Hub, actorUID, age
 		return fmt.Errorf("save inbound %s message: %w", source, err)
 	}
 	if !result.Duplicate && hub != nil {
-		hub.recordChannelInboundReplyRoute(topicID, conversationUID, binding)
+		hub.recordChannelInboundReplyRoute(topicID, conversationUID, binding, metadata)
 		hub.fanoutNormalizedMessage(conversationUID, topicID, 0, payload, result.ID, nil)
 	}
 	return nil

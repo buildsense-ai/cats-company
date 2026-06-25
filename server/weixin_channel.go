@@ -86,10 +86,10 @@ func (h *WeixinChannelHandler) InstallOutboundDispatcher() {
 	h.hub.mu.Lock()
 	defer h.hub.mu.Unlock()
 	if h.hub.channelOut == nil {
-		h.hub.channelOut = NewChannelOutboundDispatcher(h.db, nil, "").WithWeixin(h.api, h.effectiveAppID(""))
+		h.hub.channelOut = NewChannelOutboundDispatcher(h.db, nil, "").WithWeixin(h.api, h.effectiveAppID("")).WithHub(h.hub)
 		return
 	}
-	h.hub.channelOut.WithWeixin(h.api, h.effectiveAppID(""))
+	h.hub.channelOut.WithWeixin(h.api, h.effectiveAppID("")).WithHub(h.hub)
 }
 
 func weixinConfigFromEnv() WeixinChannelConfig {

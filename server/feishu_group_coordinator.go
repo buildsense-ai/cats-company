@@ -29,6 +29,43 @@ type feishuGroupAgentSpeaker struct {
 	Secret     string
 }
 
+const (
+	feishuGroupDiscussionMode               = "multi_agent_discussion"
+	feishuGroupDiscussionIDMetadataKey      = "channel_group_discussion_id"
+	feishuGroupDiscussionTurnMetadataKey    = "channel_group_discussion_turn_index"
+	feishuGroupDiscussionSpeakerMetadataKey = "channel_group_speaker_agent_uid"
+)
+
+type feishuGroupDiscussionParticipant struct {
+	AgentUID  int64
+	AgentName string
+	Binding   *types.ChannelAgentBinding
+	Speaker   feishuGroupAgentSpeaker
+}
+
+type feishuGroupDiscussionReply struct {
+	AgentUID  int64
+	AgentName string
+	Text      string
+}
+
+type feishuGroupDiscussionSession struct {
+	ID              string
+	AppID           string
+	ChannelUserID   string
+	ActorUID        int64
+	ChatID          string
+	MessageID       string
+	MessageType     string
+	OriginalText    string
+	CoordinatorName string
+	Participants    []feishuGroupDiscussionParticipant
+	Replies         []feishuGroupDiscussionReply
+	NextIndex       int
+	CompletedTurns  map[int]bool
+	ExpiresAt       time.Time
+}
+
 func feishuBotMentionAliases() []string {
 	raw := firstEnv("CATSCO_FEISHU_GROUP_BOT_ALIASES", "CATSCO_FEISHU_BOT_ALIASES", "FEISHU_BOT_ALIASES")
 	return uniqueNonEmptyStrings(splitFeishuList(raw))
@@ -172,15 +209,11 @@ func buildFeishuGroupCoordinatorText(text string, binding *types.ChannelAgentBin
 	return b.String()
 }
 
-func buildFeishuGroupAgentTurnText(text string, agent *types.User, coordinator *types.User, participants []*types.User, index, total int) string {
+func buildFeishuGroupAgentTurnText(text string, participant feishuGroupDiscussionParticipant, coordinatorName string, participants []feishuGroupDiscussionParticipant, previous []feishuGroupDiscussionReply, index, total int) string {
 	userText := strings.TrimSpace(text)
-	agentName := "当前虚拟员工"
-	if agent != nil {
-		agentName = displayNameOrUsername(agent.DisplayName, agent.Username)
-	}
-	coordinatorName := ""
-	if coordinator != nil {
-		coordinatorName = displayNameOrUsername(coordinator.DisplayName, coordinator.Username)
+	agentName := strings.TrimSpace(participant.AgentName)
+	if agentName == "" {
+		agentName = "当前虚拟员工"
 	}
 
 	var b strings.Builder
@@ -198,16 +231,26 @@ func buildFeishuGroupAgentTurnText(text string, agent *types.User, coordinator *
 			if i > 0 {
 				b.WriteString("、")
 			}
-			if participant == nil {
-				b.WriteString("虚拟员工")
-				continue
+			name := strings.TrimSpace(participant.AgentName)
+			if name == "" {
+				name = "虚拟员工"
 			}
-			b.WriteString(displayNameOrUsername(participant.DisplayName, participant.Username))
+			b.WriteString(name)
 		}
 		b.WriteString("\n")
 	}
+	if len(previous) > 0 {
+		b.WriteString("群聊里前面已经发出的同事观点：\n")
+		for _, reply := range previous {
+			name := strings.TrimSpace(reply.AgentName)
+			if name == "" {
+				name = "虚拟员工"
+			}
+			fmt.Fprintf(&b, "- %s：%s\n", name, strings.TrimSpace(reply.Text))
+		}
+	}
 	b.WriteString("场景：用户在飞书群聊中 @ 调度员发起任务。你会以独立机器人身份在飞书群里真实发言。请只输出你这一位虚拟员工应该发到群里的内容。\n")
-	b.WriteString("回复要求：结论优先，2-6 句为宜；像公司群里的同事一样自然发言；不要提到系统上下文、prompt、webhook 或内部配置；不要等待别人回复，也不要模拟其他人的发言。\n\n")
+	b.WriteString("回复要求：先阅读前面同事的观点，只补充你有增量的判断、风险或下一步建议；如果前面已经覆盖充分，可以简短说明你没有额外补充；2-6 句为宜；像公司群里的同事一样自然发言；不要提到系统上下文、prompt、webhook 或内部配置；不要等待别人回复，也不要模拟其他人的发言。\n\n")
 	b.WriteString("用户在群聊里的原始消息：\n")
 	b.WriteString(userText)
 	return b.String()

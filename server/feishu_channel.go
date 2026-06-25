@@ -94,10 +94,10 @@ func (h *FeishuChannelHandler) InstallOutboundDispatcher() {
 	h.hub.mu.Lock()
 	defer h.hub.mu.Unlock()
 	if h.hub.channelOut == nil {
-		h.hub.channelOut = NewChannelOutboundDispatcher(h.db, h.api, h.effectiveAppID(""))
+		h.hub.channelOut = NewChannelOutboundDispatcher(h.db, h.api, h.effectiveAppID("")).WithHub(h.hub)
 		return
 	}
-	h.hub.channelOut.WithFeishu(h.api, h.effectiveAppID(""))
+	h.hub.channelOut.WithFeishu(h.api, h.effectiveAppID("")).WithHub(h.hub)
 }
 
 func feishuConfigFromEnv() FeishuChannelConfig {
@@ -635,8 +635,22 @@ func (h *FeishuChannelHandler) deliverInboundMessageToAgent(actorUID, agentUID i
 	return deliverInboundChannelMessageToAgent(h.db, h.hub, actorUID, agentUID, text, files, clientMsgID, "feishu", metadata)
 }
 
+func (h *FeishuChannelHandler) channelOutboundDispatcher() *ChannelOutboundDispatcher {
+	if h == nil || h.hub == nil {
+		return nil
+	}
+	h.hub.mu.RLock()
+	dispatcher := h.hub.channelOut
+	h.hub.mu.RUnlock()
+	return dispatcher
+}
+
 func (h *FeishuChannelHandler) deliverFeishuGroupAgentTurns(appID, channelUserID string, actorUID int64, event *feishuMessageEvent, coordinatorBinding *types.ChannelAgentBinding, text, messageType string) (int, error) {
 	if h == nil || event == nil || coordinatorBinding == nil || normalizeFeishuChatType(event.Message.ChatType) != "group" {
+		return 0, nil
+	}
+	dispatcher := h.channelOutboundDispatcher()
+	if dispatcher == nil {
 		return 0, nil
 	}
 	speakers := feishuGroupAgentSpeakersForChat(event.Message.ChatID)
@@ -654,52 +668,69 @@ func (h *FeishuChannelHandler) deliverFeishuGroupAgentTurns(appID, channelUserID
 			entriesByAgent[item.Entry.AgentUID] = &item
 		}
 	}
-	participants := make([]*types.User, 0, len(speakers))
-	for _, speaker := range speakers {
-		if item := entriesByAgent[speaker.AgentUID]; item != nil {
-			participants = append(participants, item.Agent)
-		}
-	}
-	if len(participants) == 0 {
-		return 0, nil
-	}
 	coordinator, _ := h.db.GetUser(coordinatorBinding.AgentUID)
-	delivered := 0
+	coordinatorName := ""
+	if coordinator != nil {
+		coordinatorName = displayNameOrUsername(coordinator.DisplayName, coordinator.Username)
+	}
+	participants := make([]feishuGroupDiscussionParticipant, 0, len(speakers))
 	for _, speaker := range speakers {
+		if len(participants) >= 4 {
+			break
+		}
 		item := entriesByAgent[speaker.AgentUID]
-		if item == nil || item.Entry == nil {
+		if item == nil || item.Entry == nil || item.Agent == nil {
 			continue
 		}
 		binding := coordinatorBinding
 		if speaker.AgentUID != coordinatorBinding.AgentUID {
 			nextBinding, _, err := h.bindOrRequestFeishuIdentityWithCanonical(item.Entry, actorUID, channelUserID, event.Message.ChatID, "group", coordinatorBinding.CanonicalUID)
 			if err != nil {
-				return delivered, err
+				return 0, err
 			}
 			binding = nextBinding
 		}
 		if msg, ok, err := h.feishuBindingDeliverableMessage(binding); err != nil {
-			return delivered, err
+			return 0, err
 		} else if !ok {
 			log.Printf("skip feishu group agent speaker agent=%d chat=%s: %s", speaker.AgentUID, event.Message.ChatID, strings.ReplaceAll(msg, "\n", " "))
 			continue
 		}
-		metadata := h.feishuInboundMetadata(appID, channelUserID, event, binding, "group", messageType)
-		metadata["channel_group_coordinator_mode"] = "multi_agent"
-		metadata["channel_group_original_text"] = text
-		metadata["channel_group_speaker_agent_uid"] = speaker.AgentUID
-		metadata["channel_group_speaker_count"] = len(participants)
-		turnText := buildFeishuGroupAgentTurnText(text, item.Agent, coordinator, participants, delivered+1, len(participants))
-		clientMsgID := fmt.Sprintf("feishu-group-agent:%s:%d", strings.TrimSpace(event.Message.MessageID), speaker.AgentUID)
-		if err := h.deliverInboundTextToAgent(actorUID, speaker.AgentUID, turnText, clientMsgID, metadata); err != nil {
-			return delivered, err
+		agentName := strings.TrimSpace(item.Name)
+		if agentName == "" {
+			agentName = displayNameOrUsername(item.Agent.DisplayName, item.Agent.Username)
 		}
-		delivered++
-		if delivered >= 4 {
-			break
-		}
+		participants = append(participants, feishuGroupDiscussionParticipant{
+			AgentUID:  speaker.AgentUID,
+			AgentName: agentName,
+			Binding:   binding,
+			Speaker:   speaker,
+		})
 	}
-	return delivered, nil
+	if len(participants) == 0 {
+		return 0, nil
+	}
+	messageID := strings.TrimSpace(event.Message.MessageID)
+	sessionID := "feishu-group:" + messageID
+	if messageID == "" {
+		sessionID = fmt.Sprintf("feishu-group:%s:%d", strings.TrimSpace(event.Message.ChatID), time.Now().UnixNano())
+	}
+	session := &feishuGroupDiscussionSession{
+		ID:              sessionID,
+		AppID:           appID,
+		ChannelUserID:   channelUserID,
+		ActorUID:        actorUID,
+		ChatID:          event.Message.ChatID,
+		MessageID:       messageID,
+		MessageType:     messageType,
+		OriginalText:    text,
+		CoordinatorName: coordinatorName,
+		Participants:    participants,
+	}
+	if err := dispatcher.StartFeishuGroupDiscussion(context.Background(), session); err != nil {
+		return 0, err
+	}
+	return 1, nil
 }
 
 type feishuGatewayCommand struct {
@@ -1906,17 +1937,21 @@ func (c *feishuAPIClient) doJSON(req *http.Request, out interface{}) error {
 // ChannelOutboundDispatcher forwards CatsCo bot replies back to external chats.
 type ChannelOutboundDispatcher struct {
 	db          store.Store
+	hub         *Hub
 	feishu      feishuAPI
 	feishuAppID string
 	weixin      weixinAPI
 	weixinAppID string
 	mu          sync.Mutex
 	replyRoutes map[string]channelOutboundReplyRoute
+	discussions map[string]*feishuGroupDiscussionSession
 }
 
 type channelOutboundReplyRoute struct {
-	Query     types.ChannelAgentBindingQuery
-	ExpiresAt time.Time
+	Query          types.ChannelAgentBindingQuery
+	DiscussionID   string
+	DiscussionTurn int
+	ExpiresAt      time.Time
 }
 
 func NewChannelOutboundDispatcher(db store.Store, feishu feishuAPI, appID string) *ChannelOutboundDispatcher {
@@ -1944,16 +1979,24 @@ func (d *ChannelOutboundDispatcher) WithWeixin(weixin weixinAPI, appID string) *
 	return d
 }
 
+func (d *ChannelOutboundDispatcher) WithHub(hub *Hub) *ChannelOutboundDispatcher {
+	if d == nil {
+		return nil
+	}
+	d.hub = hub
+	return d
+}
+
 func (h *Hub) SetChannelOutboundDispatcher(dispatcher *ChannelOutboundDispatcher) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
-	h.channelOut = dispatcher
+	h.channelOut = dispatcher.WithHub(h)
 	h.mu.Unlock()
 }
 
-func (h *Hub) recordChannelInboundReplyRoute(topicID string, canonicalUID int64, binding *types.ChannelAgentBinding) {
+func (h *Hub) recordChannelInboundReplyRoute(topicID string, canonicalUID int64, binding *types.ChannelAgentBinding, metadata ...map[string]interface{}) {
 	if h == nil || binding == nil || canonicalUID <= 0 {
 		return
 	}
@@ -1963,7 +2006,7 @@ func (h *Hub) recordChannelInboundReplyRoute(topicID string, canonicalUID int64,
 	if dispatcher == nil {
 		return
 	}
-	dispatcher.RecordInboundReplyRoute(topicID, canonicalUID, binding)
+	dispatcher.RecordInboundReplyRoute(topicID, canonicalUID, binding, metadata...)
 }
 
 func (h *Hub) clearChannelInboundReplyRoute(topicID string, canonicalUID int64, agentUID int64) {
@@ -1983,7 +2026,7 @@ func channelOutboundReplyRouteKey(topicID string, canonicalUID int64, agentUID i
 	return fmt.Sprintf("%s:%d:%d", strings.TrimSpace(topicID), canonicalUID, agentUID)
 }
 
-func (d *ChannelOutboundDispatcher) RecordInboundReplyRoute(topicID string, canonicalUID int64, binding *types.ChannelAgentBinding) {
+func (d *ChannelOutboundDispatcher) RecordInboundReplyRoute(topicID string, canonicalUID int64, binding *types.ChannelAgentBinding, metadata ...map[string]interface{}) {
 	if d == nil || binding == nil || canonicalUID <= 0 || binding.AgentUID <= 0 || binding.ActorUID <= 0 {
 		return
 	}
@@ -1996,6 +2039,10 @@ func (d *ChannelOutboundDispatcher) RecordInboundReplyRoute(topicID string, cano
 	if d.replyRoutes == nil {
 		d.replyRoutes = map[string]channelOutboundReplyRoute{}
 	}
+	var routeMetadata map[string]interface{}
+	if len(metadata) > 0 {
+		routeMetadata = metadata[0]
+	}
 	d.replyRoutes[key] = channelOutboundReplyRoute{
 		Query: types.ChannelAgentBindingQuery{
 			Channel:                 binding.Channel,
@@ -2006,7 +2053,9 @@ func (d *ChannelOutboundDispatcher) RecordInboundReplyRoute(topicID string, cano
 			AgentUID:                binding.AgentUID,
 			ActorUID:                binding.ActorUID,
 		},
-		ExpiresAt: time.Now().Add(2 * time.Hour),
+		DiscussionID:   firstMetadataString(routeMetadata, feishuGroupDiscussionIDMetadataKey),
+		DiscussionTurn: int(firstMetadataInt64(routeMetadata, feishuGroupDiscussionTurnMetadataKey)),
+		ExpiresAt:      time.Now().Add(2 * time.Hour),
 	}
 }
 
@@ -2076,12 +2125,18 @@ func (d *ChannelOutboundDispatcher) ForwardBotReply(ctx context.Context, actorUI
 	if !ok {
 		return nil
 	}
-	if binding, ok, err := d.lookupRecordedReplyBinding(bindings, topicID, actorUID, agentUID); err != nil {
+	if binding, route, ok, err := d.lookupRecordedReplyBinding(bindings, topicID, actorUID, agentUID); err != nil {
 		return err
 	} else if ok {
 		sent, err := d.sendChannelBindingReply(ctx, binding, topicID, actorUID, agentUID, text)
-		if sent || err != nil {
+		if err != nil {
 			return err
+		}
+		if sent {
+			if route.DiscussionID != "" {
+				return d.advanceFeishuGroupDiscussion(ctx, route.DiscussionID, route.DiscussionTurn, agentUID, text)
+			}
+			return nil
 		}
 	}
 	if d.feishu != nil {
@@ -2156,9 +2211,9 @@ func (d *ChannelOutboundDispatcher) ForwardGroupBotReply(ctx context.Context, se
 	return nil
 }
 
-func (d *ChannelOutboundDispatcher) lookupRecordedReplyBinding(bindings store.ChannelAgentBindingStore, topicID string, canonicalUID int64, agentUID int64) (*types.ChannelAgentBinding, bool, error) {
+func (d *ChannelOutboundDispatcher) lookupRecordedReplyBinding(bindings store.ChannelAgentBindingStore, topicID string, canonicalUID int64, agentUID int64) (*types.ChannelAgentBinding, channelOutboundReplyRoute, bool, error) {
 	if d == nil || bindings == nil || canonicalUID <= 0 || agentUID <= 0 {
-		return nil, false, nil
+		return nil, channelOutboundReplyRoute{}, false, nil
 	}
 	key := channelOutboundReplyRouteKey(topicID, canonicalUID, agentUID)
 	now := time.Now()
@@ -2170,13 +2225,196 @@ func (d *ChannelOutboundDispatcher) lookupRecordedReplyBinding(bindings store.Ch
 	}
 	d.mu.Unlock()
 	if !ok {
-		return nil, false, nil
+		return nil, channelOutboundReplyRoute{}, false, nil
 	}
 	binding, err := bindings.ResolveChannelAgentBinding(route.Query)
 	if err != nil || binding == nil {
-		return binding, false, err
+		return binding, route, false, err
 	}
-	return binding, true, nil
+	return binding, route, true, nil
+}
+
+func (d *ChannelOutboundDispatcher) StartFeishuGroupDiscussion(ctx context.Context, session *feishuGroupDiscussionSession) error {
+	if d == nil || d.db == nil || d.hub == nil || session == nil || strings.TrimSpace(session.ID) == "" || len(session.Participants) == 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	next := *session
+	next.ID = strings.TrimSpace(next.ID)
+	next.ChatID = strings.TrimSpace(next.ChatID)
+	next.ChannelUserID = strings.TrimSpace(next.ChannelUserID)
+	next.MessageType = firstNonEmpty(next.MessageType, "text")
+	next.Participants = append([]feishuGroupDiscussionParticipant(nil), session.Participants...)
+	next.Replies = nil
+	next.NextIndex = 0
+	next.CompletedTurns = map[int]bool{}
+	if next.ExpiresAt.IsZero() {
+		next.ExpiresAt = time.Now().Add(30 * time.Minute)
+	}
+	d.mu.Lock()
+	if d.discussions == nil {
+		d.discussions = map[string]*feishuGroupDiscussionSession{}
+	}
+	d.cleanupExpiredFeishuGroupDiscussionsLocked(time.Now())
+	d.discussions[next.ID] = &next
+	d.mu.Unlock()
+	return d.dispatchFeishuGroupDiscussionTurn(ctx, next.ID)
+}
+
+func (d *ChannelOutboundDispatcher) dispatchFeishuGroupDiscussionTurn(ctx context.Context, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if d == nil || d.db == nil || d.hub == nil || sessionID == "" {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now := time.Now()
+	d.mu.Lock()
+	session := d.discussions[sessionID]
+	if session == nil {
+		d.mu.Unlock()
+		return nil
+	}
+	if !session.ExpiresAt.IsZero() && now.After(session.ExpiresAt) {
+		delete(d.discussions, sessionID)
+		d.mu.Unlock()
+		return nil
+	}
+	if session.NextIndex >= len(session.Participants) {
+		delete(d.discussions, sessionID)
+		d.mu.Unlock()
+		return nil
+	}
+	index := session.NextIndex
+	participant := session.Participants[index]
+	participants := append([]feishuGroupDiscussionParticipant(nil), session.Participants...)
+	previous := append([]feishuGroupDiscussionReply(nil), session.Replies...)
+	originalText := session.OriginalText
+	coordinatorName := session.CoordinatorName
+	actorUID := session.ActorUID
+	metadata := feishuGroupDiscussionTurnMetadata(session, participant, index+1)
+	clientMsgID := fmt.Sprintf("feishu-group-discussion:%s:%d:%d", session.ID, participant.AgentUID, index+1)
+	session.NextIndex++
+	d.mu.Unlock()
+
+	turnText := buildFeishuGroupAgentTurnText(originalText, participant, coordinatorName, participants, previous, index+1, len(participants))
+	return deliverInboundChannelTextToAgent(d.db, d.hub, actorUID, participant.AgentUID, turnText, clientMsgID, "feishu", metadata)
+}
+
+func (d *ChannelOutboundDispatcher) advanceFeishuGroupDiscussion(ctx context.Context, sessionID string, turn int, agentUID int64, text string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if d == nil || d.db == nil || d.hub == nil || sessionID == "" || agentUID <= 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now := time.Now()
+	d.mu.Lock()
+	session := d.discussions[sessionID]
+	if session == nil {
+		d.mu.Unlock()
+		return nil
+	}
+	if !session.ExpiresAt.IsZero() && now.After(session.ExpiresAt) {
+		delete(d.discussions, sessionID)
+		d.mu.Unlock()
+		return nil
+	}
+	if session.CompletedTurns == nil {
+		session.CompletedTurns = map[int]bool{}
+	}
+	if turn <= 0 {
+		for i, participant := range session.Participants {
+			if participant.AgentUID == agentUID {
+				turn = i + 1
+				break
+			}
+		}
+	}
+	if turn > 0 && session.CompletedTurns[turn] {
+		d.mu.Unlock()
+		return nil
+	}
+	if turn > 0 {
+		session.CompletedTurns[turn] = true
+	}
+	agentName := ""
+	if turn > 0 && turn <= len(session.Participants) && session.Participants[turn-1].AgentUID == agentUID {
+		agentName = session.Participants[turn-1].AgentName
+	}
+	if agentName == "" {
+		for _, participant := range session.Participants {
+			if participant.AgentUID == agentUID {
+				agentName = participant.AgentName
+				break
+			}
+		}
+	}
+	replyText := strings.TrimSpace(text)
+	if replyText != "" {
+		session.Replies = append(session.Replies, feishuGroupDiscussionReply{
+			AgentUID:  agentUID,
+			AgentName: agentName,
+			Text:      replyText,
+		})
+	}
+	done := session.NextIndex >= len(session.Participants)
+	if done {
+		delete(d.discussions, sessionID)
+	}
+	d.mu.Unlock()
+	if done {
+		return nil
+	}
+	return d.dispatchFeishuGroupDiscussionTurn(ctx, sessionID)
+}
+
+func (d *ChannelOutboundDispatcher) cleanupExpiredFeishuGroupDiscussionsLocked(now time.Time) {
+	for id, session := range d.discussions {
+		if session == nil || (!session.ExpiresAt.IsZero() && now.After(session.ExpiresAt)) {
+			delete(d.discussions, id)
+		}
+	}
+}
+
+func feishuGroupDiscussionTurnMetadata(session *feishuGroupDiscussionSession, participant feishuGroupDiscussionParticipant, turn int) map[string]interface{} {
+	metadata := map[string]interface{}{
+		"source_channel":                        "feishu",
+		"channel_app_id":                        session.AppID,
+		"channel_user_id":                       session.ChannelUserID,
+		"channel_conversation_id":               session.ChatID,
+		"channel_conversation_type":             "group",
+		"channel_message_id":                    session.MessageID,
+		"channel_message_type":                  firstNonEmpty(session.MessageType, "text"),
+		"channel_identity_source":               "feishu.event",
+		"channel_identity_trust":                "feishu_event_callback",
+		"channel_gateway_mode":                  "feishu_agent_gateway",
+		"channel_selected_agent_id":             participant.AgentUID,
+		"channel_actor_uid":                     session.ActorUID,
+		"channel_group_coordinator_mode":        feishuGroupDiscussionMode,
+		"channel_group_original_text":           session.OriginalText,
+		feishuGroupDiscussionIDMetadataKey:      session.ID,
+		feishuGroupDiscussionTurnMetadataKey:    turn,
+		feishuGroupDiscussionSpeakerMetadataKey: participant.AgentUID,
+		"channel_group_speaker_count":           len(session.Participants),
+	}
+	if binding := participant.Binding; binding != nil {
+		metadata["source_channel"] = binding.Channel
+		metadata["channel_app_id"] = binding.ChannelAppID
+		metadata["channel_user_id"] = binding.ChannelUserID
+		metadata["channel_conversation_id"] = binding.ChannelConversationID
+		metadata["channel_conversation_type"] = binding.ChannelConversationType
+		metadata["channel_agent_binding_entry_id"] = binding.EntryID
+		metadata["channel_actor_uid"] = binding.ActorUID
+		metadata["channel_canonical_uid"] = binding.CanonicalUID
+		metadata["channel_agent_binding_id"] = binding.ID
+		metadata["channel_device_access_enabled"] = binding.DeviceAccessEnabled
+	}
+	return metadata
 }
 
 func (d *ChannelOutboundDispatcher) sendChannelBindingReply(ctx context.Context, binding *types.ChannelAgentBinding, topicID string, actorUID int64, agentUID int64, text string) (bool, error) {
