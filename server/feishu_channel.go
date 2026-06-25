@@ -94,10 +94,10 @@ func (h *FeishuChannelHandler) InstallOutboundDispatcher() {
 	h.hub.mu.Lock()
 	defer h.hub.mu.Unlock()
 	if h.hub.channelOut == nil {
-		h.hub.channelOut = NewChannelOutboundDispatcher(h.db, h.api, h.effectiveAppID(""))
+		h.hub.channelOut = NewChannelOutboundDispatcher(h.db, h.api, h.effectiveAppID("")).WithHub(h.hub)
 		return
 	}
-	h.hub.channelOut.WithFeishu(h.api, h.effectiveAppID(""))
+	h.hub.channelOut.WithFeishu(h.api, h.effectiveAppID("")).WithHub(h.hub)
 }
 
 func feishuConfigFromEnv() FeishuChannelConfig {
@@ -525,9 +525,10 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		return nil
 	}
 	text = stripFeishuLeadingMentions(text)
-	if chatType == "group" && cmd.Kind == "" && media == nil {
-		return h.replyToFeishu(ctx, replyIDType, replyID, "群聊里请使用「员工列表」「切换到 员工名」「当前员工」等命令；普通任务请在私聊中发送，避免回复或设备授权发到错误会话。")
+	if chatType == "group" && cmd.Kind == "" && media == nil && strings.TrimSpace(text) == "" {
+		return nil
 	}
+	groupCoordinatorMode := chatType == "group" && cmd.Kind == "" && media == nil
 	if chatType == "group" && cmd.Kind == "" && media != nil {
 		return h.replyToFeishu(ctx, replyIDType, replyID, "群聊里的图片或文件请先切换到目标虚拟员工后，在私聊中发送，避免附件进入错误会话。")
 	}
@@ -539,6 +540,8 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		return h.replyToFeishu(ctx, replyIDType, replyID, h.formatFeishuRosterReply(appID))
 	case "current":
 		return h.replyToFeishuSafely(ctx, channelUserID, event.Message.ChatID, chatType, h.formatFeishuCurrentReply(appID, channelUserID, event.Message.ChatID, chatType, actorUID))
+	case "chat_id":
+		return h.replyToFeishu(ctx, replyIDType, replyID, h.formatFeishuChatIDReply(event.Message.ChatID, chatType))
 	case "bind":
 		return h.replyToFeishuSafely(ctx, channelUserID, event.Message.ChatID, chatType, h.formatFeishuAccountBindingReply(appID, channelUserID, event.Message.ChatID, chatType, actorUID))
 	case "device":
@@ -556,6 +559,9 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		return err
 	}
 	if binding == nil {
+		if groupCoordinatorMode {
+			return h.replyToFeishu(ctx, replyIDType, replyID, "这个群聊还没有选择群聊调度员。\n请先发送「员工列表」查看可用虚拟员工，再发送「切换到 员工名」选择一个虚拟员工作为群聊调度员。")
+		}
 		return h.replyToFeishu(ctx, replyIDType, replyID, "请先选择一个虚拟员工。\n"+h.formatFeishuRosterReply(appID))
 	}
 	if msg, ok, err := h.feishuBindingDeliverableMessage(binding); err != nil {
@@ -564,6 +570,19 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		return h.replyToFeishu(ctx, replyIDType, replyID, msg)
 	}
 	metadata := h.feishuInboundMetadata(appID, channelUserID, &event, binding, chatType, messageType)
+	if groupCoordinatorMode {
+		delivered, err := h.deliverFeishuGroupAgentTurns(appID, channelUserID, actorUID, &event, binding, text, messageType)
+		if err != nil {
+			return err
+		}
+		if delivered > 0 {
+			return nil
+		}
+		agent, _ := h.db.GetUser(binding.AgentUID)
+		metadata["channel_group_coordinator_mode"] = "team"
+		metadata["channel_group_original_text"] = text
+		text = buildFeishuGroupCoordinatorText(text, binding, agent)
+	}
 	if media != nil {
 		metadata["channel_media_key"] = media.ResourceKey
 		download, err := h.api.DownloadMessageResource(ctx, event.Message.MessageID, media.ResourceKey, media.ResourceType)
@@ -616,6 +635,105 @@ func (h *FeishuChannelHandler) deliverInboundMessageToAgent(actorUID, agentUID i
 	return deliverInboundChannelMessageToAgent(h.db, h.hub, actorUID, agentUID, text, files, clientMsgID, "feishu", metadata)
 }
 
+func (h *FeishuChannelHandler) channelOutboundDispatcher() *ChannelOutboundDispatcher {
+	if h == nil || h.hub == nil {
+		return nil
+	}
+	h.hub.mu.RLock()
+	dispatcher := h.hub.channelOut
+	h.hub.mu.RUnlock()
+	return dispatcher
+}
+
+func (h *FeishuChannelHandler) deliverFeishuGroupAgentTurns(appID, channelUserID string, actorUID int64, event *feishuMessageEvent, coordinatorBinding *types.ChannelAgentBinding, text, messageType string) (int, error) {
+	if h == nil || event == nil || coordinatorBinding == nil || normalizeFeishuChatType(event.Message.ChatType) != "group" {
+		return 0, nil
+	}
+	dispatcher := h.channelOutboundDispatcher()
+	if dispatcher == nil {
+		return 0, nil
+	}
+	speakers := feishuGroupAgentSpeakersForChat(event.Message.ChatID)
+	if len(speakers) == 0 {
+		return 0, nil
+	}
+	roster, err := h.listFeishuRoster(appID)
+	if err != nil {
+		return 0, err
+	}
+	entriesByAgent := map[int64]*feishuRosterItem{}
+	for i := range roster {
+		item := roster[i]
+		if item.Entry != nil && item.Entry.AgentUID > 0 {
+			entriesByAgent[item.Entry.AgentUID] = &item
+		}
+	}
+	coordinator, _ := h.db.GetUser(coordinatorBinding.AgentUID)
+	coordinatorName := ""
+	if coordinator != nil {
+		coordinatorName = displayNameOrUsername(coordinator.DisplayName, coordinator.Username)
+	}
+	participants := make([]feishuGroupDiscussionParticipant, 0, len(speakers))
+	for _, speaker := range speakers {
+		if len(participants) >= 4 {
+			break
+		}
+		item := entriesByAgent[speaker.AgentUID]
+		if item == nil || item.Entry == nil || item.Agent == nil {
+			continue
+		}
+		binding := coordinatorBinding
+		if speaker.AgentUID != coordinatorBinding.AgentUID {
+			nextBinding, _, err := h.bindOrRequestFeishuIdentityWithCanonical(item.Entry, actorUID, channelUserID, event.Message.ChatID, "group", coordinatorBinding.CanonicalUID)
+			if err != nil {
+				return 0, err
+			}
+			binding = nextBinding
+		}
+		if msg, ok, err := h.feishuBindingDeliverableMessage(binding); err != nil {
+			return 0, err
+		} else if !ok {
+			log.Printf("skip feishu group agent speaker agent=%d chat=%s: %s", speaker.AgentUID, event.Message.ChatID, strings.ReplaceAll(msg, "\n", " "))
+			continue
+		}
+		agentName := strings.TrimSpace(item.Name)
+		if agentName == "" {
+			agentName = displayNameOrUsername(item.Agent.DisplayName, item.Agent.Username)
+		}
+		participants = append(participants, feishuGroupDiscussionParticipant{
+			AgentUID:  speaker.AgentUID,
+			AgentName: agentName,
+			Binding:   binding,
+			Speaker:   speaker,
+		})
+	}
+	if len(participants) == 0 {
+		return 0, nil
+	}
+	messageID := strings.TrimSpace(event.Message.MessageID)
+	participants = orderFeishuGroupDiscussionParticipants(text, messageID, event.Message.ChatID, participants)
+	sessionID := "feishu-group:" + messageID
+	if messageID == "" {
+		sessionID = fmt.Sprintf("feishu-group:%s:%d", strings.TrimSpace(event.Message.ChatID), time.Now().UnixNano())
+	}
+	session := &feishuGroupDiscussionSession{
+		ID:              sessionID,
+		AppID:           appID,
+		ChannelUserID:   channelUserID,
+		ActorUID:        actorUID,
+		ChatID:          event.Message.ChatID,
+		MessageID:       messageID,
+		MessageType:     messageType,
+		OriginalText:    text,
+		CoordinatorName: coordinatorName,
+		Participants:    participants,
+	}
+	if err := dispatcher.StartFeishuGroupDiscussion(context.Background(), session); err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
+
 type feishuGatewayCommand struct {
 	Kind    string
 	Target  string
@@ -638,6 +756,8 @@ func parseFeishuGatewayCommand(text string) feishuGatewayCommand {
 		return feishuGatewayCommand{Kind: "list", Trigger: true}
 	case "当前员工", "当前虚拟员工", "current", "/current":
 		return feishuGatewayCommand{Kind: "current", Trigger: true}
+	case "群id", "群 id", "群聊id", "群聊 id", "chat_id", "/chat_id":
+		return feishuGatewayCommand{Kind: "chat_id", Trigger: true}
 	case "绑定账号", "绑定catsco", "绑定 catsco", "/bind":
 		return feishuGatewayCommand{Kind: "bind", Trigger: true}
 	case "设备授权", "绑定设备", "/device":
@@ -652,7 +772,18 @@ func parseFeishuGatewayCommand(text string) feishuGatewayCommand {
 }
 
 func feishuGatewayHelpText() string {
-	return "我是 CatsCo 飞书虚拟员工入口。\n\n常用命令：\n- 员工列表：查看可用虚拟员工\n- 切换到 员工名：选择当前员工\n- 当前员工：查看当前会话服务者\n- 绑定账号：绑定 CatsCo 账号\n- 设备授权：授权我使用你自己的设备\n\n未选择员工、未绑定账号、申请未通过或设备未授权时，我不会把消息交给模型或操作设备。"
+	return "我是 CatsCo 飞书虚拟员工入口。\n\n常用命令：\n- 员工列表：查看可用虚拟员工\n- 切换到 员工名：选择当前员工\n- 当前员工：查看当前会话服务者\n- 群ID：查看当前飞书群 chat_id\n- 绑定账号：绑定 CatsCo 账号\n- 设备授权：授权我使用你自己的设备\n\n未选择员工、未绑定账号、申请未通过或设备未授权时，我不会把消息交给模型或操作设备。"
+}
+
+func (h *FeishuChannelHandler) formatFeishuChatIDReply(chatID, chatType string) string {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return "当前会话没有可用的飞书 chat_id。"
+	}
+	if normalizeFeishuChatType(chatType) == "group" {
+		return "当前飞书群 chat_id：\n" + chatID
+	}
+	return "当前飞书会话 chat_id：\n" + chatID
 }
 
 func feishuReplyTarget(channelUserID, chatID, chatType string) (string, string) {
@@ -678,7 +809,60 @@ func (h *FeishuChannelHandler) replyToFeishuSafely(ctx context.Context, channelU
 
 func feishuEventMentionsBot(event *feishuMessageEvent, text string) bool {
 	text = strings.TrimSpace(text)
-	return strings.Contains(text, "@CatsCo") || strings.Contains(text, "@catsco")
+	lowerText := strings.ToLower(text)
+	for _, alias := range feishuBotMentionAliases() {
+		if alias == "" {
+			continue
+		}
+		if strings.Contains(lowerText, strings.ToLower("@"+alias)) ||
+			strings.Contains(lowerText, strings.ToLower("＠"+alias)) {
+			return true
+		}
+	}
+	if event != nil {
+		for _, mention := range event.Message.Mentions {
+			if feishuMentionMatchesAlias(mention.Key) || feishuMentionMatchesAlias(mention.Name) || feishuMentionMatchesConfiguredBotID(mention.ID.OpenID, mention.ID.UserID, mention.ID.UnionID) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func feishuMentionMatchesAlias(value string) bool {
+	value = strings.TrimPrefix(strings.TrimSpace(value), "@")
+	value = strings.TrimPrefix(value, "＠")
+	if value == "" {
+		return false
+	}
+	for _, alias := range feishuBotMentionAliases() {
+		if strings.EqualFold(value, alias) {
+			return true
+		}
+	}
+	return false
+}
+
+func feishuMentionMatchesConfiguredBotID(openID, userID, unionID string) bool {
+	if stringInList(strings.TrimSpace(openID), feishuBotMentionOpenIDs()) {
+		return true
+	}
+	if stringInList(strings.TrimSpace(userID), feishuBotMentionUserIDs()) {
+		return true
+	}
+	return stringInList(strings.TrimSpace(unionID), feishuBotMentionUnionIDs())
+}
+
+func stringInList(value string, values []string) bool {
+	if value == "" {
+		return false
+	}
+	for _, candidate := range values {
+		if strings.EqualFold(value, strings.TrimSpace(candidate)) {
+			return true
+		}
+	}
+	return false
 }
 
 func stripFeishuLeadingMentions(text string) string {
@@ -729,6 +913,10 @@ func (h *FeishuChannelHandler) formatFeishuRosterReply(appID string) string {
 	var b strings.Builder
 	b.WriteString("可用虚拟员工：")
 	for i, item := range items {
+		if item.Entry != nil && item.Entry.AgentUID > 0 {
+			fmt.Fprintf(&b, "\n%d. %s（UID: %d）", i+1, item.Name, item.Entry.AgentUID)
+			continue
+		}
 		fmt.Fprintf(&b, "\n%d. %s", i+1, item.Name)
 	}
 	b.WriteString("\n\n发送「切换到 员工名」选择当前员工。")
@@ -1410,6 +1598,16 @@ type feishuMessageEvent struct {
 		ChatType    string `json:"chat_type"`
 		MessageType string `json:"message_type"`
 		Content     string `json:"content"`
+		Mentions    []struct {
+			Key string `json:"key"`
+			ID  struct {
+				OpenID  string `json:"open_id"`
+				UserID  string `json:"user_id"`
+				UnionID string `json:"union_id"`
+			} `json:"id"`
+			Name      string `json:"name"`
+			TenantKey string `json:"tenant_key"`
+		} `json:"mentions"`
 	} `json:"message"`
 }
 
@@ -1740,17 +1938,21 @@ func (c *feishuAPIClient) doJSON(req *http.Request, out interface{}) error {
 // ChannelOutboundDispatcher forwards CatsCo bot replies back to external chats.
 type ChannelOutboundDispatcher struct {
 	db          store.Store
+	hub         *Hub
 	feishu      feishuAPI
 	feishuAppID string
 	weixin      weixinAPI
 	weixinAppID string
 	mu          sync.Mutex
 	replyRoutes map[string]channelOutboundReplyRoute
+	discussions map[string]*feishuGroupDiscussionSession
 }
 
 type channelOutboundReplyRoute struct {
-	Query     types.ChannelAgentBindingQuery
-	ExpiresAt time.Time
+	Query          types.ChannelAgentBindingQuery
+	DiscussionID   string
+	DiscussionTurn int
+	ExpiresAt      time.Time
 }
 
 func NewChannelOutboundDispatcher(db store.Store, feishu feishuAPI, appID string) *ChannelOutboundDispatcher {
@@ -1778,16 +1980,24 @@ func (d *ChannelOutboundDispatcher) WithWeixin(weixin weixinAPI, appID string) *
 	return d
 }
 
+func (d *ChannelOutboundDispatcher) WithHub(hub *Hub) *ChannelOutboundDispatcher {
+	if d == nil {
+		return nil
+	}
+	d.hub = hub
+	return d
+}
+
 func (h *Hub) SetChannelOutboundDispatcher(dispatcher *ChannelOutboundDispatcher) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
-	h.channelOut = dispatcher
+	h.channelOut = dispatcher.WithHub(h)
 	h.mu.Unlock()
 }
 
-func (h *Hub) recordChannelInboundReplyRoute(topicID string, canonicalUID int64, binding *types.ChannelAgentBinding) {
+func (h *Hub) recordChannelInboundReplyRoute(topicID string, canonicalUID int64, binding *types.ChannelAgentBinding, metadata ...map[string]interface{}) {
 	if h == nil || binding == nil || canonicalUID <= 0 {
 		return
 	}
@@ -1797,7 +2007,7 @@ func (h *Hub) recordChannelInboundReplyRoute(topicID string, canonicalUID int64,
 	if dispatcher == nil {
 		return
 	}
-	dispatcher.RecordInboundReplyRoute(topicID, canonicalUID, binding)
+	dispatcher.RecordInboundReplyRoute(topicID, canonicalUID, binding, metadata...)
 }
 
 func (h *Hub) clearChannelInboundReplyRoute(topicID string, canonicalUID int64, agentUID int64) {
@@ -1817,7 +2027,7 @@ func channelOutboundReplyRouteKey(topicID string, canonicalUID int64, agentUID i
 	return fmt.Sprintf("%s:%d:%d", strings.TrimSpace(topicID), canonicalUID, agentUID)
 }
 
-func (d *ChannelOutboundDispatcher) RecordInboundReplyRoute(topicID string, canonicalUID int64, binding *types.ChannelAgentBinding) {
+func (d *ChannelOutboundDispatcher) RecordInboundReplyRoute(topicID string, canonicalUID int64, binding *types.ChannelAgentBinding, metadata ...map[string]interface{}) {
 	if d == nil || binding == nil || canonicalUID <= 0 || binding.AgentUID <= 0 || binding.ActorUID <= 0 {
 		return
 	}
@@ -1830,6 +2040,10 @@ func (d *ChannelOutboundDispatcher) RecordInboundReplyRoute(topicID string, cano
 	if d.replyRoutes == nil {
 		d.replyRoutes = map[string]channelOutboundReplyRoute{}
 	}
+	var routeMetadata map[string]interface{}
+	if len(metadata) > 0 {
+		routeMetadata = metadata[0]
+	}
 	d.replyRoutes[key] = channelOutboundReplyRoute{
 		Query: types.ChannelAgentBindingQuery{
 			Channel:                 binding.Channel,
@@ -1840,7 +2054,9 @@ func (d *ChannelOutboundDispatcher) RecordInboundReplyRoute(topicID string, cano
 			AgentUID:                binding.AgentUID,
 			ActorUID:                binding.ActorUID,
 		},
-		ExpiresAt: time.Now().Add(2 * time.Hour),
+		DiscussionID:   firstMetadataString(routeMetadata, feishuGroupDiscussionIDMetadataKey),
+		DiscussionTurn: int(firstMetadataInt64(routeMetadata, feishuGroupDiscussionTurnMetadataKey)),
+		ExpiresAt:      time.Now().Add(2 * time.Hour),
 	}
 }
 
@@ -1910,12 +2126,18 @@ func (d *ChannelOutboundDispatcher) ForwardBotReply(ctx context.Context, actorUI
 	if !ok {
 		return nil
 	}
-	if binding, ok, err := d.lookupRecordedReplyBinding(bindings, topicID, actorUID, agentUID); err != nil {
+	if binding, route, ok, err := d.lookupRecordedReplyBinding(bindings, topicID, actorUID, agentUID); err != nil {
 		return err
 	} else if ok {
 		sent, err := d.sendChannelBindingReply(ctx, binding, topicID, actorUID, agentUID, text)
-		if sent || err != nil {
+		if err != nil {
 			return err
+		}
+		if sent {
+			if route.DiscussionID != "" {
+				return d.advanceFeishuGroupDiscussion(ctx, route.DiscussionID, route.DiscussionTurn, agentUID, text)
+			}
+			return nil
 		}
 	}
 	if d.feishu != nil {
@@ -1990,9 +2212,9 @@ func (d *ChannelOutboundDispatcher) ForwardGroupBotReply(ctx context.Context, se
 	return nil
 }
 
-func (d *ChannelOutboundDispatcher) lookupRecordedReplyBinding(bindings store.ChannelAgentBindingStore, topicID string, canonicalUID int64, agentUID int64) (*types.ChannelAgentBinding, bool, error) {
+func (d *ChannelOutboundDispatcher) lookupRecordedReplyBinding(bindings store.ChannelAgentBindingStore, topicID string, canonicalUID int64, agentUID int64) (*types.ChannelAgentBinding, channelOutboundReplyRoute, bool, error) {
 	if d == nil || bindings == nil || canonicalUID <= 0 || agentUID <= 0 {
-		return nil, false, nil
+		return nil, channelOutboundReplyRoute{}, false, nil
 	}
 	key := channelOutboundReplyRouteKey(topicID, canonicalUID, agentUID)
 	now := time.Now()
@@ -2004,13 +2226,256 @@ func (d *ChannelOutboundDispatcher) lookupRecordedReplyBinding(bindings store.Ch
 	}
 	d.mu.Unlock()
 	if !ok {
-		return nil, false, nil
+		return nil, channelOutboundReplyRoute{}, false, nil
 	}
 	binding, err := bindings.ResolveChannelAgentBinding(route.Query)
 	if err != nil || binding == nil {
-		return binding, false, err
+		return binding, route, false, err
 	}
-	return binding, true, nil
+	return binding, route, true, nil
+}
+
+func (d *ChannelOutboundDispatcher) StartFeishuGroupDiscussion(ctx context.Context, session *feishuGroupDiscussionSession) error {
+	if d == nil || d.db == nil || d.hub == nil || session == nil || strings.TrimSpace(session.ID) == "" || len(session.Participants) == 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	next := *session
+	next.ID = strings.TrimSpace(next.ID)
+	next.ChatID = strings.TrimSpace(next.ChatID)
+	next.ChannelUserID = strings.TrimSpace(next.ChannelUserID)
+	next.MessageType = firstNonEmpty(next.MessageType, "text")
+	next.Participants = append([]feishuGroupDiscussionParticipant(nil), session.Participants...)
+	next.Replies = nil
+	next.NextIndex = 0
+	next.CompletedTurns = map[int]bool{}
+	if next.ExpiresAt.IsZero() {
+		next.ExpiresAt = time.Now().Add(30 * time.Minute)
+	}
+	d.mu.Lock()
+	if d.discussions == nil {
+		d.discussions = map[string]*feishuGroupDiscussionSession{}
+	}
+	d.cleanupExpiredFeishuGroupDiscussionsLocked(time.Now())
+	d.discussions[next.ID] = &next
+	d.mu.Unlock()
+	return d.dispatchFeishuGroupDiscussionTurn(ctx, next.ID)
+}
+
+func (d *ChannelOutboundDispatcher) dispatchFeishuGroupDiscussionTurn(ctx context.Context, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if d == nil || d.db == nil || d.hub == nil || sessionID == "" {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now := time.Now()
+	d.mu.Lock()
+	session := d.discussions[sessionID]
+	if session == nil {
+		d.mu.Unlock()
+		return nil
+	}
+	if !session.ExpiresAt.IsZero() && now.After(session.ExpiresAt) {
+		delete(d.discussions, sessionID)
+		d.mu.Unlock()
+		return nil
+	}
+	if session.NextIndex >= len(session.Participants) {
+		delete(d.discussions, sessionID)
+		d.mu.Unlock()
+		return nil
+	}
+	index := session.NextIndex
+	participant := session.Participants[index]
+	participants := append([]feishuGroupDiscussionParticipant(nil), session.Participants...)
+	previous := append([]feishuGroupDiscussionReply(nil), session.Replies...)
+	originalText := session.OriginalText
+	coordinatorName := session.CoordinatorName
+	actorUID := session.ActorUID
+	metadata := feishuGroupDiscussionTurnMetadata(session, participant, index+1)
+	clientMsgID := fmt.Sprintf("feishu-group-discussion:%s:%d:%d", session.ID, participant.AgentUID, index+1)
+	session.NextIndex++
+	d.mu.Unlock()
+
+	turnText := buildFeishuGroupAgentTurnText(originalText, participant, coordinatorName, participants, previous, index+1, len(participants))
+	if err := deliverInboundChannelTextToAgent(d.db, d.hub, actorUID, participant.AgentUID, turnText, clientMsgID, "feishu", metadata); err != nil {
+		return err
+	}
+	d.scheduleFeishuGroupDiscussionTimeout(sessionID, index+1, participant.AgentUID)
+	return nil
+}
+
+func (d *ChannelOutboundDispatcher) advanceFeishuGroupDiscussion(ctx context.Context, sessionID string, turn int, agentUID int64, text string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if d == nil || d.db == nil || d.hub == nil || sessionID == "" || agentUID <= 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now := time.Now()
+	d.mu.Lock()
+	session := d.discussions[sessionID]
+	if session == nil {
+		d.mu.Unlock()
+		return nil
+	}
+	if !session.ExpiresAt.IsZero() && now.After(session.ExpiresAt) {
+		delete(d.discussions, sessionID)
+		d.mu.Unlock()
+		return nil
+	}
+	if session.CompletedTurns == nil {
+		session.CompletedTurns = map[int]bool{}
+	}
+	if turn <= 0 {
+		for i, participant := range session.Participants {
+			if participant.AgentUID == agentUID {
+				turn = i + 1
+				break
+			}
+		}
+	}
+	if turn > 0 && session.CompletedTurns[turn] {
+		d.mu.Unlock()
+		return nil
+	}
+	if turn > 0 {
+		session.CompletedTurns[turn] = true
+	}
+	agentName := ""
+	if turn > 0 && turn <= len(session.Participants) && session.Participants[turn-1].AgentUID == agentUID {
+		agentName = session.Participants[turn-1].AgentName
+	}
+	if agentName == "" {
+		for _, participant := range session.Participants {
+			if participant.AgentUID == agentUID {
+				agentName = participant.AgentName
+				break
+			}
+		}
+	}
+	replyText := strings.TrimSpace(text)
+	if replyText != "" {
+		session.Replies = append(session.Replies, feishuGroupDiscussionReply{
+			AgentUID:  agentUID,
+			AgentName: agentName,
+			Text:      replyText,
+		})
+	}
+	done := session.NextIndex >= len(session.Participants)
+	if done {
+		delete(d.discussions, sessionID)
+	}
+	d.mu.Unlock()
+	if done {
+		return nil
+	}
+	return d.dispatchFeishuGroupDiscussionTurn(ctx, sessionID)
+}
+
+func (d *ChannelOutboundDispatcher) scheduleFeishuGroupDiscussionTimeout(sessionID string, turn int, agentUID int64) {
+	timeout := feishuGroupDiscussionTurnTimeout()
+	if d == nil || timeout <= 0 || strings.TrimSpace(sessionID) == "" || turn <= 0 || agentUID <= 0 {
+		return
+	}
+	time.AfterFunc(timeout, func() {
+		if err := d.skipFeishuGroupDiscussionTurn(context.Background(), sessionID, turn, agentUID); err != nil {
+			log.Printf("feishu group discussion timeout skip failed session=%s turn=%d agent=%d: %v", sessionID, turn, agentUID, err)
+		}
+	})
+}
+
+func (d *ChannelOutboundDispatcher) skipFeishuGroupDiscussionTurn(ctx context.Context, sessionID string, turn int, agentUID int64) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if d == nil || d.db == nil || d.hub == nil || sessionID == "" || turn <= 0 || agentUID <= 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now := time.Now()
+	d.mu.Lock()
+	session := d.discussions[sessionID]
+	if session == nil {
+		d.mu.Unlock()
+		return nil
+	}
+	if !session.ExpiresAt.IsZero() && now.After(session.ExpiresAt) {
+		delete(d.discussions, sessionID)
+		d.mu.Unlock()
+		return nil
+	}
+	if turn > len(session.Participants) || session.Participants[turn-1].AgentUID != agentUID {
+		d.mu.Unlock()
+		return nil
+	}
+	if session.CompletedTurns == nil {
+		session.CompletedTurns = map[int]bool{}
+	}
+	if session.CompletedTurns[turn] {
+		d.mu.Unlock()
+		return nil
+	}
+	session.CompletedTurns[turn] = true
+	done := session.NextIndex >= len(session.Participants)
+	if done {
+		delete(d.discussions, sessionID)
+	}
+	d.mu.Unlock()
+	if done {
+		return nil
+	}
+	log.Printf("feishu group discussion turn timed out; skipping session=%s turn=%d agent=%d", sessionID, turn, agentUID)
+	return d.dispatchFeishuGroupDiscussionTurn(ctx, sessionID)
+}
+
+func (d *ChannelOutboundDispatcher) cleanupExpiredFeishuGroupDiscussionsLocked(now time.Time) {
+	for id, session := range d.discussions {
+		if session == nil || (!session.ExpiresAt.IsZero() && now.After(session.ExpiresAt)) {
+			delete(d.discussions, id)
+		}
+	}
+}
+
+func feishuGroupDiscussionTurnMetadata(session *feishuGroupDiscussionSession, participant feishuGroupDiscussionParticipant, turn int) map[string]interface{} {
+	metadata := map[string]interface{}{
+		"source_channel":                        "feishu",
+		"channel_app_id":                        session.AppID,
+		"channel_user_id":                       session.ChannelUserID,
+		"channel_conversation_id":               session.ChatID,
+		"channel_conversation_type":             "group",
+		"channel_message_id":                    session.MessageID,
+		"channel_message_type":                  firstNonEmpty(session.MessageType, "text"),
+		"channel_identity_source":               "feishu.event",
+		"channel_identity_trust":                "feishu_event_callback",
+		"channel_gateway_mode":                  "feishu_agent_gateway",
+		"channel_selected_agent_id":             participant.AgentUID,
+		"channel_actor_uid":                     session.ActorUID,
+		"channel_group_coordinator_mode":        feishuGroupDiscussionMode,
+		"channel_group_original_text":           session.OriginalText,
+		feishuGroupDiscussionIDMetadataKey:      session.ID,
+		feishuGroupDiscussionTurnMetadataKey:    turn,
+		feishuGroupDiscussionSpeakerMetadataKey: participant.AgentUID,
+		"channel_group_speaker_count":           len(session.Participants),
+	}
+	if binding := participant.Binding; binding != nil {
+		metadata["source_channel"] = binding.Channel
+		metadata["channel_app_id"] = binding.ChannelAppID
+		metadata["channel_user_id"] = binding.ChannelUserID
+		metadata["channel_conversation_id"] = binding.ChannelConversationID
+		metadata["channel_conversation_type"] = binding.ChannelConversationType
+		metadata["channel_agent_binding_entry_id"] = binding.EntryID
+		metadata["channel_actor_uid"] = binding.ActorUID
+		metadata["channel_canonical_uid"] = binding.CanonicalUID
+		metadata["channel_agent_binding_id"] = binding.ID
+		metadata["channel_device_access_enabled"] = binding.DeviceAccessEnabled
+	}
+	return metadata
 }
 
 func (d *ChannelOutboundDispatcher) sendChannelBindingReply(ctx context.Context, binding *types.ChannelAgentBinding, topicID string, actorUID int64, agentUID int64, text string) (bool, error) {
@@ -2022,6 +2487,15 @@ func (d *ChannelOutboundDispatcher) sendChannelBindingReply(ctx context.Context,
 	}
 	switch normalizeChannel(binding.Channel) {
 	case "feishu":
+		if binding.ChannelConversationType == "group" && strings.TrimSpace(binding.ChannelConversationID) != "" {
+			if speaker, ok := feishuGroupAgentSpeakerFor(binding.ChannelConversationID, binding.AgentUID); ok {
+				if err := sendFeishuCustomBotText(ctx, speaker, text); err != nil {
+					log.Printf("feishu group custom bot outbound failed topic=%s actor=%d agent=%d chat=%s: %v", topicID, actorUID, agentUID, binding.ChannelConversationID, err)
+					return true, err
+				}
+				return true, nil
+			}
+		}
 		if d.feishu == nil {
 			return false, nil
 		}
