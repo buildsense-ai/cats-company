@@ -6,9 +6,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +29,12 @@ type feishuGroupAgentSpeaker struct {
 	AgentUID   int64
 	WebhookURL string
 	Secret     string
+}
+
+type feishuGroupAgentRoutingHint struct {
+	ChatID   string
+	AgentUID int64
+	Terms    []string
 }
 
 const (
@@ -113,6 +121,29 @@ func feishuGroupAgentSpeakers() []feishuGroupAgentSpeaker {
 	return parseFeishuGroupAgentSpeakers(raw)
 }
 
+func feishuGroupAgentRoutingHints() []feishuGroupAgentRoutingHint {
+	raw := firstEnv("CATSCO_FEISHU_GROUP_AGENT_HINTS", "CATSCO_FEISHU_GROUP_AGENT_KEYWORDS", "FEISHU_GROUP_AGENT_HINTS", "FEISHU_GROUP_AGENT_KEYWORDS")
+	return parseFeishuGroupAgentRoutingHints(raw)
+}
+
+func feishuGroupAgentRoutingHintsForChat(chatID string) map[int64][]string {
+	chatID = strings.TrimSpace(chatID)
+	out := map[int64][]string{}
+	for _, hint := range feishuGroupAgentRoutingHints() {
+		if hint.AgentUID <= 0 || !strings.EqualFold(strings.TrimSpace(hint.ChatID), chatID) {
+			continue
+		}
+		for _, term := range hint.Terms {
+			term = strings.TrimSpace(term)
+			if term == "" {
+				continue
+			}
+			out[hint.AgentUID] = append(out[hint.AgentUID], term)
+		}
+	}
+	return out
+}
+
 func feishuGroupAgentSpeakersForChat(chatID string) []feishuGroupAgentSpeaker {
 	chatID = strings.TrimSpace(chatID)
 	var out []feishuGroupAgentSpeaker
@@ -138,6 +169,142 @@ func feishuGroupAgentSpeakerFor(chatID string, agentUID int64) (feishuGroupAgent
 		}
 	}
 	return feishuGroupAgentSpeaker{}, false
+}
+
+func parseFeishuGroupAgentRoutingHints(raw string) []feishuGroupAgentRoutingHint {
+	rows := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ';' || r == '；'
+	})
+	out := make([]feishuGroupAgentRoutingHint, 0, len(rows))
+	for _, row := range rows {
+		row = strings.TrimSpace(row)
+		if row == "" {
+			continue
+		}
+		parts := strings.Split(row, "|")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		if len(parts) < 3 {
+			continue
+		}
+		agentUID, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || agentUID <= 0 {
+			continue
+		}
+		terms := splitFeishuRoutingTerms(strings.Join(parts[2:], " "))
+		if parts[0] == "" || len(terms) == 0 {
+			continue
+		}
+		out = append(out, feishuGroupAgentRoutingHint{
+			ChatID:   parts[0],
+			AgentUID: agentUID,
+			Terms:    terms,
+		})
+	}
+	return out
+}
+
+func orderFeishuGroupDiscussionParticipants(text string, seed string, chatID string, participants []feishuGroupDiscussionParticipant) []feishuGroupDiscussionParticipant {
+	if len(participants) <= 1 {
+		return participants
+	}
+	hints := feishuGroupAgentRoutingHintsForChat(chatID)
+	if strings.TrimSpace(seed) == "" {
+		seed = text
+	}
+	type rankedParticipant struct {
+		participant feishuGroupDiscussionParticipant
+		index       int
+		score       int
+		tieBreak    string
+	}
+	ranked := make([]rankedParticipant, 0, len(participants))
+	for i, participant := range participants {
+		ranked = append(ranked, rankedParticipant{
+			participant: participant,
+			index:       i,
+			score:       feishuGroupDiscussionParticipantScore(text, participant, hints),
+			tieBreak:    feishuGroupDiscussionTieBreak(seed, participant.AgentUID, i),
+		})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
+		}
+		if ranked[i].tieBreak != ranked[j].tieBreak {
+			return ranked[i].tieBreak < ranked[j].tieBreak
+		}
+		return ranked[i].index < ranked[j].index
+	})
+	out := make([]feishuGroupDiscussionParticipant, 0, len(ranked))
+	for _, item := range ranked {
+		out = append(out, item.participant)
+	}
+	return out
+}
+
+func feishuGroupDiscussionParticipantScore(text string, participant feishuGroupDiscussionParticipant, hints map[int64][]string) int {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if normalized == "" {
+		return 0
+	}
+	score := 0
+	for _, term := range []string{participant.AgentName, strconv.FormatInt(participant.AgentUID, 10)} {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if feishuRoutingTermUsable(term) && strings.Contains(normalized, term) {
+			score += 100
+		}
+	}
+	for _, term := range hints[participant.AgentUID] {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if !feishuRoutingTermUsable(term) {
+			continue
+		}
+		if strings.Contains(normalized, term) {
+			score += 80 + len([]rune(term))
+			continue
+		}
+		for _, token := range splitFeishuRoutingTerms(term) {
+			token = strings.ToLower(strings.TrimSpace(token))
+			if feishuRoutingTermUsable(token) && strings.Contains(normalized, token) {
+				score += 20
+			}
+		}
+	}
+	return score
+}
+
+func feishuGroupDiscussionTieBreak(seed string, agentUID int64, index int) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(seed) + ":" + strconv.FormatInt(agentUID, 10) + ":" + strconv.Itoa(index)))
+	return hex.EncodeToString(sum[:8])
+}
+
+func splitFeishuRoutingTerms(raw string) []string {
+	terms := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '，' || r == '、' || r == '/' || r == ' ' || r == '\n' || r == '\r' || r == '\t'
+	})
+	out := make([]string, 0, len(terms))
+	for _, term := range terms {
+		term = strings.TrimSpace(term)
+		if term == "" {
+			continue
+		}
+		out = append(out, term)
+	}
+	return out
+}
+
+func feishuRoutingTermUsable(term string) bool {
+	term = strings.TrimSpace(term)
+	if term == "" {
+		return false
+	}
+	runes := []rune(term)
+	if len(runes) >= 2 {
+		return true
+	}
+	return len(term) >= 3
 }
 
 func parseFeishuGroupAgentSpeakers(raw string) []feishuGroupAgentSpeaker {
@@ -175,6 +342,19 @@ func parseFeishuGroupAgentSpeakers(raw string) []feishuGroupAgentSpeaker {
 		out = append(out, speaker)
 	}
 	return out
+}
+
+func feishuGroupDiscussionTurnTimeout() time.Duration {
+	raw := firstEnv("CATSCO_FEISHU_GROUP_DISCUSSION_TURN_TIMEOUT", "FEISHU_GROUP_DISCUSSION_TURN_TIMEOUT", "CATSCO_FEISHU_GROUP_DISCUSSION_TURN_TIMEOUT_SECONDS", "FEISHU_GROUP_DISCUSSION_TURN_TIMEOUT_SECONDS")
+	if strings.TrimSpace(raw) != "" {
+		if duration, err := time.ParseDuration(strings.TrimSpace(raw)); err == nil && duration > 0 {
+			return duration
+		}
+		if seconds, err := strconv.ParseFloat(strings.TrimSpace(raw), 64); err == nil && seconds > 0 {
+			return time.Duration(seconds * float64(time.Second))
+		}
+	}
+	return 90 * time.Second
 }
 
 func buildFeishuGroupCoordinatorText(text string, binding *types.ChannelAgentBinding, agent *types.User) string {

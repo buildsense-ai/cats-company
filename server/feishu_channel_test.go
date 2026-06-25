@@ -1059,6 +1059,7 @@ func TestFeishuGroupMentionDeliversToCoordinatorAgent(t *testing.T) {
 
 func TestFeishuGroupMentionStartsSequentialAgentDiscussion(t *testing.T) {
 	t.Setenv("CATSCO_FEISHU_GROUP_BOT_ALIASES", "CoordinatorBot")
+	t.Setenv("CATSCO_FEISHU_GROUP_AGENT_HINTS", "oc_group_1|43|研发风险,代码实现;oc_group_1|44|验收标准,测试")
 	var devWebhookText string
 	devWebhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -1083,7 +1084,7 @@ func TestFeishuGroupMentionStartsSequentialAgentDiscussion(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":0}`))
 	}))
 	defer testWebhook.Close()
-	t.Setenv("CATSCO_FEISHU_GROUP_AGENT_WEBHOOKS", "oc_group_1|43|"+devWebhook.URL+";oc_group_1|44|"+testWebhook.URL)
+	t.Setenv("CATSCO_FEISHU_GROUP_AGENT_WEBHOOKS", "oc_group_1|44|"+testWebhook.URL+";oc_group_1|43|"+devWebhook.URL)
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
 	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_user"), DisplayName: "Alice", AccountType: types.AccountHuman}
@@ -1137,7 +1138,7 @@ func TestFeishuGroupMentionStartsSequentialAgentDiscussion(t *testing.T) {
 	hub.SetChannelOutboundDispatcher(dispatcher)
 	handler := NewFeishuChannelHandler(db, hub, FeishuChannelConfig{AppID: "cli_app"}, api)
 
-	rec := sendFeishuTextEvent(t, handler, "cli_app", "ou_user", "oc_group_1", "group", "om_group_task", "@CoordinatorBot 帮我拆一下这个需求")
+	rec := sendFeishuTextEvent(t, handler, "cli_app", "ou_user", "oc_group_1", "group", "om_group_task", "@CoordinatorBot 这个需求可能有研发风险，帮我拆一下")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -1148,7 +1149,7 @@ func TestFeishuGroupMentionStartsSequentialAgentDiscussion(t *testing.T) {
 		t.Fatalf("expected first discussion turn only, got %+v", db.messages)
 	}
 	firstContent := db.messages[0].Content
-	if !strings.Contains(firstContent, "[飞书群聊多机器人协作上下文]") || !strings.Contains(firstContent, "你的群聊发言身份：Dev Agent") || !strings.Contains(firstContent, "帮我拆一下这个需求") {
+	if !strings.Contains(firstContent, "[飞书群聊多机器人协作上下文]") || !strings.Contains(firstContent, "你的群聊发言身份：Dev Agent") || !strings.Contains(firstContent, "这个需求可能有研发风险") {
 		t.Fatalf("first discussion turn not routed to dev agent:\n%s", firstContent)
 	}
 	if strings.Contains(firstContent, "群聊里前面已经发出的同事观点") || strings.Contains(firstContent, "@CoordinatorBot") {
@@ -1168,7 +1169,7 @@ func TestFeishuGroupMentionStartsSequentialAgentDiscussion(t *testing.T) {
 		t.Fatalf("expected second discussion turn after first reply, got %+v", db.messages)
 	}
 	secondContent := db.messages[1].Content
-	for _, want := range []string{"你的群聊发言身份：Test Agent", "群聊里前面已经发出的同事观点", "Dev Agent：我先从研发风险看。", "帮我拆一下这个需求"} {
+	for _, want := range []string{"你的群聊发言身份：Test Agent", "群聊里前面已经发出的同事观点", "Dev Agent：我先从研发风险看。", "这个需求可能有研发风险"} {
 		if !strings.Contains(secondContent, want) {
 			t.Fatalf("second discussion turn missing %q:\n%s", want, secondContent)
 		}
@@ -1185,6 +1186,87 @@ func TestFeishuGroupMentionStartsSequentialAgentDiscussion(t *testing.T) {
 	}
 	if len(db.messages) != 2 {
 		t.Fatalf("discussion should finish after configured speakers reply, got %+v", db.messages)
+	}
+}
+
+func TestFeishuGroupDiscussionCanSkipTimedOutTurn(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_GROUP_BOT_ALIASES", "CoordinatorBot")
+	t.Setenv("CATSCO_FEISHU_GROUP_AGENT_HINTS", "oc_group_1|43|研发风险;oc_group_1|44|验收标准")
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer webhook.Close()
+	t.Setenv("CATSCO_FEISHU_GROUP_AGENT_WEBHOOKS", "oc_group_1|43|"+webhook.URL+";oc_group_1|44|"+webhook.URL)
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_user"), DisplayName: "Alice", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "dev-agent", DisplayName: "Dev Agent", AccountType: types.AccountBot}
+	db.users[44] = &types.User{ID: 44, Username: "test-agent", DisplayName: "Test Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.owners[44] = 7
+	for _, agentUID := range []int64{43, 44} {
+		if _, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+			SceneKey:     "scene-feishu",
+			Channel:      "feishu",
+			ChannelAppID: "cli_app",
+			AccessMode:   types.ChannelAgentAccessPublic,
+			OwnerUID:     7,
+			AgentUID:     agentUID,
+			Status:       "active",
+		}); err != nil {
+			t.Fatalf("seed entry %d: %v", agentUID, err)
+		}
+	}
+	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:                 "feishu",
+		ChannelAppID:            "cli_app",
+		ChannelUserID:           "ou_user",
+		ChannelConversationID:   "oc_group_1",
+		ChannelConversationType: "group",
+		ActorUID:                8,
+		CanonicalUID:            8,
+		OwnerUID:                7,
+		AgentUID:                43,
+		EntryID:                 1,
+		Status:                  types.ChannelAgentBindingActive,
+	}); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	if _, err := db.UpsertChannelAgentRoute(&types.ChannelAgentRoute{
+		Channel:                 "feishu",
+		ChannelAppID:            "cli_app",
+		ChannelUserID:           "ou_user",
+		ChannelConversationID:   "oc_group_1",
+		ChannelConversationType: "group",
+		ActorUID:                8,
+		AgentUID:                43,
+		Source:                  "manual",
+	}); err != nil {
+		t.Fatalf("seed route: %v", err)
+	}
+	api := &fakeFeishuAPI{appID: "cli_app"}
+	hub := NewHub(db, nil)
+	dispatcher := NewChannelOutboundDispatcher(db, api, "cli_app").WithHub(hub)
+	hub.SetChannelOutboundDispatcher(dispatcher)
+	handler := NewFeishuChannelHandler(db, hub, FeishuChannelConfig{AppID: "cli_app"}, api)
+
+	rec := sendFeishuTextEvent(t, handler, "cli_app", "ou_user", "oc_group_1", "group", "om_group_timeout", "@CoordinatorBot 研发风险先看，后面补验收标准")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(db.messages) != 1 || db.messages[0].TopicID != "p2p_8_43" {
+		t.Fatalf("expected first discussion turn only, got %+v", db.messages)
+	}
+
+	if err := dispatcher.skipFeishuGroupDiscussionTurn(context.Background(), "feishu-group:om_group_timeout", 1, 43); err != nil {
+		t.Fatalf("skip timed-out turn: %v", err)
+	}
+	if len(db.messages) != 2 || db.messages[1].TopicID != "p2p_8_44" {
+		t.Fatalf("expected second discussion turn after timeout skip, got %+v", db.messages)
+	}
+	secondContent := db.messages[1].Content
+	if !strings.Contains(secondContent, "你的群聊发言身份：Test Agent") || strings.Contains(secondContent, "Dev Agent：") {
+		t.Fatalf("second turn should continue without a missing first reply:\n%s", secondContent)
 	}
 }
 

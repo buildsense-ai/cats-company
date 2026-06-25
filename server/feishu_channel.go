@@ -711,6 +711,7 @@ func (h *FeishuChannelHandler) deliverFeishuGroupAgentTurns(appID, channelUserID
 		return 0, nil
 	}
 	messageID := strings.TrimSpace(event.Message.MessageID)
+	participants = orderFeishuGroupDiscussionParticipants(text, messageID, event.Message.ChatID, participants)
 	sessionID := "feishu-group:" + messageID
 	if messageID == "" {
 		sessionID = fmt.Sprintf("feishu-group:%s:%d", strings.TrimSpace(event.Message.ChatID), time.Now().UnixNano())
@@ -2301,7 +2302,11 @@ func (d *ChannelOutboundDispatcher) dispatchFeishuGroupDiscussionTurn(ctx contex
 	d.mu.Unlock()
 
 	turnText := buildFeishuGroupAgentTurnText(originalText, participant, coordinatorName, participants, previous, index+1, len(participants))
-	return deliverInboundChannelTextToAgent(d.db, d.hub, actorUID, participant.AgentUID, turnText, clientMsgID, "feishu", metadata)
+	if err := deliverInboundChannelTextToAgent(d.db, d.hub, actorUID, participant.AgentUID, turnText, clientMsgID, "feishu", metadata); err != nil {
+		return err
+	}
+	d.scheduleFeishuGroupDiscussionTimeout(sessionID, index+1, participant.AgentUID)
+	return nil
 }
 
 func (d *ChannelOutboundDispatcher) advanceFeishuGroupDiscussion(ctx context.Context, sessionID string, turn int, agentUID int64, text string) error {
@@ -2370,6 +2375,62 @@ func (d *ChannelOutboundDispatcher) advanceFeishuGroupDiscussion(ctx context.Con
 	if done {
 		return nil
 	}
+	return d.dispatchFeishuGroupDiscussionTurn(ctx, sessionID)
+}
+
+func (d *ChannelOutboundDispatcher) scheduleFeishuGroupDiscussionTimeout(sessionID string, turn int, agentUID int64) {
+	timeout := feishuGroupDiscussionTurnTimeout()
+	if d == nil || timeout <= 0 || strings.TrimSpace(sessionID) == "" || turn <= 0 || agentUID <= 0 {
+		return
+	}
+	time.AfterFunc(timeout, func() {
+		if err := d.skipFeishuGroupDiscussionTurn(context.Background(), sessionID, turn, agentUID); err != nil {
+			log.Printf("feishu group discussion timeout skip failed session=%s turn=%d agent=%d: %v", sessionID, turn, agentUID, err)
+		}
+	})
+}
+
+func (d *ChannelOutboundDispatcher) skipFeishuGroupDiscussionTurn(ctx context.Context, sessionID string, turn int, agentUID int64) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if d == nil || d.db == nil || d.hub == nil || sessionID == "" || turn <= 0 || agentUID <= 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now := time.Now()
+	d.mu.Lock()
+	session := d.discussions[sessionID]
+	if session == nil {
+		d.mu.Unlock()
+		return nil
+	}
+	if !session.ExpiresAt.IsZero() && now.After(session.ExpiresAt) {
+		delete(d.discussions, sessionID)
+		d.mu.Unlock()
+		return nil
+	}
+	if turn > len(session.Participants) || session.Participants[turn-1].AgentUID != agentUID {
+		d.mu.Unlock()
+		return nil
+	}
+	if session.CompletedTurns == nil {
+		session.CompletedTurns = map[int]bool{}
+	}
+	if session.CompletedTurns[turn] {
+		d.mu.Unlock()
+		return nil
+	}
+	session.CompletedTurns[turn] = true
+	done := session.NextIndex >= len(session.Participants)
+	if done {
+		delete(d.discussions, sessionID)
+	}
+	d.mu.Unlock()
+	if done {
+		return nil
+	}
+	log.Printf("feishu group discussion turn timed out; skipping session=%s turn=%d agent=%d", sessionID, turn, agentUID)
 	return d.dispatchFeishuGroupDiscussionTurn(ctx, sessionID)
 }
 
