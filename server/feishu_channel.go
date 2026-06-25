@@ -569,6 +569,13 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 	}
 	metadata := h.feishuInboundMetadata(appID, channelUserID, &event, binding, chatType, messageType)
 	if groupCoordinatorMode {
+		delivered, err := h.deliverFeishuGroupAgentTurns(appID, channelUserID, actorUID, &event, binding, text, messageType)
+		if err != nil {
+			return err
+		}
+		if delivered > 0 {
+			return nil
+		}
 		agent, _ := h.db.GetUser(binding.AgentUID)
 		metadata["channel_group_coordinator_mode"] = "team"
 		metadata["channel_group_original_text"] = text
@@ -624,6 +631,73 @@ func (h *FeishuChannelHandler) deliverInboundTextToAgent(actorUID, agentUID int6
 
 func (h *FeishuChannelHandler) deliverInboundMessageToAgent(actorUID, agentUID int64, text string, files []uploadPayload, clientMsgID string, metadata map[string]interface{}) error {
 	return deliverInboundChannelMessageToAgent(h.db, h.hub, actorUID, agentUID, text, files, clientMsgID, "feishu", metadata)
+}
+
+func (h *FeishuChannelHandler) deliverFeishuGroupAgentTurns(appID, channelUserID string, actorUID int64, event *feishuMessageEvent, coordinatorBinding *types.ChannelAgentBinding, text, messageType string) (int, error) {
+	if h == nil || event == nil || coordinatorBinding == nil || normalizeFeishuChatType(event.Message.ChatType) != "group" {
+		return 0, nil
+	}
+	speakers := feishuGroupAgentSpeakersForChat(event.Message.ChatID)
+	if len(speakers) == 0 {
+		return 0, nil
+	}
+	roster, err := h.listFeishuRoster(appID)
+	if err != nil {
+		return 0, err
+	}
+	entriesByAgent := map[int64]*feishuRosterItem{}
+	for i := range roster {
+		item := roster[i]
+		if item.Entry != nil && item.Entry.AgentUID > 0 {
+			entriesByAgent[item.Entry.AgentUID] = &item
+		}
+	}
+	participants := make([]*types.User, 0, len(speakers))
+	for _, speaker := range speakers {
+		if item := entriesByAgent[speaker.AgentUID]; item != nil {
+			participants = append(participants, item.Agent)
+		}
+	}
+	if len(participants) == 0 {
+		return 0, nil
+	}
+	coordinator, _ := h.db.GetUser(coordinatorBinding.AgentUID)
+	delivered := 0
+	for _, speaker := range speakers {
+		item := entriesByAgent[speaker.AgentUID]
+		if item == nil || item.Entry == nil {
+			continue
+		}
+		binding := coordinatorBinding
+		if speaker.AgentUID != coordinatorBinding.AgentUID {
+			nextBinding, _, err := h.bindOrRequestFeishuIdentityWithCanonical(item.Entry, actorUID, channelUserID, event.Message.ChatID, "group", coordinatorBinding.CanonicalUID)
+			if err != nil {
+				return delivered, err
+			}
+			binding = nextBinding
+		}
+		if msg, ok, err := h.feishuBindingDeliverableMessage(binding); err != nil {
+			return delivered, err
+		} else if !ok {
+			log.Printf("skip feishu group agent speaker agent=%d chat=%s: %s", speaker.AgentUID, event.Message.ChatID, strings.ReplaceAll(msg, "\n", " "))
+			continue
+		}
+		metadata := h.feishuInboundMetadata(appID, channelUserID, event, binding, "group", messageType)
+		metadata["channel_group_coordinator_mode"] = "multi_agent"
+		metadata["channel_group_original_text"] = text
+		metadata["channel_group_speaker_agent_uid"] = speaker.AgentUID
+		metadata["channel_group_speaker_count"] = len(participants)
+		turnText := buildFeishuGroupAgentTurnText(text, item.Agent, coordinator, participants, delivered+1, len(participants))
+		clientMsgID := fmt.Sprintf("feishu-group-agent:%s:%d", strings.TrimSpace(event.Message.MessageID), speaker.AgentUID)
+		if err := h.deliverInboundTextToAgent(actorUID, speaker.AgentUID, turnText, clientMsgID, metadata); err != nil {
+			return delivered, err
+		}
+		delivered++
+		if delivered >= 4 {
+			break
+		}
+	}
+	return delivered, nil
 }
 
 type feishuGatewayCommand struct {
@@ -2095,6 +2169,15 @@ func (d *ChannelOutboundDispatcher) sendChannelBindingReply(ctx context.Context,
 	}
 	switch normalizeChannel(binding.Channel) {
 	case "feishu":
+		if binding.ChannelConversationType == "group" && strings.TrimSpace(binding.ChannelConversationID) != "" {
+			if speaker, ok := feishuGroupAgentSpeakerFor(binding.ChannelConversationID, binding.AgentUID); ok {
+				if err := sendFeishuCustomBotText(ctx, speaker, text); err != nil {
+					log.Printf("feishu group custom bot outbound failed topic=%s actor=%d agent=%d chat=%s: %v", topicID, actorUID, agentUID, binding.ChannelConversationID, err)
+					return true, err
+				}
+				return true, nil
+			}
+		}
 		if d.feishu == nil {
 			return false, nil
 		}

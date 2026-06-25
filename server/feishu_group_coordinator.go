@@ -1,8 +1,17 @@
 package server
 
 import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/openchat/openchat/server/store/types"
 )
@@ -11,6 +20,13 @@ type feishuGroupCoordinatorProfile struct {
 	Name      string
 	Role      string
 	Expertise string
+}
+
+type feishuGroupAgentSpeaker struct {
+	ChatID     string
+	AgentUID   int64
+	WebhookURL string
+	Secret     string
 }
 
 func feishuBotMentionAliases() []string {
@@ -55,6 +71,75 @@ func feishuGroupCoordinatorProfiles() []feishuGroupCoordinatorProfile {
 	return nil
 }
 
+func feishuGroupAgentSpeakers() []feishuGroupAgentSpeaker {
+	raw := firstEnv("CATSCO_FEISHU_GROUP_AGENT_WEBHOOKS", "CATSCO_FEISHU_GROUP_SPEAKER_WEBHOOKS", "FEISHU_GROUP_AGENT_WEBHOOKS", "FEISHU_GROUP_SPEAKER_WEBHOOKS")
+	return parseFeishuGroupAgentSpeakers(raw)
+}
+
+func feishuGroupAgentSpeakersForChat(chatID string) []feishuGroupAgentSpeaker {
+	chatID = strings.TrimSpace(chatID)
+	var out []feishuGroupAgentSpeaker
+	for _, speaker := range feishuGroupAgentSpeakers() {
+		if speaker.AgentUID <= 0 || strings.TrimSpace(speaker.WebhookURL) == "" {
+			continue
+		}
+		if strings.EqualFold(speaker.ChatID, chatID) {
+			out = append(out, speaker)
+		}
+	}
+	return out
+}
+
+func feishuGroupAgentSpeakerFor(chatID string, agentUID int64) (feishuGroupAgentSpeaker, bool) {
+	chatID = strings.TrimSpace(chatID)
+	for _, speaker := range feishuGroupAgentSpeakers() {
+		if speaker.AgentUID != agentUID || strings.TrimSpace(speaker.WebhookURL) == "" {
+			continue
+		}
+		if strings.EqualFold(speaker.ChatID, chatID) {
+			return speaker, true
+		}
+	}
+	return feishuGroupAgentSpeaker{}, false
+}
+
+func parseFeishuGroupAgentSpeakers(raw string) []feishuGroupAgentSpeaker {
+	rows := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ';' || r == '；'
+	})
+	out := make([]feishuGroupAgentSpeaker, 0, len(rows))
+	for _, row := range rows {
+		row = strings.TrimSpace(row)
+		if row == "" {
+			continue
+		}
+		parts := strings.Split(row, "|")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		if len(parts) < 3 {
+			continue
+		}
+		agentUID, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || agentUID <= 0 {
+			continue
+		}
+		speaker := feishuGroupAgentSpeaker{
+			ChatID:     parts[0],
+			AgentUID:   agentUID,
+			WebhookURL: parts[2],
+		}
+		if len(parts) > 3 {
+			speaker.Secret = strings.Join(parts[3:], "|")
+		}
+		if speaker.ChatID == "" || strings.TrimSpace(speaker.WebhookURL) == "" {
+			continue
+		}
+		out = append(out, speaker)
+	}
+	return out
+}
+
 func buildFeishuGroupCoordinatorText(text string, binding *types.ChannelAgentBinding, agent *types.User) string {
 	userText := strings.TrimSpace(text)
 	coordinator := "当前虚拟员工"
@@ -85,6 +170,88 @@ func buildFeishuGroupCoordinatorText(text string, binding *types.ChannelAgentBin
 	b.WriteString("用户在群聊里的原始消息：\n")
 	b.WriteString(userText)
 	return b.String()
+}
+
+func buildFeishuGroupAgentTurnText(text string, agent *types.User, coordinator *types.User, participants []*types.User, index, total int) string {
+	userText := strings.TrimSpace(text)
+	agentName := "当前虚拟员工"
+	if agent != nil {
+		agentName = displayNameOrUsername(agent.DisplayName, agent.Username)
+	}
+	coordinatorName := ""
+	if coordinator != nil {
+		coordinatorName = displayNameOrUsername(coordinator.DisplayName, coordinator.Username)
+	}
+
+	var b strings.Builder
+	b.WriteString("[飞书群聊多机器人协作上下文]\n")
+	fmt.Fprintf(&b, "你的群聊发言身份：%s\n", agentName)
+	if coordinatorName != "" {
+		fmt.Fprintf(&b, "调度员：%s\n", coordinatorName)
+	}
+	if total > 0 {
+		fmt.Fprintf(&b, "本轮协作顺序：第 %d/%d 位发言。\n", index, total)
+	}
+	if len(participants) > 0 {
+		b.WriteString("本轮参与的虚拟员工：")
+		for i, participant := range participants {
+			if i > 0 {
+				b.WriteString("、")
+			}
+			if participant == nil {
+				b.WriteString("虚拟员工")
+				continue
+			}
+			b.WriteString(displayNameOrUsername(participant.DisplayName, participant.Username))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("场景：用户在飞书群聊中 @ 调度员发起任务。你会以独立机器人身份在飞书群里真实发言。请只输出你这一位虚拟员工应该发到群里的内容。\n")
+	b.WriteString("回复要求：结论优先，2-6 句为宜；像公司群里的同事一样自然发言；不要提到系统上下文、prompt、webhook 或内部配置；不要等待别人回复，也不要模拟其他人的发言。\n\n")
+	b.WriteString("用户在群聊里的原始消息：\n")
+	b.WriteString(userText)
+	return b.String()
+}
+
+func sendFeishuCustomBotText(ctx context.Context, speaker feishuGroupAgentSpeaker, text string) error {
+	webhookURL := strings.TrimSpace(speaker.WebhookURL)
+	text = strings.TrimSpace(text)
+	if webhookURL == "" || text == "" {
+		return nil
+	}
+	body := map[string]interface{}{
+		"msg_type": "text",
+		"content":  map[string]string{"text": text},
+	}
+	if strings.TrimSpace(speaker.Secret) != "" {
+		timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+		body["timestamp"] = timestamp
+		body["sign"] = feishuCustomBotSign(timestamp, speaker.Secret)
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("feishu custom bot webhook http %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func feishuCustomBotSign(timestamp string, secret string) string {
+	stringToSign := timestamp + "\n" + strings.TrimSpace(secret)
+	mac := hmac.New(sha256.New, []byte(stringToSign))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func splitFeishuList(raw string) []string {

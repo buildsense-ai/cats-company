@@ -1039,6 +1039,87 @@ func TestFeishuGroupMentionDeliversToCoordinatorAgent(t *testing.T) {
 	}
 }
 
+func TestFeishuGroupMentionFansOutToConfiguredAgentSpeakers(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_GROUP_BOT_ALIASES", "CoordinatorBot")
+	t.Setenv("CATSCO_FEISHU_GROUP_AGENT_WEBHOOKS", "oc_group_1|43|https://example.test/dev;oc_group_1|44|https://example.test/test")
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_user"), DisplayName: "Alice", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "dev-agent", DisplayName: "Dev Agent", AccountType: types.AccountBot}
+	db.users[44] = &types.User{ID: 44, Username: "test-agent", DisplayName: "Test Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.owners[44] = 7
+	for _, agentUID := range []int64{43, 44} {
+		if _, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+			SceneKey:     "scene-feishu",
+			Channel:      "feishu",
+			ChannelAppID: "cli_app",
+			AccessMode:   types.ChannelAgentAccessPublic,
+			OwnerUID:     7,
+			AgentUID:     agentUID,
+			Status:       "active",
+		}); err != nil {
+			t.Fatalf("seed entry %d: %v", agentUID, err)
+		}
+	}
+	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:                 "feishu",
+		ChannelAppID:            "cli_app",
+		ChannelUserID:           "ou_user",
+		ChannelConversationID:   "oc_group_1",
+		ChannelConversationType: "group",
+		ActorUID:                8,
+		CanonicalUID:            8,
+		OwnerUID:                7,
+		AgentUID:                43,
+		EntryID:                 1,
+		Status:                  types.ChannelAgentBindingActive,
+	}); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	if _, err := db.UpsertChannelAgentRoute(&types.ChannelAgentRoute{
+		Channel:                 "feishu",
+		ChannelAppID:            "cli_app",
+		ChannelUserID:           "ou_user",
+		ChannelConversationID:   "oc_group_1",
+		ChannelConversationType: "group",
+		ActorUID:                8,
+		AgentUID:                43,
+		Source:                  "manual",
+	}); err != nil {
+		t.Fatalf("seed route: %v", err)
+	}
+	api := &fakeFeishuAPI{appID: "cli_app"}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{AppID: "cli_app"}, api)
+
+	rec := sendFeishuTextEvent(t, handler, "cli_app", "ou_user", "oc_group_1", "group", "om_group_task", "@CoordinatorBot 帮我拆一下这个需求")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(api.sends) != 0 {
+		t.Fatalf("group multi-agent task should not send an immediate gateway reply: %+v", api.sends)
+	}
+	if len(db.messages) != 2 {
+		t.Fatalf("expected two agent deliveries, got %+v", db.messages)
+	}
+	topics := map[string]string{}
+	for _, msg := range db.messages {
+		topics[msg.TopicID] = msg.Content
+	}
+	for topic, wantAgent := range map[string]string{
+		"p2p_8_43": "Dev Agent",
+		"p2p_8_44": "Test Agent",
+	} {
+		content := topics[topic]
+		if !strings.Contains(content, "[飞书群聊多机器人协作上下文]") || !strings.Contains(content, wantAgent) || !strings.Contains(content, "帮我拆一下这个需求") {
+			t.Fatalf("topic %s content not routed to %s:\n%s", topic, wantAgent, content)
+		}
+		if strings.Contains(content, "@CoordinatorBot") {
+			t.Fatalf("leading bot mention should be stripped before multi-agent delivery:\n%s", content)
+		}
+	}
+}
+
 func TestFeishuGroupMentionCanMatchConfiguredBotOpenID(t *testing.T) {
 	t.Setenv("CATSCO_FEISHU_GROUP_BOT_ALIASES", "")
 	t.Setenv("CATSCO_FEISHU_GROUP_BOT_OPEN_IDS", "ou_bot")
@@ -1069,6 +1150,8 @@ func TestFeishuGroupBindingLinksAreSentPrivately(t *testing.T) {
 	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_user"), DisplayName: "Alice", AccountType: types.AccountHuman}
 	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
 	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
 	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:                 "feishu",
 		ChannelAppID:            "cli_app",
@@ -1158,6 +1241,58 @@ func TestFeishuOutboundForwardsBotReply(t *testing.T) {
 	}
 	if api.sends[0].ReceiveIDType != "open_id" || api.sends[0].ReceiveID != "ou_user" || api.sends[0].Text != "合同进度正常。" {
 		t.Fatalf("send=%+v", api.sends[0])
+	}
+}
+
+func TestFeishuOutboundUsesConfiguredGroupAgentWebhook(t *testing.T) {
+	var webhookBody map[string]interface{}
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method=%s", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&webhookBody); err != nil {
+			t.Fatalf("decode webhook body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer webhook.Close()
+	t.Setenv("CATSCO_FEISHU_GROUP_AGENT_WEBHOOKS", "oc_group_1|43|"+webhook.URL)
+
+	db := newChannelAgentTestStore()
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_user"), DisplayName: "Alice", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
+	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:                 "feishu",
+		ChannelAppID:            "cli_app",
+		ChannelUserID:           "ou_user",
+		ChannelConversationID:   "oc_group_1",
+		ChannelConversationType: "group",
+		ActorUID:                8,
+		CanonicalUID:            8,
+		OwnerUID:                7,
+		AgentUID:                43,
+		Status:                  types.ChannelAgentBindingActive,
+	}); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	api := &fakeFeishuAPI{appID: "cli_app"}
+	dispatcher := NewChannelOutboundDispatcher(db, api, "cli_app")
+
+	if err := dispatcher.ForwardBotReply(context.Background(), 8, 43, "p2p_8_43", "我先从工程风险看。"); err != nil {
+		t.Fatalf("forward: %v", err)
+	}
+	if len(api.sends) != 0 {
+		t.Fatalf("main Feishu app should not send when group agent webhook is configured: %+v", api.sends)
+	}
+	if webhookBody["msg_type"] != "text" {
+		t.Fatalf("webhook body=%+v", webhookBody)
+	}
+	content, _ := webhookBody["content"].(map[string]interface{})
+	if content["text"] != "我先从工程风险看。" {
+		t.Fatalf("webhook content=%+v", webhookBody)
 	}
 }
 
