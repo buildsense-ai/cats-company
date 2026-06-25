@@ -881,6 +881,10 @@ func (h *FeishuChannelHandler) formatFeishuRosterReply(appID string) string {
 	var b strings.Builder
 	b.WriteString("可用虚拟员工：")
 	for i, item := range items {
+		if item.Entry != nil && item.Entry.AgentUID > 0 {
+			fmt.Fprintf(&b, "\n%d. %s（UID: %d）", i+1, item.Name, item.Entry.AgentUID)
+			continue
+		}
 		fmt.Fprintf(&b, "\n%d. %s", i+1, item.Name)
 	}
 	b.WriteString("\n\n发送「切换到 员工名」选择当前员工。")
