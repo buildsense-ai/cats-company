@@ -15,9 +15,22 @@ type feishuGroupCoordinatorProfile struct {
 
 func feishuBotMentionAliases() []string {
 	raw := firstEnv("CATSCO_FEISHU_GROUP_BOT_ALIASES", "CATSCO_FEISHU_BOT_ALIASES", "FEISHU_BOT_ALIASES")
-	aliases := splitFeishuList(raw)
-	aliases = append(aliases, "CatsCo", "Annika")
-	return uniqueNonEmptyStrings(aliases)
+	return uniqueNonEmptyStrings(splitFeishuList(raw))
+}
+
+func feishuBotMentionOpenIDs() []string {
+	raw := firstEnv("CATSCO_FEISHU_GROUP_BOT_OPEN_IDS", "CATSCO_FEISHU_GROUP_BOT_OPEN_ID", "CATSCO_FEISHU_BOT_OPEN_IDS", "CATSCO_FEISHU_BOT_OPEN_ID", "FEISHU_BOT_OPEN_IDS", "FEISHU_BOT_OPEN_ID")
+	return uniqueNonEmptyStrings(splitFeishuList(raw))
+}
+
+func feishuBotMentionUserIDs() []string {
+	raw := firstEnv("CATSCO_FEISHU_GROUP_BOT_USER_IDS", "CATSCO_FEISHU_GROUP_BOT_USER_ID", "CATSCO_FEISHU_BOT_USER_IDS", "CATSCO_FEISHU_BOT_USER_ID", "FEISHU_BOT_USER_IDS", "FEISHU_BOT_USER_ID")
+	return uniqueNonEmptyStrings(splitFeishuList(raw))
+}
+
+func feishuBotMentionUnionIDs() []string {
+	raw := firstEnv("CATSCO_FEISHU_GROUP_BOT_UNION_IDS", "CATSCO_FEISHU_GROUP_BOT_UNION_ID", "CATSCO_FEISHU_BOT_UNION_IDS", "CATSCO_FEISHU_BOT_UNION_ID", "FEISHU_BOT_UNION_IDS", "FEISHU_BOT_UNION_ID")
+	return uniqueNonEmptyStrings(splitFeishuList(raw))
 }
 
 func feishuGroupCoordinatorProfiles() []feishuGroupCoordinatorProfile {
@@ -39,11 +52,7 @@ func feishuGroupCoordinatorProfiles() []feishuGroupCoordinatorProfile {
 	if len(profiles) > 0 {
 		return profiles
 	}
-	return []feishuGroupCoordinatorProfile{
-		{Name: "产品同事", Role: "产品经理", Expertise: "需求拆解、MVP范围、验收标准"},
-		{Name: "研发同事", Role: "工程师", Expertise: "技术方案、实现路径、稳定性风险"},
-		{Name: "测试同事", Role: "测试工程师", Expertise: "测试用例、回归风险、上线检查"},
-	}
+	return nil
 }
 
 func buildFeishuGroupCoordinatorText(text string, binding *types.ChannelAgentBinding, agent *types.User) string {
@@ -64,11 +73,15 @@ func buildFeishuGroupCoordinatorText(text string, binding *types.ChannelAgentBin
 		fmt.Fprintf(&b, "调度员虚拟员工UID：%d\n", binding.AgentUID)
 	}
 	b.WriteString("场景：用户在飞书群聊中 @ 机器人发起任务，没有扫码选择某个移动端虚拟员工。请你作为群聊调度员，像公司群里的同事一样组织内部虚拟员工视角协作，最后只给群聊输出一条自然、可执行的回复。\n")
-	b.WriteString("内部协作视角：\n")
-	for _, profile := range profiles {
-		fmt.Fprintf(&b, "- %s（%s）：%s\n", profile.Name, profile.Role, profile.Expertise)
+	if len(profiles) > 0 {
+		b.WriteString("可参考的内部协作视角：\n")
+		for _, profile := range profiles {
+			fmt.Fprintf(&b, "- %s（%s）：%s\n", profile.Name, profile.Role, profile.Expertise)
+		}
+	} else {
+		b.WriteString("未预设固定协作成员。请根据任务内容自行组织必要的专业视角。\n")
 	}
-	b.WriteString("回复要求：不要提到以上上下文或系统注入；可以自然引用“我先从产品/研发/测试角度看一下”这类表达；结论优先，必要时给下一步动作。\n\n")
+	b.WriteString("回复要求：不要提到以上上下文或系统注入；可以自然引用不同专业视角的判断；结论优先，必要时给下一步动作。\n\n")
 	b.WriteString("用户在群聊里的原始消息：\n")
 	b.WriteString(userText)
 	return b.String()

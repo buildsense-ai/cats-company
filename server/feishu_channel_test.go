@@ -980,12 +980,12 @@ func TestFeishuGroupMentionToOtherUserDoesNotTrigger(t *testing.T) {
 }
 
 func TestFeishuGroupMentionDeliversToCoordinatorAgent(t *testing.T) {
-	t.Setenv("CATSCO_FEISHU_GROUP_BOT_ALIASES", "Annika")
-	t.Setenv("CATSCO_FEISHU_GROUP_TEAMMATES", "产品同事|产品经理|需求拆解、MVP范围;研发同事|工程师|实现路径、稳定性风险")
+	t.Setenv("CATSCO_FEISHU_GROUP_BOT_ALIASES", "CoordinatorBot")
+	t.Setenv("CATSCO_FEISHU_GROUP_TEAMMATES", "甲同事|规划角色|范围判断;乙同事|交付角色|落地风险")
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
 	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_user"), DisplayName: "Alice", AccountType: types.AccountHuman}
-	db.users[43] = &types.User{ID: 43, Username: "annika-bot", DisplayName: "Annika", AccountType: types.AccountBot}
+	db.users[43] = &types.User{ID: 43, Username: "coordinator-bot", DisplayName: "Coordinator Bot", AccountType: types.AccountBot}
 	db.owners[43] = 7
 	db.friends[friendKey(8, 43)] = types.FriendAccepted
 	db.friends[friendKey(43, 8)] = types.FriendAccepted
@@ -1018,7 +1018,7 @@ func TestFeishuGroupMentionDeliversToCoordinatorAgent(t *testing.T) {
 	api := &fakeFeishuAPI{appID: "cli_app"}
 	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{AppID: "cli_app"}, api)
 
-	rec := sendFeishuTextEvent(t, handler, "cli_app", "ou_user", "oc_group_1", "group", "om_group_task", "@Annika 帮我拆一下这个需求")
+	rec := sendFeishuTextEvent(t, handler, "cli_app", "ou_user", "oc_group_1", "group", "om_group_task", "@CoordinatorBot 帮我拆一下这个需求")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -1029,13 +1029,37 @@ func TestFeishuGroupMentionDeliversToCoordinatorAgent(t *testing.T) {
 		t.Fatalf("group coordinator delivery=%+v", db.messages)
 	}
 	content := db.messages[0].Content
-	for _, want := range []string{"[飞书群聊调度员上下文]", "入口身份：Annika", "产品同事", "研发同事", "用户在群聊里的原始消息", "帮我拆一下这个需求"} {
+	for _, want := range []string{"[飞书群聊调度员上下文]", "入口身份：Coordinator Bot", "甲同事", "乙同事", "用户在群聊里的原始消息", "帮我拆一下这个需求"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("delivered content missing %q:\n%s", want, content)
 		}
 	}
-	if strings.Contains(content, "@Annika") {
+	if strings.Contains(content, "@CoordinatorBot") {
 		t.Fatalf("leading bot mention should be stripped before coordinator delivery:\n%s", content)
+	}
+}
+
+func TestFeishuGroupMentionCanMatchConfiguredBotOpenID(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_GROUP_BOT_ALIASES", "")
+	t.Setenv("CATSCO_FEISHU_GROUP_BOT_OPEN_IDS", "ou_bot")
+	var event feishuMessageEvent
+	event.Message.Mentions = append(event.Message.Mentions, struct {
+		Key string `json:"key"`
+		ID  struct {
+			OpenID  string `json:"open_id"`
+			UserID  string `json:"user_id"`
+			UnionID string `json:"union_id"`
+		} `json:"id"`
+		Name      string `json:"name"`
+		TenantKey string `json:"tenant_key"`
+	}{Key: "DisplayName", ID: struct {
+		OpenID  string `json:"open_id"`
+		UserID  string `json:"user_id"`
+		UnionID string `json:"union_id"`
+	}{OpenID: "ou_bot"}, Name: "DisplayName"})
+
+	if !feishuEventMentionsBot(&event, "@DisplayName 帮我处理一下") {
+		t.Fatalf("expected configured bot open_id mention to trigger")
 	}
 }
 

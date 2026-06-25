@@ -558,7 +558,7 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 	}
 	if binding == nil {
 		if groupCoordinatorMode {
-			return h.replyToFeishu(ctx, replyIDType, replyID, "这个群聊还没有选择群聊调度员。\n请先发送「员工列表」查看可用虚拟员工，再发送「切换到 Annika」选择一个虚拟员工作为群聊调度员。")
+			return h.replyToFeishu(ctx, replyIDType, replyID, "这个群聊还没有选择群聊调度员。\n请先发送「员工列表」查看可用虚拟员工，再发送「切换到 员工名」选择一个虚拟员工作为群聊调度员。")
 		}
 		return h.replyToFeishu(ctx, replyIDType, replyID, "请先选择一个虚拟员工。\n"+h.formatFeishuRosterReply(appID))
 	}
@@ -688,18 +688,19 @@ func (h *FeishuChannelHandler) replyToFeishuSafely(ctx context.Context, channelU
 
 func feishuEventMentionsBot(event *feishuMessageEvent, text string) bool {
 	text = strings.TrimSpace(text)
+	lowerText := strings.ToLower(text)
 	for _, alias := range feishuBotMentionAliases() {
 		if alias == "" {
 			continue
 		}
-		if strings.Contains(strings.ToLower(text), strings.ToLower("@"+alias)) ||
-			strings.Contains(strings.ToLower(text), strings.ToLower("＠"+alias)) {
+		if strings.Contains(lowerText, strings.ToLower("@"+alias)) ||
+			strings.Contains(lowerText, strings.ToLower("＠"+alias)) {
 			return true
 		}
 	}
 	if event != nil {
 		for _, mention := range event.Message.Mentions {
-			if feishuMentionMatchesAlias(mention.Key) || feishuMentionMatchesAlias(mention.Name) {
+			if feishuMentionMatchesAlias(mention.Key) || feishuMentionMatchesAlias(mention.Name) || feishuMentionMatchesConfiguredBotID(mention.ID.OpenID, mention.ID.UserID, mention.ID.UnionID) {
 				return true
 			}
 		}
@@ -715,6 +716,28 @@ func feishuMentionMatchesAlias(value string) bool {
 	}
 	for _, alias := range feishuBotMentionAliases() {
 		if strings.EqualFold(value, alias) {
+			return true
+		}
+	}
+	return false
+}
+
+func feishuMentionMatchesConfiguredBotID(openID, userID, unionID string) bool {
+	if stringInList(strings.TrimSpace(openID), feishuBotMentionOpenIDs()) {
+		return true
+	}
+	if stringInList(strings.TrimSpace(userID), feishuBotMentionUserIDs()) {
+		return true
+	}
+	return stringInList(strings.TrimSpace(unionID), feishuBotMentionUnionIDs())
+}
+
+func stringInList(value string, values []string) bool {
+	if value == "" {
+		return false
+	}
+	for _, candidate := range values {
+		if strings.EqualFold(value, strings.TrimSpace(candidate)) {
 			return true
 		}
 	}
