@@ -979,6 +979,66 @@ func TestFeishuGroupMentionToOtherUserDoesNotTrigger(t *testing.T) {
 	}
 }
 
+func TestFeishuGroupMentionDeliversToCoordinatorAgent(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_GROUP_BOT_ALIASES", "Annika")
+	t.Setenv("CATSCO_FEISHU_GROUP_TEAMMATES", "产品同事|产品经理|需求拆解、MVP范围;研发同事|工程师|实现路径、稳定性风险")
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_user"), DisplayName: "Alice", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "annika-bot", DisplayName: "Annika", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
+	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:                 "feishu",
+		ChannelAppID:            "cli_app",
+		ChannelUserID:           "ou_user",
+		ChannelConversationID:   "oc_group_1",
+		ChannelConversationType: "group",
+		ActorUID:                8,
+		CanonicalUID:            8,
+		OwnerUID:                7,
+		AgentUID:                43,
+		Status:                  types.ChannelAgentBindingActive,
+	}); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	if _, err := db.UpsertChannelAgentRoute(&types.ChannelAgentRoute{
+		Channel:                 "feishu",
+		ChannelAppID:            "cli_app",
+		ChannelUserID:           "ou_user",
+		ChannelConversationID:   "oc_group_1",
+		ChannelConversationType: "group",
+		ActorUID:                8,
+		AgentUID:                43,
+		Source:                  "manual",
+	}); err != nil {
+		t.Fatalf("seed route: %v", err)
+	}
+	api := &fakeFeishuAPI{appID: "cli_app"}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{AppID: "cli_app"}, api)
+
+	rec := sendFeishuTextEvent(t, handler, "cli_app", "ou_user", "oc_group_1", "group", "om_group_task", "@Annika 帮我拆一下这个需求")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(api.sends) != 0 {
+		t.Fatalf("group task should not send an immediate gateway reply: %+v", api.sends)
+	}
+	if len(db.messages) != 1 || db.messages[0].TopicID != "p2p_8_43" || db.messages[0].FromUID != 8 {
+		t.Fatalf("group coordinator delivery=%+v", db.messages)
+	}
+	content := db.messages[0].Content
+	for _, want := range []string{"[飞书群聊调度员上下文]", "入口身份：Annika", "产品同事", "研发同事", "用户在群聊里的原始消息", "帮我拆一下这个需求"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("delivered content missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "@Annika") {
+		t.Fatalf("leading bot mention should be stripped before coordinator delivery:\n%s", content)
+	}
+}
+
 func TestFeishuGroupBindingLinksAreSentPrivately(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}

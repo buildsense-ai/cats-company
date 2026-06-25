@@ -525,9 +525,10 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		return nil
 	}
 	text = stripFeishuLeadingMentions(text)
-	if chatType == "group" && cmd.Kind == "" && media == nil {
-		return h.replyToFeishu(ctx, replyIDType, replyID, "群聊里请使用「员工列表」「切换到 员工名」「当前员工」等命令；普通任务请在私聊中发送，避免回复或设备授权发到错误会话。")
+	if chatType == "group" && cmd.Kind == "" && media == nil && strings.TrimSpace(text) == "" {
+		return nil
 	}
+	groupCoordinatorMode := chatType == "group" && cmd.Kind == "" && media == nil
 	if chatType == "group" && cmd.Kind == "" && media != nil {
 		return h.replyToFeishu(ctx, replyIDType, replyID, "群聊里的图片或文件请先切换到目标虚拟员工后，在私聊中发送，避免附件进入错误会话。")
 	}
@@ -556,6 +557,9 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		return err
 	}
 	if binding == nil {
+		if groupCoordinatorMode {
+			return h.replyToFeishu(ctx, replyIDType, replyID, "这个群聊还没有选择群聊调度员。\n请先发送「员工列表」查看可用虚拟员工，再发送「切换到 Annika」选择一个虚拟员工作为群聊调度员。")
+		}
 		return h.replyToFeishu(ctx, replyIDType, replyID, "请先选择一个虚拟员工。\n"+h.formatFeishuRosterReply(appID))
 	}
 	if msg, ok, err := h.feishuBindingDeliverableMessage(binding); err != nil {
@@ -564,6 +568,12 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		return h.replyToFeishu(ctx, replyIDType, replyID, msg)
 	}
 	metadata := h.feishuInboundMetadata(appID, channelUserID, &event, binding, chatType, messageType)
+	if groupCoordinatorMode {
+		agent, _ := h.db.GetUser(binding.AgentUID)
+		metadata["channel_group_coordinator_mode"] = "team"
+		metadata["channel_group_original_text"] = text
+		text = buildFeishuGroupCoordinatorText(text, binding, agent)
+	}
 	if media != nil {
 		metadata["channel_media_key"] = media.ResourceKey
 		download, err := h.api.DownloadMessageResource(ctx, event.Message.MessageID, media.ResourceKey, media.ResourceType)
@@ -678,7 +688,37 @@ func (h *FeishuChannelHandler) replyToFeishuSafely(ctx context.Context, channelU
 
 func feishuEventMentionsBot(event *feishuMessageEvent, text string) bool {
 	text = strings.TrimSpace(text)
-	return strings.Contains(text, "@CatsCo") || strings.Contains(text, "@catsco")
+	for _, alias := range feishuBotMentionAliases() {
+		if alias == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(text), strings.ToLower("@"+alias)) ||
+			strings.Contains(strings.ToLower(text), strings.ToLower("＠"+alias)) {
+			return true
+		}
+	}
+	if event != nil {
+		for _, mention := range event.Message.Mentions {
+			if feishuMentionMatchesAlias(mention.Key) || feishuMentionMatchesAlias(mention.Name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func feishuMentionMatchesAlias(value string) bool {
+	value = strings.TrimPrefix(strings.TrimSpace(value), "@")
+	value = strings.TrimPrefix(value, "＠")
+	if value == "" {
+		return false
+	}
+	for _, alias := range feishuBotMentionAliases() {
+		if strings.EqualFold(value, alias) {
+			return true
+		}
+	}
+	return false
 }
 
 func stripFeishuLeadingMentions(text string) string {
@@ -1410,6 +1450,16 @@ type feishuMessageEvent struct {
 		ChatType    string `json:"chat_type"`
 		MessageType string `json:"message_type"`
 		Content     string `json:"content"`
+		Mentions    []struct {
+			Key string `json:"key"`
+			ID  struct {
+				OpenID  string `json:"open_id"`
+				UserID  string `json:"user_id"`
+				UnionID string `json:"union_id"`
+			} `json:"id"`
+			Name      string `json:"name"`
+			TenantKey string `json:"tenant_key"`
+		} `json:"mentions"`
 	} `json:"message"`
 }
 
