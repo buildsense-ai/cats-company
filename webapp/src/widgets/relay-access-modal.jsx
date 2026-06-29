@@ -82,8 +82,18 @@ function summarizeCommercial(summary) {
   const entries = Object.entries(totals)
     .filter(([, amount]) => Number(amount) > 0)
     .sort(([a], [b]) => a.localeCompare(b));
-  if (!entries.length) return '暂无套餐额度';
+  if (!entries.length) return '暂无已发放额度';
   return entries.map(([model, amount]) => `${modelBudgetLabel(model)} ${formatCNY(amount)} CNY`).join(' · ');
+}
+
+function activeEntitlements(summary) {
+  return (summary?.entitlements || []).filter((item) => item.state === 'active');
+}
+
+function commercialTotals(summary) {
+  return Object.entries(summary?.totals_by_model || {})
+    .filter(([, amount]) => Number(amount) > 0)
+    .sort(([a], [b]) => a.localeCompare(b));
 }
 
 function extractPlainRelayKey(data) {
@@ -277,7 +287,9 @@ export default function RelayAccessModal({ onClose }) {
 
   const busy = Boolean(actionLoading);
   const commercialSummary = commercial?.summary;
-  const commercialEnabled = commercial?.enabled !== false && commercialSummary;
+  const commercialEnabled = commercial?.enabled === true && commercialSummary;
+  const activePackages = activeEntitlements(commercialSummary);
+  const modelTotals = commercialTotals(commercialSummary);
 
   const redeemInvite = async () => {
     const code = inviteCode.trim();
@@ -358,14 +370,16 @@ export default function RelayAccessModal({ onClose }) {
           <section className="relay-access-commerce">
             <div className="relay-access-section-head">
               <div>
-                <div className="relay-access-title">套餐额度</div>
+                <div className="relay-access-title">套餐与邀请码</div>
                 <div className="oc-settings-secondary">
                   {commercialEnabled
                     ? summarizeCommercial(commercialSummary)
-                    : '当前仍保留默认 relay 额度；套餐和邀请码先作为测试入口。'}
+                    : '套餐兑换暂未开放；当前仍使用默认 relay 额度和现有 Key。'}
                 </div>
               </div>
-              <span className="relay-access-state active">测试中</span>
+              <span className={`relay-access-state ${commercialEnabled ? 'active' : 'inactive'}`}>
+                {commercialEnabled ? '灰度开启' : '未开放'}
+              </span>
             </div>
 
             <div className="relay-access-commerce-grid">
@@ -373,21 +387,21 @@ export default function RelayAccessModal({ onClose }) {
                 <Sparkles size={17} />
                 <div>
                   <strong>{formatCNY(commercialSummary?.total_cny)} CNY</strong>
-                  <span>已发放套餐额度</span>
+                  <span>已发放测试账本额度</span>
                 </div>
               </div>
               <div className="relay-access-commerce-card">
                 <Gift size={17} />
                 <div>
-                  <strong>{commercialSummary?.entitlements?.length || 0}</strong>
-                  <span>当前套餐/兑换记录</span>
+                  <strong>{activePackages.length}</strong>
+                  <span>当前有效套餐</span>
                 </div>
               </div>
             </div>
 
-            {commercialEnabled && Object.keys(commercialSummary.totals_by_model || {}).length > 0 && (
+            {commercialEnabled && modelTotals.length > 0 && (
               <div className="relay-access-budget-list">
-                {Object.entries(commercialSummary.totals_by_model).map(([model, amount]) => (
+                {modelTotals.map(([model, amount]) => (
                   <div key={model}>
                     <span>{modelBudgetLabel(model)}</span>
                     <strong>{formatCNY(amount)} CNY</strong>
@@ -396,18 +410,27 @@ export default function RelayAccessModal({ onClose }) {
               </div>
             )}
 
-            <div className="relay-access-invite-form">
-              <input
-                value={inviteCode}
-                onChange={(event) => setInviteCode(event.target.value)}
-                placeholder="输入邀请码兑换套餐额度"
-                disabled={inviteLoading}
-              />
-              <button type="button" disabled={inviteLoading} onClick={redeemInvite}>
-                {inviteLoading ? '兑换中...' : copied === 'invite' ? '已兑换' : '兑换'}
-              </button>
-            </div>
-            <div className="oc-settings-secondary">{commercial?.note || '管理员也可以在后台手动发放或调整用户额度。'}</div>
+            {commercialEnabled ? (
+              <div className="relay-access-invite-form">
+                <input
+                  value={inviteCode}
+                  onChange={(event) => setInviteCode(event.target.value)}
+                  placeholder="输入邀请码兑换套餐额度"
+                  disabled={inviteLoading}
+                />
+                <button type="button" disabled={inviteLoading} onClick={redeemInvite}>
+                  {inviteLoading ? '兑换中...' : copied === 'invite' ? '已兑换' : '兑换'}
+                </button>
+              </div>
+            ) : (
+              <div className="relay-access-token-note">
+                <Gift size={16} />
+                <span>{commercial?.note || '套餐和邀请码仍在内部测试。现在不影响你的默认 relay 额度、Key 和模型调用。'}</span>
+              </div>
+            )}
+            {commercialEnabled && (
+              <div className="oc-settings-secondary">{commercial?.note || '管理员也可以在后台手动发放或调整用户额度。'}</div>
+            )}
           </section>
 
           <div className="relay-access-connect">

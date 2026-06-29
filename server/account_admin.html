@@ -321,6 +321,34 @@
       gap: 14px;
     }
 
+    .commercial-status-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .commercial-status-card {
+      min-height: 92px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel-2);
+    }
+
+    .commercial-status-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .commercial-status-card strong {
+      display: block;
+      margin-top: 6px;
+      font-size: 24px;
+      line-height: 1.15;
+    }
+
     .commercial-panel {
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -342,6 +370,31 @@
 
     .commercial-panel button {
       justify-self: start;
+    }
+
+    .commercial-panel-wide {
+      grid-column: 1 / -1;
+    }
+
+    .commercial-model-actions {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .commercial-model-actions button {
+      width: 100%;
+      height: 36px;
+      padding: 0 10px;
+      background: transparent;
+      color: var(--accent-2);
+      border: 1px solid rgba(214, 168, 79, 0.34);
+      font-size: 12px;
+    }
+
+    .commercial-model-actions button:hover {
+      background: rgba(214, 168, 79, 0.12);
     }
 
     .commercial-list {
@@ -367,6 +420,27 @@
       color: var(--muted);
       font-size: 13px;
       margin-top: 4px;
+      overflow-wrap: anywhere;
+    }
+
+    .commercial-pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .commercial-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      max-width: 100%;
+      padding: 4px 9px;
+      border: 1px solid rgba(214, 168, 79, 0.24);
+      border-radius: 999px;
+      background: rgba(214, 168, 79, 0.06);
+      color: var(--text);
+      font-size: 12px;
       overflow-wrap: anywhere;
     }
 
@@ -548,8 +622,13 @@
       }
 
       .commercial-grid,
+      .commercial-status-grid,
       .commercial-item {
         grid-template-columns: 1fr;
+      }
+
+      .commercial-model-actions {
+        grid-template-columns: 1fr 1fr;
       }
 
       .user-item {
@@ -641,7 +720,25 @@
 
     <section>
       <h2>中转商业化测试</h2>
-      <p>先只建立套餐、邀请码和人工发放账本；现有 relay 默认额度和重置周期仍继续保留。</p>
+      <p>先只建立套餐、邀请码和人工发放账本；现有 relay 默认额度、自动建 Key 和 Bifrost 转发仍继续保留。</p>
+      <div class="commercial-status-grid" id="commercial-status-grid" aria-live="polite">
+        <div class="commercial-status-card">
+          <span>套餐</span>
+          <strong id="commercial-status-plans">-</strong>
+        </div>
+        <div class="commercial-status-card">
+          <span>邀请码</span>
+          <strong id="commercial-status-invites">-</strong>
+        </div>
+        <div class="commercial-status-card">
+          <span>剩余兑换</span>
+          <strong id="commercial-status-redemptions">-</strong>
+        </div>
+        <div class="commercial-status-card">
+          <span>灰度状态</span>
+          <strong>后台可用</strong>
+        </div>
+      </div>
       <div class="commercial-grid" style="margin-top: 16px;">
         <div class="commercial-panel">
           <h3>套餐</h3>
@@ -650,6 +747,12 @@
             <input id="commercial-plan-name" autocomplete="off" placeholder="显示名称，例如 教师试用包" />
             <input id="commercial-plan-monthly" inputmode="decimal" placeholder="通用月额度 CNY，可填 0" />
             <textarea id="commercial-plan-model-budgets" placeholder='模型额度 JSON，例如 {"MiniMax-M3":500,"deepseek-v4-flash":100}'></textarea>
+            <div class="commercial-model-actions" aria-label="套餐模型额度模板">
+              <button type="button" data-model-budget-template="teacher-trial">教师试用</button>
+              <button type="button" data-model-budget-template="m3-only">M3 体验</button>
+              <button type="button" data-model-budget-template="balanced">均衡包</button>
+              <button type="button" data-model-budget-template="clear">清空额度</button>
+            </div>
             <input id="commercial-plan-duration" inputmode="numeric" placeholder="有效天数，默认 30" />
             <button id="commercial-plan-button" type="submit">保存套餐</button>
           </form>
@@ -675,7 +778,13 @@
           <h3>人工发放额度</h3>
           <form id="commercial-grant-form">
             <input id="commercial-grant-uid" inputmode="numeric" placeholder="用户 UID" />
-            <input id="commercial-grant-model" autocomplete="off" placeholder="模型名，留空表示通用额度" />
+            <select id="commercial-grant-model">
+              <option value="">通用额度</option>
+              <option value="MiniMax-M3">MiniMax-M3</option>
+              <option value="MiniMax-M2.7">MiniMax-M2.7</option>
+              <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+              <option value="glm-5.1">glm-5.1</option>
+            </select>
             <input id="commercial-grant-amount" inputmode="decimal" placeholder="额度 CNY，例如 100" />
             <input id="commercial-grant-note" autocomplete="off" placeholder="备注，例如 手工补发" />
             <button id="commercial-grant-button" type="submit">发放额度</button>
@@ -692,6 +801,11 @@
           </form>
           <div id="commercial-summary-error" class="error"></div>
           <div id="commercial-summary-result" class="commercial-summary">输入 UID 后查看套餐、邀请码和人工发放记录。</div>
+        </div>
+
+        <div class="commercial-panel commercial-panel-wide">
+          <h3>运营边界</h3>
+          <p>这块现在只做商业化账本和展示灰度，不替换现有用户的 relay key、默认额度、模型调用和 Bifrost 路由。公开用户入口需要显式开启灰度变量后才允许兑换邀请码。</p>
         </div>
       </div>
     </section>
@@ -741,10 +855,14 @@ http://127.0.0.1:26061/local/account-admin</code>
     const commercialSummaryButton = document.querySelector('#commercial-summary-button');
     const commercialSummaryError = document.querySelector('#commercial-summary-error');
     const commercialSummaryResult = document.querySelector('#commercial-summary-result');
+    const commercialStatusPlans = document.querySelector('#commercial-status-plans');
+    const commercialStatusInvites = document.querySelector('#commercial-status-invites');
+    const commercialStatusRedemptions = document.querySelector('#commercial-status-redemptions');
     let currentUserPage = 1;
     let currentUserQuery = '';
     let currentAccountType = 'all';
     let commercialPlans = [];
+    let commercialInvites = [];
     const userPageSize = 20;
     const pendingUserStateUIDs = new Set();
 
@@ -1159,6 +1277,40 @@ http://127.0.0.1:26061/local/account-admin</code>
       return date.toLocaleString();
     }
 
+    const modelBudgetTemplates = {
+      'teacher-trial': {
+        'MiniMax-M3': 500,
+        'MiniMax-M2.7': 1000,
+        'deepseek-v4-flash': 100,
+        'glm-5.1': 500,
+      },
+      'm3-only': {
+        'MiniMax-M3': 500,
+      },
+      balanced: {
+        'MiniMax-M3': 1000,
+        'deepseek-v4-flash': 200,
+        'glm-5.1': 500,
+      },
+      clear: {},
+    };
+
+    function modelName(model) {
+      return !model || model === '*' ? '通用额度' : model;
+    }
+
+    function updateCommercialStats() {
+      const activePlans = commercialPlans.filter((plan) => Number(plan.state || 0) === 0).length;
+      const activeInvites = commercialInvites.filter((invite) => Number(invite.state || 0) === 0).length;
+      const remaining = commercialInvites.reduce((sum, invite) => {
+        if (Number(invite.state || 0) !== 0) return sum;
+        return sum + Math.max(0, Number(invite.max_redemptions || 0) - Number(invite.redeemed_count || 0));
+      }, 0);
+      commercialStatusPlans.textContent = `${activePlans} / ${commercialPlans.length}`;
+      commercialStatusInvites.textContent = `${activeInvites} / ${commercialInvites.length}`;
+      commercialStatusRedemptions.textContent = String(remaining);
+    }
+
     function parseModelBudgetsInput(raw) {
       raw = raw.trim();
       if (!raw) return {};
@@ -1195,7 +1347,7 @@ http://127.0.0.1:26061/local/account-admin</code>
           <div class="commercial-item">
             <div>
               <strong>${escapeHTML(plan.name || plan.slug)}</strong>
-              <div class="commercial-meta">slug=${escapeHTML(plan.slug)} · ${commercialBudgetText(plan)} · ${plan.duration_days || 30} 天 · ${Number(plan.state || 0) === 0 ? '启用' : '停用'}</div>
+              <div class="commercial-meta">slug=${escapeHTML(plan.slug)} · ${escapeHTML(commercialBudgetText(plan))} · ${plan.duration_days || 30} 天 · ${Number(plan.state || 0) === 0 ? '启用' : '停用'}</div>
             </div>
             <span class="badge">#${escapeHTML(plan.id)}</span>
           </div>
@@ -1204,24 +1356,29 @@ http://127.0.0.1:26061/local/account-admin</code>
       commercialInvitePlan.innerHTML = commercialPlans.length
         ? commercialPlans.map((plan) => `<option value="${escapeHTML(plan.id)}">${escapeHTML(plan.name || plan.slug)} (#${escapeHTML(plan.id)})</option>`).join('')
         : '<option value="">请先创建套餐</option>';
+      updateCommercialStats();
     }
 
     function renderCommercialInvites(invites) {
-      const items = Array.isArray(invites) ? invites : [];
-      if (!items.length) {
+      commercialInvites = Array.isArray(invites) ? invites : [];
+      if (!commercialInvites.length) {
         commercialInviteList.innerHTML = '<div class="commercial-item"><div><strong>暂无邀请码</strong><div class="commercial-meta">创建后用户可在中转页兑换。</div></div></div>';
+        updateCommercialStats();
         return;
       }
-      commercialInviteList.innerHTML = items.map((invite) => {
+      commercialInviteList.innerHTML = commercialInvites.map((invite) => {
         const usage = `${invite.redeemed_count || 0}/${invite.max_redemptions || 1}`;
+        const remaining = Math.max(0, Number(invite.max_redemptions || 0) - Number(invite.redeemed_count || 0));
         return `<div class="commercial-item">
           <div>
             <strong>${escapeHTML(invite.code)}</strong>
-            <div class="commercial-meta">套餐=${escapeHTML(invite.plan_name || invite.plan_slug || invite.plan_id)} · 兑换=${escapeHTML(usage)} · 过期=${escapeHTML(formatCommercialTime(invite.expires_at))} · ${Number(invite.state || 0) === 0 ? '启用' : '停用'}</div>
+            <div class="commercial-meta">套餐=${escapeHTML(invite.plan_name || invite.plan_slug || invite.plan_id)} · 兑换=${escapeHTML(usage)} · 剩余=${escapeHTML(remaining)} · 过期=${escapeHTML(formatCommercialTime(invite.expires_at))} · ${Number(invite.state || 0) === 0 ? '启用' : '停用'}</div>
+            ${invite.note ? `<div class="commercial-meta">备注：${escapeHTML(invite.note)}</div>` : ''}
           </div>
           <span class="badge">#${escapeHTML(invite.id)}</span>
         </div>`;
       }).join('');
+      updateCommercialStats();
     }
 
     async function loadCommercialPlans() {
@@ -1254,22 +1411,46 @@ http://127.0.0.1:26061/local/account-admin</code>
       }
     }
 
+    async function loadCommercialSummary(uid) {
+      const resp = await fetch(`/local/account-admin/commercial/users?uid=${encodeURIComponent(uid)}`, { headers: { Accept: 'application/json' } });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data.error || `查询失败：HTTP ${resp.status}`);
+      }
+      renderCommercialSummary(data.summary);
+      return data.summary;
+    }
+
     function renderCommercialSummary(summary) {
       if (!summary) {
         commercialSummaryResult.textContent = '没有额度记录。';
         return;
       }
       const totals = summary.totals_by_model || {};
-      const budgetLines = Object.entries(totals).map(([model, amount]) => `${model === '*' ? '通用额度' : model}: ${formatCNY(amount)}`);
-      const entitlementLines = (summary.entitlements || []).map((item) => `${item.plan_name || item.plan_slug} · ${item.source} · 到期 ${formatCommercialTime(item.expires_at)}`);
-      const ledgerLines = (summary.ledger || []).slice(0, 5).map((item) => `${formatCommercialTime(item.created_at)} · ${item.model === '*' ? '通用额度' : item.model} · ${formatCNY(item.amount_cny)} · ${item.entry_type}`);
+      const budgetPills = Object.entries(totals).map(([model, amount]) => `<span class="commercial-pill">${escapeHTML(modelName(model))}：${escapeHTML(formatCNY(amount))}</span>`);
+      const entitlementLines = (summary.entitlements || []).map((item) => `<div class="commercial-meta">${escapeHTML(item.plan_name || item.plan_slug || '未知套餐')} · ${escapeHTML(item.source)} · ${escapeHTML(item.state)} · 到期 ${escapeHTML(formatCommercialTime(item.expires_at))}</div>`);
+      const grantLines = (summary.grants || []).slice(0, 8).map((item) => `<div class="commercial-meta">${escapeHTML(modelName(item.model))} · ${escapeHTML(formatCNY(item.amount_cny))} · ${escapeHTML(item.grant_type)} · ${escapeHTML(item.note || '-')}</div>`);
+      const ledgerLines = (summary.ledger || []).slice(0, 8).map((item) => `<div class="commercial-meta">${escapeHTML(formatCommercialTime(item.created_at))} · ${escapeHTML(modelName(item.model))} · ${escapeHTML(formatCNY(item.amount_cny))} · ${escapeHTML(item.entry_type)} · ${escapeHTML(item.source_type || '-')}</div>`);
       commercialSummaryResult.innerHTML = [
         `<strong>UID ${escapeHTML(summary.uid)} · 总额度 ${formatCNY(summary.total_cny)}</strong>`,
-        `<div class="commercial-meta">按模型：${escapeHTML(budgetLines.join('；') || '暂无')}</div>`,
-        `<div class="commercial-meta">套餐：${escapeHTML(entitlementLines.join('；') || '暂无')}</div>`,
-        `<div class="commercial-meta">最近账本：${escapeHTML(ledgerLines.join('；') || '暂无')}</div>`,
+        `<div class="commercial-pill-row">${budgetPills.join('') || '<span class="commercial-pill">暂无额度</span>'}</div>`,
+        `<div class="commercial-meta" style="margin-top:12px;"><strong>套餐权益</strong></div>`,
+        entitlementLines.join('') || '<div class="commercial-meta">暂无套餐权益</div>',
+        `<div class="commercial-meta" style="margin-top:12px;"><strong>发放记录</strong></div>`,
+        grantLines.join('') || '<div class="commercial-meta">暂无发放记录</div>',
+        `<div class="commercial-meta" style="margin-top:12px;"><strong>最近账本</strong></div>`,
+        ledgerLines.join('') || '<div class="commercial-meta">暂无账本记录</div>',
       ].join('');
     }
+
+    document.querySelectorAll('[data-model-budget-template]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const template = modelBudgetTemplates[button.dataset.modelBudgetTemplate] || {};
+        document.querySelector('#commercial-plan-model-budgets').value = Object.keys(template).length
+          ? JSON.stringify(template, null, 2)
+          : '';
+      });
+    });
 
     commercialPlanForm.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -1353,7 +1534,13 @@ http://127.0.0.1:26061/local/account-admin</code>
           showCommercialError(commercialGrantError, data.error || `发放失败：HTTP ${resp.status}`);
           return;
         }
-        commercialGrantResult.innerHTML = `<strong>已发放 ${formatCNY(data.grant.amount_cny)}</strong><div class="commercial-meta">UID ${escapeHTML(data.grant.uid)} · ${escapeHTML(data.grant.model === '*' ? '通用额度' : data.grant.model)} · ${escapeHTML(data.grant.note || '-')}</div>`;
+        commercialGrantResult.innerHTML = `<strong>已发放 ${formatCNY(data.grant.amount_cny)}</strong><div class="commercial-meta">UID ${escapeHTML(data.grant.uid)} · ${escapeHTML(modelName(data.grant.model))} · ${escapeHTML(data.grant.note || '-')}</div>`;
+        document.querySelector('#commercial-summary-uid').value = String(data.grant.uid);
+        try {
+          await loadCommercialSummary(data.grant.uid);
+        } catch (summaryErr) {
+          showCommercialError(commercialSummaryError, summaryErr && summaryErr.message ? summaryErr.message : '发放成功，但刷新用户额度失败。');
+        }
       } catch (err) {
         showCommercialError(commercialGrantError, err && err.message ? err.message : '发放失败。');
       } finally {
@@ -1367,13 +1554,7 @@ http://127.0.0.1:26061/local/account-admin</code>
       commercialSummaryButton.disabled = true;
       const uid = document.querySelector('#commercial-summary-uid').value.trim();
       try {
-        const resp = await fetch(`/local/account-admin/commercial/users?uid=${encodeURIComponent(uid)}`, { headers: { Accept: 'application/json' } });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) {
-          showCommercialError(commercialSummaryError, data.error || `查询失败：HTTP ${resp.status}`);
-          return;
-        }
-        renderCommercialSummary(data.summary);
+        await loadCommercialSummary(uid);
       } catch (err) {
         showCommercialError(commercialSummaryError, err && err.message ? err.message : '查询失败。');
       } finally {
