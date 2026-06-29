@@ -2405,6 +2405,7 @@ button.catsco-download-action:disabled {
 .relay-access-card,
 .relay-access-key-panel,
 .relay-access-token-note,
+.relay-access-commerce,
 .relay-access-snippet {
   border: 1px solid var(--v3-border);
   border-radius: 10px;
@@ -2546,6 +2547,109 @@ button.catsco-download-action:disabled {
 
 .relay-access-key-panel {
   padding: 14px;
+}
+
+.relay-access-commerce {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.relay-access-commerce-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.relay-access-commerce-card {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--v3-border);
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.relay-access-commerce-card svg {
+  flex: 0 0 auto;
+  color: var(--v3-accent);
+  margin-top: 2px;
+}
+
+.relay-access-commerce-card strong,
+.relay-access-budget-list strong {
+  display: block;
+  color: var(--v3-text-name);
+  font-size: 14px;
+}
+
+.relay-access-commerce-card span,
+.relay-access-budget-list span {
+  display: block;
+  margin-top: 3px;
+  color: var(--v3-text-muted);
+  font-size: 12px;
+}
+
+.relay-access-budget-list {
+  display: grid;
+  gap: 8px;
+}
+
+.relay-access-budget-list div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--v3-border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.relay-access-budget-list span {
+  margin-top: 0;
+  overflow-wrap: anywhere;
+}
+
+.relay-access-invite-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.relay-access-invite-form input {
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--v3-border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.12);
+  color: var(--v3-text-main);
+  padding: 0 11px;
+  outline: none;
+}
+
+.relay-access-invite-form input:focus {
+  border-color: rgba(52, 199, 89, 0.38);
+}
+
+.relay-access-invite-form button {
+  min-height: 38px;
+  border: 1px solid rgba(52, 199, 89, 0.28);
+  border-radius: 8px;
+  background: rgba(52, 199, 89, 0.12);
+  color: var(--v3-accent);
+  cursor: pointer;
+  padding: 0 14px;
+  font-weight: 700;
+}
+
+.relay-access-invite-form button:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 
 .relay-access-section-head {
@@ -2794,7 +2898,9 @@ button.catsco-download-action:disabled {
 
   .relay-access-empty-key,
   .relay-access-secret-box,
-  .relay-access-key-meta {
+  .relay-access-key-meta,
+  .relay-access-commerce-grid,
+  .relay-access-invite-form {
     grid-template-columns: 1fr;
   }
 }

@@ -46,6 +46,98 @@ type AuthService struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
+// CommercialPlan describes an operator-managed relay package. It is the
+// commercial source record; relay-admin/Bifrost remain the execution layer.
+type CommercialPlan struct {
+	ID            int64              `json:"id"`
+	Slug          string             `json:"slug"`
+	Name          string             `json:"name"`
+	Description   string             `json:"description,omitempty"`
+	MonthlyBudget float64            `json:"monthly_budget_cny"`
+	ModelBudgets  map[string]float64 `json:"model_budgets,omitempty"`
+	DurationDays  int                `json:"duration_days"`
+	State         int                `json:"state"`
+	SortOrder     int                `json:"sort_order"`
+	CreatedAt     time.Time          `json:"created_at"`
+	UpdatedAt     time.Time          `json:"updated_at"`
+}
+
+// CommercialInviteCode grants a plan entitlement when redeemed by a user.
+type CommercialInviteCode struct {
+	ID             int64      `json:"id"`
+	Code           string     `json:"code"`
+	PlanID         int64      `json:"plan_id"`
+	PlanSlug       string     `json:"plan_slug,omitempty"`
+	PlanName       string     `json:"plan_name,omitempty"`
+	MaxRedemptions int        `json:"max_redemptions"`
+	RedeemedCount  int        `json:"redeemed_count"`
+	State          int        `json:"state"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	Note           string     `json:"note,omitempty"`
+	CreatedByUID   int64      `json:"created_by_uid,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+// CommercialEntitlement is a user's active or historical package assignment.
+type CommercialEntitlement struct {
+	ID        int64      `json:"id"`
+	UID       int64      `json:"uid"`
+	PlanID    int64      `json:"plan_id"`
+	PlanSlug  string     `json:"plan_slug,omitempty"`
+	PlanName  string     `json:"plan_name,omitempty"`
+	Source    string     `json:"source"`
+	SourceRef string     `json:"source_ref,omitempty"`
+	State     string     `json:"state"`
+	StartsAt  time.Time  `json:"starts_at"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+}
+
+// CommercialQuotaGrant is an operator/audit-friendly grant source. The grant
+// may later be synced to relay-admin/Bifrost model budgets.
+type CommercialQuotaGrant struct {
+	ID            int64      `json:"id"`
+	UID           int64      `json:"uid"`
+	PlanID        int64      `json:"plan_id,omitempty"`
+	InviteCodeID  int64      `json:"invite_code_id,omitempty"`
+	GrantType     string     `json:"grant_type"`
+	Model         string     `json:"model"`
+	AmountCNY     float64    `json:"amount_cny"`
+	ResetDuration string     `json:"reset_duration"`
+	EffectiveAt   time.Time  `json:"effective_at"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	Note          string     `json:"note,omitempty"`
+	OperatorUID   int64      `json:"operator_uid,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+}
+
+// CommercialLedgerEntry records quota mutations independently from model
+// provider usage. Usage deduction still comes from relay-admin/Bifrost.
+type CommercialLedgerEntry struct {
+	ID         int64     `json:"id"`
+	UID        int64     `json:"uid"`
+	Model      string    `json:"model"`
+	AmountCNY  float64   `json:"amount_cny"`
+	EntryType  string    `json:"entry_type"`
+	SourceType string    `json:"source_type"`
+	SourceID   int64     `json:"source_id,omitempty"`
+	Note       string    `json:"note,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// CommercialSummary is the user/admin view of commercial relay allocation.
+type CommercialSummary struct {
+	UID           int64                    `json:"uid"`
+	Plans         []*CommercialPlan        `json:"plans,omitempty"`
+	Entitlements  []*CommercialEntitlement `json:"entitlements,omitempty"`
+	Grants        []*CommercialQuotaGrant  `json:"grants,omitempty"`
+	Ledger        []*CommercialLedgerEntry `json:"ledger,omitempty"`
+	TotalsByModel map[string]float64       `json:"totals_by_model,omitempty"`
+	TotalCNY      float64                  `json:"total_cny"`
+}
+
 // FriendStatus represents the state of a friend relationship.
 type FriendStatus string
 

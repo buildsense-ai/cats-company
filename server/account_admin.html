@@ -100,19 +100,35 @@
       margin-bottom: 12px;
     }
 
-    input {
+    input,
+    textarea,
+    select {
       width: 100%;
-      height: 44px;
       border: 1px solid var(--border);
       border-radius: 8px;
       background: var(--panel-2);
       color: var(--text);
-      padding: 0 12px;
       font-size: 15px;
       outline: none;
     }
 
-    input:focus {
+    input,
+    select {
+      height: 44px;
+      padding: 0 12px;
+    }
+
+    textarea {
+      min-height: 92px;
+      padding: 10px 12px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      line-height: 1.45;
+    }
+
+    input:focus,
+    textarea:focus,
+    select:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(214, 168, 79, 0.16);
     }
@@ -299,6 +315,71 @@
       overflow: hidden;
     }
 
+    .commercial-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .commercial-panel {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.012);
+      padding: 14px;
+    }
+
+    .commercial-panel h3 {
+      margin: 0 0 10px;
+      font-size: 15px;
+    }
+
+    .commercial-panel form {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .commercial-panel button {
+      justify-self: start;
+    }
+
+    .commercial-list {
+      margin-top: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .commercial-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      padding: 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    .commercial-item:first-child {
+      border-top: 0;
+    }
+
+    .commercial-meta {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+    }
+
+    .commercial-summary {
+      margin-top: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      background: var(--panel-2);
+      color: var(--text);
+      overflow-wrap: anywhere;
+    }
+
     .user-list {
       display: none;
       margin-top: 18px;
@@ -466,6 +547,11 @@
         grid-template-columns: 1fr;
       }
 
+      .commercial-grid,
+      .commercial-item {
+        grid-template-columns: 1fr;
+      }
+
       .user-item {
         grid-template-columns: 1fr;
       }
@@ -554,6 +640,63 @@
     </section>
 
     <section>
+      <h2>中转商业化测试</h2>
+      <p>先只建立套餐、邀请码和人工发放账本；现有 relay 默认额度和重置周期仍继续保留。</p>
+      <div class="commercial-grid" style="margin-top: 16px;">
+        <div class="commercial-panel">
+          <h3>套餐</h3>
+          <form id="commercial-plan-form">
+            <input id="commercial-plan-slug" autocomplete="off" placeholder="套餐标识，例如 trial-teacher" />
+            <input id="commercial-plan-name" autocomplete="off" placeholder="显示名称，例如 教师试用包" />
+            <input id="commercial-plan-monthly" inputmode="decimal" placeholder="通用月额度 CNY，可填 0" />
+            <textarea id="commercial-plan-model-budgets" placeholder='模型额度 JSON，例如 {"MiniMax-M3":500,"deepseek-v4-flash":100}'></textarea>
+            <input id="commercial-plan-duration" inputmode="numeric" placeholder="有效天数，默认 30" />
+            <button id="commercial-plan-button" type="submit">保存套餐</button>
+          </form>
+          <div id="commercial-plan-error" class="error"></div>
+          <div id="commercial-plan-list" class="commercial-list"></div>
+        </div>
+
+        <div class="commercial-panel">
+          <h3>邀请码</h3>
+          <form id="commercial-invite-form">
+            <input id="commercial-invite-code" autocomplete="off" placeholder="邀请码，例如 SCHOOL2026" />
+            <select id="commercial-invite-plan"></select>
+            <input id="commercial-invite-max" inputmode="numeric" placeholder="最大兑换次数，默认 1" />
+            <input id="commercial-invite-expire" autocomplete="off" placeholder="过期时间 RFC3339，可留空" />
+            <input id="commercial-invite-note" autocomplete="off" placeholder="备注，例如 广州试点学校" />
+            <button id="commercial-invite-button" type="submit">保存邀请码</button>
+          </form>
+          <div id="commercial-invite-error" class="error"></div>
+          <div id="commercial-invite-list" class="commercial-list"></div>
+        </div>
+
+        <div class="commercial-panel">
+          <h3>人工发放额度</h3>
+          <form id="commercial-grant-form">
+            <input id="commercial-grant-uid" inputmode="numeric" placeholder="用户 UID" />
+            <input id="commercial-grant-model" autocomplete="off" placeholder="模型名，留空表示通用额度" />
+            <input id="commercial-grant-amount" inputmode="decimal" placeholder="额度 CNY，例如 100" />
+            <input id="commercial-grant-note" autocomplete="off" placeholder="备注，例如 手工补发" />
+            <button id="commercial-grant-button" type="submit">发放额度</button>
+          </form>
+          <div id="commercial-grant-error" class="error"></div>
+          <div id="commercial-grant-result" class="commercial-summary"></div>
+        </div>
+
+        <div class="commercial-panel">
+          <h3>用户额度详情</h3>
+          <form id="commercial-summary-form">
+            <input id="commercial-summary-uid" inputmode="numeric" placeholder="用户 UID" />
+            <button id="commercial-summary-button" type="submit">查询额度</button>
+          </form>
+          <div id="commercial-summary-error" class="error"></div>
+          <div id="commercial-summary-result" class="commercial-summary">输入 UID 后查看套餐、邀请码和人工发放记录。</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
       <h2>访问方式</h2>
       <p>在本机建立 SSH 隧道后访问下面的本地地址：</p>
       <code>ssh -L 26061:127.0.0.1:26061 &lt;server-alias&gt;
@@ -581,9 +724,27 @@ http://127.0.0.1:26061/local/account-admin</code>
     const serviceError = document.querySelector('#service-error');
     const serviceToken = document.querySelector('#service-token');
     const serviceList = document.querySelector('#service-list');
+    const commercialPlanForm = document.querySelector('#commercial-plan-form');
+    const commercialPlanButton = document.querySelector('#commercial-plan-button');
+    const commercialPlanError = document.querySelector('#commercial-plan-error');
+    const commercialPlanList = document.querySelector('#commercial-plan-list');
+    const commercialInviteForm = document.querySelector('#commercial-invite-form');
+    const commercialInviteButton = document.querySelector('#commercial-invite-button');
+    const commercialInviteError = document.querySelector('#commercial-invite-error');
+    const commercialInviteList = document.querySelector('#commercial-invite-list');
+    const commercialInvitePlan = document.querySelector('#commercial-invite-plan');
+    const commercialGrantForm = document.querySelector('#commercial-grant-form');
+    const commercialGrantButton = document.querySelector('#commercial-grant-button');
+    const commercialGrantError = document.querySelector('#commercial-grant-error');
+    const commercialGrantResult = document.querySelector('#commercial-grant-result');
+    const commercialSummaryForm = document.querySelector('#commercial-summary-form');
+    const commercialSummaryButton = document.querySelector('#commercial-summary-button');
+    const commercialSummaryError = document.querySelector('#commercial-summary-error');
+    const commercialSummaryResult = document.querySelector('#commercial-summary-result');
     let currentUserPage = 1;
     let currentUserQuery = '';
     let currentAccountType = 'all';
+    let commercialPlans = [];
     const userPageSize = 20;
     const pendingUserStateUIDs = new Set();
 
@@ -976,8 +1137,254 @@ http://127.0.0.1:26061/local/account-admin</code>
       }
     });
 
+    function showCommercialError(el, message) {
+      el.textContent = message;
+      el.classList.add('visible');
+    }
+
+    function clearCommercialError(el) {
+      el.textContent = '';
+      el.classList.remove('visible');
+    }
+
+    function formatCNY(value) {
+      const number = Number(value || 0);
+      return `${number.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} CNY`;
+    }
+
+    function formatCommercialTime(value) {
+      if (!value) return '-';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value);
+      return date.toLocaleString();
+    }
+
+    function parseModelBudgetsInput(raw) {
+      raw = raw.trim();
+      if (!raw) return {};
+      const value = JSON.parse(raw);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('模型额度必须是 JSON 对象。');
+      }
+      const out = {};
+      Object.entries(value).forEach(([model, amount]) => {
+        const n = Number(amount);
+        if (model.trim() && n > 0) out[model.trim()] = n;
+      });
+      return out;
+    }
+
+    function commercialBudgetText(plan) {
+      const parts = [];
+      if (Number(plan.monthly_budget_cny || 0) > 0) {
+        parts.push(`通用 ${formatCNY(plan.monthly_budget_cny)}`);
+      }
+      const budgets = plan.model_budgets || {};
+      Object.entries(budgets).forEach(([model, amount]) => {
+        parts.push(`${model} ${formatCNY(amount)}`);
+      });
+      return parts.length ? parts.join('；') : '未设置额度';
+    }
+
+    function renderCommercialPlans(plans) {
+      commercialPlans = Array.isArray(plans) ? plans : [];
+      if (!commercialPlans.length) {
+        commercialPlanList.innerHTML = '<div class="commercial-item"><div><strong>暂无套餐</strong><div class="commercial-meta">先创建一个试用套餐。</div></div></div>';
+      } else {
+        commercialPlanList.innerHTML = commercialPlans.map((plan) => `
+          <div class="commercial-item">
+            <div>
+              <strong>${escapeHTML(plan.name || plan.slug)}</strong>
+              <div class="commercial-meta">slug=${escapeHTML(plan.slug)} · ${commercialBudgetText(plan)} · ${plan.duration_days || 30} 天 · ${Number(plan.state || 0) === 0 ? '启用' : '停用'}</div>
+            </div>
+            <span class="badge">#${escapeHTML(plan.id)}</span>
+          </div>
+        `).join('');
+      }
+      commercialInvitePlan.innerHTML = commercialPlans.length
+        ? commercialPlans.map((plan) => `<option value="${escapeHTML(plan.id)}">${escapeHTML(plan.name || plan.slug)} (#${escapeHTML(plan.id)})</option>`).join('')
+        : '<option value="">请先创建套餐</option>';
+    }
+
+    function renderCommercialInvites(invites) {
+      const items = Array.isArray(invites) ? invites : [];
+      if (!items.length) {
+        commercialInviteList.innerHTML = '<div class="commercial-item"><div><strong>暂无邀请码</strong><div class="commercial-meta">创建后用户可在中转页兑换。</div></div></div>';
+        return;
+      }
+      commercialInviteList.innerHTML = items.map((invite) => {
+        const usage = `${invite.redeemed_count || 0}/${invite.max_redemptions || 1}`;
+        return `<div class="commercial-item">
+          <div>
+            <strong>${escapeHTML(invite.code)}</strong>
+            <div class="commercial-meta">套餐=${escapeHTML(invite.plan_name || invite.plan_slug || invite.plan_id)} · 兑换=${escapeHTML(usage)} · 过期=${escapeHTML(formatCommercialTime(invite.expires_at))} · ${Number(invite.state || 0) === 0 ? '启用' : '停用'}</div>
+          </div>
+          <span class="badge">#${escapeHTML(invite.id)}</span>
+        </div>`;
+      }).join('');
+    }
+
+    async function loadCommercialPlans() {
+      try {
+        const resp = await fetch('/local/account-admin/commercial/plans', { headers: { Accept: 'application/json' } });
+        const payload = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          showCommercialError(commercialPlanError, payload.error || `套餐加载失败：HTTP ${resp.status}`);
+          return;
+        }
+        clearCommercialError(commercialPlanError);
+        renderCommercialPlans(payload.plans);
+      } catch (err) {
+        showCommercialError(commercialPlanError, err && err.message ? err.message : '套餐加载失败。');
+      }
+    }
+
+    async function loadCommercialInvites() {
+      try {
+        const resp = await fetch('/local/account-admin/commercial/invites', { headers: { Accept: 'application/json' } });
+        const payload = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          showCommercialError(commercialInviteError, payload.error || `邀请码加载失败：HTTP ${resp.status}`);
+          return;
+        }
+        clearCommercialError(commercialInviteError);
+        renderCommercialInvites(payload.invites);
+      } catch (err) {
+        showCommercialError(commercialInviteError, err && err.message ? err.message : '邀请码加载失败。');
+      }
+    }
+
+    function renderCommercialSummary(summary) {
+      if (!summary) {
+        commercialSummaryResult.textContent = '没有额度记录。';
+        return;
+      }
+      const totals = summary.totals_by_model || {};
+      const budgetLines = Object.entries(totals).map(([model, amount]) => `${model === '*' ? '通用额度' : model}: ${formatCNY(amount)}`);
+      const entitlementLines = (summary.entitlements || []).map((item) => `${item.plan_name || item.plan_slug} · ${item.source} · 到期 ${formatCommercialTime(item.expires_at)}`);
+      const ledgerLines = (summary.ledger || []).slice(0, 5).map((item) => `${formatCommercialTime(item.created_at)} · ${item.model === '*' ? '通用额度' : item.model} · ${formatCNY(item.amount_cny)} · ${item.entry_type}`);
+      commercialSummaryResult.innerHTML = [
+        `<strong>UID ${escapeHTML(summary.uid)} · 总额度 ${formatCNY(summary.total_cny)}</strong>`,
+        `<div class="commercial-meta">按模型：${escapeHTML(budgetLines.join('；') || '暂无')}</div>`,
+        `<div class="commercial-meta">套餐：${escapeHTML(entitlementLines.join('；') || '暂无')}</div>`,
+        `<div class="commercial-meta">最近账本：${escapeHTML(ledgerLines.join('；') || '暂无')}</div>`,
+      ].join('');
+    }
+
+    commercialPlanForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      clearCommercialError(commercialPlanError);
+      commercialPlanButton.disabled = true;
+      try {
+        const payload = {
+          slug: document.querySelector('#commercial-plan-slug').value.trim(),
+          name: document.querySelector('#commercial-plan-name').value.trim(),
+          monthly_budget_cny: Number(document.querySelector('#commercial-plan-monthly').value || 0),
+          model_budgets: parseModelBudgetsInput(document.querySelector('#commercial-plan-model-budgets').value),
+          duration_days: Number(document.querySelector('#commercial-plan-duration').value || 30),
+          state: 0,
+        };
+        const resp = await fetch('/local/account-admin/commercial/plans', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          showCommercialError(commercialPlanError, data.error || `保存套餐失败：HTTP ${resp.status}`);
+          return;
+        }
+        renderCommercialPlans(data.plans);
+      } catch (err) {
+        showCommercialError(commercialPlanError, err && err.message ? err.message : '保存套餐失败。');
+      } finally {
+        commercialPlanButton.disabled = false;
+      }
+    });
+
+    commercialInviteForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      clearCommercialError(commercialInviteError);
+      commercialInviteButton.disabled = true;
+      try {
+        const payload = {
+          code: document.querySelector('#commercial-invite-code').value.trim(),
+          plan_id: Number(commercialInvitePlan.value || 0),
+          max_redemptions: Number(document.querySelector('#commercial-invite-max').value || 1),
+          expires_at: document.querySelector('#commercial-invite-expire').value.trim(),
+          note: document.querySelector('#commercial-invite-note').value.trim(),
+        };
+        const resp = await fetch('/local/account-admin/commercial/invites', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          showCommercialError(commercialInviteError, data.error || `保存邀请码失败：HTTP ${resp.status}`);
+          return;
+        }
+        renderCommercialInvites(data.invites);
+      } catch (err) {
+        showCommercialError(commercialInviteError, err && err.message ? err.message : '保存邀请码失败。');
+      } finally {
+        commercialInviteButton.disabled = false;
+      }
+    });
+
+    commercialGrantForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      clearCommercialError(commercialGrantError);
+      commercialGrantButton.disabled = true;
+      try {
+        const payload = {
+          uid: Number(document.querySelector('#commercial-grant-uid').value || 0),
+          model: document.querySelector('#commercial-grant-model').value.trim(),
+          amount_cny: Number(document.querySelector('#commercial-grant-amount').value || 0),
+          note: document.querySelector('#commercial-grant-note').value.trim(),
+        };
+        const resp = await fetch('/local/account-admin/commercial/grants', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          showCommercialError(commercialGrantError, data.error || `发放失败：HTTP ${resp.status}`);
+          return;
+        }
+        commercialGrantResult.innerHTML = `<strong>已发放 ${formatCNY(data.grant.amount_cny)}</strong><div class="commercial-meta">UID ${escapeHTML(data.grant.uid)} · ${escapeHTML(data.grant.model === '*' ? '通用额度' : data.grant.model)} · ${escapeHTML(data.grant.note || '-')}</div>`;
+      } catch (err) {
+        showCommercialError(commercialGrantError, err && err.message ? err.message : '发放失败。');
+      } finally {
+        commercialGrantButton.disabled = false;
+      }
+    });
+
+    commercialSummaryForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      clearCommercialError(commercialSummaryError);
+      commercialSummaryButton.disabled = true;
+      const uid = document.querySelector('#commercial-summary-uid').value.trim();
+      try {
+        const resp = await fetch(`/local/account-admin/commercial/users?uid=${encodeURIComponent(uid)}`, { headers: { Accept: 'application/json' } });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          showCommercialError(commercialSummaryError, data.error || `查询失败：HTTP ${resp.status}`);
+          return;
+        }
+        renderCommercialSummary(data.summary);
+      } catch (err) {
+        showCommercialError(commercialSummaryError, err && err.message ? err.message : '查询失败。');
+      } finally {
+        commercialSummaryButton.disabled = false;
+      }
+    });
+
     loadUsersList();
     loadServices();
+    loadCommercialPlans();
+    loadCommercialInvites();
   </script>
 </body>
 </html>

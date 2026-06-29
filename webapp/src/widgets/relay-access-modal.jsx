@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Check, Copy, ExternalLink, KeyRound, RotateCcw, Server, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Check, Copy, ExternalLink, Gift, KeyRound, RotateCcw, Server, Sparkles, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 
 const FALLBACK_CONFIG = {
@@ -64,6 +64,28 @@ function formatTime(value) {
   return date.toLocaleString();
 }
 
+function formatCNY(value) {
+  const number = Number(value || 0);
+  return number.toLocaleString('zh-CN', {
+    minimumFractionDigits: number > 0 && number < 1 ? 4 : 2,
+    maximumFractionDigits: 4,
+  });
+}
+
+function modelBudgetLabel(model) {
+  if (!model || model === '*') return '通用额度';
+  return model;
+}
+
+function summarizeCommercial(summary) {
+  const totals = summary?.totals_by_model || {};
+  const entries = Object.entries(totals)
+    .filter(([, amount]) => Number(amount) > 0)
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (!entries.length) return '暂无套餐额度';
+  return entries.map(([model, amount]) => `${modelBudgetLabel(model)} ${formatCNY(amount)} CNY`).join(' · ');
+}
+
 function extractPlainRelayKey(data) {
   const key = data?.key;
   const candidates = typeof key === 'string'
@@ -90,6 +112,9 @@ export default function RelayAccessModal({ onClose }) {
   const [loading, setLoading] = useState(true);
   const [keyLoading, setKeyLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState('');
+  const [commercial, setCommercial] = useState(null);
+  const [inviteCode, setInviteCode] = useState('');
+  const [inviteLoading, setInviteLoading] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
 
@@ -117,6 +142,12 @@ export default function RelayAccessModal({ onClose }) {
           } finally {
             if (!cancelled) setKeyLoading(false);
           }
+        }
+        try {
+          const commercialData = await api.getRelayCommercial();
+          if (!cancelled) setCommercial(commercialData);
+        } catch (err) {
+          if (!cancelled) setCommercial(null);
         }
       } catch (err) {
         if (!cancelled) {
@@ -245,6 +276,29 @@ export default function RelayAccessModal({ onClose }) {
   };
 
   const busy = Boolean(actionLoading);
+  const commercialSummary = commercial?.summary;
+  const commercialEnabled = commercial?.enabled !== false && commercialSummary;
+
+  const redeemInvite = async () => {
+    const code = inviteCode.trim();
+    if (!code) {
+      setError('请输入邀请码。');
+      return;
+    }
+    setInviteLoading(true);
+    setError('');
+    try {
+      const data = await api.redeemRelayInvite(code);
+      setCommercial({ ...(commercial || {}), enabled: true, summary: data.summary, note: data.note || commercial?.note });
+      setInviteCode('');
+      setCopied('invite');
+      window.setTimeout(() => setCopied(''), 1400);
+    } catch (err) {
+      setError(err.message || '邀请码兑换失败');
+    } finally {
+      setInviteLoading(false);
+    }
+  };
 
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
@@ -300,6 +354,61 @@ export default function RelayAccessModal({ onClose }) {
               )}
             </div>
           </div>
+
+          <section className="relay-access-commerce">
+            <div className="relay-access-section-head">
+              <div>
+                <div className="relay-access-title">套餐额度</div>
+                <div className="oc-settings-secondary">
+                  {commercialEnabled
+                    ? summarizeCommercial(commercialSummary)
+                    : '当前仍保留默认 relay 额度；套餐和邀请码先作为测试入口。'}
+                </div>
+              </div>
+              <span className="relay-access-state active">测试中</span>
+            </div>
+
+            <div className="relay-access-commerce-grid">
+              <div className="relay-access-commerce-card">
+                <Sparkles size={17} />
+                <div>
+                  <strong>{formatCNY(commercialSummary?.total_cny)} CNY</strong>
+                  <span>已发放套餐额度</span>
+                </div>
+              </div>
+              <div className="relay-access-commerce-card">
+                <Gift size={17} />
+                <div>
+                  <strong>{commercialSummary?.entitlements?.length || 0}</strong>
+                  <span>当前套餐/兑换记录</span>
+                </div>
+              </div>
+            </div>
+
+            {commercialEnabled && Object.keys(commercialSummary.totals_by_model || {}).length > 0 && (
+              <div className="relay-access-budget-list">
+                {Object.entries(commercialSummary.totals_by_model).map(([model, amount]) => (
+                  <div key={model}>
+                    <span>{modelBudgetLabel(model)}</span>
+                    <strong>{formatCNY(amount)} CNY</strong>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="relay-access-invite-form">
+              <input
+                value={inviteCode}
+                onChange={(event) => setInviteCode(event.target.value)}
+                placeholder="输入邀请码兑换套餐额度"
+                disabled={inviteLoading}
+              />
+              <button type="button" disabled={inviteLoading} onClick={redeemInvite}>
+                {inviteLoading ? '兑换中...' : copied === 'invite' ? '已兑换' : '兑换'}
+              </button>
+            </div>
+            <div className="oc-settings-secondary">{commercial?.note || '管理员也可以在后台手动发放或调整用户额度。'}</div>
+          </section>
 
           <div className="relay-access-connect">
             <div className="relay-access-section-head relay-access-section-head-compact">

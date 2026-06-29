@@ -22,6 +22,7 @@ type AccountAdminHandler struct {
 	users        AccountAdminUserLookup
 	services     AccountServiceVerifier
 	serviceStore AccountAdminServiceStore
+	commercial   CommercialStore
 }
 
 type AccountAdminUserLookup interface {
@@ -40,8 +41,12 @@ type AccountAdminServiceStore interface {
 	RevokeAuthService(id int64) error
 }
 
-func NewAccountAdminHandler(users AccountAdminUserLookup, services AccountServiceVerifier, serviceStore AccountAdminServiceStore) *AccountAdminHandler {
-	return &AccountAdminHandler{users: users, services: services, serviceStore: serviceStore}
+func NewAccountAdminHandler(users AccountAdminUserLookup, services AccountServiceVerifier, serviceStore AccountAdminServiceStore, commercial ...CommercialStore) *AccountAdminHandler {
+	var commercialStore CommercialStore
+	if len(commercial) > 0 {
+		commercialStore = commercial[0]
+	}
+	return &AccountAdminHandler{users: users, services: services, serviceStore: serviceStore, commercial: commercialStore}
 }
 
 func (h *AccountAdminHandler) HandlePage(w http.ResponseWriter, r *http.Request) {

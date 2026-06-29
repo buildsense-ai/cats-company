@@ -27,6 +27,15 @@ func envString(name string) string {
 	return strings.TrimSpace(os.Getenv(name))
 }
 
+func envBool(name string) bool {
+	switch strings.ToLower(envString(name)) {
+	case "1", "true", "yes", "on", "enabled":
+		return true
+	default:
+		return false
+	}
+}
+
 func isProductionEnv() bool {
 	for _, name := range []string{"OC_ENV", "APP_ENV", "GO_ENV", "ENV"} {
 		switch strings.ToLower(envString(name)) {
@@ -240,8 +249,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid OC_ACCOUNT_SERVICE_TOKENS: %v", err)
 	}
+	var commercialStore server.CommercialStore
+	if candidate, ok := db.(server.CommercialStore); ok {
+		commercialStore = candidate
+	}
 	accountCenterHandler := server.NewAccountCenterHandler(db, accountServiceVerifier)
-	accountAdminHandler := server.NewAccountAdminHandler(db, accountServiceVerifier, db)
+	accountAdminHandler := server.NewAccountAdminHandler(db, accountServiceVerifier, db, commercialStore)
 	friendHandler := server.NewFriendHandler(db)
 	conversationHandler := server.NewConversationHandler(db, hub)
 	agentHandler := server.NewAgentHandler(db, hub)
@@ -262,6 +275,11 @@ func main() {
 	feedbackHandler := server.NewFeedbackHandler(db)
 	relayConfigHandler := server.NewRelayConfigHandler()
 	relayKeyHandler := server.NewRelayKeyHandlerFromEnv()
+	relayCommercialPublicEnabled := envBool("CATS_RELAY_COMMERCIAL_ENABLED")
+	if relayCommercialPublicEnabled {
+		log.Printf("relay commercial package UI is enabled for authenticated owners")
+	}
+	relayCommercialHandler := server.NewRelayCommercialHandler(commercialStore, relayCommercialPublicEnabled)
 	// usageHandler := server.NewUsageHandler(db)
 
 	authSendCodeIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
@@ -357,6 +375,10 @@ func main() {
 	mux.HandleFunc("/local/account-admin/users/state", accountAdminHandler.HandleUserState)
 	mux.HandleFunc("/local/account-admin/services", accountAdminHandler.HandleServices)
 	mux.HandleFunc("/local/account-admin/services/revoke", accountAdminHandler.HandleRevokeService)
+	mux.HandleFunc("/local/account-admin/commercial/plans", accountAdminHandler.HandleCommercialPlans)
+	mux.HandleFunc("/local/account-admin/commercial/invites", accountAdminHandler.HandleCommercialInvites)
+	mux.HandleFunc("/local/account-admin/commercial/grants", accountAdminHandler.HandleCommercialGrant)
+	mux.HandleFunc("/local/account-admin/commercial/users", accountAdminHandler.HandleCommercialUserSummary)
 	mux.HandleFunc("/local/tutorial-admin", tutorialTaskHandler.HandleAdminPage)
 	mux.HandleFunc("/local/tutorial-admin/", tutorialTaskHandler.HandleAdminPage)
 	mux.HandleFunc("/local/tutorial-admin/tasks", tutorialTaskHandler.HandleAdminTasks)
@@ -409,6 +431,8 @@ func main() {
 	mux.HandleFunc("/api/channels/weixin/events", weixinChannelHandler.HandleEvents)
 	mux.HandleFunc("/api/feedback", chainHTTP(feedbackHandler.HandleCreateFeedback, feedbackIPLimit, authWithDB, feedbackUserLimit))
 	mux.HandleFunc("/api/relay/config", ownerAuthWithDB(relayConfigHandler.HandleConfig))
+	mux.HandleFunc("/api/relay/commercial", ownerAuthWithDB(relayCommercialHandler.HandleSummary))
+	mux.HandleFunc("/api/relay/invite/redeem", ownerAuthWithDB(relayCommercialHandler.HandleRedeemInvite))
 	mux.HandleFunc("/api/relay/session", ownerAuthWithDB(relayConfigHandler.HandleSession))
 	mux.HandleFunc("/api/relay/key", ownerAuthWithDB(relayKeyHandler.HandleKey))
 	mux.HandleFunc("/api/relay/key/rotate", ownerAuthWithDB(relayKeyHandler.HandleRotate))
