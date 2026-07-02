@@ -5,6 +5,7 @@ import Avatar from './avatar';
 
 export default function AddFriend({ currentUser, onClose, onSent }) {
   const [query, setQuery] = useState('');
+  const [searchMode, setSearchMode] = useState('name');
   const [message, setMessage] = useState(() => defaultFriendMessage(currentUser));
   const [results, setResults] = useState([]);
   const [sent, setSent] = useState(new Set());
@@ -12,7 +13,12 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
   const [error, setError] = useState('');
 
   const handleSearch = async () => {
-    if (query.trim().length < 2) {
+    const trimmedQuery = query.trim();
+    if (searchMode === 'uid' && !/^\d+$/.test(trimmedQuery)) {
+      setError('请输入数字 UID');
+      return;
+    }
+    if (searchMode === 'name' && trimmedQuery.length < 2) {
       setError(t('friend_search_too_short'));
       return;
     }
@@ -20,7 +26,7 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
     setLoading(true);
     setError('');
     try {
-      const res = await api.searchUsers(query.trim());
+      const res = await api.searchUsers(trimmedQuery, searchMode);
       setResults(res.users || []);
     } catch (e) {
       console.error('search:', e);
@@ -46,11 +52,35 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
     <div className="oc-modal-overlay" onClick={onClose}>
       <div className="oc-modal" onClick={(e) => e.stopPropagation()}>
         <div className="oc-modal-title">{t('contacts_add_friend')}</div>
+        <div className="oc-search-mode-tabs">
+          <button
+            type="button"
+            className={`oc-search-mode-tab ${searchMode === 'name' ? 'active' : ''}`}
+            onClick={() => {
+              setSearchMode('name');
+              setResults([]);
+              setError('');
+            }}
+          >
+            按名字
+          </button>
+          <button
+            type="button"
+            className={`oc-search-mode-tab ${searchMode === 'uid' ? 'active' : ''}`}
+            onClick={() => {
+              setSearchMode('uid');
+              setResults([]);
+              setError('');
+            }}
+          >
+            按 UID
+          </button>
+        </div>
         <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
           <input
             className="oc-auth-input"
             style={{ marginBottom: 0, flex: 1 }}
-            placeholder={t('contacts_search_placeholder')}
+            placeholder={searchMode === 'uid' ? '输入对方 UID，例如 38' : t('contacts_search_placeholder')}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
@@ -77,9 +107,12 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
               isBot={user.account_type === 'bot'}
               className="oc-contact-avatar"
             />
-            <span className="oc-contact-name" style={{ flex: 1 }}>
-              {user.display_name || user.username}
-            </span>
+            <div className="oc-contact-info">
+              <span className="oc-contact-name">
+                {user.display_name || user.username}
+              </span>
+              <span className="oc-contact-identity">{userIdentity(user)}</span>
+            </div>
             {sent.has(user.id) ? (
               <span style={{ color: '#888', fontSize: 13 }}>
                 {t('friend_request_sent')}
@@ -95,7 +128,7 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
           </div>
         ))}
 
-        {results.length === 0 && query.length >= 2 && (
+        {results.length === 0 && canShowEmptyState(query, searchMode) && (
           <div style={{ textAlign: 'center', color: '#888', padding: 20 }}>
             {t('no_data')}
           </div>
@@ -108,4 +141,16 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
 function defaultFriendMessage(user) {
   const name = user?.display_name || user?.username || '';
   return name ? t('friend_request_default_msg', { name }) : '';
+}
+
+function canShowEmptyState(query, searchMode) {
+  const trimmedQuery = query.trim();
+  if (searchMode === 'uid') return /^\d+$/.test(trimmedQuery);
+  return trimmedQuery.length >= 2;
+}
+
+function userIdentity(user) {
+  const username = user?.username ? `@${user.username}` : '';
+  const uid = user?.id || user?.uid ? `uid ${user.id || user.uid}` : '';
+  return [username, uid].filter(Boolean).join(' · ');
 }

@@ -280,7 +280,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                         </div>
                         <div className="v3-agent-info" style={{ flex: 1, minWidth: 0 }}>
                           <h4 style={{ margin: '0 0 4px 0', fontSize: 16, color: 'var(--v3-text-name)' }}>{bot.display_name}</h4>
-                          <span style={{ fontSize: 13, color: 'var(--v3-text-muted)' }}>@{bot.username}</span>
+                          <span style={{ fontSize: 13, color: 'var(--v3-text-muted)' }}>@{bot.username} · uid {botId}</span>
                         </div>
                       </div>
                       <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 16, marginTop: 12 }}>

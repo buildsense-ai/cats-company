@@ -241,7 +241,20 @@ func (h *FriendHandler) friendActionTargetUID(currentUID, agentUID int64) (int64
 func (h *FriendHandler) HandleSearchUsers(w http.ResponseWriter, r *http.Request) {
 	uid := UIDFromContext(r.Context())
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
-	if len(query) < 2 {
+	mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
+	if mode == "" {
+		mode = "name"
+	}
+
+	if mode != "name" && mode != "uid" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid search mode"})
+		return
+	}
+	if mode == "uid" && !isNumericQuery(query) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "uid must be numeric"})
+		return
+	}
+	if mode == "name" && len(query) < 2 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "query too short"})
 		return
 	}
@@ -254,12 +267,55 @@ func (h *FriendHandler) HandleSearchUsers(w http.ResponseWriter, r *http.Request
 
 	filtered := users[:0]
 	for _, user := range users {
-		if user.ID != uid {
-			filtered = append(filtered, user)
+		if user.ID == uid {
+			continue
 		}
+		switch mode {
+		case "uid":
+			if !matchesUserUIDQuery(user, query) {
+				continue
+			}
+		default:
+			if !matchesUserNameQuery(user, query) {
+				continue
+			}
+		}
+		filtered = append(filtered, user)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"users": filtered})
+}
+
+func matchesUserUIDQuery(user *types.User, query string) bool {
+	if user == nil {
+		return false
+	}
+	uid, err := strconv.ParseInt(query, 10, 64)
+	if err != nil {
+		return false
+	}
+	return user.ID == uid
+}
+
+func matchesUserNameQuery(user *types.User, query string) bool {
+	if user == nil {
+		return false
+	}
+	needle := strings.ToLower(query)
+	return strings.Contains(strings.ToLower(user.Username), needle) ||
+		strings.Contains(strings.ToLower(user.DisplayName), needle)
+}
+
+func isNumericQuery(query string) bool {
+	if query == "" {
+		return false
+	}
+	for _, ch := range query {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // p2pTopicID generates a deterministic topic ID for a P2P conversation.

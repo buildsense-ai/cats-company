@@ -142,7 +142,7 @@ func (a *Adapter) UpdateUserPasswordHash(uid int64, passHash []byte) error {
 	return err
 }
 
-// SearchUsers searches for users by username or display name.
+// SearchUsers searches for users by username, display name, or exact uid.
 func (a *Adapter) SearchUsers(query string, limit int) ([]*types.User, error) {
 	pattern := "%" + query + "%"
 	rows, err := a.db.Query(
@@ -150,10 +150,10 @@ func (a *Adapter) SearchUsers(query string, limit int) ([]*types.User, error) {
 		        u.account_type, COALESCE(u.bot_disclose, false)
 		 FROM users u
 		 LEFT JOIN bot_config b ON u.id = b.user_id AND u.account_type = 'bot'
-		 WHERE (u.username ILIKE $1 OR u.display_name ILIKE $2) AND u.state = 0
+		 WHERE (u.username ILIKE $1 OR u.display_name ILIKE $2 OR CAST(u.id AS TEXT) = $3) AND u.state = 0
 		   AND (u.account_type != 'bot' OR COALESCE(b.visibility, 'public') = 'public')
-		 LIMIT $3`,
-		pattern, pattern, limit,
+		 LIMIT $4`,
+		pattern, pattern, query, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("search users: %w", err)

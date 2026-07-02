@@ -78,7 +78,7 @@ export default function FriendsView({ onSelectUser, user, onClose }) {
 
   // Search filter
   const [search, setSearch] = useState('');
-  const filteredFriends = friends.filter(f => (f.display_name || f.username).toLowerCase().includes(search.toLowerCase()));
+  const filteredFriends = friends.filter(f => userSearchText(f).includes(search.toLowerCase()));
   const filteredGroups = groups.filter(g => g.name.toLowerCase().includes(search.toLowerCase()));
 
   return (
@@ -145,7 +145,10 @@ export default function FriendsView({ onSelectUser, user, onClose }) {
               {filteredFriends.map(friend => (
                 <div key={friend.id} className="v3-dir-item" onClick={() => onSelectUser({ topicId: p2pTopicId(user.uid, friend.id), name: friend.display_name || friend.username, isGroup: false, avatar_url: friend.avatar_url, friendId: friend.id })}>
                   <Avatar name={friend.display_name || friend.username} src={friend.avatar_url} size={36} isBot={friend.account_type === 'bot'} className={`v3-avatar ${friend.account_type === 'bot' ? 'bot' : ''}`} style={{ marginRight: 12 }} />
-                  <span style={{ color: '#E1E2E3', fontWeight: 500, fontSize: 15 }}>{friend.display_name || friend.username}</span>
+                  <span style={{ minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                    <span style={{ color: '#E1E2E3', fontWeight: 500, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{friend.display_name || friend.username}</span>
+                    <span style={{ color: 'var(--v3-text-muted)', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{userIdentity(friend)}</span>
+                  </span>
                 </div>
               ))}
 
@@ -169,6 +172,21 @@ export default function FriendsView({ onSelectUser, user, onClose }) {
 function p2pTopicId(uid1, uid2) {
   if (uid1 > uid2) [uid1, uid2] = [uid2, uid1];
   return `p2p_${uid1}_${uid2}`;
+}
+
+function userIdentity(user) {
+  const username = user?.username ? `@${user.username}` : '';
+  const uid = user?.id || user?.uid ? `uid ${user.id || user.uid}` : '';
+  return [username, uid].filter(Boolean).join(' · ');
+}
+
+function userSearchText(user) {
+  return [
+    user?.display_name,
+    user?.username,
+    user?.id,
+    user?.uid,
+  ].filter(Boolean).join(' ').toLowerCase();
 }
 
 function normalizeCreatedGroup(created) {

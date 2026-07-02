@@ -99,6 +99,13 @@ func TestPostgresStoreContract(t *testing.T) {
 	if err != nil || !areFriends {
 		t.Fatalf("expected reverse friendship, areFriends=%v err=%v", areFriends, err)
 	}
+	uidSearchResults, err := db.SearchUsers(fmt.Sprintf("%d", friendID), 10)
+	if err != nil {
+		t.Fatalf("search users by uid: %v", err)
+	}
+	if len(uidSearchResults) == 0 || uidSearchResults[0].ID != friendID {
+		t.Fatalf("uid search mismatch: got=%#v want=%d", uidSearchResults, friendID)
+	}
 
 	topicID := "p2p_test"
 	if err := db.CreateTopic(topicID, "p2p", ownerID); err != nil {

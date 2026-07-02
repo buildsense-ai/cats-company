@@ -393,9 +393,9 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
   const filteredChats = recentChats.filter(c => c.name.toLowerCase().includes(lowerSearch));
   const directChats = filteredChats.filter(c => !c.isGroup);
   const mergedGroups = mergeGroupsWithConversations(groups, chats.filter(c => c.isGroup));
-  const filteredFriends = friends.filter(f => (f.display_name || f.username).toLowerCase().includes(lowerSearch));
+  const filteredFriends = friends.filter(f => userSearchText(f).includes(lowerSearch));
   const filteredGroups = mergedGroups.filter(g => g.name.toLowerCase().includes(lowerSearch));
-  const filteredAgents = agents.filter(a => (a.display_name || a.username).toLowerCase().includes(lowerSearch));
+  const filteredAgents = agents.filter(a => userSearchText(a).includes(lowerSearch));
 
   const aiChats = directChats.filter(c => c.isBot);
   const friendChats = directChats.filter(c => !c.isBot);
@@ -612,7 +612,10 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
                 onClick={() => handleSelectAgent(agent)}
               >
                 <span className="prefix" style={{display: 'flex', alignItems: 'center'}}><Bot size={18} /></span>
-                <span className="v3-chat-item-label">{agent.display_name || agent.username}</span>
+                <span className="v3-chat-item-main">
+                  <span className="v3-chat-item-label">{agent.display_name || agent.username}</span>
+                  <span className="v3-chat-item-identity">{agentIdentity(agent)}</span>
+                </span>
                 <div className="v3-agent-row-actions">
                   <button
                     type="button"
@@ -867,6 +870,21 @@ function p2pTopicId(uid1, uid2) {
   let u2 = parseInt(uid2, 10);
   if (u1 > u2) [u1, u2] = [u2, u1];
   return `p2p_${u1}_${u2}`;
+}
+
+function agentIdentity(agent) {
+  const username = agent?.username ? `@${agent.username}` : '';
+  const uid = agent?.uid || agent?.id ? `uid ${agent.uid || agent.id}` : '';
+  return [username, uid].filter(Boolean).join(' · ');
+}
+
+function userSearchText(user) {
+  return [
+    user?.display_name,
+    user?.username,
+    user?.id,
+    user?.uid,
+  ].filter(Boolean).join(' ').toLowerCase();
 }
 
 function formatTime(date) {

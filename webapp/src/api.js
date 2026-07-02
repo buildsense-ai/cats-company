@@ -103,7 +103,8 @@ export const api = {
   removeFriend: (userId) =>
     request('DELETE', `/api/friends/remove?user_id=${userId}`),
 
-  searchUsers: (q) => request('GET', `/api/users/search?q=${encodeURIComponent(q)}`),
+  searchUsers: (q, mode = 'name') =>
+    request('GET', `/api/users/search?q=${encodeURIComponent(q)}&mode=${encodeURIComponent(mode)}`),
 
   // Send message via REST
   sendMessage: (topicId, content, replyTo) => {

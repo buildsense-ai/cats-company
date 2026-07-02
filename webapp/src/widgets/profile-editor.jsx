@@ -15,8 +15,10 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [copyStatus, setCopyStatus] = useState('');
   const [showPasswordReset, setShowPasswordReset] = useState(false);
   const resetEmail = user?.email || (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(user?.username || '') ? user.username : '');
+  const userUID = user?.uid || user?.id || '';
 
   const handleSelectAvatar = async (event) => {
     const file = event.target.files?.[0];
@@ -39,6 +41,20 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
       event.target.value = '';
     }
   };
+
+  const handleCopyUID = async () => {
+    if (!userUID) return;
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('clipboard unavailable');
+      }
+      await navigator.clipboard.writeText(String(userUID));
+      setCopyStatus('已复制 UID');
+    } catch {
+      setCopyStatus(`UID：${userUID}`);
+    }
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setError('');
@@ -81,6 +97,17 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
           <div className="oc-settings-secondary" style={{ marginTop: -10, marginBottom: 12 }}>
             登录名称：{user?.username || '-'}。这里只会改变聊天中展示的昵称，不会改变登录名称或邮箱登录。
           </div>
+          <div className="oc-profile-identity-card">
+            <div>
+              <div className="oc-profile-identity-label">我的 UID</div>
+              <div className="oc-profile-identity-value">{userUID || '-'}</div>
+              <div className="oc-settings-secondary">别人按 UID 搜索时，用这个数字加你或你的虚拟员工。</div>
+            </div>
+            <button type="button" className="oc-btn oc-btn-default" onClick={handleCopyUID} disabled={!userUID}>
+              复制 UID
+            </button>
+          </div>
+          {copyStatus && <div className="oc-settings-secondary" style={{ marginTop: -6, marginBottom: 12 }}>{copyStatus}</div>}
           <div style={{ padding: '16px 0', marginTop: '16px', borderTop: '1px solid var(--v3-border)', borderBottom: '1px solid var(--v3-border)' }}>
             <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
               <input
