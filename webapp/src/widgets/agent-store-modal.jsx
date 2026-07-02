@@ -16,6 +16,11 @@ const CHANNEL_AGENT_ACCESS_MODES = {
   PUBLIC: 'public',
 };
 
+const BOT_VISIBILITY = {
+  PUBLIC: 'public',
+  PRIVATE: 'private',
+};
+
 const CHANNEL_OPTIONS = [
   { value: 'weixin', label: '微信公众号', shortLabel: '公众号' },
   { value: 'feishu', label: '飞书', shortLabel: '飞书' },
@@ -56,6 +61,20 @@ const initialForm = {
 };
 
 const isOwnedBot = (bot) => bot?.is_owner === true || bot?.relation === 'owner';
+
+const normalizeBotVisibility = (visibility) => (
+  visibility === BOT_VISIBILITY.PRIVATE ? BOT_VISIBILITY.PRIVATE : BOT_VISIBILITY.PUBLIC
+);
+
+const botVisibilityLabel = (visibility) => (
+  normalizeBotVisibility(visibility) === BOT_VISIBILITY.PRIVATE ? '私有不可搜索' : '公开可搜索'
+);
+
+const botVisibilityDescription = (visibility) => (
+  normalizeBotVisibility(visibility) === BOT_VISIBILITY.PRIVATE
+    ? '不会出现在添加好友搜索里，也不能通过 UID 搜索添加。'
+    : '别人可以通过名字或 UID 搜索并申请添加。'
+);
 
 export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
   const [bots, setBots] = useState([]);
@@ -219,6 +238,29 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
     }
   };
 
+  const handleSetVisibility = async (bot, visibility) => {
+    const botId = bot?.id || bot?.uid;
+    if (!botId || !isOwnedBot(bot)) return;
+    const nextVisibility = normalizeBotVisibility(visibility);
+    try {
+      setError('');
+      await api.setBotVisibility(botId, nextVisibility);
+      setBots(prev => prev.map(item => (
+        (item.id === botId || item.uid === botId)
+          ? { ...item, visibility: nextVisibility }
+          : item
+      )));
+      setEditingBot(prev => (
+        prev && (prev.id === botId || prev.uid === botId)
+          ? { ...prev, visibility: nextVisibility }
+          : prev
+      ));
+      if (onBotsChanged) onBotsChanged();
+    } catch (e) {
+      setError(e.message || '更新助手可见性失败');
+    }
+  };
+
   const wsUrl = getWebSocketURL();
 
   return (
@@ -286,6 +328,11 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                       <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 16, marginTop: 12 }}>
                         {owned ? (bot.tenant_name ? '我创建的 · 云托管' : '我创建的 · 自托管') : '已添加的助手'}
                       </div>
+                      {owned && (
+                        <div className={`v3-agent-visibility-badge ${normalizeBotVisibility(bot.visibility) === BOT_VISIBILITY.PRIVATE ? 'private' : 'public'}`}>
+                          {botVisibilityLabel(bot.visibility)}
+                        </div>
+                      )}
                       <div className="v3-agent-actions" style={{ display: 'flex', gap: 8 }}>
                         {owned && (
                         <button className="oc-btn oc-btn-default" style={{ flex: 1, padding: '8px 0', borderRadius: 8 }} onClick={() => {
@@ -518,6 +565,31 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                   </div>
                 </div>
               )}
+
+              <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
+                <div style={{ fontSize: 13, color: 'var(--v3-text-name)', fontWeight: 700, marginBottom: 8 }}>好友添加方式</div>
+                <div style={{ color: 'var(--v3-text-muted)', fontSize: 12, lineHeight: 1.6, marginBottom: 12 }}>
+                  当前：{botVisibilityLabel(editingBot.visibility)}。{botVisibilityDescription(editingBot.visibility)}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+                  <button
+                    type="button"
+                    className={`oc-btn ${normalizeBotVisibility(editingBot.visibility) === BOT_VISIBILITY.PUBLIC ? 'oc-btn-primary' : 'oc-btn-default'}`}
+                    style={{ padding: '10px 0', borderRadius: 8 }}
+                    onClick={() => handleSetVisibility(editingBot, BOT_VISIBILITY.PUBLIC)}
+                  >
+                    公开可搜索
+                  </button>
+                  <button
+                    type="button"
+                    className={`oc-btn ${normalizeBotVisibility(editingBot.visibility) === BOT_VISIBILITY.PRIVATE ? 'oc-btn-primary' : 'oc-btn-default'}`}
+                    style={{ padding: '10px 0', borderRadius: 8 }}
+                    onClick={() => handleSetVisibility(editingBot, BOT_VISIBILITY.PRIVATE)}
+                  >
+                    私有不可搜索
+                  </button>
+                </div>
+              </div>
 
               <div style={{ display: 'flex', gap: 12 }}>
                 <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '14px 0', borderRadius: 8 }} onClick={() => setTab('hub')}>

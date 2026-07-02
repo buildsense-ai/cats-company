@@ -3193,6 +3193,32 @@ button.catsco-download-action:disabled {
   color: #888;
 }
 
+.v3-agent-visibility-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  margin: -2px 0 14px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  border: 1px solid transparent;
+}
+
+.v3-agent-visibility-badge.public {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.22);
+}
+
+.v3-agent-visibility-badge.private {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.24);
+}
+
 .v3-agent-actions {
   display: flex;
   gap: 8px;
