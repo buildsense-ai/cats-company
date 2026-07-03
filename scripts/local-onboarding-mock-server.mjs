@@ -445,7 +445,6 @@ async function handleApi(req, res) {
           { id: 'minimax-m2.7', label: 'MiniMax M2.7', model: 'MiniMax-M2.7', provider: 'anthropic', base_url: 'https://relay.catsco.cc/anthropic', quota_class: 'standard', context_window_tokens: 204800, default: true },
           { id: 'minimax-m3', label: 'MiniMax M3', model: 'MiniMax-M3', provider: 'anthropic', base_url: 'https://relay.catsco.cc/anthropic', quota_class: 'multimodal', context_window_tokens: 1000000 },
           { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash', model: 'deepseek-v4-flash', provider: 'anthropic', base_url: 'https://relay.catsco.cc/anthropic', quota_class: 'flash-low', context_window_tokens: 1000000 },
-          { id: 'glm-5.1', label: 'GLM 5.1', model: 'glm-5.1', provider: 'anthropic', base_url: 'https://relay.catsco.cc/anthropic', quota_class: 'standard', context_window_tokens: 200000 },
         ],
       });
     }

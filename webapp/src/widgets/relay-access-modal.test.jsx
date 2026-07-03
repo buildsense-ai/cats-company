@@ -141,7 +141,7 @@ describe('RelayAccessModal commercial rollout', () => {
             duration_days: 30,
             sort_order: 20,
             model_budgets: {
-              'glm-5.1': 500,
+              'MiniMax-M2.7': 500,
             },
           },
         ],
