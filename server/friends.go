@@ -43,6 +43,10 @@ func (h *FriendHandler) HandleSendRequest(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot add yourself"})
 		return
 	}
+	if status, err := h.validateFriendRequestTarget(uid, req.UserID); err != nil {
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
 
 	// Check if already friends
 	already, err := h.db.AreFriends(uid, req.UserID)
@@ -73,6 +77,37 @@ func (h *FriendHandler) HandleSendRequest(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"id": id, "status": "pending"})
+}
+
+func (h *FriendHandler) validateFriendRequestTarget(actorUID, targetUID int64) (int, error) {
+	user, err := h.db.GetUser(targetUID)
+	if err != nil {
+		return http.StatusInternalServerError, fmt.Errorf("failed to check friend target")
+	}
+	if user == nil || user.State != 0 {
+		return http.StatusForbidden, fmt.Errorf("user not found")
+	}
+	if user.AccountType != types.AccountBot {
+		return 0, nil
+	}
+	ownerUID, err := h.db.GetBotOwner(targetUID)
+	if err != nil {
+		return http.StatusInternalServerError, fmt.Errorf("failed to check agent owner")
+	}
+	if ownerUID == actorUID {
+		return 0, nil
+	}
+	config, err := h.db.GetBotConfig(targetUID)
+	if err != nil {
+		return http.StatusInternalServerError, fmt.Errorf("failed to check agent visibility")
+	}
+	if config == nil {
+		return 0, nil
+	}
+	if config.Visibility == types.BotPrivate {
+		return http.StatusForbidden, fmt.Errorf("agent is private")
+	}
+	return 0, nil
 }
 
 // HandleAcceptRequest handles POST /api/friends/accept

@@ -72,7 +72,7 @@ const botVisibilityLabel = (visibility) => (
 
 const botVisibilityDescription = (visibility) => (
   normalizeBotVisibility(visibility) === BOT_VISIBILITY.PRIVATE
-    ? '不会出现在添加好友搜索里，也不能通过 UID 搜索添加。'
+    ? '不会出现在添加好友搜索里，也不能通过 UID 直接申请；已授权用户会保留，可在访问管理里移除。'
     : '别人可以通过名字或 UID 搜索并申请添加。'
 );
 
@@ -613,6 +613,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
           onClose={() => setEntryBot(null)}
           onCopy={handleCopy}
           copiedField={copiedField}
+          onAccessChanged={() => loadBots({ silent: true })}
         />
       )}
     </div>
@@ -674,7 +675,7 @@ function mergeManageableBots(rawBots, rawAgents, rawFriends = []) {
   });
 }
 
-function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
+function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged }) {
   const [channel, setChannel] = useState('weixin');
   const [channelAppIds, setChannelAppIds] = useState({ weixin: '', feishu: '', weixin_clawbot: '' });
   const [entries, setEntries] = useState([]);
@@ -684,10 +685,12 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
   const [error, setError] = useState('');
   const [qrImageError, setQrImageError] = useState(false);
   const [pendingRequests, setPendingRequests] = useState([]);
+  const [botFriends, setBotFriends] = useState([]);
   const [managedBindings, setManagedBindings] = useState([]);
   const [accessTab, setAccessTab] = useState('pending');
   const [pendingLoading, setPendingLoading] = useState(false);
   const [reviewingUID, setReviewingUID] = useState(null);
+  const [removingFriendUID, setRemovingFriendUID] = useState(null);
   const [clawBotMobileLink, setClawBotMobileLink] = useState(null);
   const [clawBotMobileLoading, setClawBotMobileLoading] = useState(false);
   const [clawBotMobileError, setClawBotMobileError] = useState('');
@@ -719,15 +722,19 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
     if (!botId) return;
     try {
       setPendingLoading(true);
-      const [pendingRes, bindingsRes] = await Promise.all([
+      const [pendingRes, bindingsRes, friendsRes] = await Promise.all([
         api.getPendingRequests(botId),
         api.getAgentChannelBindings(botId),
+        api.getBotFriends(botId),
       ]);
       setPendingRequests(pendingRes.requests || []);
       setManagedBindings(bindingsRes.bindings || []);
+      setBotFriends(friendsRes.friends || []);
     } catch (err) {
       console.warn('load agent pending requests:', err);
       setPendingRequests([]);
+      setManagedBindings([]);
+      setBotFriends([]);
     } finally {
       setPendingLoading(false);
     }
@@ -917,6 +924,24 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
     }
   };
 
+  const handleRemoveBotFriend = async (friend) => {
+    const friendUID = friend?.id || friend?.uid;
+    if (!friendUID || !botId) return;
+    const name = friend.display_name || friend.username || `用户 ${friendUID}`;
+    if (!window.confirm(`确定移除 ${name} 对这个虚拟员工的使用权限吗？`)) return;
+    try {
+      setRemovingFriendUID(friendUID);
+      setError('');
+      await api.removeBotFriend(botId, friendUID);
+      await loadPendingRequests();
+      if (onAccessChanged) onAccessChanged();
+    } catch (err) {
+      setError(err.message || '移除使用者失败');
+    } finally {
+      setRemovingFriendUID(null);
+    }
+  };
+
   const bindingsByStatus = useMemo(() => {
     const buckets = { approved: [], rejected: [], needs_login: [], pending: [] };
     (managedBindings || []).filter((item) => (
@@ -933,9 +958,20 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
     return buckets;
   }, [managedBindings, accessMode, channel, selected]);
 
+  useEffect(() => {
+    if (
+      accessTab === 'pending'
+      && pendingRequests.length === 0
+      && bindingsByStatus.pending.length === 0
+      && (botFriends.length > 0 || bindingsByStatus.approved.length > 0)
+    ) {
+      setAccessTab('approved');
+    }
+  }, [accessTab, pendingRequests.length, bindingsByStatus.pending.length, botFriends.length, bindingsByStatus.approved.length]);
+
   const accessTabs = [
     ['pending', '待处理', pendingRequests.length + bindingsByStatus.pending.length],
-    ['approved', '已通过', bindingsByStatus.approved.length],
+    ['approved', '已授权', botFriends.length + bindingsByStatus.approved.length],
     ['rejected', '未通过', bindingsByStatus.rejected.length],
     ['needs_login', '待登录', bindingsByStatus.needs_login.length],
   ];
@@ -1220,8 +1256,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
                   </div>
                 </div>
               </div>
-              {normalizeChannelAgentAccessMode(selected.access_mode) === CHANNEL_AGENT_ACCESS_MODES.APPROVAL_REQUIRED && (
-                <div style={{ marginTop: 18, borderTop: '1px solid var(--v3-border)', paddingTop: 16 }}>
+              <div style={{ marginTop: 18, borderTop: '1px solid var(--v3-border)', paddingTop: 16 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
                     <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, fontSize: 13 }}>访问管理</div>
                     <button type="button" className="oc-btn oc-btn-default" style={{ padding: '5px 9px', borderRadius: 8, fontSize: 12 }} onClick={loadPendingRequests} disabled={pendingLoading}>
@@ -1265,6 +1300,24 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
                     </div>
                   ) : accessTab === 'pending' ? (
                     <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>暂无待处理申请。</div>
+                  ) : accessTab === 'approved' && (botFriends.length > 0 || bindingsByStatus.approved.length > 0) ? (
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      {botFriends.map((friend) => (
+                        <BotFriendRow
+                          key={`friend-${friend.id || friend.uid}`}
+                          friend={friend}
+                          removing={removingFriendUID === (friend.id || friend.uid)}
+                          onRemove={() => handleRemoveBotFriend(friend)}
+                        />
+                      ))}
+                      {bindingsByStatus.approved.map((item) => (
+                        <BindingStatusRow
+                          key={`approved-${item.binding?.id}`}
+                          item={item}
+                          note="已通过，可从对应渠道对话"
+                        />
+                      ))}
+                    </div>
                   ) : bindingsByStatus[accessTab]?.length ? (
                     <div style={{ display: 'grid', gap: 8 }}>
                       {bindingsByStatus[accessTab].map((item) => (
@@ -1278,19 +1331,88 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField }) {
                   ) : (
                     <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>暂无记录。</div>
                   )}
-                </div>
-              )}
+              </div>
             </>
           ) : (
-            <div style={{ padding: 36, textAlign: 'center', border: '1px dashed var(--v3-border)', borderRadius: 8 }}>
-              <div style={{ color: 'var(--v3-text-name)', marginBottom: 12 }}>还没有该渠道的入口码</div>
-              <button type="button" className="oc-btn oc-btn-primary" style={{ padding: '10px 18px', borderRadius: 8 }} onClick={handleGenerate} disabled={saving}>
-                {saving ? '正在生成...' : '生成入口码'}
-              </button>
-            </div>
+            <>
+              <div style={{ padding: 36, textAlign: 'center', border: '1px dashed var(--v3-border)', borderRadius: 8 }}>
+                <div style={{ color: 'var(--v3-text-name)', marginBottom: 12 }}>还没有该渠道的入口码</div>
+                <button type="button" className="oc-btn oc-btn-primary" style={{ padding: '10px 18px', borderRadius: 8 }} onClick={handleGenerate} disabled={saving}>
+                  {saving ? '正在生成...' : '生成入口码'}
+                </button>
+              </div>
+              <div style={{ marginTop: 18, borderTop: '1px solid var(--v3-border)', paddingTop: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, fontSize: 13 }}>访问管理</div>
+                  <button type="button" className="oc-btn oc-btn-default" style={{ padding: '5px 9px', borderRadius: 8, fontSize: 12 }} onClick={loadPendingRequests} disabled={pendingLoading}>
+                    {pendingLoading ? '刷新中' : '刷新'}
+                  </button>
+                </div>
+                {pendingRequests.length > 0 && (
+                  <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
+                    {pendingRequests.map((request) => (
+                      <div key={`${request.from_user_id}-${request.created_at || ''}`} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', alignItems: 'center', gap: 8, border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10 }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {request.display_name || request.from_username || `用户 ${request.from_user_id}`}
+                          </div>
+                          <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>申请添加该虚拟员工</div>
+                        </div>
+                        <button type="button" className="oc-btn oc-btn-default" style={{ padding: '7px 9px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 5 }} onClick={() => handleReviewRequest(request, 'reject')} disabled={reviewingUID === request.from_user_id}>
+                          <XCircle size={14} /> 拒绝
+                        </button>
+                        <button type="button" className="oc-btn oc-btn-primary" style={{ padding: '7px 9px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 5 }} onClick={() => handleReviewRequest(request, 'accept')} disabled={reviewingUID === request.from_user_id}>
+                          <CheckCircle size={14} /> 通过
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {botFriends.length > 0 ? (
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {botFriends.map((friend) => (
+                      <BotFriendRow
+                        key={`friend-empty-entry-${friend.id || friend.uid}`}
+                        friend={friend}
+                        removing={removingFriendUID === (friend.id || friend.uid)}
+                        onRemove={() => handleRemoveBotFriend(friend)}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ color: 'var(--v3-text-muted)', fontSize: 12 }}>暂无已授权使用者。</div>
+                )}
+              </div>
+            </>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function BotFriendRow({ friend, removing, onRemove }) {
+  const uid = friend?.id || friend?.uid;
+  const name = friend?.display_name || friend?.username || `用户 ${uid || ''}`;
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', alignItems: 'center', gap: 8, border: '1px solid var(--v3-border)', borderRadius: 8, padding: 10 }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ color: 'var(--v3-text-name)', fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {name}
+        </div>
+        <div style={{ color: 'var(--v3-text-muted)', fontSize: 12, lineHeight: 1.5 }}>
+          CatsCo 好友 · UID {uid}
+        </div>
+      </div>
+      <button
+        type="button"
+        className="oc-btn oc-btn-default"
+        style={{ padding: '7px 9px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 5 }}
+        onClick={onRemove}
+        disabled={removing}
+      >
+        <XCircle size={14} /> {removing ? '移除中' : '移除'}
+      </button>
     </div>
   );
 }

@@ -867,8 +867,19 @@ func (h *BotHandler) HandleUpdateBot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
-// HandleGetBotFriends handles GET /api/bots/friends?uid=xxx — get bot's friends list
+// HandleGetBotFriends handles GET/DELETE /api/bots/friends?uid=xxx.
 func (h *BotHandler) HandleGetBotFriends(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.handleGetBotFriends(w, r)
+	case http.MethodDelete:
+		h.handleRemoveBotFriend(w, r)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (h *BotHandler) handleGetBotFriends(w http.ResponseWriter, r *http.Request) {
 	ownerUID := UIDFromContext(r.Context())
 	if ownerUID == 0 {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
@@ -893,6 +904,67 @@ func (h *BotHandler) HandleGetBotFriends(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to get friends"})
 		return
 	}
+	filtered := friends[:0]
+	for _, friend := range friends {
+		if friend == nil || friend.ID == ownerUID {
+			continue
+		}
+		filtered = append(filtered, friend)
+	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"friends": friends})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"friends": filtered})
+}
+
+func (h *BotHandler) handleRemoveBotFriend(w http.ResponseWriter, r *http.Request) {
+	ownerUID := UIDFromContext(r.Context())
+	if ownerUID == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	uidStr := r.URL.Query().Get("uid")
+	botUID, err := strconv.ParseInt(uidStr, 10, 64)
+	if err != nil || botUID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
+		return
+	}
+
+	userIDStr := r.URL.Query().Get("user_id")
+	userUID, err := strconv.ParseInt(userIDStr, 10, 64)
+	if err != nil || userUID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid user_id"})
+		return
+	}
+
+	actualOwner, err := h.db.GetBotOwner(botUID)
+	if err != nil || actualOwner != ownerUID {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not your bot"})
+		return
+	}
+	if userUID == ownerUID {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "owner access cannot be removed"})
+		return
+	}
+
+	if bindings, ok := h.db.(store.ChannelAgentBindingStore); ok {
+		if err := bindings.RejectChannelAgentBindingsForCanonicalUser(userUID, botUID, ownerUID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to revoke channel binding"})
+			return
+		}
+		if err := bindings.RejectChannelAgentAccessRequestsForActor(userUID, botUID, ownerUID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to revoke channel access"})
+			return
+		}
+	}
+	if err := h.db.RemoveFriend(botUID, userUID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to remove friend"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":   "removed",
+		"uid":      botUID,
+		"user_id":  userUID,
+		"owner_id": ownerUID,
+	})
 }

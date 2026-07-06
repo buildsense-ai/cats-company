@@ -236,6 +236,7 @@ export const api = {
   deleteBot: (uid) => request('DELETE', `/api/bots?uid=${uid}`),
   setBotVisibility: (uid, visibility) => request('PATCH', `/api/bots/visibility?uid=${uid}&v=${visibility}`),
   getBotFriends: (uid) => request('GET', `/api/bots/friends?uid=${uid}`),
+  removeBotFriend: (uid, userId) => request('DELETE', `/api/bots/friends?uid=${uid}&user_id=${userId}`),
   acceptFriendAsBot: async (apiKey, userId) => {
     const res = await fetch(`${API_BASE}/api/friends/accept`, {
       method: 'POST',
