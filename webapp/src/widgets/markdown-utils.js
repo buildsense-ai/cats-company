@@ -18,8 +18,9 @@ export function markdownPreviewDocument(text) {
 <html>
 <head>
   <meta charset="utf-8" />
-  <base target="_blank" />
+  <base href="about:srcdoc" target="_blank" />
   <style>
+    html { scroll-behavior: smooth; }
     body {
       margin: 0;
       padding: 28px 34px;
@@ -28,6 +29,7 @@ export function markdownPreviewDocument(text) {
       font: 14px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     a { color: #93c5fd; }
+    h1, h2, h3, h4, h5, h6 { scroll-margin-top: 20px; }
     pre, code {
       font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
       background: rgba(255,255,255,0.08);
@@ -66,10 +68,18 @@ function sanitizeHtml(html) {
     });
 
     if (node.tagName === 'A') {
-      node.setAttribute('target', '_blank');
-      node.setAttribute('rel', 'noopener noreferrer');
+      const href = node.getAttribute('href') || '';
+      if (isHashLink(href)) {
+        node.setAttribute('target', '_self');
+        node.removeAttribute('rel');
+      } else {
+        node.setAttribute('target', '_blank');
+        node.setAttribute('rel', 'noopener noreferrer');
+      }
     }
   });
+
+  addHeadingAnchors(template.content);
 
   return template.innerHTML;
 }
@@ -97,4 +107,49 @@ function isSafeUrl(value, attrName) {
   } catch (err) {
     return false;
   }
+}
+
+function isHashLink(value) {
+  return /^#[^#]/.test(String(value || '').trim());
+}
+
+function addHeadingAnchors(root) {
+  const usedIds = new Set(
+    Array.from(root.querySelectorAll('[id]'))
+      .map((node) => String(node.id || '').trim())
+      .filter(Boolean),
+  );
+
+  root.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((heading) => {
+    if (heading.id) {
+      usedIds.add(heading.id);
+      return;
+    }
+    heading.id = uniqueHeadingId(slugifyHeading(heading.textContent), usedIds);
+  });
+}
+
+function uniqueHeadingId(baseId, usedIds) {
+  const base = baseId || 'section';
+  let nextId = base;
+  let suffix = 2;
+  while (usedIds.has(nextId)) {
+    nextId = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  usedIds.add(nextId);
+  return nextId;
+}
+
+function slugifyHeading(text) {
+  const normalized = String(text || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s_-]/gu, '')
+    .replace(/[\s_]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return normalized || 'section';
 }

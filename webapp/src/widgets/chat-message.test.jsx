@@ -9,6 +9,13 @@ jest.mock('marked', () => ({
       if (String(text).includes('javascript:')) {
         return '<p><a href="javascript:alert(1)" onclick="alert(2)">bad</a></p>';
       }
+      if (String(text).includes('[[toc-preview-fixture]]')) {
+        return [
+          '<nav><a href="#章节一">章节一</a><a href="#external">外部说明</a></nav>',
+          '<h2>章节一</h2>',
+          '<p><a href="https://example.com/docs">外部链接</a></p>',
+        ].join('');
+      }
       return `<p>${text}</p>`;
     },
   },
@@ -25,6 +32,7 @@ jest.mock('./avatar', () => function MockAvatar() {
 const chatMessageModule = require('./chat-message');
 const ChatMessage = chatMessageModule.default;
 const { FilePreviewPanel } = chatMessageModule;
+const { markdownPreviewDocument } = require('./markdown-utils');
 
 function PreviewHarness({ message }) {
   const [previewFile, setPreviewFile] = React.useState(null);
@@ -117,6 +125,23 @@ describe('ChatMessage rich file rendering', () => {
     expect(frame.getAttribute('sandbox')).toContain('allow-forms');
     expect(frame.getAttribute('sandbox')).not.toContain('allow-same-origin');
     expect(frame.getAttribute('srcdoc')).toContain('<h1>Report</h1>');
+  });
+
+  it('keeps markdown preview table-of-contents links inside the preview frame', () => {
+    const html = markdownPreviewDocument('[[toc-preview-fixture]]');
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+
+    expect(doc.querySelector('base').getAttribute('href')).toBe('about:srcdoc');
+    const tocLink = doc.querySelector('a[href="#章节一"]');
+    expect(tocLink).not.toBeNull();
+    expect(tocLink.getAttribute('target')).toBe('_self');
+    expect(tocLink.getAttribute('rel')).toBeNull();
+    expect(doc.querySelector('h2#章节一')).not.toBeNull();
+
+    const externalLink = doc.querySelector('a[href="https://example.com/docs"]');
+    expect(externalLink).not.toBeNull();
+    expect(externalLink.getAttribute('target')).toBe('_blank');
+    expect(externalLink.getAttribute('rel')).toBe('noopener noreferrer');
   });
 
   it('does not leave javascript links active in markdown message rendering', async () => {
