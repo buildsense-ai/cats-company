@@ -1,14 +1,24 @@
 import React from 'react';
 import CollapsibleBlock from './collapsible-block';
-import { renderSafeMarkdown } from './markdown-utils';
+import {
+  hasPlainTextTableLikeBlock,
+  hasRenderableTable,
+  renderSafeMarkdown,
+  shouldRenderMarkdown,
+} from './markdown-utils';
 
 function TextBlock({ block }) {
   const text = block.text || '';
-  const hasMarkdown = /(\*\*|__|`|#{1,6}\s|^\s*[-*+]\s|^\s*\d+\.\s|\[.*\]\(.*\))/m.test(text);
-  if (hasMarkdown) {
+  const renderableTable = hasRenderableTable(text);
+  const plainTextTableLike = !renderableTable && hasPlainTextTableLikeBlock(text);
+  if (plainTextTableLike) {
+    return <pre className="oc-text-block oc-plain-text-table">{text}</pre>;
+  }
+  if (shouldRenderMarkdown(text, { plainTextTables: true })) {
     try {
-      const html = renderSafeMarkdown(text);
-      return <div className="oc-text-block oc-markdown" dangerouslySetInnerHTML={{ __html: html }} />;
+      const html = renderSafeMarkdown(text, { plainTextTables: true });
+      const className = `oc-text-block oc-markdown${renderableTable ? ' oc-markdown-table' : ''}`;
+      return <div className={className} dangerouslySetInnerHTML={{ __html: html }} />;
     } catch (e) { /* fall through */ }
   }
   return <div className="oc-text-block" style={{ whiteSpace: 'pre-wrap' }}>{text}</div>;

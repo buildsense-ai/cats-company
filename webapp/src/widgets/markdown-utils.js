@@ -2,6 +2,69 @@ import { marked } from 'marked';
 
 marked.setOptions({ breaks: false, gfm: true });
 
+const MARKDOWN_INLINE_OR_BLOCK_PATTERN = /(\*\*|__|`|#{1,6}\s|^\s*[-*+]\s|^\s*\d+\.\s|\[.*\]\(.*\))/m;
+const TEXT_TABLE_SEPARATOR_PATTERN = /(?:\t+| {2,}|\u3000+)/g;
+const TEXT_TABLE_ALIGNMENT_PATTERN = /(?:\t+| {2,}|\u3000+)/;
+
+export function hasMarkdownTable(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  for (let i = 0; i < lines.length - 1; i += 1) {
+    const header = lines[i].trim();
+    const separator = lines[i + 1].trim();
+    if (!header.includes('|') || !separator.includes('|')) continue;
+    if (/^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$/.test(separator)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function hasPlainTextTable(text) {
+  return false;
+}
+
+export function hasRenderableTable(text) {
+  return hasMarkdownTable(text);
+}
+
+export function hasPlainTextTableLikeBlock(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  let inFence = false;
+  let block = [];
+
+  const flush = () => {
+    const matched = isPlainTextTableLikeBlock(block);
+    block = [];
+    return matched;
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (/^\s*(```|~~~)/.test(line)) {
+      if (!inFence && flush()) return true;
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence || isIndentedCodeLine(line)) {
+      if (!inFence && flush()) return true;
+      continue;
+    }
+    if (!line.trim()) {
+      if (flush()) return true;
+      continue;
+    }
+    block.push(line);
+  }
+
+  return flush();
+}
+
+export function shouldRenderMarkdown(text, options = {}) {
+  const value = String(text || '');
+  return MARKDOWN_INLINE_OR_BLOCK_PATTERN.test(value) ||
+    hasMarkdownTable(value);
+}
+
 export function escapeHtml(text) {
   return String(text)
     .replace(/&/g, '&amp;')
@@ -9,8 +72,12 @@ export function escapeHtml(text) {
     .replace(/>/g, '&gt;');
 }
 
-export function renderSafeMarkdown(text) {
+export function renderSafeMarkdown(text, options = {}) {
   return sanitizeHtml(marked.parse(escapeHtml(text)));
+}
+
+export function normalizePlainTextTables(text) {
+  return String(text || '');
 }
 
 export function markdownPreviewDocument(text) {
@@ -152,4 +219,75 @@ function slugifyHeading(text) {
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
   return normalized || 'section';
+}
+
+function splitAlignedColumns(line) {
+  const value = String(line || '').replace(/\s+$/, '');
+  if (!value.trim() || value.includes('|')) return null;
+
+  const columns = [];
+  let segmentStart = 0;
+  let match;
+  TEXT_TABLE_SEPARATOR_PATTERN.lastIndex = 0;
+
+  while ((match = TEXT_TABLE_SEPARATOR_PATTERN.exec(value))) {
+    addAlignedColumn(columns, value, segmentStart, match.index);
+    segmentStart = match.index + match[0].length;
+  }
+  addAlignedColumn(columns, value, segmentStart, value.length);
+
+  if (columns.length < 2) return null;
+  return {
+    cells: columns.map((column) => column.text),
+  };
+}
+
+function addAlignedColumn(columns, line, start, end) {
+  const rawSegment = line.slice(start, end);
+  const text = rawSegment.trim();
+  if (!text) return;
+  const leading = rawSegment.match(/^\s*/)?.[0].length || 0;
+  columns.push({ start: start + leading, text });
+}
+
+function isIndentedCodeLine(line) {
+  return /^(?: {4,}|\t)/.test(String(line || ''));
+}
+
+function isLikelyNonTableLine(line) {
+  const value = String(line || '').trim();
+  return /^[-*+]\s{2,}/.test(value) ||
+    /^\d+[.)]\s{2,}/.test(value) ||
+    /^[^:\s]{1,32}:\s{2,}/.test(value);
+}
+
+function isLikelyLogRow(cells) {
+  const firstCell = String(cells?.[0] || '').trim().toUpperCase();
+  return /^(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)$/.test(firstCell);
+}
+
+function isPlainTextTableLikeBlock(lines) {
+  const rows = (lines || [])
+    .map((line) => String(line || '').replace(/\s+$/, ''))
+    .filter((line) => line.trim());
+  if (rows.length < 3) return false;
+  if (rows.some((line) => isLikelyNonTableLine(line))) return false;
+  if (rows.filter((line) => isLikelyLogRow(splitAlignedColumns(line)?.cells || [line])).length >= 2) return false;
+
+  const alignedRows = rows.filter((line) => (splitAlignedColumns(line)?.cells.length || 0) >= 3).length;
+  if (alignedRows >= 2) return true;
+
+  const firstLine = rows[0].trim();
+  const hasTableHeader = firstLine.startsWith('#') ||
+    /(序号|编号|名称|数量|状态|备注|说明|类型|负责人|部门|文件夹|文件|路径|目录|项目|页面|场景|典型|指标|结果|file|folder|path|project|page)/i.test(firstLine);
+  if (!hasTableHeader) return false;
+
+  const numberedRows = rows.slice(1).filter((line) => {
+    const value = line.trim();
+    if (!/^\d+/.test(value)) return false;
+    if (/^\d+[.)]\s/.test(value)) return false;
+    return /[-_./\\+]|[\p{Script=Han}]/u.test(value);
+  }).length;
+
+  return numberedRows >= 2;
 }

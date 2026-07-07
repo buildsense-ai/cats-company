@@ -3,7 +3,13 @@ import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, CornerU
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
-import { markdownPreviewDocument, renderSafeMarkdown } from './markdown-utils';
+import {
+  hasPlainTextTableLikeBlock,
+  hasRenderableTable,
+  markdownPreviewDocument,
+  renderSafeMarkdown,
+  shouldRenderMarkdown,
+} from './markdown-utils';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -880,20 +886,31 @@ export default ChatMessage;
 
 function TextContent({ content, isGroup }) {
   const text = useMemo(() => messageContentText(content), [content]);
+  const renderableTable = useMemo(() => hasRenderableTable(text), [text]);
+  const plainTextTableLike = useMemo(() => (
+    !renderableTable && hasPlainTextTableLikeBlock(text)
+  ), [renderableTable, text]);
 
   const markdownHtml = useMemo(() => {
-    const hasMarkdown = /(\*\*|__|`|#{1,6}\s|^\s*[-*+]\s|^\s*\d+\.\s|\[.*\]\(.*\))/m.test(text);
-    if (!hasMarkdown) return null;
+    if (plainTextTableLike) return null;
+    if (!shouldRenderMarkdown(text, { plainTextTables: true })) return null;
     try {
-      return renderSafeMarkdown(text);
+      return renderSafeMarkdown(text, { plainTextTables: true });
     } catch (e) {
       console.error('Markdown parse error:', e);
       return null;
     }
-  }, [text]);
+  }, [plainTextTableLike, text]);
+  const markdownClassName = useMemo(() => (
+    renderableTable ? 'oc-markdown oc-markdown-table' : 'oc-markdown'
+  ), [renderableTable]);
 
   if (markdownHtml) {
-    return <div dangerouslySetInnerHTML={{ __html: markdownHtml }} className="oc-markdown" />;
+    return <div dangerouslySetInnerHTML={{ __html: markdownHtml }} className={markdownClassName} />;
+  }
+
+  if (plainTextTableLike) {
+    return <pre className="oc-plain-text-table">{text}</pre>;
   }
 
   if (isGroup) {

@@ -9,6 +9,16 @@ jest.mock('marked', () => ({
       if (String(text).includes('javascript:')) {
         return '<p><a href="javascript:alert(1)" onclick="alert(2)">bad</a></p>';
       }
+      if (String(text).includes('bg-summary-test')) {
+        return [
+          '<p>下面是本次数据的简版结论。</p>',
+          '<table><thead><tr><th>#</th><th>文件夹</th><th>项目</th><th>页面</th></tr></thead><tbody><tr><td>1</td><td>bg-summary-test</td><td>后台子任务回流测试</td><td>index + about + notes</td></tr></tbody></table>',
+          '<p>表格之外的补充说明。</p>',
+        ].join('');
+      }
+      if (/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/m.test(String(text))) {
+        return '<table><thead><tr><th>场景</th><th>谁来填</th></tr></thead><tbody><tr><td>情况一</td><td>HR</td></tr></tbody></table>';
+      }
       if (String(text).includes('[[toc-preview-fixture]]')) {
         return [
           '<nav><a href="#章节一">章节一</a><a href="#external">外部说明</a></nav>',
@@ -166,6 +176,120 @@ describe('ChatMessage rich file rendering', () => {
     expect(link).not.toBeNull();
     expect(link.getAttribute('href')).toBeNull();
     expect(link.getAttribute('onclick')).toBeNull();
+  });
+
+  it('renders pure markdown tables in assistant replies with the table styling hook', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 22,
+            from_uid: 2,
+            content: [
+              '| 场景 | 谁来填 |',
+              '| -- | -- |',
+              '| 情况一 | HR/管理人员直接录入 |',
+            ].join('\n'),
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.oc-markdown-table')).not.toBeNull();
+    expect(container.querySelector('.oc-markdown table')).not.toBeNull();
+    expect(container.querySelectorAll('.oc-markdown th')).toHaveLength(2);
+    expect(container.querySelector('.oc-markdown').textContent).toContain('情况一');
+  });
+
+  it('renders aligned plain text tables in assistant replies as bordered text table blocks', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 23,
+            from_uid: 2,
+            content: [
+              '下面是本次数据的简版结论。',
+              '',
+              '#   文件夹            项目              页面',
+              '1   bg-summary-test   后台子任务回流测试   index + about + notes',
+              '2   bg-group-test     后台子任务组测试     index + about + notes',
+              '',
+              '表格之外的补充说明。',
+            ].join('\n'),
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.oc-plain-text-table')).not.toBeNull();
+    expect(container.querySelector('.oc-markdown table')).toBeNull();
+    expect(container.querySelector('.oc-plain-text-table').textContent).toContain('bg-summary-test');
+  });
+
+  it('renders loose model-generated text tables as bordered plain text table blocks', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 24,
+            from_uid: 2,
+            content: [
+              '# 文件夹 项目 页面',
+              '1bg-summary-test后台子任务回流测试index + about + notes',
+              '2bg-group-test后台子任务组测试index + about + notes',
+            ].join('\n'),
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.oc-plain-text-table')).not.toBeNull();
+    expect(container.querySelector('.oc-markdown table')).toBeNull();
+    expect(container.querySelector('.oc-plain-text-table').textContent).toContain('bg-summary-test');
+  });
+
+  it('renders numbered single-space text tables as bordered plain text table blocks', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 25,
+            from_uid: 2,
+            content: [
+              '序号 名称 数量 状态',
+              '1 苹果 12 正常',
+              '2 香蕉 0 缺货',
+              '3 橙子 8 正常',
+            ].join('\n'),
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.oc-plain-text-table')).not.toBeNull();
+    expect(container.querySelector('.oc-markdown table')).toBeNull();
+    expect(container.querySelector('.oc-plain-text-table').textContent).toContain('香蕉');
   });
 
   it('uses the hover action toolbar for reply and more actions without dead reaction buttons', async () => {
