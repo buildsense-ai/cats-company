@@ -143,19 +143,32 @@ describe('MessagesView composer draft isolation', () => {
     jest.clearAllMocks();
   });
 
-  it('clears an unsent draft when switching topics', async () => {
+  it('preserves unsent drafts per topic when switching topics', async () => {
     await mountTopic(root, 'p2p_1_2');
 
-    const textarea = container.querySelector('textarea.v3-composer-input');
+    const firstTextarea = container.querySelector('textarea.v3-composer-input');
     await act(async () => {
-      typeDraft(textarea, 'do not carry me');
+      typeDraft(firstTextarea, 'keep this draft');
     });
 
-    expect(textarea.value).toBe('do not carry me');
+    expect(firstTextarea.value).toBe('keep this draft');
 
     await mountTopic(root, 'p2p_1_3');
 
-    expect(container.querySelector('textarea.v3-composer-input').value).toBe('');
+    const secondTextarea = container.querySelector('textarea.v3-composer-input');
+    expect(secondTextarea.value).toBe('');
+
+    await act(async () => {
+      typeDraft(secondTextarea, 'another draft');
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+
+    expect(container.querySelector('textarea.v3-composer-input').value).toBe('keep this draft');
+
+    await mountTopic(root, 'p2p_1_3');
+
+    expect(container.querySelector('textarea.v3-composer-input').value).toBe('another draft');
   });
 
   it('does not restore a failed old-topic draft after the user has switched topics', async () => {
