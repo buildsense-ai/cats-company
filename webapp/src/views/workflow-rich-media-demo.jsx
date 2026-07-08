@@ -121,6 +121,59 @@ const demoMessages = [
       },
     ],
   },
+  {
+    id: 5,
+    from_uid: demoUser.uid,
+    created_at: '2026-06-09T09:38:00Z',
+    content: '把关键数据用表格列一下，我想看聊天里读起来清不清楚。',
+  },
+  {
+    id: 6,
+    from_uid: demoBot.uid,
+    created_at: '2026-06-09T09:38:20Z',
+    content: [
+      '| 指标 | 当前结果 | 建议动作 |',
+      '| --- | --- | --- |',
+      '| 班级平均分 | 82.6 | 保持现有节奏，重点跟进低分样本 |',
+      '| 异常样本 | 2 人低于 60 分 | 单独复核试卷和作业提交记录 |',
+      '| 缺失数据 | 3 个字段为空 | 发回任课老师补齐后再导出正式版 |',
+    ].join('\n'),
+  },
+  {
+    id: 7,
+    from_uid: demoUser.uid,
+    created_at: '2026-06-09T09:40:00Z',
+    content: '如果正文中间夹一个表格呢？我想看这种回答的排版。',
+  },
+  {
+    id: 8,
+    from_uid: demoBot.uid,
+    created_at: '2026-06-09T09:40:18Z',
+    content: [
+      '发你了，桌面上 catsco-projects-summary.html，打开就是今天建的 5 个测试文件夹一览表。',
+    ].join('\n'),
+  },
+  {
+    id: 9,
+    from_uid: demoBot.uid,
+    created_at: '2026-06-09T09:40:19Z',
+    content: [
+      '#   文件夹                    项目                  页面',
+      '1bg-summary-test             后台子任务回流测试     index + about + notes',
+      '2bg-group-test               后台子任务组测试       index + about + notes',
+      '3bg-clean-test               后台清理机制测试       index + about + notes',
+      '4bg-agent-followup-test子 agent 跟进测试        index + about + notes',
+      '5logistics-dispatch-test     仓配调度小面板         index + routes + exceptions',
+    ].join('\n'),
+  },
+  {
+    id: 10,
+    from_uid: demoBot.uid,
+    created_at: '2026-06-09T09:40:20Z',
+    content: [
+      '共 15 个页面，全绿。双击打开就能看。',
+    ].join('\n'),
+  },
 ];
 
 export default function WorkflowRichMediaDemo() {
@@ -167,9 +220,11 @@ export default function WorkflowRichMediaDemo() {
               </div>
               <div className="v3-timeline">
                 <div className="v3-timeline-inner">
-                  {demoMessages.map((message) => {
+                  {demoMessages.map((message, index) => {
                     const isSelf = message.from_uid === demoUser.uid;
                     const sender = isSelf ? demoUser : demoBot;
+                    const previousMessage = demoMessages[index - 1];
+                    const isConsecutive = Boolean(previousMessage && previousMessage.from_uid === message.from_uid);
                     return (
                       <ChatMessage
                         key={message.id}
@@ -180,7 +235,7 @@ export default function WorkflowRichMediaDemo() {
                         senderAvatarUrl={sender.avatarUrl}
                         senderIsBot={sender.isBot}
                         showThinking
-                        isConsecutive={false}
+                        isConsecutive={isConsecutive}
                         onPreviewFile={setPreviewFile}
                         activePreviewFile={previewFile}
                       />
