@@ -1950,6 +1950,11 @@ body {
   padding-bottom: 4px;
 }
 
+.oc-working-group + .v3-message.grouped,
+.v3-message.grouped + .oc-working-group .v3-message.grouped {
+  padding-top: 10px;
+}
+
 .v3-message.grouped .v3-avatar {
   display: none;
 }
