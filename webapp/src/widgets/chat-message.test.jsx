@@ -39,10 +39,16 @@ jest.mock('./avatar', () => function MockAvatar() {
   return <div data-testid="avatar" />;
 });
 
+jest.mock('read-excel-file/browser', () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
+
 const chatMessageModule = require('./chat-message');
 const ChatMessage = chatMessageModule.default;
 const { FilePreviewPanel } = chatMessageModule;
 const { markdownPreviewDocument } = require('./markdown-utils');
+const readExcelFile = require('read-excel-file/browser').default;
 
 function PreviewHarness({ message }) {
   const [previewFile, setPreviewFile] = React.useState(null);
@@ -61,6 +67,17 @@ function PreviewHarness({ message }) {
       {previewFile && <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} />}
     </div>
   );
+}
+
+async function flushAsync(times = 6) {
+  for (let index = 0; index < times; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+function utf8ArrayBuffer(text) {
+  const buffer = Buffer.from(text, 'utf8');
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
 }
 
 describe('ChatMessage rich file rendering', () => {
@@ -135,6 +152,317 @@ describe('ChatMessage rich file rendering', () => {
     expect(frame.getAttribute('sandbox')).toContain('allow-forms');
     expect(frame.getAttribute('sandbox')).not.toContain('allow-same-origin');
     expect(frame.getAttribute('srcdoc')).toContain('<h1>Report</h1>');
+  });
+
+  it('previews uploaded XLSX files as a spreadsheet artifact', async () => {
+    readExcelFile.mockResolvedValue([
+      {
+        sheet: '名单',
+        data: [
+          ['姓名', '分数', '状态'],
+          ['张三', 88, '正常'],
+          ['李四', 54, '复核'],
+        ],
+      },
+      {
+        sheet: '统计',
+        data: [
+          ['指标', '值'],
+          ['平均分', 71],
+        ],
+      },
+    ]);
+    global.fetch = jest.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
+    }));
+
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 31,
+            from_uid: 2,
+            content: '[文件] grade.xlsx',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'grade.xlsx',
+                url: '/uploads/files/grade.xlsx',
+                size: 4096,
+                mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await flushAsync();
+    });
+
+    expect(container.querySelector('.v3-attachment-size').textContent).toContain('Excel');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await flushAsync(12);
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith('/uploads/files/grade.xlsx');
+    expect(readExcelFile).toHaveBeenCalledWith(expect.any(ArrayBuffer));
+    expect(container.querySelector('.v3-spreadsheet-preview')).not.toBeNull();
+    expect(container.textContent).toContain('名单');
+    expect(container.textContent).toContain('张三');
+    expect(container.textContent).toContain('复核');
+
+    await act(async () => {
+      Simulate.click(Array.from(container.querySelectorAll('.v3-spreadsheet-tabs button')).find((button) => button.textContent === '统计'));
+      await flushAsync();
+    });
+
+    expect(container.textContent).toContain('平均分');
+  });
+
+  it('previews CSV files with the same spreadsheet grid', async () => {
+    global.fetch = jest.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(utf8ArrayBuffer('姓名,分数,状态\n张三,88,正常\n李四,54,复核\n')),
+    }));
+
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 32,
+            from_uid: 2,
+            content: '[文件] grade.csv',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'grade.csv',
+                url: '/uploads/files/grade.csv',
+                size: 128,
+                mime_type: 'text/csv',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await flushAsync();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await flushAsync(16);
+    });
+
+    expect(readExcelFile).not.toHaveBeenCalled();
+    expect(container.querySelector('.v3-spreadsheet-preview')).not.toBeNull();
+    expect(container.textContent).toContain('CSV');
+    expect(container.textContent).toContain('张三');
+    expect(container.textContent).toContain('复核');
+  });
+
+  it('previews CSV files by MIME type even when the filename has no CSV extension', async () => {
+    global.fetch = jest.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(utf8ArrayBuffer('姓名,分数\n张三,88\n')),
+    }));
+
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 321,
+            from_uid: 2,
+            content: '[文件] grade-data',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'grade-data',
+                url: '/uploads/files/grade-data',
+                size: 64,
+                mime_type: 'text/csv',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await flushAsync();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await flushAsync(12);
+    });
+
+    expect(readExcelFile).not.toHaveBeenCalled();
+    expect(container.querySelector('.v3-spreadsheet-preview')).not.toBeNull();
+    expect(container.textContent).toContain('张三');
+  });
+
+  it('truncates CSV previews while retaining total row and column counts', async () => {
+    const header = Array.from({ length: 60 }, (_, index) => `C${index + 1}`).join(',');
+    const rows = Array.from({ length: 205 }, (_, rowIndex) => (
+      Array.from({ length: 60 }, (_, columnIndex) => `R${rowIndex + 1}C${columnIndex + 1}`).join(',')
+    ));
+    global.fetch = jest.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(utf8ArrayBuffer([header, ...rows].join('\n'))),
+    }));
+
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 322,
+            from_uid: 2,
+            content: '[文件] wide.csv',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'wide.csv',
+                url: '/uploads/files/wide.csv',
+                size: 4096,
+                mime_type: 'text/csv',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await flushAsync();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await flushAsync(12);
+    });
+
+    expect(container.querySelector('.v3-spreadsheet-preview')).not.toBeNull();
+    expect(container.textContent).toContain('206 行 · 60 列');
+    expect(container.textContent).toContain('仅预览前 200 行、50 列');
+    expect(container.textContent).toContain('R199C50');
+    expect(container.textContent).not.toContain('R200C1');
+    expect(container.textContent).not.toContain('C51');
+  });
+
+  it('keeps legacy XLS files download-only until browser parsing is supported', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 33,
+            from_uid: 2,
+            content: '[文件] legacy.xls',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'legacy.xls',
+                url: '/uploads/files/legacy.xls',
+                size: 2048,
+                mime_type: 'application/vnd.ms-excel',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await flushAsync();
+    });
+
+    expect(container.querySelector('.v3-attachment-size').textContent).toContain('Excel');
+    expect(container.querySelector('.v3-artifact-action[disabled]')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await flushAsync();
+    });
+
+    expect(window.open).toHaveBeenCalledWith('/uploads/files/legacy.xls', '_blank');
+    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+  });
+
+  it('blocks oversized spreadsheet previews before reading the full response body', async () => {
+    const arrayBuffer = jest.fn(() => Promise.resolve(new ArrayBuffer(16)));
+    global.fetch = jest.fn(() => Promise.resolve({
+      ok: true,
+      headers: {
+        get: (name) => (name.toLowerCase() === 'content-length' ? String(13 * 1024 * 1024) : ''),
+      },
+      arrayBuffer,
+    }));
+
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 34,
+            from_uid: 2,
+            content: '[文件] large.xlsx',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'large.xlsx',
+                url: '/uploads/files/large.xlsx',
+                mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await flushAsync();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await flushAsync(8);
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith('/uploads/files/large.xlsx');
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('当前最多预览');
+    expect(container.querySelector('.v3-spreadsheet-preview')).toBeNull();
+  });
+
+  it('blocks oversized spreadsheet previews after reading the response body when the header is missing', async () => {
+    global.fetch = jest.fn(() => Promise.resolve({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(new ArrayBuffer(13 * 1024 * 1024)),
+    }));
+
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 35,
+            from_uid: 2,
+            content: '[文件] large.xlsx',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'large.xlsx',
+                url: '/uploads/files/large.xlsx',
+                mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await flushAsync();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await flushAsync(8);
+    });
+
+    expect(readExcelFile).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('当前最多预览');
+    expect(container.querySelector('.v3-spreadsheet-preview')).toBeNull();
   });
 
   it('keeps markdown preview table-of-contents links inside the preview frame', () => {

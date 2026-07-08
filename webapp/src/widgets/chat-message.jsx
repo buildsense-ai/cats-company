@@ -10,6 +10,7 @@ import {
   renderSafeMarkdown,
   shouldRenderMarkdown,
 } from './markdown-utils';
+import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -19,6 +20,13 @@ const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
 const HTML_FILE_EXTENSIONS = new Set(['HTML', 'HTM', 'XHTML']);
 const TEXT_FILE_EXTENSIONS = new Set(['TXT', 'JSON', 'MD', 'CSV', 'JS', 'PY', 'GO', 'HTML', 'HTM', 'CSS', 'XML']);
 const PREVIEW_FILE_EXTENSIONS = new Set(['PDF', ...TEXT_FILE_EXTENSIONS]);
+const SPREADSHEET_FILE_EXTENSIONS = new Set(['CSV', 'XLS', 'XLSX']);
+const SPREADSHEET_MIME_TYPES = new Set([
+  'text/csv',
+  'application/csv',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+]);
 const HTML_PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals';
 
 function shouldHideToolProgressName(name) {
@@ -992,6 +1000,23 @@ function isPdfFile(payload, ext = fileExtension(payload)) {
   return ext === 'PDF' || fileMimeType(payload) === 'application/pdf';
 }
 
+function isCsvFile(payload, ext = fileExtension(payload)) {
+  const mime = fileMimeType(payload);
+  return ext === 'CSV' || mime === 'text/csv' || mime === 'application/csv';
+}
+
+function isXlsxFile(payload, ext = fileExtension(payload)) {
+  return ext === 'XLSX' || fileMimeType(payload) === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+}
+
+function isSpreadsheetFile(payload, ext = fileExtension(payload)) {
+  return SPREADSHEET_FILE_EXTENSIONS.has(ext) || SPREADSHEET_MIME_TYPES.has(fileMimeType(payload));
+}
+
+function isSpreadsheetPreviewFile(payload, ext = fileExtension(payload)) {
+  return isCsvFile(payload, ext) || isXlsxFile(payload, ext);
+}
+
 function isDocxFile(payload, ext = fileExtension(payload)) {
   const mime = fileMimeType(payload);
   return ext === 'DOCX' ||
@@ -1000,6 +1025,7 @@ function isDocxFile(payload, ext = fileExtension(payload)) {
 
 function isPreviewableFile(payload, ext = fileExtension(payload)) {
   const mime = fileMimeType(payload);
+  if (isSpreadsheetPreviewFile(payload, ext)) return true;
   if (PREVIEW_FILE_EXTENSIONS.has(ext) || isPdfFile(payload, ext)) return true;
   return mime.startsWith('text/') || mime === 'application/json' || mime === 'application/xml';
 }
@@ -1026,18 +1052,18 @@ function artifactMeta(payload, ext = fileExtension(payload)) {
       subtitle: '可下载的文档',
     };
   }
+  if (isSpreadsheetFile(payload, ext)) {
+    return {
+      label: isCsvFile(payload, ext) ? 'CSV' : 'Excel',
+      className: 'dataset',
+      subtitle: isSpreadsheetPreviewFile(payload, ext) ? '可预览的表格数据' : '可下载的表格文件',
+    };
+  }
   if (isMarkdownFile(payload, ext)) {
     return {
       label: 'Markdown',
       className: 'document',
       subtitle: '文档产物',
-    };
-  }
-  if (ext === 'CSV' || fileMimeType(payload) === 'text/csv') {
-    return {
-      label: 'CSV',
-      className: 'dataset',
-      subtitle: '表格数据',
     };
   }
   return {
@@ -1085,6 +1111,8 @@ function previewFileDescriptor(payload) {
   const isPdf = isPdfFile(payload, ext);
   const isHtml = isHtmlFile(payload, ext);
   const isMarkdown = isMarkdownFile(payload, ext);
+  const isSpreadsheet = isSpreadsheetPreviewFile(payload, ext);
+  const spreadsheetKind = isCsvFile(payload, ext) ? 'csv' : isXlsxFile(payload, ext) ? 'xlsx' : '';
   const canPreview = isPreviewableFile(payload, ext) && isTrustedPreviewURL(url);
   return {
     payload,
@@ -1094,10 +1122,16 @@ function previewFileDescriptor(payload) {
     isPdf,
     isHtml,
     isMarkdown,
+    isSpreadsheet,
+    spreadsheetKind,
     canPreview,
     sizeStr: payload.size ? formatFileSize(payload.size) : '',
     key: `${url}|${payload.name || ''}|${payload.size || ''}`,
   };
+}
+
+function spreadsheetPreviewTooLargeMessage() {
+  return `表格文件较大，当前最多预览 ${formatFileSize(SPREADSHEET_PREVIEW_MAX_BYTES)}，请下载后查看。`;
 }
 
 function FileContent({ payload, onPreviewFile, activePreviewFile }) {
@@ -1161,6 +1195,7 @@ function FileContent({ payload, onPreviewFile, activePreviewFile }) {
 export function FilePreviewPanel({ file, onClose }) {
   const [preview, setPreview] = useState(false);
   const [textContent, setTextContent] = useState(null);
+  const [binaryContent, setBinaryContent] = useState(null);
   const [loadingText, setLoadingText] = useState(false);
   const [previewError, setPreviewError] = useState('');
 
@@ -1169,6 +1204,7 @@ export function FilePreviewPanel({ file, onClose }) {
   const isPdf = descriptor?.isPdf || false;
   const isHtml = descriptor?.isHtml || false;
   const isMarkdown = descriptor?.isMarkdown || false;
+  const isSpreadsheet = descriptor?.isSpreadsheet || false;
   const meta = descriptor?.meta || artifactMeta(file || {});
   const sizeStr = descriptor?.sizeStr || '';
 
@@ -1176,8 +1212,16 @@ export function FilePreviewPanel({ file, onClose }) {
     let cancelled = false;
     setPreview(Boolean(file));
     setTextContent(null);
+    setBinaryContent(null);
     setPreviewError('');
     if (!file || !descriptor?.canPreview || isPdf) {
+      setLoadingText(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+    if (isSpreadsheet && file?.size > SPREADSHEET_PREVIEW_MAX_BYTES) {
+      setPreviewError(spreadsheetPreviewTooLargeMessage());
       setLoadingText(false);
       return () => {
         cancelled = true;
@@ -1189,8 +1233,20 @@ export function FilePreviewPanel({ file, onClose }) {
       try {
         const res = await fetch(fetchableMediaURL(url));
         if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
-        const text = await res.text();
-        if (!cancelled) setTextContent(text);
+        if (isSpreadsheet) {
+          const contentLength = Number(res.headers?.get?.('Content-Length') || res.headers?.get?.('content-length') || 0);
+          if (contentLength > SPREADSHEET_PREVIEW_MAX_BYTES) {
+            throw new Error(spreadsheetPreviewTooLargeMessage());
+          }
+          const buffer = await res.arrayBuffer();
+          if (buffer.byteLength > SPREADSHEET_PREVIEW_MAX_BYTES) {
+            throw new Error(spreadsheetPreviewTooLargeMessage());
+          }
+          if (!cancelled) setBinaryContent(buffer);
+        } else {
+          const text = await res.text();
+          if (!cancelled) setTextContent(text);
+        }
       } catch (err) {
         if (!cancelled) setPreviewError(`预览加载失败：${err.message}`);
       } finally {
@@ -1202,13 +1258,13 @@ export function FilePreviewPanel({ file, onClose }) {
     return () => {
       cancelled = true;
     };
-  }, [descriptor?.canPreview, file, isPdf, url]);
+  }, [descriptor?.canPreview, file, isPdf, isSpreadsheet, url]);
 
   if (!preview || !file) return null;
   if (!descriptor?.canPreview) return null;
 
   return (
-    <aside className={`v3-file-preview-panel ${isHtml || isPdf ? 'wide' : ''}`} aria-label="文件预览">
+    <aside className={`v3-file-preview-panel ${isHtml || isPdf || isSpreadsheet ? 'wide' : ''}`} aria-label="文件预览">
       <div className="v3-file-preview-header">
         <div className="v3-file-preview-title">
           <FileText size={18} />
@@ -1249,6 +1305,8 @@ export function FilePreviewPanel({ file, onClose }) {
             referrerPolicy="no-referrer"
             srcDoc={markdownPreviewDocument(textContent || '')}
           />
+        ) : isSpreadsheet ? (
+          <SpreadsheetPreview buffer={binaryContent} kind={descriptor.spreadsheetKind} />
         ) : (
           <pre className="v3-file-preview-text">{textContent || '暂无可预览内容。'}</pre>
         )}
