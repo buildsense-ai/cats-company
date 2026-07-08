@@ -75,6 +75,12 @@ type MessageStore interface {
 	GetLatestMessagesForTopics(topicIDs []string) (map[string]*types.Message, error)
 }
 
+// ConversationTaskStatusStore persists the latest runtime/task status per topic.
+type ConversationTaskStatusStore interface {
+	UpsertConversationTaskStatus(status *types.ConversationTaskStatus) (*types.ConversationTaskStatus, error)
+	GetConversationTaskStatuses(topicIDs []string) (map[string]*types.ConversationTaskStatus, error)
+}
+
 // BotStore contains bot account and bot configuration persistence operations.
 type BotStore interface {
 	SaveBotConfig(uid int64, apiEndpoint, model string) error

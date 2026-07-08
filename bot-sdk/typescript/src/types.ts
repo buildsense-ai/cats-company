@@ -32,6 +32,11 @@ export interface MsgClientPub {
   id?: string;
   topic: string;
   content: unknown;
+  metadata?: Record<string, unknown>;
+  msg_type?: string;
+  type?: string;
+  mode?: string;
+  role?: string;
   reply_to?: number;
 }
 
@@ -226,6 +231,34 @@ export interface MsgServerFriend {
   msg?: string;
 }
 
+export type ConversationTaskStatusState =
+  | 'idle'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'stale'
+  | 'waiting';
+
+export interface ConversationTaskStatus {
+  topic_id: string;
+  run_id?: string;
+  state: ConversationTaskStatusState;
+  summary?: string;
+  error?: string;
+  source_uid?: number;
+  updated_at: string;
+  expires_at?: string;
+}
+
+export interface ConversationTaskStatusInput {
+  run_id?: string;
+  state: ConversationTaskStatusState;
+  summary?: string;
+  error?: string;
+  expires_at?: string;
+}
+
 export interface ScopedDeviceGrant {
   kind: string;
   source: string;
@@ -298,6 +331,7 @@ export interface CatsCoIdentityMetadata {
 export interface ServerMessage {
   ctrl?: MsgServerCtrl;
   data?: MsgServerData;
+  task_status?: ConversationTaskStatus;
   pres?: MsgServerPres;
   meta?: MsgServerMeta;
   info?: MsgServerInfo;
@@ -397,6 +431,7 @@ import type { MessageContext } from './context';
 export interface BotEventMap {
   ready: (uid: string, name: string) => void;
   message: (ctx: MessageContext) => void;
+  task_status: (status: ConversationTaskStatus) => void;
   device_rpc: (msg: MsgDeviceRPC) => void;
   presence: (pres: MsgServerPres) => void;
   typing: (info: MsgServerInfo) => void;

@@ -288,6 +288,7 @@ type conversationTestStore struct {
 	groups        []*types.Group
 	ownerBots     []map[string]interface{}
 	latestByTopic map[string]*types.Message
+	taskStatuses  map[string]*types.ConversationTaskStatus
 	requestedIDs  []string
 }
 
@@ -309,6 +310,24 @@ func (s *conversationTestStore) GetLatestMessagesForTopics(topicIDs []string) (m
 		return map[string]*types.Message{}, nil
 	}
 	return s.latestByTopic, nil
+}
+
+func (s *conversationTestStore) GetConversationTaskStatuses(topicIDs []string) (map[string]*types.ConversationTaskStatus, error) {
+	out := make(map[string]*types.ConversationTaskStatus)
+	for _, topicID := range topicIDs {
+		if status := s.taskStatuses[topicID]; status != nil {
+			out[topicID] = status
+		}
+	}
+	return out, nil
+}
+
+func (s *conversationTestStore) UpsertConversationTaskStatus(status *types.ConversationTaskStatus) (*types.ConversationTaskStatus, error) {
+	if s.taskStatuses == nil {
+		s.taskStatuses = make(map[string]*types.ConversationTaskStatus)
+	}
+	s.taskStatuses[status.TopicID] = status
+	return status, nil
 }
 
 func TestConversationsIncludeOwnedAgentsWithoutFriendRelationship(t *testing.T) {
@@ -431,5 +450,56 @@ func TestConversationsMarkGroupsContainingBots(t *testing.T) {
 	}
 	if !got.HasBot {
 		t.Fatalf("bot group conversation should be marked has_bot: %+v", got)
+	}
+}
+
+func TestConversationsIncludeTaskStatus(t *testing.T) {
+	updatedAt := time.Date(2026, 7, 8, 10, 30, 0, 0, time.UTC)
+	store := &conversationTestStore{
+		groups: []*types.Group{
+			{
+				ID:        9,
+				Name:      "Task Room",
+				OwnerID:   7,
+				HasBot:    true,
+				CreatedAt: time.Date(2026, 7, 8, 9, 0, 0, 0, time.UTC),
+			},
+		},
+		taskStatuses: map[string]*types.ConversationTaskStatus{
+			"grp_9": {
+				TopicID:   "grp_9",
+				RunID:     "run-1",
+				State:     "running",
+				Summary:   "正在执行：npm test",
+				SourceUID: 42,
+				UpdatedAt: updatedAt,
+			},
+		},
+	}
+	handler := NewConversationHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Conversations []*types.ConversationSummary `json:"conversations"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Conversations) != 1 {
+		t.Fatalf("conversation count=%d, want 1: %+v", len(body.Conversations), body.Conversations)
+	}
+	status := body.Conversations[0].TaskStatus
+	if status == nil {
+		t.Fatalf("missing task status: %+v", body.Conversations[0])
+	}
+	if status.State != "running" || status.Summary != "正在执行：npm test" || status.RunID != "run-1" {
+		t.Fatalf("unexpected task status: %+v", status)
 	}
 }

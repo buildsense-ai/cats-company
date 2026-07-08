@@ -56,6 +56,9 @@ export type {
   MsgServerMeta,
   MsgServerInfo,
   MsgServerFriend,
+  ConversationTaskStatusState,
+  ConversationTaskStatus,
+  ConversationTaskStatusInput,
   ServerMessage,
   // Rich content
   RichContentImage,

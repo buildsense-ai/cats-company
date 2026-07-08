@@ -25,14 +25,15 @@ type ClientMessage struct {
 
 // ServerMessage is the top-level server-to-client message envelope.
 type ServerMessage struct {
-	Ctrl        *MsgServerCtrl   `json:"ctrl,omitempty"`
-	Data        *MsgServerData   `json:"data,omitempty"`
-	Pres        *MsgServerPres   `json:"pres,omitempty"`
-	Meta        *MsgServerMeta   `json:"meta,omitempty"`
-	Info        *MsgServerInfo   `json:"info,omitempty"`
-	Friend      *MsgServerFriend `json:"friend,omitempty"`
-	DeviceRPC   *MsgDeviceRPC    `json:"device_rpc,omitempty"`
-	ThinToolRPC *MsgThinToolRPC  `json:"thin_tool_rpc,omitempty"`
+	Ctrl        *MsgServerCtrl                `json:"ctrl,omitempty"`
+	Data        *MsgServerData                `json:"data,omitempty"`
+	TaskStatus  *types.ConversationTaskStatus `json:"task_status,omitempty"`
+	Pres        *MsgServerPres                `json:"pres,omitempty"`
+	Meta        *MsgServerMeta                `json:"meta,omitempty"`
+	Info        *MsgServerInfo                `json:"info,omitempty"`
+	Friend      *MsgServerFriend              `json:"friend,omitempty"`
+	DeviceRPC   *MsgDeviceRPC                 `json:"device_rpc,omitempty"`
+	ThinToolRPC *MsgThinToolRPC               `json:"thin_tool_rpc,omitempty"`
 }
 
 // --- Client messages ---

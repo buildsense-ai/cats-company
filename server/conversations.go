@@ -68,27 +68,47 @@ func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load latest messages"})
 		return
 	}
+	taskStatusByTopic := h.taskStatusesForTopics(topicIDs)
 
 	conversations := make([]*types.ConversationSummary, 0, len(topicIDs))
 	for _, friend := range friends {
 		topicID := p2pTopicID(uid, friend.ID)
 		summary := buildFriendConversationSummary(topicID, friend, latestByTopic[topicID], h.hub)
+		summary.TaskStatus = taskStatusByTopic[topicID]
 		conversations = append(conversations, summary)
 	}
 	for _, bot := range ownerConversationBots {
 		topicID := p2pTopicID(uid, bot.ID)
 		summary := buildFriendConversationSummary(topicID, bot, latestByTopic[topicID], h.hub)
+		summary.TaskStatus = taskStatusByTopic[topicID]
 		conversations = append(conversations, summary)
 	}
 	for _, group := range groups {
 		topicID := "grp_" + formatInt64(group.ID)
 		summary := buildGroupConversationSummary(topicID, group, latestByTopic[topicID])
+		summary.TaskStatus = taskStatusByTopic[topicID]
 		conversations = append(conversations, summary)
 	}
 
 	sort.SliceStable(conversations, conversationLess(conversations))
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"conversations": conversations})
+}
+
+func (h *ConversationHandler) taskStatusesForTopics(topicIDs []string) map[string]*types.ConversationTaskStatus {
+	if h == nil || h.db == nil || len(topicIDs) == 0 {
+		return map[string]*types.ConversationTaskStatus{}
+	}
+	statusStore, ok := h.db.(store.ConversationTaskStatusStore)
+	if !ok {
+		return map[string]*types.ConversationTaskStatus{}
+	}
+	statuses, err := statusStore.GetConversationTaskStatuses(topicIDs)
+	if err != nil {
+		log.Printf("conversations: failed to load task statuses: %v", err)
+		return map[string]*types.ConversationTaskStatus{}
+	}
+	return statuses
 }
 
 func buildFriendConversationSummary(topicID string, friend *types.User, latest *types.Message, hub *Hub) *types.ConversationSummary {

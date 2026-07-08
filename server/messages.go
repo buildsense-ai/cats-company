@@ -39,15 +39,16 @@ type SendMessageRequest struct {
 }
 
 type normalizedMessagePayload struct {
-	StoredContent  string
-	DisplayContent interface{}
-	StoredType     string
-	DisplayType    string
-	ClientMsgID    string
-	ContentBlocks  []types.ContentBlock
-	Metadata       map[string]interface{}
-	Mode           string
-	Role           string
+	StoredContent       string
+	DisplayContent      interface{}
+	StoredType          string
+	DisplayType         string
+	ExplicitDisplayType bool
+	ClientMsgID         string
+	ContentBlocks       []types.ContentBlock
+	Metadata            map[string]interface{}
+	Mode                string
+	Role                string
 }
 
 type savedMessageResult struct {
@@ -89,6 +90,29 @@ func (h *MessageHandler) HandleSendMessage(w http.ResponseWriter, r *http.Reques
 			"msg_type": payload.StoredType,
 			"type":     payload.DisplayType,
 			"metadata": payload.Metadata,
+		})
+		return
+	}
+
+	if isTaskStatusPayload(payload) {
+		if !canPublishTaskStatus(h.accountTypeForUID(uid)) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "task_status requires a bot or service account"})
+			return
+		}
+		status, err := h.handleTaskStatus(uid, req.TopicID, payload)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"id":          0,
+			"seq_id":      0,
+			"topic_id":    req.TopicID,
+			"from_uid":    uid,
+			"msg_type":    payload.StoredType,
+			"type":        payload.DisplayType,
+			"metadata":    payload.Metadata,
+			"task_status": status,
 		})
 		return
 	}
@@ -953,7 +977,8 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 	}
 
 	storedContent, displayContent := normalizeRawContent(req.Content)
-	displayType := stripMessageNullBytes(firstNonEmpty(strings.TrimSpace(req.Type), strings.TrimSpace(req.MsgType)))
+	explicitDisplayType := stripMessageNullBytes(firstNonEmpty(strings.TrimSpace(req.Type), strings.TrimSpace(req.MsgType)))
+	displayType := explicitDisplayType
 	if displayType == "" {
 		displayType = inferDisplayTypeFromContent(displayContent)
 	}
@@ -980,15 +1005,16 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 	}
 
 	return &normalizedMessagePayload{
-		StoredContent:  storedContent,
-		DisplayContent: displayContent,
-		StoredType:     normalizeStoredMsgType(displayType),
-		DisplayType:    displayType,
-		ClientMsgID:    normalizeClientMsgID(req.ClientMsgID, metadata),
-		ContentBlocks:  blocks,
-		Metadata:       metadata,
-		Mode:           mode,
-		Role:           role,
+		StoredContent:       storedContent,
+		DisplayContent:      displayContent,
+		StoredType:          normalizeStoredMsgType(displayType),
+		DisplayType:         displayType,
+		ExplicitDisplayType: explicitDisplayType != "",
+		ClientMsgID:         normalizeClientMsgID(req.ClientMsgID, metadata),
+		ContentBlocks:       blocks,
+		Metadata:            metadata,
+		Mode:                mode,
+		Role:                role,
 	}, nil
 }
 

@@ -198,18 +198,33 @@ type ContentBlock struct {
 
 // ConversationSummary is the lightweight chat-list payload for a topic.
 type ConversationSummary struct {
-	ID        string     `json:"id"`
-	Name      string     `json:"name"`
-	Preview   string     `json:"preview,omitempty"`
-	IsGroup   bool       `json:"is_group"`
-	GroupID   int64      `json:"group_id,omitempty"`
-	FriendID  int64      `json:"friend_id,omitempty"`
-	AvatarURL string     `json:"avatar_url,omitempty"`
-	IsBot     bool       `json:"is_bot,omitempty"`
-	HasBot    bool       `json:"has_bot,omitempty"`
-	IsOnline  bool       `json:"is_online,omitempty"`
-	LastTime  *time.Time `json:"last_time,omitempty"`
-	LatestSeq int64      `json:"latest_seq,omitempty"`
+	ID         string                  `json:"id"`
+	Name       string                  `json:"name"`
+	Preview    string                  `json:"preview,omitempty"`
+	IsGroup    bool                    `json:"is_group"`
+	GroupID    int64                   `json:"group_id,omitempty"`
+	FriendID   int64                   `json:"friend_id,omitempty"`
+	AvatarURL  string                  `json:"avatar_url,omitempty"`
+	IsBot      bool                    `json:"is_bot,omitempty"`
+	HasBot     bool                    `json:"has_bot,omitempty"`
+	IsOnline   bool                    `json:"is_online,omitempty"`
+	LastTime   *time.Time              `json:"last_time,omitempty"`
+	LatestSeq  int64                   `json:"latest_seq,omitempty"`
+	TaskStatus *ConversationTaskStatus `json:"task_status,omitempty"`
+}
+
+// ConversationTaskStatus is the latest persisted task/run state for a topic.
+// It is intentionally separate from normal messages so runtime status can
+// survive reloads without polluting the chat transcript.
+type ConversationTaskStatus struct {
+	TopicID   string     `json:"topic_id"`
+	RunID     string     `json:"run_id,omitempty"`
+	State     string     `json:"state"`
+	Summary   string     `json:"summary,omitempty"`
+	Error     string     `json:"error,omitempty"`
+	SourceUID int64      `json:"source_uid,omitempty"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // RichContent is the unified message payload structure.

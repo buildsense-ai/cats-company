@@ -1,4 +1,4 @@
-import type { CatsBotConfig, BotEventMap, MsgServerData, MsgDeviceRPC, DeviceRPCAckParams, DeviceRPCRequestAck, DeviceRPCRequestInput, DeviceRPCResultInput, MessageContent, RichContentLinkPreview, RichContentCard, UploadResult } from './types';
+import type { CatsBotConfig, BotEventMap, MsgServerData, MsgDeviceRPC, ConversationTaskStatus, ConversationTaskStatusInput, DeviceRPCAckParams, DeviceRPCRequestAck, DeviceRPCRequestInput, DeviceRPCResultInput, MessageContent, RichContentLinkPreview, RichContentCard, UploadResult } from './types';
 export declare class CatsBot {
     uid: string;
     name: string;
@@ -37,6 +37,11 @@ export declare class CatsBot {
      * Publish a message to a topic. Returns the server-assigned seq number.
      */
     sendMessage(topic: string, content: MessageContent, replyTo?: number): Promise<number>;
+    /**
+     * Publish a backend-trusted task status update for a topic.
+     * Task status updates are not stored as chat messages.
+     */
+    sendTaskStatus(topic: string, status: ConversationTaskStatusInput): Promise<ConversationTaskStatus>;
     /** Send an image message (from an UploadResult). */
     sendImage(topic: string, upload: UploadResult, opts?: {
         width?: number;
