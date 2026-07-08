@@ -112,8 +112,18 @@ export default function MessagesView({
   const hasMoreHistoryRef = useRef(false);
   const loadingOlderRef = useRef(false);
   const activeTopicRef = useRef(topic);
+  const composerDraftsRef = useRef(new Map());
   const previewWidthRef = useRef(previewWidth);
   const phoneUploadFileKeysRef = useRef(new Set());
+
+  const updateComposerDraft = useCallback((draftTopic, value) => {
+    if (!draftTopic) return;
+    if (value) {
+      composerDraftsRef.current.set(draftTopic, value);
+    } else {
+      composerDraftsRef.current.delete(draftTopic);
+    }
+  }, []);
 
   useEffect(() => {
     previewWidthRef.current = previewWidth;
@@ -245,7 +255,7 @@ export default function MessagesView({
   useEffect(() => {
     if (!topic) return;
     activeTopicRef.current = topic;
-    setInput('');
+    setInput(composerDraftsRef.current.get(topic) || '');
     setMessages([]);
     setPendingAttachments([]);
     setIsUploadingAttachment(false);
@@ -579,6 +589,7 @@ export default function MessagesView({
     clearRuntimePlan();
     setAttachmentStatus(null);
     const attachmentsToSend = pendingAttachments;
+    updateComposerDraft(sendTopic, '');
     setInput('');
     const currentReplyTo = replyTo;
     setReplyTo(null);
@@ -615,12 +626,13 @@ export default function MessagesView({
       finalizeOptimisticMessage(tempId, result);
     } catch (err) {
       removeOptimisticMessage(tempId);
+      updateComposerDraft(sendTopic, text);
       if (activeTopicRef.current !== sendTopic) return;
       setInput(text);
       setPendingAttachments(attachmentsToSend);
       setReplyTo(currentReplyTo);
     }
-  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isUploadingAttachment, pendingAttachments, removeOptimisticMessage, replyTo, topic, user.uid]);
+  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isUploadingAttachment, pendingAttachments, removeOptimisticMessage, replyTo, topic, updateComposerDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
     if (!activeBotWorking || isStopRequested) return;
@@ -642,6 +654,7 @@ export default function MessagesView({
   const handleInputChange = (e) => {
     const val = e.target.value;
     setInput(val);
+    updateComposerDraft(topic, val);
 
     // Detect @mention trigger
     if (isGroup) {
@@ -675,6 +688,7 @@ export default function MessagesView({
     const mention = `@usr${member.user_id} `;
     const newText = textBeforeCursor.slice(0, atIndex) + mention + textAfterCursor;
     setInput(newText);
+    updateComposerDraft(topic, newText);
     setShowMentionPicker(false);
     setMentionFilter('');
     // Focus back on textarea
@@ -1048,6 +1062,7 @@ export default function MessagesView({
 
   const applyTutorialPrompt = (prompt) => {
     setInput(prompt);
+    updateComposerDraft(topic, prompt);
     setAttachmentStatus({ tone: 'success', message: '已填入示例任务，你可以直接发送。' });
     setSelectedTutorialTask(null);
     window.setTimeout(() => {
@@ -1242,7 +1257,7 @@ export default function MessagesView({
               <Smartphone size={16} strokeWidth={2} />
             </button>
             <div style={{flex:1}}></div>
-            <button className="v3-tool" style={{ fontWeight: 600 }} onClick={() => { if(isGroup && textareaRef.current) { const pos = textareaRef.current.selectionStart; setInput(input.slice(0,pos) + '@' + input.slice(pos)); textareaRef.current.focus(); } }} title="@成员" type="button">@</button>
+            <button className="v3-tool" style={{ fontWeight: 600 }} onClick={() => { if(isGroup && textareaRef.current) { const pos = textareaRef.current.selectionStart; const nextInput = input.slice(0,pos) + '@' + input.slice(pos); setInput(nextInput); updateComposerDraft(topic, nextInput); textareaRef.current.focus(); } }} title="@成员" type="button">@</button>
           </div>
 
           {activeBotWorking && (
