@@ -15,7 +15,7 @@ jest.mock('../api', () => ({
 }));
 
 const CatsCoDownloadModal = require('./catsco-download-modal').default;
-const { buildDeviceConnectorDeepLink, visibleDeviceAuditEvents } = require('./catsco-download-modal');
+const { DOWNLOAD_OPTIONS, buildDeviceConnectorDeepLink, visibleDeviceAuditEvents } = require('./catsco-download-modal');
 const { api, getApiBaseURL, getWebSocketURL } = require('../api');
 
 describe('CatsCoDownloadModal', () => {
@@ -58,6 +58,24 @@ describe('CatsCoDownloadModal', () => {
     expect(link).not.toContain('allowShell');
     expect(link).not.toContain('execute_shell');
     expect(link).not.toContain('write_file');
+  });
+
+  test('uses the current CatsCo 1.4.1 release download links', async () => {
+    expect(DOWNLOAD_OPTIONS).toHaveLength(5);
+    expect(DOWNLOAD_OPTIONS.map((option) => option.href)).toEqual([
+      'https://github-release.tos-cn-guangzhou.volces.com/update/CatsCo-1.4.1-win.exe',
+      'https://github-release.tos-cn-guangzhou.volces.com/update/macos-arm64/CatsCo-1.4.1-mac-arm64.dmg',
+      'https://github-release.tos-cn-guangzhou.volces.com/update/macos-x64/CatsCo-1.4.1-mac-x64.dmg',
+      'https://github-release.tos-cn-guangzhou.volces.com/update/CatsCo-1.4.1-linux.AppImage',
+      'https://github-release.tos-cn-guangzhou.volces.com/update/CatsCo-1.4.1-linux.deb',
+    ]);
+
+    await act(async () => {
+      root.render(React.createElement(CatsCoDownloadModal, { onClose: jest.fn() }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('当前版本 v1.4.1');
   });
 
   test('opens the desktop connector from the primary action', async () => {

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Apple, Copy, Download, ExternalLink, Laptop, Monitor, RefreshCw, Trash2, X } from 'lucide-react';
 import { api, getApiBaseURL, getWebSocketURL } from '../api';
 
-const RELEASE_VERSION = '1.3.0';
+const RELEASE_VERSION = '1.4.1';
 const TOS_BASE_URL = 'https://github-release.tos-cn-guangzhou.volces.com/update';
 
 export const DOWNLOAD_OPTIONS = [
