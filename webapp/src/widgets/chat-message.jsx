@@ -924,7 +924,7 @@ function TextContent({ content, isGroup }) {
   if (isGroup) {
     const parts = text.split(/(@usr\d+)/g);
     return (
-      <span>
+      <span style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
         {parts.map((part, i) =>
           part.match(/^@usr\d+$/) ? (
             <span key={i} className="oc-mention">{part}</span>

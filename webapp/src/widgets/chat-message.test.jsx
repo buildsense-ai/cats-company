@@ -154,6 +154,31 @@ describe('ChatMessage rich file rendering', () => {
     expect(frame.getAttribute('srcdoc')).toContain('<h1>Report</h1>');
   });
 
+  it('preserves line breaks in group plain text messages', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 21,
+            from_uid: 2,
+            content: '第一段\n\n第二段\n第三段',
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={true}
+          senderName="CatsCo"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const textNode = Array.from(container.querySelectorAll('span'))
+      .find((node) => node.textContent === '第一段\n\n第二段\n第三段');
+    expect(textNode).not.toBeUndefined();
+    expect(textNode.style.whiteSpace).toBe('pre-wrap');
+    expect(textNode.style.overflowWrap).toBe('anywhere');
+  });
+
   it('previews uploaded XLSX files as a spreadsheet artifact', async () => {
     readExcelFile.mockResolvedValue([
       {
