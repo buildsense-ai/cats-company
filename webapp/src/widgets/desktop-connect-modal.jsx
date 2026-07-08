@@ -1,19 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, Download, Laptop, Loader2, X } from 'lucide-react';
 import { api } from '../api';
-import { DOWNLOAD_OPTIONS } from './catsco-download-modal';
+import { FALLBACK_RELEASE_VERSION, buildDownloadOptions } from './catsco-download-modal';
 
-function detectRecommendedOption() {
+function detectRecommendedOption(downloadOptions) {
   const platform = `${navigator.platform || ''} ${navigator.userAgent || ''}`.toLowerCase();
-  if (platform.includes('win')) return DOWNLOAD_OPTIONS.find((option) => option.key === 'windows');
+  if (platform.includes('win')) return downloadOptions.find((option) => option.key === 'windows');
   if (platform.includes('mac')) {
     if (platform.includes('arm') || platform.includes('apple')) {
-      return DOWNLOAD_OPTIONS.find((option) => option.key === 'mac-arm');
+      return downloadOptions.find((option) => option.key === 'mac-arm');
     }
-    return DOWNLOAD_OPTIONS.find((option) => option.key === 'mac-intel');
+    return downloadOptions.find((option) => option.key === 'mac-intel');
   }
-  if (platform.includes('linux')) return DOWNLOAD_OPTIONS.find((option) => option.key === 'linux-appimage');
-  return DOWNLOAD_OPTIONS.find((option) => option.key === 'windows');
+  if (platform.includes('linux')) return downloadOptions.find((option) => option.key === 'linux-appimage');
+  return downloadOptions.find((option) => option.key === 'windows');
 }
 
 function findConnectedLocalAgent(agents) {
@@ -33,13 +33,30 @@ export default function DesktopConnectModal({ onClose, onConnected, onStatusChan
   const installHintTimerRef = useRef(null);
   const pollTimerRef = useRef(null);
   const startInFlightRef = useRef(false);
-  const recommendedDownload = useMemo(() => detectRecommendedOption(), []);
-  const otherDownloads = DOWNLOAD_OPTIONS.filter((option) => option.key !== recommendedDownload?.key);
+  const [desktopRelease, setDesktopRelease] = useState({ version: FALLBACK_RELEASE_VERSION });
+  const downloadOptions = useMemo(() => buildDownloadOptions(desktopRelease), [desktopRelease]);
+  const recommendedDownload = useMemo(() => detectRecommendedOption(downloadOptions), [downloadOptions]);
+  const otherDownloads = useMemo(
+    () => downloadOptions.filter((option) => option.key !== recommendedDownload?.key),
+    [downloadOptions, recommendedDownload?.key],
+  );
 
   useEffect(() => () => {
     launchCleanupRef.current?.();
     if (installHintTimerRef.current) window.clearTimeout(installHintTimerRef.current);
     if (pollTimerRef.current) window.clearInterval(pollTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getCatsCoDesktopReleases()
+      .then((release) => {
+        if (!cancelled && release) setDesktopRelease(release);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const markState = (next) => {
