@@ -1,17 +1,17 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Apple, Copy, Download, ExternalLink, Laptop, Monitor, RefreshCw, Trash2, X } from 'lucide-react';
 import { api, getApiBaseURL, getWebSocketURL } from '../api';
 
-const RELEASE_VERSION = '1.4.1';
+export const FALLBACK_RELEASE_VERSION = '1.4.1';
 const TOS_BASE_URL = 'https://github-release.tos-cn-guangzhou.volces.com/update';
 
-export const DOWNLOAD_OPTIONS = [
+const DOWNLOAD_OPTION_DEFS = [
   {
     key: 'windows',
     title: 'Windows',
     description: '适用于 Windows 10/11 的安装程序',
     icon: Monitor,
-    href: `${TOS_BASE_URL}/CatsCo-${RELEASE_VERSION}-win.exe`,
+    hrefForVersion: (version) => `${TOS_BASE_URL}/CatsCo-${version}-win.exe`,
     meta: 'x64 / arm64 由安装包自动适配',
   },
   {
@@ -19,7 +19,7 @@ export const DOWNLOAD_OPTIONS = [
     title: 'macOS Apple Silicon',
     description: '适用于 M 系列芯片 Mac',
     icon: Apple,
-    href: `${TOS_BASE_URL}/macos-arm64/CatsCo-${RELEASE_VERSION}-mac-arm64.dmg`,
+    hrefForVersion: (version) => `${TOS_BASE_URL}/macos-arm64/CatsCo-${version}-mac-arm64.dmg`,
     meta: 'arm64',
   },
   {
@@ -27,7 +27,7 @@ export const DOWNLOAD_OPTIONS = [
     title: 'macOS Intel',
     description: '适用于 Intel 芯片 Mac',
     icon: Apple,
-    href: `${TOS_BASE_URL}/macos-x64/CatsCo-${RELEASE_VERSION}-mac-x64.dmg`,
+    hrefForVersion: (version) => `${TOS_BASE_URL}/macos-x64/CatsCo-${version}-mac-x64.dmg`,
     meta: 'x64',
   },
   {
@@ -35,7 +35,7 @@ export const DOWNLOAD_OPTIONS = [
     title: 'Linux AppImage',
     description: '无需安装，下载后赋予执行权限运行',
     icon: Laptop,
-    href: `${TOS_BASE_URL}/CatsCo-${RELEASE_VERSION}-linux.AppImage`,
+    hrefForVersion: (version) => `${TOS_BASE_URL}/CatsCo-${version}-linux.AppImage`,
     meta: 'x64',
   },
   {
@@ -43,10 +43,31 @@ export const DOWNLOAD_OPTIONS = [
     title: 'Linux Debian / Ubuntu',
     description: '适用于 Debian、Ubuntu 等发行版',
     icon: Laptop,
-    href: `${TOS_BASE_URL}/CatsCo-${RELEASE_VERSION}-linux.deb`,
+    hrefForVersion: (version) => `${TOS_BASE_URL}/CatsCo-${version}-linux.deb`,
     meta: 'deb',
   },
 ];
+
+function safeReleaseHref(value) {
+  const href = String(value || '').trim();
+  return /^https?:\/\//i.test(href) ? href : '';
+}
+
+export function releaseVersion(release) {
+  const version = String(release?.version || '').trim();
+  return version || FALLBACK_RELEASE_VERSION;
+}
+
+export function buildDownloadOptions(release = {}) {
+  const version = releaseVersion(release);
+  const downloads = release?.downloads && typeof release.downloads === 'object' ? release.downloads : {};
+  return DOWNLOAD_OPTION_DEFS.map(({ hrefForVersion, ...option }) => ({
+    ...option,
+    href: safeReleaseHref(downloads[option.key]) || hrefForVersion(version),
+  }));
+}
+
+export const DOWNLOAD_OPTIONS = buildDownloadOptions({ version: FALLBACK_RELEASE_VERSION });
 
 function deviceStatusLabel(device) {
   if (device.routable) return '可用';
@@ -132,6 +153,8 @@ export default function CatsCoDownloadModal({ onClose }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [launchMessage, setLaunchMessage] = useState('');
+  const [desktopRelease, setDesktopRelease] = useState({ version: FALLBACK_RELEASE_VERSION });
+  const downloadOptions = useMemo(() => buildDownloadOptions(desktopRelease), [desktopRelease]);
 
   const loadDeviceState = useCallback(async () => {
     try {
@@ -149,6 +172,18 @@ export default function CatsCoDownloadModal({ onClose }) {
   useEffect(() => {
     loadDeviceState();
   }, [loadDeviceState]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getCatsCoDesktopReleases()
+      .then((release) => {
+        if (!cancelled && release) setDesktopRelease(release);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!pairing?.pairing_id || pairing.status === 'consumed') return undefined;
@@ -222,7 +257,7 @@ export default function CatsCoDownloadModal({ onClose }) {
         <div className="oc-modal-header catsco-download-header">
           <div>
             <h3>CatsCo 本机设备</h3>
-            <p>当前版本 v{RELEASE_VERSION}</p>
+            <p>当前版本 v{releaseVersion(desktopRelease)}</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">
             <X size={18} />
@@ -292,7 +327,7 @@ export default function CatsCoDownloadModal({ onClose }) {
         </div>
 
         <div className="catsco-download-list">
-          {DOWNLOAD_OPTIONS.map((option) => {
+          {downloadOptions.map((option) => {
             const Icon = option.icon;
             return (
               <a

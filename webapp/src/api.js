@@ -167,6 +167,7 @@ export const api = {
     }),
   getDeviceConnectorPairing: (pairingId) =>
     request('GET', `/api/device-connectors/pairings/${encodeURIComponent(pairingId)}`),
+  getCatsCoDesktopReleases: () => request('GET', '/api/catsco/desktop-releases'),
   getDevices: () => request('GET', '/api/devices'),
   unlinkDevice: (deviceId) => request('DELETE', `/api/devices/${encodeURIComponent(deviceId)}`),
   getDeviceAudit: (limit = 20) => request('GET', `/api/devices/audit?limit=${limit}`),

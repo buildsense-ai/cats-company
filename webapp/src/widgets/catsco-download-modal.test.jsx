@@ -6,6 +6,7 @@ jest.mock('../api', () => ({
   api: {
     createDeviceConnectorPairing: jest.fn(),
     getDeviceConnectorPairing: jest.fn(),
+    getCatsCoDesktopReleases: jest.fn(),
     getDevices: jest.fn(),
     getDeviceAudit: jest.fn(),
     unlinkDevice: jest.fn(),
@@ -29,6 +30,7 @@ describe('CatsCoDownloadModal', () => {
     jest.useFakeTimers();
     api.createDeviceConnectorPairing.mockReset();
     api.getDeviceConnectorPairing.mockReset();
+    api.getCatsCoDesktopReleases.mockResolvedValue({ version: '1.4.1' });
     api.getDevices.mockResolvedValue({ devices: [] });
     api.getDeviceAudit.mockResolvedValue({ events: [] });
     getApiBaseURL.mockReturnValue('https://app.catsco.cc');
@@ -60,7 +62,7 @@ describe('CatsCoDownloadModal', () => {
     expect(link).not.toContain('write_file');
   });
 
-  test('uses the current CatsCo 1.4.1 release download links', async () => {
+  test('uses the CatsCo 1.4.1 fallback release download links', async () => {
     expect(DOWNLOAD_OPTIONS).toHaveLength(5);
     expect(DOWNLOAD_OPTIONS.map((option) => option.href)).toEqual([
       'https://github-release.tos-cn-guangzhou.volces.com/update/CatsCo-1.4.1-win.exe',
@@ -76,6 +78,35 @@ describe('CatsCoDownloadModal', () => {
     });
 
     expect(container.textContent).toContain('当前版本 v1.4.1');
+  });
+
+  test('updates download links from the desktop release API', async () => {
+    api.getCatsCoDesktopReleases.mockResolvedValue({
+      version: '1.5.0',
+      downloads: {
+        windows: 'https://download.example/CatsCo-1.5.0-win.exe',
+        'mac-arm': 'https://download.example/macos-arm64/CatsCo-1.5.0-mac-arm64.dmg',
+        'mac-intel': 'https://download.example/macos-x64/CatsCo-1.5.0-mac-x64.dmg',
+        'linux-appimage': 'https://download.example/CatsCo-1.5.0-linux.AppImage',
+        'linux-deb': 'https://download.example/CatsCo-1.5.0-linux.deb',
+      },
+    });
+
+    await act(async () => {
+      root.render(React.createElement(CatsCoDownloadModal, { onClose: jest.fn() }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('当前版本 v1.5.0');
+    const hrefs = Array.from(container.querySelectorAll('a.catsco-download-card')).map((link) => link.href);
+    expect(hrefs).toEqual(expect.arrayContaining([
+      'https://download.example/CatsCo-1.5.0-win.exe',
+      'https://download.example/macos-arm64/CatsCo-1.5.0-mac-arm64.dmg',
+      'https://download.example/macos-x64/CatsCo-1.5.0-mac-x64.dmg',
+      'https://download.example/CatsCo-1.5.0-linux.AppImage',
+      'https://download.example/CatsCo-1.5.0-linux.deb',
+    ]));
   });
 
   test('opens the desktop connector from the primary action', async () => {

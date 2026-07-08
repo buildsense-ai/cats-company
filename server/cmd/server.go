@@ -495,6 +495,7 @@ func main() {
 	mux.HandleFunc("/api/device-connectors/token/refresh", deviceConnectorHandler.HandleRefreshToken)
 	mux.HandleFunc("/api/device-connectors/register", deviceConnectorHandler.HandleRegisterDevice)
 	mux.HandleFunc("/api/device-connectors/releases", deviceConnectorHandler.HandleReleases)
+	mux.HandleFunc("/api/catsco/desktop-releases", server.HandleCatsCoDesktopReleases)
 
 	// Online status API
 	mux.HandleFunc("/api/users/online", jwtAuthWithDB(func(w http.ResponseWriter, r *http.Request) {
