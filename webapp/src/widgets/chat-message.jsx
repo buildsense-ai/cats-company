@@ -909,12 +909,8 @@ function TextContent({ content, isGroup }) {
       return null;
     }
   }, [plainTextTableLike, text]);
-  const markdownClassName = useMemo(() => (
-    renderableTable ? 'oc-markdown oc-markdown-table' : 'oc-markdown'
-  ), [renderableTable]);
-
   if (markdownHtml) {
-    return <div dangerouslySetInnerHTML={{ __html: markdownHtml }} className={markdownClassName} />;
+    return <div dangerouslySetInnerHTML={{ __html: markdownHtml }} className="oc-markdown" />;
   }
 
   if (plainTextTableLike) {
