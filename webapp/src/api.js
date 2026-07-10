@@ -6,9 +6,12 @@ let token = localStorage.getItem('oc_token');
 let wsConn = null;
 let wsReconnectTimer = null;
 let wsGeneration = 0;
+let wsReconnectAttempt = 0;
 let msgHandlers = [];
 let wsConnected = false;
 let topicLastSeq = {};
+
+const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 
 export function updateTopicSeq(topicId, seq) {
   if (!topicLastSeq[topicId] || seq > topicLastSeq[topicId]) {
@@ -54,6 +57,21 @@ export function resolveMediaURL(url) {
 
 export function isWSConnected() {
   return wsConnected;
+}
+
+export function isTokenExpired(candidate = token) {
+  if (!candidate) return false;
+  try {
+    const encodedPayload = candidate.split('.')[1];
+    if (!encodedPayload) return false;
+    const normalized = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    const payload = JSON.parse(atob(padded));
+    const expiresAt = Number(payload.exp);
+    return Number.isFinite(expiresAt) && Date.now() >= expiresAt * 1000;
+  } catch {
+    return false;
+  }
 }
 
 async function request(method, path, body) {
@@ -303,7 +321,23 @@ function nextMsgId() {
   return String(++_msgIdCounter);
 }
 
-export function connectWS(onMessage) {
+function reconnectDelay(attempt) {
+  const index = Math.max(0, Math.min(attempt - 1, WS_RECONNECT_DELAYS.length - 1));
+  return WS_RECONNECT_DELAYS[index];
+}
+
+export function connectWS(onMessage, { force = false } = {}) {
+  if (!token) return false;
+  if (isTokenExpired()) {
+    onMessage({ _type: 'ws_auth_expired' });
+    return false;
+  }
+  if (!force && wsConn && (
+    wsConn.readyState === WebSocket.OPEN || wsConn.readyState === WebSocket.CONNECTING
+  )) {
+    return false;
+  }
+
   if (wsReconnectTimer) {
     clearTimeout(wsReconnectTimer);
     wsReconnectTimer = null;
@@ -318,12 +352,13 @@ export function connectWS(onMessage) {
     staleConn.onmessage = null;
     staleConn.close();
   }
-  if (!token) return;
-
+  wsConnected = false;
   const url = `${WS_URL}?token=${token}`;
   const conn = new WebSocket(url);
   wsConn = conn;
   const isCurrent = () => wsConn === conn && wsGeneration === generation;
+
+  onMessage({ _type: 'ws_connecting', attempt: wsReconnectAttempt });
 
   conn.onopen = () => {
     if (!isCurrent()) {
@@ -332,6 +367,7 @@ export function connectWS(onMessage) {
     }
     console.log('WebSocket connected');
     wsConnected = true;
+    wsReconnectAttempt = 0;
     // Send handshake
     sendWS({ hi: { id: nextMsgId(), ver: '0.1.0' } });
     // Request online status of friends
@@ -348,14 +384,19 @@ export function connectWS(onMessage) {
     console.log('WebSocket disconnected');
     wsConnected = false;
     wsConn = null;
-    onMessage({ _type: 'ws_close' });
-    // Reconnect after 3s
+    wsReconnectAttempt += 1;
+    const retryInMs = reconnectDelay(wsReconnectAttempt);
+    onMessage({ _type: 'ws_close', attempt: wsReconnectAttempt, retryInMs });
+    if (isTokenExpired()) {
+      onMessage({ _type: 'ws_auth_expired' });
+      return;
+    }
     if (token) {
       wsReconnectTimer = setTimeout(() => {
         if (wsGeneration === generation) {
           connectWS(onMessage);
         }
-      }, 3000);
+      }, retryInMs);
     }
   };
 
@@ -374,6 +415,12 @@ export function connectWS(onMessage) {
       console.error('WS parse error:', e);
     }
   };
+
+  return true;
+}
+
+export function reconnectWS(onMessage) {
+  return connectWS(onMessage, { force: true });
 }
 
 export function disconnectWS() {
@@ -392,6 +439,7 @@ export function disconnectWS() {
     staleConn.close();
   }
   wsConnected = false;
+  wsReconnectAttempt = 0;
 }
 
 export function sendWS(msg) {

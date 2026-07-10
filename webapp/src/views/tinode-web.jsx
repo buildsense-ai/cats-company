@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { api, setToken, getToken, connectWS, disconnectWS } from '../api';
+import { api, setToken, getToken, connectWS, reconnectWS, disconnectWS } from '../api';
 import t from '../i18n';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
@@ -168,7 +168,7 @@ function TinodeWebApp() {
   }, [user?.uid]);
   const [authMode, setAuthMode] = useState('login');
   const [onlineUsers, setOnlineUsers] = useState({});
-  const [wsStatus, setWsStatus] = useState('disconnected');
+  const [wsStatus, setWsStatus] = useState(user ? 'connecting' : 'disconnected');
   const [showProfileEditor, setShowProfileEditor] = useState(false);
   const [showProfilePopover, setShowProfilePopover] = useState(false);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
@@ -199,13 +199,24 @@ function TinodeWebApp() {
 
   // WebSocket message handler
   const handleWSMessage = useCallback((msg) => {
+    if (msg._type === 'ws_auth_expired') {
+      disconnectWS();
+      setToken(null);
+      localStorage.removeItem('oc_user');
+      setUser(null);
+      setActiveTopic(null);
+      return;
+    }
     if (msg._type === 'ws_open') {
       setWsStatus('connected');
       return;
     }
+    if (msg._type === 'ws_connecting') {
+      setWsStatus(msg.attempt > 0 ? 'reconnecting' : 'connecting');
+      return;
+    }
     if (msg._type === 'ws_close') {
       setWsStatus('reconnecting');
-      setOnlineUsers({});
       return;
     }
 
@@ -234,16 +245,50 @@ function TinodeWebApp() {
         });
       }
     }
-  }, []);
+  }, [setActiveTopic]);
 
   useEffect(() => {
-    if (user) {
+    if (user?.uid) {
       connectWS(handleWSMessage);
     }
     return () => {
-      if (user) disconnectWS();
+      if (user?.uid) disconnectWS();
     };
-  }, [user, handleWSMessage]);
+  }, [user?.uid, handleWSMessage]);
+
+  useEffect(() => {
+    if (!user?.uid) return undefined;
+
+    let hiddenAt = 0;
+    const recoverConnection = (force = false) => {
+      if (document.visibilityState !== 'visible' || navigator.onLine === false) return;
+      if (force) reconnectWS(handleWSMessage);
+      else connectWS(handleWSMessage);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAt = Date.now();
+        return;
+      }
+      const suspendedLongEnoughToStale = hiddenAt > 0 && Date.now() - hiddenAt >= 30000;
+      recoverConnection(suspendedLongEnoughToStale);
+      hiddenAt = 0;
+    };
+    const handlePageShow = (event) => recoverConnection(Boolean(event.persisted));
+    const handleOnline = () => recoverConnection(true);
+    const handleFocus = () => recoverConnection(false);
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pageshow', handlePageShow);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pageshow', handlePageShow);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [user?.uid, handleWSMessage]);
 
   useEffect(() => {
     if (!user?.uid) {
@@ -620,7 +665,10 @@ function SidebarContent({ activeTopic, onSelectTopic, user, onlineUsers }) {
 }
 
 function ProfileFooter({ user, wsStatus, relayUsage, onTogglePopover }) {
-  const statusClass = wsStatus === 'connected' ? 'online' : 'offline';
+  const connected = wsStatus === 'connected';
+  const reconnecting = wsStatus === 'connecting' || wsStatus === 'reconnecting';
+  const statusClass = connected ? 'online' : reconnecting ? 'reconnecting' : 'offline';
+  const statusLabel = connected ? '在线' : wsStatus === 'connecting' ? '连接中' : reconnecting ? '重新连接中' : '离线';
   const displayName = user.display_name || user.username;
   const usageLabel = formatRelayUsagePill(relayUsage);
   return (
@@ -630,7 +678,7 @@ function ProfileFooter({ user, wsStatus, relayUsage, onTogglePopover }) {
         <div className="v3-profile-name">{displayName}</div>
         <div className="v3-profile-roles">
            <span className={`v3-status-dot ${statusClass}`} style={{marginLeft: 0, marginRight: 6}}></span>
-           {wsStatus === 'connected' ? 'Online' : 'Offline'}
+           {statusLabel}
            {usageLabel && <span className={`v3-relay-usage-pill ${relayUsage?.status === 'over_limit' ? 'danger' : ''}`}>{usageLabel}</span>}
         </div>
       </div>

@@ -2234,7 +2234,16 @@ body {
   display: inline-block;
 }
 .v3-status-dot.online { background: var(--v3-primary); }
+.v3-status-dot.reconnecting {
+  background: #d9a441;
+  animation: v3-status-pulse 1.4s ease-in-out infinite;
+}
 .v3-status-dot.offline { border: 1.5px solid var(--v3-text-muted); background: transparent; }
+
+@keyframes v3-status-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
 
 .v3-profile-footer {
   margin-top: auto;
