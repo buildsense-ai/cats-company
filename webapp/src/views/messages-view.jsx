@@ -9,6 +9,7 @@ import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
+import { formatRelayUsagePill, relayUsageTone } from '../utils/relay-usage';
 
 const PAGE_SIZE = 50;
 const TYPING_TIMEOUT_MS = 10000;
@@ -73,6 +74,7 @@ export default function MessagesView({
   const [members, setMembers] = useState([]);
   const [groupInfo, setGroupInfo] = useState(null);
   const [peerProfile, setPeerProfile] = useState(null);
+  const [agentQuota, setAgentQuota] = useState(null);
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [replyTo, setReplyTo] = useState(null);
@@ -271,6 +273,7 @@ export default function MessagesView({
     setMembers([]);
     setGroupInfo(null);
     setPeerProfile(null);
+    setAgentQuota(null);
     setHistoryLoaded(false);
     historyOffsetRef.current = 0;
     hasMoreHistoryRef.current = false;
@@ -945,6 +948,31 @@ export default function MessagesView({
   const canBindMobileChannel = (!isGroup && peerUID > 0 && peerIsBot) || (isGroup && effectiveGroupId > 0);
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (peerProfile?.display_name || peerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (peerProfile?.avatar_url || topicAvatarUrl);
+  const agentQuotaLabel = formatRelayUsagePill(agentQuota, { customLabel: '自备模型' });
+
+  useEffect(() => {
+    if (isGroup || !peerIsBot || peerUID <= 0) {
+      setAgentQuota(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const loadQuota = () => {
+      api.getAgentQuota(peerUID)
+        .then((response) => {
+          if (!cancelled) setAgentQuota(response?.summary || null);
+        })
+        .catch(() => {
+          if (!cancelled) setAgentQuota(null);
+        });
+    };
+    loadQuota();
+    const interval = window.setInterval(loadQuota, 60000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [isGroup, peerIsBot, peerUID]);
 
   const memberMap = useMemo(() => {
     const map = new Map();
@@ -1088,9 +1116,17 @@ export default function MessagesView({
         <div className="v3-chat-column">
           <div className="v3-header">
             <div className="v3-header-left">
-              <div style={{display: 'flex', flexDirection: 'column'}}>
-                <span className="v3-header-title" style={{ fontSize: 17, letterSpacing: '-0.3px' }}>{displayName}</span>
+              <div className="v3-header-identity">
+                <span className="v3-header-title" style={{ fontSize: 17, letterSpacing: 0 }}>{displayName}</span>
                 {isGroup && members.length > 0 && <span className="v3-header-desc">{members.length} 位成员</span>}
+                {!isGroup && agentQuotaLabel && (
+                  <span
+                    className={`v3-relay-usage-pill v3-agent-quota-pill ${relayUsageTone(agentQuota)}`}
+                    title={agentQuota?.status === 'custom' ? '该虚拟员工使用自备模型，不消耗 CatsCo 共享额度' : '使用该虚拟员工所属账号的共享额度'}
+                  >
+                    {agentQuotaLabel}
+                  </span>
+                )}
               </div>
             </div>
             <div className="v3-header-actions">

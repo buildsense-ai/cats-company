@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/openchat/openchat/server/store"
@@ -236,6 +237,88 @@ func TestHandleOpenAgentCreatesP2PTopicForAccessibleAgent(t *testing.T) {
 	}
 	if len(store.createdTopics) != 1 || store.createdTopics[0] != "p2p_7_43" {
 		t.Fatalf("created topics = %#v, want p2p_7_43", store.createdTopics)
+	}
+}
+
+func TestHandleAgentQuotaUsesOwnerBudgetAndAgentModel(t *testing.T) {
+	store := &agentTestStore{
+		users: map[int64]*types.User{
+			43: {ID: 43, Username: "review-agent", AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{43: 99},
+		friendPairs: map[string]bool{
+			agentPairKey(7, 43): true,
+		},
+	}
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("search"); got != "99" {
+			t.Fatalf("relay usage search=%q, want owner uid 99", got)
+		}
+		writeJSON(w, http.StatusOK, commercialRelayUsageResponse{Users: []commercialRelayUsageUser{{
+			UID:        99,
+			Configured: true,
+			Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{{
+				Provider: "minimax-m3-anthropic",
+				Model:    "MiniMax-M3",
+				Budget: commercialRelayBudget{
+					MaxLimit:      1000,
+					CurrentUsage:  250,
+					ResetDuration: "1M",
+				},
+			}}},
+		}}})
+	}))
+	defer admin.Close()
+
+	handler := NewAgentHandler(store, nil)
+	handler.SetRelayUsageDependencies(&RelayAdminClient{
+		baseURL: admin.URL,
+		token:   "test-token",
+		client:  admin.Client(),
+	}, func(uid int64) (DeviceModelStatus, bool) {
+		return DeviceModelStatus{Source: "relay", Model: "MiniMax-M3"}, uid == 43
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/quota?uid=43", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleAgentQuota(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body agentQuotaResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !body.Configured || !body.Shared || body.Summary == nil {
+		t.Fatalf("unexpected quota response: %+v", body)
+	}
+	if body.Summary.Model != "MiniMax-M3" || body.Summary.RemainingPercent != 75 || body.Summary.Status != "normal" {
+		t.Fatalf("unexpected sanitized summary: %+v", body.Summary)
+	}
+	if strings.Contains(rec.Body.String(), "used_cny") || strings.Contains(rec.Body.String(), "limit_cny") {
+		t.Fatalf("friend-visible response leaked cost fields: %s", rec.Body.String())
+	}
+}
+
+func TestHandleAgentQuotaRejectsNonFriend(t *testing.T) {
+	store := &agentTestStore{
+		users: map[int64]*types.User{
+			43: {ID: 43, Username: "private-agent", AccountType: types.AccountBot},
+		},
+		owners:      map[int64]int64{43: 99},
+		friendPairs: map[string]bool{},
+	}
+	handler := NewAgentHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/quota?uid=43", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleAgentQuota(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
 }
 

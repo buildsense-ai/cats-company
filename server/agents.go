@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
@@ -11,13 +15,47 @@ import (
 
 // AgentHandler exposes the user-facing virtual employee roster.
 type AgentHandler struct {
-	db  store.Store
-	hub *Hub
+	db                        store.Store
+	hub                       *Hub
+	relayAdmin                *RelayAdminClient
+	deviceModelStatusResolver func(uid int64) (DeviceModelStatus, bool)
+	quotaMu                   sync.Mutex
+	quotaCache                map[string]agentQuotaCacheEntry
+}
+
+const agentQuotaCacheTTL = 30 * time.Second
+
+type agentQuotaResponse struct {
+	Configured bool               `json:"configured"`
+	Shared     bool               `json:"shared"`
+	Summary    *agentQuotaSummary `json:"summary,omitempty"`
+}
+
+type agentQuotaSummary struct {
+	Source           string  `json:"source,omitempty"`
+	Model            string  `json:"model"`
+	RemainingPercent float64 `json:"remaining_percent,omitempty"`
+	Status           string  `json:"status"`
+	ResetDuration    string  `json:"reset_duration,omitempty"`
+}
+
+type agentQuotaCacheEntry struct {
+	response  agentQuotaResponse
+	expiresAt time.Time
 }
 
 // NewAgentHandler creates an AgentHandler.
 func NewAgentHandler(db store.Store, hub *Hub) *AgentHandler {
-	return &AgentHandler{db: db, hub: hub}
+	return &AgentHandler{db: db, hub: hub, quotaCache: make(map[string]agentQuotaCacheEntry)}
+}
+
+// SetRelayUsageDependencies enables the friend-visible, sanitized agent quota summary.
+func (h *AgentHandler) SetRelayUsageDependencies(admin *RelayAdminClient, resolver func(uid int64) (DeviceModelStatus, bool)) {
+	if h == nil {
+		return
+	}
+	h.relayAdmin = admin
+	h.deviceModelStatusResolver = resolver
 }
 
 // AgentSummary is the lightweight roster item used by the WebApp.
@@ -91,6 +129,119 @@ func (h *AgentHandler) HandleOpenAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"agent": agent, "topic": agent.TopicID})
+}
+
+// HandleAgentQuota handles GET /api/agents/quota?uid=<agent uid>.
+// It deliberately exposes only the active model and remaining percentage.
+func (h *AgentHandler) HandleAgentQuota(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	viewerUID := UIDFromContext(r.Context())
+	if viewerUID <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	agentUID, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("uid")), 10, 64)
+	if err != nil || agentUID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid agent uid"})
+		return
+	}
+	if _, _, status, err := accessibleAgentUser(h.db, viewerUID, agentUID); err != nil {
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+
+	ownerUID, err := h.db.GetBotOwner(agentUID)
+	if err != nil || ownerUID <= 0 {
+		writeJSON(w, http.StatusOK, agentQuotaResponse{Configured: false, Shared: true})
+		return
+	}
+	if h.deviceModelStatusResolver == nil {
+		writeJSON(w, http.StatusOK, agentQuotaResponse{Configured: false, Shared: true})
+		return
+	}
+	deviceStatus, ok := h.deviceModelStatusResolver(agentUID)
+	if !ok {
+		writeJSON(w, http.StatusOK, agentQuotaResponse{Configured: false, Shared: true})
+		return
+	}
+
+	source := strings.ToLower(strings.TrimSpace(deviceStatus.Source))
+	model := strings.TrimSpace(deviceStatus.Model)
+	if source == "custom" || normalizeRelayModelName(model) == "custom" || strings.EqualFold(model, "自定义模型") {
+		writeJSON(w, http.StatusOK, agentQuotaResponse{
+			Configured: true,
+			Shared:     false,
+			Summary: &agentQuotaSummary{
+				Source: "custom",
+				Model:  "自定义模型",
+				Status: "custom",
+			},
+		})
+		return
+	}
+	if h.relayAdmin == nil || model == "" {
+		writeJSON(w, http.StatusOK, agentQuotaResponse{Configured: false, Shared: true})
+		return
+	}
+
+	cacheKey := strconv.FormatInt(ownerUID, 10) + ":" + normalizeRelayModelName(model)
+	if cached, ok := h.cachedAgentQuota(cacheKey); ok {
+		writeJSON(w, http.StatusOK, cached)
+		return
+	}
+	usage, err := fetchRelayUsageForUID(r.Context(), h.relayAdmin, ownerUID)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "relay admin request failed"})
+		return
+	}
+	response := sanitizeAgentQuota(buildRelayUsageResponse(usage, model))
+	h.storeAgentQuota(cacheKey, response)
+	writeJSON(w, http.StatusOK, response)
+}
+
+func sanitizeAgentQuota(usage relayUsageResponse) agentQuotaResponse {
+	response := agentQuotaResponse{Configured: usage.Configured, Shared: true}
+	if usage.Summary == nil {
+		return response
+	}
+	remaining := 100 - usage.Summary.Percent
+	if remaining < 0 {
+		remaining = 0
+	} else if remaining > 100 {
+		remaining = 100
+	}
+	response.Summary = &agentQuotaSummary{
+		Source:           usage.Summary.Source,
+		Model:            usage.Summary.Model,
+		RemainingPercent: remaining,
+		Status:           usage.Summary.Status,
+		ResetDuration:    usage.Summary.ResetDuration,
+	}
+	return response
+}
+
+func (h *AgentHandler) cachedAgentQuota(key string) (agentQuotaResponse, bool) {
+	h.quotaMu.Lock()
+	defer h.quotaMu.Unlock()
+	entry, ok := h.quotaCache[key]
+	if !ok || time.Now().After(entry.expiresAt) {
+		delete(h.quotaCache, key)
+		return agentQuotaResponse{}, false
+	}
+	return entry.response, true
+}
+
+func (h *AgentHandler) storeAgentQuota(key string, response agentQuotaResponse) {
+	h.quotaMu.Lock()
+	defer h.quotaMu.Unlock()
+	if h.quotaCache == nil {
+		h.quotaCache = make(map[string]agentQuotaCacheEntry)
+	}
+	h.quotaCache[key] = agentQuotaCacheEntry{response: response, expiresAt: time.Now().Add(agentQuotaCacheTTL)}
 }
 
 func (h *AgentHandler) visibleAgents(uid int64) ([]AgentSummary, error) {

@@ -1773,6 +1773,15 @@ body {
 .v3-header-left {
   display: flex;
   align-items: center;
+  min-width: 0;
+}
+
+.v3-header-identity {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
 }
 
 .v3-header-title {
@@ -2309,6 +2318,26 @@ body {
   border-color: rgba(248, 113, 113, 0.34);
   color: #fecaca;
   background: rgba(248, 113, 113, 0.12);
+}
+
+.v3-relay-usage-pill.warning {
+  border-color: rgba(251, 191, 36, 0.34);
+  color: #fde68a;
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.v3-relay-usage-pill.muted {
+  border-color: var(--v3-border);
+  color: var(--v3-text-muted);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.v3-agent-quota-pill {
+  max-width: 180px;
+  min-height: 17px;
+  margin-left: 0;
+  padding: 1px 7px;
+  font-size: 10px;
 }
 
 .v3-profile-settings {

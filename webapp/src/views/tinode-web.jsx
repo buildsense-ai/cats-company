@@ -15,6 +15,7 @@ import RelayAccessModal from '../widgets/relay-access-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
+import { formatRelayUsagePill, relayUsageTone } from '../utils/relay-usage';
 import { BookOpen, Bug, Download, KeyRound, Settings, LogOut, Eye, EyeOff, Laptop, CheckCircle2, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import CatOrb from '../components/CatOrb/CatOrb';
 import '../css/openchat-theme.css';
@@ -679,7 +680,7 @@ function ProfileFooter({ user, wsStatus, relayUsage, onTogglePopover }) {
         <div className="v3-profile-roles">
            <span className={`v3-status-dot ${statusClass}`} style={{marginLeft: 0, marginRight: 6}}></span>
            {statusLabel}
-           {usageLabel && <span className={`v3-relay-usage-pill ${relayUsage?.status === 'over_limit' ? 'danger' : ''}`}>{usageLabel}</span>}
+           {usageLabel && <span className={`v3-relay-usage-pill ${relayUsageTone(relayUsage)}`}>{usageLabel}</span>}
         </div>
       </div>
       <div className="v3-profile-settings" style={{color: '#888'}}>
@@ -687,30 +688,6 @@ function ProfileFooter({ user, wsStatus, relayUsage, onTogglePopover }) {
       </div>
     </div>
   );
-}
-
-function formatRelayUsagePill(summary) {
-  if (summary?.source === 'custom' || summary?.status === 'custom') {
-    return '自定义模型';
-  }
-  if (!summary || !summary.model || !Number.isFinite(Number(summary.limit_cny)) || Number(summary.limit_cny) <= 0) {
-    return '';
-  }
-  if (summary.status === 'over_limit') {
-    return `${shortRelayModelName(summary.model)} 已用 100%+`;
-  }
-  const remainingPercent = Math.max(0, Math.min(100, 100 - Number(summary.percent || 0)));
-  return `${shortRelayModelName(summary.model)} 剩余 ${Math.round(remainingPercent)}%`;
-}
-
-function shortRelayModelName(model) {
-  const text = String(model || '').trim();
-  if (!text) return '模型';
-  if (/minimax-m3/i.test(text)) return 'M3';
-  if (/minimax-m2\.?7/i.test(text)) return 'M2.7';
-  if (/deepseek/i.test(text)) return 'DS';
-  if (/glm/i.test(text)) return 'GLM';
-  return text.length > 8 ? `${text.slice(0, 8)}...` : text;
 }
 
 function formatAuthError(message) {

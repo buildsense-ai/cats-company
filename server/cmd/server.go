@@ -300,6 +300,9 @@ func main() {
 		return server.LatestDeviceModelStatus(hub, uid)
 	})
 	relayAdminClient := server.NewRelayAdminClientFromEnv()
+	agentHandler.SetRelayUsageDependencies(relayAdminClient, func(uid int64) (server.DeviceModelStatus, bool) {
+		return server.LatestDeviceModelStatus(hub, uid)
+	})
 	relayCommercialPublicEnabled := envBool("CATS_RELAY_COMMERCIAL_ENABLED")
 	relayCommercialTestUIDs := envInt64Set("CATS_RELAY_COMMERCIAL_TEST_UIDS")
 	relayCommercialEnforceEnabled := envBool("CATS_RELAY_COMMERCIAL_ENFORCE_ENABLED")
@@ -454,6 +457,7 @@ func main() {
 	mux.HandleFunc("/api/messages", authWithDB(msgHandler.HandleGetMessages))
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.HandleList))
 	mux.HandleFunc("/api/agents", jwtAuthWithDB(agentHandler.HandleListAgents))
+	mux.HandleFunc("/api/agents/quota", jwtAuthWithDB(agentHandler.HandleAgentQuota))
 	mux.HandleFunc("/api/agents/open", jwtAuthWithDB(agentHandler.HandleOpenAgent))
 	mux.HandleFunc("/api/desktop-connect/session", jwtAuthWithDB(desktopConnectHandler.HandleCreateSession))
 	mux.HandleFunc("/api/desktop-connect/exchange", desktopConnectHandler.HandleExchange)

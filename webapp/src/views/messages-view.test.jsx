@@ -35,6 +35,7 @@ jest.mock('../api', () => ({
     getMessages: jest.fn(),
     getFriends: jest.fn(),
     getAgents: jest.fn(),
+    getAgentQuota: jest.fn(),
     getGroupInfo: jest.fn(),
     createChannelIdentityMobileLink: jest.fn(),
     sendMessage: jest.fn(),
@@ -106,6 +107,7 @@ describe('MessagesView composer draft isolation', () => {
     api.getMessages.mockResolvedValue({ messages: [] });
     api.getFriends.mockResolvedValue({ friends: [] });
     api.getAgents.mockResolvedValue({ agents: [] });
+    api.getAgentQuota.mockResolvedValue({ configured: false, shared: true });
     api.createChannelIdentityMobileLink.mockResolvedValue({ qr_value: 'https://app.catsco.cc/mobile-link' });
     api.getGroupInfo.mockResolvedValue({ members: [], group: null });
     api.sendMessage.mockResolvedValue({ seq_id: 100 });
@@ -524,6 +526,39 @@ describe('MessagesView composer draft isolation', () => {
     await mountTopic(root, 'p2p_1_2');
 
     expect(container.querySelector('button[title="移动端使用"]')).toBeTruthy();
+  });
+
+  it('shows the owner shared quota for the active bot conversation', async () => {
+    api.getAgents.mockResolvedValueOnce({
+      agents: [{
+        uid: 2,
+        username: 'friend-agent',
+        display_name: 'Friend Agent',
+        relation: 'friend',
+        is_bot: true,
+      }],
+    });
+    api.getAgentQuota.mockResolvedValueOnce({
+      configured: true,
+      shared: true,
+      summary: {
+        source: 'relay',
+        model: 'MiniMax-M3',
+        remaining_percent: 72,
+        status: 'normal',
+      },
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const quota = container.querySelector('.v3-agent-quota-pill');
+    expect(api.getAgentQuota).toHaveBeenCalledWith(2);
+    expect(quota?.textContent).toBe('M3 剩余 72%');
+    expect(quota?.getAttribute('title')).toBe('使用该虚拟员工所属账号的共享额度');
   });
 
   it('clears peer typing immediately when a peer final reply arrives', async () => {
