@@ -322,6 +322,27 @@ func TestHandleAgentQuotaRejectsNonFriend(t *testing.T) {
 	}
 }
 
+func TestSanitizeAgentQuotaPreservesZeroRemainingPercent(t *testing.T) {
+	response := sanitizeAgentQuota(relayUsageResponse{
+		Configured: true,
+		Summary: &relayUsageSummary{
+			Source:   "relay",
+			Model:    "MiniMax-M3",
+			Percent:  100,
+			Status:   "high",
+			LimitCNY: 1000,
+		},
+	})
+
+	data, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if !strings.Contains(string(data), `"remaining_percent":0`) {
+		t.Fatalf("zero remaining percent must be explicit: %s", data)
+	}
+}
+
 func TestHandleOpenAgentKeepsDifferentActorsOnDistinctTopics(t *testing.T) {
 	store := &agentTestStore{
 		users: map[int64]*types.User{

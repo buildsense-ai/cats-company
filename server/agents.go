@@ -34,7 +34,7 @@ type agentQuotaResponse struct {
 type agentQuotaSummary struct {
 	Source           string  `json:"source,omitempty"`
 	Model            string  `json:"model"`
-	RemainingPercent float64 `json:"remaining_percent,omitempty"`
+	RemainingPercent float64 `json:"remaining_percent"`
 	Status           string  `json:"status"`
 	ResetDuration    string  `json:"reset_duration,omitempty"`
 }
