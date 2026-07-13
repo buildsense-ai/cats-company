@@ -163,7 +163,9 @@ func (h *AgentHandler) HandleAgentQuota(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, agentQuotaResponse{Configured: false, Shared: true})
 		return
 	}
-	deviceStatus, ok := h.deviceModelStatusResolver(agentUID)
+	// A bot runtime is registered as a device of its owner. The current
+	// one-owner-one-bot deployment therefore resolves model status by owner UID.
+	deviceStatus, ok := h.deviceModelStatusResolver(ownerUID)
 	if !ok {
 		writeJSON(w, http.StatusOK, agentQuotaResponse{Configured: false, Shared: true})
 		return

@@ -276,7 +276,7 @@ func TestHandleAgentQuotaUsesOwnerBudgetAndAgentModel(t *testing.T) {
 		token:   "test-token",
 		client:  admin.Client(),
 	}, func(uid int64) (DeviceModelStatus, bool) {
-		return DeviceModelStatus{Source: "relay", Model: "MiniMax-M3"}, uid == 43
+		return DeviceModelStatus{Source: "relay", Model: "MiniMax-M3"}, uid == 99
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/agents/quota?uid=43", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
