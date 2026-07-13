@@ -949,6 +949,10 @@ export default function MessagesView({
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (peerProfile?.display_name || peerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (peerProfile?.avatar_url || topicAvatarUrl);
   const agentQuotaLabel = formatRelayUsagePill(agentQuota, { customLabel: '自备模型' });
+  const agentUsesCustomModel = agentQuota?.source === 'custom' || agentQuota?.status === 'custom';
+  const agentQuotaTitle = agentUsesCustomModel
+    ? `${agentQuota?.model && agentQuota.model !== '自定义模型' ? `${agentQuota.model}；` : ''}该虚拟员工使用自备模型，不消耗 CatsCo 共享额度`
+    : '使用该虚拟员工所属账号的共享额度';
 
   useEffect(() => {
     if (isGroup || !peerIsBot || peerUID <= 0) {
@@ -1122,7 +1126,7 @@ export default function MessagesView({
                 {!isGroup && agentQuotaLabel && (
                   <span
                     className={`v3-relay-usage-pill v3-agent-quota-pill ${relayUsageTone(agentQuota)}`}
-                    title={agentQuota?.status === 'custom' ? '该虚拟员工使用自备模型，不消耗 CatsCo 共享额度' : '使用该虚拟员工所属账号的共享额度'}
+                    title={agentQuotaTitle}
                   >
                     {agentQuotaLabel}
                   </span>

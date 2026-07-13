@@ -1,6 +1,7 @@
 export function formatRelayUsagePill(summary, { customLabel = '自定义模型' } = {}) {
   if (summary?.source === 'custom' || summary?.status === 'custom') {
-    return customLabel;
+    const model = shortCustomModelName(summary?.model);
+    return model ? `${model} · 自备` : customLabel;
   }
   if (!summary || !summary.model) return '';
 
@@ -22,6 +23,12 @@ export function formatRelayUsagePill(summary, { customLabel = '自定义模型' 
 
   const clamped = Math.max(0, Math.min(100, remainingPercent));
   return `${shortRelayModelName(summary.model)} 剩余 ${Math.round(clamped)}%`;
+}
+
+export function shortCustomModelName(model) {
+  const text = String(model || '').trim();
+  if (!text || /^custom$/i.test(text) || text === '自定义模型') return '';
+  return text.length > 24 ? `${text.slice(0, 24)}...` : text;
 }
 
 export function relayUsageTone(summary) {

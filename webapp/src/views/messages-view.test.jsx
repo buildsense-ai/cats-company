@@ -561,6 +561,37 @@ describe('MessagesView composer draft isolation', () => {
     expect(quota?.getAttribute('title')).toBe('使用该虚拟员工所属账号的共享额度');
   });
 
+  it('shows the reported custom model name for the active bot conversation', async () => {
+    api.getAgents.mockResolvedValueOnce({
+      agents: [{
+        uid: 2,
+        username: 'friend-agent',
+        display_name: 'Friend Agent',
+        relation: 'friend',
+        is_bot: true,
+      }],
+    });
+    api.getAgentQuota.mockResolvedValueOnce({
+      configured: true,
+      shared: false,
+      summary: {
+        source: 'custom',
+        model: 'gpt-5.6-terra',
+        status: 'custom',
+      },
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const quota = container.querySelector('.v3-agent-quota-pill');
+    expect(quota?.textContent).toBe('gpt-5.6-terra · 自备');
+    expect(quota?.getAttribute('title')).toBe('gpt-5.6-terra；该虚拟员工使用自备模型，不消耗 CatsCo 共享额度');
+  });
+
   it('clears peer typing immediately when a peer final reply arrives', async () => {
     await mountTopic(root, 'p2p_1_2');
 

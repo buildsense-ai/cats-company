@@ -302,6 +302,41 @@ func TestHandleAgentQuotaUsesOwnerBudgetAndAgentModel(t *testing.T) {
 	}
 }
 
+func TestHandleAgentQuotaPreservesCustomModelName(t *testing.T) {
+	store := &agentTestStore{
+		users: map[int64]*types.User{
+			43: {ID: 43, Username: "custom-agent", AccountType: types.AccountBot},
+		},
+		owners: map[int64]int64{43: 99},
+		friendPairs: map[string]bool{
+			agentPairKey(7, 43): true,
+		},
+	}
+	handler := NewAgentHandler(store, nil)
+	handler.SetRelayUsageDependencies(nil, func(uid int64) (DeviceModelStatus, bool) {
+		return DeviceModelStatus{Source: "custom", Model: "gpt-5.6-terra"}, uid == 99
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/quota?uid=43", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleAgentQuota(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body agentQuotaResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !body.Configured || body.Shared || body.Summary == nil {
+		t.Fatalf("unexpected custom model response: %+v", body)
+	}
+	if body.Summary.Source != "custom" || body.Summary.Model != "gpt-5.6-terra" || body.Summary.Status != "custom" {
+		t.Fatalf("unexpected custom model summary: %+v", body.Summary)
+	}
+}
+
 func TestHandleAgentQuotaRejectsNonFriend(t *testing.T) {
 	store := &agentTestStore{
 		users: map[int64]*types.User{

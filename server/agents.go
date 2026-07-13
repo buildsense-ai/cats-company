@@ -174,12 +174,16 @@ func (h *AgentHandler) HandleAgentQuota(w http.ResponseWriter, r *http.Request) 
 	source := strings.ToLower(strings.TrimSpace(deviceStatus.Source))
 	model := strings.TrimSpace(deviceStatus.Model)
 	if source == "custom" || normalizeRelayModelName(model) == "custom" || strings.EqualFold(model, "自定义模型") {
+		customModel := model
+		if customModel == "" || normalizeRelayModelName(customModel) == "custom" || strings.EqualFold(customModel, "自定义模型") {
+			customModel = "自定义模型"
+		}
 		writeJSON(w, http.StatusOK, agentQuotaResponse{
 			Configured: true,
 			Shared:     false,
 			Summary: &agentQuotaSummary{
 				Source: "custom",
-				Model:  "自定义模型",
+				Model:  customModel,
 				Status: "custom",
 			},
 		})
