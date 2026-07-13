@@ -15,7 +15,6 @@ import RelayAccessModal from '../widgets/relay-access-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
-import { formatRelayUsagePill, relayUsageTone } from '../utils/relay-usage';
 import { BookOpen, Bug, Download, KeyRound, Settings, LogOut, Eye, EyeOff, Laptop, CheckCircle2, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import CatOrb from '../components/CatOrb/CatOrb';
 import '../css/openchat-theme.css';
@@ -177,7 +176,6 @@ function TinodeWebApp() {
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
-  const [relayUsage, setRelayUsage] = useState(null);
   const [appSidebarCollapsed, setAppSidebarCollapsed] = useState(() => loadAppSidebarCollapsed());
   const [tutorialOpenToken, setTutorialOpenToken] = useState(0);
   const [showTutorialMenuHint, setShowTutorialMenuHint] = useState(false);
@@ -326,31 +324,6 @@ function TinodeWebApp() {
       cancelled = true;
     };
   }, [user?.uid, persistUser]);
-
-  useEffect(() => {
-    if (!user?.uid) {
-      setRelayUsage(null);
-      return undefined;
-    }
-
-    let cancelled = false;
-    const loadRelayUsage = () => {
-      api.getRelayUsage()
-        .then((data) => {
-          if (!cancelled) setRelayUsage(data?.summary || null);
-        })
-        .catch(() => {
-          if (!cancelled) setRelayUsage(null);
-        });
-    };
-
-    loadRelayUsage();
-    const timer = window.setInterval(loadRelayUsage, 60000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [user?.uid]);
 
   const refreshLocalAgentStatus = useCallback(async ({ allowDailyPrompt = false } = {}) => {
     if (!user?.uid) return;
@@ -545,7 +518,6 @@ function TinodeWebApp() {
           <ProfileFooter
             user={user}
             wsStatus={wsStatus}
-            relayUsage={relayUsage}
             onTogglePopover={() => setShowProfilePopover(!showProfilePopover)}
           />
         )}
@@ -665,13 +637,12 @@ function SidebarContent({ activeTopic, onSelectTopic, user, onlineUsers }) {
   return <ChatListView activeTopic={activeTopic} onSelectTopic={onSelectTopic} user={user} onlineUsers={onlineUsers} />;
 }
 
-function ProfileFooter({ user, wsStatus, relayUsage, onTogglePopover }) {
+function ProfileFooter({ user, wsStatus, onTogglePopover }) {
   const connected = wsStatus === 'connected';
   const reconnecting = wsStatus === 'connecting' || wsStatus === 'reconnecting';
   const statusClass = connected ? 'online' : reconnecting ? 'reconnecting' : 'offline';
   const statusLabel = connected ? '在线' : wsStatus === 'connecting' ? '连接中' : reconnecting ? '重新连接中' : '离线';
   const displayName = user.display_name || user.username;
-  const usageLabel = formatRelayUsagePill(relayUsage);
   return (
     <div className="v3-profile-footer" onClick={onTogglePopover} style={{cursor: 'pointer'}}>
       <Avatar name={displayName} src={user.avatar_url} size={32} className="v3-profile-avatar" />
@@ -680,7 +651,6 @@ function ProfileFooter({ user, wsStatus, relayUsage, onTogglePopover }) {
         <div className="v3-profile-roles">
            <span className={`v3-status-dot ${statusClass}`} style={{marginLeft: 0, marginRight: 6}}></span>
            {statusLabel}
-           {usageLabel && <span className={`v3-relay-usage-pill ${relayUsageTone(relayUsage)}`}>{usageLabel}</span>}
         </div>
       </div>
       <div className="v3-profile-settings" style={{color: '#888'}}>
