@@ -293,6 +293,7 @@ func main() {
 	uploadHandler := server.NewUploadHandler("./uploads", "/uploads")
 	tutorialTaskHandler := server.NewTutorialTaskHandler("./uploads", "/uploads")
 	readerHandler := server.NewReaderProxyHandlerFromEnv()
+	imageGenerationHandler := server.NewImageGenerationProxyHandlerFromEnv()
 	feedbackHandler := server.NewFeedbackHandler(db)
 	relayConfigHandler := server.NewRelayConfigHandler()
 	relayKeyHandler := server.NewRelayKeyHandlerFromEnv()
@@ -372,6 +373,12 @@ func main() {
 	})
 	readerUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "reader_user", Limit: 10, Window: time.Minute, Burst: 3,
+	})
+	imageGenerationIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
+		Name: "image_generation_ip", Limit: 20, Window: time.Minute, Burst: 4,
+	})
+	imageGenerationUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "image_generation_user", Limit: 6, Window: time.Minute, Burst: 2,
 	})
 	feedbackIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "feedback_ip", Limit: 20, Window: time.Minute, Burst: 5,
@@ -550,10 +557,14 @@ func main() {
 	mux.HandleFunc("/api/mobile-upload/sessions", chainHTTP(uploadHandler.HandleMobileUploadSession, uploadIPLimit, authWithDB, uploadUserLimit))
 	mux.HandleFunc("/api/mobile-upload/sessions/", uploadIPLimit(uploadHandler.HandleMobileUploadSession))
 	mux.HandleFunc("/api/reader/analyze", chainHTTP(readerHandler.HandleAnalyze, readerIPLimit, authWithDB, readerUserLimit))
+	mux.HandleFunc("/v1/images/generations", chainHTTP(imageGenerationHandler.HandleGenerate, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
 	mux.HandleFunc("/uploads/", uploadHandler.HandleServeFile)
 
 	if err := readerHandler.ConfigError(); err != nil {
 		log.Printf("Reader proxy is unavailable until configured: %v", err)
+	}
+	if err := imageGenerationHandler.ConfigError(); err != nil {
+		log.Printf("Image generation proxy is unavailable until configured: %v", err)
 	}
 
 	// Token usage tracking (API Key auth for bots)

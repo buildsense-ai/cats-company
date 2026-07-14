@@ -96,6 +96,19 @@ Authorization: ApiKey <api_key>
 **POST /api/messages/send**
 发送消息（HTTP 方式，推荐用 WebSocket）
 
+### 图片生成
+
+**POST /v1/images/generations**
+
+使用现有 CatsCo 用户登录凭证（`Authorization: Bearer ...`）或 Bot API Key
+（`Authorization: ApiKey ...`）调用服务端配置的图片生成服务。请求和响应遵循
+OpenAI-compatible images generations 格式；服务端固定使用配置的模型并强制
+`n=1`，不会向客户端暴露上游 API Key。
+
+此接口仅在服务端配置 `CATSCO_IMAGE_UPSTREAM_URL` 和上游 API Key 后可用。
+Skill 或其他客户端将 `CATSCO_IMAGE_API_BASE` 指向
+`https://app.catsco.cc/v1` 即可复用当前 CatsCo 登录或 Bot 凭证，无需持有上游密钥。
+
 ### 文件上传
 
 **POST /api/upload**
