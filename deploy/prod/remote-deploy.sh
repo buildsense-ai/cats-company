@@ -6,7 +6,6 @@ revision="${2:-}"
 compose_dir="$root/compose"
 env_dir="$root/env"
 env_file="$env_dir/prod.env"
-managed_env_file="$env_dir/prod.managed.env"
 compose_file="$compose_dir/docker-compose.yml"
 health_api="${PROD_HEALTH_API:-http://127.0.0.1:26061/health}"
 health_web="${PROD_HEALTH_WEB:-http://127.0.0.1:28080/health}"
@@ -69,33 +68,17 @@ if [ ! -f "$env_file" ]; then
   exit 1
 fi
 
-python3 - "$env_file" "$managed_env_file" "${GHCR_REGISTRY:-ghcr.io}" "${GHCR_OWNER:-}" "$revision" <<'PY'
-import sys
+python3 - <<PY
 from pathlib import Path
 
-p = Path(sys.argv[1])
-managed_path = Path(sys.argv[2])
+p = Path(r"$env_file")
 text = p.read_text(encoding="utf-8", errors="replace").replace("\ufeff", "")
 
 updates = {
-    "GHCR_REGISTRY": sys.argv[3],
-    "GHCR_OWNER": sys.argv[4],
-    "IMAGE_TAG": sys.argv[5],
+    "GHCR_REGISTRY": "${GHCR_REGISTRY:-ghcr.io}",
+    "GHCR_OWNER": "${GHCR_OWNER:-}",
+    "IMAGE_TAG": "$revision",
 }
-
-managed_keys = {
-    "CATSCO_IMAGE_UPSTREAM_URL",
-    "CATSCO_IMAGE_UPSTREAM_API_KEY",
-    "CATSCO_IMAGE_MODEL",
-}
-if managed_path.is_file():
-    for raw_line in managed_path.read_text(encoding="utf-8", errors="strict").splitlines():
-        if not raw_line or raw_line.lstrip().startswith("#"):
-            continue
-        key, separator, value = raw_line.partition("=")
-        if not separator or key not in managed_keys or not value:
-            raise SystemExit(f"invalid managed production environment entry: {key or '<empty>'}")
-        updates[key] = value
 
 lines = []
 seen = set()
@@ -113,10 +96,7 @@ for key, value in updates.items():
         lines.append(f"{key}={value}")
 
 p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-if managed_path.is_file():
-    managed_path.unlink()
 PY
-chmod 600 "$env_file"
 
 allow_shared_db_user="$(sed -n 's/^ALLOW_SHARED_DB_USER=//p' "$env_file" | tail -n 1)"
 db_driver="$(sed -n 's/^OC_DB_DRIVER=//p' "$env_file" | tail -n 1)"
