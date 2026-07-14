@@ -113,6 +113,29 @@ OpenAI-compatible images generations 格式；服务端固定使用配置的模�
 XiaoBa Skill 从现有 `CATSCO_HTTP_BASE_URL` 自动推导 `/v1/images/generations`，
 并复用当前 CatsCo 登录或 Bot 凭证，无需任何生图专用客户端配置。
 
+**POST /v1/images/edits**
+
+使用与图片生成相同的 CatsCo 用户或 Bot 鉴权、限流、服务端模型和上游密钥，
+用于带参考图的图片生成。请求使用 JSON，不接受 multipart、遮罩或远程图片 URL：
+
+```json
+{
+  "prompt": "保持参考图中的角色身份，生成新的夜间城市场景",
+  "images": [
+    {"image_url": "data:image/png;base64,..."}
+  ],
+  "size": "1024x1024",
+  "quality": "medium",
+  "output_format": "png"
+}
+```
+
+服务端接受 1-3 张不重复的 PNG、JPEG 或 WebP。单张解码后最多 8 MiB，
+合计最多 16 MiB；只在内存中验证并转发，不下载远程图片、不持久化参考图，
+也不会把 base64、CatsCo 凭证或上游 API Key 写入日志。客户端传入的 `model`
+和 `n` 会被服务端配置覆盖，其中 `n` 固定为 1。第一版只支持同步响应，
+`async=true` 会被明确拒绝，避免返回当前网关无法继续查询的任务 ID。
+
 ### 文件上传
 
 **POST /api/upload**

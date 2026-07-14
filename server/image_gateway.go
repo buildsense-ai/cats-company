@@ -20,33 +20,39 @@ import (
 const (
 	defaultImageGenerationModel                 = "gpt-image-2"
 	defaultImageGenerationTimeout               = 300 * time.Second
-	defaultImageGenerationMaxRequestBytes int64 = 1 << 20 // 1 MiB
+	defaultImageGenerationMaxRequestBytes int64 = 1 << 20  // 1 MiB
+	defaultImageEditMaxRequestBytes       int64 = 24 << 20 // 24 MiB, including base64 expansion.
 )
 
 // ImageGenerationProxyOptions configures the authenticated image-generation proxy.
 type ImageGenerationProxyOptions struct {
-	Timeout         time.Duration
-	MaxRequestBytes int64
-	Model           string
-	APIKey          string
+	Timeout             time.Duration
+	MaxRequestBytes     int64
+	MaxEditRequestBytes int64
+	Model               string
+	APIKey              string
 }
 
 // ImageGenerationProxyHandler keeps the provider credential on the CatsCo server.
 type ImageGenerationProxyHandler struct {
-	upstreamURL     string
-	model           string
-	apiKey          string
-	client          *http.Client
-	maxRequestBytes int64
-	configError     error
+	upstreamURL         string
+	editUpstreamURL     string
+	model               string
+	apiKey              string
+	client              *http.Client
+	maxRequestBytes     int64
+	maxEditRequestBytes int64
+	configError         error
+	editConfigError     error
 }
 
 // NewImageGenerationProxyHandler builds a proxy for an OpenAI-compatible generations endpoint.
 func NewImageGenerationProxyHandler(upstreamURL string, opts ImageGenerationProxyOptions) *ImageGenerationProxyHandler {
 	handler := &ImageGenerationProxyHandler{
-		model:           strings.TrimSpace(opts.Model),
-		apiKey:          strings.TrimSpace(opts.APIKey),
-		maxRequestBytes: opts.MaxRequestBytes,
+		model:               strings.TrimSpace(opts.Model),
+		apiKey:              strings.TrimSpace(opts.APIKey),
+		maxRequestBytes:     opts.MaxRequestBytes,
+		maxEditRequestBytes: opts.MaxEditRequestBytes,
 	}
 
 	if handler.model == "" {
@@ -54,6 +60,9 @@ func NewImageGenerationProxyHandler(upstreamURL string, opts ImageGenerationProx
 	}
 	if handler.maxRequestBytes <= 0 {
 		handler.maxRequestBytes = defaultImageGenerationMaxRequestBytes
+	}
+	if handler.maxEditRequestBytes <= 0 {
+		handler.maxEditRequestBytes = defaultImageEditMaxRequestBytes
 	}
 	timeout := opts.Timeout
 	if timeout <= 0 {
@@ -70,7 +79,18 @@ func NewImageGenerationProxyHandler(upstreamURL string, opts ImageGenerationProx
 		handler.configError = errors.New("CATSCO_IMAGE_UPSTREAM_API_KEY is not set")
 		return handler
 	}
-	handler.upstreamURL = parsedURL.String()
+	generationURL, err := resolveImageOperationUpstreamURL(parsedURL, "generations")
+	if err != nil {
+		handler.configError = err
+		return handler
+	}
+	handler.upstreamURL = generationURL.String()
+	editURL, err := resolveImageOperationUpstreamURL(parsedURL, "edits")
+	if err != nil {
+		handler.editConfigError = err
+	} else {
+		handler.editUpstreamURL = editURL.String()
+	}
 	return handler
 }
 
@@ -91,26 +111,43 @@ func NewImageGenerationProxyHandlerFromEnv() *ImageGenerationProxyHandler {
 	if err != nil {
 		return &ImageGenerationProxyHandler{configError: err}
 	}
+	maxEditRequestBytes, editLimitErr := parsePositiveInt64Env(
+		"CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES",
+		defaultImageEditMaxRequestBytes,
+	)
 
 	apiKey, err := readImageGenerationAPIKeyFromEnv()
 	if err != nil {
 		return &ImageGenerationProxyHandler{configError: err}
 	}
 
-	return NewImageGenerationProxyHandler(
+	handler := NewImageGenerationProxyHandler(
 		os.Getenv("CATSCO_IMAGE_UPSTREAM_URL"),
 		ImageGenerationProxyOptions{
-			Timeout:         time.Duration(timeoutSeconds) * time.Second,
-			MaxRequestBytes: maxRequestBytes,
-			Model:           os.Getenv("CATSCO_IMAGE_MODEL"),
-			APIKey:          apiKey,
+			Timeout:             time.Duration(timeoutSeconds) * time.Second,
+			MaxRequestBytes:     maxRequestBytes,
+			MaxEditRequestBytes: maxEditRequestBytes,
+			Model:               os.Getenv("CATSCO_IMAGE_MODEL"),
+			APIKey:              apiKey,
 		},
 	)
+	if editLimitErr != nil {
+		handler.editConfigError = editLimitErr
+	}
+	return handler
 }
 
 // ConfigError returns the startup or configuration error, if any.
 func (h *ImageGenerationProxyHandler) ConfigError() error {
 	return h.configError
+}
+
+// EditConfigError returns the reference-image route configuration error, if any.
+func (h *ImageGenerationProxyHandler) EditConfigError() error {
+	if h.configError != nil {
+		return h.configError
+	}
+	return h.editConfigError
 }
 
 // HandleGenerate handles POST /v1/images/generations.
@@ -131,7 +168,7 @@ func (h *ImageGenerationProxyHandler) HandleGenerate(w http.ResponseWriter, r *h
 		return
 	}
 
-	payload, status, err := readImageGenerationPayload(w, r, h.maxRequestBytes)
+	payload, status, err := readImageJSONPayload(w, r, h.maxRequestBytes, "image generation")
 	if err != nil {
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
@@ -145,13 +182,49 @@ func (h *ImageGenerationProxyHandler) HandleGenerate(w http.ResponseWriter, r *h
 	// Server policy owns provider selection and prevents accidental batches.
 	payload["model"] = h.model
 	payload["n"] = 1
+	h.forwardImageRequest(w, r, payload, h.upstreamURL, "generation", 0, 0)
+}
+
+func readImageJSONPayload(w http.ResponseWriter, r *http.Request, maxBytes int64, requestName string) (map[string]interface{}, int, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.UseNumber()
+
+	var payload map[string]interface{}
+	if err := decoder.Decode(&payload); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return nil, http.StatusRequestEntityTooLarge, fmt.Errorf("%s request body is too large", requestName)
+		}
+		return nil, http.StatusBadRequest, errors.New("invalid JSON request body")
+	}
+	if payload == nil {
+		return nil, http.StatusBadRequest, errors.New("invalid JSON request body")
+	}
+
+	var trailing interface{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, http.StatusBadRequest, errors.New("request body must contain one JSON object")
+	}
+	return payload, 0, nil
+}
+
+func (h *ImageGenerationProxyHandler) forwardImageRequest(
+	w http.ResponseWriter,
+	r *http.Request,
+	payload map[string]interface{},
+	upstreamURL string,
+	operation string,
+	referenceCount int,
+	referenceBytes int64,
+) {
 	upstreamBody, err := json.Marshal(payload)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid image generation request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid image " + operation + " request"})
 		return
 	}
 
-	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, h.upstreamURL, bytes.NewReader(upstreamBody))
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(upstreamBody))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to build upstream image request"})
 		return
@@ -169,8 +242,8 @@ func (h *ImageGenerationProxyHandler) HandleGenerate(w http.ResponseWriter, r *h
 		if isImageGenerationTimeout(err) {
 			status = http.StatusGatewayTimeout
 		}
-		log.Printf("[image-proxy] upstream request failed uid=%d status=%d duration_ms=%d error=%v", requesterUID, status, time.Since(startedAt).Milliseconds(), err)
-		writeJSON(w, status, map[string]string{"error": "image generation upstream request failed"})
+		log.Printf("[image-proxy] upstream request failed operation=%s uid=%d reference_count=%d reference_bytes=%d status=%d duration_ms=%d error=%v", operation, requesterUID, referenceCount, referenceBytes, status, time.Since(startedAt).Milliseconds(), err)
+		writeJSON(w, status, map[string]string{"error": "image " + operation + " upstream request failed"})
 		return
 	}
 	defer resp.Body.Close()
@@ -179,34 +252,10 @@ func (h *ImageGenerationProxyHandler) HandleGenerate(w http.ResponseWriter, r *h
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(resp.StatusCode)
 	if _, err := io.Copy(w, resp.Body); err != nil {
-		log.Printf("[image-proxy] response copy failed uid=%d status=%d error=%v", requesterUID, resp.StatusCode, err)
+		log.Printf("[image-proxy] response copy failed operation=%s uid=%d reference_count=%d reference_bytes=%d status=%d error=%v", operation, requesterUID, referenceCount, referenceBytes, resp.StatusCode, err)
 		return
 	}
-	log.Printf("[image-proxy] request completed uid=%d status=%d duration_ms=%d", requesterUID, resp.StatusCode, time.Since(startedAt).Milliseconds())
-}
-
-func readImageGenerationPayload(w http.ResponseWriter, r *http.Request, maxBytes int64) (map[string]interface{}, int, error) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
-	decoder := json.NewDecoder(r.Body)
-	decoder.UseNumber()
-
-	var payload map[string]interface{}
-	if err := decoder.Decode(&payload); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			return nil, http.StatusRequestEntityTooLarge, errors.New("image generation request body is too large")
-		}
-		return nil, http.StatusBadRequest, errors.New("invalid JSON request body")
-	}
-	if payload == nil {
-		return nil, http.StatusBadRequest, errors.New("invalid JSON request body")
-	}
-
-	var trailing interface{}
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return nil, http.StatusBadRequest, errors.New("request body must contain one JSON object")
-	}
-	return payload, 0, nil
+	log.Printf("[image-proxy] request completed operation=%s uid=%d reference_count=%d reference_bytes=%d status=%d duration_ms=%d", operation, requesterUID, referenceCount, referenceBytes, resp.StatusCode, time.Since(startedAt).Milliseconds())
 }
 
 func parseImageGenerationUpstreamURL(rawURL string) (*url.URL, error) {
@@ -230,6 +279,25 @@ func parseImageGenerationUpstreamURL(rawURL string) (*url.URL, error) {
 		}
 	}
 	return nil, errors.New("CATSCO_IMAGE_UPSTREAM_URL must use HTTPS outside localhost")
+}
+
+func resolveImageOperationUpstreamURL(configuredURL *url.URL, operation string) (*url.URL, error) {
+	resolved := *configuredURL
+	trimmedPath := strings.TrimRight(resolved.Path, "/")
+	for _, currentOperation := range []string{"generations", "edits"} {
+		suffix := "/images/" + currentOperation
+		if strings.HasSuffix(trimmedPath, suffix) {
+			resolved.Path = strings.TrimSuffix(trimmedPath, suffix) + "/images/" + operation
+			resolved.RawPath = ""
+			return &resolved, nil
+		}
+	}
+	if operation == "generations" {
+		resolved.Path = trimmedPath
+		resolved.RawPath = ""
+		return &resolved, nil
+	}
+	return nil, errors.New("CATSCO_IMAGE_UPSTREAM_URL must end with /images/generations or /images/edits to enable reference images")
 }
 
 func readImageGenerationAPIKeyFromEnv() (string, error) {

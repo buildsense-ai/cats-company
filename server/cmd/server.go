@@ -558,6 +558,7 @@ func main() {
 	mux.HandleFunc("/api/mobile-upload/sessions/", uploadIPLimit(uploadHandler.HandleMobileUploadSession))
 	mux.HandleFunc("/api/reader/analyze", chainHTTP(readerHandler.HandleAnalyze, readerIPLimit, authWithDB, readerUserLimit))
 	mux.HandleFunc("/v1/images/generations", chainHTTP(imageGenerationHandler.HandleGenerate, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
+	mux.HandleFunc("/v1/images/edits", chainHTTP(imageGenerationHandler.HandleEdit, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
 	mux.HandleFunc("/uploads/", uploadHandler.HandleServeFile)
 
 	if err := readerHandler.ConfigError(); err != nil {
@@ -565,6 +566,11 @@ func main() {
 	}
 	if err := imageGenerationHandler.ConfigError(); err != nil {
 		log.Printf("Image generation proxy is unavailable until configured: %v", err)
+	}
+	if imageGenerationHandler.ConfigError() == nil {
+		if err := imageGenerationHandler.EditConfigError(); err != nil {
+			log.Printf("Reference-image proxy is unavailable until configured: %v", err)
+		}
 	}
 
 	// Token usage tracking (API Key auth for bots)
