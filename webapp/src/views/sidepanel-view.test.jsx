@@ -157,7 +157,7 @@ describe('ChatListView sidebar sections', () => {
   it('opens an agent conversation from the assistant roster', async () => {
     await mount();
 
-    expect(container.textContent).toContain('AI 助手');
+    expect(container.textContent).toContain('Agent 助手');
     expect(container.textContent).toContain('Dev Agent');
     const agentItem = Array.from(container.querySelectorAll('.v3-chat-item'))
       .find((node) => node.textContent.includes('Dev Agent'));
@@ -336,7 +336,7 @@ describe('ChatListView sidebar sections', () => {
     const text = container.textContent;
     expect(text).toContain('Bot Room');
     expect(text.indexOf('群聊')).toBeLessThan(text.indexOf('Bot Room'));
-    expect(text.indexOf('Bot Room')).toBeLessThan(text.indexOf('AI 助手'));
+    expect(text.indexOf('Bot Room')).toBeLessThan(text.indexOf('Agent 助手'));
   });
 
   it('shows matches from collapsed sections while searching', async () => {
@@ -434,7 +434,7 @@ describe('ChatListView sidebar sections', () => {
     const sections = Array.from(container.querySelectorAll('.v3-chat-section')).map((node) => node.textContent);
     expect(sections.join(' | ')).toContain('群聊');
     expect(sections.findIndex((text) => text.includes('群聊'))).toBeLessThan(
-      sections.findIndex((text) => text.includes('AI 助手'))
+      sections.findIndex((text) => text.includes('Agent 助手'))
     );
 
     const groupItem = Array.from(container.querySelectorAll('.v3-chat-item'))

@@ -6,10 +6,10 @@ import AddFriend from '../widgets/add-friend';
 import FriendRequest from '../widgets/friend-request';
 import AgentStoreModal from '../widgets/agent-store-modal';
 import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
-import { Users, Zap, Bot, Trash2, MessageSquare, Smartphone, Check, X, Pin } from 'lucide-react';
+import { Users, Zap, Bot, Trash2, MessageSquare, Smartphone, Check, X, Pin, ChevronRight, Plus, Search } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
-const DEFAULT_COLLAPSED_SECTIONS = { ai: false, friends: false, groups: false, agents: false };
+const DEFAULT_COLLAPSED_SECTIONS = { collaboration: false, ai: false, friends: false, groups: false, agents: false };
 const PINNED_GROUPS_STORAGE_PREFIX = 'cc_pinned_groups_v1';
 
 function sidebarCollapsedStorageKey(uid) {
@@ -22,6 +22,7 @@ function pinnedGroupsStorageKey(uid) {
 
 function normalizeCollapsedSections(value) {
   return {
+    collaboration: typeof value?.collaboration === 'boolean' ? value.collaboration : DEFAULT_COLLAPSED_SECTIONS.collaboration,
     ai: typeof value?.ai === 'boolean' ? value.ai : DEFAULT_COLLAPSED_SECTIONS.ai,
     friends: typeof value?.friends === 'boolean' ? value.friends : DEFAULT_COLLAPSED_SECTIONS.friends,
     groups: typeof value?.groups === 'boolean' ? value.groups : DEFAULT_COLLAPSED_SECTIONS.groups,
@@ -404,13 +405,19 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
 
   return (
     <>
-      <div style={{padding: '12px 16px', borderBottom: '1px solid var(--v3-border)'}}>
+      <div className="cc-sidebar-tools">
+        <button type="button" className="cc-sidebar-primary" onClick={() => setShowNewChat(true)}>
+          <Plus size={17} />
+          <span>新建任务</span>
+        </button>
+        <label className="cc-sidebar-search">
+          <Search size={15} />
         <input
-          style={{width: '100%', background: 'rgba(255,255,255,0.03)', border: 'none', color: '#fff', padding: '8px 12px', borderRadius: '6px', outline: 'none', fontSize: '13px'}}
-          placeholder="搜索..."
+          placeholder="搜索任务"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        </label>
       </div>
 
       <div className="v3-chat-list">
@@ -427,12 +434,15 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
         )}
 
         {/* AI 对话 */}
-        <div className="v3-chat-section" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-          <span style={{display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer'}} onClick={() => toggleCollapsed('ai')}><span style={{fontSize: 12, color: '#666'}}>{collapsed.ai ? '▶' : '▼'}</span><Bot size={20} style={{color: 'var(--v3-primary)'}} /> AI 对话</span>
-          <span onClick={() => setShowNewChat(true)} style={{cursor: 'pointer', fontSize: 25, color: '#888', lineHeight: 1}} title="新对话">+</span>
+        <div className="v3-chat-section">
+          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('ai')} aria-expanded={!collapsed.ai}>
+            <span>历史任务</span>
+            <ChevronRight size={14} />
+          </button>
+          <button type="button" className="cc-section-add" onClick={() => setShowNewChat(true)} title="新建任务" aria-label="新建任务"><Plus size={15} /></button>
         </div>
         {(isSearching || !collapsed.ai) && (aiChats.length === 0 && !isSearching ? (
-          <div style={{ padding: '12px 20px', color: '#666', fontSize: '13px' }}>点击 + 开始新对话</div>
+          <div className="cc-sidebar-empty">点击 + 开始新任务</div>
         ) : (
           aiChats.map((chat) => {
             const canDelete = chat.isGroup && groupOwnerById.get(String(chat.groupId)) === String(user.uid);
@@ -465,13 +475,21 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           })
         ))}
 
+        <div className="v3-chat-section cc-top-level-section">
+          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('collaboration')} aria-expanded={!collapsed.collaboration}>
+            <span>协作</span>
+            <ChevronRight size={14} />
+          </button>
+        </div>
+
+        {(isSearching || !collapsed.collaboration) && <div className="cc-sidebar-nested">
         {/* 好友 */}
-        <div className="v3-chat-section" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12}}>
-          <span style={{display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer'}} onClick={() => toggleCollapsed('friends')}><span style={{fontSize: 12, color: '#666'}}>{collapsed.friends ? '▶' : '▼'}</span><MessageSquare size={20} style={{color: '#888'}} /> 好友</span>
-          <span onClick={() => setShowAddFriend(true)} style={{cursor: 'pointer', fontSize: 25, color: '#888', lineHeight: 1}} title="添加好友">+</span>
+        <div className="v3-chat-section">
+          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('friends')} aria-expanded={!collapsed.friends}><MessageSquare size={15} /><span>好友</span><ChevronRight size={13} /></button>
+          <button type="button" className="cc-section-add" onClick={() => setShowAddFriend(true)} title="添加好友" aria-label="添加好友"><Plus size={15} /></button>
         </div>
         {(isSearching || !collapsed.friends) && (friendChats.length === 0 && !isSearching ? (
-          <div style={{ padding: '12px 20px', color: '#666', fontSize: '13px' }}>暂无好友对话</div>
+          <div className="cc-sidebar-empty">暂无好友</div>
         ) : (
           friendChats.map((chat) => {
             const isOnline = onlineStatusFor(onlineUsers, chat.friendId, chat.isOnline);
@@ -495,12 +513,12 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
         ))}
 
         {/* 群聊 */}
-        <div className="v3-chat-section" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12}}>
-          <span style={{display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer'}} onClick={() => toggleCollapsed('groups')}><span style={{fontSize: 12, color: '#666'}}>{collapsed.groups ? '▶' : '▼'}</span><Users size={20} style={{color: '#888'}} /> 群聊</span>
-          <span onClick={() => setShowCreateGroup(true)} style={{cursor: 'pointer', fontSize: 25, color: '#888', lineHeight: 1}} title="创建群聊">+</span>
+        <div className="v3-chat-section">
+          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('groups')} aria-expanded={!collapsed.groups}><Users size={15} /><span>群聊</span><ChevronRight size={13} /></button>
+          <button type="button" className="cc-section-add" onClick={() => setShowCreateGroup(true)} title="创建群聊" aria-label="创建群聊"><Plus size={15} /></button>
         </div>
         {(isSearching || !collapsed.groups) && (groupChats.length === 0 && !isSearching ? (
-          <div style={{ padding: '12px 20px', color: '#666', fontSize: '13px' }}>暂无群聊</div>
+          <div className="cc-sidebar-empty">暂无群聊</div>
         ) : (
           groupChats.map((chat) => {
             const canDelete = groupOwnerById.get(String(chat.groupId)) === String(user.uid);
@@ -550,14 +568,14 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
         ))}
 
         {/* AI 助手 */}
-        <div className="v3-chat-section" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12}}>
-          <span style={{display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer'}} onClick={() => toggleCollapsed('agents')}>
-            <span style={{fontSize: 12, color: '#666'}}>{collapsed.agents ? '▶' : '▼'}</span>
-            <Zap size={20} fill="currentColor" style={{color: 'var(--v3-primary)'}} />
-            AI 助手
+        <div className="v3-chat-section">
+          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('agents')} aria-expanded={!collapsed.agents}>
+            <Zap size={15} />
+            <span>Agent 助手</span>
+            <ChevronRight size={13} />
             {agentPendingRequests.length > 0 && <span className="v3-agent-request-badge">{agentPendingRequests.length}</span>}
-          </span>
-          <span onClick={() => setShowAgentStore(true)} style={{cursor: 'pointer', fontSize: 25, color: '#888', lineHeight: 1}} title="管理 AI 助手">+</span>
+          </button>
+          <button type="button" className="cc-section-add" onClick={() => setShowAgentStore(true)} title="管理 Agent 助手" aria-label="管理 Agent 助手"><Plus size={15} /></button>
         </div>
         {!isSearching && agentPendingRequests.length > 0 && (
           <div className="v3-agent-request-panel">
@@ -597,7 +615,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           </div>
         )}
         {(isSearching || !collapsed.agents) && (filteredAgents.length === 0 ? (
-          <div style={{ padding: '12px 20px', color: '#666', fontSize: '13px' }}>暂无 AI 助手，点击 + 创建</div>
+          <div className="cc-sidebar-empty">暂无 Agent 助手</div>
         ) : (
           filteredAgents.map((agent) => {
             const agentId = agent.uid || agent.id;
@@ -654,6 +672,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
             );
           })
         ))}
+        </div>}
 
         {isSearching && !hasSearchResults && (
           <div style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)', fontSize: '13px' }}>没有匹配结果</div>

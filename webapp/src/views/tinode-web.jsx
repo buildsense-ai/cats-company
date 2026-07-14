@@ -16,8 +16,8 @@ import PasswordResetForm from '../widgets/password-reset-form';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
 import { BookOpen, Bug, Download, KeyRound, Settings, LogOut, Eye, EyeOff, Laptop, CheckCircle2, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
-import CatOrb from '../components/CatOrb/CatOrb';
 import '../css/openchat-theme.css';
+import '../css/catsco-ui-system.css';
 
 const TABS = {
   CHATS: 'chats'
@@ -491,7 +491,10 @@ function TinodeWebApp() {
     <div className="v3-app">
       <div className={`v3-sidebar${appSidebarCollapsed ? ' collapsed' : ''}`}>
         <div className="v3-sidebar-header">
-          <div className="v3-brand-title" style={{fontSize: 20, fontWeight: 700}}>CatsCo</div>
+          <div className="v3-brand-title">
+            <span className="catsco-brand-mark" aria-hidden="true" />
+            <span className="catsco-brand-name">CatsCo</span>
+          </div>
           <button
             className="v3-sidebar-collapse-btn"
             type="button"
@@ -722,9 +725,6 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
 
   const authShell = (content) => (
     <div className="oc-auth">
-      <div className="oc-auth-cat">
-        <CatOrb hue={0} backgroundColor="#050505" hoverIntensity={0.3} rotateOnHover={false} />
-      </div>
       {content}
     </div>
   );
@@ -732,7 +732,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
   if (mode === 'reset') {
     return authShell(
       <div className="oc-auth-card">
-        <div className="oc-auth-logo">CatsCo</div>
+        <div className="oc-auth-logo"><span className="catsco-brand-mark" aria-hidden="true" /><span>CatsCo</span></div>
         <div className="oc-settings-secondary" style={{ marginBottom: 14 }}>
           输入注册邮箱，验证后设置新密码。
         </div>
@@ -746,7 +746,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
 
   return authShell(
     <form className="oc-auth-card" onSubmit={handleSubmit}>
-      <div className="oc-auth-logo">CatsCo</div>
+      <div className="oc-auth-logo"><span className="catsco-brand-mark" aria-hidden="true" /><span>CatsCo</span></div>
       {error && <div style={{ color: '#FA5151', marginBottom: 12, fontSize: 13 }}>{error}</div>}
 
       {mode === 'login' ? (
