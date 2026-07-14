@@ -1,6 +1,6 @@
-const API_BASE = process.env.REACT_APP_API_BASE || '';
+const API_BASE = import.meta.env.VITE_API_BASE || '';
 const DEFAULT_WS_SCHEME = window.location.protocol === 'https:' ? 'wss' : 'ws';
-const WS_URL = process.env.REACT_APP_WS_URL || `${DEFAULT_WS_SCHEME}://${window.location.host}/v0/channels`;
+const WS_URL = import.meta.env.VITE_WS_URL || `${DEFAULT_WS_SCHEME}://${window.location.host}/v0/channels`;
 
 let token = localStorage.getItem('oc_token');
 let wsConn = null;

@@ -2,56 +2,66 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 
-jest.mock('../widgets/create-group', () => function MockCreateGroup() {
-  return null;
-});
-
-jest.mock('../widgets/add-friend', () => function MockAddFriend() {
-  return null;
-});
-
-jest.mock('../widgets/friend-request', () => function MockFriendRequest() {
-  return null;
-});
-
-jest.mock('../widgets/agent-store-modal', () => function MockAgentStoreModal() {
-  return null;
-});
-
-jest.mock('../widgets/mobile-channel-bind-modal', () => function MockMobileChannelBindModal({ agentName, groupId, topicId, groupName, onClose }) {
-  return (
-    <div data-testid="mobile-channel-modal">
-      <strong>移动端使用</strong>
-      <span>{agentName}</span>
-      <span>{groupName}</span>
-      <span data-testid="mobile-channel-group-id">{groupId || ''}</span>
-      <span data-testid="mobile-channel-topic-id">{topicId || ''}</span>
-      <button type="button" onClick={onClose}>关闭移动端</button>
-    </div>
-  );
-});
-
-jest.mock('../api', () => ({
-  api: {
-    getConversations: jest.fn(),
-    getFriends: jest.fn(),
-    getGroups: jest.fn(),
-    getPendingRequests: jest.fn(),
-    getAgents: jest.fn(),
-    openAgent: jest.fn(),
-    acceptAgentFriend: jest.fn(),
-    rejectAgentFriend: jest.fn(),
-    acceptFriend: jest.fn(),
-    rejectFriend: jest.fn(),
-    removeFriend: jest.fn(),
-    disbandGroup: jest.fn(),
+vi.mock('../widgets/create-group', () => ({
+  default: function MockCreateGroup() {
+    return null;
   },
-  onWSMessage: jest.fn(() => jest.fn()),
-  updateTopicSeq: jest.fn(),
 }));
 
-const ChatListView = require('./sidepanel-view').default;
-const { api, onWSMessage } = require('../api');
+vi.mock('../widgets/add-friend', () => ({
+  default: function MockAddFriend() {
+    return null;
+  },
+}));
+
+vi.mock('../widgets/friend-request', () => ({
+  default: function MockFriendRequest() {
+    return null;
+  },
+}));
+
+vi.mock('../widgets/agent-store-modal', () => ({
+  default: function MockAgentStoreModal() {
+    return null;
+  },
+}));
+
+vi.mock('../widgets/mobile-channel-bind-modal', () => ({
+  default: function MockMobileChannelBindModal({ agentName, groupId, topicId, groupName, onClose }) {
+    return (
+      <div data-testid="mobile-channel-modal">
+        <strong>移动端使用</strong>
+        <span>{agentName}</span>
+        <span>{groupName}</span>
+        <span data-testid="mobile-channel-group-id">{groupId || ''}</span>
+        <span data-testid="mobile-channel-topic-id">{topicId || ''}</span>
+        <button type="button" onClick={onClose}>关闭移动端</button>
+      </div>
+    );
+  },
+}));
+
+vi.mock('../api', () => ({
+  api: {
+    getConversations: vi.fn(),
+    getFriends: vi.fn(),
+    getGroups: vi.fn(),
+    getPendingRequests: vi.fn(),
+    getAgents: vi.fn(),
+    openAgent: vi.fn(),
+    acceptAgentFriend: vi.fn(),
+    rejectAgentFriend: vi.fn(),
+    acceptFriend: vi.fn(),
+    rejectFriend: vi.fn(),
+    removeFriend: vi.fn(),
+    disbandGroup: vi.fn(),
+  },
+  onWSMessage: vi.fn(() => vi.fn()),
+  updateTopicSeq: vi.fn(),
+}));
+
+import ChatListView from './sidepanel-view';
+import { api, onWSMessage } from '../api';
 
 const user = {
   uid: 7,
@@ -98,8 +108,8 @@ describe('ChatListView sidebar sections', () => {
     api.acceptAgentFriend.mockResolvedValue({ ok: true });
     api.rejectAgentFriend.mockResolvedValue({ ok: true });
     api.removeFriend.mockResolvedValue({ ok: true });
-    onWSMessage.mockImplementation(() => jest.fn());
-    onSelectTopic = jest.fn();
+    onWSMessage.mockImplementation(() => vi.fn());
+    onSelectTopic = vi.fn();
 
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -111,7 +121,7 @@ describe('ChatListView sidebar sections', () => {
       root.unmount();
     });
     container.remove();
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   async function mount(props = {}) {
@@ -227,7 +237,7 @@ describe('ChatListView sidebar sections', () => {
         },
       ],
     });
-    window.confirm = jest.fn(() => true);
+    window.confirm = vi.fn(() => true);
 
     await mount();
 

@@ -2,14 +2,14 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 
-jest.mock('../api', () => ({
+vi.mock('../api', () => ({
   api: {
-    linkChannelAgentBindingUser: jest.fn(),
+    linkChannelAgentBindingUser: vi.fn(),
   },
 }));
 
-const ChannelDeviceLinkView = require('./channel-device-link-view').default;
-const { api } = require('../api');
+import ChannelDeviceLinkView from './channel-device-link-view';
+import { api } from '../api';
 
 const user = {
   uid: 7,

@@ -2,7 +2,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 
-jest.mock('../widgets/chat-message', () => ({
+vi.mock('../widgets/chat-message', () => ({
   __esModule: true,
   default: function MockChatMessage(props) {
     const fileBlock = props.message?.content_blocks?.find?.((block) => block.type === 'file');
@@ -22,39 +22,43 @@ jest.mock('../widgets/chat-message', () => ({
   },
 }));
 
-jest.mock('../widgets/group-settings', () => function MockGroupSettings() {
-  return null;
-});
-
-jest.mock('../widgets/avatar', () => function MockAvatar() {
-  return null;
-});
-
-jest.mock('../api', () => ({
-  api: {
-    getMessages: jest.fn(),
-    getFriends: jest.fn(),
-    getAgents: jest.fn(),
-    getAgentQuota: jest.fn(),
-    getGroupInfo: jest.fn(),
-    createChannelIdentityMobileLink: jest.fn(),
-    sendMessage: jest.fn(),
-    uploadFile: jest.fn(),
-    createMobileUploadSession: jest.fn(),
-    getMobileUploadSession: jest.fn(),
-    getTutorialTasks: jest.fn(),
+vi.mock('../widgets/group-settings', () => ({
+  default: function MockGroupSettings() {
+    return null;
   },
-  wsSendMessage: jest.fn(),
-  wsSendStreamCancel: jest.fn(),
-  wsSendTyping: jest.fn(),
-  wsSendRead: jest.fn(),
-  onWSMessage: jest.fn(() => jest.fn()),
-  updateTopicSeq: jest.fn(),
 }));
 
-const MessagesView = require('./messages-view').default;
-const { TUTORIAL_TASKS } = require('../widgets/tutorial-tasks');
-const { api, onWSMessage } = require('../api');
+vi.mock('../widgets/avatar', () => ({
+  default: function MockAvatar() {
+    return null;
+  },
+}));
+
+vi.mock('../api', () => ({
+  api: {
+    getMessages: vi.fn(),
+    getFriends: vi.fn(),
+    getAgents: vi.fn(),
+    getAgentQuota: vi.fn(),
+    getGroupInfo: vi.fn(),
+    createChannelIdentityMobileLink: vi.fn(),
+    sendMessage: vi.fn(),
+    uploadFile: vi.fn(),
+    createMobileUploadSession: vi.fn(),
+    getMobileUploadSession: vi.fn(),
+    getTutorialTasks: vi.fn(),
+  },
+  wsSendMessage: vi.fn(),
+  wsSendStreamCancel: vi.fn(),
+  wsSendTyping: vi.fn(),
+  wsSendRead: vi.fn(),
+  onWSMessage: vi.fn(() => vi.fn()),
+  updateTopicSeq: vi.fn(),
+}));
+
+import MessagesView from './messages-view';
+import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
+import { api, onWSMessage } from '../api';
 
 const user = {
   uid: 1,
@@ -73,7 +77,7 @@ function renderTopic(root, topic, extraProps = {}) {
       isGroup={false}
       groupId={null}
       topicAvatarUrl=""
-      onTopicUpdated={jest.fn()}
+      onTopicUpdated={vi.fn()}
       {...extraProps}
     />
   );
@@ -128,10 +132,10 @@ describe('MessagesView composer draft isolation', () => {
     wsHandler = null;
     onWSMessage.mockImplementation((handler) => {
       wsHandler = handler;
-      return jest.fn();
+      return vi.fn();
     });
 
-    window.HTMLElement.prototype.scrollIntoView = jest.fn();
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -142,7 +146,7 @@ describe('MessagesView composer draft isolation', () => {
       root.unmount();
     });
     container.remove();
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   it('preserves unsent drafts per topic when switching topics', async () => {
@@ -355,7 +359,7 @@ describe('MessagesView composer draft isolation', () => {
   });
 
   it('keeps syncing phone uploads after the QR dialog is closed', async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     api.createMobileUploadSession.mockResolvedValueOnce({
       session_id: 'sync-after-close',
       upload_url: '/mobile-upload/sync-after-close',
@@ -393,7 +397,7 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     await act(async () => {
-      jest.advanceTimersByTime(2000);
+      vi.advanceTimersByTime(2000);
       await Promise.resolve();
     });
 
@@ -404,12 +408,12 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     await act(async () => {
-      jest.advanceTimersByTime(2000);
+      vi.advanceTimersByTime(2000);
       await Promise.resolve();
     });
 
     expect(container.textContent).toContain('9 个附件待发送');
-    jest.useRealTimers();
+    vi.useRealTimers();
   });
 
   it('shows tutorial task cards on an empty topic', async () => {
@@ -465,7 +469,7 @@ describe('MessagesView composer draft isolation', () => {
   });
 
   it('dismisses tutorial cards for the current topic and stores the choice', async () => {
-    const onTutorialHint = jest.fn();
+    const onTutorialHint = vi.fn();
     await mountTopic(root, 'p2p_1_2', { onTutorialHint });
 
     await act(async () => {

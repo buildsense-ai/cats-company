@@ -31,24 +31,30 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: |
+            package-lock.json
             webapp/package-lock.json
             bot-sdk/typescript/package-lock.json
+            bots/xiaoba-ts/package-lock.json
 
       - name: Test backend
         run: go test ./server/...
+
+      - name: Scan Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
       - name: Test PostgreSQL store contract
         env:
@@ -66,17 +72,30 @@ jobs:
           npm test
           npm run test:types
 
+      - name: Build TypeScript bot example
+        working-directory: bots/xiaoba-ts
+        run: |
+          npm ci
+          npm run build
+
       - name: Install webapp dependencies
         working-directory: webapp
         run: npm ci
 
       - name: Test webapp
         working-directory: webapp
-        run: npm test -- --watchAll=false --runInBand
+        run: npm test
 
       - name: Build webapp
         working-directory: webapp
         run: npm run build
+
+      - name: Audit JavaScript dependencies
+        run: |
+          npm audit --package-lock-only --audit-level=high
+          npm audit --prefix webapp --package-lock-only --audit-level=high
+          npm audit --prefix bot-sdk/typescript --package-lock-only --audit-level=high
+          npm audit --prefix bots/xiaoba-ts --package-lock-only --audit-level=high
 
       - name: Validate test compose
         run: docker compose -f deploy/test/docker-compose.yml --env-file deploy/test/env.test.example config

@@ -1,15 +1,15 @@
-jest.mock('marked', () => ({
+vi.mock('marked', () => ({
   marked: {
-    setOptions: jest.fn(),
+    setOptions: vi.fn(),
     parse: (text) => `<p>${text}</p>`,
   },
 }));
 
-const {
+import {
   hasPlainTextTableLikeBlock,
   normalizePlainTextTables,
   renderSafeMarkdown,
-} = require('./markdown-utils');
+} from './markdown-utils';
 
 describe('markdown-utils plain text table detection', () => {
   it('detects aligned model-generated text table messages', () => {

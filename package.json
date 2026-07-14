@@ -3,6 +3,6 @@
     "dev:onboarding-mock": "node scripts/local-onboarding-mock-server.mjs"
   },
   "dependencies": {
-    "puppeteer": "^24.37.3"
+    "puppeteer": "^24.43.1"
   }
 }

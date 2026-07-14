@@ -2,9 +2,9 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 
-jest.mock('marked', () => ({
+vi.mock('marked', () => ({
   marked: {
-    setOptions: jest.fn(),
+    setOptions: vi.fn(),
     parse: (text) => {
       if (String(text).includes('javascript:')) {
         return '<p><a href="javascript:alert(1)" onclick="alert(2)">bad</a></p>';
@@ -31,24 +31,24 @@ jest.mock('marked', () => ({
   },
 }));
 
-jest.mock('../api', () => ({
+vi.mock('../api', () => ({
   resolveMediaURL: (url) => url,
 }));
 
-jest.mock('./avatar', () => function MockAvatar() {
-  return <div data-testid="avatar" />;
-});
-
-jest.mock('read-excel-file/browser', () => ({
-  __esModule: true,
-  default: jest.fn(),
+vi.mock('./avatar', () => ({
+  default: function MockAvatar() {
+    return <div data-testid="avatar" />;
+  },
 }));
 
-const chatMessageModule = require('./chat-message');
-const ChatMessage = chatMessageModule.default;
-const { FilePreviewPanel } = chatMessageModule;
-const { markdownPreviewDocument } = require('./markdown-utils');
-const readExcelFile = require('read-excel-file/browser').default;
+vi.mock('read-excel-file/browser', () => ({
+  __esModule: true,
+  default: vi.fn(),
+}));
+
+import ChatMessage, { FilePreviewPanel } from './chat-message';
+import { markdownPreviewDocument } from './markdown-utils';
+import readExcelFile from 'read-excel-file/browser';
 
 function PreviewHarness({ message }) {
   const [previewFile, setPreviewFile] = React.useState(null);
@@ -86,14 +86,14 @@ describe('ChatMessage rich file rendering', () => {
 
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
-    window.open = jest.fn();
+    window.open = vi.fn();
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: {
-        writeText: jest.fn(() => Promise.resolve()),
+        writeText: vi.fn(() => Promise.resolve()),
       },
     });
-    global.fetch = jest.fn(() => Promise.resolve({
+    global.fetch = vi.fn(() => Promise.resolve({
       ok: true,
       text: () => Promise.resolve('<!doctype html><h1>Report</h1><script>window.evil=true</script>'),
     }));
@@ -108,7 +108,7 @@ describe('ChatMessage rich file rendering', () => {
       root.unmount();
     });
     container.remove();
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   it('previews uploaded HTML as a sandboxed workflow report artifact', async () => {
@@ -197,7 +197,7 @@ describe('ChatMessage rich file rendering', () => {
         ],
       },
     ]);
-    global.fetch = jest.fn(() => Promise.resolve({
+    global.fetch = vi.fn(() => Promise.resolve({
       ok: true,
       arrayBuffer: () => Promise.resolve(new ArrayBuffer(16)),
     }));
@@ -248,7 +248,7 @@ describe('ChatMessage rich file rendering', () => {
   });
 
   it('previews CSV files with the same spreadsheet grid', async () => {
-    global.fetch = jest.fn(() => Promise.resolve({
+    global.fetch = vi.fn(() => Promise.resolve({
       ok: true,
       arrayBuffer: () => Promise.resolve(utf8ArrayBuffer('姓名,分数,状态\n张三,88,正常\n李四,54,复核\n')),
     }));
@@ -289,7 +289,7 @@ describe('ChatMessage rich file rendering', () => {
   });
 
   it('previews CSV files by MIME type even when the filename has no CSV extension', async () => {
-    global.fetch = jest.fn(() => Promise.resolve({
+    global.fetch = vi.fn(() => Promise.resolve({
       ok: true,
       arrayBuffer: () => Promise.resolve(utf8ArrayBuffer('姓名,分数\n张三,88\n')),
     }));
@@ -332,7 +332,7 @@ describe('ChatMessage rich file rendering', () => {
     const rows = Array.from({ length: 205 }, (_, rowIndex) => (
       Array.from({ length: 60 }, (_, columnIndex) => `R${rowIndex + 1}C${columnIndex + 1}`).join(',')
     ));
-    global.fetch = jest.fn(() => Promise.resolve({
+    global.fetch = vi.fn(() => Promise.resolve({
       ok: true,
       arrayBuffer: () => Promise.resolve(utf8ArrayBuffer([header, ...rows].join('\n'))),
     }));
@@ -410,8 +410,8 @@ describe('ChatMessage rich file rendering', () => {
   });
 
   it('blocks oversized spreadsheet previews before reading the full response body', async () => {
-    const arrayBuffer = jest.fn(() => Promise.resolve(new ArrayBuffer(16)));
-    global.fetch = jest.fn(() => Promise.resolve({
+    const arrayBuffer = vi.fn(() => Promise.resolve(new ArrayBuffer(16)));
+    global.fetch = vi.fn(() => Promise.resolve({
       ok: true,
       headers: {
         get: (name) => (name.toLowerCase() === 'content-length' ? String(13 * 1024 * 1024) : ''),
@@ -453,7 +453,7 @@ describe('ChatMessage rich file rendering', () => {
   });
 
   it('blocks oversized spreadsheet previews after reading the response body when the header is missing', async () => {
-    global.fetch = jest.fn(() => Promise.resolve({
+    global.fetch = vi.fn(() => Promise.resolve({
       ok: true,
       arrayBuffer: () => Promise.resolve(new ArrayBuffer(13 * 1024 * 1024)),
     }));
@@ -646,7 +646,7 @@ describe('ChatMessage rich file rendering', () => {
   });
 
   it('uses the hover action toolbar for reply and more actions without dead reaction buttons', async () => {
-    const onReply = jest.fn();
+    const onReply = vi.fn();
     await act(async () => {
       root.render(
         <ChatMessage

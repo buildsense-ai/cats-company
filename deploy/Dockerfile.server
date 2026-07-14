@@ -1,13 +1,13 @@
-FROM golang:1.21-alpine AS builder
+FROM golang:1.26.5-alpine3.24 AS builder
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
 WORKDIR /app
-COPY go.mod ./
-RUN go mod download || true
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
-RUN go mod tidy && CGO_ENABLED=0 go build -o openchat-server ./server/cmd/
+RUN CGO_ENABLED=0 go build -mod=readonly -o openchat-server ./server/cmd/
 
-FROM alpine:3.19
+FROM alpine:3.24.1
 RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=builder /app/openchat-server .

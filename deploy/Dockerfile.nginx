@@ -1,12 +1,12 @@
-FROM node:18-alpine AS webapp-build
+FROM node:24-alpine3.24 AS webapp-build
 
 WORKDIR /app
 
 ARG REACT_APP_API_BASE=""
-ENV REACT_APP_API_BASE=${REACT_APP_API_BASE}
+ENV VITE_API_BASE=${REACT_APP_API_BASE}
 
 COPY webapp/package.json webapp/package-lock.json ./
-RUN npm install
+RUN npm ci
 
 COPY webapp/ ./
 
@@ -24,7 +24,7 @@ RUN find build -type f \( \
   \) -exec gzip -kf -9 {} \; \
   -exec brotli -f -q 11 {} \;
 
-FROM georgjung/nginx-brotli:latest
+FROM georgjung/nginx-brotli:latest@sha256:488e48d7773deef7f696a25362da3043e3aabb447c6f28548eda7391a27c7fc9
 
 COPY deploy/nginx/nginx.conf /etc/nginx/nginx.conf
 COPY --from=webapp-build /app/build /usr/share/nginx/html
