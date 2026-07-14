@@ -191,6 +191,19 @@ func chainHTTP(handler http.HandlerFunc, middlewares ...func(http.HandlerFunc) h
 	return handler
 }
 
+func limitHTTPMethod(method string, middleware func(http.HandlerFunc) http.HandlerFunc) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		limited := middleware(next)
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == method {
+				limited(w, r)
+				return
+			}
+			next(w, r)
+		}
+	}
+}
+
 func useRedisRuntime(cfg RuntimeConfig) bool {
 	store := strings.ToLower(strings.TrimSpace(cfg.Store))
 	return store == "redis" || (store == "" && strings.TrimSpace(cfg.RedisURL) != "")
@@ -262,6 +275,14 @@ func main() {
 	var commercialStore server.CommercialStore
 	if candidate, ok := db.(server.CommercialStore); ok {
 		commercialStore = candidate
+	}
+	var commercialPaymentStore server.CommercialPaymentStore
+	if candidate, ok := db.(server.CommercialPaymentStore); ok {
+		commercialPaymentStore = candidate
+	}
+	var commercialRelayManagedStore server.CommercialRelayManagedStore
+	if candidate, ok := db.(server.CommercialRelayManagedStore); ok {
+		commercialRelayManagedStore = candidate
 	}
 	accountCenterHandler := server.NewAccountCenterHandler(db, accountServiceVerifier)
 	accountAdminHandler := server.NewAccountAdminHandler(db, accountServiceVerifier, db, commercialStore)
@@ -348,11 +369,48 @@ func main() {
 		log.Printf("relay commercial enforce sync allowlist is enabled for %d uid(s)", len(relayCommercialEnforceUIDs))
 	}
 	accountAdminHandler.SetCommercialRelayAdmin(relayAdminClient, relayCommercialEnforceEnabled, relayCommercialEnforceUIDs)
+	var commercialRelaySyncer *server.CommercialRelaySyncer
+	commercialServiceCtx, commercialServiceCancel := context.WithCancel(context.Background())
+	defer commercialServiceCancel()
+	if commercialRelayManagedStore != nil && relayAdminClient != nil {
+		commercialRelaySyncer = server.NewCommercialRelaySyncer(commercialRelayManagedStore, relayAdminClient, server.CommercialRelaySyncerOptions{
+			EnforceEnabled: relayCommercialEnforceEnabled,
+			EnforceUIDs:    relayCommercialEnforceUIDs,
+		})
+		commercialRelaySyncer.Start(commercialServiceCtx)
+		accountAdminHandler.SetCommercialRelaySyncer(commercialRelaySyncer)
+	}
 	relayCommercialHandler := server.NewRelayCommercialHandlerWithOptions(commercialStore, server.RelayCommercialOptions{
 		PublicEnabled:  relayCommercialPublicEnabled,
 		TestUIDs:       relayCommercialTestUIDs,
 		EnforceEnabled: relayCommercialEnforceEnabled,
 		EnforceUIDs:    relayCommercialEnforceUIDs,
+		Syncer:         commercialRelaySyncer,
+	})
+	paymentTestUIDs := envInt64Set("CATS_COMMERCIAL_TEST_PAYMENT_UIDS")
+	paymentProviders := []server.CommercialPaymentProvider{}
+	if envBool("CATS_COMMERCIAL_TEST_PAYMENT_ENABLED") {
+		paymentProviders = append(paymentProviders, server.NewTestCommercialPaymentProvider())
+		log.Printf("commercial test payment is enabled for %d uid(s)", len(paymentTestUIDs))
+	}
+	if envBool("CATS_WECHAT_PAY_ENABLED") {
+		provider, missing, err := server.NewWeChatNativePaymentProviderFromEnv(context.Background())
+		if err != nil {
+			log.Printf("WeChat Pay is disabled due to configuration error: %v", err)
+		} else if provider == nil {
+			log.Printf("WeChat Pay is waiting for configuration: %s", strings.Join(missing, ", "))
+		} else {
+			paymentProviders = append(paymentProviders, provider)
+			log.Printf("WeChat Native payment is enabled")
+		}
+	}
+	commercialPaymentHandler := server.NewCommercialPaymentHandler(commercialPaymentStore, server.CommercialPaymentHandlerOptions{
+		PublicEnabled: relayCommercialPublicEnabled,
+		TestUIDs:      relayCommercialTestUIDs,
+		TestPayments:  paymentTestUIDs,
+		TrialPlanSlug: envString("CATS_COMMERCIAL_TRIAL_PLAN_SLUG"),
+		Providers:     paymentProviders,
+		Syncer:        commercialRelaySyncer,
 	})
 	// usageHandler := server.NewUsageHandler(db)
 
@@ -428,6 +486,18 @@ func main() {
 	deviceConnectorEnrollIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "device_connector_enroll_ip", Limit: 20, Window: time.Minute, Burst: 5,
 	})
+	commercialOrderUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "commercial_order_user", Limit: 12, Window: 10 * time.Minute, Burst: 3,
+	})
+	commercialTrialUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "commercial_trial_user", Limit: 5, Window: time.Hour, Burst: 2,
+	})
+	commercialTestPaymentUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "commercial_test_payment_user", Limit: 10, Window: time.Minute, Burst: 3,
+	})
+	commercialNotifyIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
+		Name: "commercial_wechat_notify_ip", Limit: 3000, Window: time.Minute, Burst: 500,
+	})
 
 	// HTTP routes
 	mux := http.NewServeMux()
@@ -473,6 +543,7 @@ func main() {
 	mux.HandleFunc("/local/account-admin/commercial/users", accountAdminHandler.HandleCommercialUserSummary)
 	mux.HandleFunc("/local/account-admin/commercial/relay-dry-run", accountAdminHandler.HandleCommercialRelayDryRun)
 	mux.HandleFunc("/local/account-admin/commercial/relay-sync", accountAdminHandler.HandleCommercialRelaySync)
+	mux.HandleFunc("/local/account-admin/commercial/orders", accountAdminHandler.HandleCommercialOrders)
 	mux.HandleFunc("/local/tutorial-admin", tutorialTaskHandler.HandleAdminPage)
 	mux.HandleFunc("/local/tutorial-admin/", tutorialTaskHandler.HandleAdminPage)
 	mux.HandleFunc("/local/tutorial-admin/tasks", tutorialTaskHandler.HandleAdminTasks)
@@ -559,6 +630,11 @@ func main() {
 	mux.HandleFunc("/api/relay/config", ownerAuthWithDB(relayConfigHandler.HandleConfig))
 	mux.HandleFunc("/api/relay/commercial", ownerAuthWithDB(relayCommercialHandler.HandleSummary))
 	mux.HandleFunc("/api/relay/invite/redeem", ownerAuthWithDB(relayCommercialHandler.HandleRedeemInvite))
+	mux.HandleFunc("/api/relay/commercial/catalog", ownerAuthWithDB(commercialPaymentHandler.HandleCatalog))
+	mux.HandleFunc("/api/relay/commercial/orders", chainHTTP(commercialPaymentHandler.HandleOrders, ownerAuthWithDB, limitHTTPMethod(http.MethodPost, commercialOrderUserLimit)))
+	mux.HandleFunc("/api/relay/commercial/orders/test-confirm", chainHTTP(commercialPaymentHandler.HandleTestConfirm, ownerAuthWithDB, commercialTestPaymentUserLimit))
+	mux.HandleFunc("/api/relay/commercial/trial/claim", chainHTTP(commercialPaymentHandler.HandleClaimTrial, ownerAuthWithDB, commercialTrialUserLimit))
+	mux.HandleFunc("/api/payments/wechat/notify", commercialNotifyIPLimit(commercialPaymentHandler.HandleWeChatNotify))
 	mux.HandleFunc("/api/relay/session", ownerAuthWithDB(relayConfigHandler.HandleSession))
 	mux.HandleFunc("/api/relay/key", ownerAuthWithDB(relayKeyHandler.HandleKey))
 	mux.HandleFunc("/api/relay/key/rotate", ownerAuthWithDB(relayKeyHandler.HandleRotate))

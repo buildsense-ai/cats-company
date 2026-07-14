@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CalendarDays, Check, Copy, ExternalLink, Gift, KeyRound, RotateCcw, Server, Sparkles, Trash2, X } from 'lucide-react';
+import { AlertTriangle, CalendarDays, Check, Copy, CreditCard, ExternalLink, Gift, KeyRound, ReceiptText, RotateCcw, Server, Sparkles, Trash2, X } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 
@@ -85,6 +86,28 @@ function formatShortDateTime(value) {
 }
 
 
+function formatPriceFen(value) {
+  return `¥${(Number(value || 0) / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function commercialOrderStatus(status) {
+  return {
+    created: '创建中',
+    pending: '待支付',
+    paid: '已支付',
+    fulfilled: '已到账',
+    closed: '已关闭',
+    failed: '创建失败',
+    refunding: '退款中',
+    refunded: '已退款',
+  }[status] || status || '未知状态';
+}
+
+function newCommercialClientRequestID() {
+  const random = globalThis.crypto?.randomUUID?.().replaceAll('-', '') || Math.random().toString(36).slice(2);
+  return `order_${Date.now()}_${random}`.slice(0, 64);
+}
+
 function formatPercent(value) {
   const number = Number(value || 0);
   if (!Number.isFinite(number)) return '0%';
@@ -100,6 +123,16 @@ function summarizeCommercial(summary) {
   const models = summary?.models || [];
   if (!models.length) return '暂无已发放额度';
   return `已发放 ${models.length} 项模型额度`;
+}
+
+function commercialBudgetTextForUser(plan) {
+  const entries = Object.entries(plan?.model_budgets || {}).filter(([, amount]) => Number(amount) > 0);
+  if (Number(plan?.monthly_budget_cny || 0) > 0) {
+    entries.unshift(['*', plan.monthly_budget_cny]);
+  }
+  if (!entries.length) return `${Number(plan?.duration_days || 30)} 天有效`;
+  const preview = entries.slice(0, 3).map(([model, amount]) => `${modelBudgetLabel(model)} ${formatCNY(amount)}`).join(' · ');
+  return `${preview}${entries.length > 3 ? ` 等 ${entries.length} 项` : ''} · ${Number(plan?.duration_days || 30)} 天`;
 }
 
 function activeEntitlements(summary) {
@@ -333,6 +366,12 @@ export default function RelayAccessModal({ onClose }) {
   const [keyLoading, setKeyLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState('');
   const [commercial, setCommercial] = useState(null);
+  const [commercialCatalog, setCommercialCatalog] = useState(null);
+  const [commercialOrders, setCommercialOrders] = useState([]);
+  const [paymentChannel, setPaymentChannel] = useState('');
+  const [checkoutOrder, setCheckoutOrder] = useState(null);
+  const [paymentLoading, setPaymentLoading] = useState('');
+  const [trialLoading, setTrialLoading] = useState(false);
   const [currentUsage, setCurrentUsage] = useState(undefined);
   const [usageByModel, setUsageByModel] = useState({});
   const [inviteCode, setInviteCode] = useState('');
@@ -370,6 +409,23 @@ export default function RelayAccessModal({ onClose }) {
           if (!cancelled) setCommercial(commercialData);
         } catch (err) {
           if (!cancelled) setCommercial(null);
+        }
+        try {
+          const [catalogData, ordersData] = await Promise.all([
+            api.getCommercialCatalog(),
+            api.getCommercialOrders(),
+          ]);
+          if (!cancelled) {
+            setCommercialCatalog(catalogData);
+            setCommercialOrders(Array.isArray(ordersData?.orders) ? ordersData.orders : []);
+            const channels = Array.isArray(catalogData?.channels) ? catalogData.channels : [];
+            setPaymentChannel(channels[0]?.id || '');
+          }
+        } catch {
+          if (!cancelled) {
+            setCommercialCatalog(null);
+            setCommercialOrders([]);
+          }
         }
       } catch (err) {
         if (!cancelled) {
@@ -515,6 +571,8 @@ export default function RelayAccessModal({ onClose }) {
   const commercialSummary = commercial?.summary;
   const commercialEnabled = commercial?.enabled === true && commercialSummary;
   const commercialEnforced = commercial?.enforce_enabled === true;
+  const salePlans = Array.isArray(commercialCatalog?.plans) ? commercialCatalog.plans : [];
+  const paymentChannels = Array.isArray(commercialCatalog?.channels) ? commercialCatalog.channels : [];
   const activePackages = activeEntitlements(commercialSummary);
   const modelTotals = commercialModels(commercialSummary);
   const packageExpiry = nearestPackageExpiry(activePackages);
@@ -595,6 +653,91 @@ export default function RelayAccessModal({ onClose }) {
       setInviteLoading(false);
     }
   };
+
+  const refreshCommercialState = async () => {
+    const [commercialData, catalogData, ordersData] = await Promise.all([
+      api.getRelayCommercial(),
+      api.getCommercialCatalog(),
+      api.getCommercialOrders(),
+    ]);
+    setCommercial(commercialData);
+    setCommercialCatalog(catalogData);
+    setCommercialOrders(Array.isArray(ordersData?.orders) ? ordersData.orders : []);
+    const channels = Array.isArray(catalogData?.channels) ? catalogData.channels : [];
+    setPaymentChannel((current) => channels.some((channel) => channel.id === current) ? current : (channels[0]?.id || ''));
+  };
+
+  const createCommercialOrder = async (plan) => {
+    if (!paymentChannel) {
+      setError('支付通道尚未配置。');
+      return;
+    }
+    setPaymentLoading(`create:${plan.id}`);
+    setError('');
+    try {
+      const data = await api.createCommercialOrder(plan.id, paymentChannel, newCommercialClientRequestID());
+      setCheckoutOrder(data.order || null);
+      setCommercialOrders((current) => {
+        const next = (current || []).filter((item) => item.order_no !== data.order?.order_no);
+        return data.order ? [data.order, ...next] : next;
+      });
+    } catch (err) {
+      setError(err.message || '创建订单失败');
+    } finally {
+      setPaymentLoading('');
+    }
+  };
+
+  const confirmCommercialTestPayment = async () => {
+    if (!checkoutOrder?.order_no) return;
+    setPaymentLoading(`confirm:${checkoutOrder.order_no}`);
+    setError('');
+    try {
+      const data = await api.confirmCommercialTestPayment(checkoutOrder.order_no);
+      setCheckoutOrder(data.order || checkoutOrder);
+      await refreshCommercialState();
+    } catch (err) {
+      setError(err.message || '测试支付失败');
+    } finally {
+      setPaymentLoading('');
+    }
+  };
+
+  const claimCommercialTrial = async () => {
+    setTrialLoading(true);
+    setError('');
+    try {
+      const data = await api.claimCommercialTrial();
+      setCommercial({ ...(commercial || {}), enabled: true, summary: data.summary });
+      await refreshCommercialState();
+    } catch (err) {
+      setError(err.message || '体验包领取失败');
+    } finally {
+      setTrialLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!checkoutOrder?.order_no || checkoutOrder.status !== 'pending') return undefined;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const data = await api.getCommercialOrders(checkoutOrder.order_no);
+        if (cancelled || !data?.order) return;
+        setCheckoutOrder(data.order);
+        if (data.order.status === 'fulfilled') {
+          await refreshCommercialState();
+        }
+      } catch {
+        // Keep the payment panel open; the next poll or callback can recover.
+      }
+    };
+    const timer = window.setInterval(poll, 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [checkoutOrder?.order_no, checkoutOrder?.status]);
 
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
@@ -712,6 +855,115 @@ export default function RelayAccessModal({ onClose }) {
               </div>
             </div>
             <div className="relay-access-period-note">{currentResetInfo.note}</div>
+
+            {commercialCatalog?.trial_available && (
+              <div className="relay-access-trial-row">
+                <div>
+                  <strong>新用户体验包</strong>
+                  <span>领取后会直接加入当前模型额度，每个账号限一次。</span>
+                </div>
+                <button type="button" onClick={claimCommercialTrial} disabled={trialLoading}>
+                  {trialLoading ? '领取中...' : '领取体验包'}
+                </button>
+              </div>
+            )}
+
+            {salePlans.length > 0 && (
+              <div className="relay-access-storefront">
+                <div className="relay-access-storefront-head">
+                  <div>
+                    <div className="relay-access-mini-title">购买套餐</div>
+                    <span>支付完成后自动到账，无需再输入邀请码。</span>
+                  </div>
+                  {paymentChannels.length > 1 ? (
+                    <select value={paymentChannel} onChange={(event) => setPaymentChannel(event.target.value)}>
+                      {paymentChannels.map((channel) => (
+                        <option value={channel.id} key={channel.id}>{channel.label}</option>
+                      ))}
+                    </select>
+                  ) : paymentChannels.length === 1 ? (
+                    <span className="relay-access-payment-channel">{paymentChannels[0].label}</span>
+                  ) : null}
+                </div>
+                <div className="relay-access-plan-list">
+                  {salePlans.map((plan) => (
+                    <div className="relay-access-plan-row" key={plan.id}>
+                      <div>
+                        <strong>{plan.name}</strong>
+                        <span>{plan.description || `${plan.duration_days} 天有效`}</span>
+                        <em>{commercialBudgetTextForUser(plan)}</em>
+                      </div>
+                      <div>
+                        <strong>{formatPriceFen(plan.price_fen)}</strong>
+                        <button
+                          type="button"
+                          onClick={() => createCommercialOrder(plan)}
+                          disabled={!paymentChannel || Boolean(paymentLoading)}
+                        >
+                          <CreditCard size={15} />
+                          {paymentLoading === `create:${plan.id}` ? '创建中...' : '购买'}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {paymentChannels.length === 0 && (
+                  <div className="relay-access-period-note">支付通道还未配置，套餐暂时只能通过邀请码或后台发放。</div>
+                )}
+              </div>
+            )}
+
+            {checkoutOrder && (
+              <div className={`relay-access-checkout ${checkoutOrder.status}`}>
+                <div className="relay-access-checkout-head">
+                  <div>
+                    <strong>{checkoutOrder.plan_name}</strong>
+                    <span>订单 {checkoutOrder.order_no}</span>
+                  </div>
+                  <em>{commercialOrderStatus(checkoutOrder.status)}</em>
+                </div>
+                {checkoutOrder.status === 'pending' && checkoutOrder.code_url && (
+                  <div className="relay-access-payment-qr">
+                    <QRCodeSVG value={checkoutOrder.code_url} size={156} level="M" marginSize={2} />
+                    <div>
+                      <strong>微信扫码支付 {formatPriceFen(checkoutOrder.amount_fen)}</strong>
+                      <span>支付成功后此处会自动更新，订单约 20 分钟失效。</span>
+                    </div>
+                  </div>
+                )}
+                {checkoutOrder.status === 'pending' && checkoutOrder.channel === 'test' && commercialCatalog?.test_mode && (
+                  <button
+                    type="button"
+                    className="relay-access-test-payment"
+                    onClick={confirmCommercialTestPayment}
+                    disabled={Boolean(paymentLoading)}
+                  >
+                    {paymentLoading === `confirm:${checkoutOrder.order_no}` ? '入账中...' : '完成灰度测试支付'}
+                  </button>
+                )}
+                {checkoutOrder.status === 'fulfilled' && (
+                  <div className="relay-access-payment-success"><Check size={16} />支付成功，套餐额度已到账。</div>
+                )}
+              </div>
+            )}
+
+            {commercialOrders.length > 0 && (
+              <div className="relay-access-order-list">
+                <div className="relay-access-mini-title"><ReceiptText size={15} />最近订单</div>
+                {commercialOrders.slice(0, 5).map((order) => (
+                  <button type="button" key={order.order_no} onClick={() => setCheckoutOrder(order)}>
+                    <span>
+                      <strong>{order.plan_name}</strong>
+                      <em>{formatShortDateTime(order.created_at)}</em>
+                    </span>
+                    <span>
+                      <strong>{formatPriceFen(order.amount_fen)}</strong>
+                      <em>{commercialOrderStatus(order.status)}</em>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
 
             {commercialEnabled && activePackages.length > 0 && (
               <div className="relay-access-package-list">

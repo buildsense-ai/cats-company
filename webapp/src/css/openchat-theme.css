@@ -3427,6 +3427,233 @@ button.catsco-download-action:disabled {
   padding: 2px 2px 0;
 }
 
+.relay-access-trial-row,
+.relay-access-storefront,
+.relay-access-checkout,
+.relay-access-order-list {
+  border: 1px solid var(--v3-border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.relay-access-trial-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  border-color: rgba(52, 199, 89, 0.28);
+  background: rgba(52, 199, 89, 0.06);
+}
+
+.relay-access-trial-row div,
+.relay-access-plan-row > div,
+.relay-access-checkout-head > div,
+.relay-access-payment-qr > div {
+  min-width: 0;
+}
+
+.relay-access-trial-row strong,
+.relay-access-trial-row span,
+.relay-access-plan-row strong,
+.relay-access-plan-row span,
+.relay-access-plan-row em,
+.relay-access-checkout-head strong,
+.relay-access-checkout-head span,
+.relay-access-payment-qr strong,
+.relay-access-payment-qr span {
+  display: block;
+}
+
+.relay-access-trial-row strong,
+.relay-access-plan-row strong,
+.relay-access-checkout-head strong,
+.relay-access-payment-qr strong {
+  color: var(--v3-text-name);
+}
+
+.relay-access-trial-row span,
+.relay-access-plan-row span,
+.relay-access-plan-row em,
+.relay-access-checkout-head span,
+.relay-access-payment-qr span,
+.relay-access-storefront-head > div > span {
+  margin-top: 3px;
+  color: var(--v3-text-muted);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.5;
+}
+
+.relay-access-trial-row button,
+.relay-access-plan-row button,
+.relay-access-test-payment {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid rgba(52, 199, 89, 0.3);
+  border-radius: 8px;
+  background: rgba(52, 199, 89, 0.12);
+  color: var(--v3-accent);
+  padding: 0 12px;
+  font-weight: 750;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.relay-access-trial-row button:disabled,
+.relay-access-plan-row button:disabled,
+.relay-access-test-payment:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.relay-access-storefront,
+.relay-access-checkout,
+.relay-access-order-list {
+  padding: 12px;
+}
+
+.relay-access-storefront-head,
+.relay-access-checkout-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.relay-access-storefront-head select {
+  min-width: 130px;
+  height: 34px;
+  border: 1px solid var(--v3-border);
+  border-radius: 8px;
+  background: var(--v3-panel);
+  color: var(--v3-text-main);
+  padding: 0 9px;
+}
+
+.relay-access-payment-channel,
+.relay-access-checkout-head em {
+  flex: 0 0 auto;
+  color: var(--v3-text-muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.relay-access-plan-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.relay-access-plan-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 10px;
+  border-top: 1px solid var(--v3-border);
+}
+
+.relay-access-plan-row:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.relay-access-plan-row > div:last-child {
+  display: grid;
+  justify-items: end;
+  gap: 7px;
+}
+
+.relay-access-plan-row > div:last-child > strong {
+  font-size: 17px;
+}
+
+.relay-access-checkout.pending {
+  border-color: rgba(214, 168, 79, 0.34);
+}
+
+.relay-access-checkout.fulfilled {
+  border-color: rgba(52, 199, 89, 0.3);
+}
+
+.relay-access-payment-qr {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--v3-border);
+}
+
+.relay-access-payment-qr svg {
+  flex: 0 0 auto;
+  width: 156px;
+  height: 156px;
+  border-radius: 6px;
+}
+
+.relay-access-test-payment {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.relay-access-payment-success {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--v3-accent);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.relay-access-order-list {
+  display: grid;
+  gap: 6px;
+}
+
+.relay-access-order-list .relay-access-mini-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 2px;
+}
+
+.relay-access-order-list > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--v3-border);
+  background: transparent;
+  color: var(--v3-text-main);
+  padding: 8px 0 2px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.relay-access-order-list > button > span:last-child {
+  text-align: right;
+}
+
+.relay-access-order-list strong,
+.relay-access-order-list em {
+  display: block;
+}
+
+.relay-access-order-list em {
+  margin-top: 2px;
+  color: var(--v3-text-muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
 .relay-access-invite-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -3742,6 +3969,28 @@ button.catsco-download-action:disabled {
   .relay-access-commerce-grid,
   .relay-access-invite-form {
     grid-template-columns: 1fr;
+  }
+
+  .relay-access-trial-row,
+  .relay-access-storefront-head,
+  .relay-access-plan-row,
+  .relay-access-payment-qr {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .relay-access-trial-row button,
+  .relay-access-plan-row button,
+  .relay-access-storefront-head select {
+    width: 100%;
+  }
+
+  .relay-access-plan-row > div:last-child {
+    justify-items: stretch;
+  }
+
+  .relay-access-payment-qr svg {
+    align-self: center;
   }
 }
 

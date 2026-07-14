@@ -46,6 +46,10 @@ func scanCommercialPlan(scanner interface {
 		&plan.Slug,
 		&plan.Name,
 		&plan.Description,
+		&plan.PriceFen,
+		&plan.Currency,
+		&plan.SaleState,
+		&plan.PurchaseLimit,
 		&plan.MonthlyBudget,
 		&budgets,
 		&plan.DurationDays,
@@ -66,7 +70,8 @@ func (a *Adapter) ListCommercialPlans(includeDisabled bool) ([]*types.Commercial
 		where = "WHERE state = 0"
 	}
 	rows, err := a.db.Query(`
-		SELECT id, slug, name, description, monthly_budget_cny, model_budgets, duration_days, state, sort_order, created_at, updated_at
+		SELECT id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
+		       monthly_budget_cny, model_budgets, duration_days, state, sort_order, created_at, updated_at
 		FROM commercial_plans
 		` + where + `
 		ORDER BY sort_order ASC, id ASC`)
@@ -103,11 +108,18 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	}
 	var id int64
 	err = a.db.QueryRow(`
-		INSERT INTO commercial_plans(slug, name, description, monthly_budget_cny, model_budgets, duration_days, state, sort_order)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+		INSERT INTO commercial_plans(
+			slug, name, description, price_fen, currency, sale_state, purchase_limit,
+			monthly_budget_cny, model_budgets, duration_days, state, sort_order
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12)
 		ON CONFLICT(slug) DO UPDATE SET
 			name = EXCLUDED.name,
 			description = EXCLUDED.description,
+			price_fen = EXCLUDED.price_fen,
+			currency = EXCLUDED.currency,
+			sale_state = EXCLUDED.sale_state,
+			purchase_limit = EXCLUDED.purchase_limit,
 			monthly_budget_cny = EXCLUDED.monthly_budget_cny,
 			model_budgets = EXCLUDED.model_budgets,
 			duration_days = EXCLUDED.duration_days,
@@ -117,6 +129,10 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 		strings.TrimSpace(plan.Slug),
 		strings.TrimSpace(plan.Name),
 		strings.TrimSpace(plan.Description),
+		plan.PriceFen,
+		normalizeCommercialCurrency(plan.Currency),
+		normalizeCommercialSaleState(plan.SaleState),
+		maxInt(plan.PurchaseLimit, 0),
 		plan.MonthlyBudget,
 		string(budgets),
 		durationDays,
@@ -127,6 +143,30 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 		return 0, fmt.Errorf("create commercial plan: %w", err)
 	}
 	return id, nil
+}
+
+func normalizeCommercialCurrency(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if value == "" {
+		return "CNY"
+	}
+	return value
+}
+
+func normalizeCommercialSaleState(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "test", "public":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "hidden"
+	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func scanCommercialInvite(scanner interface {

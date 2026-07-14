@@ -6,6 +6,11 @@ vi.mock('../api', () => ({
     getRelayConfig: vi.fn(),
     getRelayKey: vi.fn(),
     getRelayCommercial: vi.fn(),
+    getCommercialCatalog: vi.fn(),
+    getCommercialOrders: vi.fn(),
+    createCommercialOrder: vi.fn(),
+    confirmCommercialTestPayment: vi.fn(),
+    claimCommercialTrial: vi.fn(),
     getRelayUsage: vi.fn(),
     createRelaySession: vi.fn(),
     createRelayKey: vi.fn(),
@@ -63,6 +68,8 @@ describe('RelayAccessModal commercial rollout', () => {
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
     });
     window.confirm = vi.fn(() => true);
+    api.getCommercialCatalog.mockResolvedValue({ enabled: false, plans: [], channels: [], trial_available: false });
+    api.getCommercialOrders.mockResolvedValue({ orders: [] });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -290,5 +297,33 @@ describe('RelayAccessModal commercial rollout', () => {
 
     expect(container.textContent).toContain('当前模型未设置额度');
     expect(container.textContent).toContain('等待模型限额同步');
+  });
+
+  it('shows gray purchase plans and the configured payment channel', async () => {
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      test_mode: true,
+      trial_available: true,
+      channels: [{ id: 'test', label: '灰度测试支付', test_mode: true }],
+      plans: [{
+        id: 9,
+        slug: 'gray-plan',
+        name: '灰度标准包',
+        description: '用于内部支付冒烟',
+        price_fen: 2990,
+        currency: 'CNY',
+        sale_state: 'test',
+        duration_days: 30,
+        model_budgets: { 'MiniMax-M3': 500 },
+      }],
+    });
+
+    await renderModal();
+
+    expect(container.textContent).toContain('购买套餐');
+    expect(container.textContent).toContain('灰度标准包');
+    expect(container.textContent).toContain('¥29.90');
+    expect(container.textContent).toContain('灰度测试支付');
+    expect(container.textContent).toContain('领取体验包');
   });
 });

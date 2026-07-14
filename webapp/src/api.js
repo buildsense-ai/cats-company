@@ -588,6 +588,15 @@ export const api = {
   getRelayConfig: () => request('GET', '/api/relay/config'),
   getRelayCommercial: () => request('GET', '/api/relay/commercial'),
   redeemRelayInvite: (code) => request('POST', '/api/relay/invite/redeem', { code }),
+  getCommercialCatalog: () => request('GET', '/api/relay/commercial/catalog'),
+  getCommercialOrders: (orderNo = '') => request('GET', `/api/relay/commercial/orders${orderNo ? `?order_no=${encodeURIComponent(orderNo)}` : ''}`),
+  createCommercialOrder: (planId, channel, clientRequestId) => request('POST', '/api/relay/commercial/orders', {
+    plan_id: planId,
+    channel,
+    client_request_id: clientRequestId,
+  }),
+  confirmCommercialTestPayment: (orderNo) => request('POST', '/api/relay/commercial/orders/test-confirm', { order_no: orderNo }),
+  claimCommercialTrial: () => request('POST', '/api/relay/commercial/trial/claim', {}),
   createRelaySession: () => request('POST', '/api/relay/session', {}),
   getRelayKey: () => request('GET', '/api/relay/key'),
   getRelayUsage: ({ model, source } = {}) => {

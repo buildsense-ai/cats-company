@@ -824,7 +824,7 @@
 
     <section class="admin-view" data-admin-view="commercial">
       <h2>模型服务商业化测试</h2>
-      <p>先建立套餐、邀请码和人工发放账本；模型额度通过“预演 -> 同步”写入 relay。现有自动建 Key、Bifrost 转发和用户默认额度不会被创建套餐这一步直接改动。</p>
+      <p>建立套餐、邀请码、体验包和灰度支付订单；只有标记为 test/public 且设置售价的套餐会进入购买列表。模型额度通过“预演 -> 同步”写入 relay。</p>
       <div class="commercial-status-grid" id="commercial-status-grid" aria-live="polite">
         <div class="commercial-status-card">
           <span>套餐</span>
@@ -850,7 +850,7 @@
         </div>
         <div class="commercial-flow-step">
           <strong>2. 发邀请码</strong>
-          <span>用户兑换后生成套餐权益；也可以手工给 UID 补额。</span>
+          <span>用户可兑换、领取体验包或支付购买；也可以手工给 UID 补额。</span>
         </div>
         <div class="commercial-flow-step">
           <strong>3. 查 UID</strong>
@@ -877,6 +877,13 @@
           <form id="commercial-plan-form">
             <input id="commercial-plan-slug" autocomplete="off" placeholder="套餐标识，例如 trial-teacher" />
             <input id="commercial-plan-name" autocomplete="off" placeholder="显示名称，例如 教师试用包" />
+            <input id="commercial-plan-price" inputmode="decimal" placeholder="售价 CNY，例如 29.90；内部包填 0" />
+            <select id="commercial-plan-sale-state">
+              <option value="hidden">不展示（内部/邀请码）</option>
+              <option value="test">仅灰度账号可购买</option>
+              <option value="public">公开可购买</option>
+            </select>
+            <input id="commercial-plan-purchase-limit" inputmode="numeric" placeholder="每用户限购次数，0 表示不限" />
             <input id="commercial-plan-monthly" inputmode="decimal" placeholder="通用账本额度 CNY，内测建议填 0" />
             <textarea id="commercial-plan-model-budgets" placeholder='模型额度 JSON，会同步到 relay，例如 {"MiniMax-M3":500,"deepseek-v4-flash":100}'></textarea>
             <div class="commercial-model-actions" aria-label="套餐模型额度模板">
@@ -947,6 +954,11 @@
         </div>
 
         <div class="commercial-panel commercial-panel-wide">
+          <h3>最近订单</h3>
+          <div id="commercial-order-list" class="commercial-list">正在加载订单...</div>
+        </div>
+
+        <div class="commercial-panel commercial-panel-wide">
           <h3>运营边界</h3>
           <p>这块先做商业化账本、灰度入口和 relay 对账。只有开启 enforce 变量后，“尝试同步”才会把模型额度写到 relay-admin 的 provider config；默认不会替换现有用户的 relay key、模型调用、key 级月预算或 Bifrost 路由。通用账本额度暂时只做记录和展示，不作为 relay 强制限额。已超额用户需要补额或在 relay 侧重置用量后再继续。</p>
         </div>
@@ -1003,6 +1015,7 @@ http://127.0.0.1:26061/local/account-admin</code>
     const commercialSyncButton = document.querySelector('#commercial-sync-button');
     const commercialDryRunError = document.querySelector('#commercial-dry-run-error');
     const commercialDryRunResult = document.querySelector('#commercial-dry-run-result');
+    const commercialOrderList = document.querySelector('#commercial-order-list');
     const commercialStatusPlans = document.querySelector('#commercial-status-plans');
     const commercialStatusInvites = document.querySelector('#commercial-status-invites');
     const commercialStatusRedemptions = document.querySelector('#commercial-status-redemptions');
@@ -1068,6 +1081,7 @@ http://127.0.0.1:26061/local/account-admin</code>
       } else if (view === 'commercial') {
         loadCommercialPlans();
         loadCommercialInvites();
+        loadCommercialOrders();
       }
     }
 
@@ -1508,6 +1522,8 @@ http://127.0.0.1:26061/local/account-admin</code>
       'teacher-trial': {
         slug: 'teacher-trial',
         name: '教师试用包',
+        price_cny: 0,
+        sale_state: 'hidden',
         monthly_budget_cny: 0,
         duration_days: 30,
         model_budgets: modelBudgetTemplates['teacher-trial'],
@@ -1515,6 +1531,8 @@ http://127.0.0.1:26061/local/account-admin</code>
       'teacher-standard': {
         slug: 'teacher-standard',
         name: '教师标准包',
+        price_cny: 0,
+        sale_state: 'hidden',
         monthly_budget_cny: 0,
         duration_days: 30,
         model_budgets: {
@@ -1526,6 +1544,8 @@ http://127.0.0.1:26061/local/account-admin</code>
       'internal-large': {
         slug: 'internal-large',
         name: '内部大额包',
+        price_cny: 0,
+        sale_state: 'hidden',
         monthly_budget_cny: 0,
         duration_days: 30,
         model_budgets: {
@@ -1538,6 +1558,8 @@ http://127.0.0.1:26061/local/account-admin</code>
       blank: {
         slug: '',
         name: '',
+        price_cny: 0,
+        sale_state: 'hidden',
         monthly_budget_cny: 0,
         duration_days: 30,
         model_budgets: {},
@@ -1596,7 +1618,7 @@ http://127.0.0.1:26061/local/account-admin</code>
           <div class="commercial-item">
             <div>
               <strong>${escapeHTML(plan.name || plan.slug)}</strong>
-              <div class="commercial-meta">slug=${escapeHTML(plan.slug)} · ${escapeHTML(commercialBudgetText(plan))} · ${plan.duration_days || 30} 天 · ${Number(plan.state || 0) === 0 ? '启用' : '停用'}</div>
+              <div class="commercial-meta">slug=${escapeHTML(plan.slug)} · 售价 ¥${escapeHTML((Number(plan.price_fen || 0) / 100).toFixed(2))} · ${escapeHTML(plan.sale_state || 'hidden')} · ${escapeHTML(commercialBudgetText(plan))} · ${plan.duration_days || 30} 天 · ${Number(plan.state || 0) === 0 ? '启用' : '停用'}</div>
             </div>
             <span class="badge">#${escapeHTML(plan.id)}</span>
           </div>
@@ -1660,6 +1682,29 @@ http://127.0.0.1:26061/local/account-admin</code>
       }
     }
 
+    async function loadCommercialOrders() {
+      try {
+        const resp = await fetch('/local/account-admin/commercial/orders', { headers: { Accept: 'application/json' } });
+        const payload = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          commercialOrderList.textContent = payload.error || `订单加载失败：HTTP ${resp.status}`;
+          return;
+        }
+        const orders = Array.isArray(payload.orders) ? payload.orders : [];
+        commercialOrderList.innerHTML = orders.length ? orders.map((order) => `
+          <div class="commercial-item">
+            <div>
+              <strong>${escapeHTML(order.plan_name || order.plan_slug)} · ¥${escapeHTML((Number(order.amount_fen || 0) / 100).toFixed(2))}</strong>
+              <div class="commercial-meta">${escapeHTML(order.order_no)} · UID ${escapeHTML(order.uid)} · ${escapeHTML(order.channel)} · ${escapeHTML(order.status)} · ${escapeHTML(formatCommercialTime(order.created_at))}</div>
+            </div>
+            <span class="badge">${escapeHTML(order.status)}</span>
+          </div>
+        `).join('') : '<div class="commercial-item"><div><strong>暂无订单</strong><div class="commercial-meta">灰度购买后会显示在这里。</div></div></div>';
+      } catch (err) {
+        commercialOrderList.textContent = err && err.message ? err.message : '订单加载失败。';
+      }
+    }
+
     async function loadCommercialSummary(uid) {
       const resp = await fetch(`/local/account-admin/commercial/users?uid=${encodeURIComponent(uid)}`, { headers: { Accept: 'application/json' } });
       const data = await resp.json().catch(() => ({}));
@@ -1708,6 +1753,8 @@ http://127.0.0.1:26061/local/account-admin</code>
         case 'mismatch': return '需同步';
         case 'over_limit': return '已超额';
         case 'relay_only': return '仅 relay';
+        case 'managed_expired': return '套餐已过期，待停用';
+        case 'managed_blocked': return '套餐已过期，已停用';
         case 'missing_relay_budget': return '缺 relay 限额';
         default: return status || '-';
       }
@@ -1756,6 +1803,9 @@ http://127.0.0.1:26061/local/account-admin</code>
         const preset = commercialPlanPresets[button.dataset.planPreset] || commercialPlanPresets.blank;
         document.querySelector('#commercial-plan-slug').value = preset.slug || '';
         document.querySelector('#commercial-plan-name').value = preset.name || '';
+        document.querySelector('#commercial-plan-price').value = String(preset.price_cny || 0);
+        document.querySelector('#commercial-plan-sale-state').value = preset.sale_state || 'hidden';
+        document.querySelector('#commercial-plan-purchase-limit').value = '0';
         document.querySelector('#commercial-plan-monthly').value = String(preset.monthly_budget_cny || 0);
         document.querySelector('#commercial-plan-duration').value = String(preset.duration_days || 30);
         document.querySelector('#commercial-plan-model-budgets').value = Object.keys(preset.model_budgets || {}).length
@@ -1772,6 +1822,10 @@ http://127.0.0.1:26061/local/account-admin</code>
         const payload = {
           slug: document.querySelector('#commercial-plan-slug').value.trim(),
           name: document.querySelector('#commercial-plan-name').value.trim(),
+          price_fen: Math.round(Number(document.querySelector('#commercial-plan-price').value || 0) * 100),
+          currency: 'CNY',
+          sale_state: document.querySelector('#commercial-plan-sale-state').value,
+          purchase_limit: Number(document.querySelector('#commercial-plan-purchase-limit').value || 0),
           monthly_budget_cny: Number(document.querySelector('#commercial-plan-monthly').value || 0),
           model_budgets: parseModelBudgetsInput(document.querySelector('#commercial-plan-model-budgets').value),
           duration_days: Number(document.querySelector('#commercial-plan-duration').value || 30),
