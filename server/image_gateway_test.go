@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -126,6 +127,51 @@ func TestImageGenerationProxyHandlerRejectsInvalidRequests(t *testing.T) {
 				t.Fatalf("expected %d, got %d: %s", tc.wantStatus, rr.Code, rr.Body.String())
 			}
 		})
+	}
+}
+
+func TestImageGenerationIPLimitRejectsSpoofedForwardedForRotation(t *testing.T) {
+	var upstreamRequests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamRequests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"aW1hZ2U="}]}`))
+	}))
+	defer upstream.Close()
+
+	handler := NewImageGenerationProxyHandler(
+		upstream.URL+"/v1/images/generations",
+		ImageGenerationProxyOptions{APIKey: "provider-secret"},
+	)
+	limiter := NewHTTPRateLimiter()
+	limitedHandler := limiter.LimitIP(HTTPRateLimitConfig{
+		Name: "image_generation_ip_test", Limit: 1, Window: time.Hour, Burst: 1,
+	})(handler.HandleGenerate)
+
+	for i, spoofedIP := range []string{"198.51.100.11", "198.51.100.12"} {
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/v1/images/generations",
+			strings.NewReader(`{"prompt":"test"}`),
+		)
+		req.RemoteAddr = "172.18.0.8:42000"
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-For", spoofedIP+", 203.0.113.24, 172.17.0.1")
+		rr := httptest.NewRecorder()
+
+		limitedHandler(rr, req)
+
+		wantStatus := http.StatusOK
+		if i == 1 {
+			wantStatus = http.StatusTooManyRequests
+		}
+		if rr.Code != wantStatus {
+			t.Fatalf("request %d status = %d, want %d: %s", i+1, rr.Code, wantStatus, rr.Body.String())
+		}
+	}
+
+	if got := upstreamRequests.Load(); got != 1 {
+		t.Fatalf("upstream requests = %d, want 1", got)
 	}
 }
 

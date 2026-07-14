@@ -147,11 +147,8 @@ func clientIPFromRequest(r *http.Request) string {
 		remoteIP := net.ParseIP(strings.TrimSpace(host))
 		if remoteIP != nil {
 			if isTrustedProxyIP(remoteIP) {
-				forwardedFor := r.Header.Get("X-Forwarded-For")
-				for _, part := range strings.Split(forwardedFor, ",") {
-					if ip := normalizeIP(part); ip != "" {
-						return ip
-					}
+				if ip := clientIPFromForwardedFor(r.Header.Get("X-Forwarded-For")); ip != "" {
+					return ip
 				}
 				if ip := normalizeIP(r.Header.Get("X-Real-IP")); ip != "" {
 					return ip
@@ -161,6 +158,24 @@ func clientIPFromRequest(r *http.Request) string {
 		}
 	}
 	return normalizeIP(r.RemoteAddr)
+}
+
+func clientIPFromForwardedFor(value string) string {
+	parts := strings.Split(value, ",")
+	nearestIP := ""
+	for i := len(parts) - 1; i >= 0; i-- {
+		candidate := normalizeIP(parts[i])
+		if candidate == "" {
+			continue
+		}
+		if nearestIP == "" {
+			nearestIP = candidate
+		}
+		if !isTrustedProxyIP(net.ParseIP(candidate)) {
+			return candidate
+		}
+	}
+	return nearestIP
 }
 
 func isTrustedProxyIP(ip net.IP) bool {
