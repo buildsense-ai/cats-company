@@ -12,7 +12,7 @@ class MockWebSocket {
   constructor(url) {
     this.url = url;
     this.readyState = MockWebSocket.CONNECTING;
-    this.send = jest.fn();
+    this.send = vi.fn();
     MockWebSocket.instances.push(this);
   }
 
@@ -35,23 +35,23 @@ class MockWebSocket {
 describe('WebSocket connection recovery', () => {
   let api;
 
-  beforeEach(() => {
-    jest.useFakeTimers();
-    jest.resetModules();
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
     localStorage.clear();
     MockWebSocket.instances = [];
     global.WebSocket = MockWebSocket;
-    api = require('./api');
+    api = await import('./api');
     api.setToken('test-token');
   });
 
   afterEach(() => {
     api.disconnectWS();
-    jest.useRealTimers();
+    vi.useRealTimers();
   });
 
   test('reuses an open or connecting socket', () => {
-    const onMessage = jest.fn();
+    const onMessage = vi.fn();
 
     expect(api.connectWS(onMessage)).toBe(true);
     expect(api.connectWS(onMessage)).toBe(false);
@@ -64,7 +64,7 @@ describe('WebSocket connection recovery', () => {
   });
 
   test('retries quickly with capped backoff after a dropped socket', () => {
-    const onMessage = jest.fn();
+    const onMessage = vi.fn();
     api.connectWS(onMessage);
     MockWebSocket.instances[0].open();
 
@@ -75,9 +75,9 @@ describe('WebSocket connection recovery', () => {
       retryInMs: 1000,
     });
 
-    jest.advanceTimersByTime(999);
+    vi.advanceTimersByTime(999);
     expect(MockWebSocket.instances).toHaveLength(1);
-    jest.advanceTimersByTime(1);
+    vi.advanceTimersByTime(1);
     expect(MockWebSocket.instances).toHaveLength(2);
 
     MockWebSocket.instances[1].serverClose();
@@ -89,7 +89,7 @@ describe('WebSocket connection recovery', () => {
   });
 
   test('forces a fresh socket when the page resumes', () => {
-    const onMessage = jest.fn();
+    const onMessage = vi.fn();
     api.connectWS(onMessage);
     const staleSocket = MockWebSocket.instances[0];
     staleSocket.open();
@@ -98,23 +98,23 @@ describe('WebSocket connection recovery', () => {
     expect(staleSocket.readyState).toBe(MockWebSocket.CLOSED);
     expect(MockWebSocket.instances).toHaveLength(2);
 
-    jest.runOnlyPendingTimers();
+    vi.runOnlyPendingTimers();
     expect(MockWebSocket.instances).toHaveLength(2);
   });
 
   test('manual disconnect cancels a scheduled retry', () => {
-    const onMessage = jest.fn();
+    const onMessage = vi.fn();
     api.connectWS(onMessage);
     MockWebSocket.instances[0].serverClose();
 
     api.disconnectWS();
-    jest.runOnlyPendingTimers();
+    vi.runOnlyPendingTimers();
 
     expect(MockWebSocket.instances).toHaveLength(1);
   });
 
   test('stops reconnecting when the saved session has expired', () => {
-    const onMessage = jest.fn();
+    const onMessage = vi.fn();
     const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 60 }))
       .replace(/=/g, '')
       .replace(/\+/g, '-')

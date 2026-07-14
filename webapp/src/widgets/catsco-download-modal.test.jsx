@@ -2,22 +2,25 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 
-jest.mock('../api', () => ({
+vi.mock('../api', () => ({
   api: {
-    createDeviceConnectorPairing: jest.fn(),
-    getDeviceConnectorPairing: jest.fn(),
-    getCatsCoDesktopReleases: jest.fn(),
-    getDevices: jest.fn(),
-    getDeviceAudit: jest.fn(),
-    unlinkDevice: jest.fn(),
+    createDeviceConnectorPairing: vi.fn(),
+    getDeviceConnectorPairing: vi.fn(),
+    getCatsCoDesktopReleases: vi.fn(),
+    getDevices: vi.fn(),
+    getDeviceAudit: vi.fn(),
+    unlinkDevice: vi.fn(),
   },
-  getApiBaseURL: jest.fn(() => 'https://app.catsco.cc'),
-  getWebSocketURL: jest.fn(() => 'wss://app.catsco.cc/v0/channels'),
+  getApiBaseURL: vi.fn(() => 'https://app.catsco.cc'),
+  getWebSocketURL: vi.fn(() => 'wss://app.catsco.cc/v0/channels'),
 }));
 
-const CatsCoDownloadModal = require('./catsco-download-modal').default;
-const { DOWNLOAD_OPTIONS, buildDeviceConnectorDeepLink, visibleDeviceAuditEvents } = require('./catsco-download-modal');
-const { api, getApiBaseURL, getWebSocketURL } = require('../api');
+import CatsCoDownloadModal, {
+  DOWNLOAD_OPTIONS,
+  buildDeviceConnectorDeepLink,
+  visibleDeviceAuditEvents,
+} from './catsco-download-modal';
+import { api, getApiBaseURL, getWebSocketURL } from '../api';
 
 describe('CatsCoDownloadModal', () => {
   let container;
@@ -27,7 +30,7 @@ describe('CatsCoDownloadModal', () => {
 
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     api.createDeviceConnectorPairing.mockReset();
     api.getDeviceConnectorPairing.mockReset();
     api.getCatsCoDesktopReleases.mockResolvedValue({ version: '1.4.1' });
@@ -36,7 +39,7 @@ describe('CatsCoDownloadModal', () => {
     getApiBaseURL.mockReturnValue('https://app.catsco.cc');
     getWebSocketURL.mockReturnValue('wss://app.catsco.cc/v0/channels');
     clickedHref = '';
-    clickSpy = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function click() {
+    clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function click() {
       clickedHref = this.href;
     });
     container = document.createElement('div');
@@ -50,7 +53,7 @@ describe('CatsCoDownloadModal', () => {
     });
     container.remove();
     clickSpy.mockRestore();
-    jest.useRealTimers();
+    vi.useRealTimers();
   });
 
   test('builds a CatsCo desktop pairing deep link without shell/write capabilities', () => {
@@ -73,7 +76,7 @@ describe('CatsCoDownloadModal', () => {
     ]);
 
     await act(async () => {
-      root.render(React.createElement(CatsCoDownloadModal, { onClose: jest.fn() }));
+      root.render(React.createElement(CatsCoDownloadModal, { onClose: vi.fn() }));
       await Promise.resolve();
     });
 
@@ -93,7 +96,7 @@ describe('CatsCoDownloadModal', () => {
     });
 
     await act(async () => {
-      root.render(React.createElement(CatsCoDownloadModal, { onClose: jest.fn() }));
+      root.render(React.createElement(CatsCoDownloadModal, { onClose: vi.fn() }));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -117,7 +120,7 @@ describe('CatsCoDownloadModal', () => {
     });
 
     await act(async () => {
-      root.render(React.createElement(CatsCoDownloadModal, { onClose: jest.fn() }));
+      root.render(React.createElement(CatsCoDownloadModal, { onClose: vi.fn() }));
       await Promise.resolve();
     });
 
@@ -133,7 +136,7 @@ describe('CatsCoDownloadModal', () => {
     expect(clickedHref).toContain('catsco://device-connector/pair?code=PAIRCODE123');
 
     await act(async () => {
-      jest.runOnlyPendingTimers();
+      vi.runOnlyPendingTimers();
     });
     expect(container.textContent).toContain('如果桌面端没有弹出');
   });
@@ -149,7 +152,7 @@ describe('CatsCoDownloadModal', () => {
     api.getDeviceAudit.mockResolvedValue({ events });
 
     await act(async () => {
-      root.render(React.createElement(CatsCoDownloadModal, { onClose: jest.fn() }));
+      root.render(React.createElement(CatsCoDownloadModal, { onClose: vi.fn() }));
       await Promise.resolve();
     });
 
@@ -171,7 +174,7 @@ describe('CatsCoDownloadModal', () => {
     });
 
     await act(async () => {
-      root.render(React.createElement(CatsCoDownloadModal, { onClose: jest.fn() }));
+      root.render(React.createElement(CatsCoDownloadModal, { onClose: vi.fn() }));
       await Promise.resolve();
     });
 
@@ -184,7 +187,7 @@ describe('CatsCoDownloadModal', () => {
     expect(container.textContent).toContain('CONSUMED123');
 
     await act(async () => {
-      jest.advanceTimersByTime(3000);
+      vi.advanceTimersByTime(3000);
       await Promise.resolve();
     });
 

@@ -25,6 +25,7 @@ import { CatsBot } from '@catscompany/bot-sdk';
 const bot = new CatsBot({
   serverUrl: 'wss://app.catsco.cc/v0/channels',
   apiKey: 'your-bot-api-key',
+  bodyId: 'your-runtime-body-id',
 });
 
 bot.on('ready', (uid, name) => {
@@ -79,6 +80,7 @@ await bot.sendFile(ctx.topic, upload);
 {
   serverUrl: string;           // WebSocket URL
   apiKey: string;              // Bot API Key
+  bodyId: string;              // 稳定且唯一的 runtime/body ID
   httpBaseUrl?: string;        // HTTP API base (自动推导)
   reconnectDelay?: number;     // 重连延迟 (默认 3000ms)
   connectTimeout?: number;     // 连接超时 (默认 15000ms)

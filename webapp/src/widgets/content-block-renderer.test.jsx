@@ -2,9 +2,9 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import ContentBlockRenderer from './content-block-renderer';
 
-jest.mock('marked', () => ({
+vi.mock('marked', () => ({
   marked: {
-    setOptions: jest.fn(),
+    setOptions: vi.fn(),
     parse: () => '<table><thead><tr><th>指标</th><th>当前结果</th></tr></thead><tbody><tr><td>班级平均分</td><td>82.6</td></tr></tbody></table>',
   },
 }));

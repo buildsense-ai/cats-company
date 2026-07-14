@@ -2,15 +2,15 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 
-jest.mock('../api', () => ({
+vi.mock('../api', () => ({
   api: {
-    getMobileUploadSession: jest.fn(),
-    uploadMobileSessionFile: jest.fn(),
+    getMobileUploadSession: vi.fn(),
+    uploadMobileSessionFile: vi.fn(),
   },
 }));
 
-const MobileUploadView = require('./mobile-upload-view').default;
-const { api } = require('../api');
+import MobileUploadView from './mobile-upload-view';
+import { api } from '../api';
 
 describe('MobileUploadView', () => {
   let container;
@@ -35,7 +35,7 @@ describe('MobileUploadView', () => {
       root.unmount();
     });
     container.remove();
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   it('shows cumulative upload count across multiple file selections', async () => {

@@ -7,6 +7,7 @@
  *
  * Environment variables:
  *   BOT_API_KEY   - Bot API key (required)
+ *   BOT_BODY_ID   - Stable runtime/body id (required)
  *   BOT_WS_URL    - WebSocket URL (default: ws://localhost:6061/v0/channels)
  *   LLM_API_BASE  - LLM endpoint (default: https://api.openai.com/v1)
  *   LLM_API_KEY   - LLM bearer token
@@ -17,6 +18,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const bot_sdk_1 = require("@catscompany/bot-sdk");
 // --- Configuration ---
 const BOT_API_KEY = process.env.BOT_API_KEY ?? '';
+const BOT_BODY_ID = process.env.BOT_BODY_ID ?? '';
 const BOT_WS_URL = process.env.BOT_WS_URL ?? 'ws://localhost:6061/v0/channels';
 const LLM_API_BASE = process.env.LLM_API_BASE ?? 'https://api.openai.com/v1';
 const LLM_API_KEY = process.env.LLM_API_KEY ?? '';
@@ -82,12 +84,17 @@ function main() {
         console.error('BOT_API_KEY environment variable is required');
         process.exit(1);
     }
+    if (!BOT_BODY_ID) {
+        console.error('BOT_BODY_ID environment variable is required');
+        process.exit(1);
+    }
     if (!LLM_API_KEY) {
         console.warn('[warn] LLM_API_KEY not set — LLM calls will likely fail');
     }
     const bot = new bot_sdk_1.CatsBot({
         serverUrl: BOT_WS_URL,
         apiKey: BOT_API_KEY,
+        bodyId: BOT_BODY_ID,
     });
     bot.on('ready', (uid) => {
         console.log(`[ready] 小八 online as ${uid}`);

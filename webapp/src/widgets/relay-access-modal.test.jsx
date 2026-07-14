@@ -1,23 +1,23 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
-jest.mock('../api', () => ({
+vi.mock('../api', () => ({
   api: {
-    getRelayConfig: jest.fn(),
-    getRelayKey: jest.fn(),
-    getRelayCommercial: jest.fn(),
-    getRelayUsage: jest.fn(),
-    createRelaySession: jest.fn(),
-    createRelayKey: jest.fn(),
-    rotateRelayKey: jest.fn(),
-    revealRelayKey: jest.fn(),
-    revokeRelayKey: jest.fn(),
-    redeemRelayInvite: jest.fn(),
+    getRelayConfig: vi.fn(),
+    getRelayKey: vi.fn(),
+    getRelayCommercial: vi.fn(),
+    getRelayUsage: vi.fn(),
+    createRelaySession: vi.fn(),
+    createRelayKey: vi.fn(),
+    rotateRelayKey: vi.fn(),
+    revealRelayKey: vi.fn(),
+    revokeRelayKey: vi.fn(),
+    redeemRelayInvite: vi.fn(),
   },
 }));
 
-const RelayAccessModal = require('./relay-access-modal').default;
-const { api } = require('../api');
+import RelayAccessModal from './relay-access-modal';
+import { api } from '../api';
 
 describe('RelayAccessModal commercial rollout', () => {
   let container;
@@ -70,12 +70,12 @@ describe('RelayAccessModal commercial rollout', () => {
       root.unmount();
     });
     container.remove();
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   async function renderModal() {
     await act(async () => {
-      root.render(<RelayAccessModal onClose={jest.fn()} />);
+      root.render(<RelayAccessModal onClose={vi.fn()} />);
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
