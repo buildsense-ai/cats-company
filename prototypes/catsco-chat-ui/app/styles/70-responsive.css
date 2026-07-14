@@ -1,0 +1,90 @@
+﻿/* Responsive layout rules */
+
+@media (max-width: 720px) {
+
+  body { display: block; }
+
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    z-index: 20;
+    box-shadow: none;
+  }
+
+  .sidebar.open { width: min(var(--sidebar-w), 82vw); box-shadow: 0 0 24px rgba(0,0,0,0.2); }
+
+  .sidebar:not(.open) .top,
+  .sidebar:not(.open) .new-btn,
+  .sidebar:not(.open) .footer-info { display: none; }
+
+  .main-wrap { width: 100%; height: 100vh; }
+
+  .container { padding: 0 12px; }
+
+  header {
+    padding: 0 12px;
+    gap: 8px;
+  }
+
+  .mobile-sidebar-btn { display: flex; }
+
+  .model-btn { max-width: 120px; padding: 8px 10px; }
+
+  .header-title { max-width: 42vw; padding: 0 8px; }
+
+  .theme-btn { margin-left: auto; }
+
+  .welcome { padding: 34px 14px 18px; margin-top: 0; }
+
+  .welcome-logo { margin-bottom: 12px; }
+
+  .welcome-logo-icon { width: 70px; height: 35px; }
+
+  .welcome h1 { font-size: 24px; line-height: 1.25; }
+
+  .welcome-sub { font-size: 14px; margin-bottom: 18px; }
+
+  .welcome-suggestions {
+    grid-auto-flow: column;
+    grid-template-columns: none;
+    grid-template-rows: repeat(2, 44px);
+    grid-auto-columns: max-content;
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 8px;
+    width: 100%;
+  }
+
+  .welcome-pill:nth-child(-n+8) {
+    grid-column: auto;
+    min-width: 148px;
+  }
+
+
+
+  footer { padding: 8px 12px 10px; }
+
+  .main-wrap.empty-chat > footer {
+    top: 332px;
+  }
+
+  .input-box {
+    max-width: min(900px, calc(100vw - 40px));
+  }
+
+  .input-box { border-radius: 20px; }
+
+  .hint { font-size: 11px; line-height: 1.45; max-width: 300px; margin-left: auto; margin-right: auto; }
+
+  .main-wrap.empty-chat .hint {
+    font-size: 12px;
+    max-width: none;
+  }
+
+  .progress-bar { display: none; }
+
+}

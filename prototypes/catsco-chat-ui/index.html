@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>CatsCo Agent</title>
+
+<script src="app/runtime-shims.js"></script>
+
+<link rel="stylesheet" href="app/styles.css?v=20260714-10">
+
+</head>
+
+<body class="auth-pending">
+
+
+
+<aside class="sidebar" id="sidebar">
+
+  <div class="top">
+
+    <a class="brand" href="#" aria-label="CatsCo">
+
+      <svg class="brand-logo" viewBox="0 0 240 120" fill="#188567" fill-rule="nonzero">
+
+        <path d="M72 0 L168 0 L183 25 L57 25 Z"/>
+
+        <path d="M24 0 L52 0 L28 120 L0 120 Z"/>
+
+        <path d="M188 0 L216 0 L240 120 L212 120 Z"/>
+
+      </svg>
+
+      <span class="brand-text">CatsCo</span>
+
+    </a>
+
+    <button class="toggle-btn" id="toggleBtn" title="展开/收起 (Ctrl+B)">
+
+      <span class="toggle-icon">&#9776;</span>
+
+      <svg class="toggle-logo" viewBox="0 0 240 120" fill="#188567" fill-rule="nonzero" aria-hidden="true">
+
+        <path d="M72 0 L168 0 L183 25 L57 25 Z"/>
+
+        <path d="M24 0 L52 0 L28 120 L0 120 Z"/>
+
+        <path d="M188 0 L216 0 L240 120 L212 120 Z"/>
+
+      </svg>
+
+    </button>
+
+  </div>
+
+  <button class="new-btn" onclick="newChat()">
+
+    <span class="new-btn-icon">+</span>
+
+    <span class="label">新建任务</span>
+
+  </button>
+
+  <div class="sidebar-search">
+
+    <svg class="search-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+
+    <input type="text" id="searchInput" class="search-input" placeholder="搜索任务" oninput="onSearchInput()" />
+
+    <button class="search-clear" id="searchClear" onclick="clearSearch()" aria-label="清空">&times;</button>
+
+  </div>
+
+  <div class="search-results" id="searchResults" style="display: none;"></div>
+
+  <div class="sidebar-section pinned-section" style="display: none;">
+    <div class="sidebar-section-title">置顶</div>
+    <div class="sidebar-section-body" id="pinnedList">
+      <div class="sidebar-empty">置顶为空</div>
+    </div>
+  </div>
+
+  <div class="sidebar-scroll">
+
+  <div class="sidebar-section collaboration-section">
+    <button class="sidebar-section-title collapsible" id="collaborationToggle" type="button" aria-expanded="true">
+      <span>协作</span>
+      <svg class="chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+    </button>
+    <div class="sidebar-section-body collaboration-body" id="collaborationBody">
+
+  <div class="sidebar-section collaboration-child agents-section">
+    <div class="sidebar-section-title collapsible section-title-row" id="agentsToggle" role="button" tabindex="0" aria-label="Agent 助手">
+      <svg class="chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      <span>Agent 助手</span>
+      <button class="section-add-btn agent-add-btn" id="agentAddBtn" type="button" title="添加 Agent" aria-label="添加 Agent"></button>
+    </div>
+    <div class="sidebar-section-body" id="agentsList">
+      <div class="sidebar-empty"></div>
+    </div>
+  </div>
+
+  <div class="sidebar-section collaboration-child groups-section">
+    <div class="sidebar-section-title collapsible section-title-row" id="groupsToggle" role="button" tabindex="0" aria-label="群聊">
+      <svg class="chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      <span>群聊</span>
+      <button class="section-add-btn group-add-btn" id="groupAddBtn" type="button" title="创建群聊" aria-label="创建群聊"></button>
+    </div>
+    <div class="sidebar-section-body" id="groupsList">
+      <div class="sidebar-empty">还没有群聊</div>
+    </div>
+  </div>
+
+  <div class="sidebar-section collaboration-child friends-section">
+    <div class="sidebar-section-title collapsible section-title-row" id="friendsToggle" role="button" tabindex="0" aria-label="好友">
+      <svg class="chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      <span>好友</span>
+      <button class="friend-requests-btn" id="friendRequestsBtn" type="button" title="好友申请" aria-label="好友申请" hidden>
+        <span id="friendRequestsCount"></span>
+      </button>
+      <button class="section-add-btn friend-add-btn" id="friendAddBtn" type="button" title="添加好友" aria-label="添加好友"></button>
+    </div>
+    <div class="sidebar-section-body" id="friendsList">
+      <div class="sidebar-empty">还没有好友</div>
+    </div>
+  </div>
+
+    </div>
+  </div>
+
+  <div class="sidebar-section projects-section">
+    <div class="sidebar-section-title collapsible section-title-row" id="projectsToggle" role="button" tabindex="0" aria-label="项目">
+      <svg class="chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      <span>项目</span>
+      <button class="section-add-btn project-add-btn" id="projectAddBtn" type="button" title="新建项目" aria-label="新建项目"></button>
+    </div>
+    <div class="sidebar-section-body" id="projectsList">
+      <div class="sidebar-empty">还没有项目</div>
+    </div>
+  </div>
+
+  <div class="sidebar-section history-section">
+
+    <div class="sidebar-section-title collapsible section-title-row" id="historyToggle" role="button" tabindex="0" aria-label="历史任务">
+
+      <svg class="chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+
+      <span>历史任务</span>
+
+      <button class="section-add-btn history-add-btn" id="historyAddBtn" type="button" title="新建任务" aria-label="新建任务"></button>
+
+    </div>
+
+    <div class="sidebar-section-body" id="history">
+
+      <div class="sidebar-empty">还没有历史任务</div>
+
+    </div>
+
+  </div>
+
+  </div>
+
+  <div class="footer-info">
+
+    <div class="account-bar">
+      <div class="account-avatar" aria-hidden="true">我</div>
+      <div class="account-meta">
+        <div class="account-name">我天</div>
+        <div class="account-plan">Plus</div>
+      </div>
+      <button class="account-settings" id="accountSettingsBtn" type="button" title="设置" aria-label="设置">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/>
+          <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.04.04a2 2 0 0 1-2.83 2.83l-.04-.04a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 0 1-4 0v-.07A1.7 1.7 0 0 0 8.97 19.37a1.7 1.7 0 0 0-1.88.34l-.04.04a2 2 0 0 1-2.83-2.83l.04-.04A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 0 1 0-4h.07A1.7 1.7 0 0 0 4.6 8.97a1.7 1.7 0 0 0-.34-1.88l-.04-.04a2 2 0 0 1 2.83-2.83l.04.04a1.7 1.7 0 0 0 1.88.34H9A1.7 1.7 0 0 0 10 3.07V3a2 2 0 0 1 4 0v.07a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.04-.04a2 2 0 0 1 2.83 2.83l-.04.04a1.7 1.7 0 0 0-.34 1.88v.03A1.7 1.7 0 0 0 20.93 10H21a2 2 0 0 1 0 4h-.07A1.7 1.7 0 0 0 19.4 15Z"/>
+        </svg>
+      </button>
+    </div>
+    <div class="sidebar-stats">
+      <span id="modelName">MiniMax-M3</span>
+      <span id="msgCount">0</span>
+    </div>
+
+  </div>
+
+</aside>
+
+
+
+<div class="main-wrap">
+
+  <header>
+
+    <button class="mobile-sidebar-btn" id="mobileSidebarBtn" title="打开侧栏" onclick="toggleSidebar()">&#9776;</button>
+
+    <div class="model-select" id="modelSelect">
+      <button class="model-btn" id="modelBtn" type="button" aria-haspopup="listbox" aria-expanded="false">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="modelLabel">MiniMax-M3</span>
+        <svg class="select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="selector-menu model-menu" id="modelMenu" role="listbox" aria-label="Model"></div>
+    </div>
+
+    <div class="header-title" id="headerTitle">新对话</div>
+
+    <div class="header-actions">
+      <button class="theme-btn" id="themeBtn" type="button" title="切换日夜模式" aria-label="切换日夜模式">&#9728;</button>
+      <button class="header-action-btn download-client-btn" id="downloadClientBtn" type="button" title="下载 CatsCo 客户端" aria-label="下载 CatsCo 客户端">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3v12"/>
+          <path d="m7 10 5 5 5-5"/>
+          <path d="M5 21h14"/>
+        </svg>
+      </button>
+    </div>
+
+  </header>
+
+
+
+  <main id="main">
+
+    <div class="welcome" id="welcome">
+
+      <div class="welcome-logo">
+
+        <svg class="welcome-logo-icon" viewBox="0 0 240 120" fill="#188567" fill-rule="nonzero">
+
+          <path d="M72 0 L168 0 L183 25 L57 25 Z"/>
+
+          <path d="M24 0 L52 0 L28 120 L0 120 Z"/>
+
+          <path d="M188 0 L216 0 L240 120 L212 120 Z"/>
+
+        </svg>
+
+      </div>
+
+      <div class="welcome-hero">
+
+        <h1>需要我为您做什么？</h1>
+
+      </div>
+
+      <div class="welcome-suggestions">
+        <button class="welcome-pill" type="button" data-prompt="扫描当前项目结构，指出主要模块职责、潜在问题和下一步优化顺序">扫描结构</button>
+        <button class="welcome-pill" type="button" data-prompt="帮我定位前端按钮状态混乱的原因，并列出需要检查的文件和交互路径">定位交互</button>
+        <button class="welcome-pill" type="button" data-prompt="把这个功能需求拆成可执行的开发步骤、数据结构和验收标准">拆解需求</button>
+        <button class="welcome-pill" type="button" data-prompt="根据这段报错推断可能的代码位置、原因和排查顺序">解释报错</button>
+        <button class="welcome-pill" type="button" data-prompt="为当前功能设计测试计划，覆盖正常、异常和边界情况">生成测试</button>
+        <button class="welcome-pill" type="button" data-prompt="检查最近一次前端修改可能影响哪些交互状态，并给出回归清单">检查影响</button>
+        <button class="welcome-pill" type="button" data-prompt="把下面的实现想法整理成技术方案，包括流程、接口、风险和验证方式">整理方案</button>
+        <button class="welcome-pill" type="button" data-prompt="阅读这段代码并说明它的职责、关键路径和可能的重构点">解释代码</button>
+        <button class="welcome-pill" type="button" data-prompt="根据本轮修改生成清晰的提交摘要和测试说明">提交摘要</button>
+        <button class="welcome-pill" type="button" data-prompt="为这个前端功能设计前后端接口契约和错误处理策略">接口契约</button>
+        <button class="welcome-pill" type="button" data-prompt="整理一个发布前回归清单，覆盖 UI、状态、错误和旧数据兼容">回归清单</button>
+      </div>
+
+    </div>
+
+    <div class="container" id="messages"></div>
+
+  </main>
+
+
+
+  <footer>
+
+    <div class="input-box">
+
+      <div class="agent-picker" id="agentPicker">
+        <button class="agent-picker-btn" id="agentPickerBtn" type="button" aria-haspopup="listbox" aria-expanded="false">
+          <span class="agent-picker-avatar" id="agentPickerAvatar">AI</span>
+          <span class="agent-picker-name" id="agentPickerName">Agent</span>
+          <svg class="select-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="selector-menu agent-picker-menu" id="agentPickerMenu" role="listbox" aria-label="Agent"></div>
+      </div>
+
+      <div class="attachment-picker" id="attachmentPicker">
+      <button class="plus-btn" id="plusBtn" type="button" title="添加附件" aria-label="添加附件" aria-haspopup="menu" aria-expanded="false">
+
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+      <div class="attachment-menu" id="attachmentMenu" role="menu" aria-label="添加附件">
+        <button type="button" role="menuitem" data-attachment-type="image">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="m4 17 4.5-4.5 3.5 3 3-3 5 4.5"/></svg>
+          <span>添加图片</span>
+        </button>
+        <button type="button" role="menuitem" data-attachment-type="file">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5"/></svg>
+          <span>添加文件</span>
+        </button>
+      </div>
+      <input type="file" id="imageInput" class="file-input-hidden" multiple accept="image/*" />
+      <input type="file" id="fileInput" class="file-input-hidden" multiple accept=".pdf,.txt,.md,.doc,.docx,.json,.py,.js,.ts,.html,.css" />
+      </div>
+
+      <textarea id="input" rows="1" placeholder="输入指令，我帮您完成" oninput="autoGrow(this); updateSendBtn();" onkeydown="onKey(event)"></textarea>
+
+      <button id="sendBtn" class="send-btn" onclick="sendOrStop()" disabled title="发送 (Ctrl+回车)" aria-label="发送">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+      </button>
+
+    </div>
+
+    <div class="hint">Enter 发送 · Shift+Enter 换行 · Ctrl+Enter 发送 · Ctrl+B 折叠侧栏 · 点击红色按钮停止生成</div>
+
+  </footer>
+
+</div>
+
+
+
+<div class="progress-bar" id="progressBar" aria-label="进度条">
+
+  <div class="progress-track" id="progressTrack"></div>
+
+</div>
+
+
+
+<div class="toast" id="toast"></div>
+
+
+
+
+
+<script src="app/core/errors.js"></script>
+<script src="app/core/store.js"></script>
+<script src="app/state.js"></script>
+<script src="app/api.js"></script>
+<script src="app/components/auth.js?v=20260713-1"></script>
+<script src="app/utils.js"></script>
+<script src="app/company-runtime.js?v=20260713-1"></script>
+<script src="app/theme.js"></script>
+<script src="app/task-process.js"></script>
+<script src="app/components/collaboration.js"></script>
+<script src="app/components/collaboration-manager.js?v=20260713-1"></script>
+<script src="app/components/projects.js"></script>
+<script src="app/components/sidebar.js"></script>
+<script src="app/components/messages.js"></script>
+<script src="app/components/settings.js"></script>
+<script src="app/sidebar.js?v=20260714-1"></script>
+<script src="app/selectors.js"></script>
+<script src="app/messages.js"></script>
+<script src="app/input.js"></script>
+<script src="app/search.js"></script>
+<script src="app/settings-panels.js?v=20260711-6"></script>
+<script src="app/components/desktop-connection.js?v=20260714-1"></script>
+<script src="app/main.js?v=20260714-1"></script>
+
+</body>
+
+</html>

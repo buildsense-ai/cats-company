@@ -1,0 +1,850 @@
+/* Collaboration surfaces: friends, groups, member invitations, and related states. */
+
+.name-dialog.collaboration-manager {
+  width: min(780px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 32px));
+  padding: 20px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.name-dialog.friend-manager-dialog { width: min(500px, calc(100vw - 32px)); }
+.name-dialog.group-manager-dialog { width: min(900px, calc(100vw - 32px)); }
+.name-dialog.group-invite-dialog {
+  width: min(860px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.group-invite-overlay { z-index: 460; }
+
+.collaboration-manager .name-dialog-head {
+  min-height: 32px;
+  padding: 0;
+  margin: 0 0 16px;
+  border: 0;
+  gap: 12px;
+}
+
+.collaboration-manager .name-dialog-head h2 {
+  font-size: 17px;
+  line-height: 1.25;
+  font-weight: 680;
+}
+
+.collaboration-manager .name-dialog-close {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  flex-basis: 32px;
+  font-size: 20px;
+}
+
+.collaboration-manager-body {
+  display: grid;
+  gap: 16px;
+}
+
+.collaboration-manager button {
+  min-height: 34px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: var(--secondary-radius-control, 8px);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color .14s ease, border-color .14s ease, color .14s ease, filter .14s ease;
+}
+
+.collaboration-manager button:hover,
+.collaboration-manager button:focus-visible {
+  background: var(--ui-hover);
+  color: var(--text);
+}
+
+.collaboration-manager button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.collaboration-manager button.primary:hover,
+.collaboration-manager button.primary:focus-visible { filter: brightness(.94); }
+
+.collaboration-manager button.danger {
+  border-color: color-mix(in srgb, var(--error) 34%, var(--border));
+  color: var(--error);
+}
+
+.collaboration-manager button:disabled {
+  cursor: default;
+  opacity: .46;
+  filter: none;
+}
+
+.ui-select {
+  min-height: 40px;
+  padding: 0 36px 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--secondary-radius-control, 8px);
+  appearance: none;
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%;
+  background-repeat: no-repeat;
+  background-size: 5px 5px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color .14s ease, border-color .14s ease;
+}
+
+.ui-select:hover { background-color: var(--ui-hover); }
+.ui-select:focus-visible {
+  outline: none;
+  border-color: var(--border-strong, var(--accent));
+  box-shadow: inset 0 0 0 1px rgba(128,128,128,.12);
+}
+.ui-select:disabled { cursor: default; opacity: .48; }
+
+.settings-panel select.ui-select,
+.agent-field select.ui-select {
+  min-height: 40px;
+  padding: 0 36px 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--secondary-radius-control, 8px);
+  appearance: none;
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%;
+  background-repeat: no-repeat;
+  background-size: 5px 5px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.settings-panel select.ui-select:hover,
+.agent-field select.ui-select:hover { background-color: var(--ui-hover); }
+
+.settings-panel select.ui-select:focus,
+.agent-field select.ui-select:focus {
+  outline: none;
+  border-color: var(--border-strong, var(--accent));
+  background-color: var(--panel);
+  box-shadow: inset 0 0 0 1px rgba(128,128,128,.12);
+}
+
+.collaboration-section-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.collaboration-section-intro h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.35;
+  font-weight: 660;
+}
+
+.collaboration-section-intro p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.collaboration-tab-panel { display: grid; gap: 12px; }
+.collaboration-tab-panel[hidden] { display: none !important; }
+
+.friend-manager-dialog .collaboration-manager-body { gap: 14px; }
+
+.friend-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.friend-search-control {
+  min-width: 0;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 102px minmax(0, 1fr);
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--secondary-radius-control, 8px);
+  background: var(--bg);
+  overflow: hidden;
+  transition: background-color .14s ease, border-color .14s ease;
+}
+
+.friend-search-control:hover { background: var(--ui-hover); }
+.friend-search-control:focus-within {
+  background: var(--panel);
+  border-color: var(--border-strong, var(--accent));
+  box-shadow: inset 0 0 0 1px rgba(128,128,128,.12);
+}
+
+.friend-search-mode.ui-select {
+  width: 102px;
+  min-height: 40px;
+  padding-left: 10px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  background-color: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.friend-search-input,
+.collaboration-field textarea,
+.group-name-input,
+.group-announcement,
+.group-invite-search input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--secondary-radius-control, 8px);
+  outline: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  transition: background-color .14s ease, border-color .14s ease, box-shadow .14s ease;
+}
+
+.friend-search-input:focus,
+.collaboration-field textarea:focus,
+.group-name-input:focus,
+.group-announcement:focus,
+.group-invite-search input:focus {
+  background: var(--panel);
+  border-color: var(--border-strong, var(--accent));
+  box-shadow: inset 0 0 0 1px rgba(128,128,128,.12);
+}
+
+.friend-search-control .friend-search-input {
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.friend-search-submit { min-height: 42px !important; }
+
+.collaboration-field {
+  display: grid;
+  gap: 6px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.collaboration-field textarea {
+  min-height: 66px;
+  padding: 10px 12px;
+  resize: vertical;
+  line-height: 1.45;
+  font-weight: 400;
+}
+
+.friend-requests-panel { gap: 8px; }
+
+.collaboration-subhead {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.collaboration-subhead > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.collaboration-subhead strong {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.3;
+  font-weight: 650;
+}
+
+.collaboration-subhead span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.request-count:empty { display: none; }
+.request-count:not(:empty) {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--ui-selected);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.collaboration-list { display: grid; gap: 6px; }
+
+.collaboration-list-row {
+  min-height: 58px;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--secondary-radius-control, 8px);
+  background: var(--bg);
+}
+
+.collaboration-avatar {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 36px;
+  border-radius: 50%;
+  background: var(--ui-selected);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 660;
+}
+
+.collaboration-row-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.collaboration-row-copy strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 640;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collaboration-row-copy span { color: var(--muted); font-size: 11px; }
+.collaboration-row-actions { display: flex; gap: 6px; }
+
+.collaboration-empty {
+  min-height: 92px;
+  display: grid;
+  place-content: center;
+  gap: 5px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.collaboration-empty strong { color: var(--text); font-size: 13px; font-weight: 620; }
+.collaboration-empty span { font-size: 11px; line-height: 1.4; }
+
+.friend-manager-dialog .collaboration-empty { min-height: 72px; }
+
+.friend-requests-btn {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.friend-requests-btn[hidden] { display: none; }
+.friend-requests-btn:hover,
+.friend-requests-btn:focus-visible { background: var(--ui-hover); }
+.sidebar.open .friends-section .friend-requests-btn { order: 2; }
+.sidebar.open .friends-section .friend-requests-btn + .section-add-btn { order: 3; }
+.friends-section .friend-requests-btn:not([hidden]) + .section-add-btn { margin-left: 0; }
+
+/* Group management */
+.group-summary {
+  min-height: 62px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.group-summary .group-avatar {
+  width: 44px;
+  height: 44px;
+  flex-basis: 44px;
+  border-radius: 10px;
+  font-size: 15px;
+}
+
+.group-summary-copy {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 420px) auto;
+  gap: 3px 10px;
+  align-items: center;
+}
+
+.group-summary-label {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.group-name-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.group-name-input {
+  min-width: 0;
+  height: 38px;
+  padding: 0 11px;
+  font-size: 14px;
+  font-weight: 620;
+}
+
+.group-name-save { min-height: 38px !important; }
+.group-member-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+.group-manager-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(250px, .65fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.collaboration-subsection {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.group-members-section,
+.group-settings-section { display: grid; align-content: start; gap: 10px; }
+
+.group-invite-toggle {
+  border-color: var(--border) !important;
+  color: var(--text) !important;
+}
+
+.group-member-list {
+  min-height: 208px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(86px, 1fr));
+  align-content: start;
+  gap: 8px;
+}
+
+.group-member-list > .collaboration-empty {
+  grid-column: 1 / -1;
+  min-height: 192px;
+}
+
+.group-member-tile {
+  position: relative;
+  min-width: 0;
+  min-height: 112px;
+  padding: 12px 8px 9px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  text-align: center;
+}
+
+.group-member-tile .collaboration-avatar {
+  width: 42px;
+  height: 42px;
+  flex-basis: 42px;
+  font-size: 14px;
+}
+
+.group-member-tile strong {
+  width: 100%;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-member-tile > span:not(.collaboration-avatar) { color: var(--muted); font-size: 10px; }
+
+.group-member-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  min-width: 24px !important;
+  min-height: 24px !important;
+  padding: 0 !important;
+  opacity: 0;
+  font-size: 16px !important;
+}
+
+.group-member-tile:hover .group-member-remove,
+.group-member-remove:focus-visible { opacity: 1; }
+
+.group-empty-invite {
+  width: max-content;
+  margin: 6px auto 0;
+  border-color: var(--border) !important;
+  color: var(--text) !important;
+}
+
+.group-announcement {
+  min-height: 146px;
+  padding: 10px 11px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.group-announcement-save { width: 100%; }
+
+.collaboration-footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.group-danger-actions {
+  margin-top: 0;
+  padding-top: 0;
+  border: 0;
+}
+
+/* Group member picker */
+.group-invite-dialog .collaboration-manager-body {
+  min-height: 0;
+  flex: 1;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 14px;
+}
+
+.group-invite-picker {
+  height: min(540px, calc(100vh - 190px));
+  min-height: 360px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, .82fr);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.group-invite-source,
+.group-invite-selected {
+  min-width: 0;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.group-invite-selected { border-left: 1px solid var(--border); }
+
+.group-invite-search {
+  position: relative;
+  min-height: 40px;
+}
+
+.group-invite-search > span {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  z-index: 1;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 17px;
+  pointer-events: none;
+}
+
+.group-invite-search input {
+  height: 40px;
+  padding: 0 12px 0 36px;
+}
+
+.group-invite-tabs {
+  display: flex;
+  width: max-content;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--secondary-radius-control, 8px);
+  background: var(--panel);
+}
+
+.group-invite-tabs button {
+  min-height: 30px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  box-shadow: none;
+}
+
+.group-invite-tabs button:hover,
+.group-invite-tabs button:focus-visible {
+  background: var(--ui-hover);
+  color: var(--text);
+}
+
+.group-invite-tabs button.active {
+  background: var(--ui-selected);
+  color: var(--text);
+  font-weight: 620;
+}
+
+.group-invite-candidates,
+.group-invite-selected-list {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  scrollbar-width: thin;
+}
+
+.group-invite-candidate {
+  min-height: 52px;
+  padding: 6px 8px;
+  display: grid;
+  grid-template-columns: 18px 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.group-invite-candidate:hover { background: var(--ui-hover); }
+.group-invite-candidate input { width: 16px; height: 16px; accent-color: var(--accent); }
+.group-invite-candidate .collaboration-avatar { width: 34px; height: 34px; flex-basis: 34px; }
+
+.group-invite-candidate-copy,
+.group-invite-selected-row > div { min-width: 0; display: grid; gap: 2px; }
+.group-invite-candidate-copy strong,
+.group-invite-selected-row strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.group-invite-candidate-copy small,
+.group-invite-selected-row span { color: var(--muted); font-size: 10px; }
+
+.group-invite-selected-head {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.group-invite-selected-head strong { font-size: 13px; font-weight: 650; }
+.group-invite-selected-head span { color: var(--muted); font-size: 11px; }
+
+.group-invite-selected-row {
+  min-height: 50px;
+  padding: 6px 7px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 26px;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.group-invite-selected-row .collaboration-avatar { width: 34px; height: 34px; flex-basis: 34px; }
+.group-invite-selected-row > button {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  font-size: 16px;
+}
+
+.group-invite-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.group-invite-cancel { border-color: var(--border) !important; color: var(--text) !important; }
+
+/* Group creation uses the same member-selection language as group invitations. */
+.group-card-dialog {
+  width: min(860px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 32px));
+  padding: 20px;
+  overflow: hidden;
+  scrollbar-width: thin;
+}
+
+.group-card-dialog .name-dialog-head {
+  min-height: 32px;
+  padding: 0;
+  margin: 0 0 14px;
+  border: 0;
+}
+
+.group-card-dialog .name-dialog-head h2 {
+  font-size: 17px;
+  line-height: 1.25;
+  font-weight: 680;
+}
+
+.group-card-dialog .name-dialog-close {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  font-size: 20px;
+}
+
+.group-card-intro { margin-bottom: 12px; }
+.group-card-intro h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.35;
+  font-weight: 650;
+}
+.group-card-intro p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.group-card-field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.group-card-dialog .group-card-name {
+  min-height: 40px;
+  margin: 0;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.group-create-picker {
+  height: min(430px, calc(100vh - 330px));
+  min-height: 300px;
+}
+.group-card-dialog .name-dialog-actions {
+  margin-top: 14px;
+  padding-top: 0;
+  border: 0;
+}
+.group-card-dialog .name-dialog-actions button {
+  min-height: 34px;
+  padding: 0 14px;
+  font-size: 13px;
+}
+
+/* Task failures remain visually distinct without dominating the message. */
+.msg.error[data-error-kind] .content {
+  border-left: 3px solid color-mix(in srgb, var(--error) 72%, transparent);
+}
+.msg.error[data-error-kind="network"] .content,
+.msg.error[data-error-kind="timeout"] .content,
+.msg.error[data-error-kind="rate-limit"] .content { border-left-color: #b88932; }
+.msg.error[data-error-kind="cancelled"] .content {
+  border-left-color: var(--muted);
+  color: var(--muted);
+}
+
+@media (max-width: 760px) {
+  .name-dialog.collaboration-manager {
+    width: 100%;
+    max-height: calc(100vh - 28px);
+    padding: 18px;
+  }
+
+  .name-dialog.group-invite-dialog,
+  .group-card-dialog { overflow: auto; }
+
+  .group-manager-grid,
+  .group-invite-picker { grid-template-columns: 1fr; }
+  .group-invite-selected { border-top: 1px solid var(--border); border-left: 0; }
+  .group-invite-picker,
+  .group-create-picker {
+    height: auto;
+    min-height: 0;
+  }
+  .group-invite-source,
+  .group-invite-selected { min-height: 280px; }
+
+  .group-card-dialog {
+    width: 100%;
+    max-height: calc(100vh - 28px);
+    padding: 18px;
+  }
+}
+
+@media (max-width: 520px) {
+  .friend-search-row { grid-template-columns: 1fr; }
+  .friend-search-submit { width: 100%; }
+  .collaboration-list-row { grid-template-columns: 36px minmax(0, 1fr); }
+  .collaboration-row-actions { grid-column: 2; }
+  .group-summary-copy { grid-template-columns: 1fr; }
+  .group-member-count { grid-column: 1; }
+}

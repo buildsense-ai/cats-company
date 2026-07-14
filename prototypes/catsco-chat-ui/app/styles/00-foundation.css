@@ -1,0 +1,79 @@
+﻿/* Design tokens, reset, shared primitives */
+
+:root {
+
+  --bg: rgba(252, 252, 252, 1);
+
+  --panel: #ffffff;
+
+  --border: #e5e5e8;
+
+  --text: #1f1f1f;
+
+  --muted: #8a8a8e;
+
+  --accent: #188567;
+
+  --accent-soft: rgba(24, 133, 103, 0.12);
+
+  --error: #d93025;
+
+  --code-bg: #f6f6f8;
+
+  --sidebar-w: 260px;
+
+  --sidebar-w-collapsed: 64px;
+
+  --surface-hover: rgba(0,0,0,0.05);
+
+  --radius-sm: 6px;
+
+  --radius-md: 10px;
+
+  --radius-lg: 14px;
+
+}
+
+[data-theme="dark"] {
+
+  --bg: #1a1a1a;
+
+  --panel: #232325;
+
+  --border: #2e2e30;
+
+  --text: #ececec;
+
+  --muted: #888;
+
+  --accent: #1a9d7a;
+
+  --accent-soft: rgba(26, 157, 122, 0.18);
+
+  --surface-hover: #2a2a2c;
+
+  --error: #e05757;
+
+  --code-bg: #16161a;
+
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body { height: 100%; }
+
+body {
+
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+
+  background: var(--bg);
+
+  color: var(--text);
+
+  display: flex;
+
+  overflow: hidden;
+
+  transition: background .2s, color .2s;
+
+}

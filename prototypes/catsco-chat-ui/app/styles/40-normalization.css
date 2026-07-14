@@ -1,0 +1,299 @@
+﻿/* Shared control normalization and late UI overrides */
+
+/* UI normalization layer: keeps common controls visually consistent. */
+:root {
+  --ui-radius-xs: 6px;
+  --ui-radius-sm: 8px;
+  --ui-radius-md: 10px;
+  --ui-radius-lg: 14px;
+  --ui-font-control: 13px;
+  --ui-font-composer: 16px;
+  --ui-font-body: 15px;
+  --ui-control-h: 36px;
+  --ui-item-h: 38px;
+  --ui-gap-xs: 6px;
+  --ui-gap-sm: 8px;
+  --ui-gap-md: 12px;
+  --ui-pad-x: 12px;
+  --ui-hover: rgba(0,0,0,.075);
+  --ui-selected: rgba(0,0,0,.095);
+  --ui-active: rgba(24,133,103,.14);
+  --ui-disabled-opacity: .46;
+}
+
+[data-theme="dark"] {
+  --ui-hover: rgba(255,255,255,.105);
+  --ui-selected: rgba(255,255,255,.13);
+  --ui-active: rgba(255,255,255,.14);
+}
+
+button,
+input,
+textarea {
+  font-family: inherit;
+}
+
+.model-btn,
+.theme-btn,
+.new-btn,
+.session-menu button,
+.account-menu button,
+.msg-more-menu button,
+.qr-box .qr-close,
+.msg .meta button {
+  min-height: var(--ui-control-h);
+  border-radius: var(--ui-radius-sm);
+  font-size: var(--ui-font-control);
+  line-height: 1.2;
+}
+
+.model-btn,
+.theme-btn,
+.new-btn,
+.welcome-pill,
+.input-box,
+.sidebar-search .search-input,
+.task-process,
+.msg,
+.session-menu,
+.account-menu,
+.msg-more-menu,
+.qr-box {
+  border-color: var(--border);
+}
+
+.theme-btn,
+.account-settings,
+.section-add-btn,
+.session .pin-btn,
+.session .more-btn,
+.group-item .pin-btn,
+.group-item .more-btn,
+.msg-more-btn,
+.input-box .plus-btn {
+  border-radius: var(--ui-radius-sm);
+}
+
+.input-box,
+.task-process,
+.qr-box,
+.session-menu,
+.account-menu,
+.msg-more-menu {
+  border-radius: var(--ui-radius-md);
+}
+
+.msg {
+  border-radius: 0;
+  padding: 0;
+}
+
+.input-box {
+  gap: var(--ui-gap-sm);
+  padding: 6px 6px 6px 8px;
+  border-radius: 28px;
+}
+
+.welcome-pill {
+  border-radius: 16px;
+}
+
+.input-box textarea {
+  font-size: var(--ui-font-composer);
+}
+
+.sidebar-search .search-input {
+  font-size: var(--ui-font-control);
+}
+
+.msg .content {
+  font-size: var(--ui-font-body);
+}
+
+.sidebar .session,
+.sidebar .group-item,
+.sidebar .project-item,
+.sidebar .friend-item,
+.sidebar .sidebar-section-title,
+.sidebar .sidebar-section-title.collapsible,
+.search-result-item {
+  min-height: var(--ui-item-h);
+  border-radius: var(--ui-radius-sm);
+  padding: 8px 10px;
+  font-size: var(--ui-font-control);
+}
+
+.sidebar {
+  --sidebar-row-x: 10px;
+  --sidebar-icon-slot: 16px;
+  --sidebar-action-slot: 28px;
+}
+
+.sidebar.open .new-btn,
+.sidebar.open .session,
+.sidebar.open .group-item,
+.sidebar.open .project-item,
+.sidebar.open .friend-item,
+.sidebar.open .sidebar-section-title.collapsible {
+  padding-left: var(--sidebar-row-x);
+  padding-right: var(--sidebar-row-x);
+}
+
+.sidebar.open .new-btn {
+  min-height: var(--ui-item-h);
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar.open .new-btn .new-btn-icon,
+.sidebar .session .icon,
+.sidebar .group-item .icon,
+.sidebar .project-item .icon,
+.sidebar .friend-item .icon,
+.sidebar .project-item .project-chevron,
+.sidebar.open .sidebar-section-title .chevron {
+  width: var(--sidebar-icon-slot);
+  min-width: var(--sidebar-icon-slot);
+  height: var(--sidebar-icon-slot);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar.open .section-add-btn,
+.sidebar.open .history-section .sidebar-section-title::after,
+.sidebar.open .session .pin-btn,
+.sidebar.open .session .more-btn,
+.sidebar.open .group-item .pin-btn,
+.sidebar.open .group-item .more-btn,
+.sidebar.open .project-item .more-btn {
+  width: var(--sidebar-action-slot);
+  min-width: var(--sidebar-action-slot);
+  height: var(--sidebar-action-slot);
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar.open .section-add-btn {
+  margin-left: auto;
+  font-size: 18px;
+}
+
+.sidebar .session:not(.active):hover,
+.sidebar .group-item:not(.active):hover,
+.sidebar .project-item:not(.active):hover,
+.sidebar .friend-item:not(.active):hover,
+.sidebar .sidebar-section-title.collapsible:hover,
+.search-result-item:hover,
+.welcome-pill:hover,
+.model-btn:hover,
+.theme-btn:hover,
+.account-menu button:hover,
+.account-menu button:focus-visible,
+.session-menu button:hover,
+.msg-more-menu button:hover,
+.input-box .plus-btn:hover,
+.msg-more-btn:hover {
+  background: var(--ui-hover);
+}
+
+.sidebar .session.active,
+.sidebar .group-item.active,
+.sidebar .project-item.active,
+.sidebar .friend-item.active {
+  background: var(--ui-active);
+}
+
+.input-box .plus-btn,
+.input-box .plus-btn:hover,
+.input-box .plus-btn:focus-visible,
+.input-box .plus-btn:active {
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  border-radius: 50%;
+}
+
+[data-theme="light"] .sidebar .session.active,
+[data-theme="light"] .sidebar .group-item.active,
+[data-theme="light"] .sidebar .project-item.active,
+[data-theme="light"] .sidebar .friend-item.active {
+  background: #e4e4e8;
+  color: #202124;
+}
+
+button:disabled,
+.send-btn:disabled,
+input:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+}
+
+button:disabled:not(.send-btn),
+input:disabled,
+textarea:disabled {
+  opacity: var(--ui-disabled-opacity);
+}
+
+.send-btn {
+  background: rgb(24, 133, 103);
+  opacity: .38;
+  transform: none;
+}
+
+.input-box:focus-within .send-btn:disabled {
+  opacity: .38;
+}
+
+.send-btn.ready {
+  opacity: 1;
+}
+
+.send-btn:hover:not(:disabled) {
+  opacity: .9;
+}
+
+.send-btn:active:not(:disabled) {
+  opacity: .78;
+  transform: scale(.94);
+}
+
+.send-btn.stop,
+.send-btn.stop:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.send-btn.stop {
+  background: #d83a34;
+  color: #fff;
+}
+
+.send-btn.stop:hover:not(:disabled),
+.send-btn.stop:focus-visible {
+  background: #c9342f;
+  color: #fff;
+}
+
+.send-btn.stop:active:not(:disabled) {
+  background: #b82f2a;
+}
+
+.toast {
+  border-radius: var(--ui-radius-md);
+  font-size: var(--ui-font-control);
+  padding: 8px 14px;
+}
+
+.account-menu,
+.session-menu,
+.msg-more-menu {
+  padding: 6px;
+}
+
+.account-menu button,
+.session-menu button,
+.msg-more-menu button {
+  padding: 8px 10px;
+}

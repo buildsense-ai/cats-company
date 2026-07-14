@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+sessions.json
+*.tmp
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db

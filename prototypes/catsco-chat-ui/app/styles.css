@@ -1,0 +1,13 @@
+﻿/* CatsCo UI stylesheet manifest.
+   Keep imports in this order: later files intentionally refine earlier layers. */
+@import url("./styles/00-foundation.css");
+@import url("./styles/05-auth.css?v=20260713-2");
+@import url("./styles/10-sidebar.css?v=20260713-1");
+@import url("./styles/20-chat-layout.css?v=20260714-2");
+@import url("./styles/25-task-process.css");
+@import url("./styles/30-composer.css?v=20260714-4");
+@import url("./styles/40-normalization.css?v=20260714-1");
+@import url("./styles/50-settings.css?v=20260713-2");
+@import url("./styles/60-light-sidebar-repair.css?v=20260714-7");
+@import url("./styles/45-collaboration.css?v=20260714-1");
+@import url("./styles/70-responsive.css");
