@@ -62,6 +62,48 @@ jobs:
           ssh ${SSH_OPTS} "${REMOTE}" "tar -xzf - -C ${PROD_STACK_ROOT}" < prod-stack-files.tar.gz
           ssh ${SSH_OPTS} "${REMOTE}" "cat > ${PROD_STACK_ROOT}/releases/cats-company-source-${IMAGE_TAG}.tar.gz" < "cats-company-source-${IMAGE_TAG}.tar.gz"
 
+      - name: Upload managed image configuration
+        timeout-minutes: 3
+        env:
+          CATSCO_IMAGE_UPSTREAM_URL: ${{ vars.CATSCO_IMAGE_UPSTREAM_URL }}
+          CATSCO_IMAGE_UPSTREAM_API_KEY: ${{ secrets.CATSCO_IMAGE_UPSTREAM_API_KEY }}
+          CATSCO_IMAGE_MODEL: ${{ vars.CATSCO_IMAGE_MODEL }}
+        run: |
+          for variable_name in CATSCO_IMAGE_UPSTREAM_URL CATSCO_IMAGE_UPSTREAM_API_KEY CATSCO_IMAGE_MODEL; do
+            if [ -z "${!variable_name:-}" ]; then
+              echo "missing required prod environment value: ${variable_name}" >&2
+              exit 1
+            fi
+          done
+
+          umask 077
+          config_file="$(mktemp)"
+          trap 'rm -f "$config_file"' EXIT
+          python3 - "$config_file" <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          values = {
+              "CATSCO_IMAGE_UPSTREAM_URL": os.environ["CATSCO_IMAGE_UPSTREAM_URL"],
+              "CATSCO_IMAGE_UPSTREAM_API_KEY": os.environ["CATSCO_IMAGE_UPSTREAM_API_KEY"],
+              "CATSCO_IMAGE_MODEL": os.environ["CATSCO_IMAGE_MODEL"],
+          }
+          for key, value in values.items():
+              if not value or "\n" in value or "\r" in value:
+                  raise SystemExit(f"invalid managed prod environment value: {key}")
+
+          Path(sys.argv[1]).write_text(
+              "".join(f"{key}={value}\n" for key, value in values.items()),
+              encoding="utf-8",
+          )
+          PY
+
+          SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+          REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
+          scp ${SSH_OPTS} "$config_file" "${REMOTE}:${PROD_STACK_ROOT}/env/prod.managed.env"
+          ssh ${SSH_OPTS} "${REMOTE}" "chmod 600 ${PROD_STACK_ROOT}/env/prod.managed.env"
+
       - name: Deploy prod stack
         timeout-minutes: 25
         env:
