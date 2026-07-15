@@ -15,7 +15,7 @@ import RelayAccessModal from '../widgets/relay-access-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
-import { BookOpen, Bug, Download, KeyRound, Settings, LogOut, Eye, EyeOff, Laptop, CheckCircle2, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, CheckCircle2, Menu, PanelLeftOpen, Sun, Moon, Plus, ArrowUp, ChevronDown, Check } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 
@@ -23,6 +23,24 @@ const TABS = {
   CHATS: 'chats'
 };
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
+const MODEL_STORAGE_KEY = 'catsco_selected_model';
+const MODEL_OPTIONS = [
+  { id: 'minimax-m2.7', name: 'MiniMax-M2.7', description: '标准额度 · Anthropic SDK' },
+  { id: 'minimax-m3', name: 'MiniMax-M3', description: '多模态 · Anthropic SDK' },
+  { id: 'gpt-5.6', name: 'GPT-5.6', description: '通用推理与编程' },
+  { id: 'opus-4.8', name: 'Opus-4.8', description: '复杂分析与长文' },
+  { id: 'fable-5', name: 'Fable-5', description: '创意写作与表达' },
+  { id: 'glm-5.1', name: 'GLM-5.1', description: '中文任务与知识' },
+];
+const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
+const DEV_PREVIEW_USER = {
+  uid: 'local-preview',
+  username: 'preview',
+  email: '',
+  display_name: '本地预览',
+  avatar_url: '',
+  account_type: 'human',
+};
 
 function normalizeUserProfile(raw) {
   if (!raw) return null;
@@ -38,6 +56,8 @@ function normalizeUserProfile(raw) {
 }
 
 function getInitialUser() {
+  if (DEV_PREVIEW_ENABLED) return DEV_PREVIEW_USER;
+
   const token = getToken();
   if (!token) return null;
 
@@ -180,6 +200,20 @@ function TinodeWebApp() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [tutorialOpenToken, setTutorialOpenToken] = useState(0);
   const [showTutorialMenuHint, setShowTutorialMenuHint] = useState(false);
+  const [theme, setTheme] = useState(() => localStorage.getItem('catsco_theme') || 'light');
+  const [selectedModel, setSelectedModel] = useState(() => {
+    const stored = localStorage.getItem(MODEL_STORAGE_KEY);
+    return MODEL_OPTIONS.some((model) => model.id === stored) ? stored : MODEL_OPTIONS[0].id;
+  });
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('catsco_theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem(MODEL_STORAGE_KEY, selectedModel);
+  }, [selectedModel]);
 
 
 
@@ -318,6 +352,7 @@ function TinodeWebApp() {
 
   useEffect(() => {
     if (!user?.uid) return;
+    if (DEV_PREVIEW_ENABLED) return undefined;
 
     let cancelled = false;
     api.getMe()
@@ -486,6 +521,21 @@ function TinodeWebApp() {
     }
   };
 
+  const handleSelectComposerAgent = useCallback(async (agent) => {
+    const agentUid = agent?.uid || agent?.id;
+    if (!agentUid) return;
+    const res = await api.openAgent(agentUid);
+    const opened = res.agent || agent;
+    setActiveTopic({
+      topicId: opened.topic_id || res.topic || agent.topic_id,
+      name: opened.display_name || agent.display_name || agent.username,
+      isGroup: false,
+      avatar_url: opened.avatar_url || agent.avatar_url,
+      friendId: opened.uid || agentUid,
+    });
+    window.dispatchEvent(new Event('cc:data-changed'));
+  }, [setActiveTopic]);
+
   if (channelDeviceLink && user) {
     const params = new URLSearchParams(window.location.search);
     return (
@@ -528,11 +578,11 @@ function TinodeWebApp() {
             aria-label={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
             title={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
           >
-            {appSidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+            {appSidebarCollapsed ? <span className="catsco-brand-mark" aria-hidden="true" /> : <Menu size={18} />}
           </button>
         </div>
         
-        {!appSidebarCollapsed && (
+        <div className="cc-sidebar-content-shell">
           <SidebarContent
             activeTopic={activeTopic ? activeTopic.topicId : null}
             onSelectTopic={(topic) => {
@@ -542,29 +592,29 @@ function TinodeWebApp() {
             user={user}
             onlineUsers={onlineUsers}
           />
-        )}
+        </div>
         
-        {!appSidebarCollapsed && (
-          <ProfileFooter
-            user={user}
-            wsStatus={wsStatus}
-            onTogglePopover={() => setShowProfilePopover(!showProfilePopover)}
-          />
-        )}
+        <ProfileFooter
+          user={user}
+          wsStatus={wsStatus}
+          onTogglePopover={() => {
+            if (!appSidebarCollapsed) setShowProfilePopover(!showProfilePopover);
+          }}
+        />
 
         {showProfilePopover && !appSidebarCollapsed && (
           <div className="v3-profile-popover">
+            <div className="v3-popover-item v3-popover-status" aria-disabled="true">
+              <CheckCircle2 size={16} style={{marginRight: 10}} /> 公司账号已连接
+            </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowFeedbackModal(true); }}>
-              <Bug size={16} style={{marginRight: 10}} /> 问题反馈与建议
+              <Bug size={16} style={{marginRight: 10}} /> 意见反馈
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDownloadModal(true); }}>
               <Download size={16} style={{marginRight: 10}} /> 下载 CatsCo 桌面端
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDesktopConnectModal(true); }}>
               <Laptop size={16} style={{marginRight: 10}} /> 连接我的电脑助手
-            </div>
-            <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowTutorialMenuHint(false); setTutorialOpenToken((value) => value + 1); }}>
-              <BookOpen size={16} style={{marginRight: 10}} /> 示例任务
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowRelayModal(true); }}>
               <KeyRound size={16} style={{marginRight: 10}} /> CatsCo 中转站
@@ -596,6 +646,12 @@ function TinodeWebApp() {
         <LocalAssistantBar
           status={localAgentStatus}
           onConnect={() => setShowDesktopConnectModal(true)}
+          selectedModel={selectedModel}
+          onSelectModel={setSelectedModel}
+          theme={theme}
+          onToggleTheme={() => setTheme((value) => value === 'light' ? 'dark' : 'light')}
+          onDownload={() => setShowDownloadModal(true)}
+          title={activeTopic?.name || '新对话'}
         />
         {activeTopic ? (
           <MessagesView
@@ -609,13 +665,10 @@ function TinodeWebApp() {
             tutorialOpenToken={tutorialOpenToken}
             localAssistantStatus={localAgentStatus}
             onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
+            onSelectAgent={handleSelectComposerAgent}
             onTutorialHint={() => setShowTutorialMenuHint(true)}
           />
-        ) : (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888' }}>
-            {t('chats_empty')}
-          </div>
-        )}
+        ) : <NoActiveTask onCreate={() => window.dispatchEvent(new Event('catsco:new-task'))} />}
       </div>
 
       {showProfileEditor && (
@@ -657,22 +710,85 @@ function TinodeWebApp() {
   );
 }
 
-function LocalAssistantBar({ status, onConnect }) {
+function LocalAssistantBar({ status, onConnect, selectedModel, onSelectModel, theme, onToggleTheme, onDownload, title }) {
   const connected = status === 'connected';
   const checking = status === 'checking';
-  const label = connected ? '已连接' : checking ? '检测中' : '未连接';
+  const [menuOpen, setMenuOpen] = useState(false);
+  const currentModel = MODEL_OPTIONS.find((model) => model.id === selectedModel) || MODEL_OPTIONS[0];
+  const statusClass = connected ? 'connected' : checking ? 'connecting' : 'disconnected';
   return (
-    <div className="v3-local-assistant-bar">
-      <div className={`v3-local-assistant-status ${connected ? 'connected' : ''}`}>
-        {connected ? <CheckCircle2 size={15} /> : <Laptop size={15} />}
-        <span>本地助手：{label}</span>
-      </div>
-      {!connected && (
-        <button type="button" className="v3-local-assistant-connect" onClick={onConnect}>
-          连接
+    <header className="v3-local-assistant-bar">
+      <div className="v3-model-select">
+        <button
+          type="button"
+          className={`v3-local-assistant-status ${statusClass}`}
+          onClick={() => setMenuOpen((open) => !open)}
+          aria-expanded={menuOpen}
+          aria-haspopup="listbox"
+        >
+          <span className="v3-model-status-dot" aria-hidden="true" />
+          <span>{currentModel.name}</span>
+          <ChevronDown size={14} className={menuOpen ? 'is-open' : ''} />
         </button>
-      )}
-    </div>
+        {menuOpen && (
+          <div className="v3-model-menu" role="listbox" aria-label="选择模型">
+            {MODEL_OPTIONS.map((model) => (
+              <button
+                type="button"
+                role="option"
+                aria-selected={model.id === selectedModel}
+                className={`v3-model-option${model.id === selectedModel ? ' selected' : ''}`}
+                key={model.id}
+                onClick={() => {
+                  onSelectModel(model.id);
+                  setMenuOpen(false);
+                  if (!connected) onConnect();
+                }}
+              >
+                <span><strong>{model.name}</strong><small>{model.description}</small></span>
+                {model.id === selectedModel && <Check size={15} />}
+              </button>
+            ))}
+            {!connected && (
+              <button type="button" className="v3-model-connect" onClick={() => { setMenuOpen(false); onConnect(); }}>
+                {checking ? '正在连接桌面端…' : '连接本地模型'}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      <strong className="v3-shell-title">{title}</strong>
+      <div className="v3-shell-actions">
+        <button type="button" className="v3-action-btn" onClick={onToggleTheme} aria-label="切换日夜模式">
+          {theme === 'light' ? <Sun size={17} /> : <Moon size={17} />}
+        </button>
+        <button type="button" className="v3-action-btn" onClick={onDownload} aria-label="下载桌面端">
+          <Download size={17} />
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function NoActiveTask({ onCreate }) {
+  return (
+    <main className="cc-empty-task">
+      <div className="cc-empty-task-inner">
+        <span className="catsco-brand-mark cc-empty-task-mark" aria-hidden="true" />
+        <h1>需要我为您做什么？</h1>
+        <div className="cc-empty-composer">
+          <button type="button" className="v3-tool cc-empty-tool" onClick={onCreate} aria-label="添加文件或图片">
+            <Plus size={20} />
+          </button>
+          <button type="button" className="cc-empty-composer-input" onClick={onCreate}>输入指令，我帮您完成</button>
+          <button type="button" className="v3-agent-picker-button cc-empty-agent" onClick={onCreate}>
+            <span>选择 Agent</span><ChevronDown size={14} />
+          </button>
+          <button type="button" className="cc-empty-send" onClick={onCreate} aria-label="开始任务"><ArrowUp size={17} /></button>
+        </div>
+        <p>Enter 发送 · Shift+Enter 换行 · Ctrl+Enter 发送 · Ctrl+B 折叠侧栏 · 点击红色按钮停止生成</p>
+      </div>
+    </main>
   );
 }
 

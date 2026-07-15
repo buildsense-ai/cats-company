@@ -3,6 +3,7 @@ import { api } from '../api';
 import t from '../i18n';
 import Avatar from './avatar';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
+import { UserPlus, X } from 'lucide-react';
 
 export default function GroupSettings({ groupId, currentUser, onClose, onSaved }) {
   const fileInputRef = useRef(null);
@@ -13,6 +14,7 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
   const [avatarUrl, setAvatarUrl] = useState('');
   const [announcement, setAnnouncement] = useState('');
   const [selected, setSelected] = useState(new Set());
+  const [showInvite, setShowInvite] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -207,12 +209,28 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <div className="oc-modal oc-modal-wide oc-group-settings-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="oc-modal-title">{t('group_settings')}</div>
+        <header className="oc-group-settings-header">
+          <h2>{t('group_settings')}</h2>
+          <button type="button" className="oc-modal-close" onClick={onClose} aria-label="关闭">
+            <X size={18} strokeWidth={1.8} />
+          </button>
+        </header>
         <div className="oc-group-settings-body">
-          <div className="oc-settings-avatar-block">
-            <Avatar name={name || group?.name || t('contacts_groups')} src={avatarUrl} size={88} isGroup />
+          <section className="oc-group-summary">
+            <Avatar name={name || group?.name || t('contacts_groups')} src={avatarUrl} size={48} isGroup />
+            <div className="oc-group-summary-copy">
+              <input
+                className="oc-group-name-input"
+                aria-label="群聊名称"
+                placeholder={t('group_name_placeholder')}
+                value={name}
+                disabled={!canEditGroup}
+                onChange={(e) => setName(e.target.value)}
+              />
+              <span>{members.length} 位成员</span>
+            </div>
             {canEditGroup && (
-              <button className="oc-btn oc-btn-default" onClick={() => fileInputRef.current?.click()}>
+              <button type="button" className="oc-btn oc-btn-default oc-group-avatar-button" onClick={() => fileInputRef.current?.click()}>
                 {t('group_avatar_pick')}
               </button>
             )}
@@ -223,14 +241,7 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
               style={{ display: 'none' }}
               onChange={handleSelectAvatar}
             />
-          </div>
-          <input
-            className="oc-auth-input"
-            placeholder={t('group_name_placeholder')}
-            value={name}
-            disabled={!canEditGroup}
-            onChange={(e) => setName(e.target.value)}
-          />
+          </section>
 
           <div className="oc-settings-section">
             <div className="oc-settings-section-title">{t('group_announcement')}</div>
@@ -244,7 +255,18 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
           </div>
 
           <div className="oc-settings-section">
-            <div className="oc-settings-section-title">{t('group_members')} ({members.length})</div>
+            <div className="oc-settings-section-head">
+              <div>
+                <div className="oc-settings-section-title">{t('group_members')}</div>
+                <div className="oc-settings-secondary">查看和管理当前成员</div>
+              </div>
+              {canEditGroup && (
+                <button type="button" className="oc-btn oc-btn-default oc-invite-members-button" onClick={() => setShowInvite((value) => !value)}>
+                  <UserPlus size={15} strokeWidth={1.8} />
+                  邀请成员
+                </button>
+              )}
+            </div>
             <div className="oc-settings-list">
               {members.map((member) => (
                 <div key={member.user_id} className="oc-settings-list-item oc-settings-member-item">
@@ -298,9 +320,15 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
             </div>
           </div>
 
-          {canEditGroup && (
+          {canEditGroup && showInvite && (
             <div className="oc-settings-section">
-              <div className="oc-settings-section-title">{t('group_add_members')}</div>
+              <div className="oc-settings-section-head">
+                <div>
+                  <div className="oc-settings-section-title">{t('group_add_members')}</div>
+                  <div className="oc-settings-secondary">选择要加入群聊的好友或 Agent</div>
+                </div>
+                {selected.size > 0 && <span className="oc-selection-count">已选 {selected.size}</span>}
+              </div>
               <div className="oc-settings-list">
                 {availableFriends.length === 0 ? (
                   <div className="oc-settings-empty">{t('group_no_invitable_members')}</div>

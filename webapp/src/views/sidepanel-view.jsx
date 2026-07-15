@@ -114,6 +114,12 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
     return () => document.removeEventListener('click', closeMenu);
   }, [openFriendMenuId]);
 
+  useEffect(() => {
+    const openNewTask = () => setShowNewChat(true);
+    window.addEventListener('catsco:new-task', openNewTask);
+    return () => window.removeEventListener('catsco:new-task', openNewTask);
+  }, []);
+
   const toggleCollapsed = (section) => {
     setCollapsed((prev) => {
       const next = { ...prev, [section]: !prev[section] };
@@ -472,7 +478,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
         )}
 
         {/* AI 对话 */}
-        <div className="v3-chat-section">
+        <div className="v3-chat-section cc-history-section">
           <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('ai')} aria-expanded={!collapsed.ai}>
             <span>历史任务</span>
             <ChevronRight size={14} />
@@ -480,13 +486,13 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           <button type="button" className="cc-section-add" onClick={() => setShowNewChat(true)} title="新建任务" aria-label="新建任务"><Plus size={15} /></button>
         </div>
         {(isSearching || !collapsed.ai) && (aiChats.length === 0 && !isSearching ? (
-          <div className="cc-sidebar-empty">点击 + 开始新任务</div>
+          <div className="cc-sidebar-empty cc-history-empty">点击 + 开始新任务</div>
         ) : (
           aiChats.map((chat) => {
             const canDelete = chat.isGroup && groupOwnerById.get(String(chat.groupId)) === String(user.uid);
             const isOnline = onlineStatusFor(onlineUsers, chat.friendId, chat.isOnline);
             return (
-              <div key={chat.id} className={`v3-chat-item ${activeTopic === chat.id ? 'active' : ''}`}
+              <div key={chat.id} className={`v3-chat-item cc-history-item ${activeTopic === chat.id ? 'active' : ''}`}
                 onClick={() => onSelectTopic({ topicId: chat.id, name: chat.name, isGroup: chat.isGroup, groupId: chat.groupId, avatar_url: chat.avatar_url, friendId: chat.friendId })}>
                 <span className="prefix" style={{fontSize: '16px'}}>{chat.isGroup ? '#' : '●'}</span>
                 <div style={{flex: 1, overflow: 'hidden'}}>
@@ -513,7 +519,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           })
         ))}
 
-        <div className="v3-chat-section cc-top-level-section">
+        <div className="v3-chat-section cc-top-level-section cc-collaboration-section">
           <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('collaboration')} aria-expanded={!collapsed.collaboration}>
             <span>协作</span>
             <ChevronRight size={14} />
@@ -738,20 +744,28 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
         ))}
         </div>}
 
+        <div className="v3-chat-section cc-top-level-section cc-project-section">
+          <button type="button" className="cc-section-toggle" aria-expanded="false">
+            <span>{'项目'}</span>
+            <ChevronRight size={14} />
+          </button>
+          <button type="button" className="cc-section-add" disabled title="项目接口尚未接入" aria-label="项目接口尚未接入"><Plus size={15} /></button>
+        </div>
+
         {isSearching && !hasSearchResults && (
-          <div style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)', fontSize: '13px' }}>没有匹配结果</div>
+          <div className="cc-search-empty" style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)', fontSize: '13px' }}>没有匹配结果</div>
         )}
 
       </div>
 
       {showNewChat && (
         <div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center'}} onClick={() => { setShowNewChat(false); setNamingAgent(null); }}>
-          <div style={{background: 'var(--v3-bg-secondary, #1a1a2e)', borderRadius: 12, padding: 24, minWidth: 300, maxWidth: 400}} onClick={(e) => e.stopPropagation()}>
+          <div style={{background: 'var(--cc-surface)', border: '1px solid var(--cc-border)', color: 'var(--cc-text)', borderRadius: 8, padding: 24, minWidth: 300, maxWidth: 400}} onClick={(e) => e.stopPropagation()}>
             {!namingAgent ? (
               <>
-                <h3 style={{margin: '0 0 16px', fontSize: 16, color: '#fff'}}>选择 AI 助手开始对话</h3>
+                <h3 style={{margin: '0 0 16px', fontSize: 16, color: 'var(--cc-text)'}}>选择 AI 助手开始对话</h3>
                 {agents.length === 0 ? (
-                  <div style={{color: '#888', fontSize: 13, textAlign: 'center', padding: 20}}>暂无 AI 助手，请先在 AI 助手区创建</div>
+                  <div style={{color: 'var(--cc-muted)', fontSize: 13, textAlign: 'center', padding: 20}}>暂无 AI 助手，请先在 AI 助手区创建</div>
                 ) : (
                   <div style={{display: 'flex', flexDirection: 'column', gap: 8}}>
                     {agents.map((agent) => (

@@ -4,6 +4,7 @@ import t from '../i18n';
 import Avatar from './avatar';
 import PasswordResetForm from './password-reset-form';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
+import { X } from 'lucide-react';
 
 export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
   const fileInputRef = useRef(null);
@@ -73,8 +74,13 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <div className="oc-modal oc-profile-editor-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="oc-profile-editor-scroll">
+        <div className="oc-profile-editor-header">
           <div className="oc-modal-title">{t('me_profile_edit')}</div>
+          <button type="button" className="oc-profile-editor-close" onClick={onClose} aria-label="关闭">
+            <X size={18} strokeWidth={1.8} />
+          </button>
+        </div>
+        <div className="oc-profile-editor-scroll">
           <div className="oc-settings-avatar-block">
             <Avatar name={displayName || user?.username} src={avatarUrl} size={88} />
             <button className="oc-btn oc-btn-default" onClick={() => fileInputRef.current?.click()}>

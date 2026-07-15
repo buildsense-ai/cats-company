@@ -1,7 +1,22 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, getWebSocketURL } from '../api';
 import t from '../i18n';
-import { CheckCircle, Copy, QrCode, RefreshCw, XCircle, Zap, Bot, Upload } from 'lucide-react';
+import {
+  Bot,
+  Bug,
+  CheckCircle,
+  Code2,
+  Copy,
+  FileCheck2,
+  Lightbulb,
+  QrCode,
+  RefreshCw,
+  Sparkles,
+  Upload,
+  X,
+  XCircle,
+  Zap,
+} from 'lucide-react';
 import Avatar from './avatar';
 import QRCode from './qr-code';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
@@ -58,7 +73,24 @@ const isFeishuChannel = (value) => normalizeChannel(value) === 'feishu';
 
 const initialForm = {
   display_name: '',
+  role: 'code_review',
+  description: '',
 };
+
+const ASSISTANT_ROLES = [
+  { value: 'code_review', label: '代码审查助手' },
+  { value: 'debugging', label: '问题排查助手' },
+  { value: 'writing', label: '写作助手' },
+  { value: 'research', label: '研究助手' },
+  { value: 'general', label: '通用助手' },
+];
+
+const ASSISTANT_CAPABILITIES = [
+  { icon: Code2, title: '阅读代码', detail: '理解代码结构与逻辑，快速定位功能' },
+  { icon: Bug, title: '分析 Bug', detail: '识别潜在问题，分析原因与影响' },
+  { icon: Lightbulb, title: '优化建议', detail: '提供可行的优化建议与最佳实践' },
+  { icon: FileCheck2, title: '生成方案', detail: '整理可执行的修改方案与代码片段' },
+];
 
 const isOwnedBot = (bot) => bot?.is_owner === true || bot?.relation === 'owner';
 
@@ -266,32 +298,32 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
   return (
     <div className="oc-modal-overlay" onClick={onClose} style={{ zIndex: 1000 }}>
       {/* Removed arbitrary background hardcoding to allow inheritance from the global .oc-modal V3 matrix */}
-      <div className="oc-modal" onClick={e => e.stopPropagation()} style={{ width: 700, maxWidth: '95vw', minHeight: 400 }}>
+      <div className="oc-modal cc-agent-manager" onClick={e => e.stopPropagation()}>
 
-        <div className="oc-modal-header" style={{ padding: '20px 24px', borderBottom: '1px solid var(--v3-border)' }}>
-          <div style={{ display: 'flex', gap: 24, alignItems: 'center' }}>
-            <h3 style={{ margin: 0, fontSize: 18, fontWeight: 600, display: 'flex', alignItems: 'center', color: 'var(--v3-text-name)' }}>
-              <Zap size={20} style={{marginRight: 8, color: 'var(--v3-primary)'}} fill="currentColor" /> AI 助手管理
+        <div className="oc-modal-header cc-agent-manager-header">
+          <div className="cc-agent-manager-nav">
+            <h3 className="cc-agent-manager-title">
+              <Zap size={17} /> AI 助手管理
             </h3>
-            <div style={{ display: 'flex', gap: 16 }}>
+            <div className="cc-agent-manager-tabs">
               <button
-                style={{ background: 'none', border: 'none', color: tab === 'hub' ? 'var(--v3-text-name)' : 'var(--v3-text-muted)', fontWeight: tab === 'hub' ? 600 : 400, cursor: 'pointer', outline: 'none' }}
+                className={tab === 'hub' ? 'active' : ''}
                 onClick={() => setTab('hub')}
               >
                 我创建的助手
               </button>
               <button
-                style={{ background: 'none', border: 'none', color: tab === 'create' ? 'var(--v3-text-name)' : 'var(--v3-text-muted)', fontWeight: tab === 'create' ? 600 : 400, cursor: 'pointer', outline: 'none' }}
+                className={tab === 'create' ? 'active' : ''}
                 onClick={() => setTab('create')}
               >
                 创建新助手
               </button>
             </div>
           </div>
-          <button className="oc-btn-default" style={{ width: 28, height: 28, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', border: 'none', background: 'transparent' }} onClick={onClose}>×</button>
+          <button className="cc-dialog-close" onClick={onClose} aria-label="关闭"><X size={18} /></button>
         </div>
 
-        <div className="oc-modal-body" style={{ padding: '24px', position: 'relative' }}>
+        <div className="oc-modal-body cc-agent-manager-body">
 
           {error && <div style={{ background: 'rgba(250,81,81,0.1)', color: '#FA5151', padding: 12, borderRadius: 8, marginBottom: 16 }}>{error}</div>}
 
@@ -307,7 +339,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                   <div style={{ color: 'var(--v3-text-muted)', fontSize: 13, maxWidth: 280 }}>
                     已添加的助手会保留在左侧 AI 助手列表，可直接移动端使用或移除。
                   </div>
-                  <button className="oc-btn oc-btn-primary" style={{ padding: '8px 16px', borderRadius: 8 }} onClick={() => setTab('create')}>创建第一个助手</button>
+                  <button className="oc-btn cc-agent-empty-action" onClick={() => setTab('create')}>创建第一个助手</button>
                 </div>
               ) : (
                 <div className="v3-agent-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
@@ -377,48 +409,76 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
 
           {/* CREATE TAB */}
           {tab === 'create' && (
-            <form onSubmit={handleCreate} style={{ maxWidth: 460, margin: '0 auto' }}>
-              <div style={{ textAlign: 'center', marginBottom: 24, color: 'var(--v3-primary)' }}>
-                <Zap size={32} fill="currentColor" style={{ marginBottom: 8 }} />
-                <h2 style={{ margin: '0 0 8px 0', fontSize: 20, color: 'var(--v3-text-name)' }}>创建 AI 助手</h2>
-                <p style={{ margin: 0, color: 'var(--v3-text-muted)', fontSize: 14 }}>创建一个新的 AI 助手并获取 API Key。</p>
+            <form onSubmit={handleCreate} className="cc-agent-create-form">
+              <div className="cc-agent-create-intro">
+                <h2>创建你的专属助手</h2>
+                <p>先定义助手身份，再配置运行方式。</p>
               </div>
 
-              <div className="oc-mode-switch" style={{ marginBottom: 24, display: 'flex', gap: 12 }}>
-                <div
-                  className={`oc-mode-option ${createMode === CREATE_MODES.SELF_HOSTED ? 'active' : ''}`}
-                  onClick={() => setCreateMode(CREATE_MODES.SELF_HOSTED)}
-                  style={{ flex: 1, padding: 16, border: createMode === CREATE_MODES.SELF_HOSTED ? '1px solid var(--v3-primary)' : '1px solid var(--v3-border)', borderRadius: 8, cursor: 'pointer', background: createMode === CREATE_MODES.SELF_HOSTED ? 'rgba(16,185,129,0.05)' : 'var(--v3-bg-app)' }}
-                >
-                  <div style={{ fontWeight: 600, color: 'var(--v3-text-name)', marginBottom: 4 }}>自托管</div>
-                  <div style={{ fontSize: 12, color: 'var(--v3-text-muted)' }}>自行部署服务器，通过 API Key 和 WebSocket 连接。</div>
-                </div>
-                <div
-                  className={`oc-mode-option ${createMode === CREATE_MODES.MANAGED ? 'active' : ''}`}
-                  onClick={() => setCreateMode(CREATE_MODES.MANAGED)}
-                  style={{ flex: 1, padding: 16, border: '1px solid var(--v3-border)', borderRadius: 8, cursor: 'pointer', opacity: 0.5, background: 'var(--v3-bg-app)' }}
-                >
-                  <div style={{ fontWeight: 600, color: 'var(--v3-text-name)', marginBottom: 4 }}>云托管</div>
-                  <div style={{ fontSize: 12, color: 'var(--v3-text-muted)' }}>自动部署无状态助手（即将推出）</div>
-                </div>
+              <div className="cc-agent-create-grid">
+                <section className="cc-agent-create-card cc-agent-basic-card">
+                  <h3><FileCheck2 size={17} />基本信息</h3>
+                  <label>
+                    <span>助手名称 <b>*</b></span>
+                    <input
+                      type="text"
+                      value={createForm.display_name}
+                      onChange={(e) => setCreateForm({ ...createForm, display_name: e.target.value })}
+                      placeholder="例如：代码审查助手"
+                      className="oc-auth-input"
+                      required
+                      disabled={isSubmitting}
+                    />
+                  </label>
+                  <label>
+                    <span>助手定位 <b>*</b></span>
+                    <select
+                      value={createForm.role}
+                      onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })}
+                      className="oc-auth-input"
+                    >
+                      {ASSISTANT_ROLES.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    <span>用途说明 <b>*</b></span>
+                    <textarea
+                      value={createForm.description}
+                      onChange={(e) => setCreateForm({ ...createForm, description: e.target.value.slice(0, 500) })}
+                      placeholder="说明这个助手解决什么问题，以及你希望它如何工作"
+                      required
+                    />
+                    <em>{createForm.description.length}/500</em>
+                  </label>
+                </section>
+
+                <section className="cc-agent-create-card cc-agent-capability-card">
+                  <h3><Sparkles size={17} />能力预览</h3>
+                  <div className="cc-agent-capability-list">
+                    {ASSISTANT_CAPABILITIES.map(({ icon: Icon, title, detail }) => (
+                      <div className="cc-agent-capability-item" key={title}>
+                        <span><Icon size={18} /></span>
+                        <div><strong>{title}</strong><small>{detail}</small></div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
               </div>
 
-              <div className="oc-form-group" style={{ marginBottom: 24 }}>
-                <label style={{ display: 'block', marginBottom: 8, fontSize: 13, color: 'var(--v3-text-muted)' }}>助手名称</label>
-                <input
-                  type="text"
-                  value={createForm.display_name}
-                  onChange={(e) => setCreateForm({ ...createForm, display_name: e.target.value })}
-                  placeholder="例如：代码审查助手"
-                  className="oc-auth-input"
-                  style={{ width: '100%', padding: '12px 16px', fontSize: 15 }}
-                  required
-                  disabled={isSubmitting}
-                />
-              </div>
+              <fieldset className="cc-agent-hosting">
+                <legend><span><Zap size={16} /></span>部署方式 <small>高级设置</small></legend>
+                <label className={createMode === CREATE_MODES.SELF_HOSTED ? 'active' : ''}>
+                  <input type="radio" name="hosting" checked={createMode === CREATE_MODES.SELF_HOSTED} onChange={() => setCreateMode(CREATE_MODES.SELF_HOSTED)} />
+                  <span><strong>自托管</strong><small>生成本地身份 Key，后续连接你的服务。</small></span>
+                </label>
+                <label className="disabled">
+                  <input type="radio" name="hosting" disabled />
+                  <span><strong>云托管</strong><small>无需部署，创建后直接使用，即将推出。</small></span>
+                </label>
+              </fieldset>
 
-              <button type="submit" className="oc-btn oc-btn-primary" style={{ width: '100%', padding: '14px 0', fontSize: 15, borderRadius: 8 }} disabled={isSubmitting || createMode === CREATE_MODES.MANAGED}>
-                {isSubmitting ? '创建中...' : '生成 API Key 并创建'}
+              <button type="submit" className="oc-btn oc-btn-primary cc-agent-create-submit" disabled={isSubmitting || !createForm.description.trim()}>
+                {isSubmitting ? '创建中...' : '创建我的专属助手'}
               </button>
             </form>
           )}
