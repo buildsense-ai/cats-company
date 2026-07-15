@@ -6,7 +6,7 @@ import AddFriend from '../widgets/add-friend';
 import FriendRequest from '../widgets/friend-request';
 import AgentStoreModal from '../widgets/agent-store-modal';
 import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
-import { Users, Zap, Bot, Trash2, MessageSquare, Smartphone, Check, X, Pin, ChevronRight, Plus, Search } from 'lucide-react';
+import { Users, Zap, Bot, Trash2, MessageSquare, Smartphone, Check, X, Pin, ChevronRight, Plus, Search, MoreHorizontal, UserX, Ban } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
 const DEFAULT_COLLAPSED_SECTIONS = { collaboration: false, ai: false, friends: false, groups: false, agents: false };
@@ -99,11 +99,20 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
   const [agentPendingRequests, setAgentPendingRequests] = useState([]);
   const [agentReviewingKey, setAgentReviewingKey] = useState('');
   const [pinnedGroupIds, setPinnedGroupIds] = useState(() => loadPinnedGroupIds(user?.uid));
+  const [openFriendMenuId, setOpenFriendMenuId] = useState('');
+  const [friendActionId, setFriendActionId] = useState('');
 
   useEffect(() => {
     setCollapsed(loadCollapsedSections(user?.uid));
     setPinnedGroupIds(loadPinnedGroupIds(user?.uid));
   }, [user?.uid]);
+
+  useEffect(() => {
+    if (!openFriendMenuId) return undefined;
+    const closeMenu = () => setOpenFriendMenuId('');
+    document.addEventListener('click', closeMenu);
+    return () => document.removeEventListener('click', closeMenu);
+  }, [openFriendMenuId]);
 
   const toggleCollapsed = (section) => {
     setCollapsed((prev) => {
@@ -307,6 +316,35 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
     }
   };
 
+  const handleFriendAction = async (chat, action) => {
+    const friendId = chat?.friendId;
+    if (!friendId) return;
+    const isBlock = action === 'block';
+    const confirmed = window.confirm(
+      isBlock
+        ? `确定拉黑“${chat.name}”吗？\n\n拉黑后对方将无法再向你发送消息。`
+        : `确定删除好友“${chat.name}”吗？`
+    );
+    if (!confirmed) return;
+
+    try {
+      setFriendActionId(String(friendId));
+      if (isBlock) {
+        await api.blockUser(friendId);
+      } else {
+        await api.removeFriend(friendId);
+      }
+      if (activeTopic === chat.id) onSelectTopic(null);
+      setOpenFriendMenuId('');
+      await loadAll();
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (err) {
+      window.alert(err.message || (isBlock ? '拉黑好友失败' : '删除好友失败'));
+    } finally {
+      setFriendActionId('');
+    }
+  };
+
   const handleDeleteGroup = async ({ groupId, topicId, name }) => {
     if (!groupId || !topicId) return;
 
@@ -494,7 +532,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           friendChats.map((chat) => {
             const isOnline = onlineStatusFor(onlineUsers, chat.friendId, chat.isOnline);
             return (
-              <div key={chat.id} className={`v3-chat-item ${activeTopic === chat.id ? 'active' : ''}`}
+              <div key={chat.id} className={`v3-chat-item v3-friend-chat-item ${activeTopic === chat.id ? 'active' : ''}`}
                 onClick={() => onSelectTopic({ topicId: chat.id, name: chat.name, isGroup: false, avatar_url: chat.avatar_url, friendId: chat.friendId })}>
                 <span
                   className={`v3-status-dot ${isOnline ? 'online' : 'offline'}`}
@@ -507,6 +545,32 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
                   {chat.preview && <div style={{fontSize: 12, color: '#555', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{chat.preview}</div>}
                 </div>
                 {chat.time && <span style={{fontSize: 11, color: '#555', flexShrink: 0}}>{chat.time}</span>}
+                <button
+                  type="button"
+                  className="v3-chat-item-action v3-friend-menu-trigger"
+                  title="好友操作"
+                  aria-label={`${chat.name} 更多操作`}
+                  aria-expanded={openFriendMenuId === String(chat.friendId)}
+                  disabled={friendActionId === String(chat.friendId)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setOpenFriendMenuId((current) => current === String(chat.friendId) ? '' : String(chat.friendId));
+                  }}
+                >
+                  <MoreHorizontal size={15} />
+                </button>
+                {openFriendMenuId === String(chat.friendId) && (
+                  <div className="v3-friend-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+                    <button type="button" role="menuitem" onClick={() => handleFriendAction(chat, 'remove')}>
+                      <UserX size={14} />
+                      <span>删除好友</span>
+                    </button>
+                    <button type="button" role="menuitem" className="danger" onClick={() => handleFriendAction(chat, 'block')}>
+                      <Ban size={14} />
+                      <span>拉黑好友</span>
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })

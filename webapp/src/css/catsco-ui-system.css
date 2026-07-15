@@ -510,6 +510,12 @@ select:disabled {
   color: var(--cc-text);
 }
 
+@media (hover: none), (pointer: coarse) {
+  .cc-section-add {
+    opacity: 1;
+  }
+}
+
 .cc-top-level-section {
   margin-top: 8px !important;
 }
@@ -579,6 +585,53 @@ select:disabled {
 .v3-chat-item-action.is-pinned {
   color: var(--cc-text-secondary);
   background: var(--cc-hover);
+}
+
+.v3-friend-chat-item {
+  position: relative;
+}
+
+.v3-friend-menu-trigger {
+  flex: 0 0 28px;
+}
+
+.v3-friend-action-menu {
+  position: absolute;
+  top: calc(100% - 2px);
+  right: 8px;
+  z-index: 30;
+  width: 132px;
+  padding: 5px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-panel-elevated, var(--cc-panel));
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.22);
+}
+
+.v3-friend-action-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.v3-friend-action-menu button:hover,
+.v3-friend-action-menu button:focus-visible {
+  background: var(--cc-hover);
+  color: var(--cc-text);
+}
+
+.v3-friend-action-menu button.danger {
+  color: var(--cc-danger, #dc5a5a);
 }
 
 .v3-profile-footer {
@@ -783,5 +836,50 @@ select:disabled {
 
   .v3-composer {
     padding: 10px;
+  }
+}
+
+.v3-mobile-sidebar-toggle,
+.v3-mobile-sidebar-backdrop {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .v3-mobile-sidebar-toggle {
+    display: inline-flex;
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    z-index: 82;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 1px solid var(--cc-border);
+    border-radius: var(--cc-radius-md);
+    background: var(--cc-panel);
+    color: var(--cc-text-secondary);
+    box-shadow: none;
+  }
+
+  .v3-mobile-sidebar-toggle:hover,
+  .v3-mobile-sidebar-toggle:active {
+    background: var(--cc-hover);
+    color: var(--cc-text);
+  }
+
+  .v3-mobile-sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    padding: 0;
+    border: 0;
+    background: rgba(0, 0, 0, 0.38);
+  }
+
+  .v3-sidebar.open {
+    z-index: 90;
   }
 }

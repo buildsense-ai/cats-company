@@ -54,6 +54,7 @@ vi.mock('../api', () => ({
     acceptFriend: vi.fn(),
     rejectFriend: vi.fn(),
     removeFriend: vi.fn(),
+    blockUser: vi.fn(),
     disbandGroup: vi.fn(),
   },
   onWSMessage: vi.fn(() => vi.fn()),
@@ -108,6 +109,7 @@ describe('ChatListView sidebar sections', () => {
     api.acceptAgentFriend.mockResolvedValue({ ok: true });
     api.rejectAgentFriend.mockResolvedValue({ ok: true });
     api.removeFriend.mockResolvedValue({ ok: true });
+    api.blockUser.mockResolvedValue({ ok: true });
     onWSMessage.mockImplementation(() => vi.fn());
     onSelectTopic = vi.fn();
 
@@ -398,6 +400,69 @@ describe('ChatListView sidebar sections', () => {
 
     expect(container.textContent).toContain('好友');
     expect(container.textContent).not.toContain('Alice');
+  });
+
+  it('removes an ordinary friend from the friend row menu', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_8',
+          friend_id: 8,
+          name: 'Alice',
+          is_group: false,
+          is_bot: false,
+        },
+      ],
+    });
+    window.confirm = vi.fn(() => true);
+
+    await mount({ activeTopic: 'p2p_7_8' });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Alice 更多操作"]'));
+    });
+    const removeButton = Array.from(container.querySelectorAll('[role="menuitem"]'))
+      .find((node) => node.textContent.includes('删除好友'));
+    expect(removeButton).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(removeButton);
+      await Promise.resolve();
+    });
+
+    expect(api.removeFriend).toHaveBeenCalledWith(8);
+    expect(onSelectTopic).toHaveBeenCalledWith(null);
+  });
+
+  it('blocks an ordinary friend from the friend row menu', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_9',
+          friend_id: 9,
+          name: 'Bob',
+          is_group: false,
+          is_bot: false,
+        },
+      ],
+    });
+    window.confirm = vi.fn(() => true);
+
+    await mount();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Bob 更多操作"]'));
+    });
+    const blockButton = Array.from(container.querySelectorAll('[role="menuitem"]'))
+      .find((node) => node.textContent.includes('拉黑好友'));
+    expect(blockButton).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(blockButton);
+      await Promise.resolve();
+    });
+
+    expect(api.blockUser).toHaveBeenCalledWith(9);
   });
 
   it('keeps group conversations in the groups section by default', async () => {

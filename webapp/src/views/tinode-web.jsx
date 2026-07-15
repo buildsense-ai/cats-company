@@ -177,6 +177,7 @@ function TinodeWebApp() {
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
   const [appSidebarCollapsed, setAppSidebarCollapsed] = useState(() => loadAppSidebarCollapsed());
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [tutorialOpenToken, setTutorialOpenToken] = useState(0);
   const [showTutorialMenuHint, setShowTutorialMenuHint] = useState(false);
 
@@ -188,6 +189,13 @@ function TinodeWebApp() {
   }, []);
 
   const toggleAppSidebar = useCallback(() => {
+    if (window.matchMedia('(max-width: 768px)').matches) {
+      setMobileSidebarOpen((open) => !open);
+      setAppSidebarCollapsed(false);
+      saveAppSidebarCollapsed(false);
+      setShowProfilePopover(false);
+      return;
+    }
     setAppSidebarCollapsed((prev) => {
       const next = !prev;
       saveAppSidebarCollapsed(next);
@@ -195,6 +203,16 @@ function TinodeWebApp() {
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    if (!mobileSidebarOpen) return undefined;
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setMobileSidebarOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [mobileSidebarOpen]);
 
   // WebSocket message handler
   const handleWSMessage = useCallback((msg) => {
@@ -489,7 +507,15 @@ function TinodeWebApp() {
 
   return (
     <div className="v3-app">
-      <div className={`v3-sidebar${appSidebarCollapsed ? ' collapsed' : ''}`}>
+      {mobileSidebarOpen && (
+        <button
+          type="button"
+          className="v3-mobile-sidebar-backdrop"
+          onClick={() => setMobileSidebarOpen(false)}
+          aria-label="关闭左侧栏"
+        />
+      )}
+      <div className={`v3-sidebar${appSidebarCollapsed ? ' collapsed' : ''}${mobileSidebarOpen ? ' open' : ''}`}>
         <div className="v3-sidebar-header">
           <div className="v3-brand-title">
             <span className="catsco-brand-mark" aria-hidden="true" />
@@ -511,6 +537,7 @@ function TinodeWebApp() {
             activeTopic={activeTopic ? activeTopic.topicId : null}
             onSelectTopic={(topic) => {
               setActiveTopic(topic);
+              setMobileSidebarOpen(false);
             }}
             user={user}
             onlineUsers={onlineUsers}
@@ -553,6 +580,19 @@ function TinodeWebApp() {
       </div>
       
       <div className="v3-main">
+        <button
+          type="button"
+          className="v3-mobile-sidebar-toggle"
+          onClick={() => {
+            setAppSidebarCollapsed(false);
+            saveAppSidebarCollapsed(false);
+            setMobileSidebarOpen(true);
+          }}
+          aria-label="打开左侧栏"
+          aria-expanded={mobileSidebarOpen}
+        >
+          <PanelLeftOpen size={18} />
+        </button>
         <LocalAssistantBar
           status={localAgentStatus}
           onConnect={() => setShowDesktopConnectModal(true)}
