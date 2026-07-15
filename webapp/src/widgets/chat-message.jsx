@@ -1083,6 +1083,23 @@ function fetchableMediaURL(url) {
   }
 }
 
+function downloadableMediaURL(url, fileName) {
+  if (!url || !fileName) return url || '';
+  try {
+    const urlObj = new URL(url, window.location.origin);
+    const mediaOrigin = new URL(resolveMediaURL('/'), window.location.origin).origin;
+    if (urlObj.origin !== mediaOrigin || !urlObj.pathname.startsWith('/uploads/files/')) {
+      return url;
+    }
+    urlObj.searchParams.set('download', '1');
+    return /^https?:\/\//i.test(url)
+      ? urlObj.toString()
+      : `${urlObj.pathname}${urlObj.search}${urlObj.hash}`;
+  } catch (e) {
+    return url;
+  }
+}
+
 function isTrustedPreviewURL(url) {
   if (!url) return false;
   try {
@@ -1141,6 +1158,7 @@ function FileContent({ payload, onPreviewFile, activePreviewFile }) {
   const activeKey = activePreviewFile ? previewFileDescriptor(activePreviewFile)?.key : '';
   const isActive = canPreview && activeKey === key;
   const subtitle = [meta.label, meta.subtitle, sizeStr, fileMimeType(payload) || ext].filter(Boolean).join(' · ');
+  const downloadURL = downloadableMediaURL(url, payload.name);
   const openFile = () => {
     if (canPreview && onPreviewFile) onPreviewFile(payload);
     else if (url) window.open(url, '_blank');
@@ -1177,8 +1195,8 @@ function FileContent({ payload, onPreviewFile, activePreviewFile }) {
         </button>
         <a
           className="v3-artifact-action"
-          href={url || undefined}
-          download
+          href={downloadURL || undefined}
+          download={payload.name || true}
           onClick={(event) => event.stopPropagation()}
           rel="noopener noreferrer"
           target="_blank"
@@ -1207,6 +1225,7 @@ export function FilePreviewPanel({ file, onClose }) {
   const isSpreadsheet = descriptor?.isSpreadsheet || false;
   const meta = descriptor?.meta || artifactMeta(file || {});
   const sizeStr = descriptor?.sizeStr || '';
+  const downloadURL = downloadableMediaURL(url, file?.name);
 
   useEffect(() => {
     let cancelled = false;
@@ -1274,7 +1293,7 @@ export function FilePreviewPanel({ file, onClose }) {
           </div>
         </div>
         <div className="v3-file-preview-actions">
-          <a href={url} download title="下载原文件" target="_blank" rel="noopener noreferrer">
+          <a href={downloadURL} download={file.name || true} title="下载原文件" target="_blank" rel="noopener noreferrer">
             <Download size={18} />
           </a>
           <button aria-label="关闭预览" onClick={onClose} type="button">

@@ -466,7 +466,8 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Cache-Control", cacheControlForUpload(subDir))
 	if subDir == "files" {
-		w.Header().Set("Content-Disposition", contentDispositionForUploadFile(fileName, ext))
+		forceDownload := r.URL.Query().Get("download") == "1"
+		w.Header().Set("Content-Disposition", contentDispositionForUploadFile(fileName, ext, forceDownload))
 	}
 	http.ServeFile(w, r, fullPath)
 }
@@ -478,7 +479,10 @@ func cacheControlForUpload(subDir string) string {
 	return "private, max-age=86400"
 }
 
-func contentDispositionForUploadFile(fileName, ext string) string {
+func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) string {
+	if forceDownload {
+		return "attachment"
+	}
 	disposition := "attachment"
 	if strings.EqualFold(ext, ".pdf") {
 		disposition = "inline"
