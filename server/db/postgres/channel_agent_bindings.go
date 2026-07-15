@@ -875,6 +875,9 @@ func (a *Adapter) UpsertChannelGroupBinding(binding *types.ChannelGroupBinding) 
 		return nil, fmt.Errorf("begin channel group selection: %w", err)
 	}
 	defer tx.Rollback()
+	if err := lockChannelRouteSelectionTx(tx, binding.Channel, binding.ChannelAppID, binding.ChannelUserID, binding.ChannelConversationID, conversationType); err != nil {
+		return nil, err
+	}
 	if _, err := tx.Exec(
 		`INSERT INTO channel_group_bindings (
 			     channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
@@ -1006,6 +1009,23 @@ func (a *Adapter) UpsertChannelAgentRoute(route *types.ChannelAgentRoute) (*type
 		return nil, fmt.Errorf("begin channel agent route selection: %w", err)
 	}
 	defer tx.Rollback()
+	if err := lockChannelRouteSelectionTx(tx, route.Channel, route.ChannelAppID, route.ChannelUserID, route.ChannelConversationID, conversationType); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(
+		`UPDATE channel_group_bindings
+		 SET status = 'revoked', updated_at = CURRENT_TIMESTAMP
+		 WHERE channel = $1 AND channel_app_id = $2 AND channel_user_id = $3
+		   AND channel_conversation_id = $4 AND channel_conversation_type = $5
+		   AND status = 'active'`,
+		route.Channel,
+		route.ChannelAppID,
+		route.ChannelUserID,
+		route.ChannelConversationID,
+		conversationType,
+	); err != nil {
+		return nil, fmt.Errorf("revoke superseded channel group binding: %w", err)
+	}
 	if _, err := tx.Exec(
 		`INSERT INTO channel_agent_routes (
 		     channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
@@ -1031,20 +1051,6 @@ func (a *Adapter) UpsertChannelAgentRoute(route *types.ChannelAgentRoute) (*type
 	); err != nil {
 		return nil, fmt.Errorf("upsert channel agent route: %w", err)
 	}
-	if _, err := tx.Exec(
-		`UPDATE channel_group_bindings
-		 SET status = 'revoked', updated_at = CURRENT_TIMESTAMP
-		 WHERE channel = $1 AND channel_app_id = $2 AND channel_user_id = $3
-		   AND channel_conversation_id = $4 AND channel_conversation_type = $5
-		   AND status = 'active'`,
-		route.Channel,
-		route.ChannelAppID,
-		route.ChannelUserID,
-		route.ChannelConversationID,
-		conversationType,
-	); err != nil {
-		return nil, fmt.Errorf("revoke superseded channel group binding: %w", err)
-	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit channel agent route selection: %w", err)
 	}
@@ -1055,6 +1061,20 @@ func (a *Adapter) UpsertChannelAgentRoute(route *types.ChannelAgentRoute) (*type
 		ChannelConversationID:   route.ChannelConversationID,
 		ChannelConversationType: conversationType,
 	})
+}
+
+func lockChannelRouteSelectionTx(tx *sql.Tx, channel, appID, userID, conversationID, conversationType string) error {
+	if _, err := tx.Exec(
+		`INSERT INTO channel_route_selection_locks (
+		     channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type
+		 ) VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type)
+		 DO UPDATE SET updated_at = channel_route_selection_locks.updated_at`,
+		channel, appID, userID, conversationID, conversationType,
+	); err != nil {
+		return fmt.Errorf("lock channel route selection: %w", err)
+	}
+	return nil
 }
 
 func (a *Adapter) ResolveChannelAgentRoute(query types.ChannelAgentRouteQuery) (*types.ChannelAgentRoute, error) {

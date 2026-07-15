@@ -22,6 +22,7 @@ func (a *Adapter) CreateSchema() error {
 		createChannelAgentEntriesTable,
 		createChannelAgentAccessRequestsTable,
 		createChannelAgentBindingsTable,
+		createChannelRouteSelectionLocksTable,
 		createChannelAgentRoutesTable,
 		createChannelIdentityMobileLinksTable,
 		createChannelGroupMobileLinksTable,
@@ -72,6 +73,9 @@ func (a *Adapter) CreateSchema() error {
 		migrateChannelGroupBindingsAddSelectedAt,
 		migrateChannelGroupBindingsBackfillSelectedAt,
 		migrateChannelGroupBindingsSelectedAtNotNull,
+		migrateChannelNativeGroupsAddLastEventID,
+		migrateChannelNativeGroupsAddLastEventTime,
+		migrateChannelNativeGroupsAddLastEventClaimedAt,
 		migrateChannelAgentAccessOwnerAgentIndex,
 		migrateChannelAgentAccessActorAgentIndex,
 		migrateChannelAgentAccessLookupIndex,
@@ -259,6 +263,12 @@ SET g.group_kind = 'channel_managed'
 WHERE g.group_kind <> 'channel_managed';
 `
 
+const migrateChannelNativeGroupsAddLastEventID = `ALTER TABLE channel_native_groups ADD COLUMN last_event_id VARCHAR(128) NOT NULL DEFAULT '';`
+
+const migrateChannelNativeGroupsAddLastEventTime = `ALTER TABLE channel_native_groups ADD COLUMN last_event_time BIGINT NOT NULL DEFAULT 0;`
+
+const migrateChannelNativeGroupsAddLastEventClaimedAt = `ALTER TABLE channel_native_groups ADD COLUMN last_event_claimed_at BIGINT NOT NULL DEFAULT 0;`
+
 const createGroupMembersTable = `
 CREATE TABLE IF NOT EXISTS group_members (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -411,6 +421,20 @@ CREATE TABLE IF NOT EXISTS channel_agent_routes (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
+const createChannelRouteSelectionLocksTable = `
+CREATE TABLE IF NOT EXISTS channel_route_selection_locks (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    channel VARCHAR(32) NOT NULL,
+    channel_app_id VARCHAR(128) NOT NULL DEFAULT '',
+    channel_user_id VARCHAR(128) NOT NULL,
+    channel_conversation_id VARCHAR(128) NOT NULL DEFAULT '',
+    channel_conversation_type VARCHAR(32) NOT NULL DEFAULT 'p2p',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_channel_route_selection_lock (channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
 const createChannelIdentityMobileLinksTable = `
 CREATE TABLE IF NOT EXISTS channel_identity_mobile_links (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -494,6 +518,9 @@ CREATE TABLE IF NOT EXISTS channel_native_groups (
     source_group_id BIGINT NULL DEFAULT NULL,
     source_agent_uid BIGINT NULL DEFAULT NULL,
     status ENUM('pending','active','disconnected') NOT NULL DEFAULT 'pending',
+	last_event_id VARCHAR(128) NOT NULL DEFAULT '',
+	last_event_time BIGINT NOT NULL DEFAULT 0,
+	last_event_claimed_at BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_channel_native_group_identity (channel, channel_app_id, tenant_key, conversation_id),

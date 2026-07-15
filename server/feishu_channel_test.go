@@ -12,12 +12,17 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
+
+var feishuTestEventClock atomic.Int64
 
 type fakeFeishuAPI struct {
 	appID         string
@@ -135,12 +140,33 @@ func TestFeishuMentionIsBotUsesConfiguredGroupIdentity(t *testing.T) {
 	if !feishuMentionIsBot(feishuMessageMention{Name: "项目助手"}) {
 		t.Fatal("configured bot alias should match")
 	}
+	humanWithBotName := feishuMessageMention{Name: "catsco_飞书专用"}
+	humanWithBotName.ID.OpenID = "ou_human"
+	if feishuMentionIsBot(humanWithBotName) {
+		t.Fatal("a formal mention with a different immutable ID must not match by display name")
+	}
 	if feishuMentionIsBot(feishuMessageMention{Name: "项目助手临时"}) {
 		t.Fatal("bot alias should require an exact mention name")
 	}
 	if feishuMentionIsBot(feishuMessageMention{Name: "catsco_临时成员"}) {
 		t.Fatal("an unrelated mention containing catsco must not match")
 	}
+}
+
+type feishuRouteFailureStore struct {
+	*channelAgentTestStore
+}
+
+func (s *feishuRouteFailureStore) UpsertChannelAgentRoute(*types.ChannelAgentRoute) (*types.ChannelAgentRoute, error) {
+	return nil, errors.New("route store unavailable")
+}
+
+type feishuActorFailureStore struct {
+	*channelAgentTestStore
+}
+
+func (s *feishuActorFailureStore) GetUserByUsername(string) (*types.User, error) {
+	return nil, errors.New("actor store unavailable")
 }
 
 func TestHTTPFeishuSendAttachmentUploadsAndSendsNativeFile(t *testing.T) {
@@ -394,9 +420,63 @@ func TestFeishuOAuthCallbackMobileIdentityLinkReusesExistingCatsCoFriend(t *test
 	if reused != nil {
 		t.Fatalf("mobile link should be consumed by callback, reused=%+v", reused)
 	}
+	api.identity = &FeishuUserIdentity{OpenID: "ou_second", UserID: "user_second", Name: "Second Scanner"}
+	second := httptest.NewRecorder()
+	handler.HandleOAuthCallback(second, httptest.NewRequest(http.MethodGet, "/api/channel-agent-bindings/oauth/feishu/callback?code=code-2&state="+state, nil))
+	if second.Code != http.StatusNotFound {
+		t.Fatalf("second scanner status=%d body=%s", second.Code, second.Body.String())
+	}
+	secondBinding, err := db.ResolveChannelAgentBinding(types.ChannelAgentBindingQuery{
+		Channel: "feishu", ChannelAppID: "cli_app", ChannelUserID: "ou_second",
+	})
+	if err != nil || secondBinding != nil {
+		t.Fatalf("consumed mobile link must not bind a second identity: binding=%+v err=%v", secondBinding, err)
+	}
 }
 
-func TestFeishuOAuthCallbackMobileIdentityLinkRejectsDifferentCatsCoUserWithoutConsuming(t *testing.T) {
+func TestFeishuOAuthCallbackConsumesMobileLinkBeforeRouteMutation(t *testing.T) {
+	t.Setenv("CATSCO_CHANNEL_BINDING_TOKEN", "mobile-link-test-secret")
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	db.users[9] = &types.User{ID: 9, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "agent", DisplayName: "Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.friends[friendKey(9, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 9)] = types.FriendAccepted
+	entry, err := db.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+		SceneKey: "scene-route-failure", Channel: "feishu", ChannelAppID: "cli_app",
+		AccessMode: types.ChannelAgentAccessApprovalRequired, OwnerUID: 7, AgentUID: 43, Status: "active",
+	})
+	if err != nil {
+		t.Fatalf("seed entry: %v", err)
+	}
+	link, err := db.CreateChannelIdentityMobileLink(&types.ChannelIdentityMobileLink{
+		SceneKey: "m.route-failure", EntryID: entry.ID, Channel: "feishu", ChannelAppID: "cli_app",
+		CanonicalUID: 9, ExpiresAt: time.Now().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("create mobile link: %v", err)
+	}
+	api := &fakeFeishuAPI{appID: "cli_app", identity: &FeishuUserIdentity{OpenID: "ou_mobile", UserID: "user_mobile", Name: "Alice"}}
+	handler := NewFeishuChannelHandler(&feishuRouteFailureStore{channelAgentTestStore: db}, nil, FeishuChannelConfig{
+		AppID: "cli_app", AppSecret: "secret", OAuthRedirectURI: "https://app.catsco.cc/api/channel-agent-bindings/oauth/feishu/callback",
+	}, api)
+	state, err := handler.signOAuthState(feishuOAuthState{SceneKey: link.SceneKey, ExpiresAt: time.Now().Add(time.Minute).Unix(), Nonce: "nonce"})
+	if err != nil {
+		t.Fatalf("sign state: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	handler.HandleOAuthCallback(rec, httptest.NewRequest(http.MethodGet, "/api/channel-agent-bindings/oauth/feishu/callback?code=code-1&state="+state, nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	stored, err := db.GetChannelIdentityMobileLink(link.SceneKey)
+	if err != nil || stored == nil || stored.Status != "consumed" || stored.ConsumedAt == nil {
+		t.Fatalf("one-time mobile link must remain consumed after a downstream failure, link=%+v err=%v", stored, err)
+	}
+}
+
+func TestFeishuOAuthCallbackMobileIdentityLinkRejectsDifferentCatsCoUserAfterClaim(t *testing.T) {
 	t.Setenv("CATSCO_CHANNEL_BINDING_TOKEN", "mobile-link-test-secret")
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
@@ -476,8 +556,50 @@ func TestFeishuOAuthCallbackMobileIdentityLinkRejectsDifferentCatsCoUserWithoutC
 	if body := rec.Body.String(); !strings.Contains(body, "已经绑定到另一个 CatsCo 账号") {
 		t.Fatalf("expected account conflict guidance, body=%s", body)
 	}
-	if got := db.mobileLinks[mobileLink.SceneKey]; got == nil || got.Status != "active" {
-		t.Fatalf("mobile link should remain active after failed binding, got=%+v", got)
+	if got := db.mobileLinks[mobileLink.SceneKey]; got == nil || got.Status != "consumed" || got.ConsumedAt == nil {
+		t.Fatalf("claimed one-time mobile link must not be reusable after a binding conflict, got=%+v", got)
+	}
+}
+
+func TestFeishuGroupOAuthCallbackClaimsOneTimeLinkBeforeBinding(t *testing.T) {
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	groupID, err := db.CreateGroup("英语备课组", 7)
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	link, err := db.CreateChannelGroupMobileLink(&types.ChannelGroupMobileLink{
+		SceneKey: "g.feishu-once", Channel: "feishu", ChannelAppID: "cli_app", CanonicalUID: 7,
+		GroupID: groupID, TopicID: fmt.Sprintf("grp_%d", groupID), ExpiresAt: time.Now().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("create group mobile link: %v", err)
+	}
+	api := &fakeFeishuAPI{appID: "cli_app", identity: &FeishuUserIdentity{OpenID: "ou_first", Name: "First Scanner"}}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{
+		AppID: "cli_app", AppSecret: "secret", OAuthRedirectURI: "https://app.catsco.cc/api/channel-agent-bindings/oauth/feishu/callback",
+	}, api)
+	state, err := handler.signOAuthState(feishuOAuthState{SceneKey: link.SceneKey, ExpiresAt: time.Now().Add(time.Minute).Unix(), Nonce: "nonce"})
+	if err != nil {
+		t.Fatalf("sign state: %v", err)
+	}
+	first := httptest.NewRecorder()
+	handler.HandleOAuthCallback(first, httptest.NewRequest(http.MethodGet, "/api/channel-agent-bindings/oauth/feishu/callback?code=code-1&state="+state, nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first scanner status=%d body=%s", first.Code, first.Body.String())
+	}
+
+	api.identity = &FeishuUserIdentity{OpenID: "ou_second", Name: "Second Scanner"}
+	second := httptest.NewRecorder()
+	handler.HandleOAuthCallback(second, httptest.NewRequest(http.MethodGet, "/api/channel-agent-bindings/oauth/feishu/callback?code=code-2&state="+state, nil))
+	if second.Code != http.StatusNotFound {
+		t.Fatalf("second scanner status=%d body=%s", second.Code, second.Body.String())
+	}
+	secondBinding, err := db.ResolveChannelGroupBinding(types.ChannelGroupBindingQuery{
+		Channel: "feishu", ChannelAppID: "cli_app", ChannelUserID: "ou_second", ChannelConversationType: "p2p",
+	})
+	if err != nil || secondBinding != nil {
+		t.Fatalf("consumed group link must not bind a second identity: binding=%+v err=%v", secondBinding, err)
 	}
 }
 
@@ -2035,11 +2157,119 @@ func TestFeishuBotAddedCreatesIndependentGroupFromCurrentAgent(t *testing.T) {
 		!strings.Contains(api.sends[0].Text, "发送 /当前目标") {
 		t.Fatalf("welcome sends=%+v", api.sends)
 	}
+	sendFeishuBotMembershipEvent(t, handler, "im.chat.member.bot.added_v1", "evt_add_2", "cli_app", "tenant_1", "ou_owner", "oc_native_1", "英语年级组")
+	if len(api.sends) != 2 {
+		t.Fatalf("duplicate event id must not send another welcome: %+v", api.sends)
+	}
 
 	sendFeishuBotMembershipEvent(t, handler, "im.chat.member.bot.deleted_v1", "evt_delete_1", "cli_app", "tenant_1", "ou_owner", "oc_native_1", "英语年级组")
 	binding, _ = db.ResolveChannelNativeGroup("feishu", "cli_app", "tenant_1", "oc_native_1")
 	if binding == nil || binding.Status != types.ChannelNativeGroupDisconnected {
 		t.Fatalf("deleted binding=%+v", binding)
+	}
+}
+
+func TestFeishuBotMembershipIgnoresStaleAddAfterDelete(t *testing.T) {
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_owner"), DisplayName: "Owner in Feishu", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "agent", DisplayName: "Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	_, _ = db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{Channel: "feishu", ChannelAppID: "cli_app", ChannelUserID: "ou_owner", ChannelConversationType: "p2p", ActorUID: 8, CanonicalUID: 7, OwnerUID: 7, AgentUID: 43, Status: types.ChannelAgentBindingActive})
+	_, _ = db.UpsertChannelAgentRoute(&types.ChannelAgentRoute{Channel: "feishu", ChannelAppID: "cli_app", ChannelUserID: "ou_owner", ChannelConversationType: "p2p", ActorUID: 8, AgentUID: 43, Source: "entry_scan"})
+	api := &fakeFeishuAPI{appID: "cli_app"}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{AppID: "cli_app"}, api)
+
+	sendFeishuBotMembershipEventAt(t, handler, "im.chat.member.bot.added_v1", "evt_add_old", 1000, "cli_app", "tenant_1", "ou_owner", "oc_ordered", "英语组")
+	sendFeishuBotMembershipEventAt(t, handler, "im.chat.member.bot.deleted_v1", "evt_delete_new", 1000, "cli_app", "tenant_1", "ou_owner", "oc_ordered", "英语组")
+	binding, _ := db.ResolveChannelNativeGroup("feishu", "cli_app", "tenant_1", "oc_ordered")
+	if binding == nil || binding.Status != types.ChannelNativeGroupDisconnected {
+		t.Fatalf("delete should disconnect native group: %+v", binding)
+	}
+	sendsAfterDelete := len(api.sends)
+
+	sendFeishuBotMembershipEventAt(t, handler, "im.chat.member.bot.added_v1", "evt_add_old", 1000, "cli_app", "tenant_1", "ou_owner", "oc_ordered", "英语组")
+	binding, _ = db.ResolveChannelNativeGroup("feishu", "cli_app", "tenant_1", "oc_ordered")
+	if binding == nil || binding.Status != types.ChannelNativeGroupDisconnected || len(api.sends) != sendsAfterDelete {
+		t.Fatalf("stale add must not reactivate or send welcome: binding=%+v sends=%d want=%d", binding, len(api.sends), sendsAfterDelete)
+	}
+
+	sendFeishuBotMembershipEventAt(t, handler, "im.chat.member.bot.added_v1", "evt_add_new", 4000, "cli_app", "tenant_1", "ou_owner", "oc_ordered", "英语组")
+	binding, _ = db.ResolveChannelNativeGroup("feishu", "cli_app", "tenant_1", "oc_ordered")
+	if binding == nil || binding.Status != types.ChannelNativeGroupActive || len(api.sends) != sendsAfterDelete+1 {
+		t.Fatalf("newer add should restore the managed group: binding=%+v sends=%d", binding, len(api.sends))
+	}
+}
+
+func TestFeishuBotMembershipFailureReturnsRetryableErrorAndReleasesClaim(t *testing.T) {
+	db := newChannelAgentTestStore()
+	handler := NewFeishuChannelHandler(&feishuActorFailureStore{channelAgentTestStore: db}, nil, FeishuChannelConfig{AppID: "cli_app"}, &fakeFeishuAPI{appID: "cli_app"})
+	eventBody := map[string]interface{}{
+		"schema": "2.0",
+		"header": map[string]interface{}{
+			"event_type": "im.chat.member.bot.added_v1", "event_id": "evt_retry", "create_time": "1000",
+			"app_id": "cli_app", "tenant_key": "tenant_1",
+		},
+		"event": map[string]interface{}{
+			"chat_id": "oc_retry_failure", "operator_id": map[string]interface{}{"open_id": "ou_owner"}, "name": "英语组",
+		},
+	}
+	body, _ := json.Marshal(eventBody)
+	rec := httptest.NewRecorder()
+	handler.HandleEvents(rec, httptest.NewRequest(http.MethodPost, "/api/channels/feishu/events", bytes.NewReader(body)))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed membership initialization must remain retryable: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	identity := &types.ChannelNativeGroupBinding{
+		Channel: "feishu", ChannelAppID: "cli_app", TenantKey: "tenant_1", ConversationID: "oc_retry_failure",
+	}
+	if applied, _, err := db.ApplyChannelNativeGroupMembershipEvent(identity, true, "evt_retry", 1_000_000); err != nil || !applied {
+		t.Fatalf("failed handler must release the event claim: applied=%v err=%v", applied, err)
+	}
+}
+
+func TestFeishuNativeGroupCreationDoesNotOverrideNewerDelete(t *testing.T) {
+	db := newChannelAgentTestStore()
+	identity := &types.ChannelNativeGroupBinding{
+		Channel: "feishu", ChannelAppID: "cli_app", TenantKey: "tenant_1",
+		ConversationID: "oc_race", ConversationName: "飞书｜英语组", OperatorChannelUserID: "ou_owner",
+	}
+	if applied, _, err := db.ApplyChannelNativeGroupMembershipEvent(identity, true, "evt_add", 1000); err != nil || !applied {
+		t.Fatalf("apply add: applied=%v err=%v", applied, err)
+	}
+	if applied, _, err := db.ApplyChannelNativeGroupMembershipEvent(identity, false, "evt_delete", 2000); err != nil || !applied {
+		t.Fatalf("apply delete: applied=%v err=%v", applied, err)
+	}
+	materialized := cloneNativeGroupBinding(identity)
+	materialized.CanonicalUID = 7
+	materialized.SourceAgentUID = 43
+	result, created, err := db.EnsureChannelNativeGroup(materialized, materialized.ConversationName, []int64{43})
+	if err != nil {
+		t.Fatalf("ensure stale add: %v", err)
+	}
+	if created || result == nil || result.Status != types.ChannelNativeGroupDisconnected || result.GroupID != 0 || len(db.groups) != 0 {
+		t.Fatalf("newer delete must win over in-flight creation: created=%v result=%+v groups=%+v", created, result, db.groups)
+	}
+}
+
+func TestFeishuPendingNativeGroupEventRetriesAfterClaimExpires(t *testing.T) {
+	db := newChannelAgentTestStore()
+	identity := &types.ChannelNativeGroupBinding{
+		Channel: "feishu", ChannelAppID: "cli_app", TenantKey: "tenant_1",
+		ConversationID: "oc_retry", ConversationName: "飞书｜英语组", OperatorChannelUserID: "ou_owner",
+	}
+	if applied, _, err := db.ApplyChannelNativeGroupMembershipEvent(identity, true, "evt_add", 1000); err != nil || !applied {
+		t.Fatalf("apply add: applied=%v err=%v", applied, err)
+	}
+	if applied, _, err := db.ApplyChannelNativeGroupMembershipEvent(identity, true, "evt_add", 1000); !errors.Is(err, store.ErrChannelNativeGroupEventBusy) || applied {
+		t.Fatalf("active claim must report a busy retry: applied=%v err=%v", applied, err)
+	}
+	key := nativeGroupTestKey("feishu", "cli_app", "tenant_1", "oc_retry")
+	state := db.nativeEvents[key]
+	state.ClaimedAt = time.Now().Add(-61 * time.Second).UnixMilli()
+	db.nativeEvents[key] = state
+	if applied, _, err := db.ApplyChannelNativeGroupMembershipEvent(identity, true, "evt_add", 1000); err != nil || !applied {
+		t.Fatalf("expired pending claim must allow retry: applied=%v err=%v", applied, err)
 	}
 }
 
@@ -2115,6 +2345,7 @@ func TestFeishuPendingNativeGroupCanOnlyBeInitializedByOriginalOperator(t *testi
 }
 
 func TestFeishuNativeGroupRecordsOrdinaryMessageAndRoutesMentionToSameTopic(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_GROUP_BOT_OPEN_IDS", "ou_bot")
 	db := newChannelAgentTestStore()
 	db.nextID = 100
 	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
@@ -2248,10 +2479,15 @@ func TestFeishuNativeGroupOutboundFallsBackToAttachmentLink(t *testing.T) {
 }
 
 func sendFeishuBotMembershipEvent(t *testing.T, handler *FeishuChannelHandler, eventType, eventID, appID, tenantKey, operatorOpenID, chatID, name string) *httptest.ResponseRecorder {
+	eventTime := feishuTestEventClock.Add(1)
+	return sendFeishuBotMembershipEventAt(t, handler, eventType, eventID, eventTime, appID, tenantKey, operatorOpenID, chatID, name)
+}
+
+func sendFeishuBotMembershipEventAt(t *testing.T, handler *FeishuChannelHandler, eventType, eventID string, eventTime int64, appID, tenantKey, operatorOpenID, chatID, name string) *httptest.ResponseRecorder {
 	t.Helper()
 	eventBody := map[string]interface{}{
 		"schema": "2.0",
-		"header": map[string]interface{}{"event_type": eventType, "event_id": eventID, "app_id": appID, "tenant_key": tenantKey},
+		"header": map[string]interface{}{"event_type": eventType, "event_id": eventID, "create_time": strconv.FormatInt(eventTime, 10), "app_id": appID, "tenant_key": tenantKey},
 		"event": map[string]interface{}{
 			"chat_id": chatID, "operator_id": map[string]interface{}{"open_id": operatorOpenID}, "operator_tenant_key": tenantKey, "name": name,
 		},

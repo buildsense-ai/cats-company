@@ -2267,6 +2267,7 @@ type channelAgentTestStore struct {
 	groupLinks     map[string]*types.ChannelGroupMobileLink
 	groupBindings  map[string]*types.ChannelGroupBinding
 	nativeGroups   map[string]*types.ChannelNativeGroupBinding
+	nativeEvents   map[string]channelNativeGroupEventState
 	routes         map[string]*types.ChannelAgentRoute
 	clawBotTokens  map[int64]*types.WeixinClawBotToken
 	clawBotByHash  map[string]int64
@@ -2300,6 +2301,7 @@ func newChannelAgentTestStore() *channelAgentTestStore {
 		groupLinks:     map[string]*types.ChannelGroupMobileLink{},
 		groupBindings:  map[string]*types.ChannelGroupBinding{},
 		nativeGroups:   map[string]*types.ChannelNativeGroupBinding{},
+		nativeEvents:   map[string]channelNativeGroupEventState{},
 		routes:         map[string]*types.ChannelAgentRoute{},
 		clawBotTokens:  map[int64]*types.WeixinClawBotToken{},
 		clawBotByHash:  map[string]int64{},
@@ -2903,6 +2905,90 @@ func cloneNativeGroupBinding(binding *types.ChannelNativeGroupBinding) *types.Ch
 	return &next
 }
 
+type channelNativeGroupEventState struct {
+	EventID   string
+	EventTime int64
+	ClaimedAt int64
+}
+
+func (s *channelAgentTestStore) ApplyChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, added bool, eventID string, eventTime int64) (bool, int64, error) {
+	if binding == nil || strings.TrimSpace(binding.Channel) == "" || strings.TrimSpace(binding.ConversationID) == "" || strings.TrimSpace(eventID) == "" || eventTime <= 0 {
+		return false, 0, errors.New("invalid native group membership event")
+	}
+	key := nativeGroupTestKey(binding.Channel, binding.ChannelAppID, binding.TenantKey, binding.ConversationID)
+	status := types.ChannelNativeGroupDisconnected
+	if added {
+		status = types.ChannelNativeGroupPending
+	}
+	existing := s.nativeGroups[key]
+	if existing == nil {
+		existing = cloneNativeGroupBinding(binding)
+		existing.ID = s.nextID
+		s.nextID++
+		existing.Status = status
+		existing.CreatedAt = time.Now()
+		existing.UpdatedAt = existing.CreatedAt
+		s.nativeGroups[key] = existing
+		claimedAt := int64(-1)
+		if added {
+			claimedAt = time.Now().UnixMilli()
+		}
+		s.nativeEvents[key] = channelNativeGroupEventState{EventID: strings.TrimSpace(eventID), EventTime: eventTime, ClaimedAt: claimedAt}
+		return true, claimedAt, nil
+	}
+	current := s.nativeEvents[key]
+	if strings.TrimSpace(eventID) != "" && strings.TrimSpace(eventID) == current.EventID {
+		if current.ClaimedAt < 0 {
+			return false, 0, nil
+		}
+		claimNow := time.Now().UnixMilli()
+		if current.ClaimedAt > 0 && claimNow-current.ClaimedAt < time.Minute.Milliseconds() {
+			return false, 0, store.ErrChannelNativeGroupEventBusy
+		}
+		current.ClaimedAt = claimNow
+		s.nativeEvents[key] = current
+		return true, claimNow, nil
+	}
+	if eventTime < current.EventTime || (eventTime == current.EventTime && (added || existing.Status == types.ChannelNativeGroupDisconnected)) {
+		return false, 0, nil
+	}
+	existing.Status = status
+	existing.UpdatedAt = time.Now()
+	claimedAt := int64(-1)
+	if added {
+		claimedAt = time.Now().UnixMilli()
+	}
+	s.nativeEvents[key] = channelNativeGroupEventState{EventID: strings.TrimSpace(eventID), EventTime: eventTime, ClaimedAt: claimedAt}
+	return true, claimedAt, nil
+}
+
+func (s *channelAgentTestStore) CompleteChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, eventID string, claimToken int64) (bool, error) {
+	if binding == nil || claimToken <= 0 {
+		return false, errors.New("invalid native group membership event completion")
+	}
+	key := nativeGroupTestKey(binding.Channel, binding.ChannelAppID, binding.TenantKey, binding.ConversationID)
+	state, ok := s.nativeEvents[key]
+	if !ok || state.EventID != strings.TrimSpace(eventID) || state.ClaimedAt != claimToken {
+		return false, nil
+	}
+	state.ClaimedAt = -1
+	s.nativeEvents[key] = state
+	return true, nil
+}
+
+func (s *channelAgentTestStore) ReleaseChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, eventID string, claimToken int64) error {
+	if binding == nil || claimToken <= 0 {
+		return nil
+	}
+	key := nativeGroupTestKey(binding.Channel, binding.ChannelAppID, binding.TenantKey, binding.ConversationID)
+	state, ok := s.nativeEvents[key]
+	if ok && state.EventID == strings.TrimSpace(eventID) && state.ClaimedAt == claimToken {
+		state.ClaimedAt = 0
+		s.nativeEvents[key] = state
+	}
+	return nil
+}
+
 func (s *channelAgentTestStore) EnsureChannelNativeGroup(binding *types.ChannelNativeGroupBinding, groupName string, memberUIDs []int64) (*types.ChannelNativeGroupBinding, bool, error) {
 	if binding == nil {
 		return nil, false, errors.New("missing native group binding")
@@ -2910,6 +2996,9 @@ func (s *channelAgentTestStore) EnsureChannelNativeGroup(binding *types.ChannelN
 	key := nativeGroupTestKey(binding.Channel, binding.ChannelAppID, binding.TenantKey, binding.ConversationID)
 	now := time.Now()
 	existing := s.nativeGroups[key]
+	if existing != nil && existing.Status == types.ChannelNativeGroupDisconnected {
+		return cloneNativeGroupBinding(existing), false, nil
+	}
 	if existing == nil {
 		existing = cloneNativeGroupBinding(binding)
 		existing.ID = s.nextID

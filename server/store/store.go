@@ -9,6 +9,7 @@ import (
 
 var ErrChannelAgentBindingAlreadyLinked = errors.New("channel agent binding already linked to another canonical user")
 var ErrChannelAgentAccessAlreadyLinked = errors.New("channel agent access request already linked")
+var ErrChannelNativeGroupEventBusy = errors.New("channel native group event is already being processed")
 
 // UserStore contains user and profile persistence operations.
 type UserStore interface {
@@ -157,6 +158,9 @@ type ChannelAgentBindingStore interface {
 // external-channel groups. It is deliberately not embedded in Store so
 // existing Store implementations and mocks do not need to implement it.
 type ChannelNativeGroupStore interface {
+	ApplyChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, added bool, eventID string, eventTime int64) (bool, int64, error)
+	CompleteChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, eventID string, claimToken int64) (bool, error)
+	ReleaseChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, eventID string, claimToken int64) error
 	EnsureChannelNativeGroup(binding *types.ChannelNativeGroupBinding, groupName string, memberUIDs []int64) (*types.ChannelNativeGroupBinding, bool, error)
 	ResolveChannelNativeGroup(channel, appID, tenantKey, conversationID string) (*types.ChannelNativeGroupBinding, error)
 	SetChannelNativeGroupStatus(channel, appID, tenantKey, conversationID, status string) error

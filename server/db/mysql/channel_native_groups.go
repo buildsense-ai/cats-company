@@ -4,12 +4,147 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
 var _ store.ChannelNativeGroupStore = (*Adapter)(nil)
+
+const channelNativeGroupEventRetryLease = time.Minute
+
+func (a *Adapter) ApplyChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, added bool, eventID string, eventTime int64) (bool, int64, error) {
+	if err := validateChannelNativeGroupBinding(binding); err != nil {
+		return false, 0, err
+	}
+	if eventTime <= 0 {
+		return false, 0, fmt.Errorf("invalid channel native group event time")
+	}
+	if strings.TrimSpace(eventID) == "" {
+		return false, 0, fmt.Errorf("invalid channel native group event id")
+	}
+	status := types.ChannelNativeGroupDisconnected
+	if added {
+		status = types.ChannelNativeGroupPending
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return false, 0, fmt.Errorf("apply channel native group event begin: %w", err)
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(
+		`INSERT INTO channel_native_groups (
+		     channel, channel_app_id, tenant_key, conversation_id, conversation_name,
+		     operator_channel_user_id, status, last_event_id, last_event_time
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON DUPLICATE KEY UPDATE id = id`,
+		strings.TrimSpace(binding.Channel), strings.TrimSpace(binding.ChannelAppID), strings.TrimSpace(binding.TenantKey),
+		strings.TrimSpace(binding.ConversationID), strings.TrimSpace(binding.ConversationName), strings.TrimSpace(binding.OperatorChannelUserID),
+		types.ChannelNativeGroupDisconnected, "", int64(0),
+	)
+	if err != nil {
+		return false, 0, fmt.Errorf("apply channel native group event placeholder: %w", err)
+	}
+	var currentStatus, currentEventID string
+	var currentEventTime, currentEventClaimedAt int64
+	if err := tx.QueryRow(
+		`SELECT status, last_event_id, last_event_time, last_event_claimed_at FROM channel_native_groups
+		 WHERE channel = ? AND channel_app_id = ? AND tenant_key = ? AND conversation_id = ? FOR UPDATE`,
+		strings.TrimSpace(binding.Channel), strings.TrimSpace(binding.ChannelAppID), strings.TrimSpace(binding.TenantKey), strings.TrimSpace(binding.ConversationID),
+	).Scan(&currentStatus, &currentEventID, &currentEventTime, &currentEventClaimedAt); err != nil {
+		return false, 0, fmt.Errorf("apply channel native group event lock: %w", err)
+	}
+	claimNow := time.Now().UnixMilli()
+	if strings.TrimSpace(eventID) != "" && strings.TrimSpace(eventID) == strings.TrimSpace(currentEventID) {
+		if currentEventClaimedAt < 0 {
+			if err := tx.Commit(); err != nil {
+				return false, 0, fmt.Errorf("apply completed channel native group event commit: %w", err)
+			}
+			return false, 0, nil
+		}
+		if currentEventClaimedAt > 0 && claimNow-currentEventClaimedAt < channelNativeGroupEventRetryLease.Milliseconds() {
+			return false, 0, store.ErrChannelNativeGroupEventBusy
+		}
+		if _, err := tx.Exec(
+			`UPDATE channel_native_groups SET last_event_claimed_at = ?, updated_at = CURRENT_TIMESTAMP
+			 WHERE channel = ? AND channel_app_id = ? AND tenant_key = ? AND conversation_id = ?`,
+			claimNow, strings.TrimSpace(binding.Channel), strings.TrimSpace(binding.ChannelAppID), strings.TrimSpace(binding.TenantKey), strings.TrimSpace(binding.ConversationID),
+		); err != nil {
+			return false, 0, fmt.Errorf("renew channel native group event claim: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return false, 0, fmt.Errorf("apply channel native group duplicate commit: %w", err)
+		}
+		return true, claimNow, nil
+	}
+	if eventTime < currentEventTime || (eventTime == currentEventTime && (added || currentStatus == types.ChannelNativeGroupDisconnected)) {
+		if err := tx.Commit(); err != nil {
+			return false, 0, fmt.Errorf("apply stale channel native group event commit: %w", err)
+		}
+		return false, 0, nil
+	}
+	claimedAt := int64(-1)
+	if added {
+		claimedAt = claimNow
+	}
+	if _, err := tx.Exec(
+		`UPDATE channel_native_groups SET status = ?, last_event_id = ?, last_event_time = ?, last_event_claimed_at = ?, updated_at = CURRENT_TIMESTAMP
+		 WHERE channel = ? AND channel_app_id = ? AND tenant_key = ? AND conversation_id = ?`,
+		status, strings.TrimSpace(eventID), eventTime, claimedAt,
+		strings.TrimSpace(binding.Channel), strings.TrimSpace(binding.ChannelAppID), strings.TrimSpace(binding.TenantKey), strings.TrimSpace(binding.ConversationID),
+	); err != nil {
+		return false, 0, fmt.Errorf("apply channel native group event update: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, 0, fmt.Errorf("apply channel native group event commit: %w", err)
+	}
+	return true, claimedAt, nil
+}
+
+func (a *Adapter) CompleteChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, eventID string, claimToken int64) (bool, error) {
+	if err := validateChannelNativeGroupBinding(binding); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(eventID) == "" || claimToken <= 0 {
+		return false, fmt.Errorf("invalid channel native group event completion")
+	}
+	result, err := a.db.Exec(
+		`UPDATE channel_native_groups SET last_event_claimed_at = -1, updated_at = CURRENT_TIMESTAMP
+		 WHERE channel = ? AND channel_app_id = ? AND tenant_key = ? AND conversation_id = ?
+		   AND last_event_id = ? AND last_event_claimed_at = ?`,
+		strings.TrimSpace(binding.Channel), strings.TrimSpace(binding.ChannelAppID), strings.TrimSpace(binding.TenantKey), strings.TrimSpace(binding.ConversationID),
+		strings.TrimSpace(eventID), claimToken,
+	)
+	if err != nil {
+		return false, fmt.Errorf("complete channel native group event: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("complete channel native group event rows: %w", err)
+	}
+	return count == 1, nil
+}
+
+func (a *Adapter) ReleaseChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, eventID string, claimToken int64) error {
+	if err := validateChannelNativeGroupBinding(binding); err != nil {
+		return err
+	}
+	if strings.TrimSpace(eventID) == "" || claimToken <= 0 {
+		return nil
+	}
+	_, err := a.db.Exec(
+		`UPDATE channel_native_groups SET last_event_claimed_at = 0, updated_at = CURRENT_TIMESTAMP
+		 WHERE channel = ? AND channel_app_id = ? AND tenant_key = ? AND conversation_id = ?
+		   AND last_event_id = ? AND last_event_claimed_at = ?`,
+		strings.TrimSpace(binding.Channel), strings.TrimSpace(binding.ChannelAppID), strings.TrimSpace(binding.TenantKey), strings.TrimSpace(binding.ConversationID),
+		strings.TrimSpace(eventID), claimToken,
+	)
+	if err != nil {
+		return fmt.Errorf("release channel native group event: %w", err)
+	}
+	return nil
+}
 
 // EnsureChannelNativeGroup transactionally creates the CatsCo group backing a
 // native channel conversation. The identity row serializes concurrent calls.
@@ -42,6 +177,12 @@ func (a *Adapter) EnsureChannelNativeGroup(binding *types.ChannelNativeGroupBind
 	current, err := selectChannelNativeGroupTx(tx, binding.Channel, binding.ChannelAppID, binding.TenantKey, binding.ConversationID, true)
 	if err != nil {
 		return nil, false, fmt.Errorf("ensure channel native group lock: %w", err)
+	}
+	if current.Status == types.ChannelNativeGroupDisconnected {
+		if err := tx.Commit(); err != nil {
+			return nil, false, fmt.Errorf("ensure disconnected channel native group commit: %w", err)
+		}
+		return current, false, nil
 	}
 	mergeChannelNativeGroupBinding(current, binding)
 

@@ -27,12 +27,16 @@ func (a *Adapter) CreateSchema() error {
 		createChannelAgentEntriesTable,
 		createChannelAgentAccessRequestsTable,
 		createChannelAgentBindingsTable,
+		createChannelRouteSelectionLocksTable,
 		createChannelAgentRoutesTable,
 		createChannelIdentityMobileLinksTable,
 		createChannelGroupMobileLinksTable,
 		createChannelGroupBindingsTable,
 		createChannelNativeGroupsTable,
 		createWeixinClawBotTokensTable,
+		migrateChannelNativeGroupsAddLastEventID,
+		migrateChannelNativeGroupsAddLastEventTime,
+		migrateChannelNativeGroupsAddLastEventClaimedAt,
 		migrateGroupsAddKind,
 		migrateGroupsBackfillChannelManagedKind,
 		migrateUsersAddBotDisclose,
@@ -222,6 +226,12 @@ SET group_kind = 'channel_managed'
 FROM channel_native_groups cng
 WHERE cng.group_id = g.id AND g.group_kind <> 'channel_managed';
 `
+
+const migrateChannelNativeGroupsAddLastEventID = `ALTER TABLE channel_native_groups ADD COLUMN IF NOT EXISTS last_event_id VARCHAR(128) NOT NULL DEFAULT '';`
+
+const migrateChannelNativeGroupsAddLastEventTime = `ALTER TABLE channel_native_groups ADD COLUMN IF NOT EXISTS last_event_time BIGINT NOT NULL DEFAULT 0;`
+
+const migrateChannelNativeGroupsAddLastEventClaimedAt = `ALTER TABLE channel_native_groups ADD COLUMN IF NOT EXISTS last_event_claimed_at BIGINT NOT NULL DEFAULT 0;`
 
 const createGroupMembersTable = `
 CREATE TABLE IF NOT EXISTS group_members (
@@ -429,6 +439,20 @@ CREATE TABLE IF NOT EXISTS channel_agent_routes (
 );
 `
 
+const createChannelRouteSelectionLocksTable = `
+CREATE TABLE IF NOT EXISTS channel_route_selection_locks (
+    id BIGSERIAL PRIMARY KEY,
+    channel VARCHAR(32) NOT NULL,
+    channel_app_id VARCHAR(128) NOT NULL DEFAULT '',
+    channel_user_id VARCHAR(128) NOT NULL,
+    channel_conversation_id VARCHAR(128) NOT NULL DEFAULT '',
+    channel_conversation_type VARCHAR(32) NOT NULL DEFAULT 'p2p',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_channel_route_selection_lock UNIQUE (channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type)
+);
+`
+
 const createChannelIdentityMobileLinksTable = `
 CREATE TABLE IF NOT EXISTS channel_identity_mobile_links (
     id BIGSERIAL PRIMARY KEY,
@@ -500,6 +524,9 @@ CREATE TABLE IF NOT EXISTS channel_native_groups (
     source_group_id BIGINT DEFAULT NULL REFERENCES "groups"(id) ON DELETE SET NULL,
     source_agent_uid BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
     status VARCHAR(16) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','disconnected')),
+	last_event_id VARCHAR(128) NOT NULL DEFAULT '',
+	last_event_time BIGINT NOT NULL DEFAULT 0,
+	last_event_claimed_at BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uk_channel_native_group_identity UNIQUE (channel, channel_app_id, tenant_key, conversation_id)

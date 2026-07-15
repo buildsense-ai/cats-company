@@ -316,6 +316,20 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 		writeHTML(w, http.StatusBadGateway, oauthResultHTML("绑定失败", "飞书没有返回可绑定的用户身份。"))
 		return
 	}
+	if isMobileIdentityLink && canonicalUIDHint > 0 {
+		claimedEntry, claimedUID, err := h.resolveFeishuEntryScene(state.SceneKey, true)
+		if err != nil {
+			log.Printf("consume feishu mobile link failed: %v", err)
+			writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "领取移动端二维码失败，请刷新二维码后重试。"))
+			return
+		}
+		if claimedEntry == nil || claimedUID != canonicalUIDHint {
+			writeHTML(w, http.StatusGone, oauthResultHTML("二维码已失效", "这个移动端二维码已被使用或已经过期，请回到 CatsCo 刷新后重试。"))
+			return
+		}
+		entry = claimedEntry
+		canonicalUIDHint = claimedUID
+	}
 	actorUID, err := h.ensureChannelActor("feishu", h.effectiveAppID(""), channelUserID, identity)
 	if err != nil {
 		log.Printf("ensure feishu actor failed: %v", err)
@@ -332,14 +346,11 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 		writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "保存虚拟员工绑定失败，请稍后重试。"))
 		return
 	}
-	if isMobileIdentityLink && canonicalUIDHint > 0 {
-		if _, _, err := h.resolveFeishuEntryScene(state.SceneKey, true); err != nil {
-			log.Printf("consume feishu mobile link failed: %v", err)
-		}
-	}
 	if binding != nil {
 		if _, err := h.upsertFeishuRoute(h.effectiveAppID(""), channelUserID, "", "p2p", actorUID, binding.AgentUID, "oauth"); err != nil {
 			log.Printf("select feishu oauth route failed: %v", err)
+			writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "保存当前飞书会话目标失败，请重新扫描二维码后重试。"))
+			return
 		}
 	}
 	agent, _ := h.db.GetUser(entry.AgentUID)
@@ -404,6 +415,18 @@ func (h *FeishuChannelHandler) handleGroupOAuthCallback(w http.ResponseWriter, r
 		writeHTML(w, http.StatusBadGateway, oauthResultHTML("绑定失败", "飞书没有返回可绑定的用户身份。"))
 		return
 	}
+	claimedLink, claimedGroup, err := resolveChannelGroupMobileLink(h.db, state.SceneKey, "feishu", h.effectiveAppID(""), true)
+	if err != nil {
+		log.Printf("consume feishu group mobile link failed: %v", err)
+		writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "领取群聊二维码失败，请刷新二维码后重试。"))
+		return
+	}
+	if claimedLink == nil {
+		writeHTML(w, http.StatusGone, oauthResultHTML("二维码已失效", "这个群聊二维码已被使用或已经过期，请回到 CatsCo 刷新后重试。"))
+		return
+	}
+	link = claimedLink
+	group = claimedGroup
 	actorUID, err := h.ensureChannelActor("feishu", h.effectiveAppID(""), channelUserID, identity)
 	if err != nil {
 		log.Printf("ensure feishu group actor failed: %v", err)
@@ -414,9 +437,6 @@ func (h *FeishuChannelHandler) handleGroupOAuthCallback(w http.ResponseWriter, r
 		log.Printf("bind feishu group identity failed: %v", err)
 		writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "保存群聊移动端绑定失败，请稍后重试。"))
 		return
-	}
-	if _, _, err := resolveChannelGroupMobileLink(h.db, state.SceneKey, "feishu", h.effectiveAppID(""), true); err != nil {
-		log.Printf("consume feishu group mobile link failed: %v", err)
 	}
 	if err := h.db.CreateTopic(link.TopicID, "group", link.CanonicalUID); err != nil {
 		log.Printf("create feishu group mobile topic failed: %v", err)
@@ -467,7 +487,7 @@ func (h *FeishuChannelHandler) HandleEvents(w http.ResponseWriter, r *http.Reque
 	case "im.chat.member.bot.added_v1":
 		if err := h.handleBotMembershipEvent(r.Context(), &env, true); err != nil {
 			log.Printf("feishu bot added event failed: %v", err)
-			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "error": err.Error()})
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
@@ -475,7 +495,7 @@ func (h *FeishuChannelHandler) HandleEvents(w http.ResponseWriter, r *http.Reque
 	case "im.chat.member.bot.deleted_v1":
 		if err := h.handleBotMembershipEvent(r.Context(), &env, false); err != nil {
 			log.Printf("feishu bot deleted event failed: %v", err)
-			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "error": err.Error()})
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
@@ -517,13 +537,38 @@ func (h *FeishuChannelHandler) handleBotMembershipEvent(ctx context.Context, env
 	if !ok {
 		return errors.New("native channel group store not configured")
 	}
-	if !added {
-		return nativeStore.SetChannelNativeGroupStatus("feishu", appID, tenantKey, chatID, types.ChannelNativeGroupDisconnected)
-	}
 	operatorID := firstNonEmpty(strings.TrimSpace(event.OperatorID.OpenID), strings.TrimSpace(event.OperatorID.UserID))
-	if operatorID == "" {
+	if added && operatorID == "" {
 		return errors.New("bot added event missing operator id")
 	}
+	groupName := firstNonEmpty(strings.TrimSpace(event.Name), strings.TrimSpace(event.I18nNames.ZhCN), strings.TrimSpace(event.I18nNames.EnUS), "飞书群聊")
+	eventBinding := &types.ChannelNativeGroupBinding{
+		Channel:               "feishu",
+		ChannelAppID:          appID,
+		TenantKey:             tenantKey,
+		ConversationID:        chatID,
+		ConversationName:      feishuNativeGroupName(groupName),
+		OperatorChannelUserID: operatorID,
+	}
+	eventID := strings.TrimSpace(env.Header.EventID)
+	if eventID == "" {
+		return errors.New("bot membership event missing event id")
+	}
+	applied, claimToken, err := nativeStore.ApplyChannelNativeGroupMembershipEvent(eventBinding, added, eventID, parseFeishuEventTime(env.Header.CreateTime))
+	if err != nil {
+		return err
+	}
+	if !applied || !added {
+		return nil
+	}
+	claimFinalized := false
+	defer func() {
+		if !claimFinalized {
+			if err := nativeStore.ReleaseChannelNativeGroupMembershipEvent(eventBinding, eventID, claimToken); err != nil {
+				log.Printf("release feishu bot membership event claim failed: %v", err)
+			}
+		}
+	}()
 	identity := h.lookupFeishuUserIdentity(ctx, event.OperatorID.OpenID)
 	if identity == nil {
 		identity = &FeishuUserIdentity{OpenID: event.OperatorID.OpenID, UserID: event.OperatorID.UserID, UnionID: event.OperatorID.UnionID}
@@ -532,10 +577,17 @@ func (h *FeishuChannelHandler) handleBotMembershipEvent(ctx context.Context, env
 	if err != nil {
 		return err
 	}
-	groupName := firstNonEmpty(strings.TrimSpace(event.Name), strings.TrimSpace(event.I18nNames.ZhCN), strings.TrimSpace(event.I18nNames.EnUS), "飞书群聊")
 	binding, _, targetNames, reason, err := h.ensureFeishuNativeGroup(appID, tenantKey, chatID, groupName, operatorID, actorUID)
 	if err != nil {
 		return err
+	}
+	completed, err := nativeStore.CompleteChannelNativeGroupMembershipEvent(eventBinding, eventID, claimToken)
+	if err != nil {
+		return err
+	}
+	claimFinalized = true
+	if !completed {
+		return nil
 	}
 	if binding != nil && binding.Status == types.ChannelNativeGroupActive && binding.GroupID > 0 {
 		employees := strings.Join(targetNames, "、")
@@ -1110,6 +1162,36 @@ func feishuMentionIsBot(mention feishuMessageMention) bool {
 		firstEnv("CATSCO_FEISHU_BOT_USER_ID", "FEISHU_BOT_USER_ID"),
 		firstEnv("CATSCO_FEISHU_BOT_UNION_ID", "FEISHU_BOT_UNION_ID"),
 	)
+	mentionIDs := []string{mention.ID.OpenID, mention.ID.UserID, mention.ID.UnionID}
+	hasMentionID := false
+	for _, configured := range configuredIDs {
+		configured = strings.TrimSpace(configured)
+		if configured == "" {
+			continue
+		}
+		for _, mentionID := range mentionIDs {
+			if strings.TrimSpace(mentionID) != "" {
+				hasMentionID = true
+			}
+			if strings.EqualFold(configured, strings.TrimSpace(mentionID)) {
+				return true
+			}
+		}
+	}
+	if !hasMentionID {
+		for _, mentionID := range mentionIDs {
+			if strings.TrimSpace(mentionID) != "" {
+				hasMentionID = true
+				break
+			}
+		}
+	}
+	// Feishu includes immutable IDs for formal mentions. If an ID is present but
+	// does not match the configured bot identity, never fall back to a display
+	// name: a human member can use the same name as the bot.
+	if hasMentionID {
+		return false
+	}
 	name := strings.ToLower(strings.TrimSpace(mention.Name))
 	key := strings.ToLower(strings.TrimSpace(mention.Key))
 	if name == "catsco" || name == "catsco_飞书专用" || key == "@catsco" || key == "@catsco_飞书专用" {
@@ -1119,18 +1201,6 @@ func feishuMentionIsBot(mention feishuMessageMention) bool {
 		alias = strings.ToLower(strings.TrimSpace(alias))
 		if alias != "" && (strings.TrimPrefix(name, "@") == alias || strings.TrimPrefix(key, "@") == alias) {
 			return true
-		}
-	}
-	mentionIDs := []string{mention.ID.OpenID, mention.ID.UserID, mention.ID.UnionID}
-	for _, configured := range configuredIDs {
-		configured = strings.TrimSpace(configured)
-		if configured == "" {
-			continue
-		}
-		for _, mentionID := range mentionIDs {
-			if strings.EqualFold(configured, strings.TrimSpace(mentionID)) {
-				return true
-			}
 		}
 	}
 	return false
@@ -2036,11 +2106,23 @@ type feishuEventEnvelope struct {
 }
 
 type feishuEventHead struct {
-	EventID   string `json:"event_id"`
-	EventType string `json:"event_type"`
-	AppID     string `json:"app_id"`
-	TenantKey string `json:"tenant_key"`
-	Token     string `json:"token"`
+	EventID    string `json:"event_id"`
+	EventType  string `json:"event_type"`
+	CreateTime string `json:"create_time"`
+	AppID      string `json:"app_id"`
+	TenantKey  string `json:"tenant_key"`
+	Token      string `json:"token"`
+}
+
+func parseFeishuEventTime(value string) int64 {
+	value = strings.TrimSpace(value)
+	if parsed, err := strconv.ParseInt(value, 10, 64); err == nil && parsed > 0 {
+		if parsed < 1_000_000_000_000 {
+			return parsed * 1000
+		}
+		return parsed
+	}
+	return time.Now().UnixMilli()
 }
 
 func (e *feishuEventEnvelope) isURLVerification() bool {
