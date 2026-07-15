@@ -812,6 +812,9 @@ describe('ChatMessage rich file rendering', () => {
     const panel = container.querySelector('.v3-file-preview-panel');
     expect(panel).not.toBeNull();
     expect(panel.querySelector('iframe.v3-file-preview-frame').getAttribute('src')).toBe('/uploads/files/report.pdf');
+    const downloadLink = panel.querySelector('.v3-file-preview-actions a');
+    expect(downloadLink.getAttribute('href')).toBe('/uploads/files/report.pdf?download=1');
+    expect(downloadLink.getAttribute('download')).toBe('report.pdf');
   });
 
   it('switches the side preview when another file card is clicked', async () => {
@@ -913,8 +916,8 @@ describe('ChatMessage rich file rendering', () => {
             content_blocks: [{
               type: 'file',
               payload: {
-                name: 'report.pdf',
-                url: '/uploads/files/report.pdf',
+                name: '【电商带货主播_广州 4-6K】何荧 25年应届生.pdf',
+                url: '/uploads/files/20260715_f547bf132d510e621877d89214098db5.pdf',
                 size: 2048,
                 mime_type: 'application/pdf',
               },
@@ -930,8 +933,9 @@ describe('ChatMessage rich file rendering', () => {
     expect(actions).toHaveLength(2);
     expect(actions[0].textContent).toContain('预览');
     expect(actions[1].textContent).toContain('下载');
-    expect(actions[1].getAttribute('href')).toBe('/uploads/files/report.pdf');
+    expect(actions[1].getAttribute('href')).toBe('/uploads/files/20260715_f547bf132d510e621877d89214098db5.pdf?download=1');
     expect(actions[1].hasAttribute('download')).toBe(true);
+    expect(actions[1].getAttribute('download')).toBe('【电商带货主播_广州 4-6K】何荧 25年应届生.pdf');
   });
 
   it('marks DOCX as downloadable without claiming browser preview support', async () => {
@@ -962,6 +966,6 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-attachment-size').textContent).toContain('Word');
     const previewButton = container.querySelector('button.v3-artifact-action');
     expect(previewButton.disabled).toBe(true);
-    expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toBe('/uploads/files/handout.docx');
+    expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toBe('/uploads/files/handout.docx?download=1');
   });
 });
