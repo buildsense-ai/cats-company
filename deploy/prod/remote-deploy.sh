@@ -9,6 +9,8 @@ env_file="$env_dir/prod.env"
 compose_file="$compose_dir/docker-compose.yml"
 health_api="${PROD_HEALTH_API:-http://127.0.0.1:26061/health}"
 health_web="${PROD_HEALTH_WEB:-http://127.0.0.1:28080/health}"
+image_generation_api="${PROD_IMAGE_GENERATION_API:-http://127.0.0.1:26061/v1/images/generations}"
+image_edit_api="${PROD_IMAGE_EDIT_API:-http://127.0.0.1:26061/v1/images/edits}"
 
 compose() {
   if command -v docker-compose >/dev/null 2>&1; then
@@ -38,6 +40,45 @@ wait_for_health() {
   curl -sS -m 10 "$url" >&2 || true
   echo >&2
   return 1
+}
+
+expect_unauthorized_post() {
+  local name="$1"
+  local url="$2"
+  local response_file
+  local status
+
+  response_file="$(mktemp)"
+  if ! status="$(curl -sS -m 15 -o "$response_file" -w '%{http_code}' \
+    -X POST \
+    -H 'Content-Type: application/json' \
+    --data '{}' \
+    "$url")"; then
+    echo "$name contract check could not reach $url" >&2
+    rm -f "$response_file"
+    return 1
+  fi
+
+  if [ "$status" != "401" ]; then
+    echo "$name contract check failed: expected HTTP 401, got HTTP $status from $url" >&2
+    head -c 500 "$response_file" >&2 || true
+    echo >&2
+    rm -f "$response_file"
+    return 1
+  fi
+
+  rm -f "$response_file"
+  echo "$name contract ok"
+}
+
+rollback_failed_verification() {
+  if [ ! -f "$root/PREVIOUS_REVISION" ]; then
+    echo "deployment verification failed and no previous revision is available" >&2
+    return 1
+  fi
+
+  echo "deployment verification failed; rolling back automatically" >&2
+  SKIP_IMAGE_PULL="${SKIP_IMAGE_PULL:-0}" bash "$compose_dir/remote-rollback.sh" "$root"
 }
 
 if [ -z "$revision" ]; then
@@ -131,9 +172,16 @@ fi
 compose -f "$compose_file" --env-file "$env_file" up -d
 compose -f "$compose_file" --env-file "$env_file" ps
 
-printf '%s\n' "$revision" > "$root/CURRENT_REVISION"
+if ! {
+  wait_for_health "api" "$health_api" &&
+    wait_for_health "web" "$health_web" &&
+    expect_unauthorized_post "image generation route" "$image_generation_api" &&
+    expect_unauthorized_post "image edit route" "$image_edit_api"
+}; then
+  rollback_failed_verification || true
+  exit 1
+fi
 
-wait_for_health "api" "$health_api"
-wait_for_health "web" "$health_web"
+printf '%s\n' "$revision" > "$root/CURRENT_REVISION"
 
 echo "deployed revision $revision to $root"

@@ -84,6 +84,44 @@ jobs:
           "$root/compose/remote-status.sh" "$root"
           EOF
 
+      - name: Verify public image routes
+        timeout-minutes: 2
+        env:
+          PROD_PUBLIC_BASE_URL: https://app.catsco.cc
+        run: |
+          set -euo pipefail
+
+          verify_route() {
+            local path="$1"
+            local response_file
+            local status
+
+            response_file="$(mktemp)"
+            if ! status="$(curl -sS -m 30 -o "$response_file" -w '%{http_code}' \
+              -X POST \
+              -H 'Content-Type: application/json' \
+              --data '{}' \
+              "${PROD_PUBLIC_BASE_URL}${path}")"; then
+              echo "public route check could not reach ${PROD_PUBLIC_BASE_URL}${path}" >&2
+              rm -f "$response_file"
+              return 1
+            fi
+
+            if [ "$status" != "401" ]; then
+              echo "public route check failed: ${path} returned HTTP ${status}, expected HTTP 401" >&2
+              head -c 500 "$response_file" >&2 || true
+              echo >&2
+              rm -f "$response_file"
+              return 1
+            fi
+
+            rm -f "$response_file"
+            echo "public route ok: ${path}"
+          }
+
+          verify_route /v1/images/generations
+          verify_route /v1/images/edits
+
       - name: Roll back prod stack on failure
         if: failure()
         env:
