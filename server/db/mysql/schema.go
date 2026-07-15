@@ -26,6 +26,7 @@ func (a *Adapter) CreateSchema() error {
 		createChannelIdentityMobileLinksTable,
 		createChannelGroupMobileLinksTable,
 		createChannelGroupBindingsTable,
+		createChannelNativeGroupsTable,
 		createWeixinClawBotTokensTable,
 	}
 	for _, q := range tables {
@@ -50,6 +51,8 @@ func (a *Adapter) CreateSchema() error {
 		migrateGroupsBackfillCreatedAt,
 		migrateGroupsCreatedAtNotNull,
 		migrateGroupsAddAnnouncement,
+		migrateGroupsAddKind,
+		migrateGroupsBackfillChannelManagedKind,
 		migrateGroupMembersAddMuted,
 		migrateFriendsAddFromStatusIndex,
 		migrateMessagesAddTopicIDIndex,
@@ -59,6 +62,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateChannelAgentBindingsAddActorUID,
 		migrateChannelAgentBindingsAddCanonicalUID,
 		migrateChannelAgentBindingsAddDeviceAccessEnabled,
+		migrateChannelAgentBindingsEnableCanonicalDeviceAccess,
 		migrateChannelAgentEntriesOwnerAgentIndex,
 		migrateChannelAgentBindingsLookupIndex,
 		migrateChannelAgentBindingsActorAgentIndex,
@@ -237,12 +241,22 @@ CREATE TABLE IF NOT EXISTS ` + "`groups`" + ` (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(128) NOT NULL,
     owner_id BIGINT NOT NULL,
+    group_kind VARCHAR(32) NOT NULL DEFAULT 'standard',
     avatar_url VARCHAR(512) DEFAULT NULL,
     announcement TEXT DEFAULT NULL,
     max_members INT NOT NULL DEFAULT 200,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const migrateGroupsAddKind = `ALTER TABLE ` + "`groups`" + ` ADD COLUMN group_kind VARCHAR(32) NOT NULL DEFAULT 'standard';`
+
+const migrateGroupsBackfillChannelManagedKind = `
+UPDATE ` + "`groups`" + ` g
+JOIN channel_native_groups cng ON cng.group_id = g.id
+SET g.group_kind = 'channel_managed'
+WHERE g.group_kind <> 'channel_managed';
 `
 
 const createGroupMembersTable = `
@@ -463,6 +477,35 @@ CREATE TABLE IF NOT EXISTS channel_group_bindings (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
+const createChannelNativeGroupsTable = `
+CREATE TABLE IF NOT EXISTS channel_native_groups (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    channel VARCHAR(32) NOT NULL,
+    channel_app_id VARCHAR(128) NOT NULL DEFAULT '',
+    tenant_key VARCHAR(128) NOT NULL DEFAULT '',
+    conversation_id VARCHAR(256) NOT NULL,
+    conversation_name VARCHAR(255) NOT NULL DEFAULT '',
+    operator_channel_user_id VARCHAR(256) NOT NULL DEFAULT '',
+    operator_actor_uid BIGINT NULL DEFAULT NULL,
+    canonical_uid BIGINT NULL DEFAULT NULL,
+    group_id BIGINT NULL DEFAULT NULL,
+    topic_id VARCHAR(128) NOT NULL DEFAULT '',
+    source_kind VARCHAR(32) NOT NULL DEFAULT '',
+    source_group_id BIGINT NULL DEFAULT NULL,
+    source_agent_uid BIGINT NULL DEFAULT NULL,
+    status ENUM('pending','active','disconnected') NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_channel_native_group_identity (channel, channel_app_id, tenant_key, conversation_id),
+    INDEX idx_channel_native_groups_topic (topic_id, status),
+    FOREIGN KEY (operator_actor_uid) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (canonical_uid) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (group_id) REFERENCES ` + "`groups`" + `(id) ON DELETE SET NULL,
+    FOREIGN KEY (source_group_id) REFERENCES ` + "`groups`" + `(id) ON DELETE SET NULL,
+    FOREIGN KEY (source_agent_uid) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
 const createWeixinClawBotTokensTable = `
 CREATE TABLE IF NOT EXISTS weixin_clawbot_tokens (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -597,6 +640,12 @@ ALTER TABLE channel_agent_bindings ADD COLUMN canonical_uid BIGINT DEFAULT NULL;
 
 const migrateChannelAgentBindingsAddDeviceAccessEnabled = `
 ALTER TABLE channel_agent_bindings ADD COLUMN device_access_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+`
+
+const migrateChannelAgentBindingsEnableCanonicalDeviceAccess = `
+UPDATE channel_agent_bindings
+SET device_access_enabled = TRUE, updated_at = CURRENT_TIMESTAMP
+WHERE status = 'active' AND canonical_uid IS NOT NULL AND canonical_uid > 0 AND device_access_enabled = FALSE;
 `
 
 const migrateChannelAgentBindingsUniqueIncludesAgent = `

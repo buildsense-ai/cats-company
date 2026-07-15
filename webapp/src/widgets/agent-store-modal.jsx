@@ -1038,7 +1038,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
               {accessMode === CHANNEL_AGENT_ACCESS_MODES.PUBLIC
                 ? '扫码后仍需登录 CatsCo 账号；账号验证通过后可直接对话，不需要管理员审批。设备操作只会使用申请人自己授权的设备。'
                 : isFeishuChannel(channel)
-                  ? '用户用飞书扫码后会打开该虚拟员工的飞书应用或机器人入口；首次进入会提交好友申请，通过后可直接在飞书对话。需要账号或设备授权时，再按提示完成绑定。'
+                  ? '用户用飞书扫码后会打开该虚拟员工的飞书应用或机器人入口；首次进入会提交好友申请，通过并完成 CatsCo 账号绑定后，可直接在飞书对话并使用该账号已连接的设备。'
                   : isWeixinClawBotChannel(channel)
                     ? '用户用微信 ClawBot 扫码后会进入独立的 ClawBot 入口；首次进入会提交好友申请，通过后可直接在 ClawBot 对话。'
                     : '扫码后需要登录 CatsCo 并发送好友申请，通过后才能对话；设备操作只会使用申请人自己授权的设备。'}

@@ -43,7 +43,7 @@ type Hub struct {
 	deviceRevokes *deviceConnectorRevocationList
 	deviceClients map[int64]map[string]*Client
 	deviceRPC     *deviceRPCRouter
-	thinToolRPC  *thinToolRPCRouter
+	thinToolRPC   *thinToolRPCRouter
 	channelOut    *ChannelOutboundDispatcher
 }
 
@@ -100,7 +100,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		deviceRevokes: newDeviceConnectorRevocationList(),
 		deviceClients: make(map[int64]map[string]*Client),
 		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
-		thinToolRPC:  newThinToolRPCRouter(defaultThinToolRPCTTL),
+		thinToolRPC:   newThinToolRPCRouter(defaultThinToolRPCTTL),
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
@@ -962,6 +962,9 @@ func (h *Hub) validateMessagePublish(uid int64, accountType types.AccountType, t
 		if groupID == 0 {
 			return http.StatusBadRequest, "invalid group topic"
 		}
+		if h.isChannelManagedGroup(groupID) && accountType == types.AccountHuman {
+			return http.StatusNotFound, "group not found"
+		}
 		isMember, err := h.db.IsGroupMember(groupID, uid)
 		if err != nil || !isMember {
 			return http.StatusForbidden, "not a group member"
@@ -998,6 +1001,9 @@ func (h *Hub) validateTopicReadAccess(uid int64, accountType types.AccountType, 
 		if groupID == 0 {
 			return http.StatusBadRequest, "invalid group topic"
 		}
+		if h.isChannelManagedGroup(groupID) && accountType == types.AccountHuman {
+			return http.StatusNotFound, "group not found"
+		}
 		isMember, err := h.db.IsGroupMember(groupID, uid)
 		if err != nil || !isMember {
 			return http.StatusForbidden, "not a group member"
@@ -1013,6 +1019,23 @@ func (h *Hub) validateTopicReadAccess(uid int64, accountType types.AccountType, 
 		return code, text
 	}
 	return 0, ""
+}
+
+func (h *Hub) isChannelManagedGroup(groupID int64) bool {
+	if h == nil || h.db == nil || groupID <= 0 {
+		return true
+	}
+	groups, ok := h.db.(store.ChannelManagedGroupStore)
+	if !ok {
+		log.Printf("channel-managed group lookup unavailable for group %d", groupID)
+		return true
+	}
+	managed, err := groups.IsChannelManagedGroup(groupID)
+	if err != nil {
+		log.Printf("channel-managed group lookup failed for group %d: %v", groupID, err)
+		return true
+	}
+	return managed
 }
 
 // handlePub handles a publish (send message) request.
@@ -1139,6 +1162,12 @@ func (h *Hub) handleStreamPub(client *Client, msg *MsgClientPub, topic string) {
 		if groupID == 0 {
 			h.SendToClient(client, &ServerMessage{
 				Ctrl: &MsgServerCtrl{ID: msg.ID, Code: 400, Text: "invalid group topic"},
+			})
+			return
+		}
+		if h.isChannelManagedGroup(groupID) && client.accountType == types.AccountHuman {
+			h.SendToClient(client, &ServerMessage{
+				Ctrl: &MsgServerCtrl{ID: msg.ID, Code: 404, Text: "group not found"},
 			})
 			return
 		}
@@ -1349,6 +1378,12 @@ func (h *Hub) broadcastToGroup(groupID int64, msg *ServerMessage, excludeUID int
 		if m.UserID == excludeUID {
 			continue
 		}
+		if h.isChannelManagedGroup(groupID) {
+			isBot, err := h.db.IsUserBot(m.UserID)
+			if err != nil || !isBot {
+				continue
+			}
+		}
 		h.SendToUser(m.UserID, msg)
 	}
 }
@@ -1468,6 +1503,9 @@ func (h *Hub) handleGet(client *Client, msg *MsgClientGet) {
 // handleNote handles typing indicators and read receipts.
 func (h *Hub) handleNote(client *Client, msg *MsgClientNote) {
 	uid := client.uid
+	if code, _ := h.validateTopicReadAccess(uid, client.accountType, msg.Topic); code != 0 {
+		return
+	}
 	infoMsg := &ServerMessage{
 		Info: &MsgServerInfo{
 			Topic: msg.Topic,
@@ -1656,14 +1694,23 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 		mentionSet[m] = true
 	}
 
+	channelManaged := h.isChannelManagedGroup(groupID)
 	for _, m := range members {
 		if m.UserID == excludeUID {
 			continue
 		}
 
 		// Check if this is a Bot
-		client := h.getClient(m.UserID)
-		isBot := client != nil && client.accountType == types.AccountBot
+		isBot := false
+		if channelManaged {
+			var err error
+			isBot, err = h.db.IsUserBot(m.UserID)
+			if err != nil || !isBot {
+				continue
+			}
+		} else if client := h.getClient(m.UserID); client != nil {
+			isBot = client.accountType == types.AccountBot
+		}
 
 		if isBot {
 			// Bots only receive message if:

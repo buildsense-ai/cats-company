@@ -510,6 +510,31 @@ func (a *Adapter) ResolveChannelAgentBindingForActor(channel, channelAppID strin
 	return binding, nil
 }
 
+func (a *Adapter) ResolveChannelAgentBindingForCanonical(channel, channelAppID string, canonicalUID, agentUID int64) (*types.ChannelAgentBinding, error) {
+	if channel == "" || canonicalUID <= 0 || agentUID <= 0 {
+		return nil, fmt.Errorf("invalid channel agent canonical query")
+	}
+	row := a.db.QueryRow(
+		`SELECT id, channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
+		        COALESCE(actor_uid, 0), COALESCE(canonical_uid, 0), COALESCE(device_access_enabled, FALSE), owner_uid, agent_uid, COALESCE(entry_id, 0), status, bound_at, updated_at, last_used_at
+		 FROM channel_agent_bindings
+		 WHERE channel = $1 AND channel_app_id = $2 AND canonical_uid = $3 AND agent_uid = $4 AND status = 'active'
+		 ORDER BY updated_at DESC LIMIT 1`,
+		channel, channelAppID, canonicalUID, agentUID,
+	)
+	binding, err := scanChannelAgentBinding(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve channel agent canonical binding: %w", err)
+	}
+	if _, err := a.db.Exec(`UPDATE channel_agent_bindings SET last_used_at = CURRENT_TIMESTAMP WHERE id = $1`, binding.ID); err != nil {
+		return nil, fmt.Errorf("touch channel agent canonical binding: %w", err)
+	}
+	return binding, nil
+}
+
 func (a *Adapter) ResolveChannelAgentBindingForActorAny(actorUID, agentUID int64) (*types.ChannelAgentBinding, error) {
 	if actorUID <= 0 || agentUID <= 0 {
 		return nil, fmt.Errorf("invalid channel agent actor query")
@@ -845,7 +870,12 @@ func (a *Adapter) UpsertChannelGroupBinding(binding *types.ChannelGroupBinding) 
 		return nil, fmt.Errorf("invalid channel group binding")
 	}
 	conversationType := normalizeGroupBindingConversationType(binding.ChannelConversationType)
-	if _, err := a.db.Exec(
+	tx, err := a.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin channel group selection: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(
 		`INSERT INTO channel_group_bindings (
 			     channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
 			     actor_uid, canonical_uid, group_id, topic_id, status, bound_at, selected_at, last_used_at
@@ -871,6 +901,21 @@ func (a *Adapter) UpsertChannelGroupBinding(binding *types.ChannelGroupBinding) 
 		binding.TopicID,
 	); err != nil {
 		return nil, fmt.Errorf("upsert channel group binding: %w", err)
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM channel_agent_routes
+		 WHERE channel = $1 AND channel_app_id = $2 AND channel_user_id = $3
+		   AND channel_conversation_id = $4 AND channel_conversation_type = $5`,
+		binding.Channel,
+		binding.ChannelAppID,
+		binding.ChannelUserID,
+		binding.ChannelConversationID,
+		conversationType,
+	); err != nil {
+		return nil, fmt.Errorf("clear superseded channel agent route: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit channel group selection: %w", err)
 	}
 	return a.ResolveChannelGroupBinding(types.ChannelGroupBindingQuery{
 		Channel:                 binding.Channel,
@@ -956,7 +1001,12 @@ func (a *Adapter) UpsertChannelAgentRoute(route *types.ChannelAgentRoute) (*type
 	if source == "" {
 		source = "manual"
 	}
-	if _, err := a.db.Exec(
+	tx, err := a.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin channel agent route selection: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(
 		`INSERT INTO channel_agent_routes (
 		     channel, channel_app_id, channel_user_id, channel_conversation_id, channel_conversation_type,
 		     actor_uid, agent_uid, source, selected_at, last_used_at
@@ -980,6 +1030,23 @@ func (a *Adapter) UpsertChannelAgentRoute(route *types.ChannelAgentRoute) (*type
 		source,
 	); err != nil {
 		return nil, fmt.Errorf("upsert channel agent route: %w", err)
+	}
+	if _, err := tx.Exec(
+		`UPDATE channel_group_bindings
+		 SET status = 'revoked', updated_at = CURRENT_TIMESTAMP
+		 WHERE channel = $1 AND channel_app_id = $2 AND channel_user_id = $3
+		   AND channel_conversation_id = $4 AND channel_conversation_type = $5
+		   AND status = 'active'`,
+		route.Channel,
+		route.ChannelAppID,
+		route.ChannelUserID,
+		route.ChannelConversationID,
+		conversationType,
+	); err != nil {
+		return nil, fmt.Errorf("revoke superseded channel group binding: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit channel agent route selection: %w", err)
 	}
 	return a.ResolveChannelAgentRoute(types.ChannelAgentRouteQuery{
 		Channel:                 route.Channel,

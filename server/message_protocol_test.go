@@ -107,6 +107,42 @@ func TestRuntimePlanMessageIsTransientWithoutMetadata(t *testing.T) {
 	}
 }
 
+func TestAgentExecutionDetailsAreTransient(t *testing.T) {
+	for _, messageType := range []string{"thinking", "tool_use", "tool_result"} {
+		payload, err := normalizeMessageRequest(&SendMessageRequest{
+			TopicID: "grp_80",
+			Type:    messageType,
+			Content: json.RawMessage(`"debug detail"`),
+		})
+		if err != nil {
+			t.Fatalf("normalize %s: %v", messageType, err)
+		}
+		if isTransientRuntimePayload(payload) {
+			t.Fatalf("%s must remain stored for the CatsCo working view", messageType)
+		}
+		if !isInternalChannelOutboundPayload(payload) {
+			t.Fatalf("%s should remain visible in CatsCo but must not be forwarded to external channels", messageType)
+		}
+	}
+}
+
+func TestLegacyAndBlockOnlyWorkingMessagesStayOffExternalChannels(t *testing.T) {
+	cases := []*SendMessageRequest{
+		{TopicID: "grp_80", Type: "text", Content: json.RawMessage(`"AI文本: 正在读取文件"`)},
+		{TopicID: "grp_80", Type: "debug", Content: json.RawMessage(`"internal status"`)},
+		{TopicID: "grp_80", Type: "text", Content: json.RawMessage(`"tool output"`), ContentBlocks: []types.ContentBlock{{Type: "tool_result", Content: "private debug output"}}},
+	}
+	for _, request := range cases {
+		payload, err := normalizeMessageRequest(request)
+		if err != nil {
+			t.Fatalf("normalize working payload: %v", err)
+		}
+		if isTransientRuntimePayload(payload) || !isInternalChannelOutboundPayload(payload) {
+			t.Fatalf("working payload must stay in CatsCo and off external channels: %#v", payload)
+		}
+	}
+}
+
 func TestContentBlocksKeepAttachmentPayload(t *testing.T) {
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
 		TopicID: "grp_80",
@@ -480,6 +516,10 @@ func (s *identityMessageStore) GetGroupMembers(groupID int64) ([]*types.GroupMem
 		}
 	}
 	return members, nil
+}
+
+func (s *identityMessageStore) IsChannelManagedGroup(groupID int64) (bool, error) {
+	return false, nil
 }
 
 func (s *identityMessageStore) GetMessagesSince(topicID string, sinceID int64, limit int) ([]*types.Message, error) {

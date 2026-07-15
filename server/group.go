@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/openchat/openchat/server/store"
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // GroupHandler handles group-related API requests.
@@ -20,6 +21,19 @@ type GroupHandler struct {
 // NewGroupHandler creates a new GroupHandler.
 func NewGroupHandler(db store.Store, hub *Hub) *GroupHandler {
 	return &GroupHandler{db: db, hub: hub}
+}
+
+func (h *GroupHandler) rejectChannelManagedGroup(w http.ResponseWriter, groupID int64) bool {
+	group, err := h.db.GetGroup(groupID)
+	if err != nil || group == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "group not found"})
+		return true
+	}
+	if group.Kind != types.GroupKindChannelManaged {
+		return false
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "group not found"})
+	return true
 }
 
 // CreateGroupRequest is the JSON body for creating a group.
@@ -148,6 +162,9 @@ func (h *GroupHandler) HandleUpdateGroup(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group id and name required"})
 		return
 	}
+	if h.rejectChannelManagedGroup(w, req.GroupID) {
+		return
+	}
 
 	role, err := h.db.GetMemberRole(req.GroupID, uid)
 	if err != nil || (role != "owner" && role != "admin") {
@@ -212,6 +229,10 @@ func (h *GroupHandler) HandleGetGroupInfo(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "group not found"})
 		return
 	}
+	if group.Kind == types.GroupKindChannelManaged {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "group not found"})
+		return
+	}
 
 	members, err := h.db.GetGroupMembers(groupID)
 	if err != nil {
@@ -232,6 +253,9 @@ func (h *GroupHandler) HandleInviteMembers(w http.ResponseWriter, r *http.Reques
 	var req GroupActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	if h.rejectChannelManagedGroup(w, req.GroupID) {
 		return
 	}
 
@@ -289,6 +313,9 @@ func (h *GroupHandler) HandleLeaveGroup(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
+	if h.rejectChannelManagedGroup(w, req.GroupID) {
+		return
+	}
 
 	// Owner cannot leave
 	role, err := h.db.GetMemberRole(req.GroupID, uid)
@@ -321,6 +348,9 @@ func (h *GroupHandler) HandleKickMember(w http.ResponseWriter, r *http.Request) 
 	var req GroupActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	if h.rejectChannelManagedGroup(w, req.GroupID) {
 		return
 	}
 
@@ -367,6 +397,9 @@ func (h *GroupHandler) HandleDisbandGroup(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
+	if h.rejectChannelManagedGroup(w, req.GroupID) {
+		return
+	}
 
 	// Only owner can disband
 	role, err := h.db.GetMemberRole(req.GroupID, uid)
@@ -403,6 +436,9 @@ func (h *GroupHandler) HandleUpdateRole(w http.ResponseWriter, r *http.Request) 
 	var req GroupActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	if h.rejectChannelManagedGroup(w, req.GroupID) {
 		return
 	}
 
@@ -473,6 +509,9 @@ func (h *GroupHandler) HandleMuteMember(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
+	if h.rejectChannelManagedGroup(w, req.GroupID) {
+		return
+	}
 
 	// Check caller can manage target
 	canManage, err := h.db.CanManageMember(req.GroupID, uid, req.UserID)
@@ -502,6 +541,9 @@ func (h *GroupHandler) HandleUnmuteMember(w http.ResponseWriter, r *http.Request
 	var req GroupActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	if h.rejectChannelManagedGroup(w, req.GroupID) {
 		return
 	}
 
@@ -536,6 +578,9 @@ func (h *GroupHandler) HandleSetAnnouncement(w http.ResponseWriter, r *http.Requ
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	if h.rejectChannelManagedGroup(w, req.GroupID) {
 		return
 	}
 

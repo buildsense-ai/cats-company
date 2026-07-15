@@ -129,6 +129,7 @@ type ChannelAgentBindingStore interface {
 	UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) (*types.ChannelAgentBinding, error)
 	ResolveChannelAgentBinding(query types.ChannelAgentBindingQuery) (*types.ChannelAgentBinding, error)
 	ResolveChannelAgentBindingForActor(channel, channelAppID string, actorUID, agentUID int64) (*types.ChannelAgentBinding, error)
+	ResolveChannelAgentBindingForCanonical(channel, channelAppID string, canonicalUID, agentUID int64) (*types.ChannelAgentBinding, error)
 	ResolveChannelAgentBindingForActorAny(actorUID, agentUID int64) (*types.ChannelAgentBinding, error)
 	ResolveChannelAgentBindingForChannelUser(channel, channelAppID, channelUserID string) (*types.ChannelAgentBinding, error)
 	ResolveChannelAgentDeviceAccessBindingForActorAny(actorUID, agentUID int64) (*types.ChannelAgentBinding, error)
@@ -150,6 +151,22 @@ type ChannelAgentBindingStore interface {
 	ListActiveWeixinClawBotTokens() ([]*types.WeixinClawBotToken, error)
 	UpdateWeixinClawBotTokenPollState(id int64, getUpdatesBuf string, contextTokens map[string]types.WeixinClawBotContext) error
 	MarkWeixinClawBotTokenError(id int64, status string, message string) error
+}
+
+// ChannelNativeGroupStore is the optional persistence boundary for native
+// external-channel groups. It is deliberately not embedded in Store so
+// existing Store implementations and mocks do not need to implement it.
+type ChannelNativeGroupStore interface {
+	EnsureChannelNativeGroup(binding *types.ChannelNativeGroupBinding, groupName string, memberUIDs []int64) (*types.ChannelNativeGroupBinding, bool, error)
+	ResolveChannelNativeGroup(channel, appID, tenantKey, conversationID string) (*types.ChannelNativeGroupBinding, error)
+	SetChannelNativeGroupStatus(channel, appID, tenantKey, conversationID, status string) error
+	ListChannelNativeGroupsForTopic(topicID string) ([]*types.ChannelNativeGroupBinding, error)
+}
+
+// ChannelManagedGroupStore exposes the product-level visibility boundary for
+// channel-owned sessions without requiring lightweight Store mocks to support it.
+type ChannelManagedGroupStore interface {
+	IsChannelManagedGroup(groupID int64) (bool, error)
 }
 
 // Store is the complete persistence boundary required by the current server.

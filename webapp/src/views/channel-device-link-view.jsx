@@ -27,24 +27,26 @@ export default function ChannelDeviceLinkView({ bindingId, linkToken, user }) {
       })
       .catch((err) => {
         setStatus('error');
-        setError(err.message || '设备授权绑定失败，请重新打开链接。');
+        setError(err.message || '渠道身份绑定失败，请重新打开链接。');
       });
   };
 
+  const accountName = user?.display_name || user?.displayName || user?.username || '';
+
   const title = status === 'linked'
-    ? '设备授权已绑定'
+    ? 'CatsCo 账号已绑定'
     : status === 'error'
       ? '授权链接不可用'
       : status === 'linking'
-        ? '正在绑定设备授权'
-        : '确认绑定设备授权';
+        ? '正在绑定 CatsCo 账号'
+        : '确认绑定 CatsCo 账号';
   const message = status === 'linked'
-    ? `已把当前微信/飞书身份关联到 CatsCo 账号 ${user?.display_name || user?.displayName || user?.username || ''}。以后该虚拟员工需要访问你的本地设备时，会使用你已授权且在线的设备。`
+    ? `已把当前微信/飞书身份关联到 CatsCo 账号 ${accountName}。之后可以直接使用该账号已连接的设备。`
     : status === 'error'
       ? error
       : status === 'linking'
         ? '请稍候，正在确认当前账号与渠道身份。'
-        : `将把当前微信/飞书身份关联到 CatsCo 账号 ${user?.display_name || user?.displayName || user?.username || ''}。确认后，虚拟员工需要访问你的本地设备时，会使用你已授权且在线的设备。`;
+        : `将把当前微信/飞书身份关联到 CatsCo 账号 ${accountName}，用于继续聊天并使用该账号已连接的设备。`;
 
   return (
     <div className="v3-app" style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>

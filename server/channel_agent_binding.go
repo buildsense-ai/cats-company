@@ -56,11 +56,17 @@ type channelAgentLinkRequest struct {
 }
 
 type channelAgentLinkTokenPayload struct {
-	BindingID int64 `json:"binding_id"`
-	ActorUID  int64 `json:"actor_uid"`
-	AgentUID  int64 `json:"agent_uid"`
-	ExpiresAt int64 `json:"expires_at"`
+	BindingID int64  `json:"binding_id"`
+	ActorUID  int64  `json:"actor_uid"`
+	AgentUID  int64  `json:"agent_uid"`
+	Purpose   string `json:"purpose,omitempty"`
+	ExpiresAt int64  `json:"expires_at"`
 }
+
+const (
+	channelBindingLinkPurposeAccount = "account_link"
+	channelBindingLinkPurposeDevice  = "device_access"
+)
 
 type channelAgentEntryResponse struct {
 	*types.ChannelAgentEntry
@@ -375,7 +381,7 @@ func (h *ChannelAgentBindingHandler) HandleConfirmChannelAgentBinding(w http.Res
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"status":           "needs_catsco_login",
 			"binding":          binding,
-			"account_link_url": channelBindingDeviceLinkURL(r, binding),
+			"account_link_url": channelBindingAccountLinkURL(r, binding),
 			"agent": map[string]interface{}{
 				"uid":          agent.ID,
 				"username":     agent.Username,
@@ -417,7 +423,7 @@ func (h *ChannelAgentBindingHandler) HandleConfirmChannelAgentBinding(w http.Res
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":          "bound",
 		"binding":         binding,
-		"device_link_url": channelBindingDeviceLinkURL(r, binding),
+		"device_link_url": "",
 		"agent": map[string]interface{}{
 			"uid":          agent.ID,
 			"username":     agent.Username,
@@ -483,8 +489,8 @@ func (h *ChannelAgentBindingHandler) HandleResolveChannelAgentBinding(w http.Res
 			"binding":          binding,
 			"agent_uid":        binding.AgentUID,
 			"owner_uid":        binding.OwnerUID,
-			"account_link_url": channelBindingDeviceLinkURL(r, binding),
-			"device_link_url":  channelBindingDeviceLinkURL(r, binding),
+			"account_link_url": channelBindingAccountLinkURL(r, binding),
+			"device_link_url":  "",
 			"device_linked":    false,
 		})
 		return
@@ -525,10 +531,7 @@ func (h *ChannelAgentBindingHandler) HandleResolveChannelAgentBinding(w http.Res
 		})
 		return
 	}
-	var deviceOwnerUID int64
-	if binding.DeviceAccessEnabled && binding.CanonicalUID > 0 {
-		deviceOwnerUID = binding.CanonicalUID
-	}
+	deviceOwnerUID := binding.CanonicalUID
 	bodyID, _ := h.db.GetBotBodyID(binding.AgentUID)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"bound":            true,
@@ -538,7 +541,7 @@ func (h *ChannelAgentBindingHandler) HandleResolveChannelAgentBinding(w http.Res
 		"agent_body_id":    bodyID,
 		"owner_uid":        binding.OwnerUID,
 		"canonical_uid":    binding.CanonicalUID,
-		"device_link_url":  channelBindingDeviceLinkURL(r, binding),
+		"device_link_url":  "",
 		"device_linked":    deviceOwnerUID > 0,
 		"device_owner_uid": deviceOwnerUID,
 		"agent": map[string]interface{}{
@@ -554,8 +557,8 @@ func (h *ChannelAgentBindingHandler) HandleResolveChannelAgentBinding(w http.Res
 }
 
 // HandleLinkChannelAgentBindingUser links a channel actor to the currently
-// authenticated CatsCo user so device grants can target that user's devices
-// while preserving the channel actor as the task initiator.
+// authenticated CatsCo user. An active channel binding uses that user's
+// connected devices without a second device-authorization step.
 func (h *ChannelAgentBindingHandler) HandleLinkChannelAgentBindingUser(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -585,7 +588,8 @@ func (h *ChannelAgentBindingHandler) HandleLinkChannelAgentBindingUser(w http.Re
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only active human CatsCo users can link channel device authorization"})
 		return
 	}
-	binding, err := bindings.LinkChannelAgentBindingCanonicalUser(payload.BindingID, payload.ActorUID, payload.AgentUID, canonicalUID, req.DeviceAccess)
+	enableDeviceAccess := true
+	binding, err := bindings.LinkChannelAgentBindingCanonicalUser(payload.BindingID, payload.ActorUID, payload.AgentUID, canonicalUID, enableDeviceAccess)
 	if err != nil {
 		if errors.Is(err, store.ErrChannelAgentBindingAlreadyLinked) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "channel identity already linked to another CatsCo user"})
@@ -656,7 +660,7 @@ func (h *ChannelAgentBindingHandler) HandleLinkChannelAgentBindingUser(w http.Re
 				AgentUID:                binding.AgentUID,
 				EntryID:                 binding.EntryID,
 				Status:                  types.ChannelAgentBindingActive,
-				DeviceAccessEnabled:     true,
+				DeviceAccessEnabled:     enableDeviceAccess,
 			}); err == nil && refreshed != nil {
 				binding = refreshed
 			} else if err != nil {
@@ -680,7 +684,7 @@ func (h *ChannelAgentBindingHandler) HandleLinkChannelAgentBindingUser(w http.Re
 			}
 		}
 	}
-	deviceLinked := binding.Status == types.ChannelAgentBindingActive && binding.CanonicalUID > 0 && binding.DeviceAccessEnabled
+	deviceLinked := binding.Status == types.ChannelAgentBindingActive && binding.CanonicalUID > 0
 	deviceOwnerUID := int64(0)
 	if deviceLinked {
 		deviceOwnerUID = binding.CanonicalUID
@@ -698,9 +702,8 @@ func (h *ChannelAgentBindingHandler) HandleLinkChannelAgentBindingUser(w http.Re
 
 // HandleCreateChannelIdentityMobileLink creates a short-lived mobile-channel
 // binding QR for the current CatsCo user. It is for "I already use this agent
-// on Web; let my Weixin/Feishu identity use the same agent". It only inherits
-// device access when the current user owns the virtual employee; other users
-// must authorize their own devices separately.
+// on Web; let my Weixin/Feishu identity use the same agent". Once the identity
+// is linked, the channel uses the current CatsCo user's connected devices.
 func (h *ChannelAgentBindingHandler) HandleCreateChannelIdentityMobileLink(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -815,6 +818,10 @@ func (h *ChannelAgentBindingHandler) HandleCreateChannelGroupMobileLink(w http.R
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "group not found"})
 		return
 	}
+	if group.Kind == types.GroupKindChannelManaged {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "group not found"})
+		return
+	}
 	isMember, err := h.db.IsGroupMember(groupID, canonicalUID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check group membership"})
@@ -889,6 +896,11 @@ func (h *ChannelAgentBindingHandler) findMobileIdentityEntry(bindings store.Chan
 	} else if ownerEntry != nil {
 		return ownerEntry, nil
 	}
+	if accessibleEntry, err := h.ensureAccessibleMobileIdentityEntry(bindings, canonicalUID, agentUID, channel, appID); err != nil {
+		return nil, err
+	} else if accessibleEntry != nil {
+		return accessibleEntry, nil
+	}
 	return nil, fmt.Errorf("you must add this virtual employee on CatsCo before binding it to a mobile channel")
 }
 
@@ -936,6 +948,39 @@ func (h *ChannelAgentBindingHandler) ensureOwnerMobileIdentityEntry(bindings sto
 		ChannelAppID: appID,
 		AccessMode:   types.ChannelAgentAccessApprovalRequired,
 		OwnerUID:     canonicalUID,
+		AgentUID:     agentUID,
+		Status:       "active",
+	})
+}
+
+func (h *ChannelAgentBindingHandler) ensureAccessibleMobileIdentityEntry(bindings store.ChannelAgentBindingStore, canonicalUID, agentUID int64, channel, appID string) (*types.ChannelAgentEntry, error) {
+	if h == nil || h.db == nil || bindings == nil || canonicalUID <= 0 || agentUID <= 0 {
+		return nil, nil
+	}
+	status, _, err := channelBindingStatusForCanonicalUser(h.db, canonicalUID, agentUID)
+	if err != nil {
+		return nil, err
+	}
+	if status != types.ChannelAgentBindingActive {
+		return nil, nil
+	}
+	ownerUID, err := h.db.GetBotOwner(agentUID)
+	if err != nil || ownerUID <= 0 {
+		return nil, err
+	}
+	entry := &types.ChannelAgentEntry{
+		OwnerUID: ownerUID,
+		AgentUID: agentUID,
+	}
+	if !channelEntryAgentAvailable(h.db, entry) {
+		return nil, nil
+	}
+	return bindings.EnsureChannelAgentEntry(&types.ChannelAgentEntry{
+		SceneKey:     mustGenerateSceneKey(),
+		Channel:      channel,
+		ChannelAppID: appID,
+		AccessMode:   types.ChannelAgentAccessApprovalRequired,
+		OwnerUID:     ownerUID,
 		AgentUID:     agentUID,
 		Status:       "active",
 	})
@@ -1702,7 +1747,6 @@ func bindOrRequestChannelAgentAccessWithCanonical(
 			}
 		}
 	}
-	deviceAccessEnabled := canonicalUID > 0 && status == types.ChannelAgentBindingActive
 	binding, err = bindings.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:                 channel,
 		ChannelAppID:            strings.TrimSpace(channelAppID),
@@ -1711,7 +1755,7 @@ func bindOrRequestChannelAgentAccessWithCanonical(
 		ChannelConversationType: conversationType,
 		ActorUID:                actorUID,
 		CanonicalUID:            canonicalUID,
-		DeviceAccessEnabled:     deviceAccessEnabled,
+		DeviceAccessEnabled:     canonicalUID > 0 && status == types.ChannelAgentBindingActive,
 		OwnerUID:                entry.OwnerUID,
 		AgentUID:                entry.AgentUID,
 		EntryID:                 entry.ID,
@@ -2012,6 +2056,9 @@ func validateChannelGroupMobileAccess(db store.Store, link *types.ChannelGroupMo
 	if err != nil || group == nil {
 		return nil, errors.New("group mobile link group is not available")
 	}
+	if group.Kind == types.GroupKindChannelManaged {
+		return nil, errors.New("channel-managed groups do not support mobile links")
+	}
 	if parseGroupIDFromTopicID(link.TopicID) != link.GroupID {
 		return nil, errors.New("group mobile link topic mismatch")
 	}
@@ -2061,33 +2108,46 @@ func entryURL(r *http.Request, sceneKey string) string {
 }
 
 func channelBindingDeviceLinkURL(r *http.Request, binding *types.ChannelAgentBinding) string {
+	return channelBindingLinkURL(r, binding, channelBindingLinkPurposeDevice)
+}
+
+func channelBindingAccountLinkURL(r *http.Request, binding *types.ChannelAgentBinding) string {
+	return channelBindingLinkURL(r, binding, channelBindingLinkPurposeAccount)
+}
+
+func channelBindingLinkURL(r *http.Request, binding *types.ChannelAgentBinding, purpose string) string {
 	if binding == nil || binding.ID <= 0 || binding.ActorUID <= 0 || binding.AgentUID <= 0 {
 		return ""
+	}
+	path := "/channel-account-link"
+	if purpose == channelBindingLinkPurposeDevice {
+		path = "/channel-device-link"
 	}
 	token, err := signChannelBindingLinkToken(channelAgentLinkTokenPayload{
 		BindingID: binding.ID,
 		ActorUID:  binding.ActorUID,
 		AgentUID:  binding.AgentUID,
+		Purpose:   purpose,
 		ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
 	})
 	if err != nil || token == "" {
 		return ""
 	}
-	return publicBaseURL(r) + "/channel-device-link?binding_id=" + strconv.FormatInt(binding.ID, 10) + "&link_token=" + token
+	return publicBaseURL(r) + path + "?binding_id=" + strconv.FormatInt(binding.ID, 10) + "&link_token=" + token
 }
 
 func channelBindingDeviceLinkGuidance(db store.Store, r *http.Request, binding *types.ChannelAgentBinding) string {
 	if binding == nil || binding.CanonicalUID > 0 {
 		return ""
 	}
-	link := channelBindingDeviceLinkURL(r, binding)
+	link := channelBindingAccountLinkURL(r, binding)
 	if link == "" {
 		return "你还没有登录绑定 CatsCo 账号。请联系管理员检查账号绑定链接配置。"
 	}
 	if ok, err := channelBindingEntryAllowsPublicAccess(db, binding); err == nil && ok {
-		return "请先登录 CatsCo 账号完成身份验证。验证后就可以继续和该虚拟员工对话；如果后续需要操作你的电脑，也只会使用你自己账号名下授权的设备：\n" + link
+		return "请先登录 CatsCo 账号完成身份验证。验证后就可以继续和该虚拟员工对话，并直接使用该账号已连接的设备：\n" + link
 	}
-	return "请先登录 CatsCo 账号并申请添加该虚拟员工。通过后，我才能在这里继续为你服务；如果后续需要操作你的电脑，也只会使用你自己账号名下授权的设备：\n" + link
+	return "请先登录 CatsCo 账号并申请添加该虚拟员工。通过后，我才能在这里继续为你服务，并使用该账号已连接的设备：\n" + link
 }
 
 func channelBindingNeedsCatsCoLogin(binding *types.ChannelAgentBinding) bool {
@@ -2147,7 +2207,7 @@ func withChannelBindingDeliveryMetadata(metadata map[string]interface{}, binding
 	if binding.CanonicalUID > 0 {
 		next["channel_canonical_uid"] = binding.CanonicalUID
 	}
-	next["channel_device_access_enabled"] = binding.DeviceAccessEnabled
+	next["channel_device_access_enabled"] = binding.CanonicalUID > 0 && binding.Status == types.ChannelAgentBindingActive
 	next[channelBindingDeliveryTrustMetadataKey] = channelBindingDeliveryTrustToken{}
 	return next
 }
@@ -2279,38 +2339,10 @@ func channelBindingEntryAllowsPublicAccess(db store.Store, binding *types.Channe
 	return types.NormalizeChannelAgentAccessMode(entry.AccessMode) == types.ChannelAgentAccessPublic, nil
 }
 
-func isChannelDeviceLinkRequest(text string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(text))
-	if normalized == "" {
-		return false
-	}
-	keywords := []string{
-		"设备授权",
-		"授权设备",
-		"绑定设备",
-		"连接设备",
-		"连接电脑",
-		"绑定电脑",
-		"操作电脑",
-		"操作我的电脑",
-		"本地电脑",
-		"电脑文件",
-		"本地文件",
-		"device link",
-		"device auth",
-		"link device",
-	}
-	for _, keyword := range keywords {
-		if strings.Contains(normalized, keyword) {
-			return true
-		}
-	}
-	return false
-}
-
 func signChannelBindingLinkToken(payload channelAgentLinkTokenPayload) (string, error) {
 	secret := channelBindingLinkSecret()
-	if secret == "" || payload.BindingID <= 0 || payload.ActorUID <= 0 || payload.AgentUID <= 0 || payload.ExpiresAt <= 0 {
+	validPurpose := payload.Purpose == channelBindingLinkPurposeAccount || payload.Purpose == channelBindingLinkPurposeDevice
+	if secret == "" || !validPurpose || payload.BindingID <= 0 || payload.ActorUID <= 0 || payload.AgentUID <= 0 || payload.ExpiresAt <= 0 {
 		return "", fmt.Errorf("invalid channel binding link token")
 	}
 	raw, err := json.Marshal(payload)
@@ -2343,6 +2375,12 @@ func verifyChannelBindingLinkToken(raw string) (*channelAgentLinkTokenPayload, e
 	var out channelAgentLinkTokenPayload
 	if err := json.Unmarshal(payload, &out); err != nil {
 		return nil, err
+	}
+	if out.Purpose == "" {
+		out.Purpose = channelBindingLinkPurposeAccount
+	}
+	if out.Purpose != channelBindingLinkPurposeAccount && out.Purpose != channelBindingLinkPurposeDevice {
+		return nil, fmt.Errorf("invalid channel binding link purpose")
 	}
 	if out.BindingID <= 0 || out.ActorUID <= 0 || out.AgentUID <= 0 || time.Now().Unix() > out.ExpiresAt {
 		return nil, fmt.Errorf("expired channel binding link token")

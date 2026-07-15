@@ -54,7 +54,7 @@ describe('ChannelDeviceLinkView', () => {
     });
 
     expect(api.linkChannelAgentBindingUser).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('确认绑定设备授权');
+    expect(container.textContent).toContain('确认绑定 CatsCo 账号');
 
     const button = container.querySelector('button');
     expect(button).not.toBeNull();
@@ -68,7 +68,7 @@ describe('ChannelDeviceLinkView', () => {
       link_token: 'token-1',
       device_access: true,
     });
-    expect(container.textContent).toContain('设备授权已绑定');
+    expect(container.textContent).toContain('CatsCo 账号已绑定');
   });
 
   test('shows an error when required link parameters are missing', async () => {
@@ -79,6 +79,30 @@ describe('ChannelDeviceLinkView', () => {
 
     expect(api.linkChannelAgentBindingUser).not.toHaveBeenCalled();
     expect(container.textContent).toContain('授权链接缺少必要信息');
+  });
+
+  test('account link includes connected device access', async () => {
+    api.linkChannelAgentBindingUser.mockResolvedValue({ status: 'linked' });
+
+    await act(async () => {
+      root.render(view({ bindingId: '12', linkToken: 'account-token', purpose: 'account_link' }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('确认绑定 CatsCo 账号');
+    expect(container.textContent).toContain('使用该账号已连接的设备');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button'));
+      await Promise.resolve();
+    });
+
+    expect(api.linkChannelAgentBindingUser).toHaveBeenCalledWith({
+      binding_id: 12,
+      link_token: 'account-token',
+      device_access: true,
+    });
+    expect(container.textContent).toContain('可以直接使用该账号已连接的设备');
   });
 
   test('shows backend link failures after confirmation', async () => {

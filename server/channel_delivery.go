@@ -74,17 +74,22 @@ func deliverInboundChannelTextToGroup(db store.Store, hub *Hub, canonicalUID int
 	return deliverInboundChannelMessageToGroup(db, hub, canonicalUID, binding, text, nil, clientMsgID, source, metadata)
 }
 
+func recordInboundChannelTextToGroup(db store.Store, hub *Hub, actorUID int64, binding *types.ChannelGroupBinding, text, clientMsgID, source string, metadata map[string]interface{}) error {
+	return deliverInboundChannelMessageToGroupWithTrigger(db, hub, actorUID, binding, text, nil, clientMsgID, source, metadata, false, false)
+}
+
 func deliverInboundChannelMessageToGroup(db store.Store, hub *Hub, canonicalUID int64, binding *types.ChannelGroupBinding, text string, files []uploadPayload, clientMsgID, source string, metadata map[string]interface{}) error {
-	if canonicalUID <= 0 || binding == nil || strings.TrimSpace(binding.TopicID) == "" {
+	return deliverInboundChannelMessageToGroupWithTrigger(db, hub, canonicalUID, binding, text, files, clientMsgID, source, metadata, true, false)
+}
+
+func deliverInboundChannelMessageToGroupWithTrigger(db store.Store, hub *Hub, actorUID int64, binding *types.ChannelGroupBinding, text string, files []uploadPayload, clientMsgID, source string, metadata map[string]interface{}, triggerBots, allowChannelManaged bool) error {
+	if actorUID <= 0 || binding == nil || strings.TrimSpace(binding.TopicID) == "" {
 		return errors.New("invalid channel group binding")
 	}
-	if canonicalUID != binding.CanonicalUID {
-		return errors.New("channel group binding user mismatch")
-	}
-	if _, err := validateDeliverableChannelGroupBinding(db, binding); err != nil {
+	if _, err := validateDeliverableChannelGroupBinding(db, binding, allowChannelManaged); err != nil {
 		return err
 	}
-	if err := db.CreateTopic(binding.TopicID, "group", canonicalUID); err != nil {
+	if err := db.CreateTopic(binding.TopicID, "group", binding.CanonicalUID); err != nil {
 		return fmt.Errorf("create group topic: %w", err)
 	}
 	displayText := strings.TrimSpace(text)
@@ -108,7 +113,7 @@ func deliverInboundChannelMessageToGroup(db store.Store, hub *Hub, canonicalUID 
 	if err != nil {
 		return err
 	}
-	result, err := saveNormalizedMessage(db, binding.TopicID, canonicalUID, 0, payload)
+	result, err := saveNormalizedMessage(db, binding.TopicID, actorUID, 0, payload)
 	if err != nil {
 		if source == "" {
 			source = "channel"
@@ -116,12 +121,16 @@ func deliverInboundChannelMessageToGroup(db store.Store, hub *Hub, canonicalUID 
 		return fmt.Errorf("save inbound %s group message: %w", source, err)
 	}
 	if !result.Duplicate && hub != nil {
-		hub.fanoutNormalizedMessage(canonicalUID, binding.TopicID, 0, payload, result.ID, nil)
+		if triggerBots {
+			hub.fanoutNormalizedMessage(actorUID, binding.TopicID, 0, payload, result.ID, nil)
+		} else {
+			hub.fanoutNormalizedGroupMessageToHumans(actorUID, binding.TopicID, payload, result.ID)
+		}
 	}
 	return nil
 }
 
-func validateDeliverableChannelGroupBinding(db store.Store, binding *types.ChannelGroupBinding) (*types.Group, error) {
+func validateDeliverableChannelGroupBinding(db store.Store, binding *types.ChannelGroupBinding, allowChannelManaged bool) (*types.Group, error) {
 	if db == nil || binding == nil {
 		return nil, errors.New("channel group binding not available")
 	}
@@ -138,6 +147,9 @@ func validateDeliverableChannelGroupBinding(db store.Store, binding *types.Chann
 	group, err := db.GetGroup(binding.GroupID)
 	if err != nil || group == nil {
 		return nil, errors.New("channel group binding group is not available")
+	}
+	if group.Kind == types.GroupKindChannelManaged && !allowChannelManaged {
+		return nil, errors.New("channel-managed groups cannot be used as mobile group bindings")
 	}
 	if parseGroupIDFromTopicID(binding.TopicID) != binding.GroupID {
 		return nil, errors.New("channel group binding topic mismatch")

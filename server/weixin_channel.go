@@ -287,7 +287,7 @@ func (h *WeixinChannelHandler) handleScanEvent(w http.ResponseWriter, ctx contex
 		name = displayNameOrUsername(agent.DisplayName, agent.Username)
 	}
 	if accessRequest != nil && binding == nil {
-		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, fmt.Sprintf("已向「%s」发送好友申请。管理员通过后，你就可以在这里直接提问；如果需要使用你的电脑文件，可以发送「设备授权」获取绑定链接。", name))
+		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, fmt.Sprintf("已向「%s」发送好友申请。管理员通过后，你就可以在这里直接提问，并使用已绑定 CatsCo 账号所连接的设备。", name))
 		return
 	}
 	if channelBindingNeedsCatsCoLogin(binding) {
@@ -341,7 +341,7 @@ func (h *WeixinChannelHandler) handleTextMessage(w http.ResponseWriter, ctx cont
 		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "读取群聊移动端绑定失败，请稍后重试。")
 		return
 	}
-	if groupBinding != nil && !weixinAgentRouteSelectedAfterGroup(agentRoute, groupBinding) {
+	if groupBinding != nil && groupBinding.Status == types.ChannelAgentBindingActive && !weixinAgentRouteSelectedAfterGroup(agentRoute, groupBinding) {
 		clientMsgID := weixinClientMsgID(msg)
 		if err := deliverInboundChannelTextToGroup(h.db, h.hub, groupBinding.CanonicalUID, groupBinding, text, clientMsgID, "weixin", map[string]interface{}{
 			"source_channel":                    "weixin",
@@ -434,7 +434,7 @@ func (h *WeixinChannelHandler) resolveDeliverableWeixinBinding(w http.ResponseWr
 	if binding == nil {
 		if access, lookupErr := h.resolveWeixinAccessRequest(appID, openID, "", "p2p"); lookupErr == nil && access != nil {
 			if access.Status == "pending" {
-				writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "你的好友申请正在等待管理员通过。通过后，我会在这里继续为你服务；如果需要使用你的电脑文件，可以发送「设备授权」获取绑定链接。")
+				writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "你的好友申请正在等待管理员通过。通过后，我会在这里继续为你服务，并使用已绑定 CatsCo 账号所连接的设备。")
 				return appID, nil, 0, false
 			}
 			if access.Status == "rejected" {
@@ -542,7 +542,7 @@ func (h *WeixinChannelHandler) weixinInboundMetadata(appID, openID string, bindi
 		"channel_actor_uid":              binding.ActorUID,
 		"channel_canonical_uid":          binding.CanonicalUID,
 		"channel_agent_binding_id":       binding.ID,
-		"channel_device_access_enabled":  binding.DeviceAccessEnabled,
+		"channel_device_access_enabled":  binding.CanonicalUID > 0 && binding.Status == types.ChannelAgentBindingActive,
 	}
 }
 
@@ -690,6 +690,10 @@ func (h *WeixinChannelHandler) resolveWeixinGroupBinding(appID, channelUserID, c
 }
 
 func weixinAgentRouteSelectedAfterGroup(route *types.ChannelAgentRoute, groupBinding *types.ChannelGroupBinding) bool {
+	return channelAgentRouteSelectedAfterGroup(route, groupBinding)
+}
+
+func channelAgentRouteSelectedAfterGroup(route *types.ChannelAgentRoute, groupBinding *types.ChannelGroupBinding) bool {
 	if route == nil || groupBinding == nil {
 		return false
 	}
@@ -713,7 +717,34 @@ func weixinAgentRouteSelectedAfterGroup(route *types.ChannelAgentRoute, groupBin
 	if groupSelectedAt.IsZero() && groupBinding.LastUsedAt != nil {
 		groupSelectedAt = *groupBinding.LastUsedAt
 	}
-	return !routeSelectedAt.Before(groupSelectedAt)
+	return routeSelectedAt.After(groupSelectedAt)
+}
+
+func channelAgentRouteSelectedAfterRoute(candidate, current *types.ChannelAgentRoute) bool {
+	if candidate == nil || candidate.AgentUID <= 0 {
+		return false
+	}
+	if current == nil || current.AgentUID <= 0 {
+		return true
+	}
+	candidateSelectedAt := candidate.SelectedAt
+	if candidateSelectedAt.IsZero() {
+		candidateSelectedAt = candidate.UpdatedAt
+	}
+	if candidateSelectedAt.IsZero() && candidate.LastUsedAt != nil {
+		candidateSelectedAt = *candidate.LastUsedAt
+	}
+	if candidateSelectedAt.IsZero() {
+		return false
+	}
+	currentSelectedAt := current.SelectedAt
+	if currentSelectedAt.IsZero() {
+		currentSelectedAt = current.UpdatedAt
+	}
+	if currentSelectedAt.IsZero() && current.LastUsedAt != nil {
+		currentSelectedAt = *current.LastUsedAt
+	}
+	return currentSelectedAt.IsZero() || !candidateSelectedAt.Before(currentSelectedAt)
 }
 
 func (h *WeixinChannelHandler) resolveWeixinAccessRequest(appID, channelUserID, conversationID, conversationType string) (*types.ChannelAgentAccessRequest, error) {

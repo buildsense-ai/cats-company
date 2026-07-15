@@ -459,6 +459,19 @@ func TestBotRecipientIdentityIncludesCurrentActorDeviceGrants(t *testing.T) {
 	if _, ok := humanMsg.Data.Metadata["xiaoba_runtime"]; ok {
 		t.Fatalf("human recipient should not receive xiaoba runtime facts: %#v", humanMsg.Data.Metadata["xiaoba_runtime"])
 	}
+
+	payload.Metadata = map[string]interface{}{"channel_native_group_binding_id": int64(1)}
+	nativeGroupMsg := hub.messageForRecipient(7, 42, "grp_80", 0, payload, 101)
+	nativeGroupIdentity := metadataMapFromServerMessage(t, nativeGroupMsg, "catsco_identity")
+	if _, ok := nativeGroupIdentity["device_grants"]; ok {
+		t.Fatalf("native channel group must not receive device grants: %#v", nativeGroupIdentity["device_grants"])
+	}
+	if _, ok := nativeGroupIdentity["device_selection"]; ok {
+		t.Fatalf("native channel group must not receive device selection: %#v", nativeGroupIdentity["device_selection"])
+	}
+	if _, ok := nativeGroupMsg.Data.Metadata["xiaoba_runtime"]; ok {
+		t.Fatalf("native channel group must not receive xiaoba runtime facts: %#v", nativeGroupMsg.Data.Metadata["xiaoba_runtime"])
+	}
 }
 
 func TestXiaobaRuntimeMetadataIncludesGroupHumanReadyDevices(t *testing.T) {
