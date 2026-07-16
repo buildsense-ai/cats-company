@@ -856,6 +856,104 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('button[aria-label="发送"]')).not.toBeNull();
   });
 
+  it('lists only bots from the current group after typing @', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 7, display_name: 'Alice', username: 'alice', is_bot: false },
+        { user_id: 42, display_name: 'Saturday', username: 'bot-saturday', is_bot: true },
+        { user_id: 43, display_name: 'Wanyu', username: 'catsco-agent-worker1', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@');
+    });
+
+    const options = [...container.querySelectorAll('.oc-mention-item')];
+    expect(options).toHaveLength(2);
+    expect(options.map((option) => option.textContent)).toEqual([
+      'Saturday@usr42',
+      'Wanyu@usr43',
+    ]);
+    expect(container.querySelector('.oc-mention-picker')?.textContent).not.toContain('Alice');
+  });
+
+  it('filters bot names and inserts the canonical uid mention with Enter', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 42, display_name: 'Saturday', username: 'bot-saturday', is_bot: true },
+        { user_id: 43, display_name: 'Wanyu', username: 'catsco-agent-worker1', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@wan');
+    });
+    expect(container.querySelectorAll('.oc-mention-item')).toHaveLength(1);
+
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await Promise.resolve();
+    });
+
+    expect(textarea.value).toBe('@usr43 ');
+    expect(container.querySelector('.oc-mention-picker')).toBeNull();
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('opens the bot picker from the toolbar and inserts at the cursor', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 42, display_name: 'Saturday', username: 'bot-saturday', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '前后');
+    });
+    await act(async () => {
+      textarea.setSelectionRange(1, 1);
+      Simulate.click(container.querySelector('button[aria-label="@机器人"]'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(textarea.value).toBe('前@后');
+    const option = container.querySelector('.oc-mention-item');
+    expect(option).toBeTruthy();
+
+    await act(async () => {
+      Simulate.mouseDown(option);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(textarea.value).toBe('前@usr42 后');
+  });
+
   it('lets the file preview panel width be adjusted and persisted', async () => {
     Object.defineProperty(window, 'innerWidth', {
       configurable: true,

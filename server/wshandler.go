@@ -1727,7 +1727,7 @@ func parseMentions(content interface{}) []string {
 }
 
 // broadcastToGroupWithMentions sends a message to all online members with Bot @trigger filtering.
-// Bots only receive the message if they are mentioned or if there are no mentions at all.
+// Human messages without mentions may wake every bot. Bot messages only wake explicitly mentioned bots.
 func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, excludeUID int64, mentions []string, senderUID int64) {
 	members, err := h.db.GetGroupMembers(groupID)
 	if err != nil {
@@ -1742,30 +1742,29 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 	}
 
 	channelManaged := h.isChannelManagedGroup(groupID)
+	senderIsBot := h.isBotUser(senderUID)
 	for _, m := range members {
 		if m.UserID == excludeUID {
 			continue
 		}
 
-		// Check if this is a Bot
-		isBot := false
-		if channelManaged {
-			var err error
-			isBot, err = h.db.IsUserBot(m.UserID)
-			if err != nil || !isBot {
-				continue
+		isBot := m.IsBot
+		if !isBot {
+			if client := h.getClient(m.UserID); client != nil {
+				isBot = client.accountType == types.AccountBot
 			}
-		} else if client := h.getClient(m.UserID); client != nil {
-			isBot = client.accountType == types.AccountBot
+		}
+		if channelManaged && !isBot {
+			continue
 		}
 
 		if isBot {
-			// Bots only receive message if:
-			// 1. They are mentioned, OR
-			// 2. There are no mentions at all (broadcast to all)
 			userIDStr := formatUID(m.UserID)
-			if len(mentions) > 0 && !mentionSet[userIDStr] {
-				// Bot not mentioned and there are mentions - skip
+			if len(mentions) > 0 {
+				if !mentionSet[userIDStr] {
+					continue
+				}
+			} else if senderIsBot {
 				continue
 			}
 		}

@@ -73,6 +73,21 @@ describe('ChatComposer', () => {
     expect(onAgentToggle).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards mention accessibility attributes to the textarea', async () => {
+    await renderComposer({
+      textareaProps: {
+        'aria-controls': 'mention-picker',
+        'aria-expanded': true,
+        'aria-activedescendant': 'mention-option-42',
+      },
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    expect(textarea.getAttribute('aria-controls')).toBe('mention-picker');
+    expect(textarea.getAttribute('aria-expanded')).toBe('true');
+    expect(textarea.getAttribute('aria-activedescendant')).toBe('mention-option-42');
+  });
+
   it('uses the same action slot for stop while working and send after input', async () => {
     const onSend = vi.fn();
     const onStop = vi.fn();

@@ -150,6 +150,23 @@ func TestPostgresStoreContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create bot user: %v", err)
 	}
+	if err := db.AddGroupMember(groupID, botID, "member"); err != nil {
+		t.Fatalf("add bot group member: %v", err)
+	}
+	members, err = db.GetGroupMembers(groupID)
+	if err != nil {
+		t.Fatalf("get group members with bot: %v", err)
+	}
+	var botMember *types.GroupMember
+	for _, member := range members {
+		if member.UserID == botID {
+			botMember = member
+			break
+		}
+	}
+	if botMember == nil || !botMember.IsBot {
+		t.Fatalf("bot group member must disclose is_bot: %#v", botMember)
+	}
 	if err := db.SaveBotConfigWithOwner(botID, ownerID, "https://bot.example", "catsco-test"); err != nil {
 		t.Fatalf("save bot config: %v", err)
 	}
