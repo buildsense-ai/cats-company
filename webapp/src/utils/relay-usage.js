@@ -31,6 +31,14 @@ export function shortCustomModelName(model) {
   return text.length > 24 ? `${text.slice(0, 24)}...` : text;
 }
 
+export function resolveCurrentModelName(summary, defaultModel = 'MiniMax-M2.7') {
+  const reportedModel = String(summary?.model || '').trim();
+  if (summary?.source === 'custom' || summary?.status === 'custom') {
+    return reportedModel && !/^custom$/i.test(reportedModel) ? reportedModel : '自定义模型';
+  }
+  return reportedModel || String(defaultModel || '').trim() || '模型未知';
+}
+
 export function relayUsageTone(summary) {
   if (summary?.status === 'over_limit') return 'danger';
   if (summary?.status === 'high' || Number(summary?.remaining_percent) <= 10) return 'warning';

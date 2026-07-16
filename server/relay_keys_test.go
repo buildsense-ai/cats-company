@@ -396,7 +396,7 @@ func TestRelayUsageSummaryUsesCurrentCustomModel(t *testing.T) {
 	if !out.Configured || out.Summary == nil {
 		t.Fatalf("expected custom usage summary, got %+v", out)
 	}
-	if out.Summary.Source != "custom" || out.Summary.Model != "自定义模型" || out.Summary.LimitCNY != 0 {
+	if out.Summary.Source != "custom" || out.Summary.Model != "gpt-5.5" || out.Summary.LimitCNY != 0 {
 		t.Fatalf("expected current custom summary without quota, got %+v", out.Summary)
 	}
 }
@@ -431,7 +431,7 @@ func TestRelayUsageSummarySkipsQuotaForCustomModel(t *testing.T) {
 	if !out.Configured || out.Summary == nil {
 		t.Fatalf("expected custom usage summary, got %+v", out)
 	}
-	if out.Summary.Source != "custom" || out.Summary.Model != "自定义模型" || out.Summary.LimitCNY != 0 {
+	if out.Summary.Source != "custom" || out.Summary.Model != "gpt-5.5" || out.Summary.LimitCNY != 0 {
 		t.Fatalf("expected custom summary without quota, got %+v", out.Summary)
 	}
 }

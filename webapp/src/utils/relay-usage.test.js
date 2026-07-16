@@ -1,4 +1,4 @@
-import { formatRelayUsagePill, shortCustomModelName } from './relay-usage';
+import { formatRelayUsagePill, resolveCurrentModelName, shortCustomModelName } from './relay-usage';
 
 describe('relay usage labels', () => {
   test('shows the reported custom model name', () => {
@@ -18,5 +18,24 @@ describe('relay usage labels', () => {
   test('bounds unusually long custom model names', () => {
     expect(shortCustomModelName('vendor-model-name-that-is-unusually-long'))
       .toBe('vendor-model-name-that-i...');
+  });
+
+  test('resolves the exact current relay and custom model names', () => {
+    expect(resolveCurrentModelName(
+      { source: 'relay', model: 'MiniMax-M3' },
+      'MiniMax-M2.7',
+    )).toBe('MiniMax-M3');
+    expect(resolveCurrentModelName(
+      { source: 'custom', status: 'custom', model: 'gpt-5.6-terra' },
+      'MiniMax-M2.7',
+    )).toBe('gpt-5.6-terra');
+  });
+
+  test('falls back to configured or generic model labels', () => {
+    expect(resolveCurrentModelName(null, 'MiniMax-M3')).toBe('MiniMax-M3');
+    expect(resolveCurrentModelName(
+      { source: 'custom', status: 'custom', model: 'custom' },
+      'MiniMax-M3',
+    )).toBe('自定义模型');
   });
 });

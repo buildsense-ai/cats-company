@@ -15,6 +15,7 @@ import RelayAccessModal from '../widgets/relay-access-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
+import { resolveCurrentModelName } from '../utils/relay-usage';
 import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, CheckCircle2, PanelLeftClose, PanelLeftOpen, Sun, Moon, Plus, ArrowUp, ChevronDown } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
@@ -203,20 +204,26 @@ function TinodeWebApp() {
   useEffect(() => {
     if (!user?.uid) return undefined;
     let cancelled = false;
-
-    Promise.allSettled([api.getRelayUsage(), api.getRelayConfig()]).then(([usageResult, configResult]) => {
+    const refresh = async () => {
+      const [usageResult, configResult] = await Promise.allSettled([api.getRelayUsage(), api.getRelayConfig()]);
       if (cancelled) return;
       const usage = usageResult.status === 'fulfilled' ? usageResult.value?.summary : null;
       const config = configResult.status === 'fulfilled' ? configResult.value : null;
-      const modelName = usage?.model
-        || (usage?.source === 'custom' || usage?.status === 'custom' ? '自定义模型' : '')
-        || config?.default_model
-        || DEFAULT_MODEL_NAME;
-      setCurrentModelName(modelName);
-    });
+      setCurrentModelName(resolveCurrentModelName(usage, config?.default_model || DEFAULT_MODEL_NAME));
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
 
+    refresh();
+    window.addEventListener('focus', refresh);
+    window.addEventListener('cc:data-changed', refresh);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
       cancelled = true;
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('cc:data-changed', refresh);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [user?.uid]);
 
