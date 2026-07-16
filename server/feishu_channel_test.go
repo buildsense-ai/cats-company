@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,6 +34,18 @@ type fakeFeishuAPI struct {
 	attachmentErr error
 }
 
+type fakeFeishuBotIdentityAPI struct {
+	*fakeFeishuAPI
+	openID string
+	err    error
+	calls  atomic.Int64
+}
+
+func (f *fakeFeishuBotIdentityAPI) BotOpenID(context.Context) (string, error) {
+	f.calls.Add(1)
+	return f.openID, f.err
+}
+
 type fakeFeishuSend struct {
 	ReceiveIDType string
 	ReceiveID     string
@@ -49,6 +62,10 @@ type fakeFeishuMedia struct {
 
 func (f *fakeFeishuAPI) AppID() string {
 	return f.appID
+}
+
+func (f *fakeFeishuAPI) BotOpenID(context.Context) (string, error) {
+	return "ou_bot", nil
 }
 
 func (f *fakeFeishuAPI) ExchangeOAuthCode(ctx context.Context, code string, redirectURI string) (*FeishuUserIdentity, error) {
@@ -150,6 +167,314 @@ func TestFeishuMentionIsBotUsesConfiguredGroupIdentity(t *testing.T) {
 	}
 	if feishuMentionIsBot(feishuMessageMention{Name: "catsco_临时成员"}) {
 		t.Fatal("an unrelated mention containing catsco must not match")
+	}
+}
+
+func TestHTTPFeishuBotOpenIDCachesConcurrentDiscovery(t *testing.T) {
+	var botCalls atomic.Int64
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			writeJSON(w, http.StatusOK, map[string]interface{}{"code": 0, "tenant_access_token": "tenant-token", "expire": 3600})
+		case "/open-apis/bot/v3/info":
+			if r.Header.Get("Authorization") != "Bearer tenant-token" {
+				t.Fatalf("authorization=%q", r.Header.Get("Authorization"))
+			}
+			botCalls.Add(1)
+			time.Sleep(20 * time.Millisecond)
+			writeJSON(w, http.StatusOK, map[string]interface{}{"code": 0, "msg": "ok", "bot": map[string]string{"open_id": "ou_discovered_bot"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer apiServer.Close()
+
+	client := newFeishuAPIClient(FeishuChannelConfig{AppID: "cli_app", AppSecret: "secret", APIBaseURL: apiServer.URL})
+	var wg sync.WaitGroup
+	errs := make(chan error, 12)
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			openID, err := client.BotOpenID(context.Background())
+			if err != nil {
+				errs <- err
+				return
+			}
+			if openID != "ou_discovered_bot" {
+				errs <- fmt.Errorf("open_id=%q", openID)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	if got := botCalls.Load(); got != 1 {
+		t.Fatalf("bot info calls=%d, want 1", got)
+	}
+}
+
+func TestHTTPFeishuBotOpenIDRetriesAfterFailure(t *testing.T) {
+	var botCalls atomic.Int64
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			writeJSON(w, http.StatusOK, map[string]interface{}{"code": 0, "tenant_access_token": "tenant-token", "expire": 3600})
+		case "/open-apis/bot/v3/info":
+			if botCalls.Add(1) == 1 {
+				writeJSON(w, http.StatusOK, map[string]interface{}{"code": 999, "msg": "temporary failure"})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"code": 0, "bot": map[string]string{"open_id": "ou_retry_bot"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer apiServer.Close()
+
+	client := newFeishuAPIClient(FeishuChannelConfig{AppID: "cli_app", AppSecret: "secret", APIBaseURL: apiServer.URL})
+	if _, err := client.BotOpenID(context.Background()); err == nil {
+		t.Fatal("first bot identity discovery should fail")
+	}
+	if _, err := client.BotOpenID(context.Background()); err == nil {
+		t.Fatal("negative cache should preserve the discovery error during backoff")
+	}
+	if got := botCalls.Load(); got != 1 {
+		t.Fatalf("bot info calls during backoff=%d, want 1", got)
+	}
+	client.mu.Lock()
+	client.botRetryAfter = time.Time{}
+	client.mu.Unlock()
+	openID, err := client.BotOpenID(context.Background())
+	if err != nil || openID != "ou_retry_bot" {
+		t.Fatalf("retry open_id=%q err=%v", openID, err)
+	}
+	if got := botCalls.Load(); got != 2 {
+		t.Fatalf("bot info calls=%d, want 2", got)
+	}
+}
+
+func TestHTTPFeishuBotOpenIDLeaderCancellationDoesNotCancelSharedLoad(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var botCalls atomic.Int64
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			writeJSON(w, http.StatusOK, map[string]interface{}{"code": 0, "tenant_access_token": "tenant-token", "expire": 3600})
+		case "/open-apis/bot/v3/info":
+			if botCalls.Add(1) == 1 {
+				close(started)
+			}
+			<-release
+			writeJSON(w, http.StatusOK, map[string]interface{}{"code": 0, "bot": map[string]string{"open_id": "ou_shared_bot"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer apiServer.Close()
+
+	client := newFeishuAPIClient(FeishuChannelConfig{AppID: "cli_app", AppSecret: "secret", APIBaseURL: apiServer.URL})
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderResult := make(chan error, 1)
+	go func() {
+		_, err := client.BotOpenID(leaderCtx)
+		leaderResult <- err
+	}()
+	<-started
+	waiterResult := make(chan error, 1)
+	go func() {
+		openID, err := client.BotOpenID(context.Background())
+		if err == nil && openID != "ou_shared_bot" {
+			err = fmt.Errorf("open_id=%q", openID)
+		}
+		waiterResult <- err
+	}()
+	cancelLeader()
+	leaderErr := <-leaderResult
+	close(release)
+	if !errors.Is(leaderErr, context.Canceled) {
+		t.Fatalf("leader error=%v, want context canceled", leaderErr)
+	}
+	if err := <-waiterResult; err != nil {
+		t.Fatal(err)
+	}
+	if got := botCalls.Load(); got != 1 {
+		t.Fatalf("bot info calls=%d, want 1", got)
+	}
+}
+
+func TestHTTPFeishuBotOpenIDRejectsInvalidResponses(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   map[string]interface{}
+	}{
+		{name: "http error", status: http.StatusServiceUnavailable, body: map[string]interface{}{"error": "unavailable"}},
+		{name: "missing open id", status: http.StatusOK, body: map[string]interface{}{"code": 0, "bot": map[string]string{}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/open-apis/auth/v3/tenant_access_token/internal":
+					writeJSON(w, http.StatusOK, map[string]interface{}{"code": 0, "tenant_access_token": "tenant-token", "expire": 3600})
+				case "/open-apis/bot/v3/info":
+					writeJSON(w, tt.status, tt.body)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer apiServer.Close()
+
+			client := newFeishuAPIClient(FeishuChannelConfig{AppID: "cli_app", AppSecret: "secret", APIBaseURL: apiServer.URL})
+			if openID, err := client.BotOpenID(context.Background()); err == nil {
+				t.Fatalf("open_id=%q, want error", openID)
+			}
+		})
+	}
+}
+
+func TestFeishuGroupMentionBotIdentityFailureIsRetryable(t *testing.T) {
+	db := newChannelAgentTestStore()
+	api := &fakeFeishuBotIdentityAPI{
+		fakeFeishuAPI: &fakeFeishuAPI{appID: "cli_app", users: map[string]*FeishuUserIdentity{
+			"ou_member": {OpenID: "ou_member", Name: "Member"},
+		}},
+		err: errors.New("bot info unavailable"),
+	}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{AppID: "cli_app"}, api)
+	rec := sendFeishuTextEventWithMentionsUnchecked(t, handler, "cli_app", "tenant_1", "ou_member", "oc_group", "group", "om_retry", "@_user_1 hello", []map[string]interface{}{
+		{"key": "@_user_1", "name": "catsco_飞书专用", "id": map[string]interface{}{"open_id": "ou_bot"}},
+	})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if api.calls.Load() != 1 {
+		t.Fatalf("bot identity calls=%d", api.calls.Load())
+	}
+}
+
+func TestFeishuGroupMentionRejectsEmptyBotIdentity(t *testing.T) {
+	db := newChannelAgentTestStore()
+	api := &fakeFeishuBotIdentityAPI{
+		fakeFeishuAPI: &fakeFeishuAPI{appID: "cli_app", users: map[string]*FeishuUserIdentity{
+			"ou_member": {OpenID: "ou_member", Name: "Member"},
+		}},
+	}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{AppID: "cli_app"}, api)
+	rec := sendFeishuTextEventWithMentionsUnchecked(t, handler, "cli_app", "tenant_1", "ou_member", "oc_group", "group", "om_empty", "@_user_1 hello", []map[string]interface{}{
+		{"key": "@_user_1", "name": "catsco_飞书专用", "id": map[string]interface{}{"open_id": "ou_bot"}},
+	})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestFeishuGroupMentionRetryDeliversOnce(t *testing.T) {
+	db := newChannelAgentTestStore()
+	db.nextID = 100
+	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_owner"), DisplayName: "Owner in Feishu", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "agent", DisplayName: "Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	_, _ = db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{Channel: "feishu", ChannelAppID: "cli_app", ChannelUserID: "ou_owner", ChannelConversationType: "p2p", ActorUID: 8, CanonicalUID: 7, OwnerUID: 7, AgentUID: 43, Status: types.ChannelAgentBindingActive})
+	_, _ = db.UpsertChannelAgentRoute(&types.ChannelAgentRoute{Channel: "feishu", ChannelAppID: "cli_app", ChannelUserID: "ou_owner", ChannelConversationType: "p2p", ActorUID: 8, AgentUID: 43, Source: "entry_scan"})
+	api := &fakeFeishuBotIdentityAPI{
+		fakeFeishuAPI: &fakeFeishuAPI{appID: "cli_app", users: map[string]*FeishuUserIdentity{
+			"ou_owner":  {OpenID: "ou_owner", Name: "Owner"},
+			"ou_member": {OpenID: "ou_member", Name: "Member"},
+		}},
+		openID: "ou_bot",
+	}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{AppID: "cli_app"}, api)
+	sendFeishuBotMembershipEvent(t, handler, "im.chat.member.bot.added_v1", "evt_retry_group", "cli_app", "tenant_1", "ou_owner", "oc_retry_group", "Retry Group")
+	binding, _ := db.ResolveChannelNativeGroup("feishu", "cli_app", "tenant_1", "oc_retry_group")
+	if binding == nil || binding.GroupID <= 0 {
+		t.Fatalf("native group binding=%+v", binding)
+	}
+	db.groupMembers[binding.GroupID][43].IsBot = false
+	hub := NewHub(db, nil)
+	botClient := &Client{hub: hub, uid: 43, accountType: types.AccountBot, send: make(chan []byte, 4)}
+	hub.clients[43] = map[*Client]struct{}{botClient: {}}
+	handler.hub = hub
+	mentions := []map[string]interface{}{
+		{"key": "@_user_1", "name": "catsco_飞书专用", "id": map[string]interface{}{"open_id": "ou_bot"}},
+	}
+
+	api.err = errors.New("temporary bot info failure")
+	first := sendFeishuTextEventWithMentionsUnchecked(t, handler, "cli_app", "tenant_1", "ou_member", "oc_retry_group", "group", "om_retry_once", "@_user_1 hello", mentions)
+	if first.Code != http.StatusInternalServerError || len(db.messages) != 0 || len(botClient.send) != 0 {
+		t.Fatalf("first status=%d messages=%d bot=%d", first.Code, len(db.messages), len(botClient.send))
+	}
+
+	api.err = nil
+	second := sendFeishuTextEventWithMentions(t, handler, "cli_app", "tenant_1", "ou_member", "oc_retry_group", "group", "om_retry_once", "@_user_1 hello", mentions)
+	if second.Code != http.StatusOK || len(db.messages) != 1 || len(botClient.send) != 1 {
+		t.Fatalf("second status=%d messages=%d bot=%d", second.Code, len(db.messages), len(botClient.send))
+	}
+}
+
+func TestFeishuGroupCommandDoesNotRequireBotIdentity(t *testing.T) {
+	db := newChannelAgentTestStore()
+	api := &fakeFeishuBotIdentityAPI{
+		fakeFeishuAPI: &fakeFeishuAPI{appID: "cli_app", users: map[string]*FeishuUserIdentity{
+			"ou_member": {OpenID: "ou_member", Name: "Member"},
+		}},
+		err: errors.New("bot info unavailable"),
+	}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{AppID: "cli_app"}, api)
+	rec := sendFeishuTextEvent(t, handler, "cli_app", "ou_member", "oc_group", "group", "om_current", "/当前目标")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if api.calls.Load() != 0 {
+		t.Fatalf("gateway command should not discover bot identity, calls=%d", api.calls.Load())
+	}
+}
+
+func TestFeishuHandlerDiscoversBotIdentityForFormalMention(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_GROUP_BOT_OPEN_IDS", "")
+	api := &fakeFeishuBotIdentityAPI{fakeFeishuAPI: &fakeFeishuAPI{appID: "cli_app"}, openID: "ou_discovered_bot"}
+	handler := NewFeishuChannelHandler(newChannelAgentTestStore(), nil, FeishuChannelConfig{AppID: "cli_app"}, api)
+	event := &feishuMessageEvent{}
+	event.Message.Mentions = []feishuMessageMention{{Key: "@_user_1", Name: "catsco_飞书专用"}}
+	event.Message.Mentions[0].ID.OpenID = "ou_discovered_bot"
+
+	botIDs, err := handler.resolveFeishuBotOpenIDs(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !feishuEventMentionsBotWithIDs(event, botIDs) {
+		t.Fatal("discovered immutable bot ID should trigger the group message")
+	}
+	if got := normalizeFeishuMessageMentionsWithBotIDs("@_user_1 请整理", event, botIDs); got != "请整理" {
+		t.Fatalf("normalized text=%q", got)
+	}
+	if api.calls.Load() != 1 {
+		t.Fatalf("bot identity calls=%d", api.calls.Load())
+	}
+}
+
+func TestFeishuHandlerUsesConfiguredBotIdentityWithoutDiscovery(t *testing.T) {
+	t.Setenv("CATSCO_FEISHU_GROUP_BOT_OPEN_IDS", "ou_configured_bot")
+	api := &fakeFeishuBotIdentityAPI{fakeFeishuAPI: &fakeFeishuAPI{appID: "cli_app"}, err: errors.New("must not be called")}
+	handler := NewFeishuChannelHandler(newChannelAgentTestStore(), nil, FeishuChannelConfig{AppID: "cli_app"}, api)
+	event := &feishuMessageEvent{}
+	event.Message.Mentions = []feishuMessageMention{{Key: "@_user_1", Name: "catsco_飞书专用"}}
+	event.Message.Mentions[0].ID.OpenID = "ou_configured_bot"
+
+	botIDs, err := handler.resolveFeishuBotOpenIDs(context.Background(), event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !feishuEventMentionsBotWithIDs(event, botIDs) {
+		t.Fatal("configured immutable bot ID should trigger the group message")
+	}
+	if api.calls.Load() != 0 {
+		t.Fatalf("configured ID should bypass discovery, calls=%d", api.calls.Load())
 	}
 }
 
@@ -2529,6 +2854,15 @@ func sendFeishuNativeGroupTextEvent(t *testing.T, handler *FeishuChannelHandler,
 
 func sendFeishuTextEventWithMentions(t *testing.T, handler *FeishuChannelHandler, appID, tenantKey, openID, chatID, chatType, messageID, text string, mentions []map[string]interface{}) *httptest.ResponseRecorder {
 	t.Helper()
+	rec := sendFeishuTextEventWithMentionsUnchecked(t, handler, appID, tenantKey, openID, chatID, chatType, messageID, text, mentions)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("message event status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	return rec
+}
+
+func sendFeishuTextEventWithMentionsUnchecked(t *testing.T, handler *FeishuChannelHandler, appID, tenantKey, openID, chatID, chatType, messageID, text string, mentions []map[string]interface{}) *httptest.ResponseRecorder {
+	t.Helper()
 	content, _ := json.Marshal(map[string]string{"text": text})
 	message := map[string]interface{}{
 		"message_id": messageID, "chat_id": chatID, "chat_type": chatType, "message_type": "text", "content": string(content), "mentions": mentions,
@@ -2545,9 +2879,6 @@ func sendFeishuTextEventWithMentions(t *testing.T, handler *FeishuChannelHandler
 	req := httptest.NewRequest(http.MethodPost, "/api/channels/feishu/events", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	handler.HandleEvents(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("message event status=%d body=%s", rec.Code, rec.Body.String())
-	}
 	return rec
 }
 
