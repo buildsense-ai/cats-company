@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useMemo, useState } from 'react';
+import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, CornerUpLeft, MoreHorizontal, X, Eye, Copy, CheckCircle2, CircleDot, Circle } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
@@ -700,6 +700,7 @@ function WorkingProcess({ blocks }) {
 function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, onReply, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [copyState, setCopyState] = useState('');
+  const actionsRef = useRef(null);
   const content = message.content;
   const effectiveWorkingMessages = workingMessages || message._working || [];
   const storedBlocks = useMemo(() => Array.isArray(message.content_blocks) ? message.content_blocks : [], [message.content_blocks]);
@@ -776,51 +777,34 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
     }
   };
 
+  useEffect(() => {
+    if (!actionsOpen) return undefined;
+
+    const closeFromOutside = (event) => {
+      if (!actionsRef.current?.contains(event.target)) {
+        setActionsOpen(false);
+      }
+    };
+    const closeFromKeyboard = (event) => {
+      if (event.key === 'Escape') {
+        setActionsOpen(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', closeFromOutside);
+    document.addEventListener('keydown', closeFromKeyboard);
+    return () => {
+      document.removeEventListener('pointerdown', closeFromOutside);
+      document.removeEventListener('keydown', closeFromKeyboard);
+    };
+  }, [actionsOpen]);
+
   if (!hasText && richBlocks.length === 0 && workingBlocks.length === 0) return null;
 
   return (
-    <div className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}`} onMouseLeave={() => setActionsOpen(false)}>
-      <div className={`v3-message-actions${actionsOpen ? ' open' : ''}`} onClick={(event) => event.stopPropagation()}>
-        {onReply && (
-          <button className="v3-action-btn" onClick={handleReplyClick} aria-label={t('chat_reply')} title={t('chat_reply')} type="button">
-            <CornerUpLeft size={14} />
-          </button>
-        )}
-        <button
-          className="v3-action-btn"
-          onClick={handleMoreClick}
-          aria-label="更多操作"
-          aria-expanded={actionsOpen}
-          title="更多操作"
-          type="button"
-        >
-          <MoreHorizontal size={14} />
-        </button>
-        {actionsOpen && (
-          <div className="v3-message-action-menu" role="menu">
-            <button
-              type="button"
-              role="menuitem"
-              onClick={handleCopyClick}
-              disabled={!copyText}
-            >
-              <Copy size={14} />
-              <span>{copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败' : t('chat_copy')}</span>
-            </button>
-            {onReply && (
-              <button type="button" role="menuitem" onClick={handleReplyClick}>
-                <CornerUpLeft size={14} />
-                <span>{t('chat_reply')}</span>
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-
+    <div className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}`}>
       <div className="v3-avatar-col">
-        {isConsecutive ? (
-          timeString
-        ) : (
+        {!isConsecutive && (
           <Avatar
             name={displayName}
             src={senderAvatarUrl}
@@ -836,7 +820,6 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
         {!isConsecutive && (
           <div className="v3-msg-header">
             <span className="v3-msg-name">{displayName}</span>
-            <span className="v3-msg-time">{timeString}</span>
           </div>
         )}
 
@@ -870,6 +853,51 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
             {message._streaming && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
           </div>
         )}
+
+        <div className="v3-message-footer">
+          <div
+            ref={actionsRef}
+            className={`v3-message-actions${actionsOpen ? ' open' : ''}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            {onReply && (
+              <button className="v3-action-btn" onClick={handleReplyClick} aria-label={t('chat_reply')} title={t('chat_reply')} type="button">
+                <CornerUpLeft size={14} />
+              </button>
+            )}
+            <button
+              className="v3-action-btn"
+              onClick={handleMoreClick}
+              aria-label="更多操作"
+              aria-haspopup="menu"
+              aria-expanded={actionsOpen}
+              title="更多操作"
+              type="button"
+            >
+              <MoreHorizontal size={14} />
+            </button>
+            {actionsOpen && (
+              <div className="v3-message-action-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={handleCopyClick}
+                  disabled={!copyText}
+                >
+                  <Copy size={14} />
+                  <span>{copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败' : t('chat_copy')}</span>
+                </button>
+                {onReply && (
+                  <button type="button" role="menuitem" onClick={handleReplyClick}>
+                    <CornerUpLeft size={14} />
+                    <span>{t('chat_reply')}</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          <time className="v3-msg-time" dateTime={message.created_at || undefined}>{timeString}</time>
+        </div>
       </div>
     </div>
   );

@@ -8,6 +8,8 @@ const scenario = String(process.env.MOCK_CATS_SCENARIO || 'new').trim().toLowerC
 const echoReplies = ['1', 'true', 'yes', 'on'].includes(String(process.env.MOCK_CATS_ECHO || '').trim().toLowerCase());
 const tutorialTasksFile = String(process.env.MOCK_CATS_TUTORIAL_TASKS_FILE || '').trim();
 const tutorialTasksJSON = String(process.env.MOCK_CATS_TUTORIAL_TASKS_JSON || '').trim();
+const showcaseUsername = String(process.env.MOCK_CATS_SHOWCASE_USERNAME || 'ui-reviewer').trim();
+const showcasePassword = String(process.env.MOCK_CATS_SHOWCASE_PASSWORD || 'demo123456');
 
 let nextUserId = 100;
 let nextBotId = 200;
@@ -20,6 +22,7 @@ const onlineBodies = new Map();
 const agentSockets = new Map();
 const webSocketsByUserId = new Map();
 const messagesByTopic = new Map();
+const showcaseByUserId = new Map();
 let nextSeq = 1;
 
 function p2pTopicId(uid1, uid2) {
@@ -30,17 +33,114 @@ function p2pTopicId(uid1, uid2) {
 }
 
 function seedExistingBot(user) {
-  if (scenario !== 'existing') return;
-  const existing = {
-    id: nextBotId++,
-    uid: nextBotId - 1,
-    username: `existing_bot_${user.id}`,
-    display_name: 'Existing Local Bot',
+  if (scenario !== 'existing' && scenario !== 'showcase') return;
+  const definitions = scenario === 'showcase'
+    ? [
+      { username: 'code_review_agent', display_name: '代码审查助手' },
+      { username: 'ops_data_agent', display_name: '运营数据助手' },
+    ]
+    : [{ username: `existing_bot_${user.id}`, display_name: 'Existing Local Bot' }];
+  const bots = definitions.map((definition) => {
+    const id = nextBotId++;
+    return {
+      id,
+      uid: id,
+      username: definition.username,
+      display_name: definition.display_name,
+      avatar_url: '',
+      api_key: `mock-api-key-${id}`,
+      owner_id: user.id,
+    };
+  });
+  botsByOwner.set(user.id, bots);
+  if (scenario === 'showcase') seedChatShowcase(user, bots);
+}
+
+function seedChatShowcase(user, bots) {
+  const now = Date.now();
+  const at = (minutesAgo) => new Date(now - minutesAgo * 60_000).toISOString();
+  const friends = [
+    { id: 301, uid: 301, username: 'linxiao', display_name: '林晓 · 产品设计', avatar_url: '', is_online: true, bot: false },
+    { id: 302, uid: 302, username: 'chenyu', display_name: '陈宇 · 前端开发', avatar_url: '', is_online: false, bot: false },
+  ];
+  const groups = [
+    {
+      id: 401,
+      topic_id: 'grp_401',
+      name: 'CatsCo 前端验收群',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: true,
+      created_at: at(24 * 60),
+    },
+  ];
+  const codeAgent = bots[0];
+  const opsAgent = bots[1];
+  const codeTopic = p2pTopicId(user.id, codeAgent.id);
+  const opsTopic = p2pTopicId(user.id, opsAgent.id);
+  const designTopic = p2pTopicId(user.id, friends[0].id);
+  const groupTopic = groups[0].topic_id;
+
+  const seeded = [
+    [codeTopic, [
+      { from_uid: user.id, content: '帮我检查当前聊天界面的信息层级，重点看侧栏和消息区。', created_at: at(42) },
+      {
+        from_uid: codeAgent.id,
+        role: 'assistant',
+        mode: 'code',
+        content: '我先按桌面端验收，当前建议关注：\n\n1. **会话层级**：标题、预览、时间需要形成稳定对比。\n2. **消息密度**：连续短消息不要显得过散。\n3. **操作反馈**：悬浮、选中和禁用状态应使用同一套颜色。\n\n```css\n.v3-chat-item.active {\n  background: var(--cc-selected);\n}\n```',
+        created_at: at(39),
+      },
+      { from_uid: user.id, content: '再补一条长文本，看看气泡宽度和换行。这个页面后续还会展示代码、文件和工作流结果，所以普通文本不能抢占太多视觉注意力。', created_at: at(37) },
+      { from_uid: codeAgent.id, role: 'assistant', content: '收到。长文本在当前宽度下会自然换行；建议同时检查 390px、768px 和宽屏三档，尤其留意右侧预览面板打开后的可读宽度。', created_at: at(35) },
+    ]],
+    [groupTopic, [
+      { from_uid: friends[0].id, from_name: friends[0].display_name, content: '我把今天的视觉验收项整理好了，大家重点看深色模式。', created_at: at(28) },
+      { from_uid: user.id, content: '好的，我正在用服务器生成的演示数据检查会话列表。', created_at: at(25) },
+      { from_uid: codeAgent.id, from_name: codeAgent.display_name, role: 'assistant', content: '已记录 4 个检查点：侧栏密度、消息对齐、输入框状态、移动端折叠。', created_at: at(22) },
+      { from_uid: friends[1].id, from_name: friends[1].display_name, content: '前端这边会再验证超长名称和多行预览。', created_at: at(18) },
+    ]],
+    [designTopic, [
+      { from_uid: friends[0].id, from_name: friends[0].display_name, content: '侧栏二级标题的字重现在接近了，图标可以再弱一点。', created_at: at(16) },
+      { from_uid: user.id, content: '明白，我会同时看展开和收起状态。', created_at: at(13) },
+    ]],
+    [opsTopic, [
+      { from_uid: user.id, content: '生成一份本周活跃会话概览。', created_at: at(9) },
+      { from_uid: opsAgent.id, role: 'assistant', content: '演示数据已准备：**18 个活跃会话**，其中私聊 9 个、群聊 5 个、Agent 会话 4 个。当前为本地模拟结果，不代表生产统计。', created_at: at(7) },
+    ]],
+  ];
+
+  for (const [topic, messages] of seeded) {
+    for (const message of messages) storeMessage(topic, message);
+  }
+
+  const conversations = [
+    conversationFromTopic(opsTopic, '本周活跃会话概览', opsAgent.id, false, at(7), true),
+    conversationFromTopic(designTopic, friends[0].display_name, friends[0].id, false, at(13)),
+    conversationFromTopic(groupTopic, groups[0].name, null, true, at(18), false, groups[0].id),
+    conversationFromTopic(codeTopic, 'PR #71 前端迁移复盘', codeAgent.id, false, at(35), true),
+  ];
+  showcaseByUserId.set(user.id, { friends, groups, conversations });
+}
+
+function conversationFromTopic(id, name, friendId, isGroup, lastTime, isBot = false, groupId = null) {
+  const messages = messagesByTopic.get(id) || [];
+  const latest = messages[messages.length - 1];
+  return {
+    id,
+    friend_id: friendId,
+    group_id: groupId,
+    name,
+    preview: latest?.content || '',
+    last_time: lastTime || latest?.created_at || new Date().toISOString(),
+    created_at: messages[0]?.created_at || new Date().toISOString(),
+    is_group: isGroup,
     avatar_url: '',
-    api_key: `mock-api-key-${nextBotId - 1}`,
-    owner_id: user.id,
+    is_bot: isBot,
+    has_bot: isGroup,
+    is_online: isBot || friendId === 301,
+    latest_seq: latest?.seq || 0,
   };
-  botsByOwner.set(user.id, [existing]);
 }
 
 function createUser(input) {
@@ -60,6 +160,16 @@ function createUser(input) {
   if (user.email) users.set(user.email, user);
   seedExistingBot(user);
   return user;
+}
+
+function seedShowcaseAccount() {
+  if (scenario !== 'showcase') return null;
+  return createUser({
+    username: showcaseUsername,
+    email: `${showcaseUsername}@local.test`,
+    password: showcasePassword,
+    display_name: 'UI Reviewer',
+  });
 }
 
 function issueToken(user) {
@@ -234,9 +344,11 @@ async function handleApi(req, res) {
       agentSockets.clear();
       webSocketsByUserId.clear();
       messagesByTopic.clear();
+      showcaseByUserId.clear();
       nextSeq = 1;
       nextUserId = 100;
       nextBotId = 200;
+      seedShowcaseAccount();
       return send(res, 200, { ok: true, scenario });
     }
 
@@ -343,7 +455,7 @@ async function handleApi(req, res) {
           display_name: bot.display_name,
           avatar_url: bot.avatar_url,
           relation: 'owner',
-          is_online: onlineBodies.has(bot.api_key),
+          is_online: scenario === 'showcase' || onlineBodies.has(bot.api_key),
           topic_id: p2pTopicId(user.id, bot.id),
         })),
       });
@@ -436,6 +548,60 @@ async function handleApi(req, res) {
       return send(res, 200, { success: true });
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/friends') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      return send(res, 200, { friends: showcaseByUserId.get(user.id)?.friends || [] });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/friends/pending') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      return send(res, 200, { requests: [] });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/users/online') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const online = Object.fromEntries((showcaseByUserId.get(user.id)?.friends || []).map((friend) => [friend.id, Boolean(friend.is_online)]));
+      return send(res, 200, { online });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/groups') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      return send(res, 200, { groups: showcaseByUserId.get(user.id)?.groups || [] });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/groups/info') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const showcase = showcaseByUserId.get(user.id);
+      const groupId = Number(url.searchParams.get('id'));
+      const group = (showcase?.groups || []).find((item) => item.id === groupId);
+      if (!group) return send(res, 404, { error: 'group not found' });
+      const members = [
+        { user_id: user.id, display_name: user.display_name, username: user.username, role: 'owner', is_bot: false },
+        ...(showcase?.friends || []).map((friend) => ({
+          user_id: friend.id,
+          display_name: friend.display_name,
+          username: friend.username,
+          avatar_url: friend.avatar_url,
+          role: 'member',
+          is_bot: false,
+        })),
+        ...(botsByOwner.get(user.id) || []).slice(0, 1).map((bot) => ({
+          user_id: bot.id,
+          display_name: bot.display_name,
+          username: bot.username,
+          avatar_url: bot.avatar_url,
+          role: 'member',
+          is_bot: true,
+        })),
+      ];
+      return send(res, 200, { group, members });
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/relay/config') {
       return send(res, 200, {
         self_service_enabled: true,
@@ -447,6 +613,29 @@ async function handleApi(req, res) {
           { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash', model: 'deepseek-v4-flash', provider: 'anthropic', base_url: 'https://relay.catsco.cc/anthropic', quota_class: 'flash-low', context_window_tokens: 1000000 },
         ],
       });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/relay/usage') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      return send(res, 200, {
+        configured: true,
+        summary: {
+          source: 'relay',
+          model: String(url.searchParams.get('model') || 'MiniMax-M2.7'),
+          used_cny: 3.2,
+          limit_cny: 50,
+          remaining_cny: 46.8,
+          percent: 6.4,
+          status: 'normal',
+        },
+      });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/relay/commercial') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      return send(res, 200, { enabled: false, packages: [], invite: null });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/relay/key') {
@@ -485,14 +674,21 @@ async function handleApi(req, res) {
     }
 
     if (req.method === 'GET' && url.pathname === '/api/conversations') {
-      return send(res, 200, { conversations: [] });
+      const user = requireUser(req, res);
+      if (!user) return;
+      return send(res, 200, { conversations: showcaseByUserId.get(user.id)?.conversations || [] });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/messages') {
+      const user = requireUser(req, res);
+      if (!user) return;
       const topicId = String(url.searchParams.get('topic_id') || url.searchParams.get('topic') || '').trim();
       const limit = Number(url.searchParams.get('limit') || 50);
+      const offset = Number(url.searchParams.get('offset') || 0);
       const list = topicId ? (messagesByTopic.get(topicId) || []) : [...messagesByTopic.values()].flat();
-      return send(res, 200, { messages: list.slice(-limit) });
+      const end = Math.max(0, list.length - offset);
+      const start = Math.max(0, end - limit);
+      return send(res, 200, { messages: list.slice(start, end) });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/messages/send') {
@@ -511,6 +707,13 @@ async function handleApi(req, res) {
         type: body.type || 'text',
         msg_type: body.type || 'text',
       });
+      const showcase = showcaseByUserId.get(user.id);
+      const conversation = showcase?.conversations.find((item) => item.id === topicId);
+      if (conversation) {
+        conversation.preview = typeof content === 'string' ? content : JSON.stringify(content);
+        conversation.last_time = new Date().toISOString();
+        conversation.latest_seq = nextSeq - 1;
+      }
       if (match) {
         const agentSocket = agentSockets.get(match.bot.api_key);
         if (agentSocket) {
@@ -725,8 +928,12 @@ function handleUpgrade(req, socket) {
 
 const server = http.createServer(handleApi);
 server.on('upgrade', handleUpgrade);
+seedShowcaseAccount();
 server.listen(port, '127.0.0.1', () => {
   console.log(`[mock] CatsCo local onboarding mock server listening on http://localhost:${port}`);
-  console.log(`[mock] scenario=${scenario} (set MOCK_CATS_SCENARIO=new|existing)`);
+  console.log(`[mock] scenario=${scenario} (set MOCK_CATS_SCENARIO=new|existing|showcase)`);
   console.log(`[mock] echoReplies=${echoReplies} (set MOCK_CATS_ECHO=1 to echo without a real model)`);
+  if (scenario === 'showcase') {
+    console.log(`[mock] showcase login: ${showcaseUsername} / ${showcasePassword}`);
+  }
 });

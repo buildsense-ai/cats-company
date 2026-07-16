@@ -6,25 +6,32 @@ vi.mock('../widgets/chat-message', () => ({
   __esModule: true,
   default: function MockChatMessage(props) {
     const fileBlock = props.message?.content_blocks?.find?.((block) => block.type === 'file');
-    if (!fileBlock) return null;
     return (
-      <button
-        type="button"
-        className="mock-open-preview"
-        onClick={() => props.onPreviewFile?.(fileBlock.payload)}
-      >
-        open preview
-      </button>
+      <>
+        {props.onReply && (
+          <button
+            type="button"
+            className="mock-reply-message"
+            data-message-id={props.message?.id}
+            onClick={props.onReply}
+          >
+            reply
+          </button>
+        )}
+        {fileBlock && (
+          <button
+            type="button"
+            className="mock-open-preview"
+            onClick={() => props.onPreviewFile?.(fileBlock.payload)}
+          >
+            open preview
+          </button>
+        )}
+      </>
     );
   },
   FilePreviewPanel: function MockFilePreviewPanel({ file }) {
     return <aside className="mock-file-preview">{file?.name || 'preview'}</aside>;
-  },
-}));
-
-vi.mock('../widgets/group-settings', () => ({
-  default: function MockGroupSettings() {
-    return null;
   },
 }));
 
@@ -100,6 +107,75 @@ function typeDraft(textarea, value) {
   });
 }
 
+async function openPhoneUploadFromComposer(container) {
+  const attachmentButton = container.querySelector('button[aria-label="添加文件或图片"]');
+  expect(attachmentButton).not.toBeNull();
+
+  await act(async () => {
+    Simulate.click(attachmentButton);
+    await Promise.resolve();
+  });
+
+  expect(attachmentButton.getAttribute('aria-expanded')).toBe('true');
+  const phoneUploadButton = container.querySelector('button[aria-label="手机扫码上传"]');
+  expect(phoneUploadButton).not.toBeNull();
+
+  await act(async () => {
+    Simulate.click(phoneUploadButton);
+    await Promise.resolve();
+  });
+
+  return phoneUploadButton;
+}
+
+async function selectComposerAgent(container, name) {
+  await act(async () => {
+    Simulate.click(container.querySelector('.v3-agent-picker-button'));
+  });
+  const option = Array.from(container.querySelectorAll('[role="option"]'))
+    .find((item) => item.textContent.includes(name));
+  expect(option).toBeTruthy();
+  await act(async () => {
+    Simulate.click(option);
+  });
+  return option;
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function composerAgentFixtures() {
+  return {
+    codeAgent: {
+      uid: 2,
+      username: 'code-agent',
+      display_name: '代码审查助手',
+      topic_id: 'p2p_1_2',
+      is_bot: true,
+    },
+    opsAgent: {
+      uid: 3,
+      username: 'ops-agent',
+      display_name: '运营数据助手',
+      topic_id: 'p2p_1_3',
+      is_bot: true,
+    },
+  };
+}
+
+async function flushPromises(count = 8) {
+  for (let index = 0; index < count; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe('MessagesView composer draft isolation', () => {
   let container;
   let root;
@@ -145,6 +221,7 @@ describe('MessagesView composer draft isolation', () => {
     await act(async () => {
       root.unmount();
     });
+    vi.useRealTimers();
     container.remove();
     vi.clearAllMocks();
   });
@@ -228,8 +305,46 @@ describe('MessagesView composer draft isolation', () => {
       typeDraft(textarea, 'line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8');
     });
 
-    expect(textarea.style.height).toBe('220px');
+    expect(textarea.style.height).toBe('200px');
     expect(textarea.style.overflowY).toBe('auto');
+  });
+
+  it('sends an ordinary friend message while the local assistant is disconnected', async () => {
+    const onOpenDesktopConnect = vi.fn();
+    api.getFriends.mockResolvedValueOnce({
+      friends: [{ id: 2, username: 'alice', display_name: 'Alice', account_type: 'human' }],
+    });
+
+    await mountTopic(root, 'p2p_1_2', {
+      localAssistantStatus: 'disconnected',
+      onOpenDesktopConnect,
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '普通好友消息');
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-send'));
+      await Promise.resolve();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '普通好友消息', undefined);
+    expect(onOpenDesktopConnect).not.toHaveBeenCalled();
+  });
+
+  it('does not send from the chat composer for an IME Enter reported as keyCode 229', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    const textarea = container.querySelector('textarea.v3-composer-input');
+
+    await act(async () => {
+      typeDraft(textarea, '正在输入中文');
+      Simulate.keyDown(textarea, { key: 'Enter', keyCode: 229, which: 229, shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(textarea.value).toBe('正在输入中文');
   });
 
   it('lets the file preview panel width be adjusted and persisted', async () => {
@@ -329,16 +444,32 @@ describe('MessagesView composer draft isolation', () => {
   it('opens a phone upload QR dialog from the composer', async () => {
     await mountTopic(root, 'p2p_1_2');
 
-    const phoneUploadButton = container.querySelector('button[aria-label="微信扫码上传"]');
-    expect(phoneUploadButton).not.toBeNull();
-    expect(phoneUploadButton.getAttribute('data-tooltip')).toBe('微信扫码上传');
-
-    await act(async () => {
-      Simulate.click(phoneUploadButton);
-    });
+    const phoneUploadButton = await openPhoneUploadFromComposer(container);
+    expect(phoneUploadButton.getAttribute('data-tooltip')).toBe('手机扫码上传');
 
     expect(container.textContent).toContain('手机扫码上传');
     expect(container.textContent).toContain('/mobile-upload/');
+  });
+
+  it('closes the phone upload dialog with Escape or a backdrop press', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    await openPhoneUploadFromComposer(container);
+
+    expect(container.querySelector('.v3-phone-upload-backdrop')).not.toBeNull();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-phone-upload-backdrop')).toBeNull();
+
+    await openPhoneUploadFromComposer(container);
+    const backdrop = container.querySelector('.v3-phone-upload-backdrop');
+    expect(backdrop).not.toBeNull();
+    await act(async () => {
+      Simulate.mouseDown(backdrop);
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-phone-upload-backdrop')).toBeNull();
   });
 
   it('uses an absolute phone upload URL without prefixing the browser origin', async () => {
@@ -349,10 +480,7 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     await mountTopic(root, 'p2p_1_2');
-
-    await act(async () => {
-      Simulate.click(container.querySelector('button[aria-label="微信扫码上传"]'));
-    });
+    await openPhoneUploadFromComposer(container);
 
     expect(container.textContent).toContain('https://app.example.test/mobile-upload/lan123');
     expect(container.textContent).not.toContain('localhost:6061https://app.example.test');
@@ -391,10 +519,7 @@ describe('MessagesView composer draft isolation', () => {
       });
 
     await mountTopic(root, 'p2p_1_2');
-
-    await act(async () => {
-      Simulate.click(container.querySelector('button[aria-label="微信扫码上传"]'));
-    });
+    await openPhoneUploadFromComposer(container);
 
     await act(async () => {
       vi.advanceTimersByTime(2000);
@@ -479,7 +604,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(localStorage.getItem('cc_tutorial_empty_dismissed:v1:1:p2p_1_2')).toBe('1');
   });
 
-  it('shows mobile binding action for bot friends identified by bot flag', async () => {
+  it('does not repeat the migrated mobile binding action for bot friends', async () => {
     api.getFriends.mockResolvedValueOnce({
       friends: [
         {
@@ -493,10 +618,10 @@ describe('MessagesView composer draft isolation', () => {
 
     await mountTopic(root, 'p2p_1_2');
 
-    expect(container.querySelector('button[title="移动端使用"]')).toBeTruthy();
+    expect(container.querySelector('button[title="移动端使用"]')).toBeNull();
   });
 
-  it('shows mobile binding action when agent roster identifies the peer as bot', async () => {
+  it('does not repeat the migrated mobile binding action for roster agents', async () => {
     api.getFriends.mockResolvedValueOnce({
       friends: [
         {
@@ -520,7 +645,243 @@ describe('MessagesView composer draft isolation', () => {
 
     await mountTopic(root, 'p2p_1_2');
 
-    expect(container.querySelector('button[title="移动端使用"]')).toBeTruthy();
+    expect(container.querySelector('button[title="移动端使用"]')).toBeNull();
+  });
+
+  it('does not repeat migrated mobile and management actions in a group header', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 9, name: '前端验收群' },
+      members: [{ user_id: 1, display_name: 'Me', is_bot: false }],
+    });
+
+    await mountTopic(root, 'grp_9', { isGroup: true, groupId: 9 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-conversation-actions')).toBeNull();
+    expect(container.querySelector('button[title="移动端使用"]')).toBeNull();
+    expect(container.querySelector('button[title="群设置"]')).toBeNull();
+  });
+
+  it('keeps the composer agent label in sync with the active agent topic', async () => {
+    api.getAgents.mockResolvedValue({
+      agents: [
+        {
+          uid: 2,
+          username: 'code-agent',
+          display_name: '代码审查助手',
+          topic_id: 'p2p_1_2',
+          is_bot: true,
+        },
+        {
+          uid: 3,
+          username: 'ops-agent',
+          display_name: '运营数据助手',
+          topic_id: 'p2p_1_3',
+          is_bot: true,
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    expect(container.querySelector('.v3-agent-picker-button')?.textContent).toContain('代码审查助手');
+
+    await mountTopic(root, 'p2p_1_3');
+    expect(container.querySelector('.v3-agent-picker-button')?.textContent).toContain('运营数据助手');
+  });
+
+  it('shows the agent that actually belongs to the active group', async () => {
+    api.getAgents.mockResolvedValue({
+      agents: [
+        { uid: 2, display_name: '代码审查助手', topic_id: 'p2p_1_2', is_bot: true },
+        { uid: 3, display_name: '运营数据助手', topic_id: 'p2p_1_3', is_bot: true },
+      ],
+    });
+    api.getGroupInfo.mockResolvedValue({
+      group: { id: 9, name: '前端验收群' },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 3, display_name: '运营数据助手', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_9', { isGroup: true, groupId: 9 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-agent-picker-button')?.textContent).toContain('运营数据助手');
+  });
+
+  it('defers resolving and activating a selected agent until send succeeds', async () => {
+    const codeAgent = {
+      uid: 2,
+      username: 'code-agent',
+      display_name: '代码审查助手',
+      topic_id: 'p2p_1_2',
+      is_bot: true,
+    };
+    const opsAgent = {
+      uid: 3,
+      username: 'ops-agent',
+      display_name: '运营数据助手',
+      topic_id: 'p2p_1_3',
+      is_bot: true,
+    };
+    const resolvedTopic = {
+      topicId: 'p2p_1_3',
+      name: '运营数据助手',
+      isGroup: false,
+      friendId: 3,
+    };
+    const interactionOrder = [];
+    const onResolveAgentTopic = vi.fn(async () => {
+      interactionOrder.push('resolve');
+      return resolvedTopic;
+    });
+    const onActivateTopic = vi.fn(() => {
+      interactionOrder.push('activate');
+    });
+    api.getAgents.mockResolvedValue({ agents: [codeAgent, opsAgent] });
+    api.sendMessage.mockImplementationOnce(async (sendTopic) => {
+      interactionOrder.push(`send:${sendTopic}`);
+      return { seq_id: 101 };
+    });
+
+    await mountTopic(root, 'p2p_1_2', { onResolveAgentTopic, onActivateTopic });
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-agent-picker-button'));
+    });
+    const opsOption = Array.from(container.querySelectorAll('[role="option"]'))
+      .find((option) => option.textContent.includes('运营数据助手'));
+    expect(opsOption).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(opsOption);
+    });
+    expect(onResolveAgentTopic).not.toHaveBeenCalled();
+    expect(onActivateTopic).not.toHaveBeenCalled();
+
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '生成运营周报');
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-send'));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(onResolveAgentTopic).toHaveBeenCalledWith(opsAgent);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_3', '生成运营周报', undefined);
+    expect(onActivateTopic).toHaveBeenCalledWith(resolvedTopic);
+    expect(interactionOrder).toEqual(['resolve', 'send:p2p_1_3', 'activate']);
+  });
+
+  it('deduplicates repeated Enter and send clicks while an Agent topic is resolving', async () => {
+    const { codeAgent, opsAgent } = composerAgentFixtures();
+    const pendingResolution = deferred();
+    const resolvedTopic = { topicId: 'p2p_1_3', name: '运营数据助手', friendId: 3 };
+    const onResolveAgentTopic = vi.fn(() => pendingResolution.promise);
+    const onActivateTopic = vi.fn();
+    api.getAgents.mockResolvedValue({ agents: [codeAgent, opsAgent] });
+
+    await mountTopic(root, 'p2p_1_2', { onResolveAgentTopic, onActivateTopic });
+    await selectComposerAgent(container, '运营数据助手');
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '只发送一次');
+    });
+
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      Simulate.click(container.querySelector('button.v3-send'));
+      await Promise.resolve();
+    });
+    expect(onResolveAgentTopic).toHaveBeenCalledTimes(1);
+    expect(api.sendMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pendingResolution.resolve(resolvedTopic);
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_3', '只发送一次', undefined);
+    expect(onActivateTopic).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not activate a resolved Agent topic after the user has switched conversations', async () => {
+    const { codeAgent, opsAgent } = composerAgentFixtures();
+    const pendingResolution = deferred();
+    const onResolveAgentTopic = vi.fn(() => pendingResolution.promise);
+    const onActivateTopic = vi.fn();
+    api.getAgents.mockResolvedValue({ agents: [codeAgent, opsAgent] });
+
+    await mountTopic(root, 'p2p_1_2', { onResolveAgentTopic, onActivateTopic });
+    await selectComposerAgent(container, '运营数据助手');
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '旧会话请求');
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-send'));
+      await Promise.resolve();
+    });
+    expect(onResolveAgentTopic).toHaveBeenCalledTimes(1);
+
+    await mountTopic(root, 'p2p_1_4', { onResolveAgentTopic, onActivateTopic });
+    await act(async () => {
+      pendingResolution.resolve({ topicId: 'p2p_1_3', name: '运营数据助手', friendId: 3 });
+      await flushPromises();
+    });
+
+    expect(onActivateTopic).not.toHaveBeenCalled();
+  });
+
+  it('does not carry a reply from the old conversation when sending to another Agent', async () => {
+    const { codeAgent, opsAgent } = composerAgentFixtures();
+    const resolvedTopic = { topicId: 'p2p_1_3', name: '运营数据助手', friendId: 3 };
+    api.getAgents.mockResolvedValue({ agents: [codeAgent, opsAgent] });
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 77,
+        seq_id: 77,
+        from_uid: 9,
+        content: '旧会话里的消息',
+        type: 'text',
+        created_at: '2026-07-16T10:00:00Z',
+      }],
+    });
+    const onResolveAgentTopic = vi.fn().mockResolvedValue(resolvedTopic);
+    const onActivateTopic = vi.fn();
+
+    await mountTopic(root, 'p2p_1_2', { onResolveAgentTopic, onActivateTopic });
+    await act(async () => {
+      await flushPromises();
+    });
+    const replyButton = container.querySelector('.mock-reply-message[data-message-id="77"]');
+    expect(replyButton).not.toBeNull();
+    await act(async () => {
+      Simulate.click(replyButton);
+    });
+    expect(container.querySelector('.oc-reply-bar')).not.toBeNull();
+
+    await selectComposerAgent(container, '运营数据助手');
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '发给另一个 Agent');
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button.v3-send'));
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_3', '发给另一个 Agent', undefined);
+    expect(onActivateTopic).toHaveBeenCalledWith(resolvedTopic);
   });
 
   it('shows the owner shared quota for the active bot conversation', async () => {

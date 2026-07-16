@@ -1,6 +1,7 @@
 {
   "scripts": {
-    "dev:onboarding-mock": "node scripts/local-onboarding-mock-server.mjs"
+    "dev:onboarding-mock": "node scripts/local-onboarding-mock-server.mjs",
+    "dev:chat-showcase": "node scripts/local-chat-showcase.mjs"
   },
   "dependencies": {
     "puppeteer": "^24.43.1"

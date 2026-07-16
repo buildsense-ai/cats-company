@@ -645,7 +645,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.oc-plain-text-table').textContent).toContain('香蕉');
   });
 
-  it('uses the hover action toolbar for reply and more actions without dead reaction buttons', async () => {
+  it('renders message actions at the lower left and time at the lower right', async () => {
     const onReply = vi.fn();
     await act(async () => {
       root.render(
@@ -666,6 +666,14 @@ describe('ChatMessage rich file rendering', () => {
     });
 
     expect(container.querySelector('[aria-label="Add Reaction"]')).toBeNull();
+    const footer = container.querySelector('.v3-message-footer');
+    expect(footer).not.toBeNull();
+    expect(Array.from(footer.children).map((node) => node.className)).toEqual([
+      'v3-message-actions',
+      'v3-msg-time',
+    ]);
+    expect(container.querySelector('.v3-msg-header .v3-msg-time')).toBeNull();
+    expect(footer.querySelector('time.v3-msg-time')?.getAttribute('datetime')).toBe('2026-06-09T00:00:00Z');
 
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="回复"]'));
@@ -679,6 +687,7 @@ describe('ChatMessage rich file rendering', () => {
     });
     const menu = container.querySelector('.v3-message-action-menu');
     expect(menu).not.toBeNull();
+    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(2);
 
     await act(async () => {
       Simulate.click(menu.querySelector('[role="menuitem"]'));
@@ -687,6 +696,36 @@ describe('ChatMessage rich file rendering', () => {
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('这是一条可以复制的消息');
     expect(menu.textContent).toContain('已复制');
+
+    await act(async () => {
+      document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-message-action-menu')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="更多操作"]'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-message-action-menu')).not.toBeNull();
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-message-action-menu')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="更多操作"]'));
+      await Promise.resolve();
+    });
+    const replyMenuItem = container.querySelectorAll('.v3-message-action-menu [role="menuitem"]')[1];
+    await act(async () => {
+      Simulate.click(replyMenuItem);
+      await Promise.resolve();
+    });
+    expect(onReply).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('.v3-message-action-menu')).toBeNull();
   });
 
   it('renders update_plan working tools as a plan card fallback', async () => {
