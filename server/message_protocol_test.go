@@ -107,6 +107,42 @@ func TestRuntimePlanMessageIsTransientWithoutMetadata(t *testing.T) {
 	}
 }
 
+func TestAgentExecutionDetailsAreTransient(t *testing.T) {
+	for _, messageType := range []string{"thinking", "tool_use", "tool_result"} {
+		payload, err := normalizeMessageRequest(&SendMessageRequest{
+			TopicID: "grp_80",
+			Type:    messageType,
+			Content: json.RawMessage(`"debug detail"`),
+		})
+		if err != nil {
+			t.Fatalf("normalize %s: %v", messageType, err)
+		}
+		if isTransientRuntimePayload(payload) {
+			t.Fatalf("%s must remain stored for the CatsCo working view", messageType)
+		}
+		if !isInternalChannelOutboundPayload(payload) {
+			t.Fatalf("%s should remain visible in CatsCo but must not be forwarded to external channels", messageType)
+		}
+	}
+}
+
+func TestLegacyAndBlockOnlyWorkingMessagesStayOffExternalChannels(t *testing.T) {
+	cases := []*SendMessageRequest{
+		{TopicID: "grp_80", Type: "text", Content: json.RawMessage(`"AI文本: 正在读取文件"`)},
+		{TopicID: "grp_80", Type: "debug", Content: json.RawMessage(`"internal status"`)},
+		{TopicID: "grp_80", Type: "text", Content: json.RawMessage(`"tool output"`), ContentBlocks: []types.ContentBlock{{Type: "tool_result", Content: "private debug output"}}},
+	}
+	for _, request := range cases {
+		payload, err := normalizeMessageRequest(request)
+		if err != nil {
+			t.Fatalf("normalize working payload: %v", err)
+		}
+		if isTransientRuntimePayload(payload) || !isInternalChannelOutboundPayload(payload) {
+			t.Fatalf("working payload must stay in CatsCo and off external channels: %#v", payload)
+		}
+	}
+}
+
 func TestContentBlocksKeepAttachmentPayload(t *testing.T) {
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
 		TopicID: "grp_80",
@@ -458,6 +494,120 @@ func TestHandleGetMessagesAuthorizesAndMarksReplayHistory(t *testing.T) {
 	}
 }
 
+func TestHandleGetMessagesBuildsAgentContextForGroupHistory(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
+			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
+			43: {ID: 43, Username: "other_agent", DisplayName: "Other Agent", AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 42},
+			{GroupID: 80, UserID: 43},
+		},
+		history: []*types.Message{
+			{ID: 1, TopicID: "grp_80", FromUID: 7, Content: "大家看一下", MsgType: "text"},
+			{ID: 2, TopicID: "grp_80", FromUID: 7, Content: "@usr43 只让另一个机器人处理", MsgType: "text"},
+			{ID: 3, TopicID: "grp_80", FromUID: 7, Content: "@usr42 请继续", MsgType: "text"},
+			{ID: 4, TopicID: "grp_80", FromUID: 42, Content: "我来处理", MsgType: "text"},
+			{ID: 5, TopicID: "grp_80", FromUID: 43, Content: "另一个机器人的回答", MsgType: "text"},
+			{
+				ID: 6, TopicID: "grp_80", FromUID: 42, Content: "处理中", MsgType: "text",
+				ContentBlocks: []types.ContentBlock{{Type: "thinking", Thinking: "处理中"}},
+			},
+		},
+	}
+	handler := NewMessageHandler(store, NewHub(store, nil))
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=grp_80&agent_context=1&before_id=7&limit=20", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
+	rec := httptest.NewRecorder()
+	handler.HandleGetMessages(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("agent context status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Messages []map[string]interface{} `json:"messages"`
+		AgentUID float64                  `json:"agent_uid"`
+		HasMore  bool                     `json:"has_more"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode agent context response: %v", err)
+	}
+	if body.AgentUID != 42 || body.HasMore || len(body.Messages) != 6 {
+		t.Fatalf("unexpected agent context envelope: %#v", body)
+	}
+
+	wantEligible := []bool{true, false, true, true, false, false}
+	wantRoles := []string{"user", "user", "user", "assistant", "other_agent", "assistant"}
+	for i, message := range body.Messages {
+		if message["context_eligible"] != wantEligible[i] || message["context_role"] != wantRoles[i] {
+			t.Fatalf("message %d context=%#v, want eligible=%v role=%s", i, message, wantEligible[i], wantRoles[i])
+		}
+	}
+}
+
+func TestHandleGetMessagesAgentContextRequiresBotCredentials(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", AccountType: types.AccountHuman},
+			42: {ID: 42, Username: "dev_agent", AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 42},
+		},
+		history: []*types.Message{
+			{ID: 1, TopicID: "grp_80", FromUID: 7, Content: "group history", MsgType: "text"},
+		},
+	}
+	handler := NewMessageHandler(store, NewHub(store, nil))
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=grp_80&agent_context=1", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleGetMessages(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("agent context status=%d body=%s, want 403", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleGetMessagesAgentContextUsesStableBeforeCursor(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice"},
+			42: {ID: 42, Username: "dev_agent", AccountType: types.AccountBot},
+		},
+		history: []*types.Message{
+			{ID: 1, TopicID: "p2p_7_42", FromUID: 7, Content: "one", MsgType: "text"},
+			{ID: 2, TopicID: "p2p_7_42", FromUID: 42, Content: "two", MsgType: "text"},
+			{ID: 3, TopicID: "p2p_7_42", FromUID: 7, Content: "three", MsgType: "text"},
+			{ID: 4, TopicID: "p2p_7_42", FromUID: 7, Content: "current", MsgType: "text"},
+		},
+	}
+	handler := NewMessageHandler(store, NewHub(store, nil))
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=p2p_7_42&agent_context=1&before_id=4&limit=2", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
+	rec := httptest.NewRecorder()
+	handler.HandleGetMessages(rec, req)
+
+	var body struct {
+		Messages     []map[string]interface{} `json:"messages"`
+		HasMore      bool                     `json:"has_more"`
+		NextBeforeID float64                  `json:"next_before_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode agent context cursor response: %v", err)
+	}
+	if !body.HasMore || body.NextBeforeID != 2 || len(body.Messages) != 2 {
+		t.Fatalf("unexpected cursor response: %#v", body)
+	}
+	if body.Messages[0]["id"] != float64(2) || body.Messages[1]["id"] != float64(3) {
+		t.Fatalf("messages=%#v, want ids 2,3", body.Messages)
+	}
+}
+
 type identityMessageStore struct {
 	store.Store
 	users        map[int64]*types.User
@@ -482,6 +632,27 @@ func (s *identityMessageStore) GetGroupMembers(groupID int64) ([]*types.GroupMem
 	return members, nil
 }
 
+func (s *identityMessageStore) IsChannelManagedGroup(groupID int64) (bool, error) {
+	return false, nil
+}
+
+func (s *identityMessageStore) IsGroupMember(groupID, userID int64) (bool, error) {
+	for _, member := range s.groupMembers {
+		if member.GroupID == groupID && member.UserID == userID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *identityMessageStore) IsUserBot(userID int64) (bool, error) {
+	user, ok := s.users[userID]
+	if !ok {
+		return false, errors.New("user not found")
+	}
+	return user.AccountType == types.AccountBot, nil
+}
+
 func (s *identityMessageStore) GetMessagesSince(topicID string, sinceID int64, limit int) ([]*types.Message, error) {
 	var messages []*types.Message
 	for _, message := range s.history {
@@ -503,7 +674,28 @@ func (s *identityMessageStore) GetMessages(topicID string, limit, offset int) ([
 }
 
 func (s *identityMessageStore) GetLatestMessages(topicID string, limit, offset int) ([]*types.Message, error) {
-	return s.GetMessages(topicID, limit, offset)
+	messages, _ := s.GetMessages(topicID, 0, 0)
+	if offset >= len(messages) {
+		return nil, nil
+	}
+	messages = messages[offset:]
+	if limit > 0 && len(messages) > limit {
+		messages = messages[len(messages)-limit:]
+	}
+	return messages, nil
+}
+
+func (s *identityMessageStore) GetLatestMessagesBefore(topicID string, beforeID int64, limit int) ([]*types.Message, error) {
+	var messages []*types.Message
+	for _, message := range s.history {
+		if message.TopicID == topicID && (beforeID <= 0 || message.ID < beforeID) {
+			messages = append(messages, message)
+		}
+	}
+	if limit > 0 && len(messages) > limit {
+		messages = messages[len(messages)-limit:]
+	}
+	return messages, nil
 }
 
 func decodeQueuedServerMessage(t *testing.T, ch <-chan []byte, msg *ServerMessage) {

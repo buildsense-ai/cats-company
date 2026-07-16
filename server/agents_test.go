@@ -74,6 +74,10 @@ func (s *agentTestStore) IsMemberMuted(groupID, userID int64) (bool, error) {
 	return s.groupMuted[groupMemberKey(groupID, userID)], nil
 }
 
+func (s *agentTestStore) IsChannelManagedGroup(groupID int64) (bool, error) {
+	return false, nil
+}
+
 func TestHandleListAgentsIncludesOwnedAndFriendBots(t *testing.T) {
 	store := &agentTestStore{
 		ownerBots: []map[string]interface{}{

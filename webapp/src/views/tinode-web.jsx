@@ -174,6 +174,7 @@ function TinodeWebApp() {
   const entryMatch = window.location.pathname.match(/^\/e\/([^/]+)$/);
   const entrySceneKey = entryMatch ? decodeURIComponent(entryMatch[1]) : '';
   const channelDeviceLink = window.location.pathname === '/channel-device-link';
+  const channelAccountLink = window.location.pathname === '/channel-account-link';
   const [user, setUser] = useState(() => getInitialUser());
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
   const [activeTopic, _setActiveTopic] = useState(null);
@@ -369,7 +370,27 @@ function TinodeWebApp() {
       return;
     }
 
-    _setActiveTopic(readStoredTopic(user.uid));
+    const stored = readStoredTopic(user.uid);
+    if (!stored?.topicId?.startsWith('grp_')) {
+      _setActiveTopic(stored);
+      return;
+    }
+
+    let cancelled = false;
+    const groupId = stored.groupId || Number(stored.topicId.slice(4));
+    api.getGroupInfo(groupId)
+      .then(() => {
+        if (!cancelled) _setActiveTopic(stored);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          writeStoredTopic(user.uid, null);
+          _setActiveTopic(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [user?.uid]);
 
   useEffect(() => {
@@ -558,7 +579,7 @@ function TinodeWebApp() {
     window.dispatchEvent(new Event('cc:data-changed'));
   }, [setActiveTopic]);
 
-  if (channelDeviceLink && user) {
+  if ((channelDeviceLink || channelAccountLink) && user) {
     const params = new URLSearchParams(window.location.search);
     return (
       <ChannelDeviceLinkView

@@ -59,9 +59,9 @@ func (a *Adapter) GetGroup(groupID int64) (*types.Group, error) {
 	var avatarURL *string
 	var announcement *string
 	err := a.db.QueryRow(
-		"SELECT id, name, owner_id, avatar_url, announcement, max_members, created_at FROM `groups` WHERE id = ?",
+		"SELECT id, name, owner_id, group_kind, avatar_url, announcement, max_members, created_at FROM `groups` WHERE id = ?",
 		groupID,
-	).Scan(&g.ID, &g.Name, &g.OwnerID, &avatarURL, &announcement, &g.MaxMembers, &g.CreatedAt)
+	).Scan(&g.ID, &g.Name, &g.OwnerID, &g.Kind, &avatarURL, &announcement, &g.MaxMembers, &g.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get group: %w", err)
 	}
@@ -72,6 +72,15 @@ func (a *Adapter) GetGroup(groupID int64) (*types.Group, error) {
 		g.Announcement = *announcement
 	}
 	return g, nil
+}
+
+func (a *Adapter) IsChannelManagedGroup(groupID int64) (bool, error) {
+	var managed bool
+	err := a.db.QueryRow("SELECT group_kind = 'channel_managed' FROM `groups` WHERE id = ?", groupID).Scan(&managed)
+	if err != nil {
+		return false, fmt.Errorf("is channel managed group: %w", err)
+	}
+	return managed, nil
 }
 
 // AddGroupMember adds a user to a group with the given role.
@@ -139,7 +148,7 @@ func (a *Adapter) GetGroupMembers(groupID int64) ([]*types.GroupMember, error) {
 // GetUserGroups returns all groups a user belongs to.
 func (a *Adapter) GetUserGroups(userID int64) ([]*types.Group, error) {
 	rows, err := a.db.Query(
-		`SELECT g.id, g.name, g.owner_id, g.avatar_url, g.max_members, g.created_at,
+		`SELECT g.id, g.name, g.owner_id, g.group_kind, g.avatar_url, g.max_members, g.created_at,
 		        EXISTS(
 		          SELECT 1
 		          FROM group_members gm_bot
@@ -148,7 +157,7 @@ func (a *Adapter) GetUserGroups(userID int64) ([]*types.Group, error) {
 		        ) AS has_bot
 		 FROM `+"`groups`"+` g
 		 JOIN group_members gm ON gm.group_id = g.id
-		 WHERE gm.user_id = ?
+		 WHERE gm.user_id = ? AND g.group_kind = 'standard'
 		 ORDER BY g.created_at DESC, g.id DESC`,
 		userID,
 	)
@@ -161,7 +170,7 @@ func (a *Adapter) GetUserGroups(userID int64) ([]*types.Group, error) {
 	for rows.Next() {
 		g := &types.Group{}
 		var avatarURL *string
-		if err := rows.Scan(&g.ID, &g.Name, &g.OwnerID, &avatarURL, &g.MaxMembers, &g.CreatedAt, &g.HasBot); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.OwnerID, &g.Kind, &avatarURL, &g.MaxMembers, &g.CreatedAt, &g.HasBot); err != nil {
 			return nil, fmt.Errorf("scan group: %w", err)
 		}
 		if avatarURL != nil {

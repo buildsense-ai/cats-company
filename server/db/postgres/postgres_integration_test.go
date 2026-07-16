@@ -1,13 +1,16 @@
 package postgres
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -159,6 +162,87 @@ func TestPostgresStoreContract(t *testing.T) {
 	}
 	if err := db.SetBotVisibility(botID, "private"); err != nil {
 		t.Fatalf("set bot visibility: %v", err)
+	}
+	nativeIdentity := &types.ChannelNativeGroupBinding{
+		Channel: "feishu", ChannelAppID: "cli_test", TenantKey: "tenant_test",
+		ConversationID: "oc_event_order", ConversationName: "飞书｜事件顺序", OperatorChannelUserID: "ou_owner",
+	}
+	if applied, _, err := db.ApplyChannelNativeGroupMembershipEvent(nativeIdentity, true, "evt_add", 1000); err != nil || !applied {
+		t.Fatalf("first native-group add must apply: applied=%v err=%v", applied, err)
+	}
+	if applied, _, err := db.ApplyChannelNativeGroupMembershipEvent(nativeIdentity, true, "evt_add", 1000); !errors.Is(err, store.ErrChannelNativeGroupEventBusy) || applied {
+		t.Fatalf("in-flight native-group add must report busy: applied=%v err=%v", applied, err)
+	}
+	if _, err := db.db.Exec(
+		`UPDATE channel_native_groups SET last_event_claimed_at = 0
+		 WHERE channel = 'feishu' AND channel_app_id = 'cli_test' AND tenant_key = 'tenant_test' AND conversation_id = 'oc_event_order'`,
+	); err != nil {
+		t.Fatalf("expire native-group event claim: %v", err)
+	}
+	if applied, _, err := db.ApplyChannelNativeGroupMembershipEvent(nativeIdentity, true, "evt_add", 1000); err != nil || !applied {
+		t.Fatalf("expired pending native-group add must be retryable: applied=%v err=%v", applied, err)
+	}
+	if applied, _, err := db.ApplyChannelNativeGroupMembershipEvent(nativeIdentity, false, "evt_delete", 1000); err != nil || !applied {
+		t.Fatalf("same-time native-group delete must win: applied=%v err=%v", applied, err)
+	}
+	if applied, _, err := db.ApplyChannelNativeGroupMembershipEvent(nativeIdentity, true, "evt_add_late", 1000); err != nil || applied {
+		t.Fatalf("same-time add must not override delete: applied=%v err=%v", applied, err)
+	}
+	nativeBinding, err := db.ResolveChannelNativeGroup("feishu", "cli_test", "tenant_test", "oc_event_order")
+	if err != nil || nativeBinding == nil || nativeBinding.Status != types.ChannelNativeGroupDisconnected {
+		t.Fatalf("native-group event order mismatch: binding=%+v err=%v", nativeBinding, err)
+	}
+	selectionGroup := &types.ChannelGroupBinding{
+		Channel: "feishu", ChannelAppID: "cli_test", ChannelUserID: "ou_route_race", ChannelConversationType: "p2p",
+		ActorUID: ownerID, CanonicalUID: ownerID, GroupID: groupID, TopicID: fmt.Sprintf("grp_%d", groupID),
+	}
+	selectionAgent := &types.ChannelAgentRoute{
+		Channel: "feishu", ChannelAppID: "cli_test", ChannelUserID: "ou_route_race", ChannelConversationType: "p2p",
+		ActorUID: ownerID, AgentUID: botID, Source: "contract_test",
+	}
+	for attempt := 0; attempt < 8; attempt++ {
+		start := make(chan struct{})
+		errs := make(chan error, 2)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := db.UpsertChannelGroupBinding(selectionGroup)
+			errs <- err
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := db.UpsertChannelAgentRoute(selectionAgent)
+			errs <- err
+		}()
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("concurrent channel selection attempt %d: %v", attempt, err)
+			}
+		}
+		var activeGroups, agentRoutes int
+		if err := db.db.QueryRow(
+			`SELECT COUNT(*) FROM channel_group_bindings
+			 WHERE channel = 'feishu' AND channel_app_id = 'cli_test' AND channel_user_id = 'ou_route_race'
+			   AND channel_conversation_id = '' AND channel_conversation_type = 'p2p' AND status = 'active'`,
+		).Scan(&activeGroups); err != nil {
+			t.Fatalf("count active group selections: %v", err)
+		}
+		if err := db.db.QueryRow(
+			`SELECT COUNT(*) FROM channel_agent_routes
+			 WHERE channel = 'feishu' AND channel_app_id = 'cli_test' AND channel_user_id = 'ou_route_race'
+			   AND channel_conversation_id = '' AND channel_conversation_type = 'p2p'`,
+		).Scan(&agentRoutes); err != nil {
+			t.Fatalf("count agent route selections: %v", err)
+		}
+		if activeGroups+agentRoutes != 1 {
+			t.Fatalf("channel selection must stay exclusive after attempt %d: groups=%d routes=%d", attempt, activeGroups, agentRoutes)
+		}
 	}
 	searchResults, err := db.SearchUsers("helper", 10)
 	if err != nil {

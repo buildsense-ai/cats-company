@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -100,8 +101,8 @@ func TestChannelAgentEntryAndBindingFlow(t *testing.T) {
 	if confirmed.Status != "needs_catsco_login" || confirmed.Binding.ID <= 0 || confirmed.Binding.CanonicalUID != 0 {
 		t.Fatalf("confirm should only create account-link placeholder: %+v", confirmed)
 	}
-	token := validChannelAgentLinkToken(t, &confirmed.Binding)
-	linkBody := `{"binding_id":` + strconv.FormatInt(confirmed.Binding.ID, 10) + `,"link_token":"` + token + `"}`
+	token := validChannelAgentAccountLinkToken(t, &confirmed.Binding)
+	linkBody := `{"binding_id":` + strconv.FormatInt(confirmed.Binding.ID, 10) + `,"link_token":"` + token + `","device_access":true}`
 	linkReq := httptest.NewRequest(http.MethodPost, "/api/channel-agent-bindings/link-user", strings.NewReader(linkBody))
 	linkReq = linkReq.WithContext(context.WithValue(linkReq.Context(), uidKey, int64(8)))
 	linkRec := httptest.NewRecorder()
@@ -122,7 +123,7 @@ func TestChannelAgentEntryAndBindingFlow(t *testing.T) {
 		t.Fatalf("public link should activate without friend approval: %+v", linked)
 	}
 	if !linked.DeviceLinked || linked.DeviceOwnerUID != 8 || !linked.Binding.DeviceAccessEnabled {
-		t.Fatalf("public account binding should enable the linked CatsCo user's own devices: %+v", linked)
+		t.Fatalf("public account binding should include the linked user's devices: %+v", linked)
 	}
 	if db.friends[friendKey(8, 43)] == types.FriendPending || db.friends[friendKey(43, 8)] == types.FriendPending {
 		t.Fatalf("public link should not create friend requests: %+v", db.friends)
@@ -287,6 +288,53 @@ func TestCreateChannelIdentityMobileLinkAutoCreatesOwnerEntry(t *testing.T) {
 	}
 	if len(entries) != 1 || secondResp.Entry.ID != resp.Entry.ID || secondResp.SceneKey == resp.SceneKey {
 		t.Fatalf("expected second mobile link to reuse entry with a new mobile scene, entries=%+v first=%+v second=%+v", entries, resp, secondResp)
+	}
+}
+
+func TestCreateChannelIdentityMobileLinkAutoCreatesFriendEntry(t *testing.T) {
+	t.Setenv("CATSCO_CHANNEL_BINDING_TOKEN", "mobile-link-test-secret")
+	t.Setenv("CATSCO_FEISHU_APP_ID", "cli_app")
+	t.Setenv("CATSCO_FEISHU_APP_SECRET", "feishu_secret")
+	t.Setenv("CATSCO_FEISHU_ENTRY_URL_TEMPLATE", "https://applink.feishu.cn/client/app/open?app_id={app_id}&scene={scene_key}&landing={landing_url_encoded}")
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	db.users[9] = &types.User{ID: 9, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "cloud-agent", DisplayName: "Cloud Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.friends[friendKey(9, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 9)] = types.FriendAccepted
+	handler := NewChannelAgentBindingHandler(db, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "https://app.catsco.cc/api/channel-agent-bindings/mobile-link", strings.NewReader(`{"agent_uid":43,"channel":"feishu"}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(9)))
+	rec := httptest.NewRecorder()
+	handler.HandleCreateChannelIdentityMobileLink(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp channelAgentMobileLinkResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Entry.ID == 0 || resp.Entry.OwnerUID != 7 || resp.Entry.AgentUID != 43 || resp.Entry.Channel != "feishu" {
+		t.Fatalf("unexpected friend-created entry: %+v", resp.Entry.ChannelAgentEntry)
+	}
+	if resp.Entry.AccessMode != types.ChannelAgentAccessApprovalRequired || resp.Entry.ChannelAppID != "cli_app" {
+		t.Fatalf("unexpected friend-created entry config: %+v", resp.Entry.ChannelAgentEntry)
+	}
+	if resp.SceneKey == "" || !strings.HasPrefix(resp.SceneKey, "m.") {
+		t.Fatalf("unexpected mobile scene key: %+v", resp)
+	}
+	if resp.QRKind != "feishu_native_entry" || resp.QRValue == "" || resp.ChannelQRURL == "" {
+		t.Fatalf("unexpected Feishu QR metadata: %+v", resp)
+	}
+	entries, err := db.ListChannelAgentEntries(7, 43)
+	if err != nil {
+		t.Fatalf("list entries: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ID != resp.Entry.ID {
+		t.Fatalf("expected mobile flow to persist one owner-scoped entry, entries=%+v resp=%+v", entries, resp.Entry.ChannelAgentEntry)
 	}
 }
 
@@ -641,7 +689,7 @@ func TestChannelIdentityMobileLinkRejectsInvalidOrRevokedAccess(t *testing.T) {
 	}
 }
 
-func TestMobileChannelBindingDeviceAccessFollowsAgentOwnership(t *testing.T) {
+func TestMobileChannelBindingUsesCanonicalUserDevices(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
 	db.users[9] = &types.User{ID: 9, Username: "friend", DisplayName: "Friend", AccountType: types.AccountHuman}
@@ -669,7 +717,7 @@ func TestMobileChannelBindingDeviceAccessFollowsAgentOwnership(t *testing.T) {
 		t.Fatalf("bind friend mobile identity: %v", err)
 	}
 	if friendBinding == nil || friendBinding.Status != types.ChannelAgentBindingActive || !friendBinding.DeviceAccessEnabled {
-		t.Fatalf("friend mobile binding should use the friend's own device context: %+v", friendBinding)
+		t.Fatalf("friend mobile binding should include the friend's device context: %+v", friendBinding)
 	}
 	hub := NewHub(db, nil)
 	friendMetadata := withChannelBindingDeliveryMetadata(map[string]interface{}{
@@ -679,10 +727,10 @@ func TestMobileChannelBindingDeviceAccessFollowsAgentOwnership(t *testing.T) {
 		"channel_conversation_type": "p2p",
 	}, friendBinding)
 	if ownerUID, source := hub.deviceAccessOwnerUID(100, 43, friendMetadata); ownerUID != 9 || source != "channel_identity_link" {
-		t.Fatalf("legacy channel actor should only delegate to the friend's own device owner, owner=%d source=%s", ownerUID, source)
+		t.Fatalf("channel actor should use the bound CatsCo user's devices, owner=%d source=%s", ownerUID, source)
 	}
 	if ownerUID, source := hub.deviceAccessOwnerUID(9, 43, friendMetadata); ownerUID != 9 || source != "actor" {
-		t.Fatalf("canonical friend mobile actor should use its own device context, owner=%d source=%s", ownerUID, source)
+		t.Fatalf("canonical actor should use its own devices, owner=%d source=%s", ownerUID, source)
 	}
 
 	ownerBinding, _, err := bindOrRequestChannelAgentAccessWithCanonical(db, db, entry, 101, "weixin", "wx_app", "openid-owner", "", "p2p", 7)
@@ -690,7 +738,7 @@ func TestMobileChannelBindingDeviceAccessFollowsAgentOwnership(t *testing.T) {
 		t.Fatalf("bind owner mobile identity: %v", err)
 	}
 	if ownerBinding == nil || ownerBinding.Status != types.ChannelAgentBindingActive || !ownerBinding.DeviceAccessEnabled {
-		t.Fatalf("owner mobile binding should inherit own device access: %+v", ownerBinding)
+		t.Fatalf("owner mobile binding should include the owner's device context: %+v", ownerBinding)
 	}
 	ownerMetadata := withChannelBindingDeliveryMetadata(map[string]interface{}{
 		"source_channel":            "weixin",
@@ -699,14 +747,14 @@ func TestMobileChannelBindingDeviceAccessFollowsAgentOwnership(t *testing.T) {
 		"channel_conversation_type": "p2p",
 	}, ownerBinding)
 	if ownerUID, source := hub.deviceAccessOwnerUID(101, 43, ownerMetadata); ownerUID != 7 || source != "channel_identity_link" {
-		t.Fatalf("owner mobile binding should expose owner device access, owner=%d source=%s", ownerUID, source)
+		t.Fatalf("owner channel actor should use the bound CatsCo user's devices, owner=%d source=%s", ownerUID, source)
 	}
 	if ownerUID, source := hub.deviceAccessOwnerUID(7, 43, ownerMetadata); ownerUID != 7 || source != "actor" {
-		t.Fatalf("canonical owner actor should use its own device context, owner=%d source=%s", ownerUID, source)
+		t.Fatalf("canonical owner should use its own devices, owner=%d source=%s", ownerUID, source)
 	}
 }
 
-func TestChannelAgentApprovalEnablesApplicantDeviceAccess(t *testing.T) {
+func TestChannelAgentApprovalEnablesApplicantDeviceContext(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
 	db.users[9] = &types.User{ID: 9, Username: "friend", DisplayName: "Friend", AccountType: types.AccountHuman}
@@ -742,7 +790,7 @@ func TestChannelAgentApprovalEnablesApplicantDeviceAccess(t *testing.T) {
 		t.Fatalf("activate friend access: %v", err)
 	}
 	if len(activated) != 1 || activated[0].Status != types.ChannelAgentBindingActive || !activated[0].DeviceAccessEnabled {
-		t.Fatalf("approved friend binding should enable applicant device access: %+v", activated)
+		t.Fatalf("approved friend binding should include device context: %+v", activated)
 	}
 	metadata := withChannelBindingDeliveryMetadata(map[string]interface{}{
 		"source_channel":            "weixin",
@@ -752,14 +800,14 @@ func TestChannelAgentApprovalEnablesApplicantDeviceAccess(t *testing.T) {
 	}, activated[0])
 	hub := NewHub(db, nil)
 	if ownerUID, source := hub.deviceAccessOwnerUID(100, 43, metadata); ownerUID != 9 || source != "channel_identity_link" {
-		t.Fatalf("legacy channel actor should delegate only to applicant device owner, owner=%d source=%s", ownerUID, source)
+		t.Fatalf("approved actor should use the linked CatsCo user's devices, owner=%d source=%s", ownerUID, source)
 	}
 	if ownerUID, source := hub.deviceAccessOwnerUID(9, 43, metadata); ownerUID != 9 || source != "actor" {
-		t.Fatalf("canonical mobile actor should use own device context after approval, owner=%d source=%s", ownerUID, source)
+		t.Fatalf("canonical mobile actor should use its own devices, owner=%d source=%s", ownerUID, source)
 	}
 }
 
-func TestChannelDeviceAccessDoesNotLeakAcrossConversations(t *testing.T) {
+func TestChannelDeviceContextFollowsCanonicalUserAcrossConversations(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
 	db.users[8] = &types.User{ID: 8, Username: "visitor", DisplayName: "Visitor", AccountType: types.AccountHuman}
@@ -818,8 +866,8 @@ func TestChannelDeviceAccessDoesNotLeakAcrossConversations(t *testing.T) {
 		"channel_conversation_id":   "chat-group",
 		"channel_conversation_type": "group",
 	}, groupBinding)
-	if ownerUID, source := hub.deviceAccessOwnerUID(100, 43, groupMetadata); ownerUID != 0 || source != "channel_identity_unlinked" {
-		t.Fatalf("group binding must not inherit p2p device access, owner=%d source=%s", ownerUID, source)
+	if ownerUID, source := hub.deviceAccessOwnerUID(100, 43, groupMetadata); ownerUID != 8 || source != "channel_identity_link" {
+		t.Fatalf("group binding should use its bound CatsCo user's devices, owner=%d source=%s", ownerUID, source)
 	}
 }
 
@@ -1401,6 +1449,7 @@ func TestChannelAgentBindingLinkUser(t *testing.T) {
 		BindingID: binding.ID,
 		ActorUID:  binding.ActorUID,
 		AgentUID:  binding.AgentUID,
+		Purpose:   channelBindingLinkPurposeDevice,
 		ExpiresAt: time.Now().Add(time.Hour).Unix(),
 	})
 	if err != nil {
@@ -1647,6 +1696,7 @@ func TestChannelAgentBindingLinkUserRejectsInvalidTokensBeforeStoreUpdate(t *tes
 		BindingID: binding.ID,
 		ActorUID:  binding.ActorUID,
 		AgentUID:  binding.AgentUID,
+		Purpose:   channelBindingLinkPurposeDevice,
 		ExpiresAt: time.Now().Add(-time.Hour).Unix(),
 	})
 	if err != nil {
@@ -1781,10 +1831,26 @@ func validChannelAgentLinkToken(t *testing.T, binding *types.ChannelAgentBinding
 		BindingID: binding.ID,
 		ActorUID:  binding.ActorUID,
 		AgentUID:  binding.AgentUID,
+		Purpose:   channelBindingLinkPurposeDevice,
 		ExpiresAt: time.Now().Add(time.Hour).Unix(),
 	})
 	if err != nil {
 		t.Fatalf("sign link token: %v", err)
+	}
+	return token
+}
+
+func validChannelAgentAccountLinkToken(t *testing.T, binding *types.ChannelAgentBinding) string {
+	t.Helper()
+	token, err := signChannelBindingLinkToken(channelAgentLinkTokenPayload{
+		BindingID: binding.ID,
+		ActorUID:  binding.ActorUID,
+		AgentUID:  binding.AgentUID,
+		Purpose:   channelBindingLinkPurposeAccount,
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("sign account link token: %v", err)
 	}
 	return token
 }
@@ -2200,6 +2266,8 @@ type channelAgentTestStore struct {
 	groupMembers   map[int64]map[int64]*types.GroupMember
 	groupLinks     map[string]*types.ChannelGroupMobileLink
 	groupBindings  map[string]*types.ChannelGroupBinding
+	nativeGroups   map[string]*types.ChannelNativeGroupBinding
+	nativeEvents   map[string]channelNativeGroupEventState
 	routes         map[string]*types.ChannelAgentRoute
 	clawBotTokens  map[int64]*types.WeixinClawBotToken
 	clawBotByHash  map[string]int64
@@ -2232,6 +2300,8 @@ func newChannelAgentTestStore() *channelAgentTestStore {
 		groupMembers:   map[int64]map[int64]*types.GroupMember{},
 		groupLinks:     map[string]*types.ChannelGroupMobileLink{},
 		groupBindings:  map[string]*types.ChannelGroupBinding{},
+		nativeGroups:   map[string]*types.ChannelNativeGroupBinding{},
+		nativeEvents:   map[string]channelNativeGroupEventState{},
 		routes:         map[string]*types.ChannelAgentRoute{},
 		clawBotTokens:  map[int64]*types.WeixinClawBotToken{},
 		clawBotByHash:  map[string]int64{},
@@ -2260,6 +2330,14 @@ func (s *channelAgentTestStore) CreateUser(u *types.User) (int64, error) {
 
 func (s *channelAgentTestStore) GetUser(id int64) (*types.User, error) {
 	return s.users[id], nil
+}
+
+func (s *channelAgentTestStore) UpdateUser(id int64, displayName, avatarURL string) error {
+	if user := s.users[id]; user != nil {
+		user.DisplayName = displayName
+		user.AvatarURL = avatarURL
+	}
+	return nil
 }
 
 func (s *channelAgentTestStore) GetUserByUsername(username string) (*types.User, error) {
@@ -2392,6 +2470,11 @@ func (s *channelAgentTestStore) GetGroup(groupID int64) (*types.Group, error) {
 	}
 	next := *group
 	return &next, nil
+}
+
+func (s *channelAgentTestStore) IsChannelManagedGroup(groupID int64) (bool, error) {
+	group := s.groups[groupID]
+	return group != nil && group.Kind == types.GroupKindChannelManaged, nil
 }
 
 func (s *channelAgentTestStore) AddGroupMember(groupID, userID int64, role string) error {
@@ -2762,6 +2845,7 @@ func (s *channelAgentTestStore) UpsertChannelGroupBinding(binding *types.Channel
 	}
 	next.UpdatedAt = now
 	s.groupBindings[key] = next
+	delete(s.routes, routeKey(next.Channel, next.ChannelAppID, next.ChannelUserID, next.ChannelConversationID, next.ChannelConversationType))
 	return cloneGroupBinding(next), nil
 }
 
@@ -2804,6 +2888,182 @@ func (s *channelAgentTestStore) ListChannelGroupBindingsForTopic(topicID string)
 	for _, binding := range s.groupBindings {
 		if binding.TopicID == topicID {
 			out = append(out, cloneGroupBinding(binding))
+		}
+	}
+	return out, nil
+}
+
+func nativeGroupTestKey(channel, appID, tenantKey, conversationID string) string {
+	return strings.Join([]string{normalizeChannel(channel), strings.TrimSpace(appID), strings.TrimSpace(tenantKey), strings.TrimSpace(conversationID)}, "|")
+}
+
+func cloneNativeGroupBinding(binding *types.ChannelNativeGroupBinding) *types.ChannelNativeGroupBinding {
+	if binding == nil {
+		return nil
+	}
+	next := *binding
+	return &next
+}
+
+type channelNativeGroupEventState struct {
+	EventID   string
+	EventTime int64
+	ClaimedAt int64
+}
+
+func (s *channelAgentTestStore) ApplyChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, added bool, eventID string, eventTime int64) (bool, int64, error) {
+	if binding == nil || strings.TrimSpace(binding.Channel) == "" || strings.TrimSpace(binding.ConversationID) == "" || strings.TrimSpace(eventID) == "" || eventTime <= 0 {
+		return false, 0, errors.New("invalid native group membership event")
+	}
+	key := nativeGroupTestKey(binding.Channel, binding.ChannelAppID, binding.TenantKey, binding.ConversationID)
+	status := types.ChannelNativeGroupDisconnected
+	if added {
+		status = types.ChannelNativeGroupPending
+	}
+	existing := s.nativeGroups[key]
+	if existing == nil {
+		existing = cloneNativeGroupBinding(binding)
+		existing.ID = s.nextID
+		s.nextID++
+		existing.Status = status
+		existing.CreatedAt = time.Now()
+		existing.UpdatedAt = existing.CreatedAt
+		s.nativeGroups[key] = existing
+		claimedAt := int64(-1)
+		if added {
+			claimedAt = time.Now().UnixMilli()
+		}
+		s.nativeEvents[key] = channelNativeGroupEventState{EventID: strings.TrimSpace(eventID), EventTime: eventTime, ClaimedAt: claimedAt}
+		return true, claimedAt, nil
+	}
+	current := s.nativeEvents[key]
+	if strings.TrimSpace(eventID) != "" && strings.TrimSpace(eventID) == current.EventID {
+		if current.ClaimedAt < 0 {
+			return false, 0, nil
+		}
+		claimNow := time.Now().UnixMilli()
+		if current.ClaimedAt > 0 && claimNow-current.ClaimedAt < time.Minute.Milliseconds() {
+			return false, 0, store.ErrChannelNativeGroupEventBusy
+		}
+		current.ClaimedAt = claimNow
+		s.nativeEvents[key] = current
+		return true, claimNow, nil
+	}
+	if eventTime < current.EventTime || (eventTime == current.EventTime && (added || existing.Status == types.ChannelNativeGroupDisconnected)) {
+		return false, 0, nil
+	}
+	existing.Status = status
+	existing.UpdatedAt = time.Now()
+	claimedAt := int64(-1)
+	if added {
+		claimedAt = time.Now().UnixMilli()
+	}
+	s.nativeEvents[key] = channelNativeGroupEventState{EventID: strings.TrimSpace(eventID), EventTime: eventTime, ClaimedAt: claimedAt}
+	return true, claimedAt, nil
+}
+
+func (s *channelAgentTestStore) CompleteChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, eventID string, claimToken int64) (bool, error) {
+	if binding == nil || claimToken <= 0 {
+		return false, errors.New("invalid native group membership event completion")
+	}
+	key := nativeGroupTestKey(binding.Channel, binding.ChannelAppID, binding.TenantKey, binding.ConversationID)
+	state, ok := s.nativeEvents[key]
+	if !ok || state.EventID != strings.TrimSpace(eventID) || state.ClaimedAt != claimToken {
+		return false, nil
+	}
+	state.ClaimedAt = -1
+	s.nativeEvents[key] = state
+	return true, nil
+}
+
+func (s *channelAgentTestStore) ReleaseChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, eventID string, claimToken int64) error {
+	if binding == nil || claimToken <= 0 {
+		return nil
+	}
+	key := nativeGroupTestKey(binding.Channel, binding.ChannelAppID, binding.TenantKey, binding.ConversationID)
+	state, ok := s.nativeEvents[key]
+	if ok && state.EventID == strings.TrimSpace(eventID) && state.ClaimedAt == claimToken {
+		state.ClaimedAt = 0
+		s.nativeEvents[key] = state
+	}
+	return nil
+}
+
+func (s *channelAgentTestStore) EnsureChannelNativeGroup(binding *types.ChannelNativeGroupBinding, groupName string, memberUIDs []int64) (*types.ChannelNativeGroupBinding, bool, error) {
+	if binding == nil {
+		return nil, false, errors.New("missing native group binding")
+	}
+	key := nativeGroupTestKey(binding.Channel, binding.ChannelAppID, binding.TenantKey, binding.ConversationID)
+	now := time.Now()
+	existing := s.nativeGroups[key]
+	if existing != nil && existing.Status == types.ChannelNativeGroupDisconnected {
+		return cloneNativeGroupBinding(existing), false, nil
+	}
+	if existing == nil {
+		existing = cloneNativeGroupBinding(binding)
+		existing.ID = s.nextID
+		s.nextID++
+		existing.Status = types.ChannelNativeGroupPending
+		existing.CreatedAt = now
+		s.nativeGroups[key] = existing
+	}
+	if existing.GroupID > 0 {
+		existing.Status = types.ChannelNativeGroupActive
+		existing.UpdatedAt = now
+		return cloneNativeGroupBinding(existing), false, nil
+	}
+	if binding.CanonicalUID <= 0 || len(memberUIDs) == 0 {
+		existing.OperatorChannelUserID = binding.OperatorChannelUserID
+		existing.OperatorActorUID = binding.OperatorActorUID
+		existing.ConversationName = firstNonEmpty(strings.TrimSpace(groupName), binding.ConversationName)
+		existing.UpdatedAt = now
+		return cloneNativeGroupBinding(existing), false, nil
+	}
+	groupID, err := s.CreateGroup(groupName, binding.CanonicalUID)
+	if err != nil {
+		return nil, false, err
+	}
+	s.groups[groupID].Kind = types.GroupKindChannelManaged
+	for _, memberUID := range memberUIDs {
+		if memberUID > 0 && memberUID != binding.CanonicalUID {
+			_ = s.AddGroupMember(groupID, memberUID, "member")
+		}
+	}
+	existing.Channel = normalizeChannel(binding.Channel)
+	existing.ChannelAppID = binding.ChannelAppID
+	existing.TenantKey = binding.TenantKey
+	existing.ConversationID = binding.ConversationID
+	existing.ConversationName = groupName
+	existing.OperatorChannelUserID = binding.OperatorChannelUserID
+	existing.OperatorActorUID = binding.OperatorActorUID
+	existing.CanonicalUID = binding.CanonicalUID
+	existing.GroupID = groupID
+	existing.TopicID = fmt.Sprintf("grp_%d", groupID)
+	existing.SourceKind = binding.SourceKind
+	existing.SourceGroupID = binding.SourceGroupID
+	existing.SourceAgentUID = binding.SourceAgentUID
+	existing.Status = types.ChannelNativeGroupActive
+	existing.UpdatedAt = now
+	return cloneNativeGroupBinding(existing), true, nil
+}
+
+func (s *channelAgentTestStore) ResolveChannelNativeGroup(channel, appID, tenantKey, conversationID string) (*types.ChannelNativeGroupBinding, error) {
+	return cloneNativeGroupBinding(s.nativeGroups[nativeGroupTestKey(channel, appID, tenantKey, conversationID)]), nil
+}
+
+func (s *channelAgentTestStore) SetChannelNativeGroupStatus(channel, appID, tenantKey, conversationID, status string) error {
+	if binding := s.nativeGroups[nativeGroupTestKey(channel, appID, tenantKey, conversationID)]; binding != nil {
+		binding.Status = status
+		binding.UpdatedAt = time.Now()
+	}
+	return nil
+}
+
+func (s *channelAgentTestStore) ListChannelNativeGroupsForTopic(topicID string) ([]*types.ChannelNativeGroupBinding, error) {
+	var out []*types.ChannelNativeGroupBinding
+	for _, binding := range s.nativeGroups {
+		if binding.TopicID == topicID && binding.Status == types.ChannelNativeGroupActive {
+			out = append(out, cloneNativeGroupBinding(binding))
 		}
 	}
 	return out, nil
@@ -2878,7 +3138,7 @@ func (s *channelAgentTestStore) ApproveChannelAgentAccessRequestsForActor(actorU
 			AgentUID:                request.AgentUID,
 			EntryID:                 request.EntryID,
 			Status:                  "active",
-			DeviceAccessEnabled:     true,
+			DeviceAccessEnabled:     false,
 		})
 		if err != nil {
 			return nil, err
@@ -3014,6 +3274,15 @@ func (s *channelAgentTestStore) ResolveChannelAgentBindingForActor(channel, chan
 	return nil, nil
 }
 
+func (s *channelAgentTestStore) ResolveChannelAgentBindingForCanonical(channel, channelAppID string, canonicalUID, agentUID int64) (*types.ChannelAgentBinding, error) {
+	for _, binding := range s.bindings {
+		if binding.Channel == channel && binding.ChannelAppID == channelAppID && binding.CanonicalUID == canonicalUID && binding.AgentUID == agentUID && binding.Status == "active" {
+			return cloneBinding(binding), nil
+		}
+	}
+	return nil, nil
+}
+
 func (s *channelAgentTestStore) ResolveChannelAgentBindingForActorAny(actorUID, agentUID int64) (*types.ChannelAgentBinding, error) {
 	for _, binding := range s.bindings {
 		if binding.ActorUID == actorUID && binding.AgentUID == agentUID && binding.Status == "active" {
@@ -3111,6 +3380,20 @@ func (s *channelAgentTestStore) UpsertChannelAgentRoute(route *types.ChannelAgen
 	next.UpdatedAt = now
 	next.LastUsedAt = &now
 	s.routes[key] = next
+	for _, binding := range s.groupBindings {
+		if binding == nil || binding.Status != types.ChannelAgentBindingActive {
+			continue
+		}
+		if normalizeChannel(binding.Channel) != normalizeChannel(next.Channel) ||
+			strings.TrimSpace(binding.ChannelAppID) != strings.TrimSpace(next.ChannelAppID) ||
+			strings.TrimSpace(binding.ChannelUserID) != strings.TrimSpace(next.ChannelUserID) ||
+			strings.TrimSpace(binding.ChannelConversationID) != strings.TrimSpace(next.ChannelConversationID) ||
+			normalizeFeishuChatType(binding.ChannelConversationType) != normalizeFeishuChatType(next.ChannelConversationType) {
+			continue
+		}
+		binding.Status = types.ChannelAgentBindingRevoked
+		binding.UpdatedAt = now
+	}
 	return cloneRoute(next), nil
 }
 

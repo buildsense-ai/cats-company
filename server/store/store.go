@@ -9,6 +9,7 @@ import (
 
 var ErrChannelAgentBindingAlreadyLinked = errors.New("channel agent binding already linked to another canonical user")
 var ErrChannelAgentAccessAlreadyLinked = errors.New("channel agent access request already linked")
+var ErrChannelNativeGroupEventBusy = errors.New("channel native group event is already being processed")
 
 // UserStore contains user and profile persistence operations.
 type UserStore interface {
@@ -129,6 +130,7 @@ type ChannelAgentBindingStore interface {
 	UpsertChannelAgentBinding(binding *types.ChannelAgentBinding) (*types.ChannelAgentBinding, error)
 	ResolveChannelAgentBinding(query types.ChannelAgentBindingQuery) (*types.ChannelAgentBinding, error)
 	ResolveChannelAgentBindingForActor(channel, channelAppID string, actorUID, agentUID int64) (*types.ChannelAgentBinding, error)
+	ResolveChannelAgentBindingForCanonical(channel, channelAppID string, canonicalUID, agentUID int64) (*types.ChannelAgentBinding, error)
 	ResolveChannelAgentBindingForActorAny(actorUID, agentUID int64) (*types.ChannelAgentBinding, error)
 	ResolveChannelAgentBindingForChannelUser(channel, channelAppID, channelUserID string) (*types.ChannelAgentBinding, error)
 	ResolveChannelAgentDeviceAccessBindingForActorAny(actorUID, agentUID int64) (*types.ChannelAgentBinding, error)
@@ -150,6 +152,25 @@ type ChannelAgentBindingStore interface {
 	ListActiveWeixinClawBotTokens() ([]*types.WeixinClawBotToken, error)
 	UpdateWeixinClawBotTokenPollState(id int64, getUpdatesBuf string, contextTokens map[string]types.WeixinClawBotContext) error
 	MarkWeixinClawBotTokenError(id int64, status string, message string) error
+}
+
+// ChannelNativeGroupStore is the optional persistence boundary for native
+// external-channel groups. It is deliberately not embedded in Store so
+// existing Store implementations and mocks do not need to implement it.
+type ChannelNativeGroupStore interface {
+	ApplyChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, added bool, eventID string, eventTime int64) (bool, int64, error)
+	CompleteChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, eventID string, claimToken int64) (bool, error)
+	ReleaseChannelNativeGroupMembershipEvent(binding *types.ChannelNativeGroupBinding, eventID string, claimToken int64) error
+	EnsureChannelNativeGroup(binding *types.ChannelNativeGroupBinding, groupName string, memberUIDs []int64) (*types.ChannelNativeGroupBinding, bool, error)
+	ResolveChannelNativeGroup(channel, appID, tenantKey, conversationID string) (*types.ChannelNativeGroupBinding, error)
+	SetChannelNativeGroupStatus(channel, appID, tenantKey, conversationID, status string) error
+	ListChannelNativeGroupsForTopic(topicID string) ([]*types.ChannelNativeGroupBinding, error)
+}
+
+// ChannelManagedGroupStore exposes the product-level visibility boundary for
+// channel-owned sessions without requiring lightweight Store mocks to support it.
+type ChannelManagedGroupStore interface {
+	IsChannelManagedGroup(groupID int64) (bool, error)
 }
 
 // Store is the complete persistence boundary required by the current server.

@@ -15,9 +15,11 @@ import (
 	"io"
 	"log"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +33,8 @@ const (
 	defaultFeishuAuthorizeURL = "https://open.feishu.cn/open-apis/authen/v1/index"
 	defaultFeishuAPIBase      = "https://open.feishu.cn"
 	feishuOAuthStateTTL       = 10 * time.Minute
+	feishuBotIdentityTimeout  = 10 * time.Second
+	feishuBotIdentityBackoff  = 5 * time.Second
 )
 
 // FeishuChannelConfig contains the cloud Feishu app settings.
@@ -55,10 +59,15 @@ type FeishuUserIdentity struct {
 
 type feishuAPI interface {
 	AppID() string
+	BotOpenID(ctx context.Context) (string, error)
 	ExchangeOAuthCode(ctx context.Context, code string, redirectURI string) (*FeishuUserIdentity, error)
+	GetUserIdentity(ctx context.Context, openID string) (*FeishuUserIdentity, error)
 	DownloadMessageResource(ctx context.Context, messageID, fileKey, resourceType string) (*channelMediaDownload, error)
 	SendTextMessage(ctx context.Context, receiveIDType string, receiveID string, text string) error
+	SendAttachmentMessage(ctx context.Context, receiveIDType string, receiveID string, attachment channelOutboundAttachment) error
 }
+
+var errFeishuBotIdentityUnavailable = errors.New("feishu bot identity unavailable")
 
 // FeishuChannelHandler owns Feishu OAuth binding and event callbacks.
 type FeishuChannelHandler struct {
@@ -312,6 +321,20 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 		writeHTML(w, http.StatusBadGateway, oauthResultHTML("绑定失败", "飞书没有返回可绑定的用户身份。"))
 		return
 	}
+	if isMobileIdentityLink && canonicalUIDHint > 0 {
+		claimedEntry, claimedUID, err := h.resolveFeishuEntryScene(state.SceneKey, true)
+		if err != nil {
+			log.Printf("consume feishu mobile link failed: %v", err)
+			writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "领取移动端二维码失败，请刷新二维码后重试。"))
+			return
+		}
+		if claimedEntry == nil || claimedUID != canonicalUIDHint {
+			writeHTML(w, http.StatusGone, oauthResultHTML("二维码已失效", "这个移动端二维码已被使用或已经过期，请回到 CatsCo 刷新后重试。"))
+			return
+		}
+		entry = claimedEntry
+		canonicalUIDHint = claimedUID
+	}
 	actorUID, err := h.ensureChannelActor("feishu", h.effectiveAppID(""), channelUserID, identity)
 	if err != nil {
 		log.Printf("ensure feishu actor failed: %v", err)
@@ -328,14 +351,11 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 		writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "保存虚拟员工绑定失败，请稍后重试。"))
 		return
 	}
-	if isMobileIdentityLink && canonicalUIDHint > 0 {
-		if _, _, err := h.resolveFeishuEntryScene(state.SceneKey, true); err != nil {
-			log.Printf("consume feishu mobile link failed: %v", err)
-		}
-	}
 	if binding != nil {
 		if _, err := h.upsertFeishuRoute(h.effectiveAppID(""), channelUserID, "", "p2p", actorUID, binding.AgentUID, "oauth"); err != nil {
 			log.Printf("select feishu oauth route failed: %v", err)
+			writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "保存当前飞书会话目标失败，请重新扫描二维码后重试。"))
+			return
 		}
 	}
 	agent, _ := h.db.GetUser(entry.AgentUID)
@@ -344,7 +364,7 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 		name = displayNameOrUsername(agent.DisplayName, agent.Username)
 	}
 	if accessRequest != nil && binding == nil {
-		writeHTML(w, http.StatusOK, oauthResultHTML("申请已提交", fmt.Sprintf("已向「%s」发送好友申请。管理员通过后，你就可以回到飞书聊天框提问；如果需要使用你的电脑文件，可以发送「设备授权」获取绑定链接。", name)))
+		writeHTML(w, http.StatusOK, oauthResultHTML("申请已提交", fmt.Sprintf("已向「%s」发送好友申请。管理员通过后，你就可以回到飞书聊天框提问，并使用已绑定 CatsCo 账号所连接的设备。", name)))
 		return
 	}
 	if channelBindingNeedsCatsCoLogin(binding) {
@@ -371,7 +391,8 @@ func (h *FeishuChannelHandler) HandleOAuthCallback(w http.ResponseWriter, r *htt
 	if err := h.db.CreateTopic(p2pTopicID(conversationUID, entry.AgentUID), "p2p", conversationUID); err != nil {
 		log.Printf("create feishu agent topic failed: %v", err)
 	}
-	writeHTML(w, http.StatusOK, oauthResultHTML("绑定完成", fmt.Sprintf("你已进入「%s」，可以回到飞书聊天框直接提问。", name)))
+	h.sendFeishuBindingWelcome(r.Context(), channelUserID, name, false)
+	writeHTML(w, http.StatusOK, oauthResultHTML("绑定完成", fmt.Sprintf("你已进入「%s」。我已向飞书应用聊天框发送确认消息，回到飞书消息页找到本应用会话即可直接提问。", name)))
 }
 
 func (h *FeishuChannelHandler) handleGroupOAuthCallback(w http.ResponseWriter, r *http.Request, state *feishuOAuthState, code string) {
@@ -399,6 +420,18 @@ func (h *FeishuChannelHandler) handleGroupOAuthCallback(w http.ResponseWriter, r
 		writeHTML(w, http.StatusBadGateway, oauthResultHTML("绑定失败", "飞书没有返回可绑定的用户身份。"))
 		return
 	}
+	claimedLink, claimedGroup, err := resolveChannelGroupMobileLink(h.db, state.SceneKey, "feishu", h.effectiveAppID(""), true)
+	if err != nil {
+		log.Printf("consume feishu group mobile link failed: %v", err)
+		writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "领取群聊二维码失败，请刷新二维码后重试。"))
+		return
+	}
+	if claimedLink == nil {
+		writeHTML(w, http.StatusGone, oauthResultHTML("二维码已失效", "这个群聊二维码已被使用或已经过期，请回到 CatsCo 刷新后重试。"))
+		return
+	}
+	link = claimedLink
+	group = claimedGroup
 	actorUID, err := h.ensureChannelActor("feishu", h.effectiveAppID(""), channelUserID, identity)
 	if err != nil {
 		log.Printf("ensure feishu group actor failed: %v", err)
@@ -410,9 +443,6 @@ func (h *FeishuChannelHandler) handleGroupOAuthCallback(w http.ResponseWriter, r
 		writeHTML(w, http.StatusInternalServerError, oauthResultHTML("绑定失败", "保存群聊移动端绑定失败，请稍后重试。"))
 		return
 	}
-	if _, _, err := resolveChannelGroupMobileLink(h.db, state.SceneKey, "feishu", h.effectiveAppID(""), true); err != nil {
-		log.Printf("consume feishu group mobile link failed: %v", err)
-	}
 	if err := h.db.CreateTopic(link.TopicID, "group", link.CanonicalUID); err != nil {
 		log.Printf("create feishu group mobile topic failed: %v", err)
 	}
@@ -420,7 +450,8 @@ func (h *FeishuChannelHandler) handleGroupOAuthCallback(w http.ResponseWriter, r
 	if group != nil && strings.TrimSpace(group.Name) != "" {
 		groupName = strings.TrimSpace(group.Name)
 	}
-	writeHTML(w, http.StatusOK, oauthResultHTML("已进入群聊", fmt.Sprintf("已进入「%s」。你现在可以回到飞书聊天框直接发消息，CatsCo 会把消息同步到这个群。", groupName)))
+	h.sendFeishuBindingWelcome(r.Context(), channelUserID, groupName, true)
+	writeHTML(w, http.StatusOK, oauthResultHTML("已进入群聊", fmt.Sprintf("已进入「%s」。我已向飞书应用聊天框发送确认消息，回到飞书消息页找到本应用会话即可直接发消息。", groupName)))
 }
 
 // HandleEvents receives Feishu URL verification and message events.
@@ -457,16 +488,295 @@ func (h *FeishuChannelHandler) HandleEvents(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "feishu event token is required in production"})
 		return
 	}
-	if env.Header.EventType != "im.message.receive_v1" {
+	switch env.Header.EventType {
+	case "im.chat.member.bot.added_v1":
+		if err := h.handleBotMembershipEvent(r.Context(), &env, true); err != nil {
+			log.Printf("feishu bot added event failed: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		return
+	case "im.chat.member.bot.deleted_v1":
+		if err := h.handleBotMembershipEvent(r.Context(), &env, false); err != nil {
+			log.Printf("feishu bot deleted event failed: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+		return
+	case "im.message.receive_v1":
+		// handled below
+	default:
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "ignored": true})
 		return
 	}
 	if err := h.handleMessageEvent(r.Context(), &env); err != nil {
 		log.Printf("feishu message event failed: %v", err)
+		if errors.Is(err, errFeishuBotIdentityUnavailable) {
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+}
+
+type feishuPrivateTarget struct {
+	CanonicalUID int64
+	AgentUIDs    []int64
+	SourceKind   string
+	SourceGroup  int64
+	SourceAgent  int64
+}
+
+func (h *FeishuChannelHandler) handleBotMembershipEvent(ctx context.Context, env *feishuEventEnvelope, added bool) error {
+	var event feishuBotMembershipEvent
+	if err := json.Unmarshal(env.Event, &event); err != nil {
+		return fmt.Errorf("decode bot membership event: %w", err)
+	}
+	chatID := strings.TrimSpace(event.ChatID)
+	if chatID == "" {
+		return errors.New("bot membership event missing chat id")
+	}
+	appID := h.effectiveAppID(env.Header.AppID)
+	tenantKey := firstNonEmpty(strings.TrimSpace(env.Header.TenantKey), strings.TrimSpace(event.OperatorTenantKey))
+	nativeStore, ok := h.db.(store.ChannelNativeGroupStore)
+	if !ok {
+		return errors.New("native channel group store not configured")
+	}
+	operatorID := firstNonEmpty(strings.TrimSpace(event.OperatorID.OpenID), strings.TrimSpace(event.OperatorID.UserID))
+	if added && operatorID == "" {
+		return errors.New("bot added event missing operator id")
+	}
+	groupName := firstNonEmpty(strings.TrimSpace(event.Name), strings.TrimSpace(event.I18nNames.ZhCN), strings.TrimSpace(event.I18nNames.EnUS), "飞书群聊")
+	eventBinding := &types.ChannelNativeGroupBinding{
+		Channel:               "feishu",
+		ChannelAppID:          appID,
+		TenantKey:             tenantKey,
+		ConversationID:        chatID,
+		ConversationName:      feishuNativeGroupName(groupName),
+		OperatorChannelUserID: operatorID,
+	}
+	eventID := strings.TrimSpace(env.Header.EventID)
+	if eventID == "" {
+		return errors.New("bot membership event missing event id")
+	}
+	applied, claimToken, err := nativeStore.ApplyChannelNativeGroupMembershipEvent(eventBinding, added, eventID, parseFeishuEventTime(env.Header.CreateTime))
+	if err != nil {
+		return err
+	}
+	if !applied || !added {
+		return nil
+	}
+	claimFinalized := false
+	defer func() {
+		if !claimFinalized {
+			if err := nativeStore.ReleaseChannelNativeGroupMembershipEvent(eventBinding, eventID, claimToken); err != nil {
+				log.Printf("release feishu bot membership event claim failed: %v", err)
+			}
+		}
+	}()
+	identity := h.lookupFeishuUserIdentity(ctx, event.OperatorID.OpenID)
+	if identity == nil {
+		identity = &FeishuUserIdentity{OpenID: event.OperatorID.OpenID, UserID: event.OperatorID.UserID, UnionID: event.OperatorID.UnionID}
+	}
+	actorUID, err := h.ensureChannelActor("feishu", appID, operatorID, identity)
+	if err != nil {
+		return err
+	}
+	binding, _, targetNames, reason, err := h.ensureFeishuNativeGroup(appID, tenantKey, chatID, groupName, operatorID, actorUID)
+	if err != nil {
+		return err
+	}
+	completed, err := nativeStore.CompleteChannelNativeGroupMembershipEvent(eventBinding, eventID, claimToken)
+	if err != nil {
+		return err
+	}
+	claimFinalized = true
+	if !completed {
+		return nil
+	}
+	if binding != nil && binding.Status == types.ChannelNativeGroupActive && binding.GroupID > 0 {
+		employees := strings.Join(targetNames, "、")
+		if employees == "" {
+			employees = "已继承的虚拟员工"
+		}
+		return h.replyToFeishu(ctx, "chat_id", chatID, fmt.Sprintf("大家好，我是 CatsCo 的飞书沟通渠道，本群已接入虚拟员工「%s」。\n\n直接 @我即可提问、整理讨论或交办任务。云端能力无需安装；如需读取本地文件、操作软件或执行开发任务，请前往 https://app.catsco.cc 注册 CatsCo，并在电脑安装、连接「猫壳」。\n\n发送 /当前目标 可以查看本群当前的连接状态。", employees))
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "还没有找到添加者当前绑定的 CatsCo 虚拟员工"
+	}
+	return h.replyToFeishu(ctx, "chat_id", chatID, "大家好，我是 CatsCo 的飞书沟通渠道。当前群还没有完成 CatsCo 初始化："+reason+"。\n\n请添加者先在 CatsCo 的虚拟员工或群聊中点击「移动端使用」并扫描飞书二维码，然后回到本群 @我 或发送「/当前目标」。")
+}
+
+func (h *FeishuChannelHandler) ensureFeishuNativeGroup(appID, tenantKey, chatID, chatName, operatorID string, actorUID int64) (*types.ChannelNativeGroupBinding, bool, []string, string, error) {
+	nativeStore, ok := h.db.(store.ChannelNativeGroupStore)
+	if !ok {
+		return nil, false, nil, "", errors.New("native channel group store not configured")
+	}
+	existing, err := nativeStore.ResolveChannelNativeGroup("feishu", appID, tenantKey, chatID)
+	if err != nil {
+		return nil, false, nil, "", err
+	}
+	if existing != nil && existing.GroupID > 0 {
+		restored, created, err := nativeStore.EnsureChannelNativeGroup(existing, existing.ConversationName, nil)
+		return restored, created, h.nativeGroupVirtualEmployeeNames(restored), "", err
+	}
+	if existing != nil {
+		chatName = firstNonEmpty(existing.ConversationName, chatName)
+		operatorID = firstNonEmpty(existing.OperatorChannelUserID, operatorID)
+		if existing.OperatorActorUID > 0 {
+			actorUID = existing.OperatorActorUID
+		}
+	}
+	target, err := h.resolveFeishuPrivateTarget(appID, operatorID, actorUID)
+	if err != nil {
+		return nil, false, nil, "", err
+	}
+	binding := &types.ChannelNativeGroupBinding{
+		Channel:               "feishu",
+		ChannelAppID:          appID,
+		TenantKey:             tenantKey,
+		ConversationID:        chatID,
+		ConversationName:      feishuNativeGroupName(chatName),
+		OperatorChannelUserID: operatorID,
+		OperatorActorUID:      actorUID,
+		Status:                types.ChannelNativeGroupPending,
+	}
+	if target == nil || target.CanonicalUID <= 0 {
+		pending, created, err := nativeStore.EnsureChannelNativeGroup(binding, binding.ConversationName, nil)
+		return pending, created, nil, "添加者尚未通过 CatsCo 移动端二维码绑定当前目标", err
+	}
+	if len(target.AgentUIDs) == 0 {
+		pending, created, err := nativeStore.EnsureChannelNativeGroup(binding, binding.ConversationName, nil)
+		return pending, created, nil, "当前 CatsCo 目标中没有虚拟员工", err
+	}
+	binding.CanonicalUID = target.CanonicalUID
+	binding.SourceKind = target.SourceKind
+	binding.SourceGroupID = target.SourceGroup
+	binding.SourceAgentUID = target.SourceAgent
+	materialized, created, err := nativeStore.EnsureChannelNativeGroup(binding, binding.ConversationName, target.AgentUIDs)
+	if err != nil {
+		return nil, false, nil, "", err
+	}
+	return materialized, created, h.nativeGroupVirtualEmployeeNames(materialized), "", nil
+}
+
+func (h *FeishuChannelHandler) resolveFeishuPrivateTarget(appID, channelUserID string, actorUID int64) (*feishuPrivateTarget, error) {
+	route, err := h.resolveFeishuCurrentAgentRoute(appID, channelUserID, "", "p2p", actorUID)
+	if err != nil {
+		return nil, err
+	}
+	groupBinding, err := h.resolveFeishuGroupBinding(appID, channelUserID, "", "p2p", actorUID)
+	if err != nil {
+		return nil, err
+	}
+	if groupBinding != nil && groupBinding.Status == types.ChannelAgentBindingActive && !channelAgentRouteSelectedAfterGroup(route, groupBinding) {
+		if _, err := validateDeliverableChannelGroupBinding(h.db, groupBinding, false); err != nil {
+			return nil, nil
+		}
+		members, err := h.db.GetGroupMembers(groupBinding.GroupID)
+		if err != nil {
+			return nil, err
+		}
+		agentUIDs := make([]int64, 0, 1)
+		for _, member := range members {
+			if member == nil || member.UserID <= 0 {
+				continue
+			}
+			isBot, err := h.db.IsUserBot(member.UserID)
+			if err != nil {
+				return nil, err
+			}
+			if isBot {
+				agentUIDs = append(agentUIDs, member.UserID)
+			}
+		}
+		return &feishuPrivateTarget{CanonicalUID: groupBinding.CanonicalUID, AgentUIDs: agentUIDs, SourceKind: "group", SourceGroup: groupBinding.GroupID}, nil
+	}
+	if route == nil || route.AgentUID <= 0 {
+		return nil, nil
+	}
+	binding, err := h.resolveCurrentFeishuBinding(appID, channelUserID, "", "p2p", actorUID)
+	if err != nil {
+		return nil, err
+	}
+	if binding == nil || binding.Status != types.ChannelAgentBindingActive || binding.CanonicalUID <= 0 {
+		return nil, nil
+	}
+	if err := validateDeliverableChannelBinding(h.db, binding); err != nil {
+		return nil, nil
+	}
+	return &feishuPrivateTarget{CanonicalUID: binding.CanonicalUID, AgentUIDs: []int64{binding.AgentUID}, SourceKind: "agent", SourceAgent: binding.AgentUID}, nil
+}
+
+func feishuNativeGroupName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "飞书群聊"
+	}
+	if !strings.HasPrefix(name, "飞书｜") {
+		name = "飞书｜" + name
+	}
+	runes := []rune(name)
+	if len(runes) > 100 {
+		name = string(runes[:100])
+	}
+	return name
+}
+
+func (h *FeishuChannelHandler) nativeGroupVirtualEmployeeNames(binding *types.ChannelNativeGroupBinding) []string {
+	if binding == nil || binding.GroupID <= 0 {
+		return nil
+	}
+	return h.groupVirtualEmployeeNames(binding.GroupID)
+}
+
+func (h *FeishuChannelHandler) groupVirtualEmployeeNames(groupID int64) []string {
+	if groupID <= 0 {
+		return nil
+	}
+	members, err := h.db.GetGroupMembers(groupID)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, 1)
+	for _, member := range members {
+		if member == nil || member.UserID <= 0 {
+			continue
+		}
+		isBot, err := h.db.IsUserBot(member.UserID)
+		if err != nil || !isBot {
+			continue
+		}
+		user, err := h.db.GetUser(member.UserID)
+		if err != nil || user == nil {
+			continue
+		}
+		names = append(names, firstNonEmpty(strings.TrimSpace(user.DisplayName), strings.TrimSpace(user.Username), fmt.Sprintf("uid %d", member.UserID)))
+	}
+	return names
+}
+
+func (h *FeishuChannelHandler) userDisplayName(uid int64, fallback string) string {
+	if user, err := h.db.GetUser(uid); err == nil && user != nil {
+		return firstNonEmpty(strings.TrimSpace(user.DisplayName), strings.TrimSpace(user.Username), fallback)
+	}
+	return fallback
+}
+
+func (h *FeishuChannelHandler) lookupFeishuUserIdentity(ctx context.Context, openID string) *FeishuUserIdentity {
+	if h == nil || h.api == nil || strings.TrimSpace(openID) == "" {
+		return nil
+	}
+	identity, err := h.api.GetUserIdentity(ctx, strings.TrimSpace(openID))
+	if err != nil {
+		log.Printf("lookup feishu user identity failed open_id=%s: %v", openID, err)
+		return nil
+	}
+	return identity
 }
 
 func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feishuEventEnvelope) error {
@@ -512,14 +822,51 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		UserID:  event.Sender.SenderID.UserID,
 		UnionID: event.Sender.SenderID.UnionID,
 	}
+	if chatType == "group" {
+		if resolved := h.lookupFeishuUserIdentity(ctx, event.Sender.SenderID.OpenID); resolved != nil {
+			identity = resolved
+		}
+	}
 	actorUID, err := h.ensureChannelActor("feishu", appID, channelUserID, identity)
+	if err != nil {
+		return err
+	}
+	botIDs := feishuConfiguredBotIDs()
+	if chatType == "group" {
+		botIDs, err = h.resolveFeishuBotOpenIDs(ctx, &event)
+		if err != nil {
+			return err
+		}
+	}
+	text = normalizeFeishuMessageMentionsWithBotIDs(text, &event, botIDs)
+	cmd := parseFeishuGatewayCommand(text)
+	groupTriggered := cmd.Trigger || feishuEventMentionsBotWithIDs(&event, botIDs)
+	if chatType == "group" {
+		handled, err := h.handleFeishuNativeGroupMessage(ctx, env.Header.TenantKey, appID, channelUserID, actorUID, &event, text, messageType, media, cmd, groupTriggered)
+		if err != nil || handled {
+			return err
+		}
+	}
+	switch cmd.Kind {
+	case "help":
+		return h.replyToFeishu(ctx, replyIDType, replyID, feishuGatewayHelpText())
+	case "list":
+		return h.replyToFeishuSafely(ctx, channelUserID, event.Message.ChatID, chatType, feishuGatewayScanRequiredText())
+	case "current":
+		return h.replyToFeishuSafely(ctx, channelUserID, event.Message.ChatID, chatType, h.formatFeishuCurrentReply(appID, channelUserID, event.Message.ChatID, chatType, actorUID))
+	case "bind":
+		return h.replyToFeishuSafely(ctx, channelUserID, event.Message.ChatID, chatType, h.formatFeishuAccountBindingReply(appID, channelUserID, event.Message.ChatID, chatType, actorUID))
+	case "select":
+		return h.replyToFeishuSafely(ctx, channelUserID, event.Message.ChatID, chatType, feishuGatewayScanRequiredText())
+	}
+	agentRoute, err := h.resolveFeishuCurrentAgentRoute(appID, channelUserID, event.Message.ChatID, chatType, actorUID)
 	if err != nil {
 		return err
 	}
 	if groupBinding, err := h.resolveFeishuGroupBinding(appID, channelUserID, event.Message.ChatID, chatType, actorUID); err != nil {
 		return err
-	} else if groupBinding != nil {
-		groupText := strings.TrimSpace(stripFeishuLeadingMentions(text))
+	} else if groupBinding != nil && groupBinding.Status == types.ChannelAgentBindingActive && !channelAgentRouteSelectedAfterGroup(agentRoute, groupBinding) {
+		groupText := strings.TrimSpace(text)
 		if groupText == "" {
 			return nil
 		}
@@ -537,36 +884,15 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		})
 	}
 
-	cmd := parseFeishuGatewayCommand(text)
-	groupTriggered := cmd.Trigger || feishuEventMentionsBot(&event, text)
 	if chatType == "group" && !groupTriggered {
 		return nil
 	}
-	text = stripFeishuLeadingMentions(text)
+	text = strings.TrimSpace(text)
 	if chatType == "group" && cmd.Kind == "" && media == nil {
-		return h.replyToFeishu(ctx, replyIDType, replyID, "群聊里请使用「员工列表」「切换到 员工名」「当前员工」等命令；普通任务请在私聊中发送，避免回复或设备授权发到错误会话。")
+		return h.replyToFeishu(ctx, replyIDType, replyID, "请先从 CatsCo 当前会话点击「移动端使用」并扫描飞书二维码。绑定完成后，我会把消息转到对应的虚拟员工或群聊。")
 	}
 	if chatType == "group" && cmd.Kind == "" && media != nil {
-		return h.replyToFeishu(ctx, replyIDType, replyID, "群聊里的图片或文件请先切换到目标虚拟员工后，在私聊中发送，避免附件进入错误会话。")
-	}
-
-	switch cmd.Kind {
-	case "help":
-		return h.replyToFeishu(ctx, replyIDType, replyID, feishuGatewayHelpText())
-	case "list":
-		return h.replyToFeishu(ctx, replyIDType, replyID, h.formatFeishuRosterReply(appID, channelUserID))
-	case "current":
-		return h.replyToFeishuSafely(ctx, channelUserID, event.Message.ChatID, chatType, h.formatFeishuCurrentReply(appID, channelUserID, event.Message.ChatID, chatType, actorUID))
-	case "bind":
-		return h.replyToFeishuSafely(ctx, channelUserID, event.Message.ChatID, chatType, h.formatFeishuAccountBindingReply(appID, channelUserID, event.Message.ChatID, chatType, actorUID))
-	case "device":
-		return h.replyToFeishuSafely(ctx, channelUserID, event.Message.ChatID, chatType, h.formatFeishuDeviceBindingReply(appID, channelUserID, event.Message.ChatID, chatType, actorUID))
-	case "select":
-		msg, err := h.selectFeishuAgent(appID, channelUserID, event.Message.ChatID, chatType, actorUID, cmd.Target)
-		if err != nil {
-			return err
-		}
-		return h.replyToFeishuSafely(ctx, channelUserID, event.Message.ChatID, chatType, msg)
+		return h.replyToFeishu(ctx, replyIDType, replyID, "请先从 CatsCo 当前会话点击「移动端使用」并扫描飞书二维码，再发送图片或文件。")
 	}
 
 	binding, err := h.resolveCurrentFeishuBinding(appID, channelUserID, event.Message.ChatID, chatType, actorUID)
@@ -574,7 +900,7 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		return err
 	}
 	if binding == nil {
-		return h.replyToFeishu(ctx, replyIDType, replyID, "请先选择一个虚拟员工。\n"+h.formatFeishuRosterReply(appID, channelUserID))
+		return h.replyToFeishu(ctx, replyIDType, replyID, feishuGatewayScanRequiredText())
 	}
 	if msg, ok, err := h.feishuBindingDeliverableMessage(binding); err != nil {
 		return err
@@ -605,6 +931,142 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 	return h.deliverInboundTextToAgent(actorUID, binding.AgentUID, text, "feishu:"+event.Message.MessageID, metadata)
 }
 
+func (h *FeishuChannelHandler) handleFeishuNativeGroupMessage(ctx context.Context, tenantKey, appID, channelUserID string, actorUID int64, event *feishuMessageEvent, text, messageType string, media *feishuInboundMedia, cmd feishuGatewayCommand, triggered bool) (bool, error) {
+	if event == nil || normalizeFeishuChatType(event.Message.ChatType) != "group" || strings.TrimSpace(event.Message.ChatID) == "" {
+		return false, nil
+	}
+	nativeStore, ok := h.db.(store.ChannelNativeGroupStore)
+	if !ok {
+		return false, nil
+	}
+	chatID := strings.TrimSpace(event.Message.ChatID)
+	binding, err := nativeStore.ResolveChannelNativeGroup("feishu", appID, strings.TrimSpace(tenantKey), chatID)
+	if err != nil {
+		return true, err
+	}
+	if binding != nil && binding.Status == types.ChannelNativeGroupPending && triggered {
+		if binding.OperatorChannelUserID != "" && binding.OperatorChannelUserID != channelUserID {
+			return true, h.replyToFeishu(ctx, "chat_id", chatID, "当前飞书群尚未完成 CatsCo 初始化。请由最初添加机器人的成员先扫描 CatsCo 的移动端二维码，再回到群里 @我或发送 /当前目标。")
+		}
+		binding, _, _, _, err = h.ensureFeishuNativeGroup(appID, strings.TrimSpace(tenantKey), chatID, "飞书群聊", channelUserID, actorUID)
+		if err != nil {
+			return true, err
+		}
+	}
+	if binding == nil {
+		return false, nil
+	}
+	if cmd.Kind == "current" {
+		return true, h.replyToFeishu(ctx, "chat_id", chatID, h.formatFeishuNativeGroupCurrent(binding))
+	}
+	if binding.Status != types.ChannelNativeGroupActive || binding.GroupID <= 0 {
+		if !triggered {
+			return true, nil
+		}
+		return true, h.replyToFeishu(ctx, "chat_id", chatID, "当前飞书群还没有完成 CatsCo 初始化。请先在 CatsCo 的虚拟员工或群聊中点击「移动端使用」并扫码，然后回到本群 @我。")
+	}
+	if cmd.Kind == "help" {
+		return true, h.replyToFeishu(ctx, "chat_id", chatID, "我是 CatsCo 的飞书沟通渠道。群消息会进入独立的 CatsCo 群聊；普通消息只记录上下文，@我时才会交给群内虚拟员工。发送「/当前目标」可以查看当前群和虚拟员工。")
+	}
+	if cmd.Kind != "" {
+		return true, h.replyToFeishu(ctx, "chat_id", chatID, h.formatFeishuNativeGroupCurrent(binding))
+	}
+	messageActorUID, err := h.resolveFeishuNativeGroupParticipant(appID, channelUserID, actorUID)
+	if err != nil {
+		return true, err
+	}
+	deliveryBinding := &types.ChannelGroupBinding{
+		Channel:                 "feishu",
+		ChannelAppID:            appID,
+		ChannelUserID:           channelUserID,
+		ChannelConversationID:   chatID,
+		ChannelConversationType: "group",
+		ActorUID:                actorUID,
+		CanonicalUID:            binding.CanonicalUID,
+		GroupID:                 binding.GroupID,
+		TopicID:                 binding.TopicID,
+		Status:                  types.ChannelAgentBindingActive,
+	}
+	deliveryText := strings.TrimSpace(text)
+	if triggered {
+		if deliveryText == "" && media == nil {
+			return true, h.replyToFeishu(ctx, "chat_id", chatID, h.formatFeishuNativeGroupCurrent(binding))
+		}
+	}
+	metadata := map[string]interface{}{
+		"source_channel":                  "feishu",
+		"channel_app_id":                  appID,
+		"channel_user_id":                 channelUserID,
+		"channel_actor_uid":               actorUID,
+		"channel_canonical_uid":           messageActorUID,
+		"channel_conversation_id":         chatID,
+		"channel_conversation_type":       "group",
+		"channel_message_id":              event.Message.MessageID,
+		"channel_message_type":            messageType,
+		"channel_identity_source":         "feishu.event",
+		"channel_identity_trust":          "feishu_event_callback",
+		"channel_native_group_binding_id": binding.ID,
+		"channel_native_group_triggered":  triggered,
+	}
+	clientMsgID := "feishu-native-group:" + event.Message.MessageID
+	if media == nil {
+		if triggered {
+			return true, deliverInboundChannelMessageToGroupWithTrigger(h.db, h.hub, messageActorUID, deliveryBinding, deliveryText, nil, clientMsgID, "feishu", metadata, true, true)
+		}
+		return true, deliverInboundChannelMessageToGroupWithTrigger(h.db, h.hub, messageActorUID, deliveryBinding, deliveryText, nil, clientMsgID, "feishu", metadata, false, true)
+	}
+	metadata["channel_media_key"] = media.ResourceKey
+	download, err := h.api.DownloadMessageResource(ctx, event.Message.MessageID, media.ResourceKey, media.ResourceType)
+	if err != nil {
+		return true, h.replyToFeishu(ctx, "chat_id", chatID, "读取飞书图片或文件失败，请稍后重试。")
+	}
+	if download.FileName == "" {
+		download.FileName = media.FileName
+	}
+	if download.ContentType == "" {
+		download.ContentType = media.ContentType
+	}
+	file, err := saveChannelMediaUpload(media.UploadType, download)
+	if err != nil {
+		return true, err
+	}
+	return true, deliverInboundChannelMessageToGroupWithTrigger(h.db, h.hub, messageActorUID, deliveryBinding, deliveryText, []uploadPayload{file}, clientMsgID, "feishu", metadata, triggered, true)
+}
+
+func (h *FeishuChannelHandler) resolveFeishuNativeGroupParticipant(appID, channelUserID string, actorUID int64) (int64, error) {
+	bindings, ok := h.db.(store.ChannelAgentBindingStore)
+	if !ok {
+		return actorUID, nil
+	}
+	identity, err := bindings.ResolveChannelAgentBindingForChannelUser("feishu", appID, channelUserID)
+	if err != nil {
+		return 0, err
+	}
+	if identity != nil && identity.Status == types.ChannelAgentBindingActive && identity.CanonicalUID > 0 {
+		return identity.CanonicalUID, nil
+	}
+	groupBinding, err := h.resolveFeishuGroupBinding(appID, channelUserID, "", "p2p", actorUID)
+	if err != nil {
+		return 0, err
+	}
+	if groupBinding != nil && groupBinding.Status == types.ChannelAgentBindingActive && groupBinding.CanonicalUID > 0 {
+		return groupBinding.CanonicalUID, nil
+	}
+	return actorUID, nil
+}
+
+func (h *FeishuChannelHandler) formatFeishuNativeGroupCurrent(binding *types.ChannelNativeGroupBinding) string {
+	if binding == nil || binding.Status != types.ChannelNativeGroupActive || binding.GroupID <= 0 {
+		return "当前飞书群尚未完成 CatsCo 初始化。请先在 CatsCo 扫描目标虚拟员工或群聊的移动端二维码，然后回到这里 @我。"
+	}
+	names := h.nativeGroupVirtualEmployeeNames(binding)
+	employees := "暂无虚拟员工"
+	if len(names) > 0 {
+		employees = strings.Join(names, "、")
+	}
+	return fmt.Sprintf("当前飞书群对应 CatsCo 群聊「%s」，群内虚拟员工：%s。该群使用独立 session，不会随私人聊天重新扫码而改变。", binding.ConversationName, employees)
+}
+
 func (h *FeishuChannelHandler) feishuInboundMetadata(appID, channelUserID string, event *feishuMessageEvent, binding *types.ChannelAgentBinding, chatType string, messageType string) map[string]interface{} {
 	return map[string]interface{}{
 		"source_channel":                 "feishu",
@@ -622,7 +1084,7 @@ func (h *FeishuChannelHandler) feishuInboundMetadata(appID, channelUserID string
 		"channel_actor_uid":              binding.ActorUID,
 		"channel_canonical_uid":          binding.CanonicalUID,
 		"channel_agent_binding_id":       binding.ID,
-		"channel_device_access_enabled":  binding.DeviceAccessEnabled,
+		"channel_device_access_enabled":  binding.CanonicalUID > 0 && binding.Status == types.ChannelAgentBindingActive,
 	}
 }
 
@@ -654,15 +1116,10 @@ func parseFeishuGatewayCommand(text string) feishuGatewayCommand {
 		return feishuGatewayCommand{Kind: "help", Trigger: true}
 	case "员工列表", "虚拟员工", "列表", "list", "/list":
 		return feishuGatewayCommand{Kind: "list", Trigger: true}
-	case "当前员工", "当前虚拟员工", "current", "/current":
+	case "当前目标", "/当前目标", "当前员工", "当前虚拟员工", "current", "/current":
 		return feishuGatewayCommand{Kind: "current", Trigger: true}
 	case "绑定账号", "绑定catsco", "绑定 catsco", "/bind":
 		return feishuGatewayCommand{Kind: "bind", Trigger: true}
-	case "设备授权", "绑定设备", "/device":
-		return feishuGatewayCommand{Kind: "device", Trigger: true}
-	}
-	if n, err := strconv.Atoi(lower); err == nil && n > 0 {
-		return feishuGatewayCommand{Kind: "select", Target: text, Trigger: true}
 	}
 	for _, prefix := range []string{"切换到", "切换 ", "选择 ", "/use ", "use "} {
 		if strings.HasPrefix(lower, strings.ToLower(prefix)) {
@@ -673,7 +1130,11 @@ func parseFeishuGatewayCommand(text string) feishuGatewayCommand {
 }
 
 func feishuGatewayHelpText() string {
-	return "我是 CatsCo 飞书虚拟员工入口。\n\n常用命令：\n- 员工列表：查看可用虚拟员工\n- 切换到 员工名：选择当前员工\n- 当前员工：查看当前会话服务者\n- 绑定账号：绑定 CatsCo 账号\n- 设备授权：授权我使用你自己的设备\n\n未选择员工、未绑定账号、申请未通过或设备未授权时，我不会把消息交给模型或操作设备。"
+	return "我是 CatsCo 飞书移动端入口。\n\n使用方式：\n- 在 CatsCo 的虚拟员工或群聊里点击「移动端使用」，选择飞书并扫码。\n- 扫哪个会话的二维码，我就把这里的消息转到哪个会话。\n- 重新扫描另一个会话的二维码，会覆盖当前飞书入口的目标。\n- 绑定完成后，可直接使用该 CatsCo 账号已连接的设备。\n\n常用命令：\n- 当前虚拟员工：查看当前绑定的虚拟员工\n- 绑定账号：继续完成 CatsCo 账号绑定\n\n我不会在飞书里列出或切换虚拟员工；切换请回 CatsCo 扫描目标会话的移动端二维码。"
+}
+
+func feishuGatewayScanRequiredText() string {
+	return "请回到 CatsCo，打开目标虚拟员工或群聊，点击「移动端使用」并扫描飞书二维码。扫哪个会话，我就会把这里的消息转到哪个会话；重新扫码会覆盖当前目标。"
 }
 
 func feishuReplyTarget(channelUserID, chatID, chatType string) (string, string) {
@@ -697,9 +1158,141 @@ func (h *FeishuChannelHandler) replyToFeishuSafely(ctx context.Context, channelU
 	return h.replyToFeishu(ctx, "chat_id", strings.TrimSpace(chatID), "我已把详细信息私信给你。")
 }
 
-func feishuEventMentionsBot(event *feishuMessageEvent, text string) bool {
-	text = strings.TrimSpace(text)
-	return strings.Contains(text, "@CatsCo") || strings.Contains(text, "@catsco")
+func feishuEventMentionsBot(event *feishuMessageEvent) bool {
+	return feishuEventMentionsBotWithIDs(event, feishuConfiguredBotIDs())
+}
+
+func feishuEventMentionsBotWithIDs(event *feishuMessageEvent, botIDs []string) bool {
+	if event == nil {
+		return false
+	}
+	for _, mention := range event.Message.Mentions {
+		if feishuMentionIsBotWithIDs(mention, botIDs) {
+			return true
+		}
+	}
+	return false
+}
+
+func feishuMentionIsBot(mention feishuMessageMention) bool {
+	return feishuMentionIsBotWithIDs(mention, feishuConfiguredBotIDs())
+}
+
+func feishuConfiguredBotIDs() []string {
+	configuredIDs := append([]string{}, feishuConfiguredList("CATSCO_FEISHU_GROUP_BOT_OPEN_IDS")...)
+	configuredIDs = append(configuredIDs,
+		firstEnv("CATSCO_FEISHU_BOT_OPEN_ID", "FEISHU_BOT_OPEN_ID"),
+	)
+	configuredIDs = append(configuredIDs,
+		firstEnv("CATSCO_FEISHU_BOT_USER_ID", "FEISHU_BOT_USER_ID"),
+		firstEnv("CATSCO_FEISHU_BOT_UNION_ID", "FEISHU_BOT_UNION_ID"),
+	)
+	return configuredIDs
+}
+
+func (h *FeishuChannelHandler) resolveFeishuBotOpenIDs(ctx context.Context, event *feishuMessageEvent) ([]string, error) {
+	botIDs := feishuConfiguredBotIDs()
+	if event == nil || feishuEventMentionsBotWithIDs(event, botIDs) || !feishuEventHasFormalMention(event) {
+		return botIDs, nil
+	}
+	if h == nil || h.api == nil {
+		return nil, fmt.Errorf("%w: API client is not configured", errFeishuBotIdentityUnavailable)
+	}
+	openID, err := h.api.BotOpenID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errFeishuBotIdentityUnavailable, err)
+	}
+	openID = strings.TrimSpace(openID)
+	if openID == "" {
+		return nil, fmt.Errorf("%w: API returned an empty open_id", errFeishuBotIdentityUnavailable)
+	}
+	botIDs = append(botIDs, openID)
+	return botIDs, nil
+}
+
+func feishuEventHasFormalMention(event *feishuMessageEvent) bool {
+	if event == nil {
+		return false
+	}
+	for _, mention := range event.Message.Mentions {
+		for _, mentionID := range []string{mention.ID.OpenID, mention.ID.UserID, mention.ID.UnionID} {
+			if strings.TrimSpace(mentionID) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func feishuMentionIsBotWithIDs(mention feishuMessageMention, configuredIDs []string) bool {
+	mentionIDs := []string{mention.ID.OpenID, mention.ID.UserID, mention.ID.UnionID}
+	hasMentionID := false
+	for _, configured := range configuredIDs {
+		configured = strings.TrimSpace(configured)
+		if configured == "" {
+			continue
+		}
+		for _, mentionID := range mentionIDs {
+			if strings.TrimSpace(mentionID) != "" {
+				hasMentionID = true
+			}
+			if strings.EqualFold(configured, strings.TrimSpace(mentionID)) {
+				return true
+			}
+		}
+	}
+	if !hasMentionID {
+		for _, mentionID := range mentionIDs {
+			if strings.TrimSpace(mentionID) != "" {
+				hasMentionID = true
+				break
+			}
+		}
+	}
+	// Feishu includes immutable IDs for formal mentions. If an ID is present but
+	// does not match the configured bot identity, never fall back to a display
+	// name: a human member can use the same name as the bot.
+	if hasMentionID {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(mention.Name))
+	key := strings.ToLower(strings.TrimSpace(mention.Key))
+	if name == "catsco" || name == "catsco_飞书专用" || key == "@catsco" || key == "@catsco_飞书专用" {
+		return true
+	}
+	for _, alias := range feishuConfiguredList("CATSCO_FEISHU_GROUP_BOT_ALIASES") {
+		alias = strings.ToLower(strings.TrimSpace(alias))
+		if alias != "" && (strings.TrimPrefix(name, "@") == alias || strings.TrimPrefix(key, "@") == alias) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeFeishuMessageMentions(text string, event *feishuMessageEvent) string {
+	return normalizeFeishuMessageMentionsWithBotIDs(text, event, feishuConfiguredBotIDs())
+}
+
+func normalizeFeishuMessageMentionsWithBotIDs(text string, event *feishuMessageEvent, botIDs []string) string {
+	if event == nil || len(event.Message.Mentions) == 0 {
+		return strings.TrimSpace(text)
+	}
+	for _, mention := range event.Message.Mentions {
+		key := strings.TrimSpace(mention.Key)
+		name := strings.TrimSpace(mention.Name)
+		if feishuMentionIsBotWithIDs(mention, botIDs) {
+			for _, token := range []string{key, "@" + name} {
+				if token != "" && token != "@" {
+					text = strings.ReplaceAll(text, token, "")
+				}
+			}
+			continue
+		}
+		if key != "" && name != "" {
+			text = strings.ReplaceAll(text, key, "@"+name)
+		}
+	}
+	return strings.TrimSpace(text)
 }
 
 func stripFeishuLeadingMentions(text string) string {
@@ -907,7 +1500,7 @@ func (h *FeishuChannelHandler) selectFeishuAgent(appID, channelUserID, conversat
 	} else if !ok {
 		return fmt.Sprintf("已选择「%s」。\n%s", item.Name, msg), nil
 	}
-	return fmt.Sprintf("已切换到「%s」。现在可以直接提问；如需使用你的电脑文件，请发送「设备授权」。", item.Name), nil
+	return fmt.Sprintf("已切换到「%s」。现在可以直接提问，并使用当前 CatsCo 账号已连接的设备。", item.Name), nil
 }
 
 func (h *FeishuChannelHandler) ensureFeishuOwnerRosterEntry(appID, channelUserID string, item *feishuRosterItem) (*types.ChannelAgentEntry, error) {
@@ -952,6 +1545,43 @@ func (h *FeishuChannelHandler) upsertFeishuRoute(appID, channelUserID, conversat
 		AgentUID:                agentUID,
 		Source:                  source,
 	})
+}
+
+func (h *FeishuChannelHandler) resolveFeishuCurrentAgentRoute(appID, channelUserID, conversationID, conversationType string, actorUID int64) (*types.ChannelAgentRoute, error) {
+	bindings, ok := h.db.(store.ChannelAgentBindingStore)
+	if !ok {
+		return nil, errors.New("channel binding store not configured")
+	}
+	conversationType = normalizeFeishuChatType(conversationType)
+	conversationID = strings.TrimSpace(conversationID)
+	route, err := bindings.ResolveChannelAgentRoute(types.ChannelAgentRouteQuery{
+		Channel:                 "feishu",
+		ChannelAppID:            strings.TrimSpace(appID),
+		ChannelUserID:           strings.TrimSpace(channelUserID),
+		ChannelConversationID:   conversationID,
+		ChannelConversationType: conversationType,
+		ActorUID:                actorUID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if conversationType != "p2p" || conversationID == "" {
+		return route, nil
+	}
+	baseRoute, err := bindings.ResolveChannelAgentRoute(types.ChannelAgentRouteQuery{
+		Channel:                 "feishu",
+		ChannelAppID:            strings.TrimSpace(appID),
+		ChannelUserID:           strings.TrimSpace(channelUserID),
+		ChannelConversationType: "p2p",
+		ActorUID:                actorUID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if channelAgentRouteSelectedAfterRoute(baseRoute, route) {
+		return baseRoute, nil
+	}
+	return route, nil
 }
 
 func (h *FeishuChannelHandler) upsertFeishuGroupBinding(link *types.ChannelGroupMobileLink, actorUID int64, channelUserID, conversationID, conversationType string) (*types.ChannelGroupBinding, error) {
@@ -1082,7 +1712,7 @@ func (h *FeishuChannelHandler) resolveCurrentFeishuBinding(appID, channelUserID,
 				AgentUID:                baseBinding.AgentUID,
 				EntryID:                 baseBinding.EntryID,
 				Status:                  baseBinding.Status,
-				DeviceAccessEnabled:     baseBinding.DeviceAccessEnabled,
+				DeviceAccessEnabled:     baseBinding.CanonicalUID > 0 && baseBinding.Status == types.ChannelAgentBindingActive,
 			})
 		}
 		return binding, nil
@@ -1102,7 +1732,7 @@ func (h *FeishuChannelHandler) resolveCurrentFeishuBinding(appID, channelUserID,
 		AgentUID:                baseBinding.AgentUID,
 		EntryID:                 baseBinding.EntryID,
 		Status:                  baseBinding.Status,
-		DeviceAccessEnabled:     baseBinding.DeviceAccessEnabled,
+		DeviceAccessEnabled:     baseBinding.CanonicalUID > 0 && baseBinding.Status == types.ChannelAgentBindingActive,
 	})
 }
 
@@ -1141,20 +1771,41 @@ func feishuBindingShouldInheritBase(binding, baseBinding *types.ChannelAgentBind
 	if baseBinding.Status == types.ChannelAgentBindingPendingApproval && binding.Status == types.ChannelAgentBindingPendingLogin {
 		return true
 	}
-	if baseBinding.DeviceAccessEnabled && !binding.DeviceAccessEnabled {
+	if baseBinding.CanonicalUID > 0 && baseBinding.Status == types.ChannelAgentBindingActive && !binding.DeviceAccessEnabled {
 		return true
 	}
 	return false
 }
 
 func (h *FeishuChannelHandler) formatFeishuCurrentReply(appID, channelUserID, conversationID, conversationType string, actorUID int64) string {
+	agentRoute, err := h.resolveFeishuCurrentAgentRoute(appID, channelUserID, conversationID, conversationType, actorUID)
+	if err != nil {
+		log.Printf("resolve feishu current route failed: %v", err)
+		return "暂时无法读取当前目标，请稍后重试。"
+	}
+	groupBinding, err := h.resolveFeishuGroupBinding(appID, channelUserID, conversationID, conversationType, actorUID)
+	if err != nil {
+		log.Printf("resolve feishu current group failed: %v", err)
+		return "暂时无法读取当前目标，请稍后重试。"
+	}
+	if groupBinding != nil && groupBinding.Status == types.ChannelAgentBindingActive && !channelAgentRouteSelectedAfterGroup(agentRoute, groupBinding) {
+		groupName := "当前群聊"
+		if group, groupErr := h.db.GetGroup(groupBinding.GroupID); groupErr == nil && group != nil {
+			groupName = firstNonEmpty(strings.TrimSpace(group.Name), groupName)
+		}
+		employees := strings.Join(h.groupVirtualEmployeeNames(groupBinding.GroupID), "、")
+		if employees == "" {
+			employees = "暂无虚拟员工"
+		}
+		return fmt.Sprintf("当前目标是 CatsCo 群聊「%s」，群内虚拟员工：%s。你在这里发送的普通消息会进入该群原有 session；如需更换，请回 CatsCo 扫描另一个会话的移动端二维码。", groupName, employees)
+	}
 	binding, err := h.resolveCurrentFeishuBinding(appID, channelUserID, conversationID, conversationType, actorUID)
 	if err != nil {
 		log.Printf("resolve feishu current failed: %v", err)
 		return "暂时无法读取当前虚拟员工，请稍后重试。"
 	}
 	if binding == nil {
-		return "当前还没有选择虚拟员工。\n" + h.formatFeishuRosterReply(appID, channelUserID)
+		return "当前还没有绑定虚拟员工。\n" + feishuGatewayScanRequiredText()
 	}
 	agent, _ := h.db.GetUser(binding.AgentUID)
 	name := "当前虚拟员工"
@@ -1167,37 +1818,23 @@ func (h *FeishuChannelHandler) formatFeishuCurrentReply(appID, channelUserID, co
 	} else if !ok {
 		return fmt.Sprintf("当前虚拟员工是「%s」，但暂时还不能对话：\n%s", name, msg)
 	}
-	return fmt.Sprintf("当前虚拟员工是「%s」。你可以直接提问，或发送「切换到 员工名」更换。", name)
+	return fmt.Sprintf("当前虚拟员工是「%s」。你可以直接提问；如需更换，请回 CatsCo 扫描另一个会话的移动端二维码。", name)
 }
 
 func (h *FeishuChannelHandler) formatFeishuAccountBindingReply(appID, channelUserID, conversationID, conversationType string, actorUID int64) string {
 	binding, err := h.resolveCurrentFeishuBinding(appID, channelUserID, conversationID, conversationType, actorUID)
 	if err != nil || binding == nil {
-		return "请先选择一个虚拟员工，再绑定 CatsCo 账号。\n" + h.formatFeishuRosterReply(appID, channelUserID)
+		return "请先绑定一个 CatsCo 会话。\n" + feishuGatewayScanRequiredText()
 	}
 	if channelBindingNeedsCatsCoLogin(binding) {
 		return channelBindingDeviceLinkGuidance(h.db, nil, binding)
 	}
-	return "你已经完成 CatsCo 账号绑定。如需使用自己的电脑文件，请发送「设备授权」。"
-}
-
-func (h *FeishuChannelHandler) formatFeishuDeviceBindingReply(appID, channelUserID, conversationID, conversationType string, actorUID int64) string {
-	binding, err := h.resolveCurrentFeishuBinding(appID, channelUserID, conversationID, conversationType, actorUID)
-	if err != nil || binding == nil {
-		return "请先选择一个虚拟员工，再进行设备授权。\n" + h.formatFeishuRosterReply(appID, channelUserID)
-	}
-	if channelBindingNeedsCatsCoLogin(binding) {
-		return channelBindingDeviceLinkGuidance(h.db, nil, binding)
-	}
-	if link := channelBindingDeviceLinkURL(nil, binding); link != "" {
-		return "设备授权只会绑定你自己的 CatsCo 账号和设备，不会授权虚拟员工 owner 的电脑。\n请打开链接完成授权：" + link
-	}
-	return "暂时无法生成设备授权链接，请稍后重试。"
+	return "你已经完成 CatsCo 账号绑定，可以直接使用该账号已连接的设备。"
 }
 
 func (h *FeishuChannelHandler) feishuBindingDeliverableMessage(binding *types.ChannelAgentBinding) (string, bool, error) {
 	if binding == nil {
-		return "请先选择一个虚拟员工。", false, nil
+		return feishuGatewayScanRequiredText(), false, nil
 	}
 	if channelBindingNeedsCatsCoLogin(binding) {
 		return channelBindingDeviceLinkGuidance(h.db, nil, binding), false, nil
@@ -1210,7 +1847,17 @@ func (h *FeishuChannelHandler) feishuBindingDeliverableMessage(binding *types.Ch
 	} else if pending {
 		return "你的好友申请正在等待管理员通过。通过后，我会在这里继续为你服务。", false, nil
 	}
+	if !h.feishuAgentRuntimeAvailable(binding.AgentUID) {
+		return "当前绑定的虚拟员工暂时不可用，请回 CatsCo 扫描另一个虚拟员工的移动端二维码。", false, nil
+	}
 	return "", true, nil
+}
+
+func (h *FeishuChannelHandler) feishuAgentRuntimeAvailable(agentUID int64) bool {
+	if h == nil || h.hub == nil || agentUID <= 0 {
+		return true
+	}
+	return h.hub.BotBodyStatus(agentUID).Active
 }
 
 func (h *FeishuChannelHandler) resolveFeishuBinding(appID, channelUserID, conversationID, conversationType string) (*types.ChannelAgentBinding, error) {
@@ -1250,7 +1897,7 @@ func (h *FeishuChannelHandler) resolveFeishuBinding(appID, channelUserID, conver
 		AgentUID:                baseBinding.AgentUID,
 		EntryID:                 baseBinding.EntryID,
 		Status:                  baseBinding.Status,
-		DeviceAccessEnabled:     baseBinding.DeviceAccessEnabled,
+		DeviceAccessEnabled:     baseBinding.CanonicalUID > 0 && baseBinding.Status == types.ChannelAgentBindingActive,
 	})
 }
 
@@ -1337,6 +1984,16 @@ func bindingAsEntry(binding *types.ChannelAgentBinding) *types.ChannelAgentEntry
 func (h *FeishuChannelHandler) ensureChannelActor(channel, appID, channelUserID string, identity *FeishuUserIdentity) (int64, error) {
 	username := channelActorUsername(channel, appID, channelUserID)
 	if user, err := h.db.GetUserByUsername(username); err == nil && user != nil {
+		if identity != nil {
+			displayName := strings.TrimSpace(identity.Name)
+			avatarURL := strings.TrimSpace(identity.AvatarURL)
+			if displayName != "" && (user.DisplayName != displayName || (avatarURL != "" && user.AvatarURL != avatarURL)) {
+				if avatarURL == "" {
+					avatarURL = user.AvatarURL
+				}
+				_ = h.db.UpdateUser(user.ID, displayName, avatarURL)
+			}
+		}
 		return user.ID, nil
 	} else if err != nil {
 		return 0, err
@@ -1432,6 +2089,24 @@ func (h *FeishuChannelHandler) replyToFeishu(ctx context.Context, receiveIDType,
 	return h.api.SendTextMessage(ctx, receiveIDType, receiveID, text)
 }
 
+func (h *FeishuChannelHandler) sendFeishuBindingWelcome(ctx context.Context, channelUserID, targetName string, group bool) {
+	if h == nil || h.api == nil || strings.TrimSpace(channelUserID) == "" {
+		return
+	}
+	name := strings.TrimSpace(targetName)
+	if name == "" {
+		name = "当前目标"
+	}
+	targetKind := "虚拟员工"
+	if group {
+		targetKind = "群聊"
+	}
+	text := fmt.Sprintf("已绑定「%s」。之后你在这个飞书应用聊天里发消息，会转到 CatsCo 对应的%s；重新扫描 CatsCo「移动端使用」二维码会覆盖当前目标。", name, targetKind)
+	if err := h.api.SendTextMessage(ctx, "open_id", strings.TrimSpace(channelUserID), text); err != nil {
+		log.Printf("send feishu binding welcome failed: %v", err)
+	}
+}
+
 type feishuOAuthState struct {
 	SceneKey  string `json:"scene_key"`
 	ExpiresAt int64  `json:"expires_at"`
@@ -1498,11 +2173,23 @@ type feishuEventEnvelope struct {
 }
 
 type feishuEventHead struct {
-	EventID   string `json:"event_id"`
-	EventType string `json:"event_type"`
-	AppID     string `json:"app_id"`
-	TenantKey string `json:"tenant_key"`
-	Token     string `json:"token"`
+	EventID    string `json:"event_id"`
+	EventType  string `json:"event_type"`
+	CreateTime string `json:"create_time"`
+	AppID      string `json:"app_id"`
+	TenantKey  string `json:"tenant_key"`
+	Token      string `json:"token"`
+}
+
+func parseFeishuEventTime(value string) int64 {
+	value = strings.TrimSpace(value)
+	if parsed, err := strconv.ParseInt(value, 10, 64); err == nil && parsed > 0 {
+		if parsed < 1_000_000_000_000 {
+			return parsed * 1000
+		}
+		return parsed
+	}
+	return time.Now().UnixMilli()
 }
 
 func (e *feishuEventEnvelope) isURLVerification() bool {
@@ -1530,6 +2217,17 @@ func (h *FeishuChannelHandler) verifyEventAppID(env *feishuEventEnvelope) bool {
 	return env.Header.AppID == required
 }
 
+type feishuMessageMention struct {
+	Key string `json:"key"`
+	ID  struct {
+		OpenID  string `json:"open_id"`
+		UserID  string `json:"user_id"`
+		UnionID string `json:"union_id"`
+	} `json:"id"`
+	Name      string `json:"name"`
+	TenantKey string `json:"tenant_key"`
+}
+
 type feishuMessageEvent struct {
 	Sender struct {
 		SenderID struct {
@@ -1541,12 +2239,30 @@ type feishuMessageEvent struct {
 		TenantKey  string `json:"tenant_key"`
 	} `json:"sender"`
 	Message struct {
-		MessageID   string `json:"message_id"`
-		ChatID      string `json:"chat_id"`
-		ChatType    string `json:"chat_type"`
-		MessageType string `json:"message_type"`
-		Content     string `json:"content"`
+		MessageID   string                 `json:"message_id"`
+		ChatID      string                 `json:"chat_id"`
+		ChatType    string                 `json:"chat_type"`
+		MessageType string                 `json:"message_type"`
+		Content     string                 `json:"content"`
+		Mentions    []feishuMessageMention `json:"mentions"`
 	} `json:"message"`
+}
+
+type feishuBotMembershipEvent struct {
+	ChatID     string `json:"chat_id"`
+	OperatorID struct {
+		OpenID  string `json:"open_id"`
+		UserID  string `json:"user_id"`
+		UnionID string `json:"union_id"`
+	} `json:"operator_id"`
+	External          bool   `json:"external"`
+	OperatorTenantKey string `json:"operator_tenant_key"`
+	Name              string `json:"name"`
+	I18nNames         struct {
+		ZhCN string `json:"zh_cn"`
+		EnUS string `json:"en_us"`
+		JaJP string `json:"ja_jp"`
+	} `json:"i18n_names"`
 }
 
 func normalizeFeishuChatType(value string) string {
@@ -1622,11 +2338,21 @@ func extractFeishuInboundMedia(messageType, content string) (*feishuInboundMedia
 }
 
 type feishuAPIClient struct {
-	config FeishuChannelConfig
-	http   *http.Client
-	mu     sync.Mutex
-	token  string
-	expiry time.Time
+	config        FeishuChannelConfig
+	http          *http.Client
+	mu            sync.Mutex
+	token         string
+	expiry        time.Time
+	botOpenID     string
+	botLoad       *feishuBotIdentityLoad
+	botLastErr    error
+	botRetryAfter time.Time
+}
+
+type feishuBotIdentityLoad struct {
+	done   chan struct{}
+	openID string
+	err    error
 }
 
 func newFeishuAPIClient(cfg FeishuChannelConfig) *feishuAPIClient {
@@ -1699,7 +2425,97 @@ func (c *feishuAPIClient) ExchangeOAuthCode(ctx context.Context, code string, re
 	}, nil
 }
 
+func (c *feishuAPIClient) GetUserIdentity(ctx context.Context, openID string) (*FeishuUserIdentity, error) {
+	openID = strings.TrimSpace(openID)
+	if c == nil || openID == "" {
+		return nil, errors.New("missing feishu user identity")
+	}
+	token, err := c.tenantAccessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := strings.TrimRight(firstNonEmpty(c.config.APIBaseURL, defaultFeishuAPIBase), "/") +
+		"/open-apis/contact/v3/users/" + url.PathEscape(openID) + "?user_id_type=open_id"
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			User struct {
+				OpenID    string `json:"open_id"`
+				UnionID   string `json:"union_id"`
+				UserID    string `json:"user_id"`
+				Name      string `json:"name"`
+				AvatarURL string `json:"avatar_url"`
+				Avatar    struct {
+					Avatar72 string `json:"avatar_72"`
+				} `json:"avatar"`
+			} `json:"user"`
+		} `json:"data"`
+	}
+	if err := c.getJSON(ctx, endpoint, "Bearer "+token, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("feishu user info error: %s", resp.Msg)
+	}
+	return &FeishuUserIdentity{
+		OpenID:    firstNonEmpty(resp.Data.User.OpenID, openID),
+		UnionID:   resp.Data.User.UnionID,
+		UserID:    resp.Data.User.UserID,
+		Name:      resp.Data.User.Name,
+		AvatarURL: firstNonEmpty(resp.Data.User.AvatarURL, resp.Data.User.Avatar.Avatar72),
+	}, nil
+}
+
 func (c *feishuAPIClient) SendTextMessage(ctx context.Context, receiveIDType string, receiveID string, text string) error {
+	return c.sendMessage(ctx, receiveIDType, receiveID, "text", map[string]string{"text": text})
+}
+
+func (c *feishuAPIClient) SendAttachmentMessage(ctx context.Context, receiveIDType string, receiveID string, attachment channelOutboundAttachment) error {
+	if c == nil || strings.TrimSpace(c.config.AppID) == "" || strings.TrimSpace(c.config.AppSecret) == "" {
+		return errors.New("feishu app is not configured")
+	}
+	media, err := weixinClawBotOutboundMediaFromAttachment(attachment)
+	if err != nil {
+		return err
+	}
+	const (
+		maxFeishuImageSize = int64(10 << 20)
+		maxFeishuFileSize  = int64(30 << 20)
+	)
+	if media.Size <= 0 {
+		return errors.New("cannot send an empty attachment to feishu")
+	}
+	maxSize := maxFeishuFileSize
+	if media.Type == "image" {
+		maxSize = maxFeishuImageSize
+	}
+	if media.Type == "image" && media.Size > maxSize {
+		return errors.New("feishu image attachment exceeds 10MB")
+	}
+	if media.Type != "image" && media.Size > maxSize {
+		return errors.New("feishu file attachment exceeds 30MB")
+	}
+	file, err := os.Open(media.Path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || openedInfo.Size() != media.Size {
+		return errors.New("outbound attachment changed before feishu upload")
+	}
+	key, err := c.uploadMessageAttachment(ctx, media, file, maxSize)
+	if err != nil {
+		return err
+	}
+	if media.Type == "image" {
+		return c.sendMessage(ctx, receiveIDType, receiveID, "image", map[string]string{"image_key": key})
+	}
+	return c.sendMessage(ctx, receiveIDType, receiveID, "file", map[string]string{"file_key": key})
+}
+
+func (c *feishuAPIClient) sendMessage(ctx context.Context, receiveIDType, receiveID, messageType string, content map[string]string) error {
 	if c == nil || strings.TrimSpace(c.config.AppID) == "" || strings.TrimSpace(c.config.AppSecret) == "" {
 		return errors.New("feishu app is not configured")
 	}
@@ -1707,11 +2523,11 @@ func (c *feishuAPIClient) SendTextMessage(ctx context.Context, receiveIDType str
 	if err != nil {
 		return err
 	}
-	contentBytes, _ := json.Marshal(map[string]string{"text": text})
+	contentBytes, _ := json.Marshal(content)
 	sendURL := strings.TrimRight(firstNonEmpty(c.config.APIBaseURL, defaultFeishuAPIBase), "/") + "/open-apis/im/v1/messages?receive_id_type=" + url.QueryEscape(receiveIDType)
 	payload := map[string]string{
 		"receive_id": receiveID,
-		"msg_type":   "text",
+		"msg_type":   messageType,
 		"content":    string(contentBytes),
 	}
 	var resp struct {
@@ -1725,6 +2541,110 @@ func (c *feishuAPIClient) SendTextMessage(ctx context.Context, receiveIDType str
 		return fmt.Errorf("feishu send message error: %s", resp.Msg)
 	}
 	return nil
+}
+
+func (c *feishuAPIClient) uploadMessageAttachment(ctx context.Context, media weixinClawBotOutboundMedia, body io.Reader, maxSize int64) (string, error) {
+	token, err := c.tenantAccessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	base := strings.TrimRight(firstNonEmpty(c.config.APIBaseURL, defaultFeishuAPIBase), "/")
+	endpoint := base + "/open-apis/im/v1/files"
+	fileField := "file"
+	fields := map[string]string{"file_type": feishuUploadFileType(media.Path), "file_name": media.Name}
+	keyField := "file_key"
+	if media.Type == "image" {
+		endpoint = base + "/open-apis/im/v1/images"
+		fileField = "image"
+		fields = map[string]string{"image_type": "message"}
+		keyField = "image_key"
+	}
+
+	reader, writer := io.Pipe()
+	multipartWriter := multipart.NewWriter(writer)
+	go func() {
+		var writeErr error
+		for name, value := range fields {
+			if writeErr = multipartWriter.WriteField(name, value); writeErr != nil {
+				break
+			}
+		}
+		if writeErr == nil {
+			var part io.Writer
+			part, writeErr = multipartWriter.CreateFormFile(fileField, media.Name)
+			if writeErr == nil {
+				var written int64
+				written, writeErr = io.Copy(part, io.LimitReader(body, maxSize+1))
+				if writeErr == nil && written > maxSize {
+					writeErr = errors.New("feishu attachment exceeded size limit while uploading")
+				}
+			}
+		}
+		if closeErr := multipartWriter.Close(); writeErr == nil {
+			writeErr = closeErr
+		}
+		_ = writer.CloseWithError(writeErr)
+	}()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, reader)
+	if err != nil {
+		reader.Close()
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", multipartWriter.FormDataContentType())
+	uploadClient := *c.http
+	if uploadClient.Timeout < 2*time.Minute {
+		uploadClient.Timeout = 2 * time.Minute
+	}
+	res, err := uploadClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return "", fmt.Errorf("feishu attachment upload http %d: %s", res.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	var response struct {
+		Code int               `json:"code"`
+		Msg  string            `json:"msg"`
+		Data map[string]string `json:"data"`
+	}
+	if err := json.Unmarshal(responseBody, &response); err != nil {
+		return "", err
+	}
+	if response.Code != 0 {
+		return "", fmt.Errorf("feishu attachment upload error: %s", response.Msg)
+	}
+	key := strings.TrimSpace(response.Data[keyField])
+	if key == "" {
+		return "", errors.New("feishu attachment upload response missing key")
+	}
+	return key, nil
+}
+
+func feishuUploadFileType(name string) string {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(name)))
+	switch ext {
+	case ".opus":
+		return "opus"
+	case ".mp4":
+		return "mp4"
+	case ".pdf":
+		return "pdf"
+	case ".doc", ".docx":
+		return "doc"
+	case ".xls", ".xlsx":
+		return "xls"
+	case ".ppt", ".pptx":
+		return "ppt"
+	default:
+		return "stream"
+	}
 }
 
 func (c *feishuAPIClient) DownloadMessageResource(ctx context.Context, messageID, fileKey, resourceType string) (*channelMediaDownload, error) {
@@ -1781,6 +2701,101 @@ func (c *feishuAPIClient) DownloadMessageResource(ctx context.Context, messageID
 		FileName:    fileName,
 		ContentType: contentType,
 	}, nil
+}
+
+func (c *feishuAPIClient) BotOpenID(ctx context.Context) (string, error) {
+	if c == nil || strings.TrimSpace(c.config.AppID) == "" || strings.TrimSpace(c.config.AppSecret) == "" {
+		return "", errors.New("feishu app is not configured")
+	}
+
+	c.mu.Lock()
+	if c.botOpenID != "" {
+		openID := c.botOpenID
+		c.mu.Unlock()
+		return openID, nil
+	}
+	load := c.botLoad
+	if load == nil && c.botLastErr != nil && time.Now().Before(c.botRetryAfter) {
+		err := c.botLastErr
+		c.mu.Unlock()
+		return "", err
+	}
+	if load == nil {
+		load = &feishuBotIdentityLoad{done: make(chan struct{})}
+		c.botLoad = load
+		go c.loadBotOpenID(load)
+	}
+	c.mu.Unlock()
+
+	select {
+	case <-load.done:
+		return load.openID, load.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (c *feishuAPIClient) loadBotOpenID(load *feishuBotIdentityLoad) {
+	ctx, cancel := context.WithTimeout(context.Background(), feishuBotIdentityTimeout)
+	defer cancel()
+	openID, err := c.fetchBotOpenID(ctx)
+
+	c.mu.Lock()
+	if err == nil {
+		c.botOpenID = openID
+		c.botLastErr = nil
+		c.botRetryAfter = time.Time{}
+	} else {
+		c.botLastErr = err
+		c.botRetryAfter = time.Now().Add(feishuBotIdentityBackoff)
+	}
+	load.openID = openID
+	load.err = err
+	close(load.done)
+	if c.botLoad == load {
+		c.botLoad = nil
+	}
+	c.mu.Unlock()
+}
+
+func (c *feishuAPIClient) fetchBotOpenID(ctx context.Context) (string, error) {
+	token, err := c.tenantAccessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	endpoint := strings.TrimRight(firstNonEmpty(c.config.APIBaseURL, defaultFeishuAPIBase), "/") + "/open-apis/bot/v3/info"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	res, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+		return "", fmt.Errorf("feishu bot info http %d: %s", res.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var payload struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Bot  struct {
+			OpenID string `json:"open_id"`
+		} `json:"bot"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	if payload.Code != 0 {
+		return "", fmt.Errorf("feishu bot info error %d: %s", payload.Code, payload.Msg)
+	}
+	openID := strings.TrimSpace(payload.Bot.OpenID)
+	if openID == "" {
+		return "", errors.New("feishu bot info response missing open_id")
+	}
+	return openID, nil
 }
 
 func (c *feishuAPIClient) tenantAccessToken(ctx context.Context) (string, error) {
@@ -2008,7 +3023,7 @@ func (h *Hub) forwardChannelBotReply(senderUID int64, peerUID int64, topicID str
 	if h == nil || payload == nil || msgID <= 0 || peerUID <= 0 || senderUID <= 0 {
 		return
 	}
-	if isTransientRuntimePayload(payload) {
+	if isInternalChannelOutboundPayload(payload) {
 		return
 	}
 	user, err := h.db.GetUser(senderUID)
@@ -2032,7 +3047,7 @@ func (h *Hub) forwardChannelGroupBotReply(senderUID int64, topicID string, paylo
 	if h == nil || payload == nil || msgID <= 0 || senderUID <= 0 || strings.TrimSpace(topicID) == "" {
 		return
 	}
-	if isTransientRuntimePayload(payload) {
+	if isInternalChannelOutboundPayload(payload) {
 		return
 	}
 	user, err := h.db.GetUser(senderUID)
@@ -2080,9 +3095,21 @@ func (d *ChannelOutboundDispatcher) ForwardBotReplyMessage(ctx context.Context, 
 		if err != nil {
 			return err
 		}
-		if binding != nil {
-			if sent, err := d.sendChannelBindingReply(ctx, binding, topicID, actorUID, agentUID, message); sent || err != nil {
+		if binding == nil {
+			binding, err = bindings.ResolveChannelAgentBindingForCanonical("feishu", d.feishuAppID, actorUID, agentUID)
+			if err != nil {
 				return err
+			}
+		}
+		if binding != nil {
+			current, err := channelBindingMatchesCurrentAgentRoute(bindings, binding)
+			if err != nil {
+				return err
+			}
+			if current {
+				if sent, err := d.sendChannelBindingReply(ctx, binding, topicID, actorUID, agentUID, message); sent || err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -2109,6 +3136,39 @@ func (d *ChannelOutboundDispatcher) ForwardBotReplyMessage(ctx context.Context, 
 	return nil
 }
 
+func channelBindingMatchesCurrentAgentRoute(bindings store.ChannelAgentBindingStore, binding *types.ChannelAgentBinding) (bool, error) {
+	if bindings == nil || binding == nil || binding.AgentUID <= 0 {
+		return false, nil
+	}
+	query := types.ChannelAgentRouteQuery{
+		Channel:                 binding.Channel,
+		ChannelAppID:            binding.ChannelAppID,
+		ChannelUserID:           binding.ChannelUserID,
+		ChannelConversationID:   binding.ChannelConversationID,
+		ChannelConversationType: binding.ChannelConversationType,
+		ActorUID:                binding.ActorUID,
+	}
+	route, err := bindings.ResolveChannelAgentRoute(query)
+	if err != nil || route == nil || route.AgentUID != binding.AgentUID {
+		return false, err
+	}
+	groupBinding, err := bindings.ResolveChannelGroupBinding(types.ChannelGroupBindingQuery{
+		Channel:                 binding.Channel,
+		ChannelAppID:            binding.ChannelAppID,
+		ChannelUserID:           binding.ChannelUserID,
+		ChannelConversationID:   binding.ChannelConversationID,
+		ChannelConversationType: binding.ChannelConversationType,
+		ActorUID:                binding.ActorUID,
+	})
+	if err != nil {
+		return false, err
+	}
+	if groupBinding != nil && groupBinding.Status == types.ChannelAgentBindingActive && !channelAgentRouteSelectedAfterGroup(route, groupBinding) {
+		return false, nil
+	}
+	return true, nil
+}
+
 func (d *ChannelOutboundDispatcher) ForwardGroupBotReply(ctx context.Context, senderUID int64, topicID string, text string) error {
 	return d.ForwardGroupBotReplyMessage(ctx, senderUID, topicID, channelOutboundTextMessage(text))
 }
@@ -2125,11 +3185,19 @@ func (d *ChannelOutboundDispatcher) ForwardGroupBotReplyMessage(ctx context.Cont
 	if err != nil {
 		return err
 	}
+	sentFeishuChats := make(map[string]struct{})
 	for _, binding := range bindings {
 		if binding == nil || binding.Status != types.ChannelAgentBindingActive {
 			continue
 		}
-		if _, err := validateDeliverableChannelGroupBinding(d.db, binding); err != nil {
+		if _, err := validateDeliverableChannelGroupBinding(d.db, binding, false); err != nil {
+			continue
+		}
+		superseded, err := d.groupBindingSupersededByAgentRoute(bindingsStore, binding)
+		if err != nil {
+			return err
+		}
+		if superseded {
 			continue
 		}
 		switch normalizeChannel(binding.Channel) {
@@ -2146,12 +3214,10 @@ func (d *ChannelOutboundDispatcher) ForwardGroupBotReplyMessage(ctx context.Cont
 			if strings.TrimSpace(receiveID) == "" {
 				continue
 			}
-			text := message.TextWithAttachmentLinks()
-			if strings.TrimSpace(text) == "" {
-				continue
-			}
-			if err := d.feishu.SendTextMessage(ctx, receiveIDType, receiveID, text); err != nil {
+			if err := d.sendFeishuOutboundMessage(ctx, receiveIDType, receiveID, message); err != nil {
 				log.Printf("feishu group outbound reply failed topic=%s sender=%d binding=%d: %v", topicID, senderUID, binding.ID, err)
+			} else if receiveIDType == "chat_id" {
+				sentFeishuChats[receiveID] = struct{}{}
 			}
 		case "weixin":
 			if d.weixin == nil || strings.TrimSpace(binding.ChannelAppID) != strings.TrimSpace(d.weixinAppID) || strings.TrimSpace(binding.ChannelUserID) == "" {
@@ -2185,7 +3251,60 @@ func (d *ChannelOutboundDispatcher) ForwardGroupBotReplyMessage(ctx context.Cont
 			}
 		}
 	}
+	if nativeStore, ok := d.db.(store.ChannelNativeGroupStore); ok && d.feishu != nil {
+		nativeBindings, err := nativeStore.ListChannelNativeGroupsForTopic(topicID)
+		if err != nil {
+			return err
+		}
+		for _, binding := range nativeBindings {
+			if binding == nil || binding.Status != types.ChannelNativeGroupActive || strings.TrimSpace(binding.ChannelAppID) != strings.TrimSpace(d.feishuAppID) {
+				continue
+			}
+			chatID := strings.TrimSpace(binding.ConversationID)
+			if chatID == "" {
+				continue
+			}
+			if _, sent := sentFeishuChats[chatID]; sent {
+				continue
+			}
+			if err := d.sendFeishuOutboundMessage(ctx, "chat_id", chatID, message); err != nil {
+				log.Printf("feishu native group outbound reply failed topic=%s sender=%d binding=%d: %v", topicID, senderUID, binding.ID, err)
+				continue
+			}
+			sentFeishuChats[chatID] = struct{}{}
+		}
+	}
 	return nil
+}
+
+func (d *ChannelOutboundDispatcher) groupBindingSupersededByAgentRoute(bindings store.ChannelAgentBindingStore, binding *types.ChannelGroupBinding) (bool, error) {
+	if bindings == nil || binding == nil {
+		return false, nil
+	}
+	route, err := bindings.ResolveChannelAgentRoute(types.ChannelAgentRouteQuery{
+		Channel:                 binding.Channel,
+		ChannelAppID:            binding.ChannelAppID,
+		ChannelUserID:           binding.ChannelUserID,
+		ChannelConversationID:   binding.ChannelConversationID,
+		ChannelConversationType: normalizeFeishuChatType(binding.ChannelConversationType),
+		ActorUID:                binding.ActorUID,
+	})
+	if err != nil {
+		return false, err
+	}
+	if route == nil && normalizeFeishuChatType(binding.ChannelConversationType) == "p2p" && strings.TrimSpace(binding.ChannelConversationID) != "" {
+		route, err = bindings.ResolveChannelAgentRoute(types.ChannelAgentRouteQuery{
+			Channel:                 binding.Channel,
+			ChannelAppID:            binding.ChannelAppID,
+			ChannelUserID:           binding.ChannelUserID,
+			ChannelConversationType: "p2p",
+			ActorUID:                binding.ActorUID,
+		})
+		if err != nil {
+			return false, err
+		}
+	}
+	return channelAgentRouteSelectedAfterGroup(route, binding), nil
 }
 
 func (d *ChannelOutboundDispatcher) lookupRecordedReplyBinding(bindings store.ChannelAgentBindingStore, topicID string, canonicalUID int64, agentUID int64) (*types.ChannelAgentBinding, bool, error) {
@@ -2218,7 +3337,6 @@ func (d *ChannelOutboundDispatcher) sendChannelBindingReply(ctx context.Context,
 	if err := validateDeliverableChannelBinding(d.db, binding); err != nil {
 		return false, nil
 	}
-	text := message.TextWithAttachmentLinks()
 	switch normalizeChannel(binding.Channel) {
 	case "feishu":
 		if d.feishu == nil {
@@ -2233,10 +3351,7 @@ func (d *ChannelOutboundDispatcher) sendChannelBindingReply(ctx context.Context,
 		if receiveID == "" {
 			return false, nil
 		}
-		if strings.TrimSpace(text) == "" {
-			return false, nil
-		}
-		if err := d.feishu.SendTextMessage(ctx, receiveIDType, receiveID, text); err != nil {
+		if err := d.sendFeishuOutboundMessage(ctx, receiveIDType, receiveID, message); err != nil {
 			log.Printf("feishu outbound reply failed topic=%s actor=%d agent=%d: %v", topicID, actorUID, agentUID, err)
 			return true, err
 		}
@@ -2245,6 +3360,7 @@ func (d *ChannelOutboundDispatcher) sendChannelBindingReply(ctx context.Context,
 		if d.weixin == nil || binding.ChannelUserID == "" {
 			return false, nil
 		}
+		text := message.TextWithAttachmentLinks()
 		if strings.TrimSpace(text) == "" {
 			return false, nil
 		}
@@ -2265,6 +3381,34 @@ func (d *ChannelOutboundDispatcher) sendChannelBindingReply(ctx context.Context,
 	default:
 		return false, nil
 	}
+}
+
+func (d *ChannelOutboundDispatcher) sendFeishuOutboundMessage(ctx context.Context, receiveIDType, receiveID string, message channelOutboundMessage) error {
+	if d == nil || d.feishu == nil || strings.TrimSpace(receiveID) == "" || !message.HasContent() {
+		return nil
+	}
+	var sendErrors []error
+	if text := strings.TrimSpace(message.Text); text != "" {
+		if err := d.feishu.SendTextMessage(ctx, receiveIDType, receiveID, text); err != nil {
+			sendErrors = append(sendErrors, fmt.Errorf("send text: %w", err))
+		}
+	}
+	fallbackAttachments := make([]channelOutboundAttachment, 0)
+	for _, attachment := range message.Attachments {
+		if err := d.feishu.SendAttachmentMessage(ctx, receiveIDType, receiveID, attachment); err != nil {
+			log.Printf("feishu native attachment fallback name=%s url=%s: %v", attachment.Name, attachment.URL, err)
+			fallbackAttachments = append(fallbackAttachments, attachment)
+		}
+	}
+	if len(fallbackAttachments) > 0 {
+		fallback := (channelOutboundMessage{Attachments: fallbackAttachments}).TextWithAttachmentLinks()
+		if strings.TrimSpace(fallback) != "" {
+			if err := d.feishu.SendTextMessage(ctx, receiveIDType, receiveID, fallback); err != nil {
+				sendErrors = append(sendErrors, fmt.Errorf("send attachment fallback: %w", err))
+			}
+		}
+	}
+	return errors.Join(sendErrors...)
 }
 
 func writeHTML(w http.ResponseWriter, status int, body string) {
@@ -2290,4 +3434,30 @@ func firstEnv(names ...string) string {
 		}
 	}
 	return ""
+}
+
+func feishuConfiguredList(name string) []string {
+	values := strings.FieldsFunc(os.Getenv(name), func(r rune) bool {
+		switch r {
+		case ',', '，', ';', '；', '\n', '\r', '\t':
+			return true
+		default:
+			return false
+		}
+	})
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		key := strings.ToLower(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }

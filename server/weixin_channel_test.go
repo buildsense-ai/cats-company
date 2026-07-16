@@ -162,7 +162,7 @@ func TestWeixinScanEventBindsActor(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "Contract Agent") {
 		t.Fatalf("reply=%s", rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "登录 CatsCo") || !strings.Contains(body, "/channel-device-link") || !strings.Contains(body, "binding_id=") || !strings.Contains(body, "link_token=") {
+	if body := rec.Body.String(); !strings.Contains(body, "登录 CatsCo") || !strings.Contains(body, "/channel-account-link") || !strings.Contains(body, "binding_id=") || !strings.Contains(body, "link_token=") {
 		t.Fatalf("scan reply should require CatsCo account link, body=%s", body)
 	}
 }
@@ -387,7 +387,7 @@ func TestWeixinApprovalRequiredScanCreatesPendingAccess(t *testing.T) {
 	if len(db.topics) != 0 {
 		t.Fatalf("private scan should not create chat topic before approval: %+v", db.topics)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "登录 CatsCo") || !strings.Contains(body, "/channel-device-link") {
+	if body := rec.Body.String(); !strings.Contains(body, "登录 CatsCo") || !strings.Contains(body, "/channel-account-link") {
 		t.Fatalf("private scan reply should request CatsCo account link, body=%s", body)
 	}
 }
@@ -1100,6 +1100,16 @@ func TestChannelOutboundDispatcherPreservesFeishuAndWeixin(t *testing.T) {
 		Status:        "active",
 	}); err != nil {
 		t.Fatalf("seed feishu binding: %v", err)
+	}
+	if _, err := db.UpsertChannelAgentRoute(&types.ChannelAgentRoute{
+		Channel:       "feishu",
+		ChannelAppID:  "feishu_app",
+		ChannelUserID: "ou_user",
+		ActorUID:      8,
+		AgentUID:      43,
+		Source:        "entry_scan",
+	}); err != nil {
+		t.Fatalf("seed feishu route: %v", err)
 	}
 	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
 		Channel:       "weixin",

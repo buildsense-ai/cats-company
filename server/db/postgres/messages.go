@@ -201,6 +201,32 @@ func (a *Adapter) GetLatestMessages(topicID string, limit, offset int) ([]*types
 	return scanMessages(rows, "scan latest message")
 }
 
+// GetLatestMessagesBefore returns the newest messages older than beforeID.
+// Results are ordered ascending so callers can rebuild a transcript directly.
+func (a *Adapter) GetLatestMessagesBefore(topicID string, beforeID int64, limit int) ([]*types.Message, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if beforeID <= 0 {
+		return a.GetLatestMessages(topicID, limit, 0)
+	}
+	rows, err := a.db.Query(
+		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+         FROM (
+           SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+           FROM messages WHERE topic_id = $1 AND id < $2
+           ORDER BY id DESC LIMIT $3
+         ) recent
+         ORDER BY id ASC`,
+		topicID, beforeID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get latest messages before: %w", err)
+	}
+	defer rows.Close()
+	return scanMessages(rows, "scan latest message before")
+}
+
 // GetLatestMessagesForTopics returns the newest persisted message for each topic.
 func (a *Adapter) GetLatestMessagesForTopics(topicIDs []string) (map[string]*types.Message, error) {
 	if len(topicIDs) == 0 {

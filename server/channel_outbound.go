@@ -23,6 +23,39 @@ type channelOutboundAttachment struct {
 	MimeType string
 }
 
+func isInternalChannelOutboundPayload(payload *normalizedMessagePayload) bool {
+	if payload == nil {
+		return false
+	}
+	switch payload.DisplayType {
+	case "runtime_plan", "thinking", "tool_use", "tool_result":
+		return true
+	case "text", "image", "file":
+	default:
+		return true
+	}
+	if strings.HasPrefix(strings.TrimSpace(normalizeContentText(payload.DisplayContent)), "AI文本:") ||
+		strings.HasPrefix(strings.TrimSpace(normalizeContentText(payload.DisplayContent)), "AI文本：") {
+		return true
+	}
+	if payload.DisplayType == "text" && len(payload.ContentBlocks) > 0 {
+		hasInternalBlock := false
+		hasDeliverableBlock := false
+		for _, block := range payload.ContentBlocks {
+			switch strings.ToLower(strings.TrimSpace(block.Type)) {
+			case "thinking", "tool_use", "tool_result":
+				hasInternalBlock = true
+			case "text", "image", "file":
+				hasDeliverableBlock = true
+			}
+		}
+		if hasInternalBlock && !hasDeliverableBlock {
+			return true
+		}
+	}
+	return false
+}
+
 func channelOutboundTextMessage(text string) channelOutboundMessage {
 	return channelOutboundMessage{Text: strings.TrimSpace(text)}
 }

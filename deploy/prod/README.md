@@ -39,6 +39,28 @@ Before enabling automatic production deploys:
 5. Fill real secrets in `prod.env`
 6. Point `OC_DB_DSN` at the active database and set `OC_DB_DRIVER`
 
+## Image generation gateway
+
+Keep the provider configuration only in the persistent server file
+`/srv/catscompany-prod/env/prod.env`:
+
+```env
+CATSCO_IMAGE_UPSTREAM_URL=https://provider.example/v1/images/generations
+CATSCO_IMAGE_UPSTREAM_API_KEY=replace-with-provider-key
+CATSCO_IMAGE_MODEL=gpt-image-2
+CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES=25165824
+```
+
+Do not mirror the provider key into repository or GitHub Actions secrets. The
+deployment scripts preserve `prod.env` across releases. After changing these
+values, recreate the server container with the manual start commands below.
+
+Reference-image requests reuse the same upstream URL, key, and model. The
+server derives the sibling `/images/edits` endpoint from an upstream URL ending
+in `/images/generations`. `CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES` limits only the
+JSON request containing base64 references; its 24 MiB default remains below
+the bundled Nginx 32 MiB body limit.
+
 ## Manual start
 
 ```bash

@@ -388,6 +388,34 @@ type ChannelAgentBinding struct {
 	LastUsedAt              *time.Time `json:"last_used_at,omitempty"`
 }
 
+const (
+	ChannelNativeGroupPending      = "pending"
+	ChannelNativeGroupActive       = "active"
+	ChannelNativeGroupDisconnected = "disconnected"
+)
+
+// ChannelNativeGroupBinding maps a native external-channel group to the
+// CatsCo group created to persist and relay that conversation.
+type ChannelNativeGroupBinding struct {
+	ID                    int64     `json:"id"`
+	Channel               string    `json:"channel"`
+	ChannelAppID          string    `json:"channel_app_id,omitempty"`
+	TenantKey             string    `json:"tenant_key,omitempty"`
+	ConversationID        string    `json:"conversation_id"`
+	ConversationName      string    `json:"conversation_name,omitempty"`
+	OperatorChannelUserID string    `json:"operator_channel_user_id,omitempty"`
+	OperatorActorUID      int64     `json:"operator_actor_uid,omitempty"`
+	CanonicalUID          int64     `json:"canonical_uid,omitempty"`
+	GroupID               int64     `json:"group_id,omitempty"`
+	TopicID               string    `json:"topic_id,omitempty"`
+	SourceKind            string    `json:"source_kind,omitempty"`
+	SourceGroupID         int64     `json:"source_group_id,omitempty"`
+	SourceAgentUID        int64     `json:"source_agent_uid,omitempty"`
+	Status                string    `json:"status"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
+}
+
 // ChannelIdentityMobileLink is a one-time QR scene generated from an existing
 // CatsCo web identity so the same human user can bind Weixin/Feishu without
 // repeating the full CatsCo login or friend-request flow.
@@ -539,12 +567,18 @@ type Group struct {
 	ID           int64     `json:"id"`
 	Name         string    `json:"name"`
 	OwnerID      int64     `json:"owner_id"`
+	Kind         string    `json:"kind,omitempty"`
 	AvatarURL    string    `json:"avatar_url,omitempty"`
 	Announcement string    `json:"announcement,omitempty"`
 	HasBot       bool      `json:"has_bot,omitempty"`
 	MaxMembers   int       `json:"max_members"`
 	CreatedAt    time.Time `json:"created_at"`
 }
+
+const (
+	GroupKindStandard       = "standard"
+	GroupKindChannelManaged = "channel_managed"
+)
 
 // GroupMember represents a member of a group.
 type GroupMember struct {
