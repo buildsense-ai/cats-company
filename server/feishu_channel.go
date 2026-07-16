@@ -33,6 +33,8 @@ const (
 	defaultFeishuAuthorizeURL = "https://open.feishu.cn/open-apis/authen/v1/index"
 	defaultFeishuAPIBase      = "https://open.feishu.cn"
 	feishuOAuthStateTTL       = 10 * time.Minute
+	feishuBotIdentityTimeout  = 10 * time.Second
+	feishuBotIdentityBackoff  = 5 * time.Second
 )
 
 // FeishuChannelConfig contains the cloud Feishu app settings.
@@ -57,12 +59,15 @@ type FeishuUserIdentity struct {
 
 type feishuAPI interface {
 	AppID() string
+	BotOpenID(ctx context.Context) (string, error)
 	ExchangeOAuthCode(ctx context.Context, code string, redirectURI string) (*FeishuUserIdentity, error)
 	GetUserIdentity(ctx context.Context, openID string) (*FeishuUserIdentity, error)
 	DownloadMessageResource(ctx context.Context, messageID, fileKey, resourceType string) (*channelMediaDownload, error)
 	SendTextMessage(ctx context.Context, receiveIDType string, receiveID string, text string) error
 	SendAttachmentMessage(ctx context.Context, receiveIDType string, receiveID string, attachment channelOutboundAttachment) error
 }
+
+var errFeishuBotIdentityUnavailable = errors.New("feishu bot identity unavailable")
 
 // FeishuChannelHandler owns Feishu OAuth binding and event callbacks.
 type FeishuChannelHandler struct {
@@ -508,6 +513,10 @@ func (h *FeishuChannelHandler) HandleEvents(w http.ResponseWriter, r *http.Reque
 	}
 	if err := h.handleMessageEvent(r.Context(), &env); err != nil {
 		log.Printf("feishu message event failed: %v", err)
+		if errors.Is(err, errFeishuBotIdentityUnavailable) {
+			writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "error": err.Error()})
 		return
 	}
@@ -822,9 +831,16 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 	if err != nil {
 		return err
 	}
-	text = normalizeFeishuMessageMentions(text, &event)
+	botIDs := feishuConfiguredBotIDs()
+	if chatType == "group" {
+		botIDs, err = h.resolveFeishuBotOpenIDs(ctx, &event)
+		if err != nil {
+			return err
+		}
+	}
+	text = normalizeFeishuMessageMentionsWithBotIDs(text, &event, botIDs)
 	cmd := parseFeishuGatewayCommand(text)
-	groupTriggered := cmd.Trigger || feishuEventMentionsBot(&event)
+	groupTriggered := cmd.Trigger || feishuEventMentionsBotWithIDs(&event, botIDs)
 	if chatType == "group" {
 		handled, err := h.handleFeishuNativeGroupMessage(ctx, env.Header.TenantKey, appID, channelUserID, actorUID, &event, text, messageType, media, cmd, groupTriggered)
 		if err != nil || handled {
@@ -1143,11 +1159,15 @@ func (h *FeishuChannelHandler) replyToFeishuSafely(ctx context.Context, channelU
 }
 
 func feishuEventMentionsBot(event *feishuMessageEvent) bool {
+	return feishuEventMentionsBotWithIDs(event, feishuConfiguredBotIDs())
+}
+
+func feishuEventMentionsBotWithIDs(event *feishuMessageEvent, botIDs []string) bool {
 	if event == nil {
 		return false
 	}
 	for _, mention := range event.Message.Mentions {
-		if feishuMentionIsBot(mention) {
+		if feishuMentionIsBotWithIDs(mention, botIDs) {
 			return true
 		}
 	}
@@ -1155,13 +1175,56 @@ func feishuEventMentionsBot(event *feishuMessageEvent) bool {
 }
 
 func feishuMentionIsBot(mention feishuMessageMention) bool {
-	configuredIDs := append(feishuConfiguredList("CATSCO_FEISHU_GROUP_BOT_OPEN_IDS"),
+	return feishuMentionIsBotWithIDs(mention, feishuConfiguredBotIDs())
+}
+
+func feishuConfiguredBotIDs() []string {
+	configuredIDs := append([]string{}, feishuConfiguredList("CATSCO_FEISHU_GROUP_BOT_OPEN_IDS")...)
+	configuredIDs = append(configuredIDs,
 		firstEnv("CATSCO_FEISHU_BOT_OPEN_ID", "FEISHU_BOT_OPEN_ID"),
 	)
 	configuredIDs = append(configuredIDs,
 		firstEnv("CATSCO_FEISHU_BOT_USER_ID", "FEISHU_BOT_USER_ID"),
 		firstEnv("CATSCO_FEISHU_BOT_UNION_ID", "FEISHU_BOT_UNION_ID"),
 	)
+	return configuredIDs
+}
+
+func (h *FeishuChannelHandler) resolveFeishuBotOpenIDs(ctx context.Context, event *feishuMessageEvent) ([]string, error) {
+	botIDs := feishuConfiguredBotIDs()
+	if event == nil || feishuEventMentionsBotWithIDs(event, botIDs) || !feishuEventHasFormalMention(event) {
+		return botIDs, nil
+	}
+	if h == nil || h.api == nil {
+		return nil, fmt.Errorf("%w: API client is not configured", errFeishuBotIdentityUnavailable)
+	}
+	openID, err := h.api.BotOpenID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errFeishuBotIdentityUnavailable, err)
+	}
+	openID = strings.TrimSpace(openID)
+	if openID == "" {
+		return nil, fmt.Errorf("%w: API returned an empty open_id", errFeishuBotIdentityUnavailable)
+	}
+	botIDs = append(botIDs, openID)
+	return botIDs, nil
+}
+
+func feishuEventHasFormalMention(event *feishuMessageEvent) bool {
+	if event == nil {
+		return false
+	}
+	for _, mention := range event.Message.Mentions {
+		for _, mentionID := range []string{mention.ID.OpenID, mention.ID.UserID, mention.ID.UnionID} {
+			if strings.TrimSpace(mentionID) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func feishuMentionIsBotWithIDs(mention feishuMessageMention, configuredIDs []string) bool {
 	mentionIDs := []string{mention.ID.OpenID, mention.ID.UserID, mention.ID.UnionID}
 	hasMentionID := false
 	for _, configured := range configuredIDs {
@@ -1207,13 +1270,17 @@ func feishuMentionIsBot(mention feishuMessageMention) bool {
 }
 
 func normalizeFeishuMessageMentions(text string, event *feishuMessageEvent) string {
+	return normalizeFeishuMessageMentionsWithBotIDs(text, event, feishuConfiguredBotIDs())
+}
+
+func normalizeFeishuMessageMentionsWithBotIDs(text string, event *feishuMessageEvent, botIDs []string) string {
 	if event == nil || len(event.Message.Mentions) == 0 {
 		return strings.TrimSpace(text)
 	}
 	for _, mention := range event.Message.Mentions {
 		key := strings.TrimSpace(mention.Key)
 		name := strings.TrimSpace(mention.Name)
-		if feishuMentionIsBot(mention) {
+		if feishuMentionIsBotWithIDs(mention, botIDs) {
 			for _, token := range []string{key, "@" + name} {
 				if token != "" && token != "@" {
 					text = strings.ReplaceAll(text, token, "")
@@ -2271,11 +2338,21 @@ func extractFeishuInboundMedia(messageType, content string) (*feishuInboundMedia
 }
 
 type feishuAPIClient struct {
-	config FeishuChannelConfig
-	http   *http.Client
-	mu     sync.Mutex
-	token  string
-	expiry time.Time
+	config        FeishuChannelConfig
+	http          *http.Client
+	mu            sync.Mutex
+	token         string
+	expiry        time.Time
+	botOpenID     string
+	botLoad       *feishuBotIdentityLoad
+	botLastErr    error
+	botRetryAfter time.Time
+}
+
+type feishuBotIdentityLoad struct {
+	done   chan struct{}
+	openID string
+	err    error
 }
 
 func newFeishuAPIClient(cfg FeishuChannelConfig) *feishuAPIClient {
@@ -2624,6 +2701,101 @@ func (c *feishuAPIClient) DownloadMessageResource(ctx context.Context, messageID
 		FileName:    fileName,
 		ContentType: contentType,
 	}, nil
+}
+
+func (c *feishuAPIClient) BotOpenID(ctx context.Context) (string, error) {
+	if c == nil || strings.TrimSpace(c.config.AppID) == "" || strings.TrimSpace(c.config.AppSecret) == "" {
+		return "", errors.New("feishu app is not configured")
+	}
+
+	c.mu.Lock()
+	if c.botOpenID != "" {
+		openID := c.botOpenID
+		c.mu.Unlock()
+		return openID, nil
+	}
+	load := c.botLoad
+	if load == nil && c.botLastErr != nil && time.Now().Before(c.botRetryAfter) {
+		err := c.botLastErr
+		c.mu.Unlock()
+		return "", err
+	}
+	if load == nil {
+		load = &feishuBotIdentityLoad{done: make(chan struct{})}
+		c.botLoad = load
+		go c.loadBotOpenID(load)
+	}
+	c.mu.Unlock()
+
+	select {
+	case <-load.done:
+		return load.openID, load.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (c *feishuAPIClient) loadBotOpenID(load *feishuBotIdentityLoad) {
+	ctx, cancel := context.WithTimeout(context.Background(), feishuBotIdentityTimeout)
+	defer cancel()
+	openID, err := c.fetchBotOpenID(ctx)
+
+	c.mu.Lock()
+	if err == nil {
+		c.botOpenID = openID
+		c.botLastErr = nil
+		c.botRetryAfter = time.Time{}
+	} else {
+		c.botLastErr = err
+		c.botRetryAfter = time.Now().Add(feishuBotIdentityBackoff)
+	}
+	load.openID = openID
+	load.err = err
+	close(load.done)
+	if c.botLoad == load {
+		c.botLoad = nil
+	}
+	c.mu.Unlock()
+}
+
+func (c *feishuAPIClient) fetchBotOpenID(ctx context.Context) (string, error) {
+	token, err := c.tenantAccessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	endpoint := strings.TrimRight(firstNonEmpty(c.config.APIBaseURL, defaultFeishuAPIBase), "/") + "/open-apis/bot/v3/info"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	res, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+		return "", fmt.Errorf("feishu bot info http %d: %s", res.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var payload struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Bot  struct {
+			OpenID string `json:"open_id"`
+		} `json:"bot"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	if payload.Code != 0 {
+		return "", fmt.Errorf("feishu bot info error %d: %s", payload.Code, payload.Msg)
+	}
+	openID := strings.TrimSpace(payload.Bot.OpenID)
+	if openID == "" {
+		return "", errors.New("feishu bot info response missing open_id")
+	}
+	return openID, nil
 }
 
 func (c *feishuAPIClient) tenantAccessToken(ctx context.Context) (string, error) {
