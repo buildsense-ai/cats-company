@@ -239,6 +239,51 @@ func (a *Adapter) GetLatestMessages(topicID string, limit, offset int) ([]*types
 	return msgs, rows.Err()
 }
 
+// GetLatestMessagesBefore returns the newest messages older than beforeID.
+// Results are ordered ascending so callers can rebuild a transcript directly.
+func (a *Adapter) GetLatestMessagesBefore(topicID string, beforeID int64, limit int) ([]*types.Message, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if beforeID <= 0 {
+		return a.GetLatestMessages(topicID, limit, 0)
+	}
+	rows, err := a.db.Query(
+		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+         FROM (
+           SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+           FROM messages WHERE topic_id = ? AND id < ?
+           ORDER BY id DESC LIMIT ?
+         ) recent
+         ORDER BY id ASC`,
+		topicID, beforeID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get latest messages before: %w", err)
+	}
+	defer rows.Close()
+	msgs := make([]*types.Message, 0)
+	for rows.Next() {
+		m := &types.Message{}
+		var blocksJSON []byte
+		var mode, role *string
+		if err := rows.Scan(&m.ID, &m.TopicID, &m.FromUID, &m.Content, &m.MsgType, &m.CreatedAt, &blocksJSON, &mode, &role); err != nil {
+			return nil, fmt.Errorf("scan latest message before: %w", err)
+		}
+		if len(blocksJSON) > 0 {
+			json.Unmarshal(blocksJSON, &m.ContentBlocks)
+		}
+		if mode != nil {
+			m.Mode = *mode
+		}
+		if role != nil {
+			m.Role = *role
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
 // GetLatestMessagesForTopics returns the newest persisted message for each topic.
 func (a *Adapter) GetLatestMessagesForTopics(topicIDs []string) (map[string]*types.Message, error) {
 	if len(topicIDs) == 0 {

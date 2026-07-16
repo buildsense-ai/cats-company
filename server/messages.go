@@ -291,9 +291,13 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 	}
 }
 
-func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.Message) *MsgServerData {
+func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.Message, identityUsers ...map[int64]*types.User) *MsgServerData {
 	if message == nil {
 		return nil
+	}
+	var users map[int64]*types.User
+	if len(identityUsers) > 0 {
+		users = identityUsers[0]
 	}
 	displayContent := decodeStoredContent(message.Content)
 	return &MsgServerData{
@@ -303,18 +307,18 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 		Content:       displayContent,
 		Type:          inferDisplayTypeFromStoredMessage(message.MsgType, message.Content, message.ContentBlocks),
 		MsgType:       message.MsgType,
-		Metadata:      withCatscoIdentityMetadata(nil, h.buildCatscoIdentityMetadata(message.FromUID, recipientUID, message.TopicID, message.ID, normalizeContentText(displayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: true, Replay: true})),
+		Metadata:      withCatscoIdentityMetadata(nil, h.buildCatscoIdentityMetadata(message.FromUID, recipientUID, message.TopicID, message.ID, normalizeContentText(displayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: true, Replay: true, IdentityUsers: users})),
 		ContentBlocks: message.ContentBlocks,
 		Mode:          message.Mode,
 		Role:          message.Role,
 	}
 }
 
-func (h *Hub) historyAPIMessageForRecipient(recipientUID int64, message *types.Message) map[string]interface{} {
+func (h *Hub) historyAPIMessageForRecipient(recipientUID int64, message *types.Message, identityUsers ...map[int64]*types.User) map[string]interface{} {
 	if message == nil {
 		return nil
 	}
-	data := h.historyMessageDataForRecipient(recipientUID, message)
+	data := h.historyMessageDataForRecipient(recipientUID, message, identityUsers...)
 	if data == nil {
 		return nil
 	}
@@ -487,6 +491,7 @@ type catscoIdentityMetadataOptions struct {
 	OmitDeviceAccess bool
 	Replay           bool
 	SourceMetadata   map[string]interface{}
+	IdentityUsers    map[int64]*types.User
 }
 
 func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, topicID string, msgID int64, messageText string, options ...catscoIdentityMetadataOptions) map[string]interface{} {
@@ -516,7 +521,17 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 	if msgID > 0 {
 		identity["topic"].(map[string]interface{})["channel_seq"] = msgID
 	}
-	if h != nil && h.db != nil {
+	if opts.IdentityUsers != nil {
+		if actor := opts.IdentityUsers[actorUID]; actor != nil {
+			actorMap := identity["actor"].(map[string]interface{})
+			if actor.DisplayName != "" {
+				actorMap["display_name"] = actor.DisplayName
+			}
+			if actor.Username != "" {
+				actorMap["username"] = actor.Username
+			}
+		}
+	} else if h != nil && h.db != nil {
 		if actor, err := h.db.GetUser(actorUID); err == nil && actor != nil {
 			actorMap := identity["actor"].(map[string]interface{})
 			if actor.DisplayName != "" {
@@ -533,7 +548,16 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 	agent := map[string]interface{}{
 		"agent_id": formatUID(recipientUID),
 	}
-	if h != nil && h.db != nil {
+	if opts.IdentityUsers != nil {
+		if user := opts.IdentityUsers[recipientUID]; user != nil {
+			if user.DisplayName != "" {
+				agent["display_name"] = user.DisplayName
+			}
+			if user.Username != "" {
+				agent["username"] = user.Username
+			}
+		}
+	} else if h != nil && h.db != nil {
 		if user, err := h.db.GetUser(recipientUID); err == nil && user != nil {
 			if user.DisplayName != "" {
 				agent["display_name"] = user.DisplayName
@@ -702,6 +726,15 @@ func topicTypeForID(topicID string) string {
 	return "p2p"
 }
 
+const (
+	defaultAgentContextHistoryLimit = 100
+	maxAgentContextHistoryLimit     = 200
+)
+
+type latestMessagesBeforeStore interface {
+	GetLatestMessagesBefore(topicID string, beforeID int64, limit int) ([]*types.Message, error)
+}
+
 // HandleGetMessages handles GET /api/messages?topic_id=xxx&limit=50&offset=0
 func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Request) {
 	uid := UIDFromContext(r.Context())
@@ -721,6 +754,45 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	latest := r.URL.Query().Get("latest") == "1" || r.URL.Query().Get("latest") == "true"
+	agentContext := r.URL.Query().Get("agent_context") == "1" || r.URL.Query().Get("agent_context") == "true"
+	beforeID, _ := strconv.ParseInt(r.URL.Query().Get("before_id"), 10, 64)
+
+	if agentContext {
+		if h.hub == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "agent context history unavailable"})
+			return
+		}
+		if h.accountTypeForUID(uid) != types.AccountBot {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "agent context history requires bot credentials"})
+			return
+		}
+		if limit <= 0 {
+			limit = defaultAgentContextHistoryLimit
+		}
+		if limit > maxAgentContextHistoryLimit {
+			limit = maxAgentContextHistoryLimit
+		}
+		rawMsgs, hasMore, nextBeforeID, err := h.loadAgentContextHistory(topicID, beforeID, limit)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load agent context history"})
+			return
+		}
+		identityUsers := h.loadAgentContextUsers(uid, rawMsgs)
+		msgs := make([]map[string]interface{}, 0, len(rawMsgs))
+		for _, message := range rawMsgs {
+			if formatted := h.hub.agentContextHistoryAPIMessageForRecipient(uid, message, identityUsers); formatted != nil {
+				msgs = append(msgs, formatted)
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"messages":       msgs,
+			"topic_id":       topicID,
+			"agent_uid":      uid,
+			"has_more":       hasMore,
+			"next_before_id": nextBeforeID,
+		})
+		return
+	}
 
 	var rawMsgs []*types.Message
 	var err error
@@ -756,6 +828,123 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"messages": msgs})
+}
+
+func (h *MessageHandler) loadAgentContextHistory(topicID string, beforeID int64, limit int) ([]*types.Message, bool, int64, error) {
+	queryLimit := limit + 1
+	var (
+		messages []*types.Message
+		err      error
+	)
+	if beforeID > 0 {
+		if storeWithCursor, ok := h.db.(latestMessagesBeforeStore); ok {
+			messages, err = storeWithCursor.GetLatestMessagesBefore(topicID, beforeID, queryLimit)
+		} else {
+			return nil, false, 0, errors.New("message store does not support stable before cursor")
+		}
+	} else {
+		messages, err = h.db.GetLatestMessages(topicID, queryLimit, 0)
+	}
+	if err != nil {
+		return nil, false, 0, err
+	}
+
+	hasMore := len(messages) > limit
+	if hasMore {
+		messages = messages[len(messages)-limit:]
+	}
+	nextBeforeID := int64(0)
+	if len(messages) > 0 {
+		nextBeforeID = messages[0].ID
+	}
+	return messages, hasMore, nextBeforeID, nil
+}
+
+func (h *MessageHandler) loadAgentContextUsers(agentUID int64, messages []*types.Message) map[int64]*types.User {
+	users := make(map[int64]*types.User)
+	uids := map[int64]struct{}{agentUID: {}}
+	for _, message := range messages {
+		if message != nil && message.FromUID > 0 {
+			uids[message.FromUID] = struct{}{}
+		}
+	}
+	for uid := range uids {
+		if user, err := h.db.GetUser(uid); err == nil && user != nil {
+			users[uid] = user
+		}
+	}
+	return users
+}
+
+func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message *types.Message, identityUsers map[int64]*types.User) map[string]interface{} {
+	formatted := h.historyAPIMessageForRecipient(agentUID, message, identityUsers)
+	if formatted == nil || message == nil {
+		return nil
+	}
+
+	displayType, _ := formatted["type"].(string)
+	role := "user"
+	eligible := isDurableAgentContextMessage(message, displayType)
+	reason := "participant_message"
+	if message.FromUID == agentUID {
+		role = "assistant"
+		reason = "current_agent_message"
+	} else if sender := identityUsers[message.FromUID]; sender == nil {
+		eligible = false
+		reason = "sender_classification_failed"
+	} else if sender.AccountType == types.AccountBot {
+		role = "other_agent"
+		eligible = false
+		reason = "other_agent_message"
+	}
+
+	mentions := parseMentions(normalizeContentText(formatted["content"]))
+	if eligible && isGroupTopic(message.TopicID) && role == "user" && len(mentions) > 0 {
+		agentID := formatUID(agentUID)
+		if !containsString(mentions, agentID) {
+			eligible = false
+			reason = "group_message_targets_another_member"
+		} else {
+			reason = "group_message_targets_agent"
+		}
+	}
+
+	formatted["agent_uid"] = agentUID
+	formatted["agent_id"] = formatUID(agentUID)
+	formatted["context_role"] = role
+	formatted["context_eligible"] = eligible
+	formatted["context_reason"] = reason
+	if len(mentions) > 0 {
+		formatted["mentions"] = mentions
+	}
+	return formatted
+}
+
+func isDurableAgentContextMessage(message *types.Message, displayType string) bool {
+	if message == nil {
+		return false
+	}
+	for _, block := range message.ContentBlocks {
+		switch block.Type {
+		case "thinking", "tool_use", "tool_result", "runtime_plan":
+			return false
+		}
+	}
+	switch displayType {
+	case "text", "image", "voice", "file":
+		return true
+	default:
+		return false
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload, error) {
