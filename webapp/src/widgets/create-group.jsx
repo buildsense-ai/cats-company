@@ -114,25 +114,25 @@ export default function CreateGroup({ onClose, onCreated }) {
 
           <div className="oc-member-picker-shell">
             <section className="oc-member-picker-source">
-              <label className="oc-member-search">
+              <div className="oc-member-search">
                 <Search size={15} strokeWidth={1.8} />
                 <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索成员" />
-              </label>
-              <div className="oc-segmented-control" role="tablist" aria-label="成员类型">
-                <button
-                  type="button"
-                  className={memberType === 'friends' ? 'active' : ''}
-                  onClick={() => setMemberType('friends')}
-                >
-                  好友
-                </button>
-                <button
-                  type="button"
-                  className={memberType === 'agents' ? 'active' : ''}
-                  onClick={() => setMemberType('agents')}
-                >
-                  Agent
-                </button>
+                <div className="oc-segmented-control" role="tablist" aria-label="成员类型">
+                  <button
+                    type="button"
+                    className={memberType === 'friends' ? 'active' : ''}
+                    onClick={() => setMemberType('friends')}
+                  >
+                    好友
+                  </button>
+                  <button
+                    type="button"
+                    className={memberType === 'agents' ? 'active' : ''}
+                    onClick={() => setMemberType('agents')}
+                  >
+                    Agent
+                  </button>
+                </div>
               </div>
               <div className="oc-member-picker-list">
                 {filteredMembers.map((friend) => {

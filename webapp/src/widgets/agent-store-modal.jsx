@@ -127,6 +127,12 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
 
   useEffect(() => { loadBots(); }, []);
 
+  useEffect(() => {
+    if (!error) return undefined;
+    const timer = window.setTimeout(() => setError(''), 3600);
+    return () => window.clearTimeout(timer);
+  }, [error]);
+
   const loadBots = async ({ silent = false } = {}) => {
     try {
       if (!silent) setLoading(true);
@@ -140,7 +146,6 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
       setBots(mergeManageableBots(botsRes.bots || [], agentsRes.agents || [], friendsRes.friends || []).filter(isOwnedBot));
     } catch (e) {
       console.error('Load bots error:', e);
-      setError(e.message || t('error_server'));
     } finally {
       if (!silent) setLoading(false);
     }
@@ -324,8 +329,6 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
         </div>
 
         <div className="oc-modal-body cc-agent-manager-body">
-
-          {error && <div style={{ background: 'rgba(250,81,81,0.1)', color: '#FA5151', padding: 12, borderRadius: 8, marginBottom: 16 }}>{error}</div>}
 
           {/* HUB TAB */}
           {tab === 'hub' && (
@@ -664,8 +667,17 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
               </div>
             </form>
           )}
-
         </div>
+
+        {error && (
+          <div className="cc-agent-error-toast" role="alert">
+            <XCircle size={17} />
+            <span>{error}</span>
+            <button type="button" onClick={() => setError('')} aria-label="关闭错误提示">
+              <X size={15} />
+            </button>
+          </div>
+        )}
       </div>
       {entryBot && isOwnedBot(entryBot) && (
         <AgentEntryModal

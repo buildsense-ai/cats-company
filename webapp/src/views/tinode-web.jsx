@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api, setToken, getToken, connectWS, reconnectWS, disconnectWS } from '../api';
 import t from '../i18n';
 import ChatListView from './sidepanel-view';
@@ -191,6 +191,7 @@ function TinodeWebApp() {
   const [wsStatus, setWsStatus] = useState(user ? 'connecting' : 'disconnected');
   const [showProfileEditor, setShowProfileEditor] = useState(false);
   const [showProfilePopover, setShowProfilePopover] = useState(false);
+  const profilePopoverRef = useRef(null);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
@@ -214,6 +215,27 @@ function TinodeWebApp() {
   useEffect(() => {
     localStorage.setItem(MODEL_STORAGE_KEY, selectedModel);
   }, [selectedModel]);
+
+  useEffect(() => {
+    if (!showProfilePopover) return undefined;
+
+    const handlePointerDown = (event) => {
+      const target = event.target;
+      if (profilePopoverRef.current?.contains(target)) return;
+      if (target?.closest?.('.v3-profile-footer')) return;
+      setShowProfilePopover(false);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setShowProfilePopover(false);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showProfilePopover]);
 
 
 
@@ -598,12 +620,12 @@ function TinodeWebApp() {
           user={user}
           wsStatus={wsStatus}
           onTogglePopover={() => {
-            if (!appSidebarCollapsed) setShowProfilePopover(!showProfilePopover);
+            if (!appSidebarCollapsed) setShowProfilePopover((open) => !open);
           }}
         />
 
         {showProfilePopover && !appSidebarCollapsed && (
-          <div className="v3-profile-popover">
+          <div className="v3-profile-popover" ref={profilePopoverRef}>
             <div className="v3-popover-item v3-popover-status" aria-disabled="true">
               <CheckCircle2 size={16} style={{marginRight: 10}} /> 公司账号已连接
             </div>

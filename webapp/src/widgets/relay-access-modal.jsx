@@ -598,8 +598,8 @@ export default function RelayAccessModal({ onClose }) {
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <div className="oc-modal relay-access-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="oc-modal-header relay-access-header">
-          <div>
+        <div className="oc-modal-header relay-access-header cc-settings-secondary-header">
+          <div className="cc-settings-secondary-header-copy">
             <h3>CatsCo 模型服务</h3>
             <p>
               {config.self_service_enabled

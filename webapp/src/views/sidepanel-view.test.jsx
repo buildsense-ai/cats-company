@@ -4,7 +4,7 @@ import { Simulate } from 'react-dom/test-utils';
 
 vi.mock('../widgets/create-group', () => ({
   default: function MockCreateGroup() {
-    return null;
+    return <div data-testid="create-group-modal">创建群聊弹窗</div>;
   },
 }));
 
@@ -192,8 +192,9 @@ describe('ChatListView sidebar sections', () => {
     });
 
     expect(api.openAgent).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('移动端使用');
-    expect(container.textContent).toContain('Dev Agent');
+    expect(container.querySelector('[data-testid="mobile-channel-modal"]')).toBeFalsy();
+    expect(document.body.querySelector('[data-testid="mobile-channel-modal"]')?.textContent).toContain('移动端使用');
+    expect(document.body.querySelector('[data-testid="mobile-channel-modal"]')?.textContent).toContain('Dev Agent');
   });
 
   it('opens mobile binding from a group row without opening the group conversation', async () => {
@@ -219,10 +220,11 @@ describe('ChatListView sidebar sections', () => {
     });
 
     expect(onSelectTopic).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('移动端使用');
-    expect(container.textContent).toContain('Virtual Team');
-    expect(container.querySelector('[data-testid="mobile-channel-group-id"]').textContent).toBe('88');
-    expect(container.querySelector('[data-testid="mobile-channel-topic-id"]').textContent).toBe('grp_88');
+    expect(container.querySelector('[data-testid="mobile-channel-modal"]')).toBeFalsy();
+    expect(document.body.querySelector('[data-testid="mobile-channel-modal"]')?.textContent).toContain('移动端使用');
+    expect(document.body.querySelector('[data-testid="mobile-channel-modal"]')?.textContent).toContain('Virtual Team');
+    expect(document.body.querySelector('[data-testid="mobile-channel-group-id"]').textContent).toBe('88');
+    expect(document.body.querySelector('[data-testid="mobile-channel-topic-id"]').textContent).toBe('grp_88');
   });
 
   it('removes friend agents directly from the assistant row', async () => {
@@ -400,6 +402,28 @@ describe('ChatListView sidebar sections', () => {
 
     expect(container.textContent).toContain('好友');
     expect(container.textContent).not.toContain('Alice');
+  });
+
+  it('portals the new-task dialog outside the sidebar container', async () => {
+    await mount();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.cc-sidebar-primary'));
+    });
+
+    expect(container.querySelector('.cc-new-task-dialog')).toBeFalsy();
+    expect(document.body.querySelector('.cc-new-task-dialog')).toBeTruthy();
+  });
+
+  it('portals collaboration dialogs outside the sidebar container', async () => {
+    await mount();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="创建群聊"]'));
+    });
+
+    expect(container.querySelector('[data-testid="create-group-modal"]')).toBeFalsy();
+    expect(document.body.querySelector('[data-testid="create-group-modal"]')).toBeTruthy();
   });
 
   it('removes an ordinary friend from the friend row menu', async () => {

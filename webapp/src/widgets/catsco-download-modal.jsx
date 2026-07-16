@@ -254,8 +254,8 @@ export default function CatsCoDownloadModal({ onClose }) {
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <div className="oc-modal catsco-download-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="oc-modal-header catsco-download-header">
-          <div>
+        <div className="oc-modal-header catsco-download-header cc-settings-secondary-header">
+          <div className="cc-settings-secondary-header-copy">
             <h3>CatsCo 本机设备</h3>
             <p>当前版本 v{releaseVersion(desktopRelease)}</p>
           </div>

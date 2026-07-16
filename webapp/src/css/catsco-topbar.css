@@ -1,0 +1,124 @@
+/*
+ * Top bar layout is intentionally isolated from the shared UI system so this
+ * surface can evolve without coupling it to sidebar and dialog work.
+ */
+
+.v3-local-assistant-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  box-sizing: border-box;
+  min-height: 56px;
+  padding: 0 12px;
+}
+
+.v3-model-select {
+  min-width: 0;
+  justify-self: stretch;
+}
+
+.v3-local-assistant-status {
+  max-width: min(100%, 220px);
+  min-width: 0;
+}
+
+.v3-local-assistant-status > span:not(.v3-model-status-dot) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-local-assistant-status > svg {
+  flex: 0 0 auto;
+}
+
+.v3-shell-title {
+  position: static;
+  justify-self: center;
+  max-width: min(42vw, 480px);
+  overflow: hidden;
+  transform: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-shell-actions {
+  min-width: 0;
+  justify-self: end;
+  margin-left: 0;
+}
+
+.v3-action-btn {
+  flex: 0 0 auto;
+  border-radius: var(--cc-radius-md);
+}
+
+.v3-local-assistant-status:focus-visible,
+.v3-action-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--cc-accent) 72%, transparent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 768px) {
+  .v3-local-assistant-bar {
+    gap: 8px;
+    padding: 0 10px;
+  }
+
+  .v3-model-select {
+    box-sizing: border-box;
+    padding-left: 44px;
+  }
+
+  .v3-model-menu {
+    left: 44px;
+    width: min(248px, calc(100vw - 64px));
+  }
+
+  .v3-local-assistant-status {
+    max-width: 100%;
+    padding-inline: 8px;
+  }
+
+  .v3-shell-title {
+    max-width: 26vw;
+    font-size: 13px;
+  }
+
+  .v3-shell-actions {
+    gap: 2px;
+  }
+
+  .v3-action-btn {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+@media (max-width: 360px) {
+  .v3-local-assistant-bar {
+    gap: 5px;
+    padding-right: 7px;
+    padding-left: 7px;
+  }
+
+  .v3-model-select {
+    padding-left: 43px;
+  }
+
+  .v3-local-assistant-status {
+    gap: 5px;
+    padding-inline: 7px;
+  }
+
+  .v3-shell-title {
+    max-width: 22vw;
+  }
+
+  .v3-action-btn {
+    width: 30px;
+    height: 30px;
+  }
+}

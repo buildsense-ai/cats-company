@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { api, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import CreateGroup from '../widgets/create-group';
@@ -758,20 +759,28 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
 
       </div>
 
-      {showNewChat && (
-        <div style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center'}} onClick={() => { setShowNewChat(false); setNamingAgent(null); }}>
-          <div style={{background: 'var(--cc-surface)', border: '1px solid var(--cc-border)', color: 'var(--cc-text)', borderRadius: 8, padding: 24, minWidth: 300, maxWidth: 400}} onClick={(e) => e.stopPropagation()}>
+      {showNewChat && createPortal(
+        <div className="name-dialog-overlay cc-new-task-overlay" onClick={() => { setShowNewChat(false); setNamingAgent(null); }}>
+          <section className="name-dialog cc-new-task-dialog" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <header className="cc-new-task-header">
+              <h3>{namingAgent ? '为对话取个名字' : '选择 AI 助手开始对话'}</h3>
+              <button type="button" className="cc-dialog-close" onClick={() => { setShowNewChat(false); setNamingAgent(null); }} aria-label="关闭">
+                <X size={18} />
+              </button>
+            </header>
+            <div className="cc-new-task-body">
             {!namingAgent ? (
               <>
-                <h3 style={{margin: '0 0 16px', fontSize: 16, color: 'var(--cc-text)'}}>选择 AI 助手开始对话</h3>
                 {agents.length === 0 ? (
-                  <div style={{color: 'var(--cc-muted)', fontSize: 13, textAlign: 'center', padding: 20}}>暂无 AI 助手，请先在 AI 助手区创建</div>
+                  <div className="cc-new-task-empty">
+                    <strong>暂无 AI 助手</strong>
+                    <span>请先在“协作 &gt; Agent 助手”中创建</span>
+                  </div>
                 ) : (
-                  <div style={{display: 'flex', flexDirection: 'column', gap: 8}}>
+                  <div className="cc-new-task-agent-list">
                     {agents.map((agent) => (
-                      <button key={agent.uid || agent.id} onClick={() => handleNewChatWithAgent(agent)}
-                        style={{display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--v3-border)', borderRadius: 8, cursor: 'pointer', color: '#fff', fontSize: 14, textAlign: 'left'}}>
-                        <Bot size={20} style={{color: 'var(--v3-primary)', flexShrink: 0}} />
+                      <button type="button" className="cc-new-task-agent" key={agent.uid || agent.id} onClick={() => handleNewChatWithAgent(agent)}>
+                        <Bot size={18} />
                         <span>{agent.display_name || agent.username}</span>
                       </button>
                     ))}
@@ -780,49 +789,58 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
               </>
             ) : (
               <>
-                <h3 style={{margin: '0 0 16px', fontSize: 16, color: '#fff'}}>为对话取个名字</h3>
                 <input
                   autoFocus
-                  className="oc-auth-input"
-                  style={{width: '100%', padding: '10px 14px', marginBottom: 12}}
+                  className="oc-auth-input cc-new-task-name"
                   value={newChatName}
                   onChange={(e) => setNewChatName(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleConfirmNewChat(); }}
                   placeholder="对话名称"
                 />
-                <div style={{display: 'flex', gap: 8}}>
-                  <button onClick={() => setNamingAgent(null)}
-                    style={{flex: 1, padding: '10px', background: 'none', border: '1px solid var(--v3-border)', borderRadius: 8, cursor: 'pointer', color: '#888', fontSize: 14}}>
+                <div className="cc-new-task-actions">
+                  <button type="button" className="oc-btn oc-btn-default" onClick={() => setNamingAgent(null)}>
                     返回
                   </button>
-                  <button onClick={handleConfirmNewChat}
-                    style={{flex: 1, padding: '10px', background: 'var(--v3-primary)', border: 'none', borderRadius: 8, cursor: 'pointer', color: '#fff', fontSize: 14}}>
+                  <button type="button" className="oc-btn oc-btn-primary" onClick={handleConfirmNewChat}>
                     创建
                   </button>
                 </div>
               </>
             )}
-          </div>
-        </div>
+            </div>
+          </section>
+        </div>,
+        document.body,
       )}
 
-      {showCreateGroup && <CreateGroup onClose={() => setShowCreateGroup(false)} onCreated={handleGroupCreated} />}
-      {showAddFriend && <AddFriend currentUser={user} onClose={() => setShowAddFriend(false)} onSent={() => loadAll()} />}
-      {showAgentStore && <AgentStoreModal onClose={() => setShowAgentStore(false)} user={user} onBotsChanged={() => loadAll()} />}
-      {mobileLinkAgent && (
+      {showCreateGroup && createPortal(
+        <CreateGroup onClose={() => setShowCreateGroup(false)} onCreated={handleGroupCreated} />,
+        document.body,
+      )}
+      {showAddFriend && createPortal(
+        <AddFriend currentUser={user} onClose={() => setShowAddFriend(false)} onSent={() => loadAll()} />,
+        document.body,
+      )}
+      {showAgentStore && createPortal(
+        <AgentStoreModal onClose={() => setShowAgentStore(false)} user={user} onBotsChanged={() => loadAll()} />,
+        document.body,
+      )}
+      {mobileLinkAgent && createPortal(
         <MobileChannelBindModal
           agentUid={mobileLinkAgent.uid || mobileLinkAgent.id}
           agentName={mobileLinkAgent.display_name || mobileLinkAgent.username}
           onClose={() => setMobileLinkAgent(null)}
-        />
+        />,
+        document.body,
       )}
-      {mobileLinkGroup && (
+      {mobileLinkGroup && createPortal(
         <MobileChannelBindModal
           groupId={mobileLinkGroup.groupId}
           topicId={mobileLinkGroup.topicId}
           groupName={mobileLinkGroup.name}
           onClose={() => setMobileLinkGroup(null)}
-        />
+        />,
+        document.body,
       )}
     </>
   );
