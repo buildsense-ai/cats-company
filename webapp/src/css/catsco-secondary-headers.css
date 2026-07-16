@@ -1,0 +1,144 @@
+/* Shared title bar for the five secondary surfaces opened from account settings. */
+
+.oc-modal .cc-settings-secondary-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  box-sizing: border-box;
+  min-height: 76px;
+  margin: 0;
+  padding: 16px 20px 14px;
+  border-bottom: 1px solid var(--cc-border) !important;
+  background: var(--cc-panel);
+}
+
+.cc-settings-secondary-header-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.oc-modal .cc-settings-secondary-header h3 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--cc-text);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.32;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oc-modal .cc-settings-secondary-header p {
+  display: -webkit-box;
+  max-width: 560px;
+  margin: 0;
+  overflow: hidden;
+  color: var(--cc-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.oc-modal .cc-settings-secondary-header > button {
+  display: inline-flex;
+  flex: 0 0 34px;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-muted);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.oc-modal .cc-settings-secondary-header > button:hover {
+  background: var(--cc-hover);
+  color: var(--cc-text);
+}
+
+.oc-modal .cc-settings-secondary-header > button:active {
+  background: var(--cc-pressed);
+  transform: scale(0.96);
+}
+
+.oc-modal .cc-settings-secondary-header > button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--cc-accent) 72%, transparent);
+  outline-offset: 2px;
+}
+
+.oc-modal .cc-settings-secondary-header > button svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.8;
+}
+
+/* These two dialogs retain padded bodies; extend only their headers to the edge. */
+.oc-feedback-modal > .cc-settings-secondary-header {
+  margin: -22px -22px 0;
+  padding-right: 22px;
+  padding-left: 22px;
+}
+
+.oc-profile-editor-modal > .cc-settings-secondary-header {
+  margin: -24px -24px 20px;
+  padding-right: 24px;
+  padding-left: 24px;
+}
+
+.relay-access-modal > .cc-settings-secondary-header {
+  margin: -24px -24px 0;
+  padding-right: 24px;
+  padding-left: 24px;
+}
+
+@media (max-width: 560px) {
+  .oc-modal .cc-settings-secondary-header {
+    gap: 14px;
+    min-height: 68px;
+    padding: 13px 16px 12px;
+  }
+
+  .oc-modal .cc-settings-secondary-header h3 {
+    font-size: 16px;
+  }
+
+  .oc-modal .cc-settings-secondary-header p {
+    font-size: 11px;
+  }
+
+  .oc-modal .cc-settings-secondary-header > button {
+    flex-basis: 32px;
+    width: 32px;
+    height: 32px;
+  }
+
+  .oc-feedback-modal > .cc-settings-secondary-header {
+    margin-right: -22px;
+    margin-left: -22px;
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+
+  .oc-profile-editor-modal > .cc-settings-secondary-header {
+    margin-right: -24px;
+    margin-left: -24px;
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+
+  .relay-access-modal > .cc-settings-secondary-header {
+    margin-right: -24px;
+    margin-left: -24px;
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+}

@@ -102,20 +102,18 @@ export default function PasswordResetForm({ defaultEmail = '', onDone }) {
         value={email}
         onChange={(e) => setEmail(e.target.value)}
       />
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div className="oc-password-reset-code-row">
         <input
           className="oc-auth-input"
           placeholder="邮箱验证码"
           value={code}
           onChange={(e) => setCode(e.target.value)}
-          style={{ flex: 1 }}
         />
         <button
           type="button"
           className="oc-auth-btn"
           onClick={handleSendCode}
           disabled={countdown > 0}
-          style={{ width: 120, fontSize: 13 }}
         >
           {countdown > 0 ? `${countdown}秒` : (codeSent ? '重新发送' : '发送验证码')}
         </button>

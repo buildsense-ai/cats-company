@@ -78,20 +78,44 @@ async function request(method, path, body) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (cause) {
+    const error = new Error('网络连接失败，请检查后端服务是否运行');
+    error.code = 'NETWORK_ERROR';
+    error.cause = cause;
+    throw error;
+  }
 
-  const data = await res.json();
+  let data = {};
+  try {
+    data = await res.json();
+  } catch {
+    data = {};
+  }
   if (!res.ok) {
-    const error = new Error(data.error || 'Request failed');
+    const error = new Error(data.error || statusMessage(res.status));
     error.status = res.status;
     error.data = data;
     throw error;
   }
   return data;
+}
+
+function statusMessage(status) {
+  if (status === 400) return '请求内容有误，请检查后重试';
+  if (status === 401) return '登录状态已失效，请重新登录';
+  if (status === 403) return '当前账号没有执行此操作的权限';
+  if (status === 404) return '请求的功能暂时不可用';
+  if (status === 409) return '当前数据已发生变化，请刷新后重试';
+  if (status === 429) return '操作过于频繁，请稍后再试';
+  if (status >= 500) return '后端服务暂时异常，请稍后重试';
+  return '请求失败，请稍后重试';
 }
 
 export const api = {

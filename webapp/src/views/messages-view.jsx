@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, MoreHorizontal, SendHorizontal, Smartphone, Square, X } from 'lucide-react';
+import { Check, CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, MoreHorizontal, Plus, Smartphone, Square, X, ArrowUp } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { FilePreviewPanel } from '../widgets/chat-message';
@@ -59,10 +59,9 @@ export default function MessagesView({
   groupId,
   topicAvatarUrl,
   onTopicUpdated,
-  tutorialOpenToken = 0,
-  localAssistantStatus = 'unknown',
+  localAssistantStatus = 'connected',
   onOpenDesktopConnect,
-  onTutorialHint,
+  onSelectAgent,
 }) {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
@@ -94,6 +93,10 @@ export default function MessagesView({
   const [tutorialTasks, setTutorialTasks] = useState(TUTORIAL_TASKS);
   const [tutorialDismissed, setTutorialDismissed] = useState(() => localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
   const [showMobileLinkModal, setShowMobileLinkModal] = useState(false);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+  const [availableAgents, setAvailableAgents] = useState([]);
+  const [selectedAgentId, setSelectedAgentId] = useState('');
   const [showThinking, setShowThinking] = useState(() => {
     const saved = localStorage.getItem('cc_show_thinking');
     return saved === null ? true : saved === 'true';
@@ -117,6 +120,28 @@ export default function MessagesView({
   const composerDraftsRef = useRef(new Map());
   const previewWidthRef = useRef(previewWidth);
   const phoneUploadFileKeysRef = useRef(new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadAgents = async () => {
+      try {
+        const response = await api.getAgents();
+        if (cancelled) return;
+        const agents = response.agents || [];
+        setAvailableAgents(agents);
+        setSelectedAgentId((current) => current || agents.find((agent) => agent.topic_id === topic)?.uid || agents[0]?.uid || agents[0]?.id || '');
+      } catch (error) {
+        if (!cancelled) setAvailableAgents([]);
+      }
+    };
+    loadAgents();
+    const refresh = () => loadAgents();
+    window.addEventListener('cc:data-changed', refresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('cc:data-changed', refresh);
+    };
+  }, [topic]);
 
   const updateComposerDraft = useCallback((draftTopic, value) => {
     if (!draftTopic) return;
@@ -192,12 +217,6 @@ export default function MessagesView({
   useEffect(() => {
     setTutorialDismissed(localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
   }, [topic, user.uid]);
-
-  useEffect(() => {
-    if (tutorialOpenToken > 0) {
-      setShowTutorialPicker(true);
-    }
-  }, [tutorialOpenToken]);
 
   useEffect(() => {
     let cancelled = false;
@@ -587,6 +606,16 @@ export default function MessagesView({
     const text = input.trim();
     if (!text && pendingAttachments.length === 0) return;
     if (isUploadingAttachment) return;
+    if (localAssistantStatus !== 'connected') {
+      setAttachmentStatus({
+        tone: 'error',
+        message: localAssistantStatus === 'checking'
+          ? '模型正在连接，请稍候再发送。'
+          : '模型未连接，请先连接本地 CatsCo 助手。',
+      });
+      onOpenDesktopConnect?.();
+      return;
+    }
 
     const sendTopic = topic;
     clearRuntimePlan();
@@ -629,13 +658,17 @@ export default function MessagesView({
       finalizeOptimisticMessage(tempId, result);
     } catch (err) {
       removeOptimisticMessage(tempId);
-      updateComposerDraft(sendTopic, text);
       if (activeTopicRef.current !== sendTopic) return;
+      updateComposerDraft(sendTopic, text);
       setInput(text);
       setPendingAttachments(attachmentsToSend);
       setReplyTo(currentReplyTo);
+      setAttachmentStatus({
+        tone: 'error',
+        message: err?.message ? `发送失败：${err.message}` : '连接失败，请检查本地模型和网络后重试。',
+      });
     }
-  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isUploadingAttachment, pendingAttachments, removeOptimisticMessage, replyTo, topic, updateComposerDraft, user.uid]);
+  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isUploadingAttachment, localAssistantStatus, onOpenDesktopConnect, pendingAttachments, removeOptimisticMessage, replyTo, topic, updateComposerDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
     if (!activeBotWorking || isStopRequested) return;
@@ -944,10 +977,12 @@ export default function MessagesView({
     const match = String(topic || '').match(/^grp_(\d+)$/);
     return match ? parseInt(match[1], 10) : 0;
   }, [groupId, isGroup, topic]);
-  const peerIsBot = peerProfile?.bot === true || peerProfile?.is_bot === true || peerProfile?.account_type === 'bot';
+  const rosterPeer = availableAgents.find((agent) => agent.uid === peerUID || agent.id === peerUID);
+  const resolvedPeerProfile = rosterPeer ? { ...peerProfile, ...rosterPeer } : peerProfile;
+  const peerIsBot = resolvedPeerProfile?.bot === true || resolvedPeerProfile?.is_bot === true || resolvedPeerProfile?.account_type === 'bot';
   const canBindMobileChannel = (!isGroup && peerUID > 0 && peerIsBot) || (isGroup && effectiveGroupId > 0);
-  const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (peerProfile?.display_name || peerProfile?.username || topicName || topic);
-  const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (peerProfile?.avatar_url || topicAvatarUrl);
+  const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
+  const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const agentQuotaLabel = formatRelayUsagePill(agentQuota, { customLabel: '自备模型' });
   const agentUsesCustomModel = agentQuota?.source === 'custom' || agentQuota?.status === 'custom';
   const agentQuotaTitle = agentUsesCustomModel
@@ -1089,7 +1124,6 @@ export default function MessagesView({
   const dismissTutorialEmptyState = () => {
     localStorage.setItem(tutorialDismissStorageKey(user.uid, topic), '1');
     setTutorialDismissed(true);
-    onTutorialHint?.();
   };
 
   const applyTutorialPrompt = (prompt) => {
@@ -1110,6 +1144,9 @@ export default function MessagesView({
       loadOlderHistory();
     }
   };
+
+  const selectedAgent = availableAgents.find((agent) => (agent.uid || agent.id) === selectedAgentId) || availableAgents[0] || null;
+  const selectedAgentName = selectedAgent?.display_name || selectedAgent?.username || '选择 Agent';
 
   return (
     <>
@@ -1264,42 +1301,6 @@ export default function MessagesView({
             </div>
           )}
           
-          <div className="v3-composer-toolbar">
-            <button
-              className="v3-tool"
-              onClick={() => openAttachmentPicker(imageInputRef)}
-              title="上传图片"
-              aria-label="上传图片"
-              disabled={isUploadingAttachment}
-              type="button"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
-            </button>
-            <button
-              className="v3-tool"
-              onClick={() => openAttachmentPicker(fileInputRef)}
-              title="上传文件"
-              aria-label="上传文件"
-              disabled={isUploadingAttachment}
-              type="button"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
-            </button>
-            <button
-              className="v3-tool v3-tool-with-tooltip"
-              onClick={openPhoneUploadDialog}
-              title="微信扫码上传"
-              aria-label="微信扫码上传"
-              data-tooltip="微信扫码上传"
-              disabled={isUploadingAttachment}
-              type="button"
-            >
-              <Smartphone size={16} strokeWidth={2} />
-            </button>
-            <div style={{flex:1}}></div>
-            <button className="v3-tool" style={{ fontWeight: 600 }} onClick={() => { if(isGroup && textareaRef.current) { const pos = textareaRef.current.selectionStart; const nextInput = input.slice(0,pos) + '@' + input.slice(pos); setInput(nextInput); updateComposerDraft(topic, nextInput); textareaRef.current.focus(); } }} title="@成员" type="button">@</button>
-          </div>
-
           {activeBotWorking && (
             <div className="v3-live-input-status" role="status">
               {isStopRequested
@@ -1314,16 +1315,72 @@ export default function MessagesView({
             </div>
           )}
 
-          <textarea
-            ref={textareaRef}
-            className="v3-composer-input"
-            rows={1}
-            placeholder={t('chat_input_placeholder')}
-            value={input}
-            onChange={handleInputChange}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-          />
+          <div className="v3-composer-row">
+            <div className="v3-attachment-picker">
+              <button
+                className="v3-tool v3-composer-plus"
+                onClick={() => setAttachmentMenuOpen((open) => !open)}
+                title="添加文件或图片"
+                aria-label="添加文件或图片"
+                aria-expanded={attachmentMenuOpen}
+                disabled={isUploadingAttachment}
+                type="button"
+              >
+                <Plus size={20} />
+              </button>
+              <div className={`v3-attachment-menu${attachmentMenuOpen ? ' is-open' : ''}`} aria-hidden={!attachmentMenuOpen}>
+                  <button type="button" onClick={() => { setAttachmentMenuOpen(false); openAttachmentPicker(imageInputRef); }}><Image size={16} /><span>上传图片</span></button>
+                  <button type="button" onClick={() => { setAttachmentMenuOpen(false); openAttachmentPicker(fileInputRef); }}><FileText size={16} /><span>上传文件</span></button>
+                  <button type="button" aria-label="微信扫码上传" data-tooltip="微信扫码上传" onClick={() => { setAttachmentMenuOpen(false); openPhoneUploadDialog(); }}><Smartphone size={16} /><span>手机扫码上传</span></button>
+                  {isGroup && <button type="button" onClick={() => { setAttachmentMenuOpen(false); if (textareaRef.current) { const pos = textareaRef.current.selectionStart; const nextInput = `${input.slice(0, pos)}@${input.slice(pos)}`; setInput(nextInput); updateComposerDraft(topic, nextInput); textareaRef.current.focus(); } }}><span className="v3-at-sign">@</span><span>提及群成员</span></button>}
+              </div>
+            </div>
+
+            <textarea
+              ref={textareaRef}
+              className="v3-composer-input"
+              rows={1}
+              placeholder={t('chat_input_placeholder')}
+              value={input}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+            />
+
+            <div className="v3-agent-picker">
+              <button type="button" className="v3-agent-picker-button" onClick={() => setAgentPickerOpen((open) => !open)} aria-expanded={agentPickerOpen}>
+                <span>{selectedAgentName}</span><ChevronDown size={14} />
+              </button>
+              {agentPickerOpen && (
+                <div className="v3-agent-picker-menu" role="listbox" aria-label="选择 Agent">
+                  {availableAgents.length === 0 ? <div className="v3-picker-empty">暂无可用 Agent</div> : availableAgents.map((agent) => {
+                    const agentId = agent.uid || agent.id;
+                    const name = agent.display_name || agent.username || 'Agent';
+                    return (
+                      <button type="button" role="option" aria-selected={agentId === selectedAgentId} className={agentId === selectedAgentId ? 'selected' : ''} key={agentId} onClick={async () => {
+                        setSelectedAgentId(agentId);
+                        setAgentPickerOpen(false);
+                        try { await onSelectAgent?.(agent); } catch (error) { setAttachmentStatus({ tone: 'error', message: error?.message || '无法切换 Agent，请稍后重试。' }); }
+                      }}>
+                        <span>{name}</span>{agentId === selectedAgentId && <Check size={15} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <button
+              className={`v3-send${showStopButton ? ' stop' : ''}`}
+              disabled={showStopButton ? isStopRequested : isUploadingAttachment || (!input.trim() && pendingAttachments.length === 0)}
+              onClick={showStopButton ? handleStopGeneration : handleSend}
+              aria-label={showStopButton ? '停止当前工作' : t('chat_send')}
+              title={showStopButton ? '停止当前工作' : t('chat_send')}
+              type="button"
+            >
+              {showStopButton ? <Square size={13} fill="currentColor" /> : <ArrowUp size={18} />}
+            </button>
+          </div>
 
           {(isUploadingAttachment || pendingAttachments.length > 0) && (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', marginTop: 10, borderRadius: 10, background: 'rgba(255,255,255,0.04)', border: '1px solid var(--v3-border)', color: 'var(--v3-text-main)' }}>
@@ -1358,22 +1415,7 @@ export default function MessagesView({
             </div>
           )}
           
-          <div className="v3-composer-footer">
-            <span><strong>Enter</strong> 发送，<strong>Shift + Enter</strong> 换行</span>
-            <button
-className={`v3-send${showStopButton ? ' stop' : ''}`}
-              disabled={showStopButton ? isStopRequested : isUploadingAttachment || (!input.trim() && pendingAttachments.length === 0)}
-              onClick={showStopButton ? handleStopGeneration : handleSend}
-              aria-label={showStopButton ? '停止当前工作' : t('chat_send')}
-              title={showStopButton ? '停止当前工作' : t('chat_send')}
-              type="button"
-            >
-              {showStopButton
-                ? <Square size={12} fill="currentColor" strokeWidth={2.5} />
-                : <SendHorizontal size={13} strokeWidth={2.5} />}
-              <span>{showStopButton ? (isStopRequested ? '停止中' : '停止') : t('chat_send')}</span>
-            </button>
-          </div>
+          <div className="v3-composer-hint">Enter 发送 · Shift+Enter 换行 · Ctrl+Enter 发送 · Ctrl+B 折叠侧栏 · 点击红色按钮停止生成</div>
           
           <input ref={imageInputRef} type="file" accept={IMAGE_UPLOAD_ACCEPT} multiple style={{ display: 'none' }} onChange={(e) => handleFileUpload(e, 'image')} />
           <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={(e) => handleFileUpload(e, 'file')} />

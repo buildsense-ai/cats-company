@@ -197,11 +197,15 @@ func (h *RelayKeyHandler) HandleUsage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if source == "custom" || normalizeRelayModelName(model) == "custom" || strings.EqualFold(model, "自定义模型") {
+		customModel := model
+		if customModel == "" || normalizeRelayModelName(customModel) == "custom" || strings.EqualFold(customModel, "自定义模型") {
+			customModel = "自定义模型"
+		}
 		writeJSON(w, http.StatusOK, relayUsageResponse{
 			Configured: true,
 			Summary: &relayUsageSummary{
 				Source: "custom",
-				Model:  "自定义模型",
+				Model:  customModel,
 				Status: "custom",
 			},
 		})

@@ -200,8 +200,8 @@ export default function DesktopConnectModal({ onClose, onConnected, onStatusChan
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <div className="oc-modal catsco-download-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="oc-modal-header catsco-download-header">
-          <div>
+        <div className="oc-modal-header catsco-download-header cc-settings-secondary-header">
+          <div className="cc-settings-secondary-header-copy">
             <h3>连接本地 CatsCo 助手</h3>
             <p>网页登录后，桌面端会自动完成同账号连接。</p>
           </div>
@@ -210,10 +210,10 @@ export default function DesktopConnectModal({ onClose, onConnected, onStatusChan
           </button>
         </div>
 
-        <div style={{ display: 'grid', gap: 14 }}>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center', color: 'var(--v3-text-main)' }}>
+        <div className="catsco-connect-body">
+          <div className="catsco-connect-summary">
             {state === 'connected' ? <CheckCircle2 size={20} color="#0BA36D" /> : busy ? <Loader2 className="catsco-spin" size={20} /> : <Laptop size={20} />}
-            <div>
+            <div className="catsco-connect-copy">
               <div style={{ fontWeight: 600 }}>
                 {state === 'connected' ? '已连接本地助手' : busy ? '正在等待桌面端确认' : '打开已安装的 CatsCo 桌面端'}
               </div>
@@ -234,27 +234,28 @@ export default function DesktopConnectModal({ onClose, onConnected, onStatusChan
             </div>
           )}
 
-          {error && <div style={{ color: '#FA5151', fontSize: 13 }}>{error}</div>}
+          {error && <div className="catsco-connect-feedback is-error" role="alert">{error}</div>}
 
           {state === 'connected' && (
-            <div style={{ color: '#0BA36D', fontSize: 13, fontWeight: 600 }}>
+            <div className="catsco-connect-feedback is-success">
               已连接到本地 CatsCo 桌面助手，正在为你打开对话。
             </div>
           )}
 
-          <button className="oc-btn oc-btn-primary" type="button" onClick={startConnect} disabled={state === 'connected' || busy}>
-            {busy ? <Loader2 className="catsco-spin" size={16} style={{ marginRight: 8 }} /> : <Laptop size={16} style={{ marginRight: 8 }} />}
-            {busy ? '等待连接...' : '打开 CatsCo 桌面端'}
-          </button>
+          <div className="catsco-connect-actions">
+            <button className="oc-btn oc-btn-primary" type="button" onClick={startConnect} disabled={state === 'connected' || busy}>
+              {busy && <Loader2 className="catsco-spin" size={16} />}
+              {busy ? '等待连接...' : '打开 CatsCo 桌面端'}
+            </button>
 
-          <button
-            type="button"
-            className="oc-btn oc-btn-default"
-            style={{ width: '100%', justifyContent: 'center' }}
-            onClick={() => setShowDownloads((value) => !value)}
-          >
-            {showDownloads ? '收起下载' : '下载桌面端'}
-          </button>
+            <button
+              type="button"
+              className="oc-btn oc-btn-default"
+              onClick={() => setShowDownloads((value) => !value)}
+            >
+              {showDownloads ? '收起下载' : '下载桌面端'}
+            </button>
+          </div>
 
           {showDownloads && (
             <div className="catsco-download-list">

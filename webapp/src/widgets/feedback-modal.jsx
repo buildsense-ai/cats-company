@@ -1,15 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Bug, Plus, X } from 'lucide-react';
 import { api } from '../api';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
 
 const MAX_ATTACHMENTS = 5;
 const FEEDBACK_DRAFT_VERSION = 1;
-
-const CATEGORY_OPTIONS = [
-  { value: 'bug', label: '问题反馈' },
-  { value: 'suggestion', label: '功能建议' },
-  { value: 'other', label: '其他' },
-];
 
 function getDraftKey(user) {
   return `cats_feedback_draft_v${FEEDBACK_DRAFT_VERSION}_${user?.uid || user?.username || 'guest'}`;
@@ -36,9 +31,11 @@ function isEmptyDraft({ category, title, description }) {
 export default function FeedbackModal({ onClose, user }) {
   const draftKey = useMemo(() => getDraftKey(user), [user]);
   const initialDraft = useMemo(() => readDraft(draftKey), [draftKey]);
-  const [category, setCategory] = useState(initialDraft?.category || 'bug');
-  const [title, setTitle] = useState(initialDraft?.title || '');
+  const category = initialDraft?.category || 'bug';
+  const title = initialDraft?.title || '';
   const [description, setDescription] = useState(initialDraft?.description || '');
+  const [contact, setContact] = useState('');
+  const [includeLogs, setIncludeLogs] = useState(true);
   const [attachments, setAttachments] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -124,17 +121,6 @@ export default function FeedbackModal({ onClose, user }) {
     });
   };
 
-  const handleClearDraft = () => {
-    attachmentsRef.current.forEach((item) => URL.revokeObjectURL(item.previewUrl));
-    attachmentsRef.current = [];
-    setCategory('bug');
-    setTitle('');
-    setDescription('');
-    setAttachments([]);
-    setError('');
-    localStorage.removeItem(draftKey);
-  };
-
   const handleSubmit = async (event) => {
     event.preventDefault();
     if (!description.trim()) {
@@ -161,6 +147,8 @@ export default function FeedbackModal({ onClose, user }) {
         category,
         title: title.trim(),
         description: description.trim(),
+        contact: contact.trim(),
+        include_logs: includeLogs,
         page_url: window.location.href,
         user_agent: navigator.userAgent,
         attachments: uploaded,
@@ -183,11 +171,14 @@ export default function FeedbackModal({ onClose, user }) {
 
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
-      <div className="oc-modal oc-feedback-modal" onClick={(event) => event.stopPropagation()}>
-        <div className="oc-modal-header">
-          <h3>问题反馈与建议</h3>
-          <button type="button" onClick={onClose}>×</button>
-        </div>
+      <section className="oc-modal oc-feedback-modal" role="dialog" aria-modal="true" aria-label="意见反馈" onClick={(event) => event.stopPropagation()}>
+        <header className="oc-modal-header cc-settings-secondary-header">
+          <div className="cc-settings-secondary-header-copy">
+            <h3>意见反馈</h3>
+            <p>分享你的使用体验、问题或改进建议。</p>
+          </div>
+          <button type="button" aria-label="关闭" onClick={onClose}><X aria-hidden="true" /></button>
+        </header>
 
         {submitted ? (
           <div className="oc-modal-body">
@@ -199,101 +190,34 @@ export default function FeedbackModal({ onClose, user }) {
           </div>
         ) : (
           <form className="oc-modal-body" onSubmit={handleSubmit}>
-            <div className="oc-feedback-required-note">
-              内容会自动暂存，关闭后下次打开可继续编辑。
-            </div>
-            <div className="oc-feedback-required-note">
-              标 <span className="oc-required">*</span> 的项目为必填，截图可不上传。
+            <div className="oc-feedback-intro">
+              <span className="oc-feedback-intro-icon" aria-hidden="true"><Bug /></span>
+              <div><h4>你的每一条反馈，都在帮助 CatsCo 变得更好</h4><p>请描述遇到的问题或建议，我们会认真查看。</p></div>
             </div>
 
-            <div className="oc-form-group">
-              <label>反馈类型 <span className="oc-required">*</span></label>
-              <div className="oc-feedback-category-grid">
-                {CATEGORY_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    className={`oc-feedback-category ${category === option.value ? 'active' : ''}`}
-                    onClick={() => setCategory(option.value)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
+            <label className={`oc-feedback-message-field ${isDragging ? 'dragging' : ''}`} onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }} onDragLeave={() => setIsDragging(false)} onDrop={handleDrop}>
+              <textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={800} rows={8} required placeholder="描述你遇到的问题或建议" />
+              <div className="oc-feedback-media-tools">
+                {attachments.length > 0 && <div className="oc-feedback-preview-grid">{attachments.map((item) => <div className="oc-feedback-preview" key={item.id}><img src={item.previewUrl} alt={item.file.name} /><button type="button" aria-label={`移除 ${item.file.name}`} onClick={() => removeAttachment(item.id)}><X /></button></div>)}</div>}
+                <span className="oc-feedback-upload-button"><Plus aria-hidden="true" /><span>上传图片/录屏</span><input type="file" accept={IMAGE_UPLOAD_ACCEPT} multiple onChange={(event) => addFiles(event.target.files)} /></span>
               </div>
-            </div>
+              <span className="oc-feedback-counter">{description.length}/800</span>
+            </label>
 
-            <div className="oc-form-group">
-              <label>标题（可选）</label>
-              <input
-                className="oc-input"
-                value={title}
-                onChange={(event) => setTitle(event.target.value)}
-                maxLength={160}
-                placeholder="一句话说明问题"
-              />
-            </div>
-
-            <div className="oc-form-group">
-              <label>描述 <span className="oc-required">*</span></label>
-              <textarea
-                className="oc-input oc-feedback-textarea"
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-                maxLength={5000}
-                required
-                placeholder="请描述你遇到的问题、期望效果，或复现步骤。"
-              />
-            </div>
-
-            <div className="oc-form-group">
-              <label>截图说明（可选，最多 {MAX_ATTACHMENTS} 张）</label>
-              <div
-                className={`oc-feedback-dropzone ${isDragging ? 'dragging' : ''}`}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                  setIsDragging(true);
-                }}
-                onDragLeave={() => setIsDragging(false)}
-                onDrop={handleDrop}
-              >
-                <input
-                  type="file"
-                  accept={IMAGE_UPLOAD_ACCEPT}
-                  multiple
-                  onChange={(event) => addFiles(event.target.files)}
-                />
-                <div>点击选择截图，或直接拖拽图片到这里</div>
-                <small>支持 PNG、JPG、GIF、WebP</small>
-              </div>
-            </div>
-
-            {attachments.length > 0 && (
-              <div className="oc-feedback-preview-grid">
-                {attachments.map((item) => (
-                  <div className="oc-feedback-preview" key={item.id}>
-                    <img src={item.previewUrl} alt={item.file.name} />
-                    <button type="button" onClick={() => removeAttachment(item.id)}>移除</button>
-                  </div>
-                ))}
-              </div>
-            )}
+            <label className="oc-feedback-contact-field"><span>联系方式 <small>可选</small></span><input value={contact} onChange={(event) => setContact(event.target.value)} maxLength={100} placeholder="手机号、邮箱或其他联系方式，方便后续跟进" /></label>
 
             {error && <div className="oc-bot-error compact">{error}</div>}
 
-            <div className="oc-modal-footer">
-              <button type="button" className="oc-btn oc-btn-default" onClick={onClose} disabled={submitting}>
-                取消
-              </button>
-              <button type="button" className="oc-btn oc-btn-default" onClick={handleClearDraft} disabled={submitting}>
-                清空草稿
-              </button>
-              <button type="submit" className="oc-btn oc-btn-primary" disabled={!canSubmit}>
-                {submitting ? '提交中...' : '提交反馈'}
-              </button>
+            <div className="oc-feedback-footer-row">
+              <label className="oc-feedback-log-consent"><input type="checkbox" checked={includeLogs} onChange={(event) => setIncludeLogs(event.target.checked)} /><span>允许附带基础运行日志，帮助定位问题</span></label>
+              <div className="oc-modal-footer">
+                <button type="button" className="oc-btn oc-btn-default" onClick={onClose} disabled={submitting}>取消</button>
+                <button type="submit" className="oc-btn oc-btn-primary" disabled={!canSubmit}>{submitting ? '提交中...' : '提交'}</button>
+              </div>
             </div>
           </form>
         )}
-      </div>
+      </section>
     </div>
   );
 }

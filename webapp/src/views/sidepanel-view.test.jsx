@@ -4,7 +4,7 @@ import { Simulate } from 'react-dom/test-utils';
 
 vi.mock('../widgets/create-group', () => ({
   default: function MockCreateGroup() {
-    return null;
+    return <div data-testid="create-group-modal">创建群聊弹窗</div>;
   },
 }));
 
@@ -54,6 +54,7 @@ vi.mock('../api', () => ({
     acceptFriend: vi.fn(),
     rejectFriend: vi.fn(),
     removeFriend: vi.fn(),
+    blockUser: vi.fn(),
     disbandGroup: vi.fn(),
   },
   onWSMessage: vi.fn(() => vi.fn()),
@@ -108,6 +109,7 @@ describe('ChatListView sidebar sections', () => {
     api.acceptAgentFriend.mockResolvedValue({ ok: true });
     api.rejectAgentFriend.mockResolvedValue({ ok: true });
     api.removeFriend.mockResolvedValue({ ok: true });
+    api.blockUser.mockResolvedValue({ ok: true });
     onWSMessage.mockImplementation(() => vi.fn());
     onSelectTopic = vi.fn();
 
@@ -157,7 +159,7 @@ describe('ChatListView sidebar sections', () => {
   it('opens an agent conversation from the assistant roster', async () => {
     await mount();
 
-    expect(container.textContent).toContain('AI 助手');
+    expect(container.textContent).toContain('Agent 助手');
     expect(container.textContent).toContain('Dev Agent');
     const agentItem = Array.from(container.querySelectorAll('.v3-chat-item'))
       .find((node) => node.textContent.includes('Dev Agent'));
@@ -190,8 +192,9 @@ describe('ChatListView sidebar sections', () => {
     });
 
     expect(api.openAgent).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('移动端使用');
-    expect(container.textContent).toContain('Dev Agent');
+    expect(container.querySelector('[data-testid="mobile-channel-modal"]')).toBeFalsy();
+    expect(document.body.querySelector('[data-testid="mobile-channel-modal"]')?.textContent).toContain('移动端使用');
+    expect(document.body.querySelector('[data-testid="mobile-channel-modal"]')?.textContent).toContain('Dev Agent');
   });
 
   it('opens mobile binding from a group row without opening the group conversation', async () => {
@@ -217,10 +220,11 @@ describe('ChatListView sidebar sections', () => {
     });
 
     expect(onSelectTopic).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('移动端使用');
-    expect(container.textContent).toContain('Virtual Team');
-    expect(container.querySelector('[data-testid="mobile-channel-group-id"]').textContent).toBe('88');
-    expect(container.querySelector('[data-testid="mobile-channel-topic-id"]').textContent).toBe('grp_88');
+    expect(container.querySelector('[data-testid="mobile-channel-modal"]')).toBeFalsy();
+    expect(document.body.querySelector('[data-testid="mobile-channel-modal"]')?.textContent).toContain('移动端使用');
+    expect(document.body.querySelector('[data-testid="mobile-channel-modal"]')?.textContent).toContain('Virtual Team');
+    expect(document.body.querySelector('[data-testid="mobile-channel-group-id"]').textContent).toBe('88');
+    expect(document.body.querySelector('[data-testid="mobile-channel-topic-id"]').textContent).toBe('grp_88');
   });
 
   it('removes friend agents directly from the assistant row', async () => {
@@ -336,7 +340,7 @@ describe('ChatListView sidebar sections', () => {
     const text = container.textContent;
     expect(text).toContain('Bot Room');
     expect(text.indexOf('群聊')).toBeLessThan(text.indexOf('Bot Room'));
-    expect(text.indexOf('Bot Room')).toBeLessThan(text.indexOf('AI 助手'));
+    expect(text.indexOf('Bot Room')).toBeLessThan(text.indexOf('Agent 助手'));
   });
 
   it('shows matches from collapsed sections while searching', async () => {
@@ -400,6 +404,128 @@ describe('ChatListView sidebar sections', () => {
     expect(container.textContent).not.toContain('Alice');
   });
 
+  it('portals the new-task dialog outside the sidebar container', async () => {
+    await mount();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.cc-sidebar-primary'));
+    });
+
+    expect(container.querySelector('.cc-new-task-dialog')).toBeFalsy();
+    expect(document.body.querySelector('.cc-new-task-dialog')).toBeTruthy();
+  });
+
+  it('shows a new-chat action and recent conversations in compact mode', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Recent assistant',
+          is_group: false,
+          is_bot: true,
+          last_time: '2026-07-16T08:00:00Z',
+        },
+      ],
+    });
+
+    await mount({ compact: true });
+
+    expect(container.querySelector('[aria-label="新建对话"]')).toBeTruthy();
+    const recentButton = container.querySelector('[aria-label="打开对话：Recent assistant"]');
+    expect(recentButton).toBeTruthy();
+    expect(container.querySelector('.cc-sidebar-tools')).toBeFalsy();
+
+    await act(async () => {
+      Simulate.click(recentButton);
+    });
+
+    expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({
+      topicId: 'p2p_7_42',
+      name: 'Recent assistant',
+    }));
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="新建对话"]'));
+    });
+
+    expect(document.body.querySelector('.cc-new-task-dialog')).toBeTruthy();
+  });
+
+  it('portals collaboration dialogs outside the sidebar container', async () => {
+    await mount();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="创建群聊"]'));
+    });
+
+    expect(container.querySelector('[data-testid="create-group-modal"]')).toBeFalsy();
+    expect(document.body.querySelector('[data-testid="create-group-modal"]')).toBeTruthy();
+  });
+
+  it('removes an ordinary friend from the friend row menu', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_8',
+          friend_id: 8,
+          name: 'Alice',
+          is_group: false,
+          is_bot: false,
+        },
+      ],
+    });
+    window.confirm = vi.fn(() => true);
+
+    await mount({ activeTopic: 'p2p_7_8' });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Alice 更多操作"]'));
+    });
+    const removeButton = Array.from(container.querySelectorAll('[role="menuitem"]'))
+      .find((node) => node.textContent.includes('删除好友'));
+    expect(removeButton).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(removeButton);
+      await Promise.resolve();
+    });
+
+    expect(api.removeFriend).toHaveBeenCalledWith(8);
+    expect(onSelectTopic).toHaveBeenCalledWith(null);
+  });
+
+  it('blocks an ordinary friend from the friend row menu', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_9',
+          friend_id: 9,
+          name: 'Bob',
+          is_group: false,
+          is_bot: false,
+        },
+      ],
+    });
+    window.confirm = vi.fn(() => true);
+
+    await mount();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Bob 更多操作"]'));
+    });
+    const blockButton = Array.from(container.querySelectorAll('[role="menuitem"]'))
+      .find((node) => node.textContent.includes('拉黑好友'));
+    expect(blockButton).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(blockButton);
+      await Promise.resolve();
+    });
+
+    expect(api.blockUser).toHaveBeenCalledWith(9);
+  });
+
   it('keeps group conversations in the groups section by default', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [
@@ -434,7 +560,7 @@ describe('ChatListView sidebar sections', () => {
     const sections = Array.from(container.querySelectorAll('.v3-chat-section')).map((node) => node.textContent);
     expect(sections.join(' | ')).toContain('群聊');
     expect(sections.findIndex((text) => text.includes('群聊'))).toBeLessThan(
-      sections.findIndex((text) => text.includes('AI 助手'))
+      sections.findIndex((text) => text.includes('Agent 助手'))
     );
 
     const groupItem = Array.from(container.querySelectorAll('.v3-chat-item'))

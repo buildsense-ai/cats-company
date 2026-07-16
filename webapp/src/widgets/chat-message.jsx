@@ -779,7 +779,7 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
   if (!hasText && richBlocks.length === 0 && workingBlocks.length === 0) return null;
 
   return (
-    <div className={`v3-message ${isConsecutive ? 'grouped' : ''}`} onMouseLeave={() => setActionsOpen(false)}>
+    <div className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}`} onMouseLeave={() => setActionsOpen(false)}>
       <div className={`v3-message-actions${actionsOpen ? ' open' : ''}`} onClick={(event) => event.stopPropagation()}>
         {onReply && (
           <button className="v3-action-btn" onClick={handleReplyClick} aria-label={t('chat_reply')} title={t('chat_reply')} type="button">
@@ -827,7 +827,7 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
             size={36}
             isBot={senderIsBot}
             className={`v3-avatar ${senderIsBot ? 'bot' : ''}`}
-            style={{ borderRadius: 4, background: senderIsBot ? 'linear-gradient(135deg, #a855f7 0%, #ec4899 100%)' : '#E8E8E8', color: senderIsBot ? '#fff' : '#333' }}
+            style={{ borderRadius: 6 }}
           />
         )}
       </div>

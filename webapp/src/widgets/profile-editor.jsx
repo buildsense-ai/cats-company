@@ -4,6 +4,7 @@ import t from '../i18n';
 import Avatar from './avatar';
 import PasswordResetForm from './password-reset-form';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
+import { X } from 'lucide-react';
 
 export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
   const fileInputRef = useRef(null);
@@ -73,8 +74,16 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <div className="oc-modal oc-profile-editor-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="oc-profile-editor-header cc-settings-secondary-header">
+          <div className="cc-settings-secondary-header-copy">
+            <h3>设置与资料</h3>
+            <p>管理个人资料、账号安全与使用偏好。</p>
+          </div>
+          <button type="button" className="oc-profile-editor-close" onClick={onClose} aria-label="关闭">
+            <X size={18} strokeWidth={1.8} />
+          </button>
+        </div>
         <div className="oc-profile-editor-scroll">
-          <div className="oc-modal-title">{t('me_profile_edit')}</div>
           <div className="oc-settings-avatar-block">
             <Avatar name={displayName || user?.username} src={avatarUrl} size={88} />
             <button className="oc-btn oc-btn-default" onClick={() => fileInputRef.current?.click()}>
@@ -88,14 +97,14 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
               onChange={handleSelectAvatar}
             />
           </div>
-          <input
-            className="oc-auth-input"
-            placeholder="显示昵称（可选）"
-            value={displayName}
-            onChange={(e) => setDisplayName(e.target.value)}
-          />
-          <div className="oc-settings-secondary" style={{ marginTop: -10, marginBottom: 12 }}>
-            登录名称：{user?.username || '-'}。这里只会改变聊天中展示的昵称，不会改变登录名称或邮箱登录。
+          <div className="oc-profile-name-field">
+            <div className="oc-settings-section-title">姓名</div>
+            <input
+              className="oc-auth-input"
+              placeholder="显示昵称（可选）"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+            />
           </div>
           <div className="oc-profile-identity-card">
             <div>
@@ -108,17 +117,6 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
             </button>
           </div>
           {copyStatus && <div className="oc-settings-secondary" style={{ marginTop: -6, marginBottom: 12 }}>{copyStatus}</div>}
-          <div style={{ padding: '16px 0', marginTop: '16px', borderTop: '1px solid var(--v3-border)', borderBottom: '1px solid var(--v3-border)' }}>
-            <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={showThinking}
-                onChange={(e) => setShowThinking(e.target.checked)}
-                style={{ marginRight: '10px', width: '16px', height: '16px', accentColor: 'var(--v3-primary)' }}
-              />
-              <span style={{ color: 'var(--v3-text-main)' }}>显示 AI 思考过程 (Code Mode)</span>
-            </label>
-          </div>
           <div className="oc-settings-section">
             <div className="oc-settings-section-title">账号安全</div>
             {showPasswordReset ? (
@@ -150,6 +148,16 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
               </button>
             </div>
           )}
+          <div className="oc-profile-thinking-toggle">
+            <label>
+              <input
+                type="checkbox"
+                checked={showThinking}
+                onChange={(e) => setShowThinking(e.target.checked)}
+              />
+              <span>显示 AI 思考过程 (Code Mode)</span>
+            </label>
+          </div>
           {error && <div className="oc-form-error">{error}</div>}
         </div>
         <div className="oc-settings-actions oc-profile-editor-actions">

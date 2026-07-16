@@ -1,0 +1,9 @@
+/* Settings fields use a contained focus treatment: border emphasis only. */
+
+.oc-profile-editor-modal .oc-auth-input:focus,
+.oc-profile-editor-modal .oc-auth-input:focus-visible {
+  border-color: var(--cc-border-strong) !important;
+  outline: none !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+}
