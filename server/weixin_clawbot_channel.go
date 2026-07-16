@@ -572,7 +572,25 @@ func weixinClawBotLocalUploadPath(raw string, kind string) (string, error) {
 	if fullPath != baseDir && !strings.HasPrefix(fullPath, baseDir+string(os.PathSeparator)) {
 		return "", errors.New("invalid outbound attachment path")
 	}
-	return fullPath, nil
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("outbound attachment must not be a symbolic link")
+	}
+	resolvedBase, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		return "", err
+	}
+	resolvedPath, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		return "", err
+	}
+	if resolvedPath != resolvedBase && !strings.HasPrefix(resolvedPath, resolvedBase+string(os.PathSeparator)) {
+		return "", errors.New("outbound attachment resolves outside uploads")
+	}
+	return resolvedPath, nil
 }
 
 func weixinClawBotURLMatchesPublicBase(parsed *url.URL) bool {
@@ -871,7 +889,7 @@ func (h *WeixinClawBotHandler) inboundMetadata(token *types.WeixinClawBotToken, 
 		"channel_actor_uid":              binding.ActorUID,
 		"channel_canonical_uid":          binding.CanonicalUID,
 		"channel_agent_binding_id":       binding.ID,
-		"channel_device_access_enabled":  binding.DeviceAccessEnabled,
+		"channel_device_access_enabled":  binding.CanonicalUID > 0 && binding.Status == types.ChannelAgentBindingActive,
 		"weixin_clawbot_token_id":        token.ID,
 		"weixin_clawbot_bot_user_id":     strings.TrimSpace(msg.ToUserID),
 	}

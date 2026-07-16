@@ -199,7 +199,9 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 		}
 		mentions := parseMentions(payload.DisplayContent)
 		dataMsg.Data.Mentions = mentions
-		h.SendToUserExcept(uid, dataMsg, exclude)
+		if !h.isChannelManagedGroup(groupID) {
+			h.SendToUserExcept(uid, dataMsg, exclude)
+		}
 		h.broadcastToGroupWithMentions(groupID, dataMsg, uid, mentions, uid)
 		h.forwardChannelGroupBotReply(uid, topicID, payload, msgID)
 		return
@@ -225,14 +227,53 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 	}
 }
 
+func (h *Hub) fanoutNormalizedGroupMessageToHumans(uid int64, topicID string, payload *normalizedMessagePayload, msgID int64) {
+	if h == nil || payload == nil || !isGroupTopic(topicID) {
+		return
+	}
+	groupID := extractGroupID(topicID)
+	if groupID == 0 {
+		return
+	}
+	if h.isChannelManagedGroup(groupID) {
+		return
+	}
+	msg := h.messageForRecipient(uid, 0, topicID, 0, payload, msgID)
+	if msg == nil {
+		return
+	}
+	members, err := h.db.GetGroupMembers(groupID)
+	if err != nil {
+		log.Printf("fanout group record-only message: failed to get members for group %d: %v", groupID, err)
+		return
+	}
+	for _, member := range members {
+		if member == nil || member.UserID == uid {
+			continue
+		}
+		isBot, err := h.db.IsUserBot(member.UserID)
+		if err != nil {
+			log.Printf("fanout group record-only message: failed to classify member %d: %v", member.UserID, err)
+			continue
+		}
+		if isBot {
+			continue
+		}
+		h.SendToUser(member.UserID, h.messageForRecipient(uid, member.UserID, topicID, 0, payload, msgID))
+	}
+}
+
 func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string, replyTo int, payload *normalizedMessagePayload, msgID int64) *ServerMessage {
 	if payload == nil {
 		return nil
 	}
 	sourceMetadata := payload.Metadata
+	nativeChannelGroup := firstMetadataInt64(sourceMetadata, "channel_native_group_binding_id") > 0
 	publicMetadata := withoutInternalChannelBindingDeliveryMetadata(payload.Metadata)
-	metadata := withCatscoIdentityMetadata(publicMetadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID, normalizeContentText(payload.DisplayContent), catscoIdentityMetadataOptions{SourceMetadata: sourceMetadata}))
-	metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(uid, recipientUID, topicID))
+	metadata := withCatscoIdentityMetadata(publicMetadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID, normalizeContentText(payload.DisplayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: nativeChannelGroup, SourceMetadata: sourceMetadata}))
+	if !nativeChannelGroup {
+		metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(uid, recipientUID, topicID))
+	}
 	return &ServerMessage{
 		Data: &MsgServerData{
 			Topic:         topicID,
@@ -548,7 +589,7 @@ func (h *Hub) deviceAccessOwnerUID(actorUID, agentUID int64, sourceMetadata ...m
 				if err := validateDeliverableChannelBinding(h.db, binding); err != nil {
 					return 0, "channel_identity_unapproved"
 				}
-				if binding.CanonicalUID > 0 && binding.DeviceAccessEnabled {
+				if binding.CanonicalUID > 0 {
 					if binding.CanonicalUID == actorUID {
 						return actorUID, "actor"
 					}
