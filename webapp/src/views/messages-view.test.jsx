@@ -469,8 +469,7 @@ describe('MessagesView composer draft isolation', () => {
   });
 
   it('dismisses tutorial cards for the current topic and stores the choice', async () => {
-    const onTutorialHint = vi.fn();
-    await mountTopic(root, 'p2p_1_2', { onTutorialHint });
+    await mountTopic(root, 'p2p_1_2');
 
     await act(async () => {
       Simulate.click(Array.from(container.querySelectorAll('button')).find((el) => el.textContent.includes('暂时不用')));
@@ -478,14 +477,6 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(container.textContent).not.toContain('试一个文件任务');
     expect(localStorage.getItem('cc_tutorial_empty_dismissed:v1:1:p2p_1_2')).toBe('1');
-    expect(onTutorialHint).toHaveBeenCalledTimes(1);
-  });
-
-  it('opens tutorial picker from the profile menu trigger token', async () => {
-    await mountTopic(root, 'p2p_1_2', { tutorialOpenToken: 1 });
-
-    expect(container.textContent).toContain('选择示例任务');
-    expect(container.textContent).toContain('选择一个任务，下载示例文件');
   });
 
   it('shows mobile binding action for bot friends identified by bot flag', async () => {

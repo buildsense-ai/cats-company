@@ -59,11 +59,9 @@ export default function MessagesView({
   groupId,
   topicAvatarUrl,
   onTopicUpdated,
-  tutorialOpenToken = 0,
   localAssistantStatus = 'connected',
   onOpenDesktopConnect,
   onSelectAgent,
-  onTutorialHint,
 }) {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
@@ -219,12 +217,6 @@ export default function MessagesView({
   useEffect(() => {
     setTutorialDismissed(localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
   }, [topic, user.uid]);
-
-  useEffect(() => {
-    if (tutorialOpenToken > 0) {
-      setShowTutorialPicker(true);
-    }
-  }, [tutorialOpenToken]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1132,7 +1124,6 @@ export default function MessagesView({
   const dismissTutorialEmptyState = () => {
     localStorage.setItem(tutorialDismissStorageKey(user.uid, topic), '1');
     setTutorialDismissed(true);
-    onTutorialHint?.();
   };
 
   const applyTutorialPrompt = (prompt) => {

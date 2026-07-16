@@ -72,11 +72,6 @@
     padding-left: 44px;
   }
 
-  .v3-model-menu {
-    left: 44px;
-    width: min(248px, calc(100vw - 64px));
-  }
-
   .v3-local-assistant-status {
     max-width: 100%;
     padding-inline: 8px;

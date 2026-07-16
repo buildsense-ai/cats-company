@@ -7,6 +7,7 @@ import AddFriend from '../widgets/add-friend';
 import FriendRequest from '../widgets/friend-request';
 import AgentStoreModal from '../widgets/agent-store-modal';
 import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
+import Avatar from '../widgets/avatar';
 import { Users, Zap, Bot, Trash2, MessageSquare, Smartphone, Check, X, Pin, ChevronRight, Plus, Search, MoreHorizontal, UserX, Ban } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
@@ -79,7 +80,7 @@ function savePinnedGroupIds(uid, next) {
   }
 }
 
-export default function ChatListView({ activeTopic, onSelectTopic, user, onlineUsers }) {
+export default function ChatListView({ activeTopic, onSelectTopic, user, onlineUsers, compact = false }) {
   const [chats, setChats] = useState([]);
   const [friends, setFriends] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -447,10 +448,50 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
   const friendChats = directChats.filter(c => !c.isBot);
   const groupChats = sortGroupsWithPins(filteredGroups, pinnedGroupIds);
   const hasSearchResults = aiChats.length > 0 || friendChats.length > 0 || groupChats.length > 0 || filteredAgents.length > 0;
+  const compactChats = recentChats.slice(0, 12);
+
+  const selectConversation = (chat) => {
+    onSelectTopic({
+      topicId: chat.id,
+      name: chat.name,
+      isGroup: chat.isGroup,
+      groupId: chat.groupId,
+      avatar_url: chat.avatar_url,
+      friendId: chat.friendId,
+    });
+  };
 
   return (
     <>
-      <div className="cc-sidebar-tools">
+      {compact && (
+        <nav className="cc-sidebar-compact-rail" aria-label="对话快捷栏">
+          <button
+            type="button"
+            className="cc-compact-new-chat"
+            onClick={() => setShowNewChat(true)}
+            aria-label="新建对话"
+            title="新建对话"
+          >
+            <Plus size={20} />
+          </button>
+          <div className="cc-compact-conversations" aria-label="曾经对话">
+            {compactChats.map((chat) => (
+              <button
+                type="button"
+                key={chat.id}
+                className={`cc-compact-conversation${activeTopic === chat.id ? ' active' : ''}`}
+                onClick={() => selectConversation(chat)}
+                aria-label={`打开对话：${chat.name}`}
+                title={chat.name}
+              >
+                <Avatar name={chat.name} src={chat.avatar_url} size={32} />
+              </button>
+            ))}
+          </div>
+        </nav>
+      )}
+
+      {!compact && <div className="cc-sidebar-tools">
         <button type="button" className="cc-sidebar-primary" onClick={() => setShowNewChat(true)}>
           <Plus size={17} />
           <span>新建任务</span>
@@ -463,9 +504,9 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           onChange={(e) => setSearch(e.target.value)}
         />
         </label>
-      </div>
+      </div>}
 
-      <div className="v3-chat-list">
+      {!compact && <div className="v3-chat-list">
 
         {!isSearching && pending.length > 0 && (
           <div style={{ padding: '0 16px', marginBottom: 12 }}>
@@ -757,7 +798,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           <div className="cc-search-empty" style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)', fontSize: '13px' }}>没有匹配结果</div>
         )}
 
-      </div>
+      </div>}
 
       {showNewChat && createPortal(
         <div className="name-dialog-overlay cc-new-task-overlay" onClick={() => { setShowNewChat(false); setNamingAgent(null); }}>

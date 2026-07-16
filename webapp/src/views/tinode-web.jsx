@@ -15,7 +15,7 @@ import RelayAccessModal from '../widgets/relay-access-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
-import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, CheckCircle2, Menu, PanelLeftOpen, Sun, Moon, Plus, ArrowUp, ChevronDown, Check } from 'lucide-react';
+import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, CheckCircle2, PanelLeftClose, PanelLeftOpen, Sun, Moon, Plus, ArrowUp, ChevronDown } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 
@@ -23,15 +23,7 @@ const TABS = {
   CHATS: 'chats'
 };
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
-const MODEL_STORAGE_KEY = 'catsco_selected_model';
-const MODEL_OPTIONS = [
-  { id: 'minimax-m2.7', name: 'MiniMax-M2.7', description: '标准额度 · Anthropic SDK' },
-  { id: 'minimax-m3', name: 'MiniMax-M3', description: '多模态 · Anthropic SDK' },
-  { id: 'gpt-5.6', name: 'GPT-5.6', description: '通用推理与编程' },
-  { id: 'opus-4.8', name: 'Opus-4.8', description: '复杂分析与长文' },
-  { id: 'fable-5', name: 'Fable-5', description: '创意写作与表达' },
-  { id: 'glm-5.1', name: 'GLM-5.1', description: '中文任务与知识' },
-];
+const DEFAULT_MODEL_NAME = 'MiniMax-M2.7';
 const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
 const DEV_PREVIEW_USER = {
   uid: 'local-preview',
@@ -200,13 +192,8 @@ function TinodeWebApp() {
   const [showRelayModal, setShowRelayModal] = useState(false);
   const [appSidebarCollapsed, setAppSidebarCollapsed] = useState(() => loadAppSidebarCollapsed());
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [tutorialOpenToken, setTutorialOpenToken] = useState(0);
-  const [showTutorialMenuHint, setShowTutorialMenuHint] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem('catsco_theme') || 'light');
-  const [selectedModel, setSelectedModel] = useState(() => {
-    const stored = localStorage.getItem(MODEL_STORAGE_KEY);
-    return MODEL_OPTIONS.some((model) => model.id === stored) ? stored : MODEL_OPTIONS[0].id;
-  });
+  const [currentModelName, setCurrentModelName] = useState(DEFAULT_MODEL_NAME);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -214,8 +201,24 @@ function TinodeWebApp() {
   }, [theme]);
 
   useEffect(() => {
-    localStorage.setItem(MODEL_STORAGE_KEY, selectedModel);
-  }, [selectedModel]);
+    if (!user?.uid) return undefined;
+    let cancelled = false;
+
+    Promise.allSettled([api.getRelayUsage(), api.getRelayConfig()]).then(([usageResult, configResult]) => {
+      if (cancelled) return;
+      const usage = usageResult.status === 'fulfilled' ? usageResult.value?.summary : null;
+      const config = configResult.status === 'fulfilled' ? configResult.value : null;
+      const modelName = usage?.model
+        || (usage?.source === 'custom' || usage?.status === 'custom' ? '自定义模型' : '')
+        || config?.default_model
+        || DEFAULT_MODEL_NAME;
+      setCurrentModelName(modelName);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.uid]);
 
   useEffect(() => {
     if (!showProfilePopover) return undefined;
@@ -621,7 +624,12 @@ function TinodeWebApp() {
             aria-label={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
             title={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
           >
-            {appSidebarCollapsed ? <span className="catsco-brand-mark" aria-hidden="true" /> : <Menu size={18} />}
+            {appSidebarCollapsed ? (
+              <>
+                <span className="catsco-brand-mark v3-collapsed-brand-icon" aria-hidden="true" />
+                <PanelLeftClose size={18} className="v3-collapsed-expand-icon" aria-hidden="true" />
+              </>
+            ) : <PanelLeftClose size={18} />}
           </button>
         </div>
         
@@ -634,18 +642,18 @@ function TinodeWebApp() {
             }}
             user={user}
             onlineUsers={onlineUsers}
+            compact={appSidebarCollapsed}
           />
         </div>
         
         <ProfileFooter
           user={user}
           wsStatus={wsStatus}
-          onTogglePopover={() => {
-            if (!appSidebarCollapsed) setShowProfilePopover((open) => !open);
-          }}
+          popoverOpen={showProfilePopover}
+          onTogglePopover={() => setShowProfilePopover((open) => !open)}
         />
 
-        {showProfilePopover && !appSidebarCollapsed && (
+        {showProfilePopover && (
           <div className="v3-profile-popover" ref={profilePopoverRef}>
             <div className="v3-popover-item v3-popover-status" aria-disabled="true">
               <CheckCircle2 size={16} style={{marginRight: 10}} /> 公司账号已连接
@@ -688,9 +696,7 @@ function TinodeWebApp() {
         </button>
         <LocalAssistantBar
           status={localAgentStatus}
-          onConnect={() => setShowDesktopConnectModal(true)}
-          selectedModel={selectedModel}
-          onSelectModel={setSelectedModel}
+          currentModelName={currentModelName}
           theme={theme}
           onToggleTheme={() => setTheme((value) => value === 'light' ? 'dark' : 'light')}
           onDownload={() => setShowDownloadModal(true)}
@@ -705,11 +711,9 @@ function TinodeWebApp() {
             groupId={activeTopic.groupId}
             topicAvatarUrl={activeTopic.avatar_url}
             onTopicUpdated={handleTopicUpdated}
-            tutorialOpenToken={tutorialOpenToken}
             localAssistantStatus={localAgentStatus}
             onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
             onSelectAgent={handleSelectComposerAgent}
-            onTutorialHint={() => setShowTutorialMenuHint(true)}
           />
         ) : <NoActiveTask onCreate={() => window.dispatchEvent(new Event('catsco:new-task'))} />}
       </div>
@@ -743,62 +747,23 @@ function TinodeWebApp() {
         <RelayAccessModal onClose={() => setShowRelayModal(false)} />
       )}
 
-      {showTutorialMenuHint && (
-        <div className="cc-tutorial-menu-hint">
-          <button type="button" onClick={() => setShowTutorialMenuHint(false)} aria-label="关闭">x</button>
-          以后可从头像菜单里的“示例任务”重新打开。
-        </div>
-      )}
     </div>
   );
 }
 
-function LocalAssistantBar({ status, onConnect, selectedModel, onSelectModel, theme, onToggleTheme, onDownload, title }) {
-  const connected = status === 'connected';
-  const checking = status === 'checking';
-  const [menuOpen, setMenuOpen] = useState(false);
-  const currentModel = MODEL_OPTIONS.find((model) => model.id === selectedModel) || MODEL_OPTIONS[0];
-  const statusClass = connected ? 'connected' : checking ? 'connecting' : 'disconnected';
+function LocalAssistantBar({ status, currentModelName, theme, onToggleTheme, onDownload, title }) {
+  const statusClass = status === 'connected' ? 'connected' : status === 'checking' ? 'connecting' : 'disconnected';
   return (
     <header className="v3-local-assistant-bar">
       <div className="v3-model-select">
-        <button
-          type="button"
+        <div
           className={`v3-local-assistant-status ${statusClass}`}
-          onClick={() => setMenuOpen((open) => !open)}
-          aria-expanded={menuOpen}
-          aria-haspopup="listbox"
+          aria-label={`当前使用的模型：${currentModelName}`}
+          title={`当前使用的模型：${currentModelName}`}
         >
           <span className="v3-model-status-dot" aria-hidden="true" />
-          <span>{currentModel.name}</span>
-          <ChevronDown size={14} className={menuOpen ? 'is-open' : ''} />
-        </button>
-        {menuOpen && (
-          <div className="v3-model-menu" role="listbox" aria-label="选择模型">
-            {MODEL_OPTIONS.map((model) => (
-              <button
-                type="button"
-                role="option"
-                aria-selected={model.id === selectedModel}
-                className={`v3-model-option${model.id === selectedModel ? ' selected' : ''}`}
-                key={model.id}
-                onClick={() => {
-                  onSelectModel(model.id);
-                  setMenuOpen(false);
-                  if (!connected) onConnect();
-                }}
-              >
-                <span><strong>{model.name}</strong><small>{model.description}</small></span>
-                {model.id === selectedModel && <Check size={15} />}
-              </button>
-            ))}
-            {!connected && (
-              <button type="button" className="v3-model-connect" onClick={() => { setMenuOpen(false); onConnect(); }}>
-                {checking ? '正在连接桌面端…' : '连接本地模型'}
-              </button>
-            )}
-          </div>
-        )}
+          <span>{currentModelName}</span>
+        </div>
       </div>
       <strong className="v3-shell-title">{title}</strong>
       <div className="v3-shell-actions">
@@ -817,8 +782,10 @@ function NoActiveTask({ onCreate }) {
   return (
     <main className="cc-empty-task">
       <div className="cc-empty-task-inner">
-        <span className="catsco-brand-mark cc-empty-task-mark" aria-hidden="true" />
-        <h1>需要我为您做什么？</h1>
+        <div className="cc-empty-task-heading">
+          <span className="catsco-brand-mark cc-empty-task-mark" aria-hidden="true" />
+          <h1>需要我为您做什么？</h1>
+        </div>
         <div className="cc-empty-composer">
           <button type="button" className="v3-tool cc-empty-tool" onClick={onCreate} aria-label="添加文件或图片">
             <Plus size={20} />
@@ -835,18 +802,24 @@ function NoActiveTask({ onCreate }) {
   );
 }
 
-function SidebarContent({ activeTopic, onSelectTopic, user, onlineUsers }) {
-  return <ChatListView activeTopic={activeTopic} onSelectTopic={onSelectTopic} user={user} onlineUsers={onlineUsers} />;
+function SidebarContent({ activeTopic, onSelectTopic, user, onlineUsers, compact }) {
+  return <ChatListView activeTopic={activeTopic} onSelectTopic={onSelectTopic} user={user} onlineUsers={onlineUsers} compact={compact} />;
 }
 
-function ProfileFooter({ user, wsStatus, onTogglePopover }) {
+function ProfileFooter({ user, wsStatus, popoverOpen, onTogglePopover }) {
   const connected = wsStatus === 'connected';
   const reconnecting = wsStatus === 'connecting' || wsStatus === 'reconnecting';
   const statusClass = connected ? 'online' : reconnecting ? 'reconnecting' : 'offline';
   const statusLabel = connected ? '在线' : wsStatus === 'connecting' ? '连接中' : reconnecting ? '重新连接中' : '离线';
   const displayName = user.display_name || user.username;
   return (
-    <div className="v3-profile-footer" onClick={onTogglePopover} style={{cursor: 'pointer'}}>
+    <button
+      type="button"
+      className="v3-profile-footer"
+      onClick={onTogglePopover}
+      aria-label={`${displayName}，打开个人菜单`}
+      aria-expanded={popoverOpen}
+    >
       <Avatar name={displayName} src={user.avatar_url} size={32} className="v3-profile-avatar" />
       <div className="v3-profile-info">
         <div className="v3-profile-name">{displayName}</div>
@@ -858,7 +831,7 @@ function ProfileFooter({ user, wsStatus, onTogglePopover }) {
       <div className="v3-profile-settings" style={{color: '#888'}}>
         <Settings size={18} />
       </div>
-    </div>
+    </button>
   );
 }
 

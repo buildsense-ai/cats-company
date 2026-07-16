@@ -415,6 +415,43 @@ describe('ChatListView sidebar sections', () => {
     expect(document.body.querySelector('.cc-new-task-dialog')).toBeTruthy();
   });
 
+  it('shows a new-chat action and recent conversations in compact mode', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Recent assistant',
+          is_group: false,
+          is_bot: true,
+          last_time: '2026-07-16T08:00:00Z',
+        },
+      ],
+    });
+
+    await mount({ compact: true });
+
+    expect(container.querySelector('[aria-label="新建对话"]')).toBeTruthy();
+    const recentButton = container.querySelector('[aria-label="打开对话：Recent assistant"]');
+    expect(recentButton).toBeTruthy();
+    expect(container.querySelector('.cc-sidebar-tools')).toBeFalsy();
+
+    await act(async () => {
+      Simulate.click(recentButton);
+    });
+
+    expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({
+      topicId: 'p2p_7_42',
+      name: 'Recent assistant',
+    }));
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="新建对话"]'));
+    });
+
+    expect(document.body.querySelector('.cc-new-task-dialog')).toBeTruthy();
+  });
+
   it('portals collaboration dialogs outside the sidebar container', async () => {
     await mount();
 
