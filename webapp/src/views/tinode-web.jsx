@@ -25,7 +25,7 @@ import GroupSettings from '../widgets/group-settings';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
 import { resolveCurrentModelName } from '../utils/relay-usage';
-import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, CheckCircle2, PanelLeftClose, PanelLeftOpen, Sun, Moon } from 'lucide-react';
+import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Sun, Moon } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 
@@ -736,9 +736,6 @@ function TinodeWebApp() {
 
         {showProfilePopover && (
           <div className="v3-profile-popover" ref={profilePopoverRef}>
-            <div className="v3-popover-item v3-popover-status" aria-disabled="true">
-              <CheckCircle2 size={16} style={{marginRight: 10}} /> 公司账号已连接
-            </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowFeedbackModal(true); }}>
               <Bug size={16} style={{marginRight: 10}} /> 意见反馈
             </div>

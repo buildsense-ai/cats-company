@@ -207,6 +207,7 @@ type ConversationSummary struct {
 	AvatarURL   string                  `json:"avatar_url,omitempty"`
 	IsBot       bool                    `json:"is_bot,omitempty"`
 	HasBot      bool                    `json:"has_bot,omitempty"`
+	IsAgentTask bool                    `json:"is_agent_task,omitempty"`
 	IsOnline    bool                    `json:"is_online,omitempty"`
 	LastTime    *time.Time              `json:"last_time,omitempty"`
 	LatestSeq   int64                   `json:"latest_seq,omitempty"`
@@ -612,6 +613,7 @@ type Group struct {
 
 const (
 	GroupKindStandard       = "standard"
+	GroupKindAgentTask      = "agent_task"
 	GroupKindChannelManaged = "channel_managed"
 )
 

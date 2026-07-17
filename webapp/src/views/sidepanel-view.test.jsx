@@ -59,7 +59,10 @@ vi.mock('../api', () => ({
     rejectFriend: vi.fn(),
     removeFriend: vi.fn(),
     blockUser: vi.fn(),
+    createGroup: vi.fn(),
     disbandGroup: vi.fn(),
+    updateGroup: vi.fn(),
+    updateConversationTitle: vi.fn(),
   },
   onWSMessage: vi.fn(() => vi.fn()),
   updateTopicSeq: vi.fn(),
@@ -86,6 +89,7 @@ describe('ChatListView sidebar sections', () => {
     api.getFriends.mockResolvedValue({ friends: [] });
     api.getGroups.mockResolvedValue({ groups: [] });
     api.getPendingRequests.mockResolvedValue({ requests: [] });
+    api.updateConversationTitle.mockResolvedValue({ ok: true });
     api.getAgents.mockResolvedValue({
       agents: [
         {
@@ -118,6 +122,15 @@ describe('ChatListView sidebar sections', () => {
     api.rejectAgentFriend.mockResolvedValue({ ok: true });
     api.removeFriend.mockResolvedValue({ ok: true });
     api.blockUser.mockResolvedValue({ ok: true });
+    api.createGroup.mockResolvedValue({
+      group_id: 77,
+      topic: 'grp_77',
+      name: 'New Agent Task',
+      kind: 'agent_task',
+      is_agent_task: true,
+      group: { id: 77, name: 'New Agent Task', kind: 'agent_task', is_agent_task: true },
+    });
+    api.updateGroup.mockResolvedValue({ ok: true });
     onWSMessage.mockImplementation(() => vi.fn());
     onSelectTopic = vi.fn();
 
@@ -316,12 +329,13 @@ describe('ChatListView sidebar sections', () => {
     expect(api.disbandGroup).toHaveBeenCalledWith(88);
   });
 
-  it('routes history task pin, mobile scan, and deletion through its three-dot menu', async () => {
+  it('keeps history tasks compact and exposes pin beside the three-dot menu', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{
         id: 'p2p_7_42',
         friend_id: 42,
         name: 'Review Task',
+        preview: 'This preview should not be rendered in history.',
         is_group: false,
         is_bot: true,
         last_time: '2026-06-08T08:00:00Z',
@@ -335,14 +349,30 @@ describe('ChatListView sidebar sections', () => {
     await mount({ activeTopic: 'p2p_7_42', onOpenMobileLink, onDeleteHistoryTask });
 
     const row = container.querySelector('.cc-history-item');
-    expect(row.querySelectorAll('.cc-chat-row-actions button')).toHaveLength(1);
+    expect(row.querySelector('.cc-chat-row-preview')).toBeNull();
+    expect(row.querySelectorAll('.cc-chat-row-actions button')).toHaveLength(2);
+    expect(row.querySelector('[aria-label="置顶历史任务 Review Task"]')).toBeTruthy();
     await act(async () => {
       Simulate.click(row.querySelector('[aria-label="Review Task 更多操作"]'));
     });
-    expect(row.querySelector('[aria-label="置顶历史任务 Review Task"]')).toBeTruthy();
+    expect(row.querySelector('[role="menu"] [aria-label="置顶历史任务 Review Task"]')).toBeNull();
+    expect(row.querySelector('[aria-label="修改任务名称 Review Task"]')).toBeTruthy();
+    expect(row.querySelector('[aria-label="加入项目 Review Task"]')).toBeTruthy();
     expect(row.querySelector('[aria-label="Review Task 手机扫码"]')).toBeTruthy();
     expect(row.querySelector('[aria-label="删除任务 Review Task"]')).toBeTruthy();
 
+    await act(async () => {
+      Simulate.click(row.querySelector('[aria-label="加入项目 Review Task"]'));
+    });
+    expect(document.body.textContent).toContain('将“Review Task”加入项目');
+    expect(document.body.textContent).toContain('暂无可用项目');
+    await act(async () => {
+      Simulate.click(document.body.querySelector('[aria-label="关闭加入项目"]'));
+    });
+
+    await act(async () => {
+      Simulate.click(row.querySelector('[aria-label="Review Task 更多操作"]'));
+    });
     await act(async () => {
       Simulate.click(row.querySelector('[aria-label="Review Task 手机扫码"]'));
     });
@@ -362,6 +392,49 @@ describe('ChatListView sidebar sections', () => {
     });
     expect(onDeleteHistoryTask).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'p2p_7_42' }));
     expect(onSelectTopic).toHaveBeenCalledWith(null);
+  });
+
+  it('renames a history task from the three-dot menu and updates the active title', async () => {
+    let taskName = 'Review Task';
+    api.getConversations.mockImplementation(() => Promise.resolve({
+      conversations: [{
+        id: 'p2p_7_42',
+        friend_id: 42,
+        name: taskName,
+        is_group: false,
+        is_bot: true,
+      }],
+    }));
+    api.getAgents.mockResolvedValue({ agents: [] });
+    api.updateConversationTitle.mockImplementation(async (_topicId, nextName) => {
+      taskName = nextName;
+      return { ok: true, name: nextName };
+    });
+
+    await mount({ activeTopic: 'p2p_7_42' });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Review Task 更多操作"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="修改任务名称 Review Task"]'));
+    });
+
+    const input = container.querySelector('input[aria-label="修改任务名称 Review Task"]');
+    await act(async () => {
+      Simulate.change(input, { target: { value: 'Release checklist' } });
+    });
+    await act(async () => {
+      Simulate.submit(container.querySelector('.cc-history-rename-form'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.updateConversationTitle).toHaveBeenCalledWith('p2p_7_42', 'Release checklist');
+    expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({
+      topicId: 'p2p_7_42',
+      name: 'Release checklist',
+    }));
+    expect(container.textContent).toContain('Release checklist');
   });
 
   it('persists locally hidden history tasks when no server deletion callback exists', async () => {
@@ -473,6 +546,107 @@ describe('ChatListView sidebar sections', () => {
     });
 
     expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'p2p_7_42', name: 'Project Task' }));
+  });
+
+  it('opens an assigned task menu and removes the task from its project', async () => {
+    let assigned = true;
+    api.getConversations.mockImplementation(() => Promise.resolve({
+      conversations: [{
+        id: 'p2p_7_42',
+        friend_id: 42,
+        name: 'Project Task',
+        is_group: false,
+        is_bot: true,
+        project_id: assigned ? 12 : 0,
+        project_name: assigned ? 'Website Launch' : '',
+      }],
+    }));
+    api.getProjects.mockImplementation(() => Promise.resolve({
+      projects: [{ id: 12, name: 'Website Launch', task_count: assigned ? 1 : 0 }],
+    }));
+    api.removeProjectTopic.mockImplementation(async () => {
+      assigned = false;
+      return { ok: true };
+    });
+    const onDeleteHistoryTask = vi.fn().mockResolvedValue({ ok: true });
+
+    await mount({ onDeleteHistoryTask });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Website Launch"]'));
+    });
+
+    const task = container.querySelector('.cc-project-task-item');
+    expect(task).toBeTruthy();
+    expect(task.querySelectorAll('.cc-chat-row-actions button')).toHaveLength(1);
+    expect(task.querySelector('[aria-label="置顶历史任务 Project Task"]')).toBeNull();
+    await act(async () => {
+      Simulate.click(task.querySelector('[aria-label="Project Task 更多操作"]'));
+    });
+
+    expect(task.querySelector('[aria-label="修改任务名称 Project Task"]')).toBeTruthy();
+    expect(task.querySelector('[aria-label="移动到项目 Project Task"]')).toBeTruthy();
+    expect(task.querySelector('[aria-label="移出当前项目 Project Task"]')).toBeTruthy();
+    expect(task.querySelector('[aria-label="Project Task 手机扫码"]')).toBeTruthy();
+    expect(task.querySelector('[aria-label="删除任务 Project Task"]')).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(task.querySelector('[aria-label="移出当前项目 Project Task"]'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.removeProjectTopic).toHaveBeenCalledWith('p2p_7_42');
+    expect(container.querySelector('.cc-project-task-item')).toBeNull();
+    expect(container.querySelector('.cc-history-item')).toBeTruthy();
+  });
+
+  it('renames an assigned agent task group through updateGroup', async () => {
+    let taskName = 'Agent Project Task';
+    api.getConversations.mockImplementation(() => Promise.resolve({
+      conversations: [{
+        id: 'grp_77',
+        group_id: 77,
+        name: taskName,
+        avatar_url: '/uploads/agent-task.png',
+        is_group: true,
+        is_bot: false,
+        kind: 'agent_task',
+        is_agent_task: true,
+        project_id: 12,
+        project_name: 'Website Launch',
+      }],
+    }));
+    api.updateGroup.mockImplementation(async (_groupId, nextName) => {
+      taskName = nextName;
+      return { ok: true };
+    });
+    api.getProjects.mockResolvedValue({
+      projects: [{ id: 12, name: 'Website Launch', task_count: 1 }],
+    });
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Website Launch"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Agent Project Task 更多操作"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="修改任务名称 Agent Project Task"]'));
+    });
+
+    const input = container.querySelector('input[aria-label="修改任务名称 Agent Project Task"]');
+    await act(async () => {
+      Simulate.change(input, { target: { value: 'Renamed Agent Task' } });
+    });
+    await act(async () => {
+      Simulate.submit(container.querySelector('.cc-project-task-item .cc-history-rename-form'));
+      await Promise.resolve();
+    });
+
+    expect(api.updateGroup).toHaveBeenCalledWith(77, 'Renamed Agent Task', '/uploads/agent-task.png');
+    expect(api.updateConversationTitle).not.toHaveBeenCalled();
+    expect(container.querySelector('.cc-project-task-item').textContent).toContain('Renamed Agent Task');
   });
 
   it('does not keep showing an expired running task status', async () => {
@@ -723,6 +897,68 @@ describe('ChatListView sidebar sections', () => {
     expect(text).toContain('Bot Room');
     expect(text.indexOf('群聊')).toBeLessThan(text.indexOf('Bot Room'));
     expect(text.indexOf('Bot Room')).toBeLessThan(text.indexOf('Agent 助手'));
+  });
+
+  it('renders agent task groups in history instead of the groups section', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'grp_77',
+        group_id: 77,
+        name: 'Release Review Task',
+        is_group: true,
+        has_bot: true,
+        is_agent_task: true,
+        last_time: '2026-06-04T09:00:00Z',
+      }],
+    });
+    api.getGroups.mockResolvedValue({
+      groups: [{
+        id: 77,
+        name: 'Release Review Task',
+        owner_id: 7,
+        kind: 'agent_task',
+        is_agent_task: true,
+        has_bot: true,
+        created_at: '2026-06-04T09:00:00Z',
+      }],
+    });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mount();
+
+    const historyRow = container.querySelector('.cc-history-item');
+    expect(historyRow?.textContent).toContain('Release Review Task');
+    const groupRows = Array.from(container.querySelectorAll('.v3-chat-item'))
+      .filter((row) => !row.classList.contains('cc-history-item'));
+    expect(groupRows.some((row) => row.textContent.includes('Release Review Task'))).toBe(false);
+  });
+
+  it('creates a new Agent task with the dedicated task kind', async () => {
+    await mount();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.cc-sidebar-primary'));
+    });
+    await act(async () => {
+      Simulate.click(document.body.querySelector('.cc-new-task-agent'));
+    });
+    const nameInput = document.body.querySelector('.cc-new-task-name');
+    await act(async () => {
+      Simulate.change(nameInput, { target: { value: 'New Agent Task' } });
+    });
+    await act(async () => {
+      Simulate.click(document.body.querySelector('.cc-new-task-actions .oc-btn-primary'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.createGroup).toHaveBeenCalledWith('New Agent Task', [42], { kind: 'agent_task' });
+    expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({
+      topicId: 'grp_77',
+      name: 'New Agent Task',
+      isGroup: true,
+      groupId: 77,
+    }));
   });
 
   it('shows matches from collapsed sections while searching', async () => {
@@ -1128,9 +1364,6 @@ describe('ChatListView sidebar sections', () => {
     await mount();
 
     expect(container.textContent.indexOf('Busy Agent Task')).toBeLessThan(container.textContent.indexOf('Old Agent Task'));
-    await act(async () => {
-      Simulate.click(container.querySelector('button[aria-label="Old Agent Task 更多操作"]'));
-    });
     const pinOldTask = container.querySelector('button[aria-label="置顶历史任务 Old Agent Task"]');
     expect(pinOldTask).toBeTruthy();
 
@@ -1147,9 +1380,6 @@ describe('ChatListView sidebar sections', () => {
     await remount();
 
     expect(container.textContent.indexOf('Old Agent Task')).toBeLessThan(container.textContent.indexOf('Busy Agent Task'));
-    await act(async () => {
-      Simulate.click(container.querySelector('button[aria-label="Old Agent Task 更多操作"]'));
-    });
     expect(container.querySelector('button[aria-label="取消置顶历史任务 Old Agent Task"]')).toBeTruthy();
   });
 

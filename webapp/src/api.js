@@ -187,6 +187,7 @@ export const api = {
   createProject: (name) => request('POST', '/api/projects', { name }),
   assignProjectTopic: (projectId, topicId) => request('POST', '/api/projects/topic', { project_id: projectId, topic_id: topicId }),
   removeProjectTopic: (topicId) => request('DELETE', `/api/projects/topic?topic_id=${encodeURIComponent(topicId)}`),
+  updateConversationTitle: (topicId, name) => request('PATCH', '/api/conversations', { topic_id: topicId, name }),
   getRelayConfig: () => request('GET', '/api/relay/config'),
   getRelayCommercial: () => request('GET', '/api/relay/commercial'),
   redeemRelayInvite: (code) => request('POST', '/api/relay/invite/redeem', { code }),
@@ -259,7 +260,11 @@ export const api = {
     request('GET', `/api/channel-agent-bindings/weixin-clawbot/qrcode-status?scene_key=${encodeURIComponent(sceneKey)}&qrcode=${encodeURIComponent(qrcode)}`),
 
   // Groups
-  createGroup: (name, memberIds) => request('POST', '/api/groups/create', { name, member_ids: memberIds }),
+  createGroup: (name, memberIds, { kind } = {}) => request('POST', '/api/groups/create', {
+    name,
+    member_ids: memberIds,
+    ...(kind ? { kind } : {}),
+  }),
   getGroups: () => request('GET', '/api/groups'),
   getGroupInfo: (groupId) => request('GET', `/api/groups/info?id=${groupId}`),
   updateGroup: (groupId, name, avatarUrl) =>

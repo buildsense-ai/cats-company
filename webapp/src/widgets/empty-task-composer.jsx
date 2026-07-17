@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, FileText, Image, Smartphone, X } from 'lucide-react';
+import { FileText, Image, Smartphone, X } from 'lucide-react';
 import { api } from '../api';
 import {
   IMAGE_UPLOAD_ACCEPT,
@@ -23,11 +23,9 @@ export default function EmptyTaskComposer({
 }) {
   const [input, setInput] = useState('');
   const [agents, setAgents] = useState([]);
-  const [agentsLoading, setAgentsLoading] = useState(true);
   const [agentsError, setAgentsError] = useState('');
   const [selectedAgentId, setSelectedAgentId] = useState('');
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
-  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState([]);
   const [attachmentStatus, setAttachmentStatus] = useState(null);
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
@@ -85,10 +83,7 @@ export default function EmptyTaskComposer({
     let cancelled = false;
 
     const loadAgents = async () => {
-      if (!cancelled && mountedRef.current) {
-        setAgentsLoading(true);
-        setAgentsError('');
-      }
+      if (!cancelled && mountedRef.current) setAgentsError('');
       try {
         const response = await api.getAgents();
         if (cancelled || !mountedRef.current) return;
@@ -109,8 +104,6 @@ export default function EmptyTaskComposer({
         selectedAgentIdRef.current = '';
         setSelectedAgentId('');
         setAgentsError(error?.message || 'Agent 列表加载失败，请稍后重试。');
-      } finally {
-        if (!cancelled && mountedRef.current) setAgentsLoading(false);
       }
     };
 
@@ -126,9 +119,6 @@ export default function EmptyTaskComposer({
     () => agents.find((agent) => agentKey(agent) === String(selectedAgentId || '')) || null,
     [agents, selectedAgentId],
   );
-  const selectedAgentName = selectedAgent
-    ? (selectedAgent.display_name || selectedAgent.username || 'Agent')
-    : (agentsLoading ? '正在加载 Agent' : '选择 Agent');
 
   const syncPhoneUploads = useCallback(async ({ final = false } = {}) => {
     const sessionId = phoneUploadSessionRef.current?.session_id;
@@ -333,7 +323,6 @@ export default function EmptyTaskComposer({
     );
     if (!agent) {
       setAttachmentStatus({ tone: 'error', message: '请先选择一个 Agent。' });
-      setAgentPickerOpen(true);
       return;
     }
     if (!inputValueRef.current.trim() && pendingAttachmentsRef.current.length === 0) return;
@@ -345,7 +334,6 @@ export default function EmptyTaskComposer({
     sendInFlightRef.current = true;
     setIsSubmitting(true);
     setAttachmentMenuOpen(false);
-    setAgentPickerOpen(false);
     setAttachmentStatus({ tone: 'info', message: '正在打开 Agent 并发送...' });
 
     let messageSent = false;
@@ -424,37 +412,6 @@ export default function EmptyTaskComposer({
       </button>
     </div>
   );
-
-  const agentMenu = agentPickerOpen ? (
-    <div className="v3-agent-picker-menu" role="listbox" aria-label="选择 Agent">
-      {agentsLoading ? (
-        <div className="v3-picker-empty">正在加载 Agent...</div>
-      ) : agents.length === 0 ? (
-        <div className="v3-picker-empty">{agentsError || '暂无可用 Agent'}</div>
-      ) : agents.map((agent) => {
-        const key = agentKey(agent);
-        const name = agent.display_name || agent.username || 'Agent';
-        const selected = key === String(selectedAgentId || '');
-        return (
-          <button
-            type="button"
-            role="option"
-            aria-selected={selected}
-            className={selected ? 'selected' : ''}
-            key={key}
-            onClick={() => {
-              selectedAgentIdRef.current = key;
-              setSelectedAgentId(key);
-              setAgentPickerOpen(false);
-              setAttachmentStatus(null);
-            }}
-          >
-            <span>{name}</span>{selected && <Check size={15} />}
-          </button>
-        );
-      })}
-    </div>
-  ) : null;
 
   const notices = (
     <>
@@ -545,18 +502,9 @@ export default function EmptyTaskComposer({
         attachmentOpen={attachmentMenuOpen}
         attachmentDisabled={isUploadingAttachment || isSubmitting}
         onAttachmentToggle={() => {
-          setAgentPickerOpen(false);
           setAttachmentMenuOpen((open) => !open);
         }}
         attachmentMenu={attachmentMenu}
-        agentName={selectedAgentName}
-        agentOpen={agentPickerOpen}
-        agentDisabled={isSubmitting}
-        onAgentToggle={() => {
-          setAttachmentMenuOpen(false);
-          setAgentPickerOpen((open) => !open);
-        }}
-        agentMenu={agentMenu}
         onSend={handleSend}
         sendDisabled={
           isSubmitting
@@ -566,7 +514,6 @@ export default function EmptyTaskComposer({
         }
         onCloseMenus={() => {
           setAttachmentMenuOpen(false);
-          setAgentPickerOpen(false);
         }}
         notices={notices}
         overlay={phoneUploadOverlay}

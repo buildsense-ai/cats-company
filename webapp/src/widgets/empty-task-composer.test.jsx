@@ -107,11 +107,10 @@ describe('EmptyTaskComposer', () => {
     expect(menu.textContent).toContain('手机扫码上传');
   });
 
-  it('selects the first loaded Agent without resolving or activating its topic', async () => {
+  it('selects the first loaded Agent internally without rendering a picker', async () => {
     const { onResolveAgentTopic, onActivateTopic } = await mountComposer();
 
-    const agentButton = container.querySelector('.v3-agent-picker-button');
-    expect(agentButton.textContent).toContain('代码审查助手');
+    expect(container.querySelector('.v3-agent-picker')).toBeNull();
     expect(onResolveAgentTopic).not.toHaveBeenCalled();
     expect(onActivateTopic).not.toHaveBeenCalled();
     expect(api.sendMessage).not.toHaveBeenCalled();

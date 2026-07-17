@@ -30,7 +30,6 @@ describe('ChatComposer', () => {
           placeholder="输入指令，我帮您完成"
           onChange={vi.fn()}
           onAttachmentToggle={vi.fn()}
-          onAgentToggle={vi.fn()}
           onSend={vi.fn()}
           {...extraProps}
         />,
@@ -39,7 +38,7 @@ describe('ChatComposer', () => {
   }
 
   it('renders the shared control row and keeps the hint outside the pill', async () => {
-    await renderComposer({ agentName: '代码审查助手' });
+    await renderComposer();
 
     const composer = container.querySelector('.v3-composer');
     const box = composer.querySelector('.v3-composer-box');
@@ -48,7 +47,7 @@ describe('ChatComposer', () => {
 
     expect(row.querySelector('.v3-attachment-picker > button.v3-composer-plus')).not.toBeNull();
     expect(row.querySelector('textarea.v3-composer-input')).not.toBeNull();
-    expect(row.querySelector('.v3-agent-picker > button.v3-agent-picker-button')?.textContent).toContain('代码审查助手');
+    expect(row.querySelector('.v3-agent-picker')).toBeNull();
     expect(row.querySelector('button.v3-send')).not.toBeNull();
     expect(hint.textContent).toBe(CHAT_COMPOSER_HINT);
     expect(hint.parentElement).toBe(composer);

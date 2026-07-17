@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
-import { ArrowUp, Bot, ChevronDown, Plus, Square } from 'lucide-react';
+import { ArrowUp, Plus, Square } from 'lucide-react';
 
-export const CHAT_COMPOSER_HINT = 'Enter 发送 · Shift+Enter 换行 · Ctrl+Enter 发送 · Ctrl+B 折叠侧栏 · 点击红色按钮停止生成';
+export const CHAT_COMPOSER_HINT = 'Enter 发送 · Shift+Enter 换行 · Ctrl+B 折叠侧栏 · 点击红色按钮停止生成';
 
 export default function ChatComposer({
   className = '',
@@ -16,14 +16,10 @@ export default function ChatComposer({
   attachmentOpen = false,
   attachmentDisabled = false,
   attachmentMenu,
-  agentName = '选择 Agent',
-  agentOpen = false,
-  agentDisabled = false,
-  onAgentToggle,
-  agentMenu,
   onSend,
   sendDisabled = false,
   stop = false,
+  onStop,
   stopDisabled = false,
   onStop,
   onCloseMenus,
@@ -34,16 +30,13 @@ export default function ChatComposer({
 }) {
   const rootRef = useRef(null);
   const attachmentPickerRef = useRef(null);
-  const agentPickerRef = useRef(null);
-  const anyMenuOpen = attachmentOpen || agentOpen;
 
   useEffect(() => {
-    if (!anyMenuOpen || !onCloseMenus) return undefined;
+    if (!attachmentOpen || !onCloseMenus) return undefined;
 
     const handlePointerDown = (event) => {
       const clickedOpenAttachmentPicker = attachmentOpen && attachmentPickerRef.current?.contains(event.target);
-      const clickedOpenAgentPicker = agentOpen && agentPickerRef.current?.contains(event.target);
-      if (!clickedOpenAttachmentPicker && !clickedOpenAgentPicker) onCloseMenus();
+      if (!clickedOpenAttachmentPicker) onCloseMenus();
     };
     const handleKeyDown = (event) => {
       if (event.key === 'Escape') onCloseMenus();
@@ -55,7 +48,7 @@ export default function ChatComposer({
       document.removeEventListener('pointerdown', handlePointerDown, true);
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [agentOpen, anyMenuOpen, attachmentOpen, onCloseMenus]);
+  }, [attachmentOpen, onCloseMenus]);
 
   return (
     <div
@@ -94,21 +87,6 @@ export default function ChatComposer({
             onKeyDown={onKeyDown}
             onPaste={onPaste}
           />
-
-          <div ref={agentPickerRef} className="v3-agent-picker">
-            <button
-              type="button"
-              className="v3-agent-picker-button"
-              onClick={onAgentToggle}
-              aria-expanded={agentOpen}
-              aria-label={`选择 Agent，当前为${agentName}`}
-              disabled={agentDisabled}
-            >
-              <Bot className="v3-agent-picker-icon" size={16} aria-hidden="true" />
-              <span>{agentName}</span><ChevronDown className="v3-agent-picker-chevron" size={14} />
-            </button>
-            {agentMenu}
-          </div>
 
           <button
             className={`v3-send${stop ? ' stop' : ''}`}

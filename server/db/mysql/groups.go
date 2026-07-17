@@ -53,6 +53,12 @@ func (a *Adapter) CreateGroup(name string, ownerID int64) (int64, error) {
 	return groupID, nil
 }
 
+// UpdateGroupKind marks a standard group as a product-specific conversation kind.
+func (a *Adapter) UpdateGroupKind(groupID int64, kind string) error {
+	_, err := a.db.Exec("UPDATE `groups` SET group_kind = ? WHERE id = ?", kind, groupID)
+	return err
+}
+
 // GetGroup returns a group by ID.
 func (a *Adapter) GetGroup(groupID int64) (*types.Group, error) {
 	g := &types.Group{}
@@ -157,7 +163,7 @@ func (a *Adapter) GetUserGroups(userID int64) ([]*types.Group, error) {
 		        ) AS has_bot
 		 FROM `+"`groups`"+` g
 		 JOIN group_members gm ON gm.group_id = g.id
-		 WHERE gm.user_id = ? AND g.group_kind = 'standard'
+		 WHERE gm.user_id = ? AND g.group_kind IN ('standard', 'agent_task')
 		 ORDER BY g.created_at DESC, g.id DESC`,
 		userID,
 	)

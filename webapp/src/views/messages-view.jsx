@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Check, CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, Smartphone, X } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, Smartphone, X } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { FilePreviewPanel } from '../widgets/chat-message';
@@ -93,9 +93,7 @@ export default function MessagesView({
   const [tutorialTasks, setTutorialTasks] = useState(TUTORIAL_TASKS);
   const [tutorialDismissed, setTutorialDismissed] = useState(() => localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
-  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [availableAgents, setAvailableAgents] = useState([]);
-  const [selectedAgentId, setSelectedAgentId] = useState('');
   const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [showThinking, setShowThinking] = useState(() => {
     const saved = localStorage.getItem('cc_show_thinking');
@@ -136,11 +134,6 @@ export default function MessagesView({
         if (cancelled) return;
         const agents = response.agents || [];
         setAvailableAgents(agents);
-        setSelectedAgentId(() => {
-          const topicAgent = agents.find((agent) => agent.topic_id === topic);
-          if (topicAgent) return topicAgent.uid || topicAgent.id || '';
-          return '';
-        });
       } catch (error) {
         if (!cancelled) setAvailableAgents([]);
       }
@@ -340,7 +333,6 @@ export default function MessagesView({
     }
     setAttachmentStatus(null);
     setAttachmentMenuOpen(false);
-    setAgentPickerOpen(false);
     setPhoneUploadDialogOpen(false);
     setPhoneUploadSession(null);
     setPhoneUploadError('');
@@ -659,9 +651,7 @@ export default function MessagesView({
     : null;
   const selectedAgent = isGroup
     ? groupAgent
-    : availableAgents.find((agent) => (agent.uid || agent.id) === selectedAgentId) || topicAgent || null;
-  const selectedAgentKey = selectedAgent?.uid || selectedAgent?.id || '';
-  const selectedAgentName = selectedAgent?.display_name || selectedAgent?.username || '选择 Agent';
+    : topicAgent;
 
   const syncPhoneUploads = useCallback(async ({ final = false } = {}) => {
     const sessionId = phoneUploadSessionRef.current?.session_id;
@@ -762,7 +752,6 @@ export default function MessagesView({
     sendInFlightRef.current = true;
     setIsSendingMessage(true);
     setAttachmentMenuOpen(false);
-    setAgentPickerOpen(false);
 
     let sendTopic = topic;
     let topicToActivate = null;
@@ -882,6 +871,54 @@ export default function MessagesView({
       setIsStopRequested(false);
     }
   }, [activeBotWorking, clearLiveWorking, clearRuntimePlan, isStopRequested, topic, workingState.key]);
+
+  const handleRegenerateMessage = useCallback(async (message) => {
+    if (sendInFlightRef.current) {
+      throw new Error('当前有消息正在发送');
+    }
+
+    const messageIndex = messages.findIndex((item) => item.id === message?.id);
+    const previousTask = (messageIndex < 0 ? messages : messages.slice(0, messageIndex))
+      .slice()
+      .reverse()
+      .find((item) => item.from_uid === user.uid && isFinalTextMessage(item));
+    const taskText = typeof previousTask?.content === 'string' ? previousTask.content.trim() : '';
+    if (!taskText) {
+      throw new Error('没有找到可以重新发送的上一条任务');
+    }
+
+    sendInFlightRef.current = true;
+    setIsSendingMessage(true);
+    clearRuntimePlan();
+    const tempId = Date.now();
+    stickToBottomRef.current = true;
+    setMessages((current) => mergeMessages(current, [{
+      id: tempId,
+      seq_id: tempId,
+      topic_id: topic,
+      from_uid: user.uid,
+      content: taskText,
+      type: 'text',
+      msg_type: 'text',
+      created_at: new Date().toISOString(),
+      _pending: true,
+    }]));
+
+    try {
+      const result = await api.sendMessage(topic, taskText, undefined);
+      finalizeOptimisticMessage(tempId, result);
+    } catch (error) {
+      removeOptimisticMessage(tempId);
+      setAttachmentStatus({
+        tone: 'error',
+        message: error?.message ? `重新生成失败：${error.message}` : '重新生成失败，请稍后重试。',
+      });
+      throw error;
+    } finally {
+      sendInFlightRef.current = false;
+      setIsSendingMessage(false);
+    }
+  }, [clearRuntimePlan, finalizeOptimisticMessage, messages, removeOptimisticMessage, topic, user.uid]);
 
   const handleKeyDown = (e) => {
     if (
@@ -1154,10 +1191,13 @@ export default function MessagesView({
   }, [isGroup, topic, user.uid]);
   const rosterPeer = availableAgents.find((agent) => agent.uid === peerUID || agent.id === peerUID);
   const resolvedPeerProfile = rosterPeer ? { ...peerProfile, ...rosterPeer } : peerProfile;
-  const peerIsBot = resolvedPeerProfile?.bot === true || resolvedPeerProfile?.is_bot === true || resolvedPeerProfile?.account_type === 'bot';
+  const peerIsBot = Boolean(rosterPeer)
+    || resolvedPeerProfile?.bot === true
+    || resolvedPeerProfile?.is_bot === true
+    || resolvedPeerProfile?.account_type === 'bot';
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
-  const agentQuotaLabel = formatRelayUsagePill(agentQuota, { customLabel: '自备模型' });
+  const agentQuotaLabel = formatRelayUsagePill(agentQuota, { customLabel: '自备模型', showModel: false });
   const agentUsesCustomModel = agentQuota?.source === 'custom' || agentQuota?.status === 'custom';
   const agentQuotaTitle = agentUsesCustomModel
     ? `${agentQuota?.model && agentQuota.model !== '自定义模型' ? `${agentQuota.model}；` : ''}该虚拟员工使用自备模型，不消耗 CatsCo 共享额度`
@@ -1374,6 +1414,9 @@ export default function MessagesView({
               senderIsBot={group.sender.isBot}
               replyMessage={group.replyMessage}
               onReply={() => setReplyTo(group.message)}
+              onRegenerate={group.message.from_uid !== user.uid && isAssistantAuthoredMessage(group.message, group.sender.isBot)
+                ? handleRegenerateMessage
+                : undefined}
               showThinking={showThinking}
               isConsecutive={group.isConsecutive}
               onPreviewFile={setPreviewFile}
@@ -1422,7 +1465,6 @@ export default function MessagesView({
         attachmentOpen={attachmentMenuOpen}
         attachmentDisabled={isUploadingAttachment || isSendingMessage}
         onAttachmentToggle={() => {
-          setAgentPickerOpen(false);
           setAttachmentMenuOpen((open) => !open);
         }}
         attachmentMenu={(
@@ -1433,30 +1475,6 @@ export default function MessagesView({
             {isGroup && <button type="button" onClick={() => { setAttachmentMenuOpen(false); if (textareaRef.current) { const pos = textareaRef.current.selectionStart; const nextInput = `${input.slice(0, pos)}@${input.slice(pos)}`; setInput(nextInput); updateComposerDraft(topic, nextInput); textareaRef.current.focus(); } }}><span className="v3-at-sign">@</span><span>提及群成员</span></button>}
           </div>
         )}
-        agentName={selectedAgentName}
-        agentOpen={agentPickerOpen}
-        agentDisabled={activeBotWorking || isSendingMessage || isGroup}
-        onAgentToggle={() => {
-          if (isGroup) return;
-          setAttachmentMenuOpen(false);
-          setAgentPickerOpen((open) => !open);
-        }}
-        agentMenu={agentPickerOpen && (
-          <div className="v3-agent-picker-menu" role="listbox" aria-label="选择 Agent">
-            {availableAgents.length === 0 ? <div className="v3-picker-empty">暂无可用 Agent</div> : availableAgents.map((agent) => {
-              const agentId = agent.uid || agent.id;
-              const name = agent.display_name || agent.username || 'Agent';
-              return (
-                <button type="button" role="option" aria-selected={agentId === selectedAgentKey} className={agentId === selectedAgentKey ? 'selected' : ''} key={agentId} onClick={() => {
-                  setSelectedAgentId(agentId);
-                  setAgentPickerOpen(false);
-                }}>
-                  <span>{name}</span>{agentId === selectedAgentKey && <Check size={15} />}
-                </button>
-              );
-            })}
-          </div>
-        )}
         onSend={handleSend}
         sendDisabled={isSendingMessage || isUploadingAttachment || (!input.trim() && pendingAttachments.length === 0)}
         stop={activeBotWorking && !input.trim() && pendingAttachments.length === 0}
@@ -1464,7 +1482,6 @@ export default function MessagesView({
         onStop={handleStopGeneration}
         onCloseMenus={() => {
           setAttachmentMenuOpen(false);
-          setAgentPickerOpen(false);
         }}
         overlay={showMentionPicker && isGroup && filteredMembers.length > 0 && (
           <div className="oc-mention-picker v3-composer-mention-picker">
@@ -1870,6 +1887,15 @@ function isFinalTextMessage(message) {
   if (type !== 'text') return false;
   if (isWorkingTextMessage(message)) return false;
   return typeof message?.content === 'string' && message.content.trim().length > 0;
+}
+
+function isAssistantAuthoredMessage(message, senderIsBot = false) {
+  return Boolean(
+    senderIsBot
+    || message?.role === 'assistant'
+    || message?.metadata?.role === 'assistant'
+    || message?.metadata?.sender_type === 'agent',
+  );
 }
 
 function RuntimePlanCard({ plan }) {
