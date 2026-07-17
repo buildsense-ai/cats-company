@@ -979,4 +979,39 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(container.textContent).not.toContain('输入');
   });
+
+  it('expands a runtime plan without crashing the conversation view', async () => {
+    await mountTopic(root, 'p2p_1_2');
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 23,
+          seq: 23,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: {
+            revision: 1,
+            updatedAt: Date.now(),
+            steps: [
+              { text: '定位白屏原因', status: 'completed' },
+              { text: '验证计划展开', status: 'in_progress' },
+            ],
+          },
+          type: 'runtime_plan',
+          msg_type: 'runtime_plan',
+        },
+      });
+    });
+
+    const toggle = container.querySelector('.v3-runtime-plan-toggle');
+    expect(toggle).not.toBeNull();
+    expect(container.querySelector('.v3-runtime-plan-steps')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(toggle);
+    });
+
+    expect(container.querySelector('.v3-runtime-plan-steps')?.textContent).toContain('验证计划展开');
+  });
 });

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Check, CheckCircle2, ChevronRight, Circle, CircleDot, FileText, Image, Smartphone, X } from 'lucide-react';
+import { Check, CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, Smartphone, X } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { FilePreviewPanel } from '../widgets/chat-message';
