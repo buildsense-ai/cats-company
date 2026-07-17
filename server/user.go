@@ -184,143 +184,72 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	req.Email = strings.TrimSpace(req.Email)
 	req.Username = strings.TrimSpace(req.Username)
 
-	// 邮箱注册模式
-	if req.Email != "" {
-		if len(req.Password) < 6 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password min 6 chars"})
-			return
-		}
-
-		email := req.Email
-		username := email
-		if req.Username != "" {
-			username = req.Username
-		} else {
-			// 从邮箱提取用户名
-			atIndex := 0
-			for i, c := range email {
-				if c == '@' {
-					atIndex = i
-					break
-				}
-			}
-			if atIndex > 0 {
-				username = email[:atIndex]
-			}
-		}
-
-		if len(username) < 3 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "username min 3 chars"})
-			return
-		}
-
-		existingEmail, err := h.db.GetUserByEmail(email)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
-			return
-		}
-		if existingEmail != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email already registered"})
-			return
-		}
-
-		existingUsername, err := h.db.GetUserByUsername(username)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
-			return
-		}
-		if existingUsername != nil {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "username taken"})
-			return
-		}
-
-		if req.Code == "" || !verifyCode(email, req.Code) {
-			fmt.Printf("[REGISTER_ERROR] Invalid code for %s\n", email)
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired verification code"})
-			return
-		}
-
-		displayName := strings.TrimSpace(req.DisplayName)
-		hash, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-
-		user := &types.User{
-			Username:    username,
-			Email:       email,
-			DisplayName: displayName,
-			AccountType: types.AccountHuman,
-			PassHash:    hash,
-		}
-
-		_, err = h.db.CreateUser(user)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email already exists"})
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+	if req.Email == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email required"})
+		return
+	}
+	if len(req.Password) < 6 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password min 6 chars"})
 		return
 	}
 
-	// 原有的用户名注册模式
-	if len(req.Username) < 3 || len(req.Password) < 6 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "username min 3 chars, password min 6 chars"})
+	email := req.Email
+	username := email
+	if req.Username != "" {
+		username = req.Username
+	} else if atIndex := strings.IndexRune(email, '@'); atIndex > 0 {
+		username = email[:atIndex]
+	}
+
+	if len(username) < 3 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "username min 3 chars"})
 		return
 	}
 
-	// Check if username exists
-	existing, err := h.db.GetUserByUsername(req.Username)
+	existingEmail, err := h.db.GetUserByEmail(email)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
 		return
 	}
-	if existing != nil {
+	if existingEmail != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email already registered"})
+		return
+	}
+
+	existingUsername, err := h.db.GetUserByUsername(username)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
+		return
+	}
+	if existingUsername != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "username taken"})
 		return
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	if req.Code == "" || !verifyCode(email, req.Code) {
+		fmt.Printf("[REGISTER_ERROR] Invalid code for %s\n", email)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired verification code"})
 		return
 	}
 
-	displayName := req.DisplayName
-	if displayName == "" {
-		displayName = req.Username
-	}
+	displayName := strings.TrimSpace(req.DisplayName)
+	hash, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 
 	user := &types.User{
-		Username:    req.Username,
-		Email:       req.Email,
-		Phone:       req.Phone,
+		Username:    username,
+		Email:       email,
 		DisplayName: displayName,
 		AccountType: types.AccountHuman,
 		PassHash:    hash,
 	}
 
-	uid, err := h.db.CreateUser(user)
+	_, err = h.db.CreateUser(user)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "registration failed"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email already exists"})
 		return
 	}
 
-	token, err := GenerateToken(uid, req.Username, req.Email)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
-		return
-	}
-
-	// Auto-add default AI assistant as friend
-	autoAddAssistantFriend(h.db, uid)
-
-	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"token":        token,
-		"uid":          uid,
-		"username":     req.Username,
-		"display_name": displayName,
-		"avatar_url":   user.AvatarURL,
-		"account_type": user.AccountType,
-	})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
 }
 
 // HandleLogin handles POST /api/auth/login
