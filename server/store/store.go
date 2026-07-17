@@ -10,6 +10,8 @@ import (
 var ErrChannelAgentBindingAlreadyLinked = errors.New("channel agent binding already linked to another canonical user")
 var ErrChannelAgentAccessAlreadyLinked = errors.New("channel agent access request already linked")
 var ErrChannelNativeGroupEventBusy = errors.New("channel native group event is already being processed")
+var ErrProjectNameConflict = errors.New("project name already exists")
+var ErrProjectTopicNotFound = errors.New("project or topic not found")
 
 // UserStore contains user and profile persistence operations.
 type UserStore interface {
@@ -79,6 +81,21 @@ type MessageStore interface {
 type ConversationTaskStatusStore interface {
 	UpsertConversationTaskStatus(status *types.ConversationTaskStatus) (*types.ConversationTaskStatus, error)
 	GetConversationTaskStatuses(topicIDs []string) (map[string]*types.ConversationTaskStatus, error)
+}
+
+// ProjectStore persists user-owned projects and their conversation assignments.
+// It remains optional so narrow server test stores do not need project methods.
+type ProjectStore interface {
+	CreateProject(ownerUID int64, name string) (*types.Project, error)
+	ListProjects(ownerUID int64) ([]*types.Project, error)
+	AssignTopicToProject(ownerUID, projectID int64, topicID string) error
+	RemoveTopicFromProject(ownerUID int64, topicID string) error
+	ListProjectTopics(ownerUID int64) ([]*types.ProjectTopic, error)
+}
+
+// ProjectTopicStore is the read-only boundary used by conversation summaries.
+type ProjectTopicStore interface {
+	ListProjectTopics(ownerUID int64) ([]*types.ProjectTopic, error)
 }
 
 // BotStore contains bot account and bot configuration persistence operations.

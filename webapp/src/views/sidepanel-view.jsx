@@ -8,10 +8,10 @@ import FriendRequest from '../widgets/friend-request';
 import AgentStoreModal from '../widgets/agent-store-modal';
 import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
 import Avatar from '../widgets/avatar';
-import { Users, UserRound, Zap, Bot, Trash2, MessageSquare, Smartphone, Check, X, Pin, ChevronRight, Plus, Search, MoreHorizontal, UserX, Ban, AlertCircle, CheckCircle2, Clock3, LoaderCircle } from 'lucide-react';
+import { Users, UserRound, Zap, Bot, Trash2, MessageSquare, Smartphone, Check, X, Pin, ChevronRight, Plus, Search, MoreHorizontal, UserX, Ban, AlertCircle, CheckCircle2, Clock3, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
-const DEFAULT_COLLAPSED_SECTIONS = { collaboration: false, ai: false, friends: false, groups: false, agents: false };
+const DEFAULT_COLLAPSED_SECTIONS = { collaboration: false, ai: false, friends: false, groups: false, agents: false, projects: false };
 const PINNED_GROUPS_STORAGE_PREFIX = 'cc_pinned_groups_v1';
 const PINNED_HISTORY_STORAGE_PREFIX = 'cc_pinned_history_v1';
 const HIDDEN_HISTORY_STORAGE_PREFIX = 'cc_hidden_history_v1';
@@ -44,6 +44,7 @@ function normalizeCollapsedSections(value) {
     friends: typeof value?.friends === 'boolean' ? value.friends : DEFAULT_COLLAPSED_SECTIONS.friends,
     groups: typeof value?.groups === 'boolean' ? value.groups : DEFAULT_COLLAPSED_SECTIONS.groups,
     agents: typeof value?.agents === 'boolean' ? value.agents : DEFAULT_COLLAPSED_SECTIONS.agents,
+    projects: typeof value?.projects === 'boolean' ? value.projects : DEFAULT_COLLAPSED_SECTIONS.projects,
   };
 }
 
@@ -181,6 +182,7 @@ export default function ChatListView({
   const [groups, setGroups] = useState([]);
   const [pending, setPending] = useState([]);
   const [agents, setAgents] = useState([]);
+  const [projects, setProjects] = useState([]);
   const [search, setSearch] = useState('');
   const [deletingTopicId, setDeletingTopicId] = useState('');
   const [showCreateGroup, setShowCreateGroup] = useState(false);
@@ -202,6 +204,11 @@ export default function ChatListView({
   const [openChatMenuKey, setOpenChatMenuKey] = useState('');
   const [friendActionId, setFriendActionId] = useState('');
   const [dismissedTaskStatuses, setDismissedTaskStatuses] = useState(() => loadDismissedTaskStatuses(user?.uid));
+  const [projectPickerTask, setProjectPickerTask] = useState(null);
+  const [showCreateProject, setShowCreateProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [projectActionTopicId, setProjectActionTopicId] = useState('');
+  const [expandedProjectId, setExpandedProjectId] = useState(null);
   const justHiddenHistoryRef = useRef('');
   const activeTopicRef = useRef(activeTopic);
   const userUidRef = useRef(user?.uid);
@@ -377,12 +384,13 @@ export default function ChatListView({
 
   const loadAll = async () => {
     try {
-      const [resC, resF, resG, resP, resA] = await Promise.all([
+      const [resC, resF, resG, resP, resA, resProjects] = await Promise.all([
         api.getConversations().catch((error) => ({ error })),
         api.getFriends().catch(()=>({})),
         api.getGroups().catch(()=>({})),
         api.getPendingRequests().catch(()=>({})),
-        api.getAgents().catch(()=>({}))
+        api.getAgents().catch(()=>({})),
+        api.getProjects().catch(()=>({})),
       ]);
       const groups = resG.groups || [];
       const conversationItems = resC.conversations || [];
@@ -400,6 +408,7 @@ export default function ChatListView({
       setPending(resP.requests || []);
       const nextAgents = resA.agents || [];
       setAgents(nextAgents);
+      setProjects(resProjects.projects || []);
       await loadAgentPendingRequests(nextAgents);
     } catch (e) {
       console.error('Failed to load sidebar data:', e);
@@ -680,14 +689,26 @@ export default function ChatListView({
   const filteredFriends = friends.filter(f => userSearchText(f).includes(lowerSearch));
   const filteredGroups = mergedGroups.filter(g => g.name.toLowerCase().includes(lowerSearch));
   const filteredAgents = agents.filter(a => userSearchText(a).includes(lowerSearch));
+  const projectTasksById = recentChats.reduce((result, chat) => {
+    if (chat.isGroup || !chat.isBot || !chat.projectId) return result;
+    const projectId = Number(chat.projectId);
+    const tasks = result.get(projectId) || [];
+    tasks.push(chat);
+    result.set(projectId, tasks);
+    return result;
+  }, new Map());
+  const filteredProjects = projects.filter((project) => {
+    if (String(project.name || '').toLowerCase().includes(lowerSearch)) return true;
+    return (projectTasksById.get(Number(project.id)) || []).some((chat) => chat.name.toLowerCase().includes(lowerSearch));
+  });
 
   const aiChats = sortConversationsWithPins(
-    directChats.filter((chat) => chat.isBot && !hiddenHistoryIds.has(String(chat.id))),
+    directChats.filter((chat) => chat.isBot && !chat.projectId && !hiddenHistoryIds.has(String(chat.id))),
     pinnedHistoryIds,
   );
   const friendChats = directChats.filter(c => !c.isBot);
   const groupChats = sortGroupsWithPins(filteredGroups, pinnedGroupIds);
-  const hasSearchResults = aiChats.length > 0 || friendChats.length > 0 || groupChats.length > 0 || filteredAgents.length > 0;
+  const hasSearchResults = aiChats.length > 0 || friendChats.length > 0 || groupChats.length > 0 || filteredAgents.length > 0 || filteredProjects.length > 0;
   const compactChats = visibleRecentChats.slice(0, 12);
 
   const selectConversation = (chat) => {
@@ -723,6 +744,71 @@ export default function ChatListView({
       setMobileLinkGroup({ groupId: chat.groupId, topicId: chat.id, name: chat.name });
     } else if (chat.friendId) {
       setMobileLinkAgent({ uid: chat.friendId, display_name: chat.name });
+    }
+  };
+
+  const closeProjectDialog = () => {
+    setProjectPickerTask(null);
+    setShowCreateProject(false);
+    setNewProjectName('');
+  };
+
+  const handleOpenProjectPicker = (chat) => {
+    setOpenChatMenuKey('');
+    setProjectPickerTask(chat);
+    setShowCreateProject(false);
+  };
+
+  const handleAssignProject = async (project) => {
+    if (!projectPickerTask || !project?.id) return;
+    setProjectActionTopicId(projectPickerTask.id);
+    try {
+      await api.assignProjectTopic(project.id, projectPickerTask.id);
+      setExpandedProjectId(Number(project.id));
+      await loadAll();
+      closeProjectDialog();
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (err) {
+      window.alert(err.message || '加入项目失败');
+    } finally {
+      setProjectActionTopicId('');
+    }
+  };
+
+  const handleRemoveFromProject = async () => {
+    if (!projectPickerTask?.id) return;
+    setProjectActionTopicId(projectPickerTask.id);
+    try {
+      await api.removeProjectTopic(projectPickerTask.id);
+      await loadAll();
+      closeProjectDialog();
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (err) {
+      window.alert(err.message || '移出项目失败');
+    } finally {
+      setProjectActionTopicId('');
+    }
+  };
+
+  const handleCreateProject = async () => {
+    const name = newProjectName.trim();
+    if (!name) return;
+    const pendingTask = projectPickerTask;
+    setProjectActionTopicId(pendingTask?.id || 'create-project');
+    try {
+      const res = await api.createProject(name);
+      const project = res.project;
+      if (pendingTask && project?.id) {
+        await api.assignProjectTopic(project.id, pendingTask.id);
+        setExpandedProjectId(Number(project.id));
+      }
+      await loadAll();
+      closeProjectDialog();
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (err) {
+      window.alert(err.message || '创建项目失败');
+    } finally {
+      setProjectActionTopicId('');
     }
   };
 
@@ -866,6 +952,15 @@ export default function ChatListView({
                     >
                       <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
                       <span>{isPinned ? '取消置顶任务' : '置顶任务'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      aria-label={`${chat.projectId ? '移动到项目' : '加入项目'} ${chat.name}`}
+                      onClick={() => handleOpenProjectPicker(chat)}
+                    >
+                      <FolderPlus size={14} />
+                      <span>{chat.projectId ? '移动到项目' : '加入项目'}</span>
                     </button>
                     <button type="button" role="menuitem" aria-label={`${chat.name} 手机扫码`} onClick={() => handleOpenMobileLink(chat)}>
                       <Smartphone size={14} />
@@ -1161,12 +1256,72 @@ export default function ChatListView({
         </div>}
 
         <div className="v3-chat-section cc-top-level-section cc-project-section">
-          <button type="button" className="cc-section-toggle" aria-expanded="false">
+          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('projects')} aria-expanded={!collapsed.projects}>
             <span>{'项目'}</span>
             <ChevronRight size={14} />
           </button>
-          <button type="button" className="cc-section-add" disabled title="项目接口尚未接入" aria-label="项目接口尚未接入"><Plus size={15} /></button>
+          <button
+            type="button"
+            className="cc-section-add"
+            title="新建项目"
+            aria-label="新建项目"
+            onClick={() => {
+              setProjectPickerTask(null);
+              setShowCreateProject(true);
+              setNewProjectName('');
+            }}
+          >
+            <Plus size={15} />
+          </button>
         </div>
+        {(isSearching || !collapsed.projects) && (filteredProjects.length === 0 && !isSearching ? (
+          <div className="cc-sidebar-empty cc-project-empty">暂无项目</div>
+        ) : (
+          filteredProjects.map((project) => {
+            const projectId = Number(project.id);
+            const projectNameMatches = String(project.name || '').toLowerCase().includes(lowerSearch);
+            const projectTasks = (projectTasksById.get(projectId) || []).filter((chat) => (
+              !isSearching || projectNameMatches || chat.name.toLowerCase().includes(lowerSearch)
+            ));
+            const expanded = isSearching ? projectTasks.length > 0 : expandedProjectId === projectId;
+            return (
+              <React.Fragment key={project.id}>
+                <button
+                  type="button"
+                  className="v3-chat-item cc-project-item"
+                  aria-label={`${expanded ? '收起项目' : '打开项目'} ${project.name}`}
+                  aria-expanded={expanded}
+                  onClick={() => setExpandedProjectId(expanded ? null : projectId)}
+                >
+                  {expanded
+                    ? <FolderOpen size={14} className="prefix cc-chat-row-icon" />
+                    : <Folder size={14} className="prefix cc-chat-row-icon" />}
+                  <div className="cc-chat-row-copy">
+                    <span className="v3-chat-item-label">{project.name}</span>
+                  </div>
+                  <span className="cc-project-count" aria-label={`${project.task_count || 0} 个任务`}>{project.task_count || 0}</span>
+                </button>
+                {expanded && (projectTasks.length > 0 ? projectTasks.map((chat) => (
+                  <button
+                    type="button"
+                    key={chat.id}
+                    className={`v3-chat-item cc-project-task-item ${activeTopic === chat.id ? 'active' : ''}`}
+                    aria-label={`打开项目任务 ${chat.name}`}
+                    onClick={() => selectConversation(chat)}
+                  >
+                    <MessageSquare size={13} className="prefix cc-chat-row-icon" />
+                    <div className="cc-chat-row-copy">
+                      <span className="v3-chat-item-label">{chat.name}</span>
+                      <ConversationTaskStatusLine status={visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id)} fallback={chat.preview} />
+                    </div>
+                  </button>
+                )) : (
+                  <div className="cc-sidebar-empty cc-project-task-empty">暂无任务</div>
+                ))}
+              </React.Fragment>
+            );
+          })
+        ))}
 
         {isSearching && !hasSearchResults && (
           <div className="cc-search-empty" style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)', fontSize: '13px' }}>没有匹配结果</div>
@@ -1228,6 +1383,111 @@ export default function ChatListView({
         document.body,
       )}
 
+      {projectPickerTask && !showCreateProject && createPortal(
+        <div className="name-dialog-overlay cc-new-task-overlay" onClick={closeProjectDialog}>
+          <section className="name-dialog cc-new-task-dialog" role="dialog" aria-modal="true" aria-label="选择项目" onClick={(e) => e.stopPropagation()}>
+            <header className="cc-new-task-header">
+              <h3>加入项目</h3>
+              <button type="button" className="cc-dialog-close" onClick={closeProjectDialog} aria-label="关闭">
+                <X size={18} />
+              </button>
+            </header>
+            <div className="cc-new-task-body">
+              {projects.length === 0 ? (
+                <div className="cc-new-task-empty">
+                  <strong>暂无项目</strong>
+                  <span>先新建一个项目，再加入当前任务</span>
+                </div>
+              ) : (
+                <div className="cc-new-task-agent-list cc-project-picker-list">
+                  {projects.map((project) => {
+                    const selected = Number(projectPickerTask.projectId) === Number(project.id);
+                    return (
+                      <button
+                        type="button"
+                        className="cc-new-task-agent"
+                        key={project.id}
+                        disabled={selected || projectActionTopicId === projectPickerTask.id}
+                        onClick={() => handleAssignProject(project)}
+                      >
+                        {selected ? <Check size={17} /> : <Folder size={17} />}
+                        <span>{project.name}</span>
+                      </button>
+                    );
+                  })}
+                  {projectPickerTask.projectId && (
+                    <button
+                      type="button"
+                      className="cc-new-task-agent cc-project-remove-option"
+                      disabled={projectActionTopicId === projectPickerTask.id}
+                      onClick={handleRemoveFromProject}
+                    >
+                      <X size={17} />
+                      <span>移出当前项目</span>
+                    </button>
+                  )}
+                </div>
+              )}
+              <div className="cc-new-task-actions cc-project-picker-actions">
+                <button type="button" className="oc-btn oc-btn-default" onClick={closeProjectDialog}>取消</button>
+                <button type="button" className="oc-btn oc-btn-primary" onClick={() => { setShowCreateProject(true); setNewProjectName(''); }}>新建项目</button>
+              </div>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
+
+      {showCreateProject && createPortal(
+        <div className="name-dialog-overlay cc-new-task-overlay" onClick={closeProjectDialog}>
+          <section className="name-dialog cc-new-task-dialog" role="dialog" aria-modal="true" aria-label="新建项目" onClick={(e) => e.stopPropagation()}>
+            <header className="cc-new-task-header">
+              <h3>新建项目</h3>
+              <button type="button" className="cc-dialog-close" onClick={closeProjectDialog} aria-label="关闭">
+                <X size={18} />
+              </button>
+            </header>
+            <div className="cc-new-task-body">
+              <input
+                autoFocus
+                className="oc-auth-input cc-new-task-name"
+                value={newProjectName}
+                maxLength={128}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleCreateProject(); }}
+                placeholder="项目名称"
+                aria-label="项目名称"
+              />
+              <div className="cc-new-task-actions">
+                <button
+                  type="button"
+                  className="oc-btn oc-btn-default"
+                  onClick={() => {
+                    if (projectPickerTask) {
+                      setShowCreateProject(false);
+                      setNewProjectName('');
+                    } else {
+                      closeProjectDialog();
+                    }
+                  }}
+                >
+                  {projectPickerTask ? '返回' : '取消'}
+                </button>
+                <button
+                  type="button"
+                  className="oc-btn oc-btn-primary"
+                  disabled={!newProjectName.trim() || Boolean(projectActionTopicId)}
+                  onClick={handleCreateProject}
+                >
+                  创建
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
+
       {showCreateGroup && createPortal(
         <CreateGroup onClose={() => setShowCreateGroup(false)} onCreated={handleGroupCreated} />,
         document.body,
@@ -1274,8 +1534,20 @@ function isOwnedAgent(agent) {
 }
 
 function ConversationTaskStatusLine({ status, fallback }) {
+  const expiresAtMs = taskStatusExpiresMs(status);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!expiresAtMs || expiresAtMs <= Date.now()) return undefined;
+    const timer = window.setTimeout(
+      () => setNowMs(Date.now()),
+      Math.min(expiresAtMs - Date.now() + 50, 2147483647),
+    );
+    return () => window.clearTimeout(timer);
+  }, [expiresAtMs]);
+
   const normalized = normalizeTaskStatus(status);
-  if (!normalized || normalized.state === 'idle') {
+  if (!normalized || normalized.state === 'idle' || (expiresAtMs && expiresAtMs <= nowMs)) {
     return fallback ? <span className="cc-chat-row-preview">{fallback}</span> : null;
   }
 
@@ -1343,6 +1615,10 @@ function taskStatusUpdatedMs(status) {
   return toTimeMs(status?.updated_at || status?.updatedAt);
 }
 
+function taskStatusExpiresMs(status) {
+  return toTimeMs(status?.expires_at || status?.expiresAt);
+}
+
 function conversationSummaryToChat(item) {
   const createdAtMs = toTimeMs(item.created_at);
   const lastTimeMs = toTimeMs(item.last_time) || createdAtMs;
@@ -1362,6 +1638,8 @@ function conversationSummaryToChat(item) {
     isOnline: item.is_online,
     seq: item.latest_seq || 0,
     taskStatus: normalizeTaskStatus(item.task_status),
+    projectId: item.project_id || 0,
+    projectName: item.project_name || '',
   };
 }
 

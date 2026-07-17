@@ -183,6 +183,10 @@ export const api = {
   getMessages: (topicId, limit, offset, latest = false) =>
     request('GET', `/api/messages?topic_id=${encodeURIComponent(topicId)}&limit=${limit || 50}&offset=${offset || 0}${latest ? '&latest=1' : ''}`),
   getConversations: () => request('GET', '/api/conversations'),
+  getProjects: () => request('GET', '/api/projects'),
+  createProject: (name) => request('POST', '/api/projects', { name }),
+  assignProjectTopic: (projectId, topicId) => request('POST', '/api/projects/topic', { project_id: projectId, topic_id: topicId }),
+  removeProjectTopic: (topicId) => request('DELETE', `/api/projects/topic?topic_id=${encodeURIComponent(topicId)}`),
   getRelayConfig: () => request('GET', '/api/relay/config'),
   getRelayCommercial: () => request('GET', '/api/relay/commercial'),
   redeemRelayInvite: (code) => request('POST', '/api/relay/invite/redeem', { code }),

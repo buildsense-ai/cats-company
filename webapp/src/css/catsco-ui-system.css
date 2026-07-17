@@ -694,7 +694,11 @@ select:disabled {
   order: 10;
 }
 
-.v3-chat-list > .cc-project-section {
+.v3-chat-list > .cc-project-section,
+.v3-chat-list > .cc-project-item,
+.v3-chat-list > .cc-project-task-item,
+.v3-chat-list > .cc-project-task-empty,
+.v3-chat-list > .cc-project-empty {
   order: 20;
 }
 
@@ -851,6 +855,36 @@ select:disabled {
   white-space: nowrap;
 }
 
+.cc-project-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cc-project-item:hover,
+.cc-project-task-item:hover {
+  background: var(--cc-hover);
+}
+
+.cc-project-task-item {
+  width: 100%;
+  min-height: 32px;
+  padding-left: 28px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cc-project-task-item .v3-chat-item-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cc-task-status-line.running .cc-task-status-pill {
   color: #08795f;
   background: #d9f4eb;
@@ -858,6 +892,12 @@ select:disabled {
 
 .cc-task-status-line.running .cc-task-status-pill svg {
   animation: catsco-spin 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-task-status-line.running .cc-task-status-pill svg {
+    animation: none;
+  }
 }
 
 .cc-task-status-line.completed .cc-task-status-pill {
@@ -897,6 +937,19 @@ html[data-theme="dark"] .cc-task-status-line.stale .cc-task-status-pill,
 html[data-theme="dark"] .cc-task-status-line.waiting .cc-task-status-pill {
   color: #f2c16c;
   background: rgba(187, 125, 27, 0.22);
+}
+
+.cc-project-task-empty {
+  padding-left: 44px;
+}
+
+.cc-project-count {
+  flex: 0 0 auto;
+  min-width: 20px;
+  color: var(--cc-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .v3-chat-section:hover {
@@ -3315,6 +3368,19 @@ html[data-theme="dark"] .cc-task-status-line.waiting .cc-task-status-pill {
 
 .cc-new-task-agent svg { flex: 0 0 auto; color: var(--cc-accent); }
 
+.cc-new-task-agent:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.cc-project-remove-option {
+  color: var(--cc-danger);
+}
+
+.cc-project-remove-option svg {
+  color: currentColor;
+}
+
 .cc-new-task-name {
   box-sizing: border-box;
   width: 100%;
@@ -3330,6 +3396,10 @@ html[data-theme="dark"] .cc-task-status-line.waiting .cc-task-status-pill {
 }
 
 .cc-new-task-actions .oc-btn { min-height: 38px; justify-content: center; }
+
+.cc-project-picker-actions {
+  margin-top: 10px;
+}
 
 /* Keep secondary-view controls quiet and consistent across dialogs. */
 :is(.settings-panel, .oc-modal, .name-dialog, .collaboration-manager) button {

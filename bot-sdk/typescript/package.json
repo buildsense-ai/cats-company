@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "node --test test/device-rpc.test.cjs",
+    "test": "node --test test/device-rpc.test.cjs test/task-status.test.cjs",
     "test:types": "tsc -p test/tsconfig.json"
   },
   "dependencies": {

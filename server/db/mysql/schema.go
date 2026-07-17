@@ -12,6 +12,8 @@ func (a *Adapter) CreateSchema() error {
 		createUsersTable,
 		createFriendsTable,
 		createTopicsTable,
+		createProjectsTable,
+		createProjectTopicsTable,
 		createMessagesTable,
 		createConversationTaskStatusesTable,
 		createBotConfigTable,
@@ -188,6 +190,33 @@ CREATE TABLE IF NOT EXISTS topics (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_topics_type (type),
     FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createProjectsTable = `
+CREATE TABLE IF NOT EXISTS projects (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    owner_uid BIGINT NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_projects_owner_name (owner_uid, name),
+    INDEX idx_projects_owner_updated (owner_uid, updated_at, id),
+    FOREIGN KEY (owner_uid) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createProjectTopicsTable = `
+CREATE TABLE IF NOT EXISTS project_topics (
+    owner_uid BIGINT NOT NULL,
+    topic_id VARCHAR(64) NOT NULL,
+    project_id BIGINT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (owner_uid, topic_id),
+    INDEX idx_project_topics_project (project_id, created_at),
+    FOREIGN KEY (owner_uid) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 

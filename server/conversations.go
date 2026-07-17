@@ -43,6 +43,7 @@ func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request)
 		ownedBots = nil
 	}
 	ownerBotUsers := ownerBotUsersFromMaps(ownedBots)
+	projectTopics := h.loadProjectTopics(uid)
 
 	topicIDs := make([]string, 0, len(friends)+len(groups)+len(ownerBotUsers))
 	seenP2P := make(map[int64]struct{})
@@ -75,18 +76,21 @@ func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request)
 		topicID := p2pTopicID(uid, friend.ID)
 		summary := buildFriendConversationSummary(topicID, friend, latestByTopic[topicID], h.hub)
 		summary.TaskStatus = taskStatusByTopic[topicID]
+		applyProjectTopic(summary, projectTopics[topicID])
 		conversations = append(conversations, summary)
 	}
 	for _, bot := range ownerConversationBots {
 		topicID := p2pTopicID(uid, bot.ID)
 		summary := buildFriendConversationSummary(topicID, bot, latestByTopic[topicID], h.hub)
 		summary.TaskStatus = taskStatusByTopic[topicID]
+		applyProjectTopic(summary, projectTopics[topicID])
 		conversations = append(conversations, summary)
 	}
 	for _, group := range groups {
 		topicID := "grp_" + formatInt64(group.ID)
 		summary := buildGroupConversationSummary(topicID, group, latestByTopic[topicID])
 		summary.TaskStatus = taskStatusByTopic[topicID]
+		applyProjectTopic(summary, projectTopics[topicID])
 		conversations = append(conversations, summary)
 	}
 
@@ -109,6 +113,34 @@ func (h *ConversationHandler) taskStatusesForTopics(topicIDs []string) map[strin
 		return map[string]*types.ConversationTaskStatus{}
 	}
 	return statuses
+}
+
+func (h *ConversationHandler) loadProjectTopics(uid int64) map[string]*types.ProjectTopic {
+	byTopic := make(map[string]*types.ProjectTopic)
+	projects, ok := h.db.(store.ProjectTopicStore)
+	if !ok {
+		return byTopic
+	}
+	assignments, err := projects.ListProjectTopics(uid)
+	if err != nil {
+		log.Printf("conversations: failed to list project topics for uid=%d: %v", uid, err)
+		return byTopic
+	}
+	for _, assignment := range assignments {
+		if assignment == nil || assignment.TopicID == "" {
+			continue
+		}
+		byTopic[assignment.TopicID] = assignment
+	}
+	return byTopic
+}
+
+func applyProjectTopic(summary *types.ConversationSummary, assignment *types.ProjectTopic) {
+	if summary == nil || assignment == nil {
+		return
+	}
+	summary.ProjectID = assignment.ProjectID
+	summary.ProjectName = assignment.ProjectName
 }
 
 func buildFriendConversationSummary(topicID string, friend *types.User, latest *types.Message, hub *Hub) *types.ConversationSummary {

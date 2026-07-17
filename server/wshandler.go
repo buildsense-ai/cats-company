@@ -1101,7 +1101,6 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 	}
 
 	if isTaskStatusPayload(payload) {
-		h.db.CreateTopic(topic, "p2p", uid)
 		h.handleTaskStatusPub(client, msg, topic, payload)
 		return
 	}

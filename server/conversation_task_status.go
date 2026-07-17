@@ -13,10 +13,11 @@ import (
 )
 
 const (
-	taskStatusType       = "task_status"
-	maxTaskRunIDLength   = 128
-	maxTaskSummaryLength = 500
-	maxTaskErrorLength   = 2000
+	taskStatusType             = "task_status"
+	maxTaskRunIDLength         = 128
+	maxTaskSummaryLength       = 500
+	maxTaskErrorLength         = 2000
+	defaultActiveTaskStatusTTL = 6 * time.Hour
 )
 
 var allowedTaskStatusStates = map[string]bool{
@@ -125,6 +126,12 @@ func normalizeConversationTaskStatus(uid int64, topicID string, payload *normali
 		return nil, fmt.Errorf("unsupported task_status state %q", state)
 	}
 
+	now := time.Now().UTC()
+	expiresAt := firstTaskStatusTime(body, payload.Metadata, "expires_at", "expiresAt")
+	if expiresAt == nil && (state == "running" || state == "waiting") {
+		defaultExpiry := now.Add(defaultActiveTaskStatusTTL)
+		expiresAt = &defaultExpiry
+	}
 	status := &types.ConversationTaskStatus{
 		TopicID:   topicID,
 		RunID:     truncateUTF8(firstTaskStatusString(body, payload.Metadata, "run_id", "runId", "run"), maxTaskRunIDLength),
@@ -132,8 +139,8 @@ func normalizeConversationTaskStatus(uid int64, topicID string, payload *normali
 		Summary:   truncateUTF8(firstTaskStatusString(body, payload.Metadata, "summary", "text", "message"), maxTaskSummaryLength),
 		Error:     truncateUTF8(firstTaskStatusString(body, payload.Metadata, "error", "error_message", "errorMessage"), maxTaskErrorLength),
 		SourceUID: uid,
-		UpdatedAt: time.Now().UTC(),
-		ExpiresAt: firstTaskStatusTime(body, payload.Metadata, "expires_at", "expiresAt"),
+		UpdatedAt: now,
+		ExpiresAt: expiresAt,
 	}
 	return status, nil
 }
