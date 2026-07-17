@@ -198,18 +198,38 @@ type ContentBlock struct {
 
 // ConversationSummary is the lightweight chat-list payload for a topic.
 type ConversationSummary struct {
-	ID        string     `json:"id"`
-	Name      string     `json:"name"`
-	Preview   string     `json:"preview,omitempty"`
-	IsGroup   bool       `json:"is_group"`
-	GroupID   int64      `json:"group_id,omitempty"`
-	FriendID  int64      `json:"friend_id,omitempty"`
-	AvatarURL string     `json:"avatar_url,omitempty"`
-	IsBot     bool       `json:"is_bot,omitempty"`
-	HasBot    bool       `json:"has_bot,omitempty"`
-	IsOnline  bool       `json:"is_online,omitempty"`
-	LastTime  *time.Time `json:"last_time,omitempty"`
-	LatestSeq int64      `json:"latest_seq,omitempty"`
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Preview     string     `json:"preview,omitempty"`
+	IsGroup     bool       `json:"is_group"`
+	GroupID     int64      `json:"group_id,omitempty"`
+	FriendID    int64      `json:"friend_id,omitempty"`
+	AvatarURL   string     `json:"avatar_url,omitempty"`
+	IsBot       bool       `json:"is_bot,omitempty"`
+	HasBot      bool       `json:"has_bot,omitempty"`
+	IsOnline    bool       `json:"is_online,omitempty"`
+	LastTime    *time.Time `json:"last_time,omitempty"`
+	LatestSeq   int64      `json:"latest_seq,omitempty"`
+	ProjectID   int64      `json:"project_id,omitempty"`
+	ProjectName string     `json:"project_name,omitempty"`
+}
+
+// Project groups existing conversation topics without copying their messages.
+type Project struct {
+	ID        int64     `json:"id"`
+	OwnerUID  int64     `json:"owner_uid"`
+	Name      string    `json:"name"`
+	TaskCount int64     `json:"task_count"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ProjectTopic is the owner-scoped assignment of one topic to one project.
+type ProjectTopic struct {
+	ProjectID   int64     `json:"project_id"`
+	ProjectName string    `json:"project_name"`
+	TopicID     string    `json:"topic_id"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // RichContent is the unified message payload structure.

@@ -12,6 +12,8 @@ func (a *Adapter) CreateSchema() error {
 		createUsersTable,
 		createFriendsTable,
 		createTopicsTable,
+		createProjectsTable,
+		createProjectTopicsTable,
 		createMessagesTable,
 		createBotConfigTable,
 		createRateLimitTable,
@@ -68,6 +70,7 @@ func (a *Adapter) CreateSchema() error {
 		createUsersIndexes,
 		createFriendsIndexes,
 		createTopicsIndexes,
+		createProjectIndexes,
 		createMessagesIndexes,
 		createBotConfigIndexes,
 		createGroupMembersIndexes,
@@ -160,6 +163,27 @@ CREATE TABLE IF NOT EXISTS topics (
     name VARCHAR(128) DEFAULT '',
     owner_id BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+`
+
+const createProjectsTable = `
+CREATE TABLE IF NOT EXISTS projects (
+    id BIGSERIAL PRIMARY KEY,
+    owner_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(128) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_projects_owner_name UNIQUE (owner_uid, name)
+);
+`
+
+const createProjectTopicsTable = `
+CREATE TABLE IF NOT EXISTS project_topics (
+    owner_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    topic_id VARCHAR(64) NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (owner_uid, topic_id)
 );
 `
 
@@ -632,6 +656,10 @@ CREATE INDEX IF NOT EXISTS idx_friends_to_user ON friends (to_user_id, status);
 CREATE INDEX IF NOT EXISTS idx_friends_status ON friends (status);
 `
 const createTopicsIndexes = `CREATE INDEX IF NOT EXISTS idx_topics_type ON topics (type);`
+const createProjectIndexes = `
+CREATE INDEX IF NOT EXISTS idx_projects_owner_updated ON projects (owner_uid, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_project_topics_project ON project_topics (project_id, created_at DESC);
+`
 const createMessagesIndexes = `
 CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages (topic_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_topic_id ON messages (topic_id, id);
@@ -695,6 +723,8 @@ const createUpdatedAtTriggers = `
 CREATE OR REPLACE TRIGGER trg_users_updated_at BEFORE UPDATE ON users
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_friends_updated_at BEFORE UPDATE ON friends
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_projects_updated_at BEFORE UPDATE ON projects
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_bot_config_updated_at BEFORE UPDATE ON bot_config
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();

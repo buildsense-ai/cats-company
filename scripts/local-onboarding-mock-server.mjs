@@ -13,6 +13,7 @@ const showcasePassword = String(process.env.MOCK_CATS_SHOWCASE_PASSWORD || 'demo
 
 let nextUserId = 100;
 let nextBotId = 200;
+let nextProjectId = 1;
 const users = new Map();
 const tokens = new Map();
 const sessions = new Map();
@@ -23,6 +24,8 @@ const agentSockets = new Map();
 const webSocketsByUserId = new Map();
 const messagesByTopic = new Map();
 const showcaseByUserId = new Map();
+const projectsByUserId = new Map();
+const projectTopicsByUserId = new Map();
 let nextSeq = 1;
 
 function p2pTopicId(uid1, uid2) {
@@ -121,6 +124,34 @@ function seedChatShowcase(user, bots) {
     conversationFromTopic(codeTopic, 'PR #71 前端迁移复盘', codeAgent.id, false, at(35), true),
   ];
   showcaseByUserId.set(user.id, { friends, groups, conversations });
+  const project = {
+    id: nextProjectId++,
+    owner_uid: user.id,
+    name: 'CatsCo 体验优化',
+    task_count: 0,
+    created_at: at(60),
+    updated_at: at(5),
+  };
+  projectsByUserId.set(user.id, [project]);
+  projectTopicsByUserId.set(user.id, new Map([[codeTopic, project.id]]));
+  refreshProjectAssignments(user.id);
+}
+
+function refreshProjectAssignments(userId) {
+  const projects = projectsByUserId.get(userId) || [];
+  const assignments = projectTopicsByUserId.get(userId) || new Map();
+  const projectsById = new Map(projects.map((project) => [Number(project.id), project]));
+  for (const project of projects) project.task_count = 0;
+  for (const projectId of assignments.values()) {
+    const project = projectsById.get(Number(projectId));
+    if (project) project.task_count += 1;
+  }
+  const conversations = showcaseByUserId.get(userId)?.conversations || [];
+  for (const conversation of conversations) {
+    const project = projectsById.get(Number(assignments.get(conversation.id)));
+    conversation.project_id = project?.id || 0;
+    conversation.project_name = project?.name || '';
+  }
 }
 
 function conversationFromTopic(id, name, friendId, isGroup, lastTime, isBot = false, groupId = null) {
@@ -345,9 +376,12 @@ async function handleApi(req, res) {
       webSocketsByUserId.clear();
       messagesByTopic.clear();
       showcaseByUserId.clear();
+      projectsByUserId.clear();
+      projectTopicsByUserId.clear();
       nextSeq = 1;
       nextUserId = 100;
       nextBotId = 200;
+      nextProjectId = 1;
       seedShowcaseAccount();
       return send(res, 200, { ok: true, scenario });
     }
@@ -677,6 +711,55 @@ async function handleApi(req, res) {
       const user = requireUser(req, res);
       if (!user) return;
       return send(res, 200, { conversations: showcaseByUserId.get(user.id)?.conversations || [] });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/projects') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      return send(res, 200, { projects: projectsByUserId.get(user.id) || [] });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/projects') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const body = await readBody(req);
+      const name = String(body.name || '').trim();
+      if (!name || name.length > 128) return send(res, 400, { error: 'project name must be 1-128 characters' });
+      const projects = projectsByUserId.get(user.id) || [];
+      if (projects.some((project) => project.name === name)) return send(res, 409, { error: 'project name already exists' });
+      const now = new Date().toISOString();
+      const project = { id: nextProjectId++, owner_uid: user.id, name, task_count: 0, created_at: now, updated_at: now };
+      projects.unshift(project);
+      projectsByUserId.set(user.id, projects);
+      return send(res, 201, { project });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/projects/topic') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const body = await readBody(req);
+      const projectId = Number(body.project_id || 0);
+      const topicId = String(body.topic_id || '').trim();
+      const project = (projectsByUserId.get(user.id) || []).find((item) => Number(item.id) === projectId);
+      const conversation = (showcaseByUserId.get(user.id)?.conversations || []).find((item) => item.id === topicId);
+      if (!project || !conversation) return send(res, 404, { error: 'project or conversation not found' });
+      const assignments = projectTopicsByUserId.get(user.id) || new Map();
+      assignments.set(topicId, projectId);
+      projectTopicsByUserId.set(user.id, assignments);
+      project.updated_at = new Date().toISOString();
+      refreshProjectAssignments(user.id);
+      return send(res, 200, { ok: true });
+    }
+
+    if (req.method === 'DELETE' && url.pathname === '/api/projects/topic') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const topicId = String(url.searchParams.get('topic_id') || '').trim();
+      const assignments = projectTopicsByUserId.get(user.id) || new Map();
+      assignments.delete(topicId);
+      projectTopicsByUserId.set(user.id, assignments);
+      refreshProjectAssignments(user.id);
+      return send(res, 200, { ok: true });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/messages') {

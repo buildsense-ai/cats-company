@@ -288,6 +288,7 @@ type conversationTestStore struct {
 	groups        []*types.Group
 	ownerBots     []map[string]interface{}
 	latestByTopic map[string]*types.Message
+	projectTopics []*types.ProjectTopic
 	requestedIDs  []string
 }
 
@@ -311,6 +312,10 @@ func (s *conversationTestStore) GetLatestMessagesForTopics(topicIDs []string) (m
 	return s.latestByTopic, nil
 }
 
+func (s *conversationTestStore) ListProjectTopics(ownerUID int64) ([]*types.ProjectTopic, error) {
+	return s.projectTopics, nil
+}
+
 func TestConversationsIncludeOwnedAgentsWithoutFriendRelationship(t *testing.T) {
 	now := time.Date(2026, 5, 30, 8, 0, 0, 0, time.UTC)
 	store := &conversationTestStore{
@@ -325,6 +330,7 @@ func TestConversationsIncludeOwnedAgentsWithoutFriendRelationship(t *testing.T) 
 		latestByTopic: map[string]*types.Message{
 			"p2p_7_42": {ID: 9, TopicID: "p2p_7_42", FromUID: 7, Content: "hello dev", MsgType: "text", CreatedAt: now},
 		},
+		projectTopics: []*types.ProjectTopic{{ProjectID: 12, ProjectName: "Website Launch", TopicID: "p2p_7_42"}},
 	}
 	handler := NewConversationHandler(store, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
@@ -351,6 +357,9 @@ func TestConversationsIncludeOwnedAgentsWithoutFriendRelationship(t *testing.T) 
 	}
 	if got.Preview != "hello dev" || got.LatestSeq != 9 {
 		t.Fatalf("unexpected latest message fields: %+v", got)
+	}
+	if got.ProjectID != 12 || got.ProjectName != "Website Launch" {
+		t.Fatalf("unexpected project fields: %+v", got)
 	}
 	if len(store.requestedIDs) != 1 || store.requestedIDs[0] != "p2p_7_42" {
 		t.Fatalf("requested topic ids = %#v, want p2p_7_42", store.requestedIDs)

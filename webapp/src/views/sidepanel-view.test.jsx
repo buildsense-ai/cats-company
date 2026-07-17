@@ -48,6 +48,10 @@ vi.mock('../api', () => ({
     getGroups: vi.fn(),
     getPendingRequests: vi.fn(),
     getAgents: vi.fn(),
+    getProjects: vi.fn(),
+    createProject: vi.fn(),
+    assignProjectTopic: vi.fn(),
+    removeProjectTopic: vi.fn(),
     openAgent: vi.fn(),
     acceptAgentFriend: vi.fn(),
     rejectAgentFriend: vi.fn(),
@@ -97,6 +101,10 @@ describe('ChatListView sidebar sections', () => {
         },
       ],
     });
+    api.getProjects.mockResolvedValue({ projects: [] });
+    api.createProject.mockResolvedValue({ project: { id: 1, name: 'New Project', task_count: 0 } });
+    api.assignProjectTopic.mockResolvedValue({ ok: true });
+    api.removeProjectTopic.mockResolvedValue({ ok: true });
     api.openAgent.mockResolvedValue({
       agent: {
         uid: 42,
@@ -392,6 +400,132 @@ describe('ChatListView sidebar sections', () => {
 
     expect(container.textContent).toContain('Local History Task');
     expect(JSON.parse(localStorage.getItem('cc_hidden_history_v1:7'))).toEqual([]);
+  });
+
+  it('assigns a history task to an existing project from the row menu', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_42',
+        friend_id: 42,
+        name: 'Project Task',
+        is_group: false,
+        is_bot: true,
+      }],
+    });
+    api.getProjects.mockResolvedValue({
+      projects: [{ id: 12, name: 'Website Launch', task_count: 0 }],
+    });
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Project Task 更多操作"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="加入项目 Project Task"]'));
+    });
+
+    const dialog = document.body.querySelector('[aria-label="选择项目"]');
+    expect(dialog).toBeTruthy();
+    await act(async () => {
+      Simulate.click(dialog.querySelector('.cc-new-task-agent'));
+      await Promise.resolve();
+    });
+
+    expect(api.assignProjectTopic).toHaveBeenCalledWith(12, 'p2p_7_42');
+  });
+
+  it('expands a project and opens its assigned history task', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_42',
+        friend_id: 42,
+        name: 'Project Task',
+        is_group: false,
+        is_bot: true,
+        project_id: 12,
+        project_name: 'Website Launch',
+      }],
+    });
+    api.getProjects.mockResolvedValue({
+      projects: [{ id: 12, name: 'Website Launch', task_count: 1 }],
+    });
+    const onSelectTopic = vi.fn();
+
+    await mount({ onSelectTopic });
+    expect(container.querySelector('.cc-history-item')).toBeFalsy();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Website Launch"]'));
+    });
+
+    const task = container.querySelector('[aria-label="打开项目任务 Project Task"]');
+    expect(task).toBeTruthy();
+    await act(async () => {
+      Simulate.click(task);
+    });
+
+    expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'p2p_7_42', name: 'Project Task' }));
+  });
+
+  it('finds an assigned task through search and expands its project', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_42',
+        friend_id: 42,
+        name: 'Quarterly Launch Review',
+        is_group: false,
+        is_bot: true,
+        project_id: 12,
+        project_name: 'Website',
+      }],
+    });
+    api.getProjects.mockResolvedValue({
+      projects: [{ id: 12, name: 'Website', task_count: 1 }],
+    });
+
+    await mount();
+    await act(async () => {
+      Simulate.change(container.querySelector('[aria-label="搜索会话、联系人或助手"]'), { target: { value: 'Launch Review' } });
+    });
+
+    expect(container.querySelector('[aria-label="打开项目任务 Quarterly Launch Review"]')).toBeTruthy();
+    expect(container.textContent).not.toContain('没有匹配结果');
+  });
+
+  it('creates a project and immediately assigns the selected history task', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_42',
+        friend_id: 42,
+        name: 'Fresh Project Task',
+        is_group: false,
+        is_bot: true,
+      }],
+    });
+    api.createProject.mockResolvedValue({ project: { id: 18, name: 'New Workspace', task_count: 0 } });
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Fresh Project Task 更多操作"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="加入项目 Fresh Project Task"]'));
+    });
+    await act(async () => {
+      Simulate.click(document.body.querySelector('[aria-label="选择项目"] .oc-btn-primary'));
+    });
+
+    const createDialog = document.body.querySelector('[role="dialog"][aria-label="新建项目"]');
+    const input = createDialog.querySelector('[aria-label="项目名称"]');
+    await act(async () => {
+      Simulate.change(input, { target: { value: 'New Workspace' } });
+    });
+    await act(async () => {
+      Simulate.click(createDialog.querySelector('.oc-btn-primary'));
+      await Promise.resolve();
+    });
+
+    expect(api.createProject).toHaveBeenCalledWith('New Workspace');
+    expect(api.assignProjectTopic).toHaveBeenCalledWith(18, 'p2p_7_42');
   });
 
   it('restores a locally hidden task when another entry point activates it again', async () => {
