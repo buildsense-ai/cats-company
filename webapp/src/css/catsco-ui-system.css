@@ -999,6 +999,10 @@ html[data-theme="dark"] .cc-task-status-line.waiting .cc-task-status-pill {
   min-width: 58px;
 }
 
+.cc-history-item .cc-chat-row-actions {
+  right: -5px;
+}
+
 .v3-chat-item-identity {
   color: var(--cc-muted);
   font-size: 11px;
@@ -1529,7 +1533,8 @@ html[data-theme="dark"] .cc-task-status-line.waiting .cc-task-status-pill {
 }
 
 .v3-composer-row { min-height: 54px; display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 10px; }
-.v3-attachment-picker { position: relative; flex: 0 0 auto; }
+.v3-attachment-picker,
+.v3-agent-picker { position: relative; flex: 0 0 auto; }
 .v3-composer-plus { width: 36px; height: 36px; border-radius: 50%; }
 .v3-composer-input {
   flex: 1;
@@ -1556,14 +1561,28 @@ html[data-theme="dark"] .cc-task-status-line.waiting .cc-task-status-pill {
   outline-color: var(--cc-border-strong);
 }
 
+.v3-agent-picker-button {
+  min-width: 0; max-width: 168px; height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  padding: 0 9px; border: 0; border-radius: 18px; background: transparent; color: var(--cc-muted); font-size: 13px; font-weight: 500;
+}
+.v3-agent-picker-button:hover,
+.v3-agent-picker-button[aria-expanded="true"] { background: var(--cc-hover); color: var(--cc-text); }
+.v3-agent-picker-button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.v3-agent-picker-icon { display: none; }
+.v3-agent-picker-menu,
 .v3-attachment-menu {
   position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 80; width: 260px; padding: 6px;
   border: 1px solid var(--cc-border); border-radius: var(--cc-radius-lg); background: var(--cc-panel); box-shadow: 0 14px 36px rgba(0, 0, 0, .2);
 }
 .v3-attachment-menu { right: auto; left: 0; width: 180px; visibility: hidden; opacity: 0; pointer-events: none; transform: translateY(3px); }
 .v3-attachment-menu.is-open { visibility: visible; opacity: 1; pointer-events: auto; transform: translateY(0); }
+.v3-agent-picker-menu button,
 .v3-attachment-menu button { width: 100%; min-height: 40px; display: flex; align-items: center; justify-content: flex-start; gap: 9px; padding: 0 10px; border: 0; border-radius: var(--cc-radius-md); background: transparent; color: var(--cc-text-secondary); text-align: left; }
+.v3-agent-picker-menu button svg:last-child { margin-left: auto; }
+.v3-agent-picker-menu button:hover,
 .v3-attachment-menu button:hover { background: var(--cc-hover); color: var(--cc-text); }
+.v3-agent-picker-menu button.selected { background: var(--cc-selected); color: var(--cc-text); font-weight: 600; }
+.v3-picker-empty { padding: 12px 10px; color: var(--cc-muted); font-size: 12px; }
 .v3-at-sign { width: 16px; text-align: center; }
 .v3-send {
   width: 40px;
@@ -1996,6 +2015,20 @@ html[data-theme="dark"] .cc-task-status-line.waiting .cc-task-status-pill {
 
   .cc-empty-task h1 {
     font-size: 28px;
+  }
+
+  .v3-agent-picker-button {
+    max-width: 132px;
+    padding: 0 8px;
+  }
+
+  .v3-agent-picker-chevron {
+    display: none;
+  }
+
+  .v3-agent-picker-menu {
+    right: 0;
+    width: min(260px, calc(100vw - 40px));
   }
 
   .v3-composer-hint {
@@ -3551,8 +3584,47 @@ button[aria-label="关闭"]:not(:disabled):active {
   transform: none;
 }
 
+.catsco-download-card.catsco-device-card {
+  grid-template-columns: 40px minmax(0, 1fr) 32px;
+  align-items: center;
+}
+
+.catsco-device-card .catsco-download-action {
+  grid-column: 3;
+}
+
+.catsco-device-capabilities {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 5px 6px;
+  margin-top: 3px;
+  white-space: normal;
+}
+
+.catsco-device-capabilities > span {
+  max-width: 100%;
+  padding: 2px 6px;
+  overflow: hidden;
+  border: 1px solid var(--cc-border);
+  border-radius: 999px;
+  background: var(--cc-hover);
+  color: var(--cc-text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .catsco-download-actions {
   align-self: center;
+}
+
+@media (max-width: 640px) {
+  .catsco-download-card.catsco-device-card {
+    grid-template-columns: 36px minmax(0, 1fr) 28px;
+  }
 }
 
 /* Secondary controls use one neutral light-mode hover language. */

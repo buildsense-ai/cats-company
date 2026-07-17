@@ -682,7 +682,7 @@ export default function ChatListView({
   const isSearching = trimmedSearch.length > 0;
   const recentChats = sortConversationsByRecent(chats);
   const visibleRecentChats = recentChats.filter((chat) => (
-    !isHistoryTask(chat) || !hiddenHistoryIds.has(String(chat.id))
+    chat.isAgentTask || !isHistoryTask(chat) || !hiddenHistoryIds.has(String(chat.id))
   ));
   const filteredChats = visibleRecentChats.filter(c => c.name.toLowerCase().includes(lowerSearch));
   const directChats = filteredChats.filter(c => !c.isGroup);
@@ -704,7 +704,11 @@ export default function ChatListView({
   });
 
   const aiChats = sortConversationsWithPins(
-    filteredChats.filter((chat) => isHistoryTask(chat) && !chat.projectId && !hiddenHistoryIds.has(String(chat.id))),
+    filteredChats.filter((chat) => (
+      isHistoryTask(chat)
+      && !chat.projectId
+      && (chat.isAgentTask || !hiddenHistoryIds.has(String(chat.id)))
+    )),
     pinnedHistoryIds,
   );
   const friendChats = directChats.filter(c => !c.isBot);
@@ -986,18 +990,20 @@ export default function ChatListView({
               <Smartphone size={14} />
               <span>手机扫码</span>
             </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="danger"
-              aria-label={`${removeLabel} ${chat.name}`}
-              disabled={deletingTopicId === chat.id}
-              title={removeLabel}
-              onClick={() => handleDeleteHistoryTask(chat)}
-            >
-              <Trash2 size={14} />
-              <span>{removeLabel}</span>
-            </button>
+            {!chat.isAgentTask && (
+              <button
+                type="button"
+                role="menuitem"
+                className="danger"
+                aria-label={`${removeLabel} ${chat.name}`}
+                disabled={deletingTopicId === chat.id}
+                title={removeLabel}
+                onClick={() => handleDeleteHistoryTask(chat)}
+              >
+                <Trash2 size={14} />
+                <span>{removeLabel}</span>
+              </button>
+            )}
           </div>
         )}
       </>

@@ -475,6 +475,39 @@ describe('ChatListView sidebar sections', () => {
     expect(JSON.parse(localStorage.getItem('cc_hidden_history_v1:7'))).toEqual([]);
   });
 
+  it('keeps agent tasks visible and does not offer local removal without a recovery entry', async () => {
+    localStorage.setItem('cc_hidden_history_v1:7', JSON.stringify(['grp_77']));
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'grp_77',
+        group_id: 77,
+        name: 'Release Review Task',
+        is_group: true,
+        has_bot: true,
+        is_agent_task: true,
+      }],
+    });
+    api.getGroups.mockResolvedValue({
+      groups: [{
+        id: 77,
+        name: 'Release Review Task',
+        owner_id: 7,
+        kind: 'agent_task',
+        is_agent_task: true,
+        has_bot: true,
+      }],
+    });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mount();
+
+    expect(container.textContent).toContain('Release Review Task');
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Release Review Task 更多操作"]'));
+    });
+    expect(container.querySelector('[aria-label="从列表移除 Release Review Task"]')).toBeNull();
+  });
+
   it('assigns a history task to an existing project from the row menu', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{

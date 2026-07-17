@@ -1197,6 +1197,9 @@ export default function MessagesView({
     || resolvedPeerProfile?.account_type === 'bot';
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
+  const canRegenerateAssistantMessages = !isGroup || Boolean(
+    groupInfo?.is_agent_task || groupInfo?.kind === 'agent_task',
+  );
   const agentQuotaLabel = formatRelayUsagePill(agentQuota, { customLabel: '自备模型', showModel: false });
   const agentUsesCustomModel = agentQuota?.source === 'custom' || agentQuota?.status === 'custom';
   const agentQuotaTitle = agentUsesCustomModel
@@ -1414,7 +1417,9 @@ export default function MessagesView({
               senderIsBot={group.sender.isBot}
               replyMessage={group.replyMessage}
               onReply={() => setReplyTo(group.message)}
-              onRegenerate={group.message.from_uid !== user.uid && isAssistantAuthoredMessage(group.message, group.sender.isBot)
+              onRegenerate={canRegenerateAssistantMessages
+                && group.message.from_uid !== user.uid
+                && isAssistantAuthoredMessage(group.message, group.sender.isBot)
                 ? handleRegenerateMessage
                 : undefined}
               showThinking={showThinking}

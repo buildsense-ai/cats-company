@@ -132,7 +132,11 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 		if mid == uid {
 			continue // owner already added
 		}
-		_ = h.db.AddGroupMember(groupID, mid, "member")
+		if err := h.db.AddGroupMember(groupID, mid, "member"); err != nil && req.Kind == types.GroupKindAgentTask {
+			_ = h.db.DeleteGroup(groupID)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to add agent to task"})
+			return
+		}
 	}
 
 	topicID := fmt.Sprintf("grp_%d", groupID)

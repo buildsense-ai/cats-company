@@ -54,6 +54,25 @@ describe('ChatComposer', () => {
     expect(box.contains(hint)).toBe(false);
   });
 
+  it('renders the optional Agent selector only when a caller provides it', async () => {
+    const onAgentToggle = vi.fn();
+    await renderComposer({
+      agentName: '代码审查助手',
+      agentOpen: true,
+      onAgentToggle,
+      agentMenu: <div className="test-agent-menu">Agent 菜单</div>,
+    });
+
+    const agentButton = container.querySelector('.v3-agent-picker-button');
+    expect(agentButton?.textContent).toContain('代码审查助手');
+    expect(container.querySelector('.test-agent-menu')).not.toBeNull();
+
+    await act(async () => {
+      agentButton.click();
+    });
+    expect(onAgentToggle).toHaveBeenCalledTimes(1);
+  });
+
   it('uses the same action slot for stop while working and send after input', async () => {
     const onSend = vi.fn();
     const onStop = vi.fn();

@@ -444,12 +444,11 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                     </select>
                   </label>
                   <label>
-                    <span>用途说明 <b>*</b></span>
+                    <span>用途说明 <small>选填</small></span>
                     <textarea
                       value={createForm.description}
                       onChange={(e) => setCreateForm({ ...createForm, description: e.target.value.slice(0, 500) })}
                       placeholder="说明这个助手解决什么问题，以及你希望它如何工作"
-                      required
                     />
                     <em>{createForm.description.length}/500</em>
                   </label>
@@ -480,7 +479,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                 </label>
               </fieldset>
 
-              <button type="submit" className="oc-btn oc-btn-primary cc-agent-create-submit" disabled={isSubmitting || !createForm.description.trim()}>
+              <button type="submit" className="oc-btn oc-btn-primary cc-agent-create-submit" disabled={isSubmitting}>
                 {isSubmitting ? '创建中...' : '创建我的专属助手'}
               </button>
             </form>

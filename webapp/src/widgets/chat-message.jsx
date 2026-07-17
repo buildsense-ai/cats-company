@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, CornerUpLeft, MoreHorizontal, X, Eye, Copy, ThumbsUp, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
+import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, CornerUpLeft, MoreHorizontal, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -700,7 +700,6 @@ function WorkingProcess({ blocks }) {
 function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, onReply, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [copyState, setCopyState] = useState('');
-  const [liked, setLiked] = useState(false);
   const [regenerateState, setRegenerateState] = useState('');
   const actionsRef = useRef(null);
   const content = message.content;
@@ -777,11 +776,6 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
     } catch (e) {
       setCopyState('failed');
     }
-  };
-
-  const handleLikeClick = (event) => {
-    event.stopPropagation();
-    setLiked((value) => !value);
   };
 
   const handleRegenerateClick = async (event) => {
@@ -890,16 +884,6 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
               type="button"
             >
               <Copy size={17} />
-            </button>
-            <button
-              className={`v3-action-btn${liked ? ' is-active' : ''}`}
-              onClick={handleLikeClick}
-              aria-label={liked ? '取消点赞' : '点赞'}
-              aria-pressed={liked}
-              title={liked ? '取消点赞' : '点赞'}
-              type="button"
-            >
-              <ThumbsUp size={17} />
             </button>
             {onRegenerate && (
               <button

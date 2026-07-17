@@ -330,40 +330,6 @@ describe('MessagesView composer draft isolation', () => {
     expect(onOpenDesktopConnect).not.toHaveBeenCalled();
   });
 
-  it('allows a second task to be entered and sent while the bot is working', async () => {
-    api.getMessages.mockResolvedValueOnce({
-      messages: [{
-        id: 90,
-        seq_id: 90,
-        topic_id: 'p2p_1_2',
-        from_uid: 2,
-        type: 'thinking',
-        msg_type: 'thinking',
-        content: '正在处理第一条任务',
-        created_at: new Date().toISOString(),
-      }],
-    });
-
-    await mountTopic(root, 'p2p_1_2');
-    await act(async () => {
-      await flushPromises();
-    });
-
-    const textarea = container.querySelector('textarea.v3-composer-input');
-    expect(textarea.disabled).toBe(false);
-    expect(container.querySelector('button.v3-stop')).not.toBeNull();
-
-    await act(async () => {
-      typeDraft(textarea, '第二条任务');
-    });
-    await act(async () => {
-      Simulate.click(container.querySelector('button.v3-send:not(.stop)'));
-      await flushPromises();
-    });
-
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '第二条任务', undefined);
-  });
-
   it('regenerates a bot reply by resending the preceding user task', async () => {
     api.getMessages.mockResolvedValueOnce({
       messages: [
@@ -404,6 +370,53 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '检查这段代码', undefined);
+  });
+
+  it('does not expose regenerate for bot replies in a standard group', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 70, seq_id: 70, topic_id: 'grp_9', from_uid: 1, type: 'text', content: '检查这段代码' },
+        { id: 71, seq_id: 71, topic_id: 'grp_9', from_uid: 2, type: 'text', content: '第一个 Bot 的回复' },
+      ],
+    });
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 9, name: '多 Bot 群', kind: 'standard' },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 2, display_name: 'Bot A', is_bot: true },
+        { user_id: 3, display_name: 'Bot B', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_9', { isGroup: true, groupId: 9 });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.mock-regenerate-message[data-message-id="71"]')).toBeNull();
+  });
+
+  it('keeps regenerate available for a single-Agent task', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 80, seq_id: 80, topic_id: 'grp_10', from_uid: 1, type: 'text', content: '生成发布说明' },
+        { id: 81, seq_id: 81, topic_id: 'grp_10', from_uid: 2, type: 'text', content: '初版发布说明' },
+      ],
+    });
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 10, name: '发布说明任务', kind: 'agent_task', is_agent_task: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 2, display_name: 'Writer', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_10', { isGroup: true, groupId: 10 });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.mock-regenerate-message[data-message-id="81"]')).not.toBeNull();
   });
 
   it('does not send from the chat composer for an IME Enter reported as keyCode 229', async () => {

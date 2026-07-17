@@ -682,7 +682,6 @@ describe('ChatMessage rich file rendering', () => {
     const directActions = Array.from(footer.querySelectorAll(':scope > .v3-message-actions > .v3-action-btn'));
     expect(directActions.map((button) => button.getAttribute('aria-label'))).toEqual([
       '复制',
-      '点赞',
       '重新生成',
       '更多操作',
     ]);
@@ -693,14 +692,7 @@ describe('ChatMessage rich file rendering', () => {
     });
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('这是一条可以复制的消息');
     expect(container.querySelector('[aria-label="已复制"]')).not.toBeNull();
-
-    const likeButton = container.querySelector('[aria-label="点赞"]');
-    expect(likeButton.getAttribute('aria-pressed')).toBe('false');
-    await act(async () => {
-      Simulate.click(likeButton);
-      await Promise.resolve();
-    });
-    expect(container.querySelector('[aria-label="取消点赞"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector('[aria-label="点赞"]')).toBeNull();
 
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="重新生成"]'));
