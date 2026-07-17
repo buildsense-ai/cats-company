@@ -1,13 +1,12 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Check, CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, MoreHorizontal, Plus, Smartphone, Square, X, ArrowUp } from 'lucide-react';
+import { Check, CheckCircle2, ChevronRight, Circle, CircleDot, FileText, Image, Smartphone, X } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { FilePreviewPanel } from '../widgets/chat-message';
-import GroupSettings from '../widgets/group-settings';
 import Avatar from '../widgets/avatar';
 import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
-import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
+import ChatComposer from '../widgets/chat-composer';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 import { formatRelayUsagePill, relayUsageTone } from '../utils/relay-usage';
 
@@ -58,10 +57,10 @@ export default function MessagesView({
   isGroup,
   groupId,
   topicAvatarUrl,
-  onTopicUpdated,
   localAssistantStatus = 'connected',
   onOpenDesktopConnect,
-  onSelectAgent,
+  onResolveAgentTopic,
+  onActivateTopic,
 }) {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
@@ -82,7 +81,6 @@ export default function MessagesView({
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [showGroupSettings, setShowGroupSettings] = useState(false);
   const [isStopRequested, setIsStopRequested] = useState(false);
   const [attachmentStatus, setAttachmentStatus] = useState(null);
   const [phoneUploadDialogOpen, setPhoneUploadDialogOpen] = useState(false);
@@ -92,11 +90,11 @@ export default function MessagesView({
   const [selectedTutorialTask, setSelectedTutorialTask] = useState(null);
   const [tutorialTasks, setTutorialTasks] = useState(TUTORIAL_TASKS);
   const [tutorialDismissed, setTutorialDismissed] = useState(() => localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
-  const [showMobileLinkModal, setShowMobileLinkModal] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [availableAgents, setAvailableAgents] = useState([]);
   const [selectedAgentId, setSelectedAgentId] = useState('');
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [showThinking, setShowThinking] = useState(() => {
     const saved = localStorage.getItem('cc_show_thinking');
     return saved === null ? true : saved === 'true';
@@ -118,8 +116,14 @@ export default function MessagesView({
   const loadingOlderRef = useRef(false);
   const activeTopicRef = useRef(topic);
   const composerDraftsRef = useRef(new Map());
+  const attachmentDraftsRef = useRef(new Map());
+  const pendingAttachmentsRef = useRef([]);
   const previewWidthRef = useRef(previewWidth);
   const phoneUploadFileKeysRef = useRef(new Set());
+  const phoneUploadSessionRef = useRef(null);
+  const phoneUploadTopicRef = useRef('');
+  const phoneUploadSyncRef = useRef(null);
+  const sendInFlightRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -129,7 +133,11 @@ export default function MessagesView({
         if (cancelled) return;
         const agents = response.agents || [];
         setAvailableAgents(agents);
-        setSelectedAgentId((current) => current || agents.find((agent) => agent.topic_id === topic)?.uid || agents[0]?.uid || agents[0]?.id || '');
+        setSelectedAgentId(() => {
+          const topicAgent = agents.find((agent) => agent.topic_id === topic);
+          if (topicAgent) return topicAgent.uid || topicAgent.id || '';
+          return '';
+        });
       } catch (error) {
         if (!cancelled) setAvailableAgents([]);
       }
@@ -150,6 +158,23 @@ export default function MessagesView({
     } else {
       composerDraftsRef.current.delete(draftTopic);
     }
+  }, []);
+
+  const updateAttachmentDraft = useCallback((draftTopic, nextValue) => {
+    if (!draftTopic) return [];
+    const current = attachmentDraftsRef.current.get(draftTopic) || [];
+    const next = typeof nextValue === 'function' ? nextValue(current) : nextValue;
+    const normalized = Array.isArray(next) ? next : [];
+    if (normalized.length > 0) {
+      attachmentDraftsRef.current.set(draftTopic, normalized);
+    } else {
+      attachmentDraftsRef.current.delete(draftTopic);
+    }
+    if (activeTopicRef.current === draftTopic) {
+      pendingAttachmentsRef.current = normalized;
+      setPendingAttachments(normalized);
+    }
+    return normalized;
   }, []);
 
   useEffect(() => {
@@ -203,9 +228,9 @@ export default function MessagesView({
   const resizeComposerInput = useCallback(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-    const maxHeight = 220;
+    const maxHeight = 200;
     textarea.style.height = 'auto';
-    const nextHeight = Math.min(Math.max(textarea.scrollHeight, 44), maxHeight);
+    const nextHeight = Math.min(Math.max(textarea.scrollHeight, 40), maxHeight);
     textarea.style.height = `${nextHeight}px`;
     textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
   }, []);
@@ -278,8 +303,9 @@ export default function MessagesView({
     activeTopicRef.current = topic;
     setInput(composerDraftsRef.current.get(topic) || '');
     setMessages([]);
-    setPendingAttachments([]);
-    setIsUploadingAttachment(false);
+    const attachmentDraft = attachmentDraftsRef.current.get(topic) || [];
+    pendingAttachmentsRef.current = attachmentDraft;
+    setPendingAttachments(attachmentDraft);
     setIsDragActive(false);
     dragDepthRef.current = 0;
     setPeerTyping(false);
@@ -288,7 +314,6 @@ export default function MessagesView({
     clearRuntimePlan();
     setReplyTo(null);
     setPreviewFile(null);
-    setShowMobileLinkModal(false);
     setMembers([]);
     setGroupInfo(null);
     setPeerProfile(null);
@@ -302,6 +327,15 @@ export default function MessagesView({
     setLoadingOlder(false);
     setIsStopRequested(false);
     setAttachmentStatus(null);
+    setAttachmentMenuOpen(false);
+    setAgentPickerOpen(false);
+    setPhoneUploadDialogOpen(false);
+    setPhoneUploadSession(null);
+    setPhoneUploadError('');
+    phoneUploadSessionRef.current = null;
+    phoneUploadTopicRef.current = '';
+    phoneUploadSyncRef.current = null;
+    phoneUploadFileKeysRef.current = new Set();
     loadHistory(topic);
     if (isGroup && groupId) {
       loadGroupMembers();
@@ -579,8 +613,85 @@ export default function MessagesView({
     }
   }, [activeBotWorking]);
 
-  const hasComposerDraft = input.trim().length > 0 || pendingAttachments.length > 0;
-  const showStopButton = activeBotWorking && !hasComposerDraft && !isUploadingAttachment;
+  const topicAgent = availableAgents.find((agent) => agent.topic_id === topic) || null;
+  const groupAgent = isGroup
+    ? availableAgents.find((agent) => members.some((member) => member.user_id === (agent.uid || agent.id))) || null
+    : null;
+  const selectedAgent = isGroup
+    ? groupAgent
+    : availableAgents.find((agent) => (agent.uid || agent.id) === selectedAgentId) || topicAgent || null;
+  const selectedAgentKey = selectedAgent?.uid || selectedAgent?.id || '';
+  const selectedAgentName = selectedAgent?.display_name || selectedAgent?.username || '选择 Agent';
+
+  const syncPhoneUploads = useCallback(async ({ final = false } = {}) => {
+    const sessionId = phoneUploadSessionRef.current?.session_id;
+    const sessionTopic = phoneUploadTopicRef.current;
+    if (!sessionId || !sessionTopic || activeTopicRef.current !== sessionTopic) return [];
+
+    let operation = phoneUploadSyncRef.current;
+    if (!operation) {
+      operation = (async () => {
+        const data = await api.getMobileUploadSession(sessionId);
+        if (
+          phoneUploadSessionRef.current?.session_id !== sessionId
+          || phoneUploadTopicRef.current !== sessionTopic
+          || activeTopicRef.current !== sessionTopic
+        ) {
+          return [];
+        }
+        if (data?.topic && data.topic !== sessionTopic) {
+          throw new Error('手机上传会话与当前对话不匹配，请重新打开二维码。');
+        }
+
+        const nextAttachments = [];
+        for (const file of Array.isArray(data?.files) ? data.files : []) {
+          const fileKey = file.file_key || file.url || file.name;
+          if (!fileKey || phoneUploadFileKeysRef.current.has(fileKey)) continue;
+          phoneUploadFileKeysRef.current.add(fileKey);
+          const type = file.type === 'image' ? 'image' : 'file';
+          const payload = {
+            file_key: file.file_key,
+            url: file.url,
+            name: file.name,
+            size: file.size,
+            mime_type: file.mime_type || '',
+          };
+          if (type === 'image') payload.thumbnail = file.url;
+          nextAttachments.push({
+            type,
+            name: file.name,
+            size: file.size,
+            content: { type, payload },
+          });
+        }
+
+        if (nextAttachments.length > 0) {
+          const updated = updateAttachmentDraft(sessionTopic, (current) => [...current, ...nextAttachments]);
+          if (activeTopicRef.current === sessionTopic) {
+            setAttachmentStatus({ tone: 'success', message: `手机已上传 ${updated.length} 个附件，发送后对方可见。` });
+          }
+        }
+        if (activeTopicRef.current === sessionTopic) setPhoneUploadError('');
+        return nextAttachments;
+      })();
+      phoneUploadSyncRef.current = operation;
+    }
+
+    try {
+      return await operation;
+    } catch (error) {
+      if (
+        activeTopicRef.current === sessionTopic
+        && phoneUploadSessionRef.current?.session_id === sessionId
+      ) {
+        setPhoneUploadError(error?.message || '读取手机上传结果失败');
+      }
+      if (final) throw error;
+      return [];
+    } finally {
+      if (phoneUploadSyncRef.current === operation) phoneUploadSyncRef.current = null;
+    }
+  }, [updateAttachmentDraft]);
 
   const finalizeOptimisticMessage = useCallback((tempId, result) => {
     if (!result || (!result.seq_id && !result.id)) return;
@@ -603,72 +714,118 @@ export default function MessagesView({
   }, []);
 
   const handleSend = useCallback(async () => {
-    const text = input.trim();
-    if (!text && pendingAttachments.length === 0) return;
-    if (isUploadingAttachment) return;
-    if (localAssistantStatus !== 'connected') {
-      setAttachmentStatus({
-        tone: 'error',
-        message: localAssistantStatus === 'checking'
-          ? '模型正在连接，请稍候再发送。'
-          : '模型未连接，请先连接本地 CatsCo 助手。',
-      });
-      onOpenDesktopConnect?.();
-      return;
-    }
+    const initialText = input.trim();
+    const initialAttachments = attachmentDraftsRef.current.get(topic) || pendingAttachmentsRef.current;
+    if (!initialText && initialAttachments.length === 0) return;
+    if (isUploadingAttachment || sendInFlightRef.current) return;
 
-    const sendTopic = topic;
-    clearRuntimePlan();
-    setAttachmentStatus(null);
-    const attachmentsToSend = pendingAttachments;
-    updateComposerDraft(sendTopic, '');
-    setInput('');
-    const currentReplyTo = replyTo;
-    setReplyTo(null);
-    setPendingAttachments([]);
+    sendInFlightRef.current = true;
+    setIsSendingMessage(true);
+    setAttachmentMenuOpen(false);
+    setAgentPickerOpen(false);
 
-    const contentBlocks = buildAtomicContentBlocks(text, attachmentsToSend);
-    const displayContent = text || summarizeAttachments(attachmentsToSend);
-    const payload = attachmentsToSend.length > 0
-      ? {
-          type: 'text',
-          content: displayContent,
-          content_blocks: contentBlocks,
-        }
-      : text;
-
+    let sendTopic = topic;
+    let topicToActivate = null;
+    let switchesTopic = false;
+    let stateCleared = false;
+    let messageSent = false;
+    let optimisticMessageAdded = false;
+    let attachmentsToSend = [...initialAttachments];
+    const text = initialText;
+    const originalReplyTo = replyTo;
     const tempId = Date.now();
-    stickToBottomRef.current = true;
-    setMessages((prev) => mergeMessages(prev, [{
-      id: tempId,
-      seq_id: tempId,
-      topic_id: sendTopic,
-      from_uid: user.uid,
-      content: displayContent,
-      content_blocks: attachmentsToSend.length > 0 ? contentBlocks : undefined,
-      type: 'text',
-      msg_type: 'text',
-      reply_to: currentReplyTo ? currentReplyTo.id : 0,
-      created_at: new Date().toISOString(),
-      _pending: true,
-    }]));
 
     try {
+      if (!isGroup && selectedAgent && selectedAgent.topic_id !== topic && onResolveAgentTopic) {
+        topicToActivate = await onResolveAgentTopic(selectedAgent);
+        sendTopic = topicToActivate?.topicId || topicToActivate?.topic_id || sendTopic;
+      }
+      switchesTopic = sendTopic !== topic;
+
+      await syncPhoneUploads({ final: true });
+      attachmentsToSend = [...(attachmentDraftsRef.current.get(topic) || [])];
+      if (!text && attachmentsToSend.length === 0) return;
+
+      const currentReplyTo = switchesTopic ? null : originalReplyTo;
+      const contentBlocks = buildAtomicContentBlocks(text, attachmentsToSend);
+      const displayContent = text || summarizeAttachments(attachmentsToSend);
+      const payload = attachmentsToSend.length > 0
+        ? {
+            type: 'text',
+            content: displayContent,
+            content_blocks: contentBlocks,
+          }
+        : text;
+
+      updateComposerDraft(topic, '');
+      updateAttachmentDraft(topic, []);
+      stateCleared = true;
+      if (activeTopicRef.current === topic) {
+        clearRuntimePlan();
+        setAttachmentStatus(null);
+        setInput('');
+        setReplyTo(null);
+      }
+
+      stickToBottomRef.current = true;
+      if (!switchesTopic && activeTopicRef.current === topic) {
+        optimisticMessageAdded = true;
+        setMessages((prev) => mergeMessages(prev, [{
+          id: tempId,
+          seq_id: tempId,
+          topic_id: sendTopic,
+          from_uid: user.uid,
+          content: displayContent,
+          content_blocks: attachmentsToSend.length > 0 ? contentBlocks : undefined,
+          type: 'text',
+          msg_type: 'text',
+          reply_to: currentReplyTo ? currentReplyTo.id : 0,
+          created_at: new Date().toISOString(),
+          _pending: true,
+        }]));
+      }
+
       const result = await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined);
-      finalizeOptimisticMessage(tempId, result);
+      messageSent = true;
+      if (switchesTopic) {
+        if (activeTopicRef.current === topic) {
+          await onActivateTopic?.(topicToActivate);
+        }
+        window.dispatchEvent(new Event('cc:data-changed'));
+      } else if (activeTopicRef.current === sendTopic) {
+        finalizeOptimisticMessage(tempId, result);
+      }
     } catch (err) {
-      removeOptimisticMessage(tempId);
-      if (activeTopicRef.current !== sendTopic) return;
-      updateComposerDraft(sendTopic, text);
-      setInput(text);
-      setPendingAttachments(attachmentsToSend);
-      setReplyTo(currentReplyTo);
-      setAttachmentStatus({
-        tone: 'error',
-        message: err?.message ? `发送失败：${err.message}` : '连接失败，请检查本地模型和网络后重试。',
-      });
+      if (messageSent) {
+        if (activeTopicRef.current === topic) {
+          setAttachmentStatus({
+            tone: 'error',
+            message: '消息已发送，但暂时无法打开目标会话。请从历史任务中重新进入。',
+          });
+        }
+        return;
+      }
+
+      if (optimisticMessageAdded && activeTopicRef.current === topic) removeOptimisticMessage(tempId);
+      if (stateCleared) {
+        updateComposerDraft(topic, text);
+        updateAttachmentDraft(topic, attachmentsToSend);
+      }
+      if (activeTopicRef.current === topic) {
+        if (stateCleared) {
+          setInput(text);
+          setReplyTo(originalReplyTo);
+        }
+        setAttachmentStatus({
+          tone: 'error',
+          message: err?.message ? `发送失败：${err.message}` : '连接失败，请检查本地模型和网络后重试。',
+        });
+      }
+    } finally {
+      sendInFlightRef.current = false;
+      setIsSendingMessage(false);
     }
-  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isUploadingAttachment, localAssistantStatus, onOpenDesktopConnect, pendingAttachments, removeOptimisticMessage, replyTo, topic, updateComposerDraft, user.uid]);
+  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
     if (!activeBotWorking || isStopRequested) return;
@@ -681,6 +838,12 @@ export default function MessagesView({
   }, [activeBotWorking, isStopRequested, topic]);
 
   const handleKeyDown = (e) => {
+    if (
+      e.isComposing
+      || e.nativeEvent?.isComposing
+      || e.keyCode === 229
+      || e.nativeEvent?.keyCode === 229
+    ) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -735,8 +898,7 @@ export default function MessagesView({
     }, 0);
   };
 
-  const uploadAttachmentFile = async (file, requestedType) => {
-    const uploadTopic = activeTopicRef.current;
+  const uploadAttachmentFile = async (file, requestedType, uploadTopic = activeTopicRef.current) => {
     const type = inferAttachmentType(file, requestedType);
     const validationError = validateAttachmentBeforeUpload(file, type);
     if (validationError) {
@@ -769,13 +931,16 @@ export default function MessagesView({
         size: data.size,
         content,
       };
-      if (activeTopicRef.current !== uploadTopic) return attachment;
-      setPendingAttachments((prev) => [...prev, attachment]);
-      setAttachmentStatus({ tone: 'success', message: `已添加${type === 'image' ? '图片' : '文件'}：${data.name}` });
-      setTimeout(() => textareaRef.current?.focus(), 0);
+      updateAttachmentDraft(uploadTopic, (current) => [...current, attachment]);
+      if (activeTopicRef.current === uploadTopic) {
+        setAttachmentStatus({ tone: 'success', message: `已添加${type === 'image' ? '图片' : '文件'}：${data.name}` });
+        setTimeout(() => textareaRef.current?.focus(), 0);
+      }
       return attachment;
     } catch (err) {
-      setAttachmentStatus({ tone: 'error', message: formatUploadError(err) });
+      if (activeTopicRef.current === uploadTopic) {
+        setAttachmentStatus({ tone: 'error', message: formatUploadError(err) });
+      }
       return null;
     } finally {
       setIsUploadingAttachment(false);
@@ -784,14 +949,15 @@ export default function MessagesView({
 
   const uploadAttachmentFiles = async (files, requestedType) => {
     const fileList = Array.from(files || []).filter(Boolean);
-    if (fileList.length === 0) return;
+    if (fileList.length === 0 || sendInFlightRef.current) return;
+    const uploadTopic = activeTopicRef.current;
     let uploadedCount = 0;
     for (const file of fileList.slice(0, MAX_DROPPED_FILES)) {
-      const uploaded = await uploadAttachmentFile(file, requestedType);
+      const uploaded = await uploadAttachmentFile(file, requestedType, uploadTopic);
       if (!uploaded) break;
       uploadedCount += 1;
     }
-    if (uploadedCount > 1) {
+    if (uploadedCount > 1 && activeTopicRef.current === uploadTopic) {
       setAttachmentStatus({ tone: 'success', message: `已添加 ${uploadedCount} 个附件，发送后对方可见。` });
     }
   };
@@ -804,7 +970,7 @@ export default function MessagesView({
   };
 
   const openAttachmentPicker = (inputRef) => {
-    if (isUploadingAttachment) return;
+    if (isUploadingAttachment || sendInFlightRef.current) return;
     setAttachmentStatus(null);
     if (inputRef.current) {
       inputRef.current.value = '';
@@ -813,17 +979,25 @@ export default function MessagesView({
   };
 
   const openPhoneUploadDialog = async () => {
-    if (!topic || phoneUploadDialogOpen) return;
+    if (!topic || phoneUploadDialogOpen || sendInFlightRef.current) return;
+    const sessionTopic = topic;
     setPhoneUploadDialogOpen(true);
     setPhoneUploadError('');
     setPhoneUploadSession(null);
+    phoneUploadSessionRef.current = null;
+    phoneUploadTopicRef.current = '';
+    phoneUploadSyncRef.current = null;
     phoneUploadFileKeysRef.current = new Set();
     try {
-      const session = await api.createMobileUploadSession(topic);
-      if (activeTopicRef.current !== topic) return;
+      const session = await api.createMobileUploadSession(sessionTopic);
+      if (activeTopicRef.current !== sessionTopic) return;
+      phoneUploadSessionRef.current = session;
+      phoneUploadTopicRef.current = sessionTopic;
       setPhoneUploadSession(session);
     } catch (err) {
-      setPhoneUploadError(err.message || '手机上传入口创建失败');
+      if (activeTopicRef.current === sessionTopic) {
+        setPhoneUploadError(err.message || '手机上传入口创建失败');
+      }
     }
   };
 
@@ -836,59 +1010,20 @@ export default function MessagesView({
 
   useEffect(() => {
     if (!phoneUploadSession?.session_id) return undefined;
-    let stopped = false;
-    const sessionId = phoneUploadSession.session_id;
+    if (phoneUploadTopicRef.current !== topic) return undefined;
+    syncPhoneUploads();
+    const timer = setInterval(() => syncPhoneUploads(), 2000);
+    return () => clearInterval(timer);
+  }, [phoneUploadSession?.session_id, syncPhoneUploads, topic]);
 
-    const poll = async () => {
-      try {
-        const data = await api.getMobileUploadSession(sessionId);
-        if (stopped || activeTopicRef.current !== topic) return;
-        const files = Array.isArray(data.files) ? data.files : [];
-        const nextAttachments = [];
-        for (const file of files) {
-          const fileKey = file.file_key || file.url || file.name;
-          if (!fileKey || phoneUploadFileKeysRef.current.has(fileKey)) continue;
-          phoneUploadFileKeysRef.current.add(fileKey);
-          const type = file.type === 'image' ? 'image' : 'file';
-          const content = {
-            type,
-            payload: {
-              file_key: file.file_key,
-              url: file.url,
-              name: file.name,
-              size: file.size,
-              mime_type: file.mime_type || '',
-            },
-          };
-          if (type === 'image') {
-            content.payload.thumbnail = file.url;
-          }
-          nextAttachments.push({
-            type,
-            name: file.name,
-            size: file.size,
-            content,
-          });
-        }
-        if (nextAttachments.length > 0) {
-          setPendingAttachments((prev) => {
-            const updated = [...prev, ...nextAttachments];
-            setAttachmentStatus({ tone: 'success', message: `手机已上传 ${updated.length} 个附件，发送后对方可见。` });
-            return updated;
-          });
-        }
-      } catch (err) {
-        if (!stopped) setPhoneUploadError(err.message || '读取手机上传结果失败');
-      }
+  useEffect(() => {
+    if (!phoneUploadDialogOpen) return undefined;
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') closePhoneUploadDialog();
     };
-
-    poll();
-    const timer = setInterval(poll, 2000);
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-    };
-  }, [phoneUploadSession?.session_id, topic]);
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [phoneUploadDialogOpen]);
 
   const handleDragEnter = (e) => {
     if (!hasFileDrag(e.dataTransfer)) return;
@@ -971,16 +1106,9 @@ export default function MessagesView({
     if (!Number.isFinite(left) || !Number.isFinite(right)) return 0;
     return left === user.uid ? right : left;
   }, [isGroup, topic, user.uid]);
-  const effectiveGroupId = useMemo(() => {
-    if (!isGroup) return 0;
-    if (groupId) return groupId;
-    const match = String(topic || '').match(/^grp_(\d+)$/);
-    return match ? parseInt(match[1], 10) : 0;
-  }, [groupId, isGroup, topic]);
   const rosterPeer = availableAgents.find((agent) => agent.uid === peerUID || agent.id === peerUID);
   const resolvedPeerProfile = rosterPeer ? { ...peerProfile, ...rosterPeer } : peerProfile;
   const peerIsBot = resolvedPeerProfile?.bot === true || resolvedPeerProfile?.is_bot === true || resolvedPeerProfile?.account_type === 'bot';
-  const canBindMobileChannel = (!isGroup && peerUID > 0 && peerIsBot) || (isGroup && effectiveGroupId > 0);
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const agentQuotaLabel = formatRelayUsagePill(agentQuota, { customLabel: '自备模型' });
@@ -1098,24 +1226,6 @@ export default function MessagesView({
     return groups;
   }, [messages, user.uid, isGroup, memberMap, messageById, peerProfile, topicName, topic, topicAvatarUrl]);
 
-  const handleGroupSaved = (updatedGroup) => {
-    setShowGroupSettings(false);
-    if (updatedGroup) {
-      setGroupInfo(updatedGroup);
-      if (onTopicUpdated) {
-        onTopicUpdated({
-          topicId: topic,
-          name: updatedGroup.name,
-          avatar_url: updatedGroup.avatar_url,
-          isGroup: true,
-          groupId,
-        });
-      }
-    }
-    loadGroupMembers();
-    window.dispatchEvent(new Event('cc:data-changed'));
-  };
-
   const openTutorialTask = (task) => {
     setShowTutorialPicker(false);
     setSelectedTutorialTask(task);
@@ -1145,9 +1255,6 @@ export default function MessagesView({
     }
   };
 
-  const selectedAgent = availableAgents.find((agent) => (agent.uid || agent.id) === selectedAgentId) || availableAgents[0] || null;
-  const selectedAgentName = selectedAgent?.display_name || selectedAgent?.username || '选择 Agent';
-
   return (
     <>
       <div
@@ -1155,34 +1262,16 @@ export default function MessagesView({
         style={previewFile ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
       >
         <div className="v3-chat-column">
-          <div className="v3-header">
-            <div className="v3-header-left">
-              <div className="v3-header-identity">
-                <span className="v3-header-title" style={{ fontSize: 17, letterSpacing: 0 }}>{displayName}</span>
-                {isGroup && members.length > 0 && <span className="v3-header-desc">{members.length} 位成员</span>}
-                {!isGroup && agentQuotaLabel && (
-                  <span
-                    className={`v3-relay-usage-pill v3-agent-quota-pill ${relayUsageTone(agentQuota)}`}
-                    title={agentQuotaTitle}
-                  >
-                    {agentQuotaLabel}
-                  </span>
-                )}
-              </div>
+          {!isGroup && agentQuotaLabel && (
+            <div className="v3-conversation-actions" aria-label={`${displayName} 会话操作`}>
+              <span
+                className={`v3-relay-usage-pill v3-agent-quota-pill ${relayUsageTone(agentQuota)}`}
+                title={agentQuotaTitle}
+              >
+                {agentQuotaLabel}
+              </span>
             </div>
-            <div className="v3-header-actions">
-              {canBindMobileChannel && (
-                <button className="v3-action-btn" onClick={() => setShowMobileLinkModal(true)} title="移动端使用">
-                  <Smartphone size={16} />
-                </button>
-              )}
-              {isGroup && (
-                <button className="v3-action-btn" onClick={() => setShowGroupSettings(true)} title={t('group_settings')}>
-                  <MoreHorizontal size={16} />
-                </button>
-              )}
-            </div>
-          </div>
+          )}
           <div
             className={`v3-timeline${isDragActive ? ' is-drag-active' : ''}`}
             ref={timelineRef}
@@ -1269,186 +1358,152 @@ export default function MessagesView({
         </div>
       )}
 
-      <div
-        className={`v3-composer${isDragActive ? ' is-drag-active' : ''}`}
-        onDragEnter={handleDragEnter}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        {/* @mention picker */}
-        {showMentionPicker && isGroup && filteredMembers.length > 0 && (
-          <div className="oc-mention-picker" style={{position:'absolute', bottom: '100%', left: 20, zIndex: 100}}>
-            {filteredMembers.map((m) => (
-              <div
-                key={m.user_id}
-                className="oc-mention-item"
-                onClick={() => insertMention(m)}
-                style={{display:'flex', alignItems:'center', padding:'8px', cursor:'pointer', background:'var(--v3-bg-app)', border:'1px solid var(--v3-border)'}}
-              >
-                <Avatar name={m.display_name || m.username} src={m.avatar_url} size={24} isBot={m.is_bot} style={{marginRight:8}} />
-                <span>{m.display_name || m.username}</span>
-              </div>
+      <ChatComposer
+        className={isDragActive ? 'is-drag-active' : ''}
+        rootProps={{
+          onDragEnter: handleDragEnter,
+          onDragOver: handleDragOver,
+          onDragLeave: handleDragLeave,
+          onDrop: handleDrop,
+        }}
+        textareaRef={textareaRef}
+        value={input}
+        placeholder="输入指令，我帮您完成"
+        disabled={activeBotWorking || isSendingMessage}
+        onChange={handleInputChange}
+        onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
+        attachmentOpen={attachmentMenuOpen}
+        attachmentDisabled={isUploadingAttachment || activeBotWorking || isSendingMessage}
+        onAttachmentToggle={() => {
+          setAgentPickerOpen(false);
+          setAttachmentMenuOpen((open) => !open);
+        }}
+        attachmentMenu={(
+          <div className={`v3-attachment-menu${attachmentMenuOpen ? ' is-open' : ''}`} aria-hidden={!attachmentMenuOpen}>
+            <button type="button" onClick={() => { setAttachmentMenuOpen(false); openAttachmentPicker(imageInputRef); }}><Image size={16} /><span>上传图片</span></button>
+            <button type="button" onClick={() => { setAttachmentMenuOpen(false); openAttachmentPicker(fileInputRef); }}><FileText size={16} /><span>上传文件</span></button>
+            <button type="button" aria-label="手机扫码上传" data-tooltip="手机扫码上传" onClick={() => { setAttachmentMenuOpen(false); openPhoneUploadDialog(); }}><Smartphone size={16} /><span>手机扫码上传</span></button>
+            {isGroup && <button type="button" onClick={() => { setAttachmentMenuOpen(false); if (textareaRef.current) { const pos = textareaRef.current.selectionStart; const nextInput = `${input.slice(0, pos)}@${input.slice(pos)}`; setInput(nextInput); updateComposerDraft(topic, nextInput); textareaRef.current.focus(); } }}><span className="v3-at-sign">@</span><span>提及群成员</span></button>}
+          </div>
+        )}
+        agentName={selectedAgentName}
+        agentOpen={agentPickerOpen}
+        agentDisabled={activeBotWorking || isSendingMessage || isGroup}
+        onAgentToggle={() => {
+          if (isGroup) return;
+          setAttachmentMenuOpen(false);
+          setAgentPickerOpen((open) => !open);
+        }}
+        agentMenu={agentPickerOpen && (
+          <div className="v3-agent-picker-menu" role="listbox" aria-label="选择 Agent">
+            {availableAgents.length === 0 ? <div className="v3-picker-empty">暂无可用 Agent</div> : availableAgents.map((agent) => {
+              const agentId = agent.uid || agent.id;
+              const name = agent.display_name || agent.username || 'Agent';
+              return (
+                <button type="button" role="option" aria-selected={agentId === selectedAgentKey} className={agentId === selectedAgentKey ? 'selected' : ''} key={agentId} onClick={() => {
+                  setSelectedAgentId(agentId);
+                  setAgentPickerOpen(false);
+                }}>
+                  <span>{name}</span>{agentId === selectedAgentKey && <Check size={15} />}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        onSend={activeBotWorking ? handleStopGeneration : handleSend}
+        sendDisabled={isSendingMessage || isUploadingAttachment || (!input.trim() && pendingAttachments.length === 0)}
+        stop={activeBotWorking}
+        stopDisabled={isStopRequested}
+        onCloseMenus={() => {
+          setAttachmentMenuOpen(false);
+          setAgentPickerOpen(false);
+        }}
+        overlay={showMentionPicker && isGroup && filteredMembers.length > 0 && (
+          <div className="oc-mention-picker v3-composer-mention-picker">
+            {filteredMembers.map((member) => (
+              <button type="button" key={member.user_id} className="oc-mention-item" onClick={() => insertMention(member)}>
+                <Avatar name={member.display_name || member.username} src={member.avatar_url} size={24} isBot={member.is_bot} />
+                <span>{member.display_name || member.username}</span>
+              </button>
             ))}
           </div>
         )}
-
-        <div className="v3-composer-box">
-          {isDragActive && (
-            <div className="v3-drop-overlay" aria-hidden="true">
-              <div className="v3-drop-title">拖放文件以上传</div>
-              <div className="v3-drop-subtitle">支持图片、文件和文件夹，附件会先放在这里等待发送。</div>
-            </div>
-          )}
-          
-          {activeBotWorking && (
-            <div className="v3-live-input-status" role="status">
-              {isStopRequested
-                ? '已请求 CatsCo 停止当前工作。'
-                : 'CatsCo 正在处理。没有补充内容时可点停止；输入内容后仍可继续发送。'}
-            </div>
-          )}
-
-          {attachmentStatus?.message && (
-            <div className={`v3-live-input-status v3-live-input-status-${attachmentStatus.tone || 'info'}`} role="status">
-              {attachmentStatus.message}
-            </div>
-          )}
-
-          <div className="v3-composer-row">
-            <div className="v3-attachment-picker">
-              <button
-                className="v3-tool v3-composer-plus"
-                onClick={() => setAttachmentMenuOpen((open) => !open)}
-                title="添加文件或图片"
-                aria-label="添加文件或图片"
-                aria-expanded={attachmentMenuOpen}
-                disabled={isUploadingAttachment}
-                type="button"
-              >
-                <Plus size={20} />
-              </button>
-              <div className={`v3-attachment-menu${attachmentMenuOpen ? ' is-open' : ''}`} aria-hidden={!attachmentMenuOpen}>
-                  <button type="button" onClick={() => { setAttachmentMenuOpen(false); openAttachmentPicker(imageInputRef); }}><Image size={16} /><span>上传图片</span></button>
-                  <button type="button" onClick={() => { setAttachmentMenuOpen(false); openAttachmentPicker(fileInputRef); }}><FileText size={16} /><span>上传文件</span></button>
-                  <button type="button" aria-label="微信扫码上传" data-tooltip="微信扫码上传" onClick={() => { setAttachmentMenuOpen(false); openPhoneUploadDialog(); }}><Smartphone size={16} /><span>手机扫码上传</span></button>
-                  {isGroup && <button type="button" onClick={() => { setAttachmentMenuOpen(false); if (textareaRef.current) { const pos = textareaRef.current.selectionStart; const nextInput = `${input.slice(0, pos)}@${input.slice(pos)}`; setInput(nextInput); updateComposerDraft(topic, nextInput); textareaRef.current.focus(); } }}><span className="v3-at-sign">@</span><span>提及群成员</span></button>}
-              </div>
-            </div>
-
-            <textarea
-              ref={textareaRef}
-              className="v3-composer-input"
-              rows={1}
-              placeholder={t('chat_input_placeholder')}
-              value={input}
-              onChange={handleInputChange}
-              onKeyDown={handleKeyDown}
-              onPaste={handlePaste}
-            />
-
-            <div className="v3-agent-picker">
-              <button type="button" className="v3-agent-picker-button" onClick={() => setAgentPickerOpen((open) => !open)} aria-expanded={agentPickerOpen}>
-                <span>{selectedAgentName}</span><ChevronDown size={14} />
-              </button>
-              {agentPickerOpen && (
-                <div className="v3-agent-picker-menu" role="listbox" aria-label="选择 Agent">
-                  {availableAgents.length === 0 ? <div className="v3-picker-empty">暂无可用 Agent</div> : availableAgents.map((agent) => {
-                    const agentId = agent.uid || agent.id;
-                    const name = agent.display_name || agent.username || 'Agent';
-                    return (
-                      <button type="button" role="option" aria-selected={agentId === selectedAgentId} className={agentId === selectedAgentId ? 'selected' : ''} key={agentId} onClick={async () => {
-                        setSelectedAgentId(agentId);
-                        setAgentPickerOpen(false);
-                        try { await onSelectAgent?.(agent); } catch (error) { setAttachmentStatus({ tone: 'error', message: error?.message || '无法切换 Agent，请稍后重试。' }); }
-                      }}>
-                        <span>{name}</span>{agentId === selectedAgentId && <Check size={15} />}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            <button
-              className={`v3-send${showStopButton ? ' stop' : ''}`}
-              disabled={showStopButton ? isStopRequested : isUploadingAttachment || (!input.trim() && pendingAttachments.length === 0)}
-              onClick={showStopButton ? handleStopGeneration : handleSend}
-              aria-label={showStopButton ? '停止当前工作' : t('chat_send')}
-              title={showStopButton ? '停止当前工作' : t('chat_send')}
-              type="button"
-            >
-              {showStopButton ? <Square size={13} fill="currentColor" /> : <ArrowUp size={18} />}
-            </button>
+        boxOverlay={isDragActive && (
+          <div className="v3-drop-overlay" aria-hidden="true">
+            <div className="v3-drop-title">拖放文件以上传</div>
+            <div className="v3-drop-subtitle">支持图片、文件和文件夹，附件会先放在这里等待发送。</div>
           </div>
-
-          {(isUploadingAttachment || pendingAttachments.length > 0) && (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '10px 12px', marginTop: 10, borderRadius: 10, background: 'rgba(255,255,255,0.04)', border: '1px solid var(--v3-border)', color: 'var(--v3-text-main)' }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 2 }}>
-                  {isUploadingAttachment ? '正在上传附件...' : `${pendingAttachments.length} 个附件待发送`}
+        )}
+        notices={(
+          <>
+            {activeBotWorking && (
+              <div className="v3-live-input-status" role="status">
+                {isStopRequested ? '已请求 CatsCo 停止当前工作。' : 'CatsCo 正在处理，可点击红色按钮停止。'}
+              </div>
+            )}
+            {attachmentStatus?.message && (
+              <div className={`v3-live-input-status v3-live-input-status-${attachmentStatus.tone || 'info'}`} role="status">
+                {attachmentStatus.message}
+              </div>
+            )}
+            {(isUploadingAttachment || pendingAttachments.length > 0) && (
+              <div className="v3-composer-attachments">
+                <div className="v3-composer-attachments-copy">
+                  <strong>{isUploadingAttachment ? '正在上传附件...' : `${pendingAttachments.length} 个附件待发送`}</strong>
+                  {!isUploadingAttachment && pendingAttachments.map((attachment, index) => (
+                    <span key={`${attachment.name}-${index}`}>
+                      {attachment.type === 'image' ? '图片' : '文件'}: {attachment.name}
+                      {attachment.size ? ` • ${formatFileSize(attachment.size)}` : ''}
+                    </span>
+                  ))}
                 </div>
-                {!isUploadingAttachment && pendingAttachments.length > 0 && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    {pendingAttachments.map((attachment, index) => (
-                      <div key={`${attachment.name}-${index}`} style={{ fontSize: 12, color: 'var(--v3-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {attachment.type === 'image' ? '图片' : '文件'}: {attachment.name}
-                        {attachment.size ? ` • ${formatFileSize(attachment.size)}` : ''}
-                      </div>
-                    ))}
-                  </div>
+                {pendingAttachments.length > 0 && !isUploadingAttachment && !isSendingMessage && (
+                  <button className="v3-action-btn" aria-label="移除附件" onClick={() => { updateAttachmentDraft(topic, []); setAttachmentStatus(null); }} type="button">×</button>
                 )}
               </div>
-              {pendingAttachments.length > 0 && !isUploadingAttachment && (
-                <button
-                  className="v3-action-btn"
-                  aria-label="移除附件"
-                  onClick={() => {
-                    setPendingAttachments([]);
-                    setAttachmentStatus(null);
-                  }}
-                  type="button"
-                >
-                  x
-                </button>
+            )}
+          </>
+        )}
+      />
+      <input ref={imageInputRef} type="file" accept={IMAGE_UPLOAD_ACCEPT} multiple style={{ display: 'none' }} onChange={(e) => handleFileUpload(e, 'image')} />
+      <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={(e) => handleFileUpload(e, 'file')} />
+      {phoneUploadDialogOpen && (
+        <div
+          className="v3-phone-upload-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label="手机扫码上传"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closePhoneUploadDialog();
+          }}
+        >
+          <div className="v3-phone-upload-modal">
+            <div className="v3-phone-upload-header">
+              <div>
+                <div className="v3-phone-upload-title">手机扫码上传</div>
+                <div className="v3-phone-upload-subtitle">用手机打开后可多选图片或文件上传到当前会话。</div>
+              </div>
+              <button className="v3-tool" type="button" aria-label="关闭手机上传" onClick={closePhoneUploadDialog}>
+                <X size={16} strokeWidth={2} />
+              </button>
+            </div>
+            <div className="v3-phone-upload-body">
+              {phoneUploadError ? (
+                <div className="v3-phone-upload-error">{phoneUploadError}</div>
+              ) : phoneUploadLink ? (
+                <>
+                  <QRCode value={phoneUploadLink} size={180} />
+                  <div className="v3-phone-upload-link">{phoneUploadLink}</div>
+                </>
+              ) : (
+                <div className="v3-phone-upload-loading">正在创建上传入口...</div>
               )}
             </div>
-          )}
-          
-          <div className="v3-composer-hint">Enter 发送 · Shift+Enter 换行 · Ctrl+Enter 发送 · Ctrl+B 折叠侧栏 · 点击红色按钮停止生成</div>
-          
-          <input ref={imageInputRef} type="file" accept={IMAGE_UPLOAD_ACCEPT} multiple style={{ display: 'none' }} onChange={(e) => handleFileUpload(e, 'image')} />
-          <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }} onChange={(e) => handleFileUpload(e, 'file')} />
-          {phoneUploadDialogOpen && (
-            <div className="v3-phone-upload-backdrop" role="dialog" aria-modal="true" aria-label="手机扫码上传">
-              <div className="v3-phone-upload-modal">
-                <div className="v3-phone-upload-header">
-                  <div>
-                    <div className="v3-phone-upload-title">手机扫码上传</div>
-                    <div className="v3-phone-upload-subtitle">用手机打开后可多选图片或文件上传到当前会话。</div>
-                  </div>
-                  <button className="v3-tool" type="button" aria-label="关闭手机上传" onClick={closePhoneUploadDialog}>
-                    <X size={16} strokeWidth={2} />
-                  </button>
-                </div>
-                <div className="v3-phone-upload-body">
-                  {phoneUploadError ? (
-                    <div className="v3-phone-upload-error">{phoneUploadError}</div>
-                  ) : phoneUploadLink ? (
-                    <>
-                      <QRCode value={phoneUploadLink} size={180} />
-                      <div className="v3-phone-upload-link">{phoneUploadLink}</div>
-                    </>
-                  ) : (
-                    <div className="v3-phone-upload-loading">正在创建上传入口...</div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
+          </div>
         </div>
+      )}
       </div>
-        </div>
         {previewFile && (
           <div className="v3-file-preview-shell">
             <div
@@ -1465,14 +1520,6 @@ export default function MessagesView({
           </div>
         )}
       </div>
-      {showGroupSettings && isGroup && groupId && (
-        <GroupSettings
-          groupId={groupId}
-          currentUser={user}
-          onClose={() => setShowGroupSettings(false)}
-          onSaved={handleGroupSaved}
-        />
-      )}
       {showTutorialPicker && (
         <TutorialTaskPicker
           tasks={tutorialTasks}
@@ -1491,16 +1538,6 @@ export default function MessagesView({
           }}
           onApplyPrompt={applyTutorialPrompt}
           onOpenDesktopConnect={onOpenDesktopConnect}
-        />
-      )}
-      {showMobileLinkModal && canBindMobileChannel && (
-        <MobileChannelBindModal
-          agentUid={!isGroup ? peerUID : undefined}
-          agentName={!isGroup ? displayName : undefined}
-          groupId={isGroup ? effectiveGroupId : undefined}
-          topicId={isGroup ? topic : undefined}
-          groupName={isGroup ? displayName : undefined}
-          onClose={() => setShowMobileLinkModal(false)}
         />
       )}
     </>

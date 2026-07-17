@@ -1,0 +1,763 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, FileText, Image, Smartphone, X } from 'lucide-react';
+import { api } from '../api';
+import {
+  IMAGE_UPLOAD_ACCEPT,
+  MAX_ATTACHMENT_SIZE,
+  MAX_ATTACHMENT_SIZE_MB,
+  inferAttachmentType,
+  validateImageUpload,
+} from '../utils/upload-rules';
+import ChatComposer from './chat-composer';
+import QRCode from './qr-code';
+
+const MAX_DROPPED_FILES = 200;
+const PHONE_UPLOAD_POLL_INTERVAL_MS = 2000;
+const COMPOSER_MAX_HEIGHT = 200;
+
+export default function EmptyTaskComposer({
+  className = 'cc-empty-composer-wrap',
+  placeholder = '输入指令，我帮您完成',
+  onResolveAgentTopic,
+  onActivateTopic,
+}) {
+  const [input, setInput] = useState('');
+  const [agents, setAgents] = useState([]);
+  const [agentsLoading, setAgentsLoading] = useState(true);
+  const [agentsError, setAgentsError] = useState('');
+  const [selectedAgentId, setSelectedAgentId] = useState('');
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState([]);
+  const [attachmentStatus, setAttachmentStatus] = useState(null);
+  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+  const [isDragActive, setIsDragActive] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [phoneUploadDialogOpen, setPhoneUploadDialogOpen] = useState(false);
+  const [phoneUploadSession, setPhoneUploadSession] = useState(null);
+  const [phoneUploadError, setPhoneUploadError] = useState('');
+
+  const textareaRef = useRef(null);
+  const imageInputRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const mountedRef = useRef(true);
+  const inputValueRef = useRef('');
+  const agentsRef = useRef([]);
+  const selectedAgentIdRef = useRef('');
+  const pendingAttachmentsRef = useRef([]);
+  const dragDepthRef = useRef(0);
+  const sendInFlightRef = useRef(false);
+  const phoneUploadSessionRef = useRef(null);
+  const phoneUploadFileKeysRef = useRef(new Set());
+  const phoneUploadSyncRef = useRef(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const replaceAttachments = useCallback((nextAttachments) => {
+    pendingAttachmentsRef.current = nextAttachments;
+    if (mountedRef.current) setPendingAttachments(nextAttachments);
+  }, []);
+
+  const appendAttachments = useCallback((attachments) => {
+    if (!attachments?.length) return;
+    replaceAttachments([...pendingAttachmentsRef.current, ...attachments]);
+  }, [replaceAttachments]);
+
+  const resizeTextarea = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = '0px';
+    const nextHeight = Math.min(textarea.scrollHeight, COMPOSER_MAX_HEIGHT);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > COMPOSER_MAX_HEIGHT ? 'auto' : 'hidden';
+  }, []);
+
+  useEffect(() => {
+    resizeTextarea();
+  }, [input, resizeTextarea]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadAgents = async () => {
+      if (!cancelled && mountedRef.current) {
+        setAgentsLoading(true);
+        setAgentsError('');
+      }
+      try {
+        const response = await api.getAgents();
+        if (cancelled || !mountedRef.current) return;
+        const nextAgents = Array.isArray(response?.agents) ? response.agents : [];
+        agentsRef.current = nextAgents;
+        setAgents(nextAgents);
+        setSelectedAgentId((current) => {
+          const currentKey = String(current || '');
+          const currentExists = nextAgents.some((agent) => agentKey(agent) === currentKey);
+          const nextKey = currentExists ? currentKey : agentKey(nextAgents[0]);
+          selectedAgentIdRef.current = nextKey;
+          return nextKey;
+        });
+      } catch (error) {
+        if (cancelled || !mountedRef.current) return;
+        agentsRef.current = [];
+        setAgents([]);
+        selectedAgentIdRef.current = '';
+        setSelectedAgentId('');
+        setAgentsError(error?.message || 'Agent 列表加载失败，请稍后重试。');
+      } finally {
+        if (!cancelled && mountedRef.current) setAgentsLoading(false);
+      }
+    };
+
+    loadAgents();
+    window.addEventListener('cc:data-changed', loadAgents);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('cc:data-changed', loadAgents);
+    };
+  }, []);
+
+  const selectedAgent = useMemo(
+    () => agents.find((agent) => agentKey(agent) === String(selectedAgentId || '')) || null,
+    [agents, selectedAgentId],
+  );
+  const selectedAgentName = selectedAgent
+    ? (selectedAgent.display_name || selectedAgent.username || 'Agent')
+    : (agentsLoading ? '正在加载 Agent' : '选择 Agent');
+
+  const syncPhoneUploads = useCallback(async ({ final = false } = {}) => {
+    const sessionId = phoneUploadSessionRef.current?.session_id;
+    if (!sessionId) return [];
+    if (sendInFlightRef.current && !final) return [];
+
+    let operation = phoneUploadSyncRef.current;
+    if (!operation) {
+      operation = (async () => {
+        const data = await api.getMobileUploadSession(sessionId);
+        if (!mountedRef.current || phoneUploadSessionRef.current?.session_id !== sessionId) return [];
+
+        const nextAttachments = [];
+        for (const file of Array.isArray(data?.files) ? data.files : []) {
+          const fileKey = file.file_key || file.url || file.name;
+          if (!fileKey || phoneUploadFileKeysRef.current.has(fileKey)) continue;
+          phoneUploadFileKeysRef.current.add(fileKey);
+          nextAttachments.push(attachmentFromUpload(file));
+        }
+
+        if (nextAttachments.length > 0) {
+          appendAttachments(nextAttachments);
+          setAttachmentStatus({
+            tone: 'success',
+            message: `手机已上传 ${pendingAttachmentsRef.current.length} 个附件，发送后会加入新对话。`,
+          });
+        }
+        setPhoneUploadError('');
+        return nextAttachments;
+      })();
+      phoneUploadSyncRef.current = operation;
+    }
+
+    try {
+      return await operation;
+    } catch (error) {
+      if (mountedRef.current) {
+        const message = error?.message || '读取手机上传结果失败';
+        setPhoneUploadError(message);
+        if (/session not found|not found|expired/i.test(message)) {
+          phoneUploadSessionRef.current = null;
+          setPhoneUploadSession(null);
+        }
+      }
+      if (final) throw error;
+      return [];
+    } finally {
+      if (phoneUploadSyncRef.current === operation) phoneUploadSyncRef.current = null;
+    }
+  }, [appendAttachments]);
+
+  useEffect(() => {
+    if (!phoneUploadSession?.session_id) return undefined;
+    syncPhoneUploads();
+    const timer = window.setInterval(() => {
+      syncPhoneUploads();
+    }, PHONE_UPLOAD_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [phoneUploadSession?.session_id, syncPhoneUploads]);
+
+  useEffect(() => {
+    if (!phoneUploadDialogOpen) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setPhoneUploadDialogOpen(false);
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [phoneUploadDialogOpen]);
+
+  const uploadAttachmentFiles = useCallback(async (files, requestedType) => {
+    const fileList = Array.from(files || []).filter(Boolean).slice(0, MAX_DROPPED_FILES);
+    if (fileList.length === 0 || isUploadingAttachment || sendInFlightRef.current) return;
+
+    setIsUploadingAttachment(true);
+    let uploadedCount = 0;
+    try {
+      for (const file of fileList) {
+        const type = inferAttachmentType(file, requestedType);
+        const validationError = validateAttachmentBeforeUpload(file, type);
+        if (validationError) {
+          setAttachmentStatus({ tone: 'error', message: validationError });
+          break;
+        }
+
+        setAttachmentStatus({ tone: 'info', message: `正在上传 ${file.name || '附件'}...` });
+        try {
+          const data = await api.uploadFile(file, type);
+          if (!mountedRef.current) return;
+          appendAttachments([attachmentFromUpload(data, type, file.type)]);
+          uploadedCount += 1;
+        } catch (error) {
+          if (mountedRef.current) setAttachmentStatus({ tone: 'error', message: formatUploadError(error) });
+          break;
+        }
+      }
+
+      if (!mountedRef.current || uploadedCount === 0) return;
+      setAttachmentStatus({
+        tone: 'success',
+        message: uploadedCount === 1
+          ? '已添加 1 个附件，发送后会加入新对话。'
+          : `已添加 ${uploadedCount} 个附件，发送后会加入新对话。`,
+      });
+      window.setTimeout(() => textareaRef.current?.focus(), 0);
+    } finally {
+      if (mountedRef.current) setIsUploadingAttachment(false);
+    }
+  }, [appendAttachments, isUploadingAttachment]);
+
+  const handleFileInput = useCallback(async (event, type) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    await uploadAttachmentFiles(files, type);
+  }, [uploadAttachmentFiles]);
+
+  const openAttachmentPicker = useCallback((inputRef) => {
+    if (isUploadingAttachment || isSubmitting) return;
+    setAttachmentStatus(null);
+    if (inputRef.current) {
+      inputRef.current.value = '';
+      inputRef.current.click();
+    }
+  }, [isSubmitting, isUploadingAttachment]);
+
+  const openPhoneUploadDialog = useCallback(async () => {
+    if (isSubmitting) return;
+    setAttachmentMenuOpen(false);
+    setPhoneUploadDialogOpen(true);
+    setPhoneUploadError('');
+
+    if (phoneUploadSessionRef.current?.session_id) return;
+    try {
+      const session = await api.createMobileUploadSession('');
+      if (!mountedRef.current) return;
+      phoneUploadFileKeysRef.current = new Set();
+      phoneUploadSessionRef.current = session;
+      setPhoneUploadSession(session);
+    } catch (error) {
+      if (mountedRef.current) setPhoneUploadError(error?.message || '手机上传入口创建失败');
+    }
+  }, [isSubmitting]);
+
+  const handleInputChange = useCallback((event) => {
+    const value = event.target.value;
+    inputValueRef.current = value;
+    setInput(value);
+  }, []);
+
+  const handlePaste = useCallback(async (event) => {
+    const files = collectClipboardFiles(event.clipboardData);
+    if (files.length === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    await uploadAttachmentFiles(files);
+  }, [uploadAttachmentFiles]);
+
+  const handleDragEnter = useCallback((event) => {
+    if (!hasFileDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current += 1;
+    setIsDragActive(true);
+  }, []);
+
+  const handleDragOver = useCallback((event) => {
+    if (!hasFileDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+    setIsDragActive(true);
+  }, []);
+
+  const handleDragLeave = useCallback((event) => {
+    if (!hasFileDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDragActive(false);
+  }, []);
+
+  const handleDrop = useCallback(async (event) => {
+    if (!hasFileDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = 0;
+    setIsDragActive(false);
+
+    if (isUploadingAttachment || isSubmitting) return;
+    const files = await collectDroppedFiles(event.dataTransfer);
+    if (files.length === 0) {
+      setAttachmentStatus({ tone: 'error', message: '这次拖入没有识别到可上传的文件。' });
+      return;
+    }
+    await uploadAttachmentFiles(files);
+  }, [isSubmitting, isUploadingAttachment, uploadAttachmentFiles]);
+
+  const handleSend = useCallback(async () => {
+    if (sendInFlightRef.current || isUploadingAttachment) return;
+
+    const agent = agentsRef.current.find(
+      (candidate) => agentKey(candidate) === String(selectedAgentIdRef.current || ''),
+    );
+    if (!agent) {
+      setAttachmentStatus({ tone: 'error', message: '请先选择一个 Agent。' });
+      setAgentPickerOpen(true);
+      return;
+    }
+    if (!inputValueRef.current.trim() && pendingAttachmentsRef.current.length === 0) return;
+    if (typeof onResolveAgentTopic !== 'function' || typeof onActivateTopic !== 'function') {
+      setAttachmentStatus({ tone: 'error', message: '暂时无法创建对话，请稍后重试。' });
+      return;
+    }
+
+    sendInFlightRef.current = true;
+    setIsSubmitting(true);
+    setAttachmentMenuOpen(false);
+    setAgentPickerOpen(false);
+    setAttachmentStatus({ tone: 'info', message: '正在打开 Agent 并发送...' });
+
+    let messageSent = false;
+    try {
+      const resolvedTopic = await onResolveAgentTopic(agent);
+      const topicId = resolveTopicId(resolvedTopic);
+      if (!topicId) throw new Error('Agent 对话创建失败，请稍后重试。');
+      if (!mountedRef.current) return;
+
+      await syncPhoneUploads({ final: true });
+
+      const text = inputValueRef.current.trim();
+      const attachments = [...pendingAttachmentsRef.current];
+      if (!text && attachments.length === 0) return;
+
+      const contentBlocks = buildAtomicContentBlocks(text, attachments);
+      const displayContent = text || summarizeAttachments(attachments);
+      const payload = attachments.length > 0
+        ? { type: 'text', content: displayContent, content_blocks: contentBlocks }
+        : text;
+
+      await api.sendMessage(topicId, payload);
+      messageSent = true;
+      if (!mountedRef.current) return;
+      inputValueRef.current = '';
+      pendingAttachmentsRef.current = [];
+      phoneUploadSessionRef.current = null;
+      if (mountedRef.current) {
+        setInput('');
+        setPendingAttachments([]);
+        setPhoneUploadSession(null);
+        setPhoneUploadDialogOpen(false);
+        setAttachmentStatus(null);
+      }
+
+      await onActivateTopic(resolvedTopic);
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (error) {
+      if (!mountedRef.current) return;
+      setAttachmentStatus({
+        tone: 'error',
+        message: messageSent
+          ? '消息已发送，但暂时无法打开新对话。请从历史任务中重新进入。'
+          : (error?.message || '发送失败，请稍后重试。'),
+      });
+    } finally {
+      sendInFlightRef.current = false;
+      if (mountedRef.current) setIsSubmitting(false);
+    }
+  }, [isUploadingAttachment, onActivateTopic, onResolveAgentTopic, syncPhoneUploads]);
+
+  const handleKeyDown = useCallback((event) => {
+    const nativeEvent = event.nativeEvent || event;
+    if (
+      nativeEvent.isComposing
+      || event.isComposing
+      || event.keyCode === 229
+      || nativeEvent.keyCode === 229
+    ) return;
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      handleSend();
+    }
+  }, [handleSend]);
+
+  const attachmentMenu = (
+    <div className={`v3-attachment-menu${attachmentMenuOpen ? ' is-open' : ''}`} aria-hidden={!attachmentMenuOpen}>
+      <button type="button" onClick={() => { setAttachmentMenuOpen(false); openAttachmentPicker(imageInputRef); }}>
+        <Image size={16} /><span>上传图片</span>
+      </button>
+      <button type="button" onClick={() => { setAttachmentMenuOpen(false); openAttachmentPicker(fileInputRef); }}>
+        <FileText size={16} /><span>上传文件</span>
+      </button>
+      <button type="button" aria-label="手机扫码上传" data-tooltip="手机扫码上传" onClick={openPhoneUploadDialog}>
+        <Smartphone size={16} /><span>手机扫码上传</span>
+      </button>
+    </div>
+  );
+
+  const agentMenu = agentPickerOpen ? (
+    <div className="v3-agent-picker-menu" role="listbox" aria-label="选择 Agent">
+      {agentsLoading ? (
+        <div className="v3-picker-empty">正在加载 Agent...</div>
+      ) : agents.length === 0 ? (
+        <div className="v3-picker-empty">{agentsError || '暂无可用 Agent'}</div>
+      ) : agents.map((agent) => {
+        const key = agentKey(agent);
+        const name = agent.display_name || agent.username || 'Agent';
+        const selected = key === String(selectedAgentId || '');
+        return (
+          <button
+            type="button"
+            role="option"
+            aria-selected={selected}
+            className={selected ? 'selected' : ''}
+            key={key}
+            onClick={() => {
+              selectedAgentIdRef.current = key;
+              setSelectedAgentId(key);
+              setAgentPickerOpen(false);
+              setAttachmentStatus(null);
+            }}
+          >
+            <span>{name}</span>{selected && <Check size={15} />}
+          </button>
+        );
+      })}
+    </div>
+  ) : null;
+
+  const notices = (
+    <>
+      {agentsError && agents.length === 0 && (
+        <div className="v3-live-input-status v3-live-input-status-error" role="status">{agentsError}</div>
+      )}
+      {attachmentStatus?.message && (
+        <div className={`v3-live-input-status v3-live-input-status-${attachmentStatus.tone || 'info'}`} role="status">
+          {attachmentStatus.message}
+        </div>
+      )}
+      {(isUploadingAttachment || pendingAttachments.length > 0) && (
+        <div className="v3-composer-attachments">
+          <div className="v3-composer-attachments-copy">
+            <strong>{isUploadingAttachment ? '正在上传附件...' : `${pendingAttachments.length} 个附件待发送`}</strong>
+            {!isUploadingAttachment && pendingAttachments.map((attachment, index) => (
+              <span key={`${attachment.content?.payload?.file_key || attachment.name}-${index}`}>
+                {attachment.type === 'image' ? '图片' : '文件'}: {attachment.name}
+                {attachment.size ? ` • ${formatFileSize(attachment.size)}` : ''}
+              </span>
+            ))}
+          </div>
+          {pendingAttachments.length > 0 && !isUploadingAttachment && !isSubmitting && (
+            <button
+              className="v3-action-btn"
+              aria-label="移除附件"
+              onClick={() => {
+                replaceAttachments([]);
+                setAttachmentStatus(null);
+              }}
+              type="button"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      )}
+    </>
+  );
+
+  const phoneUploadOverlay = phoneUploadDialogOpen ? (
+    <div
+      className="v3-phone-upload-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="手机扫码上传"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) setPhoneUploadDialogOpen(false);
+      }}
+    >
+      <div className="v3-phone-upload-modal">
+        <div className="v3-phone-upload-header">
+          <div>
+            <div className="v3-phone-upload-title">手机扫码上传</div>
+            <div className="v3-phone-upload-subtitle">上传到当前草稿，发送后会加入新对话。</div>
+          </div>
+          <button className="v3-tool" type="button" aria-label="关闭手机上传" onClick={() => setPhoneUploadDialogOpen(false)}>
+            <X size={16} strokeWidth={2} />
+          </button>
+        </div>
+        <div className="v3-phone-upload-body">
+          {phoneUploadError ? (
+            <div className="v3-phone-upload-error">{phoneUploadError}</div>
+          ) : resolvePhoneUploadLink(phoneUploadSession?.upload_url) ? (
+            <>
+              <QRCode value={resolvePhoneUploadLink(phoneUploadSession.upload_url)} size={180} />
+              <div className="v3-phone-upload-link">{resolvePhoneUploadLink(phoneUploadSession.upload_url)}</div>
+            </>
+          ) : (
+            <div className="v3-phone-upload-loading">正在创建上传入口...</div>
+          )}
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  return (
+    <>
+      <ChatComposer
+        className={className}
+        textareaRef={textareaRef}
+        value={input}
+        placeholder={placeholder}
+        disabled={isSubmitting}
+        onChange={handleInputChange}
+        onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
+        attachmentOpen={attachmentMenuOpen}
+        attachmentDisabled={isUploadingAttachment || isSubmitting}
+        onAttachmentToggle={() => {
+          setAgentPickerOpen(false);
+          setAttachmentMenuOpen((open) => !open);
+        }}
+        attachmentMenu={attachmentMenu}
+        agentName={selectedAgentName}
+        agentOpen={agentPickerOpen}
+        agentDisabled={isSubmitting}
+        onAgentToggle={() => {
+          setAttachmentMenuOpen(false);
+          setAgentPickerOpen((open) => !open);
+        }}
+        agentMenu={agentMenu}
+        onSend={handleSend}
+        sendDisabled={
+          isSubmitting
+          || isUploadingAttachment
+          || !selectedAgent
+          || (!input.trim() && pendingAttachments.length === 0)
+        }
+        onCloseMenus={() => {
+          setAttachmentMenuOpen(false);
+          setAgentPickerOpen(false);
+        }}
+        notices={notices}
+        overlay={phoneUploadOverlay}
+        boxOverlay={isDragActive ? (
+          <div className="v3-drop-overlay" aria-hidden="true">
+            <div className="v3-drop-title">拖放文件以上传</div>
+            <div className="v3-drop-subtitle">支持图片、文件和文件夹，附件会先放在这里等待发送。</div>
+          </div>
+        ) : null}
+        rootProps={{
+          'aria-label': '新对话输入栏',
+          onDragEnter: handleDragEnter,
+          onDragOver: handleDragOver,
+          onDragLeave: handleDragLeave,
+          onDrop: handleDrop,
+        }}
+      />
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept={IMAGE_UPLOAD_ACCEPT}
+        multiple
+        style={{ display: 'none' }}
+        onChange={(event) => handleFileInput(event, 'image')}
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        style={{ display: 'none' }}
+        onChange={(event) => handleFileInput(event, 'file')}
+      />
+    </>
+  );
+}
+
+function agentKey(agent) {
+  return String(agent?.uid || agent?.id || '');
+}
+
+function resolveTopicId(topic) {
+  return topic?.topicId || topic?.topic_id || topic?.topic || topic?.agent?.topic_id || '';
+}
+
+function resolvePhoneUploadLink(uploadUrl) {
+  if (!uploadUrl) return '';
+  if (/^https?:\/\//i.test(uploadUrl)) return uploadUrl;
+  const path = uploadUrl.startsWith('/') ? uploadUrl : `/${uploadUrl}`;
+  return `${window.location.origin}${path}`;
+}
+
+function attachmentFromUpload(file, requestedType, fallbackMimeType = '') {
+  const type = requestedType || (file?.type === 'image' ? 'image' : 'file');
+  const payload = {
+    file_key: file?.file_key,
+    url: file?.url,
+    name: file?.name,
+    size: file?.size,
+    mime_type: file?.mime_type || fallbackMimeType || '',
+  };
+  if (type === 'image') payload.thumbnail = file?.url;
+  return {
+    type,
+    name: file?.name,
+    size: file?.size,
+    content: { type, payload },
+  };
+}
+
+function validateAttachmentBeforeUpload(file, type) {
+  if (!file) return '未找到可上传的文件。';
+  if (file.size > MAX_ATTACHMENT_SIZE) {
+    return `文件过大：${(file.size / 1024 / 1024).toFixed(1)}MB。当前最多支持 ${MAX_ATTACHMENT_SIZE_MB}MB。`;
+  }
+  return type === 'image' ? validateImageUpload(file) : '';
+}
+
+function formatUploadError(error) {
+  const message = String(error?.message || '上传失败');
+  if (message.includes('413') || message.includes('Payload Too Large')) {
+    return `上传失败：文件超过 ${MAX_ATTACHMENT_SIZE_MB}MB 限制。`;
+  }
+  if (message.includes('invalid image type')) return '上传失败：当前仅支持 JPG、PNG、GIF、WebP 图片。';
+  if (message.includes('file type not allowed')) return '上传失败：该文件类型暂不支持。';
+  if (message.includes('Unexpected token') || message.includes('invalid server response') || message.includes('JSON')) {
+    return '上传失败：服务器返回了无法识别的响应。';
+  }
+  return `上传失败：${message}`;
+}
+
+function buildAtomicContentBlocks(text, attachments) {
+  const blocks = [];
+  if (text) blocks.push({ type: 'text', text });
+  for (const attachment of attachments || []) {
+    const payload = attachment?.content?.payload;
+    if (!payload) continue;
+    blocks.push({ type: attachment.type === 'image' ? 'image' : 'file', payload });
+  }
+  return blocks;
+}
+
+function summarizeAttachments(attachments) {
+  const list = attachments || [];
+  if (list.length === 0) return '';
+  if (list.length === 1) {
+    const attachment = list[0];
+    return `[${attachment.type === 'image' ? '图片' : '文件'}] ${attachment.name || 'attachment'}`;
+  }
+  return `[附件] ${list.map((attachment) => attachment.name || 'attachment').join(', ')}`;
+}
+
+function hasFileDrag(dataTransfer) {
+  return Array.from(dataTransfer?.types || []).includes('Files');
+}
+
+function collectClipboardFiles(clipboardData) {
+  const files = [];
+  for (const item of Array.from(clipboardData?.items || [])) {
+    if (files.length >= MAX_DROPPED_FILES) break;
+    if (item.kind === 'file' && typeof item.getAsFile === 'function') {
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  }
+  if (files.length === 0) {
+    files.push(...Array.from(clipboardData?.files || []).slice(0, MAX_DROPPED_FILES));
+  }
+  return files;
+}
+
+async function collectDroppedFiles(dataTransfer) {
+  const files = [];
+  const addFiles = (items) => {
+    for (const file of items) {
+      if (file && files.length < MAX_DROPPED_FILES) files.push(file);
+    }
+  };
+
+  for (const item of Array.from(dataTransfer?.items || [])) {
+    if (files.length >= MAX_DROPPED_FILES || item.kind !== 'file') continue;
+    const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null;
+    if (entry) {
+      addFiles(await readEntryFiles(entry, MAX_DROPPED_FILES - files.length));
+    } else if (typeof item.getAsFile === 'function') {
+      addFiles([item.getAsFile()]);
+    }
+  }
+
+  if (files.length === 0) addFiles(Array.from(dataTransfer?.files || []));
+  return files;
+}
+
+async function readEntryFiles(entry, limit) {
+  if (!entry || limit <= 0) return [];
+  if (entry.isFile) {
+    return new Promise((resolve) => {
+      entry.file((file) => resolve(file ? [file] : []), () => resolve([]));
+    });
+  }
+  if (!entry.isDirectory) return [];
+
+  const entries = await readDirectoryEntries(entry.createReader());
+  const files = [];
+  for (const child of entries) {
+    if (files.length >= limit) break;
+    files.push(...await readEntryFiles(child, limit - files.length));
+  }
+  return files;
+}
+
+function readDirectoryEntries(reader) {
+  return new Promise((resolve) => {
+    const entries = [];
+    const readBatch = () => {
+      reader.readEntries((batch) => {
+        if (!batch.length) {
+          resolve(entries);
+          return;
+        }
+        entries.push(...batch);
+        readBatch();
+      }, () => resolve(entries));
+    };
+    readBatch();
+  });
+}
+
+function formatFileSize(size) {
+  if (!size || size <= 0) return '';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}

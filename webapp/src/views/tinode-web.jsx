@@ -7,16 +7,25 @@ import MessagesView from './messages-view';
 import AgentEntryBindView from './agent-entry-bind-view';
 import ChannelDeviceLinkView from './channel-device-link-view';
 import MobileUploadView from './mobile-upload-view';
+import EmptyTaskComposer from '../widgets/empty-task-composer';
+import SidebarResizeHandle, {
+  MIN_APP_SIDEBAR_WIDTH,
+  clampSidebarWidth,
+  getSidebarMaxWidth,
+  loadSidebarWidth,
+  saveSidebarWidth,
+} from '../widgets/sidebar-resizer';
 import ProfileEditor from '../widgets/profile-editor';
 import FeedbackModal from '../widgets/feedback-modal';
 import CatsCoDownloadModal from '../widgets/catsco-download-modal';
 import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import RelayAccessModal from '../widgets/relay-access-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
+import GroupSettings from '../widgets/group-settings';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
 import { resolveCurrentModelName } from '../utils/relay-usage';
-import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, CheckCircle2, PanelLeftClose, PanelLeftOpen, Sun, Moon, Plus, ArrowUp, ChevronDown } from 'lucide-react';
+import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, CheckCircle2, PanelLeftClose, PanelLeftOpen, Sun, Moon } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 
@@ -191,15 +200,39 @@ function TinodeWebApp() {
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
+  const [managedGroup, setManagedGroup] = useState(null);
+  const appShellRef = useRef(null);
   const [appSidebarCollapsed, setAppSidebarCollapsed] = useState(() => loadAppSidebarCollapsed());
+  const [appSidebarPreferredWidth, setAppSidebarPreferredWidth] = useState(() => loadSidebarWidth());
+  const [sidebarViewportWidth, setSidebarViewportWidth] = useState(() => window.innerWidth);
+  const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem('catsco_theme') || 'light');
   const [currentModelName, setCurrentModelName] = useState(DEFAULT_MODEL_NAME);
+  const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
+  const appSidebarWidth = clampSidebarWidth(
+    appSidebarPreferredWidth,
+    MIN_APP_SIDEBAR_WIDTH,
+    appSidebarMaxWidth,
+  );
+  const previewAppSidebarWidth = useCallback((nextWidth) => {
+    appShellRef.current?.style.setProperty('--cc-sidebar-user-width', `${nextWidth}px`);
+  }, []);
+  const commitAppSidebarWidth = useCallback((nextWidth) => {
+    setAppSidebarPreferredWidth(nextWidth);
+    saveSidebarWidth(nextWidth);
+  }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem('catsco_theme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    const handleViewportResize = () => setSidebarViewportWidth(window.innerWidth);
+    window.addEventListener('resize', handleViewportResize);
+    return () => window.removeEventListener('resize', handleViewportResize);
+  }, []);
 
   useEffect(() => {
     if (!user?.uid) return undefined;
@@ -270,6 +303,16 @@ function TinodeWebApp() {
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    const handleSidebarShortcut = (event) => {
+      if (!event.ctrlKey || event.altKey || event.metaKey || event.key.toLowerCase() !== 'b') return;
+      event.preventDefault();
+      toggleAppSidebar();
+    };
+    document.addEventListener('keydown', handleSidebarShortcut);
+    return () => document.removeEventListener('keydown', handleSidebarShortcut);
+  }, [toggleAppSidebar]);
 
   useEffect(() => {
     if (!mobileSidebarOpen) return undefined;
@@ -548,6 +591,49 @@ function TinodeWebApp() {
     });
   };
 
+  const resolveAgentTopic = useCallback(async (agent) => {
+    const agentUid = agent?.uid || agent?.id;
+    if (!agentUid) throw new Error('请选择一个可用的 Agent');
+
+    const res = await api.openAgent(agentUid);
+    const opened = res.agent || agent;
+    const topicId = opened.topic_id || res.topic || agent.topic_id;
+    if (!topicId) throw new Error('暂时无法打开所选 Agent');
+    let conversationName = '';
+
+    if (topicId) {
+      try {
+        const conversations = await api.getConversations();
+        conversationName = (conversations.conversations || [])
+          .find((conversation) => conversation.id === topicId)?.name || '';
+      } catch (error) {
+        console.warn('Failed to resolve the conversation title:', error);
+      }
+    }
+
+    return {
+      topicId,
+      name: conversationName
+        || opened.display_name
+        || agent.display_name
+        || agent.username,
+      isGroup: false,
+      avatar_url: opened.avatar_url || agent.avatar_url,
+      friendId: opened.uid || agentUid,
+    };
+  }, []);
+
+  const activateResolvedTopic = useCallback((nextTopic) => {
+    if (!nextTopic?.topicId) return;
+    setActiveTopic(nextTopic);
+  }, [setActiveTopic]);
+
+  const activateAgentTopic = useCallback(async (agent) => {
+    const nextTopic = await resolveAgentTopic(agent);
+    activateResolvedTopic(nextTopic);
+    return nextTopic;
+  }, [activateResolvedTopic, resolveAgentTopic]);
+
   const handleDesktopConnected = async (agent) => {
     try {
       const agentUid = agent?.uid || agent?.id;
@@ -557,15 +643,7 @@ function TinodeWebApp() {
         window.dispatchEvent(new Event('cc:data-changed'));
         return;
       }
-      const res = await api.openAgent(agentUid);
-      const opened = res.agent || agent;
-      setActiveTopic({
-        topicId: opened.topic_id || res.topic || agent.topic_id,
-        name: opened.display_name || agent.display_name || agent.username,
-        isGroup: false,
-        avatar_url: opened.avatar_url || agent.avatar_url,
-        friendId: opened.uid || agent.uid || agent.id,
-      });
+      await activateAgentTopic(agent);
       setLocalAgentStatus('connected');
       setShowDesktopConnectModal(false);
       window.dispatchEvent(new Event('cc:data-changed'));
@@ -573,21 +651,6 @@ function TinodeWebApp() {
       console.warn('Failed to open connected desktop agent:', error);
     }
   };
-
-  const handleSelectComposerAgent = useCallback(async (agent) => {
-    const agentUid = agent?.uid || agent?.id;
-    if (!agentUid) return;
-    const res = await api.openAgent(agentUid);
-    const opened = res.agent || agent;
-    setActiveTopic({
-      topicId: opened.topic_id || res.topic || agent.topic_id,
-      name: opened.display_name || agent.display_name || agent.username,
-      isGroup: false,
-      avatar_url: opened.avatar_url || agent.avatar_url,
-      friendId: opened.uid || agentUid,
-    });
-    window.dispatchEvent(new Event('cc:data-changed'));
-  }, [setActiveTopic]);
 
   if ((channelDeviceLink || channelAccountLink) && user) {
     const params = new URLSearchParams(window.location.search);
@@ -609,7 +672,11 @@ function TinodeWebApp() {
   }
 
   return (
-    <div className="v3-app">
+    <div
+      ref={appShellRef}
+      className={`v3-app${isSidebarResizing ? ' sidebar-resizing' : ''}`}
+      style={{ '--cc-sidebar-user-width': `${appSidebarWidth}px` }}
+    >
       {mobileSidebarOpen && (
         <button
           type="button"
@@ -618,7 +685,10 @@ function TinodeWebApp() {
           aria-label="关闭左侧栏"
         />
       )}
-      <div className={`v3-sidebar${appSidebarCollapsed ? ' collapsed' : ''}${mobileSidebarOpen ? ' open' : ''}`}>
+      <div
+        id="catsco-function-sidebar"
+        className={`v3-sidebar${appSidebarCollapsed ? ' collapsed' : ''}${mobileSidebarOpen ? ' open' : ''}`}
+      >
         <div className="v3-sidebar-header">
           <div className="v3-brand-title">
             <span className="catsco-brand-mark" aria-hidden="true" />
@@ -650,6 +720,10 @@ function TinodeWebApp() {
             user={user}
             onlineUsers={onlineUsers}
             compact={appSidebarCollapsed}
+            onManageGroup={(group) => {
+              setManagedGroup(group);
+              setMobileSidebarOpen(false);
+            }}
           />
         </div>
         
@@ -685,6 +759,15 @@ function TinodeWebApp() {
             </div>
           </div>
         )}
+
+        <SidebarResizeHandle
+          width={appSidebarWidth}
+          maxWidth={appSidebarMaxWidth}
+          disabled={appSidebarCollapsed || sidebarViewportWidth <= 768}
+          onWidthChange={previewAppSidebarWidth}
+          onWidthCommit={commitAppSidebarWidth}
+          onResizeChange={setIsSidebarResizing}
+        />
       </div>
       
       <div className="v3-main">
@@ -702,7 +785,6 @@ function TinodeWebApp() {
           <PanelLeftOpen size={18} />
         </button>
         <LocalAssistantBar
-          status={localAgentStatus}
           currentModelName={currentModelName}
           theme={theme}
           onToggleTheme={() => setTheme((value) => value === 'light' ? 'dark' : 'light')}
@@ -717,12 +799,17 @@ function TinodeWebApp() {
             isGroup={activeTopic.isGroup || (activeTopic.topicId && activeTopic.topicId.startsWith('grp_'))}
             groupId={activeTopic.groupId}
             topicAvatarUrl={activeTopic.avatar_url}
-            onTopicUpdated={handleTopicUpdated}
             localAssistantStatus={localAgentStatus}
             onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
-            onSelectAgent={handleSelectComposerAgent}
+            onResolveAgentTopic={resolveAgentTopic}
+            onActivateTopic={activateResolvedTopic}
           />
-        ) : <NoActiveTask onCreate={() => window.dispatchEvent(new Event('catsco:new-task'))} />}
+        ) : (
+          <NoActiveTask
+            onResolveAgentTopic={resolveAgentTopic}
+            onActivateTopic={activateResolvedTopic}
+          />
+        )}
       </div>
 
       {showProfileEditor && (
@@ -754,21 +841,41 @@ function TinodeWebApp() {
         <RelayAccessModal onClose={() => setShowRelayModal(false)} />
       )}
 
+      {managedGroup?.groupId && (
+        <GroupSettings
+          groupId={managedGroup.groupId}
+          currentUser={user}
+          onClose={() => setManagedGroup(null)}
+          onSaved={(updatedGroup) => {
+            if (updatedGroup) {
+              handleTopicUpdated({
+                topicId: managedGroup.topicId,
+                name: updatedGroup.name,
+                avatar_url: updatedGroup.avatar_url,
+              });
+            } else {
+              setActiveTopic((current) => (
+                current?.topicId === managedGroup.topicId ? null : current
+              ));
+            }
+            window.dispatchEvent(new Event('cc:data-changed'));
+          }}
+        />
+      )}
+
     </div>
   );
 }
 
-function LocalAssistantBar({ status, currentModelName, theme, onToggleTheme, onDownload, title }) {
-  const statusClass = status === 'connected' ? 'connected' : status === 'checking' ? 'connecting' : 'disconnected';
+function LocalAssistantBar({ currentModelName, theme, onToggleTheme, onDownload, title }) {
   return (
     <header className="v3-local-assistant-bar">
       <div className="v3-model-select">
         <div
-          className={`v3-local-assistant-status ${statusClass}`}
+          className="v3-local-assistant-status"
           aria-label={`当前使用的模型：${currentModelName}`}
           title={`当前使用的模型：${currentModelName}`}
         >
-          <span className="v3-model-status-dot" aria-hidden="true" />
           <span>{currentModelName}</span>
         </div>
       </div>
@@ -785,7 +892,7 @@ function LocalAssistantBar({ status, currentModelName, theme, onToggleTheme, onD
   );
 }
 
-function NoActiveTask({ onCreate }) {
+function NoActiveTask({ onResolveAgentTopic, onActivateTopic }) {
   return (
     <main className="cc-empty-task">
       <div className="cc-empty-task-inner">
@@ -793,24 +900,26 @@ function NoActiveTask({ onCreate }) {
           <span className="catsco-brand-mark cc-empty-task-mark" aria-hidden="true" />
           <h1>需要我为您做什么？</h1>
         </div>
-        <div className="cc-empty-composer">
-          <button type="button" className="v3-tool cc-empty-tool" onClick={onCreate} aria-label="添加文件或图片">
-            <Plus size={20} />
-          </button>
-          <button type="button" className="cc-empty-composer-input" onClick={onCreate}>输入指令，我帮您完成</button>
-          <button type="button" className="v3-agent-picker-button cc-empty-agent" onClick={onCreate}>
-            <span>选择 Agent</span><ChevronDown size={14} />
-          </button>
-          <button type="button" className="cc-empty-send" onClick={onCreate} aria-label="开始任务"><ArrowUp size={17} /></button>
-        </div>
-        <p>Enter 发送 · Shift+Enter 换行 · Ctrl+Enter 发送 · Ctrl+B 折叠侧栏 · 点击红色按钮停止生成</p>
+        <EmptyTaskComposer
+          onResolveAgentTopic={onResolveAgentTopic}
+          onActivateTopic={onActivateTopic}
+        />
       </div>
     </main>
   );
 }
 
-function SidebarContent({ activeTopic, onSelectTopic, user, onlineUsers, compact }) {
-  return <ChatListView activeTopic={activeTopic} onSelectTopic={onSelectTopic} user={user} onlineUsers={onlineUsers} compact={compact} />;
+function SidebarContent({ activeTopic, onSelectTopic, user, onlineUsers, compact, onManageGroup }) {
+  return (
+    <ChatListView
+      activeTopic={activeTopic}
+      onSelectTopic={onSelectTopic}
+      user={user}
+      onlineUsers={onlineUsers}
+      compact={compact}
+      onManageGroup={onManageGroup}
+    />
+  );
 }
 
 function ProfileFooter({ user, wsStatus, popoverOpen, onTogglePopover }) {

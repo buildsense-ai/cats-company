@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
@@ -8,11 +8,13 @@ import FriendRequest from '../widgets/friend-request';
 import AgentStoreModal from '../widgets/agent-store-modal';
 import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
 import Avatar from '../widgets/avatar';
-import { Users, Zap, Bot, Trash2, MessageSquare, Smartphone, Check, X, Pin, ChevronRight, Plus, Search, MoreHorizontal, UserX, Ban } from 'lucide-react';
+import { Users, UserRound, Zap, Bot, Trash2, MessageSquare, Smartphone, Check, X, Pin, ChevronRight, Plus, Search, MoreHorizontal, UserX, Ban } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
 const DEFAULT_COLLAPSED_SECTIONS = { collaboration: false, ai: false, friends: false, groups: false, agents: false };
 const PINNED_GROUPS_STORAGE_PREFIX = 'cc_pinned_groups_v1';
+const PINNED_HISTORY_STORAGE_PREFIX = 'cc_pinned_history_v1';
+const HIDDEN_HISTORY_STORAGE_PREFIX = 'cc_hidden_history_v1';
 
 function sidebarCollapsedStorageKey(uid) {
   return `${SIDEBAR_COLLAPSED_STORAGE_PREFIX}:${uid || 'guest'}`;
@@ -20,6 +22,14 @@ function sidebarCollapsedStorageKey(uid) {
 
 function pinnedGroupsStorageKey(uid) {
   return `${PINNED_GROUPS_STORAGE_PREFIX}:${uid || 'guest'}`;
+}
+
+function pinnedHistoryStorageKey(uid) {
+  return `${PINNED_HISTORY_STORAGE_PREFIX}:${uid || 'guest'}`;
+}
+
+function hiddenHistoryStorageKey(uid) {
+  return `${HIDDEN_HISTORY_STORAGE_PREFIX}:${uid || 'guest'}`;
 }
 
 function normalizeCollapsedSections(value) {
@@ -80,7 +90,64 @@ function savePinnedGroupIds(uid, next) {
   }
 }
 
-export default function ChatListView({ activeTopic, onSelectTopic, user, onlineUsers, compact = false }) {
+function loadPinnedHistoryIds(uid) {
+  if (typeof window === 'undefined' || !window.localStorage) return new Set();
+
+  try {
+    const raw = window.localStorage.getItem(pinnedHistoryStorageKey(uid));
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.map((value) => String(value || '').trim()).filter(Boolean));
+  } catch (error) {
+    console.warn('Failed to restore pinned history:', error);
+    return new Set();
+  }
+}
+
+function savePinnedHistoryIds(uid, next) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+
+  try {
+    window.localStorage.setItem(pinnedHistoryStorageKey(uid), JSON.stringify([...next]));
+  } catch (error) {
+    console.warn('Failed to save pinned history:', error);
+  }
+}
+
+function loadHiddenHistoryIds(uid) {
+  if (typeof window === 'undefined' || !window.localStorage) return new Set();
+
+  try {
+    const raw = window.localStorage.getItem(hiddenHistoryStorageKey(uid));
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.map((value) => String(value || '').trim()).filter(Boolean));
+  } catch (error) {
+    console.warn('Failed to restore hidden history:', error);
+    return new Set();
+  }
+}
+
+function saveHiddenHistoryIds(uid, next) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+
+  try {
+    window.localStorage.setItem(hiddenHistoryStorageKey(uid), JSON.stringify([...next]));
+  } catch (error) {
+    console.warn('Failed to save hidden history:', error);
+  }
+}
+
+export default function ChatListView({
+  activeTopic,
+  onSelectTopic,
+  user,
+  onlineUsers,
+  compact = false,
+  onManageGroup,
+  onDeleteHistoryTask,
+  onOpenMobileLink,
+}) {
   const [chats, setChats] = useState([]);
   const [friends, setFriends] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -101,20 +168,48 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
   const [agentPendingRequests, setAgentPendingRequests] = useState([]);
   const [agentReviewingKey, setAgentReviewingKey] = useState('');
   const [pinnedGroupIds, setPinnedGroupIds] = useState(() => loadPinnedGroupIds(user?.uid));
+  const [pinnedHistoryIds, setPinnedHistoryIds] = useState(() => loadPinnedHistoryIds(user?.uid));
+  const [hiddenHistoryIds, setHiddenHistoryIds] = useState(() => loadHiddenHistoryIds(user?.uid));
   const [openFriendMenuId, setOpenFriendMenuId] = useState('');
+  const [openChatMenuKey, setOpenChatMenuKey] = useState('');
   const [friendActionId, setFriendActionId] = useState('');
+  const justHiddenHistoryRef = useRef('');
 
   useEffect(() => {
     setCollapsed(loadCollapsedSections(user?.uid));
     setPinnedGroupIds(loadPinnedGroupIds(user?.uid));
+    setPinnedHistoryIds(loadPinnedHistoryIds(user?.uid));
+    setHiddenHistoryIds(loadHiddenHistoryIds(user?.uid));
   }, [user?.uid]);
 
   useEffect(() => {
-    if (!openFriendMenuId) return undefined;
-    const closeMenu = () => setOpenFriendMenuId('');
-    document.addEventListener('click', closeMenu);
-    return () => document.removeEventListener('click', closeMenu);
-  }, [openFriendMenuId]);
+    if (!openFriendMenuId && !openChatMenuKey) return undefined;
+    const closeMenus = () => {
+      setOpenFriendMenuId('');
+      setOpenChatMenuKey('');
+    };
+    const closeMenusFromOutside = (event) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest([
+        '.v3-friend-action-menu',
+        '.v3-friend-menu-trigger',
+        '.v3-group-menu-trigger',
+        '.v3-history-menu-trigger',
+      ].join(','))) {
+        return;
+      }
+      closeMenus();
+    };
+    const closeMenusOnEscape = (event) => {
+      if (event.key === 'Escape') closeMenus();
+    };
+    document.addEventListener('pointerdown', closeMenusFromOutside);
+    document.addEventListener('keydown', closeMenusOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeMenusFromOutside);
+      document.removeEventListener('keydown', closeMenusOnEscape);
+    };
+  }, [openFriendMenuId, openChatMenuKey]);
 
   useEffect(() => {
     const openNewTask = () => setShowNewChat(true);
@@ -144,6 +239,56 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
       return next;
     });
   };
+
+  const togglePinnedHistory = (topicId) => {
+    setPinnedHistoryIds((prev) => {
+      const next = new Set(prev);
+      const key = String(topicId || '').trim();
+      if (!key) return prev;
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      savePinnedHistoryIds(user?.uid, next);
+      return next;
+    });
+  };
+
+  const hideHistoryTask = (topicId) => {
+    setHiddenHistoryIds((prev) => {
+      const key = String(topicId || '').trim();
+      if (!key || prev.has(key)) return prev;
+      justHiddenHistoryRef.current = key;
+      const next = new Set(prev);
+      next.add(key);
+      saveHiddenHistoryIds(user?.uid, next);
+      return next;
+    });
+  };
+
+  const restoreHistoryTask = (topicId) => {
+    setHiddenHistoryIds((prev) => {
+      const key = String(topicId || '').trim();
+      if (!key || !prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      saveHiddenHistoryIds(user?.uid, next);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const key = String(activeTopic || '').trim();
+    if (justHiddenHistoryRef.current && justHiddenHistoryRef.current !== key) {
+      justHiddenHistoryRef.current = '';
+    }
+    if (!key || justHiddenHistoryRef.current === key || !hiddenHistoryIds.has(key)) return;
+    const reopenedTask = chats.some((chat) => (
+      String(chat.id) === key && chat.isBot && !chat.isGroup
+    ));
+    if (reopenedTask) restoreHistoryTask(key);
+  }, [activeTopic, chats, hiddenHistoryIds]);
 
   const loadAgentPendingRequests = async (nextAgents) => {
     const ownedAgents = (nextAgents || []).filter(isOwnedAgent);
@@ -393,11 +538,14 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
     try {
       const res = await api.openAgent(agentId);
       const opened = res.agent || {};
+      const openedTopicId = opened.topic_id || res.topic || fallbackTopicId;
+      const existingConversation = chats.find((chat) => chat.id === openedTopicId);
+      restoreHistoryTask(openedTopicId);
       onSelectTopic({
         ...fallbackTopic,
-        topicId: opened.topic_id || res.topic || fallbackTopicId,
-        name: opened.display_name || fallbackTopic.name,
-        avatar_url: opened.avatar_url || fallbackTopic.avatar_url,
+        topicId: openedTopicId,
+        name: existingConversation?.name || opened.display_name || fallbackTopic.name,
+        avatar_url: existingConversation?.avatar_url || opened.avatar_url || fallbackTopic.avatar_url,
       });
       window.dispatchEvent(new Event('cc:data-changed'));
     } catch (err) {
@@ -437,18 +585,24 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
   const lowerSearch = trimmedSearch.toLowerCase();
   const isSearching = trimmedSearch.length > 0;
   const recentChats = sortConversationsByRecent(chats);
-  const filteredChats = recentChats.filter(c => c.name.toLowerCase().includes(lowerSearch));
+  const visibleRecentChats = recentChats.filter((chat) => (
+    chat.isGroup || !chat.isBot || !hiddenHistoryIds.has(String(chat.id))
+  ));
+  const filteredChats = visibleRecentChats.filter(c => c.name.toLowerCase().includes(lowerSearch));
   const directChats = filteredChats.filter(c => !c.isGroup);
   const mergedGroups = mergeGroupsWithConversations(groups, chats.filter(c => c.isGroup));
   const filteredFriends = friends.filter(f => userSearchText(f).includes(lowerSearch));
   const filteredGroups = mergedGroups.filter(g => g.name.toLowerCase().includes(lowerSearch));
   const filteredAgents = agents.filter(a => userSearchText(a).includes(lowerSearch));
 
-  const aiChats = directChats.filter(c => c.isBot);
+  const aiChats = sortConversationsWithPins(
+    directChats.filter((chat) => chat.isBot && !hiddenHistoryIds.has(String(chat.id))),
+    pinnedHistoryIds,
+  );
   const friendChats = directChats.filter(c => !c.isBot);
   const groupChats = sortGroupsWithPins(filteredGroups, pinnedGroupIds);
   const hasSearchResults = aiChats.length > 0 || friendChats.length > 0 || groupChats.length > 0 || filteredAgents.length > 0;
-  const compactChats = recentChats.slice(0, 12);
+  const compactChats = visibleRecentChats.slice(0, 12);
 
   const selectConversation = (chat) => {
     onSelectTopic({
@@ -459,6 +613,55 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
       avatar_url: chat.avatar_url,
       friendId: chat.friendId,
     });
+  };
+
+  const topicPayloadForChat = (chat, isGroup = Boolean(chat?.isGroup)) => ({
+    topicId: chat?.id,
+    name: chat?.name,
+    isGroup,
+    groupId: chat?.groupId,
+    avatar_url: chat?.avatar_url,
+    friendId: chat?.friendId,
+    isBot: chat?.isBot,
+  });
+
+  const handleOpenMobileLink = (chat, isGroup = Boolean(chat?.isGroup)) => {
+    const payload = topicPayloadForChat(chat, isGroup);
+    setOpenChatMenuKey('');
+    if (onOpenMobileLink) {
+      onOpenMobileLink(payload);
+      return;
+    }
+    if (isGroup) {
+      setMobileLinkGroup({ groupId: chat.groupId, topicId: chat.id, name: chat.name });
+    } else if (chat.friendId) {
+      setMobileLinkAgent({ uid: chat.friendId, display_name: chat.name });
+    }
+  };
+
+  const handleDeleteHistoryTask = async (chat) => {
+    const actionLabel = onDeleteHistoryTask ? '删除任务' : '从列表移除';
+    const confirmation = onDeleteHistoryTask
+      ? `确定删除任务“${chat.name}”吗？`
+      : `确定从历史任务列表移除“${chat.name}”吗？\n\n此操作只影响当前浏览器，不会删除历史消息。`;
+    const confirmed = window.confirm(confirmation);
+    if (!confirmed) return;
+
+    setOpenChatMenuKey('');
+    setDeletingTopicId(chat.id);
+    try {
+      if (onDeleteHistoryTask) {
+        await onDeleteHistoryTask(topicPayloadForChat(chat));
+      }
+      hideHistoryTask(chat.id);
+      if (activeTopic === chat.id) onSelectTopic(null);
+      if (onDeleteHistoryTask) await loadAll();
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (err) {
+      window.alert(err.message || `${actionLabel}失败`);
+    } finally {
+      setDeletingTopicId('');
+    }
   };
 
   return (
@@ -499,7 +702,8 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
         <label className="cc-sidebar-search">
           <Search size={15} />
         <input
-          placeholder="搜索任务"
+          placeholder="搜索"
+          aria-label="搜索会话、联系人或助手"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -531,30 +735,68 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           <div className="cc-sidebar-empty cc-history-empty">点击 + 开始新任务</div>
         ) : (
           aiChats.map((chat) => {
-            const canDelete = chat.isGroup && groupOwnerById.get(String(chat.groupId)) === String(user.uid);
-            const isOnline = onlineStatusFor(onlineUsers, chat.friendId, chat.isOnline);
+            const isPinned = pinnedHistoryIds.has(String(chat.id));
+            const menuKey = `history:${chat.id}`;
+            const removeLabel = onDeleteHistoryTask ? '删除任务' : '从列表移除';
             return (
               <div key={chat.id} className={`v3-chat-item cc-history-item ${activeTopic === chat.id ? 'active' : ''}`}
                 onClick={() => onSelectTopic({ topicId: chat.id, name: chat.name, isGroup: chat.isGroup, groupId: chat.groupId, avatar_url: chat.avatar_url, friendId: chat.friendId })}>
-                <span className="prefix" style={{fontSize: '16px'}}>{chat.isGroup ? '#' : '●'}</span>
-                <div style={{flex: 1, overflow: 'hidden'}}>
+                <span className="prefix cc-chat-row-icon">{chat.isGroup ? '#' : <MessageSquare size={14} />}</span>
+                <div className="cc-chat-row-copy">
                   <span className="v3-chat-item-label">{chat.name}</span>
-                  {chat.preview && <div style={{fontSize: 12, color: '#555', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{chat.preview}</div>}
+                  {chat.preview && <span className="cc-chat-row-preview">{chat.preview}</span>}
                 </div>
-                {chat.time && <span style={{fontSize: 11, color: '#555', flexShrink: 0}}>{chat.time}</span>}
-                {!chat.isGroup && (
-                  <span
-                    className={`v3-status-dot ${isOnline ? 'online' : 'offline'}`}
-                    style={{marginLeft: 4}}
-                    title={isOnline ? 'Online' : 'Offline'}
-                    aria-label={isOnline ? 'Online' : 'Offline'}
-                  />
-                )}
-                {canDelete && (
-                  <button type="button" className="v3-chat-item-delete" disabled={deletingTopicId === chat.id}
-                    onClick={(e) => { e.stopPropagation(); handleDeleteGroup({ groupId: chat.groupId, topicId: chat.id, name: chat.name }); }} title="删除">
-                    <Trash2 size={14} />
-                  </button>
+                <div className="cc-chat-row-trailing">
+                  {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
+                  <div className="cc-chat-row-actions">
+                    <button
+                      type="button"
+                      className="v3-chat-item-action v3-history-menu-trigger"
+                      title="任务操作"
+                      aria-label={`${chat.name} 更多操作`}
+                      aria-haspopup="menu"
+                      aria-expanded={openChatMenuKey === menuKey}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setOpenFriendMenuId('');
+                        setOpenChatMenuKey((current) => current === menuKey ? '' : menuKey);
+                      }}
+                    >
+                      <MoreHorizontal size={15} />
+                    </button>
+                  </div>
+                </div>
+                {openChatMenuKey === menuKey && (
+                  <div className="v3-friend-action-menu cc-chat-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      aria-label={`${isPinned ? '取消置顶历史任务' : '置顶历史任务'} ${chat.name}`}
+                      onClick={() => {
+                        togglePinnedHistory(chat.id);
+                        setOpenChatMenuKey('');
+                      }}
+                    >
+                      <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
+                      <span>{isPinned ? '取消置顶任务' : '置顶任务'}</span>
+                    </button>
+                    <button type="button" role="menuitem" aria-label={`${chat.name} 手机扫码`} onClick={() => handleOpenMobileLink(chat)}>
+                      <Smartphone size={14} />
+                      <span>手机扫码</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="danger"
+                      aria-label={`${removeLabel} ${chat.name}`}
+                      disabled={deletingTopicId === chat.id}
+                      title={removeLabel}
+                      onClick={() => handleDeleteHistoryTask(chat)}
+                    >
+                      <Trash2 size={14} />
+                      <span>{removeLabel}</span>
+                    </button>
+                  </div>
                 )}
               </div>
             );
@@ -571,7 +813,7 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
         {(isSearching || !collapsed.collaboration) && <div className="cc-sidebar-nested">
         {/* 好友 */}
         <div className="v3-chat-section">
-          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('friends')} aria-expanded={!collapsed.friends}><MessageSquare size={15} /><span>好友</span><ChevronRight size={13} /></button>
+          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('friends')} aria-expanded={!collapsed.friends}><UserRound size={15} /><span>好友</span><ChevronRight size={13} /></button>
           <button type="button" className="cc-section-add" onClick={() => setShowAddFriend(true)} title="添加好友" aria-label="添加好友"><Plus size={15} /></button>
         </div>
         {(isSearching || !collapsed.friends) && (friendChats.length === 0 && !isSearching ? (
@@ -588,25 +830,31 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
                   title={isOnline ? 'Online' : 'Offline'}
                   aria-label={isOnline ? 'Online' : 'Offline'}
                 />
-                <div style={{flex: 1, overflow: 'hidden'}}>
+                <div className="cc-chat-row-copy">
                   <span className="v3-chat-item-label">{chat.name}</span>
-                  {chat.preview && <div style={{fontSize: 12, color: '#555', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{chat.preview}</div>}
+                  {chat.preview && <span className="cc-chat-row-preview">{chat.preview}</span>}
                 </div>
-                {chat.time && <span style={{fontSize: 11, color: '#555', flexShrink: 0}}>{chat.time}</span>}
-                <button
-                  type="button"
-                  className="v3-chat-item-action v3-friend-menu-trigger"
-                  title="好友操作"
-                  aria-label={`${chat.name} 更多操作`}
-                  aria-expanded={openFriendMenuId === String(chat.friendId)}
-                  disabled={friendActionId === String(chat.friendId)}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setOpenFriendMenuId((current) => current === String(chat.friendId) ? '' : String(chat.friendId));
-                  }}
-                >
-                  <MoreHorizontal size={15} />
-                </button>
+                <div className="cc-chat-row-trailing">
+                  {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
+                  <div className="cc-chat-row-actions">
+                    <button
+                      type="button"
+                      className="v3-chat-item-action v3-friend-menu-trigger"
+                      title="好友操作"
+                      aria-label={`${chat.name} 更多操作`}
+                      aria-haspopup="menu"
+                      aria-expanded={openFriendMenuId === String(chat.friendId)}
+                      disabled={friendActionId === String(chat.friendId)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setOpenChatMenuKey('');
+                        setOpenFriendMenuId((current) => current === String(chat.friendId) ? '' : String(chat.friendId));
+                      }}
+                    >
+                      <MoreHorizontal size={15} />
+                    </button>
+                  </div>
+                </div>
                 {openFriendMenuId === String(chat.friendId) && (
                   <div className="v3-friend-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
                     <button type="button" role="menuitem" onClick={() => handleFriendAction(chat, 'remove')}>
@@ -635,44 +883,84 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           groupChats.map((chat) => {
             const canDelete = groupOwnerById.get(String(chat.groupId)) === String(user.uid);
             const isPinned = pinnedGroupIds.has(String(chat.id));
+            const menuKey = `group:${chat.id}`;
             return (
               <div key={chat.id} className={`v3-chat-item ${activeTopic === chat.id ? 'active' : ''}`}
                 onClick={() => onSelectTopic({ topicId: chat.id, name: chat.name, isGroup: true, groupId: chat.groupId, avatar_url: chat.avatar_url })}>
-                <span className="prefix" style={{fontSize: '16px'}}>#</span>
-                <div style={{flex: 1, overflow: 'hidden'}}>
+                <span className="prefix cc-chat-row-icon">#</span>
+                <div className="cc-chat-row-copy">
                   <span className="v3-chat-item-label">{chat.name}</span>
-                  {chat.preview && <div style={{fontSize: 12, color: '#555', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{chat.preview}</div>}
+                  {chat.preview && <span className="cc-chat-row-preview">{chat.preview}</span>}
                 </div>
-                {chat.time && <span style={{fontSize: 11, color: '#555', flexShrink: 0}}>{chat.time}</span>}
-                <button
-                  type="button"
-                  className={`v3-chat-item-action ${isPinned ? 'is-pinned' : ''}`}
-                  title={isPinned ? '取消置顶' : '置顶群聊'}
-                  aria-label={`${isPinned ? '取消置顶' : '置顶'} ${chat.name}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    togglePinnedGroup(chat.id);
-                  }}
-                >
-                  <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
-                </button>
-                <button
-                  type="button"
-                  className="v3-chat-item-action"
-                  title="移动端使用"
-                  aria-label={`${chat.name} 移动端使用`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setMobileLinkGroup({ groupId: chat.groupId, topicId: chat.id, name: chat.name });
-                  }}
-                >
-                  <Smartphone size={14} />
-                </button>
-                {canDelete && (
-                  <button type="button" className="v3-chat-item-delete" disabled={deletingTopicId === chat.id}
-                    onClick={(e) => { e.stopPropagation(); handleDeleteGroup({ groupId: chat.groupId, topicId: chat.id, name: chat.name }); }} title="删除">
-                    <Trash2 size={14} />
-                  </button>
+                <div className="cc-chat-row-trailing">
+                  {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
+                  <div className="cc-chat-row-actions">
+                    <button
+                      type="button"
+                      className="v3-chat-item-action v3-group-menu-trigger"
+                      title="群聊操作"
+                      aria-label={`${chat.name} 更多操作`}
+                      aria-haspopup="menu"
+                      aria-expanded={openChatMenuKey === menuKey}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setOpenFriendMenuId('');
+                        setOpenChatMenuKey((current) => current === menuKey ? '' : menuKey);
+                      }}
+                    >
+                      <MoreHorizontal size={15} />
+                    </button>
+                  </div>
+                </div>
+                {openChatMenuKey === menuKey && (
+                  <div className="v3-friend-action-menu cc-chat-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      aria-label={`${isPinned ? '取消置顶' : '置顶'} ${chat.name}`}
+                      onClick={() => {
+                        togglePinnedGroup(chat.id);
+                        setOpenChatMenuKey('');
+                      }}
+                    >
+                      <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
+                      <span>{isPinned ? '取消置顶群聊' : '置顶群聊'}</span>
+                    </button>
+                    <button type="button" role="menuitem" aria-label={`${chat.name} 移动端使用`} onClick={() => handleOpenMobileLink(chat, true)}>
+                      <Smartphone size={14} />
+                      <span>移动端使用</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      aria-label={`${chat.name} 群管理`}
+                      disabled={!onManageGroup}
+                      title={!onManageGroup ? '群管理入口暂未接入' : '群管理'}
+                      onClick={() => {
+                        setOpenChatMenuKey('');
+                        onManageGroup?.(topicPayloadForChat(chat, true));
+                      }}
+                    >
+                      <Users size={14} />
+                      <span>群管理</span>
+                    </button>
+                    {canDelete && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="danger"
+                        aria-label={`删除群聊 ${chat.name}`}
+                        disabled={deletingTopicId === chat.id}
+                        onClick={() => {
+                          setOpenChatMenuKey('');
+                          handleDeleteGroup({ groupId: chat.groupId, topicId: chat.id, name: chat.name });
+                        }}
+                      >
+                        <Trash2 size={14} />
+                        <span>删除群聊</span>
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             );
@@ -732,19 +1020,18 @@ export default function ChatListView({ activeTopic, onSelectTopic, user, onlineU
           filteredAgents.map((agent) => {
             const agentId = agent.uid || agent.id;
             const isOnline = onlineStatusFor(onlineUsers, agentId, agent.is_online);
-            const topicId = agent.topic_id || p2pTopicId(user.uid, agentId);
             const owned = isOwnedAgent(agent);
             return (
               <div
                 key={agentId}
-                className={`v3-chat-item ${activeTopic === topicId ? 'active' : ''}`}
-                style={{opacity: 0.85, cursor: 'pointer'}}
+                className="v3-chat-item cc-agent-roster-item"
+                title={agentIdentity(agent)}
                 onClick={() => handleSelectAgent(agent)}
               >
                 <span className="prefix" style={{display: 'flex', alignItems: 'center'}}><Bot size={18} /></span>
                 <span className="v3-chat-item-main">
                   <span className="v3-chat-item-label">{agent.display_name || agent.username}</span>
-                  <span className="v3-chat-item-identity">{agentIdentity(agent)}</span>
+                  <span className="v3-chat-item-identity">{agentVisibleIdentity(agent)}</span>
                 </span>
                 <div className="v3-agent-row-actions">
                   <button
@@ -978,6 +1265,15 @@ function sortConversationsByRecent(items) {
   return [...items].sort(conversationRecentLess);
 }
 
+function sortConversationsWithPins(items, pinnedTopicIds) {
+  return [...items].sort((left, right) => {
+    const leftPinned = pinnedTopicIds?.has(String(left.id));
+    const rightPinned = pinnedTopicIds?.has(String(right.id));
+    if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
+    return conversationRecentLess(left, right);
+  });
+}
+
 function sortGroupsWithPins(items, pinnedGroupIds) {
   return [...items].sort((left, right) => {
     const leftPinned = pinnedGroupIds?.has(String(left.id));
@@ -1032,6 +1328,11 @@ function agentIdentity(agent) {
   const username = agent?.username ? `@${agent.username}` : '';
   const uid = agent?.uid || agent?.id ? `uid ${agent.uid || agent.id}` : '';
   return [username, uid].filter(Boolean).join(' · ');
+}
+
+function agentVisibleIdentity(agent) {
+  if (agent?.username) return `@${agent.username}`;
+  return agent?.uid || agent?.id ? `uid ${agent.uid || agent.id}` : '';
 }
 
 function userSearchText(user) {
