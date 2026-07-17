@@ -640,7 +640,11 @@ export default function ChatListView({
   };
 
   const handleDeleteHistoryTask = async (chat) => {
-    const confirmed = window.confirm(`确定删除任务“${chat.name}”吗？`);
+    const actionLabel = onDeleteHistoryTask ? '删除任务' : '从列表移除';
+    const confirmation = onDeleteHistoryTask
+      ? `确定删除任务“${chat.name}”吗？`
+      : `确定从历史任务列表移除“${chat.name}”吗？\n\n此操作只影响当前浏览器，不会删除历史消息。`;
+    const confirmed = window.confirm(confirmation);
     if (!confirmed) return;
 
     setOpenChatMenuKey('');
@@ -654,7 +658,7 @@ export default function ChatListView({
       if (onDeleteHistoryTask) await loadAll();
       window.dispatchEvent(new Event('cc:data-changed'));
     } catch (err) {
-      window.alert(err.message || '删除任务失败');
+      window.alert(err.message || `${actionLabel}失败`);
     } finally {
       setDeletingTopicId('');
     }
@@ -733,6 +737,7 @@ export default function ChatListView({
           aiChats.map((chat) => {
             const isPinned = pinnedHistoryIds.has(String(chat.id));
             const menuKey = `history:${chat.id}`;
+            const removeLabel = onDeleteHistoryTask ? '删除任务' : '从列表移除';
             return (
               <div key={chat.id} className={`v3-chat-item cc-history-item ${activeTopic === chat.id ? 'active' : ''}`}
                 onClick={() => onSelectTopic({ topicId: chat.id, name: chat.name, isGroup: chat.isGroup, groupId: chat.groupId, avatar_url: chat.avatar_url, friendId: chat.friendId })}>
@@ -783,13 +788,13 @@ export default function ChatListView({
                       type="button"
                       role="menuitem"
                       className="danger"
-                      aria-label={`删除任务 ${chat.name}`}
+                      aria-label={`${removeLabel} ${chat.name}`}
                       disabled={deletingTopicId === chat.id}
-                      title="删除任务"
+                      title={removeLabel}
                       onClick={() => handleDeleteHistoryTask(chat)}
                     >
                       <Trash2 size={14} />
-                      <span>删除任务</span>
+                      <span>{removeLabel}</span>
                     </button>
                   </div>
                 )}

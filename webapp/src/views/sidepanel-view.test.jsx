@@ -373,7 +373,7 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(container.querySelector('[aria-label="Local History Task 更多操作"]'));
     });
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="删除任务 Local History Task"]'));
+      Simulate.click(container.querySelector('[aria-label="从列表移除 Local History Task"]'));
       await Promise.resolve();
     });
 

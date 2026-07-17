@@ -895,7 +895,7 @@ function handleUpgrade(req, socket) {
         sendWS(socket, { ctrl: { id: msg.pub.id, code: 200, text: 'ok', params: { seq: Date.now() } } });
         const stored = storeMessage(String(msg.pub.topic || ''), {
           from_uid: bot?.id || 0,
-          from: bot?.id || 0,
+          from: `usr${bot?.id || 0}`,
           content: msg.pub.content ?? '',
           content_blocks: msg.pub.content_blocks,
           type: msg.pub.type || 'text',
@@ -907,7 +907,6 @@ function handleUpgrade(req, socket) {
         broadcastToTopicOwner(String(msg.pub.topic || ''), {
           data: {
             ...stored,
-            from: bot?.id || 0,
           },
         });
       }
