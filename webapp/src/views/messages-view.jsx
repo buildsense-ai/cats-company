@@ -82,6 +82,8 @@ export default function MessagesView({
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [isStopRequested, setIsStopRequested] = useState(false);
+  const [suppressedWorkingKey, setSuppressedWorkingKey] = useState('');
+  const [liveWorkingKey, setLiveWorkingKey] = useState('');
   const [attachmentStatus, setAttachmentStatus] = useState(null);
   const [phoneUploadDialogOpen, setPhoneUploadDialogOpen] = useState(false);
   const [phoneUploadSession, setPhoneUploadSession] = useState(null);
@@ -102,6 +104,7 @@ export default function MessagesView({
   const bottomRef = useRef(null);
   const lastTypingSent = useRef(0);
   const peerTypingTimer = useRef(null);
+  const liveWorkingTimer = useRef(null);
   const timelineRef = useRef(null);
   const previousScrollRef = useRef(null);
   const stickToBottomRef = useRef(true);
@@ -295,6 +298,9 @@ export default function MessagesView({
     if (runtimePlanClearTimer.current) {
       clearTimeout(runtimePlanClearTimer.current);
     }
+    if (liveWorkingTimer.current) {
+      clearTimeout(liveWorkingTimer.current);
+    }
   }, []);
 
   // Load message history and group members when topic changes
@@ -326,6 +332,12 @@ export default function MessagesView({
     setHasMoreHistory(false);
     setLoadingOlder(false);
     setIsStopRequested(false);
+    setSuppressedWorkingKey('');
+    setLiveWorkingKey('');
+    if (liveWorkingTimer.current) {
+      clearTimeout(liveWorkingTimer.current);
+      liveWorkingTimer.current = null;
+    }
     setAttachmentStatus(null);
     setAttachmentMenuOpen(false);
     setAgentPickerOpen(false);
@@ -398,6 +410,22 @@ export default function MessagesView({
     }
   };
 
+  const markLiveWorking = useCallback((message) => {
+    const key = workingMessageKey(message);
+    setLiveWorkingKey(key);
+    if (liveWorkingTimer.current) clearTimeout(liveWorkingTimer.current);
+    liveWorkingTimer.current = setTimeout(() => {
+      liveWorkingTimer.current = null;
+      setLiveWorkingKey('');
+    }, TYPING_TIMEOUT_MS);
+  }, []);
+
+  const clearLiveWorking = useCallback(() => {
+    if (liveWorkingTimer.current) clearTimeout(liveWorkingTimer.current);
+    liveWorkingTimer.current = null;
+    setLiveWorkingKey('');
+  }, []);
+
   // Listen for incoming WebSocket messages
   useEffect(() => {
     const unsub = onWSMessage((msg) => {
@@ -409,6 +437,9 @@ export default function MessagesView({
             setMessages((prev) => prev.filter((message) => message._stream_id !== streamId));
           }
           clearRuntimePlan();
+          clearLiveWorking();
+          clearTimeout(peerTypingTimer.current);
+          setPeerTyping(false);
           return;
         }
 
@@ -454,6 +485,7 @@ export default function MessagesView({
           reply_to: msg.data.reply_to || 0,
           created_at: new Date().toISOString(),
         });
+        if (isWorkingMessage(serverMsg)) markLiveWorking(serverMsg);
 
         setMessages((prev) => {
           const streamId = getStreamId(serverMsg);
@@ -485,6 +517,7 @@ export default function MessagesView({
           clearRuntimePlan();
         } else if (fromUid !== user.uid && isFinalTextMessage(serverMsg)) {
           clearRuntimePlan();
+          clearLiveWorking();
           clearTimeout(peerTypingTimer.current);
           setPeerTyping(false);
         }
@@ -513,7 +546,7 @@ export default function MessagesView({
     });
 
     return () => unsub();
-  }, [topic, user.uid]);
+  }, [clearLiveWorking, markLiveWorking, topic, user.uid]);
 
   // Auto-scroll to bottom or restore scroll anchor depending on state
   React.useLayoutEffect(() => {
@@ -588,7 +621,7 @@ export default function MessagesView({
     }
   }, [messages.length, hasMoreHistory, loadingOlder, loadOlderHistory]);
 
-  const activeBotWorking = useMemo(() => {
+  const workingState = useMemo(() => {
     let lastWorkingIndex = -1;
     let lastBotTextIndex = -1;
 
@@ -604,8 +637,15 @@ export default function MessagesView({
       }
     });
 
-    return lastWorkingIndex > lastBotTextIndex;
+    const active = lastWorkingIndex > lastBotTextIndex;
+    return {
+      active,
+      key: active ? workingMessageKey(messages[lastWorkingIndex], lastWorkingIndex) : '',
+    };
   }, [messages, user.uid]);
+  const activeBotWorking = workingState.active
+    && (peerTyping || workingState.key === liveWorkingKey)
+    && workingState.key !== suppressedWorkingKey;
 
   useEffect(() => {
     if (!activeBotWorking) {
@@ -832,10 +872,16 @@ export default function MessagesView({
     setIsStopRequested(true);
     try {
       await wsSendStreamCancel(topic);
+      setSuppressedWorkingKey(workingState.key);
+      clearRuntimePlan();
+      clearLiveWorking();
+      clearTimeout(peerTypingTimer.current);
+      setPeerTyping(false);
+      setIsStopRequested(false);
     } catch (err) {
       setIsStopRequested(false);
     }
-  }, [activeBotWorking, isStopRequested, topic]);
+  }, [activeBotWorking, clearLiveWorking, clearRuntimePlan, isStopRequested, topic, workingState.key]);
 
   const handleKeyDown = (e) => {
     if (
@@ -1369,12 +1415,12 @@ export default function MessagesView({
         textareaRef={textareaRef}
         value={input}
         placeholder="输入指令，我帮您完成"
-        disabled={activeBotWorking || isSendingMessage}
+        disabled={isSendingMessage}
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
         attachmentOpen={attachmentMenuOpen}
-        attachmentDisabled={isUploadingAttachment || activeBotWorking || isSendingMessage}
+        attachmentDisabled={isUploadingAttachment || isSendingMessage}
         onAttachmentToggle={() => {
           setAgentPickerOpen(false);
           setAttachmentMenuOpen((open) => !open);
@@ -1411,10 +1457,11 @@ export default function MessagesView({
             })}
           </div>
         )}
-        onSend={activeBotWorking ? handleStopGeneration : handleSend}
+        onSend={handleSend}
         sendDisabled={isSendingMessage || isUploadingAttachment || (!input.trim() && pendingAttachments.length === 0)}
-        stop={activeBotWorking}
+        stop={activeBotWorking && !input.trim() && pendingAttachments.length === 0}
         stopDisabled={isStopRequested}
+        onStop={handleStopGeneration}
         onCloseMenus={() => {
           setAttachmentMenuOpen(false);
           setAgentPickerOpen(false);
@@ -1928,6 +1975,15 @@ function isWorkingMessage(message) {
   return Boolean(inferWorkingTypeFromBlocks(message?.content_blocks));
 }
 
+function workingMessageKey(message) {
+  return [
+    message?.id ?? message?.seq_id ?? message?.seq ?? message?._stream_id ?? '',
+    message?.type || message?.msg_type || '',
+    message?.created_at || '',
+    getComparableContent(message?.content),
+  ].join(':');
+}
+
 function isWorkingTextMessage(message) {
   const type = message?.type || message?.msg_type || '';
   if (type !== 'text') return false;
@@ -1938,10 +1994,11 @@ function isWorkingTextMessage(message) {
 // Parse "usr123" -> 123
 function parseUid(uidStr) {
   if (!uidStr) return 0;
-  if (uidStr.startsWith('usr')) {
-    return parseInt(uidStr.slice(3), 10) || 0;
+  const normalized = String(uidStr);
+  if (normalized.startsWith('usr')) {
+    return parseInt(normalized.slice(3), 10) || 0;
   }
-  return parseInt(uidStr, 10) || 0;
+  return parseInt(normalized, 10) || 0;
 }
 
 function mergeMessages(primary, secondary) {

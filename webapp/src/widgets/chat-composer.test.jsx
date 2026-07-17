@@ -55,6 +55,28 @@ describe('ChatComposer', () => {
     expect(box.contains(hint)).toBe(false);
   });
 
+  it('uses the same action slot for stop while working and send after input', async () => {
+    const onSend = vi.fn();
+    const onStop = vi.fn();
+    await renderComposer({ value: '', stop: true, onSend, onStop });
+
+    const stopButton = container.querySelector('button[aria-label="停止当前工作"]');
+    expect(stopButton).not.toBeNull();
+
+    await act(async () => {
+      stopButton.click();
+    });
+    expect(onStop).toHaveBeenCalledTimes(1);
+
+    await renderComposer({ value: '追加消息', stop: false, onSend, onStop });
+    const sendButton = container.querySelector('button[aria-label="发送"]');
+    expect(sendButton).not.toBeNull();
+    await act(async () => {
+      sendButton.click();
+    });
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ['attachment', { attachmentOpen: true, attachmentMenu: <div className="test-menu">附件菜单</div> }],
     ['Agent', { agentOpen: true, agentMenu: <div className="test-menu">Agent 菜单</div> }],
