@@ -65,7 +65,7 @@ vi.mock('../api', () => ({
 
 import MessagesView from './messages-view';
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
-import { api, onWSMessage } from '../api';
+import { api, onWSMessage, wsSendStreamCancel } from '../api';
 
 const user = {
   uid: 1,
@@ -345,6 +345,109 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(api.sendMessage).not.toHaveBeenCalled();
     expect(textarea.value).toBe('正在输入中文');
+  });
+
+  it('keeps the composer usable and sends a follow-up while the agent is working', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 40, from_uid: 1, type: 'text', content: '先分析一下', created_at: '2026-07-17T01:00:00Z' },
+        { id: 41, from_uid: 2, type: 'thinking', content: '正在分析', created_at: '2026-07-17T01:00:01Z' },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      wsHandler({ info: { topic: 'p2p_1_2', what: 'kp', from: 'usr2' } });
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    expect(textarea.disabled).toBe(false);
+    expect(container.querySelector('button[aria-label="停止当前工作"]')).not.toBeNull();
+
+    await act(async () => {
+      typeDraft(textarea, '再补充一个条件');
+    });
+    expect(container.querySelector('button[aria-label="停止当前工作"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="发送"]')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '再补充一个条件', undefined);
+    expect(container.querySelector('button[aria-label="停止当前工作"]')).not.toBeNull();
+  });
+
+  it('returns the composer to send mode after a stop request is delivered', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 50, from_uid: 1, type: 'text', content: '执行长任务', created_at: '2026-07-17T02:00:00Z' },
+        { id: 51, from_uid: 2, type: 'tool_use', content: '执行工具', created_at: '2026-07-17T02:00:01Z' },
+      ],
+    });
+    wsSendStreamCancel.mockResolvedValueOnce(1);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      wsHandler({ info: { topic: 'p2p_1_2', what: 'kp', from: 'usr2' } });
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="停止当前工作"]'));
+      await flushPromises();
+    });
+
+    expect(wsSendStreamCancel).toHaveBeenCalledWith('p2p_1_2');
+    expect(container.querySelector('button[aria-label="停止当前工作"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="发送"]')).not.toBeNull();
+    expect(container.querySelector('textarea.v3-composer-input').disabled).toBe(false);
+  });
+
+  it('keeps the stop action available when cancel delivery fails', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 60, from_uid: 1, type: 'text', content: '执行长任务', created_at: '2026-07-17T03:00:00Z' },
+        { id: 61, from_uid: 2, type: 'thinking', content: '处理中', created_at: '2026-07-17T03:00:01Z' },
+      ],
+    });
+    wsSendStreamCancel.mockRejectedValueOnce(new Error('socket closed'));
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      wsHandler({ info: { topic: 'p2p_1_2', what: 'kp', from: 'usr2' } });
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="停止当前工作"]'));
+      await flushPromises();
+    });
+
+    const stopButton = container.querySelector('button[aria-label="停止当前工作"]');
+    expect(stopButton).not.toBeNull();
+    expect(stopButton.disabled).toBe(false);
+  });
+
+  it('drops a stale stop state after the bot activity heartbeat expires', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 70, from_uid: 1, type: 'text', content: '执行长任务', created_at: '2026-07-17T04:00:00Z' },
+        { id: 71, from_uid: 2, type: 'tool_use', content: '处理中', created_at: '2026-07-17T04:00:01Z' },
+      ],
+    });
+    await mountTopic(root, 'p2p_1_2');
+    vi.useFakeTimers();
+
+    await act(async () => {
+      wsHandler({ info: { topic: 'p2p_1_2', what: 'kp', from: 'usr2' } });
+    });
+    expect(container.querySelector('button[aria-label="停止当前工作"]')).not.toBeNull();
+
+    await act(async () => {
+      vi.advanceTimersByTime(10_001);
+    });
+    expect(container.querySelector('button[aria-label="停止当前工作"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="发送"]')).not.toBeNull();
   });
 
   it('lets the file preview panel width be adjusted and persisted', async () => {

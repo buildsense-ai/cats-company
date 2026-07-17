@@ -77,6 +77,39 @@ func TestSendToUserExceptAndSendToClient(t *testing.T) {
 	}
 }
 
+func TestP2PStreamCancelFansOutToPeerWithoutEchoingToSenderConnection(t *testing.T) {
+	hub := NewHub(nil, nil)
+	sender := &Client{uid: 7, send: make(chan []byte, 1)}
+	senderSibling := &Client{uid: 7, send: make(chan []byte, 1)}
+	bot := &Client{uid: 42, send: make(chan []byte, 1)}
+	hub.addClient(sender)
+	hub.addClient(senderSibling)
+	hub.addClient(bot)
+
+	hub.fanoutStreamEvent(7, "p2p_7_42", "stream_cancel", "", map[string]interface{}{
+		"stream_id": "cancel-1",
+		"control":   "interrupt",
+	}, sender)
+
+	if drainOne(sender.send) {
+		t.Fatal("the originating connection must receive only its pub ack, not a duplicate cancel event")
+	}
+
+	for name, messages := range map[string]<-chan []byte{
+		"sender sibling": senderSibling.send,
+		"bot peer":       bot.send,
+	} {
+		var received ServerMessage
+		decodeQueuedServerMessage(t, messages, &received)
+		if received.Data == nil || received.Data.Type != "stream_cancel" {
+			t.Fatalf("%s received %#v, want stream_cancel data", name, received.Data)
+		}
+		if received.Data.Metadata["stream_event"] != "cancel" || received.Data.Metadata["control"] != "interrupt" {
+			t.Fatalf("%s cancel metadata = %#v", name, received.Data.Metadata)
+		}
+	}
+}
+
 func TestDeviceConnectorConnectionsDoNotReceiveUserMessagesOrSetPresence(t *testing.T) {
 	hub := NewHub(nil, nil)
 	connector := &Client{

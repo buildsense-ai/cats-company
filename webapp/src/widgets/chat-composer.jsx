@@ -25,6 +25,7 @@ export default function ChatComposer({
   sendDisabled = false,
   stop = false,
   stopDisabled = false,
+  onStop,
   onCloseMenus,
   notices,
   overlay,
@@ -112,7 +113,7 @@ export default function ChatComposer({
           <button
             className={`v3-send${stop ? ' stop' : ''}`}
             disabled={stop ? stopDisabled : sendDisabled}
-            onClick={onSend}
+            onClick={stop ? onStop : onSend}
             aria-label={stop ? '停止当前工作' : '发送'}
             title={stop ? '停止当前工作' : '发送'}
             type="button"
