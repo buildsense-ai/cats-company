@@ -52,6 +52,8 @@ jobs:
           cp deploy/prod/remote-deploy.sh "${tmpdir}/compose/"
           cp deploy/prod/remote-rollback.sh "${tmpdir}/compose/"
           cp deploy/prod/remote-status.sh "${tmpdir}/compose/"
+          cp deploy/prod/ensure-image-timeout-nginx.sh "${tmpdir}/compose/"
+          cp deploy/prod/update-nginx-v1-timeout.py "${tmpdir}/compose/"
           cp deploy/prod/docker-compose.yml "${tmpdir}/compose/"
           cp deploy/prod/tinode.prod.conf "${tmpdir}/compose/"
           cp deploy/prod/env.prod.example "${tmpdir}/env/"
@@ -76,11 +78,12 @@ jobs:
           root="${PROD_STACK_ROOT}"
           revision="${IMAGE_TAG}"
           owner="${GHCR_OWNER}"
-          chmod +x "$root/compose/bootstrap-server.sh" "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh"
+          chmod +x "$root/compose/bootstrap-server.sh" "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh" "$root/compose/ensure-image-timeout-nginx.sh"
           "$root/compose/bootstrap-server.sh" "$root"
           "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
           export SKIP_IMAGE_PULL=1
           "$root/compose/remote-deploy.sh" "$root" "$revision"
+          "$root/compose/ensure-image-timeout-nginx.sh" /etc/nginx/sites-available/catscompany-app 580
           "$root/compose/remote-status.sh" "$root"
           EOF
 
