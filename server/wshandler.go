@@ -1100,6 +1100,11 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 		return
 	}
 
+	if isTaskStatusPayload(payload) {
+		h.handleTaskStatusPub(client, msg, topic, payload)
+		return
+	}
+
 	result, err := saveNormalizedMessage(h.db, topic, uid, msg.ReplyTo, payload)
 	if err != nil {
 		log.Printf("save message error: %v", err)
@@ -1316,6 +1321,11 @@ func (h *Hub) handleGroupPub(client *Client, msg *MsgClientPub, topic string, pa
 			},
 		})
 		h.fanoutNormalizedMessage(uid, topic, msg.ReplyTo, payload, 0, client)
+		return
+	}
+
+	if isTaskStatusPayload(payload) {
+		h.handleTaskStatusPub(client, msg, topic, payload)
 		return
 	}
 

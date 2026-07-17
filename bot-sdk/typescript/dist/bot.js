@@ -118,6 +118,27 @@ class CatsBot {
         };
         return this.sendWithAck(id, pub);
     }
+    /**
+     * Publish a backend-trusted task status update for a topic.
+     * Task status updates are not stored as chat messages.
+     */
+    async sendTaskStatus(topic, status) {
+        const id = this.nextId();
+        const pub = {
+            pub: {
+                id,
+                topic,
+                type: 'task_status',
+                content: status,
+            },
+        };
+        const ctrl = await this.sendWithCtrlAck(id, pub);
+        const taskStatus = taskStatusFromCtrl(ctrl);
+        if (!taskStatus) {
+            throw new errors_1.ProtocolError(500, 'task_status ack missing status payload');
+        }
+        return taskStatus;
+    }
     /** Send an image message (from an UploadResult). */
     sendImage(topic, upload, opts) {
         const content = {
@@ -489,6 +510,9 @@ class CatsBot {
             const ctx = new context_1.MessageContext(this, msg.data);
             this.emit('message', ctx);
         }
+        if (msg.task_status) {
+            this.emit('task_status', msg.task_status);
+        }
         if (msg.device_rpc) {
             this.emit('device_rpc', msg.device_rpc);
         }
@@ -626,5 +650,13 @@ function deviceRPCAckParams(ctrl) {
         return ctrl.params;
     }
     return {};
+}
+function taskStatusFromCtrl(ctrl) {
+    const params = ctrl.params || {};
+    const status = params.task_status;
+    if (status && typeof status === 'object') {
+        return status;
+    }
+    return null;
 }
 //# sourceMappingURL=bot.js.map

@@ -444,6 +444,13 @@ describe('ChatListView sidebar sections', () => {
         is_bot: true,
         project_id: 12,
         project_name: 'Website Launch',
+        task_status: {
+          topic_id: 'p2p_7_42',
+          run_id: 'run-1',
+          state: 'running',
+          summary: '正在整理资料',
+          updated_at: '2026-07-17T03:00:00Z',
+        },
       }],
     });
     api.getProjects.mockResolvedValue({
@@ -459,11 +466,40 @@ describe('ChatListView sidebar sections', () => {
 
     const task = container.querySelector('[aria-label="打开项目任务 Project Task"]');
     expect(task).toBeTruthy();
+    expect(task.textContent).toContain('进行中');
+    expect(task.textContent).toContain('正在整理资料');
     await act(async () => {
       Simulate.click(task);
     });
 
     expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'p2p_7_42', name: 'Project Task' }));
+  });
+
+  it('does not keep showing an expired running task status', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_42',
+        friend_id: 42,
+        name: 'Expired Task',
+        preview: '最后一条消息',
+        is_group: false,
+        is_bot: true,
+        task_status: {
+          topic_id: 'p2p_7_42',
+          state: 'running',
+          summary: '不应继续显示',
+          updated_at: '2020-01-01T00:00:00Z',
+          expires_at: '2020-01-01T06:00:00Z',
+        },
+      }],
+    });
+
+    await mount();
+
+    const task = container.querySelector('.cc-history-item');
+    expect(task.textContent).toContain('最后一条消息');
+    expect(task.textContent).not.toContain('进行中');
+    expect(task.textContent).not.toContain('不应继续显示');
   });
 
   it('finds an assigned task through search and expands its project', async () => {

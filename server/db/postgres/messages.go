@@ -248,9 +248,7 @@ func (a *Adapter) GetLatestMessagesForTopics(topicIDs []string) (map[string]*typ
 			 	FROM messages
 			 	WHERE topic_id IN (%s)
 			 	GROUP BY topic_id
-			 ) latest ON latest.max_id = m.id
-			 WHERE m.topic_id IN (%s)`,
-			placeholders,
+			 ) latest ON latest.max_id = m.id`,
 			placeholders,
 		),
 		args...,

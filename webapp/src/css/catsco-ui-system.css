@@ -825,6 +825,36 @@ select:disabled {
   font-size: 12px;
 }
 
+.cc-task-status-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--cc-text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.cc-task-status-pill {
+  display: inline-flex;
+  height: 18px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 18px;
+}
+
+.cc-task-status-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cc-project-item {
   width: 100%;
   border: 0;
@@ -853,6 +883,60 @@ select:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.cc-task-status-line.running .cc-task-status-pill {
+  color: #08795f;
+  background: #d9f4eb;
+}
+
+.cc-task-status-line.running .cc-task-status-pill svg {
+  animation: catsco-spin 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-task-status-line.running .cc-task-status-pill svg {
+    animation: none;
+  }
+}
+
+.cc-task-status-line.completed .cc-task-status-pill {
+  color: #1769aa;
+  background: #dceefd;
+}
+
+.cc-task-status-line.failed .cc-task-status-pill {
+  color: #b53737;
+  background: #ffe5e5;
+}
+
+.cc-task-status-line.cancelled .cc-task-status-pill,
+.cc-task-status-line.stale .cc-task-status-pill,
+.cc-task-status-line.waiting .cc-task-status-pill {
+  color: #956211;
+  background: #fff1d5;
+}
+
+html[data-theme="dark"] .cc-task-status-line.running .cc-task-status-pill {
+  color: #69d4b5;
+  background: rgba(38, 167, 126, 0.2);
+}
+
+html[data-theme="dark"] .cc-task-status-line.completed .cc-task-status-pill {
+  color: #83c7f6;
+  background: rgba(68, 137, 201, 0.22);
+}
+
+html[data-theme="dark"] .cc-task-status-line.failed .cc-task-status-pill {
+  color: #ffaaaa;
+  background: rgba(211, 72, 72, 0.2);
+}
+
+html[data-theme="dark"] .cc-task-status-line.cancelled .cc-task-status-pill,
+html[data-theme="dark"] .cc-task-status-line.stale .cc-task-status-pill,
+html[data-theme="dark"] .cc-task-status-line.waiting .cc-task-status-pill {
+  color: #f2c16c;
+  background: rgba(187, 125, 27, 0.22);
 }
 
 .cc-project-task-empty {

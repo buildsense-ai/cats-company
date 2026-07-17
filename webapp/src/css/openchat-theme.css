@@ -1205,6 +1205,16 @@ body {
   flex: none;
 }
 
+.v3-chat-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 16px;
+  color: #555;
+}
+
 .v3-chat-item-identity {
   color: var(--v3-text-muted);
   font-size: 11px;
