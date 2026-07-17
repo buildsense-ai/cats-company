@@ -11,6 +11,12 @@ root as `/srv/catscompany-prod` so the existing GitHub Actions deployment
 workflow can continue to upload compose, env, and release files to the expected
 location.
 
+The production deploy also reconciles only `proxy_read_timeout` and
+`proxy_send_timeout` inside the TLS `app.catsco.cc` `/v1/` location. It does not
+replace the host site file, so unrelated host-only routes remain intact. The
+update keeps a `.catsco-image-timeout.bak` copy, runs `nginx -t`, and restores
+the previous config if validation or reload fails.
+
 Default ports bind to `127.0.0.1` and should be published through the host nginx
 instead of exposed directly to the internet:
 
