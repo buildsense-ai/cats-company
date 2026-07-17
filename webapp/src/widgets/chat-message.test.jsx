@@ -741,6 +741,36 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-message-action-menu')).toBeNull();
   });
 
+  it('shows a direct edit action for the current user message', async () => {
+    const onEdit = vi.fn();
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 26,
+            from_uid: 1,
+            content: 'Edit this instruction',
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf
+          isGroup={false}
+          senderName="Me"
+          onEdit={onEdit}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[aria-label="更多操作"]')).toBeNull();
+    const editButton = container.querySelector('[aria-label="编辑并重新发送"]');
+    expect(editButton).not.toBeNull();
+    await act(async () => {
+      Simulate.click(editButton);
+      await Promise.resolve();
+    });
+    expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 26 }));
+  });
+
   it('renders update_plan working tools as a plan card fallback', async () => {
     await act(async () => {
       root.render(

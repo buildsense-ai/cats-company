@@ -21,6 +21,7 @@ func (a *Adapter) CreateSchema() error {
 		createRateLimitTable,
 		createGroupsTable,
 		createGroupMembersTable,
+		createGroupInviteRequestsTable,
 		createFeedbackReportsTable,
 		createAuthServicesTable,
 		createCommercialPlansTable,
@@ -294,6 +295,22 @@ CREATE TABLE IF NOT EXISTS group_members (
     joined_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uk_group_user UNIQUE (group_id, user_id)
 );
+`
+
+const createGroupInviteRequestsTable = `
+CREATE TABLE IF NOT EXISTS group_invite_requests (
+    id BIGSERIAL PRIMARY KEY,
+    group_id BIGINT NOT NULL REFERENCES "groups"(id) ON DELETE CASCADE,
+    inviter_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    invitee_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    resolver_id BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_group_invite_request UNIQUE (group_id, invitee_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_invite_requests_pending
+    ON group_invite_requests (group_id, status, created_at);
 `
 
 const createFeedbackReportsTable = `

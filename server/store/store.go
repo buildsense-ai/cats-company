@@ -11,7 +11,9 @@ var ErrChannelAgentBindingAlreadyLinked = errors.New("channel agent binding alre
 var ErrChannelAgentAccessAlreadyLinked = errors.New("channel agent access request already linked")
 var ErrChannelNativeGroupEventBusy = errors.New("channel native group event is already being processed")
 var ErrProjectNameConflict = errors.New("project name already exists")
+var ErrProjectNotFound = errors.New("project not found")
 var ErrProjectTopicNotFound = errors.New("project or topic not found")
+var ErrGroupInviteRequestNotPending = errors.New("group invite request is not pending")
 
 // UserStore contains user and profile persistence operations.
 type UserStore interface {
@@ -64,6 +66,16 @@ type GroupStore interface {
 	IsUserBot(userID int64) (bool, error)
 }
 
+// GroupInviteRequestStore persists member-proposed group invitations. It is
+// optional so focused test stores and non-SQL adapters do not need to provide it.
+type GroupInviteRequestStore interface {
+	CreateGroupInviteRequest(groupID, inviterID, inviteeID int64) (*types.GroupInviteRequest, error)
+	GetGroupInviteRequest(requestID int64) (*types.GroupInviteRequest, error)
+	ListPendingGroupInviteRequests(groupID int64) ([]*types.GroupInviteRequest, error)
+	ApproveGroupInviteRequest(requestID, resolverID int64) (*types.GroupInviteRequest, error)
+	RejectGroupInviteRequest(requestID, resolverID int64) (*types.GroupInviteRequest, error)
+}
+
 // MessageStore contains topic and message persistence operations.
 type MessageStore interface {
 	CreateTopic(id, topicType string, ownerID int64) error
@@ -88,6 +100,8 @@ type ConversationTaskStatusStore interface {
 type ProjectStore interface {
 	CreateProject(ownerUID int64, name string) (*types.Project, error)
 	ListProjects(ownerUID int64) ([]*types.Project, error)
+	RenameProject(ownerUID, projectID int64, name string) error
+	DeleteProject(ownerUID, projectID int64) error
 	AssignTopicToProject(ownerUID, projectID int64, topicID string) error
 	RemoveTopicFromProject(ownerUID int64, topicID string) error
 	ListProjectTopics(ownerUID int64) ([]*types.ProjectTopic, error)

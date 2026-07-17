@@ -202,6 +202,7 @@ export default function ChatListView({
   const [hiddenHistoryIds, setHiddenHistoryIds] = useState(() => loadHiddenHistoryIds(user?.uid));
   const [openFriendMenuId, setOpenFriendMenuId] = useState('');
   const [openChatMenuKey, setOpenChatMenuKey] = useState('');
+  const [openProjectMenuId, setOpenProjectMenuId] = useState(null);
   const [friendActionId, setFriendActionId] = useState('');
   const [dismissedTaskStatuses, setDismissedTaskStatuses] = useState(() => loadDismissedTaskStatuses(user?.uid));
   const [projectPickerTask, setProjectPickerTask] = useState(null);
@@ -209,6 +210,9 @@ export default function ChatListView({
   const [newProjectName, setNewProjectName] = useState('');
   const [projectActionTopicId, setProjectActionTopicId] = useState('');
   const [expandedProjectId, setExpandedProjectId] = useState(null);
+  const [editingProject, setEditingProject] = useState(null);
+  const [projectNameDraft, setProjectNameDraft] = useState('');
+  const [projectActionId, setProjectActionId] = useState(null);
   const [editingHistoryTopicId, setEditingHistoryTopicId] = useState('');
   const [historyNameDraft, setHistoryNameDraft] = useState('');
   const [renamingTopicId, setRenamingTopicId] = useState('');
@@ -253,10 +257,11 @@ export default function ChatListView({
   }, [activeTopic, chats]);
 
   useEffect(() => {
-    if (!openFriendMenuId && !openChatMenuKey) return undefined;
+    if (!openFriendMenuId && !openChatMenuKey && !openProjectMenuId) return undefined;
     const closeMenus = () => {
       setOpenFriendMenuId('');
       setOpenChatMenuKey('');
+      setOpenProjectMenuId(null);
     };
     const closeMenusFromOutside = (event) => {
       const target = event.target;
@@ -265,6 +270,8 @@ export default function ChatListView({
         '.v3-friend-menu-trigger',
         '.v3-group-menu-trigger',
         '.v3-history-menu-trigger',
+        '.cc-project-action-menu',
+        '.cc-project-menu-trigger',
       ].join(','))) {
         return;
       }
@@ -279,7 +286,7 @@ export default function ChatListView({
       document.removeEventListener('pointerdown', closeMenusFromOutside);
       document.removeEventListener('keydown', closeMenusOnEscape);
     };
-  }, [openFriendMenuId, openChatMenuKey]);
+  }, [openFriendMenuId, openChatMenuKey, openProjectMenuId]);
 
   useEffect(() => {
     const openNewTask = () => setShowNewChat(true);
@@ -815,6 +822,55 @@ export default function ChatListView({
       window.alert(err.message || '创建项目失败');
     } finally {
       setProjectActionTopicId('');
+    }
+  };
+
+  const openProjectRename = (project) => {
+    setOpenProjectMenuId(null);
+    setEditingProject(project);
+    setProjectNameDraft(String(project?.name || ''));
+  };
+
+  const closeProjectRename = () => {
+    if (projectActionId) return;
+    setEditingProject(null);
+    setProjectNameDraft('');
+  };
+
+  const handleRenameProject = async () => {
+    const projectId = Number(editingProject?.id);
+    const name = projectNameDraft.trim();
+    if (!projectId || !name) return;
+    setProjectActionId(projectId);
+    try {
+      await api.renameProject(projectId, name);
+      await loadAll();
+      setEditingProject(null);
+      setProjectNameDraft('');
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (err) {
+      window.alert(err.message || '更改项目名称失败');
+    } finally {
+      setProjectActionId(null);
+    }
+  };
+
+  const handleDeleteProject = async (project) => {
+    const projectId = Number(project?.id);
+    if (!projectId) return;
+    setOpenProjectMenuId(null);
+    const confirmed = window.confirm(`确定删除项目“${project.name}”吗？\n\n项目中的历史对话会保留，并回到历史任务列表。`);
+    if (!confirmed) return;
+    setProjectActionId(projectId);
+    try {
+      await api.deleteProject(projectId);
+      if (expandedProjectId === projectId) setExpandedProjectId(null);
+      await loadAll();
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (err) {
+      window.alert(err.message || '删除项目失败');
+    } finally {
+      setProjectActionId(null);
     }
   };
 
@@ -1394,21 +1450,52 @@ export default function ChatListView({
             const expanded = isSearching ? projectTasks.length > 0 : expandedProjectId === projectId;
             return (
               <React.Fragment key={project.id}>
-                <button
-                  type="button"
-                  className="v3-chat-item cc-project-item"
-                  aria-label={`${expanded ? '收起项目' : '打开项目'} ${project.name}`}
-                  aria-expanded={expanded}
-                  onClick={() => setExpandedProjectId(expanded ? null : projectId)}
-                >
-                  {expanded
-                    ? <FolderOpen size={14} className="prefix cc-chat-row-icon" />
-                    : <Folder size={14} className="prefix cc-chat-row-icon" />}
-                  <div className="cc-chat-row-copy">
-                    <span className="v3-chat-item-label">{project.name}</span>
-                  </div>
-                  <span className="cc-project-count" aria-label={`${project.task_count || 0} 个任务`}>{project.task_count || 0}</span>
-                </button>
+                <div className="cc-project-row">
+                  <button
+                    type="button"
+                    className="v3-chat-item cc-project-item"
+                    aria-label={`${expanded ? '收起项目' : '打开项目'} ${project.name}`}
+                    aria-expanded={expanded}
+                    onClick={() => setExpandedProjectId(expanded ? null : projectId)}
+                  >
+                    {expanded
+                      ? <FolderOpen size={14} className="prefix cc-chat-row-icon" />
+                      : <Folder size={14} className="prefix cc-chat-row-icon" />}
+                    <div className="cc-chat-row-copy">
+                      <span className="v3-chat-item-label">{project.name}</span>
+                    </div>
+                    <span className="cc-project-count" aria-label={`${project.task_count || 0} 个任务`}>{project.task_count || 0}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="v3-chat-item-action cc-project-menu-trigger"
+                    title="项目操作"
+                    aria-label={`${project.name} 项目操作`}
+                    aria-haspopup="menu"
+                    aria-expanded={openProjectMenuId === projectId}
+                    disabled={projectActionId === projectId}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setOpenFriendMenuId('');
+                      setOpenChatMenuKey('');
+                      setOpenProjectMenuId((current) => current === projectId ? null : projectId);
+                    }}
+                  >
+                    <MoreHorizontal size={15} />
+                  </button>
+                  {openProjectMenuId === projectId && (
+                    <div className="v3-friend-action-menu cc-project-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+                      <button type="button" role="menuitem" onClick={() => openProjectRename(project)}>
+                        <Pencil size={14} />
+                        <span>更改项目名称</span>
+                      </button>
+                      <button type="button" role="menuitem" className="danger" onClick={() => handleDeleteProject(project)}>
+                        <Trash2 size={14} />
+                        <span>删除项目</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
                 {expanded && (projectTasks.length > 0 ? projectTasks.map((chat) => {
                   const menuKey = `project:${chat.id}`;
                   return (
@@ -1590,6 +1677,43 @@ export default function ChatListView({
                   onClick={handleCreateProject}
                 >
                   创建
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
+
+      {editingProject && createPortal(
+        <div className="name-dialog-overlay cc-new-task-overlay" onClick={closeProjectRename}>
+          <section className="name-dialog cc-new-task-dialog" role="dialog" aria-modal="true" aria-label="更改项目名称" onClick={(event) => event.stopPropagation()}>
+            <header className="cc-new-task-header">
+              <h3>更改项目名称</h3>
+              <button type="button" className="cc-dialog-close" onClick={closeProjectRename} aria-label="关闭">
+                <X size={18} />
+              </button>
+            </header>
+            <div className="cc-new-task-body">
+              <input
+                autoFocus
+                className="oc-auth-input cc-new-task-name"
+                value={projectNameDraft}
+                maxLength={128}
+                onChange={(event) => setProjectNameDraft(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter') handleRenameProject(); }}
+                placeholder="项目名称"
+                aria-label="新的项目名称"
+              />
+              <div className="cc-new-task-actions">
+                <button type="button" className="oc-btn oc-btn-default" disabled={Boolean(projectActionId)} onClick={closeProjectRename}>取消</button>
+                <button
+                  type="button"
+                  className="oc-btn oc-btn-primary"
+                  disabled={!projectNameDraft.trim() || projectNameDraft.trim() === String(editingProject.name || '').trim() || Boolean(projectActionId)}
+                  onClick={handleRenameProject}
+                >
+                  保存
                 </button>
               </div>
             </div>

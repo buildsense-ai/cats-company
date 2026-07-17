@@ -185,6 +185,8 @@ export const api = {
   getConversations: () => request('GET', '/api/conversations'),
   getProjects: () => request('GET', '/api/projects'),
   createProject: (name) => request('POST', '/api/projects', { name }),
+  renameProject: (projectId, name) => request('PATCH', '/api/projects', { project_id: projectId, name }),
+  deleteProject: (projectId) => request('DELETE', `/api/projects?project_id=${encodeURIComponent(projectId)}`),
   assignProjectTopic: (projectId, topicId) => request('POST', '/api/projects/topic', { project_id: projectId, topic_id: topicId }),
   removeProjectTopic: (topicId) => request('DELETE', `/api/projects/topic?topic_id=${encodeURIComponent(topicId)}`),
   updateConversationTitle: (topicId, name) => request('PATCH', '/api/conversations', { topic_id: topicId, name }),
@@ -270,6 +272,8 @@ export const api = {
   updateGroup: (groupId, name, avatarUrl) =>
     request('POST', '/api/groups/update', { group_id: groupId, name, avatar_url: avatarUrl }),
   inviteToGroup: (groupId, userIds) => request('POST', '/api/groups/invite', { group_id: groupId, user_ids: userIds }),
+  resolveGroupInviteRequest: (groupId, requestId, action) =>
+    request('POST', '/api/groups/invite/resolve', { group_id: groupId, request_id: requestId, action }),
   leaveGroup: (groupId) => request('POST', '/api/groups/leave', { group_id: groupId }),
   kickMember: (groupId, userId) => request('POST', '/api/groups/kick', { group_id: groupId, user_id: userId }),
   disbandGroup: (groupId) => request('POST', '/api/groups/disband', { group_id: groupId }),

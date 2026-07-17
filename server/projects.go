@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -30,7 +31,7 @@ func (h *ProjectHandler) projectStore(w http.ResponseWriter) (store.ProjectStore
 	return projects, ok
 }
 
-// HandleProjects handles GET/POST /api/projects.
+// HandleProjects handles GET/POST/PATCH/DELETE /api/projects.
 func (h *ProjectHandler) HandleProjects(w http.ResponseWriter, r *http.Request) {
 	projects, ok := h.projectStore(w)
 	if !ok {
@@ -42,9 +43,58 @@ func (h *ProjectHandler) HandleProjects(w http.ResponseWriter, r *http.Request) 
 		h.handleList(w, r, projects)
 	case http.MethodPost:
 		h.handleCreate(w, r, projects)
+	case http.MethodPatch:
+		h.handleRename(w, r, projects)
+	case http.MethodDelete:
+		h.handleDelete(w, r, projects)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
+}
+
+func (h *ProjectHandler) handleRename(w http.ResponseWriter, r *http.Request, projects store.ProjectStore) {
+	var req struct {
+		ProjectID int64  `json:"project_id"`
+		Name      string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if req.ProjectID <= 0 || name == "" || utf8.RuneCountInString(name) > maxProjectNameLength {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_id and a 1-128 character name are required"})
+		return
+	}
+	if err := projects.RenameProject(UIDFromContext(r.Context()), req.ProjectID, name); err != nil {
+		switch {
+		case errors.Is(err, store.ErrProjectNameConflict):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "project name already exists"})
+		case errors.Is(err, store.ErrProjectNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		default:
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to rename project"})
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *ProjectHandler) handleDelete(w http.ResponseWriter, r *http.Request, projects store.ProjectStore) {
+	projectID, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("project_id")), 10, 64)
+	if err != nil || projectID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_id is required"})
+		return
+	}
+	if err := projects.DeleteProject(UIDFromContext(r.Context()), projectID); err != nil {
+		if errors.Is(err, store.ErrProjectNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete project"})
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // HandleProjectTopic handles POST/DELETE /api/projects/topic.

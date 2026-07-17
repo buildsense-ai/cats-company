@@ -21,6 +21,7 @@ func (a *Adapter) CreateSchema() error {
 		createRateLimitTable,
 		createGroupsTable,
 		createGroupMembersTable,
+		createGroupInviteRequestsTable,
 		createFeedbackReportsTable,
 		createAuthServicesTable,
 		createChannelAgentEntriesTable,
@@ -342,6 +343,25 @@ CREATE TABLE IF NOT EXISTS group_members (
     INDEX idx_gm_user (user_id),
     FOREIGN KEY (group_id) REFERENCES ` + "`groups`" + `(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createGroupInviteRequestsTable = `
+CREATE TABLE IF NOT EXISTS group_invite_requests (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    group_id BIGINT NOT NULL,
+    inviter_id BIGINT NOT NULL,
+    invitee_id BIGINT NOT NULL,
+    resolver_id BIGINT DEFAULT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_group_invite_request (group_id, invitee_id),
+    INDEX idx_group_invite_requests_pending (group_id, status, created_at),
+    FOREIGN KEY (group_id) REFERENCES ` + "`groups`" + `(id) ON DELETE CASCADE,
+    FOREIGN KEY (inviter_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (invitee_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (resolver_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 

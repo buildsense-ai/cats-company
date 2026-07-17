@@ -50,6 +50,8 @@ vi.mock('../api', () => ({
     getAgents: vi.fn(),
     getProjects: vi.fn(),
     createProject: vi.fn(),
+    renameProject: vi.fn(),
+    deleteProject: vi.fn(),
     assignProjectTopic: vi.fn(),
     removeProjectTopic: vi.fn(),
     openAgent: vi.fn(),
@@ -107,6 +109,8 @@ describe('ChatListView sidebar sections', () => {
     });
     api.getProjects.mockResolvedValue({ projects: [] });
     api.createProject.mockResolvedValue({ project: { id: 1, name: 'New Project', task_count: 0 } });
+    api.renameProject.mockResolvedValue({ ok: true });
+    api.deleteProject.mockResolvedValue({ ok: true });
     api.assignProjectTopic.mockResolvedValue({ ok: true });
     api.removeProjectTopic.mockResolvedValue({ ok: true });
     api.openAgent.mockResolvedValue({
@@ -769,6 +773,44 @@ describe('ChatListView sidebar sections', () => {
 
     expect(api.createProject).toHaveBeenCalledWith('New Workspace');
     expect(api.assignProjectTopic).toHaveBeenCalledWith(18, 'p2p_7_42');
+  });
+
+  it('renames and deletes a project from its row action menu', async () => {
+    api.getProjects.mockResolvedValue({
+      projects: [{ id: 12, name: 'Website', task_count: 0 }],
+    });
+    window.confirm = vi.fn(() => true);
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Website 项目操作"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('.cc-project-action-menu [role="menuitem"]'));
+    });
+
+    const renameDialog = document.body.querySelector('[role="dialog"][aria-label="更改项目名称"]');
+    expect(renameDialog).not.toBeNull();
+    await act(async () => {
+      Simulate.change(renameDialog.querySelector('[aria-label="新的项目名称"]'), { target: { value: 'Website Refresh' } });
+    });
+    await act(async () => {
+      Simulate.click(renameDialog.querySelector('.oc-btn-primary'));
+      await Promise.resolve();
+    });
+    expect(api.renameProject).toHaveBeenCalledWith(12, 'Website Refresh');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Website 项目操作"]'));
+    });
+    const deleteItem = Array.from(container.querySelectorAll('.cc-project-action-menu [role="menuitem"]'))
+      .find((button) => button.textContent.includes('删除项目'));
+    await act(async () => {
+      Simulate.click(deleteItem);
+      await Promise.resolve();
+    });
+    expect(window.confirm).toHaveBeenCalled();
+    expect(api.deleteProject).toHaveBeenCalledWith(12);
   });
 
   it('restores a locally hidden task when another entry point activates it again', async () => {

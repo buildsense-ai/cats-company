@@ -35,6 +35,9 @@ const TABS = {
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
 const DEFAULT_MODEL_NAME = 'MiniMax-M2.7';
 const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
+const DEV_PREVIEW_UID = Number(import.meta.env.VITE_DEV_PREVIEW_UID || 100);
+const DEV_PREVIEW_ACCOUNT = import.meta.env.VITE_DEV_PREVIEW_ACCOUNT || 'ui-reviewer';
+const DEV_PREVIEW_PASSWORD = import.meta.env.VITE_DEV_PREVIEW_PASSWORD || 'demo123456';
 const DEV_PREVIEW_USER = {
   uid: 'local-preview',
   username: 'preview',
@@ -287,6 +290,36 @@ function TinodeWebApp() {
     localStorage.setItem('oc_user', JSON.stringify(nextUser));
     setUser(nextUser);
   }, []);
+
+  useEffect(() => {
+    if (!DEV_PREVIEW_ENABLED) return undefined;
+    let cancelled = false;
+
+    const activatePreviewAccount = async () => {
+      try {
+        if (!getToken()) {
+          const session = await api.login({
+            account: DEV_PREVIEW_ACCOUNT,
+            password: DEV_PREVIEW_PASSWORD,
+          });
+          if (cancelled) return;
+          setToken(session.token);
+        }
+        if (cancelled) return;
+        persistUser({
+          ...DEV_PREVIEW_USER,
+          uid: DEV_PREVIEW_UID,
+        });
+      } catch (error) {
+        console.warn('Failed to activate local preview account:', error);
+      }
+    };
+
+    activatePreviewAccount();
+    return () => {
+      cancelled = true;
+    };
+  }, [persistUser]);
 
   const toggleAppSidebar = useCallback(() => {
     if (window.matchMedia('(max-width: 768px)').matches) {

@@ -21,6 +21,11 @@ type projectHandlerTestStore struct {
 	assignTopic    string
 	removedOwner   int64
 	removedTopic   string
+	renamedOwner   int64
+	renamedProject int64
+	renamedName    string
+	deletedOwner   int64
+	deletedProject int64
 }
 
 func (s *projectHandlerTestStore) CreateProject(ownerUID int64, name string) (*types.Project, error) {
@@ -42,6 +47,19 @@ func (s *projectHandlerTestStore) ListProjects(ownerUID int64) ([]*types.Project
 		}
 	}
 	return items, nil
+}
+
+func (s *projectHandlerTestStore) RenameProject(ownerUID, projectID int64, name string) error {
+	s.renamedOwner = ownerUID
+	s.renamedProject = projectID
+	s.renamedName = name
+	return nil
+}
+
+func (s *projectHandlerTestStore) DeleteProject(ownerUID, projectID int64) error {
+	s.deletedOwner = ownerUID
+	s.deletedProject = projectID
+	return nil
 }
 
 func (s *projectHandlerTestStore) AssignTopicToProject(ownerUID, projectID int64, topicID string) error {
@@ -126,5 +144,28 @@ func TestProjectHandlerRejectsDuplicateName(t *testing.T) {
 	handler.HandleProjects(rec, projectRequest(http.MethodPost, "/api/projects", `{"name":"Website Launch"}`, 7))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProjectHandlerRenamesAndDeletesOwnerProject(t *testing.T) {
+	db := &projectHandlerTestStore{}
+	handler := NewProjectHandler(db)
+
+	renameRec := httptest.NewRecorder()
+	handler.HandleProjects(renameRec, projectRequest(http.MethodPatch, "/api/projects", `{"project_id":12,"name":"  Updated Website  "}`, 7))
+	if renameRec.Code != http.StatusOK {
+		t.Fatalf("rename status=%d body=%s", renameRec.Code, renameRec.Body.String())
+	}
+	if db.renamedOwner != 7 || db.renamedProject != 12 || db.renamedName != "Updated Website" {
+		t.Fatalf("rename owner=%d project=%d name=%q", db.renamedOwner, db.renamedProject, db.renamedName)
+	}
+
+	deleteRec := httptest.NewRecorder()
+	handler.HandleProjects(deleteRec, projectRequest(http.MethodDelete, "/api/projects?project_id=12", "", 7))
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+	if db.deletedOwner != 7 || db.deletedProject != 12 {
+		t.Fatalf("delete owner=%d project=%d", db.deletedOwner, db.deletedProject)
 	}
 }

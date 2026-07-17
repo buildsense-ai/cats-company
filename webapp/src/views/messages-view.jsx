@@ -1336,6 +1336,22 @@ export default function MessagesView({
     }, 0);
   };
 
+  const handleEditMessage = useCallback((message) => {
+    const originalText = typeof message?.content === 'string' ? message.content : '';
+    if (!originalText.trim()) return;
+    setInput(originalText);
+    updateComposerDraft(topic, originalText);
+    setReplyTo(null);
+    setAttachmentStatus({ tone: 'success', message: '已将原指令放回输入框，编辑后可直接发送。' });
+    window.setTimeout(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(originalText.length, originalText.length);
+      resizeComposerInput();
+    }, 0);
+  }, [resizeComposerInput, topic, updateComposerDraft]);
+
   const handleTimelineScroll = (e) => {
     const el = e.target;
     stickToBottomRef.current = isTimelineNearBottom(el);
@@ -1417,6 +1433,7 @@ export default function MessagesView({
               senderIsBot={group.sender.isBot}
               replyMessage={group.replyMessage}
               onReply={() => setReplyTo(group.message)}
+              onEdit={group.message.from_uid === user.uid ? handleEditMessage : undefined}
               onRegenerate={canRegenerateAssistantMessages
                 && group.message.from_uid !== user.uid
                 && isAssistantAuthoredMessage(group.message, group.sender.isBot)

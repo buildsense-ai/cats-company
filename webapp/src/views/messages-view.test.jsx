@@ -28,6 +28,16 @@ vi.mock('../widgets/chat-message', () => ({
             regenerate
           </button>
         )}
+        {props.onEdit && (
+          <button
+            type="button"
+            className="mock-edit-message"
+            data-message-id={props.message?.id}
+            onClick={() => props.onEdit(props.message)}
+          >
+            edit
+          </button>
+        )}
         {fileBlock && (
           <button
             type="button"
@@ -328,6 +338,36 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '普通好友消息', undefined);
     expect(onOpenDesktopConnect).not.toHaveBeenCalled();
+  });
+
+  it('places a previous user instruction back into the composer for editing', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 68,
+        seq_id: 68,
+        topic_id: 'p2p_1_2',
+        from_uid: 1,
+        type: 'text',
+        content: 'Please review this instruction again.',
+        created_at: '2026-06-09T00:00:00Z',
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const editButton = container.querySelector('.mock-edit-message[data-message-id="68"]');
+    expect(editButton).not.toBeNull();
+    await act(async () => {
+      Simulate.click(editButton);
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    expect(textarea.value).toBe('Please review this instruction again.');
+    expect(document.activeElement).toBe(textarea);
   });
 
   it('regenerates a bot reply by resending the preceding user task', async () => {
