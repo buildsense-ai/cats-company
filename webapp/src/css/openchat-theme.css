@@ -1205,8 +1205,7 @@ body {
   flex: none;
 }
 
-.v3-chat-preview,
-.v3-task-status-line {
+.v3-chat-preview {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1214,58 +1213,6 @@ body {
   font-size: 12px;
   line-height: 16px;
   color: #555;
-}
-
-.v3-task-status-line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.v3-task-status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  height: 16px;
-  padding: 0 5px;
-  border-radius: 5px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 16px;
-  flex-shrink: 0;
-}
-
-.v3-task-status-summary {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.v3-task-status-line.running .v3-task-status-pill {
-  color: #38d99a;
-  background: rgba(0, 198, 137, 0.13);
-}
-
-.v3-task-status-line.running .v3-task-status-pill svg {
-  animation: catsco-spin 0.9s linear infinite;
-}
-
-.v3-task-status-line.completed .v3-task-status-pill {
-  color: #58c7ff;
-  background: rgba(68, 160, 255, 0.13);
-}
-
-.v3-task-status-line.failed .v3-task-status-pill {
-  color: #ff7a7a;
-  background: rgba(255, 86, 86, 0.14);
-}
-
-.v3-task-status-line.cancelled .v3-task-status-pill,
-.v3-task-status-line.stale .v3-task-status-pill,
-.v3-task-status-line.waiting .v3-task-status-pill {
-  color: #f1b65b;
-  background: rgba(241, 182, 91, 0.13);
 }
 
 .v3-chat-item-identity {

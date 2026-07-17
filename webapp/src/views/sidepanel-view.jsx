@@ -8,13 +8,14 @@ import FriendRequest from '../widgets/friend-request';
 import AgentStoreModal from '../widgets/agent-store-modal';
 import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
 import Avatar from '../widgets/avatar';
-import { Users, UserRound, Zap, Bot, Trash2, MessageSquare, Smartphone, Check, X, Pin, ChevronRight, Plus, Search, MoreHorizontal, UserX, Ban } from 'lucide-react';
+import { Users, UserRound, Zap, Bot, Trash2, MessageSquare, Smartphone, Check, X, Pin, ChevronRight, Plus, Search, MoreHorizontal, UserX, Ban, AlertCircle, CheckCircle2, Clock3, LoaderCircle } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
 const DEFAULT_COLLAPSED_SECTIONS = { collaboration: false, ai: false, friends: false, groups: false, agents: false };
 const PINNED_GROUPS_STORAGE_PREFIX = 'cc_pinned_groups_v1';
 const PINNED_HISTORY_STORAGE_PREFIX = 'cc_pinned_history_v1';
 const HIDDEN_HISTORY_STORAGE_PREFIX = 'cc_hidden_history_v1';
+const TASK_STATUS_DISMISSED_STORAGE_PREFIX = 'cc_task_status_dismissed_v1';
 
 function sidebarCollapsedStorageKey(uid) {
   return `${SIDEBAR_COLLAPSED_STORAGE_PREFIX}:${uid || 'guest'}`;
@@ -30,6 +31,10 @@ function pinnedHistoryStorageKey(uid) {
 
 function hiddenHistoryStorageKey(uid) {
   return `${HIDDEN_HISTORY_STORAGE_PREFIX}:${uid || 'guest'}`;
+}
+
+function taskStatusDismissedStorageKey(uid) {
+  return `${TASK_STATUS_DISMISSED_STORAGE_PREFIX}:${uid || 'guest'}`;
 }
 
 function normalizeCollapsedSections(value) {
@@ -138,6 +143,29 @@ function saveHiddenHistoryIds(uid, next) {
   }
 }
 
+function loadDismissedTaskStatuses(uid) {
+  if (typeof window === 'undefined' || !window.localStorage) return {};
+
+  try {
+    const raw = window.localStorage.getItem(taskStatusDismissedStorageKey(uid));
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    console.warn('Failed to restore dismissed task statuses:', error);
+    return {};
+  }
+}
+
+function saveDismissedTaskStatuses(uid, next) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+
+  try {
+    window.localStorage.setItem(taskStatusDismissedStorageKey(uid), JSON.stringify(next));
+  } catch (error) {
+    console.warn('Failed to save dismissed task statuses:', error);
+  }
+}
+
 export default function ChatListView({
   activeTopic,
   onSelectTopic,
@@ -173,14 +201,46 @@ export default function ChatListView({
   const [openFriendMenuId, setOpenFriendMenuId] = useState('');
   const [openChatMenuKey, setOpenChatMenuKey] = useState('');
   const [friendActionId, setFriendActionId] = useState('');
+  const [dismissedTaskStatuses, setDismissedTaskStatuses] = useState(() => loadDismissedTaskStatuses(user?.uid));
   const justHiddenHistoryRef = useRef('');
+  const activeTopicRef = useRef(activeTopic);
+  const userUidRef = useRef(user?.uid);
 
   useEffect(() => {
     setCollapsed(loadCollapsedSections(user?.uid));
     setPinnedGroupIds(loadPinnedGroupIds(user?.uid));
     setPinnedHistoryIds(loadPinnedHistoryIds(user?.uid));
     setHiddenHistoryIds(loadHiddenHistoryIds(user?.uid));
+    setDismissedTaskStatuses(loadDismissedTaskStatuses(user?.uid));
   }, [user?.uid]);
+
+  useEffect(() => {
+    activeTopicRef.current = activeTopic;
+  }, [activeTopic]);
+
+  useEffect(() => {
+    userUidRef.current = user?.uid;
+  }, [user?.uid]);
+
+  const rememberDismissedTaskStatus = (topicId, status) => {
+    const normalized = normalizeTaskStatus(status);
+    if (!topicId || !isDismissibleTaskStatus(normalized)) return;
+    const dismissedKey = taskStatusDismissKey(normalized);
+    if (!dismissedKey) return;
+
+    setDismissedTaskStatuses((previous) => {
+      if (previous[topicId] === dismissedKey) return previous;
+      const next = { ...previous, [topicId]: dismissedKey };
+      saveDismissedTaskStatuses(userUidRef.current, next);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    if (!activeTopic) return;
+    const activeChat = chats.find((chat) => chat.id === activeTopic);
+    if (activeChat?.taskStatus) rememberDismissedTaskStatus(activeTopic, activeChat.taskStatus);
+  }, [activeTopic, chats]);
 
   useEffect(() => {
     if (!openFriendMenuId && !openChatMenuKey) return undefined;
@@ -376,6 +436,32 @@ export default function ChatListView({
             loadAll();
           }
           return prev;
+        });
+      }
+
+      const taskStatus = normalizeTaskStatus(msg.task_status || msg.ctrl?.params?.task_status);
+      if (taskStatus?.topic_id) {
+        const topicId = taskStatus.topic_id;
+        const updatedAtMs = taskStatusUpdatedMs(taskStatus) || Date.now();
+        const shouldDismissImmediately = isDismissibleTaskStatus(taskStatus) && activeTopicRef.current === topicId;
+        if (shouldDismissImmediately) rememberDismissedTaskStatus(topicId, taskStatus);
+
+        setChats((previous) => {
+          const index = previous.findIndex((chat) => chat.id === topicId);
+          if (index === -1) {
+            if (topicId.startsWith('grp_') || topicId.startsWith('p2p_')) loadAll();
+            return previous;
+          }
+          const currentUpdatedAtMs = taskStatusUpdatedMs(previous[index].taskStatus);
+          if (currentUpdatedAtMs && updatedAtMs < currentUpdatedAtMs) return previous;
+
+          const updated = {
+            ...previous[index],
+            taskStatus,
+            time: formatTime(new Date(updatedAtMs)),
+            lastTimeMs: Math.max(updatedAtMs, previous[index].lastTimeMs || 0),
+          };
+          return [updated, ...previous.filter((_, itemIndex) => itemIndex !== index)];
         });
       }
 
@@ -605,6 +691,7 @@ export default function ChatListView({
   const compactChats = visibleRecentChats.slice(0, 12);
 
   const selectConversation = (chat) => {
+    rememberDismissedTaskStatus(chat.id, chat.taskStatus);
     onSelectTopic({
       topicId: chat.id,
       name: chat.name,
@@ -740,11 +827,11 @@ export default function ChatListView({
             const removeLabel = onDeleteHistoryTask ? '删除任务' : '从列表移除';
             return (
               <div key={chat.id} className={`v3-chat-item cc-history-item ${activeTopic === chat.id ? 'active' : ''}`}
-                onClick={() => onSelectTopic({ topicId: chat.id, name: chat.name, isGroup: chat.isGroup, groupId: chat.groupId, avatar_url: chat.avatar_url, friendId: chat.friendId })}>
+                onClick={() => selectConversation(chat)}>
                 <span className="prefix cc-chat-row-icon">{chat.isGroup ? '#' : <MessageSquare size={14} />}</span>
                 <div className="cc-chat-row-copy">
                   <span className="v3-chat-item-label">{chat.name}</span>
-                  {chat.preview && <span className="cc-chat-row-preview">{chat.preview}</span>}
+                  <ConversationTaskStatusLine status={visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id)} fallback={chat.preview} />
                 </div>
                 <div className="cc-chat-row-trailing">
                   {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
@@ -823,7 +910,7 @@ export default function ChatListView({
             const isOnline = onlineStatusFor(onlineUsers, chat.friendId, chat.isOnline);
             return (
               <div key={chat.id} className={`v3-chat-item v3-friend-chat-item ${activeTopic === chat.id ? 'active' : ''}`}
-                onClick={() => onSelectTopic({ topicId: chat.id, name: chat.name, isGroup: false, avatar_url: chat.avatar_url, friendId: chat.friendId })}>
+                onClick={() => selectConversation(chat)}>
                 <span
                   className={`v3-status-dot ${isOnline ? 'online' : 'offline'}`}
                   style={{marginRight: 8}}
@@ -832,7 +919,7 @@ export default function ChatListView({
                 />
                 <div className="cc-chat-row-copy">
                   <span className="v3-chat-item-label">{chat.name}</span>
-                  {chat.preview && <span className="cc-chat-row-preview">{chat.preview}</span>}
+                  <ConversationTaskStatusLine status={visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id)} fallback={chat.preview} />
                 </div>
                 <div className="cc-chat-row-trailing">
                   {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
@@ -886,11 +973,11 @@ export default function ChatListView({
             const menuKey = `group:${chat.id}`;
             return (
               <div key={chat.id} className={`v3-chat-item ${activeTopic === chat.id ? 'active' : ''}`}
-                onClick={() => onSelectTopic({ topicId: chat.id, name: chat.name, isGroup: true, groupId: chat.groupId, avatar_url: chat.avatar_url })}>
+                onClick={() => selectConversation(chat)}>
                 <span className="prefix cc-chat-row-icon">#</span>
                 <div className="cc-chat-row-copy">
                   <span className="v3-chat-item-label">{chat.name}</span>
-                  {chat.preview && <span className="cc-chat-row-preview">{chat.preview}</span>}
+                  <ConversationTaskStatusLine status={visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id)} fallback={chat.preview} />
                 </div>
                 <div className="cc-chat-row-trailing">
                   {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
@@ -1186,6 +1273,76 @@ function isOwnedAgent(agent) {
   return agent?.is_owner === true || agent?.relation === 'owner';
 }
 
+function ConversationTaskStatusLine({ status, fallback }) {
+  const normalized = normalizeTaskStatus(status);
+  if (!normalized || normalized.state === 'idle') {
+    return fallback ? <span className="cc-chat-row-preview">{fallback}</span> : null;
+  }
+
+  const descriptor = taskStatusDescriptor(normalized.state);
+  const Icon = descriptor.icon;
+  const text = normalized.summary || normalized.error || descriptor.label;
+  return (
+    <span className={`cc-task-status-line ${descriptor.className}`} title={text}>
+      <span className="cc-task-status-pill">
+        <Icon size={11} strokeWidth={2.4} />
+        <span>{descriptor.label}</span>
+      </span>
+      {text !== descriptor.label && <span className="cc-task-status-summary">{text}</span>}
+    </span>
+  );
+}
+
+function taskStatusDescriptor(state) {
+  switch (state) {
+    case 'running': return { label: '进行中', className: 'running', icon: LoaderCircle };
+    case 'completed': return { label: '已完成', className: 'completed', icon: CheckCircle2 };
+    case 'failed': return { label: '需处理', className: 'failed', icon: AlertCircle };
+    case 'cancelled': return { label: '已停止', className: 'cancelled', icon: Clock3 };
+    case 'stale': return { label: '超时', className: 'stale', icon: Clock3 };
+    case 'waiting': return { label: '等待中', className: 'waiting', icon: Clock3 };
+    default: return { label: '状态', className: 'idle', icon: Clock3 };
+  }
+}
+
+function normalizeTaskStatus(status) {
+  if (!status || typeof status !== 'object') return null;
+  const state = String(status.state || '').trim().toLowerCase();
+  if (!state) return null;
+  return {
+    ...status,
+    state,
+    summary: String(status.summary || '').trim(),
+    error: String(status.error || '').trim(),
+  };
+}
+
+function isDismissibleTaskStatus(status) {
+  return ['completed', 'failed', 'cancelled', 'stale'].includes(normalizeTaskStatus(status)?.state);
+}
+
+function taskStatusDismissKey(status) {
+  const normalized = normalizeTaskStatus(status);
+  if (!normalized) return '';
+  return [
+    normalized.state,
+    normalized.run_id || normalized.runId || '',
+    normalized.updated_at || normalized.updatedAt || '',
+    normalized.summary || '',
+    normalized.error || '',
+  ].map((value) => String(value)).join('|');
+}
+
+function visibleTaskStatus(status, dismissedTaskStatuses, topicId) {
+  const normalized = normalizeTaskStatus(status);
+  if (!normalized || dismissedTaskStatuses?.[topicId] === taskStatusDismissKey(normalized)) return null;
+  return normalized;
+}
+
+function taskStatusUpdatedMs(status) {
+  return toTimeMs(status?.updated_at || status?.updatedAt);
+}
+
 function conversationSummaryToChat(item) {
   const createdAtMs = toTimeMs(item.created_at);
   const lastTimeMs = toTimeMs(item.last_time) || createdAtMs;
@@ -1204,6 +1361,7 @@ function conversationSummaryToChat(item) {
     hasBot: Boolean(item.has_bot || item.is_agent_group),
     isOnline: item.is_online,
     seq: item.latest_seq || 0,
+    taskStatus: normalizeTaskStatus(item.task_status),
   };
 }
 
@@ -1253,6 +1411,7 @@ function normalizeGroupListItem(item) {
     lastTimeMs,
     createdAtMs,
     seq: item.seq || 0,
+    taskStatus: normalizeTaskStatus(item.taskStatus || item.task_status),
   };
 }
 

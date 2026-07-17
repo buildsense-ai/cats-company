@@ -79,9 +79,37 @@ func persistConversationTaskStatus(db store.Store, uid int64, topicID string, pa
 		return nil, err
 	}
 	if !isGroupTopic(topicID) && db != nil {
-		_ = db.CreateTopic(topicID, "p2p", uid)
+		if err := db.CreateTopic(topicID, "p2p", uid); err != nil {
+			return nil, fmt.Errorf("ensure task status topic: %w", err)
+		}
+	}
+	if existing, err := statusStore.GetConversationTaskStatuses([]string{topicID}); err != nil {
+		return nil, fmt.Errorf("load current task status: %w", err)
+	} else if current := existing[topicID]; current != nil {
+		if err := validateTaskStatusTransition(current, status); err != nil {
+			return nil, err
+		}
 	}
 	return statusStore.UpsertConversationTaskStatus(status)
+}
+
+func validateTaskStatusTransition(current, next *types.ConversationTaskStatus) error {
+	if current == nil || next == nil {
+		return nil
+	}
+	if current.SourceUID != 0 && current.SourceUID != next.SourceUID && !isTerminalTaskStatus(current.State) {
+		return errors.New("another task source already owns the active status for this topic")
+	}
+	// A run identifier lets us reject late progress events after that run has
+	// reached a terminal state, while still allowing a new run to supersede it.
+	if current.RunID != "" && current.RunID == next.RunID && isTerminalTaskStatus(current.State) && !isTerminalTaskStatus(next.State) {
+		return errors.New("cannot resume a terminal task run; publish a new run_id")
+	}
+	return nil
+}
+
+func isTerminalTaskStatus(state string) bool {
+	return state == "completed" || state == "failed" || state == "cancelled" || state == "stale"
 }
 
 func normalizeConversationTaskStatus(uid int64, topicID string, payload *normalizedMessagePayload) (*types.ConversationTaskStatus, error) {
@@ -242,7 +270,11 @@ func (h *Hub) fanoutConversationTaskStatus(sourceUID int64, status *types.Conver
 		if groupID == 0 {
 			return
 		}
-		h.SendToUserExcept(sourceUID, msg, exclude)
+		// Channel-managed groups keep human members out of internal bot traffic.
+		// Status events follow the same visibility policy as regular messages.
+		if !h.isChannelManagedGroup(groupID) {
+			h.SendToUserExcept(sourceUID, msg, exclude)
+		}
 		h.broadcastToGroup(groupID, msg, sourceUID)
 		return
 	}
