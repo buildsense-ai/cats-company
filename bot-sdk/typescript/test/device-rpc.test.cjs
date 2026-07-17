@@ -274,6 +274,72 @@ test('sendDeviceRPCResult sends result and error payloads', async () => {
   });
 });
 
+test('sendDeviceRPCProgress sends precise processed and total counts', async () => {
+  await withBot((ws, msg) => ack(ws, msg), async ({ bot, messages }) => {
+    await bot.sendDeviceRPCProgress({
+      request_id: 'rpc-progress',
+      operation: 'external_history',
+      tool_name: 'external_history',
+      progress: {
+        processed: 37,
+        total: 100,
+        provider: 'codex',
+        phase: 'importing',
+      },
+    });
+
+    const rpc = latestDeviceRPC(messages);
+    assert.equal(rpc.type, 'progress');
+    assert.equal(rpc.request_id, 'rpc-progress');
+    assert.equal(rpc.operation, 'external_history');
+    assert.deepEqual(rpc.progress, {
+      processed: 37,
+      total: 100,
+      provider: 'codex',
+      phase: 'importing',
+    });
+  });
+});
+
+test('sendDeviceRPCProgress preserves nullable total for discovering phase', async () => {
+  await withBot((ws, msg) => ack(ws, msg), async ({ bot, messages }) => {
+    await bot.sendDeviceRPCProgress({
+      request_id: 'rpc-progress-null',
+      operation: 'external_history',
+      tool_name: 'external_history',
+      progress: {
+        processed: 0,
+        total: null,
+        provider: 'pi',
+        phase: 'discovering',
+      },
+    });
+
+    const rpc = latestDeviceRPC(messages);
+    assert.equal(rpc.progress.total, null, 'nullable total must be preserved for discovering');
+    assert.equal(rpc.progress.phase, 'discovering');
+  });
+});
+
+test('sendDeviceRPCProgress preserves determinate total=0 for empty catalog', async () => {
+  await withBot((ws, msg) => ack(ws, msg), async ({ bot, messages }) => {
+    await bot.sendDeviceRPCProgress({
+      request_id: 'rpc-progress-zero',
+      operation: 'external_history',
+      tool_name: 'external_history',
+      progress: {
+        processed: 0,
+        total: 0,
+        provider: 'codex',
+        phase: 'importing',
+      },
+    });
+
+    const rpc = latestDeviceRPC(messages);
+    assert.equal(rpc.progress.total, 0, 'determinate total=0 must be preserved');
+  });
+});
+
 test('server device_rpc envelopes emit the device_rpc event', async () => {
   await withBot((ws, msg) => ack(ws, msg), async ({ bot, getSocket }) => {
     const received = onceBot(bot, 'device_rpc');

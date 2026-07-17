@@ -1,4 +1,4 @@
-import type { CatsBotConfig, BotEventMap, MsgServerData, MsgDeviceRPC, ConversationTaskStatus, ConversationTaskStatusInput, DeviceRPCAckParams, DeviceRPCRequestAck, DeviceRPCRequestInput, DeviceRPCResultInput, MessageContent, RichContentLinkPreview, RichContentCard, UploadResult } from './types';
+import type { CatsBotConfig, BotEventMap, MsgServerData, MsgDeviceRPC, ConversationTaskStatus, ConversationTaskStatusInput, DeviceRPCAckParams, DeviceRPCRequestAck, DeviceRPCRequestInput, DeviceRPCProgressInput, DeviceRPCResultInput, MessageContent, RichContentLinkPreview, RichContentCard, UploadResult } from './types';
 export declare class CatsBot {
     uid: string;
     name: string;
@@ -70,6 +70,8 @@ export declare class CatsBot {
      * request_id can be matched with a later `device_rpc` result event.
      */
     sendDeviceRPCRequest(input: DeviceRPCRequestInput): Promise<DeviceRPCRequestAck>;
+    /** Report precise progress for a pending device_rpc request. */
+    sendDeviceRPCProgress(input: DeviceRPCProgressInput): Promise<DeviceRPCAckParams>;
     /** Send a result for a device_rpc request routed to this connection. */
     sendDeviceRPCResult(input: DeviceRPCResultInput): Promise<DeviceRPCAckParams>;
     /** Fetch message history for a topic since a given seq. */

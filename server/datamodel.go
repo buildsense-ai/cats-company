@@ -123,12 +123,12 @@ type MsgClientFriend struct {
 	Msg    string `json:"msg,omitempty"`
 }
 
-// MsgDeviceRPC carries a backend-routed request/result between an agent body and
+// MsgDeviceRPC carries a backend-routed request/progress/result between an agent body and
 // a selected user device. It is intentionally outside regular chat data so RPC
 // traffic is not persisted or replayed as conversation history.
 type MsgDeviceRPC struct {
 	ID                   string                 `json:"id,omitempty"`
-	Type                 string                 `json:"type"` // "request" or "result"
+	Type                 string                 `json:"type"` // "request", "progress", or "result"
 	RequestID            string                 `json:"request_id"`
 	GrantID              string                 `json:"grant_id,omitempty"`
 	SessionKey           string                 `json:"session_key,omitempty"`
@@ -145,15 +145,28 @@ type MsgDeviceRPC struct {
 	Operation            string                 `json:"operation,omitempty"`
 	ToolName             string                 `json:"tool_name,omitempty"`
 	Payload              map[string]interface{} `json:"payload,omitempty"`
+	Progress             *MsgDeviceRPCProgress  `json:"progress,omitempty"`
 	Result               interface{}            `json:"result,omitempty"`
 	Error                *MsgDeviceRPCError     `json:"error,omitempty"`
 	CreatedAt            int64                  `json:"created_at,omitempty"`
 	ExpiresAt            int64                  `json:"expires_at,omitempty"`
 }
 
+type MsgDeviceRPCProgress struct {
+	Processed  int64  `json:"processed"`
+	Total      *int64 `json:"total"`
+	Completed  *int64 `json:"completed,omitempty"`
+	Failed     *int64 `json:"failed,omitempty"`
+	Skipped    *int64 `json:"skipped,omitempty"`
+	Remaining  *int64 `json:"remaining,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	Phase      string `json:"phase,omitempty"`
+}
+
 type MsgDeviceRPCError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string                 `json:"code"`
+	Message string                 `json:"message"`
+	Details map[string]interface{} `json:"details,omitempty"`
 }
 
 // MsgThinToolRPC carries a direct tool request/result between two connected

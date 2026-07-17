@@ -108,6 +108,18 @@
   accent-color: var(--v3-primary);
 }
 
+.external-history-provider-copy {
+  display: grid;
+  gap: 1px;
+  line-height: 1.25;
+}
+
+.external-history-provider-copy > small {
+  color: var(--v3-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
 .external-history-days {
   display: flex;
   align-items: center;
@@ -131,6 +143,90 @@
 .external-history-section > .oc-btn {
   min-height: 36px;
   gap: 7px;
+}
+
+.external-history-progress {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--v3-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--v3-primary) 3%, var(--v3-bg-app));
+}
+
+.external-history-progress-copy {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.external-history-progress-copy > span,
+.external-history-progress > small {
+  color: var(--v3-text-muted);
+}
+
+.external-history-progress-copy > strong {
+  color: var(--v3-text-name);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.external-history-progress-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--v3-text-muted) 16%, transparent);
+}
+
+.external-history-progress-value {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--v3-primary);
+  transform: scaleX(var(--external-history-progress, 0));
+  transform-origin: left center;
+  transition: transform 450ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.external-history-progress.is-indeterminate .external-history-progress-value {
+  animation: external-history-progress-waiting 2.4s cubic-bezier(0.16, 1, 0.3, 1) infinite alternate;
+}
+
+.external-history-progress.is-error .external-history-progress-copy > strong {
+  color: var(--v3-danger, #b42318);
+}
+
+.external-history-progress > small {
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+@keyframes external-history-progress-waiting {
+  from {
+    opacity: 0.5;
+    transform: scaleX(0.2);
+  }
+
+  to {
+    opacity: 0.82;
+    transform: scaleX(0.36);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .external-history-progress-value {
+    transition: none;
+  }
+
+  .external-history-progress.is-indeterminate .external-history-progress-value {
+    animation: none;
+    opacity: 0.68;
+    transform: scaleX(0.28);
+  }
 }
 
 .external-history-preview {

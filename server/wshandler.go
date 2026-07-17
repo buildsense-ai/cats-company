@@ -862,7 +862,7 @@ func (h *Hub) handleMessage(client *Client, msg *ClientMessage) {
 		h.SendToClient(client, &ServerMessage{
 			Ctrl: &MsgServerCtrl{
 				Code: http.StatusForbidden,
-				Text: "device connector connections may only register a device and return device_rpc results",
+				Text: "device connector connections may only register a device and return device_rpc responses",
 			},
 		})
 		return
@@ -898,7 +898,8 @@ func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
 	}
 	if msg.DeviceRPC != nil {
 		actions++
-		if strings.ToLower(strings.TrimSpace(msg.DeviceRPC.Type)) != deviceRPCTypeResult {
+		responseType := strings.ToLower(strings.TrimSpace(msg.DeviceRPC.Type))
+		if responseType != deviceRPCTypeProgress && responseType != deviceRPCTypeResult {
 			return false
 		}
 	}

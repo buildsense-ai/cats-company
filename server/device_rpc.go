@@ -17,6 +17,7 @@ const (
 	maxDeviceRPCPendingPerAgent  = 64
 	maxDeviceRPCPendingPerDevice = 32
 	deviceRPCTypeRequest         = "request"
+	deviceRPCTypeProgress        = "progress"
 	deviceRPCTypeResult          = "result"
 )
 
@@ -149,6 +150,31 @@ func (r *deviceRPCRouter) get(requestID string) (deviceRPCPending, bool) {
 	if !ok || !now.Before(pending.expiresAt) {
 		return deviceRPCPending{}, false
 	}
+	return pending, true
+}
+
+func (r *deviceRPCRouter) refresh(requestID string) (deviceRPCPending, bool) {
+	if r == nil || requestID == "" {
+		return deviceRPCPending{}, false
+	}
+	now := r.now()
+	expiresAt := now.Add(r.ttl)
+	if r.shared != nil {
+		record, ok := r.shared.refreshDeviceRPCPending(requestID, now, expiresAt)
+		if !ok {
+			return deviceRPCPending{}, false
+		}
+		return pendingFromDeviceRPCRecord(record), true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pending, ok := r.pending[requestID]
+	if !ok || !now.Before(pending.expiresAt) {
+		return deviceRPCPending{}, false
+	}
+	pending.expiresAt = expiresAt
+	pending.requesterRoute.ExpiresAt = expiresAt
+	r.pending[requestID] = pending
 	return pending, true
 }
 
@@ -292,11 +318,113 @@ func (h *Hub) handleDeviceRPC(client *Client, msg *MsgDeviceRPC) {
 	switch strings.ToLower(strings.TrimSpace(msg.Type)) {
 	case deviceRPCTypeRequest:
 		h.handleDeviceRPCRequest(client, msg)
+	case deviceRPCTypeProgress:
+		h.handleDeviceRPCProgress(client, msg)
 	case deviceRPCTypeResult:
 		h.handleDeviceRPCResult(client, msg)
 	default:
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusBadRequest, "unknown device_rpc type", nil)
 	}
+}
+
+func (h *Hub) handleDeviceRPCProgress(client *Client, msg *MsgDeviceRPC) {
+	if h == nil || h.deviceRPC == nil {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusServiceUnavailable, "device rpc unavailable", nil)
+		return
+	}
+	if client != nil && client.deviceConnector != nil && !deviceConnectorHasScope(client.deviceConnector, "device:rpc_result") {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "device connector token does not allow device_rpc responses", nil)
+		return
+	}
+	if client != nil && client.deviceConnector != nil && h.isDeviceConnectorRevoked(client.deviceConnector) {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "device connector token has been revoked", nil)
+		return
+	}
+	requestID, ok := normalizeDeviceRPCRequestID(msg.RequestID)
+	if !ok {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusBadRequest, "request_id required", nil)
+		return
+	}
+	if msg.Progress == nil || msg.Progress.Processed < 0 {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusBadRequest, "valid progress processed required", map[string]interface{}{"request_id": requestID})
+		return
+	}
+	// total may be nil during discovering phase (indeterminate catalog).
+	// When present, reject negative total, require processed=0 for total=0,
+	// and reject processed>total so terminal progress reconciles exactly.
+	if msg.Progress.Total != nil {
+		if *msg.Progress.Total < 0 {
+			h.sendDeviceRPCAck(client, msg.ID, http.StatusBadRequest, "total must not be negative", map[string]interface{}{"request_id": requestID})
+			return
+		}
+		if *msg.Progress.Total == 0 && msg.Progress.Processed != 0 {
+			h.sendDeviceRPCAck(client, msg.ID, http.StatusBadRequest, "processed must be 0 when total is 0", map[string]interface{}{"request_id": requestID})
+			return
+		}
+		if msg.Progress.Processed > *msg.Progress.Total {
+			h.sendDeviceRPCAck(client, msg.ID, http.StatusBadRequest, "processed must not exceed total", map[string]interface{}{"request_id": requestID})
+			return
+		}
+	}
+	pending, ok := h.deviceRPC.get(requestID)
+	if !ok {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusNotFound, "request not pending", map[string]interface{}{"request_id": requestID})
+		return
+	}
+	if !h.pendingMatchesDeviceClient(pending, client) {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "progress source does not match target device", map[string]interface{}{"request_id": requestID})
+		return
+	}
+	if pending.operation == string(DeviceGrantExternalHistory) && pending.grantID == "" {
+		if refreshed, ok := h.deviceRPC.refresh(requestID); ok {
+			pending = refreshed
+		} else {
+			h.sendDeviceRPCAck(client, msg.ID, http.StatusNotFound, "request not pending", map[string]interface{}{"request_id": requestID})
+			return
+		}
+	}
+
+	requesterRoute := pending.requesterRoute
+	requester := pending.requester
+	if !requesterRoute.validAt(nowForRoute(h)) {
+		if h.isClientRegistered(requester) {
+			requesterRoute = h.clientRoute(requester)
+		} else {
+			requester = h.findAgentRPCClient(pending.agentUID, pending.agentBodyID)
+			if requester != nil {
+				requesterRoute = h.clientRoute(requester)
+			}
+		}
+	}
+	if !requesterRoute.validAt(nowForRoute(h)) {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusGone, "requester offline", map[string]interface{}{"request_id": requestID})
+		return
+	}
+
+	forward := *msg
+	forward.ID = ""
+	forward.Type = deviceRPCTypeProgress
+	forward.RequestID = requestID
+	forward.GrantID = pending.grantID
+	forward.SessionKey = pending.sessionKey
+	forward.TopicID = pending.topicID
+	forward.TopicType = pending.topicType
+	forward.ActorUserID = pending.actorUserID
+	forward.OwnerUserID = pending.ownerUserID
+	forward.IdentitySource = pending.identitySource
+	forward.AgentID = pending.agentID
+	forward.AgentBodyID = pending.agentBodyID
+	forward.DeviceID = pending.deviceID
+	forward.DeviceBodyID = pending.deviceBodyID
+	forward.DeviceInstallationID = pending.deviceInstallID
+	forward.Operation = pending.operation
+	forward.ToolName = pending.toolName
+
+	if !h.sendDeviceRPCToRoute(requesterRoute, &forward) {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusGone, "requester offline", map[string]interface{}{"request_id": requestID})
+		return
+	}
+	h.sendDeviceRPCAck(client, msg.ID, http.StatusOK, "ok", map[string]interface{}{"request_id": requestID})
 }
 
 func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {

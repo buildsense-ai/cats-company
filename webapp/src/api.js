@@ -482,24 +482,118 @@ export function sendWS(msg) {
   }
 }
 
-export function requestExternalHistory(deviceId, payload, timeoutMs = 55000) {
+function externalHistoryProgress(value) {
+  if (!value || typeof value !== 'object') return null;
+  const rawProcessed = Number(value.processed);
+  if (!Number.isFinite(rawProcessed) || rawProcessed < 0) return null;
+  const processed = Math.floor(rawProcessed);
+  // total may be null during discovering phase (indeterminate catalog).
+  // A determinate total=0 (stable empty catalog) must remain 0, not be clamped
+  // to 1. Negative totals are rejected.
+  const rawTotal = value.total;
+  let total;
+  if (rawTotal === null || rawTotal === undefined) {
+    total = null;
+  } else {
+    const numericTotal = Number(rawTotal);
+    if (!Number.isFinite(numericTotal) || numericTotal < 0) return null;
+    total = Math.floor(numericTotal);
+  }
+  if (total !== null && processed > total) return null;
+  return {
+    processed,
+    total,
+    completed: Number.isFinite(Number(value.completed)) ? Math.floor(Number(value.completed)) : undefined,
+    failed: Number.isFinite(Number(value.failed)) ? Math.floor(Number(value.failed)) : undefined,
+    skipped: Number.isFinite(Number(value.skipped)) ? Math.floor(Number(value.skipped)) : undefined,
+    remaining: value.remaining === null || value.remaining === undefined
+      ? undefined
+      : (Number.isFinite(Number(value.remaining)) ? Math.floor(Number(value.remaining)) : undefined),
+    provider: typeof value.provider === 'string' ? value.provider.trim() : '',
+    phase: typeof value.phase === 'string' ? value.phase.trim() : '',
+  };
+}
+
+export function requestExternalHistory(deviceId, payload, options = {}) {
   if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
     return Promise.reject(new Error('本地助手连接尚未就绪'));
   }
+  const normalizedOptions = typeof options === 'number' ? { timeoutMs: options } : options;
+  const requestedTimeout = Number(normalizedOptions?.timeoutMs);
+  const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0 ? requestedTimeout : 55000;
+  const onProgress = typeof normalizedOptions?.onProgress === 'function' ? normalizedOptions.onProgress : null;
   const id = nextMsgId();
   const requestId = `external-history-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   return new Promise((resolve, reject) => {
     let settled = false;
     let timer;
+    const armTimeout = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        finish(() => reject(Object.assign(
+          new Error('本地助手响应超时，请检查设备连接'),
+          { code: 'inactivity_timeout', timeout: true }
+        )));
+      }, timeoutMs);
+    };
     const unsubscribe = onWSMessage((message) => {
       if (message?.ctrl?.id === id && Number(message.ctrl.code) >= 400) {
         finish(() => reject(new Error(message.ctrl.text || '本地助手拒绝了请求')));
         return;
       }
       const rpc = message?.device_rpc;
-      if (!rpc || rpc.request_id !== requestId || rpc.type !== 'result') return;
+      if (!rpc || rpc.request_id !== requestId) return;
+      if (rpc.type === 'progress') {
+        const progress = externalHistoryProgress(rpc.progress);
+        if (!progress) return;
+        armTimeout();
+        onProgress?.(progress);
+        return;
+      }
+      if (rpc.type !== 'result') return;
       if (rpc.error) {
-        finish(() => reject(new Error(rpc.error.message || rpc.error.code || '本地助手执行失败')));
+        const errorCode = String(rpc.error.code || '').trim();
+        const errorDetails = (rpc.error.details && typeof rpc.error.details === 'object')
+          ? rpc.error.details
+          : {};
+        // Branch on structured error code/details, not raw messages.
+        if (errorCode === 'external_history_record_too_large') {
+          const limitBytes = Number(errorDetails.limitBytes) || 0;
+          const provider = String(errorDetails.provider || '').trim();
+          // Respect details.resumable instead of hardcoding true. The specific
+          // oversized record cannot currently be imported; durable prior
+          // progress is preserved. Do not encourage an immediate retry that
+          // deterministically fails.
+          const resumable = errorDetails.resumable === true;
+          const limitLabel = limitBytes ? `（${Math.round(limitBytes / 1024 / 1024 * 10) / 10} MiB）` : '';
+          const message = resumable
+            ? `历史记录超过安全限制${limitLabel}，已保留当前进度，可以继续导入剩余历史。`
+            : `历史记录超过安全限制${limitLabel}，该条记录目前无法导入；已完成的历史进度已保留。`;
+          finish(() => reject(Object.assign(
+            new Error(message),
+            { code: errorCode, details: errorDetails, provider, oversized: true, resumable }
+          )));
+          return;
+        }
+        if (errorCode === 'external_history_source_failed') {
+          const provider = String(errorDetails.provider || '').trim();
+          finish(() => reject(Object.assign(
+            new Error('外部历史来源执行失败，请检查来源状态后重试。'),
+            { code: errorCode, details: errorDetails, provider, sourceFailed: true }
+          )));
+          return;
+        }
+        if (errorCode === 'request_expired' || errorCode === 'device_offline') {
+          finish(() => reject(Object.assign(
+            new Error('本地设备暂时离线，请检查连接后重试。'),
+            { code: errorCode, timeout: true }
+          )));
+          return;
+        }
+        finish(() => reject(Object.assign(
+          new Error(rpc.error.message || rpc.error.code || '本地助手执行失败'),
+          { code: errorCode || 'tool_execution_error', details: errorDetails }
+        )));
         return;
       }
       const content = rpc.result?.content;
@@ -517,9 +611,7 @@ export function requestExternalHistory(deviceId, payload, timeoutMs = 55000) {
       unsubscribe();
       callback();
     };
-    timer = window.setTimeout(() => {
-      finish(() => reject(new Error('本地助手响应超时，请检查设备连接')));
-    }, timeoutMs);
+    armTimeout();
     sendWS({
       device_rpc: {
         id,

@@ -59,6 +59,35 @@ func TestDeviceRPCRoutesRequestToSelectedDeviceAndReturnsResult(t *testing.T) {
 	}
 
 	hub.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "rpc-progress-1",
+		Type:      "progress",
+		RequestID: "rpc-1",
+		Progress: &MsgDeviceRPCProgress{
+			Processed: 37,
+			Total:     int64Ptr(100),
+			Provider:  "codex",
+			Phase:     "importing",
+		},
+	})
+
+	var progressAck ServerMessage
+	decodeQueuedServerMessage(t, target.send, &progressAck)
+	if progressAck.Ctrl == nil || progressAck.Ctrl.Code != http.StatusOK {
+		t.Fatalf("unexpected progress ack: %#v", progressAck.Ctrl)
+	}
+	var progress ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &progress)
+	if progress.DeviceRPC == nil || progress.DeviceRPC.Type != "progress" || progress.DeviceRPC.RequestID != "rpc-1" {
+		t.Fatalf("agent received %#v, want device_rpc progress", progress.DeviceRPC)
+	}
+	if progress.DeviceRPC.Progress == nil || progress.DeviceRPC.Progress.Processed != 37 || progress.DeviceRPC.Progress.Total == nil || *progress.DeviceRPC.Progress.Total != 100 {
+		t.Fatalf("unexpected progress payload: %#v", progress.DeviceRPC.Progress)
+	}
+	if pending := hub.DeviceRPCStatus(7); len(pending) != 1 || pending[0].RequestID != "rpc-1" {
+		t.Fatalf("progress must preserve pending request: %#v", pending)
+	}
+
+	hub.handleDeviceRPC(target, &MsgDeviceRPC{
 		ID:        "rpc-result-1",
 		Type:      "result",
 		RequestID: "rpc-1",
@@ -140,6 +169,27 @@ func TestUserExternalHistoryRPCRoutesOnlyToOwnedCapableDevice(t *testing.T) {
 		t.Fatalf("unexpected request ack: %#v", ack.Ctrl)
 	}
 
+	now = now.Add(50 * time.Second)
+	hub.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "progress-1",
+		Type:      "progress",
+		RequestID: "external-1",
+		Progress: &MsgDeviceRPCProgress{
+			Processed: 37,
+			Total:     int64Ptr(100),
+			Provider:  "codex",
+			Phase:     "importing",
+		},
+	})
+	decodeQueuedServerMessage(t, target.send, &ServerMessage{})
+	var progress ServerMessage
+	decodeQueuedServerMessage(t, user.send, &progress)
+	if progress.DeviceRPC == nil || progress.DeviceRPC.Type != "progress" || progress.DeviceRPC.Progress.Processed != 37 {
+		t.Fatalf("user received %#v, want exact external history progress", progress.DeviceRPC)
+	}
+
+	now = now.Add(50 * time.Second)
+
 	hub.handleDeviceRPC(target, &MsgDeviceRPC{
 		ID:        "result-1",
 		Type:      "result",
@@ -151,6 +201,81 @@ func TestUserExternalHistoryRPCRoutesOnlyToOwnedCapableDevice(t *testing.T) {
 	decodeQueuedServerMessage(t, user.send, &result)
 	if result.DeviceRPC == nil || result.DeviceRPC.RequestID != "external-1" {
 		t.Fatalf("user received %#v, want external history result", result.DeviceRPC)
+	}
+}
+
+func TestDeviceRPCProgressPreservesNullableTotalAndValidatesZeroNegative(t *testing.T) {
+	hub, agent, target, _, grant := newDeviceRPCTestFixture(t, true)
+
+	hub.handleDeviceRPC(agent, &MsgDeviceRPC{
+		ID:        "rpc-null-total",
+		Type:      "request",
+		RequestID: "rpc-null-total",
+		GrantID:   grant.GrantID,
+		DeviceID:  grant.DeviceID,
+		Operation: "read_file",
+	})
+	decodeQueuedServerMessage(t, target.send, &ServerMessage{})
+	decodeQueuedServerMessage(t, agent.send, &ServerMessage{})
+
+	// total=nil must serialize as explicit JSON null (not omitted) for discovering.
+	hub.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "progress-null",
+		Type:      "progress",
+		RequestID: "rpc-null-total",
+		Progress:  &MsgDeviceRPCProgress{Processed: 0, Total: nil, Phase: "discovering"},
+	})
+	decodeQueuedServerMessage(t, target.send, &ServerMessage{})
+	var progressNull ServerMessage
+	decodeQueuedServerMessage(t, agent.send, &progressNull)
+	if progressNull.DeviceRPC == nil || progressNull.DeviceRPC.Progress == nil {
+		t.Fatalf("expected forwarded progress: %#v", progressNull.DeviceRPC)
+	}
+	if progressNull.DeviceRPC.Progress.Total != nil {
+		t.Fatalf("total must stay nil for discovering, got %v", *progressNull.DeviceRPC.Progress.Total)
+	}
+	raw, _ := json.Marshal(progressNull.DeviceRPC.Progress)
+	if !strings.Contains(string(raw), `"total":null`) {
+		t.Fatalf("forwarded progress must preserve explicit total:null, got %s", raw)
+	}
+
+	// total=0 with processed=0 is valid (stable empty catalog).
+	hub.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "progress-zero",
+		Type:      "progress",
+		RequestID: "rpc-null-total",
+		Progress:  &MsgDeviceRPCProgress{Processed: 0, Total: int64Ptr(0), Phase: "importing"},
+	})
+	var ackZero ServerMessage
+	decodeQueuedServerMessage(t, target.send, &ackZero)
+	if ackZero.Ctrl == nil || ackZero.Ctrl.Code != http.StatusOK {
+		t.Fatalf("total=0 processed=0 must be accepted: %#v", ackZero.Ctrl)
+	}
+
+	// total=0 with processed>0 is rejected.
+	hub.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "progress-zero-bad",
+		Type:      "progress",
+		RequestID: "rpc-null-total",
+		Progress:  &MsgDeviceRPCProgress{Processed: 1, Total: int64Ptr(0), Phase: "importing"},
+	})
+	var ackZeroBad ServerMessage
+	decodeQueuedServerMessage(t, target.send, &ackZeroBad)
+	if ackZeroBad.Ctrl == nil || ackZeroBad.Ctrl.Code != http.StatusBadRequest {
+		t.Fatalf("processed>0 with total=0 must be rejected: %#v", ackZeroBad.Ctrl)
+	}
+
+	// negative total is rejected.
+	hub.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "progress-neg",
+		Type:      "progress",
+		RequestID: "rpc-null-total",
+		Progress:  &MsgDeviceRPCProgress{Processed: 0, Total: int64Ptr(-1), Phase: "importing"},
+	})
+	var ackNeg ServerMessage
+	decodeQueuedServerMessage(t, target.send, &ackNeg)
+	if ackNeg.Ctrl == nil || ackNeg.Ctrl.Code != http.StatusBadRequest {
+		t.Fatalf("negative total must be rejected: %#v", ackNeg.Ctrl)
 	}
 }
 
@@ -894,4 +1019,8 @@ func newDeviceRPCTestFixture(t *testing.T, bindTarget bool) (*Hub, *Client, *Cli
 
 func containsJSONText(raw []byte, text string) bool {
 	return strings.Contains(string(raw), text)
+}
+
+func int64Ptr(v int64) *int64 {
+	return &v
 }

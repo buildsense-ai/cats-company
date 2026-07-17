@@ -2389,7 +2389,7 @@ body {
 
 .catsco-download-card {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) auto 32px;
+  grid-template-columns: 40px minmax(180px, 1fr) minmax(0, 180px) 32px;
   align-items: center;
   gap: 12px;
   padding: 14px;
@@ -2458,6 +2458,10 @@ button.catsco-download-action:disabled {
 }
 
 .catsco-download-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 700;
   font-size: 14px;
 }
@@ -2469,7 +2473,29 @@ button.catsco-download-action:disabled {
 }
 
 .catsco-download-meta {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .catsco-download-card {
+    grid-template-columns: 40px minmax(0, 1fr) 32px;
+    row-gap: 6px;
+  }
+
+  .catsco-download-card > .catsco-download-meta {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .catsco-download-card > .catsco-download-action,
+  .catsco-download-card > .catsco-download-actions {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
 }
 
 .oc-modal.relay-access-modal {

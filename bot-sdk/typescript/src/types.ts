@@ -72,7 +72,7 @@ export interface MsgClientFriend {
   msg?: string;
 }
 
-export type DeviceRPCType = 'request' | 'result';
+export type DeviceRPCType = 'request' | 'progress' | 'result';
 export type DeviceRPCOperation =
   | 'read_file'
   | 'resolve_common_directory'
@@ -80,11 +80,24 @@ export type DeviceRPCOperation =
   | 'grep'
   | 'write_file'
   | 'edit_file'
-  | 'execute_shell';
+  | 'execute_shell'
+  | 'external_history';
 
 export interface MsgDeviceRPCError {
   code: string;
   message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface MsgDeviceRPCProgress {
+  processed: number;
+  total: number | null;
+  completed?: number;
+  failed?: number;
+  skipped?: number;
+  remaining?: number | null;
+  provider?: string;
+  phase?: string;
 }
 
 export interface MsgDeviceRPC {
@@ -106,6 +119,7 @@ export interface MsgDeviceRPC {
   operation?: DeviceRPCOperation;
   tool_name?: string;
   payload?: Record<string, unknown>;
+  progress?: MsgDeviceRPCProgress;
   result?: unknown;
   error?: MsgDeviceRPCError;
   created_at?: number;
@@ -129,6 +143,25 @@ export interface DeviceRPCRequestInput {
   device_id?: string;
   device_body_id?: string;
   device_installation_id?: string;
+}
+
+export interface DeviceRPCProgressInput {
+  request_id: string;
+  progress: MsgDeviceRPCProgress;
+  grant_id?: string;
+  session_key?: string;
+  topic_id?: string;
+  topic_type?: string;
+  actor_user_id?: string;
+  owner_user_id?: string;
+  identity_source?: string;
+  agent_id?: string;
+  agent_body_id?: string;
+  device_id?: string;
+  device_body_id?: string;
+  device_installation_id?: string;
+  operation?: DeviceRPCOperation;
+  tool_name?: string;
 }
 
 export interface DeviceRPCResultInput {

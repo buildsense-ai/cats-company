@@ -659,6 +659,50 @@ func (s *RedisRuntimeState) getDeviceRPCPending(requestID string, now time.Time)
 	return record, true
 }
 
+func (s *RedisRuntimeState) refreshDeviceRPCPending(requestID string, now time.Time, expiresAt time.Time) (deviceRPCPendingRecord, bool) {
+	if s == nil || requestID == "" || !now.Before(expiresAt) {
+		return deviceRPCPendingRecord{}, false
+	}
+	key := s.deviceRPCPendingKey(requestID)
+	var refreshed deviceRPCPendingRecord
+	for i := 0; i < 8; i++ {
+		found := false
+		err := s.client.Watch(s.ctx, func(tx *redis.Tx) error {
+			record, ok := s.getDeviceRPCPendingRecordWithClient(tx, requestID)
+			if !ok || !now.Before(record.expiresAt) {
+				return nil
+			}
+			record.expiresAt = expiresAt
+			record.requesterRoute.ExpiresAt = expiresAt
+			payload, err := json.Marshal(redisDeviceRPCPendingFromRuntime(record))
+			if err != nil {
+				return err
+			}
+			ttl := ttlUntil(now, expiresAt)
+			_, err = tx.TxPipelined(s.ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(s.ctx, key, payload, ttl)
+				pipe.Expire(s.ctx, s.deviceRPCPendingAllKey(), defaultDeviceRPCTTL*4)
+				pipe.Expire(s.ctx, s.deviceRPCPendingOwnerKey(record.ownerUID), defaultDeviceRPCTTL*4)
+				pipe.Expire(s.ctx, s.deviceRPCPendingDeviceKey(record.ownerUID, record.deviceID), defaultDeviceRPCTTL*4)
+				return nil
+			})
+			if err == nil {
+				refreshed = record
+				found = true
+			}
+			return err
+		}, key)
+		if errors.Is(err, redis.TxFailedErr) {
+			continue
+		}
+		if err != nil || !found {
+			return deviceRPCPendingRecord{}, false
+		}
+		return refreshed, true
+	}
+	return deviceRPCPendingRecord{}, false
+}
+
 func (s *RedisRuntimeState) finishDeviceRPCPending(requestID string) {
 	if s == nil || requestID == "" {
 		return

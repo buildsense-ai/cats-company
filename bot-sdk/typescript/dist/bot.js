@@ -230,6 +230,28 @@ class CatsBot {
             request_id: String(ack.request_id ?? requestID),
         };
     }
+    /** Report precise progress for a pending device_rpc request. */
+    sendDeviceRPCProgress(input) {
+        return this.sendDeviceRPC({
+            type: 'progress',
+            request_id: input.request_id,
+            grant_id: input.grant_id,
+            session_key: input.session_key,
+            topic_id: input.topic_id,
+            topic_type: input.topic_type,
+            actor_user_id: input.actor_user_id,
+            owner_user_id: input.owner_user_id,
+            identity_source: input.identity_source,
+            agent_id: input.agent_id,
+            agent_body_id: input.agent_body_id,
+            device_id: input.device_id,
+            device_body_id: input.device_body_id,
+            device_installation_id: input.device_installation_id,
+            operation: input.operation,
+            tool_name: input.tool_name,
+            progress: input.progress,
+        });
+    }
     /** Send a result for a device_rpc request routed to this connection. */
     sendDeviceRPCResult(input) {
         return this.sendDeviceRPC({
