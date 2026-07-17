@@ -78,6 +78,7 @@ updates = {
     "GHCR_REGISTRY": "${GHCR_REGISTRY:-ghcr.io}",
     "GHCR_OWNER": "${GHCR_OWNER:-}",
     "IMAGE_TAG": "$revision",
+    "CATSCO_IMAGE_TIMEOUT_SECONDS": "${CATSCO_IMAGE_TIMEOUT_SECONDS:-540}",
 }
 
 lines = []

@@ -238,6 +238,20 @@ func TestImageGenerationProxyHandlerFromEnvReadsAPIKeyFile(t *testing.T) {
 	}
 }
 
+func TestImageGenerationProxyHandlerFromEnvUsesLongImageBudget(t *testing.T) {
+	t.Setenv("CATSCO_IMAGE_UPSTREAM_URL", "https://images.example.com/v1/images/generations")
+	t.Setenv("CATSCO_IMAGE_UPSTREAM_API_KEY", "provider-secret")
+	t.Setenv("CATSCO_IMAGE_TIMEOUT_SECONDS", "")
+
+	handler := NewImageGenerationProxyHandlerFromEnv()
+	if err := handler.ConfigError(); err != nil {
+		t.Fatalf("unexpected configuration error: %v", err)
+	}
+	if got, want := handler.client.Timeout, 540*time.Second; got != want {
+		t.Fatalf("default image timeout = %s, want %s", got, want)
+	}
+}
+
 func TestParseImageGenerationUpstreamURLRequiresHTTPSOutsideLoopback(t *testing.T) {
 	if _, err := parseImageGenerationUpstreamURL("http://images.example.com/v1/images/generations"); err == nil {
 		t.Fatalf("expected public HTTP endpoint to be rejected")

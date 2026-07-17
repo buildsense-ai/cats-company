@@ -19,7 +19,7 @@ import (
 
 const (
 	defaultImageGenerationModel                 = "gpt-image-2"
-	defaultImageGenerationTimeout               = 300 * time.Second
+	defaultImageGenerationTimeout               = 540 * time.Second
 	defaultImageGenerationMaxRequestBytes int64 = 1 << 20  // 1 MiB
 	defaultImageEditMaxRequestBytes       int64 = 24 << 20 // 24 MiB, including base64 expansion.
 )
