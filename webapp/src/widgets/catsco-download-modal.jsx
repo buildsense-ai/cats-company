@@ -297,15 +297,21 @@ export default function CatsCoDownloadModal({ onClose }) {
           </div>
 
           {devices.map((device) => (
-            <div key={device.deviceId} className="catsco-download-card">
+            <div key={device.deviceId} className="catsco-download-card catsco-device-card">
               <span className="catsco-download-icon">
                 <Monitor size={20} />
               </span>
               <span className="catsco-download-copy">
                 <span className="catsco-download-title">{device.displayName || device.deviceId}</span>
                 <span className="catsco-download-desc">{deviceStatusLabel(device)}</span>
+                {(device.capabilities || []).length > 0 && (
+                  <span className="catsco-device-capabilities" aria-label="设备能力">
+                    {device.capabilities.map((capability, index) => (
+                      <span key={`${capability}-${index}`}>{capability}</span>
+                    ))}
+                  </span>
+                )}
               </span>
-              <span className="catsco-download-meta">{(device.capabilities || []).join(', ')}</span>
               <button type="button" className="catsco-download-action" onClick={() => handleUnlinkDevice(device.deviceId)}>
                 <Trash2 size={16} />
               </button>

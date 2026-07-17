@@ -15,6 +15,17 @@ describe('relay usage labels', () => {
     )).toBe('自备模型');
   });
 
+  test('can omit a model name already displayed by the model selector', () => {
+    expect(formatRelayUsagePill(
+      { source: 'custom', status: 'custom', model: 'gpt-5.6-sol' },
+      { customLabel: '自备模型', showModel: false },
+    )).toBe('自备模型');
+    expect(formatRelayUsagePill(
+      { status: 'ok', model: 'MiniMax-M2.7', remaining_percent: 64 },
+      { showModel: false },
+    )).toBe('剩余 64%');
+  });
+
   test('bounds unusually long custom model names', () => {
     expect(shortCustomModelName('vendor-model-name-that-is-unusually-long'))
       .toBe('vendor-model-name-that-i...');

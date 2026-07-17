@@ -40,6 +40,11 @@ func (h *GroupHandler) rejectChannelManagedGroup(w http.ResponseWriter, groupID 
 type CreateGroupRequest struct {
 	Name      string  `json:"name"`
 	MemberIDs []int64 `json:"member_ids"`
+	Kind      string  `json:"kind,omitempty"`
+}
+
+type groupKindUpdater interface {
+	UpdateGroupKind(groupID int64, kind string) error
 }
 
 // GroupActionRequest is the JSON body for group member actions.
@@ -71,6 +76,13 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "group name required"})
 		return
 	}
+	if req.Kind == "" {
+		req.Kind = types.GroupKindStandard
+	}
+	if req.Kind != types.GroupKindStandard && req.Kind != types.GroupKindAgentTask {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid group kind"})
+		return
+	}
 
 	// Check total member count (creator + invited)
 	if len(req.MemberIDs)+1 > 200 {
@@ -90,6 +102,10 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "max 10 bots per group"})
 		return
 	}
+	if req.Kind == types.GroupKindAgentTask && (len(req.MemberIDs) != 1 || botCount != 1) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "agent task requires exactly one agent"})
+		return
+	}
 
 	// Create the group (also creates topic and adds owner)
 	groupID, err := h.db.CreateGroup(req.Name, uid)
@@ -97,13 +113,30 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create group"})
 		return
 	}
+	if req.Kind == types.GroupKindAgentTask {
+		kindDB, ok := h.db.(groupKindUpdater)
+		if !ok {
+			_ = h.db.DeleteGroup(groupID)
+			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "agent tasks are unavailable"})
+			return
+		}
+		if err := kindDB.UpdateGroupKind(groupID, req.Kind); err != nil {
+			_ = h.db.DeleteGroup(groupID)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create agent task"})
+			return
+		}
+	}
 
 	// Add initial members
 	for _, mid := range req.MemberIDs {
 		if mid == uid {
 			continue // owner already added
 		}
-		_ = h.db.AddGroupMember(groupID, mid, "member")
+		if err := h.db.AddGroupMember(groupID, mid, "member"); err != nil && req.Kind == types.GroupKindAgentTask {
+			_ = h.db.DeleteGroup(groupID)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to add agent to task"})
+			return
+		}
 	}
 
 	topicID := fmt.Sprintf("grp_%d", groupID)
@@ -111,22 +144,26 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 	createdAt := time.Now()
 	avatarURL := ""
 	responseGroup := map[string]interface{}{
-		"id":         groupID,
-		"name":       req.Name,
-		"owner_id":   uid,
-		"avatar_url": avatarURL,
-		"created_at": createdAt,
+		"id":            groupID,
+		"name":          req.Name,
+		"owner_id":      uid,
+		"avatar_url":    avatarURL,
+		"created_at":    createdAt,
+		"kind":          req.Kind,
+		"is_agent_task": req.Kind == types.GroupKindAgentTask,
 	}
 	if groupErr == nil && group != nil {
 		createdAt = group.CreatedAt
 		avatarURL = group.AvatarURL
 		responseGroup = map[string]interface{}{
-			"id":          group.ID,
-			"name":        group.Name,
-			"owner_id":    group.OwnerID,
-			"avatar_url":  group.AvatarURL,
-			"max_members": group.MaxMembers,
-			"created_at":  group.CreatedAt,
+			"id":            group.ID,
+			"name":          group.Name,
+			"owner_id":      group.OwnerID,
+			"avatar_url":    group.AvatarURL,
+			"max_members":   group.MaxMembers,
+			"created_at":    group.CreatedAt,
+			"kind":          group.Kind,
+			"is_agent_task": group.Kind == types.GroupKindAgentTask,
 		}
 	}
 
@@ -138,12 +175,14 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 	})
 
 	response := map[string]interface{}{
-		"group_id":   groupID,
-		"topic":      topicID,
-		"name":       req.Name,
-		"group":      responseGroup,
-		"created_at": createdAt,
-		"avatar_url": avatarURL,
+		"group_id":     groupID,
+		"topic":        topicID,
+		"name":         req.Name,
+		"group":        responseGroup,
+		"created_at":   createdAt,
+		"avatar_url":   avatarURL,
+		"kind":         req.Kind,
+		"is_agent_task": req.Kind == types.GroupKindAgentTask,
 	}
 	writeJSON(w, http.StatusOK, response)
 }

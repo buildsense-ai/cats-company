@@ -169,6 +169,23 @@ export default function FeedbackModal({ onClose, user }) {
     addFiles(event.dataTransfer.files);
   };
 
+  const handlePaste = (event) => {
+    const clipboardItems = Array.from(event.clipboardData?.items || []);
+    let pastedImages = clipboardItems
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+
+    if (pastedImages.length === 0) {
+      pastedImages = Array.from(event.clipboardData?.files || [])
+        .filter((file) => file.type.startsWith('image/'));
+    }
+
+    if (pastedImages.length === 0) return;
+    event.preventDefault();
+    addFiles(pastedImages);
+  };
+
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <section className="oc-modal oc-feedback-modal" role="dialog" aria-modal="true" aria-label="意见反馈" onClick={(event) => event.stopPropagation()}>
@@ -196,7 +213,7 @@ export default function FeedbackModal({ onClose, user }) {
             </div>
 
             <label className={`oc-feedback-message-field ${isDragging ? 'dragging' : ''}`} onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }} onDragLeave={() => setIsDragging(false)} onDrop={handleDrop}>
-              <textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={800} rows={8} required placeholder="描述你遇到的问题或建议" />
+              <textarea value={description} onChange={(event) => setDescription(event.target.value)} onPaste={handlePaste} maxLength={800} rows={8} required placeholder="描述你遇到的问题或建议" />
               <div className="oc-feedback-media-tools">
                 {attachments.length > 0 && <div className="oc-feedback-preview-grid">{attachments.map((item) => <div className="oc-feedback-preview" key={item.id}><img src={item.previewUrl} alt={item.file.name} /><button type="button" aria-label={`移除 ${item.file.name}`} onClick={() => removeAttachment(item.id)}><X /></button></div>)}</div>}
                 <span className="oc-feedback-upload-button"><Plus aria-hidden="true" /><span>上传图片/录屏</span><input type="file" accept={IMAGE_UPLOAD_ACCEPT} multiple onChange={(event) => addFiles(event.target.files)} /></span>

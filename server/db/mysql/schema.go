@@ -14,6 +14,7 @@ func (a *Adapter) CreateSchema() error {
 		createTopicsTable,
 		createProjectsTable,
 		createProjectTopicsTable,
+		createConversationTitlesTable,
 		createMessagesTable,
 		createConversationTaskStatusesTable,
 		createBotConfigTable,
@@ -217,6 +218,18 @@ CREATE TABLE IF NOT EXISTS project_topics (
     FOREIGN KEY (owner_uid) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createConversationTitlesTable = `
+CREATE TABLE IF NOT EXISTS conversation_titles (
+    user_id BIGINT NOT NULL,
+    topic_id VARCHAR(64) NOT NULL,
+    title VARCHAR(80) NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, topic_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 

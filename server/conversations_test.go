@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -291,6 +292,11 @@ type conversationTestStore struct {
 	taskStatuses  map[string]*types.ConversationTaskStatus
 	projectTopics []*types.ProjectTopic
 	requestedIDs  []string
+	titles        map[string]string
+	allowRename   bool
+	renamedOwner  int64
+	renamedTopic  string
+	renamedTitle  string
 }
 
 func (s *conversationTestStore) GetFriends(uid int64) ([]*types.User, error) {
@@ -333,6 +339,34 @@ func (s *conversationTestStore) UpsertConversationTaskStatus(status *types.Conve
 
 func (s *conversationTestStore) ListProjectTopics(ownerUID int64) ([]*types.ProjectTopic, error) {
 	return s.projectTopics, nil
+}
+
+func TestBuildGroupConversationSummaryMarksAgentTasks(t *testing.T) {
+	summary := buildGroupConversationSummary("grp_77", &types.Group{
+		ID:      77,
+		Name:    "Release Review Task",
+		Kind:    types.GroupKindAgentTask,
+		HasBot:  true,
+		OwnerID: 100,
+	}, nil)
+
+	if !summary.IsGroup {
+		t.Fatal("expected agent task to remain a group conversation")
+	}
+	if !summary.IsAgentTask {
+		t.Fatal("expected agent task marker in conversation summary")
+	}
+}
+
+func (s *conversationTestStore) GetConversationTitles(ownerID int64, topicIDs []string) (map[string]string, error) {
+	return s.titles, nil
+}
+
+func (s *conversationTestStore) UpdateConversationTitle(ownerID int64, topicID, title string) (bool, error) {
+	s.renamedOwner = ownerID
+	s.renamedTopic = topicID
+	s.renamedTitle = title
+	return s.allowRename, nil
 }
 
 func TestConversationsIncludeOwnedAgentsWithoutFriendRelationship(t *testing.T) {
@@ -382,6 +416,70 @@ func TestConversationsIncludeOwnedAgentsWithoutFriendRelationship(t *testing.T) 
 	}
 	if len(store.requestedIDs) != 1 || store.requestedIDs[0] != "p2p_7_42" {
 		t.Fatalf("requested topic ids = %#v, want p2p_7_42", store.requestedIDs)
+	}
+}
+
+func TestConversationsUseCustomTaskTitle(t *testing.T) {
+	store := &conversationTestStore{
+		ownerBots: []map[string]interface{}{{
+			"id":           int64(42),
+			"username":     "dev-agent",
+			"display_name": "Dev Agent",
+		}},
+		titles: map[string]string{"p2p_7_42": "Release checklist"},
+	}
+	handler := NewConversationHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Conversations []*types.ConversationSummary `json:"conversations"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Conversations) != 1 || body.Conversations[0].Name != "Release checklist" {
+		t.Fatalf("unexpected custom task title: %+v", body.Conversations)
+	}
+}
+
+func TestConversationTitleUpdate(t *testing.T) {
+	store := &conversationTestStore{allowRename: true}
+	handler := NewConversationHandler(store, nil)
+	req := httptest.NewRequest(http.MethodPatch, "/api/conversations", strings.NewReader(`{"topic_id":"p2p_7_42","name":" Release checklist "}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.Handle(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.renamedOwner != 7 || store.renamedTopic != "p2p_7_42" || store.renamedTitle != "Release checklist" {
+		t.Fatalf("unexpected rename request: owner=%d topic=%q title=%q", store.renamedOwner, store.renamedTopic, store.renamedTitle)
+	}
+}
+
+func TestConversationTitleUpdateRejectsUnrelatedTask(t *testing.T) {
+	store := &conversationTestStore{allowRename: true}
+	handler := NewConversationHandler(store, nil)
+	req := httptest.NewRequest(http.MethodPatch, "/api/conversations", strings.NewReader(`{"topic_id":"p2p_8_42","name":"Not mine"}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.Handle(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if store.renamedTopic != "" {
+		t.Fatalf("unexpected rename for unrelated task: %q", store.renamedTopic)
 	}
 }
 

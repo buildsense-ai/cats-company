@@ -112,6 +112,32 @@ describe('CatsCoDownloadModal', () => {
     ]));
   });
 
+  test('keeps device status separate from wrapping capability labels', async () => {
+    api.getDevices.mockResolvedValue({
+      devices: [{
+        deviceId: 'device-1',
+        displayName: 'LAPTOP-GIHN1H8',
+        routable: true,
+        capabilities: ['read_file', 'resolve_common_directory', 'execute_shell'],
+      }],
+    });
+
+    await act(async () => {
+      root.render(React.createElement(CatsCoDownloadModal, { onClose: vi.fn() }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const card = container.querySelector('.catsco-device-card');
+    expect(card.querySelector('.catsco-download-desc').textContent).toBe('可用');
+    expect(Array.from(card.querySelectorAll('.catsco-device-capabilities > span')).map((item) => item.textContent)).toEqual([
+      'read_file',
+      'resolve_common_directory',
+      'execute_shell',
+    ]);
+    expect(card.querySelector('.catsco-download-meta')).toBeNull();
+  });
+
   test('opens the desktop connector from the primary action', async () => {
     api.createDeviceConnectorPairing.mockResolvedValue({
       pairing_id: 'pair-1',

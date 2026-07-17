@@ -647,6 +647,7 @@ describe('ChatMessage rich file rendering', () => {
 
   it('renders message actions at the lower left and time at the lower right', async () => {
     const onReply = vi.fn();
+    const onRegenerate = vi.fn(() => Promise.resolve());
     await act(async () => {
       root.render(
         <ChatMessage
@@ -660,6 +661,7 @@ describe('ChatMessage rich file rendering', () => {
           isGroup={false}
           senderName="CatsCo"
           onReply={onReply}
+          onRegenerate={onRegenerate}
         />,
       );
       await Promise.resolve();
@@ -668,6 +670,8 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('[aria-label="Add Reaction"]')).toBeNull();
     const footer = container.querySelector('.v3-message-footer');
     expect(footer).not.toBeNull();
+    expect(footer.previousElementSibling?.classList.contains('v3-message-bubble')).toBe(true);
+    expect(container.querySelector('.v3-message-bubble')?.contains(footer)).toBe(false);
     expect(Array.from(footer.children).map((node) => node.className)).toEqual([
       'v3-message-actions',
       'v3-msg-time',
@@ -675,11 +679,27 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-msg-header .v3-msg-time')).toBeNull();
     expect(footer.querySelector('time.v3-msg-time')?.getAttribute('datetime')).toBe('2026-06-09T00:00:00Z');
 
+    const directActions = Array.from(footer.querySelectorAll(':scope > .v3-message-actions > .v3-action-btn'));
+    expect(directActions.map((button) => button.getAttribute('aria-label'))).toEqual([
+      '复制',
+      '重新生成',
+      '更多操作',
+    ]);
+
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="回复"]'));
+      Simulate.click(container.querySelector('[aria-label="复制"]'));
       await Promise.resolve();
     });
-    expect(onReply).toHaveBeenCalledTimes(1);
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('这是一条可以复制的消息');
+    expect(container.querySelector('[aria-label="已复制"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="点赞"]')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="重新生成"]'));
+      await Promise.resolve();
+    });
+    expect(onRegenerate).toHaveBeenCalledTimes(1);
+    expect(onRegenerate).toHaveBeenCalledWith(expect.objectContaining({ id: 20 }));
 
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="更多操作"]'));
@@ -687,15 +707,8 @@ describe('ChatMessage rich file rendering', () => {
     });
     const menu = container.querySelector('.v3-message-action-menu');
     expect(menu).not.toBeNull();
-    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(2);
-
-    await act(async () => {
-      Simulate.click(menu.querySelector('[role="menuitem"]'));
-      await Promise.resolve();
-    });
-
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('这是一条可以复制的消息');
-    expect(menu.textContent).toContain('已复制');
+    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(1);
+    expect(menu.textContent).toContain('回复');
 
     await act(async () => {
       document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
@@ -719,12 +732,12 @@ describe('ChatMessage rich file rendering', () => {
       Simulate.click(container.querySelector('[aria-label="更多操作"]'));
       await Promise.resolve();
     });
-    const replyMenuItem = container.querySelectorAll('.v3-message-action-menu [role="menuitem"]')[1];
+    const replyMenuItem = container.querySelector('.v3-message-action-menu [role="menuitem"]');
     await act(async () => {
       Simulate.click(replyMenuItem);
       await Promise.resolve();
     });
-    expect(onReply).toHaveBeenCalledTimes(2);
+    expect(onReply).toHaveBeenCalledTimes(1);
     expect(container.querySelector('.v3-message-action-menu')).toBeNull();
   });
 

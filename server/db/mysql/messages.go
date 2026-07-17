@@ -341,3 +341,53 @@ func (a *Adapter) GetLatestMessagesForTopics(topicIDs []string) (map[string]*typ
 	}
 	return latest, rows.Err()
 }
+
+// GetConversationTitles returns non-empty custom P2P task titles owned by a user.
+func (a *Adapter) GetConversationTitles(ownerID int64, topicIDs []string) (map[string]string, error) {
+	if len(topicIDs) == 0 {
+		return map[string]string{}, nil
+	}
+
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(topicIDs)), ",")
+	args := make([]interface{}, 0, len(topicIDs)+1)
+	args = append(args, ownerID)
+	for _, topicID := range topicIDs {
+		args = append(args, topicID)
+	}
+	rows, err := a.db.Query(
+		fmt.Sprintf(`SELECT topic_id, title FROM conversation_titles WHERE user_id = ? AND topic_id IN (%s)`, placeholders),
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get conversation titles: %w", err)
+	}
+	defer rows.Close()
+
+	titles := make(map[string]string)
+	for rows.Next() {
+		var topicID, title string
+		if err := rows.Scan(&topicID, &title); err != nil {
+			return nil, fmt.Errorf("scan conversation title: %w", err)
+		}
+		titles[topicID] = title
+	}
+	return titles, rows.Err()
+}
+
+// UpdateConversationTitle updates a user-owned P2P task title.
+func (a *Adapter) UpdateConversationTitle(ownerID int64, topicID, title string) (bool, error) {
+	result, err := a.db.Exec(
+		`INSERT INTO conversation_titles (user_id, topic_id, title)
+		 SELECT ?, id, ? FROM topics WHERE id = ? AND type = 'p2p'
+		 ON DUPLICATE KEY UPDATE title = VALUES(title), updated_at = CURRENT_TIMESTAMP`,
+		ownerID, title, topicID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("update conversation title: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("conversation title rows affected: %w", err)
+	}
+	return updated > 0, nil
+}

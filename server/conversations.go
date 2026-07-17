@@ -5,6 +5,9 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
@@ -16,9 +19,32 @@ type ConversationHandler struct {
 	hub *Hub
 }
 
+type conversationTitleStore interface {
+	GetConversationTitles(ownerID int64, topicIDs []string) (map[string]string, error)
+	UpdateConversationTitle(ownerID int64, topicID, title string) (bool, error)
+}
+
+type updateConversationTitleRequest struct {
+	TopicID string `json:"topic_id"`
+	Name    string `json:"name"`
+}
+
 // NewConversationHandler creates a new ConversationHandler.
 func NewConversationHandler(db store.Store, hub *Hub) *ConversationHandler {
 	return &ConversationHandler{db: db, hub: hub}
+}
+
+// Handle serves conversation listing and task-title updates.
+func (h *ConversationHandler) Handle(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.HandleList(w, r)
+	case http.MethodPatch:
+		h.HandleUpdateTitle(w, r)
+	default:
+		w.Header().Set("Allow", "GET, PATCH")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
 }
 
 // HandleList handles GET /api/conversations
@@ -79,6 +105,7 @@ func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request)
 		applyProjectTopic(summary, projectTopics[topicID])
 		conversations = append(conversations, summary)
 	}
+
 	for _, bot := range ownerConversationBots {
 		topicID := p2pTopicID(uid, bot.ID)
 		summary := buildFriendConversationSummary(topicID, bot, latestByTopic[topicID], h.hub)
@@ -92,6 +119,22 @@ func (h *ConversationHandler) HandleList(w http.ResponseWriter, r *http.Request)
 		summary.TaskStatus = taskStatusByTopic[topicID]
 		applyProjectTopic(summary, projectTopics[topicID])
 		conversations = append(conversations, summary)
+	}
+
+	if titleDB, ok := h.db.(conversationTitleStore); ok {
+		titles, titleErr := titleDB.GetConversationTitles(uid, topicIDs)
+		if titleErr != nil {
+			log.Printf("conversations: failed to load custom titles for uid=%d: %v", uid, titleErr)
+		} else {
+			for _, conversation := range conversations {
+				if conversation.IsGroup {
+					continue
+				}
+				if title := strings.TrimSpace(titles[conversation.ID]); title != "" {
+					conversation.Name = title
+				}
+			}
+		}
 	}
 
 	sort.SliceStable(conversations, conversationLess(conversations))
@@ -143,6 +186,58 @@ func applyProjectTopic(summary *types.ConversationSummary, assignment *types.Pro
 	summary.ProjectName = assignment.ProjectName
 }
 
+// HandleUpdateTitle changes the current user's custom title for a P2P task.
+func (h *ConversationHandler) HandleUpdateTitle(w http.ResponseWriter, r *http.Request) {
+	uid := UIDFromContext(r.Context())
+	var req updateConversationTitleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+
+	req.TopicID = strings.TrimSpace(req.TopicID)
+	req.Name = strings.TrimSpace(req.Name)
+	if !p2pTopicIncludesUID(req.TopicID, uid) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid task"})
+		return
+	}
+	if req.Name == "" || utf8.RuneCountInString(req.Name) > 80 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "task name must be 1 to 80 characters"})
+		return
+	}
+
+	titleDB, ok := h.db.(conversationTitleStore)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "task rename is unavailable"})
+		return
+	}
+	updated, err := titleDB.UpdateConversationTitle(uid, req.TopicID, req.Name)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to rename task"})
+		return
+	}
+	if !updated {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":       true,
+		"topic_id": req.TopicID,
+		"name":     req.Name,
+	})
+}
+
+func p2pTopicIncludesUID(topicID string, uid int64) bool {
+	parts := strings.Split(topicID, "_")
+	if len(parts) != 3 || parts[0] != "p2p" {
+		return false
+	}
+	first, firstErr := strconv.ParseInt(parts[1], 10, 64)
+	second, secondErr := strconv.ParseInt(parts[2], 10, 64)
+	return firstErr == nil && secondErr == nil && (first == uid || second == uid)
+}
+
 func buildFriendConversationSummary(topicID string, friend *types.User, latest *types.Message, hub *Hub) *types.ConversationSummary {
 	isBot := friend.BotDisclose || friend.AccountType == types.AccountBot
 	isOnline := hub != nil && hub.IsOnline(friend.ID)
@@ -185,12 +280,13 @@ func ownerBotUsersFromMaps(bots []map[string]interface{}) []*types.User {
 
 func buildGroupConversationSummary(topicID string, group *types.Group, latest *types.Message) *types.ConversationSummary {
 	summary := &types.ConversationSummary{
-		ID:        topicID,
-		Name:      group.Name,
-		IsGroup:   true,
-		GroupID:   group.ID,
-		AvatarURL: group.AvatarURL,
-		HasBot:    group.HasBot,
+		ID:          topicID,
+		Name:        group.Name,
+		IsGroup:     true,
+		GroupID:     group.ID,
+		AvatarURL:   group.AvatarURL,
+		HasBot:      group.HasBot,
+		IsAgentTask: group.Kind == types.GroupKindAgentTask,
 	}
 	applyLatestMessage(summary, latest)
 	applyGroupCreatedTime(summary, group)

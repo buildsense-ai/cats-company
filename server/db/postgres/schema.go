@@ -14,6 +14,7 @@ func (a *Adapter) CreateSchema() error {
 		createTopicsTable,
 		createProjectsTable,
 		createProjectTopicsTable,
+		createConversationTitlesTable,
 		createMessagesTable,
 		createConversationTaskStatusesTable,
 		createBotConfigTable,
@@ -186,6 +187,16 @@ CREATE TABLE IF NOT EXISTS project_topics (
     project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (owner_uid, topic_id)
+);
+`
+
+const createConversationTitlesTable = `
+CREATE TABLE IF NOT EXISTS conversation_titles (
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    topic_id VARCHAR(64) NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    title VARCHAR(80) NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, topic_id)
 );
 `
 

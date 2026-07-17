@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, CornerUpLeft, MoreHorizontal, X, Eye, Copy, CheckCircle2, CircleDot, Circle } from 'lucide-react';
+import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, CornerUpLeft, MoreHorizontal, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -697,9 +697,10 @@ function WorkingProcess({ blocks }) {
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, onReply, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
+function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, onReply, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [copyState, setCopyState] = useState('');
+  const [regenerateState, setRegenerateState] = useState('');
   const actionsRef = useRef(null);
   const content = message.content;
   const effectiveWorkingMessages = workingMessages || message._working || [];
@@ -777,6 +778,18 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
     }
   };
 
+  const handleRegenerateClick = async (event) => {
+    event.stopPropagation();
+    if (!onRegenerate || regenerateState === 'pending') return;
+    setRegenerateState('pending');
+    try {
+      await onRegenerate(message);
+      setRegenerateState('done');
+    } catch (error) {
+      setRegenerateState('failed');
+    }
+  };
+
   useEffect(() => {
     if (!actionsOpen) return undefined;
 
@@ -817,42 +830,44 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
       </div>
 
       <div className="v3-msg-body">
-        {!isConsecutive && (
-          <div className="v3-msg-header">
-            <span className="v3-msg-name">{displayName}</span>
-          </div>
-        )}
+        <div className="v3-message-bubble">
+          {!isConsecutive && (
+            <div className="v3-msg-header">
+              <span className="v3-msg-name">{displayName}</span>
+            </div>
+          )}
 
-        {replyMessage && (
-          <div style={{ padding: '4px 8px', background: 'rgba(255,255,255,0.05)', borderRadius: 4, marginBottom: 4, fontSize: 13, color: '#aaa', borderLeft: '3px solid var(--v3-primary)', width: 'fit-content' }}>
-            <span style={{opacity: 0.8}}>
-              {typeof replyMessage.content === 'string' ? replyMessage.content.slice(0, 80) : '[media]'}
-            </span>
-          </div>
-        )}
+          {replyMessage && (
+            <div style={{ padding: '4px 8px', background: 'rgba(255,255,255,0.05)', borderRadius: 4, marginBottom: 4, fontSize: 13, color: '#aaa', borderLeft: '3px solid var(--v3-primary)', width: 'fit-content' }}>
+              <span style={{opacity: 0.8}}>
+                {typeof replyMessage.content === 'string' ? replyMessage.content.slice(0, 80) : '[media]'}
+              </span>
+            </div>
+          )}
 
-        {!isSelf && showThinking && <WorkingProcess blocks={workingBlocks} />}
+          {!isSelf && showThinking && <WorkingProcess blocks={workingBlocks} />}
 
-        {(hasText || richBlocks.length > 0) && (
-          <div style={{lineHeight: 1.46}}>
-            {hasText && (parsed ? (
-              <RichContent
-                content={parsed}
-                onPreviewFile={onPreviewFile}
-                activePreviewFile={activePreviewFile}
-              />
-            ) : <TextContent content={renderedTextContent} isGroup={isGroup} />)}
-            {richBlocks.map((block, index) => (
-              <RichContent
-                key={`${block.type}-${index}`}
-                content={block}
-                onPreviewFile={onPreviewFile}
-                activePreviewFile={activePreviewFile}
-              />
-            ))}
-            {message._streaming && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
-          </div>
-        )}
+          {(hasText || richBlocks.length > 0) && (
+            <div style={{lineHeight: 1.46}}>
+              {hasText && (parsed ? (
+                <RichContent
+                  content={parsed}
+                  onPreviewFile={onPreviewFile}
+                  activePreviewFile={activePreviewFile}
+                />
+              ) : <TextContent content={renderedTextContent} isGroup={isGroup} />)}
+              {richBlocks.map((block, index) => (
+                <RichContent
+                  key={`${block.type}-${index}`}
+                  content={block}
+                  onPreviewFile={onPreviewFile}
+                  activePreviewFile={activePreviewFile}
+                />
+              ))}
+              {message._streaming && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
+            </div>
+          )}
+        </div>
 
         <div className="v3-message-footer">
           <div
@@ -860,9 +875,26 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
             className={`v3-message-actions${actionsOpen ? ' open' : ''}`}
             onClick={(event) => event.stopPropagation()}
           >
-            {onReply && (
-              <button className="v3-action-btn" onClick={handleReplyClick} aria-label={t('chat_reply')} title={t('chat_reply')} type="button">
-                <CornerUpLeft size={14} />
+            <button
+              className={`v3-action-btn${copyState === 'copied' ? ' is-active' : ''}`}
+              onClick={handleCopyClick}
+              aria-label={copyState === 'copied' ? '已复制' : t('chat_copy')}
+              title={copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败' : t('chat_copy')}
+              disabled={!copyText}
+              type="button"
+            >
+              <Copy size={17} />
+            </button>
+            {onRegenerate && (
+              <button
+                className={`v3-action-btn v3-regenerate-action${regenerateState === 'pending' ? ' is-pending' : ''}${regenerateState === 'done' ? ' is-active' : ''}`}
+                onClick={handleRegenerateClick}
+                aria-label={regenerateState === 'pending' ? '正在重新生成' : '重新生成'}
+                title={regenerateState === 'failed' ? '重新生成失败，请重试' : regenerateState === 'pending' ? '正在重新生成' : '重新生成'}
+                disabled={regenerateState === 'pending'}
+                type="button"
+              >
+                <RotateCcw size={18} />
               </button>
             )}
             <button
@@ -878,15 +910,6 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
             </button>
             {actionsOpen && (
               <div className="v3-message-action-menu" role="menu">
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={handleCopyClick}
-                  disabled={!copyText}
-                >
-                  <Copy size={14} />
-                  <span>{copyState === 'copied' ? '已复制' : copyState === 'failed' ? '复制失败' : t('chat_copy')}</span>
-                </button>
                 {onReply && (
                   <button type="button" role="menuitem" onClick={handleReplyClick}>
                     <CornerUpLeft size={14} />
@@ -912,6 +935,7 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.senderAvatarUrl === nextProps.senderAvatarUrl &&
     prevProps.senderIsBot === nextProps.senderIsBot &&
     prevProps.replyMessage === nextProps.replyMessage &&
+    prevProps.onRegenerate === nextProps.onRegenerate &&
     prevProps.showThinking === nextProps.showThinking &&
     prevProps.isConsecutive === nextProps.isConsecutive &&
     prevProps.onPreviewFile === nextProps.onPreviewFile &&

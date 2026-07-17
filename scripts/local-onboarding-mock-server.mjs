@@ -14,6 +14,7 @@ const showcasePassword = String(process.env.MOCK_CATS_SHOWCASE_PASSWORD || 'demo
 let nextUserId = 100;
 let nextBotId = 200;
 let nextProjectId = 1;
+let nextGroupId = 500;
 const users = new Map();
 const tokens = new Map();
 const sessions = new Map();
@@ -221,10 +222,19 @@ function userPayload(user, token) {
   };
 }
 
+function resolveMockToken(token) {
+  const known = tokens.get(token);
+  if (known) return known;
+  const match = /^mock-token-(\d+)-/.exec(String(token || ''));
+  if (!match) return null;
+  const userId = Number(match[1]);
+  return [...new Set(users.values())].find((user) => user.id === userId) || null;
+}
+
 function getBearerUser(req) {
   const auth = String(req.headers.authorization || '');
   const token = auth.replace(/^Bearer\s+/i, '').trim();
-  return tokens.get(token);
+  return resolveMockToken(token);
 }
 
 function getApiKeyBot(req) {
@@ -241,6 +251,12 @@ function getApiKeyBot(req) {
 function findBotByTopic(topicId) {
   for (const [ownerId, bots] of botsByOwner.entries()) {
     const bot = bots.find((item) => p2pTopicId(ownerId, item.id) === topicId);
+    if (bot) return { ownerId, bot };
+  }
+  for (const [ownerId, showcase] of showcaseByUserId.entries()) {
+    const group = (showcase.groups || []).find((item) => item.topic_id === topicId && item.kind === 'agent_task');
+    if (!group) continue;
+    const bot = (botsByOwner.get(ownerId) || []).find((item) => item.id === group.agent_id);
     if (bot) return { ownerId, bot };
   }
   return null;
@@ -382,6 +398,7 @@ async function handleApi(req, res) {
       nextUserId = 100;
       nextBotId = 200;
       nextProjectId = 1;
+      nextGroupId = 500;
       seedShowcaseAccount();
       return send(res, 200, { ok: true, scenario });
     }
@@ -489,6 +506,8 @@ async function handleApi(req, res) {
           display_name: bot.display_name,
           avatar_url: bot.avatar_url,
           relation: 'owner',
+          is_bot: true,
+          account_type: 'bot',
           is_online: scenario === 'showcase' || onlineBodies.has(bot.api_key),
           topic_id: p2pTopicId(user.id, bot.id),
         })),
@@ -599,6 +618,75 @@ async function handleApi(req, res) {
       if (!user) return;
       const online = Object.fromEntries((showcaseByUserId.get(user.id)?.friends || []).map((friend) => [friend.id, Boolean(friend.is_online)]));
       return send(res, 200, { online });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/groups/create') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const body = await readBody(req);
+      const name = String(body.name || '').trim();
+      const memberIds = Array.isArray(body.member_ids) ? body.member_ids.map(Number) : [];
+      const kind = String(body.kind || 'standard').trim();
+      const agent = (botsByOwner.get(user.id) || []).find((bot) => memberIds.includes(bot.id));
+      if (!name) return send(res, 400, { error: 'group name required' });
+      if (!['standard', 'agent_task'].includes(kind)) return send(res, 400, { error: 'invalid group kind' });
+      if (kind === 'agent_task' && (memberIds.length !== 1 || !agent)) {
+        return send(res, 400, { error: 'agent task requires exactly one agent' });
+      }
+
+      const showcase = showcaseByUserId.get(user.id) || { friends: [], groups: [], conversations: [] };
+      showcaseByUserId.set(user.id, showcase);
+      const id = nextGroupId++;
+      const topicId = `grp_${id}`;
+      const createdAt = new Date().toISOString();
+      const group = {
+        id,
+        topic_id: topicId,
+        name,
+        avatar_url: '',
+        owner_id: user.id,
+        has_bot: Boolean(agent),
+        agent_id: agent?.id || null,
+        kind,
+        is_agent_task: kind === 'agent_task',
+        created_at: createdAt,
+      };
+      showcase.groups.unshift(group);
+      showcase.conversations.unshift({
+        ...conversationFromTopic(topicId, name, null, true, createdAt, false, id),
+        has_bot: Boolean(agent),
+        kind,
+        is_agent_task: kind === 'agent_task',
+      });
+      return send(res, 200, {
+        group_id: id,
+        topic: topicId,
+        name,
+        group,
+        created_at: createdAt,
+        avatar_url: '',
+        kind,
+        is_agent_task: kind === 'agent_task',
+      });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/groups/update') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const body = await readBody(req);
+      const groupId = Number(body.group_id);
+      const name = String(body.name || '').trim();
+      const showcase = showcaseByUserId.get(user.id);
+      const group = (showcase?.groups || []).find((item) => item.id === groupId);
+      if (!group || !name) return send(res, 404, { error: 'group not found' });
+      group.name = name;
+      group.avatar_url = String(body.avatar_url || group.avatar_url || '');
+      const conversation = showcase.conversations.find((item) => item.group_id === groupId);
+      if (conversation) {
+        conversation.name = name;
+        conversation.avatar_url = group.avatar_url;
+      }
+      return send(res, 200, { ok: true, group });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/groups') {
@@ -760,6 +848,21 @@ async function handleApi(req, res) {
       projectTopicsByUserId.set(user.id, assignments);
       refreshProjectAssignments(user.id);
       return send(res, 200, { ok: true });
+    }
+
+    if (req.method === 'PATCH' && url.pathname === '/api/conversations') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const body = await readBody(req);
+      const topicId = String(body.topic_id || '').trim();
+      const name = String(body.name || '').trim();
+      if (!topicId.startsWith('p2p_') || !name || [...name].length > 80) {
+        return send(res, 400, { error: 'invalid task name' });
+      }
+      const conversation = showcaseByUserId.get(user.id)?.conversations.find((item) => item.id === topicId && item.is_bot);
+      if (!conversation) return send(res, 404, { error: 'task not found' });
+      conversation.name = name;
+      return send(res, 200, { ok: true, topic_id: topicId, name });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/messages') {
@@ -934,7 +1037,7 @@ function handleUpgrade(req, socket) {
   const bodyId = String(req.headers['x-catsco-body-id'] || '').trim();
   const bot = apiKey ? getApiKeyBot(req) : null;
   const token = urlTokenFromRequest(req);
-  const webUser = token ? tokens.get(token) : null;
+  const webUser = token ? resolveMockToken(token) : null;
   if (bot) {
     onlineBodies.set(apiKey, bodyId || 'mock-body');
     agentSockets.set(apiKey, socket);

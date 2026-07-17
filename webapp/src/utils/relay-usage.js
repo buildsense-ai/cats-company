@@ -1,12 +1,13 @@
-export function formatRelayUsagePill(summary, { customLabel = '自定义模型' } = {}) {
+export function formatRelayUsagePill(summary, { customLabel = '自定义模型', showModel = true } = {}) {
   if (summary?.source === 'custom' || summary?.status === 'custom') {
+    if (!showModel) return customLabel;
     const model = shortCustomModelName(summary?.model);
     return model ? `${model} · 自备` : customLabel;
   }
   if (!summary || !summary.model) return '';
 
   if (summary.status === 'over_limit') {
-    return `${shortRelayModelName(summary.model)} 已用 100%+`;
+    return showModel ? `${shortRelayModelName(summary.model)} 已用 100%+` : '已用 100%+';
   }
 
   const explicitRemaining = Number(summary.remaining_percent);
@@ -22,7 +23,8 @@ export function formatRelayUsagePill(summary, { customLabel = '自定义模型' 
   }
 
   const clamped = Math.max(0, Math.min(100, remainingPercent));
-  return `${shortRelayModelName(summary.model)} 剩余 ${Math.round(clamped)}%`;
+  const remainingLabel = `剩余 ${Math.round(clamped)}%`;
+  return showModel ? `${shortRelayModelName(summary.model)} ${remainingLabel}` : remainingLabel;
 }
 
 export function shortCustomModelName(model) {
