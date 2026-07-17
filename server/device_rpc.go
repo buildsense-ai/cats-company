@@ -304,6 +304,10 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusServiceUnavailable, "device rpc unavailable", nil)
 		return
 	}
+	if client != nil && client.accountType != types.AccountBot && strings.TrimSpace(msg.Operation) == string(DeviceGrantExternalHistory) {
+		h.handleUserExternalHistoryRPC(client, msg)
+		return
+	}
 	if client == nil || client.accountType != types.AccountBot {
 		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "device rpc requests require bot connection", nil)
 		return
@@ -444,6 +448,123 @@ func (h *Hub) handleDeviceRPCRequest(client *Client, msg *MsgDeviceRPC) {
 		"operation":              string(operation),
 		"tool_name":              forward.ToolName,
 		"expires_at":             unixMillis(expiresAt),
+	})
+}
+
+func (h *Hub) handleUserExternalHistoryRPC(client *Client, msg *MsgDeviceRPC) {
+	requestID, ok := normalizeDeviceRPCRequestID(msg.RequestID)
+	if !ok {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusBadRequest, "request_id required", nil)
+		return
+	}
+	ownerUID := client.uid
+	if ownerUID <= 0 {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "authenticated user required", map[string]interface{}{"request_id": requestID})
+		return
+	}
+	deviceID := strings.TrimSpace(msg.DeviceID)
+	if deviceID == "" {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusBadRequest, "device_id required", map[string]interface{}{"request_id": requestID})
+		return
+	}
+	device, ok := h.userDevices.activeDevice(ownerUID, deviceID)
+	if !ok {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusNotFound, "device offline", map[string]interface{}{"request_id": requestID, "device_id": deviceID})
+		return
+	}
+	capable := false
+	for _, capability := range device.Capabilities {
+		if capability == DeviceGrantExternalHistory {
+			capable = true
+			break
+		}
+	}
+	if !capable {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusForbidden, "device does not support external history control", map[string]interface{}{"request_id": requestID})
+		return
+	}
+	targetRoute, target := h.findDeviceRPCTarget(ownerUID, device)
+	if !targetRoute.validAt(nowForRoute(h)) {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusNotFound, "device connection unavailable", map[string]interface{}{"request_id": requestID, "device_id": deviceID})
+		return
+	}
+
+	now := h.deviceRPC.now()
+	expiresAt := now.Add(h.deviceRPC.ttl)
+	if msg.ExpiresAt > 0 {
+		requestedExpiry := time.UnixMilli(msg.ExpiresAt)
+		if requestedExpiry.Before(expiresAt) {
+			expiresAt = requestedExpiry
+		}
+	}
+	if !now.Before(expiresAt) {
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusBadRequest, "request expired", map[string]interface{}{"request_id": requestID})
+		return
+	}
+	ownerUserID := formatUID(ownerUID)
+	requesterRoute := h.clientRoute(client)
+	requesterRoute.ExpiresAt = expiresAt
+	forward := *msg
+	forward.ID = ""
+	forward.Type = deviceRPCTypeRequest
+	forward.RequestID = requestID
+	forward.GrantID = ""
+	forward.ActorUserID = ownerUserID
+	forward.OwnerUserID = ownerUserID
+	forward.IdentitySource = "webapp_external_history"
+	forward.DeviceID = device.DeviceID
+	forward.DeviceBodyID = device.BodyID
+	forward.DeviceInstallationID = device.InstallationID
+	forward.Operation = string(DeviceGrantExternalHistory)
+	forward.ToolName = "external_history"
+	forward.CreatedAt = unixMillis(now)
+	forward.ExpiresAt = unixMillis(expiresAt)
+
+	pending := deviceRPCPending{
+		requestID:       requestID,
+		requester:       client,
+		requesterRoute:  requesterRoute,
+		agentUID:        ownerUID,
+		actorUID:        ownerUID,
+		actorUserID:     ownerUserID,
+		ownerUID:        ownerUID,
+		ownerUserID:     ownerUserID,
+		identitySource:  forward.IdentitySource,
+		deviceID:        device.DeviceID,
+		deviceBodyID:    device.BodyID,
+		deviceInstallID: device.InstallationID,
+		operation:       string(DeviceGrantExternalHistory),
+		toolName:        "external_history",
+		createdAt:       now,
+		target:          target,
+		targetRoute:     targetRoute,
+		expiresAt:       expiresAt,
+	}
+	if ok, reason := h.deviceRPC.add(pending); !ok {
+		code := http.StatusConflict
+		message := "request_id is already pending"
+		if reason == "agent_limit" || reason == "device_limit" {
+			code = http.StatusTooManyRequests
+			message = "too many pending device rpc requests"
+		}
+		h.sendDeviceRPCAck(client, msg.ID, code, message, map[string]interface{}{"request_id": requestID})
+		return
+	}
+	if !h.sendDeviceRPCToRoute(targetRoute, &forward) {
+		h.deviceRPC.finish(requestID)
+		h.sendDeviceRPCAck(client, msg.ID, http.StatusNotFound, "device connection unavailable", map[string]interface{}{"request_id": requestID, "device_id": deviceID})
+		return
+	}
+	h.auditDeviceRPC(ownerUID, "rpc_forwarded", "ok", "", &forward, ScopedDeviceGrant{
+		OwnerUserID: ownerUserID,
+		ActorUserID: ownerUserID,
+		DeviceID:    device.DeviceID,
+	})
+	h.sendDeviceRPCAck(client, msg.ID, http.StatusOK, "ok", map[string]interface{}{
+		"request_id": requestID,
+		"device_id":  device.DeviceID,
+		"operation":  string(DeviceGrantExternalHistory),
+		"expires_at": unixMillis(expiresAt),
 	})
 }
 

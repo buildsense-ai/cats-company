@@ -26,6 +26,10 @@ class MockWebSocket {
     this.onclose?.({ code: 1006 });
   }
 
+  receive(message) {
+    this.onmessage?.({ data: JSON.stringify(message) });
+  }
+
   close() {
     this.readyState = MockWebSocket.CLOSED;
     this.onclose?.({ code: 1000 });
@@ -124,5 +128,31 @@ describe('WebSocket connection recovery', () => {
     expect(api.connectWS(onMessage)).toBe(false);
     expect(MockWebSocket.instances).toHaveLength(0);
     expect(onMessage).toHaveBeenCalledWith({ _type: 'ws_auth_expired' });
+  });
+
+  test('routes structured external history requests and resolves the matching device result', async () => {
+    api.connectWS(vi.fn());
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+
+    const pending = api.requestExternalHistory('device-1', {
+      action: 'preview',
+      provider: 'codex',
+      updatedSince: '7d',
+    });
+    const sent = JSON.parse(socket.send.mock.calls.at(-1)[0]);
+    expect(sent.device_rpc.operation).toBe('external_history');
+    expect(sent.device_rpc.device_id).toBe('device-1');
+    expect(sent.device_rpc.payload).toEqual({ action: 'preview', provider: 'codex', updatedSince: '7d' });
+
+    socket.receive({
+      device_rpc: {
+        type: 'result',
+        request_id: sent.device_rpc.request_id,
+        result: { ok: true, content: JSON.stringify({ selectedCount: 12 }) },
+      },
+    });
+
+    await expect(pending).resolves.toEqual({ selectedCount: 12 });
   });
 });

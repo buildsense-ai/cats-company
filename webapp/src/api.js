@@ -210,7 +210,7 @@ export const api = {
   createDeviceConnectorPairing: (deviceName) =>
     request('POST', '/api/device-connectors/pairings', {
       device_name: deviceName || '',
-      capabilities: ['read_file', 'resolve_common_directory', 'glob', 'grep'],
+      capabilities: ['read_file', 'resolve_common_directory', 'glob', 'grep', 'external_history'],
     }),
   getDeviceConnectorPairing: (pairingId) =>
     request('GET', `/api/device-connectors/pairings/${encodeURIComponent(pairingId)}`),
@@ -480,6 +480,59 @@ export function sendWS(msg) {
   if (wsConn && wsConn.readyState === WebSocket.OPEN) {
     wsConn.send(JSON.stringify(msg));
   }
+}
+
+export function requestExternalHistory(deviceId, payload, timeoutMs = 55000) {
+  if (!wsConn || wsConn.readyState !== WebSocket.OPEN) {
+    return Promise.reject(new Error('本地助手连接尚未就绪'));
+  }
+  const id = nextMsgId();
+  const requestId = `external-history-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+    const unsubscribe = onWSMessage((message) => {
+      if (message?.ctrl?.id === id && Number(message.ctrl.code) >= 400) {
+        finish(() => reject(new Error(message.ctrl.text || '本地助手拒绝了请求')));
+        return;
+      }
+      const rpc = message?.device_rpc;
+      if (!rpc || rpc.request_id !== requestId || rpc.type !== 'result') return;
+      if (rpc.error) {
+        finish(() => reject(new Error(rpc.error.message || rpc.error.code || '本地助手执行失败')));
+        return;
+      }
+      const content = rpc.result?.content;
+      try {
+        const value = typeof content === 'string' ? JSON.parse(content) : content;
+        finish(() => resolve(value || {}));
+      } catch {
+        finish(() => reject(new Error('本地助手返回了无法识别的结果')));
+      }
+    });
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      unsubscribe();
+      callback();
+    };
+    timer = window.setTimeout(() => {
+      finish(() => reject(new Error('本地助手响应超时，请检查设备连接')));
+    }, timeoutMs);
+    sendWS({
+      device_rpc: {
+        id,
+        type: 'request',
+        request_id: requestId,
+        device_id: deviceId,
+        operation: 'external_history',
+        tool_name: 'external_history',
+        payload,
+        expires_at: Date.now() + timeoutMs,
+      },
+    });
+  });
 }
 
 // Send a chat message via WebSocket, with REST fallback

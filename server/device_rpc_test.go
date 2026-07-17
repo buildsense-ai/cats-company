@@ -88,6 +88,96 @@ func TestDeviceRPCRoutesRequestToSelectedDeviceAndReturnsResult(t *testing.T) {
 	}
 }
 
+func TestUserExternalHistoryRPCRoutesOnlyToOwnedCapableDevice(t *testing.T) {
+	hub := NewHub(nil, nil)
+	now := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	hub.userDevices.now = func() time.Time { return now }
+	hub.deviceRPC.now = func() time.Time { return now }
+	device, err := hub.userDevices.register(7, RegisterUserDeviceRequest{
+		DeviceID:       "alice-laptop",
+		BodyID:         "body-device",
+		InstallationID: "install-device",
+		Capabilities:   []string{"external_history"},
+	})
+	if err != nil {
+		t.Fatalf("register device: %v", err)
+	}
+	user := &Client{hub: hub, uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 4)}
+	target := &Client{
+		hub:                  hub,
+		uid:                  77,
+		accountType:          types.AccountBot,
+		deviceOwnerUID:       7,
+		deviceID:             device.DeviceID,
+		deviceBodyID:         device.BodyID,
+		deviceInstallationID: device.InstallationID,
+		send:                 make(chan []byte, 4),
+	}
+	hub.addClient(user)
+	hub.addClient(target)
+	hub.bindDeviceClient(7, device, target)
+
+	hub.handleDeviceRPC(user, &MsgDeviceRPC{
+		ID:        "web-1",
+		Type:      "request",
+		RequestID: "external-1",
+		DeviceID:  device.DeviceID,
+		Operation: "external_history",
+		Payload:   map[string]interface{}{"action": "preview", "provider": "codex", "updatedSince": "7d"},
+	})
+
+	var forwarded ServerMessage
+	decodeQueuedServerMessage(t, target.send, &forwarded)
+	if forwarded.DeviceRPC == nil || forwarded.DeviceRPC.Operation != "external_history" {
+		t.Fatalf("target received %#v, want external_history request", forwarded.DeviceRPC)
+	}
+	if forwarded.DeviceRPC.ActorUserID != "usr7" || forwarded.DeviceRPC.OwnerUserID != "usr7" {
+		t.Fatalf("request identity was not owner scoped: %#v", forwarded.DeviceRPC)
+	}
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, user.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != http.StatusOK {
+		t.Fatalf("unexpected request ack: %#v", ack.Ctrl)
+	}
+
+	hub.handleDeviceRPC(target, &MsgDeviceRPC{
+		ID:        "result-1",
+		Type:      "result",
+		RequestID: "external-1",
+		Result:    map[string]interface{}{"ok": true, "content": `{"selectedCount":2}`},
+	})
+	decodeQueuedServerMessage(t, target.send, &ServerMessage{})
+	var result ServerMessage
+	decodeQueuedServerMessage(t, user.send, &result)
+	if result.DeviceRPC == nil || result.DeviceRPC.RequestID != "external-1" {
+		t.Fatalf("user received %#v, want external history result", result.DeviceRPC)
+	}
+}
+
+func TestUserExternalHistoryRPCRejectsDeviceWithoutCapability(t *testing.T) {
+	hub, _, target, _, _ := newDeviceRPCTestFixture(t, true)
+	user := &Client{hub: hub, uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 2)}
+	hub.addClient(user)
+
+	hub.handleDeviceRPC(user, &MsgDeviceRPC{
+		ID:        "web-denied",
+		Type:      "request",
+		RequestID: "external-denied",
+		DeviceID:  "alice-laptop",
+		Operation: "external_history",
+		Payload:   map[string]interface{}{"action": "status"},
+	})
+
+	var response ServerMessage
+	decodeQueuedServerMessage(t, user.send, &response)
+	if response.Ctrl == nil || response.Ctrl.Code != http.StatusForbidden {
+		t.Fatalf("unexpected response: %#v", response.Ctrl)
+	}
+	if drainOne(target.send) {
+		t.Fatal("incapable device must not receive external history RPC")
+	}
+}
+
 func TestDeviceRPCRoutesDelegatedChannelActorGrantToDeviceOwner(t *testing.T) {
 	hub := NewHub(nil, nil)
 	now := time.Date(2026, 6, 4, 11, 0, 0, 0, time.UTC)

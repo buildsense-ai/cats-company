@@ -165,7 +165,7 @@ func normalizeDeviceConnectorCapabilityStrings(values []string) []string {
 	ops := normalizeDeviceCapabilities(values)
 	out := make([]string, 0, len(ops))
 	for _, op := range ops {
-		if isAllowedDeviceRPCOperation(op) {
+		if isAllowedDeviceRPCOperation(op) || op == DeviceGrantExternalHistory {
 			out = append(out, string(op))
 		}
 	}

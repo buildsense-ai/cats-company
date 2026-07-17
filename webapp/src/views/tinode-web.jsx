@@ -25,7 +25,7 @@ import GroupSettings from '../widgets/group-settings';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
 import { resolveCurrentModelName } from '../utils/relay-usage';
-import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Sun, Moon } from 'lucide-react';
+import { Bug, Database, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Sun, Moon } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 
@@ -740,7 +740,7 @@ function TinodeWebApp() {
               <Bug size={16} style={{marginRight: 10}} /> 意见反馈
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDownloadModal(true); }}>
-              <Download size={16} style={{marginRight: 10}} /> 下载 CatsCo 桌面端
+              <Database size={16} style={{marginRight: 10}} /> 本机设备与历史
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDesktopConnectModal(true); }}>
               <Laptop size={16} style={{marginRight: 10}} /> 连接我的电脑助手

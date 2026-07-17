@@ -13,11 +13,13 @@ vi.mock('../api', () => ({
   },
   getApiBaseURL: vi.fn(() => 'https://app.catsco.cc'),
   getWebSocketURL: vi.fn(() => 'wss://app.catsco.cc/v0/channels'),
+  requestExternalHistory: vi.fn(),
 }));
 
 import CatsCoDownloadModal, {
   DOWNLOAD_OPTIONS,
   buildDeviceConnectorDeepLink,
+  externalHistoryDuration,
   visibleDeviceAuditEvents,
 } from './catsco-download-modal';
 import { api, getApiBaseURL, getWebSocketURL } from '../api';
@@ -63,6 +65,14 @@ describe('CatsCoDownloadModal', () => {
     expect(link).not.toContain('allowShell');
     expect(link).not.toContain('execute_shell');
     expect(link).not.toContain('write_file');
+  });
+
+  test('normalizes external history windows without exposing operation details', () => {
+    expect(externalHistoryDuration('none', 7)).toBe('');
+    expect(externalHistoryDuration('7d', 30)).toBe('7d');
+    expect(externalHistoryDuration('custom', 30)).toBe('30d');
+    expect(externalHistoryDuration('custom', 0)).toBe('7d');
+    expect(externalHistoryDuration('custom', 900)).toBe('365d');
   });
 
   test('uses the CatsCo 1.4.1 fallback release download links', async () => {
