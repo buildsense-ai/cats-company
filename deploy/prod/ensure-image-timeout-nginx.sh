@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ "$(id -u)" -ne 0 ]; then
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "updating the host Nginx config requires root or passwordless sudo" >&2
+    exit 1
+  fi
+  exec sudo -n -- "$0" "$@"
+fi
+
 config_path="${1:-/etc/nginx/sites-available/catscompany-app}"
 timeout_seconds="${2:-580}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
