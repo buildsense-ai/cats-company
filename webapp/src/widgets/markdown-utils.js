@@ -104,6 +104,8 @@ export function markdownPreviewDocument(text) {
     }
     pre { padding: 14px; overflow: auto; }
     code { padding: 2px 5px; }
+    .oc-markdown-table { max-width: 100%; margin: 14px 0; overflow-x: auto; }
+    .oc-markdown-table table { min-width: 720px; margin: 0; }
     table { border-collapse: collapse; width: 100%; }
     th, td { border: 1px solid rgba(255,255,255,0.14); padding: 8px; }
   </style>
@@ -114,7 +116,7 @@ export function markdownPreviewDocument(text) {
 
 function sanitizeHtml(html) {
   if (typeof document === 'undefined') {
-    return fallbackSanitizeHtml(html);
+    return wrapTablesInHtml(fallbackSanitizeHtml(html));
   }
 
   const template = document.createElement('template');
@@ -147,8 +149,25 @@ function sanitizeHtml(html) {
   });
 
   addHeadingAnchors(template.content);
+  wrapMarkdownTables(template.content);
 
   return template.innerHTML;
+}
+
+function wrapTablesInHtml(html) {
+  return String(html).replace(/<table(\s|>)[\s\S]*?<\/table>/gi, (tableHtml) => (
+    `<div class="oc-markdown-table">${tableHtml}</div>`
+  ));
+}
+
+function wrapMarkdownTables(root) {
+  root.querySelectorAll('table').forEach((table) => {
+    if (table.parentElement?.classList.contains('oc-markdown-table')) return;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'oc-markdown-table';
+    table.parentNode.insertBefore(wrapper, table);
+    wrapper.appendChild(table);
+  });
 }
 
 function fallbackSanitizeHtml(html) {

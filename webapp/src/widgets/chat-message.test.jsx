@@ -555,6 +555,9 @@ describe('ChatMessage rich file rendering', () => {
 
     expect(container.querySelector('.oc-markdown-table')).not.toBeNull();
     expect(container.querySelector('.oc-markdown table')).not.toBeNull();
+    expect(container.querySelector('.oc-markdown').classList.contains('oc-markdown-table')).toBe(false);
+    expect(container.querySelector('.oc-markdown-table table')).not.toBeNull();
+    expect(container.querySelector('.oc-markdown-table').parentElement).toBe(container.querySelector('.oc-markdown'));
     expect(container.querySelectorAll('.oc-markdown th')).toHaveLength(2);
     expect(container.querySelector('.oc-markdown').textContent).toContain('情况一');
   });
