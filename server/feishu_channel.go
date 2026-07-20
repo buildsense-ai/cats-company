@@ -2978,6 +2978,18 @@ func (h *Hub) clearChannelInboundReplyRoute(topicID string, canonicalUID int64, 
 	dispatcher.ClearInboundReplyRoute(topicID, canonicalUID, agentUID)
 }
 
+func (h *Hub) clearChannelInboundReplyRoutesForIdentity(channel, appID, userID string) {
+	if h == nil || strings.TrimSpace(channel) == "" || strings.TrimSpace(userID) == "" {
+		return
+	}
+	h.mu.RLock()
+	dispatcher := h.channelOut
+	h.mu.RUnlock()
+	if dispatcher != nil {
+		dispatcher.ClearInboundReplyRoutesForIdentity(channel, appID, userID)
+	}
+}
+
 func channelOutboundReplyRouteKey(topicID string, canonicalUID int64, agentUID int64) string {
 	return fmt.Sprintf("%s:%d:%d", strings.TrimSpace(topicID), canonicalUID, agentUID)
 }
@@ -3017,6 +3029,21 @@ func (d *ChannelOutboundDispatcher) ClearInboundReplyRoute(topicID string, canon
 	d.mu.Lock()
 	delete(d.replyRoutes, key)
 	d.mu.Unlock()
+}
+
+func (d *ChannelOutboundDispatcher) ClearInboundReplyRoutesForIdentity(channel, appID, userID string) {
+	if d == nil || strings.TrimSpace(channel) == "" || strings.TrimSpace(userID) == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for key, route := range d.replyRoutes {
+		if normalizeChannel(route.Query.Channel) == normalizeChannel(channel) &&
+			strings.TrimSpace(route.Query.ChannelAppID) == strings.TrimSpace(appID) &&
+			strings.TrimSpace(route.Query.ChannelUserID) == strings.TrimSpace(userID) {
+			delete(d.replyRoutes, key)
+		}
+	}
 }
 
 func (h *Hub) forwardChannelBotReply(senderUID int64, peerUID int64, topicID string, payload *normalizedMessagePayload, msgID int64) {
@@ -3326,6 +3353,12 @@ func (d *ChannelOutboundDispatcher) lookupRecordedReplyBinding(bindings store.Ch
 	binding, err := bindings.ResolveChannelAgentBinding(route.Query)
 	if err != nil || binding == nil {
 		return binding, false, err
+	}
+	if normalizeChannel(binding.Channel) == "feishu" {
+		current, err := channelBindingMatchesCurrentAgentRoute(bindings, binding)
+		if err != nil || !current {
+			return binding, false, err
+		}
 	}
 	return binding, true, nil
 }

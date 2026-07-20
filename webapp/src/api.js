@@ -256,6 +256,21 @@ export const api = {
       topic_id: topicId,
       channel,
     }),
+  getChannelPrivateBindings: ({ agentUid, groupId, topicId }) => {
+    const params = new URLSearchParams();
+    if (agentUid) params.set('agent_uid', agentUid);
+    if (groupId) params.set('group_id', groupId);
+    if (topicId) params.set('topic_id', topicId);
+    return request('GET', `/api/channel-private-bindings?${params.toString()}`);
+  },
+  unlinkChannelPrivateBinding: ({ bindingKey, agentUid, groupId, topicId, selectedAt }) =>
+    request('DELETE', '/api/channel-private-bindings', {
+      binding_key: bindingKey,
+      ...(agentUid ? { agent_uid: agentUid } : {}),
+      ...(groupId ? { group_id: groupId } : {}),
+      ...(topicId ? { topic_id: topicId } : {}),
+      selected_at: selectedAt,
+    }),
   getWeixinClawBotQRCodeStatus: (sceneKey, qrcode) =>
     request('GET', `/api/channel-agent-bindings/weixin-clawbot/qrcode-status?scene_key=${encodeURIComponent(sceneKey)}&qrcode=${encodeURIComponent(qrcode)}`),
 

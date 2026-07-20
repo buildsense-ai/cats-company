@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Copy, RefreshCw, X } from 'lucide-react';
+import { Copy, RefreshCw, Unlink, X } from 'lucide-react';
 import { api } from '../api';
 import QRCode from './qr-code';
 
@@ -20,7 +20,14 @@ export default function MobileChannelBindModal({ agentUid, agentName, groupId, t
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
   const [clawBotAuthStatus, setClawBotAuthStatus] = useState(null);
+  const [feishuBindings, setFeishuBindings] = useState([]);
+  const [bindingsLoading, setBindingsLoading] = useState(false);
+  const [bindingsError, setBindingsError] = useState('');
+  const [unlinkingKey, setUnlinkingKey] = useState('');
+  const [bindingNotice, setBindingNotice] = useState('');
   const requestSeqRef = useRef(0);
+  const bindingsRequestSeqRef = useRef(0);
+  const bindingNoticeTimerRef = useRef(null);
   const isGroupTarget = Boolean(groupId || topicId);
   const targetName = isGroupTarget ? (groupName || '群聊') : agentName;
 
@@ -53,6 +60,76 @@ export default function MobileChannelBindModal({ agentUid, agentName, groupId, t
   useEffect(() => {
     loadLink();
   }, [loadLink]);
+
+  const loadFeishuBindings = useCallback(async () => {
+    if (channel !== 'feishu' || (!isGroupTarget && !agentUid)) {
+      bindingsRequestSeqRef.current += 1;
+      setFeishuBindings([]);
+      setBindingsLoading(false);
+      setBindingsError('');
+      return;
+    }
+    const requestSeq = bindingsRequestSeqRef.current + 1;
+    bindingsRequestSeqRef.current = requestSeq;
+    try {
+      setBindingsLoading(true);
+      setBindingsError('');
+      const res = await api.getChannelPrivateBindings({
+        agentUid: isGroupTarget ? null : agentUid,
+        groupId: isGroupTarget ? groupId : null,
+        topicId: isGroupTarget ? topicId : null,
+      });
+      if (bindingsRequestSeqRef.current !== requestSeq) return;
+      setFeishuBindings(Array.isArray(res?.bindings) ? res.bindings : []);
+    } catch (err) {
+      if (bindingsRequestSeqRef.current !== requestSeq) return;
+      setFeishuBindings([]);
+      setBindingsError(err.message || '暂时无法读取绑定状态');
+    } finally {
+      if (bindingsRequestSeqRef.current === requestSeq) setBindingsLoading(false);
+    }
+  }, [agentUid, channel, groupId, isGroupTarget, topicId]);
+
+  useEffect(() => {
+    setBindingNotice('');
+    loadFeishuBindings();
+  }, [loadFeishuBindings]);
+
+  useEffect(() => () => {
+    if (bindingNoticeTimerRef.current) window.clearTimeout(bindingNoticeTimerRef.current);
+  }, []);
+
+  const handleRefresh = () => {
+    loadLink();
+    if (channel === 'feishu') loadFeishuBindings();
+  };
+
+  const handleUnlink = async (binding) => {
+    const targetLabel = isGroupTarget ? `群聊“${targetName}”` : `虚拟员工“${targetName}”`;
+    if (!window.confirm(`解除“${binding.display_name}”与${targetLabel}的飞书绑定？解绑后，该账号的飞书私聊将停止同步；已建立的飞书群聊不受影响。`)) return;
+    try {
+      bindingsRequestSeqRef.current += 1;
+      setBindingsLoading(false);
+      setUnlinkingKey(binding.binding_key);
+      setBindingsError('');
+      setBindingNotice('');
+      await api.unlinkChannelPrivateBinding({
+        bindingKey: binding.binding_key,
+        agentUid: isGroupTarget ? null : agentUid,
+        groupId: isGroupTarget ? groupId : null,
+        topicId: isGroupTarget ? topicId : null,
+        selectedAt: binding.selected_at,
+      });
+      setFeishuBindings((current) => current.filter((item) => item.binding_key !== binding.binding_key));
+      setBindingNotice('已解除飞书私聊绑定');
+      if (bindingNoticeTimerRef.current) window.clearTimeout(bindingNoticeTimerRef.current);
+      bindingNoticeTimerRef.current = window.setTimeout(() => setBindingNotice(''), 1800);
+    } catch (err) {
+      setBindingsError(err.message || '解绑失败，请刷新后重试');
+    } finally {
+      setUnlinkingKey('');
+    }
+  };
 
   const qrKind = linkInfo?.qr_kind || linkInfo?.entry?.qr_kind || '';
   const activeChannel = channelMeta(channel);
@@ -188,10 +265,60 @@ export default function MobileChannelBindModal({ agentUid, agentName, groupId, t
           <button type="button" className="oc-btn oc-btn-default" onClick={handleCopy} disabled={!copyValue}>
             <Copy size={14} /> {copied ? '已复制' : '复制链接'}
           </button>
-          <button type="button" className="oc-btn oc-btn-default" onClick={loadLink} disabled={loading}>
+          <button type="button" className="oc-btn oc-btn-default" onClick={handleRefresh} disabled={loading || bindingsLoading || Boolean(unlinkingKey)}>
             <RefreshCw size={14} /> 刷新
           </button>
         </div>
+
+        {channel === 'feishu' && (bindingsLoading || bindingsError || bindingNotice || feishuBindings.length > 0) && (
+          <section className="mobile-channel-bindings" aria-label="已绑定飞书用户">
+            {feishuBindings.length > 0 && (
+              <div className="mobile-channel-bindings-heading">
+                <span>已绑定飞书用户</span>
+                <span>{feishuBindings.length}</span>
+              </div>
+            )}
+            {bindingsLoading && <div className="mobile-channel-bindings-status" role="status" aria-live="polite">正在读取绑定状态...</div>}
+            {!bindingsLoading && bindingsError && (
+              <div className="mobile-channel-bindings-status mobile-channel-bindings-status-error" role="alert">
+                <span>{bindingsError}</span>
+                <button type="button" onClick={loadFeishuBindings}>重试</button>
+              </div>
+            )}
+            {!bindingsLoading && !bindingsError && bindingNotice && (
+              <div className="mobile-channel-bindings-status mobile-channel-bindings-status-success" role="status" aria-live="polite">{bindingNotice}</div>
+            )}
+            {feishuBindings.length > 0 && (
+              <div className="mobile-channel-bindings-list">
+                {feishuBindings.map((binding) => (
+                  <div className="mobile-channel-binding-row" key={binding.binding_key}>
+                    {binding.avatar_url ? (
+                      <img src={binding.avatar_url} alt="" className="mobile-channel-binding-avatar" />
+                    ) : (
+                      <span className="mobile-channel-binding-avatar mobile-channel-binding-avatar-fallback">
+                        {(binding.display_name || '飞').slice(0, 1)}
+                      </span>
+                    )}
+                    <div className="mobile-channel-binding-user">
+                      <strong>{binding.display_name || '飞书用户'}</strong>
+                      <span>飞书</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="mobile-channel-unlink-btn"
+                      onClick={() => handleUnlink(binding)}
+                      disabled={bindingsLoading || Boolean(unlinkingKey)}
+                      aria-label={`解除${binding.display_name || '飞书用户'}的飞书绑定`}
+                    >
+                      <Unlink size={14} />
+                      {unlinkingKey === binding.binding_key ? '解绑中...' : '解绑'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
       </div>
     </div>
   );

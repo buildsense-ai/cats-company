@@ -598,6 +598,38 @@ type ChannelAgentRouteQuery struct {
 	ActorUID                int64
 }
 
+const (
+	ChannelPrivateTargetAgent = "agent"
+	ChannelPrivateTargetGroup = "group"
+)
+
+// ChannelPrivateSelection is the current private-chat target selected by one
+// external-channel identity. Native channel groups are intentionally excluded.
+type ChannelPrivateSelection struct {
+	Channel       string    `json:"channel"`
+	ChannelAppID  string    `json:"-"`
+	ChannelUserID string    `json:"-"`
+	ActorUID      int64     `json:"actor_uid,omitempty"`
+	TargetKind    string    `json:"target_kind"`
+	AgentUID      int64     `json:"agent_uid,omitempty"`
+	GroupID       int64     `json:"group_id,omitempty"`
+	TopicID       string    `json:"topic_id,omitempty"`
+	SelectedAt    time.Time `json:"selected_at"`
+}
+
+// ChannelPrivateIdentity identifies one external private-chat identity. The
+// canonical CatsCo user is always supplied separately by the authenticated caller.
+type ChannelPrivateIdentity struct {
+	Channel       string
+	ChannelAppID  string
+	ChannelUserID string
+}
+
+type ChannelPrivateUnbindResult struct {
+	Revoked bool
+	Changed bool
+}
+
 // Group represents a chat group.
 type Group struct {
 	ID           int64     `json:"id"`

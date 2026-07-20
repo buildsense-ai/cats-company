@@ -632,6 +632,126 @@ body {
   gap: 6px;
 }
 
+.mobile-channel-bindings {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--v3-border, var(--oc-border));
+}
+
+.mobile-channel-bindings-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  color: var(--v3-text-name, var(--oc-text));
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mobile-channel-bindings-heading span:last-child {
+  color: var(--oc-text-secondary);
+  font-weight: 400;
+}
+
+.mobile-channel-bindings-list {
+  max-height: min(192px, 28vh);
+  overflow-y: auto;
+}
+
+.mobile-channel-binding-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 8px 0;
+}
+
+.mobile-channel-binding-row + .mobile-channel-binding-row {
+  border-top: 1px solid var(--v3-border, var(--oc-border));
+}
+
+.mobile-channel-binding-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.mobile-channel-binding-avatar-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--v3-primary, var(--oc-green));
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mobile-channel-binding-user {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mobile-channel-binding-user strong {
+  overflow: hidden;
+  color: var(--v3-text-name, var(--oc-text));
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-channel-binding-user span {
+  color: var(--oc-text-secondary);
+  font-size: 11px;
+}
+
+.mobile-channel-unlink-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid rgba(255, 77, 79, 0.45);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--oc-danger);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.mobile-channel-unlink-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.mobile-channel-bindings-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--oc-text-secondary);
+  font-size: 12px;
+}
+
+.mobile-channel-bindings-status button {
+  border: 0;
+  background: transparent;
+  color: var(--v3-primary, var(--oc-green));
+  cursor: pointer;
+}
+
+.mobile-channel-bindings-status-error {
+  color: var(--oc-danger);
+}
+
+.mobile-channel-bindings-status-success {
+  color: var(--v3-primary, var(--oc-green));
+}
+
 /* Profile / Me Tab */
 .oc-profile {
   padding: 20px 16px;

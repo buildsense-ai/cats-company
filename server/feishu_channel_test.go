@@ -2106,6 +2106,37 @@ func TestFeishuOutboundForwardsWebReplyByCanonicalBinding(t *testing.T) {
 	}
 }
 
+func TestFeishuRecordedReplyRouteStopsAfterPrivateRouteRemoval(t *testing.T) {
+	db := newChannelAgentTestStore()
+	db.users[85] = &types.User{ID: 85, Username: "arrowhaken", AccountType: types.AccountHuman}
+	db.users[218] = &types.User{ID: 218, Username: "agent", AccountType: types.AccountBot}
+	db.users[453] = &types.User{ID: 453, Username: channelActorUsername("feishu", "cli_app", "ou_user"), AccountType: types.AccountHuman}
+	db.owners[218] = 85
+	binding, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel: "feishu", ChannelAppID: "cli_app", ChannelUserID: "ou_user", ChannelConversationType: "p2p",
+		ActorUID: 453, CanonicalUID: 85, OwnerUID: 85, AgentUID: 218, Status: types.ChannelAgentBindingActive,
+	})
+	if err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	if _, err := db.UpsertChannelAgentRoute(&types.ChannelAgentRoute{
+		Channel: "feishu", ChannelAppID: "cli_app", ChannelUserID: "ou_user", ChannelConversationType: "p2p", ActorUID: 453, AgentUID: 218,
+	}); err != nil {
+		t.Fatalf("seed route: %v", err)
+	}
+	api := &fakeFeishuAPI{appID: "cli_app"}
+	dispatcher := NewChannelOutboundDispatcher(db, api, "cli_app")
+	dispatcher.RecordInboundReplyRoute("p2p_85_218", 85, binding)
+
+	delete(db.routes, routeKey("feishu", "cli_app", "ou_user", "", "p2p"))
+	if err := dispatcher.ForwardBotReply(context.Background(), 85, 218, "p2p_85_218", "reply after unbind"); err != nil {
+		t.Fatalf("forward after route removal: %v", err)
+	}
+	if len(api.sends) != 0 {
+		t.Fatalf("stale recorded route must not send after unbind: %+v", api.sends)
+	}
+}
+
 func TestFeishuWebReplySkipsAgentSupersededByAnotherAgent(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[85] = &types.User{ID: 85, Username: "arrowhaken", AccountType: types.AccountHuman}
