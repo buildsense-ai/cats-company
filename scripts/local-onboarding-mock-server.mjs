@@ -548,6 +548,18 @@ async function handleApi(req, res) {
       });
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/agents/quota') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const agentUid = Number(url.searchParams.get('uid'));
+      const bot = (botsByOwner.get(user.id) || []).find((item) => item.id === agentUid);
+      if (!bot) return send(res, 404, { error: 'agent not found' });
+      return send(res, 200, {
+        configured: false,
+        shared: true,
+      });
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/devices') {
       const user = requireUser(req, res);
       if (!user) return;

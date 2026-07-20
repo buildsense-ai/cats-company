@@ -50,6 +50,9 @@ jobs:
             bot-sdk/typescript/package-lock.json
             bots/xiaoba-ts/package-lock.json
 
+      - name: Test local showcase mock
+        run: node --test scripts/local-onboarding-mock-server.test.mjs
+
       - name: Test backend
         run: go test ./server/...
 
