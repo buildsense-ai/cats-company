@@ -2423,14 +2423,6 @@ body {
   background: rgba(148, 163, 184, 0.08);
 }
 
-.v3-agent-quota-pill {
-  max-width: 180px;
-  min-height: 17px;
-  margin-left: 0;
-  padding: 1px 7px;
-  font-size: 10px;
-}
-
 .v3-profile-settings {
   color: var(--v3-text-muted);
   padding: 4px;

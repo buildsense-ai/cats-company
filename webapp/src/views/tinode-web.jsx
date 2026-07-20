@@ -24,7 +24,11 @@ import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
-import { resolveCurrentModelName } from '../utils/relay-usage';
+import {
+  relayUsageTone,
+  resolveConversationModelDisplay,
+  resolveCurrentModelName,
+} from '../utils/relay-usage';
 import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
@@ -214,6 +218,7 @@ function TinodeWebApp() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem('catsco_theme') || 'light');
   const [currentModelName, setCurrentModelName] = useState(DEFAULT_MODEL_NAME);
+  const [activeAgentModel, setActiveAgentModel] = useState(null);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
     appSidebarPreferredWidth,
@@ -264,6 +269,10 @@ function TinodeWebApp() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [user?.uid]);
+
+  useEffect(() => {
+    setActiveAgentModel(null);
+  }, [activeTopic?.topicId]);
 
   useEffect(() => {
     if (!showProfilePopover) return undefined;
@@ -857,6 +866,7 @@ function TinodeWebApp() {
           <PanelLeftOpen size={18} />
         </button>
         <LocalAssistantBar
+          agentModelState={activeAgentModel}
           currentModelName={currentModelName}
           onDownload={() => setShowDownloadModal(true)}
           title={activeTopic?.name || taskDraftTitle(taskDraft)}
@@ -870,6 +880,7 @@ function TinodeWebApp() {
             groupId={activeTopic.groupId}
             topicAvatarUrl={activeTopic.avatar_url}
             localAssistantStatus={localAgentStatus}
+            onAgentModelChange={setActiveAgentModel}
             onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
             onResolveAgentTopic={resolveAgentTopic}
             onActivateTopic={activateResolvedTopic}
@@ -941,16 +952,23 @@ function TinodeWebApp() {
   );
 }
 
-function LocalAssistantBar({ currentModelName, onDownload, title }) {
+function LocalAssistantBar({ agentModelState, currentModelName, onDownload, title }) {
+  const modelDisplay = resolveConversationModelDisplay(currentModelName, agentModelState);
+  const tone = agentModelState?.summary
+    ? relayUsageTone(agentModelState.summary)
+    : agentModelState?.isBot && agentModelState.state === 'unavailable' ? 'muted' : '';
   return (
     <header className="v3-local-assistant-bar">
       <div className="v3-model-select">
         <div
-          className="v3-local-assistant-status"
-          aria-label={`当前使用的模型：${currentModelName}`}
-          title={`当前使用的模型：${currentModelName}`}
+          className={`v3-local-assistant-status ${tone}`.trim()}
+          aria-label={modelDisplay.title}
+          title={modelDisplay.title}
         >
-          <span>{currentModelName}</span>
+          <span className="v3-local-assistant-model">{modelDisplay.model}</span>
+          {modelDisplay.meta && (
+            <span className="v3-local-assistant-model-meta">{modelDisplay.meta}</span>
+          )}
         </div>
       </div>
       <strong className="v3-shell-title">{title}</strong>

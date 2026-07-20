@@ -1190,7 +1190,8 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('button[aria-label^="选择 Agent"]')).toBeNull();
   });
 
-  it('shows the owner shared quota for the active bot conversation', async () => {
+  it('reports the owner shared quota to the active conversation header', async () => {
+    const onAgentModelChange = vi.fn();
     api.getAgents.mockResolvedValueOnce({
       agents: [{
         uid: 2,
@@ -1211,19 +1212,28 @@ describe('MessagesView composer draft isolation', () => {
       },
     });
 
-    await mountTopic(root, 'p2p_1_2');
+    await mountTopic(root, 'p2p_1_2', { onAgentModelChange });
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    const quota = container.querySelector('.v3-agent-quota-pill');
     expect(api.getAgentQuota).toHaveBeenCalledWith(2);
-    expect(quota?.textContent).toBe('剩余 72%');
-    expect(quota?.getAttribute('title')).toBe('使用该虚拟员工所属账号的共享额度');
+    expect(onAgentModelChange).toHaveBeenLastCalledWith({
+      isBot: true,
+      state: 'ready',
+      summary: {
+        source: 'relay',
+        model: 'MiniMax-M3',
+        remaining_percent: 72,
+        status: 'normal',
+      },
+    });
+    expect(container.querySelector('.v3-agent-quota-pill')).toBeNull();
   });
 
-  it('shows the custom quota source without repeating the current model name', async () => {
+  it('reports a custom model source to the active conversation header', async () => {
+    const onAgentModelChange = vi.fn();
     api.getAgents.mockResolvedValueOnce({
       agents: [{
         uid: 2,
@@ -1243,15 +1253,22 @@ describe('MessagesView composer draft isolation', () => {
       },
     });
 
-    await mountTopic(root, 'p2p_1_2');
+    await mountTopic(root, 'p2p_1_2', { onAgentModelChange });
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    const quota = container.querySelector('.v3-agent-quota-pill');
-    expect(quota?.textContent).toBe('自备模型');
-    expect(quota?.getAttribute('title')).toBe('gpt-5.6-terra；该虚拟员工使用自备模型，不消耗 CatsCo 共享额度');
+    expect(onAgentModelChange).toHaveBeenLastCalledWith({
+      isBot: true,
+      state: 'ready',
+      summary: {
+        source: 'custom',
+        model: 'gpt-5.6-terra',
+        status: 'custom',
+      },
+    });
+    expect(container.querySelector('.v3-agent-quota-pill')).toBeNull();
   });
 
   it('clears peer typing immediately when a peer final reply arrives', async () => {

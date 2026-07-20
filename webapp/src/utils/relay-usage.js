@@ -41,6 +41,46 @@ export function resolveCurrentModelName(summary, defaultModel = 'MiniMax-M2.7') 
   return reportedModel || String(defaultModel || '').trim() || '模型未知';
 }
 
+export function resolveConversationModelDisplay(currentModelName, agentModelState) {
+  const accountModel = String(currentModelName || '').trim() || '模型未知';
+  if (!agentModelState?.isBot) {
+    return {
+      model: accountModel,
+      meta: '',
+      title: `当前使用的模型：${accountModel}`,
+    };
+  }
+
+  const summary = agentModelState.summary;
+  if (!summary) {
+    const loading = agentModelState.state === 'loading';
+    return {
+      model: loading ? '模型同步中' : '模型未同步',
+      meta: loading ? '' : '额度未同步',
+      title: loading
+        ? '正在读取当前虚拟员工的模型状态'
+        : '当前虚拟员工尚未上报可用的模型与额度状态',
+    };
+  }
+
+  const model = resolveCurrentModelName(summary, '模型未知');
+  const custom = summary.source === 'custom' || summary.status === 'custom';
+  const quota = formatRelayUsagePill(summary, {
+    customLabel: '自备模型',
+    showModel: false,
+  });
+  const meta = quota || (custom ? '自备模型' : '额度未同步');
+  return {
+    model,
+    meta,
+    title: custom
+      ? `${model}；该虚拟员工使用自备模型，不消耗 CatsCo 共享额度`
+      : quota
+        ? `${model}；使用该虚拟员工所属账号的共享额度，${quota}`
+        : `${model}；当前额度暂未同步`,
+  };
+}
+
 export function relayUsageTone(summary) {
   if (summary?.status === 'over_limit') return 'danger';
   if (summary?.status === 'high' || Number(summary?.remaining_percent) <= 10) return 'warning';

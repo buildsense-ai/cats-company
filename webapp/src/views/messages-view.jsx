@@ -8,7 +8,6 @@ import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import ChatComposer from '../widgets/chat-composer';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
-import { formatRelayUsagePill, relayUsageTone } from '../utils/relay-usage';
 
 const PAGE_SIZE = 50;
 const TYPING_TIMEOUT_MS = 10000;
@@ -77,6 +76,7 @@ export default function MessagesView({
   onOpenDesktopConnect,
   onResolveAgentTopic,
   onActivateTopic,
+  onAgentModelChange,
 }) {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
@@ -88,7 +88,6 @@ export default function MessagesView({
   const [members, setMembers] = useState([]);
   const [groupInfo, setGroupInfo] = useState(null);
   const [peerProfile, setPeerProfile] = useState(null);
-  const [agentQuota, setAgentQuota] = useState(null);
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [replyTo, setReplyTo] = useState(null);
@@ -335,7 +334,6 @@ export default function MessagesView({
     setMembers([]);
     setGroupInfo(null);
     setPeerProfile(null);
-    setAgentQuota(null);
     setHistoryLoaded(false);
     historyOffsetRef.current = 0;
     hasMoreHistoryRef.current = false;
@@ -1227,26 +1225,30 @@ export default function MessagesView({
   const canRegenerateAssistantMessages = !isGroup || Boolean(
     groupInfo?.is_agent_task || groupInfo?.kind === 'agent_task',
   );
-  const agentQuotaLabel = formatRelayUsagePill(agentQuota, { customLabel: '自备模型', showModel: false });
-  const agentUsesCustomModel = agentQuota?.source === 'custom' || agentQuota?.status === 'custom';
-  const agentQuotaTitle = agentUsesCustomModel
-    ? `${agentQuota?.model && agentQuota.model !== '自定义模型' ? `${agentQuota.model}；` : ''}该虚拟员工使用自备模型，不消耗 CatsCo 共享额度`
-    : '使用该虚拟员工所属账号的共享额度';
-
   useEffect(() => {
     if (isGroup || !peerIsBot || peerUID <= 0) {
-      setAgentQuota(null);
+      onAgentModelChange?.({ isBot: false, state: 'unavailable', summary: null });
       return undefined;
     }
 
     let cancelled = false;
+    onAgentModelChange?.({ isBot: true, state: 'loading', summary: null });
     const loadQuota = () => {
       api.getAgentQuota(peerUID)
         .then((response) => {
-          if (!cancelled) setAgentQuota(response?.summary || null);
+          if (!cancelled) {
+            const summary = response?.summary || null;
+            onAgentModelChange?.({
+              isBot: true,
+              state: summary ? 'ready' : 'unavailable',
+              summary,
+            });
+          }
         })
         .catch(() => {
-          if (!cancelled) setAgentQuota(null);
+          if (!cancelled) {
+            onAgentModelChange?.({ isBot: true, state: 'unavailable', summary: null });
+          }
         });
     };
     loadQuota();
@@ -1255,7 +1257,7 @@ export default function MessagesView({
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [isGroup, peerIsBot, peerUID]);
+  }, [isGroup, onAgentModelChange, peerIsBot, peerUID]);
 
   const memberMap = useMemo(() => {
     const map = new Map();
@@ -1494,16 +1496,6 @@ export default function MessagesView({
         style={previewFile ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
       >
         <div className="v3-chat-column">
-          {!isGroup && agentQuotaLabel && (
-            <div className="v3-conversation-actions" aria-label={`${displayName} 会话操作`}>
-              <span
-                className={`v3-relay-usage-pill v3-agent-quota-pill ${relayUsageTone(agentQuota)}`}
-                title={agentQuotaTitle}
-              >
-                {agentQuotaLabel}
-              </span>
-            </div>
-          )}
           <div
             className={`v3-timeline${isDragActive ? ' is-drag-active' : ''}`}
             ref={timelineRef}

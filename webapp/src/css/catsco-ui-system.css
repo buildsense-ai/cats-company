@@ -482,6 +482,10 @@ select:disabled {
 
 .v3-local-assistant-bar {
   position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
   min-height: 56px;
   padding: 0 12px;
   border-bottom: 1px solid var(--cc-border);
@@ -492,6 +496,7 @@ select:disabled {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  max-width: 100%;
   min-height: 34px;
   padding: 0 10px;
   border: 1px solid var(--cc-border);
@@ -502,17 +507,52 @@ select:disabled {
   font-weight: 500;
 }
 
-.v3-model-select { position: relative; z-index: 40; }
+.v3-local-assistant-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-local-assistant-model-meta {
+  flex: 0 0 auto;
+  padding-left: 7px;
+  border-left: 1px solid var(--cc-border);
+  color: #9de2bd;
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.v3-local-assistant-status.warning .v3-local-assistant-model-meta { color: #f8d477; }
+.v3-local-assistant-status.danger .v3-local-assistant-model-meta { color: #f2a0a0; }
+.v3-local-assistant-status.muted .v3-local-assistant-model-meta { color: var(--cc-muted); }
+
+.v3-model-select {
+  position: relative;
+  z-index: 40;
+  min-width: 0;
+  max-width: 100%;
+  justify-self: start;
+}
 .v3-shell-title {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+  position: static;
+  max-width: min(34vw, 420px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  justify-self: center;
   color: var(--cc-text);
   font-size: 14px;
   font-weight: 650;
 }
 
-.v3-shell-actions { display: flex; gap: 6px; margin-left: auto; }
+.v3-shell-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: 0;
+  justify-self: end;
+}
 
 .cc-empty-task {
   flex: 1;
@@ -596,16 +636,6 @@ select:disabled {
 
 .v3-chat-column {
   position: relative;
-}
-
-.v3-conversation-actions {
-  position: absolute;
-  top: 12px;
-  right: 18px;
-  z-index: 12;
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 
 .cc-question-navigator {

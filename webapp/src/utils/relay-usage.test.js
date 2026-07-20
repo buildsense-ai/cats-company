@@ -1,4 +1,9 @@
-import { formatRelayUsagePill, resolveCurrentModelName, shortCustomModelName } from './relay-usage';
+import {
+  formatRelayUsagePill,
+  resolveConversationModelDisplay,
+  resolveCurrentModelName,
+  shortCustomModelName,
+} from './relay-usage';
 
 describe('relay usage labels', () => {
   test('shows the reported custom model name', () => {
@@ -48,5 +53,41 @@ describe('relay usage labels', () => {
       { source: 'custom', status: 'custom', model: 'custom' },
       'MiniMax-M3',
     )).toBe('自定义模型');
+  });
+
+  test('combines a custom Agent model and source in one header display', () => {
+    expect(resolveConversationModelDisplay('MiniMax-M2.7', {
+      isBot: true,
+      state: 'ready',
+      summary: { source: 'custom', status: 'custom', model: 'gpt-5.6-terra' },
+    })).toEqual({
+      model: 'gpt-5.6-terra',
+      meta: '自备模型',
+      title: 'gpt-5.6-terra；该虚拟员工使用自备模型，不消耗 CatsCo 共享额度',
+    });
+  });
+
+  test('combines a relay Agent model and remaining quota in one header display', () => {
+    expect(resolveConversationModelDisplay('MiniMax-M2.7', {
+      isBot: true,
+      state: 'ready',
+      summary: { source: 'relay', status: 'normal', model: 'MiniMax-M3', remaining_percent: 72 },
+    })).toEqual({
+      model: 'MiniMax-M3',
+      meta: '剩余 72%',
+      title: 'MiniMax-M3；使用该虚拟员工所属账号的共享额度，剩余 72%',
+    });
+  });
+
+  test('makes a missing Agent status visible instead of leaving a blank quota area', () => {
+    expect(resolveConversationModelDisplay('MiniMax-M2.7', {
+      isBot: true,
+      state: 'unavailable',
+      summary: null,
+    })).toEqual({
+      model: '模型未同步',
+      meta: '额度未同步',
+      title: '当前虚拟员工尚未上报可用的模型与额度状态',
+    });
   });
 });
