@@ -27,6 +27,9 @@ const MAX_HISTORY = parseInt(process.env.MAX_HISTORY ?? '20', 10);
 const SYSTEM_PROMPT = `你是 Cats Company 的 AI 助手「小八」。你友好、有帮助、简洁。
 用中文回复，除非用户使用其他语言。保持回复简短自然，像朋友聊天一样。`;
 const conversations = new Map();
+const topicTasks = new Map();
+const topicStatusTasks = new Map();
+const TASK_STATUS_ACK_TIMEOUT_MS = 1_000;
 function getHistory(topic) {
     let h = conversations.get(topic);
     if (!h) {
@@ -65,8 +68,7 @@ async function callLLM(topic, userMessage) {
             signal: AbortSignal.timeout(30_000),
         });
         if (!res.ok) {
-            const body = await res.text().catch(() => '');
-            throw new Error(`LLM API ${res.status}: ${body}`);
+            throw new Error(`LLM API ${res.status}`);
         }
         const data = await res.json();
         const reply = data.choices[0].message.content.trim();
@@ -74,9 +76,123 @@ async function callLLM(topic, userMessage) {
         return reply;
     }
     catch (err) {
-        console.error(`[llm] call failed: ${err.message}`);
-        return '抱歉，我暂时无法回复，请稍后再试。';
+        console.error(`[llm] call failed: ${errorMessage(err)}`);
+        throw err;
     }
+}
+function taskRunID() {
+    return `llm_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+function errorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+}
+function isTerminalTaskStatus(state) {
+    return state === 'completed' || state === 'failed' || state === 'cancelled' || state === 'stale';
+}
+function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function sendTaskStatusWithTimeout(context, status) {
+    let timer;
+    try {
+        await Promise.race([
+            context.bot.sendTaskStatus(context.topic, status),
+            new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error('task_status acknowledgement timed out')), TASK_STATUS_ACK_TIMEOUT_MS);
+            }),
+        ]);
+    }
+    finally {
+        if (timer) {
+            clearTimeout(timer);
+        }
+    }
+}
+async function publishTaskStatus(context, status) {
+    const attempts = isTerminalTaskStatus(status.state) ? 3 : 1;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+            await sendTaskStatusWithTimeout(context, status);
+            return;
+        }
+        catch (error) {
+            if (attempt === attempts) {
+                // Status is auxiliary: it must never keep the assistant from replying.
+                console.error(`[task_status] publish failed: ${errorMessage(error)}`);
+                return;
+            }
+            await delay(attempt * 250);
+        }
+    }
+}
+function enqueueTopicStatus(context, status) {
+    const previous = topicStatusTasks.get(context.topic) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => publishTaskStatus(context, status));
+    topicStatusTasks.set(context.topic, next);
+    void next.finally(() => {
+        if (topicStatusTasks.get(context.topic) === next) {
+            topicStatusTasks.delete(context.topic);
+        }
+    }).catch(() => undefined);
+}
+function enqueueTopicTask(topic, task) {
+    const previous = topicTasks.get(topic) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(task);
+    topicTasks.set(topic, next);
+    void next.finally(() => {
+        if (topicTasks.get(topic) === next) {
+            topicTasks.delete(topic);
+        }
+    }).catch(() => undefined);
+    return next;
+}
+async function handleMessage(context) {
+    console.log(`[msg] from=${context.from} topic=${context.topic} text="${context.text}"`);
+    const runID = taskRunID();
+    enqueueTopicStatus(context, {
+        run_id: runID,
+        state: 'running',
+        summary: '正在生成回复',
+    });
+    let reply;
+    try {
+        reply = await context.withTyping(() => callLLM(context.topic, context.text));
+    }
+    catch (error) {
+        console.error(`[error] task failed: ${errorMessage(error)}`);
+        enqueueTopicStatus(context, {
+            run_id: runID,
+            state: 'failed',
+            summary: '任务执行失败',
+            error: '任务执行失败',
+        });
+        try {
+            await context.reply('抱歉，我暂时无法回复，请稍后再试。');
+        }
+        catch (replyError) {
+            console.error(`[error] fallback reply failed: ${errorMessage(replyError)}`);
+        }
+        return;
+    }
+    try {
+        console.log(`[reply] → ${context.topic}: ${reply.slice(0, 80)}${reply.length > 80 ? '...' : ''}`);
+        await context.reply(reply);
+    }
+    catch (error) {
+        console.error(`[error] reply acknowledgement failed: ${errorMessage(error)}`);
+        enqueueTopicStatus(context, {
+            run_id: runID,
+            state: 'failed',
+            summary: '回复状态未确认',
+            error: '回复状态未确认',
+        });
+        return;
+    }
+    enqueueTopicStatus(context, {
+        run_id: runID,
+        state: 'completed',
+        summary: '回复已完成',
+    });
 }
 // --- Main ---
 function main() {
@@ -101,19 +217,7 @@ function main() {
         console.log(`  model: ${LLM_MODEL}`);
         console.log(`  api base: ${LLM_API_BASE}`);
     });
-    bot.on('message', async (ctx) => {
-        console.log(`[msg] from=${ctx.from} topic=${ctx.topic} text="${ctx.text}"`);
-        try {
-            await ctx.withTyping(async () => {
-                const reply = await callLLM(ctx.topic, ctx.text);
-                console.log(`[reply] → ${ctx.topic}: ${reply.slice(0, 80)}${reply.length > 80 ? '...' : ''}`);
-                await ctx.reply(reply);
-            });
-        }
-        catch (err) {
-            console.error(`[error] reply failed: ${err.message}`);
-        }
-    });
+    bot.on('message', (context) => enqueueTopicTask(context.topic, () => handleMessage(context)));
     bot.on('disconnect', (code, reason) => {
         console.log(`[disconnect] code=${code} reason=${reason}`);
     });
