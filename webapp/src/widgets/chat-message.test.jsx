@@ -1,6 +1,8 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 vi.mock('marked', () => ({
   marked: {
@@ -49,6 +51,11 @@ vi.mock('read-excel-file/browser', () => ({
 import ChatMessage, { FilePreviewPanel } from './chat-message';
 import { markdownPreviewDocument } from './markdown-utils';
 import readExcelFile from 'read-excel-file/browser';
+
+const catscoUiSystemCss = readFileSync(
+  resolve(process.cwd(), 'src/css/catsco-ui-system.css'),
+  'utf8',
+);
 
 function PreviewHarness({ message }) {
   const [previewFile, setPreviewFile] = React.useState(null);
@@ -739,6 +746,49 @@ describe('ChatMessage rich file rendering', () => {
     });
     expect(onReply).toHaveBeenCalledTimes(1);
     expect(container.querySelector('.v3-message-action-menu')).toBeNull();
+  });
+
+  it('shows a direct edit action for the current user message', async () => {
+    const onEdit = vi.fn();
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 26,
+            from_uid: 1,
+            content: 'Edit this instruction',
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf
+          isGroup={false}
+          senderName="Me"
+          questionAnchorKey="question-26"
+          onEdit={onEdit}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[aria-label="更多操作"]')).toBeNull();
+    const editButton = container.querySelector('[aria-label="编辑并重新发送"]');
+    expect(editButton).not.toBeNull();
+    expect(container.querySelector('[data-conversation-question="question-26"]')).not.toBeNull();
+    await act(async () => {
+      Simulate.click(editButton);
+      await Promise.resolve();
+    });
+    expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 26 }));
+  });
+
+  it('keeps the current user bubble shrink-wrapped with equal inline padding', () => {
+    expect(catscoUiSystemCss).toContain('.v3-message.is-self .v3-message-bubble');
+    const bubbleRule = catscoUiSystemCss.match(
+      /\.v3-message\.is-self \.v3-message-bubble\s*\{[^}]*\}/,
+    )?.[0];
+
+    expect(bubbleRule).toContain('width: fit-content;');
+    expect(bubbleRule).toContain('max-width: 100%;');
+    expect(bubbleRule).toContain('padding-inline: 10px;');
   });
 
   it('renders update_plan working tools as a plan card fallback', async () => {

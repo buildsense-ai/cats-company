@@ -5,6 +5,7 @@ import {
   Bot,
   Bug,
   CheckCircle,
+  ChevronDown,
   Code2,
   Copy,
   FileCheck2,
@@ -438,10 +439,11 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                     <select
                       value={createForm.role}
                       onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })}
-                      className="oc-auth-input"
+                      className="oc-auth-input cc-agent-role-select"
                     >
                       {ASSISTANT_ROLES.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
                     </select>
+                    <ChevronDown className="cc-agent-role-chevron" size={15} aria-hidden="true" />
                   </label>
                   <label>
                     <span>用途说明 <small>选填</small></span>

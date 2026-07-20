@@ -287,6 +287,7 @@ func buildGroupConversationSummary(topicID string, group *types.Group, latest *t
 		AvatarURL:   group.AvatarURL,
 		HasBot:      group.HasBot,
 		IsAgentTask: group.Kind == types.GroupKindAgentTask,
+		MemberCount: group.MemberCount,
 	}
 	applyLatestMessage(summary, latest)
 	applyGroupCreatedTime(summary, group)

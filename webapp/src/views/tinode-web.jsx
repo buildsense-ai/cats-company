@@ -25,7 +25,7 @@ import GroupSettings from '../widgets/group-settings';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
 import { resolveCurrentModelName } from '../utils/relay-usage';
-import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Sun, Moon } from 'lucide-react';
+import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 
@@ -35,6 +35,9 @@ const TABS = {
 const APP_SIDEBAR_COLLAPSED_STORAGE_KEY = 'cc_app_sidebar_collapsed_v1';
 const DEFAULT_MODEL_NAME = 'MiniMax-M2.7';
 const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true';
+const DEV_PREVIEW_UID = Number(import.meta.env.VITE_DEV_PREVIEW_UID || 100);
+const DEV_PREVIEW_ACCOUNT = import.meta.env.VITE_DEV_PREVIEW_ACCOUNT || 'ui-reviewer';
+const DEV_PREVIEW_PASSWORD = import.meta.env.VITE_DEV_PREVIEW_PASSWORD || 'demo123456';
 const DEV_PREVIEW_USER = {
   uid: 'local-preview',
   username: 'preview',
@@ -180,6 +183,8 @@ function TinodeWebApp() {
   const [user, setUser] = useState(() => getInitialUser());
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
   const [activeTopic, _setActiveTopic] = useState(null);
+  const [taskDraft, setTaskDraft] = useState(null);
+  const taskDraftSequenceRef = useRef(0);
 
   const setActiveTopic = useCallback((nextValue) => {
     _setActiveTopic((prev) => {
@@ -288,6 +293,36 @@ function TinodeWebApp() {
     setUser(nextUser);
   }, []);
 
+  useEffect(() => {
+    if (!DEV_PREVIEW_ENABLED) return undefined;
+    let cancelled = false;
+
+    const activatePreviewAccount = async () => {
+      try {
+        if (!getToken()) {
+          const session = await api.login({
+            account: DEV_PREVIEW_ACCOUNT,
+            password: DEV_PREVIEW_PASSWORD,
+          });
+          if (cancelled) return;
+          setToken(session.token);
+        }
+        if (cancelled) return;
+        persistUser({
+          ...DEV_PREVIEW_USER,
+          uid: DEV_PREVIEW_UID,
+        });
+      } catch (error) {
+        console.warn('Failed to activate local preview account:', error);
+      }
+    };
+
+    activatePreviewAccount();
+    return () => {
+      cancelled = true;
+    };
+  }, [persistUser]);
+
   const toggleAppSidebar = useCallback(() => {
     if (window.matchMedia('(max-width: 768px)').matches) {
       setMobileSidebarOpen((open) => !open);
@@ -331,6 +366,7 @@ function TinodeWebApp() {
       setToken(null);
       localStorage.removeItem('oc_user');
       setUser(null);
+      setTaskDraft(null);
       setActiveTopic(null);
       return;
     }
@@ -418,6 +454,7 @@ function TinodeWebApp() {
   }, [user?.uid, handleWSMessage]);
 
   useEffect(() => {
+    setTaskDraft(null);
     if (!user?.uid) {
       _setActiveTopic(null);
       return;
@@ -576,6 +613,7 @@ function TinodeWebApp() {
     localStorage.removeItem('oc_user');
     setUser(null);
     setOnlineUsers({});
+    setTaskDraft(null);
     setActiveTopic(null);
   };
 
@@ -623,9 +661,44 @@ function TinodeWebApp() {
     };
   }, []);
 
+  const createAgentTaskTopic = useCallback(async (agent, draft = {}) => {
+    const agentUid = agent?.uid || agent?.id;
+    if (!agentUid) throw new Error('请选择一个可用的 Agent');
+
+    const taskName = buildAgentTaskName(agent, draft);
+    const created = await api.createGroup(taskName, [agentUid], { kind: 'agent_task' });
+    const rawGroup = created?.group || {};
+    const groupId = rawGroup.id || created?.group_id;
+    const topicId = created?.topic || created?.topic_id || (groupId ? `grp_${groupId}` : '');
+    if (!topicId || !groupId) throw new Error('暂时无法创建任务，请稍后重试。');
+
+    return {
+      topicId,
+      name: rawGroup.name || created?.name || taskName,
+      isGroup: true,
+      groupId,
+      avatar_url: rawGroup.avatar_url || created?.avatar_url || agent.avatar_url || '',
+      hasBot: true,
+      isAgentTask: true,
+    };
+  }, []);
+
   const activateResolvedTopic = useCallback((nextTopic) => {
     if (!nextTopic?.topicId) return;
+    setTaskDraft(null);
     setActiveTopic(nextTopic);
+  }, [setActiveTopic]);
+
+  const handleStartAgentTask = useCallback((agent) => {
+    const agentUid = agent?.uid || agent?.id;
+    if (!agentUid) return;
+    taskDraftSequenceRef.current += 1;
+    setActiveTopic(null);
+    setTaskDraft({
+      agent,
+      key: `${agentUid}:${taskDraftSequenceRef.current}`,
+    });
+    setMobileSidebarOpen(false);
   }, [setActiveTopic]);
 
   const activateAgentTopic = useCallback(async (agent) => {
@@ -714,9 +787,11 @@ function TinodeWebApp() {
           <SidebarContent
             activeTopic={activeTopic ? activeTopic.topicId : null}
             onSelectTopic={(topic) => {
+              setTaskDraft(null);
               setActiveTopic(topic);
               setMobileSidebarOpen(false);
             }}
+            onStartAgentTask={handleStartAgentTask}
             user={user}
             onlineUsers={onlineUsers}
             compact={appSidebarCollapsed}
@@ -783,10 +858,8 @@ function TinodeWebApp() {
         </button>
         <LocalAssistantBar
           currentModelName={currentModelName}
-          theme={theme}
-          onToggleTheme={() => setTheme((value) => value === 'light' ? 'dark' : 'light')}
           onDownload={() => setShowDownloadModal(true)}
-          title={activeTopic?.name || '新对话'}
+          title={activeTopic?.name || taskDraftTitle(taskDraft)}
         />
         {activeTopic ? (
           <MessagesView
@@ -803,7 +876,9 @@ function TinodeWebApp() {
           />
         ) : (
           <NoActiveTask
-            onResolveAgentTopic={resolveAgentTopic}
+            key={taskDraft?.key || 'new-task'}
+            initialAgent={taskDraft?.agent}
+            onResolveAgentTopic={createAgentTaskTopic}
             onActivateTopic={activateResolvedTopic}
           />
         )}
@@ -812,6 +887,8 @@ function TinodeWebApp() {
       {showProfileEditor && (
         <ProfileEditor
           user={user}
+          theme={theme}
+          onToggleTheme={() => setTheme((value) => value === 'light' ? 'dark' : 'light')}
           onClose={() => setShowProfileEditor(false)}
           onSaved={handleUserUpdated}
           onOpenRelay={() => setShowRelayModal(true)}
@@ -864,7 +941,7 @@ function TinodeWebApp() {
   );
 }
 
-function LocalAssistantBar({ currentModelName, theme, onToggleTheme, onDownload, title }) {
+function LocalAssistantBar({ currentModelName, onDownload, title }) {
   return (
     <header className="v3-local-assistant-bar">
       <div className="v3-model-select">
@@ -878,9 +955,6 @@ function LocalAssistantBar({ currentModelName, theme, onToggleTheme, onDownload,
       </div>
       <strong className="v3-shell-title">{title}</strong>
       <div className="v3-shell-actions">
-        <button type="button" className="v3-action-btn" onClick={onToggleTheme} aria-label="切换日夜模式">
-          {theme === 'light' ? <Sun size={17} /> : <Moon size={17} />}
-        </button>
         <button type="button" className="v3-action-btn" onClick={onDownload} aria-label="下载桌面端">
           <Download size={17} />
         </button>
@@ -889,7 +963,7 @@ function LocalAssistantBar({ currentModelName, theme, onToggleTheme, onDownload,
   );
 }
 
-function NoActiveTask({ onResolveAgentTopic, onActivateTopic }) {
+function NoActiveTask({ initialAgent, onResolveAgentTopic, onActivateTopic }) {
   return (
     <main className="cc-empty-task">
       <div className="cc-empty-task-inner">
@@ -898,6 +972,7 @@ function NoActiveTask({ onResolveAgentTopic, onActivateTopic }) {
           <h1>需要我为您做什么？</h1>
         </div>
         <EmptyTaskComposer
+          initialAgent={initialAgent}
           onResolveAgentTopic={onResolveAgentTopic}
           onActivateTopic={onActivateTopic}
         />
@@ -906,11 +981,20 @@ function NoActiveTask({ onResolveAgentTopic, onActivateTopic }) {
   );
 }
 
-function SidebarContent({ activeTopic, onSelectTopic, user, onlineUsers, compact, onManageGroup }) {
+function SidebarContent({
+  activeTopic,
+  onSelectTopic,
+  onStartAgentTask,
+  user,
+  onlineUsers,
+  compact,
+  onManageGroup,
+}) {
   return (
     <ChatListView
       activeTopic={activeTopic}
       onSelectTopic={onSelectTopic}
+      onStartAgentTask={onStartAgentTask}
       user={user}
       onlineUsers={onlineUsers}
       compact={compact}
@@ -1136,4 +1220,30 @@ function parseUid(uidStr) {
     return parseInt(uidStr.slice(3), 10) || 0;
   }
   return parseInt(uidStr, 10) || 0;
+}
+
+function taskDraftTitle(taskDraft) {
+  const agent = taskDraft?.agent;
+  const agentName = agent?.display_name || agent?.username || '';
+  return agentName ? `新任务 · ${agentName}` : '新任务';
+}
+
+function buildAgentTaskName(agent, draft = {}) {
+  const instruction = String(draft.text || '').replace(/\s+/g, ' ').trim();
+  if (instruction) return truncateTaskName(instruction);
+
+  const attachments = Array.isArray(draft.attachments) ? draft.attachments : [];
+  const agentName = agent?.display_name || agent?.username || 'Agent';
+  if (attachments.length === 1) {
+    const attachmentName = String(attachments[0]?.name || '').trim();
+    if (attachmentName) return truncateTaskName(`${agentName} · ${attachmentName}`);
+  }
+  if (attachments.length > 1) return truncateTaskName(`${agentName} · ${attachments.length} 个附件`);
+  return truncateTaskName(`${agentName} 新任务`);
+}
+
+function truncateTaskName(value, maxLength = 36) {
+  const characters = Array.from(String(value || '').trim());
+  if (characters.length <= maxLength) return characters.join('');
+  return `${characters.slice(0, maxLength).join('')}…`;
 }

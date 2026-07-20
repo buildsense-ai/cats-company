@@ -19,6 +19,7 @@ export default function ChatComposer({
   agentName = '选择 Agent',
   agentOpen = false,
   agentDisabled = false,
+  agentPickerVisible = true,
   onAgentToggle,
   agentMenu,
   onSend,
@@ -35,7 +36,7 @@ export default function ChatComposer({
   const rootRef = useRef(null);
   const attachmentPickerRef = useRef(null);
   const agentPickerRef = useRef(null);
-  const showAgentPicker = typeof onAgentToggle === 'function' || Boolean(agentMenu);
+  const showAgentPicker = agentPickerVisible && (typeof onAgentToggle === 'function' || Boolean(agentMenu));
   const anyMenuOpen = attachmentOpen || (showAgentPicker && agentOpen);
 
   useEffect(() => {

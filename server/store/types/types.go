@@ -208,6 +208,7 @@ type ConversationSummary struct {
 	IsBot       bool                    `json:"is_bot,omitempty"`
 	HasBot      bool                    `json:"has_bot,omitempty"`
 	IsAgentTask bool                    `json:"is_agent_task,omitempty"`
+	MemberCount int                     `json:"member_count,omitempty"`
 	IsOnline    bool                    `json:"is_online,omitempty"`
 	LastTime    *time.Time              `json:"last_time,omitempty"`
 	LatestSeq   int64                   `json:"latest_seq,omitempty"`
@@ -639,6 +640,7 @@ type Group struct {
 	AvatarURL    string    `json:"avatar_url,omitempty"`
 	Announcement string    `json:"announcement,omitempty"`
 	HasBot       bool      `json:"has_bot,omitempty"`
+	MemberCount  int       `json:"member_count,omitempty"`
 	MaxMembers   int       `json:"max_members"`
 	CreatedAt    time.Time `json:"created_at"`
 }
@@ -662,6 +664,33 @@ type GroupMember struct {
 	DisplayName string `json:"display_name,omitempty"`
 	AvatarURL   string `json:"avatar_url,omitempty"`
 	IsBot       bool   `json:"is_bot,omitempty"`
+}
+
+// GroupInviteStatus represents the approval state of a member-proposed invite.
+type GroupInviteStatus string
+
+const (
+	GroupInvitePending  GroupInviteStatus = "pending"
+	GroupInviteApproved GroupInviteStatus = "approved"
+	GroupInviteRejected GroupInviteStatus = "rejected"
+)
+
+// GroupInviteRequest records a group member's proposal to invite another user.
+type GroupInviteRequest struct {
+	ID                 int64             `json:"id"`
+	GroupID            int64             `json:"group_id"`
+	InviterID          int64             `json:"inviter_id"`
+	InviteeID          int64             `json:"invitee_id"`
+	ResolverID         int64             `json:"resolver_id,omitempty"`
+	Status             GroupInviteStatus `json:"status"`
+	InviterUsername    string            `json:"inviter_username,omitempty"`
+	InviterDisplayName string            `json:"inviter_display_name,omitempty"`
+	InviteeUsername    string            `json:"invitee_username,omitempty"`
+	InviteeDisplayName string            `json:"invitee_display_name,omitempty"`
+	InviteeAvatarURL   string            `json:"invitee_avatar_url,omitempty"`
+	InviteeIsBot       bool              `json:"invitee_is_bot,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
 }
 
 // RateLimitConfig defines rate limits per account type.

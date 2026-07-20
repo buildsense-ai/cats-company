@@ -547,6 +547,7 @@ func main() {
 	mux.HandleFunc("/api/groups/info", jwtAuthWithDB(groupHandler.HandleGetGroupInfo))
 	mux.HandleFunc("/api/groups/update", jwtAuthWithDB(groupHandler.HandleUpdateGroup))
 	mux.HandleFunc("/api/groups/invite", jwtAuthWithDB(groupHandler.HandleInviteMembers))
+	mux.HandleFunc("/api/groups/invite/resolve", jwtAuthWithDB(groupHandler.HandleResolveGroupInviteRequest))
 	mux.HandleFunc("/api/groups/leave", jwtAuthWithDB(groupHandler.HandleLeaveGroup))
 	mux.HandleFunc("/api/groups/kick", jwtAuthWithDB(groupHandler.HandleKickMember))
 	mux.HandleFunc("/api/groups/mute", jwtAuthWithDB(groupHandler.HandleMuteMember))

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
@@ -56,6 +57,45 @@ func (a *Adapter) ListProjects(ownerUID int64) ([]*types.Project, error) {
 		return nil, fmt.Errorf("iterate projects: %w", err)
 	}
 	return projects, nil
+}
+
+// RenameProject renames an owner-scoped project.
+func (a *Adapter) RenameProject(ownerUID, projectID int64, name string) error {
+	result, err := a.db.Exec(
+		`UPDATE projects SET name = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND owner_uid = $3`,
+		name, projectID, ownerUID,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return store.ErrProjectNameConflict
+		}
+		return fmt.Errorf("rename project: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read rename project result: %w", err)
+	}
+	if affected == 0 {
+		return store.ErrProjectNotFound
+	}
+	return nil
+}
+
+// DeleteProject deletes an owner-scoped project without deleting its topics.
+func (a *Adapter) DeleteProject(ownerUID, projectID int64) error {
+	result, err := a.db.Exec(`DELETE FROM projects WHERE id = $1 AND owner_uid = $2`, projectID, ownerUID)
+	if err != nil {
+		return fmt.Errorf("delete project: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read delete project result: %w", err)
+	}
+	if affected == 0 {
+		return store.ErrProjectNotFound
+	}
+	return nil
 }
 
 // AssignTopicToProject moves an owned topic into the selected project.

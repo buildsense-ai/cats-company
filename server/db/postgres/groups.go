@@ -56,9 +56,18 @@ func (a *Adapter) GetGroup(groupID int64) (*types.Group, error) {
 	var avatarURL *string
 	var announcement *string
 	err := a.db.QueryRow(
-		`SELECT id, name, owner_id, group_kind, avatar_url, announcement, max_members, created_at FROM "groups" WHERE id = $1`,
+		`SELECT g.id, g.name, g.owner_id, g.group_kind, g.avatar_url, g.announcement, g.max_members, g.created_at,
+		        EXISTS(
+		          SELECT 1
+		          FROM group_members gm_bot
+		          JOIN users u_bot ON u_bot.id = gm_bot.user_id
+		          WHERE gm_bot.group_id = g.id AND u_bot.account_type = 'bot'
+		        ) AS has_bot,
+		        (SELECT COUNT(*) FROM group_members gm_count WHERE gm_count.group_id = g.id) AS member_count
+		 FROM "groups" g
+		 WHERE g.id = $1`,
 		groupID,
-	).Scan(&g.ID, &g.Name, &g.OwnerID, &g.Kind, &avatarURL, &announcement, &g.MaxMembers, &g.CreatedAt)
+	).Scan(&g.ID, &g.Name, &g.OwnerID, &g.Kind, &avatarURL, &announcement, &g.MaxMembers, &g.CreatedAt, &g.HasBot, &g.MemberCount)
 	if err != nil {
 		return nil, fmt.Errorf("get group: %w", err)
 	}
@@ -151,7 +160,8 @@ func (a *Adapter) GetUserGroups(userID int64) ([]*types.Group, error) {
 		          FROM group_members gm_bot
 		          JOIN users u_bot ON u_bot.id = gm_bot.user_id
 		          WHERE gm_bot.group_id = g.id AND u_bot.account_type = 'bot'
-		        ) AS has_bot
+		        ) AS has_bot,
+		        (SELECT COUNT(*) FROM group_members gm_count WHERE gm_count.group_id = g.id) AS member_count
 		 FROM "groups" g
 		 JOIN group_members gm ON gm.group_id = g.id
 		 WHERE gm.user_id = $1 AND g.group_kind IN ('standard', 'agent_task')
@@ -167,7 +177,7 @@ func (a *Adapter) GetUserGroups(userID int64) ([]*types.Group, error) {
 	for rows.Next() {
 		g := &types.Group{}
 		var avatarURL *string
-		if err := rows.Scan(&g.ID, &g.Name, &g.OwnerID, &g.Kind, &avatarURL, &g.MaxMembers, &g.CreatedAt, &g.HasBot); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.OwnerID, &g.Kind, &avatarURL, &g.MaxMembers, &g.CreatedAt, &g.HasBot, &g.MemberCount); err != nil {
 			return nil, fmt.Errorf("scan group: %w", err)
 		}
 		if avatarURL != nil {

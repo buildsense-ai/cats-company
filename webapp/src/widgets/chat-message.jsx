@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, CornerUpLeft, MoreHorizontal, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
+import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, CornerUpLeft, MoreHorizontal, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -697,7 +697,7 @@ function WorkingProcess({ blocks }) {
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, onReply, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
+function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
@@ -768,6 +768,12 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
     });
   };
 
+  const handleEditClick = (event) => {
+    event.stopPropagation();
+    setActionsOpen(false);
+    onEdit?.(message);
+  };
+
   const handleCopyClick = async (event) => {
     event.stopPropagation();
     try {
@@ -815,7 +821,10 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
   if (!hasText && richBlocks.length === 0 && workingBlocks.length === 0) return null;
 
   return (
-    <div className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}`}>
+    <div
+      className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}`}
+      data-conversation-question={questionAnchorKey || undefined}
+    >
       <div className="v3-avatar-col">
         {!isConsecutive && (
           <Avatar
@@ -897,18 +906,30 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
                 <RotateCcw size={18} />
               </button>
             )}
-            <button
-              className="v3-action-btn"
-              onClick={handleMoreClick}
-              aria-label="更多操作"
-              aria-haspopup="menu"
-              aria-expanded={actionsOpen}
-              title="更多操作"
-              type="button"
-            >
-              <MoreHorizontal size={14} />
-            </button>
-            {actionsOpen && (
+            {onEdit ? (
+              <button
+                className="v3-action-btn"
+                onClick={handleEditClick}
+                aria-label="编辑并重新发送"
+                title="编辑并重新发送"
+                type="button"
+              >
+                <Pencil size={14} />
+              </button>
+            ) : (
+              <button
+                className="v3-action-btn"
+                onClick={handleMoreClick}
+                aria-label="更多操作"
+                aria-haspopup="menu"
+                aria-expanded={actionsOpen}
+                title="更多操作"
+                type="button"
+              >
+                <MoreHorizontal size={14} />
+              </button>
+            )}
+            {!onEdit && actionsOpen && (
               <div className="v3-message-action-menu" role="menu">
                 {onReply && (
                   <button type="button" role="menuitem" onClick={handleReplyClick}>
@@ -935,6 +956,8 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.senderAvatarUrl === nextProps.senderAvatarUrl &&
     prevProps.senderIsBot === nextProps.senderIsBot &&
     prevProps.replyMessage === nextProps.replyMessage &&
+    prevProps.questionAnchorKey === nextProps.questionAnchorKey &&
+    prevProps.onEdit === nextProps.onEdit &&
     prevProps.onRegenerate === nextProps.onRegenerate &&
     prevProps.showThinking === nextProps.showThinking &&
     prevProps.isConsecutive === nextProps.isConsecutive &&

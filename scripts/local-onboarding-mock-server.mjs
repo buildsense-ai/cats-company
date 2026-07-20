@@ -75,6 +75,8 @@ function seedChatShowcase(user, bots) {
       avatar_url: '',
       owner_id: user.id,
       has_bot: true,
+      member_count: 4,
+      member_ids: [friends[0].id, friends[1].id, bots[0].id],
       created_at: at(24 * 60),
     },
   ];
@@ -87,16 +89,27 @@ function seedChatShowcase(user, bots) {
 
   const seeded = [
     [codeTopic, [
-      { from_uid: user.id, content: '帮我检查当前聊天界面的信息层级，重点看侧栏和消息区。', created_at: at(42) },
+      { from_uid: user.id, content: '请帮我检查新版聊天消息的布局，重点确认我的指令气泡、系统回复，以及两者之间的留白是否清晰。', created_at: at(11) },
       {
         from_uid: codeAgent.id,
         role: 'assistant',
-        mode: 'code',
-        content: '我先按桌面端验收，当前建议关注：\n\n1. **会话层级**：标题、预览、时间需要形成稳定对比。\n2. **消息密度**：连续短消息不要显得过散。\n3. **操作反馈**：悬浮、选中和禁用状态应使用同一套颜色。\n\n```css\n.v3-chat-item.active {\n  background: var(--cc-selected);\n}\n```',
-        created_at: at(39),
+        content: '可以。我会先检查用户指令是否靠右且使用独立气泡，再确认系统回复的头像、名称和正文层级，最后观察两类消息之间的垂直间距。',
+        created_at: at(9),
       },
-      { from_uid: user.id, content: '再补一条长文本，看看气泡宽度和换行。这个页面后续还会展示代码、文件和工作流结果，所以普通文本不能抢占太多视觉注意力。', created_at: at(37) },
-      { from_uid: codeAgent.id, role: 'assistant', content: '收到。长文本在当前宽度下会自然换行；建议同时检查 390px、768px 和宽屏三档，尤其留意右侧预览面板打开后的可读宽度。', created_at: at(35) },
+      { from_uid: user.id, content: '再用一条稍长的指令测试自动换行：气泡不要占满整行，文字上下需要有舒适留白，时间和操作按钮应位于气泡外部的右下方。', created_at: at(7) },
+      {
+        from_uid: codeAgent.id,
+        role: 'assistant',
+        content: '检查结果：长指令会在最大宽度内自然换行，气泡只包裹正文；时间、复制和更多操作位于气泡下方，并与右边缘对齐。',
+        created_at: at(5),
+      },
+      { from_uid: user.id, content: '最后确认一下：时间和两个按钮只在鼠标悬浮时出现，按钮大小和间距与系统回复保持一致。', created_at: at(3) },
+      {
+        from_uid: codeAgent.id,
+        role: 'assistant',
+        content: '已确认。桌面端默认隐藏该操作行，悬浮或键盘聚焦时显示；触屏设备仍保留可操作入口。这组数据仅用于本地界面验收。',
+        created_at: at(1),
+      },
     ]],
     [groupTopic, [
       { from_uid: friends[0].id, from_name: friends[0].display_name, content: '我把今天的视觉验收项整理好了，大家重点看深色模式。', created_at: at(28) },
@@ -121,8 +134,18 @@ function seedChatShowcase(user, bots) {
   const conversations = [
     conversationFromTopic(opsTopic, '本周活跃会话概览', opsAgent.id, false, at(7), true),
     conversationFromTopic(designTopic, friends[0].display_name, friends[0].id, false, at(13)),
-    conversationFromTopic(groupTopic, groups[0].name, null, true, at(18), false, groups[0].id),
-    conversationFromTopic(codeTopic, 'PR #71 前端迁移复盘', codeAgent.id, false, at(35), true),
+    conversationFromTopic(
+      groupTopic,
+      groups[0].name,
+      null,
+      true,
+      at(18),
+      false,
+      groups[0].id,
+      groups[0].has_bot,
+      groups[0].member_count,
+    ),
+    conversationFromTopic(codeTopic, '聊天气泡布局验收', codeAgent.id, false, at(1), true),
   ];
   showcaseByUserId.set(user.id, { friends, groups, conversations });
   const project = {
@@ -155,7 +178,17 @@ function refreshProjectAssignments(userId) {
   }
 }
 
-function conversationFromTopic(id, name, friendId, isGroup, lastTime, isBot = false, groupId = null) {
+function conversationFromTopic(
+  id,
+  name,
+  friendId,
+  isGroup,
+  lastTime,
+  isBot = false,
+  groupId = null,
+  hasBot = false,
+  memberCount = 0,
+) {
   const messages = messagesByTopic.get(id) || [];
   const latest = messages[messages.length - 1];
   return {
@@ -169,7 +202,8 @@ function conversationFromTopic(id, name, friendId, isGroup, lastTime, isBot = fa
     is_group: isGroup,
     avatar_url: '',
     is_bot: isBot,
-    has_bot: isGroup,
+    has_bot: Boolean(hasBot),
+    member_count: Number(memberCount) || 0,
     is_online: isBot || friendId === 301,
     latest_seq: latest?.seq || 0,
   };
@@ -514,6 +548,18 @@ async function handleApi(req, res) {
       });
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/agents/quota') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const agentUid = Number(url.searchParams.get('uid'));
+      const bot = (botsByOwner.get(user.id) || []).find((item) => item.id === agentUid);
+      if (!bot) return send(res, 404, { error: 'agent not found' });
+      return send(res, 200, {
+        configured: false,
+        shared: true,
+      });
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/devices') {
       const user = requireUser(req, res);
       if (!user) return;
@@ -639,6 +685,8 @@ async function handleApi(req, res) {
       const id = nextGroupId++;
       const topicId = `grp_${id}`;
       const createdAt = new Date().toISOString();
+      const normalizedMemberIds = [...new Set(memberIds.filter((memberId) => Number.isFinite(memberId) && memberId !== user.id))];
+      const memberCount = 1 + normalizedMemberIds.length;
       const group = {
         id,
         topic_id: topicId,
@@ -646,6 +694,8 @@ async function handleApi(req, res) {
         avatar_url: '',
         owner_id: user.id,
         has_bot: Boolean(agent),
+        member_count: memberCount,
+        member_ids: normalizedMemberIds,
         agent_id: agent?.id || null,
         kind,
         is_agent_task: kind === 'agent_task',
@@ -653,8 +703,7 @@ async function handleApi(req, res) {
       };
       showcase.groups.unshift(group);
       showcase.conversations.unshift({
-        ...conversationFromTopic(topicId, name, null, true, createdAt, false, id),
-        has_bot: Boolean(agent),
+        ...conversationFromTopic(topicId, name, null, true, createdAt, false, id, Boolean(agent), memberCount),
         kind,
         is_agent_task: kind === 'agent_task',
       });
@@ -666,7 +715,9 @@ async function handleApi(req, res) {
         created_at: createdAt,
         avatar_url: '',
         kind,
+        has_bot: Boolean(agent),
         is_agent_task: kind === 'agent_task',
+        member_count: memberCount,
       });
     }
 
@@ -702,9 +753,10 @@ async function handleApi(req, res) {
       const groupId = Number(url.searchParams.get('id'));
       const group = (showcase?.groups || []).find((item) => item.id === groupId);
       if (!group) return send(res, 404, { error: 'group not found' });
+      const groupMemberIds = new Set(Array.isArray(group.member_ids) ? group.member_ids.map(Number) : []);
       const members = [
         { user_id: user.id, display_name: user.display_name, username: user.username, role: 'owner', is_bot: false },
-        ...(showcase?.friends || []).map((friend) => ({
+        ...(showcase?.friends || []).filter((friend) => groupMemberIds.has(friend.id)).map((friend) => ({
           user_id: friend.id,
           display_name: friend.display_name,
           username: friend.username,
@@ -712,7 +764,7 @@ async function handleApi(req, res) {
           role: 'member',
           is_bot: false,
         })),
-        ...(botsByOwner.get(user.id) || []).slice(0, 1).map((bot) => ({
+        ...(botsByOwner.get(user.id) || []).filter((bot) => groupMemberIds.has(bot.id)).map((bot) => ({
           user_id: bot.id,
           display_name: bot.display_name,
           username: bot.username,
@@ -820,6 +872,41 @@ async function handleApi(req, res) {
       projects.unshift(project);
       projectsByUserId.set(user.id, projects);
       return send(res, 201, { project });
+    }
+
+    if (req.method === 'PATCH' && url.pathname === '/api/projects') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const body = await readBody(req);
+      const projectId = Number(body.project_id || 0);
+      const name = String(body.name || '').trim();
+      if (!projectId || !name || [...name].length > 128) return send(res, 400, { error: 'invalid project' });
+      const projects = projectsByUserId.get(user.id) || [];
+      const project = projects.find((item) => Number(item.id) === projectId);
+      if (!project) return send(res, 404, { error: 'project not found' });
+      if (projects.some((item) => Number(item.id) !== projectId && item.name === name)) {
+        return send(res, 409, { error: 'project name already exists' });
+      }
+      project.name = name;
+      project.updated_at = new Date().toISOString();
+      refreshProjectAssignments(user.id);
+      return send(res, 200, { ok: true });
+    }
+
+    if (req.method === 'DELETE' && url.pathname === '/api/projects') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const projectId = Number(url.searchParams.get('project_id') || 0);
+      const projects = projectsByUserId.get(user.id) || [];
+      if (!projects.some((item) => Number(item.id) === projectId)) return send(res, 404, { error: 'project not found' });
+      projectsByUserId.set(user.id, projects.filter((item) => Number(item.id) !== projectId));
+      const assignments = projectTopicsByUserId.get(user.id) || new Map();
+      for (const [topicId, assignedProjectId] of assignments.entries()) {
+        if (Number(assignedProjectId) === projectId) assignments.delete(topicId);
+      }
+      projectTopicsByUserId.set(user.id, assignments);
+      refreshProjectAssignments(user.id);
+      return send(res, 200, { ok: true });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/projects/topic') {

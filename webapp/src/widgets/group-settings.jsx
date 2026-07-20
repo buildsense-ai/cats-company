@@ -9,6 +9,7 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
   const fileInputRef = useRef(null);
   const [group, setGroup] = useState(null);
   const [members, setMembers] = useState([]);
+  const [inviteRequests, setInviteRequests] = useState([]);
   const [friends, setFriends] = useState([]);
   const [name, setName] = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
@@ -17,6 +18,7 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
   const [showInvite, setShowInvite] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
   const currentUserId = currentUser?.uid || currentUser?.id || 0;
   const currentMember = useMemo(
@@ -25,6 +27,7 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
   );
   const currentRole = currentMember?.role || '';
   const canEditGroup = currentRole === 'owner' || currentRole === 'admin';
+  const canInviteMembers = Boolean(currentRole);
 
   useEffect(() => {
     loadData();
@@ -34,6 +37,7 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
     const nextGroup = groupRes.group || null;
     setGroup(nextGroup);
     setMembers(groupRes.members || []);
+    setInviteRequests(groupRes.invite_requests || []);
     setName(nextGroup?.name || '');
     setAvatarUrl(nextGroup?.avatar_url || '');
     setAnnouncement(nextGroup?.announcement || '');
@@ -50,6 +54,7 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
       setFriends(friendsRes.friends || []);
       setSelected(new Set());
       setError('');
+      setNotice('');
     } catch (err) {
       setError(err.message || t('error_server'));
     }
@@ -63,8 +68,9 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
 
   const availableFriends = useMemo(() => {
     const memberIds = new Set(members.map((member) => member.user_id));
-    return friends.filter((friend) => !memberIds.has(friend.id));
-  }, [friends, members]);
+    const pendingInviteeIds = new Set(inviteRequests.map((request) => request.invitee_id));
+    return friends.filter((friend) => !memberIds.has(friend.id) && !pendingInviteeIds.has(friend.id));
+  }, [friends, inviteRequests, members]);
 
   const toggleInvite = (userId) => {
     setSelected((prev) => {
@@ -108,6 +114,7 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
     }
     setSaving(true);
     setError('');
+    setNotice('');
     try {
       if (canEditGroup && group && (group.name !== name.trim() || (group.avatar_url || '') !== (avatarUrl || ''))) {
         await api.updateGroup(groupId, name.trim(), avatarUrl || '');
@@ -115,11 +122,19 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
       if (canEditGroup && (group?.announcement || '') !== announcement.trim()) {
         await api.setGroupAnnouncement(groupId, announcement.trim());
       }
-      if (canEditGroup && selected.size > 0) {
-        await api.inviteToGroup(groupId, Array.from(selected));
+      let inviteResult = null;
+      if (selected.size > 0) {
+        inviteResult = await api.inviteToGroup(groupId, Array.from(selected));
       }
       const refreshedGroup = await refreshGroupInfo();
       if (onSaved) onSaved(refreshedGroup);
+      if (!canEditGroup && inviteResult) {
+        setShowInvite(false);
+        setNotice(inviteResult.requested > 0
+          ? `已提交 ${inviteResult.requested} 项邀请申请，等待群主或管理员审批。`
+          : '没有新增邀请申请，对方可能已在群内或申请正在等待审批。');
+        return;
+      }
       onClose();
     } catch (err) {
       setError(err.message || t('error_server'));
@@ -131,6 +146,7 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
   const runMemberAction = async (action) => {
     setSaving(true);
     setError('');
+    setNotice('');
     try {
       await action();
       const refreshedGroup = await refreshGroupInfo();
@@ -160,6 +176,10 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
     const displayName = member.display_name || member.username;
     if (!window.confirm(t('confirm_kick_group_member', { name: displayName }))) return;
     runMemberAction(() => api.kickMember(groupId, member.user_id));
+  };
+
+  const handleInviteRequest = (request, action) => {
+    runMemberAction(() => api.resolveGroupInviteRequest(groupId, request.id, action));
   };
 
   const handleLeave = async () => {
@@ -260,7 +280,7 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
                 <div className="oc-settings-section-title">{t('group_members')}</div>
                 <div className="oc-settings-secondary">查看和管理当前成员</div>
               </div>
-              {canEditGroup && (
+              {canInviteMembers && (
                 <button type="button" className="oc-btn oc-btn-default oc-invite-members-button" onClick={() => setShowInvite((value) => !value)}>
                   <UserPlus size={15} strokeWidth={1.8} />
                   邀请成员
@@ -320,12 +340,62 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
             </div>
           </div>
 
-          {canEditGroup && showInvite && (
+          {canEditGroup && inviteRequests.length > 0 && (
+            <div className="oc-settings-section oc-invite-requests-section">
+              <div className="oc-settings-section-head">
+                <div>
+                  <div className="oc-settings-section-title">待审批邀请</div>
+                  <div className="oc-settings-secondary">普通成员提交的邀请需要群主或管理员确认</div>
+                </div>
+                <span className="oc-selection-count">{inviteRequests.length} 项</span>
+              </div>
+              <div className="oc-settings-list">
+                {inviteRequests.map((request) => (
+                  <div key={request.id} className="oc-settings-list-item oc-settings-member-item">
+                    <Avatar
+                      name={request.invitee_display_name || request.invitee_username}
+                      src={request.invitee_avatar_url}
+                      size={32}
+                      isBot={request.invitee_is_bot}
+                    />
+                    <div className="oc-settings-list-text">
+                      <div>{request.invitee_display_name || request.invitee_username}</div>
+                      <div className="oc-settings-secondary">
+                        由 {request.inviter_display_name || request.inviter_username || `成员 ${request.inviter_id}`} 提议邀请
+                      </div>
+                    </div>
+                    <div className="oc-settings-member-actions">
+                      <button
+                        type="button"
+                        className="oc-btn oc-btn-primary oc-settings-small-btn"
+                        disabled={saving}
+                        onClick={() => handleInviteRequest(request, 'approve')}
+                      >
+                        同意
+                      </button>
+                      <button
+                        type="button"
+                        className="oc-btn oc-btn-default oc-settings-small-btn"
+                        disabled={saving}
+                        onClick={() => handleInviteRequest(request, 'reject')}
+                      >
+                        拒绝
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {canInviteMembers && showInvite && (
             <div className="oc-settings-section">
               <div className="oc-settings-section-head">
                 <div>
                   <div className="oc-settings-section-title">{t('group_add_members')}</div>
-                  <div className="oc-settings-secondary">选择要加入群聊的好友或 Agent</div>
+                  <div className="oc-settings-secondary">
+                    {canEditGroup ? '选择后将直接加入群聊' : '选择后提交申请，由群主或管理员审批'}
+                  </div>
                 </div>
                 {selected.size > 0 && <span className="oc-selection-count">已选 {selected.size}</span>}
               </div>
@@ -352,6 +422,7 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
           )}
 
           {error && <div className="oc-form-error">{error}</div>}
+          {notice && <div className="oc-form-notice">{notice}</div>}
         </div>
         <div className="oc-settings-actions oc-settings-actions-split">
           <div>
@@ -363,9 +434,9 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
           </div>
           <div className="oc-settings-inline-actions">
             <button className="oc-btn oc-btn-default" onClick={onClose}>{t('cancel')}</button>
-            {canEditGroup && (
+            {(canEditGroup || selected.size > 0) && (
               <button className="oc-btn oc-btn-primary" onClick={handleSave} disabled={saving}>
-                {saving ? t('loading') : t('save')}
+                {saving ? t('loading') : canEditGroup ? t('save') : '提交邀请申请'}
               </button>
             )}
           </div>
