@@ -942,6 +942,20 @@ select:disabled {
   transform: rotate(90deg);
 }
 
+.cc-section-unread-dot,
+.cc-friend-unread-dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 999px;
+  background: var(--v3-primary);
+}
+
+.cc-section-unread-dot {
+  margin-left: auto;
+}
+
 .cc-section-add {
   width: 28px;
   height: 28px;
@@ -1376,6 +1390,7 @@ select:disabled {
 
 .cc-chat-row-trailing > .cc-chat-row-time,
 .cc-chat-row-trailing > .cc-task-row-status,
+.cc-chat-row-trailing > .cc-friend-unread-dot,
 .cc-chat-row-actions {
   position: absolute;
   top: 50%;
@@ -1405,6 +1420,10 @@ select:disabled {
 
 .cc-agent-roster-item {
   cursor: pointer;
+}
+
+.cc-chat-row-trailing > .cc-friend-unread-dot {
+  right: 4px;
 }
 
 .cc-agent-row-trailing .v3-agent-row-actions {
@@ -1524,6 +1543,11 @@ select:disabled {
 
 .cc-chat-action-menu {
   width: 156px;
+}
+
+.cc-chat-action-menu.cc-chat-action-menu-up {
+  top: auto;
+  bottom: calc(100% - 2px);
 }
 
 .v3-friend-action-menu button {

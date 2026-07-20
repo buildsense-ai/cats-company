@@ -42,6 +42,9 @@ function seedExistingBot(user) {
     ? [
       { username: 'code_review_agent', display_name: '代码审查助手' },
       { username: 'ops_data_agent', display_name: '运营数据助手' },
+      { username: 'research_agent', display_name: '行业研究助手' },
+      { username: 'content_agent', display_name: '内容策划助手' },
+      { username: 'quality_agent', display_name: '质量巡检助手' },
     ]
     : [{ username: `existing_bot_${user.id}`, display_name: 'Existing Local Bot' }];
   const bots = definitions.map((definition) => {
@@ -63,9 +66,16 @@ function seedExistingBot(user) {
 function seedChatShowcase(user, bots) {
   const now = Date.now();
   const at = (minutesAgo) => new Date(now - minutesAgo * 60_000).toISOString();
+  const [codeAgent, opsAgent, researchAgent, contentAgent, qualityAgent] = bots;
   const friends = [
     { id: 301, uid: 301, username: 'linxiao', display_name: '林晓 · 产品设计', avatar_url: '', is_online: true, bot: false },
     { id: 302, uid: 302, username: 'chenyu', display_name: '陈宇 · 前端开发', avatar_url: '', is_online: false, bot: false },
+    { id: 303, uid: 303, username: 'zhouqi', display_name: '周琦 · 增长运营', avatar_url: '', is_online: true, bot: false },
+    { id: 304, uid: 304, username: 'wangmiao', display_name: '王淼 · 数据分析', avatar_url: '', is_online: true, bot: false },
+    { id: 305, uid: 305, username: 'sunyi', display_name: '孙怡 · 品牌内容', avatar_url: '', is_online: false, bot: false },
+    { id: 306, uid: 306, username: 'haoran', display_name: '郝然 · 后端开发', avatar_url: '', is_online: true, bot: false },
+    { id: 307, uid: 307, username: 'fangning', display_name: '方宁 · 客户成功', avatar_url: '', is_online: false, bot: false },
+    { id: 308, uid: 308, username: 'luyao', display_name: '陆遥 · 项目管理', avatar_url: '', is_online: true, bot: false },
   ];
   const groups = [
     {
@@ -79,13 +89,103 @@ function seedChatShowcase(user, bots) {
       member_ids: [friends[0].id, friends[1].id, bots[0].id],
       created_at: at(24 * 60),
     },
+    {
+      id: 402,
+      topic_id: 'grp_402',
+      name: '产品与增长周会',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: false,
+      member_count: 5,
+      member_ids: [friends[0].id, friends[2].id, friends[3].id, friends[7].id],
+      created_at: at(6 * 24 * 60),
+    },
+    {
+      id: 403,
+      topic_id: 'grp_403',
+      name: '发布风险排查',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: true,
+      member_count: 5,
+      member_ids: [friends[1].id, friends[5].id, friends[7].id, qualityAgent.id],
+      agent_id: qualityAgent.id,
+      kind: 'agent_task',
+      is_agent_task: true,
+      created_at: at(2 * 24 * 60),
+    },
+    {
+      id: 404,
+      topic_id: 'grp_404',
+      name: '品牌内容共创',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: false,
+      member_count: 4,
+      member_ids: [friends[0].id, friends[4].id, friends[6].id],
+      created_at: at(4 * 24 * 60),
+    },
+    {
+      id: 405,
+      topic_id: 'grp_405',
+      name: '客户声音同步群',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: false,
+      member_count: 4,
+      member_ids: [friends[2].id, friends[6].id, friends[7].id],
+      created_at: at(8 * 24 * 60),
+    },
+    {
+      id: 406,
+      topic_id: 'grp_406',
+      name: '竞品动态研究',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: true,
+      member_count: 4,
+      member_ids: [friends[2].id, friends[3].id, researchAgent.id],
+      agent_id: researchAgent.id,
+      kind: 'agent_task',
+      is_agent_task: true,
+      created_at: at(3 * 24 * 60),
+    },
+    {
+      id: 407,
+      topic_id: 'grp_407',
+      name: '夏季发布会文案',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: true,
+      member_count: 2,
+      member_ids: [contentAgent.id],
+      agent_id: contentAgent.id,
+      kind: 'agent_task',
+      is_agent_task: true,
+      created_at: at(18 * 60),
+    },
+    {
+      id: 408,
+      topic_id: 'grp_408',
+      name: '移动端回归测试',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: true,
+      member_count: 3,
+      member_ids: [friends[1].id, qualityAgent.id],
+      agent_id: qualityAgent.id,
+      kind: 'agent_task',
+      is_agent_task: true,
+      created_at: at(7 * 60),
+    },
   ];
-  const codeAgent = bots[0];
-  const opsAgent = bots[1];
   const codeTopic = p2pTopicId(user.id, codeAgent.id);
   const opsTopic = p2pTopicId(user.id, opsAgent.id);
+  const researchTopic = p2pTopicId(user.id, researchAgent.id);
+  const contentTopic = p2pTopicId(user.id, contentAgent.id);
+  const qualityTopic = p2pTopicId(user.id, qualityAgent.id);
   const designTopic = p2pTopicId(user.id, friends[0].id);
-  const groupTopic = groups[0].topic_id;
+  const frontendTopic = groups[0].topic_id;
 
   const seeded = [
     [codeTopic, [
@@ -111,7 +211,7 @@ function seedChatShowcase(user, bots) {
         created_at: at(1),
       },
     ]],
-    [groupTopic, [
+    [frontendTopic, [
       { from_uid: friends[0].id, from_name: friends[0].display_name, content: '我把今天的视觉验收项整理好了，大家重点看深色模式。', created_at: at(28) },
       { from_uid: user.id, content: '好的，我正在用服务器生成的演示数据检查会话列表。', created_at: at(25) },
       { from_uid: codeAgent.id, from_name: codeAgent.display_name, role: 'assistant', content: '已记录 4 个检查点：侧栏密度、消息对齐、输入框状态、移动端折叠。', created_at: at(22) },
@@ -125,6 +225,60 @@ function seedChatShowcase(user, bots) {
       { from_uid: user.id, content: '生成一份本周活跃会话概览。', created_at: at(9) },
       { from_uid: opsAgent.id, role: 'assistant', content: '演示数据已准备：**18 个活跃会话**，其中私聊 9 个、群聊 5 个、Agent 会话 4 个。当前为本地模拟结果，不代表生产统计。', created_at: at(7) },
     ]],
+    [researchTopic, [
+      { from_uid: user.id, content: '整理近一个月协作类产品的更新，重点看 Agent、项目和知识库能力。', created_at: at(43) },
+      { from_uid: researchAgent.id, role: 'assistant', content: '正在汇总公开信息，目前已完成 12 个产品的功能标签归类，并开始核对发布时间。', created_at: at(40) },
+    ]],
+    [contentTopic, [
+      { from_uid: user.id, content: '把新版首页的核心卖点改写成三组短句，语气专业但不要太像广告。', created_at: at(96) },
+      { from_uid: contentAgent.id, role: 'assistant', content: '第一轮草案已完成，但品牌术语表加载失败。我保留了草稿，等术语表恢复后可以继续统一措辞。', created_at: at(91) },
+    ]],
+    [qualityTopic, [
+      { from_uid: user.id, content: '检查今天合并的侧栏交互，覆盖折叠、搜索、项目展开和任务状态。', created_at: at(14) },
+      { from_uid: qualityAgent.id, role: 'assistant', content: '已完成 31 项检查，未发现阻塞问题；有 2 项窄屏视觉细节建议继续观察。', created_at: at(12) },
+    ]],
+    [p2pTopicId(user.id, friends[1].id), [
+      { from_uid: friends[1].id, content: '移动端侧栏的滚动问题已经修好，等你一起看回归结果。', created_at: at(51) },
+      { from_uid: user.id, content: '收到，我会连同项目展开状态一起检查。', created_at: at(49) },
+    ]],
+    [p2pTopicId(user.id, friends[2].id), [
+      { from_uid: friends[2].id, content: '下周增长实验的名单我更新到了最终版，渠道备注也补全了。', created_at: at(3 * 60 + 12) },
+      { from_uid: user.id, content: '好，明早周会直接用这版。', created_at: at(3 * 60 + 5) },
+    ]],
+    [p2pTopicId(user.id, friends[3].id), [
+      { from_uid: user.id, content: '数据看板里转化率的口径能再确认一下吗？', created_at: at(6 * 60 + 20) },
+      { from_uid: friends[3].id, content: '可以，今晚我把新旧口径对照和影响范围发给你。', created_at: at(6 * 60 + 4) },
+    ]],
+    [p2pTopicId(user.id, friends[4].id), [
+      { from_uid: friends[4].id, content: '品牌手册新增了中文标点和数字格式规范，写作任务可以按新版走。', created_at: at(22 * 60) },
+    ]],
+    ['grp_402', [
+      { from_uid: friends[2].id, content: '本周注册转化率回升了 6%，主要来自新手引导第二步。', created_at: at(2 * 60 + 15) },
+      { from_uid: friends[7].id, content: '周会结论我已经整理成三个负责人和五个截止日期。', created_at: at(2 * 60) },
+    ]],
+    ['grp_403', [
+      { from_uid: user.id, content: '请扫描本次发布清单，把高风险变更和缺少负责人的条目标出来。', created_at: at(34) },
+      { from_uid: qualityAgent.id, role: 'assistant', content: '排查进行中：已核对 18/27 项，发现 2 个数据库变更仍缺少回滚说明。', created_at: at(31) },
+    ]],
+    ['grp_404', [
+      { from_uid: friends[4].id, content: '发布会主视觉已经定稿，接下来集中收敛标题和社媒短文案。', created_at: at(5 * 60 + 35) },
+      { from_uid: friends[0].id, content: '设计侧会给每套文案补一张安全区预览。', created_at: at(5 * 60 + 20) },
+    ]],
+    ['grp_405', [
+      { from_uid: friends[6].id, content: '今天新增的客户反馈里，大家最关心的是任务记录能否快速归档。', created_at: at(26 * 60) },
+    ]],
+    ['grp_406', [
+      { from_uid: user.id, content: '汇总本周竞品发布和价格变化，按影响程度分成三档。', created_at: at(4 * 60 + 15) },
+      { from_uid: researchAgent.id, role: 'assistant', content: '研究已完成：共识别 9 项更新，其中 2 项高影响、3 项中影响、4 项低影响。', created_at: at(4 * 60) },
+    ]],
+    ['grp_407', [
+      { from_uid: user.id, content: '为夏季发布会准备一个 90 秒开场稿，先给结构再写全文。', created_at: at(12 * 60 + 30) },
+      { from_uid: contentAgent.id, role: 'assistant', content: '结构草案已生成，但资料引用校验未通过，需要补充最终产品数据后重试。', created_at: at(12 * 60 + 18) },
+    ]],
+    ['grp_408', [
+      { from_uid: friends[1].id, content: '回归包已经上传，先从消息列表和输入框开始。', created_at: at(6) },
+      { from_uid: qualityAgent.id, role: 'assistant', content: '正在执行移动端回归，目前完成 16/24 项，横屏和键盘弹起场景仍在检查。', created_at: at(4) },
+    ]],
   ];
 
   for (const [topic, messages] of seeded) {
@@ -132,10 +286,23 @@ function seedChatShowcase(user, bots) {
   }
 
   const conversations = [
-    conversationFromTopic(opsTopic, '本周活跃会话概览', opsAgent.id, false, at(7), true),
+    {
+      ...conversationFromTopic(qualityTopic, '侧栏交互质量巡检', qualityAgent.id, false, at(12), true),
+      task_status: { topic_id: qualityTopic, run_id: 'run-quality-1', state: 'completed', summary: '31 项检查已完成', updated_at: at(12) },
+    },
+    {
+      ...conversationFromTopic('grp_408', groups[7].name, null, true, at(4), false, groups[7].id, true, groups[7].member_count),
+      kind: 'agent_task',
+      is_agent_task: true,
+      task_status: { topic_id: 'grp_408', run_id: 'run-mobile-1', state: 'running', summary: '正在执行移动端回归：16/24', updated_at: at(4) },
+    },
+    {
+      ...conversationFromTopic(opsTopic, '本周活跃会话概览', opsAgent.id, false, at(7), true),
+      task_status: { topic_id: opsTopic, run_id: 'run-ops-1', state: 'completed', summary: '活跃会话概览已生成', updated_at: at(7) },
+    },
     conversationFromTopic(designTopic, friends[0].display_name, friends[0].id, false, at(13)),
     conversationFromTopic(
-      groupTopic,
+      frontendTopic,
       groups[0].name,
       null,
       true,
@@ -146,18 +313,66 @@ function seedChatShowcase(user, bots) {
       groups[0].member_count,
     ),
     conversationFromTopic(codeTopic, '聊天气泡布局验收', codeAgent.id, false, at(1), true),
+    {
+      ...conversationFromTopic(researchTopic, '协作产品趋势研究', researchAgent.id, false, at(40), true),
+      task_status: { topic_id: researchTopic, run_id: 'run-research-1', state: 'running', summary: '正在核对 12 个产品的更新', updated_at: at(40) },
+    },
+    {
+      ...conversationFromTopic(contentTopic, '首页核心卖点改写', contentAgent.id, false, at(91), true),
+      task_status: { topic_id: contentTopic, run_id: 'run-content-1', state: 'failed', error: '品牌术语表加载失败', updated_at: at(91) },
+    },
+    conversationFromTopic(p2pTopicId(user.id, friends[1].id), friends[1].display_name, friends[1].id, false, at(49)),
+    conversationFromTopic(p2pTopicId(user.id, friends[2].id), friends[2].display_name, friends[2].id, false, at(3 * 60 + 5)),
+    conversationFromTopic(p2pTopicId(user.id, friends[3].id), friends[3].display_name, friends[3].id, false, at(6 * 60 + 4)),
+    conversationFromTopic(p2pTopicId(user.id, friends[4].id), friends[4].display_name, friends[4].id, false, at(22 * 60)),
+    conversationFromTopic('grp_402', groups[1].name, null, true, at(2 * 60), false, groups[1].id, false, groups[1].member_count),
+    {
+      ...conversationFromTopic('grp_403', groups[2].name, null, true, at(31), false, groups[2].id, true, groups[2].member_count),
+      kind: 'agent_task',
+      is_agent_task: true,
+      task_status: { topic_id: 'grp_403', run_id: 'run-release-1', state: 'running', summary: '正在核对发布清单：18/27', updated_at: at(31) },
+    },
+    conversationFromTopic('grp_404', groups[3].name, null, true, at(5 * 60 + 20), false, groups[3].id, false, groups[3].member_count),
+    conversationFromTopic('grp_405', groups[4].name, null, true, at(26 * 60), false, groups[4].id, false, groups[4].member_count),
+    {
+      ...conversationFromTopic('grp_406', groups[5].name, null, true, at(4 * 60), false, groups[5].id, true, groups[5].member_count),
+      kind: 'agent_task',
+      is_agent_task: true,
+      task_status: { topic_id: 'grp_406', run_id: 'run-competitor-1', state: 'completed', summary: '本周竞品研究已完成', updated_at: at(4 * 60) },
+    },
+    {
+      ...conversationFromTopic('grp_407', groups[6].name, null, true, at(12 * 60 + 18), false, groups[6].id, true, groups[6].member_count),
+      kind: 'agent_task',
+      is_agent_task: true,
+      task_status: { topic_id: 'grp_407', run_id: 'run-launch-copy-1', state: 'failed', error: '资料引用校验未通过', updated_at: at(12 * 60 + 18) },
+    },
   ];
   showcaseByUserId.set(user.id, { friends, groups, conversations });
-  const project = {
+  const projectDefinitions = [
+    { name: 'CatsCo 体验优化', createdAt: at(14 * 24 * 60), updatedAt: at(5) },
+    { name: '增长数据看板', createdAt: at(10 * 24 * 60), updatedAt: at(31) },
+    { name: '2026 市场研究', createdAt: at(7 * 24 * 60), updatedAt: at(4 * 60) },
+    { name: '品牌内容升级', createdAt: at(20 * 24 * 60), updatedAt: at(91) },
+  ];
+  const projects = projectDefinitions.map((definition) => ({
     id: nextProjectId++,
     owner_uid: user.id,
-    name: 'CatsCo 体验优化',
+    name: definition.name,
     task_count: 0,
-    created_at: at(60),
-    updated_at: at(5),
-  };
-  projectsByUserId.set(user.id, [project]);
-  projectTopicsByUserId.set(user.id, new Map([[codeTopic, project.id]]));
+    created_at: definition.createdAt,
+    updated_at: definition.updatedAt,
+  }));
+  projectsByUserId.set(user.id, projects);
+  projectTopicsByUserId.set(user.id, new Map([
+    [codeTopic, projects[0].id],
+    [frontendTopic, projects[0].id],
+    [opsTopic, projects[1].id],
+    ['grp_403', projects[1].id],
+    [researchTopic, projects[2].id],
+    ['grp_406', projects[2].id],
+    [contentTopic, projects[3].id],
+    ['grp_407', projects[3].id],
+  ]));
   refreshProjectAssignments(user.id);
 }
 
