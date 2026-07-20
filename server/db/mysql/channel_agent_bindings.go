@@ -11,6 +11,168 @@ import (
 )
 
 var _ store.ChannelAgentBindingStore = (*Adapter)(nil)
+var _ store.ChannelPrivateBindingStore = (*Adapter)(nil)
+
+func (a *Adapter) ListChannelPrivateSelections(canonicalUID int64, channel string) ([]*types.ChannelPrivateSelection, error) {
+	if canonicalUID <= 0 || strings.TrimSpace(channel) == "" {
+		return nil, fmt.Errorf("invalid channel private selection scope")
+	}
+	var selections []*types.ChannelPrivateSelection
+	routeRows, err := a.db.Query(
+		`SELECT DISTINCT r.channel, r.channel_app_id, r.channel_user_id, COALESCE(r.actor_uid, b.actor_uid, 0),
+		        r.agent_uid, r.selected_at
+		 FROM channel_agent_routes r
+		 JOIN channel_agent_bindings b
+		   ON b.channel = r.channel AND b.channel_app_id = r.channel_app_id
+		  AND b.channel_user_id = r.channel_user_id AND b.agent_uid = r.agent_uid
+		  AND b.canonical_uid = ? AND b.status = 'active'
+		 WHERE r.channel = ? AND r.channel_conversation_type = 'p2p' AND r.channel_conversation_id = ''`,
+		canonicalUID, strings.TrimSpace(channel),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list channel private agent selections: %w", err)
+	}
+	for routeRows.Next() {
+		selection := &types.ChannelPrivateSelection{TargetKind: types.ChannelPrivateTargetAgent}
+		if err := routeRows.Scan(&selection.Channel, &selection.ChannelAppID, &selection.ChannelUserID, &selection.ActorUID, &selection.AgentUID, &selection.SelectedAt); err != nil {
+			routeRows.Close()
+			return nil, err
+		}
+		selections = append(selections, selection)
+	}
+	if err := routeRows.Close(); err != nil {
+		return nil, err
+	}
+	if err := routeRows.Err(); err != nil {
+		return nil, err
+	}
+
+	groupRows, err := a.db.Query(
+		`SELECT channel, channel_app_id, channel_user_id, COALESCE(actor_uid, 0), group_id, topic_id, selected_at
+		 FROM channel_group_bindings
+		 WHERE canonical_uid = ? AND channel = ? AND channel_conversation_type = 'p2p'
+		   AND channel_conversation_id = '' AND status = 'active'`,
+		canonicalUID, strings.TrimSpace(channel),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list channel private group selections: %w", err)
+	}
+	defer groupRows.Close()
+	for groupRows.Next() {
+		selection := &types.ChannelPrivateSelection{TargetKind: types.ChannelPrivateTargetGroup}
+		if err := groupRows.Scan(&selection.Channel, &selection.ChannelAppID, &selection.ChannelUserID, &selection.ActorUID, &selection.GroupID, &selection.TopicID, &selection.SelectedAt); err != nil {
+			return nil, err
+		}
+		selections = append(selections, selection)
+	}
+	if err := groupRows.Err(); err != nil {
+		return nil, err
+	}
+	return selections, nil
+}
+
+func (a *Adapter) RevokeChannelPrivateSelection(canonicalUID int64, expected *types.ChannelPrivateSelection) (*types.ChannelPrivateUnbindResult, error) {
+	if canonicalUID <= 0 || expected == nil || expected.Channel == "" || expected.ChannelUserID == "" || expected.SelectedAt.IsZero() {
+		return nil, fmt.Errorf("invalid channel private identity")
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err := lockChannelRouteSelectionTx(tx, expected.Channel, expected.ChannelAppID, expected.ChannelUserID, "", "p2p"); err != nil {
+		return nil, err
+	}
+	current, err := currentChannelPrivateSelectionMySQLTx(tx, canonicalUID, expected)
+	if err != nil {
+		return nil, err
+	}
+	if current == nil {
+		return &types.ChannelPrivateUnbindResult{}, nil
+	}
+	if !sameChannelPrivateSelection(current, expected) {
+		return &types.ChannelPrivateUnbindResult{Changed: true}, nil
+	}
+	if _, err := tx.Exec(
+		`UPDATE channel_agent_bindings
+		 SET status = 'revoked', device_access_enabled = FALSE, updated_at = CURRENT_TIMESTAMP
+		 WHERE canonical_uid = ? AND channel = ? AND channel_app_id = ? AND channel_user_id = ?
+		   AND channel_conversation_type = 'p2p' AND status <> 'revoked'`,
+		canonicalUID, expected.Channel, expected.ChannelAppID, expected.ChannelUserID,
+	); err != nil {
+		return nil, fmt.Errorf("revoke channel private agent bindings: %w", err)
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM channel_agent_routes
+		 WHERE channel = ? AND channel_app_id = ? AND channel_user_id = ? AND channel_conversation_type = 'p2p'`,
+		expected.Channel, expected.ChannelAppID, expected.ChannelUserID,
+	); err != nil {
+		return nil, fmt.Errorf("clear channel private agent routes: %w", err)
+	}
+	if _, err := tx.Exec(
+		`UPDATE channel_group_bindings SET status = 'revoked', updated_at = CURRENT_TIMESTAMP
+		 WHERE canonical_uid = ? AND channel = ? AND channel_app_id = ? AND channel_user_id = ?
+		   AND channel_conversation_type = 'p2p' AND status = 'active'`,
+		canonicalUID, expected.Channel, expected.ChannelAppID, expected.ChannelUserID,
+	); err != nil {
+		return nil, fmt.Errorf("revoke channel private group bindings: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &types.ChannelPrivateUnbindResult{Revoked: true}, nil
+}
+
+func currentChannelPrivateSelectionMySQLTx(tx *sql.Tx, canonicalUID int64, identity *types.ChannelPrivateSelection) (*types.ChannelPrivateSelection, error) {
+	var route *types.ChannelPrivateSelection
+	row := tx.QueryRow(
+		`SELECT r.channel, r.channel_app_id, r.channel_user_id, COALESCE(r.actor_uid, 0), r.agent_uid, r.selected_at
+		 FROM channel_agent_routes r
+		 WHERE r.channel = ? AND r.channel_app_id = ? AND r.channel_user_id = ?
+		   AND r.channel_conversation_id = '' AND r.channel_conversation_type = 'p2p'
+		   AND EXISTS (SELECT 1 FROM channel_agent_bindings b
+		       WHERE b.channel = r.channel AND b.channel_app_id = r.channel_app_id AND b.channel_user_id = r.channel_user_id
+		         AND b.agent_uid = r.agent_uid AND b.canonical_uid = ? AND b.status = 'active')
+		 ORDER BY r.selected_at DESC LIMIT 1`,
+		identity.Channel, identity.ChannelAppID, identity.ChannelUserID, canonicalUID,
+	)
+	candidate := &types.ChannelPrivateSelection{TargetKind: types.ChannelPrivateTargetAgent}
+	if err := row.Scan(&candidate.Channel, &candidate.ChannelAppID, &candidate.ChannelUserID, &candidate.ActorUID, &candidate.AgentUID, &candidate.SelectedAt); err == nil {
+		route = candidate
+	} else if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("read current channel private agent selection: %w", err)
+	}
+
+	var group *types.ChannelPrivateSelection
+	row = tx.QueryRow(
+		`SELECT channel, channel_app_id, channel_user_id, COALESCE(actor_uid, 0), group_id, topic_id, selected_at
+		 FROM channel_group_bindings
+		 WHERE canonical_uid = ? AND channel = ? AND channel_app_id = ? AND channel_user_id = ?
+		   AND channel_conversation_id = '' AND channel_conversation_type = 'p2p' AND status = 'active'
+		 ORDER BY selected_at DESC LIMIT 1`,
+		canonicalUID, identity.Channel, identity.ChannelAppID, identity.ChannelUserID,
+	)
+	candidate = &types.ChannelPrivateSelection{TargetKind: types.ChannelPrivateTargetGroup}
+	if err := row.Scan(&candidate.Channel, &candidate.ChannelAppID, &candidate.ChannelUserID, &candidate.ActorUID, &candidate.GroupID, &candidate.TopicID, &candidate.SelectedAt); err == nil {
+		group = candidate
+	} else if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("read current channel private group selection: %w", err)
+	}
+	if group != nil && (route == nil || !route.SelectedAt.After(group.SelectedAt)) {
+		return group, nil
+	}
+	return route, nil
+}
+
+func sameChannelPrivateSelection(current, expected *types.ChannelPrivateSelection) bool {
+	if current == nil || expected == nil || current.TargetKind != expected.TargetKind || !current.SelectedAt.Equal(expected.SelectedAt) {
+		return false
+	}
+	if current.TargetKind == types.ChannelPrivateTargetAgent {
+		return current.AgentUID == expected.AgentUID
+	}
+	return current.GroupID == expected.GroupID && current.TopicID == expected.TopicID
+}
 
 func (a *Adapter) EnsureChannelAgentEntry(entry *types.ChannelAgentEntry) (*types.ChannelAgentEntry, error) {
 	if entry == nil || entry.OwnerUID <= 0 || entry.AgentUID <= 0 || entry.Channel == "" || entry.SceneKey == "" {
@@ -1055,8 +1217,26 @@ func (a *Adapter) UpsertChannelAgentRoute(route *types.ChannelAgentRoute) (*type
 		return nil, fmt.Errorf("begin channel agent route selection: %w", err)
 	}
 	defer tx.Rollback()
+	if route.Channel == "feishu" && conversationType == "p2p" && strings.TrimSpace(route.ChannelConversationID) != "" {
+		if err := lockChannelRouteSelectionTx(tx, route.Channel, route.ChannelAppID, route.ChannelUserID, "", "p2p"); err != nil {
+			return nil, err
+		}
+	}
 	if err := lockChannelRouteSelectionTx(tx, route.Channel, route.ChannelAppID, route.ChannelUserID, route.ChannelConversationID, conversationType); err != nil {
 		return nil, err
+	}
+	if route.Channel == "feishu" && conversationType == "p2p" {
+		var active int
+		if err := tx.QueryRow(
+			`SELECT COUNT(*) FROM channel_agent_bindings
+			 WHERE channel = ? AND channel_app_id = ? AND channel_user_id = ? AND agent_uid = ? AND status = 'active'`,
+			route.Channel, route.ChannelAppID, route.ChannelUserID, route.AgentUID,
+		).Scan(&active); err != nil {
+			return nil, fmt.Errorf("verify active channel agent binding: %w", err)
+		}
+		if active == 0 {
+			return nil, fmt.Errorf("channel agent binding is not active")
+		}
 	}
 	if _, err := tx.Exec(
 		`UPDATE channel_group_bindings

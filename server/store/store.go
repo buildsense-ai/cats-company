@@ -177,6 +177,13 @@ type ChannelAgentBindingStore interface {
 	MarkWeixinClawBotTokenError(id int64, status string, message string) error
 }
 
+// ChannelPrivateBindingStore manages a CatsCo user's current private-channel
+// selection without changing native external-channel groups.
+type ChannelPrivateBindingStore interface {
+	ListChannelPrivateSelections(canonicalUID int64, channel string) ([]*types.ChannelPrivateSelection, error)
+	RevokeChannelPrivateSelection(canonicalUID int64, expected *types.ChannelPrivateSelection) (*types.ChannelPrivateUnbindResult, error)
+}
+
 // ChannelNativeGroupStore is the optional persistence boundary for native
 // external-channel groups. It is deliberately not embedded in Store so
 // existing Store implementations and mocks do not need to implement it.

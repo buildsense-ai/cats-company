@@ -200,6 +200,12 @@ func TestPostgresStoreContract(t *testing.T) {
 		Channel: "feishu", ChannelAppID: "cli_test", ChannelUserID: "ou_route_race", ChannelConversationType: "p2p",
 		ActorUID: ownerID, AgentUID: botID, Source: "contract_test",
 	}
+	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel: "feishu", ChannelAppID: "cli_test", ChannelUserID: "ou_route_race", ChannelConversationType: "p2p",
+		ActorUID: ownerID, CanonicalUID: ownerID, OwnerUID: ownerID, AgentUID: botID, Status: types.ChannelAgentBindingActive,
+	}); err != nil {
+		t.Fatalf("seed channel route binding: %v", err)
+	}
 	for attempt := 0; attempt < 8; attempt++ {
 		start := make(chan struct{})
 		errs := make(chan error, 2)
@@ -243,6 +249,38 @@ func TestPostgresStoreContract(t *testing.T) {
 		if activeGroups+agentRoutes != 1 {
 			t.Fatalf("channel selection must stay exclusive after attempt %d: groups=%d routes=%d", attempt, activeGroups, agentRoutes)
 		}
+	}
+	privateSelections, err := db.ListChannelPrivateSelections(ownerID, "feishu")
+	if err != nil {
+		t.Fatalf("list private selections: %v", err)
+	}
+	var currentPrivate *types.ChannelPrivateSelection
+	for _, selection := range privateSelections {
+		if selection.ChannelAppID == "cli_test" && selection.ChannelUserID == "ou_route_race" &&
+			(currentPrivate == nil || selection.SelectedAt.After(currentPrivate.SelectedAt) ||
+				(selection.SelectedAt.Equal(currentPrivate.SelectedAt) && selection.TargetKind == types.ChannelPrivateTargetGroup && currentPrivate.TargetKind == types.ChannelPrivateTargetAgent)) {
+			currentPrivate = selection
+		}
+	}
+	if currentPrivate == nil {
+		t.Fatal("current private selection not found")
+	}
+	unbound, err := db.RevokeChannelPrivateSelection(ownerID, currentPrivate)
+	if err != nil || unbound == nil || !unbound.Revoked || unbound.Changed {
+		t.Fatalf("revoke private selection: result=%+v err=%v", unbound, err)
+	}
+	var remainingRoutes, remainingGroups, remainingBindings int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM channel_agent_routes WHERE channel = 'feishu' AND channel_app_id = 'cli_test' AND channel_user_id = 'ou_route_race' AND channel_conversation_type = 'p2p'`).Scan(&remainingRoutes); err != nil {
+		t.Fatalf("count remaining private routes: %v", err)
+	}
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM channel_group_bindings WHERE channel = 'feishu' AND channel_app_id = 'cli_test' AND channel_user_id = 'ou_route_race' AND channel_conversation_type = 'p2p' AND status = 'active'`).Scan(&remainingGroups); err != nil {
+		t.Fatalf("count remaining private groups: %v", err)
+	}
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM channel_agent_bindings WHERE channel = 'feishu' AND channel_app_id = 'cli_test' AND channel_user_id = 'ou_route_race' AND channel_conversation_type = 'p2p' AND status = 'active'`).Scan(&remainingBindings); err != nil {
+		t.Fatalf("count remaining private bindings: %v", err)
+	}
+	if remainingRoutes != 0 || remainingGroups != 0 || remainingBindings != 0 {
+		t.Fatalf("private selection not fully revoked: routes=%d groups=%d bindings=%d", remainingRoutes, remainingGroups, remainingBindings)
 	}
 	searchResults, err := db.SearchUsers("helper", 10)
 	if err != nil {
