@@ -697,7 +697,7 @@ function WorkingProcess({ blocks }) {
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
+function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
@@ -821,7 +821,10 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
   if (!hasText && richBlocks.length === 0 && workingBlocks.length === 0) return null;
 
   return (
-    <div className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}`}>
+    <div
+      className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}`}
+      data-conversation-question={questionAnchorKey || undefined}
+    >
       <div className="v3-avatar-col">
         {!isConsecutive && (
           <Avatar
@@ -953,6 +956,7 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.senderAvatarUrl === nextProps.senderAvatarUrl &&
     prevProps.senderIsBot === nextProps.senderIsBot &&
     prevProps.replyMessage === nextProps.replyMessage &&
+    prevProps.questionAnchorKey === nextProps.questionAnchorKey &&
     prevProps.onEdit === nextProps.onEdit &&
     prevProps.onRegenerate === nextProps.onRegenerate &&
     prevProps.showThinking === nextProps.showThinking &&

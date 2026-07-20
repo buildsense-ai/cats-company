@@ -8,10 +8,10 @@ import FriendRequest from '../widgets/friend-request';
 import AgentStoreModal from '../widgets/agent-store-modal';
 import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
 import Avatar from '../widgets/avatar';
-import { Users, UserRound, Zap, Bot, Trash2, MessageSquare, Smartphone, Check, X, Pin, Pencil, ChevronRight, Plus, Search, MoreHorizontal, UserX, Ban, AlertCircle, CheckCircle2, Clock3, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
+import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Check, X, Pin, Pencil, ChevronRight, Plus, Search, MoreHorizontal, UserX, Ban, AlertCircle, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
-const DEFAULT_COLLAPSED_SECTIONS = { collaboration: false, ai: false, friends: false, groups: false, agents: false, projects: false };
+const DEFAULT_COLLAPSED_SECTIONS = { conversations: false, contacts: false, projects: false };
 const PINNED_GROUPS_STORAGE_PREFIX = 'cc_pinned_groups_v1';
 const PINNED_HISTORY_STORAGE_PREFIX = 'cc_pinned_history_v1';
 const HIDDEN_HISTORY_STORAGE_PREFIX = 'cc_hidden_history_v1';
@@ -39,11 +39,12 @@ function taskStatusDismissedStorageKey(uid) {
 
 function normalizeCollapsedSections(value) {
   return {
-    collaboration: typeof value?.collaboration === 'boolean' ? value.collaboration : DEFAULT_COLLAPSED_SECTIONS.collaboration,
-    ai: typeof value?.ai === 'boolean' ? value.ai : DEFAULT_COLLAPSED_SECTIONS.ai,
-    friends: typeof value?.friends === 'boolean' ? value.friends : DEFAULT_COLLAPSED_SECTIONS.friends,
-    groups: typeof value?.groups === 'boolean' ? value.groups : DEFAULT_COLLAPSED_SECTIONS.groups,
-    agents: typeof value?.agents === 'boolean' ? value.agents : DEFAULT_COLLAPSED_SECTIONS.agents,
+    conversations: typeof value?.conversations === 'boolean'
+      ? value.conversations
+      : (typeof value?.ai === 'boolean' ? value.ai : DEFAULT_COLLAPSED_SECTIONS.conversations),
+    contacts: typeof value?.contacts === 'boolean'
+      ? value.contacts
+      : (typeof value?.collaboration === 'boolean' ? value.collaboration : DEFAULT_COLLAPSED_SECTIONS.contacts),
     projects: typeof value?.projects === 'boolean' ? value.projects : DEFAULT_COLLAPSED_SECTIONS.projects,
   };
 }
@@ -174,6 +175,7 @@ export default function ChatListView({
   onlineUsers,
   compact = false,
   onManageGroup,
+  onStartAgentTask,
   onDeleteHistoryTask,
   onOpenMobileLink,
 }) {
@@ -190,8 +192,6 @@ export default function ChatListView({
   const [showAgentStore, setShowAgentStore] = useState(false);
   const [showNewChat, setShowNewChat] = useState(false);
   const [collapsed, setCollapsed] = useState(() => loadCollapsedSections(user?.uid));
-  const [namingAgent, setNamingAgent] = useState(null);
-  const [newChatName, setNewChatName] = useState('');
   const [mobileLinkAgent, setMobileLinkAgent] = useState(null);
   const [mobileLinkGroup, setMobileLinkGroup] = useState(null);
   const [agentActionId, setAgentActionId] = useState('');
@@ -203,6 +203,7 @@ export default function ChatListView({
   const [openFriendMenuId, setOpenFriendMenuId] = useState('');
   const [openChatMenuKey, setOpenChatMenuKey] = useState('');
   const [openProjectMenuId, setOpenProjectMenuId] = useState(null);
+  const [showContactActions, setShowContactActions] = useState(false);
   const [friendActionId, setFriendActionId] = useState('');
   const [dismissedTaskStatuses, setDismissedTaskStatuses] = useState(() => loadDismissedTaskStatuses(user?.uid));
   const [projectPickerTask, setProjectPickerTask] = useState(null);
@@ -257,11 +258,12 @@ export default function ChatListView({
   }, [activeTopic, chats]);
 
   useEffect(() => {
-    if (!openFriendMenuId && !openChatMenuKey && !openProjectMenuId) return undefined;
+    if (!openFriendMenuId && !openChatMenuKey && !openProjectMenuId && !showContactActions) return undefined;
     const closeMenus = () => {
       setOpenFriendMenuId('');
       setOpenChatMenuKey('');
       setOpenProjectMenuId(null);
+      setShowContactActions(false);
     };
     const closeMenusFromOutside = (event) => {
       const target = event.target;
@@ -272,6 +274,8 @@ export default function ChatListView({
         '.v3-history-menu-trigger',
         '.cc-project-action-menu',
         '.cc-project-menu-trigger',
+        '.cc-contact-section-menu',
+        '.cc-contact-section-menu-trigger',
       ].join(','))) {
         return;
       }
@@ -286,7 +290,7 @@ export default function ChatListView({
       document.removeEventListener('pointerdown', closeMenusFromOutside);
       document.removeEventListener('keydown', closeMenusOnEscape);
     };
-  }, [openFriendMenuId, openChatMenuKey, openProjectMenuId]);
+  }, [openFriendMenuId, openChatMenuKey, openProjectMenuId, showContactActions]);
 
   useEffect(() => {
     const openNewTask = () => setShowNewChat(true);
@@ -317,19 +321,25 @@ export default function ChatListView({
     });
   };
 
-  const togglePinnedHistory = (topicId) => {
-    setPinnedHistoryIds((prev) => {
-      const next = new Set(prev);
-      const key = String(topicId || '').trim();
-      if (!key) return prev;
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
+  const togglePinnedTask = (chat) => {
+    const key = String(chat?.id || '').trim();
+    if (!key) return;
+    const isPinned = pinnedHistoryIds.has(key) || (chat?.isGroup && pinnedGroupIds.has(key));
+    setPinnedHistoryIds((previous) => {
+      const next = new Set(previous);
+      if (isPinned) next.delete(key);
+      else next.add(key);
       savePinnedHistoryIds(user?.uid, next);
       return next;
     });
+    if (chat?.isGroup && pinnedGroupIds.has(key)) {
+      setPinnedGroupIds((previous) => {
+        const next = new Set(previous);
+        next.delete(key);
+        savePinnedGroupIds(user?.uid, next);
+        return next;
+      });
+    }
   };
 
   const hideHistoryTask = (topicId) => {
@@ -518,6 +528,8 @@ export default function ChatListView({
           isGroup: true,
           avatar_url: group.avatar_url,
           hasBot: Boolean(group.has_bot),
+          isAgentTask: Boolean(group.is_agent_task || group.kind === 'agent_task'),
+          memberCount: Number(group.member_count || 0),
           seq: 0,
         },
         ...prev.filter((chat) => chat.id !== topicId),
@@ -624,64 +636,17 @@ export default function ChatListView({
     }
   };
 
-  const handleSelectAgent = async (agent) => {
+  const handleSelectAgent = (agent) => {
     const agentId = agent.uid || agent.id;
     if (!agentId) return;
-
-    const fallbackTopicId = agent.topic_id || p2pTopicId(user.uid, agentId);
-    const fallbackTopic = {
-      topicId: fallbackTopicId,
-      name: agent.display_name || agent.username,
-      isGroup: false,
-      avatar_url: agent.avatar_url,
-      friendId: agentId,
-      isBot: true,
-    };
-
-    try {
-      const res = await api.openAgent(agentId);
-      const opened = res.agent || {};
-      const openedTopicId = opened.topic_id || res.topic || fallbackTopicId;
-      const existingConversation = chats.find((chat) => chat.id === openedTopicId);
-      restoreHistoryTask(openedTopicId);
-      onSelectTopic({
-        ...fallbackTopic,
-        topicId: openedTopicId,
-        name: existingConversation?.name || opened.display_name || fallbackTopic.name,
-        avatar_url: existingConversation?.avatar_url || opened.avatar_url || fallbackTopic.avatar_url,
-      });
-      window.dispatchEvent(new Event('cc:data-changed'));
-    } catch (err) {
-      console.error('Failed to open agent:', err);
-      window.alert(err.message || 'Unable to open this agent.');
-    }
+    onStartAgentTask?.(agent);
   };
 
-  const handleNewChatWithAgent = async (agent) => {
+  const handleNewChatWithAgent = (agent) => {
     const agentId = agent.uid || agent.id;
     if (!agentId) return;
-    setNamingAgent(agent);
-    setNewChatName(agent.display_name || agent.username);
-  };
-
-  const handleConfirmNewChat = async () => {
-    if (!namingAgent || !newChatName.trim()) return;
-    const agentId = namingAgent.uid || namingAgent.id;
-    try {
-      const res = await api.createGroup(newChatName.trim(), [agentId], { kind: 'agent_task' });
-      const group = normalizeCreatedGroup(res);
-      if (group) {
-        const topicId = res.topic || `grp_${group.id}`;
-        onSelectTopic({ topicId, name: group.name, isGroup: true, groupId: group.id, avatar_url: group.avatar_url, hasBot: true });
-      }
-      setNamingAgent(null);
-      setNewChatName('');
-      setShowNewChat(false);
-      await loadAll();
-      window.dispatchEvent(new Event('cc:data-changed'));
-    } catch (err) {
-      window.alert(err.message || '创建对话失败');
-    }
+    setShowNewChat(false);
+    onStartAgentTask?.(agent);
   };
 
   const trimmedSearch = search.trim();
@@ -689,7 +654,7 @@ export default function ChatListView({
   const isSearching = trimmedSearch.length > 0;
   const recentChats = sortConversationsByRecent(chats);
   const visibleRecentChats = recentChats.filter((chat) => (
-    chat.isAgentTask || !isHistoryTask(chat) || !hiddenHistoryIds.has(String(chat.id))
+    !isHistoryTask(chat) || chat.isGroup || !hiddenHistoryIds.has(String(chat.id))
   ));
   const filteredChats = visibleRecentChats.filter(c => c.name.toLowerCase().includes(lowerSearch));
   const directChats = filteredChats.filter(c => !c.isGroup);
@@ -710,18 +675,71 @@ export default function ChatListView({
     return (projectTasksById.get(Number(project.id)) || []).some((chat) => chat.name.toLowerCase().includes(lowerSearch));
   });
 
-  const aiChats = sortConversationsWithPins(
-    filteredChats.filter((chat) => (
+  const taskCandidates = [
+    ...filteredChats.filter((chat) => !chat.isGroup),
+    ...filteredGroups.filter((chat) => isHistoryTask(chat)),
+  ];
+  const taskChats = sortConversationsWithPins(
+    taskCandidates.filter((chat) => (
       isHistoryTask(chat)
       && !chat.projectId
-      && (chat.isAgentTask || !hiddenHistoryIds.has(String(chat.id)))
+      && (chat.isGroup || !hiddenHistoryIds.has(String(chat.id)))
     )),
     pinnedHistoryIds,
   );
   const friendChats = directChats.filter(c => !c.isBot);
-  const groupChats = sortGroupsWithPins(filteredGroups.filter((chat) => !chat.isAgentTask), pinnedGroupIds);
-  const hasSearchResults = aiChats.length > 0 || friendChats.length > 0 || groupChats.length > 0 || filteredAgents.length > 0 || filteredProjects.length > 0;
-  const compactChats = visibleRecentChats.slice(0, 12);
+  const humanGroupChats = sortGroupsWithPins(
+    filteredGroups.filter((chat) => conversationKind(chat) === 'human_group'),
+    pinnedGroupIds,
+  );
+  const groupTaskIds = new Set(taskChats.filter((chat) => chat.isGroup).map((chat) => String(chat.id)));
+  const taskConversationIsPinned = (chat) => (
+    pinnedHistoryIds.has(String(chat.id))
+    || (groupTaskIds.has(String(chat.id)) && pinnedGroupIds.has(String(chat.id)))
+  );
+  const conversationChats = taskChats
+    .sort((left, right) => {
+      const pinDifference = Number(taskConversationIsPinned(right)) - Number(taskConversationIsPinned(left));
+      return pinDifference || conversationRecentLess(left, right);
+    });
+  const friendContactMap = new Map();
+  filteredFriends
+    .filter((friend) => !friend.bot && friend.account_type !== 'bot')
+    .forEach((friend) => {
+      const chat = friendToConversation(user.uid, friend);
+      friendContactMap.set(String(chat.friendId), { ...chat, contact: friend });
+    });
+  friendChats.forEach((chat) => {
+    const key = String(chat.friendId || '');
+    if (!key) return;
+    const existing = friendContactMap.get(key);
+    friendContactMap.set(key, { ...existing, ...chat, contact: existing?.contact || null });
+  });
+  const friendContacts = [...friendContactMap.values()];
+  const contactItems = [
+    ...friendContacts.map((chat) => ({ kind: 'friend', name: chat.name, recentMs: conversationSortTime(chat), pinned: false, item: chat })),
+    ...humanGroupChats.map((chat) => ({
+      kind: 'group',
+      name: chat.name,
+      recentMs: conversationSortTime(chat),
+      pinned: pinnedGroupIds.has(String(chat.id)),
+      item: chat,
+    })),
+    ...filteredAgents.map((agent) => ({
+      kind: 'agent',
+      name: agent.display_name || agent.username || '',
+      recentMs: latestAgentTaskTime(taskChats, agent),
+      pinned: false,
+      item: agent,
+    })),
+  ].sort((left, right) => (
+    Number(left.kind === 'agent') - Number(right.kind === 'agent')
+    || Number(right.pinned) - Number(left.pinned)
+    || (right.recentMs || 0) - (left.recentMs || 0)
+    || left.name.localeCompare(right.name, 'zh-CN')
+  ));
+  const hasSearchResults = conversationChats.length > 0 || contactItems.length > 0 || filteredProjects.length > 0;
+  const compactChats = conversationChats.slice(0, 12);
 
   const selectConversation = (chat) => {
     rememberDismissedTaskStatus(chat.id, chat.taskStatus);
@@ -859,7 +877,7 @@ export default function ChatListView({
     const projectId = Number(project?.id);
     if (!projectId) return;
     setOpenProjectMenuId(null);
-    const confirmed = window.confirm(`确定删除项目“${project.name}”吗？\n\n项目中的历史对话会保留，并回到历史任务列表。`);
+    const confirmed = window.confirm(`确定删除项目“${project.name}”吗？\n\n项目中的任务会保留，并回到任务列表。`);
     if (!confirmed) return;
     setProjectActionId(projectId);
     try {
@@ -878,7 +896,7 @@ export default function ChatListView({
     const actionLabel = onDeleteHistoryTask ? '删除任务' : '从列表移除';
     const confirmation = onDeleteHistoryTask
       ? `确定删除任务“${chat.name}”吗？`
-      : `确定从历史任务列表移除“${chat.name}”吗？\n\n此操作只影响当前浏览器，不会删除历史消息。`;
+      : `确定从任务列表移除“${chat.name}”吗？\n\n此操作只影响当前浏览器，不会删除历史消息。`;
     const confirmed = window.confirm(confirmation);
     if (!confirmed) return;
 
@@ -922,7 +940,7 @@ export default function ChatListView({
 
     setRenamingTopicId(chat.id);
     try {
-      if (chat.isAgentTask && chat.groupId) {
+      if (chat.isGroup && chat.groupId) {
         await api.updateGroup(chat.groupId, nextName, chat.avatar_url || '');
       } else {
         await api.updateConversationTitle(chat.id, nextName);
@@ -941,7 +959,7 @@ export default function ChatListView({
     }
   };
 
-  const renderTaskCopy = (chat, fallback = null) => (
+  const renderTaskCopy = (chat, fallback = null, kindLabel = '') => (
     <div className="cc-chat-row-copy">
       {editingHistoryTopicId === chat.id ? (
         <form className="cc-history-rename-form" onSubmit={(event) => handleRenameHistoryTask(event, chat)} onClick={(event) => event.stopPropagation()}>
@@ -964,34 +982,40 @@ export default function ChatListView({
         </form>
       ) : (
         <>
-          <span className="v3-chat-item-label">{chat.name}</span>
-          <ConversationTaskStatusLine
-            status={visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id)}
-            fallback={fallback}
-          />
+          <span className="cc-chat-row-title">
+            <span className="v3-chat-item-label">{chat.name}</span>
+            {kindLabel && <span className={`cc-item-kind cc-item-kind-${kindLabel === '群聊' || kindLabel === '群组' ? 'group' : kindLabel === '单聊' ? 'direct' : 'agent'}`}>{kindLabel}</span>}
+          </span>
+          {fallback && <span className="cc-chat-row-preview">{fallback}</span>}
         </>
       )}
     </div>
   );
 
   const renderTaskControls = (chat, menuKey, { showPin = false, showTime = false } = {}) => {
-    const isPinned = pinnedHistoryIds.has(String(chat.id));
+    const isPinned = pinnedHistoryIds.has(String(chat.id))
+      || (chat.isGroup && pinnedGroupIds.has(String(chat.id)));
+    const visibleStatus = activeTopic === chat.id && normalizeTaskStatus(chat.taskStatus)?.state === 'completed'
+      ? null
+      : visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id);
+    const canDeleteGroup = chat.isGroup
+      && groupOwnerById.get(String(chat.groupId)) === String(user.uid);
     const removeLabel = onDeleteHistoryTask ? '删除任务' : '从列表移除';
     return (
       <>
         <div className="cc-chat-row-trailing">
-          {showTime && chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
+          <TaskRowStatusIndicator status={visibleStatus} time={chat.time} showTime={showTime} />
           <div className="cc-chat-row-actions">
             {showPin && (
               <button
                 type="button"
                 className="v3-chat-item-action v3-history-pin-trigger"
                 title={isPinned ? '取消置顶任务' : '置顶任务'}
-                aria-label={`${isPinned ? '取消置顶历史任务' : '置顶历史任务'} ${chat.name}`}
+                aria-label={`${isPinned ? '取消置顶任务' : '置顶任务'} ${chat.name}`}
                 aria-pressed={isPinned}
                 onClick={(event) => {
                   event.stopPropagation();
-                  togglePinnedHistory(chat.id);
+                  togglePinnedTask(chat);
                   setOpenChatMenuKey('');
                 }}
               >
@@ -1030,7 +1054,7 @@ export default function ChatListView({
               <FolderPlus size={14} />
               <span>{chat.projectId ? '移动到项目' : '加入项目'}</span>
             </button>
-            {chat.projectId && (
+            {Number(chat.projectId) > 0 && (
               <button
                 type="button"
                 role="menuitem"
@@ -1042,11 +1066,42 @@ export default function ChatListView({
                 <span>移出当前项目</span>
               </button>
             )}
-            <button type="button" role="menuitem" aria-label={`${chat.name} 手机扫码`} onClick={() => handleOpenMobileLink(chat)}>
+            <button type="button" role="menuitem" aria-label={`${chat.name} 手机扫码`} onClick={() => handleOpenMobileLink(chat, chat.isGroup)}>
               <Smartphone size={14} />
               <span>手机扫码</span>
             </button>
-            {!chat.isAgentTask && (
+            {chat.isGroup && (
+              <button
+                type="button"
+                role="menuitem"
+                aria-label={`${chat.name} 群管理`}
+                disabled={!onManageGroup}
+                title={!onManageGroup ? '群管理入口暂未接入' : '群管理'}
+                onClick={() => {
+                  setOpenChatMenuKey('');
+                  onManageGroup?.(topicPayloadForChat(chat, true));
+                }}
+              >
+                <Users size={14} />
+                <span>群管理</span>
+              </button>
+            )}
+            {canDeleteGroup ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="danger"
+                aria-label={`删除任务 ${chat.name}`}
+                disabled={deletingTopicId === chat.id}
+                onClick={() => {
+                  setOpenChatMenuKey('');
+                  handleDeleteGroup({ groupId: chat.groupId, topicId: chat.id, name: chat.name });
+                }}
+              >
+                <Trash2 size={14} />
+                <span>删除任务</span>
+              </button>
+            ) : !chat.isGroup && (
               <button
                 type="button"
                 role="menuitem"
@@ -1066,27 +1121,444 @@ export default function ChatListView({
     );
   };
 
+  const renderConversationRow = (chat) => {
+    const taskKind = conversationKind(chat);
+    if (taskKind === 'solo_agent' || taskKind === 'multi_agent') {
+      const taskLabel = taskKind === 'multi_agent' ? '协作' : '';
+      const menuKey = `task:${chat.id}`;
+      return (
+        <div
+          key={chat.id}
+          className={`v3-chat-item cc-history-item cc-conversation-item ${activeTopic === chat.id ? 'active' : ''}`}
+          data-conversation-kind="agent"
+          data-task-kind={taskKind === 'multi_agent' ? 'collaboration' : 'solo'}
+          onClick={() => selectConversation(chat)}
+        >
+          <Zap size={14} className="prefix cc-chat-row-icon" aria-label="Agent 任务" />
+          {renderTaskCopy(chat, chat.taskStatus ? chat.preview : null, taskLabel)}
+          {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
+        </div>
+      );
+    }
+
+    if (chat.isGroup && !chat.isAgentTask) {
+      const canDelete = groupOwnerById.get(String(chat.groupId)) === String(user.uid);
+      const isPinned = pinnedGroupIds.has(String(chat.id));
+      const menuKey = `group:${chat.id}`;
+      return (
+        <div
+          key={chat.id}
+          className={`v3-chat-item cc-conversation-item cc-group-conversation-item ${activeTopic === chat.id ? 'active' : ''}`}
+          data-conversation-kind="group"
+          onClick={() => selectConversation(chat)}
+        >
+          <Users size={14} className="prefix cc-chat-row-icon" aria-label="群聊" />
+          {renderTaskCopy(chat, chat.preview, '群聊')}
+          <div className="cc-chat-row-trailing">
+            {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
+            <div className="cc-chat-row-actions">
+              <button
+                type="button"
+                className="v3-chat-item-action v3-group-menu-trigger"
+                title="群聊操作"
+                aria-label={`${chat.name} 更多操作`}
+                aria-haspopup="menu"
+                aria-expanded={openChatMenuKey === menuKey}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpenFriendMenuId('');
+                  setOpenChatMenuKey((current) => current === menuKey ? '' : menuKey);
+                }}
+              >
+                <MoreHorizontal size={15} />
+              </button>
+            </div>
+          </div>
+          {openChatMenuKey === menuKey && (
+            <div className="v3-friend-action-menu cc-chat-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+              <button
+                type="button"
+                role="menuitem"
+                aria-label={`${isPinned ? '取消置顶' : '置顶'} ${chat.name}`}
+                onClick={() => {
+                  togglePinnedGroup(chat.id);
+                  setOpenChatMenuKey('');
+                }}
+              >
+                <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
+                <span>{isPinned ? '取消置顶群聊' : '置顶群聊'}</span>
+              </button>
+              <button type="button" role="menuitem" aria-label={`${chat.name} 移动端使用`} onClick={() => handleOpenMobileLink(chat, true)}>
+                <Smartphone size={14} />
+                <span>移动端使用</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                aria-label={`${chat.name} 群管理`}
+                disabled={!onManageGroup}
+                title={!onManageGroup ? '群管理入口暂未接入' : '群管理'}
+                onClick={() => {
+                  setOpenChatMenuKey('');
+                  onManageGroup?.(topicPayloadForChat(chat, true));
+                }}
+              >
+                <Users size={14} />
+                <span>群管理</span>
+              </button>
+              {canDelete && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="danger"
+                  aria-label={`删除群聊 ${chat.name}`}
+                  disabled={deletingTopicId === chat.id}
+                  onClick={() => {
+                    setOpenChatMenuKey('');
+                    handleDeleteGroup({ groupId: chat.groupId, topicId: chat.id, name: chat.name });
+                  }}
+                >
+                  <Trash2 size={14} />
+                  <span>删除群聊</span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (!chat.isGroup && !chat.isBot) {
+      const isOnline = onlineStatusFor(onlineUsers, chat.friendId, chat.isOnline);
+      return (
+        <div
+          key={chat.id}
+          className={`v3-chat-item cc-conversation-item v3-friend-chat-item ${activeTopic === chat.id ? 'active' : ''}`}
+          data-conversation-kind="direct"
+          onClick={() => selectConversation(chat)}
+        >
+          <UserRound size={14} className="prefix cc-chat-row-icon" aria-label="单聊" />
+          {renderTaskCopy(chat, chat.preview, '单聊')}
+          <div className="cc-chat-row-trailing">
+            {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
+            <div className="cc-chat-row-actions">
+              <button
+                type="button"
+                className="v3-chat-item-action v3-friend-menu-trigger"
+                title="好友操作"
+                aria-label={`${chat.name} 更多操作`}
+                aria-haspopup="menu"
+                aria-expanded={openFriendMenuId === String(chat.friendId)}
+                disabled={friendActionId === String(chat.friendId)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpenChatMenuKey('');
+                  setOpenFriendMenuId((current) => current === String(chat.friendId) ? '' : String(chat.friendId));
+                }}
+              >
+                <MoreHorizontal size={15} />
+              </button>
+            </div>
+          </div>
+          {openFriendMenuId === String(chat.friendId) && (
+            <div className="v3-friend-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+              <button type="button" role="menuitem" onClick={() => handleFriendAction(chat, 'remove')}>
+                <UserX size={14} />
+                <span>删除好友</span>
+              </button>
+              <button type="button" role="menuitem" className="danger" onClick={() => handleFriendAction(chat, 'block')}>
+                <Ban size={14} />
+                <span>拉黑好友</span>
+              </button>
+            </div>
+          )}
+          <span className={`cc-conversation-presence ${isOnline ? 'online' : 'offline'}`} aria-label={isOnline ? '在线' : '离线'} />
+        </div>
+      );
+    }
+
+    const menuKey = `history:${chat.id}`;
+    return (
+      <div
+        key={chat.id}
+        className={`v3-chat-item cc-history-item cc-conversation-item ${activeTopic === chat.id ? 'active' : ''}`}
+        data-conversation-kind="agent"
+        onClick={() => selectConversation(chat)}
+      >
+        <Zap size={14} className="prefix cc-chat-row-icon" aria-label="Agent 任务" />
+        {renderTaskCopy(chat, chat.taskStatus ? chat.preview : null, '任务')}
+        {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
+      </div>
+    );
+  };
+
+  const renderContactRow = ({ kind, item }) => {
+    if (kind === 'group') {
+      const chat = item;
+      const canDelete = groupOwnerById.get(String(chat.groupId)) === String(user.uid);
+      const isPinned = pinnedGroupIds.has(String(chat.id));
+      const menuKey = `group:${chat.id}`;
+      return (
+        <div
+          key={`group:${chat.id}`}
+          className={`v3-chat-item cc-contact-item cc-group-contact-item ${activeTopic === chat.id ? 'active' : ''}`}
+          data-contact-kind="group"
+          onClick={() => selectConversation(chat)}
+        >
+          <Users size={14} className="prefix cc-chat-row-icon" aria-label="群组" />
+          {renderTaskCopy(chat, chat.preview)}
+          <div className="cc-chat-row-trailing">
+            {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
+            <div className="cc-chat-row-actions">
+              <button
+                type="button"
+                className="v3-chat-item-action v3-group-menu-trigger"
+                title="群组操作"
+                aria-label={`${chat.name} 更多操作`}
+                aria-haspopup="menu"
+                aria-expanded={openChatMenuKey === menuKey}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpenFriendMenuId('');
+                  setOpenChatMenuKey((current) => current === menuKey ? '' : menuKey);
+                }}
+              >
+                <MoreHorizontal size={15} />
+              </button>
+            </div>
+          </div>
+          {openChatMenuKey === menuKey && (
+            <div className="v3-friend-action-menu cc-chat-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+              <button
+                type="button"
+                role="menuitem"
+                aria-label={`${isPinned ? '取消置顶' : '置顶'} ${chat.name}`}
+                onClick={() => {
+                  togglePinnedGroup(chat.id);
+                  setOpenChatMenuKey('');
+                }}
+              >
+                <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
+                <span>{isPinned ? '取消置顶群组' : '置顶群组'}</span>
+              </button>
+              <button type="button" role="menuitem" aria-label={`${chat.name} 移动端使用`} onClick={() => handleOpenMobileLink(chat, true)}>
+                <Smartphone size={14} />
+                <span>移动端使用</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                aria-label={`${chat.name} 群管理`}
+                disabled={!onManageGroup}
+                title={!onManageGroup ? '群管理入口暂未接入' : '群管理'}
+                onClick={() => {
+                  setOpenChatMenuKey('');
+                  onManageGroup?.(topicPayloadForChat(chat, true));
+                }}
+              >
+                <Users size={14} />
+                <span>群管理</span>
+              </button>
+              {canDelete && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="danger"
+                  aria-label={`删除群聊 ${chat.name}`}
+                  disabled={deletingTopicId === chat.id}
+                  onClick={() => {
+                    setOpenChatMenuKey('');
+                    handleDeleteGroup({ groupId: chat.groupId, topicId: chat.id, name: chat.name });
+                  }}
+                >
+                  <Trash2 size={14} />
+                  <span>删除群聊</span>
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (kind === 'friend') {
+      const chat = item;
+      const isOnline = onlineStatusFor(onlineUsers, chat.friendId, chat.isOnline);
+      return (
+        <div
+          key={`friend:${chat.friendId}`}
+          className={`v3-chat-item cc-contact-item v3-friend-chat-item ${activeTopic === chat.id ? 'active' : ''}`}
+          data-contact-kind="friend"
+          onClick={() => selectConversation(chat)}
+        >
+          <UserRound
+            size={16}
+            className={`prefix cc-chat-row-icon cc-friend-contact-icon ${isOnline ? 'online' : 'offline'}`}
+            title={isOnline ? '在线' : '离线'}
+            aria-label={`好友，${isOnline ? '在线' : '离线'}`}
+          />
+          <div className="cc-chat-row-copy">
+            <span className="cc-chat-row-title">
+              <span className="v3-chat-item-label">{chat.name}</span>
+            </span>
+          </div>
+          <div className="cc-chat-row-trailing">
+            {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
+            <div className="cc-chat-row-actions">
+              <button
+                type="button"
+                className="v3-chat-item-action v3-friend-menu-trigger"
+                title="好友操作"
+                aria-label={`${chat.name} 联系人操作`}
+                aria-haspopup="menu"
+                aria-expanded={openFriendMenuId === String(chat.friendId)}
+                disabled={friendActionId === String(chat.friendId)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpenChatMenuKey('');
+                  setOpenFriendMenuId((current) => current === String(chat.friendId) ? '' : String(chat.friendId));
+                }}
+              >
+                <MoreHorizontal size={15} />
+              </button>
+            </div>
+          </div>
+          {openFriendMenuId === String(chat.friendId) && (
+            <div className="v3-friend-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+              <button type="button" role="menuitem" onClick={() => handleFriendAction(chat, 'remove')}>
+                <UserX size={14} />
+                <span>删除好友</span>
+              </button>
+              <button type="button" role="menuitem" className="danger" onClick={() => handleFriendAction(chat, 'block')}>
+                <Ban size={14} />
+                <span>拉黑好友</span>
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const agent = item;
+    const agentId = agent.uid || agent.id;
+    const isOnline = onlineStatusFor(onlineUsers, agentId, agent.is_online);
+    const owned = isOwnedAgent(agent);
+    return (
+      <div
+        key={`agent:${agentId}`}
+        className="v3-chat-item cc-contact-item cc-agent-roster-item"
+        data-contact-kind="agent"
+        title={agentIdentity(agent)}
+        onClick={() => handleSelectAgent(agent)}
+      >
+        <Bot
+          size={16}
+          className={`prefix cc-chat-row-icon cc-agent-contact-icon ${isOnline ? 'online' : 'offline'}`}
+          title={isOnline ? '在线' : '离线'}
+          aria-label={`Agent 助手，${isOnline ? '在线' : '离线'}`}
+        />
+        <div className="cc-chat-row-copy">
+          <span className="cc-chat-row-title">
+            <span className="v3-chat-item-label">{agent.display_name || agent.username}</span>
+          </span>
+        </div>
+        <div className="cc-chat-row-trailing cc-agent-row-trailing">
+          <div className="v3-agent-row-actions">
+            {!owned && (
+              <button
+                type="button"
+                className="v3-chat-item-action danger"
+                title="移除助手"
+                aria-label={`移除 ${agent.display_name || agent.username}`}
+                disabled={agentActionId === String(agentId)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  handleRemoveAgent(agent);
+                }}
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
+            <button
+              type="button"
+              className="v3-chat-item-action cc-agent-mobile-action"
+              title="移动端使用"
+              aria-label={`${agent.display_name || agent.username} 移动端使用`}
+              onClick={(event) => {
+                event.stopPropagation();
+                setMobileLinkAgent(agent);
+              }}
+            >
+              <Smartphone size={14} />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderAgentPendingRequests = () => {
+    if (isSearching || agentPendingRequests.length === 0) return null;
+    return (
+      <div className="v3-agent-request-panel">
+        <div className="v3-agent-request-panel-title">新的助手好友申请</div>
+        {agentPendingRequests.map((request) => {
+          const key = `${request.agent_uid}:${request.from_user_id}`;
+          const isReviewing = agentReviewingKey === key;
+          return (
+            <div key={`${key}:${request.created_at || ''}`} className="v3-agent-request-row">
+              <div className="v3-agent-request-main">
+                <span className="v3-agent-request-name">{request.display_name || request.from_username || `用户 ${request.from_user_id}`}</span>
+                <span className="v3-agent-request-target">申请添加 {request.agent_name}</span>
+              </div>
+              <button
+                type="button"
+                className="v3-agent-request-action"
+                title="拒绝"
+                aria-label="拒绝助手好友申请"
+                disabled={isReviewing}
+                onClick={() => handleReviewAgentRequest(request, 'reject')}
+              >
+                <X size={13} />
+              </button>
+              <button
+                type="button"
+                className="v3-agent-request-action primary"
+                title="通过"
+                aria-label="通过助手好友申请"
+                disabled={isReviewing}
+                onClick={() => handleReviewAgentRequest(request, 'accept')}
+              >
+                <Check size={13} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   return (
     <>
       {compact && (
-        <nav className="cc-sidebar-compact-rail" aria-label="对话快捷栏">
+        <nav className="cc-sidebar-compact-rail" aria-label="任务快捷栏">
           <button
             type="button"
             className="cc-compact-new-chat"
             onClick={() => setShowNewChat(true)}
-            aria-label="新建对话"
-            title="新建对话"
+            aria-label="新建任务"
+            title="新建任务"
           >
             <Plus size={20} />
           </button>
-          <div className="cc-compact-conversations" aria-label="曾经对话">
+          <div className="cc-compact-conversations" aria-label="最近任务">
             {compactChats.map((chat) => (
               <button
                 type="button"
                 key={chat.id}
                 className={`cc-compact-conversation${activeTopic === chat.id ? ' active' : ''}`}
                 onClick={() => selectConversation(chat)}
-                aria-label={`打开对话：${chat.name}`}
+                aria-label={`打开任务：${chat.name}`}
                 title={chat.name}
               >
                 <Avatar name={chat.name} src={chat.avatar_url} size={32} />
@@ -1105,7 +1577,7 @@ export default function ChatListView({
           <Search size={15} />
         <input
           placeholder="搜索"
-          aria-label="搜索会话、联系人或助手"
+          aria-label="搜索任务、联系人或助手"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -1114,311 +1586,109 @@ export default function ChatListView({
 
       {!compact && <div className="v3-chat-list">
 
-        {!isSearching && pending.length > 0 && (
-          <div style={{ padding: '0 16px', marginBottom: 12 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--v3-primary)', textTransform: 'uppercase', marginBottom: 8 }}>
-              好友请求 ({pending.length})
-            </div>
-            {pending.map((req) => (
-              <FriendRequest key={req.id} request={req} onAccept={() => handleAccept(req.from_user_id)} onReject={() => handleReject(req.from_user_id)} />
-            ))}
-          </div>
-        )}
-
-        {/* AI 对话 */}
-        <div className="v3-chat-section cc-history-section">
-          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('ai')} aria-expanded={!collapsed.ai}>
-            <span>历史任务</span>
+        {/* 任务：只承载单人 + Agent 与多人 + Agent 两种工作会话 */}
+        <div className="v3-chat-section cc-top-level-section cc-conversation-section">
+          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('conversations')} aria-expanded={!collapsed.conversations}>
+            <span>任务</span>
             <ChevronRight size={14} />
           </button>
           <button type="button" className="cc-section-add" onClick={() => setShowNewChat(true)} title="新建任务" aria-label="新建任务"><Plus size={15} /></button>
         </div>
-        {(isSearching || !collapsed.ai) && (aiChats.length === 0 && !isSearching ? (
-          <div className="cc-sidebar-empty cc-history-empty">点击 + 开始新任务</div>
+        {(isSearching || !collapsed.conversations) && (conversationChats.length === 0 && !isSearching ? (
+          <div className="cc-sidebar-empty cc-conversation-empty">选择一个 Agent 开始新任务</div>
         ) : (
-          aiChats.map((chat) => {
-            const menuKey = `history:${chat.id}`;
-            return (
-              <div key={chat.id} className={`v3-chat-item cc-history-item ${activeTopic === chat.id ? 'active' : ''}`}
-                onClick={() => selectConversation(chat)}>
-                <span className="prefix cc-chat-row-icon">{chat.isGroup ? '#' : <MessageSquare size={14} />}</span>
-                {renderTaskCopy(chat, chat.taskStatus ? chat.preview : null)}
-                {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
-              </div>
-            );
-          })
+          conversationChats.map(renderConversationRow)
         ))}
 
-        <div className="v3-chat-section cc-top-level-section cc-collaboration-section">
-          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('collaboration')} aria-expanded={!collapsed.collaboration}>
-            <span>协作</span>
+        {/* 联系人：好友与 Agent 共用入口，通过行内类型软区分 */}
+        <div className="v3-chat-section cc-top-level-section cc-contacts-section" style={{ position: 'relative' }}>
+          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('contacts')} aria-expanded={!collapsed.contacts}>
+            <span>联系人</span>
             <ChevronRight size={14} />
+            {(pending.length + agentPendingRequests.length) > 0 && (
+              <span className="v3-agent-request-badge">{pending.length + agentPendingRequests.length}</span>
+            )}
           </button>
-        </div>
-
-        {(isSearching || !collapsed.collaboration) && <div className="cc-sidebar-nested">
-        {/* 好友 */}
-        <div className="v3-chat-section">
-          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('friends')} aria-expanded={!collapsed.friends}><UserRound size={15} /><span>好友</span><ChevronRight size={13} /></button>
-          <button type="button" className="cc-section-add" onClick={() => setShowAddFriend(true)} title="添加好友" aria-label="添加好友"><Plus size={15} /></button>
-        </div>
-        {(isSearching || !collapsed.friends) && (friendChats.length === 0 && !isSearching ? (
-          <div className="cc-sidebar-empty">暂无好友</div>
-        ) : (
-          friendChats.map((chat) => {
-            const isOnline = onlineStatusFor(onlineUsers, chat.friendId, chat.isOnline);
-            return (
-              <div key={chat.id} className={`v3-chat-item v3-friend-chat-item ${activeTopic === chat.id ? 'active' : ''}`}
-                onClick={() => selectConversation(chat)}>
-                <span
-                  className={`v3-status-dot ${isOnline ? 'online' : 'offline'}`}
-                  style={{marginRight: 8}}
-                  title={isOnline ? 'Online' : 'Offline'}
-                  aria-label={isOnline ? 'Online' : 'Offline'}
-                />
-                <div className="cc-chat-row-copy">
-                  <span className="v3-chat-item-label">{chat.name}</span>
-                  <ConversationTaskStatusLine status={visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id)} fallback={chat.preview} />
-                </div>
-                <div className="cc-chat-row-trailing">
-                  {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
-                  <div className="cc-chat-row-actions">
-                    <button
-                      type="button"
-                      className="v3-chat-item-action v3-friend-menu-trigger"
-                      title="好友操作"
-                      aria-label={`${chat.name} 更多操作`}
-                      aria-haspopup="menu"
-                      aria-expanded={openFriendMenuId === String(chat.friendId)}
-                      disabled={friendActionId === String(chat.friendId)}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setOpenChatMenuKey('');
-                        setOpenFriendMenuId((current) => current === String(chat.friendId) ? '' : String(chat.friendId));
-                      }}
-                    >
-                      <MoreHorizontal size={15} />
-                    </button>
-                  </div>
-                </div>
-                {openFriendMenuId === String(chat.friendId) && (
-                  <div className="v3-friend-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
-                    <button type="button" role="menuitem" onClick={() => handleFriendAction(chat, 'remove')}>
-                      <UserX size={14} />
-                      <span>删除好友</span>
-                    </button>
-                    <button type="button" role="menuitem" className="danger" onClick={() => handleFriendAction(chat, 'block')}>
-                      <Ban size={14} />
-                      <span>拉黑好友</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })
-        ))}
-
-        {/* 群聊 */}
-        <div className="v3-chat-section">
-          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('groups')} aria-expanded={!collapsed.groups}><Users size={15} /><span>群聊</span><ChevronRight size={13} /></button>
-          <button type="button" className="cc-section-add" onClick={() => setShowCreateGroup(true)} title="创建群聊" aria-label="创建群聊"><Plus size={15} /></button>
-        </div>
-        {(isSearching || !collapsed.groups) && (groupChats.length === 0 && !isSearching ? (
-          <div className="cc-sidebar-empty">暂无群聊</div>
-        ) : (
-          groupChats.map((chat) => {
-            const canDelete = groupOwnerById.get(String(chat.groupId)) === String(user.uid);
-            const isPinned = pinnedGroupIds.has(String(chat.id));
-            const menuKey = `group:${chat.id}`;
-            return (
-              <div key={chat.id} className={`v3-chat-item ${activeTopic === chat.id ? 'active' : ''}`}
-                onClick={() => selectConversation(chat)}>
-                <span className="prefix cc-chat-row-icon">#</span>
-                <div className="cc-chat-row-copy">
-                  <span className="v3-chat-item-label">{chat.name}</span>
-                  <ConversationTaskStatusLine status={visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id)} fallback={chat.preview} />
-                </div>
-                <div className="cc-chat-row-trailing">
-                  {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
-                  <div className="cc-chat-row-actions">
-                    <button
-                      type="button"
-                      className="v3-chat-item-action v3-group-menu-trigger"
-                      title="群聊操作"
-                      aria-label={`${chat.name} 更多操作`}
-                      aria-haspopup="menu"
-                      aria-expanded={openChatMenuKey === menuKey}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setOpenFriendMenuId('');
-                        setOpenChatMenuKey((current) => current === menuKey ? '' : menuKey);
-                      }}
-                    >
-                      <MoreHorizontal size={15} />
-                    </button>
-                  </div>
-                </div>
-                {openChatMenuKey === menuKey && (
-                  <div className="v3-friend-action-menu cc-chat-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      aria-label={`${isPinned ? '取消置顶' : '置顶'} ${chat.name}`}
-                      onClick={() => {
-                        togglePinnedGroup(chat.id);
-                        setOpenChatMenuKey('');
-                      }}
-                    >
-                      <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
-                      <span>{isPinned ? '取消置顶群聊' : '置顶群聊'}</span>
-                    </button>
-                    <button type="button" role="menuitem" aria-label={`${chat.name} 移动端使用`} onClick={() => handleOpenMobileLink(chat, true)}>
-                      <Smartphone size={14} />
-                      <span>移动端使用</span>
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      aria-label={`${chat.name} 群管理`}
-                      disabled={!onManageGroup}
-                      title={!onManageGroup ? '群管理入口暂未接入' : '群管理'}
-                      onClick={() => {
-                        setOpenChatMenuKey('');
-                        onManageGroup?.(topicPayloadForChat(chat, true));
-                      }}
-                    >
-                      <Users size={14} />
-                      <span>群管理</span>
-                    </button>
-                    {canDelete && (
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="danger"
-                        aria-label={`删除群聊 ${chat.name}`}
-                        disabled={deletingTopicId === chat.id}
-                        onClick={() => {
-                          setOpenChatMenuKey('');
-                          handleDeleteGroup({ groupId: chat.groupId, topicId: chat.id, name: chat.name });
-                        }}
-                      >
-                        <Trash2 size={14} />
-                        <span>删除群聊</span>
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })
-        ))}
-
-        {/* AI 助手 */}
-        <div className="v3-chat-section">
-          <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('agents')} aria-expanded={!collapsed.agents}>
-            <Zap size={15} />
-            <span>Agent 助手</span>
-            <ChevronRight size={13} />
-            {agentPendingRequests.length > 0 && <span className="v3-agent-request-badge">{agentPendingRequests.length}</span>}
+          <button
+            type="button"
+            className="cc-section-add cc-contact-section-menu-trigger"
+            title="联系人操作"
+            aria-label="联系人更多操作"
+            aria-haspopup="menu"
+            aria-expanded={showContactActions}
+            aria-controls="cc-contact-section-menu"
+            onClick={() => {
+              setOpenFriendMenuId('');
+              setOpenChatMenuKey('');
+              setOpenProjectMenuId(null);
+              setShowContactActions((current) => !current);
+            }}
+          >
+            <MoreHorizontal size={15} />
           </button>
-          <button type="button" className="cc-section-add" onClick={() => setShowAgentStore(true)} title="管理 Agent 助手" aria-label="管理 Agent 助手"><Plus size={15} /></button>
-        </div>
-        {!isSearching && agentPendingRequests.length > 0 && (
-          <div className="v3-agent-request-panel">
-            <div className="v3-agent-request-panel-title">新的助手好友申请</div>
-            {agentPendingRequests.map((request) => {
-              const key = `${request.agent_uid}:${request.from_user_id}`;
-              const isReviewing = agentReviewingKey === key;
-              return (
-                <div key={`${key}:${request.created_at || ''}`} className="v3-agent-request-row">
-                  <div className="v3-agent-request-main">
-                    <span className="v3-agent-request-name">{request.display_name || request.from_username || `用户 ${request.from_user_id}`}</span>
-                    <span className="v3-agent-request-target">申请添加 {request.agent_name}</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="v3-agent-request-action"
-                    title="拒绝"
-                    aria-label="拒绝助手好友申请"
-                    disabled={isReviewing}
-                    onClick={() => handleReviewAgentRequest(request, 'reject')}
-                  >
-                    <X size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    className="v3-agent-request-action primary"
-                    title="通过"
-                    aria-label="通过助手好友申请"
-                    disabled={isReviewing}
-                    onClick={() => handleReviewAgentRequest(request, 'accept')}
-                  >
-                    <Check size={13} />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        {(isSearching || !collapsed.agents) && (filteredAgents.length === 0 ? (
-          <div className="cc-sidebar-empty">暂无 Agent 助手</div>
-        ) : (
-          filteredAgents.map((agent) => {
-            const agentId = agent.uid || agent.id;
-            const isOnline = onlineStatusFor(onlineUsers, agentId, agent.is_online);
-            const owned = isOwnedAgent(agent);
-            return (
-              <div
-                key={agentId}
-                className="v3-chat-item cc-agent-roster-item"
-                title={agentIdentity(agent)}
-                onClick={() => handleSelectAgent(agent)}
+          {showContactActions && (
+            <div
+              id="cc-contact-section-menu"
+              className="v3-friend-action-menu cc-project-action-menu cc-contact-section-menu"
+              role="menu"
+              aria-label="联系人操作"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setShowContactActions(false);
+                  setShowAddFriend(true);
+                }}
               >
-                <span className="prefix" style={{display: 'flex', alignItems: 'center'}}><Bot size={18} /></span>
-                <span className="v3-chat-item-main">
-                  <span className="v3-chat-item-label">{agent.display_name || agent.username}</span>
-                  <span className="v3-chat-item-identity">{agentVisibleIdentity(agent)}</span>
-                </span>
-                <div className="v3-agent-row-actions">
-                  <button
-                    type="button"
-                    className="v3-chat-item-action"
-                    title="移动端使用"
-                    aria-label={`${agent.display_name || agent.username} 移动端使用`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setMobileLinkAgent(agent);
-                    }}
-                  >
-                    <Smartphone size={14} />
-                  </button>
-                  {!owned && (
-                    <button
-                      type="button"
-                      className="v3-chat-item-action danger"
-                      title="移除助手"
-                      aria-label={`移除 ${agent.display_name || agent.username}`}
-                      disabled={agentActionId === String(agentId)}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleRemoveAgent(agent);
-                      }}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  )}
-                  <span
-                    className={`v3-status-dot ${isOnline ? 'online' : 'offline'}`}
-                    title={isOnline ? 'Online' : 'Offline'}
-                    aria-label={isOnline ? 'Online' : 'Offline'}
-                  />
+                <UserPlus size={14} />
+                <span>添加好友</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setShowContactActions(false);
+                  setShowCreateGroup(true);
+                }}
+              >
+                <Users size={14} />
+                <span>创建群组</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setShowContactActions(false);
+                  setShowAgentStore(true);
+                }}
+              >
+                <Bot size={14} />
+                <span>管理 Agent 助手</span>
+              </button>
+            </div>
+          )}
+        </div>
+        {(isSearching || !collapsed.contacts) && (
+          <>
+            {!isSearching && pending.length > 0 && (
+              <div className="cc-contact-requests" style={{ padding: '0 16px', marginBottom: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--v3-primary)', textTransform: 'uppercase', marginBottom: 8 }}>
+                  好友请求 ({pending.length})
                 </div>
+                {pending.map((req) => (
+                  <FriendRequest key={req.id} request={req} onAccept={() => handleAccept(req.from_user_id)} onReject={() => handleReject(req.from_user_id)} />
+                ))}
               </div>
-            );
-          })
-        ))}
-        </div>}
-
+            )}
+            {renderAgentPendingRequests()}
+            {contactItems.length === 0 && !isSearching ? (
+              <div className="cc-sidebar-empty cc-contacts-empty">暂无联系人</div>
+            ) : (
+              contactItems.map(renderContactRow)
+            )}
+          </>
+        )}
         <div className="v3-chat-section cc-top-level-section cc-project-section">
           <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('projects')} aria-expanded={!collapsed.projects}>
             <span>{'项目'}</span>
@@ -1498,16 +1768,18 @@ export default function ChatListView({
                 </div>
                 {expanded && (projectTasks.length > 0 ? projectTasks.map((chat) => {
                   const menuKey = `project:${chat.id}`;
+                  const taskKind = conversationKind(chat);
+                  const taskLabel = taskKind === 'multi_agent' ? '协作' : '';
                   return (
                     <div
                       key={chat.id}
-                      className={`v3-chat-item cc-project-task-item ${activeTopic === chat.id ? 'active' : ''}`}
+                      className={`v3-chat-item cc-history-item cc-conversation-item cc-project-task-item ${activeTopic === chat.id ? 'active' : ''}`}
                       aria-label={`打开项目任务 ${chat.name}`}
                       onClick={() => selectConversation(chat)}
                     >
-                      <MessageSquare size={13} className="prefix cc-chat-row-icon" />
-                      {renderTaskCopy(chat, chat.preview)}
-                      {renderTaskControls(chat, menuKey)}
+                      <Zap size={14} className="prefix cc-chat-row-icon" aria-label="Agent 任务" />
+                      {renderTaskCopy(chat, chat.taskStatus ? chat.preview : null, taskLabel)}
+                      {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
                     </div>
                   );
                 }) : (
@@ -1525,52 +1797,29 @@ export default function ChatListView({
       </div>}
 
       {showNewChat && createPortal(
-        <div className="name-dialog-overlay cc-new-task-overlay" onClick={() => { setShowNewChat(false); setNamingAgent(null); }}>
+        <div className="name-dialog-overlay cc-new-task-overlay" onClick={() => setShowNewChat(false)}>
           <section className="name-dialog cc-new-task-dialog" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
             <header className="cc-new-task-header">
-              <h3>{namingAgent ? '为对话取个名字' : '选择 AI 助手开始对话'}</h3>
-              <button type="button" className="cc-dialog-close" onClick={() => { setShowNewChat(false); setNamingAgent(null); }} aria-label="关闭">
+              <h3>选择 AI 助手开始任务</h3>
+              <button type="button" className="cc-dialog-close" onClick={() => setShowNewChat(false)} aria-label="关闭">
                 <X size={18} />
               </button>
             </header>
             <div className="cc-new-task-body">
-            {!namingAgent ? (
-              <>
-                {agents.length === 0 ? (
-                  <div className="cc-new-task-empty">
-                    <strong>暂无 AI 助手</strong>
-                    <span>请先在“协作 &gt; Agent 助手”中创建</span>
-                  </div>
-                ) : (
-                  <div className="cc-new-task-agent-list">
-                    {agents.map((agent) => (
-                      <button type="button" className="cc-new-task-agent" key={agent.uid || agent.id} onClick={() => handleNewChatWithAgent(agent)}>
-                        <Bot size={18} />
-                        <span>{agent.display_name || agent.username}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </>
+            {agents.length === 0 ? (
+              <div className="cc-new-task-empty">
+                <strong>暂无 AI 助手</strong>
+                <span>请先在“联系人”中添加或创建 AI 助手</span>
+              </div>
             ) : (
-              <>
-                <input
-                  autoFocus
-                  className="oc-auth-input cc-new-task-name"
-                  value={newChatName}
-                  onChange={(e) => setNewChatName(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleConfirmNewChat(); }}
-                  placeholder="对话名称"
-                />
-                <div className="cc-new-task-actions">
-                  <button type="button" className="oc-btn oc-btn-default" onClick={() => setNamingAgent(null)}>
-                    返回
+              <div className="cc-new-task-agent-list">
+                {agents.map((agent) => (
+                  <button type="button" className="cc-new-task-agent" key={agent.uid || agent.id} onClick={() => handleNewChatWithAgent(agent)}>
+                    <Bot size={18} />
+                    <span>{agent.display_name || agent.username}</span>
                   </button>
-                  <button type="button" className="oc-btn oc-btn-primary" onClick={handleConfirmNewChat}>
-                    创建
-                  </button>
-                </div>
-              </>
+                ))}
+              </div>
             )}
             </div>
           </section>
@@ -1612,7 +1861,7 @@ export default function ChatListView({
                       </button>
                     );
                   })}
-                  {projectPickerTask.projectId && (
+                  {Number(projectPickerTask.projectId) > 0 && (
                     <button
                       type="button"
                       className="cc-new-task-agent cc-project-remove-option"
@@ -1767,7 +2016,7 @@ function isOwnedAgent(agent) {
   return agent?.is_owner === true || agent?.relation === 'owner';
 }
 
-function ConversationTaskStatusLine({ status, fallback }) {
+function TaskRowStatusIndicator({ status, time, showTime }) {
   const expiresAtMs = taskStatusExpiresMs(status);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -1782,33 +2031,35 @@ function ConversationTaskStatusLine({ status, fallback }) {
 
   const normalized = normalizeTaskStatus(status);
   if (!normalized || normalized.state === 'idle' || (expiresAtMs && expiresAtMs <= nowMs)) {
-    return fallback ? <span className="cc-chat-row-preview">{fallback}</span> : null;
+    return showTime && time ? <span className="cc-chat-row-time">{time}</span> : null;
   }
 
-  const descriptor = taskStatusDescriptor(normalized.state);
-  const Icon = descriptor.icon;
-  const text = normalized.summary || normalized.error || descriptor.label;
-  return (
-    <span className={`cc-task-status-line ${descriptor.className}`} title={text}>
-      <span className="cc-task-status-pill">
-        <Icon size={11} strokeWidth={2.4} />
-        <span>{descriptor.label}</span>
+  const detail = normalized.summary || normalized.error;
+  if (normalized.state === 'running') {
+    return (
+      <span className="cc-task-row-status running" title={detail || '任务进行中'} aria-label="任务进行中" role="status">
+        <LoaderCircle size={15} strokeWidth={2.2} />
       </span>
-      {text !== descriptor.label && <span className="cc-task-status-summary">{text}</span>}
-    </span>
-  );
-}
-
-function taskStatusDescriptor(state) {
-  switch (state) {
-    case 'running': return { label: '进行中', className: 'running', icon: LoaderCircle };
-    case 'completed': return { label: '已完成', className: 'completed', icon: CheckCircle2 };
-    case 'failed': return { label: '需处理', className: 'failed', icon: AlertCircle };
-    case 'cancelled': return { label: '已停止', className: 'cancelled', icon: Clock3 };
-    case 'stale': return { label: '超时', className: 'stale', icon: Clock3 };
-    case 'waiting': return { label: '等待中', className: 'waiting', icon: Clock3 };
-    default: return { label: '状态', className: 'idle', icon: Clock3 };
+    );
   }
+
+  if (normalized.state === 'completed') {
+    return (
+      <span className="cc-task-row-status completed" title={detail || '任务已完成'} aria-label="任务已完成" role="status">
+        <span className="cc-task-completed-dot" />
+      </span>
+    );
+  }
+
+  if (normalized.state === 'failed') {
+    return (
+      <span className="cc-task-row-status failed" title={detail || '任务执行失败'} aria-label="任务执行失败" role="status">
+        <AlertCircle size={15} strokeWidth={2.3} />
+      </span>
+    );
+  }
+
+  return showTime && time ? <span className="cc-chat-row-time">{time}</span> : null;
 }
 
 function normalizeTaskStatus(status) {
@@ -1870,6 +2121,7 @@ function conversationSummaryToChat(item) {
     isBot: item.is_bot,
     hasBot: Boolean(item.has_bot || item.is_agent_group),
     isAgentTask: Boolean(item.is_agent_task || item.kind === 'agent_task'),
+    memberCount: Number(item.member_count || 0),
     isOnline: item.is_online,
     seq: item.latest_seq || 0,
     taskStatus: normalizeTaskStatus(item.task_status),
@@ -1896,6 +2148,9 @@ function mergeGroupsWithConversations(groups, groupConversations) {
       ...normalized,
       owner_id: normalized.owner_id ?? existing.owner_id,
       avatar_url: normalized.avatar_url ?? existing.avatar_url,
+      hasBot: Boolean(existing.hasBot || normalized.hasBot),
+      isAgentTask: Boolean(existing.isAgentTask || normalized.isAgentTask),
+      memberCount: normalized.memberCount || existing.memberCount || 0,
       time: normalized.time || existing.time || '',
       lastTimeMs: preserveExistingTime ? existing.lastTimeMs : normalized.lastTimeMs,
       createdAtMs: normalized.createdAtMs || existing.createdAtMs,
@@ -1918,6 +2173,10 @@ function normalizeGroupListItem(item) {
     groupId,
     owner_id: item.owner_id,
     name,
+    isGroup: true,
+    isAgentTask: Boolean(item.isAgentTask || item.is_agent_task || item.kind === 'agent_task'),
+    hasBot: Boolean(item.hasBot || item.has_bot || item.is_agent_group),
+    memberCount: Number(item.memberCount || item.member_count || 0),
     avatar_url: item.avatar_url,
     preview: item.preview || '',
     time: item.time || (lastTimeMs ? formatTime(new Date(lastTimeMs)) : ''),
@@ -1938,7 +2197,27 @@ function sortConversationsByRecent(items) {
 }
 
 function isHistoryTask(chat) {
-  return Boolean(chat?.isAgentTask || (!chat?.isGroup && chat?.isBot));
+  const kind = conversationKind(chat);
+  return kind === 'solo_agent' || kind === 'multi_agent';
+}
+
+function conversationKind(chat) {
+  if (!chat?.isGroup) return chat?.isBot ? 'solo_agent' : 'friend';
+  if (!chat.isAgentTask && !chat.hasBot) return 'human_group';
+
+  const memberCount = Number(chat.memberCount || chat.member_count || 0);
+  if (memberCount > 2) return 'multi_agent';
+  if (memberCount > 0) return 'solo_agent';
+  return chat.isAgentTask ? 'solo_agent' : 'multi_agent';
+}
+
+function latestAgentTaskTime(tasks, agent) {
+  const agentId = String(agent?.uid || agent?.id || '');
+  if (!agentId) return 0;
+  return (tasks || []).reduce((latest, chat) => {
+    if (chat.isGroup || String(chat.friendId || '') !== agentId) return latest;
+    return Math.max(latest, conversationSortTime(chat));
+  }, 0);
 }
 
 function sortConversationsWithPins(items, pinnedTopicIds) {
@@ -2006,11 +2285,6 @@ function agentIdentity(agent) {
   return [username, uid].filter(Boolean).join(' · ');
 }
 
-function agentVisibleIdentity(agent) {
-  if (agent?.username) return `@${agent.username}`;
-  return agent?.uid || agent?.id ? `uid ${agent.uid || agent.id}` : '';
-}
-
 function userSearchText(user) {
   return [
     user?.display_name,
@@ -2040,6 +2314,7 @@ function normalizeCreatedGroup(created) {
     avatar_url: rawGroup.avatar_url || created.avatar_url || '',
     created_at: rawGroup.created_at || created.created_at || new Date().toISOString(),
     has_bot: rawGroup.has_bot || created.has_bot || false,
+    member_count: Number(rawGroup.member_count || created.member_count || 0),
     kind: rawGroup.kind || created.kind || 'standard',
     is_agent_task: Boolean(rawGroup.is_agent_task || created.is_agent_task),
   };
@@ -2059,6 +2334,7 @@ function groupToConversation(group) {
     avatar_url: group.avatar_url,
     hasBot: Boolean(group.has_bot || group.is_agent_group),
     isAgentTask: Boolean(group.is_agent_task || group.kind === 'agent_task'),
+    memberCount: Number(group.member_count || 0),
     seq: 0,
   };
 }

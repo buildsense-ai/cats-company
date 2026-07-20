@@ -9,8 +9,12 @@ vi.mock('../widgets/create-group', () => ({
 }));
 
 vi.mock('../widgets/add-friend', () => ({
-  default: function MockAddFriend() {
-    return null;
+  default: function MockAddFriend({ onClose }) {
+    return (
+      <div data-testid="add-friend-modal">
+        <button type="button" onClick={onClose}>关闭添加好友</button>
+      </div>
+    );
   },
 }));
 
@@ -21,8 +25,12 @@ vi.mock('../widgets/friend-request', () => ({
 }));
 
 vi.mock('../widgets/agent-store-modal', () => ({
-  default: function MockAgentStoreModal() {
-    return null;
+  default: function MockAgentStoreModal({ onClose }) {
+    return (
+      <div data-testid="agent-store-modal">
+        <button type="button" onClick={onClose}>关闭助手管理</button>
+      </div>
+    );
   },
 }));
 
@@ -83,6 +91,8 @@ describe('ChatListView sidebar sections', () => {
   let container;
   let root;
   let onSelectTopic;
+  let onStartAgentTask;
+  let wsHandler;
 
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
@@ -135,8 +145,13 @@ describe('ChatListView sidebar sections', () => {
       group: { id: 77, name: 'New Agent Task', kind: 'agent_task', is_agent_task: true },
     });
     api.updateGroup.mockResolvedValue({ ok: true });
-    onWSMessage.mockImplementation(() => vi.fn());
+    wsHandler = null;
+    onWSMessage.mockImplementation((handler) => {
+      wsHandler = handler;
+      return vi.fn();
+    });
     onSelectTopic = vi.fn();
+    onStartAgentTask = vi.fn();
 
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -157,6 +172,7 @@ describe('ChatListView sidebar sections', () => {
         <ChatListView
           activeTopic={null}
           onSelectTopic={onSelectTopic}
+          onStartAgentTask={onStartAgentTask}
           user={user}
           onlineUsers={{}}
           {...props}
@@ -181,30 +197,168 @@ describe('ChatListView sidebar sections', () => {
     Simulate.click(section);
   }
 
-  it('opens an agent conversation from the assistant roster', async () => {
+  it('keeps only tasks, contacts, and projects as top-level sections', async () => {
     await mount();
 
-    expect(container.textContent).toContain('Agent 助手');
+    const sectionLabels = Array.from(container.querySelectorAll('.cc-top-level-section > .cc-section-toggle'))
+      .map((button) => button.textContent.trim());
+    expect(sectionLabels).toEqual(['任务', '联系人', '项目']);
+    expect(sectionLabels).not.toContain('协作');
+    expect(sectionLabels).not.toContain('好友');
+    expect(sectionLabels).not.toContain('群聊');
+    expect(sectionLabels).not.toContain('Agent 助手');
+
+    const [tasksToggle, contactsToggle] = container.querySelectorAll('.cc-top-level-section > .cc-section-toggle');
+    expect(tasksToggle.querySelector('.lucide-message-square')).toBeNull();
+    expect(contactsToggle.querySelector('.lucide-user-round')).toBeNull();
+  });
+
+  it('keeps Agent work in tasks and human conversations in contacts', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Review Agent Task',
+          is_group: false,
+          is_bot: true,
+          last_time: '2026-07-18T10:00:00Z',
+        },
+        {
+          id: 'p2p_7_8',
+          friend_id: 8,
+          name: 'Alice',
+          is_group: false,
+          is_bot: false,
+          preview: '这段好友消息摘要不应显示',
+          last_time: '2026-07-18T09:00:00Z',
+        },
+        {
+          id: 'grp_9',
+          group_id: 9,
+          name: 'Design Team',
+          is_group: true,
+          last_time: '2026-07-18T08:00:00Z',
+        },
+      ],
+    });
+    api.getFriends.mockResolvedValue({
+      friends: [{ id: 8, username: 'alice', display_name: 'Alice' }],
+    });
+    api.getGroups.mockResolvedValue({
+      groups: [{ id: 9, name: 'Design Team', owner_id: 7 }],
+    });
+
+    await mount();
+
+    const soloTask = container.querySelector('[data-task-kind="solo"]');
+    expect(soloTask).toBeTruthy();
+    expect(soloTask.textContent).toContain('Review Agent Task');
+    expect(soloTask.querySelector('svg.lucide-zap')).toBeTruthy();
+    expect(soloTask.querySelector('.cc-item-kind')).toBeFalsy();
+    expect(soloTask.textContent).not.toContain('单人');
+
+    expect(container.querySelector('[data-conversation-kind="direct"]')).toBeFalsy();
+    expect(container.querySelector('[data-conversation-kind="group"]')).toBeFalsy();
+    const friendContact = container.querySelector('[data-contact-kind="friend"]');
+    expect(friendContact?.querySelector('svg.lucide-user-round')).toBeTruthy();
+    expect(friendContact?.querySelector('.cc-item-kind')).toBeFalsy();
+    expect(friendContact?.textContent).not.toContain('这段好友消息摘要不应显示');
+    expect(friendContact?.textContent).not.toContain('@alice');
+    expect(friendContact?.querySelector('.v3-chat-item-identity')).toBeNull();
+    const groupContact = container.querySelector('[data-contact-kind="group"]');
+    expect(groupContact?.querySelector('svg.lucide-users')).toBeTruthy();
+    expect(groupContact?.querySelector('.cc-item-kind')).toBeFalsy();
+    const agentContact = container.querySelector('[data-contact-kind="agent"]');
+    expect(agentContact?.querySelector('svg.cc-agent-contact-icon')).toBeTruthy();
+    expect(agentContact?.querySelector('.cc-item-kind')).toBeFalsy();
+    expect(agentContact?.textContent).not.toContain('@dev-agent');
+    expect(agentContact?.querySelector('.v3-chat-item-identity')).toBeNull();
+  });
+
+  it('shows a friend without conversation history in contacts and opens a synthetic direct topic', async () => {
+    api.getFriends.mockResolvedValue({
+      friends: [{ id: 8, username: 'alice', display_name: 'Alice' }],
+    });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mount();
+
+    const contact = container.querySelector('[data-contact-kind="friend"]');
+    expect(contact).toBeTruthy();
+    expect(contact.textContent).toContain('Alice');
+    expect(container.querySelector('[data-conversation-kind="direct"]')).toBeFalsy();
+
+    await act(async () => {
+      Simulate.click(contact);
+    });
+
+    expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({
+      topicId: 'p2p_7_8',
+      name: 'Alice',
+      friendId: 8,
+      isGroup: false,
+    }));
+  });
+
+  it('migrates legacy AI and collaboration collapsed keys to the unified sections', async () => {
+    localStorage.setItem('cc_sidebar_collapsed_v1:7', JSON.stringify({
+      ai: true,
+      collaboration: true,
+      projects: false,
+    }));
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_42',
+        friend_id: 42,
+        name: 'Legacy Agent Task',
+        is_group: false,
+        is_bot: true,
+      }],
+    });
+    api.getFriends.mockResolvedValue({
+      friends: [{ id: 8, username: 'alice', display_name: 'Alice' }],
+    });
+
+    await mount();
+
+    const sectionToggles = Array.from(container.querySelectorAll('.cc-top-level-section > .cc-section-toggle'));
+    const conversationsToggle = sectionToggles.find((button) => button.textContent.includes('任务'));
+    const contactsToggle = sectionToggles.find((button) => button.textContent.includes('联系人'));
+    const projectsToggle = sectionToggles.find((button) => button.textContent.includes('项目'));
+    expect(conversationsToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(contactsToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(projectsToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(container.textContent).not.toContain('Legacy Agent Task');
+    expect(container.textContent).not.toContain('Alice');
+  });
+
+  it('starts an unsent Agent task draft from the assistant roster', async () => {
+    await mount();
+
+    expect(container.textContent).toContain('联系人');
     expect(container.textContent).toContain('Dev Agent');
-    const agentItem = Array.from(container.querySelectorAll('.v3-chat-item'))
-      .find((node) => node.textContent.includes('Dev Agent'));
+    const agentItem = container.querySelector('[data-contact-kind="agent"]');
     expect(agentItem).toBeTruthy();
+    expect(agentItem.querySelector('svg.cc-agent-contact-icon.online')).toBeTruthy();
+    expect(agentItem.querySelector('.v3-status-dot')).toBeFalsy();
+    expect(agentItem.querySelector('.cc-item-kind')).toBeFalsy();
 
     await act(async () => {
       Simulate.click(agentItem);
       await Promise.resolve();
     });
 
-    expect(api.openAgent).toHaveBeenCalledWith(42);
-    expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({
-      topicId: 'p2p_7_42',
-      name: 'Dev Agent',
-      friendId: 42,
-      isBot: true,
+    expect(onStartAgentTask).toHaveBeenCalledWith(expect.objectContaining({
+      uid: 42,
+      display_name: 'Dev Agent',
     }));
+    expect(api.openAgent).not.toHaveBeenCalled();
+    expect(api.createGroup).not.toHaveBeenCalled();
+    expect(onSelectTopic).not.toHaveBeenCalled();
   });
 
-  it('keeps the server conversation title when an agent opens an existing task', async () => {
+  it('starts a fresh draft even when the Agent already has an existing task', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [
         {
@@ -229,11 +383,9 @@ describe('ChatListView sidebar sections', () => {
       await Promise.resolve();
     });
 
-    expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({
-      topicId: 'p2p_7_42',
-      name: '前端迁移复盘',
-      friendId: 42,
-    }));
+    expect(onStartAgentTask).toHaveBeenCalledWith(expect.objectContaining({ uid: 42 }));
+    expect(api.openAgent).not.toHaveBeenCalled();
+    expect(onSelectTopic).not.toHaveBeenCalled();
   });
 
   it('opens mobile binding from an assistant row without opening the conversation', async () => {
@@ -355,15 +507,16 @@ describe('ChatListView sidebar sections', () => {
     const row = container.querySelector('.cc-history-item');
     expect(row.querySelector('.cc-chat-row-preview')).toBeNull();
     expect(row.querySelectorAll('.cc-chat-row-actions button')).toHaveLength(2);
-    expect(row.querySelector('[aria-label="置顶历史任务 Review Task"]')).toBeTruthy();
+    expect(row.querySelector('[aria-label="置顶任务 Review Task"]')).toBeTruthy();
     await act(async () => {
       Simulate.click(row.querySelector('[aria-label="Review Task 更多操作"]'));
     });
-    expect(row.querySelector('[role="menu"] [aria-label="置顶历史任务 Review Task"]')).toBeNull();
+    expect(row.querySelector('[role="menu"] [aria-label="置顶任务 Review Task"]')).toBeNull();
     expect(row.querySelector('[aria-label="修改任务名称 Review Task"]')).toBeTruthy();
     expect(row.querySelector('[aria-label="加入项目 Review Task"]')).toBeTruthy();
     expect(row.querySelector('[aria-label="Review Task 手机扫码"]')).toBeTruthy();
     expect(row.querySelector('[aria-label="删除任务 Review Task"]')).toBeTruthy();
+    expect(row.querySelector('[role="menu"]').textContent).not.toContain('0');
 
     await act(async () => {
       Simulate.click(row.querySelector('[aria-label="加入项目 Review Task"]'));
@@ -441,7 +594,7 @@ describe('ChatListView sidebar sections', () => {
     expect(container.textContent).toContain('Release checklist');
   });
 
-  it('persists locally hidden history tasks when no server deletion callback exists', async () => {
+  it('keeps a locally hidden legacy task hidden when starting a fresh Agent draft', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{
         id: 'p2p_7_42',
@@ -475,8 +628,11 @@ describe('ChatListView sidebar sections', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain('Local History Task');
-    expect(JSON.parse(localStorage.getItem('cc_hidden_history_v1:7'))).toEqual([]);
+    expect(onStartAgentTask).toHaveBeenCalledWith(expect.objectContaining({ uid: 42 }));
+    expect(api.openAgent).not.toHaveBeenCalled();
+    expect(api.createGroup).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain('Local History Task');
+    expect(JSON.parse(localStorage.getItem('cc_hidden_history_v1:7'))).toEqual(['p2p_7_42']);
   });
 
   it('keeps agent tasks visible and does not offer local removal without a recovery entry', async () => {
@@ -576,13 +732,165 @@ describe('ChatListView sidebar sections', () => {
 
     const task = container.querySelector('[aria-label="打开项目任务 Project Task"]');
     expect(task).toBeTruthy();
-    expect(task.textContent).toContain('进行中');
-    expect(task.textContent).toContain('正在整理资料');
+    expect(task.querySelector('.cc-task-row-status.running')).toBeTruthy();
+    expect(task.querySelector('[aria-label="任务进行中"]')).toBeTruthy();
     await act(async () => {
       Simulate.click(task);
     });
 
     expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'p2p_7_42', name: 'Project Task' }));
+  });
+
+  it('replaces a task time with a running spinner for active and background tasks', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_42',
+        friend_id: 42,
+        name: 'Running Task',
+        is_group: false,
+        is_bot: true,
+        last_time: '2026-07-20T04:00:00Z',
+        task_status: {
+          topic_id: 'p2p_7_42',
+          run_id: 'run-active',
+          state: 'running',
+          updated_at: '2026-07-20T04:00:05Z',
+        },
+      }],
+    });
+
+    await mount({ activeTopic: 'p2p_7_42' });
+
+    const task = container.querySelector('.cc-history-item');
+    expect(task.querySelector('.cc-task-row-status.running')).toBeTruthy();
+    expect(task.querySelector('.cc-chat-row-time')).toBeFalsy();
+    expect(task.querySelector('.cc-chat-row-actions')).toBeTruthy();
+  });
+
+  it('changes a background running spinner into an unread completion dot', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_42',
+        friend_id: 42,
+        name: 'Background Task',
+        is_group: false,
+        is_bot: true,
+        last_time: '2026-07-20T04:00:00Z',
+        task_status: {
+          topic_id: 'p2p_7_42',
+          run_id: 'run-transition',
+          state: 'running',
+          updated_at: '2026-07-20T04:00:05Z',
+        },
+      }],
+    });
+
+    await mount();
+
+    const task = container.querySelector('.cc-history-item');
+    expect(task.querySelector('.cc-task-row-status.running')).toBeTruthy();
+    expect(wsHandler).toBeTypeOf('function');
+
+    await act(async () => {
+      wsHandler({
+        task_status: {
+          topic_id: 'p2p_7_42',
+          run_id: 'run-transition',
+          state: 'completed',
+          updated_at: '2026-07-20T04:01:00Z',
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(task.querySelector('.cc-task-row-status.running')).toBeFalsy();
+    expect(task.querySelector('.cc-task-row-status.completed .cc-task-completed-dot')).toBeTruthy();
+    expect(task.querySelector('.cc-chat-row-time')).toBeFalsy();
+  });
+
+  it('shows an unread green dot for a completed background task and restores time after opening it', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_42',
+        friend_id: 42,
+        name: 'Completed Task',
+        is_group: false,
+        is_bot: true,
+        last_time: '2026-07-20T04:00:00Z',
+        task_status: {
+          topic_id: 'p2p_7_42',
+          run_id: 'run-complete',
+          state: 'completed',
+          updated_at: '2026-07-20T04:01:00Z',
+        },
+      }],
+    });
+
+    await mount();
+
+    const task = container.querySelector('.cc-history-item');
+    expect(task.querySelector('.cc-task-row-status.completed .cc-task-completed-dot')).toBeTruthy();
+    expect(task.querySelector('.cc-chat-row-time')).toBeFalsy();
+
+    await act(async () => {
+      Simulate.click(task);
+      await Promise.resolve();
+    });
+
+    expect(task.querySelector('.cc-task-row-status.completed')).toBeFalsy();
+    expect(task.querySelector('.cc-chat-row-time')).toBeTruthy();
+  });
+
+  it('restores time without a completion dot when the completed task is already active', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_42',
+        friend_id: 42,
+        name: 'Visible Completed Task',
+        is_group: false,
+        is_bot: true,
+        last_time: '2026-07-20T04:00:00Z',
+        task_status: {
+          topic_id: 'p2p_7_42',
+          run_id: 'run-visible',
+          state: 'completed',
+          updated_at: '2026-07-20T04:01:00Z',
+        },
+      }],
+    });
+
+    await mount({ activeTopic: 'p2p_7_42' });
+
+    const task = container.querySelector('.cc-history-item');
+    expect(task.querySelector('.cc-task-row-status.completed')).toBeFalsy();
+    expect(task.querySelector('.cc-chat-row-time')).toBeTruthy();
+  });
+
+  it('shows a red failure icon instead of a completion dot', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_42',
+        friend_id: 42,
+        name: 'Failed Task',
+        is_group: false,
+        is_bot: true,
+        last_time: '2026-07-20T04:00:00Z',
+        task_status: {
+          topic_id: 'p2p_7_42',
+          run_id: 'run-failed',
+          state: 'failed',
+          error: 'Execution failed',
+          updated_at: '2026-07-20T04:01:00Z',
+        },
+      }],
+    });
+
+    await mount();
+
+    const task = container.querySelector('.cc-history-item');
+    expect(task.querySelector('.cc-task-row-status.failed')).toBeTruthy();
+    expect(task.querySelector('.cc-task-completed-dot')).toBeFalsy();
+    expect(task.querySelector('.cc-chat-row-time')).toBeFalsy();
   });
 
   it('opens an assigned task menu and removes the task from its project', async () => {
@@ -594,6 +902,7 @@ describe('ChatListView sidebar sections', () => {
         name: 'Project Task',
         is_group: false,
         is_bot: true,
+        last_time: '2026-07-20T04:00:00Z',
         project_id: assigned ? 12 : 0,
         project_name: assigned ? 'Website Launch' : '',
       }],
@@ -614,8 +923,11 @@ describe('ChatListView sidebar sections', () => {
 
     const task = container.querySelector('.cc-project-task-item');
     expect(task).toBeTruthy();
-    expect(task.querySelectorAll('.cc-chat-row-actions button')).toHaveLength(1);
-    expect(task.querySelector('[aria-label="置顶历史任务 Project Task"]')).toBeNull();
+    expect(task.classList.contains('cc-history-item')).toBe(true);
+    expect(task.querySelector('.lucide-zap')).toBeTruthy();
+    expect(task.querySelectorAll('.cc-chat-row-actions button')).toHaveLength(2);
+    expect(task.querySelector('[aria-label="置顶任务 Project Task"]')).toBeTruthy();
+    expect(task.querySelector('.cc-chat-row-time')).toBeTruthy();
     await act(async () => {
       Simulate.click(task.querySelector('[aria-label="Project Task 更多操作"]'));
     });
@@ -731,7 +1043,7 @@ describe('ChatListView sidebar sections', () => {
 
     await mount();
     await act(async () => {
-      Simulate.change(container.querySelector('[aria-label="搜索会话、联系人或助手"]'), { target: { value: 'Launch Review' } });
+      Simulate.change(container.querySelector('[aria-label="搜索任务、联系人或助手"]'), { target: { value: 'Launch Review' } });
     });
 
     expect(container.querySelector('[aria-label="打开项目任务 Quarterly Launch Review"]')).toBeTruthy();
@@ -877,8 +1189,10 @@ describe('ChatListView sidebar sections', () => {
     await mount();
 
     const removeButton = container.querySelector('[aria-label="移除 共享助手"]');
+    const mobileButton = container.querySelector('[aria-label="共享助手 移动端使用"]');
     expect(removeButton).toBeTruthy();
-    expect(container.querySelector('[aria-label="共享助手 移动端使用"]')).toBeTruthy();
+    expect(mobileButton).toBeTruthy();
+    expect(removeButton.nextElementSibling).toBe(mobileButton);
 
     await act(async () => {
       Simulate.click(removeButton);
@@ -948,7 +1262,7 @@ describe('ChatListView sidebar sections', () => {
     expect(api.acceptAgentFriend).toHaveBeenCalledWith(42, 88);
   });
 
-  it('keeps server-confirmed bot groups in the groups section', async () => {
+  it('merges group metadata before classifying a collaboration task', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [
         {
@@ -956,25 +1270,26 @@ describe('ChatListView sidebar sections', () => {
           group_id: 9,
           name: 'Bot Room',
           is_group: true,
-          has_bot: true,
           last_time: '2026-06-04T08:00:00Z',
         },
       ],
     });
     api.getGroups.mockResolvedValue({
-      groups: [{ id: 9, name: 'Bot Room', owner_id: 7, created_at: '2026-06-04T08:00:00Z' }],
+      groups: [{ id: 9, name: 'Bot Room', owner_id: 7, has_bot: true, member_count: 4, created_at: '2026-06-04T08:00:00Z' }],
     });
     api.getAgents.mockResolvedValue({ agents: [] });
 
     await mount();
 
-    const text = container.textContent;
-    expect(text).toContain('Bot Room');
-    expect(text.indexOf('群聊')).toBeLessThan(text.indexOf('Bot Room'));
-    expect(text.indexOf('Bot Room')).toBeLessThan(text.indexOf('Agent 助手'));
+    const collaborationTask = container.querySelector('[data-task-kind="collaboration"]');
+    expect(collaborationTask).toBeTruthy();
+    expect(collaborationTask.textContent).toContain('Bot Room');
+    expect(collaborationTask.textContent).toContain('协作');
+    expect(collaborationTask.querySelector('svg.lucide-zap')).toBeTruthy();
+    expect(container.querySelector('[data-contact-kind="group"]')).toBeFalsy();
   });
 
-  it('renders agent task groups in history instead of the groups section', async () => {
+  it('renders agent task groups as tasks instead of ordinary group conversations', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{
         id: 'grp_77',
@@ -982,7 +1297,8 @@ describe('ChatListView sidebar sections', () => {
         name: 'Release Review Task',
         is_group: true,
         has_bot: true,
-        is_agent_task: true,
+          is_agent_task: true,
+          member_count: 2,
         last_time: '2026-06-04T09:00:00Z',
       }],
     });
@@ -994,6 +1310,7 @@ describe('ChatListView sidebar sections', () => {
         kind: 'agent_task',
         is_agent_task: true,
         has_bot: true,
+        member_count: 2,
         created_at: '2026-06-04T09:00:00Z',
       }],
     });
@@ -1003,12 +1320,16 @@ describe('ChatListView sidebar sections', () => {
 
     const historyRow = container.querySelector('.cc-history-item');
     expect(historyRow?.textContent).toContain('Release Review Task');
+    expect(historyRow?.getAttribute('data-task-kind')).toBe('solo');
+    expect(historyRow?.querySelector('svg.lucide-zap')).toBeTruthy();
+    expect(historyRow?.querySelector('.cc-item-kind')).toBeFalsy();
+    expect(historyRow?.textContent).not.toContain('单人');
     const groupRows = Array.from(container.querySelectorAll('.v3-chat-item'))
       .filter((row) => !row.classList.contains('cc-history-item'));
     expect(groupRows.some((row) => row.textContent.includes('Release Review Task'))).toBe(false);
   });
 
-  it('creates a new Agent task with the dedicated task kind', async () => {
+  it('selects an Agent for a new task without creating anything before the first message', async () => {
     await mount();
 
     await act(async () => {
@@ -1016,24 +1337,17 @@ describe('ChatListView sidebar sections', () => {
     });
     await act(async () => {
       Simulate.click(document.body.querySelector('.cc-new-task-agent'));
-    });
-    const nameInput = document.body.querySelector('.cc-new-task-name');
-    await act(async () => {
-      Simulate.change(nameInput, { target: { value: 'New Agent Task' } });
-    });
-    await act(async () => {
-      Simulate.click(document.body.querySelector('.cc-new-task-actions .oc-btn-primary'));
-      await Promise.resolve();
       await Promise.resolve();
     });
 
-    expect(api.createGroup).toHaveBeenCalledWith('New Agent Task', [42], { kind: 'agent_task' });
-    expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({
-      topicId: 'grp_77',
-      name: 'New Agent Task',
-      isGroup: true,
-      groupId: 77,
+    expect(onStartAgentTask).toHaveBeenCalledWith(expect.objectContaining({
+      uid: 42,
+      display_name: 'Dev Agent',
     }));
+    expect(api.createGroup).not.toHaveBeenCalled();
+    expect(api.openAgent).not.toHaveBeenCalled();
+    expect(onSelectTopic).not.toHaveBeenCalled();
+    expect(document.body.querySelector('.cc-new-task-dialog')).toBeFalsy();
   });
 
   it('shows matches from collapsed sections while searching', async () => {
@@ -1048,13 +1362,16 @@ describe('ChatListView sidebar sections', () => {
         },
       ],
     });
+    api.getFriends.mockResolvedValue({
+      friends: [{ id: 8, username: 'alice', display_name: 'Alice' }],
+    });
     api.getAgents.mockResolvedValue({ agents: [] });
 
     await mount();
 
     expect(container.textContent).toContain('Alice');
     await act(async () => {
-      clickSection('好友');
+      clickSection('联系人');
     });
     expect(container.textContent).not.toContain('Alice');
 
@@ -1080,31 +1397,34 @@ describe('ChatListView sidebar sections', () => {
         },
       ],
     });
+    api.getFriends.mockResolvedValue({
+      friends: [{ id: 8, username: 'alice', display_name: 'Alice' }],
+    });
     api.getAgents.mockResolvedValue({ agents: [] });
 
     await mount();
 
     expect(container.textContent).toContain('Alice');
     await act(async () => {
-      clickSection('好友');
+      clickSection('联系人');
     });
     expect(container.textContent).not.toContain('Alice');
-    expect(localStorage.getItem('cc_sidebar_collapsed_v1:7')).toContain('"friends":true');
+    expect(localStorage.getItem('cc_sidebar_collapsed_v1:7')).toContain('"contacts":true');
 
     await remount();
 
-    expect(container.textContent).toContain('好友');
+    expect(container.textContent).toContain('任务');
     expect(container.textContent).not.toContain('Alice');
   });
 
-  it('uses a user icon for the friends section title', async () => {
+  it('keeps the contacts section title text-only', async () => {
     await mount();
 
-    const friendsToggle = Array.from(container.querySelectorAll('.cc-section-toggle'))
-      .find((button) => button.textContent.includes('好友'));
-    expect(friendsToggle).toBeTruthy();
-    expect(friendsToggle.querySelector('svg.lucide-user-round')).toBeTruthy();
-    expect(friendsToggle.querySelector('svg.lucide-message-square')).toBeFalsy();
+    const contactsToggle = Array.from(container.querySelectorAll('.cc-section-toggle'))
+      .find((button) => button.textContent.includes('联系人'));
+    expect(contactsToggle).toBeTruthy();
+    expect(contactsToggle.querySelector('svg.lucide-user-round')).toBeFalsy();
+    expect(contactsToggle.querySelector('svg.lucide-message-square')).toBeFalsy();
   });
 
   it('portals the new-task dialog outside the sidebar container', async () => {
@@ -1118,7 +1438,7 @@ describe('ChatListView sidebar sections', () => {
     expect(document.body.querySelector('.cc-new-task-dialog')).toBeTruthy();
   });
 
-  it('shows a new-chat action and recent conversations in compact mode', async () => {
+  it('shows a new-task action and recent Agent tasks in compact mode', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [
         {
@@ -1134,8 +1454,8 @@ describe('ChatListView sidebar sections', () => {
 
     await mount({ compact: true });
 
-    expect(container.querySelector('[aria-label="新建对话"]')).toBeTruthy();
-    const recentButton = container.querySelector('[aria-label="打开对话：Recent assistant"]');
+    expect(container.querySelector('[aria-label="新建任务"]')).toBeTruthy();
+    const recentButton = container.querySelector('[aria-label="打开任务：Recent assistant"]');
     expect(recentButton).toBeTruthy();
     expect(container.querySelector('.cc-sidebar-tools')).toBeFalsy();
 
@@ -1149,21 +1469,69 @@ describe('ChatListView sidebar sections', () => {
     }));
 
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="新建对话"]'));
+      Simulate.click(container.querySelector('[aria-label="新建任务"]'));
     });
 
     expect(document.body.querySelector('.cc-new-task-dialog')).toBeTruthy();
   });
 
-  it('portals collaboration dialogs outside the sidebar container', async () => {
+  it('collects contact creation actions in one accessible menu and closes it appropriately', async () => {
     await mount();
 
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="创建群聊"]'));
+      Simulate.click(container.querySelector('[aria-label="联系人更多操作"]'));
     });
 
+    let menu = container.querySelector('[role="menu"][aria-label="联系人操作"]');
+    expect(menu).toBeTruthy();
+    expect(container.querySelector('[aria-label="联系人更多操作"]').getAttribute('aria-expanded')).toBe('true');
+    const menuItems = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+    expect(menuItems.map((item) => item.textContent.trim())).toEqual(['添加好友', '创建群组', '管理 Agent 助手']);
+    expect(menuItems[0].querySelector('.lucide-user-plus')).toBeTruthy();
+    expect(menuItems[1].querySelector('.lucide-users')).toBeTruthy();
+    expect(menuItems[2].querySelector('.lucide-bot')).toBeTruthy();
+
+    await act(async () => {
+      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    });
+    expect(container.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="联系人更多操作"]'));
+    });
+    menu = container.querySelector('[role="menu"][aria-label="联系人操作"]');
+    await act(async () => {
+      Simulate.click(Array.from(menu.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent.includes('添加好友')));
+    });
+    expect(container.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
+    expect(document.body.querySelector('[data-testid="add-friend-modal"]')).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(document.body.querySelector('[data-testid="add-friend-modal"] button'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="联系人更多操作"]'));
+    });
+    menu = container.querySelector('[role="menu"][aria-label="联系人操作"]');
+    await act(async () => {
+      Simulate.click(Array.from(menu.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent.includes('管理 Agent 助手')));
+    });
+    expect(container.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
+    expect(document.body.querySelector('[data-testid="agent-store-modal"]')).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(document.body.querySelector('[data-testid="agent-store-modal"] button'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="联系人更多操作"]'));
+    });
+    menu = container.querySelector('[role="menu"][aria-label="联系人操作"]');
+    await act(async () => {
+      Simulate.click(Array.from(menu.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent.includes('创建群组')));
+    });
     expect(container.querySelector('[data-testid="create-group-modal"]')).toBeFalsy();
     expect(document.body.querySelector('[data-testid="create-group-modal"]')).toBeTruthy();
+    expect(container.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
   });
 
   it('removes an ordinary friend from the friend row menu', async () => {
@@ -1178,12 +1546,15 @@ describe('ChatListView sidebar sections', () => {
         },
       ],
     });
+    api.getFriends.mockResolvedValue({
+      friends: [{ id: 8, username: 'alice', display_name: 'Alice' }],
+    });
     window.confirm = vi.fn(() => true);
 
     await mount({ activeTopic: 'p2p_7_8' });
 
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="Alice 更多操作"]'));
+      Simulate.click(container.querySelector('[aria-label="Alice 联系人操作"]'));
     });
     const removeButton = Array.from(container.querySelectorAll('[role="menuitem"]'))
       .find((node) => node.textContent.includes('删除好友'));
@@ -1210,12 +1581,15 @@ describe('ChatListView sidebar sections', () => {
         },
       ],
     });
+    api.getFriends.mockResolvedValue({
+      friends: [{ id: 9, username: 'bob', display_name: 'Bob' }],
+    });
     window.confirm = vi.fn(() => true);
 
     await mount();
 
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="Bob 更多操作"]'));
+      Simulate.click(container.querySelector('[aria-label="Bob 联系人操作"]'));
     });
     const blockButton = Array.from(container.querySelectorAll('[role="menuitem"]'))
       .find((node) => node.textContent.includes('拉黑好友'));
@@ -1229,7 +1603,7 @@ describe('ChatListView sidebar sections', () => {
     expect(api.blockUser).toHaveBeenCalledWith(9);
   });
 
-  it('keeps group conversations in the groups section by default', async () => {
+  it('keeps a human-only group in contacts and preserves its group actions', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [
         {
@@ -1253,22 +1627,24 @@ describe('ChatListView sidebar sections', () => {
         {
           id: 9,
           name: '查云端log',
-          owner_id: 11,
+          owner_id: 7,
         },
       ],
     });
 
-    await mount();
+    const onManageGroup = vi.fn();
+    await mount({ onManageGroup });
 
-    const sections = Array.from(container.querySelectorAll('.v3-chat-section')).map((node) => node.textContent);
-    expect(sections.join(' | ')).toContain('群聊');
-    expect(sections.findIndex((text) => text.includes('群聊'))).toBeLessThan(
-      sections.findIndex((text) => text.includes('Agent 助手'))
-    );
+    const sections = Array.from(container.querySelectorAll('.cc-top-level-section > .cc-section-toggle'))
+      .map((node) => node.textContent.trim());
+    expect(sections).toEqual(['任务', '联系人', '项目']);
 
-    const groupItem = Array.from(container.querySelectorAll('.v3-chat-item'))
-      .find((node) => node.textContent.includes('查云端log'));
+    const groupItem = container.querySelector('[data-contact-kind="group"]');
     expect(groupItem).toBeTruthy();
+    expect(groupItem.textContent).toContain('查云端log');
+    expect(groupItem.querySelector('svg.lucide-users')).toBeTruthy();
+    expect(groupItem.querySelector('.cc-item-kind')).toBeFalsy();
+    expect(container.querySelector('[data-conversation-kind="group"]')).toBeFalsy();
 
     await act(async () => {
       Simulate.click(groupItem);
@@ -1282,9 +1658,15 @@ describe('ChatListView sidebar sections', () => {
       groupId: 9,
       avatar_url: undefined,
     });
+
+    await act(async () => {
+      Simulate.click(groupItem.querySelector('[aria-label="查云端log 更多操作"]'));
+    });
+    expect(groupItem.querySelector('[aria-label="查云端log 群管理"]')).toBeTruthy();
+    expect(groupItem.querySelector('[aria-label="删除群聊 查云端log"]')).toBeTruthy();
   });
 
-  it('orders each chat section by recent activity and new group creation time', async () => {
+  it('orders tasks and contacts independently by recent activity', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [
         {
@@ -1349,14 +1731,64 @@ describe('ChatListView sidebar sections', () => {
         },
       ],
     });
+    api.getFriends.mockResolvedValue({
+      friends: [
+        { id: 8, username: 'old-friend', display_name: 'Old Friend' },
+        { id: 9, username: 'new-friend', display_name: 'New Friend' },
+      ],
+    });
     api.getAgents.mockResolvedValue({ agents: [] });
 
     await mount();
 
-    const text = container.textContent;
-    expect(text.indexOf('New Agent')).toBeLessThan(text.indexOf('Old Agent'));
-    expect(text.indexOf('New Friend')).toBeLessThan(text.indexOf('Old Friend'));
-    expect(text.indexOf('New Empty Group')).toBeLessThan(text.indexOf('Old Group'));
+    const taskText = Array.from(container.querySelectorAll('[data-conversation-kind="agent"]'))
+      .map((row) => row.textContent)
+      .join('|');
+    expect(taskText.indexOf('New Agent')).toBeLessThan(taskText.indexOf('Old Agent'));
+
+    const contactText = Array.from(container.querySelectorAll('.cc-contact-item'))
+      .map((row) => row.textContent)
+      .join('|');
+    const expectedContactOrder = ['New Empty Group', 'New Friend', 'Old Friend', 'Old Group'];
+    expectedContactOrder.slice(1).forEach((name, index) => {
+      expect(contactText.indexOf(expectedContactOrder[index])).toBeLessThan(contactText.indexOf(name));
+    });
+  });
+
+  it('keeps human contacts above agents and distinguishes contact kinds with leading icons', async () => {
+    api.getFriends.mockResolvedValue({
+      friends: [
+        { id: 8, username: 'zoe', display_name: 'Zoe Friend' },
+        { id: 9, username: 'alice', display_name: 'Alice Friend' },
+      ],
+    });
+    api.getAgents.mockResolvedValue({
+      agents: [
+        { id: 42, uid: 42, username: 'alpha-agent', display_name: 'Alpha Agent', relation: 'owner', is_owner: true },
+        { id: 43, uid: 43, username: 'beta-agent', display_name: 'Beta Agent', relation: 'friend' },
+      ],
+    });
+
+    await mount();
+
+    const contactRows = Array.from(container.querySelectorAll('.cc-contact-item'));
+    expect(contactRows.map((row) => row.getAttribute('data-contact-kind'))).toEqual([
+      'friend',
+      'friend',
+      'agent',
+      'agent',
+    ]);
+    contactRows.forEach((row) => {
+      expect(row.querySelector('.cc-item-kind')).toBeFalsy();
+      expect(row.querySelector('.cc-chat-row-trailing')).toBeTruthy();
+    });
+    contactRows.filter((row) => row.dataset.contactKind === 'friend').forEach((row) => {
+      expect(row.querySelector('svg.cc-friend-contact-icon')).toBeTruthy();
+      expect(row.querySelector('.v3-status-dot')).toBeFalsy();
+    });
+    contactRows.filter((row) => row.dataset.contactKind === 'agent').forEach((row) => {
+      expect(row.querySelector('.cc-agent-row-trailing > .v3-agent-row-actions')).toBeTruthy();
+    });
   });
 
   it('keeps pinned group chats above newer group activity and persists the choice', async () => {
@@ -1439,7 +1871,7 @@ describe('ChatListView sidebar sections', () => {
     await mount();
 
     expect(container.textContent.indexOf('Busy Agent Task')).toBeLessThan(container.textContent.indexOf('Old Agent Task'));
-    const pinOldTask = container.querySelector('button[aria-label="置顶历史任务 Old Agent Task"]');
+    const pinOldTask = container.querySelector('button[aria-label="置顶任务 Old Agent Task"]');
     expect(pinOldTask).toBeTruthy();
 
     await act(async () => {
@@ -1455,7 +1887,7 @@ describe('ChatListView sidebar sections', () => {
     await remount();
 
     expect(container.textContent.indexOf('Old Agent Task')).toBeLessThan(container.textContent.indexOf('Busy Agent Task'));
-    expect(container.querySelector('button[aria-label="取消置顶历史任务 Old Agent Task"]')).toBeTruthy();
+    expect(container.querySelector('button[aria-label="取消置顶任务 Old Agent Task"]')).toBeTruthy();
   });
 
   it('groups row times and controls in shared trailing and actions containers', async () => {
@@ -1488,6 +1920,9 @@ describe('ChatListView sidebar sections', () => {
     });
     api.getGroups.mockResolvedValue({
       groups: [{ id: 20, name: 'Team Room', owner_id: 7, created_at: '2026-06-06T08:00:00Z' }],
+    });
+    api.getFriends.mockResolvedValue({
+      friends: [{ id: 8, username: 'alice', display_name: 'Alice' }],
     });
     api.getAgents.mockResolvedValue({ agents: [] });
 
@@ -1573,6 +2008,12 @@ describe('ChatListView sidebar sections', () => {
         },
       ],
     });
+    api.getFriends.mockResolvedValue({
+      friends: [
+        { id: 8, username: 'higher-seq', display_name: 'Higher Seq Friend' },
+        { id: 9, username: 'lower-seq', display_name: 'Lower Seq Friend' },
+      ],
+    });
     api.getGroups.mockResolvedValue({ groups: [] });
     api.getAgents.mockResolvedValue({ agents: [] });
 
@@ -1625,7 +2066,7 @@ describe('ChatListView sidebar sections', () => {
     const agentItem = Array.from(container.querySelectorAll('.v3-chat-item'))
       .find((node) => node.textContent.includes('Dev Agent'));
     expect(agentItem).toBeTruthy();
-    expect(agentItem.querySelector('[aria-label="Offline"]')).toBeTruthy();
-    expect(agentItem.querySelector('[aria-label="Online"]')).toBeFalsy();
+    expect(agentItem.querySelector('svg.cc-agent-contact-icon.offline')).toBeTruthy();
+    expect(agentItem.querySelector('.v3-status-dot')).toBeFalsy();
   });
 });

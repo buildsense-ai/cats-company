@@ -4,9 +4,9 @@ import t from '../i18n';
 import Avatar from './avatar';
 import PasswordResetForm from './password-reset-form';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
-import { X } from 'lucide-react';
+import { Moon, Sun, X } from 'lucide-react';
 
-export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
+export default function ProfileEditor({ user, theme = 'light', onToggleTheme, onClose, onSaved, onOpenRelay }) {
   const fileInputRef = useRef(null);
   const [displayName, setDisplayName] = useState(user?.display_name || '');
   const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url || '');
@@ -117,6 +117,26 @@ export default function ProfileEditor({ user, onClose, onSaved, onOpenRelay }) {
             </button>
           </div>
           {copyStatus && <div className="oc-settings-secondary" style={{ marginTop: -6, marginBottom: 12 }}>{copyStatus}</div>}
+          {onToggleTheme && (
+            <div className="oc-settings-section">
+              <div className="oc-settings-section-title">外观</div>
+              <button
+                type="button"
+                className="oc-settings-list-item oc-settings-list-button oc-settings-theme-button"
+                onClick={onToggleTheme}
+                aria-label="切换日夜模式"
+              >
+                <span className="oc-settings-theme-icon" aria-hidden="true">
+                  {theme === 'dark' ? <Moon size={18} /> : <Sun size={18} />}
+                </span>
+                <span className="oc-settings-list-text">
+                  <span>界面主题</span>
+                  <span className="oc-settings-secondary">在浅色和深色外观之间切换。</span>
+                </span>
+                <span className="oc-settings-theme-value">{theme === 'dark' ? '深色' : '浅色'}</span>
+              </button>
+            </div>
+          )}
           <div className="oc-settings-section">
             <div className="oc-settings-section-title">账号安全</div>
             {showPasswordReset ? (

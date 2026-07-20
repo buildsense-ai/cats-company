@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -168,6 +169,45 @@ func TestCreateAgentTaskRollsBackWhenAgentCannotBeAdded(t *testing.T) {
 	}
 	if base.groups[1] != nil || base.groupMembers[1] != nil {
 		t.Fatalf("partially created agent task was not removed")
+	}
+}
+
+func TestCreateAgentTaskIncludesMemberMetadata(t *testing.T) {
+	base := newChannelAgentTestStore()
+	base.users[7] = &types.User{ID: 7, Username: "owner", AccountType: types.AccountHuman}
+	base.users[42] = &types.User{ID: 42, Username: "agent", AccountType: types.AccountBot}
+	db := &agentTaskMemberFailureStore{channelAgentTestStore: base, failUserID: -1}
+	handler := NewGroupHandler(db, nil)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/groups/create",
+		bytes.NewBufferString(`{"name":"Review task","member_ids":[42],"kind":"agent_task"}`),
+	)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleCreateGroup(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		MemberCount int  `json:"member_count"`
+		HasBot      bool `json:"has_bot"`
+		Group       struct {
+			MemberCount int  `json:"member_count"`
+			HasBot      bool `json:"has_bot"`
+		} `json:"group"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.MemberCount != 2 || body.Group.MemberCount != 2 {
+		t.Fatalf("member count mismatch: %+v", body)
+	}
+	if !body.HasBot || !body.Group.HasBot {
+		t.Fatalf("agent task should be marked has_bot: %+v", body)
 	}
 }
 

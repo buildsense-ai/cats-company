@@ -17,10 +17,26 @@ const WORKING_TEXT_PREFIX = 'AI文本:';
 const MAX_DROPPED_FILES = 200;
 const HISTORY_AUTO_LOAD_THRESHOLD = 120;
 const STICK_TO_BOTTOM_THRESHOLD = 96;
+const QUESTION_NAV_BOTTOM_EPSILON = 2;
+const QUESTION_JUMP_RELEASE_DELAY = 240;
+const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
 const PREVIEW_WIDTH_STORAGE_KEY = 'cc_file_preview_width_v1';
 const PREVIEW_WIDTH_MIN = 360;
 const PREVIEW_WIDTH_DEFAULT = 640;
 const PREVIEW_WIDTH_MAX = 980;
+
+function questionNavigationKey(message, index) {
+  return String(message?.id ?? message?.seq_id ?? `question-${index}`);
+}
+
+function questionNavigationLabel(message) {
+  const content = message?.content;
+  const rawText = typeof content === 'string'
+    ? content
+    : (content && typeof content === 'object' && typeof content.text === 'string' ? content.text : '');
+  const normalized = rawText.replace(/\s+/g, ' ').trim();
+  return normalized ? normalized.slice(0, 60) : '附件指令';
+}
 
 function clampPreviewWidth(width) {
   const viewport = typeof window !== 'undefined' ? window.innerWidth : 1440;
@@ -95,6 +111,7 @@ export default function MessagesView({
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [availableAgents, setAvailableAgents] = useState([]);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [activeQuestionKey, setActiveQuestionKey] = useState('');
   const [showThinking, setShowThinking] = useState(() => {
     const saved = localStorage.getItem('cc_show_thinking');
     return saved === null ? true : saved === 'true';
@@ -104,6 +121,8 @@ export default function MessagesView({
   const peerTypingTimer = useRef(null);
   const liveWorkingTimer = useRef(null);
   const timelineRef = useRef(null);
+  const pendingQuestionJumpRef = useRef('');
+  const questionJumpReleaseTimerRef = useRef(null);
   const previousScrollRef = useRef(null);
   const stickToBottomRef = useRef(true);
   const fileInputRef = useRef(null);
@@ -829,7 +848,7 @@ export default function MessagesView({
         if (activeTopicRef.current === topic) {
           setAttachmentStatus({
             tone: 'error',
-            message: '消息已发送，但暂时无法打开目标会话。请从历史任务中重新进入。',
+            message: '消息已发送，但暂时无法打开目标会话。请从会话列表中重新进入。',
           });
         }
         return;
@@ -1195,6 +1214,14 @@ export default function MessagesView({
     || resolvedPeerProfile?.bot === true
     || resolvedPeerProfile?.is_bot === true
     || resolvedPeerProfile?.account_type === 'bot';
+  const supportsTutorialTasks = isGroup
+    ? Boolean(
+      groupInfo?.is_agent_task
+      || groupInfo?.kind === 'agent_task'
+      || groupInfo?.has_bot
+      || members.some((member) => member?.is_bot),
+    )
+    : peerIsBot;
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const canRegenerateAssistantMessages = !isGroup || Boolean(
@@ -1296,10 +1323,30 @@ export default function MessagesView({
         }
         // Recalculate isConsecutive in case a working block just processed
         const textIsConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
+        const sender = getSender(msg);
+        const previousGroup = groups[groups.length - 1];
+        const previousSourceMessages = previousGroup?.type === 'text'
+          ? (previousGroup.sourceMessages || [previousGroup.message])
+          : [];
+        const previousMessage = previousSourceMessages[previousSourceMessages.length - 1];
+
+        if (shouldMergeAssistantReply(previousMessage, msg, previousGroup?.sender, sender, user.uid)) {
+          const sourceMessages = [...previousSourceMessages, msg];
+          groups[groups.length - 1] = {
+            ...previousGroup,
+            message: mergeAssistantDisplayMessages(sourceMessages),
+            sourceMessages,
+          };
+          prevSenderUid = senderUid;
+          prevTime = msgTime;
+          return;
+        }
+
         groups.push({
           type: 'text',
           message: msg,
-          sender: getSender(msg),
+          sourceMessages: [msg],
+          sender,
           replyMessage: msg.reply_to ? (messageById.get(msg.reply_to) || null) : null,
           isConsecutive: textIsConsecutive,
         });
@@ -1313,7 +1360,7 @@ export default function MessagesView({
     }
 
     return groups;
-  }, [messages, user.uid, isGroup, memberMap, messageById, peerProfile, topicName, topic, topicAvatarUrl]);
+  }, [messages, user.uid, isGroup, memberMap, messageById, peerProfile, peerIsBot, topicName, topic, topicAvatarUrl]);
 
   const openTutorialTask = (task) => {
     setShowTutorialPicker(false);
@@ -1352,9 +1399,89 @@ export default function MessagesView({
     }, 0);
   }, [resizeComposerInput, topic, updateComposerDraft]);
 
+  const questionNavigationItems = useMemo(() => groupedMessages.reduce((items, group, index) => {
+    if (group.type !== 'text' || group.message?.from_uid !== user.uid) return items;
+    items.push({
+      key: questionNavigationKey(group.message, index),
+      label: questionNavigationLabel(group.message),
+    });
+    return items;
+  }, []), [groupedMessages, user.uid]);
+
+  const clearPendingQuestionJump = useCallback(() => {
+    pendingQuestionJumpRef.current = '';
+    if (questionJumpReleaseTimerRef.current) {
+      window.clearTimeout(questionJumpReleaseTimerRef.current);
+      questionJumpReleaseTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleQuestionJumpRelease = useCallback(() => {
+    if (questionJumpReleaseTimerRef.current) {
+      window.clearTimeout(questionJumpReleaseTimerRef.current);
+    }
+    questionJumpReleaseTimerRef.current = window.setTimeout(() => {
+      pendingQuestionJumpRef.current = '';
+      questionJumpReleaseTimerRef.current = null;
+    }, QUESTION_JUMP_RELEASE_DELAY);
+  }, []);
+
+  const syncActiveQuestion = useCallback((timeline = timelineRef.current) => {
+    if (!timeline) return;
+    const anchors = Array.from(timeline.querySelectorAll('[data-conversation-question]'));
+    if (anchors.length === 0) {
+      setActiveQuestionKey('');
+      return;
+    }
+
+    const timelineRect = timeline.getBoundingClientRect();
+    const readingLine = timelineRect.top + Math.min(160, timelineRect.height * 0.28);
+    let nextKey = anchors[0].dataset.conversationQuestion || '';
+    for (const anchor of anchors) {
+      if (anchor.getBoundingClientRect().top > readingLine) break;
+      nextKey = anchor.dataset.conversationQuestion || nextKey;
+    }
+    const distanceToBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
+    if (distanceToBottom <= QUESTION_NAV_BOTTOM_EPSILON) {
+      nextKey = anchors[anchors.length - 1].dataset.conversationQuestion || nextKey;
+    }
+    setActiveQuestionKey((current) => current === nextKey ? current : nextKey);
+  }, []);
+
+  React.useLayoutEffect(() => {
+    clearPendingQuestionJump();
+    syncActiveQuestion();
+  }, [clearPendingQuestionJump, questionNavigationItems, syncActiveQuestion]);
+
+  useEffect(() => () => {
+    if (questionJumpReleaseTimerRef.current) {
+      window.clearTimeout(questionJumpReleaseTimerRef.current);
+    }
+  }, []);
+
+  const jumpToQuestion = useCallback((questionKey) => {
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+    const target = Array.from(timeline.querySelectorAll('[data-conversation-question]'))
+      .find((anchor) => anchor.dataset.conversationQuestion === questionKey);
+    if (!target) return;
+    clearPendingQuestionJump();
+    pendingQuestionJumpRef.current = questionKey;
+    scheduleQuestionJumpRelease();
+    setActiveQuestionKey(questionKey);
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [clearPendingQuestionJump, scheduleQuestionJumpRelease]);
+
   const handleTimelineScroll = (e) => {
     const el = e.target;
     stickToBottomRef.current = isTimelineNearBottom(el);
+    const pendingQuestionKey = pendingQuestionJumpRef.current;
+    if (pendingQuestionKey) {
+      setActiveQuestionKey((current) => current === pendingQuestionKey ? current : pendingQuestionKey);
+      scheduleQuestionJumpRelease();
+    } else {
+      syncActiveQuestion(el);
+    }
     if (el.scrollTop <= HISTORY_AUTO_LOAD_THRESHOLD) {
       loadOlderHistory();
     }
@@ -1381,6 +1508,9 @@ export default function MessagesView({
             className={`v3-timeline${isDragActive ? ' is-drag-active' : ''}`}
             ref={timelineRef}
             onScroll={handleTimelineScroll}
+            onWheel={clearPendingQuestionJump}
+            onTouchStart={clearPendingQuestionJump}
+            onPointerDown={clearPendingQuestionJump}
             onDragEnter={handleDragEnter}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
@@ -1397,7 +1527,7 @@ export default function MessagesView({
           </div>
         )}
         
-        {historyLoaded && messages.length === 0 && !runtimePlan && !peerTyping && !tutorialDismissed && (
+        {supportsTutorialTasks && historyLoaded && messages.length === 0 && !runtimePlan && !peerTyping && !tutorialDismissed && (
           <TutorialEmptyState tasks={tutorialTasks} onSelectTask={openTutorialTask} onDismiss={dismissTutorialEmptyState} />
         )}
 
@@ -1432,6 +1562,9 @@ export default function MessagesView({
               senderAvatarUrl={group.sender.avatarUrl}
               senderIsBot={group.sender.isBot}
               replyMessage={group.replyMessage}
+              questionAnchorKey={group.message.from_uid === user.uid
+                ? questionNavigationKey(group.message, i)
+                : undefined}
               onReply={() => setReplyTo(group.message)}
               onEdit={group.message.from_uid === user.uid ? handleEditMessage : undefined}
               onRegenerate={canRegenerateAssistantMessages
@@ -1455,6 +1588,52 @@ export default function MessagesView({
           <div ref={bottomRef} />
         </div>
       </div>
+
+      {questionNavigationItems.length >= 2 && (
+        <nav className="cc-question-navigator" aria-label="对话问题导航">
+          <div className="cc-question-navigator-dots">
+            {questionNavigationItems.map((item, index) => {
+              const isActive = activeQuestionKey === item.key;
+              const title = `问题 ${index + 1}：${item.label}`;
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  className={`cc-question-navigator-item${isActive ? ' is-active' : ''}`}
+                  aria-label={`跳转到${title}`}
+                  aria-current={isActive ? 'true' : undefined}
+                  title={title}
+                  onClick={() => jumpToQuestion(item.key)}
+                />
+              );
+            })}
+          </div>
+
+          <div className="cc-question-navigator-panel" aria-label="问题列表">
+            <div className="cc-question-navigator-heading">问题</div>
+            <div className="cc-question-navigator-list">
+              {questionNavigationItems.map((item, index) => {
+                const isActive = activeQuestionKey === item.key;
+                const title = `问题 ${index + 1}：${item.label}`;
+                return (
+                  <button
+                    key={`question-list-${item.key}`}
+                    type="button"
+                    className={`cc-question-list-item${isActive ? ' is-active' : ''}`}
+                    aria-label={`跳转到${title}`}
+                    aria-current={isActive ? 'true' : undefined}
+                    title={title}
+                    onClick={() => jumpToQuestion(item.key)}
+                  >
+                    <span className="cc-question-list-index">{index + 1}</span>
+                    <span className="cc-question-list-label">{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </nav>
+      )}
 
       {/* Reply preview bar */}
       {replyTo && (
@@ -1918,6 +2097,65 @@ function isAssistantAuthoredMessage(message, senderIsBot = false) {
     || message?.metadata?.role === 'assistant'
     || message?.metadata?.sender_type === 'agent',
   );
+}
+
+function assistantReplyTurnKey(message) {
+  const metadata = message?.metadata || {};
+  const value = metadata.turn_id
+    ?? metadata.turnId
+    ?? metadata.response_id
+    ?? metadata.responseId
+    ?? metadata.run_id
+    ?? metadata.runId
+    ?? metadata.stream_id
+    ?? message?._stream_id;
+  return value == null ? '' : String(value).trim();
+}
+
+function messageCreatedAtMs(message) {
+  const timestamp = new Date(message?.created_at || '').getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function hasRichMessageBlocks(message) {
+  return Array.isArray(message?.content_blocks) && message.content_blocks.length > 0;
+}
+
+function shouldMergeAssistantReply(previous, current, previousSender, currentSender, currentUserUid) {
+  if (!previous || !current) return false;
+  if (previous.from_uid !== current.from_uid || current.from_uid === currentUserUid) return false;
+  if (previous.topic_id && current.topic_id && previous.topic_id !== current.topic_id) return false;
+  if (!isFinalTextMessage(previous) || !isFinalTextMessage(current)) return false;
+  if (!isAssistantAuthoredMessage(previous, previousSender?.isBot)) return false;
+  if (!isAssistantAuthoredMessage(current, currentSender?.isBot)) return false;
+  if (previous.reply_to || current.reply_to) return false;
+  if (previous._streaming || current._streaming) return false;
+  if (hasRichMessageBlocks(previous) || hasRichMessageBlocks(current)) return false;
+
+  const previousTurnKey = assistantReplyTurnKey(previous);
+  const currentTurnKey = assistantReplyTurnKey(current);
+  if (previousTurnKey || currentTurnKey) {
+    return Boolean(previousTurnKey && currentTurnKey && previousTurnKey === currentTurnKey);
+  }
+
+  const previousTime = messageCreatedAtMs(previous);
+  const currentTime = messageCreatedAtMs(current);
+  if (previousTime == null || currentTime == null) return false;
+  const gap = currentTime - previousTime;
+  return gap >= 0 && gap <= ASSISTANT_REPLY_MERGE_WINDOW_MS;
+}
+
+function mergeAssistantDisplayMessages(sourceMessages) {
+  const lastMessage = sourceMessages[sourceMessages.length - 1];
+  return {
+    ...lastMessage,
+    content: sourceMessages
+      .map((message) => String(message.content || '').trim())
+      .filter(Boolean)
+      .join('\n\n'),
+    content_blocks: [],
+    _display_source_messages: sourceMessages,
+  };
 }
 
 function RuntimePlanCard({ plan }) {

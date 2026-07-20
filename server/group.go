@@ -136,16 +136,29 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Add initial members
+	// Add initial members. Keep a local count as a fallback in case the
+	// persistence count cannot be read back after creation.
+	memberCount := 1
 	for _, mid := range req.MemberIDs {
 		if mid == uid {
 			continue // owner already added
 		}
-		if err := h.db.AddGroupMember(groupID, mid, "member"); err != nil && req.Kind == types.GroupKindAgentTask {
-			_ = h.db.DeleteGroup(groupID)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to add agent to task"})
-			return
+		if err := h.db.AddGroupMember(groupID, mid, "member"); err != nil {
+			if req.Kind == types.GroupKindAgentTask {
+				_ = h.db.DeleteGroup(groupID)
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to add agent to task"})
+				return
+			}
+			continue
 		}
+		memberCount++
+	}
+	if persistedCount, countErr := h.db.GetGroupMemberCount(groupID); countErr == nil {
+		memberCount = persistedCount
+	}
+	hasBot := botCount > 0
+	if persistedBotCount, countErr := h.db.GetGroupBotCount(groupID); countErr == nil {
+		hasBot = persistedBotCount > 0
 	}
 
 	topicID := fmt.Sprintf("grp_%d", groupID)
@@ -159,7 +172,9 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 		"avatar_url":    avatarURL,
 		"created_at":    createdAt,
 		"kind":          req.Kind,
+		"has_bot":       hasBot,
 		"is_agent_task": req.Kind == types.GroupKindAgentTask,
+		"member_count":  memberCount,
 	}
 	if groupErr == nil && group != nil {
 		createdAt = group.CreatedAt
@@ -172,7 +187,9 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 			"max_members":   group.MaxMembers,
 			"created_at":    group.CreatedAt,
 			"kind":          group.Kind,
+			"has_bot":       hasBot,
 			"is_agent_task": group.Kind == types.GroupKindAgentTask,
+			"member_count":  memberCount,
 		}
 	}
 
@@ -191,7 +208,9 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 		"created_at":   createdAt,
 		"avatar_url":   avatarURL,
 		"kind":         req.Kind,
+		"has_bot":      hasBot,
 		"is_agent_task": req.Kind == types.GroupKindAgentTask,
+		"member_count": memberCount,
 	}
 	writeJSON(w, http.StatusOK, response)
 }

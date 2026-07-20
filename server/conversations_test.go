@@ -21,10 +21,11 @@ func TestBuildGroupConversationSummary_FallbackToCreatedAt(t *testing.T) {
 	createdAt := now.Add(-1 * time.Hour)
 
 	group := &types.Group{
-		ID:        1,
-		Name:      "Test Group",
-		OwnerID:   100,
-		CreatedAt: createdAt,
+		ID:          1,
+		Name:        "Test Group",
+		OwnerID:     100,
+		MemberCount: 4,
+		CreatedAt:   createdAt,
 	}
 
 	summary := buildGroupConversationSummary("grp_1", group, nil)
@@ -46,6 +47,9 @@ func TestBuildGroupConversationSummary_FallbackToCreatedAt(t *testing.T) {
 	}
 	if summary.GroupID != 1 {
 		t.Fatalf("expected GroupID=1, got %d", summary.GroupID)
+	}
+	if summary.MemberCount != 4 {
+		t.Fatalf("expected MemberCount=4, got %d", summary.MemberCount)
 	}
 }
 

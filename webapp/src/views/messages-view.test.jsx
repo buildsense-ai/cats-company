@@ -7,7 +7,13 @@ vi.mock('../widgets/chat-message', () => ({
   default: function MockChatMessage(props) {
     const fileBlock = props.message?.content_blocks?.find?.((block) => block.type === 'file');
     return (
-      <>
+      <div
+        className="mock-chat-message"
+        data-conversation-question={props.questionAnchorKey || undefined}
+        data-message-id={props.message?.id}
+        data-message-content={typeof props.message?.content === 'string' ? props.message.content : ''}
+        data-consecutive={String(Boolean(props.isConsecutive))}
+      >
         {props.onReply && (
           <button
             type="button"
@@ -47,7 +53,7 @@ vi.mock('../widgets/chat-message', () => ({
             open preview
           </button>
         )}
-      </>
+      </div>
     );
   },
   FilePreviewPanel: function MockFilePreviewPanel({ file }) {
@@ -175,6 +181,17 @@ function composerAgentFixtures() {
       is_bot: true,
     },
   };
+}
+
+function mockTutorialAgentPeer(peerId = 2) {
+  api.getAgents.mockResolvedValue({
+    agents: [{
+      uid: peerId,
+      username: 'tutorial-agent',
+      display_name: 'Tutorial Agent',
+      is_bot: true,
+    }],
+  });
 }
 
 async function flushPromises(count = 8) {
@@ -368,6 +385,215 @@ describe('MessagesView composer draft isolation', () => {
     const textarea = container.querySelector('textarea.v3-composer-input');
     expect(textarea.value).toBe('Please review this instruction again.');
     expect(document.activeElement).toBe(textarea);
+  });
+
+  it('merges adjacent assistant text chunks into one visual reply', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 70,
+          seq_id: 70,
+          topic_id: 'p2p_1_2',
+          from_uid: 1,
+          type: 'text',
+          content: 'Explain providers.',
+          created_at: '2026-07-20T09:23:00Z',
+        },
+        {
+          id: 71,
+          seq_id: 71,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'A provider supplies the service.',
+          created_at: '2026-07-20T09:24:00Z',
+        },
+        {
+          id: 72,
+          seq_id: 72,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'The agent coordinates the work.',
+          created_at: '2026-07-20T09:24:12Z',
+        },
+        {
+          id: 73,
+          seq_id: 73,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'The provider performs it.',
+          created_at: '2026-07-20T09:24:24Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const renderedMessages = container.querySelectorAll('.mock-chat-message');
+    expect(renderedMessages).toHaveLength(2);
+    const assistantReply = container.querySelector('.mock-chat-message[data-message-id="73"]');
+    expect(assistantReply).not.toBeNull();
+    expect(assistantReply.getAttribute('data-message-content')).toBe(
+      'A provider supplies the service.\n\nThe agent coordinates the work.\n\nThe provider performs it.',
+    );
+    expect(container.querySelectorAll('.mock-regenerate-message')).toHaveLength(1);
+  });
+
+  it('keeps separate assistant replies apart outside the fallback merge window', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 71,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'First independent reply.',
+          created_at: '2026-07-20T09:24:00Z',
+        },
+        {
+          id: 72,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'Second independent reply.',
+          created_at: '2026-07-20T09:26:00Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelectorAll('.mock-chat-message')).toHaveLength(2);
+  });
+
+  it('does not merge adjacent messages from a human contact', async () => {
+    api.getFriends.mockResolvedValueOnce({
+      friends: [{ id: 2, username: 'alice', display_name: 'Alice', account_type: 'human' }],
+    });
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 81,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: 'First human message.',
+          created_at: '2026-07-20T09:24:00Z',
+        },
+        {
+          id: 82,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          content: 'Second human message.',
+          created_at: '2026-07-20T09:24:10Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelectorAll('.mock-chat-message')).toHaveLength(2);
+  });
+
+  it('renders a question navigator and scrolls to the selected user instruction', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 101, seq_id: 101, topic_id: 'p2p_1_2', from_uid: 1, type: 'text', content: 'First question' },
+        { id: 102, seq_id: 102, topic_id: 'p2p_1_2', from_uid: 2, type: 'text', content: 'First answer' },
+        { id: 103, seq_id: 103, topic_id: 'p2p_1_2', from_uid: 1, type: 'text', content: 'Second question' },
+        { id: 104, seq_id: 104, topic_id: 'p2p_1_2', from_uid: 2, type: 'text', content: 'Second answer' },
+        { id: 105, seq_id: 105, topic_id: 'p2p_1_2', from_uid: 1, type: 'text', content: 'Third question' },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const navigator = container.querySelector('[aria-label="对话问题导航"]');
+    expect(navigator).not.toBeNull();
+    const questionButtons = navigator.querySelectorAll('.cc-question-navigator-item');
+    expect(questionButtons).toHaveLength(3);
+    expect(questionButtons[1].getAttribute('title')).toContain('Second question');
+    const questionListButtons = navigator.querySelectorAll('.cc-question-list-item');
+    expect(questionListButtons).toHaveLength(3);
+    expect(questionListButtons[1].textContent).toContain('Second question');
+    expect(navigator.querySelector('.cc-question-navigator-dots').nextElementSibling)
+      .toBe(navigator.querySelector('.cc-question-navigator-panel'));
+
+    const secondQuestion = container.querySelector('[data-conversation-question="103"]');
+    secondQuestion.scrollIntoView = vi.fn();
+    await act(async () => {
+      Simulate.click(questionListButtons[1]);
+    });
+
+    expect(secondQuestion.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+    expect(questionButtons[1].getAttribute('aria-current')).toBe('true');
+    expect(questionListButtons[1].getAttribute('aria-current')).toBe('true');
+
+    const timeline = container.querySelector('.v3-timeline');
+    const firstQuestion = container.querySelector('[data-conversation-question="101"]');
+    const thirdQuestion = container.querySelector('[data-conversation-question="105"]');
+    firstQuestion.scrollIntoView = vi.fn();
+    timeline.getBoundingClientRect = vi.fn(() => ({ top: 0, height: 800 }));
+    firstQuestion.getBoundingClientRect = vi.fn(() => ({ top: -140 }));
+    secondQuestion.getBoundingClientRect = vi.fn(() => ({ top: 200 }));
+    thirdQuestion.getBoundingClientRect = vi.fn(() => ({ top: 600 }));
+    Object.defineProperties(timeline, {
+      scrollHeight: { configurable: true, value: 1040 },
+      clientHeight: { configurable: true, value: 800 },
+      scrollTop: { configurable: true, writable: true, value: 240 },
+    });
+
+    await act(async () => {
+      Simulate.click(questionButtons[0]);
+      Simulate.scroll(timeline);
+    });
+
+    expect(firstQuestion.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+    expect(questionButtons[0].getAttribute('aria-current')).toBe('true');
+    expect(questionButtons[2].hasAttribute('aria-current')).toBe(false);
+
+    await act(async () => {
+      Simulate.wheel(timeline);
+      Simulate.scroll(timeline);
+    });
+    expect(questionButtons[2].getAttribute('aria-current')).toBe('true');
+
+    Object.defineProperties(timeline, {
+      scrollHeight: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 800 },
+      scrollTop: { configurable: true, writable: true, value: 0 },
+    });
+    firstQuestion.getBoundingClientRect = vi.fn(() => ({ top: 100 }));
+    secondQuestion.getBoundingClientRect = vi.fn(() => ({ top: 360 }));
+    thirdQuestion.getBoundingClientRect = vi.fn(() => ({ top: 640 }));
+
+    await act(async () => {
+      Simulate.click(questionButtons[0]);
+      Simulate.scroll(timeline);
+    });
+    expect(questionButtons[0].getAttribute('aria-current')).toBe('true');
   });
 
   it('regenerates a bot reply by resending the preceding user task', async () => {
@@ -771,7 +997,11 @@ describe('MessagesView composer draft isolation', () => {
   });
 
   it('shows tutorial task cards on an empty topic', async () => {
+    mockTutorialAgentPeer();
     await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
 
     expect(container.textContent).toContain('试一个文件任务');
     expect(container.textContent).toContain('读图提取信息');
@@ -779,6 +1009,7 @@ describe('MessagesView composer draft isolation', () => {
   });
 
   it('waits for history before showing tutorial task cards', async () => {
+    mockTutorialAgentPeer();
     let resolveHistory;
     api.getMessages.mockImplementationOnce(() => new Promise((resolve) => {
       resolveHistory = resolve;
@@ -793,14 +1024,18 @@ describe('MessagesView composer draft isolation', () => {
 
     await act(async () => {
       resolveHistory({ messages: [] });
-      await Promise.resolve();
+      await flushPromises();
     });
 
     expect(container.querySelector('.cc-tutorial-empty')).not.toBeNull();
   });
 
   it('downloads tutorial media and fills the selected prompt', async () => {
+    mockTutorialAgentPeer();
     await mountTopic(root, 'p2p_1_2', { localAssistantStatus: 'connected' });
+    await act(async () => {
+      await flushPromises();
+    });
 
     await act(async () => {
       Simulate.click(Array.from(container.querySelectorAll('.cc-tutorial-card')).find((el) => el.textContent.includes('读图提取信息')));
@@ -823,7 +1058,11 @@ describe('MessagesView composer draft isolation', () => {
   });
 
   it('dismisses tutorial cards for the current topic and stores the choice', async () => {
+    mockTutorialAgentPeer();
     await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
 
     await act(async () => {
       Simulate.click(Array.from(container.querySelectorAll('button')).find((el) => el.textContent.includes('暂时不用')));
@@ -831,6 +1070,56 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(container.textContent).not.toContain('试一个文件任务');
     expect(localStorage.getItem('cc_tutorial_empty_dismissed:v1:1:p2p_1_2')).toBe('1');
+  });
+
+  it('does not show tutorial task cards in an empty human friend conversation', async () => {
+    api.getFriends.mockResolvedValue({
+      friends: [{
+        id: 2,
+        username: 'human-friend',
+        display_name: 'Human Friend',
+        bot: false,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.cc-tutorial-empty')).toBeNull();
+  });
+
+  it('shows tutorial task cards in an empty Agent group task but not a human group', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 9, name: 'Agent task', kind: 'agent_task', is_agent_task: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 2, display_name: 'Tutorial Agent', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_9', { isGroup: true, groupId: 9 });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.cc-tutorial-empty')).not.toBeNull();
+
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 10, name: 'Human group', kind: 'standard' },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 3, display_name: 'Human Friend', is_bot: false },
+      ],
+    });
+
+    await mountTopic(root, 'grp_10', { isGroup: true, groupId: 10 });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.cc-tutorial-empty')).toBeNull();
   });
 
   it('does not repeat the migrated mobile binding action for bot friends', async () => {

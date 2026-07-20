@@ -57,9 +57,12 @@ describe('AgentStoreModal', () => {
     const nameInput = form.querySelector('input[type="text"]');
     const description = form.querySelector('textarea');
     const submit = form.querySelector('button[type="submit"]');
+    const roleSelect = form.querySelector('select.cc-agent-role-select');
 
     expect(description.required).toBe(false);
     expect(submit.disabled).toBe(false);
+    expect(roleSelect).not.toBeNull();
+    expect(roleSelect.nextElementSibling?.classList.contains('cc-agent-role-chevron')).toBe(true);
 
     await act(async () => {
       Simulate.change(nameInput, { target: { value: '测试助手' } });

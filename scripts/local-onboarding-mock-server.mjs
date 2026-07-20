@@ -75,6 +75,8 @@ function seedChatShowcase(user, bots) {
       avatar_url: '',
       owner_id: user.id,
       has_bot: true,
+      member_count: 4,
+      member_ids: [friends[0].id, friends[1].id, bots[0].id],
       created_at: at(24 * 60),
     },
   ];
@@ -132,7 +134,17 @@ function seedChatShowcase(user, bots) {
   const conversations = [
     conversationFromTopic(opsTopic, '本周活跃会话概览', opsAgent.id, false, at(7), true),
     conversationFromTopic(designTopic, friends[0].display_name, friends[0].id, false, at(13)),
-    conversationFromTopic(groupTopic, groups[0].name, null, true, at(18), false, groups[0].id),
+    conversationFromTopic(
+      groupTopic,
+      groups[0].name,
+      null,
+      true,
+      at(18),
+      false,
+      groups[0].id,
+      groups[0].has_bot,
+      groups[0].member_count,
+    ),
     conversationFromTopic(codeTopic, '聊天气泡布局验收', codeAgent.id, false, at(1), true),
   ];
   showcaseByUserId.set(user.id, { friends, groups, conversations });
@@ -166,7 +178,17 @@ function refreshProjectAssignments(userId) {
   }
 }
 
-function conversationFromTopic(id, name, friendId, isGroup, lastTime, isBot = false, groupId = null) {
+function conversationFromTopic(
+  id,
+  name,
+  friendId,
+  isGroup,
+  lastTime,
+  isBot = false,
+  groupId = null,
+  hasBot = false,
+  memberCount = 0,
+) {
   const messages = messagesByTopic.get(id) || [];
   const latest = messages[messages.length - 1];
   return {
@@ -180,7 +202,8 @@ function conversationFromTopic(id, name, friendId, isGroup, lastTime, isBot = fa
     is_group: isGroup,
     avatar_url: '',
     is_bot: isBot,
-    has_bot: isGroup,
+    has_bot: Boolean(hasBot),
+    member_count: Number(memberCount) || 0,
     is_online: isBot || friendId === 301,
     latest_seq: latest?.seq || 0,
   };
@@ -650,6 +673,8 @@ async function handleApi(req, res) {
       const id = nextGroupId++;
       const topicId = `grp_${id}`;
       const createdAt = new Date().toISOString();
+      const normalizedMemberIds = [...new Set(memberIds.filter((memberId) => Number.isFinite(memberId) && memberId !== user.id))];
+      const memberCount = 1 + normalizedMemberIds.length;
       const group = {
         id,
         topic_id: topicId,
@@ -657,6 +682,8 @@ async function handleApi(req, res) {
         avatar_url: '',
         owner_id: user.id,
         has_bot: Boolean(agent),
+        member_count: memberCount,
+        member_ids: normalizedMemberIds,
         agent_id: agent?.id || null,
         kind,
         is_agent_task: kind === 'agent_task',
@@ -664,8 +691,7 @@ async function handleApi(req, res) {
       };
       showcase.groups.unshift(group);
       showcase.conversations.unshift({
-        ...conversationFromTopic(topicId, name, null, true, createdAt, false, id),
-        has_bot: Boolean(agent),
+        ...conversationFromTopic(topicId, name, null, true, createdAt, false, id, Boolean(agent), memberCount),
         kind,
         is_agent_task: kind === 'agent_task',
       });
@@ -677,7 +703,9 @@ async function handleApi(req, res) {
         created_at: createdAt,
         avatar_url: '',
         kind,
+        has_bot: Boolean(agent),
         is_agent_task: kind === 'agent_task',
+        member_count: memberCount,
       });
     }
 
@@ -713,9 +741,10 @@ async function handleApi(req, res) {
       const groupId = Number(url.searchParams.get('id'));
       const group = (showcase?.groups || []).find((item) => item.id === groupId);
       if (!group) return send(res, 404, { error: 'group not found' });
+      const groupMemberIds = new Set(Array.isArray(group.member_ids) ? group.member_ids.map(Number) : []);
       const members = [
         { user_id: user.id, display_name: user.display_name, username: user.username, role: 'owner', is_bot: false },
-        ...(showcase?.friends || []).map((friend) => ({
+        ...(showcase?.friends || []).filter((friend) => groupMemberIds.has(friend.id)).map((friend) => ({
           user_id: friend.id,
           display_name: friend.display_name,
           username: friend.username,
@@ -723,7 +752,7 @@ async function handleApi(req, res) {
           role: 'member',
           is_bot: false,
         })),
-        ...(botsByOwner.get(user.id) || []).slice(0, 1).map((bot) => ({
+        ...(botsByOwner.get(user.id) || []).filter((bot) => groupMemberIds.has(bot.id)).map((bot) => ({
           user_id: bot.id,
           display_name: bot.display_name,
           username: bot.username,
