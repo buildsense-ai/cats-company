@@ -65,7 +65,7 @@ function normalizeUserProfile(raw) {
 }
 
 function getInitialUser() {
-  if (DEV_PREVIEW_ENABLED) return DEV_PREVIEW_USER;
+  if (DEV_PREVIEW_ENABLED) return null;
 
   const token = getToken();
   if (!token) return null;
@@ -308,14 +308,12 @@ function TinodeWebApp() {
 
     const activatePreviewAccount = async () => {
       try {
-        if (!getToken()) {
-          const session = await api.login({
-            account: DEV_PREVIEW_ACCOUNT,
-            password: DEV_PREVIEW_PASSWORD,
-          });
-          if (cancelled) return;
-          setToken(session.token);
-        }
+        const session = await api.login({
+          account: DEV_PREVIEW_ACCOUNT,
+          password: DEV_PREVIEW_PASSWORD,
+        });
+        if (cancelled) return;
+        setToken(session.token);
         if (cancelled) return;
         persistUser({
           ...DEV_PREVIEW_USER,

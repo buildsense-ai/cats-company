@@ -213,7 +213,7 @@ describe('ChatListView sidebar sections', () => {
     expect(contactsToggle.querySelector('.lucide-user-round')).toBeNull();
   });
 
-  it('keeps Agent work in tasks and human conversations in contacts', async () => {
+  it('keeps all group work in tasks and people in contacts', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [
         {
@@ -258,6 +258,12 @@ describe('ChatListView sidebar sections', () => {
     expect(soloTask.querySelector('.cc-item-kind')).toBeFalsy();
     expect(soloTask.textContent).not.toContain('单人');
 
+    const collaborationTask = container.querySelector('[data-task-kind="collaboration"]');
+    expect(collaborationTask).toBeTruthy();
+    expect(collaborationTask.textContent).toContain('Design Team');
+    expect(collaborationTask.textContent).toContain('协作');
+    expect(collaborationTask.querySelector('svg.lucide-zap')).toBeTruthy();
+
     expect(container.querySelector('[data-conversation-kind="direct"]')).toBeFalsy();
     expect(container.querySelector('[data-conversation-kind="group"]')).toBeFalsy();
     const friendContact = container.querySelector('[data-contact-kind="friend"]');
@@ -266,14 +272,82 @@ describe('ChatListView sidebar sections', () => {
     expect(friendContact?.textContent).not.toContain('这段好友消息摘要不应显示');
     expect(friendContact?.textContent).not.toContain('@alice');
     expect(friendContact?.querySelector('.v3-chat-item-identity')).toBeNull();
-    const groupContact = container.querySelector('[data-contact-kind="group"]');
-    expect(groupContact?.querySelector('svg.lucide-users')).toBeTruthy();
-    expect(groupContact?.querySelector('.cc-item-kind')).toBeFalsy();
+    expect(container.querySelector('[data-contact-kind="group"]')).toBeFalsy();
     const agentContact = container.querySelector('[data-contact-kind="agent"]');
     expect(agentContact?.querySelector('svg.cc-agent-contact-icon')).toBeTruthy();
     expect(agentContact?.querySelector('.cc-item-kind')).toBeFalsy();
     expect(agentContact?.textContent).not.toContain('@dev-agent');
     expect(agentContact?.querySelector('.v3-chat-item-identity')).toBeNull();
+  });
+
+  it('shows only unassigned solo and collaboration tasks in the loose task list', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Loose Solo Task',
+          is_group: false,
+          is_bot: true,
+          project_id: '0',
+        },
+        {
+          id: 'p2p_7_43',
+          friend_id: 43,
+          name: 'Filed Solo Task',
+          is_group: false,
+          is_bot: true,
+          project_id: '12',
+          project_name: 'Website',
+        },
+        {
+          id: 'grp_20',
+          group_id: 20,
+          name: 'Loose Collaboration Task',
+          is_group: true,
+          project_id: '0',
+        },
+        {
+          id: 'grp_21',
+          group_id: 21,
+          name: 'Filed Collaboration Task',
+          is_group: true,
+          project_id: '12',
+          project_name: 'Website',
+        },
+      ],
+    });
+    api.getGroups.mockResolvedValue({
+      groups: [
+        { id: 20, name: 'Loose Collaboration Task', owner_id: 7 },
+        { id: 21, name: 'Filed Collaboration Task', owner_id: 7 },
+      ],
+    });
+    api.getProjects.mockResolvedValue({
+      projects: [{ id: 12, name: 'Website', task_count: 2 }],
+    });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mount();
+
+    const looseTasks = Array.from(container.querySelectorAll('.cc-conversation-item[data-task-kind]'));
+    expect(looseTasks.map((row) => row.textContent)).toEqual(expect.arrayContaining([
+      expect.stringContaining('Loose Solo Task'),
+      expect.stringContaining('Loose Collaboration Task'),
+    ]));
+    expect(looseTasks.some((row) => row.textContent.includes('Filed Solo Task'))).toBe(false);
+    expect(looseTasks.some((row) => row.textContent.includes('Filed Collaboration Task'))).toBe(false);
+    expect(looseTasks.map((row) => row.dataset.taskKind).sort()).toEqual(['collaboration', 'solo']);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Website"]'));
+    });
+
+    const projectTasks = Array.from(container.querySelectorAll('.cc-project-task-item'));
+    expect(projectTasks).toHaveLength(2);
+    expect(projectTasks.map((row) => row.textContent).join('|')).toContain('Filed Solo Task');
+    expect(projectTasks.map((row) => row.textContent).join('|')).toContain('Filed Collaboration Task');
+    expect(projectTasks.map((row) => row.dataset.taskKind).sort()).toEqual(['collaboration', 'solo']);
   });
 
   it('shows a friend without conversation history in contacts and opens a synthetic direct topic', async () => {
@@ -299,6 +373,57 @@ describe('ChatListView sidebar sections', () => {
       friendId: 8,
       isGroup: false,
     }));
+  });
+
+  it('shows unread friend dots while contacts are collapsed and clears them after opening the friend', async () => {
+    api.getFriends.mockResolvedValue({
+      friends: [{ id: 8, username: 'alice', display_name: 'Alice', topic_id: 'p2p_7_8' }],
+    });
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_8',
+        friend_id: 8,
+        name: 'Alice',
+        is_group: false,
+        is_bot: false,
+        last_time: '2026-07-20T07:30:00Z',
+      }],
+    });
+    await mount();
+
+    const contactsToggle = container.querySelector('.cc-contacts-section .cc-section-toggle');
+    await act(async () => {
+      Simulate.click(contactsToggle);
+    });
+    expect(contactsToggle.getAttribute('aria-expanded')).toBe('false');
+
+    await act(async () => {
+      wsHandler({ data: { topic: 'p2p_7_42', from: 'usr42', content: 'Agent reply', seq: 11 } });
+    });
+    expect(container.querySelector('.cc-section-unread-dot')).toBeFalsy();
+
+    await act(async () => {
+      wsHandler({ data: { topic: 'p2p_7_8', from: 'usr8', content: 'New message', seq: 12 } });
+    });
+    expect(container.querySelector('.cc-contacts-section .cc-section-unread-dot')).toBeTruthy();
+    expect(container.querySelector('[data-contact-kind="friend"]')).toBeFalsy();
+
+    await act(async () => {
+      Simulate.click(contactsToggle);
+    });
+    const friend = container.querySelector('[data-contact-kind="friend"]');
+    expect(friend.dataset.unread).toBe('true');
+    expect(friend.querySelector('.cc-friend-unread-dot')).toBeTruthy();
+    expect(friend.querySelector('.cc-chat-row-time')).toBeFalsy();
+
+    await act(async () => {
+      Simulate.click(friend);
+    });
+    expect(friend.dataset.unread).toBeUndefined();
+    expect(friend.querySelector('.cc-friend-unread-dot')).toBeFalsy();
+    expect(friend.querySelector('.cc-chat-row-time')).toBeTruthy();
+    expect(container.querySelector('.cc-section-unread-dot')).toBeFalsy();
+    expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({ topicId: 'p2p_7_8' }));
   });
 
   it('migrates legacy AI and collaboration collapsed keys to the unified sections', async () => {
@@ -425,7 +550,7 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(moreButton);
     });
-    const mobileButton = container.querySelector('[aria-label="Virtual Team 移动端使用"]');
+    const mobileButton = container.querySelector('[aria-label="Virtual Team 手机扫码"]');
     expect(mobileButton).toBeTruthy();
 
     await act(async () => {
@@ -441,7 +566,7 @@ describe('ChatListView sidebar sections', () => {
     expect(document.body.querySelector('[data-testid="mobile-channel-topic-id"]').textContent).toBe('grp_88');
   });
 
-  it('keeps only a three-dot trigger on a group row and routes every group action through its menu', async () => {
+  it('uses task controls on a group row and keeps group actions in its task menu', async () => {
     api.getGroups.mockResolvedValue({
       groups: [{ id: 88, name: 'Virtual Team', topic_id: 'grp_88', owner_id: 7 }],
     });
@@ -453,19 +578,21 @@ describe('ChatListView sidebar sections', () => {
 
     const row = Array.from(container.querySelectorAll('.v3-chat-item'))
       .find((node) => node.textContent.includes('Virtual Team'));
-    expect(row.querySelectorAll('.cc-chat-row-actions button')).toHaveLength(1);
+    expect(row.querySelectorAll('.cc-chat-row-actions button')).toHaveLength(2);
+    expect(row.querySelector('[aria-label="置顶任务 Virtual Team"]')).toBeTruthy();
 
     await act(async () => {
       Simulate.click(row.querySelector('[aria-label="Virtual Team 更多操作"]'));
     });
     expect(row.querySelector('[role="menu"]')).toBeTruthy();
-    expect(row.querySelector('[aria-label="置顶 Virtual Team"]')).toBeTruthy();
-    expect(row.querySelector('[aria-label="Virtual Team 移动端使用"]')).toBeTruthy();
-    expect(row.querySelector('[aria-label="Virtual Team 群管理"]')).toBeTruthy();
-    expect(row.querySelector('[aria-label="删除群聊 Virtual Team"]')).toBeTruthy();
+    expect(row.querySelector('[aria-label="修改任务名称 Virtual Team"]')).toBeTruthy();
+    expect(row.querySelector('[aria-label="加入项目 Virtual Team"]')).toBeTruthy();
+    expect(row.querySelector('[aria-label="Virtual Team 手机扫码"]')).toBeTruthy();
+    expect(row.querySelector('[aria-label="Virtual Team 协作管理"]')).toBeTruthy();
+    expect(row.querySelector('[aria-label="删除任务 Virtual Team"]')).toBeTruthy();
 
     await act(async () => {
-      Simulate.click(row.querySelector('[aria-label="Virtual Team 群管理"]'));
+      Simulate.click(row.querySelector('[aria-label="Virtual Team 协作管理"]'));
     });
     expect(onManageGroup).toHaveBeenCalledWith(expect.objectContaining({
       topicId: 'grp_88',
@@ -479,7 +606,7 @@ describe('ChatListView sidebar sections', () => {
       Simulate.click(row.querySelector('[aria-label="Virtual Team 更多操作"]'));
     });
     await act(async () => {
-      Simulate.click(row.querySelector('[aria-label="删除群聊 Virtual Team"]'));
+      Simulate.click(row.querySelector('[aria-label="删除任务 Virtual Team"]'));
       await Promise.resolve();
     });
     expect(api.disbandGroup).toHaveBeenCalledWith(88);
@@ -495,6 +622,11 @@ describe('ChatListView sidebar sections', () => {
         is_group: false,
         is_bot: true,
         last_time: '2026-06-08T08:00:00Z',
+        task_status: {
+          topic_id: 'p2p_7_42',
+          state: 'running',
+          updated_at: '2026-06-08T08:00:01Z',
+        },
       }],
     });
     api.getAgents.mockResolvedValue({ agents: [] });
@@ -900,6 +1032,7 @@ describe('ChatListView sidebar sections', () => {
         id: 'p2p_7_42',
         friend_id: 42,
         name: 'Project Task',
+        preview: 'This project task preview should not render.',
         is_group: false,
         is_bot: true,
         last_time: '2026-07-20T04:00:00Z',
@@ -923,6 +1056,7 @@ describe('ChatListView sidebar sections', () => {
 
     const task = container.querySelector('.cc-project-task-item');
     expect(task).toBeTruthy();
+    expect(task.querySelector('.cc-chat-row-preview')).toBeNull();
     expect(task.classList.contains('cc-history-item')).toBe(true);
     expect(task.querySelector('.lucide-zap')).toBeTruthy();
     expect(task.querySelectorAll('.cc-chat-row-actions button')).toHaveLength(2);
@@ -1020,7 +1154,8 @@ describe('ChatListView sidebar sections', () => {
     await mount();
 
     const task = container.querySelector('.cc-history-item');
-    expect(task.textContent).toContain('最后一条消息');
+    expect(task.textContent).toContain('Expired Task');
+    expect(task.querySelector('.cc-chat-row-preview')).toBeNull();
     expect(task.textContent).not.toContain('进行中');
     expect(task.textContent).not.toContain('不应继续显示');
   });
@@ -1168,6 +1303,58 @@ describe('ChatListView sidebar sections', () => {
       document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
     });
     expect(container.querySelector('.cc-chat-action-menu')).toBeFalsy();
+  });
+
+  it('opens a task menu upward when the sidebar has no room below it', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_42',
+        friend_id: 42,
+        name: 'Bottom Task',
+        is_group: false,
+        is_bot: true,
+      }],
+    });
+    await mount();
+
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+    let triggerTop = 450;
+    const makeRect = (top, bottom, height = bottom - top) => ({
+      top,
+      bottom,
+      height,
+      left: 0,
+      right: 320,
+      width: 320,
+      x: 0,
+      y: top,
+      toJSON: () => ({}),
+    });
+    HTMLElement.prototype.getBoundingClientRect = vi.fn(function getBoundingClientRect() {
+      if (this.classList.contains('v3-chat-list')) return makeRect(0, 500);
+      if (this.classList.contains('cc-chat-action-menu')) return makeRect(0, 170, 170);
+      if (this.classList.contains('v3-history-menu-trigger')) return makeRect(triggerTop, triggerTop + 28);
+      return makeRect(0, 0);
+    });
+
+    try {
+      const trigger = container.querySelector('.v3-history-menu-trigger');
+      await act(async () => {
+        Simulate.click(trigger);
+      });
+      expect(container.querySelector('.cc-chat-action-menu-up')).toBeTruthy();
+
+      await act(async () => {
+        Simulate.click(trigger);
+      });
+      triggerTop = 100;
+      await act(async () => {
+        Simulate.click(trigger);
+      });
+      expect(container.querySelector('.cc-chat-action-menu-up')).toBeFalsy();
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+    }
   });
 
   it('removes friend agents directly from the assistant row', async () => {
@@ -1320,10 +1507,9 @@ describe('ChatListView sidebar sections', () => {
 
     const historyRow = container.querySelector('.cc-history-item');
     expect(historyRow?.textContent).toContain('Release Review Task');
-    expect(historyRow?.getAttribute('data-task-kind')).toBe('solo');
+    expect(historyRow?.getAttribute('data-task-kind')).toBe('collaboration');
     expect(historyRow?.querySelector('svg.lucide-zap')).toBeTruthy();
-    expect(historyRow?.querySelector('.cc-item-kind')).toBeFalsy();
-    expect(historyRow?.textContent).not.toContain('单人');
+    expect(historyRow?.querySelector('.cc-item-kind')?.textContent).toBe('协作');
     const groupRows = Array.from(container.querySelectorAll('.v3-chat-item'))
       .filter((row) => !row.classList.contains('cc-history-item'));
     expect(groupRows.some((row) => row.textContent.includes('Release Review Task'))).toBe(false);
@@ -1603,7 +1789,7 @@ describe('ChatListView sidebar sections', () => {
     expect(api.blockUser).toHaveBeenCalledWith(9);
   });
 
-  it('keeps a human-only group in contacts and preserves its group actions', async () => {
+  it('keeps a human-only group in tasks with collaboration styling and group actions', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [
         {
@@ -1639,11 +1825,13 @@ describe('ChatListView sidebar sections', () => {
       .map((node) => node.textContent.trim());
     expect(sections).toEqual(['任务', '联系人', '项目']);
 
-    const groupItem = container.querySelector('[data-contact-kind="group"]');
+    const groupItem = container.querySelector('[data-task-kind="collaboration"]');
     expect(groupItem).toBeTruthy();
     expect(groupItem.textContent).toContain('查云端log');
-    expect(groupItem.querySelector('svg.lucide-users')).toBeTruthy();
-    expect(groupItem.querySelector('.cc-item-kind')).toBeFalsy();
+    expect(groupItem.textContent).toContain('协作');
+    expect(groupItem.querySelector('svg.lucide-zap')).toBeTruthy();
+    expect(groupItem.querySelector('.cc-item-kind')?.textContent).toBe('协作');
+    expect(container.querySelector('[data-contact-kind="group"]')).toBeFalsy();
     expect(container.querySelector('[data-conversation-kind="group"]')).toBeFalsy();
 
     await act(async () => {
@@ -1662,11 +1850,11 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(groupItem.querySelector('[aria-label="查云端log 更多操作"]'));
     });
-    expect(groupItem.querySelector('[aria-label="查云端log 群管理"]')).toBeTruthy();
-    expect(groupItem.querySelector('[aria-label="删除群聊 查云端log"]')).toBeTruthy();
+    expect(groupItem.querySelector('[aria-label="查云端log 协作管理"]')).toBeTruthy();
+    expect(groupItem.querySelector('[aria-label="删除任务 查云端log"]')).toBeTruthy();
   });
 
-  it('orders tasks and contacts independently by recent activity', async () => {
+  it('orders group and Agent tasks together while ordering people independently', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [
         {
@@ -1744,12 +1932,15 @@ describe('ChatListView sidebar sections', () => {
     const taskText = Array.from(container.querySelectorAll('[data-conversation-kind="agent"]'))
       .map((row) => row.textContent)
       .join('|');
-    expect(taskText.indexOf('New Agent')).toBeLessThan(taskText.indexOf('Old Agent'));
+    const expectedTaskOrder = ['New Empty Group', 'New Agent', 'Old Agent', 'Old Group'];
+    expectedTaskOrder.slice(1).forEach((name, index) => {
+      expect(taskText.indexOf(expectedTaskOrder[index])).toBeLessThan(taskText.indexOf(name));
+    });
 
     const contactText = Array.from(container.querySelectorAll('.cc-contact-item'))
       .map((row) => row.textContent)
       .join('|');
-    const expectedContactOrder = ['New Empty Group', 'New Friend', 'Old Friend', 'Old Group'];
+    const expectedContactOrder = ['New Friend', 'Old Friend'];
     expectedContactOrder.slice(1).forEach((name, index) => {
       expect(contactText.indexOf(expectedContactOrder[index])).toBeLessThan(contactText.indexOf(name));
     });
@@ -1791,6 +1982,46 @@ describe('ChatListView sidebar sections', () => {
     });
   });
 
+  it('does not render an Agent as a friend when the friends payload omits its bot marker', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_43',
+          friend_id: 43,
+          name: 'Virtual Catsco',
+          is_group: false,
+          is_bot: false,
+        },
+      ],
+    });
+    api.getFriends.mockResolvedValue({
+      friends: [
+        { id: 8, username: 'alice', display_name: 'Alice' },
+        { id: 43, username: 'virtual-catsco', display_name: 'Virtual Catsco' },
+        { id: 44, username: 'saturday', display_name: 'Saturday', is_bot: true },
+      ],
+    });
+    api.getAgents.mockResolvedValue({
+      agents: [
+        { id: 43, uid: 43, username: 'virtual-catsco', display_name: 'Virtual Catsco', relation: 'friend' },
+        { id: 44, uid: 44, username: 'saturday', display_name: 'Saturday', relation: 'friend' },
+      ],
+    });
+
+    await mount();
+
+    const contactRows = Array.from(container.querySelectorAll('.cc-contact-item'));
+    expect(contactRows.map((row) => row.getAttribute('data-contact-kind'))).toEqual([
+      'friend',
+      'agent',
+      'agent',
+    ]);
+    expect(contactRows.filter((row) => row.textContent.includes('Virtual Catsco'))).toHaveLength(1);
+    expect(contactRows.filter((row) => row.textContent.includes('Saturday'))).toHaveLength(1);
+    expect(contactRows.find((row) => row.textContent.includes('Virtual Catsco'))?.dataset.contactKind).toBe('agent');
+    expect(contactRows.find((row) => row.textContent.includes('Saturday'))?.dataset.contactKind).toBe('agent');
+  });
+
   it('keeps pinned group chats above newer group activity and persists the choice', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [
@@ -1827,7 +2058,7 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(container.querySelector('button[aria-label="Old Group 更多操作"]'));
     });
-    const pinOldGroup = container.querySelector('button[aria-label="置顶 Old Group"]');
+    const pinOldGroup = container.querySelector('button[aria-label="置顶任务 Old Group"]');
     expect(pinOldGroup).toBeTruthy();
     await act(async () => {
       Simulate.click(pinOldGroup);
@@ -1842,7 +2073,7 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       Simulate.click(container.querySelector('button[aria-label="Old Group 更多操作"]'));
     });
-    expect(container.querySelector('button[aria-label="取消置顶 Old Group"]')).toBeTruthy();
+    expect(container.querySelector('button[aria-label="取消置顶任务 Old Group"]')).toBeTruthy();
   });
 
   it('keeps pinned history tasks above newer tasks and persists the choice independently', async () => {
@@ -1943,7 +2174,7 @@ describe('ChatListView sidebar sections', () => {
 
     expect(historyRow.querySelector('.cc-chat-row-actions .v3-history-menu-trigger')).toBeTruthy();
     expect(friendRow.querySelector('.cc-chat-row-actions .v3-friend-menu-trigger')).toBeTruthy();
-    expect(groupRow.querySelector('.cc-chat-row-actions .v3-group-menu-trigger')).toBeTruthy();
+    expect(groupRow.querySelector('.cc-chat-row-actions .v3-history-menu-trigger')).toBeTruthy();
 
     await act(async () => {
       Simulate.click(friendRow.querySelector('.v3-friend-menu-trigger'));

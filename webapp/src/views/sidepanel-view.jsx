@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
@@ -202,6 +202,8 @@ export default function ChatListView({
   const [hiddenHistoryIds, setHiddenHistoryIds] = useState(() => loadHiddenHistoryIds(user?.uid));
   const [openFriendMenuId, setOpenFriendMenuId] = useState('');
   const [openChatMenuKey, setOpenChatMenuKey] = useState('');
+  const [chatMenuPlacement, setChatMenuPlacement] = useState('down');
+  const [unreadFriendTopicIds, setUnreadFriendTopicIds] = useState(() => new Set());
   const [openProjectMenuId, setOpenProjectMenuId] = useState(null);
   const [showContactActions, setShowContactActions] = useState(false);
   const [friendActionId, setFriendActionId] = useState('');
@@ -220,6 +222,11 @@ export default function ChatListView({
   const justHiddenHistoryRef = useRef('');
   const activeTopicRef = useRef(activeTopic);
   const userUidRef = useRef(user?.uid);
+  const chatMenuTriggerRef = useRef(null);
+  const chatMenuRef = useRef(null);
+  const chatsRef = useRef(chats);
+  const friendsRef = useRef(friends);
+  const agentsRef = useRef(agents);
 
   useEffect(() => {
     setCollapsed(loadCollapsedSections(user?.uid));
@@ -227,6 +234,7 @@ export default function ChatListView({
     setPinnedHistoryIds(loadPinnedHistoryIds(user?.uid));
     setHiddenHistoryIds(loadHiddenHistoryIds(user?.uid));
     setDismissedTaskStatuses(loadDismissedTaskStatuses(user?.uid));
+    setUnreadFriendTopicIds(new Set());
   }, [user?.uid]);
 
   useEffect(() => {
@@ -236,6 +244,24 @@ export default function ChatListView({
   useEffect(() => {
     userUidRef.current = user?.uid;
   }, [user?.uid]);
+
+  useEffect(() => {
+    chatsRef.current = chats;
+  }, [chats]);
+
+  useEffect(() => {
+    friendsRef.current = friends;
+  }, [friends]);
+
+  useEffect(() => {
+    agentsRef.current = agents;
+  }, [agents]);
+
+  useEffect(() => {
+    const topicId = String(activeTopic || '').trim();
+    if (!topicId) return;
+    setUnreadFriendTopicIds((previous) => removeSetValue(previous, topicId));
+  }, [activeTopic]);
 
   const rememberDismissedTaskStatus = (topicId, status) => {
     const normalized = normalizeTaskStatus(status);
@@ -291,6 +317,36 @@ export default function ChatListView({
       document.removeEventListener('keydown', closeMenusOnEscape);
     };
   }, [openFriendMenuId, openChatMenuKey, openProjectMenuId, showContactActions]);
+
+  useLayoutEffect(() => {
+    if (!openChatMenuKey || !chatMenuTriggerRef.current || !chatMenuRef.current) return undefined;
+
+    const trigger = chatMenuTriggerRef.current;
+    const menu = chatMenuRef.current;
+    const scrollContainer = trigger.closest('.v3-chat-list');
+    const updatePlacement = () => {
+      const triggerRect = trigger.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const boundaryRect = scrollContainer?.getBoundingClientRect() || {
+        top: 0,
+        bottom: window.innerHeight,
+      };
+      const availableBelow = boundaryRect.bottom - triggerRect.bottom;
+      const availableAbove = triggerRect.top - boundaryRect.top;
+      const nextPlacement = menuRect.height > availableBelow && availableAbove > availableBelow
+        ? 'up'
+        : 'down';
+      setChatMenuPlacement((current) => current === nextPlacement ? current : nextPlacement);
+    };
+
+    updatePlacement();
+    scrollContainer?.addEventListener('scroll', updatePlacement, { passive: true });
+    window.addEventListener('resize', updatePlacement);
+    return () => {
+      scrollContainer?.removeEventListener('scroll', updatePlacement);
+      window.removeEventListener('resize', updatePlacement);
+    };
+  }, [openChatMenuKey]);
 
   useEffect(() => {
     const openNewTask = () => setShowNewChat(true);
@@ -446,6 +502,23 @@ export default function ChatListView({
       if (msg.data) {
         const topicId = msg.data.topic;
         const seq = msg.data.seq;
+        const senderUid = numericUid(msg.data.from_uid ?? msg.data.from);
+        const currentChat = chatsRef.current.find((chat) => chat.id === topicId);
+        const isKnownFriend = currentChat
+          ? !currentChat.isGroup && !currentChat.isBot
+          : friendsRef.current.some((friend) => numericUid(friend?.id ?? friend?.uid) === senderUid);
+        const isKnownAgent = agentsRef.current.some((agent) => (
+          numericUid(agent?.id ?? agent?.uid) === senderUid
+        ));
+        const isUnreadFriendMessage = String(topicId || '').startsWith('p2p_')
+          && senderUid > 0
+          && senderUid !== numericUid(userUidRef.current)
+          && isKnownFriend
+          && !isKnownAgent
+          && activeTopicRef.current !== topicId;
+        if (isUnreadFriendMessage) {
+          setUnreadFriendTopicIds((previous) => addSetValue(previous, topicId));
+        }
         updateTopicSeq(topicId, seq);
         setChats((prev) => {
           const idx = prev.findIndex((c) => c.id === topicId);
@@ -663,8 +736,8 @@ export default function ChatListView({
   const filteredGroups = mergedGroups.filter(g => g.name.toLowerCase().includes(lowerSearch));
   const filteredAgents = agents.filter(a => userSearchText(a).includes(lowerSearch));
   const projectTasksById = visibleRecentChats.reduce((result, chat) => {
-    if (!isHistoryTask(chat) || !chat.projectId) return result;
-    const projectId = Number(chat.projectId);
+    const projectId = projectIdFor(chat);
+    if (!isHistoryTask(chat) || !projectId) return result;
     const tasks = result.get(projectId) || [];
     tasks.push(chat);
     result.set(projectId, tasks);
@@ -677,21 +750,17 @@ export default function ChatListView({
 
   const taskCandidates = [
     ...filteredChats.filter((chat) => !chat.isGroup),
-    ...filteredGroups.filter((chat) => isHistoryTask(chat)),
+    ...filteredGroups,
   ];
   const taskChats = sortConversationsWithPins(
     taskCandidates.filter((chat) => (
       isHistoryTask(chat)
-      && !chat.projectId
+      && !projectIdFor(chat)
       && (chat.isGroup || !hiddenHistoryIds.has(String(chat.id)))
     )),
     pinnedHistoryIds,
   );
   const friendChats = directChats.filter(c => !c.isBot);
-  const humanGroupChats = sortGroupsWithPins(
-    filteredGroups.filter((chat) => conversationKind(chat) === 'human_group'),
-    pinnedGroupIds,
-  );
   const groupTaskIds = new Set(taskChats.filter((chat) => chat.isGroup).map((chat) => String(chat.id)));
   const taskConversationIsPinned = (chat) => (
     pinnedHistoryIds.has(String(chat.id))
@@ -702,29 +771,29 @@ export default function ChatListView({
       const pinDifference = Number(taskConversationIsPinned(right)) - Number(taskConversationIsPinned(left));
       return pinDifference || conversationRecentLess(left, right);
     });
+  const agentContactIds = new Set(agents.flatMap((agent) => (
+    [agent?.id, agent?.uid].filter(Boolean).map(String)
+  )));
   const friendContactMap = new Map();
   filteredFriends
-    .filter((friend) => !friend.bot && friend.account_type !== 'bot')
+    .filter((friend) => {
+      const friendId = friend?.id || friend?.uid;
+      return !isBotContact(friend) && !agentContactIds.has(String(friendId || ''));
+    })
     .forEach((friend) => {
       const chat = friendToConversation(user.uid, friend);
       friendContactMap.set(String(chat.friendId), { ...chat, contact: friend });
     });
   friendChats.forEach((chat) => {
     const key = String(chat.friendId || '');
-    if (!key) return;
+    if (!key || agentContactIds.has(key)) return;
     const existing = friendContactMap.get(key);
     friendContactMap.set(key, { ...existing, ...chat, contact: existing?.contact || null });
   });
   const friendContacts = [...friendContactMap.values()];
+  const hasUnreadFriendMessages = friendContacts.some((chat) => unreadFriendTopicIds.has(chat.id));
   const contactItems = [
     ...friendContacts.map((chat) => ({ kind: 'friend', name: chat.name, recentMs: conversationSortTime(chat), pinned: false, item: chat })),
-    ...humanGroupChats.map((chat) => ({
-      kind: 'group',
-      name: chat.name,
-      recentMs: conversationSortTime(chat),
-      pinned: pinnedGroupIds.has(String(chat.id)),
-      item: chat,
-    })),
     ...filteredAgents.map((agent) => ({
       kind: 'agent',
       name: agent.display_name || agent.username || '',
@@ -743,6 +812,7 @@ export default function ChatListView({
 
   const selectConversation = (chat) => {
     rememberDismissedTaskStatus(chat.id, chat.taskStatus);
+    setUnreadFriendTopicIds((previous) => removeSetValue(previous, chat.id));
     onSelectTopic({
       topicId: chat.id,
       name: chat.name,
@@ -1000,6 +1070,7 @@ export default function ChatListView({
       : visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id);
     const canDeleteGroup = chat.isGroup
       && groupOwnerById.get(String(chat.groupId)) === String(user.uid);
+    const assignedProjectId = projectIdFor(chat);
     const removeLabel = onDeleteHistoryTask ? '删除任务' : '从列表移除';
     return (
       <>
@@ -1032,7 +1103,13 @@ export default function ChatListView({
               onClick={(event) => {
                 event.stopPropagation();
                 setOpenFriendMenuId('');
-                setOpenChatMenuKey((current) => current === menuKey ? '' : menuKey);
+                if (openChatMenuKey === menuKey) {
+                  setOpenChatMenuKey('');
+                  return;
+                }
+                chatMenuTriggerRef.current = event.currentTarget;
+                setChatMenuPlacement('down');
+                setOpenChatMenuKey(menuKey);
               }}
             >
               <MoreHorizontal size={15} />
@@ -1040,7 +1117,12 @@ export default function ChatListView({
           </div>
         </div>
         {openChatMenuKey === menuKey && (
-          <div className="v3-friend-action-menu cc-chat-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+          <div
+            ref={chatMenuRef}
+            className={`v3-friend-action-menu cc-chat-action-menu ${chatMenuPlacement === 'up' ? 'cc-chat-action-menu-up' : ''}`}
+            role="menu"
+            onClick={(event) => event.stopPropagation()}
+          >
             <button type="button" role="menuitem" aria-label={`修改任务名称 ${chat.name}`} onClick={() => startRenamingHistoryTask(chat)}>
               <Pencil size={14} />
               <span>修改任务名称</span>
@@ -1048,13 +1130,13 @@ export default function ChatListView({
             <button
               type="button"
               role="menuitem"
-              aria-label={`${chat.projectId ? '移动到项目' : '加入项目'} ${chat.name}`}
+              aria-label={`${assignedProjectId ? '移动到项目' : '加入项目'} ${chat.name}`}
               onClick={() => handleOpenProjectPicker(chat)}
             >
               <FolderPlus size={14} />
-              <span>{chat.projectId ? '移动到项目' : '加入项目'}</span>
+              <span>{assignedProjectId ? '移动到项目' : '加入项目'}</span>
             </button>
-            {Number(chat.projectId) > 0 && (
+            {assignedProjectId > 0 && (
               <button
                 type="button"
                 role="menuitem"
@@ -1074,16 +1156,16 @@ export default function ChatListView({
               <button
                 type="button"
                 role="menuitem"
-                aria-label={`${chat.name} 群管理`}
+                aria-label={`${chat.name} 协作管理`}
                 disabled={!onManageGroup}
-                title={!onManageGroup ? '群管理入口暂未接入' : '群管理'}
+                title={!onManageGroup ? '协作管理入口暂未接入' : '协作管理'}
                 onClick={() => {
                   setOpenChatMenuKey('');
                   onManageGroup?.(topicPayloadForChat(chat, true));
                 }}
               >
                 <Users size={14} />
-                <span>群管理</span>
+                <span>协作管理</span>
               </button>
             )}
             {canDeleteGroup ? (
@@ -1135,7 +1217,7 @@ export default function ChatListView({
           onClick={() => selectConversation(chat)}
         >
           <Zap size={14} className="prefix cc-chat-row-icon" aria-label="Agent 任务" />
-          {renderTaskCopy(chat, chat.taskStatus ? chat.preview : null, taskLabel)}
+          {renderTaskCopy(chat, null, taskLabel)}
           {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
         </div>
       );
@@ -1195,16 +1277,16 @@ export default function ChatListView({
               <button
                 type="button"
                 role="menuitem"
-                aria-label={`${chat.name} 群管理`}
+                aria-label={`${chat.name} 协作管理`}
                 disabled={!onManageGroup}
-                title={!onManageGroup ? '群管理入口暂未接入' : '群管理'}
+                title={!onManageGroup ? '协作管理入口暂未接入' : '协作管理'}
                 onClick={() => {
                   setOpenChatMenuKey('');
                   onManageGroup?.(topicPayloadForChat(chat, true));
                 }}
               >
                 <Users size={14} />
-                <span>群管理</span>
+                <span>协作管理</span>
               </button>
               {canDelete && (
                 <button
@@ -1286,7 +1368,7 @@ export default function ChatListView({
         onClick={() => selectConversation(chat)}
       >
         <Zap size={14} className="prefix cc-chat-row-icon" aria-label="Agent 任务" />
-        {renderTaskCopy(chat, chat.taskStatus ? chat.preview : null, '任务')}
+        {renderTaskCopy(chat, null, '任务')}
         {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
       </div>
     );
@@ -1348,16 +1430,16 @@ export default function ChatListView({
               <button
                 type="button"
                 role="menuitem"
-                aria-label={`${chat.name} 群管理`}
+                aria-label={`${chat.name} 协作管理`}
                 disabled={!onManageGroup}
-                title={!onManageGroup ? '群管理入口暂未接入' : '群管理'}
+                title={!onManageGroup ? '协作管理入口暂未接入' : '协作管理'}
                 onClick={() => {
                   setOpenChatMenuKey('');
                   onManageGroup?.(topicPayloadForChat(chat, true));
                 }}
               >
                 <Users size={14} />
-                <span>群管理</span>
+                <span>协作管理</span>
               </button>
               {canDelete && (
                 <button
@@ -1384,11 +1466,13 @@ export default function ChatListView({
     if (kind === 'friend') {
       const chat = item;
       const isOnline = onlineStatusFor(onlineUsers, chat.friendId, chat.isOnline);
+      const hasUnreadMessage = unreadFriendTopicIds.has(chat.id);
       return (
         <div
           key={`friend:${chat.friendId}`}
           className={`v3-chat-item cc-contact-item v3-friend-chat-item ${activeTopic === chat.id ? 'active' : ''}`}
           data-contact-kind="friend"
+          data-unread={hasUnreadMessage ? 'true' : undefined}
           onClick={() => selectConversation(chat)}
         >
           <UserRound
@@ -1403,7 +1487,9 @@ export default function ChatListView({
             </span>
           </div>
           <div className="cc-chat-row-trailing">
-            {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
+            {hasUnreadMessage
+              ? <span className="cc-friend-unread-dot" role="status" aria-label={`${chat.name} 有新消息`} />
+              : chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
             <div className="cc-chat-row-actions">
               <button
                 type="button"
@@ -1604,6 +1690,9 @@ export default function ChatListView({
         <div className="v3-chat-section cc-top-level-section cc-contacts-section" style={{ position: 'relative' }}>
           <button type="button" className="cc-section-toggle" onClick={() => toggleCollapsed('contacts')} aria-expanded={!collapsed.contacts}>
             <span>联系人</span>
+            {hasUnreadFriendMessages && (
+              <span className="cc-section-unread-dot" role="status" aria-label="联系人有新消息" />
+            )}
             <ChevronRight size={14} />
             {(pending.length + agentPendingRequests.length) > 0 && (
               <span className="v3-agent-request-badge">{pending.length + agentPendingRequests.length}</span>
@@ -1774,11 +1863,12 @@ export default function ChatListView({
                     <div
                       key={chat.id}
                       className={`v3-chat-item cc-history-item cc-conversation-item cc-project-task-item ${activeTopic === chat.id ? 'active' : ''}`}
+                      data-task-kind={taskKind === 'multi_agent' ? 'collaboration' : 'solo'}
                       aria-label={`打开项目任务 ${chat.name}`}
                       onClick={() => selectConversation(chat)}
                     >
                       <Zap size={14} className="prefix cc-chat-row-icon" aria-label="Agent 任务" />
-                      {renderTaskCopy(chat, chat.taskStatus ? chat.preview : null, taskLabel)}
+                      {renderTaskCopy(chat, null, taskLabel)}
                       {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
                     </div>
                   );
@@ -1847,7 +1937,7 @@ export default function ChatListView({
               ) : (
                 <div className="cc-new-task-agent-list cc-project-picker-list">
                   {projects.map((project) => {
-                    const selected = Number(projectPickerTask.projectId) === Number(project.id);
+                    const selected = projectIdFor(projectPickerTask) === Number(project.id);
                     return (
                       <button
                         type="button"
@@ -1861,7 +1951,7 @@ export default function ChatListView({
                       </button>
                     );
                   })}
-                  {Number(projectPickerTask.projectId) > 0 && (
+                  {projectIdFor(projectPickerTask) > 0 && (
                     <button
                       type="button"
                       className="cc-new-task-agent cc-project-remove-option"
@@ -2016,6 +2106,34 @@ function isOwnedAgent(agent) {
   return agent?.is_owner === true || agent?.relation === 'owner';
 }
 
+function isBotContact(contact) {
+  return contact?.bot === true
+    || contact?.is_bot === true
+    || contact?.account_type === 'bot'
+    || contact?.accountType === 'bot';
+}
+
+function numericUid(value) {
+  const match = String(value ?? '').match(/(\d+)$/);
+  return match ? Number(match[1]) : 0;
+}
+
+function addSetValue(previous, value) {
+  const key = String(value || '').trim();
+  if (!key || previous.has(key)) return previous;
+  const next = new Set(previous);
+  next.add(key);
+  return next;
+}
+
+function removeSetValue(previous, value) {
+  const key = String(value || '').trim();
+  if (!key || !previous.has(key)) return previous;
+  const next = new Set(previous);
+  next.delete(key);
+  return next;
+}
+
 function TaskRowStatusIndicator({ status, time, showTime }) {
   const expiresAtMs = taskStatusExpiresMs(status);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -2125,7 +2243,7 @@ function conversationSummaryToChat(item) {
     isOnline: item.is_online,
     seq: item.latest_seq || 0,
     taskStatus: normalizeTaskStatus(item.task_status),
-    projectId: item.project_id || 0,
+    projectId: Number(item.project_id) > 0 ? Number(item.project_id) : 0,
     projectName: item.project_name || '',
   };
 }
@@ -2177,6 +2295,7 @@ function normalizeGroupListItem(item) {
     isAgentTask: Boolean(item.isAgentTask || item.is_agent_task || item.kind === 'agent_task'),
     hasBot: Boolean(item.hasBot || item.has_bot || item.is_agent_group),
     memberCount: Number(item.memberCount || item.member_count || 0),
+    projectId: projectIdFor(item),
     avatar_url: item.avatar_url,
     preview: item.preview || '',
     time: item.time || (lastTimeMs ? formatTime(new Date(lastTimeMs)) : ''),
@@ -2203,12 +2322,15 @@ function isHistoryTask(chat) {
 
 function conversationKind(chat) {
   if (!chat?.isGroup) return chat?.isBot ? 'solo_agent' : 'friend';
-  if (!chat.isAgentTask && !chat.hasBot) return 'human_group';
+  return 'multi_agent';
+}
 
-  const memberCount = Number(chat.memberCount || chat.member_count || 0);
-  if (memberCount > 2) return 'multi_agent';
-  if (memberCount > 0) return 'solo_agent';
-  return chat.isAgentTask ? 'solo_agent' : 'multi_agent';
+function projectIdFor(chat) {
+  for (const value of [chat?.projectId, chat?.project_id]) {
+    const projectId = Number(value);
+    if (Number.isFinite(projectId) && projectId > 0) return projectId;
+  }
+  return 0;
 }
 
 function latestAgentTaskTime(tasks, agent) {
@@ -2224,15 +2346,6 @@ function sortConversationsWithPins(items, pinnedTopicIds) {
   return [...items].sort((left, right) => {
     const leftPinned = pinnedTopicIds?.has(String(left.id));
     const rightPinned = pinnedTopicIds?.has(String(right.id));
-    if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
-    return conversationRecentLess(left, right);
-  });
-}
-
-function sortGroupsWithPins(items, pinnedGroupIds) {
-  return [...items].sort((left, right) => {
-    const leftPinned = pinnedGroupIds?.has(String(left.id));
-    const rightPinned = pinnedGroupIds?.has(String(right.id));
     if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
     return conversationRecentLess(left, right);
   });
