@@ -114,6 +114,32 @@ describe('LocalAssistantBar model selector', () => {
     expect(status?.getAttribute('aria-label')).toContain('minimax-m3');
   });
 
+  it('shows the applied cloud model instead of a stale local quota snapshot', async () => {
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue({
+      ...baseConfig,
+      desired: { kind: 'catalog', model_id: 'gpt-5.6-sol', reasoning_effort: 'high', revision: 5 },
+      applied: { kind: 'catalog', model_id: 'gpt-5.6-sol', reasoning_effort: 'high', revision: 5 },
+      models: [
+        ...baseConfig.models,
+        { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', reasoning_efforts: ['medium', 'high'] },
+      ],
+    });
+    await renderBar({
+      activeAgent: { uid: 43, isOwner: true, relation: 'owner' },
+      agentModelState: {
+        isBot: true,
+        state: 'ready',
+        summary: { source: 'custom', model: 'gpt-5.6-terra' },
+      },
+    });
+
+    const status = container.querySelector('.v3-local-assistant-status');
+    expect(status?.textContent).toContain('gpt-5.6-sol');
+    expect(status?.textContent).toContain('high');
+    expect(status?.textContent).not.toContain('gpt-5.6-terra');
+    expect(status?.getAttribute('aria-label')).toContain('推理强度 high');
+  });
+
   it('does not expose a switcher for friend bots or group conversations', async () => {
     const getConfig = vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
     await renderBar({ activeAgent: { uid: 43, isOwner: false, relation: 'friend' } });
