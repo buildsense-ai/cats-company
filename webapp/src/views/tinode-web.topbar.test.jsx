@@ -226,6 +226,22 @@ describe('LocalAssistantBar model selector', () => {
     expect(container.querySelector('.v3-model-apply-state')?.textContent).toBe('待应用');
   });
 
+  it('keeps return-to-local locked until the bot acknowledges the handoff', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue({
+      ...baseConfig,
+      configured: false,
+      status: 'pending',
+      desired: { kind: 'local', model_id: 'local', reasoning_effort: '', revision: 5 },
+    });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+
+    const trigger = container.querySelector('.v3-model-status-button');
+    expect(trigger.disabled).toBe(true);
+    expect(trigger.getAttribute('aria-busy')).toBe('true');
+    expect(container.querySelector('.v3-model-apply-state')?.textContent).toBe('切换中');
+  });
+
   it('classifies request and runtime apply failures for users', () => {
     expect(describeModelConfigRequestError({ code: 'NETWORK_ERROR' })).toContain('网络连接中断');
     expect(describeModelConfigRequestError({ status: 429 })).toContain('操作过于频繁');

@@ -275,11 +275,42 @@ func TestOwnerCanReturnBotToDeviceLocalModelConfiguration(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
 	rec := httptest.NewRecorder()
 	handler.HandleOwnerConfig(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"configured":false`) || !strings.Contains(rec.Body.String(), `"model_id":"local"`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"configured":false`) ||
+		!strings.Contains(rec.Body.String(), `"model_id":"local"`) || !strings.Contains(rec.Body.String(), `"status":"pending"`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if db.models[43].ModelID != "" || db.models[43].Revision != 3 {
 		t.Fatalf("saved config=%+v", db.models[43])
+	}
+
+	runtimeReq := httptest.NewRequest(http.MethodGet, "/api/bot/model-config", nil)
+	runtimeReq = runtimeReq.WithContext(context.WithValue(runtimeReq.Context(), uidKey, int64(43)))
+	runtimeRec := httptest.NewRecorder()
+	handler.HandleRuntimeConfig(runtimeRec, runtimeReq)
+	if runtimeRec.Code != http.StatusOK || !strings.Contains(runtimeRec.Body.String(), `"configured":false`) ||
+		!strings.Contains(runtimeRec.Body.String(), `"revision":3`) || !strings.Contains(runtimeRec.Body.String(), `"status":"pending"`) {
+		t.Fatalf("runtime status=%d body=%s", runtimeRec.Code, runtimeRec.Body.String())
+	}
+
+	ackReq := httptest.NewRequest(http.MethodPost, "/api/bot/model-config/ack", strings.NewReader(
+		`{"revision":3,"kind":"local","model_id":"local"}`,
+	))
+	ackReq = ackReq.WithContext(context.WithValue(ackReq.Context(), uidKey, int64(43)))
+	ackRec := httptest.NewRecorder()
+	handler.HandleRuntimeAck(ackRec, ackReq)
+	if ackRec.Code != http.StatusOK || !strings.Contains(ackRec.Body.String(), `"status":"local"`) {
+		t.Fatalf("ack status=%d body=%s", ackRec.Code, ackRec.Body.String())
+	}
+	if db.models[43].AppliedRevision != 3 || db.models[43].AppliedKind != "local" || db.models[43].AppliedModelID != "local" {
+		t.Fatalf("acked config=%+v", db.models[43])
+	}
+
+	repeatReq := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(`{"model_id":"local"}`))
+	repeatReq = repeatReq.WithContext(context.WithValue(repeatReq.Context(), uidKey, int64(7)))
+	repeatRec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(repeatRec, repeatReq)
+	if repeatRec.Code != http.StatusOK || db.models[43].Revision != 3 {
+		t.Fatalf("repeat status=%d body=%s config=%+v", repeatRec.Code, repeatRec.Body.String(), db.models[43])
 	}
 }
 

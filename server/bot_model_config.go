@@ -217,7 +217,11 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 		}
 		kind := strings.ToLower(strings.TrimSpace(req.Kind))
 		if strings.EqualFold(strings.TrimSpace(req.ModelID), "local") || kind == "local" {
-			if configured {
+			localApplied := !configured && storedConfig.Revision > 0 &&
+				storedConfig.AppliedRevision == storedConfig.Revision &&
+				storedConfig.AppliedKind == "local" && storedConfig.AppliedModelID == "local" &&
+				!(storedConfig.LastAttemptRevision == storedConfig.Revision && storedConfig.LastError != "")
+			if !localApplied && (configured || storedConfig.Revision > 0) {
 				config, err = h.models.SaveBotDesiredModelConfig(botUID, "", "", "", "")
 			} else {
 				config = storedConfig
@@ -360,18 +364,28 @@ func (h *BotModelConfigHandler) HandleRuntimeAck(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load bot model configuration"})
 		return
 	}
-	if !botModelConfigIsConfigured(current) {
+	configured := botModelConfigIsConfigured(current)
+	localHandoff := !configured && current.Revision > 0
+	if !configured && !localHandoff {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "cloud bot model configuration is not enabled"})
 		return
 	}
-	current = botModelConfigWithDefaults(current)
 	kind := strings.ToLower(strings.TrimSpace(req.Kind))
-	if kind == "" {
-		kind = current.Kind
-	}
 	modelID := strings.TrimSpace(req.ModelID)
 	reasoning := strings.ToLower(strings.TrimSpace(req.ReasoningEffort))
-	if kind == botModelKindCatalog {
+	if localHandoff {
+		kind = strings.ToLower(kind)
+		if kind != "local" || modelID != "local" || reasoning != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid local model acknowledgement"})
+			return
+		}
+	} else {
+		current = botModelConfigWithDefaults(current)
+		if kind == "" {
+			kind = current.Kind
+		}
+	}
+	if !localHandoff && kind == botModelKindCatalog {
 		model, normalizedReasoning, ok := normalizeBotModelSelection(modelID, reasoning)
 		if !ok {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported model or reasoning effort"})
@@ -379,21 +393,22 @@ func (h *BotModelConfigHandler) HandleRuntimeAck(w http.ResponseWriter, r *http.
 		}
 		modelID = model.ID
 		reasoning = normalizedReasoning
-	} else if kind == botModelKindCustom {
+	} else if !localHandoff && kind == botModelKindCustom {
 		if modelID == "" || !validCustomReasoningEffort(reasoning) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid custom model acknowledgement"})
 			return
 		}
-	} else {
+	} else if !localHandoff {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid model kind"})
 		return
 	}
-	if current.Revision != req.Revision || current.Kind != kind || current.ModelID != modelID || current.ReasoningEffort != reasoning {
+	if current.Revision != req.Revision || (!localHandoff &&
+		(current.Kind != kind || current.ModelID != modelID || current.ReasoningEffort != reasoning)) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "bot model configuration changed before it was applied"})
 		return
 	}
 	applyError := strings.TrimSpace(req.Error)
-	if kind == botModelKindCustom && applyError != "" {
+	if !localHandoff && kind == botModelKindCustom && applyError != "" {
 		if custom, decryptErr := h.decryptCustomModel(botUID, current.CustomCiphertext); decryptErr == nil && custom.APIKey != "" {
 			applyError = strings.ReplaceAll(applyError, custom.APIKey, "[REDACTED]")
 		}
@@ -494,11 +509,13 @@ func botModelConfigResponse(botUID int64, config *types.BotModelConfig) map[stri
 		desiredReasoning = ""
 	}
 	status := "local"
-	if configured && config.LastAttemptRevision == config.Revision && config.LastError != "" {
+	localHandoff := !configured && config.Revision > 0 &&
+		!(config.AppliedRevision == config.Revision && config.AppliedKind == "local" && config.AppliedModelID == "local")
+	if (configured || localHandoff) && config.LastAttemptRevision == config.Revision && config.LastError != "" {
 		status = "failed"
 	} else if configured && config.AppliedRevision == config.Revision && config.AppliedKind == config.Kind && config.AppliedModelID == config.ModelID {
 		status = "applied"
-	} else if configured {
+	} else if configured || localHandoff {
 		status = "pending"
 	}
 	response := map[string]interface{}{
