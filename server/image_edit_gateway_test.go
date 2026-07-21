@@ -44,7 +44,6 @@ func TestImageEditProxyHandlerForwardsReferencesAndForcesPolicy(t *testing.T) {
 	var upstreamAuthorization string
 	var upstreamPath string
 	var upstreamPayload map[string]interface{}
-	responseBody := testImageResponse(t, 12)
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamAuthorization = r.Header.Get("Authorization")
@@ -54,7 +53,7 @@ func TestImageEditProxyHandlerForwardsReferencesAndForcesPolicy(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Request-Id", "provider-edit-1")
-		_, _ = w.Write([]byte(responseBody))
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"aW1hZ2U="}]}`))
 	}))
 	defer upstream.Close()
 
