@@ -1,19 +1,39 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const css = readFileSync(resolve(process.cwd(), 'src/css/catsco-ui-system.css'), 'utf8');
+const brandAssetPath = resolve(process.cwd(), 'public/catsco-brand-mark.webp');
 
 const ruleFor = (selector) => css.match(
   new RegExp(`(?:^|\\r?\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{[^}]*\\}`),
 )?.[0] || '';
 
+const readLosslessWebpDimensions = (buffer) => {
+  if (
+    buffer.subarray(0, 4).toString('ascii') !== 'RIFF'
+    || buffer.subarray(8, 12).toString('ascii') !== 'WEBP'
+    || buffer.subarray(12, 16).toString('ascii') !== 'VP8L'
+    || buffer[20] !== 0x2f
+  ) {
+    throw new Error('Expected a lossless WebP brand asset');
+  }
+  const sizeBits = buffer.readUInt32LE(21);
+  return {
+    width: (sizeBits & 0x3fff) + 1,
+    height: ((sizeBits >>> 14) & 0x3fff) + 1,
+  };
+};
+
 describe('CatsCo shell styling', () => {
-  it('uses the supplied transparent brand image wherever the shared mark is rendered', () => {
+  it('uses the optimized formal brand asset wherever the shared mark is rendered', () => {
     const brandRule = ruleFor('.catsco-brand-mark');
 
-    expect(existsSync(resolve(process.cwd(), 'public/catsco-brand-asasda.png'))).toBe(true);
+    expect(existsSync(brandAssetPath)).toBe(true);
+    expect(existsSync(resolve(process.cwd(), 'public/catsco-brand-asasda.png'))).toBe(false);
+    expect(statSync(brandAssetPath).size).toBeLessThan(25_000);
+    expect(readLosslessWebpDimensions(readFileSync(brandAssetPath))).toEqual({ width: 256, height: 96 });
     expect(brandRule).toContain('width: 48px;');
-    expect(brandRule).toContain("url('/catsco-brand-asasda.png')");
+    expect(brandRule).toContain("url('/catsco-brand-mark.webp')");
     expect(brandRule).toContain('background');
     expect(brandRule).toContain('contain no-repeat');
     expect(brandRule).toContain('-webkit-mask: none;');
