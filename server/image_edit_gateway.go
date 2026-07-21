@@ -77,15 +77,11 @@ func (h *ImageGenerationProxyHandler) HandleEdit(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Server policy owns provider selection and prevents accidental batches.
-	payload["model"] = h.model
-	payload["n"] = 1
 	h.forwardImageRequest(
 		w,
 		r,
 		payload,
-		h.editUpstreamURL,
-		"edit",
+		imageOperationEdit,
 		referenceCount,
 		referenceBytes,
 	)
