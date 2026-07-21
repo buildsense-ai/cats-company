@@ -62,6 +62,7 @@ function mockBotModelResponse(botId, includeModels = false) {
   };
   return {
     uid: botId,
+    management_enabled: true,
     ...config,
     apply_mode: 'runtime_reload',
     ...(includeModels ? { models: mockBotModels } : {}),

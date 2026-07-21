@@ -134,6 +134,51 @@ func TestJWTAuthMiddlewareWithDBRejectsDisabledJWTAndAPIKey(t *testing.T) {
 	}
 }
 
+func TestBotAPIKeyMiddlewareWithDBRejectsJWTAndDisabledBot(t *testing.T) {
+	oldSecret := append([]byte(nil), jwtSecret...)
+	defer func() { jwtSecret = oldSecret }()
+	SetJWTSecret("bot-api-key-only-test-secret")
+
+	botToken, err := GenerateToken(7, "active-bot", "bot@example.com")
+	if err != nil {
+		t.Fatalf("GenerateToken bot: %v", err)
+	}
+	const activeBotKey = "cc_7_runtime"
+	const disabledBotKey = "cc_8_runtime"
+	db := authStateTestStore{
+		users: map[int64]*types.User{
+			7: {ID: 7, Username: "active-bot", AccountType: types.AccountBot, State: 0},
+			8: {ID: 8, Username: "disabled-bot", AccountType: types.AccountBot, State: 1},
+		},
+		botKeys: map[string]int64{activeBotKey: 7, disabledBotKey: 8},
+	}
+	handler := BotAPIKeyMiddlewareWithDB(db)(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]int64{"uid": UIDFromContext(r.Context())})
+	})
+
+	cases := []struct {
+		name          string
+		authorization string
+		wantStatus    int
+	}{
+		{name: "active api key", authorization: "ApiKey " + activeBotKey, wantStatus: http.StatusOK},
+		{name: "bot jwt", authorization: "Bearer " + botToken, wantStatus: http.StatusUnauthorized},
+		{name: "disabled api key", authorization: "ApiKey " + disabledBotKey, wantStatus: http.StatusForbidden},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/bot-runtime-only", nil)
+			req.Header.Set("Authorization", tc.authorization)
+			rec := httptest.NewRecorder()
+			handler(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestLoginRejectsDisabledUser(t *testing.T) {
 	passHash, err := bcrypt.GenerateFromPassword([]byte("pass123456"), bcrypt.DefaultCost)
 	if err != nil {

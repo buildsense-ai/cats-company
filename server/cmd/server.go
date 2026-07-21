@@ -289,6 +289,14 @@ func main() {
 	botHandler.SetHub(hub)
 	botModelStore, _ := db.(store.BotModelConfigStore)
 	botModelConfigHandler := server.NewBotModelConfigHandler(db, botModelStore)
+	botModelCloudPublicEnabled := envBool("CATSCO_BOT_MODEL_CLOUD_ENABLED")
+	botModelCloudTestUIDs := envInt64Set("CATSCO_BOT_MODEL_CLOUD_TEST_UIDS")
+	botModelConfigHandler.SetRollout(botModelCloudPublicEnabled, botModelCloudTestUIDs)
+	if botModelCloudPublicEnabled {
+		log.Printf("cloud bot model management is enabled for authenticated owners")
+	} else if len(botModelCloudTestUIDs) > 0 {
+		log.Printf("cloud bot model management allowlist is enabled for %d uid(s)", len(botModelCloudTestUIDs))
+	}
 	desktopConnectHandler := server.NewDesktopConnectHandler(db)
 	msgHandler := server.NewMessageHandler(db, hub)
 	deviceHandler := server.NewDeviceHandler(db, hub)
@@ -447,6 +455,7 @@ func main() {
 	authWithDB := server.AuthMiddlewareWithDB(db)
 	jwtAuthWithDB := server.JWTAuthMiddlewareWithDB(db)
 	ownerAuthWithDB := server.OwnerMiddlewareWithDB(db)
+	botAPIKeyAuthWithDB := server.BotAPIKeyMiddlewareWithDB(db)
 	adminAuthWithDB := server.AdminMiddlewareWithDB(db)
 	mux.HandleFunc("/api/friends", authWithDB(friendHandler.HandleGetFriends))
 	mux.HandleFunc("/api/friends/pending", authWithDB(friendHandler.HandleGetPendingRequests))
@@ -543,8 +552,8 @@ func main() {
 	mux.HandleFunc("/api/bots/avatar", ownerAuthWithDB(botHandler.HandleUpdateBotAvatar))
 	mux.HandleFunc("/api/bots/friends", ownerAuthWithDB(botHandler.HandleGetBotFriends))
 	mux.HandleFunc("/api/bots/model-config", ownerAuthWithDB(botModelConfigHandler.HandleOwnerConfig))
-	mux.HandleFunc("/api/bot/model-config", authWithDB(botModelConfigHandler.HandleRuntimeConfig))
-	mux.HandleFunc("/api/bot/model-config/ack", authWithDB(botModelConfigHandler.HandleRuntimeAck))
+	mux.HandleFunc("/api/bot/model-config", botAPIKeyAuthWithDB(botModelConfigHandler.HandleRuntimeConfig))
+	mux.HandleFunc("/api/bot/model-config/ack", botAPIKeyAuthWithDB(botModelConfigHandler.HandleRuntimeAck))
 
 	// Groups (require auth)
 	groupHandler := server.NewGroupHandler(db, hub)

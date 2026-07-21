@@ -130,7 +130,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
   const menuRef = useRef(null);
   const activeBotUIDRef = useRef(0);
   const activeBotUID = Number(activeAgent?.uid) || 0;
-  const canManageModel = activeBotUID > 0 && activeAgent?.isOwner === true;
+  const isModelOwner = activeBotUID > 0 && activeAgent?.isOwner === true;
   const [modelConfig, setModelConfig] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [expandedModelID, setExpandedModelID] = useState('');
@@ -141,6 +141,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
   const [savingKey, setSavingKey] = useState('');
   const [error, setError] = useState('');
   const [applyWaitExpired, setApplyWaitExpired] = useState(false);
+  const canManageModel = isModelOwner && Number(modelConfig?.uid) === activeBotUID && modelConfig?.management_enabled !== false;
 
   const loadConfig = async (uid, includeUsage, action = '加载') => {
     try {
@@ -174,13 +175,13 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
     setApplyWaitExpired(false);
     setSavingKey('');
     setModelConfig(null);
-    if (!canManageModel) {
+    if (!isModelOwner) {
       setLoading(false);
       return undefined;
     }
     loadConfig(activeBotUID, false);
     return undefined;
-  }, [activeBotUID, canManageModel]);
+  }, [activeBotUID, isModelOwner]);
 
   useEffect(() => {
     if (!menuOpen) return undefined;

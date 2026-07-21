@@ -28,11 +28,14 @@ type botModelOwnershipStore interface {
 }
 
 type BotModelConfigHandler struct {
-	owners           botModelOwnershipStore
-	models           store.BotModelConfigStore
-	relayAdmin       *RelayAdminClient
-	secretCodec      *botModelSecretCodec
-	secretCodecError error
+	owners            botModelOwnershipStore
+	models            store.BotModelConfigStore
+	relayAdmin        *RelayAdminClient
+	secretCodec       *botModelSecretCodec
+	secretCodecError  error
+	rolloutConfigured bool
+	publicEnabled     bool
+	testUIDs          map[int64]bool
 }
 
 type botModelCatalogItem struct {
@@ -127,6 +130,32 @@ func (h *BotModelConfigHandler) SetRelayUsageClient(admin *RelayAdminClient) {
 	}
 }
 
+// SetRollout keeps cloud model management dark by default in production while
+// allowing selected owners to validate the full server-first rollout.
+func (h *BotModelConfigHandler) SetRollout(publicEnabled bool, testUIDs map[int64]bool) {
+	if h == nil {
+		return
+	}
+	h.rolloutConfigured = true
+	h.publicEnabled = publicEnabled
+	h.testUIDs = make(map[int64]bool, len(testUIDs))
+	for uid, enabled := range testUIDs {
+		if uid > 0 && enabled {
+			h.testUIDs[uid] = true
+		}
+	}
+}
+
+func (h *BotModelConfigHandler) managementEnabled(ownerUID int64) bool {
+	if h == nil {
+		return false
+	}
+	if !h.rolloutConfigured {
+		return true
+	}
+	return h.publicEnabled || h.testUIDs[ownerUID]
+}
+
 // HandleOwnerConfig manages the cloud model selected by a bot owner.
 func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodPatch {
@@ -154,6 +183,11 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 	}
 	if h.models == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot model configuration is unavailable"})
+		return
+	}
+	managementEnabled := h.managementEnabled(ownerUID)
+	if r.Method == http.MethodPatch && !managementEnabled {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "cloud bot model management is not enabled for this account"})
 		return
 	}
 
@@ -246,12 +280,19 @@ func (h *BotModelConfigHandler) HandleRuntimeConfig(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
-	if _, err := h.owners.GetBotOwner(botUID); err != nil {
+	ownerUID, err := h.owners.GetBotOwner(botUID)
+	if err != nil {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "bot api key required"})
 		return
 	}
 	if h.models == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot model configuration is unavailable"})
+		return
+	}
+	if !h.managementEnabled(ownerUID) {
+		response := botModelConfigResponse(botUID, nil)
+		response["management_enabled"] = false
+		writeJSON(w, http.StatusOK, response)
 		return
 	}
 	config, err := h.models.GetBotModelConfig(botUID)
@@ -278,12 +319,17 @@ func (h *BotModelConfigHandler) HandleRuntimeAck(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
-	if _, err := h.owners.GetBotOwner(botUID); err != nil {
+	ownerUID, err := h.owners.GetBotOwner(botUID)
+	if err != nil {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "bot api key required"})
 		return
 	}
 	if h.models == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot model configuration is unavailable"})
+		return
+	}
+	if !h.managementEnabled(ownerUID) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "cloud bot model management is not enabled for this account"})
 		return
 	}
 	var req botModelAckRequest
@@ -460,6 +506,7 @@ func (h *BotModelConfigHandler) ownerConfigResponse(
 	includeUsage bool,
 ) (map[string]interface{}, error) {
 	response := botModelConfigResponse(botUID, config)
+	response["management_enabled"] = h.managementEnabled(ownerUID)
 	catalog, quotaError := h.catalogWithUsage(ctx, ownerUID, includeUsage)
 	response["models"] = catalog
 	response["custom_supported"] = h.secretCodec != nil

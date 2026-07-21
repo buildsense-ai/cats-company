@@ -102,6 +102,49 @@ func TestOwnerCanSelectBotModelAndFriendCannot(t *testing.T) {
 	}
 }
 
+func TestCloudModelRolloutAllowsOnlyConfiguredOwners(t *testing.T) {
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7, 44: 8},
+		models: map[int64]*types.BotModelConfig{
+			43: {},
+			44: {Kind: botModelKindCatalog, ModelID: "minimax-m3", Revision: 2},
+		},
+	}
+	handler := NewBotModelConfigHandler(db, db)
+	handler.SetRollout(false, map[int64]bool{7: true})
+
+	allowedReq := httptest.NewRequest(http.MethodGet, "/api/bots/model-config?uid=43", nil)
+	allowedReq = allowedReq.WithContext(context.WithValue(allowedReq.Context(), uidKey, int64(7)))
+	allowedRec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(allowedRec, allowedReq)
+	if allowedRec.Code != http.StatusOK || !strings.Contains(allowedRec.Body.String(), `"management_enabled":true`) {
+		t.Fatalf("allowed status=%d body=%s", allowedRec.Code, allowedRec.Body.String())
+	}
+
+	blockedReq := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=44", strings.NewReader(
+		`{"kind":"catalog","model_id":"gpt-5.6-terra","reasoning_effort":"medium"}`,
+	))
+	blockedReq = blockedReq.WithContext(context.WithValue(blockedReq.Context(), uidKey, int64(8)))
+	blockedRec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(blockedRec, blockedReq)
+	if blockedRec.Code != http.StatusForbidden {
+		t.Fatalf("blocked status=%d body=%s", blockedRec.Code, blockedRec.Body.String())
+	}
+	if db.models[44].ModelID != "minimax-m3" || db.models[44].Revision != 2 {
+		t.Fatalf("blocked owner changed model config: %+v", db.models[44])
+	}
+
+	runtimeReq := httptest.NewRequest(http.MethodGet, "/api/bot/model-config", nil)
+	runtimeReq = runtimeReq.WithContext(context.WithValue(runtimeReq.Context(), uidKey, int64(44)))
+	runtimeRec := httptest.NewRecorder()
+	handler.HandleRuntimeConfig(runtimeRec, runtimeReq)
+	if runtimeRec.Code != http.StatusOK ||
+		!strings.Contains(runtimeRec.Body.String(), `"management_enabled":false`) ||
+		!strings.Contains(runtimeRec.Body.String(), `"configured":false`) {
+		t.Fatalf("runtime status=%d body=%s", runtimeRec.Code, runtimeRec.Body.String())
+	}
+}
+
 func TestGPT56CatalogUsesRelayReasoningEfforts(t *testing.T) {
 	model, effort, ok := normalizeBotModelSelection("gpt-5.6-terra", "xhigh")
 	if !ok || model.ID != "gpt-5.6-terra" || model.Provider != "openai" || model.Protocol != "OpenAI Responses" || effort != "xhigh" {

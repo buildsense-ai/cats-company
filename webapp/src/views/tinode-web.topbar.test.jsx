@@ -99,6 +99,17 @@ describe('LocalAssistantBar model selector', () => {
     expect(container.querySelector('.v3-local-assistant-status')).toBeNull();
   });
 
+  it('keeps the switcher hidden when the owner is outside the rollout', async () => {
+    const getConfig = vi.spyOn(api, 'getBotModelConfig').mockResolvedValue({
+      ...baseConfig,
+      management_enabled: false,
+    });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    expect(getConfig).toHaveBeenCalledWith(43, { includeUsage: false });
+    expect(container.querySelector('.v3-model-status-button')).toBeNull();
+    expect(container.querySelector('.v3-local-assistant-status')?.textContent).toContain('minimax-m3');
+  });
+
   it('loads quota once when the owner opens the list and shows it per model', async () => {
     const getConfig = vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
     await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
