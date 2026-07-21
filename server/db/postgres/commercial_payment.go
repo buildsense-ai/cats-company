@@ -434,6 +434,9 @@ func (a *Adapter) ClaimCommercialTrial(uid int64, planSlug string) (*types.Comme
 	if err != nil {
 		return nil, fmt.Errorf("load trial plan: %w", err)
 	}
+	if plan.PriceFen != 0 || plan.SaleState != "hidden" || plan.DurationDays <= 0 || !commercialPlanHasQuota(plan) {
+		return nil, fmt.Errorf("trial plan is unavailable")
+	}
 	var exists int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM commercial_entitlements WHERE uid = $1 AND source = 'trial'`, uid).Scan(&exists); err != nil {
 		return nil, fmt.Errorf("check commercial trial: %w", err)
@@ -464,6 +467,21 @@ func (a *Adapter) ClaimCommercialTrial(uid int64, planSlug string) (*types.Comme
 		return nil, fmt.Errorf("commit commercial trial: %w", err)
 	}
 	return a.GetCommercialSummary(uid)
+}
+
+func commercialPlanHasQuota(plan *types.CommercialPlan) bool {
+	if plan == nil {
+		return false
+	}
+	if plan.MonthlyBudget > 0 {
+		return true
+	}
+	for _, amount := range plan.ModelBudgets {
+		if amount > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Adapter) HasCommercialTrial(uid int64, _ string) (bool, error) {

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/openchat/openchat/server/store/types"
@@ -49,6 +50,10 @@ type CommercialPaymentProvider interface {
 	ParseNotification(context.Context, *http.Request) (string, *types.CommercialPaymentConfirmation, error)
 }
 
+type CommercialPaymentQuerier interface {
+	QueryPayment(context.Context, *types.CommercialOrder) (*types.CommercialPaymentConfirmation, bool, error)
+}
+
 type CommercialPaymentHandlerOptions struct {
 	PublicEnabled bool
 	TestUIDs      map[int64]bool
@@ -66,6 +71,8 @@ type CommercialPaymentHandler struct {
 	trialPlanSlug string
 	providers     map[string]CommercialPaymentProvider
 	syncer        *CommercialRelaySyncer
+	queryMu       sync.Mutex
+	nextQueries   map[string]time.Time
 }
 
 type commercialPaymentChannel struct {
@@ -83,6 +90,7 @@ func NewCommercialPaymentHandler(store CommercialPaymentStore, opts CommercialPa
 		trialPlanSlug: strings.TrimSpace(opts.TrialPlanSlug),
 		providers:     map[string]CommercialPaymentProvider{},
 		syncer:        opts.Syncer,
+		nextQueries:   map[string]time.Time{},
 	}
 	for _, provider := range opts.Providers {
 		if provider == nil || strings.TrimSpace(provider.Channel()) == "" {
@@ -125,6 +133,21 @@ func (h *CommercialPaymentHandler) planVisibleFor(uid int64, plan *types.Commerc
 	}
 }
 
+func commercialTrialPlanAvailable(plan *types.CommercialPlan) bool {
+	if plan == nil || plan.State != 0 || plan.PriceFen != 0 || plan.SaleState != "hidden" || plan.DurationDays <= 0 {
+		return false
+	}
+	if plan.MonthlyBudget > 0 {
+		return true
+	}
+	for _, amount := range plan.ModelBudgets {
+		if amount > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *CommercialPaymentHandler) channelsFor(uid int64) []commercialPaymentChannel {
 	channels := []commercialPaymentChannel{}
 	for _, id := range []string{commercialPaymentChannelWeChatNative, commercialPaymentChannelTest} {
@@ -162,7 +185,7 @@ func (h *CommercialPaymentHandler) HandleCatalog(w http.ResponseWriter, r *http.
 	if h.trialPlanSlug != "" {
 		trialPlan, planErr := h.store.GetCommercialPlanBySlug(h.trialPlanSlug)
 		claimed, claimErr := h.store.HasCommercialTrial(uid, h.trialPlanSlug)
-		trialAvailable = planErr == nil && claimErr == nil && trialPlan != nil && trialPlan.State == 0 && !claimed
+		trialAvailable = planErr == nil && claimErr == nil && commercialTrialPlanAvailable(trialPlan) && !claimed
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"enabled":            true,
@@ -196,6 +219,7 @@ func (h *CommercialPaymentHandler) HandleOrders(w http.ResponseWriter, r *http.R
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "order not found"})
 				return
 			}
+			order = h.refreshPendingCommercialOrder(r.Context(), order)
 			writeJSON(w, http.StatusOK, map[string]interface{}{"order": order})
 			return
 		}
@@ -210,6 +234,61 @@ func (h *CommercialPaymentHandler) HandleOrders(w http.ResponseWriter, r *http.R
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
+}
+
+func (h *CommercialPaymentHandler) refreshPendingCommercialOrder(ctx context.Context, order *types.CommercialOrder) *types.CommercialOrder {
+	if h == nil || order == nil || order.Status != "pending" {
+		return order
+	}
+	provider := h.providers[order.Channel]
+	querier, ok := provider.(CommercialPaymentQuerier)
+	if !ok || !h.claimCommercialPaymentQuery(order.OrderNo, time.Now().UTC()) {
+		return order
+	}
+	confirmation, paid, err := querier.QueryPayment(ctx, order)
+	if err != nil || !paid || confirmation == nil {
+		return order
+	}
+	fulfilled, changed, err := h.store.FulfillCommercialOrder(order.OrderNo, confirmation)
+	if err != nil || fulfilled == nil {
+		return order
+	}
+	h.clearCommercialPaymentQuery(order.OrderNo)
+	if changed {
+		h.enqueueRelaySync(fulfilled.UID)
+	}
+	return fulfilled
+}
+
+func (h *CommercialPaymentHandler) claimCommercialPaymentQuery(orderNo string, now time.Time) bool {
+	orderNo = strings.TrimSpace(orderNo)
+	if h == nil || orderNo == "" {
+		return false
+	}
+	h.queryMu.Lock()
+	defer h.queryMu.Unlock()
+	if next := h.nextQueries[orderNo]; next.After(now) {
+		return false
+	}
+	if len(h.nextQueries) >= 1024 {
+		staleBefore := now.Add(-30 * time.Minute)
+		for candidate, next := range h.nextQueries {
+			if next.Before(staleBefore) {
+				delete(h.nextQueries, candidate)
+			}
+		}
+	}
+	h.nextQueries[orderNo] = now.Add(10 * time.Second)
+	return true
+}
+
+func (h *CommercialPaymentHandler) clearCommercialPaymentQuery(orderNo string) {
+	if h == nil {
+		return
+	}
+	h.queryMu.Lock()
+	delete(h.nextQueries, strings.TrimSpace(orderNo))
+	h.queryMu.Unlock()
 }
 
 func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Request, uid int64) {

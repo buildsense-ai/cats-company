@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -70,6 +71,7 @@ func TestPostgresStoreContract(t *testing.T) {
 	if !pushSubscriptionForeignKey {
 		t.Fatal("push subscription foreign key missing from new schema")
 	}
+	testPostgresMigrationFiles(t, db)
 	var migrationVersion int64
 	var migrationDirty bool
 	if err := db.db.QueryRow(`SELECT version, dirty FROM schema_migrations`).Scan(&migrationVersion, &migrationDirty); err != nil {
@@ -562,6 +564,32 @@ func TestPostgresStoreContract(t *testing.T) {
 		Attachments: []types.FeedbackAttachment{{FileKey: "file-key", URL: "/uploads/a.png", Name: "a.png"}},
 	}); err != nil {
 		t.Fatalf("create feedback report: %v", err)
+	}
+
+	testCommercialPaymentContract(t, db, ownerID)
+}
+
+func testPostgresMigrationFiles(t *testing.T, db *Adapter) {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join("..", "migrations", "postgres", "*.up.sql"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("list postgres migrations: paths=%v err=%v", paths, err)
+	}
+	versions := map[string]string{}
+	for _, path := range paths {
+		name := filepath.Base(path)
+		version := strings.SplitN(name, "_", 2)[0]
+		if previous := versions[version]; previous != "" {
+			t.Fatalf("duplicate postgres migration version %s: %s and %s", version, previous, name)
+		}
+		versions[version] = name
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read postgres migration %s: %v", name, err)
+		}
+		if _, err := db.db.Exec(string(contents)); err != nil {
+			t.Fatalf("execute postgres migration %s against current schema: %v", name, err)
+		}
 	}
 }
 

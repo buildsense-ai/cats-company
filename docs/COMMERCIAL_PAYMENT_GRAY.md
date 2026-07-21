@@ -19,7 +19,7 @@
 4. 如需支付后立即写入 Relay，再配置 `CATS_RELAY_COMMERCIAL_ENFORCE_UIDS=<uid>`。
 5. 用户在“模型服务”中创建订单并点击“完成灰度测试支付”。订单会幂等履约，并触发 Relay 模型额度同步。
 
-体验包采用显式领取：把一个已启用套餐的 slug 写入 `CATS_COMMERCIAL_TRIAL_PLAN_SLUG`。同一账号终身只能领取一次体验套餐。
+体验包采用显式领取：把一个已启用、隐藏、售价为 0 且包含有效额度的套餐 slug 写入 `CATS_COMMERCIAL_TRIAL_PLAN_SLUG`。正式售卖套餐不能被误配成体验包；同一账号终身只能领取一次体验套餐。
 
 ## 微信支付需要准备
 
@@ -65,6 +65,7 @@ CATS_WECHAT_PAY_NOTIFY_URL=https://app.catsco.cc/api/payments/wechat/notify
 - 支付事件使用 `(channel, event_id)` 幂等，重复通知不会重复发套餐。
 - 履约事务同时写入订单、支付事件、权益、额度 grant 和 ledger。
 - 回调必须通过官方 SDK 验签和解密，并校验 AppID、商户号、订单号、金额和币种。
+- 待支付页面轮询本地订单时会按 10 秒节流主动查询微信订单；即使回调延迟或最终丢失，已支付订单仍能进入同一套幂等履约事务。
 - 自动同步只处理 `commercial_managed_relay_budgets` 中由 CatsCompany 接管的模型额度，不改管理员手工维护的其他模型预算。
 - 套餐到期后不能把 Relay 预算写成 `0`，因为 `0` 表示移除限制；系统会写入 `0.000001 CNY` 的阻断额度并保留接管记录，防止额度过期后模型意外变成无限制。
 - Relay 同步失败不会回滚已经确认的支付；后台 worker 会定时重试。支付和账本始终是事实来源。

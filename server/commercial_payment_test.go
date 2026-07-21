@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/openchat/openchat/server/store/types"
+	"github.com/wechatpay-apiv3/wechatpay-go/services/payments"
 )
 
 type commercialPaymentTestStore struct {
@@ -23,6 +24,27 @@ type commercialPaymentTestStore struct {
 	orders      map[string]*types.CommercialOrder
 	requestIDs  map[string]string
 	trialClaims map[int64]bool
+}
+
+type queryCommercialPaymentProvider struct {
+	paid         bool
+	confirmation *types.CommercialPaymentConfirmation
+	calls        int
+}
+
+func (p *queryCommercialPaymentProvider) Channel() string {
+	return commercialPaymentChannelWeChatNative
+}
+func (p *queryCommercialPaymentProvider) Label() string { return "微信支付" }
+func (p *queryCommercialPaymentProvider) CreatePayment(context.Context, *types.CommercialOrder) (*CommercialPaymentIntent, error) {
+	return nil, context.Canceled
+}
+func (p *queryCommercialPaymentProvider) ParseNotification(context.Context, *http.Request) (string, *types.CommercialPaymentConfirmation, error) {
+	return "", nil, context.Canceled
+}
+func (p *queryCommercialPaymentProvider) QueryPayment(context.Context, *types.CommercialOrder) (*types.CommercialPaymentConfirmation, bool, error) {
+	p.calls++
+	return p.confirmation, p.paid, nil
 }
 
 func newCommercialPaymentTestStore() *commercialPaymentTestStore {
@@ -198,6 +220,31 @@ func TestCommercialCatalogRespectsSaleRollout(t *testing.T) {
 	}
 }
 
+func TestCommercialTrialRequiresDedicatedFreeHiddenPlan(t *testing.T) {
+	valid := &types.CommercialPlan{
+		Slug: "trial", PriceFen: 0, SaleState: "hidden", DurationDays: 7, State: 0,
+		ModelBudgets: map[string]float64{"MiniMax-M3": 5},
+	}
+	if !commercialTrialPlanAvailable(valid) {
+		t.Fatal("expected dedicated trial plan to be available")
+	}
+	for name, mutate := range map[string]func(*types.CommercialPlan){
+		"paid":     func(plan *types.CommercialPlan) { plan.PriceFen = 1 },
+		"public":   func(plan *types.CommercialPlan) { plan.SaleState = "public" },
+		"disabled": func(plan *types.CommercialPlan) { plan.State = 1 },
+		"empty":    func(plan *types.CommercialPlan) { plan.ModelBudgets = map[string]float64{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := *valid
+			candidate.ModelBudgets = map[string]float64{"MiniMax-M3": 5}
+			mutate(&candidate)
+			if commercialTrialPlanAvailable(&candidate) {
+				t.Fatalf("unsafe trial plan %s was accepted: %#v", name, candidate)
+			}
+		})
+	}
+}
+
 func TestCommercialTestPaymentOrderAndFulfillment(t *testing.T) {
 	store := newCommercialPaymentTestStore()
 	store.plans = []*types.CommercialPlan{{
@@ -243,6 +290,56 @@ func TestCommercialPaymentIntentCanOnlyBeClaimedOnce(t *testing.T) {
 	order, second, err := store.BeginCommercialOrderPayment("CC-ONCE", expiresAt)
 	if err != nil || second || order.Status != "pending" {
 		t.Fatalf("duplicate claim was not suppressed: order=%#v claimed=%v err=%v", order, second, err)
+	}
+}
+
+func TestCommercialPendingOrderUsesProviderQueryFallback(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-QUERY"] = &types.CommercialOrder{
+		OrderNo: "CC-QUERY", UID: 38, PlanName: "查询兜底套餐", AmountFen: 2990, Currency: "CNY",
+		Channel: commercialPaymentChannelWeChatNative, Status: "pending",
+	}
+	provider := &queryCommercialPaymentProvider{
+		paid: true,
+		confirmation: &types.CommercialPaymentConfirmation{
+			Channel: commercialPaymentChannelWeChatNative, EventID: "WX-QUERY-1", ProviderTradeNo: "WX-QUERY-1",
+			AmountFen: 2990, Currency: "CNY", PaidAt: time.Now().UTC(),
+		},
+	}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		TestUIDs:  map[int64]bool{38: true},
+		Providers: []CommercialPaymentProvider{provider},
+	})
+	recorder := httptest.NewRecorder()
+	handler.HandleOrders(recorder, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders?order_no=CC-QUERY", "", 38))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("query fallback status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if provider.calls != 1 || store.orders["CC-QUERY"].Status != "fulfilled" {
+		t.Fatalf("query fallback did not fulfill order: calls=%d order=%#v", provider.calls, store.orders["CC-QUERY"])
+	}
+}
+
+func TestCommercialPendingOrderQueriesAreThrottled(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-PENDING"] = &types.CommercialOrder{
+		OrderNo: "CC-PENDING", UID: 38, AmountFen: 2990, Currency: "CNY",
+		Channel: commercialPaymentChannelWeChatNative, Status: "pending",
+	}
+	provider := &queryCommercialPaymentProvider{}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		TestUIDs:  map[int64]bool{38: true},
+		Providers: []CommercialPaymentProvider{provider},
+	})
+	for range 2 {
+		recorder := httptest.NewRecorder()
+		handler.HandleOrders(recorder, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders?order_no=CC-PENDING", "", 38))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("pending query status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+	if provider.calls != 1 {
+		t.Fatalf("expected one provider query inside throttle window, got %d", provider.calls)
 	}
 }
 
@@ -296,7 +393,7 @@ func TestCommercialRelayDryRunRecognizesSharedProviderBudget(t *testing.T) {
 }
 
 func TestTruncateUTF8DoesNotSplitRune(t *testing.T) {
-	value := truncateUTF8("CatsCo 教师套餐", 10)
+	value := truncateUTF8Bytes("CatsCo 教师套餐", 10)
 	if !strings.HasPrefix("CatsCo 教师套餐", value) || len(value) > 10 {
 		t.Fatalf("invalid truncation %q", value)
 	}
@@ -361,5 +458,30 @@ func TestWeChatPaymentSupportsPublicKeyMode(t *testing.T) {
 	provider, missing, err := NewWeChatNativePaymentProviderFromEnv(context.Background())
 	if err != nil || provider == nil || len(missing) != 0 {
 		t.Fatalf("provider=%#v missing=%#v err=%v", provider, missing, err)
+	}
+}
+
+func TestWeChatPaymentNormalizesVerifiedTransaction(t *testing.T) {
+	provider := &weChatNativePaymentProvider{appID: "wx-test-app", mchID: "1900000000"}
+	tradeState := "SUCCESS"
+	orderNo := "CC202607140000000000000000000001"
+	transactionID := "4200000000202607140000000001"
+	currency := "CNY"
+	amount := int64(2990)
+	transaction := &payments.Transaction{
+		Appid:         &provider.appID,
+		Mchid:         &provider.mchID,
+		OutTradeNo:    &orderNo,
+		TradeState:    &tradeState,
+		TransactionId: &transactionID,
+		Amount:        &payments.TransactionAmount{Total: &amount, Currency: &currency},
+	}
+	gotOrderNo, confirmation, err := provider.confirmationFromTransaction(transaction, strings.Repeat("b", 64))
+	if err != nil || gotOrderNo != orderNo || confirmation.EventID != transactionID || confirmation.AmountFen != amount {
+		t.Fatalf("normalize WeChat transaction: order=%q confirmation=%#v err=%v", gotOrderNo, confirmation, err)
+	}
+	transaction.TransactionId = nil
+	if _, _, err := provider.confirmationFromTransaction(transaction, ""); err == nil || !strings.Contains(err.Error(), "transaction_id") {
+		t.Fatalf("expected missing transaction id rejection, got %v", err)
 	}
 }

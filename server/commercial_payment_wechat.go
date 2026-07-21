@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -128,7 +129,7 @@ func (p *weChatNativePaymentProvider) CreatePayment(ctx context.Context, order *
 	if order.ExpiresAt != nil {
 		expiresAt = order.ExpiresAt.UTC()
 	}
-	description := truncateUTF8("CatsCo "+strings.TrimSpace(order.PlanName), 120)
+	description := truncateUTF8Bytes("CatsCo "+strings.TrimSpace(order.PlanName), 120)
 	response, _, err := p.service.Prepay(ctx, native.PrepayRequest{
 		Appid:       wechatcore.String(p.appID),
 		Mchid:       wechatcore.String(p.mchID),
@@ -163,8 +164,40 @@ func (p *weChatNativePaymentProvider) ParseNotification(ctx context.Context, req
 	if _, err := p.notifyHandler.ParseNotifyRequest(ctx, request, transaction); err != nil {
 		return "", nil, fmt.Errorf("verify WeChat Pay notification: %w", err)
 	}
+	return p.confirmationFromTransaction(transaction, paymentPayloadHash(body))
+}
+
+func (p *weChatNativePaymentProvider) QueryPayment(ctx context.Context, order *types.CommercialOrder) (*types.CommercialPaymentConfirmation, bool, error) {
+	if p == nil || order == nil || strings.TrimSpace(order.OrderNo) == "" {
+		return nil, false, fmt.Errorf("WeChat Pay order query is unavailable")
+	}
+	transaction, _, err := p.service.QueryOrderByOutTradeNo(ctx, native.QueryOrderByOutTradeNoRequest{
+		Mchid:      wechatcore.String(p.mchID),
+		OutTradeNo: wechatcore.String(order.OrderNo),
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("query WeChat Pay order: %w", err)
+	}
+	if transaction == nil || transaction.TradeState == nil || strings.TrimSpace(*transaction.TradeState) != "SUCCESS" {
+		return nil, false, nil
+	}
+	payload, _ := json.Marshal(transaction)
+	orderNo, confirmation, err := p.confirmationFromTransaction(transaction, paymentPayloadHash(payload))
+	if err != nil {
+		return nil, false, err
+	}
+	if orderNo != order.OrderNo {
+		return nil, false, fmt.Errorf("WeChat Pay queried order mismatch")
+	}
+	return confirmation, true, nil
+}
+
+func (p *weChatNativePaymentProvider) confirmationFromTransaction(transaction *payments.Transaction, payloadHash string) (string, *types.CommercialPaymentConfirmation, error) {
+	if p == nil || transaction == nil {
+		return "", nil, fmt.Errorf("WeChat Pay transaction is missing")
+	}
 	if transaction.OutTradeNo == nil || strings.TrimSpace(*transaction.OutTradeNo) == "" {
-		return "", nil, fmt.Errorf("WeChat Pay notification is missing out_trade_no")
+		return "", nil, fmt.Errorf("WeChat Pay transaction is missing out_trade_no")
 	}
 	if transaction.Mchid == nil || strings.TrimSpace(*transaction.Mchid) != p.mchID {
 		return "", nil, fmt.Errorf("WeChat Pay merchant mismatch")
@@ -186,28 +219,27 @@ func (p *weChatNativePaymentProvider) ParseNotification(ctx context.Context, req
 	if transaction.TransactionId != nil {
 		providerTradeNo = strings.TrimSpace(*transaction.TransactionId)
 	}
+	if providerTradeNo == "" {
+		return "", nil, fmt.Errorf("WeChat Pay transaction is missing transaction_id")
+	}
 	paidAt := time.Now().UTC()
 	if transaction.SuccessTime != nil {
 		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(*transaction.SuccessTime)); err == nil {
 			paidAt = parsed.UTC()
 		}
 	}
-	eventID := providerTradeNo
-	if eventID == "" {
-		eventID = paymentPayloadHash(body)
-	}
 	return strings.TrimSpace(*transaction.OutTradeNo), &types.CommercialPaymentConfirmation{
 		Channel:         commercialPaymentChannelWeChatNative,
-		EventID:         eventID,
+		EventID:         providerTradeNo,
 		ProviderTradeNo: providerTradeNo,
 		AmountFen:       *transaction.Amount.Total,
 		Currency:        currency,
 		PaidAt:          paidAt,
-		PayloadHash:     paymentPayloadHash(body),
+		PayloadHash:     payloadHash,
 	}, nil
 }
 
-func truncateUTF8(value string, maxBytes int) string {
+func truncateUTF8Bytes(value string, maxBytes int) string {
 	value = strings.TrimSpace(value)
 	if len(value) <= maxBytes {
 		return value

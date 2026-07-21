@@ -326,4 +326,61 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).toContain('灰度测试支付');
     expect(container.textContent).toContain('领取体验包');
   });
+
+  it('creates and confirms a gray payment from the user purchase flow', async () => {
+    const plan = {
+      id: 9,
+      slug: 'gray-plan',
+      name: '灰度标准包',
+      price_fen: 2990,
+      currency: 'CNY',
+      sale_state: 'test',
+      duration_days: 30,
+      model_budgets: { 'MiniMax-M3': 500 },
+    };
+    const pendingOrder = {
+      order_no: 'CCWEBTEST0001',
+      plan_name: plan.name,
+      amount_fen: plan.price_fen,
+      currency: 'CNY',
+      channel: 'test',
+      status: 'pending',
+      created_at: '2026-07-14T06:00:00Z',
+    };
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      test_mode: true,
+      trial_available: false,
+      channels: [{ id: 'test', label: '灰度测试支付', test_mode: true }],
+      plans: [plan],
+    });
+    api.createCommercialOrder.mockResolvedValue({ order: pendingOrder });
+    api.confirmCommercialTestPayment.mockResolvedValue({
+      ok: true,
+      order: { ...pendingOrder, status: 'fulfilled' },
+      summary: { uid: 38, total_cny: 500, totals_by_model: { 'MiniMax-M3': 500 } },
+    });
+
+    await renderModal();
+    const purchaseButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('购买'));
+    await act(async () => {
+      purchaseButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.createCommercialOrder).toHaveBeenCalledWith(9, 'test', expect.stringMatching(/^order_/));
+    expect(container.textContent).toContain('待支付');
+    const confirmButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('完成灰度测试支付'));
+    await act(async () => {
+      confirmButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.confirmCommercialTestPayment).toHaveBeenCalledWith('CCWEBTEST0001');
+    expect(container.textContent).toContain('支付成功');
+    expect(container.textContent).toContain('已到账');
+  });
 });
