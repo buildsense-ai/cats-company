@@ -49,7 +49,6 @@ mkdir -p \
   "$root/releases" \
   "$compose_dir" \
   "$env_dir" \
-  "$root/secrets" \
   "$root/data/mysql" \
   "$root/data/uploads" \
   "$root/logs"

@@ -7,7 +7,6 @@ mkdir -p \
   "$root/releases" \
   "$root/compose" \
   "$root/env" \
-  "$root/secrets" \
   "$root/data/mysql" \
   "$root/data/uploads" \
   "$root/logs"
