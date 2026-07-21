@@ -3724,6 +3724,7 @@ button.catsco-download-action:disabled {
 }
 
 .oc-reply-bar-close {
+  flex: 0 0 auto;
   background: none;
   border: none;
   color: var(--oc-gray);
@@ -5617,13 +5618,20 @@ button.catsco-download-action:disabled {
 
 /* --- V3 Composer Popovers (Reply & Mention) --- */
 .oc-reply-bar {
+  width: min(760px, calc(100% - 40px)) !important;
   background: var(--v3-bg-sidebar) !important;
   border: 1px solid var(--v3-border) !important;
   border-radius: 8px 8px 0 0 !important;
   border-bottom: none !important;
-  margin: 0 20px !important;
+  margin: 0 auto !important;
   padding: 10px 16px !important;
   color: var(--v3-text-main) !important;
+}
+
+@media (max-width: 760px) {
+  .oc-reply-bar {
+    width: calc(100% - 20px) !important;
+  }
 }
 
 .oc-reply-bar-label {

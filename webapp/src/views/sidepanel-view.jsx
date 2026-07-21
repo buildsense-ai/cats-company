@@ -8,6 +8,7 @@ import FriendRequest from '../widgets/friend-request';
 import AgentStoreModal from '../widgets/agent-store-modal';
 import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
 import Avatar from '../widgets/avatar';
+import { formatSidebarTime } from '../utils/sidebar-time';
 import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Check, X, Pin, Pencil, ChevronRight, Plus, Search, MoreHorizontal, UserX, Ban, AlertCircle, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
@@ -205,6 +206,8 @@ export default function ChatListView({
   const [chatMenuPlacement, setChatMenuPlacement] = useState('down');
   const [unreadFriendTopicIds, setUnreadFriendTopicIds] = useState(() => new Set());
   const [openProjectMenuId, setOpenProjectMenuId] = useState(null);
+  const [newTaskProject, setNewTaskProject] = useState(null);
+  const [taskPickerProject, setTaskPickerProject] = useState(null);
   const [showContactActions, setShowContactActions] = useState(false);
   const [friendActionId, setFriendActionId] = useState('');
   const [dismissedTaskStatuses, setDismissedTaskStatuses] = useState(() => loadDismissedTaskStatuses(user?.uid));
@@ -219,6 +222,7 @@ export default function ChatListView({
   const [editingHistoryTopicId, setEditingHistoryTopicId] = useState('');
   const [historyNameDraft, setHistoryNameDraft] = useState('');
   const [renamingTopicId, setRenamingTopicId] = useState('');
+  const [sidebarTimeNowMs, setSidebarTimeNowMs] = useState(() => Date.now());
   const justHiddenHistoryRef = useRef('');
   const activeTopicRef = useRef(activeTopic);
   const userUidRef = useRef(user?.uid);
@@ -256,6 +260,20 @@ export default function ChatListView({
   useEffect(() => {
     agentsRef.current = agents;
   }, [agents]);
+
+  useEffect(() => {
+    let midnightTimer;
+    const scheduleMidnightRefresh = () => {
+      const now = new Date();
+      const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      midnightTimer = window.setTimeout(() => {
+        setSidebarTimeNowMs(Date.now());
+        scheduleMidnightRefresh();
+      }, Math.max(1000, nextMidnight.getTime() - now.getTime() + 50));
+    };
+    scheduleMidnightRefresh();
+    return () => window.clearTimeout(midnightTimer);
+  }, []);
 
   useEffect(() => {
     const topicId = String(activeTopic || '').trim();
@@ -349,7 +367,10 @@ export default function ChatListView({
   }, [openChatMenuKey]);
 
   useEffect(() => {
-    const openNewTask = () => setShowNewChat(true);
+    const openNewTask = () => {
+      setNewTaskProject(null);
+      setShowNewChat(true);
+    };
     window.addEventListener('catsco:new-task', openNewTask);
     return () => window.removeEventListener('catsco:new-task', openNewTask);
   }, []);
@@ -526,7 +547,7 @@ export default function ChatListView({
             const updated = {
               ...prev[idx],
               preview: summarizeMessage({ content: msg.data.content }),
-              time: formatTime(new Date()),
+              time: formatSidebarTime(Date.now()),
               lastTimeMs: Date.now(),
               seq,
             };
@@ -558,7 +579,7 @@ export default function ChatListView({
           const updated = {
             ...previous[index],
             taskStatus,
-            time: formatTime(new Date(updatedAtMs)),
+            time: formatSidebarTime(updatedAtMs),
             lastTimeMs: Math.max(updatedAtMs, previous[index].lastTimeMs || 0),
           };
           return [updated, ...previous.filter((_, itemIndex) => itemIndex !== index)];
@@ -595,7 +616,7 @@ export default function ChatListView({
           groupId: group.id,
           name: group.name,
           preview: '',
-          time: formatTime(new Date(createdAtMs)),
+          time: formatSidebarTime(createdAtMs),
           lastTimeMs: createdAtMs,
           createdAtMs,
           isGroup: true,
@@ -603,6 +624,8 @@ export default function ChatListView({
           hasBot: Boolean(group.has_bot),
           isAgentTask: Boolean(group.is_agent_task || group.kind === 'agent_task'),
           memberCount: Number(group.member_count || 0),
+          agentIds: taskAgentIdsFromPayload(group),
+          memberIds: normalizedEntityIds(group.member_ids),
           seq: 0,
         },
         ...prev.filter((chat) => chat.id !== topicId),
@@ -715,11 +738,29 @@ export default function ChatListView({
     onStartAgentTask?.(agent);
   };
 
+  const openNewTaskDialog = (project = null) => {
+    setNewTaskProject(project);
+    setShowNewChat(true);
+  };
+
+  const closeNewTaskDialog = () => {
+    setShowNewChat(false);
+    setNewTaskProject(null);
+  };
+
   const handleNewChatWithAgent = (agent) => {
     const agentId = agent.uid || agent.id;
     if (!agentId) return;
-    setShowNewChat(false);
-    onStartAgentTask?.(agent);
+    const project = newTaskProject;
+    closeNewTaskDialog();
+    if (project) {
+      onStartAgentTask?.(agent, {
+        projectId: Number(project.id),
+        projectName: String(project.name || ''),
+      });
+    } else {
+      onStartAgentTask?.(agent);
+    }
   };
 
   const trimmedSearch = search.trim();
@@ -771,9 +812,27 @@ export default function ChatListView({
       const pinDifference = Number(taskConversationIsPinned(right)) - Number(taskConversationIsPinned(left));
       return pinDifference || conversationRecentLess(left, right);
     });
-  const agentContactIds = new Set(agents.flatMap((agent) => (
-    [agent?.id, agent?.uid].filter(Boolean).map(String)
-  )));
+  const availableProjectTasks = sortConversationsWithPins(
+    [
+      ...visibleRecentChats.filter((chat) => !chat.isGroup),
+      ...mergedGroups,
+    ].filter((chat) => (
+      isHistoryTask(chat)
+      && !projectIdFor(chat)
+      && (chat.isGroup || !hiddenHistoryIds.has(String(chat.id)))
+    )),
+    pinnedHistoryIds,
+  ).sort((left, right) => {
+    const pinDifference = Number(taskConversationIsPinned(right)) - Number(taskConversationIsPinned(left));
+    return pinDifference || conversationRecentLess(left, right);
+  });
+  const agentById = new Map();
+  agents.forEach((agent) => {
+    [agent?.id, agent?.uid].filter(Boolean).forEach((agentId) => {
+      agentById.set(String(agentId), agent);
+    });
+  });
+  const agentContactIds = new Set(agentById.keys());
   const friendContactMap = new Map();
   filteredFriends
     .filter((friend) => {
@@ -820,6 +879,10 @@ export default function ChatListView({
       groupId: chat.groupId,
       avatar_url: chat.avatar_url,
       friendId: chat.friendId,
+      isBot: Boolean(chat.isBot),
+      hasBot: Boolean(chat.hasBot),
+      isAgentTask: Boolean(chat.isAgentTask),
+      memberCount: Number(chat.memberCount || 0),
     });
   };
 
@@ -857,6 +920,33 @@ export default function ChatListView({
     setOpenChatMenuKey('');
     setProjectPickerTask(chat);
     setShowCreateProject(false);
+  };
+
+  const handleCreateTaskInProject = (project) => {
+    setOpenProjectMenuId(null);
+    openNewTaskDialog(project);
+  };
+
+  const handleOpenProjectTaskPicker = (project) => {
+    setOpenProjectMenuId(null);
+    setTaskPickerProject(project);
+  };
+
+  const handleAddTaskToProject = async (chat) => {
+    if (!taskPickerProject?.id || !chat?.id) return;
+    const project = taskPickerProject;
+    setProjectActionTopicId(chat.id);
+    try {
+      await api.assignProjectTopic(project.id, chat.id);
+      setExpandedProjectId(Number(project.id));
+      await loadAll();
+      setTaskPickerProject(null);
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (err) {
+      window.alert(err.message || '添加任务失败');
+    } finally {
+      setProjectActionTopicId('');
+    }
   };
 
   const handleAssignProject = async (project) => {
@@ -1062,6 +1152,11 @@ export default function ChatListView({
     </div>
   );
 
+  const displayTimeForChat = (chat) => {
+    const timestamp = conversationSortTime(chat);
+    return timestamp ? formatSidebarTime(timestamp, sidebarTimeNowMs) : chat.time || '';
+  };
+
   const renderTaskControls = (chat, menuKey, { showPin = false, showTime = false } = {}) => {
     const isPinned = pinnedHistoryIds.has(String(chat.id))
       || (chat.isGroup && pinnedGroupIds.has(String(chat.id)));
@@ -1072,10 +1167,11 @@ export default function ChatListView({
       && groupOwnerById.get(String(chat.groupId)) === String(user.uid);
     const assignedProjectId = projectIdFor(chat);
     const removeLabel = onDeleteHistoryTask ? '删除任务' : '从列表移除';
+    const displayTime = displayTimeForChat(chat);
     return (
       <>
         <div className="cc-chat-row-trailing">
-          <TaskRowStatusIndicator status={visibleStatus} time={chat.time} showTime={showTime} />
+          <TaskRowStatusIndicator status={visibleStatus} time={displayTime} showTime={showTime} />
           <div className="cc-chat-row-actions">
             {showPin && (
               <button
@@ -1205,6 +1301,7 @@ export default function ChatListView({
 
   const renderConversationRow = (chat) => {
     const taskKind = conversationKind(chat);
+    const displayTime = displayTimeForChat(chat);
     if (taskKind === 'solo_agent' || taskKind === 'multi_agent') {
       const taskLabel = taskKind === 'multi_agent' ? '协作' : '';
       const menuKey = `task:${chat.id}`;
@@ -1216,7 +1313,7 @@ export default function ChatListView({
           data-task-kind={taskKind === 'multi_agent' ? 'collaboration' : 'solo'}
           onClick={() => selectConversation(chat)}
         >
-          <Zap size={14} className="prefix cc-chat-row-icon" aria-label="Agent 任务" />
+          {renderTaskAgentIcon(chat, agentById, onlineUsers)}
           {renderTaskCopy(chat, null, taskLabel)}
           {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
         </div>
@@ -1237,7 +1334,7 @@ export default function ChatListView({
           <Users size={14} className="prefix cc-chat-row-icon" aria-label="群聊" />
           {renderTaskCopy(chat, chat.preview, '群聊')}
           <div className="cc-chat-row-trailing">
-            {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
+            {displayTime && <span className="cc-chat-row-time">{displayTime}</span>}
             <div className="cc-chat-row-actions">
               <button
                 type="button"
@@ -1322,7 +1419,7 @@ export default function ChatListView({
           <UserRound size={14} className="prefix cc-chat-row-icon" aria-label="单聊" />
           {renderTaskCopy(chat, chat.preview, '单聊')}
           <div className="cc-chat-row-trailing">
-            {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
+            {displayTime && <span className="cc-chat-row-time">{displayTime}</span>}
             <div className="cc-chat-row-actions">
               <button
                 type="button"
@@ -1367,7 +1464,7 @@ export default function ChatListView({
         data-conversation-kind="agent"
         onClick={() => selectConversation(chat)}
       >
-        <Zap size={14} className="prefix cc-chat-row-icon" aria-label="Agent 任务" />
+        {renderTaskAgentIcon(chat, agentById, onlineUsers)}
         {renderTaskCopy(chat, null, '任务')}
         {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
       </div>
@@ -1377,6 +1474,7 @@ export default function ChatListView({
   const renderContactRow = ({ kind, item }) => {
     if (kind === 'group') {
       const chat = item;
+      const displayTime = displayTimeForChat(chat);
       const canDelete = groupOwnerById.get(String(chat.groupId)) === String(user.uid);
       const isPinned = pinnedGroupIds.has(String(chat.id));
       const menuKey = `group:${chat.id}`;
@@ -1390,7 +1488,7 @@ export default function ChatListView({
           <Users size={14} className="prefix cc-chat-row-icon" aria-label="群组" />
           {renderTaskCopy(chat, chat.preview)}
           <div className="cc-chat-row-trailing">
-            {chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
+            {displayTime && <span className="cc-chat-row-time">{displayTime}</span>}
             <div className="cc-chat-row-actions">
               <button
                 type="button"
@@ -1465,6 +1563,7 @@ export default function ChatListView({
 
     if (kind === 'friend') {
       const chat = item;
+      const displayTime = displayTimeForChat(chat);
       const isOnline = onlineStatusFor(onlineUsers, chat.friendId, chat.isOnline);
       const hasUnreadMessage = unreadFriendTopicIds.has(chat.id);
       return (
@@ -1489,7 +1588,7 @@ export default function ChatListView({
           <div className="cc-chat-row-trailing">
             {hasUnreadMessage
               ? <span className="cc-friend-unread-dot" role="status" aria-label={`${chat.name} 有新消息`} />
-              : chat.time && <span className="cc-chat-row-time">{chat.time}</span>}
+              : displayTime && <span className="cc-chat-row-time">{displayTime}</span>}
             <div className="cc-chat-row-actions">
               <button
                 type="button"
@@ -1631,7 +1730,7 @@ export default function ChatListView({
           <button
             type="button"
             className="cc-compact-new-chat"
-            onClick={() => setShowNewChat(true)}
+            onClick={() => openNewTaskDialog()}
             aria-label="新建任务"
             title="新建任务"
           >
@@ -1655,7 +1754,7 @@ export default function ChatListView({
       )}
 
       {!compact && <div className="cc-sidebar-tools">
-        <button type="button" className="cc-sidebar-primary" onClick={() => setShowNewChat(true)}>
+        <button type="button" className="cc-sidebar-primary" onClick={() => openNewTaskDialog()}>
           <Plus size={17} />
           <span>新建任务</span>
         </button>
@@ -1678,7 +1777,7 @@ export default function ChatListView({
             <span>任务</span>
             <ChevronRight size={14} />
           </button>
-          <button type="button" className="cc-section-add" onClick={() => setShowNewChat(true)} title="新建任务" aria-label="新建任务"><Plus size={15} /></button>
+          <button type="button" className="cc-section-add" onClick={() => openNewTaskDialog()} title="新建任务" aria-label="新建任务"><Plus size={15} /></button>
         </div>
         {(isSearching || !collapsed.conversations) && (conversationChats.length === 0 && !isSearching ? (
           <div className="cc-sidebar-empty cc-conversation-empty">选择一个 Agent 开始新任务</div>
@@ -1844,6 +1943,14 @@ export default function ChatListView({
                   </button>
                   {openProjectMenuId === projectId && (
                     <div className="v3-friend-action-menu cc-project-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+                      <button type="button" role="menuitem" onClick={() => handleCreateTaskInProject(project)}>
+                        <Plus size={14} />
+                        <span>新建任务</span>
+                      </button>
+                      <button type="button" role="menuitem" onClick={() => handleOpenProjectTaskPicker(project)}>
+                        <FolderPlus size={14} />
+                        <span>添加已有任务</span>
+                      </button>
                       <button type="button" role="menuitem" onClick={() => openProjectRename(project)}>
                         <Pencil size={14} />
                         <span>更改项目名称</span>
@@ -1867,7 +1974,7 @@ export default function ChatListView({
                       aria-label={`打开项目任务 ${chat.name}`}
                       onClick={() => selectConversation(chat)}
                     >
-                      <Zap size={14} className="prefix cc-chat-row-icon" aria-label="Agent 任务" />
+                      {renderTaskAgentIcon(chat, agentById, onlineUsers)}
                       {renderTaskCopy(chat, null, taskLabel)}
                       {renderTaskControls(chat, menuKey, { showPin: true, showTime: true })}
                     </div>
@@ -1887,11 +1994,11 @@ export default function ChatListView({
       </div>}
 
       {showNewChat && createPortal(
-        <div className="name-dialog-overlay cc-new-task-overlay" onClick={() => setShowNewChat(false)}>
-          <section className="name-dialog cc-new-task-dialog" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <div className="name-dialog-overlay cc-new-task-overlay" onClick={closeNewTaskDialog}>
+          <section className="name-dialog cc-new-task-dialog" role="dialog" aria-modal="true" aria-label={newTaskProject ? `在${newTaskProject.name}中新建任务` : '新建任务'} onClick={(e) => e.stopPropagation()}>
             <header className="cc-new-task-header">
-              <h3>选择 AI 助手开始任务</h3>
-              <button type="button" className="cc-dialog-close" onClick={() => setShowNewChat(false)} aria-label="关闭">
+              <h3>{newTaskProject ? `在“${newTaskProject.name}”中新建任务` : '选择 AI 助手开始任务'}</h3>
+              <button type="button" className="cc-dialog-close" onClick={closeNewTaskDialog} aria-label="关闭">
                 <X size={18} />
               </button>
             </header>
@@ -1911,6 +2018,48 @@ export default function ChatListView({
                 ))}
               </div>
             )}
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
+
+      {taskPickerProject && createPortal(
+        <div className="name-dialog-overlay cc-new-task-overlay" onClick={() => setTaskPickerProject(null)}>
+          <section className="name-dialog cc-new-task-dialog cc-project-picker-dialog" role="dialog" aria-modal="true" aria-label="添加已有任务" onClick={(event) => event.stopPropagation()}>
+            <header className="cc-new-task-header">
+              <h3>添加已有任务</h3>
+              <button type="button" className="cc-dialog-close" onClick={() => setTaskPickerProject(null)} aria-label="关闭添加已有任务">
+                <X size={18} />
+              </button>
+            </header>
+            <div className="cc-new-task-body">
+              <div className="cc-project-picker-target">选择要加入“{taskPickerProject.name}”的任务</div>
+              {availableProjectTasks.length === 0 ? (
+                <div className="cc-new-task-empty cc-project-picker-empty">
+                  <Zap size={20} aria-hidden="true" />
+                  <strong>暂无可添加任务</strong>
+                  <span>已归入项目的任务不会出现在这里</span>
+                </div>
+              ) : (
+                <div className="cc-new-task-agent-list cc-project-picker-list">
+                  {availableProjectTasks.map((chat) => (
+                    <button
+                      type="button"
+                      className="cc-new-task-agent"
+                      key={chat.id}
+                      disabled={Boolean(projectActionTopicId)}
+                      onClick={() => handleAddTaskToProject(chat)}
+                    >
+                      <Zap size={17} />
+                      <span>{chat.name}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="cc-new-task-actions cc-project-picker-actions">
+                <button type="button" className="oc-btn oc-btn-default" onClick={() => setTaskPickerProject(null)}>取消</button>
+              </div>
             </div>
           </section>
         </div>,
@@ -2102,6 +2251,66 @@ function onlineStatusFor(onlineUsers, uid, fallback = false) {
   return Boolean(fallback);
 }
 
+function normalizedEntityIds(values) {
+  const source = Array.isArray(values) ? values : [values];
+  return [...new Set(source
+    .flatMap((value) => Array.isArray(value) ? value : [value])
+    .map((value) => String(value ?? '').trim())
+    .filter((value) => value && value !== '0'))];
+}
+
+function taskAgentIdsFromPayload(item) {
+  return normalizedEntityIds([
+    item?.agentIds,
+    item?.agent_ids,
+    item?.agentId,
+    item?.agent_id,
+  ]);
+}
+
+function agentIdsForTask(chat, agentById) {
+  const explicitAgentIds = taskAgentIdsFromPayload(chat);
+  if (explicitAgentIds.length > 0) return explicitAgentIds;
+
+  if (!chat?.isGroup && chat?.friendId) {
+    return [String(chat.friendId)];
+  }
+
+  return normalizedEntityIds([chat?.memberIds, chat?.member_ids])
+    .filter((agentId) => agentById.has(agentId));
+}
+
+function taskAgentOnlineSummary(chat, agentById, onlineUsers) {
+  const agentIds = agentIdsForTask(chat, agentById);
+  const onlineCount = agentIds.reduce((count, agentId) => {
+    const agent = agentById.get(agentId);
+    const isDirectTaskAgent = !chat?.isGroup && String(chat?.friendId || '') === agentId;
+    const fallback = isDirectTaskAgent && chat?.isOnline !== undefined
+      ? chat.isOnline
+      : agent?.is_online;
+    return count + Number(onlineStatusFor(onlineUsers, agentId, fallback));
+  }, 0);
+  return { agentCount: agentIds.length, onlineCount, isOnline: onlineCount > 0 };
+}
+
+function renderTaskAgentIcon(chat, agentById, onlineUsers) {
+  const status = taskAgentOnlineSummary(chat, agentById, onlineUsers);
+  const stateLabel = status.isOnline ? '在线' : '离线';
+  const detail = status.agentCount === 0
+    ? '未关联 Agent'
+    : status.agentCount > 1
+      ? `${status.onlineCount}/${status.agentCount} 个 Agent 在线`
+      : `Agent ${stateLabel}`;
+  return (
+    <Zap
+      size={14}
+      className={`prefix cc-chat-row-icon cc-task-agent-icon ${status.isOnline ? 'online' : 'offline'}`}
+      title={detail}
+      aria-label={`Agent 任务，${detail}`}
+    />
+  );
+}
+
 function isOwnedAgent(agent) {
   return agent?.is_owner === true || agent?.relation === 'owner';
 }
@@ -2231,7 +2440,7 @@ function conversationSummaryToChat(item) {
     groupId: item.group_id,
     name: item.name,
     preview: item.preview || '',
-    time: lastTimeMs ? formatTime(new Date(lastTimeMs)) : '',
+    time: lastTimeMs ? formatSidebarTime(lastTimeMs) : '',
     lastTimeMs,
     createdAtMs,
     isGroup: item.is_group,
@@ -2240,6 +2449,8 @@ function conversationSummaryToChat(item) {
     hasBot: Boolean(item.has_bot || item.is_agent_group),
     isAgentTask: Boolean(item.is_agent_task || item.kind === 'agent_task'),
     memberCount: Number(item.member_count || 0),
+    agentIds: taskAgentIdsFromPayload(item),
+    memberIds: normalizedEntityIds(item.member_ids || item.memberIds),
     isOnline: item.is_online,
     seq: item.latest_seq || 0,
     taskStatus: normalizeTaskStatus(item.task_status),
@@ -2269,6 +2480,8 @@ function mergeGroupsWithConversations(groups, groupConversations) {
       hasBot: Boolean(existing.hasBot || normalized.hasBot),
       isAgentTask: Boolean(existing.isAgentTask || normalized.isAgentTask),
       memberCount: normalized.memberCount || existing.memberCount || 0,
+      agentIds: normalizedEntityIds([existing.agentIds, normalized.agentIds]),
+      memberIds: normalizedEntityIds([existing.memberIds, normalized.memberIds]),
       time: normalized.time || existing.time || '',
       lastTimeMs: preserveExistingTime ? existing.lastTimeMs : normalized.lastTimeMs,
       createdAtMs: normalized.createdAtMs || existing.createdAtMs,
@@ -2295,10 +2508,12 @@ function normalizeGroupListItem(item) {
     isAgentTask: Boolean(item.isAgentTask || item.is_agent_task || item.kind === 'agent_task'),
     hasBot: Boolean(item.hasBot || item.has_bot || item.is_agent_group),
     memberCount: Number(item.memberCount || item.member_count || 0),
+    agentIds: taskAgentIdsFromPayload(item),
+    memberIds: normalizedEntityIds(item.memberIds || item.member_ids),
     projectId: projectIdFor(item),
     avatar_url: item.avatar_url,
     preview: item.preview || '',
-    time: item.time || (lastTimeMs ? formatTime(new Date(lastTimeMs)) : ''),
+    time: item.time || (lastTimeMs ? formatSidebarTime(lastTimeMs) : ''),
     lastTimeMs,
     createdAtMs,
     seq: item.seq || 0,
@@ -2322,7 +2537,13 @@ function isHistoryTask(chat) {
 
 function conversationKind(chat) {
   if (!chat?.isGroup) return chat?.isBot ? 'solo_agent' : 'friend';
-  return 'multi_agent';
+  const memberCount = Number(chat.memberCount || 0);
+  const includesAgent = Boolean(chat.isAgentTask || chat.hasBot);
+
+  if (includesAgent) {
+    return memberCount > 2 ? 'multi_agent' : 'solo_agent';
+  }
+  return memberCount === 1 ? 'solo_agent' : 'multi_agent';
 }
 
 function projectIdFor(chat) {
@@ -2407,12 +2628,6 @@ function userSearchText(user) {
   ].filter(Boolean).join(' ').toLowerCase();
 }
 
-function formatTime(date) {
-  const h = date.getHours().toString().padStart(2, '0');
-  const m = date.getMinutes().toString().padStart(2, '0');
-  return `${h}:${m}`;
-}
-
 function normalizeCreatedGroup(created) {
   if (!created) return null;
   const rawGroup = created.group || {};
@@ -2428,6 +2643,10 @@ function normalizeCreatedGroup(created) {
     created_at: rawGroup.created_at || created.created_at || new Date().toISOString(),
     has_bot: rawGroup.has_bot || created.has_bot || false,
     member_count: Number(rawGroup.member_count || created.member_count || 0),
+    agent_ids: taskAgentIdsFromPayload(rawGroup).length > 0
+      ? taskAgentIdsFromPayload(rawGroup)
+      : taskAgentIdsFromPayload(created),
+    member_ids: normalizedEntityIds(rawGroup.member_ids || created.member_ids),
     kind: rawGroup.kind || created.kind || 'standard',
     is_agent_task: Boolean(rawGroup.is_agent_task || created.is_agent_task),
   };
@@ -2440,7 +2659,7 @@ function groupToConversation(group) {
     groupId: group.id,
     name: group.name,
     preview: '',
-    time: createdAtMs ? formatTime(new Date(createdAtMs)) : '',
+    time: createdAtMs ? formatSidebarTime(createdAtMs) : '',
     lastTimeMs: createdAtMs,
     createdAtMs,
     isGroup: true,
@@ -2448,6 +2667,8 @@ function groupToConversation(group) {
     hasBot: Boolean(group.has_bot || group.is_agent_group),
     isAgentTask: Boolean(group.is_agent_task || group.kind === 'agent_task'),
     memberCount: Number(group.member_count || 0),
+    agentIds: taskAgentIdsFromPayload(group),
+    memberIds: normalizedEntityIds(group.member_ids),
     seq: 0,
   };
 }

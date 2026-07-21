@@ -34,6 +34,23 @@ describe('active topic normalization', () => {
     })).toMatchObject({ isGroup: false, groupId: undefined, friendId: 2 });
   });
 
+  test('preserves task classification metadata when it is provided', () => {
+    expect(normalizeActiveTopic({
+      topicId: 'grp_42',
+      name: '协作任务',
+      isGroup: true,
+      isBot: false,
+      hasBot: true,
+      isAgentTask: true,
+      memberCount: 4,
+    })).toMatchObject({
+      isBot: false,
+      hasBot: true,
+      isAgentTask: true,
+      memberCount: 4,
+    });
+  });
+
   test.each([null, '', '[object Object]', {}, { topicId: '' }])('rejects invalid topic %j', (input) => {
     expect(normalizeActiveTopic(input)).toBeNull();
   });

@@ -1,6 +1,8 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 vi.mock('../widgets/chat-message', () => ({
   __esModule: true,
@@ -92,6 +94,11 @@ vi.mock('../api', () => ({
 import MessagesView from './messages-view';
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { api, onWSMessage, wsSendStreamCancel } from '../api';
+
+const openchatThemeCss = readFileSync(
+  resolve(process.cwd(), 'src/css/openchat-theme.css'),
+  'utf8',
+);
 
 const user = {
   uid: 1,
@@ -385,6 +392,53 @@ describe('MessagesView composer draft isolation', () => {
     const textarea = container.querySelector('textarea.v3-composer-input');
     expect(textarea.value).toBe('Please review this instruction again.');
     expect(document.activeElement).toBe(textarea);
+  });
+
+  it('keeps the full reply preview available for single-line CSS truncation and clears it explicitly', async () => {
+    const longReply = '这是一段明显超过旧版六十字硬截断限制的回复内容，用来确保预览栏保留完整原文，并交给界面根据实际可用宽度显示省略号，而不是提前丢失后半段文字。';
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 69,
+        seq_id: 69,
+        topic_id: 'p2p_1_2',
+        from_uid: 1,
+        type: 'text',
+        content: longReply,
+        created_at: '2026-06-09T00:01:00Z',
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const replyButton = container.querySelector('.mock-reply-message[data-message-id="69"]');
+    expect(replyButton).not.toBeNull();
+    await act(async () => {
+      Simulate.click(replyButton);
+    });
+
+    const replyBar = container.querySelector('.oc-reply-bar');
+    const closeButton = replyBar?.querySelector('.oc-reply-bar-close');
+    expect(replyBar?.querySelector('.oc-reply-bar-text')?.textContent).toBe(longReply);
+    expect(closeButton?.getAttribute('type')).toBe('button');
+    expect(closeButton?.getAttribute('aria-label')).toBe('取消回复');
+
+    await act(async () => {
+      Simulate.click(closeButton);
+    });
+    expect(container.querySelector('.oc-reply-bar')).toBeNull();
+  });
+
+  it('aligns the reply preview with the composer at desktop and narrow widths', () => {
+    expect(openchatThemeCss).toContain('width: min(760px, calc(100% - 40px)) !important;');
+    expect(openchatThemeCss).toMatch(
+      /@media \(max-width: 760px\) \{\s*\.oc-reply-bar \{\s*width: calc\(100% - 20px\) !important;/,
+    );
+    expect(openchatThemeCss).toMatch(
+      /\.oc-reply-bar-content \{[^}]*overflow: hidden;[^}]*white-space: nowrap;[^}]*text-overflow: ellipsis;/s,
+    );
   });
 
   it('merges adjacent assistant text chunks into one visual reply', async () => {
@@ -1548,6 +1602,10 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(container.textContent).toContain('输入');
+    const typingStatus = container.querySelector('.v3-peer-typing');
+    expect(typingStatus?.getAttribute('role')).toBe('status');
+    expect(typingStatus?.querySelector('.v3-peer-typing-label')).not.toBeNull();
+    expect(typingStatus?.querySelector('.v3-avatar-col')).toBeNull();
 
     await act(async () => {
       wsHandler({
@@ -1564,6 +1622,7 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(container.textContent).not.toContain('输入');
+    expect(container.querySelector('.v3-peer-typing')).toBeNull();
   });
 
   it('expands a runtime plan without crashing the conversation view', async () => {

@@ -1304,7 +1304,6 @@ export default function MessagesView({
     return map;
   }, [members]);
 
-
   const messageById = useMemo(() => {
     const map = new Map();
     messages.forEach((message) => {
@@ -1610,8 +1609,8 @@ export default function MessagesView({
         })}
           {runtimePlan && <RuntimePlanCard plan={runtimePlan} />}
           {peerTyping && (
-            <div style={{padding:'4px 20px', fontSize:'12px', color:'var(--v3-text-muted)'}}>
-              {t('typing')}...
+            <div className="v3-peer-typing" role="status">
+              <span className="v3-peer-typing-label">{t('typing')}</span>
             </div>
           )}
           <div ref={bottomRef} />
@@ -1670,10 +1669,17 @@ export default function MessagesView({
           <div className="oc-reply-bar-content">
             <span className="oc-reply-bar-label">{t('chat_reply')}: </span>
             <span className="oc-reply-bar-text">
-              {typeof replyTo.content === 'string' ? replyTo.content.slice(0, 60) : '[media]'}
+              {typeof replyTo.content === 'string' ? replyTo.content : '[media]'}
             </span>
           </div>
-          <button className="oc-reply-bar-close" onClick={() => setReplyTo(null)}>x</button>
+          <button
+            type="button"
+            className="oc-reply-bar-close"
+            aria-label="取消回复"
+            onClick={() => setReplyTo(null)}
+          >
+            x
+          </button>
         </div>
       )}
 

@@ -253,6 +253,9 @@ func buildFriendConversationSummary(topicID string, friend *types.User, latest *
 		IsBot:     isBot,
 		IsOnline:  isOnline,
 	}
+	if isBot {
+		summary.AgentIDs = []int64{friend.ID}
+	}
 	applyLatestMessage(summary, latest)
 	return summary
 }
@@ -288,6 +291,7 @@ func buildGroupConversationSummary(topicID string, group *types.Group, latest *t
 		HasBot:      group.HasBot,
 		IsAgentTask: group.Kind == types.GroupKindAgentTask,
 		MemberCount: group.MemberCount,
+		AgentIDs:    append([]int64(nil), group.AgentIDs...),
 	}
 	applyLatestMessage(summary, latest)
 	applyGroupCreatedTime(summary, group)

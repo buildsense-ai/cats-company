@@ -417,6 +417,55 @@
   white-space: nowrap;
 }
 
+.v3-shell-title-button {
+  min-height: 30px;
+  padding: 3px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--cc-radius-sm);
+  background: transparent;
+  color: var(--cc-text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.25;
+  cursor: text;
+}
+
+.v3-shell-title-button:hover {
+  border-color: var(--cc-border);
+  background: var(--cc-hover);
+}
+
+.v3-shell-title-input {
+  box-sizing: border-box;
+  justify-self: center;
+  width: min(42vw, 480px);
+  min-width: 180px;
+  height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
+  outline: none;
+  background: var(--cc-panel);
+  color: var(--cc-text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  text-align: center;
+}
+
+.v3-shell-title-input:focus,
+.v3-shell-title-input:focus-visible {
+  border-color: var(--cc-border-strong);
+  outline: none;
+  outline-offset: 0;
+  box-shadow: none;
+}
+
+.v3-shell-title-input:disabled {
+  opacity: 0.65;
+}
+
 .v3-shell-actions {
   min-width: 0;
   justify-self: end;
@@ -432,6 +481,13 @@
 .v3-action-btn:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--cc-accent) 72%, transparent);
   outline-offset: 2px;
+}
+
+.v3-shell-title-button:focus-visible {
+  border-color: var(--cc-border-strong);
+  outline: 1px solid var(--cc-border-strong);
+  outline-offset: 1px;
+  background: var(--cc-hover);
 }
 
 @media (max-width: 768px) {
@@ -456,6 +512,12 @@
 
   .v3-shell-title {
     max-width: 34vw;
+    font-size: 13px;
+  }
+
+  .v3-shell-title-input {
+    width: 34vw;
+    min-width: 120px;
     font-size: 13px;
   }
 
@@ -533,6 +595,11 @@
 
   .v3-shell-title {
     max-width: calc(100vw - 20px);
+  }
+
+  .v3-shell-title-input {
+    width: 30vw;
+    min-width: 104px;
   }
 
   .v3-action-btn {

@@ -780,15 +780,54 @@ describe('ChatMessage rich file rendering', () => {
     expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 26 }));
   });
 
-  it('keeps the current user bubble shrink-wrapped with equal inline padding', () => {
+  it('keeps the larger current-user bubble shrink-wrapped with balanced padding', () => {
     expect(catscoUiSystemCss).toContain('.v3-message.is-self .v3-message-bubble');
+    const messageRule = catscoUiSystemCss.match(
+      /\.v3-message\.is-self\s*\{[^}]*\}/,
+    )?.[0];
     const bubbleRule = catscoUiSystemCss.match(
       /\.v3-message\.is-self \.v3-message-bubble\s*\{[^}]*\}/,
     )?.[0];
 
+    expect(messageRule).toContain('max-width: min(74%, 700px);');
     expect(bubbleRule).toContain('width: fit-content;');
     expect(bubbleRule).toContain('max-width: 100%;');
-    expect(bubbleRule).toContain('padding-inline: 10px;');
+    expect(bubbleRule).toContain('padding-block: 10px;');
+    expect(bubbleRule).toContain('padding-inline: 14px;');
+  });
+
+  it('uses the larger shared body text for both user and Agent messages', async () => {
+    await act(async () => {
+      root.render(
+        <>
+          <ChatMessage
+            message={{ id: 27, from_uid: 1, content: 'User message', created_at: '2026-06-09T00:00:00Z' }}
+            isSelf
+            isGroup={false}
+            senderName="Me"
+          />
+          <ChatMessage
+            message={{ id: 28, from_uid: 2, content: 'Agent message', created_at: '2026-06-09T00:01:00Z' }}
+            isSelf={false}
+            isGroup={false}
+            senderName="CatsCo"
+            senderIsBot
+          />
+        </>,
+      );
+      await Promise.resolve();
+    });
+
+    const messageContents = container.querySelectorAll('.v3-message-content');
+    expect(messageContents).toHaveLength(2);
+    expect(messageContents[0].textContent).toContain('User message');
+    expect(messageContents[1].textContent).toContain('Agent message');
+
+    const contentRule = catscoUiSystemCss.match(
+      /\.v3-message \.v3-message-content\s*\{[^}]*\}/,
+    )?.[0];
+    expect(contentRule).toContain('font-size: 15px;');
+    expect(contentRule).toContain('line-height: 1.62;');
   });
 
   it('renders update_plan working tools as a plan card fallback', async () => {

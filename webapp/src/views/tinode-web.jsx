@@ -22,6 +22,7 @@ import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import RelayAccessModal from '../widgets/relay-access-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
+import EditableConversationTitle from '../widgets/editable-conversation-title';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
 import BotModelSelector, {
@@ -38,6 +39,8 @@ import {
   applyScopedModelUpdate,
   resolveScopedModelState,
 } from '../utils/conversation-model-state';
+import { createAgentTaskTopicRecord } from '../utils/agent-task-topic';
+import { formatEmptyTaskGreeting } from '../utils/empty-task-greeting';
 import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
@@ -676,6 +679,29 @@ function TinodeWebApp() {
     });
   };
 
+  const handleRenameActiveTopic = useCallback(async (nextName) => {
+    const topic = activeTopic;
+    if (!topic?.topicId) return;
+
+    try {
+      if (topic.isGroup || topic.topicId.startsWith('grp_')) {
+        const groupId = Number(topic.groupId || topic.topicId.slice(4));
+        if (!groupId) throw new Error('无法识别当前协作任务');
+        await api.updateGroup(groupId, nextName, topic.avatar_url || '');
+      } else {
+        await api.updateConversationTitle(topic.topicId, nextName);
+      }
+
+      setActiveTopic((current) => (
+        current?.topicId === topic.topicId ? { ...current, name: nextName } : current
+      ));
+      window.dispatchEvent(new Event('cc:data-changed'));
+    } catch (error) {
+      window.alert(error.message || '修改对话标题失败');
+      throw error;
+    }
+  }, [activeTopic, setActiveTopic]);
+
   const resolveAgentTopic = useCallback(async (agent) => {
     const agentUid = agent?.uid || agent?.id;
     if (!agentUid) throw new Error('请选择一个可用的 Agent');
@@ -705,29 +731,18 @@ function TinodeWebApp() {
       isGroup: false,
       avatar_url: opened.avatar_url || agent.avatar_url,
       friendId: opened.uid || agentUid,
+      isBot: true,
     };
   }, []);
 
   const createAgentTaskTopic = useCallback(async (agent, draft = {}) => {
-    const agentUid = agent?.uid || agent?.id;
-    if (!agentUid) throw new Error('请选择一个可用的 Agent');
-
     const taskName = buildAgentTaskName(agent, draft);
-    const created = await api.createGroup(taskName, [agentUid], { kind: 'agent_task' });
-    const rawGroup = created?.group || {};
-    const groupId = rawGroup.id || created?.group_id;
-    const topicId = created?.topic || created?.topic_id || (groupId ? `grp_${groupId}` : '');
-    if (!topicId || !groupId) throw new Error('暂时无法创建任务，请稍后重试。');
-
-    return {
-      topicId,
-      name: rawGroup.name || created?.name || taskName,
-      isGroup: true,
-      groupId,
-      avatar_url: rawGroup.avatar_url || created?.avatar_url || agent.avatar_url || '',
-      hasBot: true,
-      isAgentTask: true,
-    };
+    return createAgentTaskTopicRecord({
+      agent,
+      taskName,
+      projectId: draft.projectId,
+      projectName: draft.projectName,
+    });
   }, []);
 
   const activateResolvedTopic = useCallback((nextTopic) => {
@@ -736,17 +751,28 @@ function TinodeWebApp() {
     setActiveTopic(nextTopic);
   }, [setActiveTopic]);
 
-  const handleStartAgentTask = useCallback((agent) => {
+  const handleStartAgentTask = useCallback((agent, options = {}) => {
     const agentUid = agent?.uid || agent?.id;
     if (!agentUid) return;
+    const projectId = Number(options?.projectId || 0);
     taskDraftSequenceRef.current += 1;
     setActiveTopic(null);
     setTaskDraft({
       agent,
       key: `${agentUid}:${taskDraftSequenceRef.current}`,
+      projectId: projectId > 0 ? projectId : 0,
+      projectName: projectId > 0 ? String(options?.projectName || '') : '',
     });
     setMobileSidebarOpen(false);
   }, [setActiveTopic]);
+
+  const createDraftAgentTaskTopic = useCallback((agent, draft = {}) => (
+    createAgentTaskTopic(agent, {
+      ...draft,
+      projectId: taskDraft?.projectId || 0,
+      projectName: taskDraft?.projectName || '',
+    })
+  ), [createAgentTaskTopic, taskDraft?.projectId, taskDraft?.projectName]);
 
   const activateAgentTopic = useCallback(async (agent) => {
     const nextTopic = await resolveAgentTopic(agent);
@@ -909,6 +935,7 @@ function TinodeWebApp() {
           currentModelName={currentModelName}
           onDownload={() => setShowDownloadModal(true)}
           title={activeTopic?.name || taskDraftTitle(taskDraft)}
+          onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
         />
         {activeTopic ? (
           <MessagesView
@@ -928,8 +955,9 @@ function TinodeWebApp() {
         ) : (
           <NoActiveTask
             key={taskDraft?.key || 'new-task'}
+            user={user}
             initialAgent={taskDraft?.agent}
-            onResolveAgentTopic={createAgentTaskTopic}
+            onResolveAgentTopic={createDraftAgentTaskTopic}
             onActivateTopic={activateResolvedTopic}
           />
         )}
@@ -992,7 +1020,7 @@ function TinodeWebApp() {
   );
 }
 
-export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, title }) {
+export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, title, onRenameTitle }) {
   return (
     <header className="v3-local-assistant-bar">
       <div className="v3-model-select">
@@ -1002,7 +1030,7 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
           activeAgent={activeAgent}
         />
       </div>
-      <strong className="v3-shell-title">{title}</strong>
+      <EditableConversationTitle title={title} editable={Boolean(onRenameTitle)} onSave={onRenameTitle} />
       <div className="v3-shell-actions">
         <button type="button" className="v3-action-btn" onClick={onDownload} aria-label="下载桌面端">
           <Download size={17} />
@@ -1034,13 +1062,13 @@ function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft)
   };
 }
 
-function NoActiveTask({ initialAgent, onResolveAgentTopic, onActivateTopic }) {
+function NoActiveTask({ user, initialAgent, onResolveAgentTopic, onActivateTopic }) {
   return (
     <main className="cc-empty-task">
       <div className="cc-empty-task-inner">
         <div className="cc-empty-task-heading">
           <span className="catsco-brand-mark cc-empty-task-mark" aria-hidden="true" />
-          <h1>需要我为您做什么？</h1>
+          <h1>{formatEmptyTaskGreeting(user)}</h1>
         </div>
         <EmptyTaskComposer
           initialAgent={initialAgent}
@@ -1296,6 +1324,8 @@ function parseUid(uidStr) {
 function taskDraftTitle(taskDraft) {
   const agent = taskDraft?.agent;
   const agentName = agent?.display_name || agent?.username || '';
+  const projectName = String(taskDraft?.projectName || '').trim();
+  if (agentName && projectName) return `新任务 · ${agentName} · ${projectName}`;
   return agentName ? `新任务 · ${agentName}` : '新任务';
 }
 
