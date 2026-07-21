@@ -820,12 +820,12 @@ select:disabled {
 }
 
 .v3-timeline {
-  padding: 18px 42px 140px 18px;
+  padding: 18px 20px 140px;
   background: var(--cc-bg);
 }
 
 .v3-timeline-inner {
-  max-width: 920px;
+  max-width: 760px;
 }
 
 .v3-date-divider {
@@ -1688,6 +1688,7 @@ select:disabled {
 }
 
 .v3-message.is-peer .v3-avatar-col {
+  margin-right: 10px;
   padding-top: 8px;
 }
 
@@ -1698,9 +1699,39 @@ select:disabled {
 }
 
 .v3-message.is-peer .v3-message-bubble {
-  padding: 8px 18px 14px;
+  padding: 8px 0 14px;
   border-radius: 24px;
   background: transparent;
+}
+
+.v3-peer-typing {
+  width: min(760px, 100%);
+  margin: 4px auto;
+  padding: 8px 0 14px;
+}
+
+.v3-peer-typing-label {
+  display: inline-block;
+  color: var(--cc-text);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.62;
+  animation: cc-peer-typing-pulse 900ms ease-in-out infinite;
+  will-change: opacity;
+}
+
+@keyframes cc-peer-typing-pulse {
+  0%, 100% {
+    color: var(--cc-muted);
+    opacity: 0.24;
+  }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-peer-typing-label {
+    animation-duration: 1800ms;
+  }
 }
 
 .v3-message.is-peer.grouped {
@@ -1862,7 +1893,7 @@ select:disabled {
 }
 
 .v3-message.is-peer .v3-message-footer {
-  padding: 0 18px;
+  padding: 0;
 }
 
 .v3-message-footer .v3-message-actions {

@@ -1304,7 +1304,6 @@ export default function MessagesView({
     return map;
   }, [members]);
 
-
   const messageById = useMemo(() => {
     const map = new Map();
     messages.forEach((message) => {
@@ -1610,8 +1609,8 @@ export default function MessagesView({
         })}
           {runtimePlan && <RuntimePlanCard plan={runtimePlan} />}
           {peerTyping && (
-            <div style={{padding:'4px 20px', fontSize:'12px', color:'var(--v3-text-muted)'}}>
-              {t('typing')}...
+            <div className="v3-peer-typing" role="status">
+              <span className="v3-peer-typing-label">{t('typing')}</span>
             </div>
           )}
           <div ref={bottomRef} />

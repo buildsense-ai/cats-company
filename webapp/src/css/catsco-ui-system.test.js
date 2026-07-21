@@ -41,4 +41,21 @@ describe('CatsCo shell styling', () => {
     expect(markRule).toContain('height: 56px;');
     expect(ruleFor('.cc-empty-task h1')).toContain('font-weight: 500;');
   });
+
+  it('aligns peer messages and typing status to the unchanged composer rail', () => {
+    expect(ruleFor('.v3-timeline')).toContain('padding: 18px 20px 140px;');
+    expect(ruleFor('.v3-timeline-inner')).toContain('max-width: 760px;');
+    expect(ruleFor('.v3-message.is-peer .v3-avatar-col')).toContain('margin-right: 10px;');
+    expect(ruleFor('.v3-message.is-peer .v3-message-bubble')).toContain('padding: 8px 0 14px;');
+    expect(ruleFor('.v3-message.is-peer .v3-message-footer')).toContain('padding: 0;');
+    expect(ruleFor('.v3-peer-typing')).toContain('width: min(760px, 100%);');
+    expect(ruleFor('.v3-peer-typing')).toContain('margin: 4px auto;');
+    expect(ruleFor('.v3-peer-typing')).toContain('padding: 8px 0 14px;');
+    expect(ruleFor('.v3-peer-typing-label')).toContain('font-weight: 400;');
+    expect(ruleFor('.v3-peer-typing-label')).toContain('animation: cc-peer-typing-pulse 900ms ease-in-out infinite;');
+    expect(ruleFor('.v3-peer-typing-label')).toContain('will-change: opacity;');
+    expect(css).toContain('@keyframes cc-peer-typing-pulse');
+    expect(css).toContain('animation-duration: 1800ms;');
+    expect(ruleFor('.v3-composer-box')).toContain('width: min(760px, 100%);');
+  });
 });

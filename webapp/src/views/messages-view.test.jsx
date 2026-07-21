@@ -1602,6 +1602,10 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(container.textContent).toContain('输入');
+    const typingStatus = container.querySelector('.v3-peer-typing');
+    expect(typingStatus?.getAttribute('role')).toBe('status');
+    expect(typingStatus?.querySelector('.v3-peer-typing-label')).not.toBeNull();
+    expect(typingStatus?.querySelector('.v3-avatar-col')).toBeNull();
 
     await act(async () => {
       wsHandler({
@@ -1618,6 +1622,7 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(container.textContent).not.toContain('输入');
+    expect(container.querySelector('.v3-peer-typing')).toBeNull();
   });
 
   it('expands a runtime plan without crashing the conversation view', async () => {

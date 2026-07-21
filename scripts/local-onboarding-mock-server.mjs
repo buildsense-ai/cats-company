@@ -6,6 +6,10 @@ import { URL } from 'node:url';
 const port = Number(process.env.MOCK_CATS_PORT || 6061);
 const scenario = String(process.env.MOCK_CATS_SCENARIO || 'new').trim().toLowerCase();
 const echoReplies = ['1', 'true', 'yes', 'on'].includes(String(process.env.MOCK_CATS_ECHO || '').trim().toLowerCase());
+const requestedEchoReplyDelayMs = Number(process.env.MOCK_CATS_ECHO_DELAY_MS || 1800);
+const echoReplyDelayMs = Number.isFinite(requestedEchoReplyDelayMs)
+  ? Math.max(0, Math.min(10_000, requestedEchoReplyDelayMs))
+  : 1800;
 const tutorialTasksFile = String(process.env.MOCK_CATS_TUTORIAL_TASKS_FILE || '').trim();
 const tutorialTasksJSON = String(process.env.MOCK_CATS_TUTORIAL_TASKS_JSON || '').trim();
 const showcaseUsername = String(process.env.MOCK_CATS_SHOWCASE_USERNAME || 'ui-reviewer').trim();
@@ -733,7 +737,13 @@ async function handleApi(req, res) {
 
   try {
     if (req.method === 'GET' && url.pathname === '/health') {
-      return send(res, 200, { ok: true, mode: 'local-onboarding-mock', scenario });
+      return send(res, 200, {
+        ok: true,
+        mode: 'local-onboarding-mock',
+        scenario,
+        echo_replies: echoReplies,
+        echo_reply_delay_ms: echoReplyDelayMs,
+      });
     }
 
     if (req.method === 'POST' && url.pathname === '/__mock/reset') {
@@ -1421,22 +1431,32 @@ async function handleApi(req, res) {
           console.log(`[mock] no agent socket for bot uid=${match.bot.id}; message stored only`);
         }
         if (echoReplies) {
-          const echoMessage = storeMessage(topicId, {
-            from_uid: match.bot.id,
-            from: match.bot.id,
-            content: `mock echo: ${typeof content === 'string' ? content : JSON.stringify(content)}`,
-            type: 'text',
-            msg_type: 'text',
-            role: 'assistant',
-          });
-          const sockets = webSocketsByUserId.get(match.ownerId);
-          console.log(`[mock] echo reply ${sockets?.size || 0} web socket(s)`);
           broadcastToTopicOwner(topicId, {
-            data: {
-              ...echoMessage,
-              from: match.bot.id,
+            info: {
+              topic: topicId,
+              what: 'kp',
+              from: `usr${match.bot.id}`,
             },
           });
+          console.log(`[mock] typing indicator from bot uid=${match.bot.id}; echo in ${echoReplyDelayMs}ms`);
+          setTimeout(() => {
+            const echoMessage = storeMessage(topicId, {
+              from_uid: match.bot.id,
+              from: match.bot.id,
+              content: `mock echo: ${typeof content === 'string' ? content : JSON.stringify(content)}`,
+              type: 'text',
+              msg_type: 'text',
+              role: 'assistant',
+            });
+            const sockets = webSocketsByUserId.get(match.ownerId);
+            console.log(`[mock] echo reply ${sockets?.size || 0} web socket(s)`);
+            broadcastToTopicOwner(topicId, {
+              data: {
+                ...echoMessage,
+                from: match.bot.id,
+              },
+            });
+          }, echoReplyDelayMs);
         }
       } else {
         console.log(`[mock] no bot found for topic=${topicId || '-'}`);
@@ -1621,6 +1641,7 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`[mock] CatsCo local onboarding mock server listening on http://localhost:${port}`);
   console.log(`[mock] scenario=${scenario} (set MOCK_CATS_SCENARIO=new|existing|showcase)`);
   console.log(`[mock] echoReplies=${echoReplies} (set MOCK_CATS_ECHO=1 to echo without a real model)`);
+  if (echoReplies) console.log(`[mock] echoReplyDelayMs=${echoReplyDelayMs}`);
   if (scenario === 'showcase') {
     console.log(`[mock] showcase login: ${showcaseUsername} / ${showcasePassword}`);
   }
