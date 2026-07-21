@@ -127,12 +127,12 @@ select:disabled {
 .catsco-brand-mark {
   position: relative;
   display: inline-block;
-  width: 28px;
-  height: 18px;
+  width: 48px;
+  height: 22px;
   flex: 0 0 auto;
-  background: var(--cc-accent);
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 120'%3E%3Cpath d='M72 0L168 0L183 25L57 25Z M24 0L52 0L28 120L0 120Z M188 0L216 0L240 120L212 120Z'/%3E%3C/svg%3E") center / contain no-repeat;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 120'%3E%3Cpath d='M72 0L168 0L183 25L57 25Z M24 0L52 0L28 120L0 120Z M188 0L216 0L240 120L212 120Z'/%3E%3C/svg%3E") center / contain no-repeat;
+  background: transparent url('/catsco-brand-asasda.png') center / contain no-repeat;
+  -webkit-mask: none;
+  mask: none;
 }
 
 .catsco-brand-mark::before,
@@ -172,8 +172,7 @@ select:disabled {
 
 .oc-auth-logo .catsco-brand-mark {
   width: 40px;
-  height: 24px;
-  border-top-width: 5px;
+  height: 31px;
 }
 
 .oc-auth-logo .catsco-brand-mark::before,
@@ -385,6 +384,8 @@ select:disabled {
 
 .v3-sidebar-header {
   height: 56px;
+  min-height: 56px;
+  flex: 0 0 56px;
   padding: 0 12px;
   border-bottom-color: var(--cc-border);
 }
@@ -435,7 +436,7 @@ select:disabled {
 
 .v3-sidebar.collapsed .v3-sidebar-collapse-btn .catsco-brand-mark {
   width: 28px;
-  height: 18px;
+  height: 22px;
 }
 
 .v3-collapsed-expand-icon {
@@ -574,11 +575,11 @@ select:disabled {
 }
 .cc-empty-task-mark {
   display: block;
-  width: 72px;
-  height: 36px;
+  width: 128px;
+  height: 56px;
   margin: 0 auto 12px;
 }
-.cc-empty-task h1 { margin: 0 0 32px; color: var(--cc-text); font-size: 31px; line-height: 1.22; font-weight: 700; }
+.cc-empty-task h1 { margin: 0 0 32px; color: var(--cc-text); font-size: 31px; line-height: 1.22; font-weight: 500; }
 .cc-empty-composer-wrap {
   width: 100%;
   padding: 0;
@@ -847,6 +848,7 @@ select:disabled {
 /* Sidebar navigation */
 .cc-sidebar-tools {
   display: grid;
+  flex: 0 0 auto;
   gap: 8px;
   padding: 10px 8px 7px;
 }
@@ -894,6 +896,9 @@ select:disabled {
 .v3-chat-list {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
   padding: 8px 7px 76px;
   scrollbar-width: thin;
   scrollbar-color: var(--cc-border-strong) transparent;
@@ -1413,9 +1418,9 @@ select:disabled {
 .cc-chat-row-trailing {
   position: relative;
   align-self: stretch;
-  flex: 0 0 28px;
-  width: 28px;
-  min-width: 28px;
+  flex: 0 0 48px;
+  width: 48px;
+  min-width: 48px;
 }
 
 .cc-chat-row-trailing > .cc-chat-row-time,
@@ -1446,6 +1451,10 @@ select:disabled {
   flex: 0 0 15px;
   color: var(--cc-muted);
   font-size: 14px;
+}
+
+.cc-task-agent-icon.online {
+  color: color-mix(in srgb, var(--v3-primary) 78%, var(--cc-text));
 }
 
 .cc-agent-roster-item {
@@ -1616,6 +1625,7 @@ select:disabled {
 .v3-profile-footer {
   width: 100%;
   min-height: 62px;
+  flex: 0 0 auto;
   padding: 10px 14px;
   border: 0;
   border-top: 1px solid var(--cc-border);
@@ -1699,7 +1709,7 @@ select:disabled {
 
 .v3-message.is-self {
   width: fit-content;
-  max-width: min(70%, 680px);
+  max-width: min(74%, 700px);
   margin-right: max(0px, calc((100% - 760px) / 2));
   padding: 0;
   flex-direction: row-reverse;
@@ -1740,8 +1750,8 @@ select:disabled {
   width: fit-content;
   max-width: 100%;
   min-width: 0;
-  padding-block: 8px;
-  padding-inline: 10px;
+  padding-block: 10px;
+  padding-inline: 14px;
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-lg);
   background: var(--cc-selected);
@@ -1817,6 +1827,11 @@ select:disabled {
 
 .v3-message .v3-message-bubble {
   max-width: 100%;
+}
+
+.v3-message .v3-message-content {
+  font-size: 15px;
+  line-height: 1.62;
 }
 
 .v3-message .v3-msg-body > *,
@@ -2420,6 +2435,11 @@ select:disabled {
   .v3-message.is-self {
     max-width: 86%;
     margin-right: 0;
+  }
+
+  .v3-message.is-self .v3-message-bubble {
+    padding-block: 9px;
+    padding-inline: 12px;
   }
 
   .v3-composer {

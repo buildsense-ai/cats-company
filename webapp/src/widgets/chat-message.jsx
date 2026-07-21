@@ -857,7 +857,7 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
           {!isSelf && showThinking && <WorkingProcess blocks={workingBlocks} />}
 
           {(hasText || richBlocks.length > 0) && (
-            <div style={{lineHeight: 1.46}}>
+            <div className="v3-message-content">
               {hasText && (parsed ? (
                 <RichContent
                   content={parsed}

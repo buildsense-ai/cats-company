@@ -236,8 +236,8 @@ func (h *Hub) GetOnlineUIDs() []int64 {
 	return uids
 }
 
-// BuildOnlineStatusList returns online status for accepted friends plus bots
-// owned by the current user, so the web sidebar can show AI Apps status.
+// BuildOnlineStatusList returns online status for accepted friends, owned bots,
+// and Agents shared through a group so every task icon can show availability.
 func BuildOnlineStatusList(db store.Store, hub *Hub, uid int64) ([]map[string]interface{}, error) {
 	friends, err := db.GetFriends(uid)
 	if err != nil {
@@ -271,10 +271,24 @@ func BuildOnlineStatusList(db store.Store, hub *Hub, uid int64) ([]map[string]in
 	bots, err := db.ListBotsByOwner(uid)
 	if err != nil {
 		log.Printf("online status: failed to list owner bots for uid=%d: %v", uid, err)
+	} else {
+		for _, bot := range bots {
+			addUser(mapID(bot["id"]), true)
+		}
+	}
+
+	groups, err := db.GetUserGroups(uid)
+	if err != nil {
+		log.Printf("online status: failed to list group agents for uid=%d: %v", uid, err)
 		return onlineList, nil
 	}
-	for _, bot := range bots {
-		addUser(mapID(bot["id"]), true)
+	for _, group := range groups {
+		if group == nil {
+			continue
+		}
+		for _, agentID := range group.AgentIDs {
+			addUser(agentID, true)
+		}
 	}
 
 	return onlineList, nil
@@ -586,7 +600,8 @@ func (h *Hub) sendDeviceRPCToLocalRoute(route runtimeRoute, msg *MsgDeviceRPC) b
 	return true
 }
 
-// broadcastPresence notifies friends and, for bots, their owner of online/offline status.
+// broadcastPresence notifies friends and, for bots, their owner and fellow
+// group members of online/offline status.
 func (h *Hub) broadcastPresence(uid int64, what string) {
 	if h.db == nil {
 		return
@@ -594,7 +609,7 @@ func (h *Hub) broadcastPresence(uid int64, what string) {
 	friends, err := h.db.GetFriends(uid)
 	if err != nil {
 		log.Printf("presence: failed to get friends for uid=%d: %v", uid, err)
-		return
+		friends = nil
 	}
 	msg := &ServerMessage{
 		Pres: &MsgServerPres{
@@ -607,8 +622,30 @@ func (h *Hub) broadcastPresence(uid int64, what string) {
 	for _, f := range friends {
 		recipients[f.ID] = struct{}{}
 	}
-	if ownerID, err := h.db.GetBotOwner(uid); err == nil && ownerID > 0 {
-		recipients[ownerID] = struct{}{}
+	if ownerID, err := h.db.GetBotOwner(uid); err == nil {
+		if ownerID > 0 {
+			recipients[ownerID] = struct{}{}
+		}
+		groups, groupErr := h.db.GetUserGroups(uid)
+		if groupErr != nil {
+			log.Printf("presence: failed to get groups for bot uid=%d: %v", uid, groupErr)
+		} else {
+			for _, group := range groups {
+				if group == nil {
+					continue
+				}
+				members, memberErr := h.db.GetGroupMembers(group.ID)
+				if memberErr != nil {
+					log.Printf("presence: failed to get members for group=%d: %v", group.ID, memberErr)
+					continue
+				}
+				for _, member := range members {
+					if member != nil && member.UserID != uid {
+						recipients[member.UserID] = struct{}{}
+					}
+				}
+			}
+		}
 	}
 	for id := range recipients {
 		h.SendToUser(id, msg)

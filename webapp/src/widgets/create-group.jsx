@@ -2,11 +2,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Search, X } from 'lucide-react';
 import { api } from '../api';
 import t from '../i18n';
+import { inviteMemberId, mergeInviteMemberCandidates } from '../utils/invite-member-candidates';
 import Avatar from './avatar';
 
 export default function CreateGroup({ onClose, onCreated }) {
   const [name, setName] = useState('');
-  const [friends, setFriends] = useState([]);
+  const [memberCandidates, setMemberCandidates] = useState({ friends: [], agents: [] });
   const [selected, setSelected] = useState(new Set());
   const [memberType, setMemberType] = useState('friends');
   const [query, setQuery] = useState('');
@@ -15,16 +16,25 @@ export default function CreateGroup({ onClose, onCreated }) {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    loadFriends();
+    loadMembers();
   }, []);
 
-  const loadFriends = async () => {
+  const loadMembers = async () => {
     setLoadingMembers(true);
     try {
-      const res = await api.getFriends();
-      setFriends(res.friends || []);
+      const [friendsRes, agentsRes] = await Promise.all([
+        api.getFriends(),
+        api.getAgents().catch((error) => {
+          console.warn('load agents for group:', error);
+          return { agents: [] };
+        }),
+      ]);
+      setMemberCandidates(mergeInviteMemberCandidates(
+        friendsRes.friends || [],
+        agentsRes.agents || [],
+      ));
     } catch (e) {
-      console.error('load friends for group:', e);
+      console.error('load members for group:', e);
       setError(e.message || t('error_server'));
     } finally {
       setLoadingMembers(false);
@@ -60,21 +70,20 @@ export default function CreateGroup({ onClose, onCreated }) {
 
   const filteredMembers = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    return friends.filter((friend) => {
-      const isAgent = friend.bot || friend.account_type === 'bot';
-      if ((memberType === 'agents') !== isAgent) return false;
+    return memberCandidates[memberType].filter((member) => {
       if (!normalizedQuery) return true;
-      return [friend.display_name, friend.username, friend.id, friend.uid]
+      return [member.display_name, member.username, member.id, member.uid]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
         .includes(normalizedQuery);
     });
-  }, [friends, memberType, query]);
+  }, [memberCandidates, memberType, query]);
 
   const selectedMembers = useMemo(
-    () => friends.filter((friend) => selected.has(friend.id)),
-    [friends, selected],
+    () => [...memberCandidates.friends, ...memberCandidates.agents]
+      .filter((member) => selected.has(inviteMemberId(member))),
+    [memberCandidates, selected],
   );
 
   return (
@@ -135,21 +144,22 @@ export default function CreateGroup({ onClose, onCreated }) {
                 </div>
               </div>
               <div className="oc-member-picker-list">
-                {filteredMembers.map((friend) => {
-                  const checked = selected.has(friend.id);
+                {filteredMembers.map((member) => {
+                  const memberId = inviteMemberId(member);
+                  const checked = selected.has(memberId);
                   return (
-                    <label key={friend.id} className={`oc-member-picker-item ${checked ? 'selected' : ''}`}>
-                      <input type="checkbox" checked={checked} onChange={() => toggleMember(friend.id)} />
+                    <label key={memberId} className={`oc-member-picker-item ${checked ? 'selected' : ''}`}>
+                      <input type="checkbox" checked={checked} onChange={() => toggleMember(memberId)} />
                       <Avatar
-                        name={friend.display_name || friend.username}
-                        src={friend.avatar_url}
+                        name={member.display_name || member.username}
+                        src={member.avatar_url}
                         size={34}
-                        isBot={friend.bot || friend.account_type === 'bot'}
+                        isBot={member.isAgent}
                         className="oc-contact-avatar"
                       />
                       <span>
-                        <strong>{friend.display_name || friend.username}</strong>
-                        <small>{friend.bot || friend.account_type === 'bot' ? 'Agent' : friend.description || '好友'}</small>
+                        <strong>{member.display_name || member.username}</strong>
+                        <small>{member.isAgent ? 'Agent' : member.description || '好友'}</small>
                       </span>
                     </label>
                   );
@@ -170,20 +180,20 @@ export default function CreateGroup({ onClose, onCreated }) {
                 <span>{selected.size} 人</span>
               </div>
               <div className="oc-member-picker-selected-list">
-                {selectedMembers.map((friend) => (
-                  <div key={friend.id} className="oc-member-picker-selected-item">
+                {selectedMembers.map((member) => (
+                  <div key={inviteMemberId(member)} className="oc-member-picker-selected-item">
                     <Avatar
-                      name={friend.display_name || friend.username}
-                      src={friend.avatar_url}
+                      name={member.display_name || member.username}
+                      src={member.avatar_url}
                       size={34}
-                      isBot={friend.bot || friend.account_type === 'bot'}
+                      isBot={member.isAgent}
                       className="oc-contact-avatar"
                     />
                     <span>
-                      <strong>{friend.display_name || friend.username}</strong>
-                      <small>{friend.bot || friend.account_type === 'bot' ? 'Agent' : '好友'}</small>
+                      <strong>{member.display_name || member.username}</strong>
+                      <small>{member.isAgent ? 'Agent' : '好友'}</small>
                     </span>
-                    <button type="button" onClick={() => toggleMember(friend.id)} aria-label={`移除 ${friend.display_name || friend.username}`}>
+                    <button type="button" onClick={() => toggleMember(inviteMemberId(member))} aria-label={`移除 ${member.display_name || member.username}`}>
                       <X size={15} strokeWidth={1.8} />
                     </button>
                   </div>

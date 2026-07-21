@@ -440,6 +440,19 @@ function seedChatShowcase(user, bots) {
       is_agent_task: true,
     },
   ];
+  const knownAgentIds = new Set(bots.map((bot) => Number(bot.id)));
+  for (const group of groups) {
+    group.agent_ids = [...new Set([
+      group.agent_id,
+      ...(Array.isArray(group.member_ids) ? group.member_ids : []),
+    ].map(Number).filter((memberId) => knownAgentIds.has(memberId)))];
+  }
+  const groupsByTopic = new Map(groups.map((group) => [group.topic_id, group]));
+  for (const conversation of conversations) {
+    const group = groupsByTopic.get(conversation.id);
+    if (!group) continue;
+    conversation.agent_ids = [...group.agent_ids];
+  }
   showcaseByUserId.set(user.id, { friends, groups, conversations });
   const projectDefinitions = [
     { name: 'CatsCo 体验优化', createdAt: at(14 * 24 * 60), updatedAt: at(5) },
@@ -1098,6 +1111,7 @@ async function handleApi(req, res) {
         member_count: memberCount,
         member_ids: normalizedMemberIds,
         agent_id: agent?.id || null,
+        agent_ids: agent ? [agent.id] : [],
         kind,
         is_agent_task: kind === 'agent_task',
         created_at: createdAt,
@@ -1107,6 +1121,7 @@ async function handleApi(req, res) {
         ...conversationFromTopic(topicId, name, null, true, createdAt, false, id, Boolean(agent), memberCount),
         kind,
         is_agent_task: kind === 'agent_task',
+        agent_ids: agent ? [agent.id] : [],
       });
       return send(res, 200, {
         group_id: id,
@@ -1347,7 +1362,7 @@ async function handleApi(req, res) {
       if (!topicId.startsWith('p2p_') || !name || [...name].length > 80) {
         return send(res, 400, { error: 'invalid task name' });
       }
-      const conversation = showcaseByUserId.get(user.id)?.conversations.find((item) => item.id === topicId && item.is_bot);
+      const conversation = showcaseByUserId.get(user.id)?.conversations.find((item) => item.id === topicId);
       if (!conversation) return send(res, 404, { error: 'task not found' });
       conversation.name = name;
       return send(res, 200, { ok: true, topic_id: topicId, name });

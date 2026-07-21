@@ -193,11 +193,13 @@ func TestCreateAgentTaskIncludesMemberMetadata(t *testing.T) {
 		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	var body struct {
-		MemberCount int  `json:"member_count"`
-		HasBot      bool `json:"has_bot"`
+		MemberCount int     `json:"member_count"`
+		HasBot      bool    `json:"has_bot"`
+		AgentIDs    []int64 `json:"agent_ids"`
 		Group       struct {
-			MemberCount int  `json:"member_count"`
-			HasBot      bool `json:"has_bot"`
+			MemberCount int     `json:"member_count"`
+			HasBot      bool    `json:"has_bot"`
+			AgentIDs    []int64 `json:"agent_ids"`
 		} `json:"group"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -208,6 +210,9 @@ func TestCreateAgentTaskIncludesMemberMetadata(t *testing.T) {
 	}
 	if !body.HasBot || !body.Group.HasBot {
 		t.Fatalf("agent task should be marked has_bot: %+v", body)
+	}
+	if len(body.AgentIDs) != 1 || body.AgentIDs[0] != 42 || len(body.Group.AgentIDs) != 1 || body.Group.AgentIDs[0] != 42 {
+		t.Fatalf("agent task should expose its agent IDs: %+v", body)
 	}
 }
 

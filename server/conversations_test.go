@@ -25,6 +25,7 @@ func TestBuildGroupConversationSummary_FallbackToCreatedAt(t *testing.T) {
 		Name:        "Test Group",
 		OwnerID:     100,
 		MemberCount: 4,
+		AgentIDs:    []int64{42, 43},
 		CreatedAt:   createdAt,
 	}
 
@@ -50,6 +51,9 @@ func TestBuildGroupConversationSummary_FallbackToCreatedAt(t *testing.T) {
 	}
 	if summary.MemberCount != 4 {
 		t.Fatalf("expected MemberCount=4, got %d", summary.MemberCount)
+	}
+	if len(summary.AgentIDs) != 2 || summary.AgentIDs[0] != 42 || summary.AgentIDs[1] != 43 {
+		t.Fatalf("expected AgentIDs=[42 43], got %v", summary.AgentIDs)
 	}
 }
 

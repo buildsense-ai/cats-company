@@ -209,6 +209,7 @@ type ConversationSummary struct {
 	HasBot      bool                    `json:"has_bot,omitempty"`
 	IsAgentTask bool                    `json:"is_agent_task,omitempty"`
 	MemberCount int                     `json:"member_count,omitempty"`
+	AgentIDs    []int64                 `json:"agent_ids,omitempty"`
 	IsOnline    bool                    `json:"is_online,omitempty"`
 	LastTime    *time.Time              `json:"last_time,omitempty"`
 	LatestSeq   int64                   `json:"latest_seq,omitempty"`
@@ -662,6 +663,7 @@ type Group struct {
 	Announcement string    `json:"announcement,omitempty"`
 	HasBot       bool      `json:"has_bot,omitempty"`
 	MemberCount  int       `json:"member_count,omitempty"`
+	AgentIDs     []int64   `json:"agent_ids,omitempty"`
 	MaxMembers   int       `json:"max_members"`
 	CreatedAt    time.Time `json:"created_at"`
 }

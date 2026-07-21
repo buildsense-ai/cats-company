@@ -24,7 +24,7 @@ export function normalizeActiveTopic(value) {
     const groupId = Number.isFinite(explicitGroupId) && explicitGroupId > 0
       ? explicitGroupId
       : groupIdFromTopicId(value.topicId);
-    return {
+    const normalized = {
       topicId: value.topicId,
       name: value.name || '',
       isGroup: Boolean(value.isGroup || groupId),
@@ -32,6 +32,11 @@ export function normalizeActiveTopic(value) {
       avatar_url: value.avatar_url || '',
       friendId: value.friendId,
     };
+    if (Object.prototype.hasOwnProperty.call(value, 'isBot')) normalized.isBot = Boolean(value.isBot);
+    if (Object.prototype.hasOwnProperty.call(value, 'hasBot')) normalized.hasBot = Boolean(value.hasBot);
+    if (Object.prototype.hasOwnProperty.call(value, 'isAgentTask')) normalized.isAgentTask = Boolean(value.isAgentTask);
+    if (Object.prototype.hasOwnProperty.call(value, 'memberCount')) normalized.memberCount = Number(value.memberCount || 0);
+    return normalized;
   }
 
   return null;

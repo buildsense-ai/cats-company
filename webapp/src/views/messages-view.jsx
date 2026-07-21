@@ -1670,10 +1670,17 @@ export default function MessagesView({
           <div className="oc-reply-bar-content">
             <span className="oc-reply-bar-label">{t('chat_reply')}: </span>
             <span className="oc-reply-bar-text">
-              {typeof replyTo.content === 'string' ? replyTo.content.slice(0, 60) : '[media]'}
+              {typeof replyTo.content === 'string' ? replyTo.content : '[media]'}
             </span>
           </div>
-          <button className="oc-reply-bar-close" onClick={() => setReplyTo(null)}>x</button>
+          <button
+            type="button"
+            className="oc-reply-bar-close"
+            aria-label="取消回复"
+            onClick={() => setReplyTo(null)}
+          >
+            x
+          </button>
         </div>
       )}
 

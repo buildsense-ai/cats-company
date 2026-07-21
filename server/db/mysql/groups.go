@@ -3,6 +3,8 @@ package mysql
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/openchat/openchat/server/store/types"
 )
@@ -64,6 +66,7 @@ func (a *Adapter) GetGroup(groupID int64) (*types.Group, error) {
 	g := &types.Group{}
 	var avatarURL *string
 	var announcement *string
+	var agentIDs string
 	err := a.db.QueryRow(
 		`SELECT g.id, g.name, g.owner_id, g.group_kind, g.avatar_url, g.announcement, g.max_members, g.created_at,
 		        EXISTS(
@@ -72,11 +75,17 @@ func (a *Adapter) GetGroup(groupID int64) (*types.Group, error) {
 		          JOIN users u_bot ON u_bot.id = gm_bot.user_id
 		          WHERE gm_bot.group_id = g.id AND u_bot.account_type = 'bot'
 		        ) AS has_bot,
-		        (SELECT COUNT(*) FROM group_members gm_count WHERE gm_count.group_id = g.id) AS member_count
+		        (SELECT COUNT(*) FROM group_members gm_count WHERE gm_count.group_id = g.id) AS member_count,
+		        COALESCE((
+		          SELECT GROUP_CONCAT(gm_agent.user_id ORDER BY gm_agent.joined_at, gm_agent.user_id SEPARATOR ',')
+		          FROM group_members gm_agent
+		          JOIN users u_agent ON u_agent.id = gm_agent.user_id
+		          WHERE gm_agent.group_id = g.id AND u_agent.account_type = 'bot'
+		        ), '') AS agent_ids
 		 FROM `+"`groups`"+` g
 		 WHERE g.id = ?`,
 		groupID,
-	).Scan(&g.ID, &g.Name, &g.OwnerID, &g.Kind, &avatarURL, &announcement, &g.MaxMembers, &g.CreatedAt, &g.HasBot, &g.MemberCount)
+	).Scan(&g.ID, &g.Name, &g.OwnerID, &g.Kind, &avatarURL, &announcement, &g.MaxMembers, &g.CreatedAt, &g.HasBot, &g.MemberCount, &agentIDs)
 	if err != nil {
 		return nil, fmt.Errorf("get group: %w", err)
 	}
@@ -86,6 +95,7 @@ func (a *Adapter) GetGroup(groupID int64) (*types.Group, error) {
 	if announcement != nil {
 		g.Announcement = *announcement
 	}
+	g.AgentIDs = parseGroupAgentIDs(agentIDs)
 	return g, nil
 }
 
@@ -170,7 +180,13 @@ func (a *Adapter) GetUserGroups(userID int64) ([]*types.Group, error) {
 		          JOIN users u_bot ON u_bot.id = gm_bot.user_id
 		          WHERE gm_bot.group_id = g.id AND u_bot.account_type = 'bot'
 		        ) AS has_bot,
-		        (SELECT COUNT(*) FROM group_members gm_count WHERE gm_count.group_id = g.id) AS member_count
+		        (SELECT COUNT(*) FROM group_members gm_count WHERE gm_count.group_id = g.id) AS member_count,
+		        COALESCE((
+		          SELECT GROUP_CONCAT(gm_agent.user_id ORDER BY gm_agent.joined_at, gm_agent.user_id SEPARATOR ',')
+		          FROM group_members gm_agent
+		          JOIN users u_agent ON u_agent.id = gm_agent.user_id
+		          WHERE gm_agent.group_id = g.id AND u_agent.account_type = 'bot'
+		        ), '') AS agent_ids
 		 FROM `+"`groups`"+` g
 		 JOIN group_members gm ON gm.group_id = g.id
 		 WHERE gm.user_id = ? AND g.group_kind IN ('standard', 'agent_task')
@@ -186,15 +202,29 @@ func (a *Adapter) GetUserGroups(userID int64) ([]*types.Group, error) {
 	for rows.Next() {
 		g := &types.Group{}
 		var avatarURL *string
-		if err := rows.Scan(&g.ID, &g.Name, &g.OwnerID, &g.Kind, &avatarURL, &g.MaxMembers, &g.CreatedAt, &g.HasBot, &g.MemberCount); err != nil {
+		var agentIDs string
+		if err := rows.Scan(&g.ID, &g.Name, &g.OwnerID, &g.Kind, &avatarURL, &g.MaxMembers, &g.CreatedAt, &g.HasBot, &g.MemberCount, &agentIDs); err != nil {
 			return nil, fmt.Errorf("scan group: %w", err)
 		}
 		if avatarURL != nil {
 			g.AvatarURL = *avatarURL
 		}
+		g.AgentIDs = parseGroupAgentIDs(agentIDs)
 		groups = append(groups, g)
 	}
 	return groups, rows.Err()
+}
+
+func parseGroupAgentIDs(value string) []int64 {
+	parts := strings.Split(strings.TrimSpace(value), ",")
+	agentIDs := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		agentID, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err == nil && agentID > 0 {
+			agentIDs = append(agentIDs, agentID)
+		}
+	}
+	return agentIDs
 }
 
 // IsGroupMember checks if a user is a member of a group.

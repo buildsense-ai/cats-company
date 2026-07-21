@@ -101,10 +101,12 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 
 	// Count bots in the member list
 	botCount := 0
+	requestedAgentIDs := make(map[int64]struct{})
 	for _, mid := range req.MemberIDs {
 		isBot, _ := h.db.IsUserBot(mid)
 		if isBot {
 			botCount++
+			requestedAgentIDs[mid] = struct{}{}
 		}
 	}
 	if botCount > 10 {
@@ -139,6 +141,8 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 	// Add initial members. Keep a local count as a fallback in case the
 	// persistence count cannot be read back after creation.
 	memberCount := 1
+	agentIDs := make([]int64, 0, len(requestedAgentIDs))
+	addedAgentIDs := make(map[int64]struct{}, len(requestedAgentIDs))
 	for _, mid := range req.MemberIDs {
 		if mid == uid {
 			continue // owner already added
@@ -152,6 +156,12 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		memberCount++
+		if _, isAgent := requestedAgentIDs[mid]; isAgent {
+			if _, alreadyAdded := addedAgentIDs[mid]; !alreadyAdded {
+				agentIDs = append(agentIDs, mid)
+				addedAgentIDs[mid] = struct{}{}
+			}
+		}
 	}
 	if persistedCount, countErr := h.db.GetGroupMemberCount(groupID); countErr == nil {
 		memberCount = persistedCount
@@ -175,10 +185,14 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 		"has_bot":       hasBot,
 		"is_agent_task": req.Kind == types.GroupKindAgentTask,
 		"member_count":  memberCount,
+		"agent_ids":     agentIDs,
 	}
 	if groupErr == nil && group != nil {
 		createdAt = group.CreatedAt
 		avatarURL = group.AvatarURL
+		if group.AgentIDs != nil {
+			agentIDs = append([]int64(nil), group.AgentIDs...)
+		}
 		responseGroup = map[string]interface{}{
 			"id":            group.ID,
 			"name":          group.Name,
@@ -190,6 +204,7 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 			"has_bot":       hasBot,
 			"is_agent_task": group.Kind == types.GroupKindAgentTask,
 			"member_count":  memberCount,
+			"agent_ids":     agentIDs,
 		}
 	}
 
@@ -211,6 +226,7 @@ func (h *GroupHandler) HandleCreateGroup(w http.ResponseWriter, r *http.Request)
 		"has_bot":      hasBot,
 		"is_agent_task": req.Kind == types.GroupKindAgentTask,
 		"member_count": memberCount,
+		"agent_ids":    agentIDs,
 	}
 	writeJSON(w, http.StatusOK, response)
 }

@@ -22,9 +22,11 @@ type agentTestStore struct {
 	users         map[int64]*types.User
 	owners        map[int64]int64
 	friendPairs   map[string]bool
-	groupMembers  map[string]bool
-	groupMuted    map[string]bool
-	createdTopics []string
+	groupMembers   map[string]bool
+	groupsByUser   map[int64][]*types.Group
+	membersByGroup map[int64][]*types.GroupMember
+	groupMuted     map[string]bool
+	createdTopics  []string
 }
 
 func (s *agentTestStore) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, error) {
@@ -33,6 +35,14 @@ func (s *agentTestStore) ListBotsByOwner(ownerID int64) ([]map[string]interface{
 
 func (s *agentTestStore) GetFriends(uid int64) ([]*types.User, error) {
 	return s.friends, nil
+}
+
+func (s *agentTestStore) GetUserGroups(uid int64) ([]*types.Group, error) {
+	return s.groupsByUser[uid], nil
+}
+
+func (s *agentTestStore) GetGroupMembers(groupID int64) ([]*types.GroupMember, error) {
+	return s.membersByGroup[groupID], nil
 }
 
 func (s *agentTestStore) GetUser(id int64) (*types.User, error) {
@@ -179,11 +189,24 @@ func TestBuildOnlineStatusListUsesBotBodyLeaseForBots(t *testing.T) {
 			{ID: 43, Username: "friend-agent", AccountType: types.AccountBot},
 			{ID: 44, Username: "human-friend", AccountType: types.AccountHuman},
 		},
+		groupsByUser: map[int64][]*types.Group{
+			7: []*types.Group{{ID: 8, Name: "Shared Agent Task", AgentIDs: []int64{43, 45, 46}}},
+		},
 	}
 	hub := NewHub(nil, nil)
 	hub.addClient(&Client{uid: 42, send: make(chan []byte, 1)})
 	hub.addClient(&Client{uid: 43, send: make(chan []byte, 1)})
 	hub.addClient(&Client{uid: 44, send: make(chan []byte, 1)})
+	if _, err := hub.bodyLeases.acquire(45, "body-group", "conn-group"); err != nil {
+		t.Fatalf("acquire group bot body lease: %v", err)
+	}
+	hub.addRegisteredClient(&Client{
+		uid:          45,
+		accountType:  types.AccountBot,
+		bodyID:       "body-group",
+		connectionID: "conn-group",
+		send:         make(chan []byte, 1),
+	})
 	if _, err := hub.bodyLeases.acquire(43, "body-friend", "conn-friend"); err != nil {
 		t.Fatalf("acquire friend bot body lease: %v", err)
 	}
@@ -214,6 +237,59 @@ func TestBuildOnlineStatusListUsesBotBodyLeaseForBots(t *testing.T) {
 	}
 	if !onlineByUID[44] {
 		t.Fatalf("human friend should still use generic online status: %#v", onlineByUID)
+	}
+	if !onlineByUID[45] {
+		t.Fatalf("group Agent with body lease should be online: %#v", onlineByUID)
+	}
+	if onlineByUID[46] {
+		t.Fatalf("group Agent without body lease should be offline: %#v", onlineByUID)
+	}
+}
+
+func TestBotPresenceReachesFellowGroupMembers(t *testing.T) {
+	store := &agentTestStore{
+		friends: []*types.User{{ID: 7, Username: "friend-member", AccountType: types.AccountHuman}},
+		owners: map[int64]int64{45: 0},
+		groupsByUser: map[int64][]*types.Group{
+			45: []*types.Group{{ID: 8, Name: "Shared Agent Task", AgentIDs: []int64{45}}},
+		},
+		membersByGroup: map[int64][]*types.GroupMember{
+			8: []*types.GroupMember{
+				{GroupID: 8, UserID: 7},
+				{GroupID: 8, UserID: 8},
+				{GroupID: 8, UserID: 45},
+			},
+		},
+	}
+	hub := NewHub(store, nil)
+	memberSeven := make(chan []byte, 1)
+	memberEight := make(chan []byte, 1)
+	outsider := make(chan []byte, 1)
+	hub.addClient(&Client{uid: 7, send: memberSeven})
+	hub.addClient(&Client{uid: 8, send: memberEight})
+	hub.addClient(&Client{uid: 10, send: outsider})
+
+	for _, what := range []string{"on", "off"} {
+		hub.broadcastPresence(45, what)
+		for uid, messages := range map[int64]chan []byte{7: memberSeven, 8: memberEight} {
+			select {
+			case payload := <-messages:
+				var message ServerMessage
+				if err := json.Unmarshal(payload, &message); err != nil {
+					t.Fatalf("decode member %d presence: %v", uid, err)
+				}
+				if message.Pres == nil || message.Pres.Topic != "me" || message.Pres.What != what || message.Pres.Src != "usr45" {
+					t.Fatalf("member %d received unexpected presence: %+v", uid, message.Pres)
+				}
+			default:
+				t.Fatalf("member %d did not receive group Agent %s presence", uid, what)
+			}
+		}
+		select {
+		case payload := <-outsider:
+			t.Fatalf("outsider received unexpected Agent presence: %s", payload)
+		default:
+		}
 	}
 }
 
