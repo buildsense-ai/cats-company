@@ -90,4 +90,12 @@ describe('relay usage labels', () => {
       title: '当前虚拟员工尚未上报可用的模型与额度状态',
     });
   });
+
+  test('hides the model for conversations without a single responsible Agent', () => {
+    expect(resolveConversationModelDisplay('MiniMax-M2.7', {
+      isBot: false,
+      state: 'hidden',
+      summary: null,
+    })).toBeNull();
+  });
 });

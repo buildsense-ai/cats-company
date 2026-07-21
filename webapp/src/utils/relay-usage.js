@@ -42,6 +42,8 @@ export function resolveCurrentModelName(summary, defaultModel = 'MiniMax-M2.7') 
 }
 
 export function resolveConversationModelDisplay(currentModelName, agentModelState) {
+  if (agentModelState?.state === 'hidden') return null;
+
   const accountModel = String(currentModelName || '').trim() || '模型未知';
   if (!agentModelState?.isBot) {
     return {

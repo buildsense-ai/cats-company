@@ -958,16 +958,18 @@ function LocalAssistantBar({ agentModelState, currentModelName, onDownload, titl
   return (
     <header className="v3-local-assistant-bar">
       <div className="v3-model-select">
-        <div
-          className={`v3-local-assistant-status ${tone}`.trim()}
-          aria-label={modelDisplay.title}
-          title={modelDisplay.title}
-        >
-          <span className="v3-local-assistant-model">{modelDisplay.model}</span>
-          {modelDisplay.meta && (
-            <span className="v3-local-assistant-model-meta">{modelDisplay.meta}</span>
-          )}
-        </div>
+        {modelDisplay && (
+          <div
+            className={`v3-local-assistant-status ${tone}`.trim()}
+            aria-label={modelDisplay.title}
+            title={modelDisplay.title}
+          >
+            <span className="v3-local-assistant-model">{modelDisplay.model}</span>
+            {modelDisplay.meta && (
+              <span className="v3-local-assistant-model-meta">{modelDisplay.meta}</span>
+            )}
+          </div>
+        )}
       </div>
       <strong className="v3-shell-title">{title}</strong>
       <div className="v3-shell-actions">

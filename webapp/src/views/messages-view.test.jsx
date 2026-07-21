@@ -1271,6 +1271,76 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.v3-agent-quota-pill')).toBeNull();
   });
 
+  it('reports the only Agent model and quota for a single-Agent task', async () => {
+    const onAgentModelChange = vi.fn();
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 9, name: '单 Agent 任务', is_agent_task: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 405, display_name: 'Wanyu', is_bot: true },
+      ],
+    });
+    api.getAgentQuota.mockResolvedValueOnce({
+      configured: true,
+      shared: true,
+      summary: {
+        source: 'relay',
+        model: 'gpt-5.6-terra',
+        remaining_percent: 81,
+        status: 'normal',
+      },
+    });
+
+    await mountTopic(root, 'grp_9', {
+      isGroup: true,
+      groupId: 9,
+      onAgentModelChange,
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(api.getAgentQuota).toHaveBeenCalledWith(405);
+    expect(onAgentModelChange).toHaveBeenLastCalledWith({
+      isBot: true,
+      state: 'ready',
+      summary: {
+        source: 'relay',
+        model: 'gpt-5.6-terra',
+        remaining_percent: 81,
+        status: 'normal',
+      },
+    });
+  });
+
+  it('hides the model for a multi-Agent task', async () => {
+    const onAgentModelChange = vi.fn();
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 10, name: '多 Agent 任务', is_agent_task: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 405, display_name: 'Wanyu', is_bot: true },
+        { user_id: 407, display_name: 'Saturday', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_10', {
+      isGroup: true,
+      groupId: 10,
+      onAgentModelChange,
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(api.getAgentQuota).not.toHaveBeenCalled();
+    expect(onAgentModelChange).toHaveBeenLastCalledWith({
+      isBot: false,
+      state: 'hidden',
+      summary: null,
+    });
+  });
+
   it('clears peer typing immediately when a peer final reply arrives', async () => {
     await mountTopic(root, 'p2p_1_2');
 

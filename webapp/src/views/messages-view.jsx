@@ -1212,29 +1212,47 @@ export default function MessagesView({
     || resolvedPeerProfile?.bot === true
     || resolvedPeerProfile?.is_bot === true
     || resolvedPeerProfile?.account_type === 'bot';
+  const isAgentTask = isGroup && Boolean(
+    groupInfo?.is_agent_task || groupInfo?.kind === 'agent_task',
+  );
+  const availableAgentUIDs = useMemo(() => new Set(
+    availableAgents
+      .map((agent) => Number(agent.uid || agent.id))
+      .filter((uid) => Number.isFinite(uid) && uid > 0),
+  ), [availableAgents]);
+  const taskBotUIDs = useMemo(() => {
+    if (!isAgentTask) return [];
+    return members
+      .filter((member) => member?.is_bot || availableAgentUIDs.has(Number(member?.user_id)))
+      .map((member) => Number(member.user_id))
+      .filter((uid) => Number.isFinite(uid) && uid > 0);
+  }, [availableAgentUIDs, isAgentTask, members]);
+  const taskBotUID = taskBotUIDs.length === 1 ? taskBotUIDs[0] : 0;
   const supportsTutorialTasks = isGroup
     ? Boolean(
-      groupInfo?.is_agent_task
-      || groupInfo?.kind === 'agent_task'
+      isAgentTask
       || groupInfo?.has_bot
       || members.some((member) => member?.is_bot),
     )
     : peerIsBot;
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
-  const canRegenerateAssistantMessages = !isGroup || Boolean(
-    groupInfo?.is_agent_task || groupInfo?.kind === 'agent_task',
-  );
+  const canRegenerateAssistantMessages = !isGroup || isAgentTask;
   useEffect(() => {
-    if (isGroup || !peerIsBot || peerUID <= 0) {
+    if (isGroup && taskBotUID <= 0) {
+      onAgentModelChange?.({ isBot: false, state: 'hidden', summary: null });
+      return undefined;
+    }
+    if (!isGroup && (!peerIsBot || peerUID <= 0)) {
       onAgentModelChange?.({ isBot: false, state: 'unavailable', summary: null });
       return undefined;
     }
 
+    const quotaUID = isGroup ? taskBotUID : peerUID;
     let cancelled = false;
     onAgentModelChange?.({ isBot: true, state: 'loading', summary: null });
     const loadQuota = () => {
-      api.getAgentQuota(peerUID)
+      api.getAgentQuota(quotaUID)
         .then((response) => {
           if (!cancelled) {
             const summary = response?.summary || null;
@@ -1257,7 +1275,7 @@ export default function MessagesView({
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [isGroup, onAgentModelChange, peerIsBot, peerUID]);
+  }, [isGroup, onAgentModelChange, peerIsBot, peerUID, taskBotUID]);
 
   const memberMap = useMemo(() => {
     const map = new Map();
