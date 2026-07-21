@@ -29,6 +29,11 @@ import {
   resolveConversationModelDisplay,
   resolveCurrentModelName,
 } from '../utils/relay-usage';
+import { normalizeActiveTopic } from '../utils/active-topic';
+import {
+  applyScopedModelUpdate,
+  resolveScopedModelState,
+} from '../utils/conversation-model-state';
 import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
@@ -92,28 +97,6 @@ function saveAppSidebarCollapsed(collapsed) {
 
 function lastTopicStorageKey(uid) {
   return uid ? `v3_last_topic:${uid}` : 'v3_last_topic';
-}
-
-function normalizeActiveTopic(value) {
-  if (!value) return null;
-
-  if (typeof value === 'string') {
-    if (!value || value === '[object Object]') return null;
-    return { topicId: value, name: '' };
-  }
-
-  if (typeof value === 'object' && value.topicId) {
-    return {
-      topicId: value.topicId,
-      name: value.name || '',
-      isGroup: Boolean(value.isGroup),
-      groupId: value.groupId,
-      avatar_url: value.avatar_url || '',
-      friendId: value.friendId,
-    };
-  }
-
-  return null;
 }
 
 function readStoredTopic(uid) {
@@ -219,6 +202,21 @@ function TinodeWebApp() {
   const [theme, setTheme] = useState(() => localStorage.getItem('catsco_theme') || 'light');
   const [currentModelName, setCurrentModelName] = useState(DEFAULT_MODEL_NAME);
   const [activeAgentModel, setActiveAgentModel] = useState(null);
+  const activeTopicId = activeTopic?.topicId || '';
+  const draftAgentUID = Number(taskDraft?.agent?.uid || taskDraft?.agent?.id || 0);
+  const modelContextId = activeTopicId || (draftAgentUID > 0 ? `draft:${taskDraft?.key || draftAgentUID}` : '');
+  const modelContext = activeTopic || (modelContextId ? { topicId: modelContextId, isGroup: false } : null);
+  const modelContextIdRef = useRef(modelContextId);
+  modelContextIdRef.current = modelContextId;
+  const handleActiveAgentModelChange = useCallback((modelState) => {
+    const topicId = activeTopicId;
+    setActiveAgentModel((current) => applyScopedModelUpdate(current, {
+      activeTopicId: modelContextIdRef.current,
+      topicId,
+      modelState,
+    }));
+  }, [activeTopicId]);
+  const displayedAgentModel = resolveScopedModelState(modelContext, activeAgentModel);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
     appSidebarPreferredWidth,
@@ -271,8 +269,37 @@ function TinodeWebApp() {
   }, [user?.uid]);
 
   useEffect(() => {
-    setActiveAgentModel(null);
-  }, [activeTopic?.topicId]);
+    if (activeTopicId || draftAgentUID <= 0 || !modelContextId) return undefined;
+    let cancelled = false;
+    const updateDraftModel = (modelState) => {
+      setActiveAgentModel((current) => applyScopedModelUpdate(current, {
+        activeTopicId: modelContextIdRef.current,
+        topicId: modelContextId,
+        modelState,
+      }));
+    };
+
+    updateDraftModel({ isBot: true, state: 'loading', summary: null });
+    api.getAgentQuota(draftAgentUID)
+      .then((response) => {
+        if (cancelled) return;
+        const summary = response?.summary || null;
+        updateDraftModel({
+          isBot: true,
+          state: summary ? 'ready' : 'unavailable',
+          summary,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          updateDraftModel({ isBot: true, state: 'unavailable', summary: null });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTopicId, draftAgentUID, modelContextId]);
 
   useEffect(() => {
     if (!showProfilePopover) return undefined;
@@ -864,7 +891,7 @@ function TinodeWebApp() {
           <PanelLeftOpen size={18} />
         </button>
         <LocalAssistantBar
-          agentModelState={activeAgentModel}
+          agentModelState={displayedAgentModel}
           currentModelName={currentModelName}
           onDownload={() => setShowDownloadModal(true)}
           title={activeTopic?.name || taskDraftTitle(taskDraft)}
@@ -878,7 +905,7 @@ function TinodeWebApp() {
             groupId={activeTopic.groupId}
             topicAvatarUrl={activeTopic.avatar_url}
             localAssistantStatus={localAgentStatus}
-            onAgentModelChange={setActiveAgentModel}
+            onAgentModelChange={handleActiveAgentModelChange}
             onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
             onResolveAgentTopic={resolveAgentTopic}
             onActivateTopic={activateResolvedTopic}

@@ -40,11 +40,11 @@ function seedExistingBot(user) {
   if (scenario !== 'existing' && scenario !== 'showcase') return;
   const definitions = scenario === 'showcase'
     ? [
-      { username: 'code_review_agent', display_name: '代码审查助手' },
-      { username: 'ops_data_agent', display_name: '运营数据助手' },
-      { username: 'research_agent', display_name: '行业研究助手' },
-      { username: 'content_agent', display_name: '内容策划助手' },
-      { username: 'quality_agent', display_name: '质量巡检助手' },
+      { username: 'code_review_agent', display_name: '代码审查助手', model: 'gpt-5.6-terra', remaining_percent: 82 },
+      { username: 'ops_data_agent', display_name: '运营数据助手', model: 'MiniMax-M3', remaining_percent: 61 },
+      { username: 'research_agent', display_name: '行业研究助手', model: 'deepseek-v4-flash', remaining_percent: 47 },
+      { username: 'content_agent', display_name: '内容策划助手', model: 'gpt-5.6-terra', remaining_percent: 28 },
+      { username: 'quality_agent', display_name: '质量巡检助手', model: 'MiniMax-M2.7', remaining_percent: 93 },
     ]
     : [{ username: `existing_bot_${user.id}`, display_name: 'Existing Local Bot' }];
   const bots = definitions.map((definition) => {
@@ -57,6 +57,12 @@ function seedExistingBot(user) {
       avatar_url: '',
       api_key: `mock-api-key-${id}`,
       owner_id: user.id,
+      quota_summary: definition.model ? {
+        source: 'relay',
+        model: definition.model,
+        remaining_percent: definition.remaining_percent,
+        status: 'normal',
+      } : null,
     };
   });
   botsByOwner.set(user.id, bots);
@@ -178,6 +184,32 @@ function seedChatShowcase(user, bots) {
       is_agent_task: true,
       created_at: at(7 * 60),
     },
+    {
+      id: 409,
+      topic_id: 'grp_409',
+      name: '多 Agent 联合任务',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: true,
+      member_count: 3,
+      member_ids: [codeAgent.id, opsAgent.id],
+      kind: 'agent_task',
+      is_agent_task: true,
+      created_at: at(5 * 60),
+    },
+    {
+      id: 410,
+      topic_id: 'grp_410',
+      name: '等待分配 Agent',
+      avatar_url: '',
+      owner_id: user.id,
+      has_bot: false,
+      member_count: 2,
+      member_ids: [friends[7].id],
+      kind: 'agent_task',
+      is_agent_task: true,
+      created_at: at(4 * 60),
+    },
   ];
   const codeTopic = p2pTopicId(user.id, codeAgent.id);
   const opsTopic = p2pTopicId(user.id, opsAgent.id);
@@ -279,6 +311,14 @@ function seedChatShowcase(user, bots) {
       { from_uid: friends[1].id, content: '回归包已经上传，先从消息列表和输入框开始。', created_at: at(6) },
       { from_uid: qualityAgent.id, role: 'assistant', content: '正在执行移动端回归，目前完成 16/24 项，横屏和键盘弹起场景仍在检查。', created_at: at(4) },
     ]],
+    ['grp_409', [
+      { from_uid: user.id, content: '请代码和运营两个 Agent 一起复核本周发布数据。', created_at: at(9) },
+      { from_uid: codeAgent.id, role: 'assistant', content: '代码侧检查已经开始。', created_at: at(8) },
+      { from_uid: opsAgent.id, role: 'assistant', content: '运营数据口径正在同步核对。', created_at: at(7) },
+    ]],
+    ['grp_410', [
+      { from_uid: user.id, content: '这个任务暂时还没有指定 Agent。', created_at: at(10) },
+    ]],
   ];
 
   for (const [topic, messages] of seeded) {
@@ -345,6 +385,16 @@ function seedChatShowcase(user, bots) {
       kind: 'agent_task',
       is_agent_task: true,
       task_status: { topic_id: 'grp_407', run_id: 'run-launch-copy-1', state: 'failed', error: '资料引用校验未通过', updated_at: at(12 * 60 + 18) },
+    },
+    {
+      ...conversationFromTopic('grp_409', groups[8].name, null, true, at(7), false, groups[8].id, true, groups[8].member_count),
+      kind: 'agent_task',
+      is_agent_task: true,
+    },
+    {
+      ...conversationFromTopic('grp_410', groups[9].name, null, true, at(10), false, groups[9].id, false, groups[9].member_count),
+      kind: 'agent_task',
+      is_agent_task: true,
     },
   ];
   showcaseByUserId.set(user.id, { friends, groups, conversations });
@@ -770,8 +820,9 @@ async function handleApi(req, res) {
       const bot = (botsByOwner.get(user.id) || []).find((item) => item.id === agentUid);
       if (!bot) return send(res, 404, { error: 'agent not found' });
       return send(res, 200, {
-        configured: false,
+        configured: Boolean(bot.quota_summary),
         shared: true,
+        summary: bot.quota_summary || undefined,
       });
     }
 

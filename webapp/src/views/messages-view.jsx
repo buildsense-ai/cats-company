@@ -1244,7 +1244,7 @@ export default function MessagesView({
       return undefined;
     }
     if (!isGroup && (!peerIsBot || peerUID <= 0)) {
-      onAgentModelChange?.({ isBot: false, state: 'unavailable', summary: null });
+      onAgentModelChange?.({ isBot: false, state: 'hidden', summary: null });
       return undefined;
     }
 

@@ -67,8 +67,14 @@ test('showcase mock serves the Agent quota endpoint without console-noisy 404s',
   const quotaResponse = await fetch(`${baseURL}/api/agents/quota?uid=${agents[0].uid}`, { headers });
   assert.equal(quotaResponse.status, 200);
   assert.deepEqual(await quotaResponse.json(), {
-    configured: false,
+    configured: true,
     shared: true,
+    summary: {
+      source: 'relay',
+      model: 'gpt-5.6-terra',
+      remaining_percent: 82,
+      status: 'normal',
+    },
   });
 
   const missingAgentResponse = await fetch(`${baseURL}/api/agents/quota?uid=999999`, { headers });

@@ -1271,6 +1271,25 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.v3-agent-quota-pill')).toBeNull();
   });
 
+  it('hides the model in a direct human conversation', async () => {
+    const onAgentModelChange = vi.fn();
+    api.getFriends.mockResolvedValueOnce({
+      friends: [{ id: 2, username: 'alice', display_name: 'Alice', account_type: 'human' }],
+    });
+
+    await mountTopic(root, 'p2p_1_2', { onAgentModelChange });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(api.getAgentQuota).not.toHaveBeenCalled();
+    expect(onAgentModelChange).toHaveBeenLastCalledWith({
+      isBot: false,
+      state: 'hidden',
+      summary: null,
+    });
+  });
+
   it('reports the only Agent model and quota for a single-Agent task', async () => {
     const onAgentModelChange = vi.fn();
     api.getGroupInfo.mockResolvedValueOnce({
@@ -1339,6 +1358,180 @@ describe('MessagesView composer draft isolation', () => {
       state: 'hidden',
       summary: null,
     });
+  });
+
+  it('hides the model for a regular group even when one bot is present', async () => {
+    const onAgentModelChange = vi.fn();
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 11, name: '普通群', kind: 'standard', has_bot: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 405, display_name: 'Wanyu', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_11', {
+      isGroup: true,
+      groupId: 11,
+      onAgentModelChange,
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(api.getAgentQuota).not.toHaveBeenCalled();
+    expect(onAgentModelChange).toHaveBeenLastCalledWith({
+      isBot: false,
+      state: 'hidden',
+      summary: null,
+    });
+  });
+
+  it('recognizes the only task Agent from the Agent roster when member disclosure is absent', async () => {
+    const onAgentModelChange = vi.fn();
+    api.getAgents.mockResolvedValueOnce({
+      agents: [{ uid: 405, display_name: 'Wanyu', is_bot: true }],
+    });
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 12, name: '旧任务', kind: 'agent_task' },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 405, display_name: 'Wanyu' },
+      ],
+    });
+    api.getAgentQuota.mockResolvedValueOnce({
+      summary: {
+        source: 'relay',
+        model: 'gpt-5.6-terra',
+        remaining_percent: 65,
+        status: 'normal',
+      },
+    });
+
+    await mountTopic(root, 'grp_12', {
+      isGroup: true,
+      groupId: 12,
+      onAgentModelChange,
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(api.getAgentQuota).toHaveBeenCalledWith(405);
+    expect(onAgentModelChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      isBot: true,
+      state: 'ready',
+      summary: expect.objectContaining({ model: 'gpt-5.6-terra' }),
+    }));
+  });
+
+  it('keeps a late single-Agent quota response from replacing a multi-Agent hidden state', async () => {
+    const onAgentModelChange = vi.fn();
+    const slowQuota = deferred();
+    api.getGroupInfo.mockImplementation((groupId) => Promise.resolve(groupId === 13 ? {
+      group: { id: 13, name: '单 Agent', kind: 'agent_task' },
+      members: [
+        { user_id: 1, is_bot: false },
+        { user_id: 405, is_bot: true },
+      ],
+    } : {
+      group: { id: 14, name: '多 Agent', kind: 'agent_task' },
+      members: [
+        { user_id: 1, is_bot: false },
+        { user_id: 405, is_bot: true },
+        { user_id: 407, is_bot: true },
+      ],
+    }));
+    api.getAgentQuota.mockReturnValueOnce(slowQuota.promise);
+
+    await mountTopic(root, 'grp_13', {
+      isGroup: true,
+      groupId: 13,
+      onAgentModelChange,
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(api.getAgentQuota).toHaveBeenCalledWith(405);
+
+    await act(async () => {
+      renderTopic(root, 'grp_14', {
+        isGroup: true,
+        groupId: 14,
+        onAgentModelChange,
+      });
+      await flushPromises();
+    });
+    expect(onAgentModelChange).toHaveBeenLastCalledWith({
+      isBot: false,
+      state: 'hidden',
+      summary: null,
+    });
+
+    await act(async () => {
+      slowQuota.resolve({
+        summary: { source: 'relay', model: 'stale-model', remaining_percent: 99 },
+      });
+      await flushPromises();
+    });
+    expect(onAgentModelChange).toHaveBeenLastCalledWith({
+      isBot: false,
+      state: 'hidden',
+      summary: null,
+    });
+  });
+
+  it('keeps out-of-order quota responses scoped while switching between single-Agent tasks', async () => {
+    const onAgentModelChange = vi.fn();
+    const firstQuota = deferred();
+    const secondQuota = deferred();
+    api.getGroupInfo.mockImplementation((groupId) => Promise.resolve({
+      group: { id: groupId, name: `任务 ${groupId}`, kind: 'agent_task' },
+      members: [
+        { user_id: 1, is_bot: false },
+        { user_id: groupId === 15 ? 405 : 407, is_bot: true },
+      ],
+    }));
+    api.getAgentQuota.mockImplementation((uid) => (uid === 405 ? firstQuota.promise : secondQuota.promise));
+
+    await mountTopic(root, 'grp_15', {
+      isGroup: true,
+      groupId: 15,
+      onAgentModelChange,
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      renderTopic(root, 'grp_16', {
+        isGroup: true,
+        groupId: 16,
+        onAgentModelChange,
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      secondQuota.resolve({
+        summary: { source: 'relay', model: 'MiniMax-M3', remaining_percent: 74 },
+      });
+      await flushPromises();
+    });
+    expect(onAgentModelChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      state: 'ready',
+      summary: expect.objectContaining({ model: 'MiniMax-M3' }),
+    }));
+
+    await act(async () => {
+      firstQuota.resolve({
+        summary: { source: 'relay', model: 'stale-model', remaining_percent: 95 },
+      });
+      await flushPromises();
+    });
+    expect(onAgentModelChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      state: 'ready',
+      summary: expect.objectContaining({ model: 'MiniMax-M3' }),
+    }));
   });
 
   it('clears peer typing immediately when a peer final reply arrives', async () => {
