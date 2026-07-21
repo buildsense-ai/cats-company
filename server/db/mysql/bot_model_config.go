@@ -24,6 +24,14 @@ func (a *Adapter) GetBotModelConfig(botUID int64) (*types.BotModelConfig, error)
 	return config, nil
 }
 
+func (a *Adapter) MarkBotModelRuntimeProtocol(botUID int64, protocol string) (*types.BotModelConfig, error) {
+	return a.updateBotModelConfig(botUID, func(config *types.BotModelConfig, now string) error {
+		config.RuntimeProtocol = protocol
+		config.RuntimeProtocolSeen = now
+		return nil
+	})
+}
+
 func (a *Adapter) SaveBotDesiredModelConfig(botUID int64, kind, modelID, reasoningEffort, customCiphertext string) (*types.BotModelConfig, error) {
 	return a.updateBotModelConfig(botUID, func(config *types.BotModelConfig, now string) error {
 		config.Kind = kind

@@ -138,6 +138,7 @@ type BotStore interface {
 // need cloud-model methods. Production database adapters implement it.
 type BotModelConfigStore interface {
 	GetBotModelConfig(botUID int64) (*types.BotModelConfig, error)
+	MarkBotModelRuntimeProtocol(botUID int64, protocol string) (*types.BotModelConfig, error)
 	SaveBotDesiredModelConfig(botUID int64, kind, modelID, reasoningEffort, customCiphertext string) (*types.BotModelConfig, error)
 	AckBotModelConfig(botUID, revision int64, kind, modelID, reasoningEffort, applyError string) (*types.BotModelConfig, error)
 }

@@ -374,6 +374,11 @@
   color: #dc2626;
 }
 
+.v3-model-apply-state.muted {
+  color: var(--cc-text-secondary);
+  background: color-mix(in srgb, var(--cc-muted) 12%, transparent);
+}
+
 [data-theme='dark'] .v3-model-quota {
   color: #a7f3d0;
 }

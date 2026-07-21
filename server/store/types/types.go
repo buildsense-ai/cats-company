@@ -350,6 +350,8 @@ type BotModelConfig struct {
 	ModelID             string `json:"model_id"`
 	ReasoningEffort     string `json:"reasoning_effort,omitempty"`
 	CustomCiphertext    string `json:"custom_ciphertext,omitempty"`
+	RuntimeProtocol     string `json:"runtime_protocol,omitempty"`
+	RuntimeProtocolSeen string `json:"runtime_protocol_seen_at,omitempty"`
 	Revision            int64  `json:"revision"`
 	UpdatedAt           string `json:"updated_at,omitempty"`
 	AppliedKind         string `json:"applied_kind,omitempty"`

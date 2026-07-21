@@ -11,6 +11,7 @@ import {
 const APPLY_POLL_MS = 2000;
 const APPLY_SLOW_POLL_MS = 15000;
 const APPLY_WAIT_TIMEOUT_MS = 45000;
+const RUNTIME_UNAVAILABLE_REASON = '当前 CatsCo 版本暂不支持云端切换，请更新桌面端后再试';
 
 const EMPTY_CUSTOM_MODEL = {
   protocol: 'anthropic',
@@ -141,7 +142,10 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
   const [savingKey, setSavingKey] = useState('');
   const [error, setError] = useState('');
   const [applyWaitExpired, setApplyWaitExpired] = useState(false);
-  const canManageModel = isModelOwner && Number(modelConfig?.uid) === activeBotUID && modelConfig?.management_enabled !== false;
+  const runtimeUnavailable = isModelOwner && Number(modelConfig?.uid) === activeBotUID
+    && modelConfig?.management_enabled !== false && modelConfig?.runtime_supported !== true;
+  const canManageModel = isModelOwner && Number(modelConfig?.uid) === activeBotUID
+    && modelConfig?.management_enabled !== false && modelConfig?.runtime_supported === true;
 
   const loadConfig = async (uid, includeUsage, action = '加载') => {
     try {
@@ -325,18 +329,20 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
   const headerTone = agentModelState?.summary
     ? relayUsageTone(agentModelState.summary)
     : agentModelState?.isBot && agentModelState.state === 'unavailable' ? 'muted' : '';
-  const applyState = savingKey
-    ? '保存中'
-    : modelConfig?.status === 'failed'
-      ? '切换失败'
-      : modelApplyPending
-        ? applyWaitExpired ? '待应用' : '切换中'
-        : '';
+  const applyState = runtimeUnavailable
+    ? '暂时无法切换'
+    : savingKey
+      ? '保存中'
+      : modelConfig?.status === 'failed'
+        ? '切换失败'
+        : modelApplyPending
+          ? applyWaitExpired ? '待应用' : '切换中'
+          : '';
   const statusContents = (
     <>
       <span className="v3-current-model-name">{display.model}</span>
       {headerQuota && <span className={`v3-model-quota ${headerTone}`.trim()}>{headerQuota}</span>}
-      {applyState && <span className={`v3-model-apply-state ${modelApplyError ? 'error' : ''}`}>{applyState}</span>}
+      {applyState && <span className={`v3-model-apply-state ${modelApplyError ? 'error' : ''} ${runtimeUnavailable ? 'muted' : ''}`.trim()}>{applyState}</span>}
       {canManageModel && (transitioning
         ? <Loader2 className="v3-model-switch-spinner" size={14} aria-hidden="true" />
         : <ChevronDown className="v3-model-menu-chevron" size={14} aria-hidden="true" />)}
@@ -360,7 +366,11 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
           {statusContents}
         </button>
       ) : (
-        <div className="v3-local-assistant-status" aria-label={display.title} title={display.title}>
+        <div
+          className="v3-local-assistant-status"
+          aria-label={runtimeUnavailable ? `${display.title}，暂时无法切换` : display.title}
+          title={runtimeUnavailable ? modelConfig.runtime_unavailable_reason || RUNTIME_UNAVAILABLE_REASON : display.title}
+        >
           {statusContents}
         </div>
       )}

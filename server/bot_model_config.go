@@ -15,6 +15,9 @@ import (
 )
 
 const defaultBotModelID = "minimax-m3"
+const botModelRuntimeProtocol = "cloud-model-v1"
+
+const botModelRuntimeUnavailableReason = "当前 CatsCo 版本暂不支持云端切换，请更新桌面端后再试"
 
 const (
 	botModelKindCatalog = "catalog"
@@ -130,8 +133,7 @@ func (h *BotModelConfigHandler) SetRelayUsageClient(admin *RelayAdminClient) {
 	}
 }
 
-// SetRollout keeps cloud model management dark by default in production while
-// allowing selected owners to validate the full server-first rollout.
+// SetRollout supports either a public launch or an owner allowlist.
 func (h *BotModelConfigHandler) SetRollout(publicEnabled bool, testUIDs map[int64]bool) {
 	if h == nil {
 		return
@@ -194,6 +196,13 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 	storedConfig, err := h.models.GetBotModelConfig(botUID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load bot model configuration"})
+		return
+	}
+	if r.Method == http.MethodPatch && !botModelRuntimeSupported(storedConfig) {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error":   "bot runtime does not support cloud model management",
+			"message": botModelRuntimeUnavailableReason,
+		})
 		return
 	}
 	configured := botModelConfigIsConfigured(storedConfig)
@@ -299,6 +308,13 @@ func (h *BotModelConfigHandler) HandleRuntimeConfig(w http.ResponseWriter, r *ht
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load bot model configuration"})
 		return
+	}
+	if !botModelRuntimeSupported(config) {
+		config, err = h.models.MarkBotModelRuntimeProtocol(botUID, botModelRuntimeProtocol)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to register bot model runtime"})
+			return
+		}
 	}
 	response, responseErr := h.runtimeConfigResponse(botUID, config)
 	if responseErr != nil {
@@ -462,6 +478,10 @@ func botModelConfigIsConfigured(config *types.BotModelConfig) bool {
 	return config != nil && strings.TrimSpace(config.ModelID) != ""
 }
 
+func botModelRuntimeSupported(config *types.BotModelConfig) bool {
+	return config != nil && config.RuntimeProtocol == botModelRuntimeProtocol
+}
+
 func botModelConfigResponse(botUID int64, config *types.BotModelConfig) map[string]interface{} {
 	configured := botModelConfigIsConfigured(config)
 	config = botModelConfigWithDefaults(config)
@@ -507,6 +527,10 @@ func (h *BotModelConfigHandler) ownerConfigResponse(
 ) (map[string]interface{}, error) {
 	response := botModelConfigResponse(botUID, config)
 	response["management_enabled"] = h.managementEnabled(ownerUID)
+	response["runtime_supported"] = botModelRuntimeSupported(config)
+	if !botModelRuntimeSupported(config) {
+		response["runtime_unavailable_reason"] = botModelRuntimeUnavailableReason
+	}
 	catalog, quotaError := h.catalogWithUsage(ctx, ownerUID, includeUsage)
 	response["models"] = catalog
 	response["custom_supported"] = h.secretCodec != nil

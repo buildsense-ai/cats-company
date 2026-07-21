@@ -10,7 +10,8 @@ import (
 func TestEncodeBotModelConfigJSONPreservesOtherConfiguration(t *testing.T) {
 	raw := []byte(`{"channel":"feishu","nested":{"keep":true}}`)
 	next, err := EncodeBotModelConfigJSON(raw, &types.BotModelConfig{
-		Kind: "custom", ModelID: "private-model", CustomCiphertext: "v1:encrypted", Revision: 2,
+		Kind: "custom", ModelID: "private-model", CustomCiphertext: "v1:encrypted",
+		RuntimeProtocol: "cloud-model-v1", RuntimeProtocolSeen: "2026-07-21T00:00:00Z", Revision: 2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +27,8 @@ func TestEncodeBotModelConfigJSONPreservesOtherConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Kind != "custom" || decoded.ModelID != "private-model" || decoded.CustomCiphertext != "v1:encrypted" || decoded.Revision != 2 {
+	if decoded.Kind != "custom" || decoded.ModelID != "private-model" || decoded.CustomCiphertext != "v1:encrypted" ||
+		decoded.RuntimeProtocol != "cloud-model-v1" || decoded.RuntimeProtocolSeen == "" || decoded.Revision != 2 {
 		t.Fatalf("decoded=%+v", decoded)
 	}
 }

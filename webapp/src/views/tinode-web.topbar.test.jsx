@@ -10,6 +10,7 @@ import { api } from '../api';
 
 const baseConfig = {
   uid: 43,
+  runtime_supported: true,
   configured: true,
   status: 'applied',
   desired: { kind: 'catalog', model_id: 'minimax-m3', reasoning_effort: '', revision: 2 },
@@ -108,6 +109,20 @@ describe('LocalAssistantBar model selector', () => {
     expect(getConfig).toHaveBeenCalledWith(43, { includeUsage: false });
     expect(container.querySelector('.v3-model-status-button')).toBeNull();
     expect(container.querySelector('.v3-local-assistant-status')?.textContent).toContain('minimax-m3');
+  });
+
+  it('shows a clear unavailable state for an old CatsCo runtime', async () => {
+    const getConfig = vi.spyOn(api, 'getBotModelConfig').mockResolvedValue({
+      ...baseConfig,
+      runtime_supported: false,
+      runtime_unavailable_reason: '当前 CatsCo 版本暂不支持云端切换，请更新桌面端后再试',
+      status: 'pending',
+    });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    expect(getConfig).toHaveBeenCalledWith(43, { includeUsage: false });
+    expect(container.querySelector('.v3-model-status-button')).toBeNull();
+    expect(container.querySelector('.v3-model-apply-state')?.textContent).toBe('暂时无法切换');
+    expect(container.querySelector('.v3-local-assistant-status')?.title).toContain('请更新桌面端');
   });
 
   it('loads quota once when the owner opens the list and shows it per model', async () => {

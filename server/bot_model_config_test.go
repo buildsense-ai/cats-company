@@ -34,6 +34,14 @@ func (s *botModelConfigTestStore) GetBotModelConfig(botUID int64) (*types.BotMod
 	return &types.BotModelConfig{}, nil
 }
 
+func (s *botModelConfigTestStore) MarkBotModelRuntimeProtocol(botUID int64, protocol string) (*types.BotModelConfig, error) {
+	config, _ := s.GetBotModelConfig(botUID)
+	config.RuntimeProtocol = protocol
+	config.RuntimeProtocolSeen = "2026-07-21T00:00:00Z"
+	s.models[botUID] = config
+	return config, nil
+}
+
 func (s *botModelConfigTestStore) SaveBotDesiredModelConfig(botUID int64, kind, modelID, reasoningEffort, customCiphertext string) (*types.BotModelConfig, error) {
 	config, _ := s.GetBotModelConfig(botUID)
 	config.Kind = kind
@@ -71,11 +79,19 @@ func enableBotModelEncryption(t *testing.T) {
 	t.Setenv(botModelEncryptionKeyEnv, base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
 }
 
+func markTestBotModelRuntime(t *testing.T, db *botModelConfigTestStore, botUID int64) {
+	t.Helper()
+	if _, err := db.MarkBotModelRuntimeProtocol(botUID, botModelRuntimeProtocol); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestOwnerCanSelectBotModelAndFriendCannot(t *testing.T) {
 	db := &botModelConfigTestStore{
 		owners: map[int64]int64{43: 7},
 		models: map[int64]*types.BotModelConfig{},
 	}
+	markTestBotModelRuntime(t, db, 43)
 	handler := NewBotModelConfigHandler(db, db)
 
 	req := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(
@@ -145,6 +161,52 @@ func TestCloudModelRolloutAllowsOnlyConfiguredOwners(t *testing.T) {
 	}
 }
 
+func TestOldRuntimeCannotSwitchUntilItRegistersCloudModelProtocol(t *testing.T) {
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{},
+	}
+	handler := NewBotModelConfigHandler(db, db)
+
+	ownerGet := httptest.NewRequest(http.MethodGet, "/api/bots/model-config?uid=43", nil)
+	ownerGet = ownerGet.WithContext(context.WithValue(ownerGet.Context(), uidKey, int64(7)))
+	ownerGetRec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(ownerGetRec, ownerGet)
+	if ownerGetRec.Code != http.StatusOK ||
+		!strings.Contains(ownerGetRec.Body.String(), `"runtime_supported":false`) ||
+		!strings.Contains(ownerGetRec.Body.String(), botModelRuntimeUnavailableReason) {
+		t.Fatalf("owner get status=%d body=%s", ownerGetRec.Code, ownerGetRec.Body.String())
+	}
+
+	blockedPatch := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(
+		`{"kind":"catalog","model_id":"gpt-5.6-terra","reasoning_effort":"medium"}`,
+	))
+	blockedPatch = blockedPatch.WithContext(context.WithValue(blockedPatch.Context(), uidKey, int64(7)))
+	blockedRec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(blockedRec, blockedPatch)
+	if blockedRec.Code != http.StatusConflict || db.models[43] != nil {
+		t.Fatalf("old runtime patch status=%d body=%s config=%+v", blockedRec.Code, blockedRec.Body.String(), db.models[43])
+	}
+
+	runtimeGet := httptest.NewRequest(http.MethodGet, "/api/bot/model-config", nil)
+	runtimeGet = runtimeGet.WithContext(context.WithValue(runtimeGet.Context(), uidKey, int64(43)))
+	runtimeRec := httptest.NewRecorder()
+	handler.HandleRuntimeConfig(runtimeRec, runtimeGet)
+	if runtimeRec.Code != http.StatusOK || !botModelRuntimeSupported(db.models[43]) || db.models[43].Revision != 0 {
+		t.Fatalf("runtime registration status=%d body=%s config=%+v", runtimeRec.Code, runtimeRec.Body.String(), db.models[43])
+	}
+
+	allowedPatch := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(
+		`{"kind":"catalog","model_id":"gpt-5.6-terra","reasoning_effort":"medium"}`,
+	))
+	allowedPatch = allowedPatch.WithContext(context.WithValue(allowedPatch.Context(), uidKey, int64(7)))
+	allowedRec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(allowedRec, allowedPatch)
+	if allowedRec.Code != http.StatusOK || db.models[43].ModelID != "gpt-5.6-terra" || db.models[43].Revision != 1 {
+		t.Fatalf("new runtime patch status=%d body=%s config=%+v", allowedRec.Code, allowedRec.Body.String(), db.models[43])
+	}
+}
+
 func TestGPT56CatalogUsesRelayReasoningEfforts(t *testing.T) {
 	model, effort, ok := normalizeBotModelSelection("gpt-5.6-terra", "xhigh")
 	if !ok || model.ID != "gpt-5.6-terra" || model.Provider != "openai" || model.Protocol != "OpenAI Responses" || effort != "xhigh" {
@@ -183,6 +245,7 @@ func TestDefaultModelIsDisplayOnlyUntilOwnerEnablesCloudManagement(t *testing.T)
 	if db.models[43] != nil {
 		t.Fatal("reading the displayed default must not enable cloud management")
 	}
+	markTestBotModelRuntime(t, db, 43)
 
 	patchReq := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(
 		`{"model_id":"minimax-m3"}`,
@@ -202,7 +265,7 @@ func TestOwnerCanReturnBotToDeviceLocalModelConfiguration(t *testing.T) {
 	db := &botModelConfigTestStore{
 		owners: map[int64]int64{43: 7},
 		models: map[int64]*types.BotModelConfig{
-			43: {ModelID: "minimax-m3", Revision: 2},
+			43: {ModelID: "minimax-m3", RuntimeProtocol: botModelRuntimeProtocol, Revision: 2},
 		},
 	}
 	handler := NewBotModelConfigHandler(db, db)
@@ -229,14 +292,14 @@ func TestOwnerRetryCreatesNewRevisionUntilSelectionIsApplied(t *testing.T) {
 		{
 			name: "pending selection",
 			config: &types.BotModelConfig{
-				ModelID: "deepseek-v4-flash", ReasoningEffort: "high", Revision: 3,
+				ModelID: "deepseek-v4-flash", ReasoningEffort: "high", RuntimeProtocol: botModelRuntimeProtocol, Revision: 3,
 			},
 			wantRevision: 4,
 		},
 		{
 			name: "failed selection",
 			config: &types.BotModelConfig{
-				ModelID: "deepseek-v4-flash", ReasoningEffort: "high", Revision: 3,
+				ModelID: "deepseek-v4-flash", ReasoningEffort: "high", RuntimeProtocol: botModelRuntimeProtocol, Revision: 3,
 				LastAttemptRevision: 3, LastError: "runtime reload failed",
 			},
 			wantRevision: 4,
@@ -244,7 +307,7 @@ func TestOwnerRetryCreatesNewRevisionUntilSelectionIsApplied(t *testing.T) {
 		{
 			name: "applied selection",
 			config: &types.BotModelConfig{
-				ModelID: "deepseek-v4-flash", ReasoningEffort: "high", Revision: 3,
+				ModelID: "deepseek-v4-flash", ReasoningEffort: "high", RuntimeProtocol: botModelRuntimeProtocol, Revision: 3,
 				AppliedRevision: 3, AppliedModelID: "deepseek-v4-flash", AppliedReasoning: "high",
 			},
 			wantRevision: 3,
@@ -282,6 +345,7 @@ func TestRuntimeReadsOwnConfigAndAcknowledgesCurrentRevision(t *testing.T) {
 			43: {ModelID: "deepseek-v4-flash", ReasoningEffort: "high", Revision: 3},
 		},
 	}
+	markTestBotModelRuntime(t, db, 43)
 	handler := NewBotModelConfigHandler(db, db)
 
 	getReq := httptest.NewRequest(http.MethodGet, "/api/bot/model-config", nil)
@@ -320,6 +384,7 @@ func TestRuntimeRejectsStaleModelAcknowledgement(t *testing.T) {
 			43: {ModelID: "minimax-m3", Revision: 4},
 		},
 	}
+	markTestBotModelRuntime(t, db, 43)
 	handler := NewBotModelConfigHandler(db, db)
 	req := httptest.NewRequest(http.MethodPost, "/api/bot/model-config/ack", strings.NewReader(
 		`{"revision":3,"model_id":"deepseek-v4-flash","reasoning_effort":"high"}`,
@@ -338,6 +403,7 @@ func TestCustomModelSecretIsEncryptedAndOnlyReturnedToBotRuntime(t *testing.T) {
 		owners: map[int64]int64{43: 7},
 		models: map[int64]*types.BotModelConfig{},
 	}
+	markTestBotModelRuntime(t, db, 43)
 	handler := NewBotModelConfigHandler(db, db)
 
 	patchReq := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(`{
@@ -387,6 +453,7 @@ func TestCustomModelUpdateCanKeepExistingAPIKey(t *testing.T) {
 		owners: map[int64]int64{43: 7},
 		models: map[int64]*types.BotModelConfig{},
 	}
+	markTestBotModelRuntime(t, db, 43)
 	handler := NewBotModelConfigHandler(db, db)
 
 	patch := func(body string) *httptest.ResponseRecorder {
@@ -421,6 +488,7 @@ func TestCustomModelRequiresServerEncryptionButCatalogDoesNot(t *testing.T) {
 		owners: map[int64]int64{43: 7},
 		models: map[int64]*types.BotModelConfig{},
 	}
+	markTestBotModelRuntime(t, db, 43)
 	handler := NewBotModelConfigHandler(db, db)
 
 	customReq := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(
@@ -453,6 +521,7 @@ func TestUnreadableSavedCustomSecretDoesNotBlockOfficialModelManagement(t *testi
 			},
 		},
 	}
+	markTestBotModelRuntime(t, db, 43)
 	handler := NewBotModelConfigHandler(db, db)
 	req := httptest.NewRequest(http.MethodGet, "/api/bots/model-config?uid=43", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
@@ -475,6 +544,7 @@ func TestCustomModelAcknowledgementTracksKind(t *testing.T) {
 		owners: map[int64]int64{43: 7},
 		models: map[int64]*types.BotModelConfig{},
 	}
+	markTestBotModelRuntime(t, db, 43)
 	handler := NewBotModelConfigHandler(db, db)
 
 	ownerReq := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(
