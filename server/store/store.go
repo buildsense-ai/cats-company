@@ -134,6 +134,14 @@ type BotStore interface {
 	SetBotVisibility(botUID int64, visibility string) error
 }
 
+// BotModelConfigStore is optional so existing narrow Store test doubles do not
+// need cloud-model methods. Production database adapters implement it.
+type BotModelConfigStore interface {
+	GetBotModelConfig(botUID int64) (*types.BotModelConfig, error)
+	SaveBotDesiredModelConfig(botUID int64, modelID, reasoningEffort string) (*types.BotModelConfig, error)
+	AckBotModelConfig(botUID, revision int64, modelID, reasoningEffort, applyError string) (*types.BotModelConfig, error)
+}
+
 // FeedbackStore contains user feedback persistence operations.
 type FeedbackStore interface {
 	CreateFeedbackReport(report *types.FeedbackReport) (int64, error)

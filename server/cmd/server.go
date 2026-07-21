@@ -287,6 +287,8 @@ func main() {
 	defer weixinClawBotHandler.Stop()
 	botHandler := server.NewBotHandler(db, deployer)
 	botHandler.SetHub(hub)
+	botModelStore, _ := db.(store.BotModelConfigStore)
+	botModelConfigHandler := server.NewBotModelConfigHandler(db, botModelStore)
 	desktopConnectHandler := server.NewDesktopConnectHandler(db)
 	msgHandler := server.NewMessageHandler(db, hub)
 	deviceHandler := server.NewDeviceHandler(db, hub)
@@ -539,6 +541,9 @@ func main() {
 	mux.HandleFunc("/api/bots/visibility", ownerAuthWithDB(botHandler.HandleSetBotVisibility))
 	mux.HandleFunc("/api/bots/avatar", ownerAuthWithDB(botHandler.HandleUpdateBotAvatar))
 	mux.HandleFunc("/api/bots/friends", ownerAuthWithDB(botHandler.HandleGetBotFriends))
+	mux.HandleFunc("/api/bots/model-config", ownerAuthWithDB(botModelConfigHandler.HandleOwnerConfig))
+	mux.HandleFunc("/api/bot/model-config", authWithDB(botModelConfigHandler.HandleRuntimeConfig))
+	mux.HandleFunc("/api/bot/model-config/ack", authWithDB(botModelConfigHandler.HandleRuntimeAck))
 
 	// Groups (require auth)
 	groupHandler := server.NewGroupHandler(db, hub)

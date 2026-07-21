@@ -343,6 +343,22 @@ type BotConfig struct {
 	Config      map[string]string `json:"config,omitempty"`
 }
 
+// BotModelConfig stores the cloud-selected model and the latest device apply
+// result. Relay credentials remain device-local and are never persisted here.
+type BotModelConfig struct {
+	ModelID             string `json:"model_id"`
+	ReasoningEffort     string `json:"reasoning_effort,omitempty"`
+	Revision            int64  `json:"revision"`
+	UpdatedAt           string `json:"updated_at,omitempty"`
+	AppliedModelID      string `json:"applied_model_id,omitempty"`
+	AppliedReasoning    string `json:"applied_reasoning_effort,omitempty"`
+	AppliedRevision     int64  `json:"applied_revision,omitempty"`
+	AppliedAt           string `json:"applied_at,omitempty"`
+	LastAttemptRevision int64  `json:"last_attempt_revision,omitempty"`
+	LastAttemptAt       string `json:"last_attempt_at,omitempty"`
+	LastError           string `json:"last_error,omitempty"`
+}
+
 const (
 	ChannelAgentAccessPublic           = "public"
 	ChannelAgentAccessApprovalRequired = "approval_required"

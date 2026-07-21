@@ -27,7 +27,46 @@ const messagesByTopic = new Map();
 const showcaseByUserId = new Map();
 const projectsByUserId = new Map();
 const projectTopicsByUserId = new Map();
+const botModelConfigs = new Map();
 let nextSeq = 1;
+
+const mockBotModels = [
+  { id: 'minimax-m2.7', label: 'MiniMax M2.7', description: '标准额度，适合日常任务' },
+  { id: 'minimax-m3', label: 'MiniMax M3', description: '支持多模态与长上下文' },
+  {
+    id: 'deepseek-v4-flash',
+    label: 'DeepSeek V4 Flash',
+    description: '低额度 Flash，支持推理强度',
+    reasoning_efforts: ['high', 'max', 'disabled'],
+    default_reasoning_effort: 'high',
+  },
+  ...['terra', 'sol', 'luna'].map((variant) => ({
+    id: `gpt-5.6-${variant}`,
+    label: `GPT-5.6 ${variant[0].toUpperCase()}${variant.slice(1)}`,
+    description: 'OpenAI Responses，支持精细推理强度',
+    provider: 'openai',
+    protocol: 'OpenAI Responses',
+    context_window_tokens: 1000000,
+    reasoning_efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+    default_reasoning_effort: 'medium',
+  })),
+];
+
+function mockBotModelResponse(botId, includeModels = false) {
+  const config = botModelConfigs.get(botId) || {
+    configured: false,
+    status: 'local',
+    desired: { model_id: 'local', reasoning_effort: '', revision: 0 },
+    applied: { model_id: '', reasoning_effort: '', revision: 0 },
+    last_error: '',
+  };
+  return {
+    uid: botId,
+    ...config,
+    apply_mode: 'runtime_reload',
+    ...(includeModels ? { models: mockBotModels } : {}),
+  };
+}
 
 function p2pTopicId(uid1, uid2) {
   const a = Number(uid1);
@@ -63,6 +102,8 @@ function seedExistingBot(user) {
         remaining_percent: definition.remaining_percent,
         status: 'normal',
       } : null,
+      relation: 'owner',
+      is_owner: true,
     };
   });
   botsByOwner.set(user.id, bots);
@@ -868,6 +909,96 @@ async function handleApi(req, res) {
       return send(res, 200, { bots: botsByOwner.get(user.id) || [] });
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/agents/quota') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const uid = Number(url.searchParams.get('uid'));
+      const bot = [...botsByOwner.values()].flat().find((item) => item.id === uid);
+      if (!bot) return send(res, 404, { error: 'agent not found' });
+      return send(res, 200, {
+        configured: true,
+        shared: true,
+        summary: {
+          source: 'relay',
+          model: 'MiniMax-M2.7',
+          remaining_percent: 72,
+          status: 'normal',
+        },
+      });
+    }
+
+    if ((req.method === 'GET' || req.method === 'PATCH') && url.pathname === '/api/bots/model-config') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const uid = Number(url.searchParams.get('uid'));
+      const bot = (botsByOwner.get(user.id) || []).find((item) => item.id === uid);
+      if (!bot) return send(res, 403, { error: 'not your bot' });
+      if (req.method === 'PATCH') {
+        const body = await readBody(req);
+        const modelId = String(body.model_id || '').trim().toLowerCase();
+        const model = mockBotModels.find((item) => item.id === modelId);
+        if (modelId === 'local') {
+          const current = mockBotModelResponse(uid);
+          botModelConfigs.set(uid, {
+            configured: false,
+            status: 'local',
+            desired: { model_id: 'local', reasoning_effort: '', revision: current.desired.revision + 1 },
+            applied: current.applied,
+            last_error: '',
+          });
+        } else if (model) {
+          const requestedEffort = String(body.reasoning_effort || model.default_reasoning_effort || '').trim().toLowerCase();
+          if (model.reasoning_efforts && !model.reasoning_efforts.includes(requestedEffort)) {
+            return send(res, 400, { error: 'unsupported reasoning effort' });
+          }
+          const current = mockBotModelResponse(uid);
+          botModelConfigs.set(uid, {
+            configured: true,
+            status: 'pending',
+            desired: {
+              model_id: model.id,
+              reasoning_effort: model.reasoning_efforts ? requestedEffort : '',
+              revision: current.desired.revision + 1,
+            },
+            applied: current.applied,
+            last_error: '',
+          });
+        } else {
+          return send(res, 400, { error: 'unsupported model' });
+        }
+      }
+      return send(res, 200, mockBotModelResponse(uid, true));
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/bot/model-config') {
+      const bot = getApiKeyBot(req);
+      if (!bot) return send(res, 401, { error: 'bot api key required' });
+      return send(res, 200, mockBotModelResponse(bot.id));
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/bot/model-config/ack') {
+      const bot = getApiKeyBot(req);
+      if (!bot) return send(res, 401, { error: 'bot api key required' });
+      const body = await readBody(req);
+      const current = mockBotModelResponse(bot.id);
+      if (!current.configured || Number(body.revision) !== current.desired.revision) {
+        return send(res, 409, { error: 'bot model configuration changed before it was applied' });
+      }
+      const applyError = String(body.error || '').trim();
+      botModelConfigs.set(bot.id, {
+        ...current,
+        status: applyError ? 'failed' : 'applied',
+        applied: applyError ? current.applied : {
+          model_id: current.desired.model_id,
+          reasoning_effort: current.desired.reasoning_effort,
+          revision: current.desired.revision,
+          applied_at: new Date().toISOString(),
+        },
+        last_error: applyError,
+      });
+      return send(res, 200, mockBotModelResponse(bot.id));
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/bots') {
       const user = requireUser(req, res);
       if (!user) return;
@@ -880,6 +1011,8 @@ async function handleApi(req, res) {
         avatar_url: '',
         api_key: `mock-api-key-${nextBotId - 1}`,
         owner_id: user.id,
+        relation: 'owner',
+        is_owner: true,
       };
       botsByOwner.set(user.id, [...(botsByOwner.get(user.id) || []), bot]);
       return send(res, 201, { uid: bot.id, id: bot.id, api_key: bot.api_key, bot });
