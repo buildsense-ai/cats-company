@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -33,10 +34,14 @@ func (s *botModelConfigTestStore) GetBotModelConfig(botUID int64) (*types.BotMod
 	return &types.BotModelConfig{}, nil
 }
 
-func (s *botModelConfigTestStore) SaveBotDesiredModelConfig(botUID int64, modelID, reasoningEffort string) (*types.BotModelConfig, error) {
+func (s *botModelConfigTestStore) SaveBotDesiredModelConfig(botUID int64, kind, modelID, reasoningEffort, customCiphertext string) (*types.BotModelConfig, error) {
 	config, _ := s.GetBotModelConfig(botUID)
+	config.Kind = kind
 	config.ModelID = modelID
 	config.ReasoningEffort = reasoningEffort
+	if customCiphertext != "" {
+		config.CustomCiphertext = customCiphertext
+	}
 	config.Revision++
 	config.LastAttemptRevision = 0
 	config.LastError = ""
@@ -44,7 +49,7 @@ func (s *botModelConfigTestStore) SaveBotDesiredModelConfig(botUID int64, modelI
 	return config, nil
 }
 
-func (s *botModelConfigTestStore) AckBotModelConfig(botUID, revision int64, modelID, reasoningEffort, applyError string) (*types.BotModelConfig, error) {
+func (s *botModelConfigTestStore) AckBotModelConfig(botUID, revision int64, kind, modelID, reasoningEffort, applyError string) (*types.BotModelConfig, error) {
 	config, _ := s.GetBotModelConfig(botUID)
 	if config.Revision != revision {
 		return nil, store.ErrStaleBotModelRevision
@@ -52,12 +57,18 @@ func (s *botModelConfigTestStore) AckBotModelConfig(botUID, revision int64, mode
 	config.LastAttemptRevision = revision
 	config.LastError = applyError
 	if applyError == "" {
+		config.AppliedKind = kind
 		config.AppliedRevision = revision
 		config.AppliedModelID = modelID
 		config.AppliedReasoning = reasoningEffort
 	}
 	s.models[botUID] = config
 	return config, nil
+}
+
+func enableBotModelEncryption(t *testing.T) {
+	t.Helper()
+	t.Setenv(botModelEncryptionKeyEnv, base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")))
 }
 
 func TestOwnerCanSelectBotModelAndFriendCannot(t *testing.T) {
@@ -275,5 +286,235 @@ func TestRuntimeRejectsStaleModelAcknowledgement(t *testing.T) {
 	handler.HandleRuntimeAck(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status=%d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCustomModelSecretIsEncryptedAndOnlyReturnedToBotRuntime(t *testing.T) {
+	enableBotModelEncryption(t)
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{},
+	}
+	handler := NewBotModelConfigHandler(db, db)
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(`{
+		"kind":"custom",
+		"custom":{
+			"protocol":"openai-responses",
+			"api_base":"https://models.example.com/v1/",
+			"model":"gpt-example",
+			"api_key":"sk-super-secret",
+			"context_window_tokens":256000,
+			"max_tokens":8192,
+			"reasoning_effort":"high"
+		}
+	}`))
+	patchReq = patchReq.WithContext(context.WithValue(patchReq.Context(), uidKey, int64(7)))
+	patchRec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(patchRec, patchReq)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch status=%d body=%s", patchRec.Code, patchRec.Body.String())
+	}
+	stored := db.models[43]
+	if stored == nil || stored.Kind != botModelKindCustom || stored.ModelID != "gpt-example" || stored.CustomCiphertext == "" {
+		t.Fatalf("saved config=%+v", stored)
+	}
+	if strings.Contains(stored.CustomCiphertext, "sk-super-secret") {
+		t.Fatal("plaintext API key was persisted")
+	}
+	if strings.Contains(patchRec.Body.String(), "sk-super-secret") {
+		t.Fatal("owner response exposed plaintext API key")
+	}
+	if !strings.Contains(patchRec.Body.String(), `"api_key_configured":true`) || !strings.Contains(patchRec.Body.String(), `"api_key_hint":"****cret"`) {
+		t.Fatalf("owner response does not contain a safe key hint: %s", patchRec.Body.String())
+	}
+
+	runtimeReq := httptest.NewRequest(http.MethodGet, "/api/bot/model-config", nil)
+	runtimeReq = runtimeReq.WithContext(context.WithValue(runtimeReq.Context(), uidKey, int64(43)))
+	runtimeRec := httptest.NewRecorder()
+	handler.HandleRuntimeConfig(runtimeRec, runtimeReq)
+	if runtimeRec.Code != http.StatusOK || !strings.Contains(runtimeRec.Body.String(), "sk-super-secret") {
+		t.Fatalf("runtime status=%d body=%s", runtimeRec.Code, runtimeRec.Body.String())
+	}
+}
+
+func TestCustomModelUpdateCanKeepExistingAPIKey(t *testing.T) {
+	enableBotModelEncryption(t)
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{},
+	}
+	handler := NewBotModelConfigHandler(db, db)
+
+	patch := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+		rec := httptest.NewRecorder()
+		handler.HandleOwnerConfig(rec, req)
+		return rec
+	}
+	first := patch(`{"kind":"custom","custom":{"protocol":"anthropic","api_base":"https://models.example.com","model":"model-a","api_key":"secret-a","context_window_tokens":128000}}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first patch status=%d body=%s", first.Code, first.Body.String())
+	}
+	second := patch(`{"kind":"custom","custom":{"protocol":"anthropic","api_base":"https://models.example.com","model":"model-b","context_window_tokens":128000}}`)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second patch status=%d body=%s", second.Code, second.Body.String())
+	}
+
+	runtimeReq := httptest.NewRequest(http.MethodGet, "/api/bot/model-config", nil)
+	runtimeReq = runtimeReq.WithContext(context.WithValue(runtimeReq.Context(), uidKey, int64(43)))
+	runtimeRec := httptest.NewRecorder()
+	handler.HandleRuntimeConfig(runtimeRec, runtimeReq)
+	if runtimeRec.Code != http.StatusOK || !strings.Contains(runtimeRec.Body.String(), `"model":"model-b"`) || !strings.Contains(runtimeRec.Body.String(), `"api_key":"secret-a"`) {
+		t.Fatalf("runtime status=%d body=%s", runtimeRec.Code, runtimeRec.Body.String())
+	}
+}
+
+func TestCustomModelRequiresServerEncryptionButCatalogDoesNot(t *testing.T) {
+	t.Setenv(botModelEncryptionKeyEnv, "")
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{},
+	}
+	handler := NewBotModelConfigHandler(db, db)
+
+	customReq := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(
+		`{"kind":"custom","custom":{"protocol":"anthropic","api_base":"https://models.example.com","model":"model-a","api_key":"secret-a","context_window_tokens":128000}}`,
+	))
+	customReq = customReq.WithContext(context.WithValue(customReq.Context(), uidKey, int64(7)))
+	customRec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(customRec, customReq)
+	if customRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("custom status=%d body=%s, want 503", customRec.Code, customRec.Body.String())
+	}
+
+	catalogReq := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(`{"kind":"catalog","model_id":"minimax-m3"}`))
+	catalogReq = catalogReq.WithContext(context.WithValue(catalogReq.Context(), uidKey, int64(7)))
+	catalogRec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(catalogRec, catalogReq)
+	if catalogRec.Code != http.StatusOK {
+		t.Fatalf("catalog status=%d body=%s", catalogRec.Code, catalogRec.Body.String())
+	}
+}
+
+func TestUnreadableSavedCustomSecretDoesNotBlockOfficialModelManagement(t *testing.T) {
+	enableBotModelEncryption(t)
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{
+			43: {
+				Kind: botModelKindCatalog, ModelID: "minimax-m3", Revision: 3,
+				CustomCiphertext: "v1:corrupted",
+			},
+		},
+	}
+	handler := NewBotModelConfigHandler(db, db)
+	req := httptest.NewRequest(http.MethodGet, "/api/bots/model-config?uid=43", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"model_id":"minimax-m3"`) || !strings.Contains(rec.Body.String(), `"custom_unavailable_reason"`) {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "corrupted") {
+		t.Fatal("owner response exposed encrypted storage material")
+	}
+}
+
+func TestCustomModelAcknowledgementTracksKind(t *testing.T) {
+	enableBotModelEncryption(t)
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{},
+	}
+	handler := NewBotModelConfigHandler(db, db)
+
+	ownerReq := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(
+		`{"kind":"custom","custom":{"protocol":"openai-chat-completions","api_base":"https://models.example.com/v1","model":"model-a","api_key":"secret-a","context_window_tokens":128000,"reasoning_effort":"medium"}}`,
+	))
+	ownerReq = ownerReq.WithContext(context.WithValue(ownerReq.Context(), uidKey, int64(7)))
+	ownerRec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(ownerRec, ownerReq)
+	if ownerRec.Code != http.StatusOK {
+		t.Fatalf("owner status=%d body=%s", ownerRec.Code, ownerRec.Body.String())
+	}
+
+	failureReq := httptest.NewRequest(http.MethodPost, "/api/bot/model-config/ack", strings.NewReader(
+		`{"revision":1,"kind":"custom","model_id":"model-a","reasoning_effort":"medium","error":"provider rejected secret-a"}`,
+	))
+	failureReq = failureReq.WithContext(context.WithValue(failureReq.Context(), uidKey, int64(43)))
+	failureRec := httptest.NewRecorder()
+	handler.HandleRuntimeAck(failureRec, failureReq)
+	if failureRec.Code != http.StatusOK || db.models[43].LastError != "provider rejected [REDACTED]" {
+		t.Fatalf("failure status=%d config=%+v", failureRec.Code, db.models[43])
+	}
+
+	ackReq := httptest.NewRequest(http.MethodPost, "/api/bot/model-config/ack", strings.NewReader(
+		`{"revision":1,"kind":"custom","model_id":"model-a","reasoning_effort":"medium"}`,
+	))
+	ackReq = ackReq.WithContext(context.WithValue(ackReq.Context(), uidKey, int64(43)))
+	ackRec := httptest.NewRecorder()
+	handler.HandleRuntimeAck(ackRec, ackReq)
+	if ackRec.Code != http.StatusOK {
+		t.Fatalf("ack status=%d body=%s", ackRec.Code, ackRec.Body.String())
+	}
+	if db.models[43].AppliedKind != botModelKindCustom || db.models[43].AppliedModelID != "model-a" {
+		t.Fatalf("ack config=%+v", db.models[43])
+	}
+}
+
+func TestOwnerModelCatalogIncludesPerModelQuotaFromSingleRelayRequest(t *testing.T) {
+	requestCount := 0
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.URL.Path != "/internal/usage/users" || r.URL.Query().Get("search") != "7" {
+			t.Fatalf("unexpected relay request: %s", r.URL.String())
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"users": []map[string]interface{}{{
+				"uid": 7, "configured": true,
+				"limits": map[string]interface{}{
+					"model_limits": []map[string]interface{}{
+						{
+							"provider": "openai", "model": "gpt-5.6-terra",
+							"budget": map[string]interface{}{"max_limit": 100.0, "current_usage": 25.0},
+						},
+						{
+							"provider": "anthropic", "model": "deepseek-v4-flash",
+							"budget": map[string]interface{}{"max_limit": 50.0, "current_usage": 45.0},
+						},
+					},
+				},
+			}},
+		})
+	}))
+	defer relay.Close()
+
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{},
+	}
+	handler := NewBotModelConfigHandler(db, db)
+	handler.SetRelayUsageClient(&RelayAdminClient{baseURL: relay.URL, token: "test-token", client: relay.Client()})
+	req := httptest.NewRequest(http.MethodGet, "/api/bots/model-config?uid=43&include_usage=1", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if requestCount != 1 {
+		t.Fatalf("relay request count=%d, want 1", requestCount)
+	}
+	if !strings.Contains(rec.Body.String(), `"model":"gpt-5.6-terra"`) || !strings.Contains(rec.Body.String(), `"remaining_cny":75`) {
+		t.Fatalf("Terra quota missing from response: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"model":"deepseek-v4-flash"`) || !strings.Contains(rec.Body.String(), `"status":"high"`) {
+		t.Fatalf("DeepSeek quota missing from response: %s", rec.Body.String())
 	}
 }

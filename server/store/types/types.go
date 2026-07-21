@@ -344,12 +344,15 @@ type BotConfig struct {
 }
 
 // BotModelConfig stores the cloud-selected model and the latest device apply
-// result. Relay credentials remain device-local and are never persisted here.
+// result. Custom credentials are persisted only as authenticated ciphertext.
 type BotModelConfig struct {
+	Kind                string `json:"kind,omitempty"`
 	ModelID             string `json:"model_id"`
 	ReasoningEffort     string `json:"reasoning_effort,omitempty"`
+	CustomCiphertext    string `json:"custom_ciphertext,omitempty"`
 	Revision            int64  `json:"revision"`
 	UpdatedAt           string `json:"updated_at,omitempty"`
+	AppliedKind         string `json:"applied_kind,omitempty"`
 	AppliedModelID      string `json:"applied_model_id,omitempty"`
 	AppliedReasoning    string `json:"applied_reasoning_effort,omitempty"`
 	AppliedRevision     int64  `json:"applied_revision,omitempty"`

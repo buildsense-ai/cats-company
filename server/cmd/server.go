@@ -304,6 +304,7 @@ func main() {
 		return server.LatestDeviceModelStatus(hub, uid)
 	})
 	relayAdminClient := server.NewRelayAdminClientFromEnv()
+	botModelConfigHandler.SetRelayUsageClient(relayAdminClient)
 	agentHandler.SetRelayUsageDependencies(relayAdminClient, func(uid int64) (server.DeviceModelStatus, bool) {
 		return server.LatestDeviceModelStatus(hub, uid)
 	})

@@ -77,6 +77,7 @@ export default function MessagesView({
   onResolveAgentTopic,
   onActivateTopic,
   onAgentModelChange,
+  onActiveAgentChange,
 }) {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
@@ -1212,6 +1213,12 @@ export default function MessagesView({
     || resolvedPeerProfile?.bot === true
     || resolvedPeerProfile?.is_bot === true
     || resolvedPeerProfile?.account_type === 'bot';
+  const peerIsOwnedBot = Boolean(
+    rosterPeer?.is_owner === true
+    || rosterPeer?.relation === 'owner'
+    || resolvedPeerProfile?.is_owner === true
+    || resolvedPeerProfile?.relation === 'owner'
+  );
   const isAgentTask = isGroup && Boolean(
     groupInfo?.is_agent_task || groupInfo?.kind === 'agent_task',
   );
@@ -1238,6 +1245,18 @@ export default function MessagesView({
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const canRegenerateAssistantMessages = !isGroup || isAgentTask;
+  useEffect(() => {
+    if (isGroup || !peerIsBot || peerUID <= 0) {
+      onActiveAgentChange?.(null);
+      return;
+    }
+    onActiveAgentChange?.({
+      uid: peerUID,
+      relation: peerIsOwnedBot ? 'owner' : (resolvedPeerProfile?.relation || 'friend'),
+      isOwner: peerIsOwnedBot,
+    });
+  }, [isGroup, onActiveAgentChange, peerIsBot, peerIsOwnedBot, peerUID, resolvedPeerProfile?.relation]);
+
   useEffect(() => {
     if (isGroup && taskBotUID <= 0) {
       onAgentModelChange?.({ isBot: false, state: 'hidden', summary: null });

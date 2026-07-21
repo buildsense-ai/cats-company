@@ -307,7 +307,8 @@ export const api = {
     request('PATCH', `/api/bots?uid=${uid}`, { display_name, avatar_url }),
   deleteBot: (uid) => request('DELETE', `/api/bots?uid=${uid}`),
   setBotVisibility: (uid, visibility) => request('PATCH', `/api/bots/visibility?uid=${uid}&v=${visibility}`),
-  getBotModelConfig: (uid) => request('GET', `/api/bots/model-config?uid=${uid}`),
+  getBotModelConfig: (uid, { includeUsage = false } = {}) =>
+    request('GET', `/api/bots/model-config?uid=${uid}${includeUsage ? '&include_usage=1' : ''}`),
   updateBotModelConfig: (uid, modelConfig) => request('PATCH', `/api/bots/model-config?uid=${uid}`, modelConfig),
   getBotFriends: (uid) => request('GET', `/api/bots/friends?uid=${uid}`),
   removeBotFriend: (uid, userId) => request('DELETE', `/api/bots/friends?uid=${uid}&user_id=${userId}`),

@@ -24,10 +24,14 @@ func (a *Adapter) GetBotModelConfig(botUID int64) (*types.BotModelConfig, error)
 	return config, nil
 }
 
-func (a *Adapter) SaveBotDesiredModelConfig(botUID int64, modelID, reasoningEffort string) (*types.BotModelConfig, error) {
+func (a *Adapter) SaveBotDesiredModelConfig(botUID int64, kind, modelID, reasoningEffort, customCiphertext string) (*types.BotModelConfig, error) {
 	return a.updateBotModelConfig(botUID, func(config *types.BotModelConfig, now string) error {
+		config.Kind = kind
 		config.ModelID = modelID
 		config.ReasoningEffort = reasoningEffort
+		if customCiphertext != "" {
+			config.CustomCiphertext = customCiphertext
+		}
 		config.Revision++
 		config.UpdatedAt = now
 		config.LastAttemptRevision = 0
@@ -37,7 +41,7 @@ func (a *Adapter) SaveBotDesiredModelConfig(botUID int64, modelID, reasoningEffo
 	})
 }
 
-func (a *Adapter) AckBotModelConfig(botUID, revision int64, modelID, reasoningEffort, applyError string) (*types.BotModelConfig, error) {
+func (a *Adapter) AckBotModelConfig(botUID, revision int64, kind, modelID, reasoningEffort, applyError string) (*types.BotModelConfig, error) {
 	return a.updateBotModelConfig(botUID, func(config *types.BotModelConfig, now string) error {
 		if revision != config.Revision {
 			return store.ErrStaleBotModelRevision
@@ -46,6 +50,7 @@ func (a *Adapter) AckBotModelConfig(botUID, revision int64, modelID, reasoningEf
 		config.LastAttemptAt = now
 		config.LastError = applyError
 		if applyError == "" {
+			config.AppliedKind = kind
 			config.AppliedRevision = revision
 			config.AppliedModelID = modelID
 			config.AppliedReasoning = reasoningEffort

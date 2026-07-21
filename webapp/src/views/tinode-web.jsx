@@ -24,6 +24,10 @@ import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
+import BotModelSelector, {
+  describeModelApplyError,
+  describeModelConfigRequestError,
+} from '../widgets/bot-model-selector';
 import {
   relayUsageTone,
   resolveConversationModelDisplay,
@@ -202,6 +206,7 @@ function TinodeWebApp() {
   const [theme, setTheme] = useState(() => localStorage.getItem('catsco_theme') || 'light');
   const [currentModelName, setCurrentModelName] = useState(DEFAULT_MODEL_NAME);
   const [activeAgentModel, setActiveAgentModel] = useState(null);
+  const [activeAgentState, setActiveAgentState] = useState(null);
   const activeTopicId = activeTopic?.topicId || '';
   const draftAgentUID = Number(taskDraft?.agent?.uid || taskDraft?.agent?.id || 0);
   const modelContextId = activeTopicId || (draftAgentUID > 0 ? `draft:${taskDraft?.key || draftAgentUID}` : '');
@@ -217,6 +222,16 @@ function TinodeWebApp() {
     }));
   }, [activeTopicId]);
   const displayedAgentModel = resolveScopedModelState(modelContext, activeAgentModel);
+  const handleActiveAgentChange = useCallback((agent) => {
+    const topicId = activeTopicId;
+    setActiveAgentState((current) => {
+      if (!topicId || topicId !== modelContextIdRef.current) return current;
+      return { topicId, agent };
+    });
+  }, [activeTopicId]);
+  const displayedActiveAgent = activeAgentState?.topicId === activeTopicId
+    ? activeAgentState.agent
+    : null;
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
     appSidebarPreferredWidth,
@@ -892,6 +907,7 @@ function TinodeWebApp() {
         </button>
         <LocalAssistantBar
           agentModelState={displayedAgentModel}
+          activeAgent={displayedActiveAgent}
           currentModelName={currentModelName}
           onDownload={() => setShowDownloadModal(true)}
           title={activeTopic?.name || taskDraftTitle(taskDraft)}
@@ -906,6 +922,7 @@ function TinodeWebApp() {
             topicAvatarUrl={activeTopic.avatar_url}
             localAssistantStatus={localAgentStatus}
             onAgentModelChange={handleActiveAgentModelChange}
+            onActiveAgentChange={handleActiveAgentChange}
             onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
             onResolveAgentTopic={resolveAgentTopic}
             onActivateTopic={activateResolvedTopic}
@@ -977,26 +994,15 @@ function TinodeWebApp() {
   );
 }
 
-function LocalAssistantBar({ agentModelState, currentModelName, onDownload, title }) {
-  const modelDisplay = resolveConversationModelDisplay(currentModelName, agentModelState);
-  const tone = agentModelState?.summary
-    ? relayUsageTone(agentModelState.summary)
-    : agentModelState?.isBot && agentModelState.state === 'unavailable' ? 'muted' : '';
+export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, title }) {
   return (
     <header className="v3-local-assistant-bar">
       <div className="v3-model-select">
-        {modelDisplay && (
-          <div
-            className={`v3-local-assistant-status ${tone}`.trim()}
-            aria-label={modelDisplay.title}
-            title={modelDisplay.title}
-          >
-            <span className="v3-local-assistant-model">{modelDisplay.model}</span>
-            {modelDisplay.meta && (
-              <span className="v3-local-assistant-model-meta">{modelDisplay.meta}</span>
-            )}
-          </div>
-        )}
+        <BotModelSelector
+          currentModelName={currentModelName}
+          agentModelState={agentModelState}
+          activeAgent={activeAgent}
+        />
       </div>
       <strong className="v3-shell-title">{title}</strong>
       <div className="v3-shell-actions">
@@ -1007,6 +1013,8 @@ function LocalAssistantBar({ agentModelState, currentModelName, onDownload, titl
     </header>
   );
 }
+
+export { describeModelApplyError, describeModelConfigRequestError };
 
 function NoActiveTask({ initialAgent, onResolveAgentTopic, onActivateTopic }) {
   return (

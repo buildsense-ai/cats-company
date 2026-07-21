@@ -1,9 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -13,24 +16,35 @@ import (
 
 const defaultBotModelID = "minimax-m3"
 
+const (
+	botModelKindCatalog = "catalog"
+	botModelKindCustom  = "custom"
+)
+
+var errBotModelEncryptionUnavailable = errors.New("custom model encryption is unavailable")
+
 type botModelOwnershipStore interface {
 	GetBotOwner(botUID int64) (int64, error)
 }
 
 type BotModelConfigHandler struct {
-	owners botModelOwnershipStore
-	models store.BotModelConfigStore
+	owners           botModelOwnershipStore
+	models           store.BotModelConfigStore
+	relayAdmin       *RelayAdminClient
+	secretCodec      *botModelSecretCodec
+	secretCodecError error
 }
 
 type botModelCatalogItem struct {
-	ID                     string   `json:"id"`
-	Label                  string   `json:"label"`
-	Description            string   `json:"description"`
-	Provider               string   `json:"provider"`
-	Protocol               string   `json:"protocol"`
-	ContextWindowTokens    int64    `json:"context_window_tokens"`
-	ReasoningEfforts       []string `json:"reasoning_efforts,omitempty"`
-	DefaultReasoningEffort string   `json:"default_reasoning_effort,omitempty"`
+	ID                     string             `json:"id"`
+	Label                  string             `json:"label"`
+	Description            string             `json:"description"`
+	Provider               string             `json:"provider"`
+	Protocol               string             `json:"protocol"`
+	ContextWindowTokens    int64              `json:"context_window_tokens"`
+	ReasoningEfforts       []string           `json:"reasoning_efforts,omitempty"`
+	DefaultReasoningEffort string             `json:"default_reasoning_effort,omitempty"`
+	Quota                  *relayUsageSummary `json:"quota,omitempty"`
 }
 
 var botModelCatalog = []botModelCatalogItem{
@@ -65,19 +79,52 @@ var botModelCatalog = []botModelCatalogItem{
 }
 
 type botModelUpdateRequest struct {
-	ModelID         string `json:"model_id"`
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	Kind            string                  `json:"kind,omitempty"`
+	ModelID         string                  `json:"model_id"`
+	ReasoningEffort string                  `json:"reasoning_effort,omitempty"`
+	Custom          *cloudCustomModelConfig `json:"custom,omitempty"`
 }
 
 type botModelAckRequest struct {
 	Revision        int64  `json:"revision"`
+	Kind            string `json:"kind,omitempty"`
 	ModelID         string `json:"model_id"`
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	Error           string `json:"error,omitempty"`
 }
 
+type cloudCustomModelConfig struct {
+	Protocol            string   `json:"protocol"`
+	APIBase             string   `json:"api_base"`
+	Model               string   `json:"model"`
+	APIKey              string   `json:"api_key,omitempty"`
+	ContextWindowTokens int64    `json:"context_window_tokens"`
+	MaxTokens           int64    `json:"max_tokens,omitempty"`
+	Temperature         *float64 `json:"temperature,omitempty"`
+	ReasoningEffort     string   `json:"reasoning_effort,omitempty"`
+}
+
+type ownerCustomModelConfig struct {
+	Protocol            string   `json:"protocol"`
+	APIBase             string   `json:"api_base"`
+	Model               string   `json:"model"`
+	APIKeyConfigured    bool     `json:"api_key_configured"`
+	APIKeyHint          string   `json:"api_key_hint,omitempty"`
+	ContextWindowTokens int64    `json:"context_window_tokens"`
+	MaxTokens           int64    `json:"max_tokens,omitempty"`
+	Temperature         *float64 `json:"temperature,omitempty"`
+	ReasoningEffort     string   `json:"reasoning_effort,omitempty"`
+}
+
 func NewBotModelConfigHandler(owners botModelOwnershipStore, models store.BotModelConfigStore) *BotModelConfigHandler {
-	return &BotModelConfigHandler{owners: owners, models: models}
+	codec, err := newBotModelSecretCodecFromEnv()
+	return &BotModelConfigHandler{owners: owners, models: models, secretCodec: codec, secretCodecError: err}
+}
+
+func (h *BotModelConfigHandler) SetRelayUsageClient(admin *RelayAdminClient) {
+	if h != nil {
+		h.relayAdmin = admin
+	}
 }
 
 // HandleOwnerConfig manages the cloud model selected by a bot owner.
@@ -115,29 +162,47 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load bot model configuration"})
 		return
 	}
-	configured := storedConfig != nil && strings.TrimSpace(storedConfig.ModelID) != ""
+	configured := botModelConfigIsConfigured(storedConfig)
 	config := botModelConfigWithDefaults(storedConfig)
 	if r.Method == http.MethodPatch {
 		var req botModelUpdateRequest
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 			return
 		}
-		if strings.EqualFold(strings.TrimSpace(req.ModelID), "local") {
+		kind := strings.ToLower(strings.TrimSpace(req.Kind))
+		if strings.EqualFold(strings.TrimSpace(req.ModelID), "local") || kind == "local" {
 			if configured {
-				config, err = h.models.SaveBotDesiredModelConfig(botUID, "", "")
+				config, err = h.models.SaveBotDesiredModelConfig(botUID, "", "", "", "")
 			} else {
 				config = storedConfig
 			}
+		} else if kind == botModelKindCustom || strings.EqualFold(strings.TrimSpace(req.ModelID), botModelKindCustom) {
+			custom, customCiphertext, customErr := h.prepareCustomModelUpdate(botUID, req.Custom, storedConfig)
+			if customErr != nil {
+				status := http.StatusBadRequest
+				if errors.Is(customErr, errBotModelEncryptionUnavailable) {
+					status = http.StatusServiceUnavailable
+				}
+				writeJSON(w, status, map[string]string{"error": customErr.Error()})
+				return
+			}
+			config, err = h.models.SaveBotDesiredModelConfig(
+				botUID,
+				botModelKindCustom,
+				custom.Model,
+				custom.ReasoningEffort,
+				customCiphertext,
+			)
 		} else {
 			model, reasoning, ok := normalizeBotModelSelection(req.ModelID, req.ReasoningEffort)
 			if !ok {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported model or reasoning effort"})
 				return
 			}
-			selectionApplied := configured &&
+			selectionApplied := configured && config.Kind == botModelKindCatalog &&
 				config.ModelID == model.ID &&
 				config.ReasoningEffort == reasoning &&
 				config.AppliedRevision == config.Revision &&
@@ -145,7 +210,7 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 				config.AppliedReasoning == reasoning &&
 				!(config.LastAttemptRevision == config.Revision && config.LastError != "")
 			if !selectionApplied {
-				config, err = h.models.SaveBotDesiredModelConfig(botUID, model.ID, reasoning)
+				config, err = h.models.SaveBotDesiredModelConfig(botUID, botModelKindCatalog, model.ID, reasoning, "")
 			}
 		}
 		if err != nil {
@@ -154,10 +219,20 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 		}
 	}
 	if r.Method == http.MethodGet {
-		writeJSON(w, http.StatusOK, botModelConfigResponse(botUID, storedConfig, true))
+		response, responseErr := h.ownerConfigResponse(r.Context(), ownerUID, botUID, storedConfig, r.URL.Query().Get("include_usage") == "1")
+		if responseErr != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": responseErr.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, response)
 		return
 	}
-	writeJSON(w, http.StatusOK, botModelConfigResponse(botUID, config, true))
+	response, responseErr := h.ownerConfigResponse(r.Context(), ownerUID, botUID, config, false)
+	if responseErr != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": responseErr.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // HandleRuntimeConfig lets an authenticated bot read only its own desired model.
@@ -184,7 +259,12 @@ func (h *BotModelConfigHandler) HandleRuntimeConfig(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load bot model configuration"})
 		return
 	}
-	writeJSON(w, http.StatusOK, botModelConfigResponse(botUID, config, false))
+	response, responseErr := h.runtimeConfigResponse(botUID, config)
+	if responseErr != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": responseErr.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // HandleRuntimeAck records a successful or failed apply for the current revision.
@@ -213,30 +293,53 @@ func (h *BotModelConfigHandler) HandleRuntimeAck(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	model, reasoning, ok := normalizeBotModelSelection(req.ModelID, req.ReasoningEffort)
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported model or reasoning effort"})
-		return
-	}
 	current, err := h.models.GetBotModelConfig(botUID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load bot model configuration"})
 		return
 	}
-	if current == nil || strings.TrimSpace(current.ModelID) == "" {
+	if !botModelConfigIsConfigured(current) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "cloud bot model configuration is not enabled"})
 		return
 	}
 	current = botModelConfigWithDefaults(current)
-	if current.Revision != req.Revision || current.ModelID != model.ID || current.ReasoningEffort != reasoning {
+	kind := strings.ToLower(strings.TrimSpace(req.Kind))
+	if kind == "" {
+		kind = current.Kind
+	}
+	modelID := strings.TrimSpace(req.ModelID)
+	reasoning := strings.ToLower(strings.TrimSpace(req.ReasoningEffort))
+	if kind == botModelKindCatalog {
+		model, normalizedReasoning, ok := normalizeBotModelSelection(modelID, reasoning)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported model or reasoning effort"})
+			return
+		}
+		modelID = model.ID
+		reasoning = normalizedReasoning
+	} else if kind == botModelKindCustom {
+		if modelID == "" || !validCustomReasoningEffort(reasoning) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid custom model acknowledgement"})
+			return
+		}
+	} else {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid model kind"})
+		return
+	}
+	if current.Revision != req.Revision || current.Kind != kind || current.ModelID != modelID || current.ReasoningEffort != reasoning {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "bot model configuration changed before it was applied"})
 		return
 	}
 	applyError := strings.TrimSpace(req.Error)
+	if kind == botModelKindCustom && applyError != "" {
+		if custom, decryptErr := h.decryptCustomModel(botUID, current.CustomCiphertext); decryptErr == nil && custom.APIKey != "" {
+			applyError = strings.ReplaceAll(applyError, custom.APIKey, "[REDACTED]")
+		}
+	}
 	if len(applyError) > 500 {
 		applyError = applyError[:500]
 	}
-	config, err := h.models.AckBotModelConfig(botUID, req.Revision, model.ID, reasoning, applyError)
+	config, err := h.models.AckBotModelConfig(botUID, req.Revision, kind, modelID, reasoning, applyError)
 	if errors.Is(err, store.ErrStaleBotModelRevision) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "bot model configuration changed before it was applied"})
 		return
@@ -245,7 +348,12 @@ func (h *BotModelConfigHandler) HandleRuntimeAck(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to acknowledge bot model configuration"})
 		return
 	}
-	writeJSON(w, http.StatusOK, botModelConfigResponse(botUID, config, false))
+	response, responseErr := h.runtimeConfigResponse(botUID, config)
+	if responseErr != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": responseErr.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func botModelConfigWithDefaults(config *types.BotModelConfig) *types.BotModelConfig {
@@ -253,7 +361,17 @@ func botModelConfigWithDefaults(config *types.BotModelConfig) *types.BotModelCon
 		config = &types.BotModelConfig{}
 	}
 	copy := *config
+	if copy.Kind == "" && copy.ModelID != "" {
+		copy.Kind = botModelKindCatalog
+	}
+	if copy.AppliedKind == "" && copy.AppliedModelID != "" {
+		copy.AppliedKind = botModelKindCatalog
+	}
+	if copy.Kind == botModelKindCustom {
+		return &copy
+	}
 	if copy.ModelID == "" {
+		copy.Kind = botModelKindCatalog
 		copy.ModelID = defaultBotModelID
 	}
 	model, reasoning, ok := normalizeBotModelSelection(copy.ModelID, copy.ReasoningEffort)
@@ -262,6 +380,7 @@ func botModelConfigWithDefaults(config *types.BotModelConfig) *types.BotModelCon
 		copy.ReasoningEffort = ""
 		return &copy
 	}
+	copy.Kind = botModelKindCatalog
 	copy.ModelID = model.ID
 	copy.ReasoningEffort = reasoning
 	return &copy
@@ -293,19 +412,25 @@ func normalizeBotModelSelection(modelID, reasoning string) (botModelCatalogItem,
 	return botModelCatalogItem{}, "", false
 }
 
-func botModelConfigResponse(botUID int64, config *types.BotModelConfig, includeCatalog bool) map[string]interface{} {
-	configured := config != nil && strings.TrimSpace(config.ModelID) != ""
+func botModelConfigIsConfigured(config *types.BotModelConfig) bool {
+	return config != nil && strings.TrimSpace(config.ModelID) != ""
+}
+
+func botModelConfigResponse(botUID int64, config *types.BotModelConfig) map[string]interface{} {
+	configured := botModelConfigIsConfigured(config)
 	config = botModelConfigWithDefaults(config)
+	desiredKind := config.Kind
 	desiredModelID := config.ModelID
 	desiredReasoning := config.ReasoningEffort
 	if !configured {
+		desiredKind = "local"
 		desiredModelID = "local"
 		desiredReasoning = ""
 	}
 	status := "local"
 	if configured && config.LastAttemptRevision == config.Revision && config.LastError != "" {
 		status = "failed"
-	} else if configured && config.AppliedRevision == config.Revision && config.AppliedModelID == config.ModelID {
+	} else if configured && config.AppliedRevision == config.Revision && config.AppliedKind == config.Kind && config.AppliedModelID == config.ModelID {
 		status = "applied"
 	} else if configured {
 		status = "pending"
@@ -314,19 +439,199 @@ func botModelConfigResponse(botUID int64, config *types.BotModelConfig, includeC
 		"uid":        botUID,
 		"configured": configured,
 		"desired": map[string]interface{}{
-			"model_id": desiredModelID, "reasoning_effort": desiredReasoning,
+			"kind": desiredKind, "model_id": desiredModelID, "reasoning_effort": desiredReasoning,
 			"revision": config.Revision, "updated_at": config.UpdatedAt,
 		},
 		"applied": map[string]interface{}{
-			"model_id": config.AppliedModelID, "reasoning_effort": config.AppliedReasoning,
+			"kind": config.AppliedKind, "model_id": config.AppliedModelID, "reasoning_effort": config.AppliedReasoning,
 			"revision": config.AppliedRevision, "applied_at": config.AppliedAt,
 		},
 		"status":     status,
 		"last_error": config.LastError,
 		"apply_mode": "runtime_reload",
 	}
-	if includeCatalog {
-		response["models"] = botModelCatalog
-	}
 	return response
+}
+
+func (h *BotModelConfigHandler) ownerConfigResponse(
+	ctx context.Context,
+	ownerUID, botUID int64,
+	config *types.BotModelConfig,
+	includeUsage bool,
+) (map[string]interface{}, error) {
+	response := botModelConfigResponse(botUID, config)
+	catalog, quotaError := h.catalogWithUsage(ctx, ownerUID, includeUsage)
+	response["models"] = catalog
+	response["custom_supported"] = h.secretCodec != nil
+	if quotaError != "" {
+		response["quota_error"] = quotaError
+	}
+	normalized := botModelConfigWithDefaults(config)
+	if normalized.CustomCiphertext != "" {
+		custom, err := h.decryptCustomModel(botUID, normalized.CustomCiphertext)
+		if err != nil {
+			response["custom_unavailable_reason"] = "已保存的自定义模型凭证暂时无法读取，请重新填写后保存"
+		} else {
+			response["custom"] = ownerCustomModelConfig{
+				Protocol:            custom.Protocol,
+				APIBase:             custom.APIBase,
+				Model:               custom.Model,
+				APIKeyConfigured:    custom.APIKey != "",
+				APIKeyHint:          secretHint(custom.APIKey),
+				ContextWindowTokens: custom.ContextWindowTokens,
+				MaxTokens:           custom.MaxTokens,
+				Temperature:         custom.Temperature,
+				ReasoningEffort:     custom.ReasoningEffort,
+			}
+		}
+	}
+	if h.secretCodecError != nil {
+		response["custom_unavailable_reason"] = "服务端尚未配置自定义模型密钥加密"
+	}
+	return response, nil
+}
+
+func (h *BotModelConfigHandler) runtimeConfigResponse(botUID int64, config *types.BotModelConfig) (map[string]interface{}, error) {
+	response := botModelConfigResponse(botUID, config)
+	normalized := botModelConfigWithDefaults(config)
+	if !botModelConfigIsConfigured(config) || normalized.Kind != botModelKindCustom {
+		return response, nil
+	}
+	custom, err := h.decryptCustomModel(botUID, normalized.CustomCiphertext)
+	if err != nil {
+		return nil, err
+	}
+	desired, _ := response["desired"].(map[string]interface{})
+	desired["custom"] = custom
+	return response, nil
+}
+
+func (h *BotModelConfigHandler) catalogWithUsage(ctx context.Context, ownerUID int64, includeUsage bool) ([]botModelCatalogItem, string) {
+	catalog := make([]botModelCatalogItem, len(botModelCatalog))
+	copy(catalog, botModelCatalog)
+	if !includeUsage {
+		return catalog, ""
+	}
+	if h.relayAdmin == nil {
+		return catalog, "额度暂时无法同步"
+	}
+	user, err := fetchRelayUsageForUID(ctx, h.relayAdmin, ownerUID)
+	if err != nil {
+		return catalog, "额度暂时无法同步"
+	}
+	for i := range catalog {
+		usage := buildRelayUsageResponse(user, catalog[i].ID)
+		catalog[i].Quota = usage.Summary
+	}
+	return catalog, ""
+}
+
+func (h *BotModelConfigHandler) prepareCustomModelUpdate(
+	botUID int64,
+	input *cloudCustomModelConfig,
+	stored *types.BotModelConfig,
+) (*cloudCustomModelConfig, string, error) {
+	if h.secretCodec == nil {
+		return nil, "", fmt.Errorf("%w: %v", errBotModelEncryptionUnavailable, h.secretCodecError)
+	}
+	if input == nil {
+		return nil, "", errors.New("custom model configuration is required")
+	}
+	custom := *input
+	custom.Protocol = strings.ToLower(strings.TrimSpace(custom.Protocol))
+	custom.APIBase = strings.TrimRight(strings.TrimSpace(custom.APIBase), "/")
+	custom.Model = strings.TrimSpace(custom.Model)
+	custom.APIKey = strings.TrimSpace(custom.APIKey)
+	custom.ReasoningEffort = strings.ToLower(strings.TrimSpace(custom.ReasoningEffort))
+	if custom.ContextWindowTokens == 0 {
+		custom.ContextWindowTokens = 128000
+	}
+	if custom.APIKey == "" && stored != nil && stored.CustomCiphertext != "" {
+		previous, err := h.decryptCustomModel(botUID, stored.CustomCiphertext)
+		if err != nil {
+			return nil, "", err
+		}
+		custom.APIKey = previous.APIKey
+	}
+	if err := validateCloudCustomModel(&custom); err != nil {
+		return nil, "", err
+	}
+	plaintext, err := json.Marshal(custom)
+	if err != nil {
+		return nil, "", errors.New("failed to encode custom model configuration")
+	}
+	ciphertext, err := h.secretCodec.encrypt(botUID, plaintext)
+	if err != nil {
+		return nil, "", fmt.Errorf("%w: %v", errBotModelEncryptionUnavailable, err)
+	}
+	return &custom, ciphertext, nil
+}
+
+func (h *BotModelConfigHandler) decryptCustomModel(botUID int64, ciphertext string) (*cloudCustomModelConfig, error) {
+	if h.secretCodec == nil {
+		return nil, fmt.Errorf("%w: %v", errBotModelEncryptionUnavailable, h.secretCodecError)
+	}
+	plaintext, err := h.secretCodec.decrypt(botUID, ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt custom model configuration: %w", err)
+	}
+	var custom cloudCustomModelConfig
+	if err := json.Unmarshal(plaintext, &custom); err != nil {
+		return nil, errors.New("invalid encrypted custom model configuration")
+	}
+	if err := validateCloudCustomModel(&custom); err != nil {
+		return nil, fmt.Errorf("stored custom model configuration is invalid: %w", err)
+	}
+	return &custom, nil
+}
+
+func validateCloudCustomModel(custom *cloudCustomModelConfig) error {
+	if custom == nil {
+		return errors.New("custom model configuration is required")
+	}
+	switch custom.Protocol {
+	case "anthropic", "openai-chat-completions", "openai-responses":
+	default:
+		return errors.New("unsupported custom model protocol")
+	}
+	parsed, err := url.Parse(custom.APIBase)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.User != nil || parsed.Fragment != "" {
+		return errors.New("custom model API base must be a valid HTTP(S) URL")
+	}
+	if len(custom.APIBase) > 2048 || custom.Model == "" || len(custom.Model) > 200 {
+		return errors.New("custom model API base or model name is invalid")
+	}
+	if custom.APIKey == "" || len(custom.APIKey) > 4096 {
+		return errors.New("custom model API key is required")
+	}
+	if custom.ContextWindowTokens < 1024 || custom.ContextWindowTokens > 4000000 {
+		return errors.New("custom model context window must be between 1024 and 4000000 tokens")
+	}
+	if custom.MaxTokens < 0 || custom.MaxTokens > 1000000 {
+		return errors.New("custom model max tokens is invalid")
+	}
+	if custom.Temperature != nil && (*custom.Temperature < 0 || *custom.Temperature > 2) {
+		return errors.New("custom model temperature must be between 0 and 2")
+	}
+	if !validCustomReasoningEffort(custom.ReasoningEffort) {
+		return errors.New("unsupported custom model reasoning effort")
+	}
+	return nil
+}
+
+func validCustomReasoningEffort(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "default", "none", "minimal", "low", "medium", "high", "xhigh", "max", "disabled":
+		return true
+	default:
+		return false
+	}
+}
+
+func secretHint(secret string) string {
+	secret = strings.TrimSpace(secret)
+	if len(secret) <= 4 {
+		return "****"
+	}
+	return "****" + secret[len(secret)-4:]
 }
