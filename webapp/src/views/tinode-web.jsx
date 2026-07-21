@@ -229,9 +229,7 @@ function TinodeWebApp() {
       return { topicId, agent };
     });
   }, [activeTopicId]);
-  const displayedActiveAgent = activeAgentState?.topicId === activeTopicId
-    ? activeAgentState.agent
-    : null;
+  const displayedActiveAgent = resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
     appSidebarPreferredWidth,
@@ -1014,7 +1012,27 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
   );
 }
 
-export { describeModelApplyError, describeModelConfigRequestError };
+export { describeModelApplyError, describeModelConfigRequestError, resolveDisplayedActiveAgent };
+
+function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft) {
+  if (activeTopicId) {
+    return activeAgentState?.topicId === activeTopicId ? activeAgentState.agent : null;
+  }
+
+  const draftAgent = taskDraft?.agent;
+  const uid = Number(draftAgent?.uid || draftAgent?.id || 0);
+  if (uid <= 0) return null;
+
+  const isOwner = draftAgent?.isOwner === true
+    || draftAgent?.is_owner === true
+    || draftAgent?.relation === 'owner';
+  return {
+    ...draftAgent,
+    uid,
+    isOwner,
+    relation: isOwner ? 'owner' : (draftAgent?.relation || 'friend'),
+  };
+}
 
 function NoActiveTask({ initialAgent, onResolveAgentTopic, onActivateTopic }) {
   return (

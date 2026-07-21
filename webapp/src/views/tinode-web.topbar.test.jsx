@@ -5,6 +5,7 @@ import {
   describeModelApplyError,
   describeModelConfigRequestError,
   LocalAssistantBar,
+  resolveDisplayedActiveAgent,
 } from './tinode-web';
 import { api } from '../api';
 
@@ -48,6 +49,29 @@ const relayState = {
     source: 'relay', model: 'minimax-m3', limit_cny: 100, percent: 25, remaining_percent: 75, status: 'normal',
   },
 };
+
+describe('resolveDisplayedActiveAgent', () => {
+  it('exposes an owned draft agent to the model selector before the task is created', () => {
+    expect(resolveDisplayedActiveAgent('', null, {
+      agent: { uid: 110, relation: 'owner', display_name: 'XiaoBa' },
+    })).toMatchObject({ uid: 110, relation: 'owner', isOwner: true });
+  });
+
+  it('keeps friend draft agents read-only', () => {
+    expect(resolveDisplayedActiveAgent('', null, {
+      agent: { id: 407, relation: 'friend' },
+    })).toMatchObject({ uid: 407, relation: 'friend', isOwner: false });
+  });
+
+  it('uses the active conversation agent instead of a stale draft', () => {
+    const activeAgent = { uid: 63, relation: 'owner', isOwner: true };
+    expect(resolveDisplayedActiveAgent(
+      'p2p_38_63',
+      { topicId: 'p2p_38_63', agent: activeAgent },
+      { agent: { uid: 110, relation: 'owner' } },
+    )).toBe(activeAgent);
+  });
+});
 
 describe('LocalAssistantBar model selector', () => {
   let container;
