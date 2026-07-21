@@ -56,6 +56,9 @@ jobs:
       - name: Test backend
         run: go test ./server/...
 
+      - name: Test image race concurrency
+        run: go test -race ./server -run 'TestImageRace|TestScriptedImageUpstream' -count=1
+
       - name: Scan Go vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
 
