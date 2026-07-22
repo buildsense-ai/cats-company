@@ -17,16 +17,18 @@ import (
 
 type agentTestStore struct {
 	store.Store
-	ownerBots     []map[string]interface{}
-	friends       []*types.User
-	users         map[int64]*types.User
-	owners        map[int64]int64
-	friendPairs   map[string]bool
+	ownerBots      []map[string]interface{}
+	friends        []*types.User
+	users          map[int64]*types.User
+	owners         map[int64]int64
+	friendPairs    map[string]bool
 	groupMembers   map[string]bool
 	groupsByUser   map[int64][]*types.Group
 	membersByGroup map[int64][]*types.GroupMember
 	groupMuted     map[string]bool
 	createdTopics  []string
+	botBodyIDs     map[int64]string
+	modelConfigs   map[int64]*types.BotModelConfig
 }
 
 func (s *agentTestStore) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, error) {
@@ -65,6 +67,22 @@ func (s *agentTestStore) GetBotOwner(botUID int64) (int64, error) {
 		return 0, errors.New("not found")
 	}
 	return owner, nil
+}
+
+func (s *agentTestStore) GetBotBodyID(botUID int64) (string, error) {
+	bodyID, ok := s.botBodyIDs[botUID]
+	if !ok {
+		return "", errors.New("not found")
+	}
+	return bodyID, nil
+}
+
+func (s *agentTestStore) GetBotModelConfig(botUID int64) (*types.BotModelConfig, error) {
+	config, ok := s.modelConfigs[botUID]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return config, nil
 }
 
 func (s *agentTestStore) AreFriends(uid1, uid2 int64) (bool, error) {
@@ -249,7 +267,7 @@ func TestBuildOnlineStatusListUsesBotBodyLeaseForBots(t *testing.T) {
 func TestBotPresenceReachesFellowGroupMembers(t *testing.T) {
 	store := &agentTestStore{
 		friends: []*types.User{{ID: 7, Username: "friend-member", AccountType: types.AccountHuman}},
-		owners: map[int64]int64{45: 0},
+		owners:  map[int64]int64{45: 0},
 		groupsByUser: map[int64][]*types.Group{
 			45: []*types.Group{{ID: 8, Name: "Shared Agent Task", AgentIDs: []int64{45}}},
 		},
@@ -320,7 +338,7 @@ func TestHandleOpenAgentCreatesP2PTopicForAccessibleAgent(t *testing.T) {
 	}
 }
 
-func TestHandleAgentQuotaUsesOwnerBudgetAndAgentModel(t *testing.T) {
+func TestHandleAgentQuotaUsesOwnerBudgetAndAppliedAgentModel(t *testing.T) {
 	store := &agentTestStore{
 		users: map[int64]*types.User{
 			43: {ID: 43, Username: "review-agent", AccountType: types.AccountBot},
@@ -328,6 +346,9 @@ func TestHandleAgentQuotaUsesOwnerBudgetAndAgentModel(t *testing.T) {
 		owners: map[int64]int64{43: 99},
 		friendPairs: map[string]bool{
 			agentPairKey(7, 43): true,
+		},
+		modelConfigs: map[int64]*types.BotModelConfig{
+			43: {AppliedKind: "catalog", AppliedModelID: "MiniMax-M3", AppliedReasoning: "high", AppliedRevision: 3},
 		},
 	}
 	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -351,12 +372,14 @@ func TestHandleAgentQuotaUsesOwnerBudgetAndAgentModel(t *testing.T) {
 	defer admin.Close()
 
 	handler := NewAgentHandler(store, nil)
+	resolverCalls := 0
 	handler.SetRelayUsageDependencies(&RelayAdminClient{
 		baseURL: admin.URL,
 		token:   "test-token",
 		client:  admin.Client(),
-	}, func(uid int64) (DeviceModelStatus, bool) {
-		return DeviceModelStatus{Source: "relay", Model: "MiniMax-M3"}, uid == 99
+	}, func(uid int64, bodyID string) (DeviceModelStatus, bool) {
+		resolverCalls++
+		return DeviceModelStatus{Source: "relay", Model: "stale-owner-device"}, uid == 99
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/agents/quota?uid=43", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
@@ -374,11 +397,66 @@ func TestHandleAgentQuotaUsesOwnerBudgetAndAgentModel(t *testing.T) {
 	if !body.Configured || !body.Shared || body.Summary == nil {
 		t.Fatalf("unexpected quota response: %+v", body)
 	}
-	if body.Summary.Model != "MiniMax-M3" || body.Summary.RemainingPercent != 75 || body.Summary.Status != "normal" {
+	if body.Summary.Model != "MiniMax-M3" || body.Summary.ReasoningEffort != "high" || body.Summary.RemainingPercent != 75 || body.Summary.Status != "normal" {
 		t.Fatalf("unexpected sanitized summary: %+v", body.Summary)
 	}
 	if strings.Contains(rec.Body.String(), "used_cny") || strings.Contains(rec.Body.String(), "limit_cny") {
 		t.Fatalf("friend-visible response leaked cost fields: %s", rec.Body.String())
+	}
+	if resolverCalls != 0 {
+		t.Fatalf("applied bot model should not consult an owner device, calls=%d", resolverCalls)
+	}
+}
+
+func TestHandleAgentQuotaDoesNotReuseCachedReasoningEffortAfterSwitch(t *testing.T) {
+	config := &types.BotModelConfig{
+		AppliedKind: "catalog", AppliedModelID: "MiniMax-M3", AppliedReasoning: "high", AppliedRevision: 3,
+	}
+	store := &agentTestStore{
+		users:        map[int64]*types.User{43: {ID: 43, AccountType: types.AccountBot}},
+		owners:       map[int64]int64{43: 99},
+		friendPairs:  map[string]bool{agentPairKey(7, 43): true},
+		modelConfigs: map[int64]*types.BotModelConfig{43: config},
+	}
+	adminCalls := 0
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		adminCalls++
+		writeJSON(w, http.StatusOK, commercialRelayUsageResponse{Users: []commercialRelayUsageUser{{
+			UID: 99, Configured: true,
+			Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{{
+				Model: "MiniMax-M3", Budget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 10},
+			}}},
+		}}})
+	}))
+	defer admin.Close()
+	handler := NewAgentHandler(store, nil)
+	handler.SetRelayUsageDependencies(&RelayAdminClient{baseURL: admin.URL, token: "test-token", client: admin.Client()}, nil)
+
+	request := func() agentQuotaResponse {
+		req := httptest.NewRequest(http.MethodGet, "/api/agents/quota?uid=43", nil)
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+		rec := httptest.NewRecorder()
+		handler.HandleAgentQuota(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var body agentQuotaResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		return body
+	}
+
+	if got := request().Summary; got == nil || got.ReasoningEffort != "high" {
+		t.Fatalf("initial summary=%+v", got)
+	}
+	config.AppliedReasoning = "xhigh"
+	config.AppliedRevision++
+	if got := request().Summary; got == nil || got.ReasoningEffort != "xhigh" {
+		t.Fatalf("updated summary=%+v", got)
+	}
+	if adminCalls != 2 {
+		t.Fatalf("relay usage calls=%d, want 2 cache entries for distinct reasoning efforts", adminCalls)
 	}
 }
 
@@ -391,10 +469,13 @@ func TestHandleAgentQuotaPreservesCustomModelName(t *testing.T) {
 		friendPairs: map[string]bool{
 			agentPairKey(7, 43): true,
 		},
+		modelConfigs: map[int64]*types.BotModelConfig{
+			43: {AppliedKind: "custom", AppliedModelID: "gpt-5.6-terra", AppliedReasoning: "xhigh", AppliedRevision: 4},
+		},
 	}
 	handler := NewAgentHandler(store, nil)
-	handler.SetRelayUsageDependencies(nil, func(uid int64) (DeviceModelStatus, bool) {
-		return DeviceModelStatus{Source: "custom", Model: "gpt-5.6-terra"}, uid == 99
+	handler.SetRelayUsageDependencies(nil, func(uid int64, bodyID string) (DeviceModelStatus, bool) {
+		return DeviceModelStatus{Source: "custom", Model: "stale-custom"}, uid == 99
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/agents/quota?uid=43", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
@@ -412,8 +493,85 @@ func TestHandleAgentQuotaPreservesCustomModelName(t *testing.T) {
 	if !body.Configured || body.Shared || body.Summary == nil {
 		t.Fatalf("unexpected custom model response: %+v", body)
 	}
-	if body.Summary.Source != "custom" || body.Summary.Model != "gpt-5.6-terra" || body.Summary.Status != "custom" {
+	if body.Summary.Source != "custom" || body.Summary.Model != "gpt-5.6-terra" || body.Summary.ReasoningEffort != "xhigh" || body.Summary.Status != "custom" {
 		t.Fatalf("unexpected custom model summary: %+v", body.Summary)
+	}
+}
+
+func TestResolveAgentModelStatusKeepsAppliedModelDuringPendingOrFailedSwitch(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config *types.BotModelConfig
+	}{
+		{
+			name: "pending",
+			config: &types.BotModelConfig{
+				Kind: "catalog", ModelID: "gpt-5.6-sol", Revision: 8,
+				AppliedKind: "catalog", AppliedModelID: "minimax-m3", AppliedRevision: 7,
+			},
+		},
+		{
+			name: "failed",
+			config: &types.BotModelConfig{
+				Kind: "catalog", ModelID: "gpt-5.6-sol", Revision: 8,
+				AppliedKind: "catalog", AppliedModelID: "minimax-m3", AppliedRevision: 7,
+				LastAttemptRevision: 8, LastError: "upstream unavailable",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &agentTestStore{modelConfigs: map[int64]*types.BotModelConfig{43: test.config}}
+			handler := NewAgentHandler(store, nil)
+			handler.SetRelayUsageDependencies(nil, func(uid int64, bodyID string) (DeviceModelStatus, bool) {
+				t.Fatal("an applied cloud model must not fall back to device state")
+				return DeviceModelStatus{}, false
+			})
+
+			status, ok := handler.resolveAgentModelStatus(43, 99)
+			if !ok || status.Source != "relay" || status.Model != "minimax-m3" {
+				t.Fatalf("resolved status=%+v ok=%v", status, ok)
+			}
+		})
+	}
+}
+
+func TestResolveAgentModelStatusFallsBackToBoundBody(t *testing.T) {
+	store := &agentTestStore{
+		botBodyIDs:   map[int64]string{43: "body-agent-43"},
+		modelConfigs: map[int64]*types.BotModelConfig{43: {AppliedKind: "local", AppliedModelID: "local", AppliedRevision: 2}},
+	}
+	handler := NewAgentHandler(store, nil)
+	handler.SetRelayUsageDependencies(nil, func(uid int64, bodyID string) (DeviceModelStatus, bool) {
+		if uid != 99 || bodyID != "body-agent-43" {
+			t.Fatalf("resolver received uid=%d bodyID=%q", uid, bodyID)
+		}
+		return DeviceModelStatus{Source: "relay", Model: "gpt-5.6-terra"}, true
+	})
+
+	status, ok := handler.resolveAgentModelStatus(43, 99)
+	if !ok || status.Source != "relay" || status.Model != "gpt-5.6-terra" {
+		t.Fatalf("resolved status=%+v ok=%v", status, ok)
+	}
+}
+
+func TestResolveAgentModelStatusKeepsBotsSeparateUnderOneOwner(t *testing.T) {
+	store := &agentTestStore{modelConfigs: map[int64]*types.BotModelConfig{
+		43: {AppliedKind: "catalog", AppliedModelID: "minimax-m3", AppliedRevision: 1},
+		44: {AppliedKind: "catalog", AppliedModelID: "gpt-5.6-sol", AppliedRevision: 1},
+	}}
+	handler := NewAgentHandler(store, nil)
+
+	first, firstOK := handler.resolveAgentModelStatus(43, 99)
+	second, secondOK := handler.resolveAgentModelStatus(44, 99)
+	if !firstOK || !secondOK || first.Model != "minimax-m3" || second.Model != "gpt-5.6-sol" {
+		t.Fatalf("unexpected per-bot models: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestAppliedBotModelStatusNormalizesCustomPlaceholder(t *testing.T) {
+	status, ok := appliedBotModelStatus(&types.BotModelConfig{AppliedKind: "custom", AppliedModelID: "custom"})
+	if !ok || status.Source != "custom" || status.Model != "自定义模型" {
+		t.Fatalf("status=%+v ok=%v", status, ok)
 	}
 }
 

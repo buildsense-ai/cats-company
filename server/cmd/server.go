@@ -313,8 +313,11 @@ func main() {
 	})
 	relayAdminClient := server.NewRelayAdminClientFromEnv()
 	botModelConfigHandler.SetRelayUsageClient(relayAdminClient)
-	agentHandler.SetRelayUsageDependencies(relayAdminClient, func(uid int64) (server.DeviceModelStatus, bool) {
-		return server.LatestDeviceModelStatus(hub, uid)
+	agentHandler.SetRelayUsageDependencies(relayAdminClient, func(uid int64, bodyID string) (server.DeviceModelStatus, bool) {
+		if strings.TrimSpace(bodyID) == "" {
+			return server.LatestDeviceModelStatus(hub, uid)
+		}
+		return server.DeviceModelStatusForBody(hub, uid, bodyID)
 	})
 	relayCommercialPublicEnabled := envBool("CATS_RELAY_COMMERCIAL_ENABLED")
 	relayCommercialTestUIDs := envInt64Set("CATS_RELAY_COMMERCIAL_TEST_UIDS")

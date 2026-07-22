@@ -1261,6 +1261,7 @@ describe('MessagesView composer draft isolation', () => {
       summary: {
         source: 'relay',
         model: 'MiniMax-M3',
+        reasoning_effort: 'high',
         remaining_percent: 72,
         status: 'normal',
       },
@@ -1279,6 +1280,7 @@ describe('MessagesView composer draft isolation', () => {
       summary: {
         source: 'relay',
         model: 'MiniMax-M3',
+        reasoning_effort: 'high',
         remaining_percent: 72,
         status: 'normal',
       },
@@ -1359,6 +1361,7 @@ describe('MessagesView composer draft isolation', () => {
       summary: {
         source: 'relay',
         model: 'gpt-5.6-terra',
+        reasoning_effort: 'xhigh',
         remaining_percent: 81,
         status: 'normal',
       },
@@ -1380,6 +1383,7 @@ describe('MessagesView composer draft isolation', () => {
       summary: {
         source: 'relay',
         model: 'gpt-5.6-terra',
+        reasoning_effort: 'xhigh',
         remaining_percent: 81,
         status: 'normal',
       },

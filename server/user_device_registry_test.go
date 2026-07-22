@@ -81,8 +81,9 @@ func TestUserDeviceRegistryStoresCurrentModelStatus(t *testing.T) {
 		DeviceID: "laptop-main",
 		Status:   "online",
 		ModelStatus: &DeviceModelStatus{
-			Source: "relay",
-			Model:  "MiniMax-M3",
+			Source:          "relay",
+			Model:           "MiniMax-M3",
+			ReasoningEffort: " high ",
 		},
 	})
 	if err != nil {
@@ -91,7 +92,7 @@ func TestUserDeviceRegistryStoresCurrentModelStatus(t *testing.T) {
 	if device.ModelStatus == nil {
 		t.Fatalf("expected model status")
 	}
-	if device.ModelStatus.Source != "relay" || device.ModelStatus.Model != "MiniMax-M3" || device.ModelStatus.UpdatedAt != unixMillis(now) {
+	if device.ModelStatus.Source != "relay" || device.ModelStatus.Model != "MiniMax-M3" || device.ModelStatus.ReasoningEffort != "high" || device.ModelStatus.UpdatedAt != unixMillis(now) {
 		t.Fatalf("unexpected model status: %#v", device.ModelStatus)
 	}
 
@@ -102,6 +103,65 @@ func TestUserDeviceRegistryStoresCurrentModelStatus(t *testing.T) {
 	}
 	if status.Source != "relay" || status.Model != "MiniMax-M3" {
 		t.Fatalf("unexpected latest model status: %#v", status)
+	}
+}
+
+func TestDeviceModelStatusForBodyDoesNotUseAnotherNewerDevice(t *testing.T) {
+	now := time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC)
+	registry := newUserDeviceRegistry(10 * time.Minute)
+	registry.now = func() time.Time { return now }
+	if _, err := registry.register(7, RegisterUserDeviceRequest{
+		DeviceID: "agent-device",
+		BodyID:   "body-agent",
+		ModelStatus: &DeviceModelStatus{
+			Source: "relay",
+			Model:  "gpt-5.6-sol",
+		},
+	}); err != nil {
+		t.Fatalf("register agent device: %v", err)
+	}
+	registry.now = func() time.Time { return now.Add(time.Minute) }
+	if _, err := registry.register(7, RegisterUserDeviceRequest{
+		DeviceID: "owner-laptop",
+		BodyID:   "body-owner-laptop",
+		ModelStatus: &DeviceModelStatus{
+			Source: "relay",
+			Model:  "minimax-m2.7",
+		},
+	}); err != nil {
+		t.Fatalf("register owner laptop: %v", err)
+	}
+
+	hub := &Hub{userDevices: registry}
+	latest, ok := LatestDeviceModelStatus(hub, 7)
+	if !ok || latest.Model != "minimax-m2.7" {
+		t.Fatalf("latest owner model=%+v ok=%v", latest, ok)
+	}
+	bot, ok := DeviceModelStatusForBody(hub, 7, "body-agent")
+	if !ok || bot.Model != "gpt-5.6-sol" {
+		t.Fatalf("bound bot model=%+v ok=%v", bot, ok)
+	}
+	if _, ok := DeviceModelStatusForBody(hub, 7, "body-missing"); ok {
+		t.Fatal("a missing body must not fall back to another owner device")
+	}
+}
+
+func TestDeviceModelStatusForBodySupportsLegacyDeviceIDBinding(t *testing.T) {
+	registry := newUserDeviceRegistry(time.Minute)
+	registry.now = func() time.Time { return time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC) }
+	if _, err := registry.register(7, RegisterUserDeviceRequest{
+		DeviceID: "legacy-body-id",
+		ModelStatus: &DeviceModelStatus{
+			Source: "custom",
+			Model:  "private-model",
+		},
+	}); err != nil {
+		t.Fatalf("register legacy device: %v", err)
+	}
+
+	status, ok := DeviceModelStatusForBody(&Hub{userDevices: registry}, 7, "legacy-body-id")
+	if !ok || status.Source != "custom" || status.Model != "private-model" {
+		t.Fatalf("status=%+v ok=%v", status, ok)
 	}
 }
 
