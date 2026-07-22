@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const css = readFileSync(resolve(process.cwd(), 'src/css/catsco-ui-system.css'), 'utf8');
+const css = readFileSync(resolve(process.cwd(), 'src/css/catsco-ui-system.css'), 'utf8')
+  .replace(/\r\n?/g, '\n');
 const brandAssetPath = resolve(process.cwd(), 'public/catsco-brand-mark.webp');
 
 const ruleFor = (selector) => css.match(

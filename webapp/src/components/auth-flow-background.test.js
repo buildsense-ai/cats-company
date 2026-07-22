@@ -1,3 +1,5 @@
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
 import {
   AUTH_FLOW_CYCLE,
   AUTH_FLOW_MESH,
@@ -7,6 +9,7 @@ import {
   authFlowSurfacePoint,
   createAuthFlowScene,
   displacedAuthFlowPoint,
+  default as AuthFlowBackground,
 } from './auth-flow-background';
 
 describe('AuthFlowBackground', () => {
@@ -68,5 +71,58 @@ describe('AuthFlowBackground', () => {
     expect(displaced.x - point.x).toBeLessThanOrEqual(17);
     expect(displaced.interactionStrength).toBeCloseTo(0.5);
     expect(distant).toEqual({ ...point, interactionStrength: 0 });
+  });
+
+  it('renders one static frame without scheduling animation when reduced motion is requested', async () => {
+    const context = {
+      arc: vi.fn(),
+      beginPath: vi.fn(),
+      clearRect: vi.fn(),
+      closePath: vi.fn(),
+      fill: vi.fn(),
+      lineTo: vi.fn(),
+      moveTo: vi.fn(),
+      setTransform: vi.fn(),
+      stroke: vi.fn(),
+    };
+    const originalMatchMedia = window.matchMedia;
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    const matchMedia = vi.fn().mockReturnValue({ matches: true });
+    const requestAnimationFrame = vi.fn().mockReturnValue(1);
+    Object.defineProperty(window, 'matchMedia', { configurable: true, value: matchMedia });
+    Object.defineProperty(window, 'requestAnimationFrame', { configurable: true, value: requestAnimationFrame });
+    const addEventListener = vi.spyOn(window, 'addEventListener');
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context);
+    const getBoundingClientRect = vi.spyOn(HTMLCanvasElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 800,
+      height: 600,
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 600,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => root.render(React.createElement(AuthFlowBackground)));
+
+      expect(matchMedia).toHaveBeenCalledWith('(prefers-reduced-motion: reduce)');
+      expect(context.clearRect).toHaveBeenCalledTimes(1);
+      expect(requestAnimationFrame).not.toHaveBeenCalled();
+      expect(addEventListener.mock.calls.some(([type]) => type === 'pointermove')).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+      Object.defineProperty(window, 'requestAnimationFrame', { configurable: true, value: originalRequestAnimationFrame });
+      addEventListener.mockRestore();
+      getContext.mockRestore();
+      getBoundingClientRect.mockRestore();
+    }
   });
 });

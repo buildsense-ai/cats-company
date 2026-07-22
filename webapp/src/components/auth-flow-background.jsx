@@ -209,7 +209,6 @@ export default function AuthFlowBackground() {
 
     const pointer = { active: false, x: 0, y: 0 };
     const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-    const motionScale = reduceMotion ? 0.65 : 1;
     let animationFrame = 0;
     let lastFrame = 0;
     let scene = createAuthFlowScene(1, 1);
@@ -218,8 +217,7 @@ export default function AuthFlowBackground() {
       ? { r: 124, g: 220, b: 194 }
       : { r: 14, g: 137, b: 104 };
 
-    const draw = (rawTimestamp = 0) => {
-      const timestamp = rawTimestamp * motionScale;
+    const draw = (timestamp = 0) => {
       const seconds = timestamp / 1000;
       const color = palette();
       context.clearRect(0, 0, scene.width, scene.height);
@@ -352,19 +350,23 @@ export default function AuthFlowBackground() {
     resizeObserver?.observe(canvas);
     themeObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     window.addEventListener('resize', resize);
-    window.addEventListener('pointermove', updatePointer, { passive: true });
-    window.addEventListener('blur', clearPointer);
-    document.addEventListener('mouseleave', clearPointer);
     resize();
-    animationFrame = window.requestAnimationFrame(animate);
+    if (!reduceMotion) {
+      window.addEventListener('pointermove', updatePointer, { passive: true });
+      window.addEventListener('blur', clearPointer);
+      document.addEventListener('mouseleave', clearPointer);
+      animationFrame = window.requestAnimationFrame(animate);
+    }
 
     return () => {
       resizeObserver?.disconnect();
       themeObserver?.disconnect();
       window.removeEventListener('resize', resize);
-      window.removeEventListener('pointermove', updatePointer);
-      window.removeEventListener('blur', clearPointer);
-      document.removeEventListener('mouseleave', clearPointer);
+      if (!reduceMotion) {
+        window.removeEventListener('pointermove', updatePointer);
+        window.removeEventListener('blur', clearPointer);
+        document.removeEventListener('mouseleave', clearPointer);
+      }
       if (animationFrame) window.cancelAnimationFrame(animationFrame);
     };
   }, []);
