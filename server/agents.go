@@ -206,6 +206,10 @@ func (h *AgentHandler) HandleAgentQuota(w http.ResponseWriter, r *http.Request) 
 	}
 	response := sanitizeAgentQuota(buildRelayUsageResponse(usage, model))
 	if response.Summary != nil {
+		// A relay budget may cover multiple allowed models. Keep its quota values,
+		// but expose the model actually applied by this bot rather than the
+		// canonical model name of the shared billing bucket.
+		response.Summary.Model = model
 		response.Summary.ReasoningEffort = deviceStatus.ReasoningEffort
 	}
 	h.storeAgentQuota(cacheKey, response)
