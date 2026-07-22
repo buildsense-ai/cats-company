@@ -302,7 +302,11 @@ func (h *GroupHandler) HandleGetGroupInfo(w http.ResponseWriter, r *http.Request
 
 	// Verify caller is a member
 	isMember, err := h.db.IsGroupMember(groupID, uid)
-	if err != nil || !isMember {
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to verify group membership"})
+		return
+	}
+	if !isMember {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not a group member"})
 		return
 	}

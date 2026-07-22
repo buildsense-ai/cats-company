@@ -5,6 +5,7 @@ const WS_URL = import.meta.env.VITE_WS_URL || `${DEFAULT_WS_SCHEME}://${window.l
 let token = localStorage.getItem('oc_token');
 let wsConn = null;
 let wsReconnectTimer = null;
+let wsConnectTimer = null;
 let wsGeneration = 0;
 let wsReconnectAttempt = 0;
 let msgHandlers = [];
@@ -12,6 +13,7 @@ let wsConnected = false;
 let topicLastSeq = {};
 
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
+const WS_CONNECT_TIMEOUT_MS = 10000;
 
 export function updateTopicSeq(topicId, seq) {
   if (!topicLastSeq[topicId] || seq > topicLastSeq[topicId]) {
@@ -398,6 +400,10 @@ export function connectWS(onMessage, { force = false } = {}) {
     clearTimeout(wsReconnectTimer);
     wsReconnectTimer = null;
   }
+  if (wsConnectTimer) {
+    clearTimeout(wsConnectTimer);
+    wsConnectTimer = null;
+  }
   const generation = ++wsGeneration;
   if (wsConn) {
     const staleConn = wsConn;
@@ -416,10 +422,32 @@ export function connectWS(onMessage, { force = false } = {}) {
 
   onMessage({ _type: 'ws_connecting', attempt: wsReconnectAttempt });
 
+  wsConnectTimer = setTimeout(() => {
+    if (!isCurrent() || conn.readyState !== WebSocket.CONNECTING) return;
+    wsConnectTimer = null;
+    wsConn = null;
+    conn.onopen = null;
+    conn.onclose = null;
+    conn.onerror = null;
+    conn.onmessage = null;
+    conn.close();
+    wsConnected = false;
+    wsReconnectAttempt += 1;
+    const retryInMs = reconnectDelay(wsReconnectAttempt);
+    onMessage({ _type: 'ws_close', attempt: wsReconnectAttempt, retryInMs });
+    wsReconnectTimer = setTimeout(() => {
+      if (wsGeneration === generation) connectWS(onMessage);
+    }, retryInMs);
+  }, WS_CONNECT_TIMEOUT_MS);
+
   conn.onopen = () => {
     if (!isCurrent()) {
       conn.close();
       return;
+    }
+    if (wsConnectTimer) {
+      clearTimeout(wsConnectTimer);
+      wsConnectTimer = null;
     }
     console.log('WebSocket connected');
     wsConnected = true;
@@ -437,6 +465,10 @@ export function connectWS(onMessage, { force = false } = {}) {
 
   conn.onclose = () => {
     if (!isCurrent()) return;
+    if (wsConnectTimer) {
+      clearTimeout(wsConnectTimer);
+      wsConnectTimer = null;
+    }
     console.log('WebSocket disconnected');
     wsConnected = false;
     wsConn = null;
@@ -484,6 +516,10 @@ export function disconnectWS() {
   if (wsReconnectTimer) {
     clearTimeout(wsReconnectTimer);
     wsReconnectTimer = null;
+  }
+  if (wsConnectTimer) {
+    clearTimeout(wsConnectTimer);
+    wsConnectTimer = null;
   }
   if (wsConn) {
     const staleConn = wsConn;

@@ -59,6 +59,7 @@ describe('WebSocket connection recovery', () => {
 
     MockWebSocket.instances[0].open();
     expect(api.connectWS(onMessage)).toBe(false);
+    vi.advanceTimersByTime(10000);
     expect(MockWebSocket.instances).toHaveLength(1);
     expect(onMessage).toHaveBeenCalledWith({ _type: 'ws_open' });
   });
@@ -88,6 +89,25 @@ describe('WebSocket connection recovery', () => {
     });
   });
 
+  test('abandons a socket stuck while connecting and retries', () => {
+    const onMessage = vi.fn();
+    api.connectWS(onMessage);
+    const staleSocket = MockWebSocket.instances[0];
+
+    vi.advanceTimersByTime(9999);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(staleSocket.readyState).toBe(MockWebSocket.CLOSED);
+    expect(onMessage).toHaveBeenCalledWith({
+      _type: 'ws_close',
+      attempt: 1,
+      retryInMs: 1000,
+    });
+
+    vi.advanceTimersByTime(1000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+  });
+
   test('forces a fresh socket when the page resumes', () => {
     const onMessage = vi.fn();
     api.connectWS(onMessage);
@@ -109,6 +129,16 @@ describe('WebSocket connection recovery', () => {
 
     api.disconnectWS();
     vi.runOnlyPendingTimers();
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
+  test('manual disconnect cancels the connecting-socket watchdog', () => {
+    const onMessage = vi.fn();
+    api.connectWS(onMessage);
+
+    api.disconnectWS();
+    vi.advanceTimersByTime(11000);
 
     expect(MockWebSocket.instances).toHaveLength(1);
   });
