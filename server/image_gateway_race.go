@@ -147,7 +147,8 @@ func (h *ImageGenerationProxyHandler) runImageProviderLane(
 }
 
 func shouldRetryImageAttempt(result imageAttemptResult) bool {
-	return result.category == imageAttemptTransient && result.status == http.StatusTooManyRequests
+	return result.category == imageAttemptTransient &&
+		(result.status == http.StatusTooManyRequests || result.status >= http.StatusInternalServerError)
 }
 
 func (h *ImageGenerationProxyHandler) runImageRace(

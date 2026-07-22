@@ -242,7 +242,7 @@ func TestImageEditRaceUsesJSONAndMultipartTransportsConcurrently(t *testing.T) {
 func TestImageRaceProviderLanesRetryIndependently(t *testing.T) {
 	relayA := newScriptedImageUpstream(t, scriptedImageStep{waitForCancel: true})
 	relayB := newScriptedImageUpstream(t,
-		scriptedImageStep{status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`},
+		scriptedImageStep{status: http.StatusBadGateway, body: `{"error":"temporary"}`},
 		scriptedImageStep{body: testImageResponse(t, 71)},
 	)
 	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
@@ -295,7 +295,7 @@ func TestImageRaceRetriesOnlyExplicitRateLimits(t *testing.T) {
 		{name: "429", result: imageAttemptResult{category: imageAttemptTransient, status: http.StatusTooManyRequests}, retryable: true},
 		{name: "network error", result: imageAttemptResult{category: imageAttemptTransient, reason: "network_error"}},
 		{name: "timeout", result: imageAttemptResult{category: imageAttemptTransient, reason: "timeout"}},
-		{name: "5xx", result: imageAttemptResult{category: imageAttemptTransient, status: http.StatusServiceUnavailable}},
+		{name: "5xx", result: imageAttemptResult{category: imageAttemptTransient, status: http.StatusServiceUnavailable}, retryable: true},
 		{name: "invalid 200", result: imageAttemptResult{category: imageAttemptTransient, status: http.StatusOK, reason: "invalid_completed_image"}},
 	}
 	for _, tc := range tests {
@@ -313,7 +313,6 @@ func TestImageRaceDoesNotRetryAmbiguousProviderOutcomes(t *testing.T) {
 		first         scriptedImageStep
 		clientTimeout time.Duration
 	}{
-		{name: "5xx", first: scriptedImageStep{status: http.StatusServiceUnavailable, body: `{"error":"temporary"}`}},
 		{name: "timeout", first: scriptedImageStep{delay: 50 * time.Millisecond, body: testImageResponse(t, 74)}, clientTimeout: 10 * time.Millisecond},
 		{name: "invalid 200", first: scriptedImageStep{body: `{"data":[{"b64_json":"not-base64"}]}`}},
 	}

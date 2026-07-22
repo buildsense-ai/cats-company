@@ -85,9 +85,10 @@ JSON reference format and `multipart` for an OpenAI-compatible file upload.
 The gateway removes `async` and accepts only a completed image response, so a
 task ID never wins the race. Both provider lanes start together, which means a
 single user request can create one billable request at each provider even when
-the slower request is cancelled locally. Only an explicit HTTP 429 response is
-retried; network errors, timeouts, 5xx responses, and invalid 200 responses are
-not retried because the provider may already have accepted or billed the job.
+the slower request is cancelled locally. Explicit HTTP 429 and 5xx responses
+can be retried within the configured attempt bound. Network errors, timeouts,
+and invalid 200 responses are not retried because the provider may already have
+accepted or billed the job without returning a trustworthy status.
 `CATSCO_IMAGE_RACE_MAX_ATTEMPTS_PER_PROVIDER` defaults to 2 and is hard-capped
 at 4. With exactly two providers, the default absolute request bound is four
 provider calls. The race also stops when `CATSCO_IMAGE_RACE_DEADLINE_SECONDS`
