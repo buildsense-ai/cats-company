@@ -1030,8 +1030,7 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
 export { canOpenCloudArtifacts, describeModelApplyError, describeModelConfigRequestError, resolveDisplayedActiveAgent };
 
 function canOpenCloudArtifacts(activeTopic, activeAgent) {
-  if (!activeAgent?.cloud_artifacts_enabled || !activeTopic?.topicId) return false;
-  return !activeTopic.isGroup && !activeTopic.topicId.startsWith('grp_');
+  return Boolean(activeAgent?.cloud_artifacts_enabled && activeTopic?.topicId);
 }
 
 function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft) {

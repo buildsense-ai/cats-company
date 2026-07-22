@@ -1390,6 +1390,43 @@ describe('MessagesView composer draft isolation', () => {
     });
   });
 
+  it('reports artifact capability for a single-Agent task', async () => {
+    const onActiveAgentChange = vi.fn();
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'doubao',
+        display_name: '豆包',
+        relation: 'friend',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 9, name: '豆包任务', kind: 'agent_task', is_agent_task: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 440, display_name: '豆包', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_9', {
+      isGroup: true,
+      groupId: 9,
+      onActiveAgentChange,
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(onActiveAgentChange).toHaveBeenLastCalledWith({
+      uid: 440,
+      relation: 'friend',
+      isOwner: false,
+      cloud_artifacts_enabled: true,
+    });
+  });
+
   it('hides the model for a multi-Agent task', async () => {
     const onAgentModelChange = vi.fn();
     api.getGroupInfo.mockResolvedValueOnce({

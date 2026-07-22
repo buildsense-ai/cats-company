@@ -1246,7 +1246,22 @@ export default function MessagesView({
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const canRegenerateAssistantMessages = !isGroup || isAgentTask;
   useEffect(() => {
-    if (isGroup || !peerIsBot || peerUID <= 0) {
+    if (isGroup) {
+      const groupAgentUID = Number(groupAgent?.uid || groupAgent?.id || 0);
+      if (!isAgentTask || taskBotUID <= 0 || groupAgentUID !== taskBotUID) {
+        onActiveAgentChange?.(null);
+        return;
+      }
+      const groupAgentIsOwner = groupAgent?.is_owner === true || groupAgent?.relation === 'owner';
+      onActiveAgentChange?.({
+        uid: groupAgentUID,
+        relation: groupAgentIsOwner ? 'owner' : (groupAgent?.relation || 'friend'),
+        isOwner: groupAgentIsOwner,
+        cloud_artifacts_enabled: groupAgent?.cloud_artifacts_enabled === true,
+      });
+      return;
+    }
+    if (!peerIsBot || peerUID <= 0) {
       onActiveAgentChange?.(null);
       return;
     }
@@ -1257,6 +1272,12 @@ export default function MessagesView({
       cloud_artifacts_enabled: resolvedPeerProfile?.cloud_artifacts_enabled === true,
     });
   }, [
+    groupAgent?.cloud_artifacts_enabled,
+    groupAgent?.id,
+    groupAgent?.is_owner,
+    groupAgent?.relation,
+    groupAgent?.uid,
+    isAgentTask,
     isGroup,
     onActiveAgentChange,
     peerIsBot,
@@ -1264,6 +1285,7 @@ export default function MessagesView({
     peerUID,
     resolvedPeerProfile?.cloud_artifacts_enabled,
     resolvedPeerProfile?.relation,
+    taskBotUID,
   ]);
 
   useEffect(() => {

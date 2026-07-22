@@ -75,10 +75,10 @@ describe('resolveDisplayedActiveAgent', () => {
 });
 
 describe('cloud artifact action visibility', () => {
-  it('is available only in a private chat with a capable agent', () => {
+  it('is available whenever the active conversation resolves to a capable agent', () => {
     const doubao = { uid: 440, cloud_artifacts_enabled: true };
     expect(canOpenCloudArtifacts({ topicId: 'p2p_7_440', isGroup: false }, doubao)).toBe(true);
-    expect(canOpenCloudArtifacts({ topicId: 'grp_8', isGroup: true }, doubao)).toBe(false);
+    expect(canOpenCloudArtifacts({ topicId: 'grp_8', isGroup: true }, doubao)).toBe(true);
     expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, { uid: 441 })).toBe(false);
     expect(canOpenCloudArtifacts(null, doubao)).toBe(false);
   });
