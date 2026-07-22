@@ -41,3 +41,45 @@ export function normalizeActiveTopic(value) {
 
   return null;
 }
+
+export function lastTopicStorageKey(uid) {
+  return uid ? `v3_last_topic:${uid}` : 'v3_last_topic';
+}
+
+export function readStoredTopic(uid, storage = globalThis.localStorage) {
+  if (!storage) return null;
+  const keys = uid ? [lastTopicStorageKey(uid), 'v3_last_topic'] : ['v3_last_topic'];
+  for (const key of keys) {
+    const raw = storage.getItem(key);
+    if (!raw) continue;
+
+    try {
+      const topic = normalizeActiveTopic(JSON.parse(raw));
+      if (topic) return topic;
+    } catch {
+      const topic = normalizeActiveTopic(raw);
+      if (topic) return topic;
+    }
+  }
+
+  return null;
+}
+
+export function writeStoredTopic(uid, topic, storage = globalThis.localStorage) {
+  if (!storage) return;
+  const key = lastTopicStorageKey(uid);
+  const normalized = normalizeActiveTopic(topic);
+  if (!normalized) {
+    storage.removeItem(key);
+    storage.removeItem('v3_last_topic');
+    return;
+  }
+
+  const serialized = JSON.stringify(normalized);
+  storage.setItem(key, serialized);
+  storage.setItem('v3_last_topic', serialized);
+}
+
+export function shouldForgetStoredTopic(error) {
+  return error?.status === 400 || error?.status === 403 || error?.status === 404;
+}

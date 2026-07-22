@@ -1,21 +1,22 @@
 {
   "providers": [
     {
-      "id": "relay-a",
-      "generation_url": "https://relay-a.example/v1/images/generations",
-      "edit_url": "https://relay-a.example/v1/images/edits",
+      "id": "code-newcli",
+      "generation_url": "https://code.newcli.com/codex/v1/images/generations",
+      "edit_url": "https://code.newcli.com/codex/v1/images/edits",
       "model": "gpt-image-2",
-      "api_key": "replace-with-relay-a-key",
-      "operations": ["generation", "edit"],
-      "timeout_seconds": 300
+      "api_key_file": "/run/catsco-secrets/code-newcli.key",
+      "edit_transport": "json_data_url",
+      "timeout_seconds": 260
     },
     {
-      "id": "relay-b",
-      "generation_url": "https://relay-b.example/v1/images/generations",
+      "id": "pptoken",
+      "generation_url": "https://api.pptoken.org/v1/images/generations",
+      "edit_url": "https://api.pptoken.org/v1/images/edits",
       "model": "gpt-image-2",
-      "api_key": "replace-with-relay-b-key",
-      "operations": ["generation"],
-      "timeout_seconds": 300
+      "api_key_file": "/run/catsco-secrets/pptoken.key",
+      "edit_transport": "multipart",
+      "timeout_seconds": 260
     }
   ]
 }

@@ -2,9 +2,11 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import {
+  canOpenCloudArtifacts,
   describeModelApplyError,
   describeModelConfigRequestError,
   LocalAssistantBar,
+  resolveDisplayedActiveAgent,
 } from './tinode-web';
 import { api } from '../api';
 
@@ -49,6 +51,39 @@ const relayState = {
   },
 };
 
+describe('resolveDisplayedActiveAgent', () => {
+  it('exposes an owned draft agent to the model selector before the task is created', () => {
+    expect(resolveDisplayedActiveAgent('', null, {
+      agent: { uid: 110, relation: 'owner', display_name: 'XiaoBa' },
+    })).toMatchObject({ uid: 110, relation: 'owner', isOwner: true });
+  });
+
+  it('keeps friend draft agents read-only', () => {
+    expect(resolveDisplayedActiveAgent('', null, {
+      agent: { id: 407, relation: 'friend' },
+    })).toMatchObject({ uid: 407, relation: 'friend', isOwner: false });
+  });
+
+  it('uses the active conversation agent instead of a stale draft', () => {
+    const activeAgent = { uid: 63, relation: 'owner', isOwner: true };
+    expect(resolveDisplayedActiveAgent(
+      'p2p_38_63',
+      { topicId: 'p2p_38_63', agent: activeAgent },
+      { agent: { uid: 110, relation: 'owner' } },
+    )).toBe(activeAgent);
+  });
+});
+
+describe('cloud artifact action visibility', () => {
+  it('is available only in a private chat with a capable agent', () => {
+    const doubao = { uid: 440, cloud_artifacts_enabled: true };
+    expect(canOpenCloudArtifacts({ topicId: 'p2p_7_440', isGroup: false }, doubao)).toBe(true);
+    expect(canOpenCloudArtifacts({ topicId: 'grp_8', isGroup: true }, doubao)).toBe(false);
+    expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, { uid: 441 })).toBe(false);
+    expect(canOpenCloudArtifacts(null, doubao)).toBe(false);
+  });
+});
+
 describe('LocalAssistantBar model selector', () => {
   let container;
   let root;
@@ -83,11 +118,49 @@ describe('LocalAssistantBar model selector', () => {
     });
   };
 
+  it('renders the generated-artifacts button only when the parent enables it', async () => {
+    const onOpenCloudArtifacts = vi.fn();
+    await renderBar({ onOpenCloudArtifacts });
+    const button = container.querySelector('button[aria-label="打开生成物"]');
+    expect(button).toBeTruthy();
+    await act(async () => button.click());
+    expect(onOpenCloudArtifacts).toHaveBeenCalledTimes(1);
+
+    await renderBar({ onOpenCloudArtifacts: undefined });
+    expect(container.querySelector('button[aria-label="打开生成物"]')).toBeNull();
+  });
+
   it('keeps the current model and quota together in the header', async () => {
     await renderBar();
     const status = container.querySelector('.v3-local-assistant-status');
     expect(status?.textContent).toBe('minimax-m3剩余 75%');
     expect(status?.getAttribute('aria-label')).toContain('minimax-m3');
+  });
+
+  it('shows the applied cloud model instead of a stale local quota snapshot', async () => {
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue({
+      ...baseConfig,
+      desired: { kind: 'catalog', model_id: 'gpt-5.6-sol', reasoning_effort: 'high', revision: 5 },
+      applied: { kind: 'catalog', model_id: 'gpt-5.6-sol', reasoning_effort: 'high', revision: 5 },
+      models: [
+        ...baseConfig.models,
+        { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', reasoning_efforts: ['medium', 'high'] },
+      ],
+    });
+    await renderBar({
+      activeAgent: { uid: 43, isOwner: true, relation: 'owner' },
+      agentModelState: {
+        isBot: true,
+        state: 'ready',
+        summary: { source: 'custom', model: 'gpt-5.6-terra' },
+      },
+    });
+
+    const status = container.querySelector('.v3-local-assistant-status');
+    expect(status?.textContent).toContain('gpt-5.6-sol');
+    expect(status?.textContent).toContain('high');
+    expect(status?.textContent).not.toContain('gpt-5.6-terra');
+    expect(status?.getAttribute('aria-label')).toContain('推理强度 high');
   });
 
   it('does not expose a switcher for friend bots or group conversations', async () => {

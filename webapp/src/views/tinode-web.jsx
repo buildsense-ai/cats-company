@@ -20,6 +20,7 @@ import FeedbackModal from '../widgets/feedback-modal';
 import CatsCoDownloadModal from '../widgets/catsco-download-modal';
 import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import RelayAccessModal from '../widgets/relay-access-modal';
+import CloudArtifactsModal from '../widgets/cloud-artifacts-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
@@ -35,7 +36,12 @@ import {
   resolveConversationModelDisplay,
   resolveCurrentModelName,
 } from '../utils/relay-usage';
-import { normalizeActiveTopic } from '../utils/active-topic';
+import {
+  normalizeActiveTopic,
+  readStoredTopic,
+  shouldForgetStoredTopic,
+  writeStoredTopic,
+} from '../utils/active-topic';
 import {
   applyScopedModelUpdate,
   resolveScopedModelState,
@@ -49,7 +55,7 @@ import {
   saveLiquidThemeUnlock,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
-import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Bug, Cloud, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 
@@ -117,42 +123,6 @@ function saveAppSidebarCollapsed(collapsed) {
   window.localStorage.setItem(APP_SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? 'true' : 'false');
 }
 
-function lastTopicStorageKey(uid) {
-  return uid ? `v3_last_topic:${uid}` : 'v3_last_topic';
-}
-
-function readStoredTopic(uid) {
-  const keys = [lastTopicStorageKey(uid), 'v3_last_topic'];
-  for (const key of keys) {
-    const raw = localStorage.getItem(key);
-    if (!raw) continue;
-
-    try {
-      const parsed = JSON.parse(raw);
-      const topic = normalizeActiveTopic(parsed);
-      if (topic) return topic;
-    } catch (error) {
-      const topic = normalizeActiveTopic(raw);
-      if (topic) return topic;
-    }
-  }
-
-  return null;
-}
-
-function writeStoredTopic(uid, topic) {
-  const key = lastTopicStorageKey(uid);
-  const normalized = normalizeActiveTopic(topic);
-  if (!normalized) {
-    localStorage.removeItem(key);
-    localStorage.removeItem('v3_last_topic');
-    return;
-  }
-
-  localStorage.setItem(key, JSON.stringify(normalized));
-  localStorage.setItem('v3_last_topic', JSON.stringify(normalized));
-}
-
 function desktopPromptStorageKey(uid) {
   return `catsco_desktop_connect_prompted:v1:${uid}`;
 }
@@ -191,7 +161,9 @@ function TinodeWebApp() {
   const channelAccountLink = window.location.pathname === '/channel-account-link';
   const [user, setUser] = useState(() => getInitialUser());
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
-  const [activeTopic, _setActiveTopic] = useState(null);
+  const [activeTopic, _setActiveTopic] = useState(() => (
+    user?.uid ? readStoredTopic(user.uid) : null
+  ));
   const [taskDraft, setTaskDraft] = useState(null);
   const taskDraftSequenceRef = useRef(0);
 
@@ -214,6 +186,7 @@ function TinodeWebApp() {
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
+  const [showCloudArtifactsModal, setShowCloudArtifactsModal] = useState(false);
   const [managedGroup, setManagedGroup] = useState(null);
   const appShellRef = useRef(null);
   const [appSidebarCollapsed, setAppSidebarCollapsed] = useState(() => loadAppSidebarCollapsed());
@@ -251,9 +224,8 @@ function TinodeWebApp() {
       return { topicId, agent };
     });
   }, [activeTopicId]);
-  const displayedActiveAgent = activeAgentState?.topicId === activeTopicId
-    ? activeAgentState.agent
-    : null;
+  const displayedActiveAgent = resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft);
+  const showCloudArtifactsAction = canOpenCloudArtifacts(activeTopic, displayedActiveAgent);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
     appSidebarPreferredWidth,
@@ -560,22 +532,25 @@ function TinodeWebApp() {
     }
 
     const stored = readStoredTopic(user.uid);
+    _setActiveTopic(stored);
     if (!stored?.topicId?.startsWith('grp_')) {
-      _setActiveTopic(stored);
       return;
     }
 
     let cancelled = false;
     const groupId = stored.groupId || Number(stored.topicId.slice(4));
     api.getGroupInfo(groupId)
-      .then(() => {
-        if (!cancelled) _setActiveTopic(stored);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          writeStoredTopic(user.uid, null);
-          _setActiveTopic(null);
+      .catch((error) => {
+        if (cancelled) return;
+        if (!shouldForgetStoredTopic(error)) {
+          console.warn('Failed to validate the restored task; keeping it for retry:', error);
+          return;
         }
+        _setActiveTopic((current) => {
+          if (current?.topicId !== stored.topicId) return current;
+          writeStoredTopic(user.uid, null);
+          return null;
+        });
       });
     return () => {
       cancelled = true;
@@ -983,6 +958,7 @@ function TinodeWebApp() {
           activeAgent={displayedActiveAgent}
           currentModelName={currentModelName}
           onDownload={() => setShowDownloadModal(true)}
+          onOpenCloudArtifacts={showCloudArtifactsAction ? () => setShowCloudArtifactsModal(true) : undefined}
           title={activeTopic?.name || taskDraftTitle(taskDraft)}
           onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
         />
@@ -1045,6 +1021,10 @@ function TinodeWebApp() {
         <RelayAccessModal onClose={() => setShowRelayModal(false)} />
       )}
 
+      {showCloudArtifactsModal && (
+        <CloudArtifactsModal onClose={() => setShowCloudArtifactsModal(false)} />
+      )}
+
       {managedGroup?.groupId && (
         <GroupSettings
           groupId={managedGroup.groupId}
@@ -1071,7 +1051,7 @@ function TinodeWebApp() {
   );
 }
 
-export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, title, onRenameTitle }) {
+export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, title, onRenameTitle }) {
   return (
     <header className="v3-local-assistant-bar">
       <div className="v3-model-select">
@@ -1083,6 +1063,11 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
       </div>
       <EditableConversationTitle title={title} editable={Boolean(onRenameTitle)} onSave={onRenameTitle} />
       <div className="v3-shell-actions">
+        {onOpenCloudArtifacts && (
+          <button type="button" className="v3-action-btn" onClick={onOpenCloudArtifacts} aria-label="打开生成物" title="生成物">
+            <Cloud size={17} />
+          </button>
+        )}
         <button type="button" className="v3-action-btn" onClick={onDownload} aria-label="下载桌面端">
           <Download size={17} />
         </button>
@@ -1091,7 +1076,32 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
   );
 }
 
-export { describeModelApplyError, describeModelConfigRequestError };
+export { canOpenCloudArtifacts, describeModelApplyError, describeModelConfigRequestError, resolveDisplayedActiveAgent };
+
+function canOpenCloudArtifacts(activeTopic, activeAgent) {
+  if (!activeAgent?.cloud_artifacts_enabled || !activeTopic?.topicId) return false;
+  return !activeTopic.isGroup && !activeTopic.topicId.startsWith('grp_');
+}
+
+function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft) {
+  if (activeTopicId) {
+    return activeAgentState?.topicId === activeTopicId ? activeAgentState.agent : null;
+  }
+
+  const draftAgent = taskDraft?.agent;
+  const uid = Number(draftAgent?.uid || draftAgent?.id || 0);
+  if (uid <= 0) return null;
+
+  const isOwner = draftAgent?.isOwner === true
+    || draftAgent?.is_owner === true
+    || draftAgent?.relation === 'owner';
+  return {
+    ...draftAgent,
+    uid,
+    isOwner,
+    relation: isOwner ? 'owner' : (draftAgent?.relation || 'friend'),
+  };
+}
 
 function NoActiveTask({ user, initialAgent, onResolveAgentTopic, onActivateTopic }) {
   return (

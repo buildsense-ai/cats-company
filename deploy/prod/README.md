@@ -51,7 +51,8 @@ Before enabling automatic production deploys:
 
 Keep image-provider credentials only under the persistent server root. For the
 race gateway, create `/srv/catscompany-prod/secrets/image-providers.json` from
-`deploy/prod/image-providers.example.json`, configure 2-3 providers, and make it
+`deploy/prod/image-providers.example.json`, configure exactly two providers,
+and make it
 readable only by the deployment administrator:
 
 ```bash
@@ -64,9 +65,10 @@ Then point the container at the mounted file from the persistent
 ```env
 CATSCO_IMAGE_UPSTREAMS_FILE=/run/catsco-secrets/image-providers.json
 CATSCO_IMAGE_MODEL=gpt-image-2
-CATSCO_IMAGE_TIMEOUT_SECONDS=300
-CATSCO_IMAGE_RACE_DEADLINE_SECONDS=540
+CATSCO_IMAGE_TIMEOUT_SECONDS=260
+CATSCO_IMAGE_RACE_DEADLINE_SECONDS=270
 CATSCO_IMAGE_RACE_BACKOFF_MS=750
+CATSCO_IMAGE_RACE_MAX_ATTEMPTS_PER_PROVIDER=2
 CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES=25165824
 CATSCO_IMAGE_MAX_RESPONSE_BYTES=41943040
 ```
@@ -77,12 +79,22 @@ the real provider file into the repository, image, deployment bundle, or GitHub
 Actions. After changing it, recreate the server container with the manual start
 commands below.
 
-Each provider declares whether it supports `generation`, `edit`, or both.
-Reference-image requests are sent only to providers with `edit`; an omitted
-`edit_url` is derived from a compatible `/images/generations` URL. The race
-gateway removes `async` and accepts only a completed image response, so a task
-ID never wins the race. The first valid image wins; temporary failures retry in
-new parallel rounds until `CATSCO_IMAGE_RACE_DEADLINE_SECONDS` expires.
+Both providers must configure `generation_url`, `edit_url`, and an explicit
+`edit_transport`. Use `json_data_url` for an upstream that accepts the CatsCo
+JSON reference format and `multipart` for an OpenAI-compatible file upload.
+The gateway removes `async` and accepts only a completed image response, so a
+task ID never wins the race. Both provider lanes start together, which means a
+single user request can create one billable request at each provider even when
+the slower request is cancelled locally. Explicit HTTP 429 and 5xx responses
+can be retried within the configured attempt bound. Network errors, timeouts,
+and invalid 200 responses are not retried because the provider may already have
+accepted or billed the job without returning a trustworthy status.
+`CATSCO_IMAGE_RACE_MAX_ATTEMPTS_PER_PROVIDER` defaults to 2 and is hard-capped
+at 4. With exactly two providers, the default absolute request bound is four
+provider calls. The race also stops when `CATSCO_IMAGE_RACE_DEADLINE_SECONDS`
+expires. The deadline is capped at 285 seconds so the gateway can return a
+structured failure before the caller's roughly 300-second connection budget
+ends.
 
 For rollback, clear `CATSCO_IMAGE_UPSTREAMS_FILE` and restore the legacy
 `CATSCO_IMAGE_UPSTREAM_URL`, `CATSCO_IMAGE_UPSTREAM_API_KEY` or

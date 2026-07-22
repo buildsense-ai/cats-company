@@ -67,19 +67,22 @@ export function resolveConversationModelDisplay(currentModelName, agentModelStat
 
   const model = resolveCurrentModelName(summary, '模型未知');
   const custom = summary.source === 'custom' || summary.status === 'custom';
+  const reasoningEffort = String(summary.reasoning_effort || '').trim();
   const quota = formatRelayUsagePill(summary, {
     customLabel: '自备模型',
     showModel: false,
   });
-  const meta = quota || (custom ? '自备模型' : '额度未同步');
+  const quotaMeta = quota || (custom ? '自备模型' : '额度未同步');
+  const meta = [reasoningEffort, quotaMeta].filter(Boolean).join(' · ');
+  const reasoningTitle = reasoningEffort ? `；推理强度 ${reasoningEffort}` : '';
   return {
     model,
     meta,
     title: custom
-      ? `${model}；该虚拟员工使用自备模型，不消耗 CatsCo 共享额度`
+      ? `${model}${reasoningTitle}；该虚拟员工使用自备模型，不消耗 CatsCo 共享额度`
       : quota
-        ? `${model}；使用该虚拟员工所属账号的共享额度，${quota}`
-        : `${model}；当前额度暂未同步`,
+        ? `${model}${reasoningTitle}；使用该虚拟员工所属账号的共享额度，${quota}`
+        : `${model}${reasoningTitle}；当前额度暂未同步`,
   };
 }
 

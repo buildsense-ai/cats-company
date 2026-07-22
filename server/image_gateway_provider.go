@@ -13,8 +13,7 @@ import (
 )
 
 const (
-	minImageRaceProviders = 2
-	maxImageRaceProviders = 3
+	requiredImageRaceProviders = 2
 )
 
 var imageProviderIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -26,6 +25,13 @@ const (
 	imageOperationEdit       imageProviderOperation = "edit"
 )
 
+type imageProviderEditTransport string
+
+const (
+	imageEditTransportJSONDataURL imageProviderEditTransport = "json_data_url"
+	imageEditTransportMultipart   imageProviderEditTransport = "multipart"
+)
+
 type imageUpstreamProvider struct {
 	id            string
 	generationURL string
@@ -34,6 +40,7 @@ type imageUpstreamProvider struct {
 	apiKey        string
 	client        *http.Client
 	operations    map[imageProviderOperation]struct{}
+	editTransport imageProviderEditTransport
 }
 
 func (p imageUpstreamProvider) supports(operation imageProviderOperation) bool {
@@ -57,14 +64,14 @@ type imageProviderPoolDocument struct {
 }
 
 type imageProviderFileEntry struct {
-	ID             string   `json:"id"`
-	GenerationURL  string   `json:"generation_url"`
-	EditURL        string   `json:"edit_url"`
-	Model          string   `json:"model"`
-	APIKey         string   `json:"api_key"`
-	APIKeyFile     string   `json:"api_key_file"`
-	Operations     []string `json:"operations"`
-	TimeoutSeconds int64    `json:"timeout_seconds"`
+	ID             string `json:"id"`
+	GenerationURL  string `json:"generation_url"`
+	EditURL        string `json:"edit_url"`
+	Model          string `json:"model"`
+	APIKey         string `json:"api_key"`
+	APIKeyFile     string `json:"api_key_file"`
+	EditTransport  string `json:"edit_transport"`
+	TimeoutSeconds int64  `json:"timeout_seconds"`
 }
 
 func loadImageUpstreamProvidersFile(path string, defaultModel string, defaultTimeout time.Duration) ([]imageUpstreamProvider, error) {
@@ -87,8 +94,8 @@ func loadImageUpstreamProvidersFile(path string, defaultModel string, defaultTim
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return nil, errors.New("CATSCO_IMAGE_UPSTREAMS_FILE must contain one JSON object")
 	}
-	if len(document.Providers) < minImageRaceProviders || len(document.Providers) > maxImageRaceProviders {
-		return nil, fmt.Errorf("CATSCO_IMAGE_UPSTREAMS_FILE must configure %d-%d providers", minImageRaceProviders, maxImageRaceProviders)
+	if len(document.Providers) != requiredImageRaceProviders {
+		return nil, fmt.Errorf("CATSCO_IMAGE_UPSTREAMS_FILE must configure exactly %d providers", requiredImageRaceProviders)
 	}
 
 	modelFallback := strings.TrimSpace(defaultModel)
@@ -120,7 +127,7 @@ func buildImageUpstreamProvider(entry imageProviderFileEntry, defaultModel strin
 	if !imageProviderIDPattern.MatchString(id) {
 		return imageUpstreamProvider{}, errors.New("id must use 1-64 letters, digits, dots, underscores, or hyphens")
 	}
-	operations, err := parseImageProviderOperations(entry.Operations)
+	editTransport, err := parseImageProviderEditTransport(entry.EditTransport)
 	if err != nil {
 		return imageUpstreamProvider{}, err
 	}
@@ -146,62 +153,48 @@ func buildImageUpstreamProvider(entry imageProviderFileEntry, defaultModel strin
 	}
 
 	provider := imageUpstreamProvider{
-		id:         id,
-		model:      model,
-		apiKey:     apiKey,
-		client:     &http.Client{Timeout: timeout},
-		operations: operations,
+		id:     id,
+		model:  model,
+		apiKey: apiKey,
+		client: &http.Client{Timeout: timeout},
+		operations: map[imageProviderOperation]struct{}{
+			imageOperationGeneration: {},
+			imageOperationEdit:       {},
+		},
+		editTransport: editTransport,
 	}
 
-	if provider.supports(imageOperationGeneration) {
-		parsed, err := parseImageGenerationUpstreamURL(entry.GenerationURL)
-		if err != nil {
-			return imageUpstreamProvider{}, fmt.Errorf("generation_url: %w", err)
-		}
-		resolved, err := resolveImageOperationUpstreamURL(parsed, "generations")
-		if err != nil {
-			return imageUpstreamProvider{}, fmt.Errorf("generation_url: %w", err)
-		}
-		provider.generationURL = resolved.String()
+	parsedGenerationURL, err := parseImageGenerationUpstreamURL(entry.GenerationURL)
+	if err != nil {
+		return imageUpstreamProvider{}, fmt.Errorf("generation_url: %w", err)
 	}
+	resolvedGenerationURL, err := resolveImageOperationUpstreamURL(parsedGenerationURL, "generations")
+	if err != nil {
+		return imageUpstreamProvider{}, fmt.Errorf("generation_url: %w", err)
+	}
+	provider.generationURL = resolvedGenerationURL.String()
 
-	if provider.supports(imageOperationEdit) {
-		rawEditURL := strings.TrimSpace(entry.EditURL)
-		if rawEditURL == "" {
-			rawEditURL = strings.TrimSpace(entry.GenerationURL)
-		}
-		parsed, err := parseImageGenerationUpstreamURL(rawEditURL)
-		if err != nil {
-			return imageUpstreamProvider{}, fmt.Errorf("edit_url: %w", err)
-		}
-		resolved, err := resolveImageOperationUpstreamURL(parsed, "edits")
-		if err != nil {
-			return imageUpstreamProvider{}, fmt.Errorf("edit_url: %w", err)
-		}
-		provider.editURL = resolved.String()
+	parsedEditURL, err := parseImageGenerationUpstreamURL(entry.EditURL)
+	if err != nil {
+		return imageUpstreamProvider{}, fmt.Errorf("edit_url: %w", err)
 	}
+	resolvedEditURL, err := resolveImageOperationUpstreamURL(parsedEditURL, "edits")
+	if err != nil {
+		return imageUpstreamProvider{}, fmt.Errorf("edit_url: %w", err)
+	}
+	provider.editURL = resolvedEditURL.String()
 
 	return provider, nil
 }
 
-func parseImageProviderOperations(values []string) (map[imageProviderOperation]struct{}, error) {
-	if len(values) == 0 {
-		return nil, errors.New("operations must contain generation and/or edit")
+func parseImageProviderEditTransport(value string) (imageProviderEditTransport, error) {
+	transport := imageProviderEditTransport(strings.TrimSpace(value))
+	switch transport {
+	case imageEditTransportJSONDataURL, imageEditTransportMultipart:
+		return transport, nil
+	default:
+		return "", fmt.Errorf("edit_transport must be %q or %q", imageEditTransportJSONDataURL, imageEditTransportMultipart)
 	}
-	operations := make(map[imageProviderOperation]struct{}, len(values))
-	for _, value := range values {
-		operation := imageProviderOperation(strings.TrimSpace(value))
-		switch operation {
-		case imageOperationGeneration, imageOperationEdit:
-		default:
-			return nil, fmt.Errorf("unsupported operation %q", value)
-		}
-		if _, duplicate := operations[operation]; duplicate {
-			return nil, fmt.Errorf("duplicate operation %q", operation)
-		}
-		operations[operation] = struct{}{}
-	}
-	return operations, nil
 }
 
 func readImageProviderAPIKey(entry imageProviderFileEntry) (string, error) {

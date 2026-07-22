@@ -64,9 +64,10 @@ type UserDevice struct {
 }
 
 type DeviceModelStatus struct {
-	Source    string `json:"source,omitempty"`
-	Model     string `json:"model,omitempty"`
-	UpdatedAt int64  `json:"updatedAt,omitempty"`
+	Source          string `json:"source,omitempty"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	UpdatedAt       int64  `json:"updatedAt,omitempty"`
 }
 
 type ScopedDeviceGrant struct {
@@ -358,9 +359,10 @@ func normalizeDeviceModelStatus(input *DeviceModelStatus, now time.Time) *Device
 		updatedAt = unixMillis(now)
 	}
 	return &DeviceModelStatus{
-		Source:    source,
-		Model:     model,
-		UpdatedAt: updatedAt,
+		Source:          source,
+		Model:           model,
+		ReasoningEffort: normalizeDeviceText(input.ReasoningEffort),
+		UpdatedAt:       updatedAt,
 	}
 }
 
@@ -368,10 +370,29 @@ func LatestDeviceModelStatus(hub *Hub, ownerUID int64) (DeviceModelStatus, bool)
 	if hub == nil || hub.userDevices == nil || ownerUID <= 0 {
 		return DeviceModelStatus{}, false
 	}
-	devices := hub.userDevices.activeDevices(ownerUID)
+	return latestDeviceModelStatus(hub.userDevices.activeDevices(ownerUID), nil)
+}
+
+// DeviceModelStatusForBody returns the current model reported by the device
+// bound to one bot, without allowing another device owned by the same account
+// to replace it.
+func DeviceModelStatusForBody(hub *Hub, ownerUID int64, bodyID string) (DeviceModelStatus, bool) {
+	bodyID = strings.TrimSpace(bodyID)
+	if hub == nil || hub.userDevices == nil || ownerUID <= 0 || bodyID == "" {
+		return DeviceModelStatus{}, false
+	}
+	return latestDeviceModelStatus(hub.userDevices.activeDevices(ownerUID), func(device UserDevice) bool {
+		return strings.TrimSpace(device.BodyID) == bodyID || strings.TrimSpace(device.DeviceID) == bodyID
+	})
+}
+
+func latestDeviceModelStatus(devices []UserDevice, include func(UserDevice) bool) (DeviceModelStatus, bool) {
 	var best DeviceModelStatus
 	bestSeenAt := int64(0)
 	for _, device := range devices {
+		if include != nil && !include(device) {
+			continue
+		}
 		if device.ModelStatus == nil {
 			continue
 		}

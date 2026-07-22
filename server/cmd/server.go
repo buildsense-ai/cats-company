@@ -304,6 +304,7 @@ func main() {
 	uploadHandler := server.NewUploadHandler("./uploads", "/uploads")
 	tutorialTaskHandler := server.NewTutorialTaskHandler("./uploads", "/uploads")
 	readerHandler := server.NewReaderProxyHandlerFromEnv()
+	cloudArtifactHandler := server.NewCloudArtifactHandlerFromEnv()
 	imageGenerationHandler := server.NewImageGenerationProxyHandlerFromEnv()
 	feedbackHandler := server.NewFeedbackHandler(db)
 	relayConfigHandler := server.NewRelayConfigHandler()
@@ -313,8 +314,11 @@ func main() {
 	})
 	relayAdminClient := server.NewRelayAdminClientFromEnv()
 	botModelConfigHandler.SetRelayUsageClient(relayAdminClient)
-	agentHandler.SetRelayUsageDependencies(relayAdminClient, func(uid int64) (server.DeviceModelStatus, bool) {
-		return server.LatestDeviceModelStatus(hub, uid)
+	agentHandler.SetRelayUsageDependencies(relayAdminClient, func(uid int64, bodyID string) (server.DeviceModelStatus, bool) {
+		if strings.TrimSpace(bodyID) == "" {
+			return server.LatestDeviceModelStatus(hub, uid)
+		}
+		return server.DeviceModelStatusForBody(hub, uid, bodyID)
 	})
 	relayCommercialPublicEnabled := envBool("CATS_RELAY_COMMERCIAL_ENABLED")
 	relayCommercialTestUIDs := envInt64Set("CATS_RELAY_COMMERCIAL_TEST_UIDS")
@@ -478,6 +482,7 @@ func main() {
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))
 	mux.HandleFunc("/api/projects/topic", authWithDB(projectHandler.HandleProjectTopic))
+	mux.HandleFunc("/api/artifacts", jwtAuthWithDB(cloudArtifactHandler.HandleList))
 	mux.HandleFunc("/api/agents", jwtAuthWithDB(agentHandler.HandleListAgents))
 	mux.HandleFunc("/api/agents/quota", jwtAuthWithDB(agentHandler.HandleAgentQuota))
 	mux.HandleFunc("/api/agents/open", jwtAuthWithDB(agentHandler.HandleOpenAgent))

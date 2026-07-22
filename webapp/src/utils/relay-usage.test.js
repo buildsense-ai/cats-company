@@ -79,6 +79,24 @@ describe('relay usage labels', () => {
     });
   });
 
+  test('keeps the applied reasoning effort with a friend-visible Agent model', () => {
+    expect(resolveConversationModelDisplay('MiniMax-M2.7', {
+      isBot: true,
+      state: 'ready',
+      summary: {
+        source: 'relay',
+        status: 'normal',
+        model: 'gpt-5.6-sol',
+        reasoning_effort: 'xhigh',
+        remaining_percent: 68,
+      },
+    })).toEqual({
+      model: 'gpt-5.6-sol',
+      meta: 'xhigh · 剩余 68%',
+      title: 'gpt-5.6-sol；推理强度 xhigh；使用该虚拟员工所属账号的共享额度，剩余 68%',
+    });
+  });
+
   test('makes a missing Agent status visible instead of leaving a blank quota area', () => {
     expect(resolveConversationModelDisplay('MiniMax-M2.7', {
       isBot: true,

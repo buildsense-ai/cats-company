@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -24,6 +25,7 @@ func raceTestProvider(id, generationURL, editURL string, operations ...imageProv
 		apiKey:        id + "-secret",
 		client:        &http.Client{Timeout: 2 * time.Second},
 		operations:    capabilities,
+		editTransport: imageEditTransportJSONDataURL,
 	}
 }
 
@@ -66,6 +68,9 @@ func TestImageRaceFirstValidCompletedImageWins(t *testing.T) {
 	if rr.Header().Get("X-CatsCo-Image-Provider") != "fast" || rr.Body.String() != testImageResponse(t, 22) {
 		t.Fatalf("unexpected winner: provider=%q body=%s", rr.Header().Get("X-CatsCo-Image-Provider"), rr.Body.String())
 	}
+	if rr.Header().Get("X-CatsCo-Image-Total-Attempts") != "2" {
+		t.Fatalf("both dispatched attempts were not counted: %q", rr.Header().Get("X-CatsCo-Image-Total-Attempts"))
+	}
 	waitForScriptedCancellation(t, slow)
 	_, _, fastPayloads := fast.Snapshot()
 	if _, sentAsync := fastPayloads[0]["async"]; sentAsync {
@@ -100,6 +105,25 @@ func TestImageRaceIgnoresFastErrorsAndIncompleteSuccess(t *testing.T) {
 	}
 }
 
+func TestImageRaceRejectsUnverifiedURLAndWaitsForCompletedImage(t *testing.T) {
+	urlOnly := newScriptedImageUpstream(t, scriptedImageStep{
+		body: `{"data":[{"url":"https://cdn.example.test/upstream-error.html"}]}`,
+	})
+	winner := newScriptedImageUpstream(t, scriptedImageStep{
+		delay: 30 * time.Millisecond,
+		body:  testImageResponse(t, 32),
+	})
+	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
+		raceTestProvider("url-only", urlOnly.URL(), "", imageOperationGeneration),
+		raceTestProvider("winner", winner.URL(), "", imageOperationGeneration),
+	}, ImageGenerationProxyOptions{RaceDeadline: time.Second})
+
+	rr := runRaceGeneration(t, handler, `{"prompt":"test"}`)
+	if rr.Code != http.StatusOK || rr.Header().Get("X-CatsCo-Image-Provider") != "winner" {
+		t.Fatalf("status=%d provider=%q body=%s", rr.Code, rr.Header().Get("X-CatsCo-Image-Provider"), rr.Body.String())
+	}
+}
+
 func TestImageRaceCancelsHangingLoser(t *testing.T) {
 	hanging := newScriptedImageUpstream(t, scriptedImageStep{waitForCancel: true})
 	winner := newScriptedImageUpstream(t, scriptedImageStep{delay: 20 * time.Millisecond, body: testImageResponse(t, 41)})
@@ -115,38 +139,108 @@ func TestImageRaceCancelsHangingLoser(t *testing.T) {
 	waitForScriptedCancellation(t, hanging)
 }
 
-func TestImageRaceFiltersProvidersByEditCapability(t *testing.T) {
-	generationOnly := newScriptedImageUpstream(t, scriptedImageStep{body: testImageResponse(t, 51)})
-	editCapable := newScriptedImageUpstream(t, scriptedImageStep{body: testImageResponse(t, 52)})
-	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
-		raceTestProvider("generation-only", generationOnly.URL(), "", imageOperationGeneration),
-		raceTestProvider("edit-capable", editCapable.URL(), editCapable.URL(), imageOperationGeneration, imageOperationEdit),
-	}, ImageGenerationProxyOptions{RaceDeadline: time.Second})
+func TestImageEditRaceUsesJSONAndMultipartTransportsConcurrently(t *testing.T) {
+	jsonStarted := make(chan struct{}, 1)
+	jsonCancelled := make(chan struct{}, 1)
+	jsonUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		jsonStarted <- struct{}{}
+		<-r.Context().Done()
+		jsonCancelled <- struct{}{}
+	}))
+	t.Cleanup(jsonUpstream.Close)
+	type multipartCapture struct {
+		prompt     string
+		model      string
+		files      int
+		fileBytes  [][]byte
+		authorized bool
+	}
+	captures := make(chan multipartCapture, 1)
+	multipartUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(20 << 20); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		capture := multipartCapture{
+			prompt:     r.FormValue("prompt"),
+			model:      r.FormValue("model"),
+			files:      len(r.MultipartForm.File["image"]),
+			authorized: r.Header.Get("Authorization") == "Bearer multipart-secret",
+		}
+		for _, header := range r.MultipartForm.File["image"] {
+			file, err := header.Open()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			contents, err := io.ReadAll(file)
+			_ = file.Close()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			capture.fileBytes = append(capture.fileBytes, contents)
+		}
+		select {
+		case <-jsonStarted:
+		case <-time.After(time.Second):
+			http.Error(w, "JSON provider did not start concurrently", http.StatusGatewayTimeout)
+			return
+		}
+		captures <- capture
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testImageResponse(t, 52)))
+	}))
+	t.Cleanup(multipartUpstream.Close)
+
+	jsonProvider := raceTestProvider("code-newcli", jsonUpstream.URL+"/v1/images/generations", jsonUpstream.URL+"/v1/images/edits", imageOperationGeneration, imageOperationEdit)
+	multipartProvider := raceTestProvider("pptoken", multipartUpstream.URL+"/v1/images/generations", multipartUpstream.URL+"/v1/images/edits", imageOperationGeneration, imageOperationEdit)
+	multipartProvider.apiKey = "multipart-secret"
+	multipartProvider.editTransport = imageEditTransportMultipart
+	handler := newImageGenerationProxyHandlerWithProviders(
+		[]imageUpstreamProvider{jsonProvider, multipartProvider},
+		ImageGenerationProxyOptions{RaceDeadline: time.Second},
+	)
 
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/images/edits",
-		strings.NewReader(imageEditBody("preserve identity", testPNGDataURL(61))),
+		strings.NewReader(imageEditBody(
+			"preserve identity",
+			testPNGDataURL(61),
+			testPNGDataURL(62),
+			testPNGDataURL(63),
+		)),
 	)
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	handler.HandleEdit(rr, req)
-
-	if rr.Code != http.StatusOK || rr.Header().Get("X-CatsCo-Image-Provider") != "edit-capable" {
+	if rr.Code != http.StatusOK || rr.Header().Get("X-CatsCo-Image-Provider") != "pptoken" {
 		t.Fatalf("status=%d provider=%q body=%s", rr.Code, rr.Header().Get("X-CatsCo-Image-Provider"), rr.Body.String())
 	}
-	generationRequests, _, _ := generationOnly.Snapshot()
-	editRequests, _, _ := editCapable.Snapshot()
-	if generationRequests != 0 || editRequests != 1 {
-		t.Fatalf("generation-only requests=%d edit-capable requests=%d", generationRequests, editRequests)
+	capture := <-captures
+	if capture.prompt != "preserve identity" || capture.model != "gpt-image-2" || capture.files != 3 || !capture.authorized {
+		t.Fatalf("unexpected multipart request: %#v", capture)
+	}
+	for index, contents := range capture.fileBytes {
+		if !imageBytesMatchMediaType(contents, "image/png") {
+			t.Fatalf("multipart reference %d is not an image", index+1)
+		}
+	}
+	select {
+	case <-jsonCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("losing JSON upstream was not cancelled")
 	}
 }
 
-func TestImageRaceRetriesRoundsUntilCompletedImage(t *testing.T) {
-	relayA := newScriptedImageUpstream(t,
-		scriptedImageStep{status: http.StatusServiceUnavailable, body: `{"error":"temporary"}`},
-		scriptedImageStep{status: http.StatusServiceUnavailable, body: `{"error":"temporary"}`},
-	)
+func TestImageRaceProviderLanesRetryIndependently(t *testing.T) {
+	relayA := newScriptedImageUpstream(t, scriptedImageStep{waitForCancel: true})
 	relayB := newScriptedImageUpstream(t,
 		scriptedImageStep{status: http.StatusBadGateway, body: `{"error":"temporary"}`},
 		scriptedImageStep{body: testImageResponse(t, 71)},
@@ -162,30 +256,99 @@ func TestImageRaceRetriesRoundsUntilCompletedImage(t *testing.T) {
 	}
 	aRequests, _, _ := relayA.Snapshot()
 	bRequests, _, _ := relayB.Snapshot()
-	if aRequests < 1 || aRequests > 2 || bRequests != 2 {
+	if aRequests != 1 || bRequests != 2 {
 		t.Fatalf("relay-a requests=%d relay-b requests=%d", aRequests, bRequests)
 	}
+	waitForScriptedCancellation(t, relayA)
 }
 
-func TestImageRaceHasNoFixedLowRetryLimit(t *testing.T) {
-	temporary := scriptedImageStep{status: http.StatusServiceUnavailable, body: `{"error":"temporary"}`}
-	relayA := newScriptedImageUpstream(t, temporary, temporary, temporary, temporary)
-	relayB := newScriptedImageUpstream(t, temporary, temporary, temporary, scriptedImageStep{body: testImageResponse(t, 72)})
+func TestImageRaceCapsAttemptsPerProvider(t *testing.T) {
+	rateLimited := scriptedImageStep{status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`}
+	relayA := newScriptedImageUpstream(t, rateLimited, rateLimited, scriptedImageStep{body: testImageResponse(t, 72)})
+	relayB := newScriptedImageUpstream(t, rateLimited, rateLimited, scriptedImageStep{body: testImageResponse(t, 73)})
 	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
 		raceTestProvider("relay-a", relayA.URL(), "", imageOperationGeneration),
 		raceTestProvider("relay-b", relayB.URL(), "", imageOperationGeneration),
-	}, ImageGenerationProxyOptions{RaceDeadline: time.Second, RetryBackoff: time.Millisecond})
+	}, ImageGenerationProxyOptions{
+		RaceDeadline:           time.Second,
+		RetryBackoff:           time.Millisecond,
+		MaxAttemptsPerProvider: 2,
+	})
 
-	rr := runRaceGeneration(t, handler, `{"prompt":"fourth round"}`)
-	if rr.Code != http.StatusOK || rr.Header().Get("X-CatsCo-Image-Round") != "4" {
+	rr := runRaceGeneration(t, handler, `{"prompt":"bounded retries"}`)
+	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d round=%q body=%s", rr.Code, rr.Header().Get("X-CatsCo-Image-Round"), rr.Body.String())
+	}
+	aRequests, _, _ := relayA.Snapshot()
+	bRequests, _, _ := relayB.Snapshot()
+	if aRequests != 2 || bRequests != 2 || rr.Header().Get("X-CatsCo-Image-Total-Attempts") != "4" {
+		t.Fatalf("attempts relay-a=%d relay-b=%d total=%q", aRequests, bRequests, rr.Header().Get("X-CatsCo-Image-Total-Attempts"))
+	}
+}
+
+func TestImageRaceRetriesOnlyExplicitRateLimits(t *testing.T) {
+	tests := []struct {
+		name      string
+		result    imageAttemptResult
+		retryable bool
+	}{
+		{name: "429", result: imageAttemptResult{category: imageAttemptTransient, status: http.StatusTooManyRequests}, retryable: true},
+		{name: "network error", result: imageAttemptResult{category: imageAttemptTransient, reason: "network_error"}},
+		{name: "timeout", result: imageAttemptResult{category: imageAttemptTransient, reason: "timeout"}},
+		{name: "5xx", result: imageAttemptResult{category: imageAttemptTransient, status: http.StatusServiceUnavailable}, retryable: true},
+		{name: "invalid 200", result: imageAttemptResult{category: imageAttemptTransient, status: http.StatusOK, reason: "invalid_completed_image"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldRetryImageAttempt(tc.result); got != tc.retryable {
+				t.Fatalf("retryable=%t, want %t", got, tc.retryable)
+			}
+		})
+	}
+}
+
+func TestImageRaceDoesNotRetryAmbiguousProviderOutcomes(t *testing.T) {
+	tests := []struct {
+		name          string
+		first         scriptedImageStep
+		clientTimeout time.Duration
+	}{
+		{name: "timeout", first: scriptedImageStep{delay: 50 * time.Millisecond, body: testImageResponse(t, 74)}, clientTimeout: 10 * time.Millisecond},
+		{name: "invalid 200", first: scriptedImageStep{body: `{"data":[{"b64_json":"not-base64"}]}`}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ambiguous := newScriptedImageUpstream(t, tc.first, scriptedImageStep{body: testImageResponse(t, 75)})
+			rejected := newScriptedImageUpstream(t, scriptedImageStep{status: http.StatusBadRequest, body: `{"error":"rejected"}`})
+			provider := raceTestProvider("ambiguous", ambiguous.URL(), "", imageOperationGeneration)
+			if tc.clientTimeout > 0 {
+				provider.client.Timeout = tc.clientTimeout
+			}
+			handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
+				provider,
+				raceTestProvider("rejected", rejected.URL(), "", imageOperationGeneration),
+			}, ImageGenerationProxyOptions{
+				RaceDeadline:           time.Second,
+				RetryBackoff:           time.Millisecond,
+				MaxAttemptsPerProvider: 2,
+			})
+
+			rr := runRaceGeneration(t, handler, `{"prompt":"do not duplicate"}`)
+			if rr.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+			}
+			requests, _, _ := ambiguous.Snapshot()
+			if requests != 1 {
+				t.Fatalf("ambiguous provider requests=%d, want 1", requests)
+			}
+		})
 	}
 }
 
 func TestImageRaceExcludesProviderAfterAuthenticationFailure(t *testing.T) {
 	unauthorized := newScriptedImageUpstream(t, scriptedImageStep{status: http.StatusUnauthorized, body: `{"error":"bad key"}`})
 	recovering := newScriptedImageUpstream(t,
-		scriptedImageStep{status: http.StatusServiceUnavailable, body: `{"error":"temporary"}`},
+		scriptedImageStep{status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`},
 		scriptedImageStep{body: testImageResponse(t, 73)},
 	)
 	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
@@ -229,8 +392,8 @@ func TestImageRaceStopsWhenAllProvidersRejectRequest(t *testing.T) {
 }
 
 func TestImageRaceStopsStartingRoundsAfterClientCancellation(t *testing.T) {
-	relayA := newScriptedImageUpstream(t)
-	relayB := newScriptedImageUpstream(t)
+	relayA := newScriptedImageUpstream(t, scriptedImageStep{waitForCancel: true})
+	relayB := newScriptedImageUpstream(t, scriptedImageStep{waitForCancel: true})
 	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
 		raceTestProvider("relay-a", relayA.URL(), "", imageOperationGeneration),
 		raceTestProvider("relay-b", relayB.URL(), "", imageOperationGeneration),
@@ -273,8 +436,8 @@ func TestImageRaceStopsStartingRoundsAfterClientCancellation(t *testing.T) {
 }
 
 func TestImageRaceReturnsRaceExhaustedAtDeadline(t *testing.T) {
-	relayA := newScriptedImageUpstream(t)
-	relayB := newScriptedImageUpstream(t)
+	relayA := newScriptedImageUpstream(t, scriptedImageStep{waitForCancel: true})
+	relayB := newScriptedImageUpstream(t, scriptedImageStep{waitForCancel: true})
 	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
 		raceTestProvider("relay-a", relayA.URL(), "", imageOperationGeneration),
 		raceTestProvider("relay-b", relayB.URL(), "", imageOperationGeneration),

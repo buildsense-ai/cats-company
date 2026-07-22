@@ -69,6 +69,34 @@ function modelQuotaTone(quota) {
   return '';
 }
 
+function activeCloudSelection(config) {
+  if (!config) return null;
+  if (config.status === 'pending' && config.desired) return config.desired;
+  if (config.status === 'failed') return config.applied || null;
+  return config.applied || config.desired || null;
+}
+
+function resolveModelHeaderDisplay(config, fallbackDisplay) {
+  const selection = activeCloudSelection(config);
+  if (!selection || selection.kind === 'local') return fallbackDisplay;
+  if (selection.kind === 'custom') {
+    const model = config?.custom?.model || '自定义模型';
+    return {
+      model,
+      meta: '自备模型',
+      title: `${model}；该虚拟员工使用自备模型，不消耗 CatsCo 共享额度`,
+    };
+  }
+
+  const modelID = selection.model_id || '';
+  const reasoningEffort = selection.reasoning_effort || '';
+  return {
+    model: modelID || fallbackDisplay?.model || '未知模型',
+    meta: reasoningEffort,
+    title: `${modelID || fallbackDisplay?.model || '未知模型'}${reasoningEffort ? `；推理强度 ${reasoningEffort}` : ''}`,
+  };
+}
+
 function reasoningEffortLabel(effort) {
   const labels = {
     none: 'none · 关闭推理',
@@ -251,9 +279,13 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
       : modelConfig?.quota_error || '');
   const feedbackIsError = Boolean(error || modelApplyError);
 
-  const display = useMemo(
+  const fallbackDisplay = useMemo(
     () => resolveConversationModelDisplay(currentModelName, agentModelState),
     [agentModelState, currentModelName],
+  );
+  const display = useMemo(
+    () => resolveModelHeaderDisplay(modelConfig, fallbackDisplay),
+    [fallbackDisplay, modelConfig],
   );
   if (!display) return null;
 
@@ -322,13 +354,24 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
     if (next && canManageModel) loadConfig(activeBotUID, true);
   };
 
-  const headerQuota = formatRelayUsagePill(agentModelState?.summary, {
-    customLabel: '自备模型',
-    showModel: false,
-  }) || display.meta;
-  const headerTone = agentModelState?.summary
-    ? relayUsageTone(agentModelState.summary)
-    : agentModelState?.isBot && agentModelState.state === 'unavailable' ? 'muted' : '';
+  const displayedSelection = activeCloudSelection(modelConfig);
+  const displayedCatalogModel = displayedSelection?.kind === 'catalog'
+    ? modelConfig?.models?.find((model) => model.id === displayedSelection.model_id)
+    : null;
+  const cloudSelectionActive = displayedSelection && displayedSelection.kind !== 'local';
+  const headerQuota = cloudSelectionActive
+    ? displayedCatalogModel?.quota
+      ? modelQuotaLabel(displayedCatalogModel.quota, 'loaded')
+      : display.meta
+    : formatRelayUsagePill(agentModelState?.summary, {
+      customLabel: '自备模型',
+      showModel: false,
+    }) || display.meta;
+  const headerTone = cloudSelectionActive
+    ? modelQuotaTone(displayedCatalogModel?.quota)
+    : agentModelState?.summary
+      ? relayUsageTone(agentModelState.summary)
+      : agentModelState?.isBot && agentModelState.state === 'unavailable' ? 'muted' : '';
   const applyState = runtimeUnavailable
     ? '暂时无法切换'
     : savingKey

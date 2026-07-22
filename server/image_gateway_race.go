@@ -13,9 +13,12 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"mime/multipart"
 	"net/http"
-	"net/url"
+	"net/textproto"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -38,11 +41,6 @@ type imageAttemptResult struct {
 	duration   time.Duration
 }
 
-type imageRaceRoundResult struct {
-	winner  *imageAttemptResult
-	results []imageAttemptResult
-}
-
 type imageRaceOutcome string
 
 const (
@@ -54,10 +52,18 @@ const (
 )
 
 type imageRaceExecution struct {
-	outcome     imageRaceOutcome
-	winner      *imageAttemptResult
-	winnerRound int
-	rounds      int
+	outcome          imageRaceOutcome
+	winner           *imageAttemptResult
+	winnerAttempt    int
+	totalAttempts    int
+	providerAttempts map[string]int
+}
+
+type imageProviderAttemptEvent struct {
+	attempt  int
+	result   imageAttemptResult
+	started  bool
+	terminal bool
 }
 
 var errAsyncImageResponse = errors.New("asynchronous image response is not a completed image")
@@ -76,108 +82,56 @@ func (h *ImageGenerationProxyHandler) eligibleImageProviders(operation imageProv
 	return providers
 }
 
-func (h *ImageGenerationProxyHandler) runImageRaceRound(
+func (h *ImageGenerationProxyHandler) runImageProviderLane(
 	ctx context.Context,
 	payload map[string]interface{},
 	operation imageProviderOperation,
-	providers []imageUpstreamProvider,
-	roundNumber int,
+	provider imageUpstreamProvider,
+	start <-chan struct{},
+	ready *sync.WaitGroup,
+	events chan<- imageProviderAttemptEvent,
 	observer func(int, imageAttemptResult),
-) imageRaceRoundResult {
-	roundContext, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	results := make(chan imageAttemptResult, len(providers))
-	for _, provider := range providers {
-		provider := provider
-		go func() {
-			result := h.callImageProvider(roundContext, provider, payload, operation)
-			if observer != nil {
-				observer(roundNumber, result)
-			}
-			results <- result
-		}()
+) {
+	ready.Done()
+	select {
+	case <-start:
+	case <-ctx.Done():
+		return
 	}
-
-	round := imageRaceRoundResult{results: make([]imageAttemptResult, 0, len(providers))}
-	for range providers {
+	for attempt := 1; attempt <= h.maxAttemptsPerProvider; attempt++ {
+		if ctx.Err() != nil {
+			return
+		}
 		select {
-		case result := <-results:
-			round.results = append(round.results, result)
-			if result.category == imageAttemptSuccess {
-				winner := result
-				round.winner = &winner
-				cancel()
-				return round
-			}
+		case events <- imageProviderAttemptEvent{
+			attempt: attempt,
+			result:  imageAttemptResult{providerID: provider.id},
+			started: true,
+		}:
 		case <-ctx.Done():
-			return round
-		}
-	}
-	return round
-}
-
-func (h *ImageGenerationProxyHandler) runImageRace(
-	ctx context.Context,
-	payload map[string]interface{},
-	operation imageProviderOperation,
-	observer func(int, imageAttemptResult),
-) imageRaceExecution {
-	execution := imageRaceExecution{}
-	excluded := make(map[string]struct{})
-	requestRejected := make(map[string]struct{})
-	totalProviders := len(h.eligibleImageProviders(operation, nil))
-
-	for {
-		if ctx.Err() != nil {
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				execution.outcome = imageRaceExhausted
-			} else {
-				execution.outcome = imageRaceCancelled
-			}
-			return execution
+			return
 		}
 
-		providers := h.eligibleImageProviders(operation, excluded)
-		if len(providers) == 0 {
-			if totalProviders > 0 && len(requestRejected) == totalProviders {
-				execution.outcome = imageRaceRequestRejected
-			} else {
-				execution.outcome = imageRaceProvidersUnavailable
-			}
-			return execution
+		result := h.callImageProvider(ctx, provider, payload, operation)
+		if observer != nil {
+			observer(attempt, result)
+		}
+		terminal := result.category == imageAttemptSuccess ||
+			result.category == imageAttemptProviderFatal ||
+			result.category == imageAttemptRequestFatal ||
+			!shouldRetryImageAttempt(result) ||
+			attempt >= h.maxAttemptsPerProvider ||
+			ctx.Err() != nil
+		select {
+		case events <- imageProviderAttemptEvent{attempt: attempt, result: result, terminal: terminal}:
+		case <-ctx.Done():
+			return
+		}
+		if terminal {
+			return
 		}
 
-		execution.rounds++
-		round := h.runImageRaceRound(ctx, payload, operation, providers, execution.rounds, observer)
-		for _, result := range round.results {
-			switch result.category {
-			case imageAttemptProviderFatal:
-				excluded[result.providerID] = struct{}{}
-			case imageAttemptRequestFatal:
-				excluded[result.providerID] = struct{}{}
-				requestRejected[result.providerID] = struct{}{}
-			}
-		}
-		if round.winner != nil {
-			execution.outcome = imageRaceCompleted
-			execution.winner = round.winner
-			execution.winnerRound = execution.rounds
-			return execution
-		}
-		if len(h.eligibleImageProviders(operation, excluded)) == 0 {
-			if totalProviders > 0 && len(requestRejected) == totalProviders {
-				execution.outcome = imageRaceRequestRejected
-			} else {
-				execution.outcome = imageRaceProvidersUnavailable
-			}
-			return execution
-		}
-		if ctx.Err() != nil {
-			continue
-		}
-		backoff := imageRaceRoundBackoff(h.retryBackoff, execution.rounds)
-		timer := time.NewTimer(backoff)
+		timer := time.NewTimer(imageRaceRoundBackoff(h.retryBackoff, attempt))
 		select {
 		case <-timer.C:
 		case <-ctx.Done():
@@ -187,8 +141,82 @@ func (h *ImageGenerationProxyHandler) runImageRace(
 				default:
 				}
 			}
+			return
 		}
 	}
+}
+
+func shouldRetryImageAttempt(result imageAttemptResult) bool {
+	return result.category == imageAttemptTransient &&
+		(result.status == http.StatusTooManyRequests || result.status >= http.StatusInternalServerError)
+}
+
+func (h *ImageGenerationProxyHandler) runImageRace(
+	ctx context.Context,
+	payload map[string]interface{},
+	operation imageProviderOperation,
+	observer func(int, imageAttemptResult),
+) imageRaceExecution {
+	providers := h.eligibleImageProviders(operation, nil)
+	execution := imageRaceExecution{providerAttempts: make(map[string]int, len(providers))}
+	if len(providers) == 0 {
+		execution.outcome = imageRaceProvidersUnavailable
+		return execution
+	}
+
+	raceContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	events := make(chan imageProviderAttemptEvent, len(providers)*2)
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	ready.Add(len(providers))
+	for _, provider := range providers {
+		provider := provider
+		go h.runImageProviderLane(raceContext, payload, operation, provider, start, &ready, events, observer)
+	}
+	ready.Wait()
+	close(start)
+
+	activeProviders := len(providers)
+	requestRejected := 0
+	for activeProviders > 0 {
+		select {
+		case event := <-events:
+			if event.started {
+				execution.totalAttempts++
+				execution.providerAttempts[event.result.providerID] = event.attempt
+				continue
+			}
+			if event.result.category == imageAttemptSuccess {
+				winner := event.result
+				execution.outcome = imageRaceCompleted
+				execution.winner = &winner
+				execution.winnerAttempt = event.attempt
+				cancel()
+				return execution
+			}
+			if event.terminal {
+				activeProviders--
+				if event.result.category == imageAttemptRequestFatal {
+					requestRejected++
+				}
+			}
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				execution.outcome = imageRaceExhausted
+			} else {
+				execution.outcome = imageRaceCancelled
+			}
+			return execution
+		}
+	}
+
+	if requestRejected == len(providers) {
+		execution.outcome = imageRaceRequestRejected
+	} else {
+		execution.outcome = imageRaceProvidersUnavailable
+	}
+	return execution
 }
 
 func imageRaceRoundBackoff(base time.Duration, completedRounds int) time.Duration {
@@ -214,32 +242,13 @@ func (h *ImageGenerationProxyHandler) callImageProvider(
 	startedAt := time.Now()
 	result := imageAttemptResult{providerID: provider.id, category: imageAttemptTransient}
 
-	providerPayload := make(map[string]interface{}, len(payload)+1)
-	for key, value := range payload {
-		providerPayload[key] = value
-	}
-	providerPayload["model"] = provider.model
-	providerPayload["n"] = 1
-	delete(providerPayload, "async")
-
-	body, err := json.Marshal(providerPayload)
+	request, err := buildImageProviderRequest(ctx, provider, payload, operation)
 	if err != nil {
 		result.category = imageAttemptRequestFatal
 		result.reason = "request_encode_failed"
 		result.duration = time.Since(startedAt)
 		return result
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.endpoint(operation), bytes.NewReader(body))
-	if err != nil {
-		result.category = imageAttemptProviderFatal
-		result.reason = "request_build_failed"
-		result.duration = time.Since(startedAt)
-		return result
-	}
-	request.Header.Set("Authorization", "Bearer "+provider.apiKey)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "cats-company-image-proxy/2.0")
 
 	response, err := provider.client.Do(request)
 	if err != nil {
@@ -287,6 +296,166 @@ func (h *ImageGenerationProxyHandler) callImageProvider(
 	return result
 }
 
+func buildImageProviderRequest(
+	ctx context.Context,
+	provider imageUpstreamProvider,
+	payload map[string]interface{},
+	operation imageProviderOperation,
+) (*http.Request, error) {
+	providerPayload := make(map[string]interface{}, len(payload)+1)
+	for key, value := range payload {
+		providerPayload[key] = value
+	}
+	providerPayload["model"] = provider.model
+	providerPayload["n"] = 1
+	delete(providerPayload, "async")
+
+	var body io.Reader
+	contentType := "application/json"
+	if operation == imageOperationEdit && provider.editTransport == imageEditTransportMultipart {
+		encoded, multipartContentType, err := encodeMultipartImageEdit(providerPayload)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(encoded)
+		contentType = multipartContentType
+	} else {
+		encoded, err := json.Marshal(providerPayload)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(encoded)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, provider.endpoint(operation), body)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Authorization", "Bearer "+provider.apiKey)
+	request.Header.Set("Content-Type", contentType)
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", "cats-company-image-proxy/2.0")
+	return request, nil
+}
+
+func encodeMultipartImageEdit(payload map[string]interface{}) ([]byte, string, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	writeField := func(name, value string) error {
+		if value == "" {
+			return nil
+		}
+		return writer.WriteField(name, value)
+	}
+
+	for _, name := range []string{
+		"model",
+		"prompt",
+		"size",
+		"quality",
+		"background",
+		"output_format",
+		"output_compression",
+		"moderation",
+		"input_fidelity",
+	} {
+		value, exists := payload[name]
+		if !exists {
+			continue
+		}
+		fieldValue, err := imageFormFieldString(value)
+		if err != nil {
+			return nil, "", fmt.Errorf("multipart field %s: %w", name, err)
+		}
+		if name == "output_format" && fieldValue == "jpg" {
+			fieldValue = "jpeg"
+		}
+		if err := writeField(name, fieldValue); err != nil {
+			return nil, "", err
+		}
+	}
+	if err := writeField("n", "1"); err != nil {
+		return nil, "", err
+	}
+
+	images, ok := payload["images"].([]interface{})
+	if !ok || len(images) == 0 {
+		return nil, "", errors.New("multipart image edit requires reference images")
+	}
+	for index, rawImage := range images {
+		imageObject, ok := rawImage.(map[string]interface{})
+		if !ok {
+			return nil, "", fmt.Errorf("reference image %d is invalid", index+1)
+		}
+		dataURL, ok := imageObject["image_url"].(string)
+		if !ok {
+			return nil, "", fmt.Errorf("reference image %d has no image_url", index+1)
+		}
+		mediaType, contents, extension, err := decodeMultipartReference(dataURL)
+		if err != nil {
+			return nil, "", fmt.Errorf("reference image %d: %w", index+1, err)
+		}
+		headers := make(textproto.MIMEHeader)
+		headers.Set("Content-Disposition", fmt.Sprintf(
+			`form-data; name="image"; filename="reference-%02d.%s"`,
+			index+1,
+			extension,
+		))
+		headers.Set("Content-Type", mediaType)
+		part, err := writer.CreatePart(headers)
+		if err != nil {
+			return nil, "", err
+		}
+		if _, err := part.Write(contents); err != nil {
+			return nil, "", err
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		return nil, "", err
+	}
+	return body.Bytes(), writer.FormDataContentType(), nil
+}
+
+func imageFormFieldString(value interface{}) (string, error) {
+	switch typed := value.(type) {
+	case string:
+		return typed, nil
+	case json.Number:
+		return typed.String(), nil
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64), nil
+	case int:
+		return strconv.Itoa(typed), nil
+	default:
+		return "", fmt.Errorf("unsupported value type %T", value)
+	}
+}
+
+func decodeMultipartReference(value string) (string, []byte, string, error) {
+	comma := strings.IndexByte(value, ',')
+	if comma < 0 {
+		return "", nil, "", errors.New("invalid data URL")
+	}
+	var mediaType string
+	var extension string
+	switch value[:comma] {
+	case "data:image/png;base64":
+		mediaType, extension = "image/png", "png"
+	case "data:image/jpeg;base64":
+		mediaType, extension = "image/jpeg", "jpg"
+	case "data:image/webp;base64":
+		mediaType, extension = "image/webp", "webp"
+	default:
+		return "", nil, "", errors.New("unsupported data URL media type")
+	}
+	contents, err := base64.StdEncoding.Strict().DecodeString(value[comma+1:])
+	if err != nil || len(contents) == 0 {
+		return "", nil, "", errors.New("invalid base64 image")
+	}
+	return mediaType, contents, extension, nil
+}
+
 func readLimitedImageResponse(reader io.Reader, maxBytes int64) ([]byte, error) {
 	if maxBytes <= 0 {
 		maxBytes = defaultImageGenerationMaxResponseBytes
@@ -328,7 +497,6 @@ func validateCompletedImageResponse(body []byte, maxImageBytes int64) error {
 		Status string `json:"status"`
 		Data   []struct {
 			B64JSON string `json:"b64_json"`
-			URL     string `json:"url"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
@@ -348,29 +516,11 @@ func validateCompletedImageResponse(body []byte, maxImageBytes int64) error {
 				return nil
 			}
 		}
-		if validateGeneratedImageURL(item.URL) == nil {
-			return nil
-		}
 	}
 	if strings.TrimSpace(envelope.TaskID) != "" {
 		return errAsyncImageResponse
 	}
-	return errors.New("response does not contain a completed PNG, JPEG, WebP, or image URL")
-}
-
-func validateGeneratedImageURL(value string) error {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return errors.New("image URL is empty")
-	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil || parsed.Host == "" || parsed.User != nil {
-		return errors.New("image URL is invalid")
-	}
-	if parsed.Scheme != "https" {
-		return errors.New("image URL must use HTTPS")
-	}
-	return nil
+	return errors.New("response does not contain a completed PNG, JPEG, or WebP image")
 }
 
 func validateGeneratedImageBytes(contents []byte) error {
