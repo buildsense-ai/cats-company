@@ -2,6 +2,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import {
+  canOpenCloudArtifacts,
   describeModelApplyError,
   describeModelConfigRequestError,
   LocalAssistantBar,
@@ -73,6 +74,16 @@ describe('resolveDisplayedActiveAgent', () => {
   });
 });
 
+describe('cloud artifact action visibility', () => {
+  it('is available only in a private chat with a capable agent', () => {
+    const doubao = { uid: 440, cloud_artifacts_enabled: true };
+    expect(canOpenCloudArtifacts({ topicId: 'p2p_7_440', isGroup: false }, doubao)).toBe(true);
+    expect(canOpenCloudArtifacts({ topicId: 'grp_8', isGroup: true }, doubao)).toBe(false);
+    expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, { uid: 441 })).toBe(false);
+    expect(canOpenCloudArtifacts(null, doubao)).toBe(false);
+  });
+});
+
 describe('LocalAssistantBar model selector', () => {
   let container;
   let root;
@@ -106,6 +117,18 @@ describe('LocalAssistantBar model selector', () => {
       await Promise.resolve();
     });
   };
+
+  it('renders the generated-artifacts button only when the parent enables it', async () => {
+    const onOpenCloudArtifacts = vi.fn();
+    await renderBar({ onOpenCloudArtifacts });
+    const button = container.querySelector('button[aria-label="打开生成物"]');
+    expect(button).toBeTruthy();
+    await act(async () => button.click());
+    expect(onOpenCloudArtifacts).toHaveBeenCalledTimes(1);
+
+    await renderBar({ onOpenCloudArtifacts: undefined });
+    expect(container.querySelector('button[aria-label="打开生成物"]')).toBeNull();
+  });
 
   it('keeps the current model and quota together in the header', async () => {
     await renderBar();

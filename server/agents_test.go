@@ -162,6 +162,45 @@ func TestHandleListAgentsIncludesOwnedAndFriendBots(t *testing.T) {
 	}
 }
 
+func TestHandleListAgentsMarksConfiguredCloudArtifactAgents(t *testing.T) {
+	t.Setenv("CATSCO_CLOUD_ARTIFACT_AGENT_UIDS", "usr42, 43; invalid 0 -1")
+	store := &agentTestStore{
+		ownerBots: []map[string]interface{}{
+			{"id": int64(42), "username": "owner-agent"},
+			{"id": int64(44), "username": "ordinary-agent"},
+		},
+		friends: []*types.User{
+			{ID: 43, Username: "friend-agent", AccountType: types.AccountBot},
+		},
+	}
+	handler := NewAgentHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleListAgents(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Agents []AgentSummary `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	enabled := make(map[int64]bool)
+	for _, agent := range body.Agents {
+		enabled[agent.UID] = agent.CloudArtifactsEnabled
+	}
+	if !enabled[42] || !enabled[43] {
+		t.Fatalf("configured agents missing capability: %+v", enabled)
+	}
+	if enabled[44] {
+		t.Fatalf("ordinary agent unexpectedly has capability: %+v", enabled)
+	}
+}
+
 func TestHandleListAgentsDoesNotTreatGenericBotUIDConnectionAsRuntimeOnline(t *testing.T) {
 	store := &agentTestStore{
 		ownerBots: []map[string]interface{}{

@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ type AgentHandler struct {
 	hub                       *Hub
 	relayAdmin                *RelayAdminClient
 	deviceModelStatusResolver func(uid int64, bodyID string) (DeviceModelStatus, bool)
+	cloudArtifactAgentUIDs    map[int64]struct{}
 	quotaMu                   sync.Mutex
 	quotaCache                map[string]agentQuotaCacheEntry
 }
@@ -51,7 +53,12 @@ type botModelConfigReader interface {
 
 // NewAgentHandler creates an AgentHandler.
 func NewAgentHandler(db store.Store, hub *Hub) *AgentHandler {
-	return &AgentHandler{db: db, hub: hub, quotaCache: make(map[string]agentQuotaCacheEntry)}
+	return &AgentHandler{
+		db:                     db,
+		hub:                    hub,
+		cloudArtifactAgentUIDs: parseAgentUIDSet(os.Getenv("CATSCO_CLOUD_ARTIFACT_AGENT_UIDS")),
+		quotaCache:             make(map[string]agentQuotaCacheEntry),
+	}
 }
 
 // SetRelayUsageDependencies enables the friend-visible, sanitized agent quota summary.
@@ -65,17 +72,18 @@ func (h *AgentHandler) SetRelayUsageDependencies(admin *RelayAdminClient, resolv
 
 // AgentSummary is the lightweight roster item used by the WebApp.
 type AgentSummary struct {
-	ID               int64  `json:"id"`
-	UID              int64  `json:"uid"`
-	Username         string `json:"username"`
-	DisplayName      string `json:"display_name"`
-	AvatarURL        string `json:"avatar_url,omitempty"`
-	Relation         string `json:"relation"`
-	TopicID          string `json:"topic_id"`
-	IsBot            bool   `json:"is_bot"`
-	IsOnline         bool   `json:"is_online"`
-	Visibility       string `json:"visibility,omitempty"`
-	DeploymentStatus string `json:"deployment_status,omitempty"`
+	ID                    int64  `json:"id"`
+	UID                   int64  `json:"uid"`
+	Username              string `json:"username"`
+	DisplayName           string `json:"display_name"`
+	AvatarURL             string `json:"avatar_url,omitempty"`
+	Relation              string `json:"relation"`
+	TopicID               string `json:"topic_id"`
+	IsBot                 bool   `json:"is_bot"`
+	IsOnline              bool   `json:"is_online"`
+	Visibility            string `json:"visibility,omitempty"`
+	DeploymentStatus      string `json:"deployment_status,omitempty"`
+	CloudArtifactsEnabled bool   `json:"cloud_artifacts_enabled,omitempty"`
 }
 
 type openAgentRequest struct {
@@ -410,17 +418,18 @@ func (h *AgentHandler) agentFromBotMap(viewerUID int64, bot map[string]interface
 		displayName = mapString(bot["username"])
 	}
 	agent := AgentSummary{
-		ID:               uid,
-		UID:              uid,
-		Username:         mapString(bot["username"]),
-		DisplayName:      displayName,
-		AvatarURL:        mapString(bot["avatar_url"]),
-		Relation:         relation,
-		TopicID:          p2pTopicID(viewerUID, uid),
-		IsBot:            true,
-		IsOnline:         h.agentRuntimeOnline(uid),
-		Visibility:       mapString(bot["visibility"]),
-		DeploymentStatus: mapString(bot["deployment_status"]),
+		ID:                    uid,
+		UID:                   uid,
+		Username:              mapString(bot["username"]),
+		DisplayName:           displayName,
+		AvatarURL:             mapString(bot["avatar_url"]),
+		Relation:              relation,
+		TopicID:               p2pTopicID(viewerUID, uid),
+		IsBot:                 true,
+		IsOnline:              h.agentRuntimeOnline(uid),
+		Visibility:            mapString(bot["visibility"]),
+		DeploymentStatus:      mapString(bot["deployment_status"]),
+		CloudArtifactsEnabled: h.cloudArtifactsEnabled(uid),
 	}
 	return agent, true
 }
@@ -428,16 +437,42 @@ func (h *AgentHandler) agentFromBotMap(viewerUID int64, bot map[string]interface
 func (h *AgentHandler) agentFromUser(viewerUID int64, user *types.User, relation string) AgentSummary {
 	displayName := displayNameOrUsername(user.DisplayName, user.Username)
 	return AgentSummary{
-		ID:          user.ID,
-		UID:         user.ID,
-		Username:    user.Username,
-		DisplayName: displayName,
-		AvatarURL:   user.AvatarURL,
-		Relation:    relation,
-		TopicID:     p2pTopicID(viewerUID, user.ID),
-		IsBot:       true,
-		IsOnline:    h.agentRuntimeOnline(user.ID),
+		ID:                    user.ID,
+		UID:                   user.ID,
+		Username:              user.Username,
+		DisplayName:           displayName,
+		AvatarURL:             user.AvatarURL,
+		Relation:              relation,
+		TopicID:               p2pTopicID(viewerUID, user.ID),
+		IsBot:                 true,
+		IsOnline:              h.agentRuntimeOnline(user.ID),
+		CloudArtifactsEnabled: h.cloudArtifactsEnabled(user.ID),
 	}
+}
+
+func (h *AgentHandler) cloudArtifactsEnabled(uid int64) bool {
+	if h == nil || uid <= 0 {
+		return false
+	}
+	_, ok := h.cloudArtifactAgentUIDs[uid]
+	return ok
+}
+
+func parseAgentUIDSet(value string) map[int64]struct{} {
+	uids := make(map[int64]struct{})
+	for _, field := range strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\r' || r == '\n'
+	}) {
+		field = strings.TrimSpace(field)
+		if len(field) >= 3 && strings.EqualFold(field[:3], "usr") {
+			field = field[3:]
+		}
+		uid, err := strconv.ParseInt(field, 10, 64)
+		if err == nil && uid > 0 {
+			uids[uid] = struct{}{}
+		}
+	}
+	return uids
 }
 
 func (h *AgentHandler) agentRuntimeOnline(uid int64) bool {

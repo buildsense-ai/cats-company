@@ -20,6 +20,7 @@ import FeedbackModal from '../widgets/feedback-modal';
 import CatsCoDownloadModal from '../widgets/catsco-download-modal';
 import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import RelayAccessModal from '../widgets/relay-access-modal';
+import CloudArtifactsModal from '../widgets/cloud-artifacts-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
@@ -46,7 +47,7 @@ import {
 } from '../utils/conversation-model-state';
 import { createAgentTaskTopicRecord } from '../utils/agent-task-topic';
 import { formatEmptyTaskGreeting } from '../utils/empty-task-greeting';
-import { Bug, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Bug, Cloud, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 
@@ -170,6 +171,7 @@ function TinodeWebApp() {
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
+  const [showCloudArtifactsModal, setShowCloudArtifactsModal] = useState(false);
   const [managedGroup, setManagedGroup] = useState(null);
   const appShellRef = useRef(null);
   const [appSidebarCollapsed, setAppSidebarCollapsed] = useState(() => loadAppSidebarCollapsed());
@@ -204,6 +206,7 @@ function TinodeWebApp() {
     });
   }, [activeTopicId]);
   const displayedActiveAgent = resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft);
+  const showCloudArtifactsAction = canOpenCloudArtifacts(activeTopic, displayedActiveAgent);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
     appSidebarPreferredWidth,
@@ -908,6 +911,7 @@ function TinodeWebApp() {
           activeAgent={displayedActiveAgent}
           currentModelName={currentModelName}
           onDownload={() => setShowDownloadModal(true)}
+          onOpenCloudArtifacts={showCloudArtifactsAction ? () => setShowCloudArtifactsModal(true) : undefined}
           title={activeTopic?.name || taskDraftTitle(taskDraft)}
           onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
         />
@@ -968,6 +972,10 @@ function TinodeWebApp() {
         <RelayAccessModal onClose={() => setShowRelayModal(false)} />
       )}
 
+      {showCloudArtifactsModal && (
+        <CloudArtifactsModal onClose={() => setShowCloudArtifactsModal(false)} />
+      )}
+
       {managedGroup?.groupId && (
         <GroupSettings
           groupId={managedGroup.groupId}
@@ -994,7 +1002,7 @@ function TinodeWebApp() {
   );
 }
 
-export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, title, onRenameTitle }) {
+export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, title, onRenameTitle }) {
   return (
     <header className="v3-local-assistant-bar">
       <div className="v3-model-select">
@@ -1006,6 +1014,11 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
       </div>
       <EditableConversationTitle title={title} editable={Boolean(onRenameTitle)} onSave={onRenameTitle} />
       <div className="v3-shell-actions">
+        {onOpenCloudArtifacts && (
+          <button type="button" className="v3-action-btn" onClick={onOpenCloudArtifacts} aria-label="打开生成物" title="生成物">
+            <Cloud size={17} />
+          </button>
+        )}
         <button type="button" className="v3-action-btn" onClick={onDownload} aria-label="下载桌面端">
           <Download size={17} />
         </button>
@@ -1014,7 +1027,12 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
   );
 }
 
-export { describeModelApplyError, describeModelConfigRequestError, resolveDisplayedActiveAgent };
+export { canOpenCloudArtifacts, describeModelApplyError, describeModelConfigRequestError, resolveDisplayedActiveAgent };
+
+function canOpenCloudArtifacts(activeTopic, activeAgent) {
+  if (!activeAgent?.cloud_artifacts_enabled || !activeTopic?.topicId) return false;
+  return !activeTopic.isGroup && !activeTopic.topicId.startsWith('grp_');
+}
 
 function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft) {
   if (activeTopicId) {

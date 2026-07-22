@@ -1257,6 +1257,230 @@ body {
   background: var(--v3-bg-message-hover);
 }
 
+.oc-modal.cloud-artifacts-modal {
+  width: 620px;
+  max-width: calc(100vw - 32px);
+  max-height: min(720px, calc(100vh - 32px));
+  padding: 0;
+  overflow: hidden;
+  color: var(--v3-text-main);
+  background: #171717;
+  border: 1px solid var(--v3-border);
+  border-radius: 8px;
+}
+
+.cloud-artifacts-header {
+  min-height: 72px;
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--v3-border);
+}
+
+.cloud-artifacts-heading,
+.cloud-artifacts-header-actions,
+.cloud-artifact-actions {
+  display: flex;
+  align-items: center;
+}
+
+.cloud-artifacts-heading {
+  min-width: 0;
+  gap: 12px;
+}
+
+.cloud-artifacts-heading-icon,
+.cloud-artifact-kind-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #f0c674;
+  background: rgba(212, 168, 83, 0.12);
+  border: 1px solid rgba(212, 168, 83, 0.24);
+}
+
+.cloud-artifacts-heading-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+}
+
+.cloud-artifacts-heading h3,
+.cloud-artifact-copy h4 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+.cloud-artifacts-heading h3 {
+  font-size: 17px;
+}
+
+.cloud-artifacts-heading p,
+.cloud-artifact-copy p {
+  margin: 4px 0 0;
+  color: var(--v3-text-muted);
+  font-size: 12px;
+}
+
+.cloud-artifacts-header-actions,
+.cloud-artifact-actions {
+  gap: 6px;
+}
+
+.cloud-artifacts-header-actions button,
+.cloud-artifact-actions button {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--v3-border);
+  border-radius: 6px;
+  color: var(--v3-text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.cloud-artifacts-header-actions button:hover,
+.cloud-artifact-actions button:hover {
+  color: var(--v3-text-main);
+  background: var(--v3-bg-message-hover);
+}
+
+.cloud-artifacts-header-actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.cloud-artifacts-body {
+  min-height: 220px;
+  max-height: calc(min(720px, 100vh - 32px) - 73px);
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.cloud-artifacts-list {
+  display: grid;
+  gap: 8px;
+}
+
+.cloud-artifact-item {
+  min-height: 66px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border: 1px solid var(--v3-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+  overflow: hidden;
+}
+
+.cloud-artifact-main {
+  min-width: 0;
+  min-height: 64px;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.cloud-artifact-main:hover {
+  background: var(--v3-bg-message-hover);
+}
+
+.cloud-artifact-open-icon {
+  color: var(--v3-text-muted);
+}
+
+.cloud-artifact-kind-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 7px;
+}
+
+.cloud-artifact-kind-icon.mini_app {
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.1);
+  border-color: rgba(56, 189, 248, 0.22);
+}
+
+.cloud-artifact-copy {
+  min-width: 0;
+}
+
+.cloud-artifact-copy h4 {
+  overflow: hidden;
+  color: var(--v3-text-main);
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-artifact-copy p {
+  display: flex;
+  gap: 10px;
+}
+
+.cloud-artifact-actions {
+  padding-right: 12px;
+}
+
+.cloud-artifacts-status {
+  min-height: 196px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--v3-text-muted);
+}
+
+.cloud-artifacts-status.error {
+  color: #fca5a5;
+}
+
+.cloud-artifacts-status button {
+  padding: 7px 14px;
+  border: 1px solid var(--v3-border);
+  border-radius: 6px;
+  color: var(--v3-text-main);
+  background: transparent;
+  cursor: pointer;
+}
+
+.is-spinning {
+  animation: cloud-artifact-spin 0.9s linear infinite;
+}
+
+@keyframes cloud-artifact-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 640px) {
+  .oc-modal.cloud-artifacts-modal {
+    width: calc(100vw - 20px);
+    max-width: none;
+    max-height: calc(100vh - 20px);
+    height: auto !important;
+    align-self: center;
+  }
+
+  .cloud-artifacts-body {
+    max-height: calc(100vh - 93px);
+  }
+
+  .cloud-artifact-main {
+    grid-template-columns: 38px minmax(0, 1fr) auto;
+  }
+}
+
 .v3-sidebar-header:hover {
   background: var(--v3-bg-message-hover);
 }

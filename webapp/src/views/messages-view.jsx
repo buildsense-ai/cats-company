@@ -1254,8 +1254,17 @@ export default function MessagesView({
       uid: peerUID,
       relation: peerIsOwnedBot ? 'owner' : (resolvedPeerProfile?.relation || 'friend'),
       isOwner: peerIsOwnedBot,
+      cloud_artifacts_enabled: resolvedPeerProfile?.cloud_artifacts_enabled === true,
     });
-  }, [isGroup, onActiveAgentChange, peerIsBot, peerIsOwnedBot, peerUID, resolvedPeerProfile?.relation]);
+  }, [
+    isGroup,
+    onActiveAgentChange,
+    peerIsBot,
+    peerIsOwnedBot,
+    peerUID,
+    resolvedPeerProfile?.cloud_artifacts_enabled,
+    resolvedPeerProfile?.relation,
+  ]);
 
   useEffect(() => {
     if (isGroup && taskBotUID <= 0) {
