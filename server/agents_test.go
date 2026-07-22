@@ -460,6 +460,64 @@ func TestHandleAgentQuotaDoesNotReuseCachedReasoningEffortAfterSwitch(t *testing
 	}
 }
 
+func TestHandleAgentQuotaKeepsAppliedModelWhenQuotaBucketUsesAnotherModelName(t *testing.T) {
+	store := &agentTestStore{
+		users:       map[int64]*types.User{43: {ID: 43, AccountType: types.AccountBot}},
+		owners:      map[int64]int64{43: 99},
+		friendPairs: map[string]bool{agentPairKey(7, 43): true},
+		modelConfigs: map[int64]*types.BotModelConfig{43: {
+			AppliedKind:      "catalog",
+			AppliedModelID:   "gpt-5.6-sol",
+			AppliedReasoning: "high",
+			AppliedRevision:  2,
+		}},
+	}
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, commercialRelayUsageResponse{Users: []commercialRelayUsageUser{{
+			UID: 99, Configured: true,
+			Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{{
+				Model:         "gpt-5.6-terra",
+				AllowedModels: []string{"gpt-5.6-terra", "gpt-5.6-sol"},
+				Budget: commercialRelayBudget{
+					MaxLimit:      5000,
+					CurrentUsage:  25,
+					ResetDuration: "1M",
+				},
+			}}},
+		}}})
+	}))
+	defer admin.Close()
+
+	handler := NewAgentHandler(store, nil)
+	handler.SetRelayUsageDependencies(&RelayAdminClient{
+		baseURL: admin.URL,
+		token:   "test-token",
+		client:  admin.Client(),
+	}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/agents/quota?uid=43", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleAgentQuota(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body agentQuotaResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Summary == nil {
+		t.Fatalf("missing summary: %+v", body)
+	}
+	if body.Summary.Model != "gpt-5.6-sol" || body.Summary.ReasoningEffort != "high" {
+		t.Fatalf("summary must describe the applied bot model, got %+v", body.Summary)
+	}
+	if body.Summary.RemainingPercent != 99.5 || body.Summary.ResetDuration != "1M" {
+		t.Fatalf("summary must retain the shared quota bucket values, got %+v", body.Summary)
+	}
+}
+
 func TestHandleAgentQuotaPreservesCustomModelName(t *testing.T) {
 	store := &agentTestStore{
 		users: map[int64]*types.User{
