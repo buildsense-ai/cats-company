@@ -1235,6 +1235,15 @@ export default function MessagesView({
       .filter((uid) => Number.isFinite(uid) && uid > 0);
   }, [availableAgentUIDs, isAgentTask, members]);
   const taskBotUID = taskBotUIDs.length === 1 ? taskBotUIDs[0] : 0;
+  const isTwoPersonGroupWithCurrentUser = useMemo(() => {
+    if (!isGroup) return false;
+    const memberUIDs = new Set(
+      members
+        .map((member) => Number(member?.user_id))
+        .filter((uid) => Number.isFinite(uid) && uid > 0),
+    );
+    return memberUIDs.size === 2 && memberUIDs.has(Number(user.uid));
+  }, [isGroup, members, user.uid]);
   const supportsTutorialTasks = isGroup
     ? Boolean(
       isAgentTask
@@ -1248,7 +1257,11 @@ export default function MessagesView({
   useEffect(() => {
     if (isGroup) {
       const groupAgentUID = Number(groupAgent?.uid || groupAgent?.id || 0);
-      if (!isAgentTask || taskBotUID <= 0 || groupAgentUID !== taskBotUID) {
+      const isSingleAgentTask = isAgentTask && taskBotUID > 0 && groupAgentUID === taskBotUID;
+      const isTwoPersonArtifactGroup = isTwoPersonGroupWithCurrentUser
+        && groupAgentUID > 0
+        && groupAgent?.cloud_artifacts_enabled === true;
+      if (!isSingleAgentTask && !isTwoPersonArtifactGroup) {
         onActiveAgentChange?.(null);
         return;
       }
@@ -1279,6 +1292,7 @@ export default function MessagesView({
     groupAgent?.uid,
     isAgentTask,
     isGroup,
+    isTwoPersonGroupWithCurrentUser,
     onActiveAgentChange,
     peerIsBot,
     peerIsOwnedBot,

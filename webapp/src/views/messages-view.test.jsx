@@ -1482,6 +1482,43 @@ describe('MessagesView composer draft isolation', () => {
     });
   });
 
+  it('reports artifact capability for a regular two-person group with Doubao', async () => {
+    const onActiveAgentChange = vi.fn();
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'doubao',
+        display_name: '豆包',
+        relation: 'friend',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 15, name: '我和豆包', kind: 'standard', has_bot: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 440, display_name: '豆包', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_15', {
+      isGroup: true,
+      groupId: 15,
+      onActiveAgentChange,
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(onActiveAgentChange).toHaveBeenLastCalledWith({
+      uid: 440,
+      relation: 'friend',
+      isOwner: false,
+      cloud_artifacts_enabled: true,
+    });
+  });
+
   it('recognizes the only task Agent from the Agent roster when member disclosure is absent', async () => {
     const onAgentModelChange = vi.fn();
     api.getAgents.mockResolvedValueOnce({
