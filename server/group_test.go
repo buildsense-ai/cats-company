@@ -27,11 +27,36 @@ type groupInviteApprovalTestStore struct {
 	nextID   int64
 }
 
+type groupMembershipLookupFailureStore struct {
+	*channelAgentTestStore
+}
+
+func (s *groupMembershipLookupFailureStore) IsGroupMember(groupID, userID int64) (bool, error) {
+	return false, errors.New("injected membership lookup failure")
+}
+
 func newGroupInviteApprovalTestStore() *groupInviteApprovalTestStore {
 	return &groupInviteApprovalTestStore{
 		channelAgentTestStore: newChannelAgentTestStore(),
 		requests:              make(map[int64]*types.GroupInviteRequest),
 		nextID:                1,
+	}
+}
+
+func TestGetGroupInfoReportsMembershipLookupFailureAsServerError(t *testing.T) {
+	db := &groupMembershipLookupFailureStore{channelAgentTestStore: newChannelAgentTestStore()}
+	handler := NewGroupHandler(db, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/groups/info?id=42", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleGetGroupInfo(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "failed to verify group membership") {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
 	}
 }
 

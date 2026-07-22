@@ -34,7 +34,12 @@ import {
   resolveConversationModelDisplay,
   resolveCurrentModelName,
 } from '../utils/relay-usage';
-import { normalizeActiveTopic } from '../utils/active-topic';
+import {
+  normalizeActiveTopic,
+  readStoredTopic,
+  shouldForgetStoredTopic,
+  writeStoredTopic,
+} from '../utils/active-topic';
 import {
   applyScopedModelUpdate,
   resolveScopedModelState,
@@ -102,42 +107,6 @@ function saveAppSidebarCollapsed(collapsed) {
   window.localStorage.setItem(APP_SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? 'true' : 'false');
 }
 
-function lastTopicStorageKey(uid) {
-  return uid ? `v3_last_topic:${uid}` : 'v3_last_topic';
-}
-
-function readStoredTopic(uid) {
-  const keys = [lastTopicStorageKey(uid), 'v3_last_topic'];
-  for (const key of keys) {
-    const raw = localStorage.getItem(key);
-    if (!raw) continue;
-
-    try {
-      const parsed = JSON.parse(raw);
-      const topic = normalizeActiveTopic(parsed);
-      if (topic) return topic;
-    } catch (error) {
-      const topic = normalizeActiveTopic(raw);
-      if (topic) return topic;
-    }
-  }
-
-  return null;
-}
-
-function writeStoredTopic(uid, topic) {
-  const key = lastTopicStorageKey(uid);
-  const normalized = normalizeActiveTopic(topic);
-  if (!normalized) {
-    localStorage.removeItem(key);
-    localStorage.removeItem('v3_last_topic');
-    return;
-  }
-
-  localStorage.setItem(key, JSON.stringify(normalized));
-  localStorage.setItem('v3_last_topic', JSON.stringify(normalized));
-}
-
 function desktopPromptStorageKey(uid) {
   return `catsco_desktop_connect_prompted:v1:${uid}`;
 }
@@ -176,7 +145,9 @@ function TinodeWebApp() {
   const channelAccountLink = window.location.pathname === '/channel-account-link';
   const [user, setUser] = useState(() => getInitialUser());
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
-  const [activeTopic, _setActiveTopic] = useState(null);
+  const [activeTopic, _setActiveTopic] = useState(() => (
+    user?.uid ? readStoredTopic(user.uid) : null
+  ));
   const [taskDraft, setTaskDraft] = useState(null);
   const taskDraftSequenceRef = useRef(0);
 
@@ -511,22 +482,25 @@ function TinodeWebApp() {
     }
 
     const stored = readStoredTopic(user.uid);
+    _setActiveTopic(stored);
     if (!stored?.topicId?.startsWith('grp_')) {
-      _setActiveTopic(stored);
       return;
     }
 
     let cancelled = false;
     const groupId = stored.groupId || Number(stored.topicId.slice(4));
     api.getGroupInfo(groupId)
-      .then(() => {
-        if (!cancelled) _setActiveTopic(stored);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          writeStoredTopic(user.uid, null);
-          _setActiveTopic(null);
+      .catch((error) => {
+        if (cancelled) return;
+        if (!shouldForgetStoredTopic(error)) {
+          console.warn('Failed to validate the restored task; keeping it for retry:', error);
+          return;
         }
+        _setActiveTopic((current) => {
+          if (current?.topicId !== stored.topicId) return current;
+          writeStoredTopic(user.uid, null);
+          return null;
+        });
       });
     return () => {
       cancelled = true;

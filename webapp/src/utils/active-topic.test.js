@@ -1,6 +1,16 @@
-import { normalizeActiveTopic } from './active-topic';
+import {
+  lastTopicStorageKey,
+  normalizeActiveTopic,
+  readStoredTopic,
+  shouldForgetStoredTopic,
+  writeStoredTopic,
+} from './active-topic';
 
 describe('active topic normalization', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
   test.each([
     ['grp_855', { topicId: 'grp_855', name: '', isGroup: true, groupId: 855 }],
     ['p2p_38_405', { topicId: 'p2p_38_405', name: '', isGroup: false, groupId: undefined }],
@@ -53,5 +63,30 @@ describe('active topic normalization', () => {
 
   test.each([null, '', '[object Object]', {}, { topicId: '' }])('rejects invalid topic %j', (input) => {
     expect(normalizeActiveTopic(input)).toBeNull();
+  });
+
+  test('restores a user-scoped topic before falling back to legacy storage', () => {
+    localStorage.setItem('v3_last_topic', JSON.stringify({ topicId: 'grp_1', name: 'legacy' }));
+    localStorage.setItem(lastTopicStorageKey(38), JSON.stringify({ topicId: 'grp_891', name: 'current' }));
+
+    expect(readStoredTopic(38)).toMatchObject({ topicId: 'grp_891', name: 'current', groupId: 891 });
+  });
+
+  test('writes and clears both scoped and legacy topic storage', () => {
+    writeStoredTopic(38, { topicId: 'p2p_38_537', name: 'Agent' });
+    expect(readStoredTopic(38)).toMatchObject({ topicId: 'p2p_38_537', name: 'Agent' });
+
+    writeStoredTopic(38, null);
+    expect(localStorage.getItem(lastTopicStorageKey(38))).toBeNull();
+    expect(localStorage.getItem('v3_last_topic')).toBeNull();
+  });
+
+  test('forgets inaccessible topics but preserves them across transient failures', () => {
+    expect(shouldForgetStoredTopic({ status: 400 })).toBe(true);
+    expect(shouldForgetStoredTopic({ status: 403 })).toBe(true);
+    expect(shouldForgetStoredTopic({ status: 404 })).toBe(true);
+    expect(shouldForgetStoredTopic({ status: 429 })).toBe(false);
+    expect(shouldForgetStoredTopic({ status: 503 })).toBe(false);
+    expect(shouldForgetStoredTopic({ code: 'NETWORK_ERROR' })).toBe(false);
   });
 });
