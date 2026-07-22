@@ -16,7 +16,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -491,7 +490,6 @@ func validateCompletedImageResponse(body []byte, maxImageBytes int64) error {
 		Status string `json:"status"`
 		Data   []struct {
 			B64JSON string `json:"b64_json"`
-			URL     string `json:"url"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
@@ -511,29 +509,11 @@ func validateCompletedImageResponse(body []byte, maxImageBytes int64) error {
 				return nil
 			}
 		}
-		if validateGeneratedImageURL(item.URL) == nil {
-			return nil
-		}
 	}
 	if strings.TrimSpace(envelope.TaskID) != "" {
 		return errAsyncImageResponse
 	}
-	return errors.New("response does not contain a completed PNG, JPEG, WebP, or image URL")
-}
-
-func validateGeneratedImageURL(value string) error {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return errors.New("image URL is empty")
-	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil || parsed.Host == "" || parsed.User != nil {
-		return errors.New("image URL is invalid")
-	}
-	if parsed.Scheme != "https" {
-		return errors.New("image URL must use HTTPS")
-	}
-	return nil
+	return errors.New("response does not contain a completed PNG, JPEG, or WebP image")
 }
 
 func validateGeneratedImageBytes(contents []byte) error {

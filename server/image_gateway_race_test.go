@@ -105,6 +105,25 @@ func TestImageRaceIgnoresFastErrorsAndIncompleteSuccess(t *testing.T) {
 	}
 }
 
+func TestImageRaceRejectsUnverifiedURLAndWaitsForCompletedImage(t *testing.T) {
+	urlOnly := newScriptedImageUpstream(t, scriptedImageStep{
+		body: `{"data":[{"url":"https://cdn.example.test/upstream-error.html"}]}`,
+	})
+	winner := newScriptedImageUpstream(t, scriptedImageStep{
+		delay: 30 * time.Millisecond,
+		body:  testImageResponse(t, 32),
+	})
+	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
+		raceTestProvider("url-only", urlOnly.URL(), "", imageOperationGeneration),
+		raceTestProvider("winner", winner.URL(), "", imageOperationGeneration),
+	}, ImageGenerationProxyOptions{RaceDeadline: time.Second})
+
+	rr := runRaceGeneration(t, handler, `{"prompt":"test"}`)
+	if rr.Code != http.StatusOK || rr.Header().Get("X-CatsCo-Image-Provider") != "winner" {
+		t.Fatalf("status=%d provider=%q body=%s", rr.Code, rr.Header().Get("X-CatsCo-Image-Provider"), rr.Body.String())
+	}
+}
+
 func TestImageRaceCancelsHangingLoser(t *testing.T) {
 	hanging := newScriptedImageUpstream(t, scriptedImageStep{waitForCancel: true})
 	winner := newScriptedImageUpstream(t, scriptedImageStep{delay: 20 * time.Millisecond, body: testImageResponse(t, 41)})
