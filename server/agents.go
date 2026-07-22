@@ -18,7 +18,7 @@ type AgentHandler struct {
 	db                        store.Store
 	hub                       *Hub
 	relayAdmin                *RelayAdminClient
-	deviceModelStatusResolver func(uid int64) (DeviceModelStatus, bool)
+	deviceModelStatusResolver func(uid int64, bodyID string) (DeviceModelStatus, bool)
 	quotaMu                   sync.Mutex
 	quotaCache                map[string]agentQuotaCacheEntry
 }
@@ -34,6 +34,7 @@ type agentQuotaResponse struct {
 type agentQuotaSummary struct {
 	Source           string  `json:"source,omitempty"`
 	Model            string  `json:"model"`
+	ReasoningEffort  string  `json:"reasoning_effort,omitempty"`
 	RemainingPercent float64 `json:"remaining_percent"`
 	Status           string  `json:"status"`
 	ResetDuration    string  `json:"reset_duration,omitempty"`
@@ -44,13 +45,17 @@ type agentQuotaCacheEntry struct {
 	expiresAt time.Time
 }
 
+type botModelConfigReader interface {
+	GetBotModelConfig(botUID int64) (*types.BotModelConfig, error)
+}
+
 // NewAgentHandler creates an AgentHandler.
 func NewAgentHandler(db store.Store, hub *Hub) *AgentHandler {
 	return &AgentHandler{db: db, hub: hub, quotaCache: make(map[string]agentQuotaCacheEntry)}
 }
 
 // SetRelayUsageDependencies enables the friend-visible, sanitized agent quota summary.
-func (h *AgentHandler) SetRelayUsageDependencies(admin *RelayAdminClient, resolver func(uid int64) (DeviceModelStatus, bool)) {
+func (h *AgentHandler) SetRelayUsageDependencies(admin *RelayAdminClient, resolver func(uid int64, bodyID string) (DeviceModelStatus, bool)) {
 	if h == nil {
 		return
 	}
@@ -159,13 +164,7 @@ func (h *AgentHandler) HandleAgentQuota(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, agentQuotaResponse{Configured: false, Shared: true})
 		return
 	}
-	if h.deviceModelStatusResolver == nil {
-		writeJSON(w, http.StatusOK, agentQuotaResponse{Configured: false, Shared: true})
-		return
-	}
-	// A bot runtime is registered as a device of its owner. The current
-	// one-owner-one-bot deployment therefore resolves model status by owner UID.
-	deviceStatus, ok := h.deviceModelStatusResolver(ownerUID)
+	deviceStatus, ok := h.resolveAgentModelStatus(agentUID, ownerUID)
 	if !ok {
 		writeJSON(w, http.StatusOK, agentQuotaResponse{Configured: false, Shared: true})
 		return
@@ -182,9 +181,10 @@ func (h *AgentHandler) HandleAgentQuota(w http.ResponseWriter, r *http.Request) 
 			Configured: true,
 			Shared:     false,
 			Summary: &agentQuotaSummary{
-				Source: "custom",
-				Model:  customModel,
-				Status: "custom",
+				Source:          "custom",
+				Model:           customModel,
+				ReasoningEffort: deviceStatus.ReasoningEffort,
+				Status:          "custom",
 			},
 		})
 		return
@@ -194,7 +194,7 @@ func (h *AgentHandler) HandleAgentQuota(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	cacheKey := strconv.FormatInt(ownerUID, 10) + ":" + normalizeRelayModelName(model)
+	cacheKey := strconv.FormatInt(ownerUID, 10) + ":" + normalizeRelayModelName(model) + ":" + strings.ToLower(strings.TrimSpace(deviceStatus.ReasoningEffort))
 	if cached, ok := h.cachedAgentQuota(cacheKey); ok {
 		writeJSON(w, http.StatusOK, cached)
 		return
@@ -205,8 +205,51 @@ func (h *AgentHandler) HandleAgentQuota(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	response := sanitizeAgentQuota(buildRelayUsageResponse(usage, model))
+	if response.Summary != nil {
+		response.Summary.ReasoningEffort = deviceStatus.ReasoningEffort
+	}
 	h.storeAgentQuota(cacheKey, response)
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *AgentHandler) resolveAgentModelStatus(agentUID, ownerUID int64) (DeviceModelStatus, bool) {
+	if models, ok := h.db.(botModelConfigReader); ok {
+		if config, err := models.GetBotModelConfig(agentUID); err == nil {
+			if status, applied := appliedBotModelStatus(config); applied {
+				return status, true
+			}
+		}
+	}
+	if h.deviceModelStatusResolver == nil {
+		return DeviceModelStatus{}, false
+	}
+	bodyID, _ := h.db.GetBotBodyID(agentUID)
+	return h.deviceModelStatusResolver(ownerUID, strings.TrimSpace(bodyID))
+}
+
+func appliedBotModelStatus(config *types.BotModelConfig) (DeviceModelStatus, bool) {
+	if config == nil {
+		return DeviceModelStatus{}, false
+	}
+	kind := strings.ToLower(strings.TrimSpace(config.AppliedKind))
+	model := strings.TrimSpace(config.AppliedModelID)
+	if kind == "" && model != "" {
+		kind = botModelKindCatalog
+	}
+	switch kind {
+	case botModelKindCatalog:
+		if model == "" {
+			return DeviceModelStatus{}, false
+		}
+		return DeviceModelStatus{Source: "relay", Model: model, ReasoningEffort: strings.TrimSpace(config.AppliedReasoning)}, true
+	case botModelKindCustom:
+		if model == "" || normalizeRelayModelName(model) == "custom" || strings.EqualFold(model, "自定义模型") {
+			model = "自定义模型"
+		}
+		return DeviceModelStatus{Source: "custom", Model: model, ReasoningEffort: strings.TrimSpace(config.AppliedReasoning)}, true
+	default:
+		return DeviceModelStatus{}, false
+	}
 }
 
 func sanitizeAgentQuota(usage relayUsageResponse) agentQuotaResponse {
