@@ -70,6 +70,7 @@ if [ ! -f "$env_file" ]; then
 fi
 
 python3 - <<PY
+import os
 from pathlib import Path
 
 p = Path(r"$env_file")
@@ -80,6 +81,9 @@ updates = {
     "GHCR_OWNER": "${GHCR_OWNER:-}",
     "IMAGE_TAG": "$revision",
     "CATSCO_IMAGE_TIMEOUT_SECONDS": "${CATSCO_IMAGE_TIMEOUT_SECONDS:-540}",
+    "CATSCO_ARTIFACT_INDEX_URL": os.environ.get("CATSCO_ARTIFACT_INDEX_URL", ""),
+    "CATSCO_ARTIFACT_MANAGEMENT_URL": os.environ.get("CATSCO_ARTIFACT_MANAGEMENT_URL", ""),
+    "CATSCO_ARTIFACT_MANAGEMENT_TOKEN": os.environ.get("CATSCO_ARTIFACT_MANAGEMENT_TOKEN", ""),
 }
 
 lines = []

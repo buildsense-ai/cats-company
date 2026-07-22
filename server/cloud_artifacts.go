@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,24 +10,30 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	artifactIndexContract   = "cloud-artifacts.index.v1"
-	defaultArtifactIndexURL = "https://logs.catsco.fun:9000/artifacts/artifacts-index.json"
-	artifactIndexMaxBytes   = 1 << 20
-	artifactIndexTimeout    = 10 * time.Second
+	artifactIndexContract        = "cloud-artifacts.index.v1"
+	artifactManagementContract   = "cloud-artifacts.management-list.v1"
+	defaultArtifactIndexURL      = "https://logs.catsco.fun:9000/artifacts/artifacts-index.json"
+	defaultArtifactManagementURL = "https://logs.catsco.fun:9000/internal/artifacts"
+	artifactResponseMaxBytes     = 1 << 20
+	artifactUpstreamTimeout      = 10 * time.Second
 )
 
 var artifactIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$`)
 
-// CloudArtifactHandler reads the public index maintained by the publishing Skill.
+// CloudArtifactHandler proxies the public index and the protected artifact-management service.
 type CloudArtifactHandler struct {
-	indexURL   string
-	httpClient *http.Client
-	configErr  error
+	indexURL        string
+	managementURL   string
+	managementToken string
+	httpClient      *http.Client
+	configErr       error
+	managementErr   error
 }
 
 type cloudArtifactIndex struct {
@@ -35,38 +42,129 @@ type cloudArtifactIndex struct {
 	Artifacts       []cloudArtifact `json:"artifacts"`
 }
 
-type cloudArtifact struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Kind      string `json:"kind"`
-	URL       string `json:"url"`
-	UpdatedAt string `json:"updated_at"`
+type cloudArtifactManagementList struct {
+	ContractVersion string          `json:"contract_version"`
+	Status          string          `json:"status"`
+	Count           int             `json:"count"`
+	Artifacts       []cloudArtifact `json:"artifacts"`
 }
 
-// NewCloudArtifactHandler builds a read-only proxy for a fixed artifact index URL.
+type cloudArtifactOperation struct {
+	OK       bool          `json:"ok"`
+	Artifact cloudArtifact `json:"artifact"`
+}
+
+type cloudArtifact struct {
+	ID             string `json:"id"`
+	Title          string `json:"title"`
+	Kind           string `json:"kind"`
+	URL            string `json:"url"`
+	Status         string `json:"status,omitempty"`
+	CreatedAt      string `json:"created_at,omitempty"`
+	UpdatedAt      string `json:"updated_at"`
+	PublishVersion *int   `json:"publish_version,omitempty"`
+	AgentName      string `json:"agent_name,omitempty"`
+	SourceTitle    string `json:"source_title,omitempty"`
+	DeletedAt      string `json:"deleted_at,omitempty"`
+	CanDelete      bool   `json:"can_delete,omitempty"`
+	CanRestore     bool   `json:"can_restore,omitempty"`
+}
+
+type artifactUpstreamError struct {
+	status int
+	code   string
+}
+
+func (e *artifactUpstreamError) Error() string {
+	return e.code
+}
+
+// NewCloudArtifactHandler builds the legacy read-only proxy.
 func NewCloudArtifactHandler(indexURL string, client *http.Client) *CloudArtifactHandler {
+	return newCloudArtifactHandler(indexURL, "", "", client)
+}
+
+// NewCloudArtifactManagementHandler enables list, delete, and restore through the protected host API.
+func NewCloudArtifactManagementHandler(indexURL, managementURL, managementToken string, client *http.Client) *CloudArtifactHandler {
+	return newCloudArtifactHandler(indexURL, managementURL, managementToken, client)
+}
+
+func newCloudArtifactHandler(indexURL, managementURL, managementToken string, client *http.Client) *CloudArtifactHandler {
 	h := &CloudArtifactHandler{httpClient: client}
 	if h.httpClient == nil {
-		h.httpClient = &http.Client{Timeout: artifactIndexTimeout}
+		h.httpClient = &http.Client{Timeout: artifactUpstreamTimeout}
 	}
 
-	parsed, err := url.Parse(strings.TrimSpace(indexURL))
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
+	parsedIndex, err := parseArtifactURL(indexURL)
+	if err != nil {
 		h.configErr = fmt.Errorf("invalid CATSCO_ARTIFACT_INDEX_URL")
+	} else {
+		h.indexURL = parsedIndex
+	}
+
+	managementURL = strings.TrimSpace(managementURL)
+	managementToken = strings.TrimSpace(managementToken)
+	if managementURL == "" && managementToken == "" {
 		return h
 	}
-	parsed.Fragment = ""
-	h.indexURL = parsed.String()
+	if managementURL == "" || managementToken == "" {
+		h.managementErr = fmt.Errorf("incomplete artifact management configuration")
+		return h
+	}
+	parsedManagement, err := parseArtifactURL(managementURL)
+	if err != nil || len(managementToken) < 32 {
+		h.managementErr = fmt.Errorf("invalid artifact management configuration")
+		return h
+	}
+	h.managementURL = strings.TrimRight(parsedManagement, "/")
+	h.managementToken = managementToken
 	return h
 }
 
-// NewCloudArtifactHandlerFromEnv uses the configured index, or the current CatsCo artifact host.
+// NewCloudArtifactHandlerFromEnv uses the current CatsCo artifact host.
 func NewCloudArtifactHandlerFromEnv() *CloudArtifactHandler {
 	indexURL := strings.TrimSpace(os.Getenv("CATSCO_ARTIFACT_INDEX_URL"))
 	if indexURL == "" {
 		indexURL = defaultArtifactIndexURL
 	}
-	return NewCloudArtifactHandler(indexURL, nil)
+	managementURL := strings.TrimSpace(os.Getenv("CATSCO_ARTIFACT_MANAGEMENT_URL"))
+	managementToken := strings.TrimSpace(os.Getenv("CATSCO_ARTIFACT_MANAGEMENT_TOKEN"))
+	if managementURL == "" && managementToken != "" {
+		managementURL = defaultArtifactManagementURL
+	}
+	return newCloudArtifactHandler(indexURL, managementURL, managementToken, nil)
+}
+
+// Handle routes the artifact collection and exact-ID mutation endpoints.
+func (h *CloudArtifactHandler) Handle(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/artifacts" || r.URL.Path == "/api/artifacts/" {
+		h.HandleList(w, r)
+		return
+	}
+	uid := UIDFromContext(r.Context())
+	if uid <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	artifactID, action, ok := parseArtifactAPIPath(r.URL.Path)
+	if !ok {
+		writeArtifactError(w, http.StatusNotFound, "artifact_not_found")
+		return
+	}
+	if h == nil || h.managementErr != nil || h.managementURL == "" {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return
+	}
+
+	switch {
+	case action == "delete" && r.Method == http.MethodDelete:
+		h.handleMutation(w, r, artifactID, "", uid)
+	case action == "restore" && r.Method == http.MethodPost:
+		h.handleMutation(w, r, artifactID, "/restore", uid)
+	default:
+		w.Header().Set("Allow", allowedArtifactMethod(action))
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
 }
 
 // HandleList serves GET /api/artifacts for authenticated CatsCo users.
@@ -83,10 +181,53 @@ func (h *CloudArtifactHandler) HandleList(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "artifact index is not configured"})
 		return
 	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	if status == "" {
+		status = "active"
+	}
+	if status != "active" && status != "deleted" {
+		writeArtifactError(w, http.StatusBadRequest, "artifact_status_invalid")
+		return
+	}
+	if h.managementErr != nil {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return
+	}
+	if h.managementURL != "" {
+		h.handleManagedList(w, r, status)
+		return
+	}
+	if status == "deleted" {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return
+	}
+	h.handlePublicIndexList(w, r)
+}
 
+func (h *CloudArtifactHandler) handleManagedList(w http.ResponseWriter, r *http.Request, status string) {
+	target := h.managementURL + "?status=" + url.QueryEscape(status)
+	body, err := h.requestManagement(r, http.MethodGet, target, nil)
+	if err != nil {
+		writeArtifactUpstreamError(w, err)
+		return
+	}
+	var list cloudArtifactManagementList
+	if err := json.Unmarshal(body, &list); err != nil || validateManagedArtifactList(list, status) != nil {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return
+	}
+	if list.Artifacts == nil {
+		list.Artifacts = []cloudArtifact{}
+	}
+	list.Count = len(list.Artifacts)
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *CloudArtifactHandler) handlePublicIndexList(w http.ResponseWriter, r *http.Request) {
 	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, h.indexURL, nil)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to build artifact index request"})
+		writeArtifactError(w, http.StatusInternalServerError, "artifact_request_failed")
 		return
 	}
 	upstreamReq.Header.Set("Accept", "application/json")
@@ -94,24 +235,23 @@ func (h *CloudArtifactHandler) HandleList(w http.ResponseWriter, r *http.Request
 
 	resp, err := h.httpClient.Do(upstreamReq)
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "artifact index is unavailable"})
+		writeArtifactError(w, http.StatusBadGateway, "artifact_index_unavailable")
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "artifact index is unavailable"})
+		writeArtifactError(w, http.StatusBadGateway, "artifact_index_unavailable")
 		return
 	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, artifactIndexMaxBytes+1))
-	if err != nil || len(body) > artifactIndexMaxBytes {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "artifact index response is invalid"})
+	body, err := readArtifactResponse(resp.Body)
+	if err != nil {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
 		return
 	}
 
 	var index cloudArtifactIndex
 	if err := json.Unmarshal(body, &index); err != nil || validateCloudArtifactIndex(index) != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "artifact index response is invalid"})
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
 		return
 	}
 	if index.Artifacts == nil {
@@ -121,21 +261,65 @@ func (h *CloudArtifactHandler) HandleList(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, index)
 }
 
+func (h *CloudArtifactHandler) handleMutation(w http.ResponseWriter, r *http.Request, artifactID, suffix string, uid int64) {
+	payload, _ := json.Marshal(map[string]string{"actor_uid": strconv.FormatInt(uid, 10)})
+	target := h.managementURL + "/" + url.PathEscape(artifactID) + suffix
+	body, err := h.requestManagement(r, r.Method, target, payload)
+	if err != nil {
+		writeArtifactUpstreamError(w, err)
+		return
+	}
+	var operation cloudArtifactOperation
+	if err := json.Unmarshal(body, &operation); err != nil || !operation.OK || validateManagedArtifact(operation.Artifact) != nil {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return
+	}
+	if operation.Artifact.ID != artifactID {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, operation)
+}
+
+func (h *CloudArtifactHandler) requestManagement(r *http.Request, method, target string, payload []byte) ([]byte, error) {
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
+	}
+	request, err := http.NewRequestWithContext(r.Context(), method, target, body)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", "Bearer "+h.managementToken)
+	request.Header.Set("User-Agent", "catsco-cloud-artifacts/1.0")
+	if payload != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, err := h.httpClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	responseBody, readErr := readArtifactResponse(response.Body)
+	if readErr != nil {
+		return nil, readErr
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, parseArtifactUpstreamError(response.StatusCode, responseBody)
+	}
+	return responseBody, nil
+}
+
 func validateCloudArtifactIndex(index cloudArtifactIndex) error {
 	if index.ContractVersion != artifactIndexContract {
 		return errors.New("unsupported artifact index contract")
 	}
 	seen := make(map[string]struct{}, len(index.Artifacts))
 	for _, artifact := range index.Artifacts {
-		artifactURL, err := url.Parse(strings.TrimSpace(artifact.URL))
-		if err != nil || artifactURL.Host == "" || (artifactURL.Scheme != "http" && artifactURL.Scheme != "https") {
-			return errors.New("invalid artifact URL")
-		}
-		if !artifactIDPattern.MatchString(artifact.ID) || strings.TrimSpace(artifact.Title) == "" {
-			return errors.New("invalid artifact identity")
-		}
-		if artifact.Kind != "html" && artifact.Kind != "mini_app" {
-			return errors.New("invalid artifact kind")
+		if err := validateArtifactIdentity(artifact); err != nil {
+			return err
 		}
 		if _, err := time.Parse(time.RFC3339, artifact.UpdatedAt); err != nil {
 			return errors.New("invalid artifact timestamp")
@@ -146,4 +330,166 @@ func validateCloudArtifactIndex(index cloudArtifactIndex) error {
 		seen[artifact.ID] = struct{}{}
 	}
 	return nil
+}
+
+func validateManagedArtifactList(list cloudArtifactManagementList, expectedStatus string) error {
+	if list.ContractVersion != artifactManagementContract || list.Status != expectedStatus {
+		return errors.New("unsupported artifact management contract")
+	}
+	seen := make(map[string]struct{}, len(list.Artifacts))
+	for _, artifact := range list.Artifacts {
+		if err := validateManagedArtifact(artifact); err != nil {
+			return err
+		}
+		if artifact.Status != expectedStatus {
+			return errors.New("artifact status mismatch")
+		}
+		if _, exists := seen[artifact.ID]; exists {
+			return errors.New("duplicate artifact ID")
+		}
+		seen[artifact.ID] = struct{}{}
+	}
+	return nil
+}
+
+func validateManagedArtifact(artifact cloudArtifact) error {
+	if err := validateArtifactIdentity(artifact); err != nil {
+		return err
+	}
+	if artifact.Status != "active" && artifact.Status != "deleted" {
+		return errors.New("invalid artifact status")
+	}
+	if _, err := time.Parse(time.RFC3339, artifact.CreatedAt); err != nil {
+		return errors.New("invalid artifact created timestamp")
+	}
+	if _, err := time.Parse(time.RFC3339, artifact.UpdatedAt); err != nil {
+		return errors.New("invalid artifact updated timestamp")
+	}
+	if artifact.Status == "active" && !artifact.CanDelete {
+		return errors.New("active artifact must be deletable")
+	}
+	if artifact.Status == "deleted" {
+		if !artifact.CanRestore {
+			return errors.New("deleted artifact must be restorable")
+		}
+		if _, err := time.Parse(time.RFC3339, artifact.DeletedAt); err != nil {
+			return errors.New("invalid artifact deleted timestamp")
+		}
+	}
+	return nil
+}
+
+func validateArtifactIdentity(artifact cloudArtifact) error {
+	artifactURL, err := url.Parse(strings.TrimSpace(artifact.URL))
+	if err != nil || artifactURL.Host == "" || (artifactURL.Scheme != "http" && artifactURL.Scheme != "https") {
+		return errors.New("invalid artifact URL")
+	}
+	if !artifactIDPattern.MatchString(artifact.ID) || strings.TrimSpace(artifact.Title) == "" {
+		return errors.New("invalid artifact identity")
+	}
+	if artifact.Kind != "html" && artifact.Kind != "mini_app" {
+		return errors.New("invalid artifact kind")
+	}
+	return nil
+}
+
+func parseArtifactAPIPath(value string) (string, string, bool) {
+	relative := strings.TrimPrefix(value, "/api/artifacts/")
+	parts := strings.Split(relative, "/")
+	if len(parts) < 1 || len(parts) > 2 {
+		return "", "", false
+	}
+	artifactID, err := url.PathUnescape(parts[0])
+	if err != nil || !artifactIDPattern.MatchString(artifactID) {
+		return "", "", false
+	}
+	if len(parts) == 1 {
+		return artifactID, "delete", true
+	}
+	if parts[1] == "restore" {
+		return artifactID, "restore", true
+	}
+	return "", "", false
+}
+
+func allowedArtifactMethod(action string) string {
+	if action == "restore" {
+		return http.MethodPost
+	}
+	return http.MethodDelete
+}
+
+func parseArtifactURL(value string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
+		return "", errors.New("invalid artifact URL")
+	}
+	parsed.Fragment = ""
+	return parsed.String(), nil
+}
+
+func readArtifactResponse(reader io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, artifactResponseMaxBytes+1))
+	if err != nil || len(body) > artifactResponseMaxBytes {
+		return nil, errors.New("artifact response is invalid")
+	}
+	return body, nil
+}
+
+func parseArtifactUpstreamError(status int, body []byte) error {
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	code := payload.Error.Code
+	if !allowedArtifactErrorCode(code) {
+		code = "artifact_service_unavailable"
+	}
+	return &artifactUpstreamError{status: status, code: code}
+}
+
+func allowedArtifactErrorCode(code string) bool {
+	switch code {
+	case "artifact_not_found", "artifact_already_deleted", "artifact_not_deleted",
+		"artifact_path_invalid", "artifact_operation_conflict":
+		return true
+	default:
+		return false
+	}
+}
+
+func writeArtifactUpstreamError(w http.ResponseWriter, err error) {
+	var upstream *artifactUpstreamError
+	if !errors.As(err, &upstream) {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_service_unavailable")
+		return
+	}
+	status := http.StatusBadGateway
+	if upstream.status == http.StatusBadRequest || upstream.status == http.StatusNotFound || upstream.status == http.StatusConflict {
+		status = upstream.status
+	}
+	writeArtifactError(w, status, upstream.code)
+}
+
+func writeArtifactError(w http.ResponseWriter, status int, code string) {
+	messages := map[string]string{
+		"artifact_not_found":              "产物不存在",
+		"artifact_already_deleted":        "产物已在回收站中",
+		"artifact_not_deleted":            "产物不在回收站中",
+		"artifact_path_invalid":           "产物标识无效",
+		"artifact_operation_conflict":     "产物状态已变化，请刷新后重试",
+		"artifact_status_invalid":         "产物列表状态无效",
+		"artifact_management_unavailable": "产物管理服务暂不可用",
+		"artifact_index_unavailable":      "产物列表暂不可用",
+		"artifact_response_invalid":       "产物服务返回了无效数据",
+		"artifact_request_failed":         "产物请求创建失败",
+		"artifact_service_unavailable":    "产物服务暂不可用",
+	}
+	message := messages[code]
+	if message == "" {
+		message = "产物操作失败"
+	}
+	writeJSON(w, status, map[string]string{"error": message, "code": code})
 }

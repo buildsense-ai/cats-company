@@ -370,7 +370,12 @@ export const api = {
   uploadFeedbackImage: (file) => api.uploadFile(file, 'feedback'),
   submitFeedback: (data) => request('POST', '/api/feedback', data),
   getTutorialTasks: () => request('GET', '/api/tutorial-tasks'),
-  getCloudArtifacts: () => request('GET', '/api/artifacts'),
+  getCloudArtifacts: (status = 'active') =>
+    request('GET', `/api/artifacts?status=${encodeURIComponent(status)}`),
+  deleteCloudArtifact: (artifactId) =>
+    request('DELETE', `/api/artifacts/${encodeURIComponent(artifactId)}`),
+  restoreCloudArtifact: (artifactId) =>
+    request('POST', `/api/artifacts/${encodeURIComponent(artifactId)}/restore`, {}),
 };
 
 // --- WebSocket ---
