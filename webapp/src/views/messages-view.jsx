@@ -1572,6 +1572,7 @@ export default function MessagesView({
                   senderName={group.sender.name}
                   senderAvatarUrl={group.sender.avatarUrl}
                   senderIsBot={group.sender.isBot}
+                  workingOnly
                   showThinking={showThinking}
                   isConsecutive={group.isConsecutive}
                   onPreviewFile={setPreviewFile}

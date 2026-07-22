@@ -697,7 +697,7 @@ function WorkingProcess({ blocks }) {
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
@@ -878,7 +878,7 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
           )}
         </div>
 
-        <div className="v3-message-footer">
+        {!workingOnly && <div className="v3-message-footer">
           <div
             ref={actionsRef}
             className={`v3-message-actions${actionsOpen ? ' open' : ''}`}
@@ -941,7 +941,7 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
             )}
           </div>
           <time className="v3-msg-time" dateTime={message.created_at || undefined}>{timeString}</time>
-        </div>
+        </div>}
       </div>
     </div>
   );
@@ -950,6 +950,7 @@ function ChatMessageComponent({ message, workingMessages = null, isSelf, isGroup
 const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
   return prevProps.message === nextProps.message &&
     prevProps.workingMessages === nextProps.workingMessages &&
+    prevProps.workingOnly === nextProps.workingOnly &&
     prevProps.isSelf === nextProps.isSelf &&
     prevProps.isGroup === nextProps.isGroup &&
     prevProps.senderName === nextProps.senderName &&
@@ -973,6 +974,9 @@ function TextContent({ content, isGroup }) {
   const plainTextTableLike = useMemo(() => (
     !renderableTable && hasPlainTextTableLikeBlock(text)
   ), [renderableTable, text]);
+  const plainTextParagraphs = useMemo(() => (
+    text.split(/\r?\n(?:[\t ]*\r?\n)+/)
+  ), [text]);
 
   const markdownHtml = useMemo(() => {
     if (plainTextTableLike) return null;
@@ -1008,6 +1012,16 @@ function TextContent({ content, isGroup }) {
           )
         )}
       </span>
+    );
+  }
+
+  if (plainTextParagraphs.length > 1) {
+    return (
+      <div className="oc-plain-text-paragraphs">
+        {plainTextParagraphs.map((paragraph, index) => (
+          <p className="oc-plain-text-paragraph" key={index}>{paragraph}</p>
+        ))}
+      </div>
     );
   }
 

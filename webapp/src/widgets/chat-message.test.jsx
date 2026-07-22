@@ -186,6 +186,31 @@ describe('ChatMessage rich file rendering', () => {
     expect(textNode.style.overflowWrap).toBe('anywhere');
   });
 
+  it('uses compact paragraph spacing for direct plain text messages', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 22,
+            from_uid: 2,
+            content: 'First paragraph.\n\nSecond paragraph.',
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const paragraphs = container.querySelectorAll('.oc-plain-text-paragraph');
+    expect(paragraphs).toHaveLength(2);
+    expect(paragraphs[0].textContent).toBe('First paragraph.');
+    expect(paragraphs[1].textContent).toBe('Second paragraph.');
+    expect(container.querySelector('.oc-markdown')).toBeNull();
+  });
+
   it('previews uploaded XLSX files as a spreadsheet artifact', async () => {
     readExcelFile.mockResolvedValue([
       {
@@ -863,6 +888,7 @@ describe('ChatMessage rich file rendering', () => {
               },
             },
           ]}
+          workingOnly
           isSelf={false}
           isGroup={false}
           senderName="CatsCo"
@@ -881,6 +907,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-wpi-plan').textContent).toContain('创建临时工作目录');
     expect(container.querySelector('.v3-wpi-plan').textContent).toContain('设计 analyzeReply 函数');
     expect(container.querySelector('.v3-wpi-tool-name')).toBeNull();
+    expect(container.querySelector('.v3-message-footer')).toBeNull();
   });
 
   it('opens external HTML files instead of fetching them into the preview panel', async () => {

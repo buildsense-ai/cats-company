@@ -1106,7 +1106,7 @@ function ProfileFooter({ user, wsStatus, popoverOpen, onTogglePopover }) {
            {statusLabel}
         </div>
       </div>
-      <div className="v3-profile-settings" style={{color: '#888'}}>
+      <div className="v3-profile-settings">
         <Settings size={18} />
       </div>
     </button>
@@ -1233,20 +1233,18 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
-          <div style={{ display: 'flex', gap: '8px' }}>
+          <div className="oc-auth-code-row">
             <input
               className="oc-auth-input"
               placeholder="邮箱验证码"
               value={code}
               onChange={(e) => setCode(e.target.value)}
-              style={{ flex: 1 }}
             />
             <button
               type="button"
               className="oc-auth-btn"
               onClick={handleSendCode}
               disabled={countdown > 0}
-              style={{ width: '120px', fontSize: '13px' }}
             >
               {countdown > 0 ? `${countdown}秒` : '发送验证码'}
             </button>

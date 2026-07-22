@@ -4438,6 +4438,16 @@ button.catsco-download-action:disabled {
   white-space: normal;
 }
 .oc-markdown p { margin: 4px 0; }
+.oc-plain-text-paragraphs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.oc-plain-text-paragraph {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .oc-markdown-table {
   display: block;
   max-width: 100%;
