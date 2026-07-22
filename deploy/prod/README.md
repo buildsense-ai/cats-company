@@ -68,6 +68,7 @@ CATSCO_IMAGE_MODEL=gpt-image-2
 CATSCO_IMAGE_TIMEOUT_SECONDS=260
 CATSCO_IMAGE_RACE_DEADLINE_SECONDS=270
 CATSCO_IMAGE_RACE_BACKOFF_MS=750
+CATSCO_IMAGE_RACE_MAX_ATTEMPTS_PER_PROVIDER=2
 CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES=25165824
 CATSCO_IMAGE_MAX_RESPONSE_BYTES=41943040
 ```
@@ -82,11 +83,17 @@ Both providers must configure `generation_url`, `edit_url`, and an explicit
 `edit_transport`. Use `json_data_url` for an upstream that accepts the CatsCo
 JSON reference format and `multipart` for an OpenAI-compatible file upload.
 The gateway removes `async` and accepts only a completed image response, so a
-task ID never wins the race. Both provider lanes start together and retry
-temporary failures independently until the first valid image wins or
-`CATSCO_IMAGE_RACE_DEADLINE_SECONDS` expires. The deadline is capped at 285
-seconds so the gateway can return a structured failure before the caller's
-roughly 300-second connection budget ends.
+task ID never wins the race. Both provider lanes start together, which means a
+single user request can create one billable request at each provider even when
+the slower request is cancelled locally. Only an explicit HTTP 429 response is
+retried; network errors, timeouts, 5xx responses, and invalid 200 responses are
+not retried because the provider may already have accepted or billed the job.
+`CATSCO_IMAGE_RACE_MAX_ATTEMPTS_PER_PROVIDER` defaults to 2 and is hard-capped
+at 4. With exactly two providers, the default absolute request bound is four
+provider calls. The race also stops when `CATSCO_IMAGE_RACE_DEADLINE_SECONDS`
+expires. The deadline is capped at 285 seconds so the gateway can return a
+structured failure before the caller's roughly 300-second connection budget
+ends.
 
 For rollback, clear `CATSCO_IMAGE_UPSTREAMS_FILE` and restore the legacy
 `CATSCO_IMAGE_UPSTREAM_URL`, `CATSCO_IMAGE_UPSTREAM_API_KEY` or

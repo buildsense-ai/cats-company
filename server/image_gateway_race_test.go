@@ -242,7 +242,7 @@ func TestImageEditRaceUsesJSONAndMultipartTransportsConcurrently(t *testing.T) {
 func TestImageRaceProviderLanesRetryIndependently(t *testing.T) {
 	relayA := newScriptedImageUpstream(t, scriptedImageStep{waitForCancel: true})
 	relayB := newScriptedImageUpstream(t,
-		scriptedImageStep{status: http.StatusBadGateway, body: `{"error":"temporary"}`},
+		scriptedImageStep{status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`},
 		scriptedImageStep{body: testImageResponse(t, 71)},
 	)
 	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
@@ -262,25 +262,94 @@ func TestImageRaceProviderLanesRetryIndependently(t *testing.T) {
 	waitForScriptedCancellation(t, relayA)
 }
 
-func TestImageRaceHasNoFixedLowRetryLimit(t *testing.T) {
-	temporary := scriptedImageStep{status: http.StatusServiceUnavailable, body: `{"error":"temporary"}`}
-	relayA := newScriptedImageUpstream(t, temporary, temporary, temporary, temporary)
-	relayB := newScriptedImageUpstream(t, temporary, temporary, temporary, scriptedImageStep{body: testImageResponse(t, 72)})
+func TestImageRaceCapsAttemptsPerProvider(t *testing.T) {
+	rateLimited := scriptedImageStep{status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`}
+	relayA := newScriptedImageUpstream(t, rateLimited, rateLimited, scriptedImageStep{body: testImageResponse(t, 72)})
+	relayB := newScriptedImageUpstream(t, rateLimited, rateLimited, scriptedImageStep{body: testImageResponse(t, 73)})
 	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
 		raceTestProvider("relay-a", relayA.URL(), "", imageOperationGeneration),
 		raceTestProvider("relay-b", relayB.URL(), "", imageOperationGeneration),
-	}, ImageGenerationProxyOptions{RaceDeadline: time.Second, RetryBackoff: time.Millisecond})
+	}, ImageGenerationProxyOptions{
+		RaceDeadline:           time.Second,
+		RetryBackoff:           time.Millisecond,
+		MaxAttemptsPerProvider: 2,
+	})
 
-	rr := runRaceGeneration(t, handler, `{"prompt":"fourth round"}`)
-	if rr.Code != http.StatusOK || rr.Header().Get("X-CatsCo-Image-Round") != "4" {
+	rr := runRaceGeneration(t, handler, `{"prompt":"bounded retries"}`)
+	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d round=%q body=%s", rr.Code, rr.Header().Get("X-CatsCo-Image-Round"), rr.Body.String())
+	}
+	aRequests, _, _ := relayA.Snapshot()
+	bRequests, _, _ := relayB.Snapshot()
+	if aRequests != 2 || bRequests != 2 || rr.Header().Get("X-CatsCo-Image-Total-Attempts") != "4" {
+		t.Fatalf("attempts relay-a=%d relay-b=%d total=%q", aRequests, bRequests, rr.Header().Get("X-CatsCo-Image-Total-Attempts"))
+	}
+}
+
+func TestImageRaceRetriesOnlyExplicitRateLimits(t *testing.T) {
+	tests := []struct {
+		name      string
+		result    imageAttemptResult
+		retryable bool
+	}{
+		{name: "429", result: imageAttemptResult{category: imageAttemptTransient, status: http.StatusTooManyRequests}, retryable: true},
+		{name: "network error", result: imageAttemptResult{category: imageAttemptTransient, reason: "network_error"}},
+		{name: "timeout", result: imageAttemptResult{category: imageAttemptTransient, reason: "timeout"}},
+		{name: "5xx", result: imageAttemptResult{category: imageAttemptTransient, status: http.StatusServiceUnavailable}},
+		{name: "invalid 200", result: imageAttemptResult{category: imageAttemptTransient, status: http.StatusOK, reason: "invalid_completed_image"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldRetryImageAttempt(tc.result); got != tc.retryable {
+				t.Fatalf("retryable=%t, want %t", got, tc.retryable)
+			}
+		})
+	}
+}
+
+func TestImageRaceDoesNotRetryAmbiguousProviderOutcomes(t *testing.T) {
+	tests := []struct {
+		name          string
+		first         scriptedImageStep
+		clientTimeout time.Duration
+	}{
+		{name: "5xx", first: scriptedImageStep{status: http.StatusServiceUnavailable, body: `{"error":"temporary"}`}},
+		{name: "timeout", first: scriptedImageStep{delay: 50 * time.Millisecond, body: testImageResponse(t, 74)}, clientTimeout: 10 * time.Millisecond},
+		{name: "invalid 200", first: scriptedImageStep{body: `{"data":[{"b64_json":"not-base64"}]}`}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ambiguous := newScriptedImageUpstream(t, tc.first, scriptedImageStep{body: testImageResponse(t, 75)})
+			rejected := newScriptedImageUpstream(t, scriptedImageStep{status: http.StatusBadRequest, body: `{"error":"rejected"}`})
+			provider := raceTestProvider("ambiguous", ambiguous.URL(), "", imageOperationGeneration)
+			if tc.clientTimeout > 0 {
+				provider.client.Timeout = tc.clientTimeout
+			}
+			handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
+				provider,
+				raceTestProvider("rejected", rejected.URL(), "", imageOperationGeneration),
+			}, ImageGenerationProxyOptions{
+				RaceDeadline:           time.Second,
+				RetryBackoff:           time.Millisecond,
+				MaxAttemptsPerProvider: 2,
+			})
+
+			rr := runRaceGeneration(t, handler, `{"prompt":"do not duplicate"}`)
+			if rr.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+			}
+			requests, _, _ := ambiguous.Snapshot()
+			if requests != 1 {
+				t.Fatalf("ambiguous provider requests=%d, want 1", requests)
+			}
+		})
 	}
 }
 
 func TestImageRaceExcludesProviderAfterAuthenticationFailure(t *testing.T) {
 	unauthorized := newScriptedImageUpstream(t, scriptedImageStep{status: http.StatusUnauthorized, body: `{"error":"bad key"}`})
 	recovering := newScriptedImageUpstream(t,
-		scriptedImageStep{status: http.StatusServiceUnavailable, body: `{"error":"temporary"}`},
+		scriptedImageStep{status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`},
 		scriptedImageStep{body: testImageResponse(t, 73)},
 	)
 	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
@@ -324,8 +393,8 @@ func TestImageRaceStopsWhenAllProvidersRejectRequest(t *testing.T) {
 }
 
 func TestImageRaceStopsStartingRoundsAfterClientCancellation(t *testing.T) {
-	relayA := newScriptedImageUpstream(t)
-	relayB := newScriptedImageUpstream(t)
+	relayA := newScriptedImageUpstream(t, scriptedImageStep{waitForCancel: true})
+	relayB := newScriptedImageUpstream(t, scriptedImageStep{waitForCancel: true})
 	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
 		raceTestProvider("relay-a", relayA.URL(), "", imageOperationGeneration),
 		raceTestProvider("relay-b", relayB.URL(), "", imageOperationGeneration),
@@ -368,8 +437,8 @@ func TestImageRaceStopsStartingRoundsAfterClientCancellation(t *testing.T) {
 }
 
 func TestImageRaceReturnsRaceExhaustedAtDeadline(t *testing.T) {
-	relayA := newScriptedImageUpstream(t)
-	relayB := newScriptedImageUpstream(t)
+	relayA := newScriptedImageUpstream(t, scriptedImageStep{waitForCancel: true})
+	relayB := newScriptedImageUpstream(t, scriptedImageStep{waitForCancel: true})
 	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
 		raceTestProvider("relay-a", relayA.URL(), "", imageOperationGeneration),
 		raceTestProvider("relay-b", relayB.URL(), "", imageOperationGeneration),

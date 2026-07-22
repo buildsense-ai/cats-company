@@ -151,6 +151,7 @@ func TestImageGenerationProxyHandlerFromEnvPrefersCompleteProviderPool(t *testin
 	t.Setenv("CATSCO_IMAGE_TIMEOUT_SECONDS", "260")
 	t.Setenv("CATSCO_IMAGE_RACE_DEADLINE_SECONDS", "270")
 	t.Setenv("CATSCO_IMAGE_RACE_BACKOFF_MS", "250")
+	t.Setenv("CATSCO_IMAGE_RACE_MAX_ATTEMPTS_PER_PROVIDER", "3")
 	t.Setenv("CATSCO_IMAGE_MAX_RESPONSE_BYTES", "123456")
 
 	handler := NewImageGenerationProxyHandlerFromEnv()
@@ -160,8 +161,8 @@ func TestImageGenerationProxyHandlerFromEnvPrefersCompleteProviderPool(t *testin
 	if !handler.raceEnabled || len(handler.providers) != 2 {
 		t.Fatalf("race pool not enabled: providers=%d", len(handler.providers))
 	}
-	if handler.raceDeadline != 270*time.Second || handler.retryBackoff != 250*time.Millisecond {
-		t.Fatalf("race settings not applied: deadline=%s backoff=%s", handler.raceDeadline, handler.retryBackoff)
+	if handler.raceDeadline != 270*time.Second || handler.retryBackoff != 250*time.Millisecond || handler.maxAttemptsPerProvider != 3 {
+		t.Fatalf("race settings not applied: deadline=%s backoff=%s max_attempts=%d", handler.raceDeadline, handler.retryBackoff, handler.maxAttemptsPerProvider)
 	}
 	if handler.maxResponseBytes != 123456 {
 		t.Fatalf("max response bytes=%d", handler.maxResponseBytes)
@@ -179,6 +180,15 @@ func TestImageGenerationProxyHandlerRejectsRaceDeadlineBeyondCallerBudget(t *tes
 	t.Setenv("CATSCO_IMAGE_RACE_DEADLINE_SECONDS", "286")
 	handler := NewImageGenerationProxyHandlerFromEnv()
 	if err := handler.ConfigError(); err == nil || !strings.Contains(err.Error(), "must not exceed 285 seconds") {
+		t.Fatalf("unexpected config error: %v", err)
+	}
+}
+
+func TestImageGenerationProxyHandlerRejectsUnboundedProviderAttempts(t *testing.T) {
+	t.Setenv("CATSCO_IMAGE_UPSTREAMS_FILE", writeImageProviderPool(t, completeProviderDocument()))
+	t.Setenv("CATSCO_IMAGE_RACE_MAX_ATTEMPTS_PER_PROVIDER", "5")
+	handler := NewImageGenerationProxyHandlerFromEnv()
+	if err := handler.ConfigError(); err == nil || !strings.Contains(err.Error(), "must not exceed 4") {
 		t.Fatalf("unexpected config error: %v", err)
 	}
 }

@@ -98,7 +98,7 @@ func (h *ImageGenerationProxyHandler) runImageProviderLane(
 	case <-ctx.Done():
 		return
 	}
-	for attempt := 1; ; attempt++ {
+	for attempt := 1; attempt <= h.maxAttemptsPerProvider; attempt++ {
 		if ctx.Err() != nil {
 			return
 		}
@@ -119,6 +119,8 @@ func (h *ImageGenerationProxyHandler) runImageProviderLane(
 		terminal := result.category == imageAttemptSuccess ||
 			result.category == imageAttemptProviderFatal ||
 			result.category == imageAttemptRequestFatal ||
+			!shouldRetryImageAttempt(result) ||
+			attempt >= h.maxAttemptsPerProvider ||
 			ctx.Err() != nil
 		select {
 		case events <- imageProviderAttemptEvent{attempt: attempt, result: result, terminal: terminal}:
@@ -142,6 +144,10 @@ func (h *ImageGenerationProxyHandler) runImageProviderLane(
 			return
 		}
 	}
+}
+
+func shouldRetryImageAttempt(result imageAttemptResult) bool {
+	return result.category == imageAttemptTransient && result.status == http.StatusTooManyRequests
 }
 
 func (h *ImageGenerationProxyHandler) runImageRace(
