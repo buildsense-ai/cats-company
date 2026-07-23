@@ -73,6 +73,42 @@ func TestGroupFanoutTwoMemberGroupPreservesAutomaticBotActivation(t *testing.T) 
 	}
 }
 
+func TestGroupFanoutTwoMemberGroupIgnoresNonBotMentionForActivation(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			42: {ID: 42, AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 42, IsBot: true},
+		},
+	}
+	hub := NewHub(store, nil)
+	bot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(bot)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID:  "grp_80",
+		Content:  json.RawMessage(`"@usr7 记录给自己"`),
+		Mentions: []string{"usr7"},
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 31, nil)
+
+	var delivered ServerMessage
+	decodeQueuedServerMessage(t, bot.send, &delivered)
+	if !reflect.DeepEqual(delivered.Data.Mentions, []string{"usr7"}) {
+		t.Fatalf("mentions = %#v, want usr7", delivered.Data.Mentions)
+	}
+	if delivered.Data.MemberCount != 2 {
+		t.Fatalf("member_count = %d, want 2", delivered.Data.MemberCount)
+	}
+}
+
 func TestGroupFanoutLargeGroupIgnoresMentionTextWithoutStructuredTarget(t *testing.T) {
 	store := &identityMessageStore{
 		users: map[int64]*types.User{

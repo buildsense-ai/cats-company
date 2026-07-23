@@ -1729,7 +1729,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 
 		if isBot {
 			userIDStr := formatUID(m.UserID)
-			requiresMention := !trustedChannelTrigger && (senderIsBot || memberCount > 2 || len(mentions) > 0)
+			requiresMention := !trustedChannelTrigger && (senderIsBot || memberCount > 2)
 			if requiresMention && !mentionSet[userIDStr] {
 				continue
 			}
