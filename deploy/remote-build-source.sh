@@ -26,6 +26,13 @@ timeout "$server_build_timeout" docker build --progress=plain \
   -t "ghcr.io/${owner}/cats-company-server:${revision}" \
   .
 
+dreamina_build_timeout="${REMOTE_DREAMINA_BUILD_TIMEOUT_SECONDS:-600}"
+echo "Building Dreamina worker image: ghcr.io/${owner}/cats-company-dreamina-worker:${revision} (timeout ${dreamina_build_timeout}s)"
+timeout "$dreamina_build_timeout" docker build --progress=plain \
+  -f deploy/Dockerfile.dreamina \
+  -t "ghcr.io/${owner}/cats-company-dreamina-worker:${revision}" \
+  .
+
 if [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
   printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin >/dev/null
 fi

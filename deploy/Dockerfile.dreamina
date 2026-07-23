@@ -1,0 +1,13 @@
+FROM node:20-bookworm-slim
+
+WORKDIR /app
+COPY services/dreamina-worker/ ./
+
+ENV DREAMINA_WORKER_HOST=0.0.0.0 \
+    DREAMINA_WORKER_PORT=7070 \
+    DREAMINA_WORKER_DATA_ROOT=/var/lib/dreamina-worker \
+    DREAMINA_CLI_BIN=/usr/local/bin/dreamina \
+    HOME=/home/dreamina
+
+EXPOSE 7070
+CMD ["node", "server.mjs"]
