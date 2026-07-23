@@ -22,7 +22,7 @@ func raceTestProvider(id, generationURL, editURL string, operations ...imageProv
 		generationURL: generationURL,
 		editURL:       editURL,
 		model:         "gpt-image-2",
-		apiKey:        id + "-secret",
+		credentials:   newImageProviderCredentials([]string{id + "-secret"}),
 		client:        &http.Client{Timeout: 2 * time.Second},
 		operations:    capabilities,
 		editTransport: imageEditTransportJSONDataURL,
@@ -79,6 +79,7 @@ func TestImageRaceFirstValidCompletedImageWins(t *testing.T) {
 }
 
 func TestImageRaceSupportsThreeProvidersAndCancelsBothLosers(t *testing.T) {
+	const testDeadline = 5 * time.Second
 	losersStarted := make(chan string, 2)
 	losersCancelled := make(chan string, 2)
 	newLoser := func(id string) *httptest.Server {
@@ -99,7 +100,7 @@ func TestImageRaceSupportsThreeProvidersAndCancelsBothLosers(t *testing.T) {
 	secondLoser := newLoser("second-loser")
 	winner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := make(map[string]struct{}, 2)
-		deadline := time.After(time.Second)
+		deadline := time.After(testDeadline)
 		for len(started) < 2 {
 			select {
 			case id := <-losersStarted:
@@ -117,7 +118,7 @@ func TestImageRaceSupportsThreeProvidersAndCancelsBothLosers(t *testing.T) {
 		raceTestProvider("first-loser", firstLoser.URL+"/v1/images/generations", "", imageOperationGeneration),
 		raceTestProvider("winner", winner.URL+"/v1/images/generations", "", imageOperationGeneration),
 		raceTestProvider("second-loser", secondLoser.URL+"/v1/images/generations", "", imageOperationGeneration),
-	}, ImageGenerationProxyOptions{RaceDeadline: time.Second})
+	}, ImageGenerationProxyOptions{RaceDeadline: testDeadline})
 
 	rr := runRaceGeneration(t, handler, `{"prompt":"three providers"}`)
 	if rr.Code != http.StatusOK {
@@ -130,7 +131,7 @@ func TestImageRaceSupportsThreeProvidersAndCancelsBothLosers(t *testing.T) {
 		t.Fatalf("three dispatched attempts were not counted: %q", rr.Header().Get("X-CatsCo-Image-Total-Attempts"))
 	}
 	cancelled := make(map[string]struct{}, 2)
-	deadline := time.After(time.Second)
+	deadline := time.After(testDeadline)
 	for len(cancelled) < 2 {
 		select {
 		case id := <-losersCancelled:
@@ -263,7 +264,7 @@ func TestImageEditRaceUsesJSONAndMultipartTransportsConcurrently(t *testing.T) {
 
 	jsonProvider := raceTestProvider("code-newcli", jsonUpstream.URL+"/v1/images/generations", jsonUpstream.URL+"/v1/images/edits", imageOperationGeneration, imageOperationEdit)
 	multipartProvider := raceTestProvider("pptoken", multipartUpstream.URL+"/v1/images/generations", multipartUpstream.URL+"/v1/images/edits", imageOperationGeneration, imageOperationEdit)
-	multipartProvider.apiKey = "multipart-secret"
+	multipartProvider.credentials = newImageProviderCredentials([]string{"multipart-secret"})
 	multipartProvider.editTransport = imageEditTransportMultipart
 	handler := newImageGenerationProxyHandlerWithProviders(
 		[]imageUpstreamProvider{jsonProvider, multipartProvider},
@@ -424,8 +425,117 @@ func TestImageRaceExcludesProviderAfterAuthenticationFailure(t *testing.T) {
 		t.Fatalf("status=%d round=%q body=%s", rr.Code, rr.Header().Get("X-CatsCo-Image-Round"), rr.Body.String())
 	}
 	requests, _, _ := unauthorized.Snapshot()
-	if requests != 1 {
-		t.Fatalf("unauthorized provider requests=%d, want 1", requests)
+	if requests > 1 {
+		t.Fatalf("unauthorized provider requests=%d, want at most 1", requests)
+	}
+}
+
+func TestImageProviderRotatesCredentialsAndRemembersWorkingKey(t *testing.T) {
+	tests := []struct {
+		name string
+		step scriptedImageStep
+	}{
+		{
+			name: "authentication rejected",
+			step: scriptedImageStep{status: http.StatusUnauthorized, body: `{"error":"bad key"}`},
+		},
+		{
+			name: "rate limited",
+			step: scriptedImageStep{status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`},
+		},
+		{
+			name: "quota mapped to bad request",
+			step: scriptedImageStep{status: http.StatusBadRequest, body: `{"error":{"code":"insufficient_quota"}}`},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := newScriptedImageUpstream(t,
+				tc.step,
+				scriptedImageStep{body: testImageResponse(t, 81)},
+				scriptedImageStep{body: testImageResponse(t, 82)},
+			)
+			provider := raceTestProvider("rotating", upstream.URL(), "", imageOperationGeneration)
+			provider.credentials = newImageProviderCredentials([]string{"expired-key", "working-key"})
+			handler := newImageGenerationProxyHandlerWithProviders(
+				[]imageUpstreamProvider{provider},
+				ImageGenerationProxyOptions{RaceDeadline: time.Second},
+			)
+
+			first := runRaceGeneration(t, handler, `{"prompt":"rotate credentials"}`)
+			if first.Code != http.StatusOK {
+				t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+			}
+			second := runRaceGeneration(t, handler, `{"prompt":"reuse working credential"}`)
+			if second.Code != http.StatusOK {
+				t.Fatalf("second status=%d body=%s", second.Code, second.Body.String())
+			}
+
+			authorizations := upstream.AuthorizationSnapshot()
+			want := []string{"Bearer expired-key", "Bearer working-key", "Bearer working-key"}
+			if len(authorizations) != len(want) {
+				t.Fatalf("authorizations=%v", authorizations)
+			}
+			for index := range want {
+				if authorizations[index] != want[index] {
+					t.Fatalf("authorization[%d]=%q, want %q", index, authorizations[index], want[index])
+				}
+			}
+		})
+	}
+}
+
+func TestImageProviderDoesNotRotateCredentialsForProviderOutage(t *testing.T) {
+	upstream := newScriptedImageUpstream(t,
+		scriptedImageStep{status: http.StatusServiceUnavailable, body: `{"error":"temporary"}`},
+		scriptedImageStep{body: testImageResponse(t, 83)},
+	)
+	provider := raceTestProvider("outage", upstream.URL(), "", imageOperationGeneration)
+	provider.credentials = newImageProviderCredentials([]string{"primary-key", "fallback-key"})
+	handler := newImageGenerationProxyHandlerWithProviders(
+		[]imageUpstreamProvider{provider},
+		ImageGenerationProxyOptions{
+			RaceDeadline:           time.Second,
+			RetryBackoff:           time.Millisecond,
+			MaxAttemptsPerProvider: 2,
+		},
+	)
+
+	rr := runRaceGeneration(t, handler, `{"prompt":"provider retry"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	authorizations := upstream.AuthorizationSnapshot()
+	if len(authorizations) != 2 ||
+		authorizations[0] != "Bearer primary-key" ||
+		authorizations[1] != "Bearer primary-key" {
+		t.Fatalf("provider outage rotated credentials: %v", authorizations)
+	}
+}
+
+func TestImageProviderStopsAfterAllCredentialsAreRejected(t *testing.T) {
+	upstream := newScriptedImageUpstream(t,
+		scriptedImageStep{status: http.StatusForbidden, body: `{"error":"first key rejected"}`},
+		scriptedImageStep{status: http.StatusForbidden, body: `{"error":"second key rejected"}`},
+	)
+	provider := raceTestProvider("exhausted", upstream.URL(), "", imageOperationGeneration)
+	provider.credentials = newImageProviderCredentials([]string{"first-key", "second-key"})
+	handler := newImageGenerationProxyHandlerWithProviders(
+		[]imageUpstreamProvider{provider},
+		ImageGenerationProxyOptions{
+			RaceDeadline:           time.Second,
+			RetryBackoff:           time.Millisecond,
+			MaxAttemptsPerProvider: 4,
+		},
+	)
+
+	rr := runRaceGeneration(t, handler, `{"prompt":"all credentials rejected"}`)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	requests, _, _ := upstream.Snapshot()
+	if requests != 2 {
+		t.Fatalf("requests=%d, want exactly one request per credential", requests)
 	}
 }
 

@@ -9,11 +9,13 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 const (
-	requiredImageRaceProviders = 3
+	requiredImageRaceProviders  = 3
+	maximumImageProviderAPIKeys = 4
 )
 
 var imageProviderIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -37,10 +39,52 @@ type imageUpstreamProvider struct {
 	generationURL string
 	editURL       string
 	model         string
-	apiKey        string
+	credentials   *imageProviderCredentials
 	client        *http.Client
 	operations    map[imageProviderOperation]struct{}
 	editTransport imageProviderEditTransport
+}
+
+type imageProviderCredentials struct {
+	keys      []string
+	preferred atomic.Uint32
+}
+
+type imageProviderCredential struct {
+	index  int
+	apiKey string
+}
+
+func newImageProviderCredentials(keys []string) *imageProviderCredentials {
+	return &imageProviderCredentials{keys: append([]string(nil), keys...)}
+}
+
+func (c *imageProviderCredentials) ordered() []imageProviderCredential {
+	if c == nil || len(c.keys) == 0 {
+		return nil
+	}
+	start := int(c.preferred.Load()) % len(c.keys)
+	ordered := make([]imageProviderCredential, 0, len(c.keys))
+	for offset := range len(c.keys) {
+		index := (start + offset) % len(c.keys)
+		ordered = append(ordered, imageProviderCredential{index: index, apiKey: c.keys[index]})
+	}
+	return ordered
+}
+
+func (c *imageProviderCredentials) prefer(index int) {
+	if c == nil || index < 0 || index >= len(c.keys) {
+		return
+	}
+	c.preferred.Store(uint32(index))
+}
+
+func (c *imageProviderCredentials) primary() string {
+	ordered := c.ordered()
+	if len(ordered) == 0 {
+		return ""
+	}
+	return ordered[0].apiKey
 }
 
 func (p imageUpstreamProvider) supports(operation imageProviderOperation) bool {
@@ -64,14 +108,15 @@ type imageProviderPoolDocument struct {
 }
 
 type imageProviderFileEntry struct {
-	ID             string `json:"id"`
-	GenerationURL  string `json:"generation_url"`
-	EditURL        string `json:"edit_url"`
-	Model          string `json:"model"`
-	APIKey         string `json:"api_key"`
-	APIKeyFile     string `json:"api_key_file"`
-	EditTransport  string `json:"edit_transport"`
-	TimeoutSeconds int64  `json:"timeout_seconds"`
+	ID             string   `json:"id"`
+	GenerationURL  string   `json:"generation_url"`
+	EditURL        string   `json:"edit_url"`
+	Model          string   `json:"model"`
+	APIKey         string   `json:"api_key"`
+	APIKeyFile     string   `json:"api_key_file"`
+	APIKeyFiles    []string `json:"api_key_files"`
+	EditTransport  string   `json:"edit_transport"`
+	TimeoutSeconds int64    `json:"timeout_seconds"`
 }
 
 func loadImageUpstreamProvidersFile(path string, defaultModel string, defaultTimeout time.Duration) ([]imageUpstreamProvider, error) {
@@ -135,12 +180,9 @@ func buildImageUpstreamProvider(entry imageProviderFileEntry, defaultModel strin
 		return imageUpstreamProvider{}, err
 	}
 
-	apiKey, err := readImageProviderAPIKey(entry)
+	apiKeys, err := readImageProviderAPIKeys(entry)
 	if err != nil {
 		return imageUpstreamProvider{}, err
-	}
-	if apiKey == "" {
-		return imageUpstreamProvider{}, errors.New("api_key or api_key_file is required")
 	}
 
 	model := strings.TrimSpace(entry.Model)
@@ -156,10 +198,10 @@ func buildImageUpstreamProvider(entry imageProviderFileEntry, defaultModel strin
 	}
 
 	provider := imageUpstreamProvider{
-		id:     id,
-		model:  model,
-		apiKey: apiKey,
-		client: &http.Client{Timeout: timeout},
+		id:          id,
+		model:       model,
+		credentials: newImageProviderCredentials(apiKeys),
+		client:      &http.Client{Timeout: timeout},
 		operations: map[imageProviderOperation]struct{}{
 			imageOperationGeneration: {},
 			imageOperationEdit:       {},
@@ -200,18 +242,70 @@ func parseImageProviderEditTransport(value string) (imageProviderEditTransport, 
 	}
 }
 
-func readImageProviderAPIKey(entry imageProviderFileEntry) (string, error) {
+func readImageProviderAPIKeys(entry imageProviderFileEntry) ([]string, error) {
 	inlineKey := strings.TrimSpace(entry.APIKey)
 	keyFile := strings.TrimSpace(entry.APIKeyFile)
-	if inlineKey != "" && keyFile != "" {
-		return "", errors.New("set only one of api_key or api_key_file")
+	hasKeyFiles := entry.APIKeyFiles != nil
+	configuredForms := 0
+	for _, configured := range []bool{inlineKey != "", keyFile != "", hasKeyFiles} {
+		if configured {
+			configuredForms++
+		}
 	}
-	if keyFile == "" {
-		return inlineKey, nil
+	if configuredForms > 1 {
+		return nil, errors.New("set only one of api_key, api_key_file, or api_key_files")
 	}
-	contents, err := os.ReadFile(keyFile)
+
+	var keys []string
+	switch {
+	case inlineKey != "":
+		keys = []string{inlineKey}
+	case keyFile != "":
+		key, err := readImageProviderAPIKeyFile(keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("read api_key_file: %w", err)
+		}
+		keys = []string{key}
+	case hasKeyFiles:
+		if len(entry.APIKeyFiles) == 0 {
+			return nil, errors.New("api_key_files must contain at least one file")
+		}
+		if len(entry.APIKeyFiles) > maximumImageProviderAPIKeys {
+			return nil, fmt.Errorf("api_key_files must not contain more than %d files", maximumImageProviderAPIKeys)
+		}
+		keys = make([]string, 0, len(entry.APIKeyFiles))
+		for index, rawPath := range entry.APIKeyFiles {
+			path := strings.TrimSpace(rawPath)
+			if path == "" {
+				return nil, fmt.Errorf("api_key_files[%d] is empty", index)
+			}
+			key, err := readImageProviderAPIKeyFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("read api_key_files[%d]: %w", index, err)
+			}
+			keys = append(keys, key)
+		}
+	default:
+		return nil, errors.New("api_key, api_key_file, or api_key_files is required")
+	}
+
+	seen := make(map[string]struct{}, len(keys))
+	for index, key := range keys {
+		if key == "" {
+			return nil, fmt.Errorf("image provider credential %d is empty", index+1)
+		}
+		if _, duplicate := seen[key]; duplicate {
+			return nil, errors.New("image provider credentials must be unique")
+		}
+		seen[key] = struct{}{}
+	}
+	return keys, nil
+}
+
+func readImageProviderAPIKeyFile(path string) (string, error) {
+	contents, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("read api_key_file: %w", err)
+		return "", err
 	}
 	return strings.TrimSpace(string(contents)), nil
 }

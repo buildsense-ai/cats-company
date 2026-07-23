@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,7 +67,7 @@ func TestLoadImageUpstreamProvidersFileRequiresThreeCompleteProviders(t *testing
 	if providers[0].editTransport != imageEditTransportJSONDataURL {
 		t.Fatalf("first edit transport=%q", providers[0].editTransport)
 	}
-	if providers[1].apiKey != "pptoken-secret" || providers[1].client.Timeout != 30*time.Second {
+	if providers[1].credentials.primary() != "pptoken-secret" || providers[1].client.Timeout != 30*time.Second {
 		t.Fatalf("unexpected second provider: %#v", providers[1])
 	}
 	if providers[1].editTransport != imageEditTransportMultipart {
@@ -79,6 +80,106 @@ func TestLoadImageUpstreamProvidersFileRequiresThreeCompleteProviders(t *testing
 		if !provider.supports(imageOperationGeneration) || !provider.supports(imageOperationEdit) {
 			t.Fatalf("provider %q is not complete", provider.id)
 		}
+	}
+}
+
+func TestLoadImageUpstreamProvidersFileSupportsCredentialFileRotation(t *testing.T) {
+	directory := t.TempDir()
+	primaryPath := filepath.Join(directory, "pptoken-primary.key")
+	fallbackPath := filepath.Join(directory, "pptoken-fallback.key")
+	if err := os.WriteFile(primaryPath, []byte("primary-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fallbackPath, []byte("fallback-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	document := completeProviderDocument()
+	pptoken := document["providers"].([]map[string]interface{})[1]
+	delete(pptoken, "api_key")
+	pptoken["api_key_files"] = []string{primaryPath, fallbackPath}
+
+	providers, err := loadImageUpstreamProvidersFile(
+		writeImageProviderPool(t, document),
+		"gpt-image-2",
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("load provider pool: %v", err)
+	}
+	credentials := providers[1].credentials.ordered()
+	if len(credentials) != 2 ||
+		credentials[0].apiKey != "primary-secret" ||
+		credentials[1].apiKey != "fallback-secret" {
+		t.Fatalf("unexpected credential pool")
+	}
+}
+
+func TestReadImageProviderAPIKeysRejectsInvalidRotationConfig(t *testing.T) {
+	directory := t.TempDir()
+	firstPath := filepath.Join(directory, "first.key")
+	duplicatePath := filepath.Join(directory, "duplicate.key")
+	if err := os.WriteFile(firstPath, []byte("same-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(duplicatePath, []byte("same-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		entry    imageProviderFileEntry
+		contains string
+	}{
+		{
+			name: "mixed single and multiple files",
+			entry: imageProviderFileEntry{
+				APIKeyFile:  firstPath,
+				APIKeyFiles: []string{duplicatePath},
+			},
+			contains: "only one",
+		},
+		{
+			name:     "empty file list",
+			entry:    imageProviderFileEntry{APIKeyFiles: []string{}},
+			contains: "at least one",
+		},
+		{
+			name: "too many files",
+			entry: imageProviderFileEntry{APIKeyFiles: []string{
+				firstPath,
+				firstPath,
+				firstPath,
+				firstPath,
+				firstPath,
+			}},
+			contains: "not contain more than 4",
+		},
+		{
+			name: "empty path",
+			entry: imageProviderFileEntry{
+				APIKeyFiles: []string{firstPath, " "},
+			},
+			contains: "api_key_files[1] is empty",
+		},
+		{
+			name: "duplicate credential contents",
+			entry: imageProviderFileEntry{
+				APIKeyFiles: []string{firstPath, duplicatePath},
+			},
+			contains: "must be unique",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := readImageProviderAPIKeys(tc.entry)
+			if err == nil || !strings.Contains(err.Error(), tc.contains) {
+				t.Fatalf("error=%v, want substring %q", err, tc.contains)
+			}
+			if strings.Contains(err.Error(), "same-secret") {
+				t.Fatalf("configuration error leaked a secret: %v", err)
+			}
+		})
 	}
 }
 
@@ -225,12 +326,25 @@ func TestProductionImageProviderExampleMatchesLoader(t *testing.T) {
 	if err := json.Unmarshal(contents, &document); err != nil {
 		t.Fatal(err)
 	}
-	secretPath := filepath.Join(t.TempDir(), "provider-key")
-	if err := os.WriteFile(secretPath, []byte("test-secret"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	secretDirectory := t.TempDir()
 	for index := range document.Providers {
-		document.Providers[index].APIKeyFile = secretPath
+		entry := &document.Providers[index]
+		if len(entry.APIKeyFiles) > 0 {
+			entry.APIKeyFiles = nil
+			for keyIndex := 0; keyIndex < 2; keyIndex++ {
+				path := filepath.Join(secretDirectory, fmt.Sprintf("provider-%d-key-%d", index, keyIndex))
+				if err := os.WriteFile(path, []byte(fmt.Sprintf("test-secret-%d-%d", index, keyIndex)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				entry.APIKeyFiles = append(entry.APIKeyFiles, path)
+			}
+			continue
+		}
+		path := filepath.Join(secretDirectory, fmt.Sprintf("provider-%d-key", index))
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("test-secret-%d", index)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		entry.APIKeyFile = path
 	}
 	providers, err := loadImageUpstreamProvidersFile(
 		writeImageProviderPool(t, document),
@@ -250,6 +364,9 @@ func TestProductionImageProviderExampleMatchesLoader(t *testing.T) {
 		providers[1].editTransport != imageEditTransportMultipart ||
 		providers[2].editTransport != imageEditTransportMultipart {
 		t.Fatalf("unexpected production edit transports")
+	}
+	if len(providers[1].credentials.ordered()) != 2 {
+		t.Fatal("production pptoken example did not keep both credentials")
 	}
 }
 

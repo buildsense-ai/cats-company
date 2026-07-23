@@ -14,7 +14,10 @@
       "generation_url": "https://api.pptoken.org/v1/images/generations",
       "edit_url": "https://api.pptoken.org/v1/images/edits",
       "model": "gpt-image-2",
-      "api_key_file": "/run/catsco-secrets/pptoken.key",
+      "api_key_files": [
+        "/run/catsco-secrets/pptoken.key",
+        "/run/catsco-secrets/pptoken-fallback.key"
+      ],
       "edit_transport": "multipart",
       "timeout_seconds": 260
     },

@@ -25,11 +25,12 @@ type scriptedImageStep struct {
 type scriptedImageUpstream struct {
 	server *httptest.Server
 
-	mu            sync.Mutex
-	steps         []scriptedImageStep
-	requests      int
-	cancellations int
-	payloads      []map[string]interface{}
+	mu             sync.Mutex
+	steps          []scriptedImageStep
+	requests       int
+	cancellations  int
+	payloads       []map[string]interface{}
+	authorizations []string
 }
 
 func newScriptedImageUpstream(t *testing.T, steps ...scriptedImageStep) *scriptedImageUpstream {
@@ -46,6 +47,7 @@ func newScriptedImageUpstream(t *testing.T, steps ...scriptedImageStep) *scripte
 		index := upstream.requests
 		upstream.requests++
 		upstream.payloads = append(upstream.payloads, payload)
+		upstream.authorizations = append(upstream.authorizations, r.Header.Get("Authorization"))
 		step := scriptedImageStep{status: http.StatusServiceUnavailable, body: `{"error":"script exhausted"}`}
 		if index < len(upstream.steps) {
 			step = upstream.steps[index]
@@ -90,6 +92,12 @@ func (u *scriptedImageUpstream) Snapshot() (requests int, cancellations int, pay
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.requests, u.cancellations, append([]map[string]interface{}(nil), u.payloads...)
+}
+
+func (u *scriptedImageUpstream) AuthorizationSnapshot() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.authorizations...)
 }
 
 func testImageResponse(t *testing.T, marker byte) string {
