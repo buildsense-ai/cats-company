@@ -466,7 +466,9 @@ export function connectWS(onMessage, { force = false } = {}) {
     Object.keys(topicLastSeq).forEach((tid) => {
       requestMissedMessages(tid);
     });
-    onMessage({ _type: 'ws_open' });
+    const openMessage = { _type: 'ws_open' };
+    onMessage(openMessage);
+    msgHandlers.forEach((handler) => handler(openMessage));
   };
 
   conn.onclose = () => {

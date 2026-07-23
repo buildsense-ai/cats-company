@@ -110,6 +110,81 @@ describe('ChatComposer', () => {
     expect(onSend).toHaveBeenCalledTimes(1);
   });
 
+  it('renders removable image and file attachments inside the expanding composer box', async () => {
+    const onRemoveAttachment = vi.fn();
+    await renderComposer({
+      attachments: [
+        {
+          type: 'image',
+          name: 'cat.jpg',
+          content: { payload: { file_key: 'cat', thumbnail: '/uploads/cat.jpg' } },
+        },
+        {
+          type: 'file',
+          name: 'brief.pdf',
+          content: { payload: { file_key: 'brief' } },
+        },
+      ],
+      onRemoveAttachment,
+    });
+
+    const box = container.querySelector('.v3-composer-box.has-attachments');
+    expect(box?.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(2);
+    expect(box?.querySelector('.v3-composer-attachment-chip.is-image img')).not.toBeNull();
+    expect(box?.textContent).toContain('brief.pdf');
+
+    await act(async () => {
+      const previewButton = box.querySelector('button[aria-label="预览图片：cat.jpg"]');
+      previewButton.focus();
+      previewButton.click();
+    });
+    expect(container.querySelector('[role="dialog"][aria-label="图片预览：cat.jpg"] img')?.getAttribute('src'))
+      .toBe('/uploads/cat.jpg');
+
+    const closePreviewButton = container.querySelector('button[aria-label="关闭图片预览"]');
+    expect(document.activeElement).toBe(closePreviewButton);
+
+    const tabEvent = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => {
+      closePreviewButton.dispatchEvent(tabEvent);
+    });
+    expect(tabEvent.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(closePreviewButton);
+
+    const shiftTabEvent = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => {
+      closePreviewButton.dispatchEvent(shiftTabEvent);
+    });
+    expect(shiftTabEvent.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(closePreviewButton);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    expect(container.querySelector('[role="dialog"][aria-label="图片预览：cat.jpg"]')).toBeNull();
+    expect(document.activeElement).toBe(
+      box.querySelector('button[aria-label="预览图片：cat.jpg"]'),
+    );
+
+    await act(async () => {
+      box.querySelector('button[aria-label="移除附件：cat.jpg"]').click();
+    });
+    expect(onRemoveAttachment).toHaveBeenCalledWith(0);
+  });
+
   it.each([
     ['attachment', { attachmentOpen: true, attachmentMenu: <div className="test-menu">附件菜单</div> }],
     ['Agent', { agentOpen: true, agentMenu: <div className="test-menu">Agent 菜单</div> }],

@@ -144,6 +144,8 @@ describe('ChatMessage rich file rendering', () => {
 
     expect(container.querySelector('.v3-attachment-name').textContent).toBe('report.html');
     expect(container.querySelector('.v3-attachment-size').textContent).toContain('HTML');
+    expect(container.querySelector('.v3-attachment-size').textContent).toBe('HTML · 2.0 KB');
+    expect(container.querySelector('.v3-message').classList.contains('has-file-only')).toBe(true);
 
     await act(async () => {
       Simulate.click(container.querySelector('.v3-artifact-main'));

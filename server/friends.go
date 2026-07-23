@@ -14,12 +14,17 @@ import (
 
 // FriendHandler handles friend-related API requests.
 type FriendHandler struct {
-	db store.Store
+	db  store.Store
+	hub *Hub
 }
 
 // NewFriendHandler creates a new FriendHandler.
-func NewFriendHandler(db store.Store) *FriendHandler {
-	return &FriendHandler{db: db}
+func NewFriendHandler(db store.Store, hubs ...*Hub) *FriendHandler {
+	var hub *Hub
+	if len(hubs) > 0 {
+		hub = hubs[0]
+	}
+	return &FriendHandler{db: db, hub: hub}
 }
 
 // FriendActionRequest is the JSON body for friend actions.
@@ -76,7 +81,48 @@ func (h *FriendHandler) HandleSendRequest(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	h.notifyFriendEvent("request", uid, req.UserID, req.Message, h.friendEventRecipients(req.UserID)...)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"id": id, "status": "pending"})
+}
+
+func (h *FriendHandler) friendEventRecipients(targetUID int64) []int64 {
+	recipients := []int64{targetUID}
+	if h.db == nil {
+		return recipients
+	}
+
+	user, err := h.db.GetUser(targetUID)
+	if err != nil || user == nil || user.AccountType != types.AccountBot {
+		return recipients
+	}
+	if ownerUID, ownerErr := h.db.GetBotOwner(targetUID); ownerErr == nil && ownerUID > 0 {
+		recipients = append(recipients, ownerUID)
+	}
+	return recipients
+}
+
+func (h *FriendHandler) notifyFriendEvent(action string, fromUID, toUID int64, message string, recipients ...int64) {
+	if h.hub == nil {
+		return
+	}
+
+	event := &ServerMessage{Friend: &MsgServerFriend{
+		Action: action,
+		From:   fromUID,
+		To:     toUID,
+		Msg:    message,
+	}}
+	sent := make(map[int64]struct{}, len(recipients))
+	for _, recipientUID := range recipients {
+		if recipientUID <= 0 {
+			continue
+		}
+		if _, exists := sent[recipientUID]; exists {
+			continue
+		}
+		sent[recipientUID] = struct{}{}
+		h.hub.SendToUser(recipientUID, event)
+	}
 }
 
 func (h *FriendHandler) validateFriendRequestTarget(actorUID, targetUID int64) (int, error) {
@@ -148,6 +194,8 @@ func (h *FriendHandler) HandleAcceptRequest(w http.ResponseWriter, r *http.Reque
 	// Topic creation would be handled by the topic manager
 	_ = topicID
 
+	recipients := append(h.friendEventRecipients(targetUID), req.UserID)
+	h.notifyFriendEvent("accepted", targetUID, req.UserID, "", recipients...)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 }
 
@@ -184,6 +232,8 @@ func (h *FriendHandler) HandleRejectRequest(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	recipients := append(h.friendEventRecipients(targetUID), req.UserID)
+	h.notifyFriendEvent("rejected", targetUID, req.UserID, "", recipients...)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rejected"})
 }
 
@@ -202,6 +252,10 @@ func (h *FriendHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Keep the privacy-sensitive block action local to the actor. The target and
+	// an Agent owner's session only need a relationship refresh.
+	h.notifyFriendEvent("blocked", uid, req.UserID, "", uid)
+	h.notifyFriendEvent("removed", uid, req.UserID, "", h.friendEventRecipients(req.UserID)...)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "blocked"})
 }
 
@@ -219,6 +273,8 @@ func (h *FriendHandler) HandleRemoveFriend(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	recipients := append(h.friendEventRecipients(friendID), uid)
+	h.notifyFriendEvent("removed", uid, friendID, "", recipients...)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 

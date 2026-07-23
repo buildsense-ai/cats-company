@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import Avatar from './avatar';
 import QRCode from './qr-code';
+import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
 
 const CREATE_MODES = {
@@ -110,6 +111,7 @@ const botVisibilityDescription = (visibility) => (
 );
 
 export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
+  const feedback = useFeedback();
   const [bots, setBots] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('hub'); // 'hub', 'create', 'manage'
@@ -127,12 +129,6 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
   const [avatarUploading, setAvatarUploading] = useState(false);
 
   useEffect(() => { loadBots(); }, []);
-
-  useEffect(() => {
-    if (!error) return undefined;
-    const timer = window.setTimeout(() => setError(''), 3600);
-    return () => window.clearTimeout(timer);
-  }, [error]);
 
   const loadBots = async ({ silent = false } = {}) => {
     try {
@@ -237,9 +233,14 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
     const botId = bot?.id || bot?.uid;
     if (!botId) return;
     const owned = isOwnedBot(bot);
-    const confirmed = owned
-      ? window.confirm(`确定要永久删除 ${bot.display_name} 吗？`)
-      : window.confirm(`确定从 AI 助手列表中移除 ${bot.display_name} 吗？\n\n这只会解除你的好友关系，不会删除对方创建的虚拟员工。`);
+    const confirmed = await feedback.confirm({
+      title: owned ? `永久删除“${bot.display_name}”？` : `移除“${bot.display_name}”？`,
+      message: owned
+        ? '该虚拟员工及其相关配置会被永久删除，且无法恢复。'
+        : '这只会解除好友关系，不会删除对方创建的虚拟员工。',
+      confirmLabel: owned ? '永久删除' : '移除',
+      tone: 'danger',
+    });
     if (!confirmed) return;
     try {
       if (owned) {
@@ -250,6 +251,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
       await loadBots({ silent: true });
       if (onBotsChanged) onBotsChanged();
       setTab('hub');
+      feedback.notify({ tone: 'success', message: owned ? '虚拟员工已删除' : '助手已移除' });
     } catch (e) {
       setError(e.message || t('error_server'));
     }
@@ -436,14 +438,16 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                   </label>
                   <label>
                     <span>助手定位 <b>*</b></span>
-                    <select
-                      value={createForm.role}
-                      onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })}
-                      className="oc-auth-input cc-agent-role-select"
-                    >
-                      {ASSISTANT_ROLES.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
-                    </select>
-                    <ChevronDown className="cc-agent-role-chevron" size={15} aria-hidden="true" />
+                    <div className="cc-agent-role-field">
+                      <select
+                        value={createForm.role}
+                        onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })}
+                        className="oc-auth-input cc-agent-role-select"
+                      >
+                        {ASSISTANT_ROLES.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
+                      </select>
+                      <ChevronDown className="cc-agent-role-chevron" size={15} aria-hidden="true" />
+                    </div>
                   </label>
                   <label>
                     <span>用途说明 <small>选填</small></span>
@@ -670,15 +674,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
           )}
         </div>
 
-        {error && (
-          <div className="cc-agent-error-toast" role="alert">
-            <XCircle size={17} />
-            <span>{error}</span>
-            <button type="button" onClick={() => setError('')} aria-label="关闭错误提示">
-              <X size={15} />
-            </button>
-          </div>
-        )}
+        {error && <InlineFeedback tone="error" className="cc-agent-inline-feedback">{error}</InlineFeedback>}
       </div>
       {entryBot && isOwnedBot(entryBot) && (
         <AgentEntryModal
@@ -749,6 +745,7 @@ function mergeManageableBots(rawBots, rawAgents, rawFriends = []) {
 }
 
 function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged }) {
+  const feedback = useFeedback();
   const [channel, setChannel] = useState('weixin');
   const [channelAppIds, setChannelAppIds] = useState({ weixin: '', feishu: '', weixin_clawbot: '' });
   const [entries, setEntries] = useState([]);
@@ -958,7 +955,13 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
 
   const handleRegenerate = async () => {
     if (!selected) return;
-    if (!window.confirm('重新生成后，旧入口码会失效。继续吗？')) return;
+    const confirmed = await feedback.confirm({
+      title: '重新生成入口码？',
+      message: '重新生成后，旧入口码会立即失效。',
+      confirmLabel: '重新生成',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     try {
       setSaving(true);
       setError('');
@@ -971,6 +974,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
           && normalizeChannelAgentAccessMode(entry.access_mode) === normalizeChannelAgentAccessMode(next.access_mode)
         )
       ))]);
+      feedback.notify({ tone: 'success', message: '入口码已重新生成' });
     } catch (err) {
       setError(err.message || 'Failed to regenerate entry code');
     } finally {
@@ -1001,13 +1005,20 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
     const friendUID = friend?.id || friend?.uid;
     if (!friendUID || !botId) return;
     const name = friend.display_name || friend.username || `用户 ${friendUID}`;
-    if (!window.confirm(`确定移除 ${name} 对这个虚拟员工的使用权限吗？`)) return;
+    const confirmed = await feedback.confirm({
+      title: `移除“${name}”的使用权限？`,
+      message: '移除后，该用户将无法继续使用这个虚拟员工。',
+      confirmLabel: '移除权限',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     try {
       setRemovingFriendUID(friendUID);
       setError('');
       await api.removeBotFriend(botId, friendUID);
       await loadPendingRequests();
       if (onAccessChanged) onAccessChanged();
+      feedback.notify({ tone: 'success', message: '使用权限已移除' });
     } catch (err) {
       setError(err.message || '移除使用者失败');
     } finally {
@@ -1118,11 +1129,7 @@ function AgentEntryModal({ bot, onClose, onCopy, copiedField, onAccessChanged })
             </div>
           </div>
 
-          {error && (
-            <div style={{ background: 'rgba(250,81,81,0.1)', color: '#FA5151', padding: 12, borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
-              {error}
-            </div>
-          )}
+          {error && <InlineFeedback tone="error" className="cc-agent-entry-feedback">{error}</InlineFeedback>}
 
           {loading ? (
             <div style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)' }}>正在读取入口码...</div>

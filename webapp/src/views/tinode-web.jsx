@@ -25,6 +25,7 @@ import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
 import AuthFlowBackground from '../components/auth-flow-background';
+import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
 import BotModelSelector, {
@@ -155,6 +156,7 @@ export default function TinodeWeb() {
 }
 
 function TinodeWebApp() {
+  const feedback = useFeedback();
   const entryMatch = window.location.pathname.match(/^\/e\/([^/]+)$/);
   const entrySceneKey = entryMatch ? decodeURIComponent(entryMatch[1]) : '';
   const channelDeviceLink = window.location.pathname === '/channel-device-link';
@@ -720,11 +722,12 @@ function TinodeWebApp() {
         current?.topicId === topic.topicId ? { ...current, name: nextName } : current
       ));
       window.dispatchEvent(new Event('cc:data-changed'));
+      feedback.notify({ tone: 'success', message: '对话标题已更新' });
     } catch (error) {
-      window.alert(error.message || '修改对话标题失败');
+      feedback.notify({ tone: 'error', title: '修改标题失败', message: error.message || '请稍后重试' });
       throw error;
     }
-  }, [activeTopic, setActiveTopic]);
+  }, [activeTopic, feedback, setActiveTopic]);
 
   const resolveAgentTopic = useCallback(async (agent) => {
     const agentUid = agent?.uid || agent?.id;
@@ -1256,7 +1259,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
   return authShell(
     <form className="oc-auth-card" onSubmit={handleSubmit}>
       <div className="oc-auth-logo">CatsCo</div>
-      {error && <div style={{ color: '#FA5151', marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      {error && <InlineFeedback tone="error" className="oc-auth-feedback">{error}</InlineFeedback>}
 
       {mode === 'login' ? (
         <>

@@ -729,6 +729,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
       ? renderedTextContent.trim().length > 0
       : renderedTextContent != null
   ), [renderedTextContent]);
+  const hasFileOnly = !hasText && richBlocks.length > 0 && richBlocks.every((block) => block.type === 'file');
 
   const parsed = useMemo(() => {
     if (storedBlocks.length > 0) return null;
@@ -822,7 +823,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
 
   return (
     <div
-      className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}`}
+      className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}${hasFileOnly ? ' has-file-only' : ''}`}
       data-conversation-question={questionAnchorKey || undefined}
     >
       <div className="v3-avatar-col">
@@ -1246,7 +1247,7 @@ function FileContent({ payload, onPreviewFile, activePreviewFile }) {
   const { url, ext, canPreview, meta, sizeStr, key } = descriptor;
   const activeKey = activePreviewFile ? previewFileDescriptor(activePreviewFile)?.key : '';
   const isActive = canPreview && activeKey === key;
-  const subtitle = [meta.label, meta.subtitle, sizeStr, fileMimeType(payload) || ext].filter(Boolean).join(' · ');
+  const subtitle = [meta.label, sizeStr].filter(Boolean).join(' · ');
   const downloadURL = downloadableMediaURL(url, payload.name);
   const openFile = () => {
     if (canPreview && onPreviewFile) onPreviewFile(payload);

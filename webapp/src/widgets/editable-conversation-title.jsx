@@ -1,5 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 
+function titleInputSize(value) {
+  const units = Array.from(String(value || '')).reduce((total, character) => (
+    total + (character.codePointAt(0) > 0xff ? 2 : 1)
+  ), 0);
+  return Math.min(40, Math.max(6, units + 2));
+}
+
 export default function EditableConversationTitle({ title, onSave, editable = false }) {
   const normalizedTitle = String(title || '');
   const [editing, setEditing] = useState(false);
@@ -63,6 +70,7 @@ export default function EditableConversationTitle({ title, onSave, editable = fa
         ref={inputRef}
         className="v3-shell-title-input"
         value={draft}
+        size={titleInputSize(draft)}
         onChange={(event) => setDraft(event.target.value)}
         onBlur={saveTitle}
         onKeyDown={(event) => {

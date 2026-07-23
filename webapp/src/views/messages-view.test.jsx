@@ -1089,6 +1089,46 @@ describe('MessagesView composer draft isolation', () => {
     expect(api.uploadFile).toHaveBeenCalledWith(image, 'image');
     expect(container.textContent).toContain('已添加图片：cat.jpg');
     expect(container.textContent).toContain('cat.jpg');
+    expect(container.querySelectorAll('.v3-composer-box .v3-composer-attachment-chip')).toHaveLength(1);
+  });
+
+  it('continues a multi-image upload after one file fails and keeps successful images removable', async () => {
+    api.uploadFile
+      .mockRejectedValueOnce(new Error('first upload failed'))
+      .mockResolvedValueOnce({
+        file_key: '20260610_dog.jpg',
+        url: '/uploads/images/20260610_dog.jpg',
+        name: 'dog.jpg',
+        size: 14,
+        mime_type: 'image/jpeg',
+      });
+
+    await mountTopic(root, 'p2p_1_2');
+
+    const input = container.querySelector('input[accept*="image/jpeg"]');
+    const firstImage = new File(['first'], 'cat.jpg', { type: 'image/jpeg' });
+    const secondImage = new File(['second'], 'dog.jpg', { type: 'image/jpeg' });
+
+    await act(async () => {
+      Simulate.change(input, {
+        target: {
+          files: [firstImage, secondImage],
+          value: 'C:\\fakepath\\dog.jpg',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(api.uploadFile).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('已添加 1 个附件，另有 1 个上传失败');
+    expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(1);
+    expect(container.querySelector('.v3-composer-attachment-chip img')?.getAttribute('src'))
+      .toBe('/uploads/images/20260610_dog.jpg');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="移除附件：dog.jpg"]'));
+    });
+    expect(container.querySelector('.v3-composer-attachment-chip')).toBeNull();
   });
 
   it('opens a phone upload QR dialog from the composer', async () => {
@@ -1176,7 +1216,9 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain('8 个附件待发送');
+    expect(container.textContent).toContain('手机已上传 8 个附件');
+    expect(container.querySelectorAll('.v3-attachment-notice')).toHaveLength(1);
+    expect(container.querySelector('.v3-composer-attachments')).toBeNull();
 
     await act(async () => {
       Simulate.click(container.querySelector('button[aria-label="关闭手机上传"]'));
@@ -1187,7 +1229,7 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain('9 个附件待发送');
+    expect(container.textContent).toContain('手机已上传 9 个附件');
     vi.useRealTimers();
   });
 
