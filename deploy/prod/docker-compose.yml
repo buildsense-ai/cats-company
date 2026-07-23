@@ -35,6 +35,8 @@ services:
       CATSCO_IMAGE_MAX_REQUEST_BYTES: "${CATSCO_IMAGE_MAX_REQUEST_BYTES:-1048576}"
       CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES: "${CATSCO_IMAGE_EDIT_MAX_REQUEST_BYTES:-25165824}"
       CATSCO_IMAGE_MAX_RESPONSE_BYTES: "${CATSCO_IMAGE_MAX_RESPONSE_BYTES:-41943040}"
+      CATSCO_DREAMINA_WORKER_URL: "${CATSCO_DREAMINA_WORKER_URL:-http://dreamina-worker:7070}"
+      CATSCO_DREAMINA_WORKER_TIMEOUT_SECONDS: "${CATSCO_DREAMINA_WORKER_TIMEOUT_SECONDS:-150}"
       TENCENTCLOUD_SECRET_ID: "${TENCENTCLOUD_SECRET_ID:-}"
       TENCENTCLOUD_SECRET_KEY: "${TENCENTCLOUD_SECRET_KEY:-}"
       TENCENTCLOUD_REGION: "${TENCENTCLOUD_REGION:-ap-guangzhou}"
@@ -80,6 +82,9 @@ services:
       CATSCO_BOT_MODEL_CLOUD_ENABLED: "${CATSCO_BOT_MODEL_CLOUD_ENABLED:-true}"
       CATSCO_BOT_MODEL_CLOUD_TEST_UIDS: "${CATSCO_BOT_MODEL_CLOUD_TEST_UIDS:-}"
       CATSCO_CLOUD_ARTIFACT_AGENT_UIDS: "${CATSCO_CLOUD_ARTIFACT_AGENT_UIDS:-440}"
+      CATSCO_ARTIFACT_INDEX_URL: "${CATSCO_ARTIFACT_INDEX_URL:-}"
+      CATSCO_ARTIFACT_MANAGEMENT_URL: "${CATSCO_ARTIFACT_MANAGEMENT_URL:-}"
+      CATSCO_ARTIFACT_MANAGEMENT_TOKEN: "${CATSCO_ARTIFACT_MANAGEMENT_TOKEN:-}"
       CATS_RELAY_PUBLIC_BASE_URL: "${CATS_RELAY_PUBLIC_BASE_URL:-https://relay.catsco.cc}"
       CATS_RELAY_OPENAI_BASE_URL: "${CATS_RELAY_OPENAI_BASE_URL:-https://relay.catsco.cc/v1}"
       CATS_RELAY_ANTHROPIC_BASE_URL: "${CATS_RELAY_ANTHROPIC_BASE_URL:-https://relay.catsco.cc/anthropic}"
@@ -103,6 +108,32 @@ services:
       - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:6061/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - prodnet
+
+  dreamina-worker:
+    image: "${GHCR_REGISTRY:-ghcr.io}/${GHCR_OWNER}/cats-company-dreamina-worker:${DREAMINA_IMAGE_TAG:?DREAMINA_IMAGE_TAG is required}"
+    restart: unless-stopped
+    environment:
+      DREAMINA_WORKER_HOST: "0.0.0.0"
+      DREAMINA_WORKER_PORT: "7070"
+      DREAMINA_WORKER_DATA_ROOT: "/var/lib/dreamina-worker"
+      DREAMINA_WORKER_POLL_WAIT_SECONDS: "${DREAMINA_WORKER_POLL_WAIT_SECONDS:-12}"
+      DREAMINA_CLI_BIN: "/usr/local/bin/dreamina"
+      DREAMINA_CLI_TIMEOUT_MS: "${DREAMINA_CLI_TIMEOUT_MS:-120000}"
+      DREAMINA_IMAGE_PROMPT_MAX_CHARS: "${DREAMINA_IMAGE_PROMPT_MAX_CHARS:-900}"
+      HOME: "/home/dreamina"
+      TZ: "Asia/Shanghai"
+    volumes:
+      - "${PROD_STACK_ROOT}/bin/dreamina:/usr/local/bin/dreamina:ro"
+      - "/etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro"
+      - "${PROD_STACK_ROOT}/data/dreamina-home:/home/dreamina"
+      - "${PROD_STACK_ROOT}/data/dreamina-worker:/var/lib/dreamina-worker"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7070/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
       retries: 10

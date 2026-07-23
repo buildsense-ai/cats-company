@@ -44,18 +44,39 @@ type JWTClaims struct {
 	jwt.RegisteredClaims
 }
 
-// GenerateToken creates a signed JWT for the given user.
+const (
+	userTokenType           = "user"
+	persistentUserTokenType = "user_persistent"
+)
+
+// GenerateToken creates a seven-day signed JWT for ordinary web sessions.
 func GenerateToken(uid int64, username string, email string) (string, error) {
+	return generateUserToken(uid, username, email, false)
+}
+
+// GeneratePersistentUserToken creates a non-expiring JWT for a trusted CatsCo
+// desktop installation. Account state and signing-key rotation still revoke it.
+func GeneratePersistentUserToken(uid int64, username string, email string) (string, error) {
+	return generateUserToken(uid, username, email, true)
+}
+
+func generateUserToken(uid int64, username string, email string, persistent bool) (string, error) {
+	tokenType := userTokenType
+	registered := jwt.RegisteredClaims{
+		IssuedAt: jwt.NewNumericDate(time.Now()),
+		Issuer:   "catscompany",
+	}
+	if persistent {
+		tokenType = persistentUserTokenType
+	} else {
+		registered.ExpiresAt = jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour))
+	}
 	claims := JWTClaims{
-		TokenType: "user",
-		UID:       uid,
-		Username:  username,
-		Email:     email,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    "catscompany",
-		},
+		TokenType:        tokenType,
+		UID:              uid,
+		Username:         username,
+		Email:            email,
+		RegisteredClaims: registered,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(jwtSecret)
@@ -77,7 +98,7 @@ func ParseToken(tokenStr string) (*JWTClaims, error) {
 		return nil, err
 	}
 	if claims, ok := token.Claims.(*JWTClaims); ok && token.Valid {
-		if claims.TokenType != "" && claims.TokenType != "user" {
+		if claims.TokenType != "" && claims.TokenType != userTokenType && claims.TokenType != persistentUserTokenType {
 			return nil, fmt.Errorf("unsupported token type %q", claims.TokenType)
 		}
 		return claims, nil

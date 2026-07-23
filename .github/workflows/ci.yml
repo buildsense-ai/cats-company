@@ -112,6 +112,10 @@ jobs:
       - name: Validate prod compose
         run: docker compose -f deploy/prod/docker-compose.yml --env-file deploy/prod/env.prod.example config
 
+      - name: Test Dreamina worker
+        working-directory: services/dreamina-worker
+        run: npm test
+
       - name: Validate host Nginx timeout update
         run: |
           bash -n deploy/prod/ensure-image-timeout-nginx.sh
@@ -119,6 +123,9 @@ jobs:
 
       - name: Build server image
         run: docker build -f deploy/Dockerfile.server -t cats-company-server-ci .
+
+      - name: Build Dreamina worker image
+        run: docker build -f deploy/Dockerfile.dreamina -t cats-company-dreamina-worker-ci .
 
       - name: Build web image
         run: docker build -f deploy/Dockerfile.nginx --build-arg REACT_APP_API_BASE= -t cats-company-web-ci .

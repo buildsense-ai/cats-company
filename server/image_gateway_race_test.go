@@ -78,6 +78,69 @@ func TestImageRaceFirstValidCompletedImageWins(t *testing.T) {
 	}
 }
 
+func TestImageRaceSupportsThreeProvidersAndCancelsBothLosers(t *testing.T) {
+	losersStarted := make(chan string, 2)
+	losersCancelled := make(chan string, 2)
+	newLoser := func(id string) *httptest.Server {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var payload map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			losersStarted <- id
+			<-r.Context().Done()
+			losersCancelled <- id
+		}))
+		t.Cleanup(upstream.Close)
+		return upstream
+	}
+	firstLoser := newLoser("first-loser")
+	secondLoser := newLoser("second-loser")
+	winner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := make(map[string]struct{}, 2)
+		deadline := time.After(time.Second)
+		for len(started) < 2 {
+			select {
+			case id := <-losersStarted:
+				started[id] = struct{}{}
+			case <-deadline:
+				http.Error(w, "losing providers did not start concurrently", http.StatusGatewayTimeout)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testImageResponse(t, 23)))
+	}))
+	t.Cleanup(winner.Close)
+	handler := newImageGenerationProxyHandlerWithProviders([]imageUpstreamProvider{
+		raceTestProvider("first-loser", firstLoser.URL+"/v1/images/generations", "", imageOperationGeneration),
+		raceTestProvider("winner", winner.URL+"/v1/images/generations", "", imageOperationGeneration),
+		raceTestProvider("second-loser", secondLoser.URL+"/v1/images/generations", "", imageOperationGeneration),
+	}, ImageGenerationProxyOptions{RaceDeadline: time.Second})
+
+	rr := runRaceGeneration(t, handler, `{"prompt":"three providers"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("X-CatsCo-Image-Provider") != "winner" {
+		t.Fatalf("unexpected winner: %q", rr.Header().Get("X-CatsCo-Image-Provider"))
+	}
+	if rr.Header().Get("X-CatsCo-Image-Total-Attempts") != "3" {
+		t.Fatalf("three dispatched attempts were not counted: %q", rr.Header().Get("X-CatsCo-Image-Total-Attempts"))
+	}
+	cancelled := make(map[string]struct{}, 2)
+	deadline := time.After(time.Second)
+	for len(cancelled) < 2 {
+		select {
+		case id := <-losersCancelled:
+			cancelled[id] = struct{}{}
+		case <-deadline:
+			t.Fatalf("losing providers were not both cancelled: %#v", cancelled)
+		}
+	}
+}
+
 func TestImageRaceIgnoresFastErrorsAndIncompleteSuccess(t *testing.T) {
 	tests := []struct {
 		name string

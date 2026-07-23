@@ -19,6 +19,13 @@ const STICK_TO_BOTTOM_THRESHOLD = 96;
 const QUESTION_NAV_BOTTOM_EPSILON = 2;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
+const GROUP_MEMBER_REFRESH_EVENTS = new Set([
+  'members_invited',
+  'member_left',
+  'member_kicked',
+  'role_updated',
+  'group_updated',
+]);
 const PREVIEW_WIDTH_STORAGE_KEY = 'cc_file_preview_width_v1';
 const PREVIEW_WIDTH_MIN = 360;
 const PREVIEW_WIDTH_DEFAULT = 640;
@@ -91,6 +98,7 @@ export default function MessagesView({
   const [peerProfile, setPeerProfile] = useState(null);
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
+  const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
   const [replyTo, setReplyTo] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
   const [previewWidth, setPreviewWidth] = useState(() => loadPreviewWidth());
@@ -128,6 +136,7 @@ export default function MessagesView({
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const textareaRef = useRef(null);
+  const mentionRangeRef = useRef(null);
   const dragDepthRef = useRef(0);
   const runtimePlanRef = useRef(null);
   const runtimePlanClearTimer = useRef(null);
@@ -329,6 +338,8 @@ export default function MessagesView({
     setPeerTyping(false);
     setShowMentionPicker(false);
     setMentionFilter('');
+    setMentionActiveIndex(0);
+    mentionRangeRef.current = null;
     clearRuntimePlan();
     setReplyTo(null);
     setPreviewFile(null);
@@ -439,6 +450,15 @@ export default function MessagesView({
   // Listen for incoming WebSocket messages
   useEffect(() => {
     const unsub = onWSMessage((msg) => {
+      if (
+        isGroup
+        && groupId
+        && msg.pres?.topic === topic
+        && GROUP_MEMBER_REFRESH_EVENTS.has(msg.pres.what)
+      ) {
+        loadGroupMembers();
+      }
+
       // New message from server
       if (msg.data && msg.data.topic === topic) {
         if (isStreamCancel(msg.data)) {
@@ -556,7 +576,7 @@ export default function MessagesView({
     });
 
     return () => unsub();
-  }, [clearLiveWorking, markLiveWorking, topic, user.uid]);
+  }, [clearLiveWorking, groupId, isGroup, markLiveWorking, topic, user.uid]);
 
   // Auto-scroll to bottom or restore scroll anchor depending on state
   React.useLayoutEffect(() => {
@@ -945,6 +965,31 @@ export default function MessagesView({
       || e.keyCode === 229
       || e.nativeEvent?.keyCode === 229
     ) return;
+    if (showMentionPicker && mentionableBots.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionActiveIndex((current) => (current + 1) % mentionableBots.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionActiveIndex((current) => (current - 1 + mentionableBots.length) % mentionableBots.length);
+        return;
+      }
+      if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+        e.preventDefault();
+        insertMention(mentionableBots[Math.min(mentionActiveIndex, mentionableBots.length - 1)]);
+        return;
+      }
+    }
+    if (e.key === 'Escape' && showMentionPicker) {
+      e.preventDefault();
+      setShowMentionPicker(false);
+      setMentionFilter('');
+      setMentionActiveIndex(0);
+      mentionRangeRef.current = null;
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -960,13 +1005,20 @@ export default function MessagesView({
     if (isGroup) {
       const cursorPos = e.target.selectionStart;
       const textBeforeCursor = val.slice(0, cursorPos);
-      const atMatch = textBeforeCursor.match(/@(\w*)$/);
+      const atMatch = textBeforeCursor.match(/@([^@\s]*)$/u);
       if (atMatch) {
         setShowMentionPicker(true);
         setMentionFilter(atMatch[1].toLowerCase());
+        setMentionActiveIndex(0);
+        mentionRangeRef.current = {
+          start: cursorPos - atMatch[0].length,
+          end: cursorPos,
+        };
       } else {
         setShowMentionPicker(false);
         setMentionFilter('');
+        setMentionActiveIndex(0);
+        mentionRangeRef.current = null;
       }
     }
 
@@ -981,21 +1033,38 @@ export default function MessagesView({
   const insertMention = (member) => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-    const cursorPos = textarea.selectionStart;
-    const textBeforeCursor = input.slice(0, cursorPos);
-    const textAfterCursor = input.slice(cursorPos);
-    const atIndex = textBeforeCursor.lastIndexOf('@');
+    const range = mentionRangeRef.current;
+    if (!range || range.start < 0 || range.end < range.start || range.end > input.length) return;
     const mention = `@usr${member.user_id} `;
-    const newText = textBeforeCursor.slice(0, atIndex) + mention + textAfterCursor;
+    const newText = input.slice(0, range.start) + mention + input.slice(range.end);
     setInput(newText);
     updateComposerDraft(topic, newText);
     setShowMentionPicker(false);
     setMentionFilter('');
+    setMentionActiveIndex(0);
+    mentionRangeRef.current = null;
     // Focus back on textarea
     setTimeout(() => {
       textarea.focus();
-      const newPos = atIndex + mention.length;
+      const newPos = range.start + mention.length;
       textarea.setSelectionRange(newPos, newPos);
+    }, 0);
+  };
+
+  const openMentionPicker = () => {
+    const textarea = textareaRef.current;
+    if (!isGroup || !textarea) return;
+    const cursorPos = textarea.selectionStart;
+    const nextInput = input.slice(0, cursorPos) + '@' + input.slice(cursorPos);
+    setInput(nextInput);
+    updateComposerDraft(topic, nextInput);
+    setShowMentionPicker(true);
+    setMentionFilter('');
+    setMentionActiveIndex(0);
+    mentionRangeRef.current = { start: cursorPos, end: cursorPos + 1 };
+    setTimeout(() => {
+      textarea.focus();
+      textarea.setSelectionRange(cursorPos + 1, cursorPos + 1);
     }, 0);
   };
 
@@ -1208,11 +1277,15 @@ export default function MessagesView({
   };
 
 
-  const filteredMembers = members.filter((m) => {
+  const mentionableBots = members.filter((m) => {
     if (m.user_id === user.uid) return false;
+    if (m.is_bot !== true && m.account_type !== 'bot') return false;
     if (!mentionFilter) return true;
-    const name = (m.display_name || m.username || '').toLowerCase();
-    return name.includes(mentionFilter);
+    const searchable = [m.display_name, m.username, `usr${m.user_id}`]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return searchable.includes(mentionFilter);
   });
 
   const peerUID = useMemo(() => {
@@ -1249,6 +1322,15 @@ export default function MessagesView({
       .filter((uid) => Number.isFinite(uid) && uid > 0);
   }, [availableAgentUIDs, isAgentTask, members]);
   const taskBotUID = taskBotUIDs.length === 1 ? taskBotUIDs[0] : 0;
+  const isTwoPersonGroupWithCurrentUser = useMemo(() => {
+    if (!isGroup) return false;
+    const memberUIDs = new Set(
+      members
+        .map((member) => Number(member?.user_id))
+        .filter((uid) => Number.isFinite(uid) && uid > 0),
+    );
+    return memberUIDs.size === 2 && memberUIDs.has(Number(user.uid));
+  }, [isGroup, members, user.uid]);
   const supportsTutorialTasks = isGroup
     ? Boolean(
       isAgentTask
@@ -1260,7 +1342,26 @@ export default function MessagesView({
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const canRegenerateAssistantMessages = !isGroup || isAgentTask;
   useEffect(() => {
-    if (isGroup || !peerIsBot || peerUID <= 0) {
+    if (isGroup) {
+      const groupAgentUID = Number(groupAgent?.uid || groupAgent?.id || 0);
+      const isSingleAgentTask = isAgentTask && taskBotUID > 0 && groupAgentUID === taskBotUID;
+      const isTwoPersonArtifactGroup = isTwoPersonGroupWithCurrentUser
+        && groupAgentUID > 0
+        && groupAgent?.cloud_artifacts_enabled === true;
+      if (!isSingleAgentTask && !isTwoPersonArtifactGroup) {
+        onActiveAgentChange?.(null);
+        return;
+      }
+      const groupAgentIsOwner = groupAgent?.is_owner === true || groupAgent?.relation === 'owner';
+      onActiveAgentChange?.({
+        uid: groupAgentUID,
+        relation: groupAgentIsOwner ? 'owner' : (groupAgent?.relation || 'friend'),
+        isOwner: groupAgentIsOwner,
+        cloud_artifacts_enabled: groupAgent?.cloud_artifacts_enabled === true,
+      });
+      return;
+    }
+    if (!peerIsBot || peerUID <= 0) {
       onActiveAgentChange?.(null);
       return;
     }
@@ -1271,13 +1372,21 @@ export default function MessagesView({
       cloud_artifacts_enabled: resolvedPeerProfile?.cloud_artifacts_enabled === true,
     });
   }, [
+    groupAgent?.cloud_artifacts_enabled,
+    groupAgent?.id,
+    groupAgent?.is_owner,
+    groupAgent?.relation,
+    groupAgent?.uid,
+    isAgentTask,
     isGroup,
+    isTwoPersonGroupWithCurrentUser,
     onActiveAgentChange,
     peerIsBot,
     peerIsOwnedBot,
     peerUID,
     resolvedPeerProfile?.cloud_artifacts_enabled,
     resolvedPeerProfile?.relation,
+    taskBotUID,
   ]);
 
   useEffect(() => {
@@ -1722,6 +1831,14 @@ export default function MessagesView({
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
+        textareaProps={{
+          'aria-controls': showMentionPicker ? 'mention-picker' : undefined,
+          'aria-expanded': showMentionPicker,
+          'aria-haspopup': isGroup ? 'listbox' : undefined,
+          'aria-activedescendant': showMentionPicker && mentionableBots.length > 0
+            ? `mention-option-${mentionableBots[Math.min(mentionActiveIndex, mentionableBots.length - 1)].user_id}`
+            : undefined,
+        }}
         attachmentOpen={attachmentMenuOpen}
         attachmentDisabled={isUploadingAttachment || isSendingMessage}
         onAttachmentToggle={() => {
@@ -1732,7 +1849,7 @@ export default function MessagesView({
             <button type="button" onClick={() => { setAttachmentMenuOpen(false); openAttachmentPicker(imageInputRef); }}><Image size={16} /><span>上传图片</span></button>
             <button type="button" onClick={() => { setAttachmentMenuOpen(false); openAttachmentPicker(fileInputRef); }}><FileText size={16} /><span>上传文件</span></button>
             <button type="button" aria-label="手机扫码上传" data-tooltip="手机扫码上传" onClick={() => { setAttachmentMenuOpen(false); openPhoneUploadDialog(); }}><Smartphone size={16} /><span>手机扫码上传</span></button>
-            {isGroup && <button type="button" onClick={() => { setAttachmentMenuOpen(false); if (textareaRef.current) { const pos = textareaRef.current.selectionStart; const nextInput = `${input.slice(0, pos)}@${input.slice(pos)}`; setInput(nextInput); updateComposerDraft(topic, nextInput); textareaRef.current.focus(); } }}><span className="v3-at-sign">@</span><span>提及群成员</span></button>}
+            {isGroup && <button type="button" aria-label="@机器人" onClick={() => { setAttachmentMenuOpen(false); openMentionPicker(); }}><span className="v3-at-sign">@</span><span>提及机器人</span></button>}
           </div>
         )}
         onSend={handleSend}
@@ -1749,14 +1866,32 @@ export default function MessagesView({
           updateAttachmentDraft(topic, (current) => current.filter((_, attachmentIndex) => attachmentIndex !== index));
           setAttachmentStatus(null);
         }}
-        overlay={showMentionPicker && isGroup && filteredMembers.length > 0 && (
-          <div className="oc-mention-picker v3-composer-mention-picker">
-            {filteredMembers.map((member) => (
-              <button type="button" key={member.user_id} className="oc-mention-item" onClick={() => insertMention(member)}>
-                <Avatar name={member.display_name || member.username} src={member.avatar_url} size={24} isBot={member.is_bot} />
-                <span>{member.display_name || member.username}</span>
+        overlay={showMentionPicker && isGroup && (
+          <div id="mention-picker" className="oc-mention-picker v3-composer-mention-picker" role="listbox" aria-label="可提及的机器人">
+            {mentionableBots.map((m, index) => (
+              <button
+                key={m.user_id}
+                id={`mention-option-${m.user_id}`}
+                className={`oc-mention-item${index === mentionActiveIndex ? ' is-active' : ''}`}
+                type="button"
+                role="option"
+                aria-selected={index === mentionActiveIndex}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  insertMention(m);
+                }}
+                onMouseEnter={() => setMentionActiveIndex(index)}
+              >
+                <Avatar name={m.display_name || m.username} src={m.avatar_url} size={24} isBot />
+                <span className="oc-mention-item-copy">
+                  <span className="oc-mention-item-name">{m.display_name || m.username || `usr${m.user_id}`}</span>
+                  <span className="oc-mention-item-handle">@usr{m.user_id}</span>
+                </span>
               </button>
             ))}
+            {mentionableBots.length === 0 && (
+              <div className="oc-mention-empty">没有匹配的机器人</div>
+            )}
           </div>
         )}
         boxOverlay={isDragActive && (

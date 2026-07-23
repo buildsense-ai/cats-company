@@ -8,7 +8,10 @@ mkdir -p \
   "$root/compose" \
   "$root/env" \
   "$root/secrets" \
+  "$root/bin" \
   "$root/data/uploads" \
+  "$root/data/dreamina-home" \
+  "$root/data/dreamina-worker" \
   "$root/logs"
 
 if command -v docker-compose >/dev/null 2>&1; then

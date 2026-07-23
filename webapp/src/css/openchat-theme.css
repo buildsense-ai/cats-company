@@ -1258,6 +1258,7 @@ body {
 }
 
 .oc-modal.cloud-artifacts-modal {
+  position: relative;
   width: 620px;
   max-width: calc(100vw - 32px);
   max-height: min(720px, calc(100vh - 32px));
@@ -1355,9 +1356,47 @@ body {
   opacity: 0.6;
 }
 
+.cloud-artifacts-tabs {
+  height: 44px;
+  padding: 0 18px;
+  display: flex;
+  align-items: stretch;
+  gap: 20px;
+  border-bottom: 1px solid var(--v3-border);
+}
+
+.cloud-artifacts-tabs button {
+  position: relative;
+  padding: 0 2px;
+  border: 0;
+  color: var(--v3-text-muted);
+  background: transparent;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.cloud-artifacts-tabs button::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: transparent;
+  content: "";
+}
+
+.cloud-artifacts-tabs button.active {
+  color: var(--v3-text-main);
+  font-weight: 600;
+}
+
+.cloud-artifacts-tabs button.active::after {
+  background: #d4a853;
+}
+
 .cloud-artifacts-body {
   min-height: 220px;
-  max-height: calc(min(720px, 100vh - 32px) - 73px);
+  max-height: calc(min(720px, 100vh - 32px) - 117px);
   padding: 12px;
   overflow-y: auto;
 }
@@ -1394,6 +1433,14 @@ body {
   background: var(--v3-bg-message-hover);
 }
 
+.cloud-artifact-main.is-deleted {
+  cursor: default;
+}
+
+.cloud-artifact-main.is-deleted:hover {
+  background: transparent;
+}
+
 .cloud-artifact-open-icon {
   color: var(--v3-text-muted);
 }
@@ -1425,11 +1472,29 @@ body {
 
 .cloud-artifact-copy p {
   display: flex;
+  overflow: hidden;
+  flex-wrap: wrap;
   gap: 10px;
+  max-height: 34px;
 }
 
 .cloud-artifact-actions {
   padding-right: 12px;
+}
+
+.cloud-artifact-actions button.danger {
+  color: #fca5a5;
+}
+
+.cloud-artifact-actions button.danger:hover {
+  color: #fecaca;
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.cloud-artifact-actions button:disabled {
+  cursor: wait;
+  opacity: 0.5;
 }
 
 .cloud-artifacts-status {
@@ -1455,6 +1520,67 @@ body {
   cursor: pointer;
 }
 
+.cloud-artifact-confirm-backdrop {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.62);
+}
+
+.cloud-artifact-confirm {
+  width: min(380px, 100%);
+  padding: 20px;
+  border: 1px solid var(--v3-border);
+  border-radius: 8px;
+  background: #202020;
+  box-shadow: 0 20px 55px rgba(0, 0, 0, 0.42);
+}
+
+.cloud-artifact-confirm h4 {
+  margin: 0;
+  color: var(--v3-text-main);
+  font-size: 16px;
+  letter-spacing: 0;
+}
+
+.cloud-artifact-confirm p {
+  margin: 10px 0 20px;
+  color: var(--v3-text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.cloud-artifact-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.cloud-artifact-confirm-actions button {
+  min-width: 72px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--v3-border);
+  border-radius: 6px;
+  color: var(--v3-text-main);
+  background: transparent;
+  cursor: pointer;
+}
+
+.cloud-artifact-confirm-actions button.danger {
+  border-color: #dc2626;
+  color: #fff;
+  background: #dc2626;
+}
+
+.cloud-artifact-confirm-actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .is-spinning {
   animation: cloud-artifact-spin 0.9s linear infinite;
 }
@@ -1473,7 +1599,7 @@ body {
   }
 
   .cloud-artifacts-body {
-    max-height: calc(100vh - 93px);
+    max-height: calc(100vh - 137px);
   }
 
   .cloud-artifact-main {
@@ -5892,16 +6018,51 @@ button.catsco-download-action:disabled {
   border: 1px solid var(--v3-border) !important;
   border-radius: var(--v3-radius) !important;
   box-shadow: 0 12px 24px rgba(0,0,0,0.5) !important;
-  overflow: hidden !important;
+  left: 20px !important;
+  right: auto !important;
+  width: min(320px, calc(100% - 40px));
+  max-height: 240px;
+  overflow-y: auto !important;
+  z-index: 100;
 }
 
-.oc-mention-picker > div {
+.oc-mention-item {
+  width: 100%;
   color: var(--v3-text-main) !important;
-  padding: 8px 16px !important;
-  border-bottom: 1px solid rgba(255,255,255,0.02) !important;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(255,255,255,0.02);
+  text-align: left;
 }
 
-.oc-mention-picker > div:hover {
+.oc-mention-item-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.oc-mention-item-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oc-mention-item-handle {
+  color: var(--v3-text-muted);
+  font-size: 11px;
+}
+
+.oc-mention-empty {
+  color: var(--v3-text-muted);
+  padding: 12px 16px;
+  font-size: 12px;
+}
+
+.oc-mention-item:hover,
+.oc-mention-item.is-active {
   background: var(--v3-bg-message-hover) !important;
   color: var(--v3-text-name) !important;
 }

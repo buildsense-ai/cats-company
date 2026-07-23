@@ -84,9 +84,9 @@ func persistConversationTaskStatus(db store.Store, uid int64, topicID string, pa
 			return nil, fmt.Errorf("ensure task status topic: %w", err)
 		}
 	}
-	if existing, err := statusStore.GetConversationTaskStatuses([]string{topicID}); err != nil {
+	if current, err := statusStore.GetConversationTaskStatusForSource(topicID, uid); err != nil {
 		return nil, fmt.Errorf("load current task status: %w", err)
-	} else if current := existing[topicID]; current != nil {
+	} else if current != nil {
 		if err := validateTaskStatusTransition(current, status); err != nil {
 			return nil, err
 		}
@@ -97,9 +97,6 @@ func persistConversationTaskStatus(db store.Store, uid int64, topicID string, pa
 func validateTaskStatusTransition(current, next *types.ConversationTaskStatus) error {
 	if current == nil || next == nil {
 		return nil
-	}
-	if current.SourceUID != 0 && current.SourceUID != next.SourceUID && !isTerminalTaskStatus(current.State) {
-		return errors.New("another task source already owns the active status for this topic")
 	}
 	// A run identifier lets us reject late progress events after that run has
 	// reached a terminal state, while still allowing a new run to supersede it.

@@ -396,6 +396,12 @@ func main() {
 	imageGenerationUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "image_generation_user", Limit: 6, Window: time.Minute, Burst: 2,
 	})
+	imageTaskPollIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
+		Name: "image_task_poll_ip", Limit: 120, Window: time.Minute, Burst: 30,
+	})
+	imageTaskPollUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "image_task_poll_user", Limit: 60, Window: time.Minute, Burst: 15,
+	})
 	feedbackIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "feedback_ip", Limit: 20, Window: time.Minute, Burst: 5,
 	})
@@ -482,7 +488,8 @@ func main() {
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))
 	mux.HandleFunc("/api/projects/topic", authWithDB(projectHandler.HandleProjectTopic))
-	mux.HandleFunc("/api/artifacts", jwtAuthWithDB(cloudArtifactHandler.HandleList))
+	mux.HandleFunc("/api/artifacts", jwtAuthWithDB(cloudArtifactHandler.Handle))
+	mux.HandleFunc("/api/artifacts/", jwtAuthWithDB(cloudArtifactHandler.Handle))
 	mux.HandleFunc("/api/agents", jwtAuthWithDB(agentHandler.HandleListAgents))
 	mux.HandleFunc("/api/agents/quota", jwtAuthWithDB(agentHandler.HandleAgentQuota))
 	mux.HandleFunc("/api/agents/open", jwtAuthWithDB(agentHandler.HandleOpenAgent))
@@ -584,6 +591,7 @@ func main() {
 	mux.HandleFunc("/api/reader/analyze", chainHTTP(readerHandler.HandleAnalyze, readerIPLimit, authWithDB, readerUserLimit))
 	mux.HandleFunc("/v1/images/generations", chainHTTP(imageGenerationHandler.HandleGenerate, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
 	mux.HandleFunc("/v1/images/edits", chainHTTP(imageGenerationHandler.HandleEdit, imageGenerationIPLimit, authWithDB, imageGenerationUserLimit))
+	mux.HandleFunc("/v1/tasks/", chainHTTP(imageGenerationHandler.HandleTask, imageTaskPollIPLimit, authWithDB, imageTaskPollUserLimit))
 	mux.HandleFunc("/uploads/", uploadHandler.HandleServeFile)
 
 	if err := readerHandler.ConfigError(); err != nil {

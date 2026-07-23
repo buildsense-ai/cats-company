@@ -21,6 +21,8 @@ jobs:
     env:
       PROD_STACK_ROOT: /srv/catscompany-prod
       IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
+      CATSCO_ARTIFACT_INDEX_URL: https://logs.catsco.fun:9000/artifacts/artifacts-index.json
+      CATSCO_ARTIFACT_MANAGEMENT_URL: https://logs.catsco.fun:9000/internal/artifacts
 
     steps:
       - name: Checkout tested revision
@@ -43,7 +45,7 @@ jobs:
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
-          ssh ${SSH_OPTS} "${REMOTE}" "mkdir -p ${PROD_STACK_ROOT}/compose ${PROD_STACK_ROOT}/env ${PROD_STACK_ROOT}/data/uploads ${PROD_STACK_ROOT}/logs ${PROD_STACK_ROOT}/releases /usr/local/bin"
+          ssh ${SSH_OPTS} "${REMOTE}" "mkdir -p ${PROD_STACK_ROOT}/compose ${PROD_STACK_ROOT}/env ${PROD_STACK_ROOT}/bin ${PROD_STACK_ROOT}/data/uploads ${PROD_STACK_ROOT}/data/dreamina-home ${PROD_STACK_ROOT}/data/dreamina-worker ${PROD_STACK_ROOT}/logs ${PROD_STACK_ROOT}/releases /usr/local/bin"
 
           tmpdir="$(mktemp -d)"
           mkdir -p "${tmpdir}/compose" "${tmpdir}/env"
@@ -69,10 +71,11 @@ jobs:
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          CATSCO_ARTIFACT_MANAGEMENT_TOKEN: ${{ secrets.CATSCO_ARTIFACT_MANAGEMENT_TOKEN }}
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
-          ssh ${SSH_OPTS} "${REMOTE}" "IMAGE_TAG=${IMAGE_TAG} PROD_STACK_ROOT=${PROD_STACK_ROOT} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} bash -s" <<'EOF'
+          ssh ${SSH_OPTS} "${REMOTE}" "IMAGE_TAG=${IMAGE_TAG} PROD_STACK_ROOT=${PROD_STACK_ROOT} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} CATSCO_ARTIFACT_INDEX_URL=${CATSCO_ARTIFACT_INDEX_URL} CATSCO_ARTIFACT_MANAGEMENT_URL=${CATSCO_ARTIFACT_MANAGEMENT_URL} CATSCO_ARTIFACT_MANAGEMENT_TOKEN=${CATSCO_ARTIFACT_MANAGEMENT_TOKEN} bash -s" <<'EOF'
           set -euo pipefail
 
           root="${PROD_STACK_ROOT}"

@@ -856,6 +856,147 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('button[aria-label="发送"]')).not.toBeNull();
   });
 
+  it('lists only bots from the current group after typing @', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 7, display_name: 'Alice', username: 'alice', is_bot: false },
+        { user_id: 42, display_name: 'Saturday', username: 'bot-saturday', is_bot: true },
+        { user_id: 43, display_name: 'Wanyu', username: 'catsco-agent-worker1', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@');
+    });
+
+    const options = [...container.querySelectorAll('.oc-mention-item')];
+    expect(options).toHaveLength(2);
+    expect(options.map((option) => option.textContent)).toEqual([
+      'Saturday@usr42',
+      'Wanyu@usr43',
+    ]);
+    expect(container.querySelector('.oc-mention-picker')?.textContent).not.toContain('Alice');
+  });
+
+  it('refreshes mentionable bots after the current group membership changes', async () => {
+    api.getGroupInfo
+      .mockResolvedValueOnce({
+        group: { id: 80, name: 'Agent Room' },
+        members: [
+          { user_id: 1, display_name: 'Me', is_bot: false },
+          { user_id: 42, display_name: 'Saturday', username: 'bot-saturday', is_bot: true },
+        ],
+      })
+      .mockResolvedValueOnce({
+        group: { id: 80, name: 'Agent Room' },
+        members: [
+          { user_id: 1, display_name: 'Me', is_bot: false },
+          { user_id: 42, display_name: 'Saturday', username: 'bot-saturday', is_bot: true },
+          { user_id: 43, display_name: 'Wanyu', username: 'catsco-agent-worker1', is_bot: true },
+        ],
+      });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      wsHandler({ pres: { topic: 'grp_80', src: 'grp_80', what: 'members_invited' } });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@');
+    });
+
+    const options = [...container.querySelectorAll('.oc-mention-item')];
+    expect(api.getGroupInfo).toHaveBeenCalledTimes(2);
+    expect(options.map((option) => option.textContent)).toEqual([
+      'Saturday@usr42',
+      'Wanyu@usr43',
+    ]);
+  });
+
+  it('filters bot names and inserts the canonical uid mention with Enter', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 42, display_name: 'Saturday', username: 'bot-saturday', is_bot: true },
+        { user_id: 43, display_name: 'Wanyu', username: 'catsco-agent-worker1', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@wan');
+    });
+    expect(container.querySelectorAll('.oc-mention-item')).toHaveLength(1);
+
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await Promise.resolve();
+    });
+
+    expect(textarea.value).toBe('@usr43 ');
+    expect(container.querySelector('.oc-mention-picker')).toBeNull();
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('opens the bot picker from the toolbar and inserts at the cursor', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 42, display_name: 'Saturday', username: 'bot-saturday', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '前后');
+    });
+    await act(async () => {
+      textarea.setSelectionRange(1, 1);
+      Simulate.click(container.querySelector('button[aria-label="@机器人"]'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(textarea.value).toBe('前@后');
+    const option = container.querySelector('.oc-mention-item');
+    expect(option).toBeTruthy();
+
+    await act(async () => {
+      Simulate.mouseDown(option);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(textarea.value).toBe('前@usr42 后');
+  });
+
   it('lets the file preview panel width be adjusted and persisted', async () => {
     Object.defineProperty(window, 'innerWidth', {
       configurable: true,
@@ -1432,6 +1573,43 @@ describe('MessagesView composer draft isolation', () => {
     });
   });
 
+  it('reports artifact capability for a single-Agent task', async () => {
+    const onActiveAgentChange = vi.fn();
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'doubao',
+        display_name: '豆包',
+        relation: 'friend',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 9, name: '豆包任务', kind: 'agent_task', is_agent_task: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 440, display_name: '豆包', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_9', {
+      isGroup: true,
+      groupId: 9,
+      onActiveAgentChange,
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(onActiveAgentChange).toHaveBeenLastCalledWith({
+      uid: 440,
+      relation: 'friend',
+      isOwner: false,
+      cloud_artifacts_enabled: true,
+    });
+  });
+
   it('hides the model for a multi-Agent task', async () => {
     const onAgentModelChange = vi.fn();
     api.getGroupInfo.mockResolvedValueOnce({
@@ -1484,6 +1662,43 @@ describe('MessagesView composer draft isolation', () => {
       isBot: false,
       state: 'hidden',
       summary: null,
+    });
+  });
+
+  it('reports artifact capability for a regular two-person group with Doubao', async () => {
+    const onActiveAgentChange = vi.fn();
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'doubao',
+        display_name: '豆包',
+        relation: 'friend',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 15, name: '我和豆包', kind: 'standard', has_bot: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 440, display_name: '豆包', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_15', {
+      isGroup: true,
+      groupId: 15,
+      onActiveAgentChange,
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(onActiveAgentChange).toHaveBeenLastCalledWith({
+      uid: 440,
+      relation: 'friend',
+      isOwner: false,
+      cloud_artifacts_enabled: true,
     });
   });
 

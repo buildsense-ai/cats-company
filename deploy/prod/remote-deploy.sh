@@ -50,7 +50,10 @@ mkdir -p \
   "$compose_dir" \
   "$env_dir" \
   "$root/secrets" \
+  "$root/bin" \
   "$root/data/uploads" \
+  "$root/data/dreamina-home" \
+  "$root/data/dreamina-worker" \
   "$root/logs"
 
 if [ ! -f "$compose_file" ]; then
@@ -70,6 +73,7 @@ if [ ! -f "$env_file" ]; then
 fi
 
 python3 - <<PY
+import os
 from pathlib import Path
 
 p = Path(r"$env_file")
@@ -79,7 +83,11 @@ updates = {
     "GHCR_REGISTRY": "${GHCR_REGISTRY:-ghcr.io}",
     "GHCR_OWNER": "${GHCR_OWNER:-}",
     "IMAGE_TAG": "$revision",
+    "DREAMINA_IMAGE_TAG": "$revision",
     "CATSCO_IMAGE_TIMEOUT_SECONDS": "${CATSCO_IMAGE_TIMEOUT_SECONDS:-540}",
+    "CATSCO_ARTIFACT_INDEX_URL": os.environ.get("CATSCO_ARTIFACT_INDEX_URL", ""),
+    "CATSCO_ARTIFACT_MANAGEMENT_URL": os.environ.get("CATSCO_ARTIFACT_MANAGEMENT_URL", ""),
+    "CATSCO_ARTIFACT_MANAGEMENT_TOKEN": os.environ.get("CATSCO_ARTIFACT_MANAGEMENT_TOKEN", ""),
 }
 
 lines = []
@@ -122,13 +130,26 @@ if [ -n "${GHCR_USERNAME:-}" ] && [ -n "${GHCR_TOKEN:-}" ]; then
   printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin >/dev/null
 fi
 
+if [ ! -x "$root/bin/dreamina" ]; then
+  echo "missing executable Dreamina CLI: $root/bin/dreamina" >&2
+  exit 1
+fi
+if [ ! -f "$root/data/dreamina-home/.local/share/dreamina/byted_cli_user_token.json" ]; then
+  echo "missing shared Dreamina login state under $root/data/dreamina-home" >&2
+  exit 1
+fi
+if [ ! -f /etc/ssl/certs/ca-certificates.crt ]; then
+  echo "missing host CA bundle: /etc/ssl/certs/ca-certificates.crt" >&2
+  exit 1
+fi
+
 if [ -f "$root/CURRENT_REVISION" ]; then
   cp "$root/CURRENT_REVISION" "$root/PREVIOUS_REVISION"
 fi
 
 cd "$compose_dir"
 if [ "${SKIP_IMAGE_PULL:-0}" != "1" ]; then
-  compose -f "$compose_file" --env-file "$env_file" pull server web
+  compose -f "$compose_file" --env-file "$env_file" pull server dreamina-worker web
 fi
 compose -f "$compose_file" --env-file "$env_file" up -d
 compose -f "$compose_file" --env-file "$env_file" ps
@@ -137,5 +158,12 @@ printf '%s\n' "$revision" > "$root/CURRENT_REVISION"
 
 wait_for_health "api" "$health_api"
 wait_for_health "web" "$health_web"
+
+worker_health="$(compose -f "$compose_file" --env-file "$env_file" ps --format json dreamina-worker 2>/dev/null || true)"
+if ! printf '%s' "$worker_health" | grep -q '"Health":"healthy"'; then
+  echo "Dreamina worker is not healthy" >&2
+  compose -f "$compose_file" --env-file "$env_file" logs --tail 100 dreamina-worker >&2 || true
+  exit 1
+fi
 
 echo "deployed revision $revision to $root"

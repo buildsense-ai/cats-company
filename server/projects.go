@@ -164,7 +164,18 @@ func (h *ProjectHandler) handleAssignTopic(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	err := projects.AssignTopicToProject(UIDFromContext(r.Context()), req.ProjectID, req.TopicID)
+	ownerUID := UIDFromContext(r.Context())
+	err := projects.AssignTopicToProject(ownerUID, req.ProjectID, req.TopicID)
+	if errors.Is(err, store.ErrProjectTopicNotFound) {
+		restored, restoreErr := h.restoreLegacyAgentTopic(ownerUID, req.TopicID)
+		if restoreErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to restore legacy conversation"})
+			return
+		}
+		if restored {
+			err = projects.AssignTopicToProject(ownerUID, req.ProjectID, req.TopicID)
+		}
+	}
 	if errors.Is(err, store.ErrProjectTopicNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project or conversation not found"})
 		return
@@ -174,6 +185,43 @@ func (h *ProjectHandler) handleAssignTopic(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *ProjectHandler) restoreLegacyAgentTopic(ownerUID int64, topicID string) (bool, error) {
+	agentUID, ok := legacyAgentUIDFromTopic(ownerUID, topicID)
+	if !ok {
+		return false, nil
+	}
+	if _, _, status, err := accessibleAgentUser(h.db, ownerUID, agentUID); err != nil {
+		if status >= http.StatusInternalServerError {
+			return false, err
+		}
+		return false, nil
+	}
+	if err := h.db.CreateTopic(topicID, "p2p", ownerUID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func legacyAgentUIDFromTopic(ownerUID int64, topicID string) (int64, bool) {
+	parts := strings.Split(topicID, "_")
+	if ownerUID <= 0 || len(parts) != 3 || parts[0] != "p2p" {
+		return 0, false
+	}
+	firstUID, firstErr := strconv.ParseInt(parts[1], 10, 64)
+	secondUID, secondErr := strconv.ParseInt(parts[2], 10, 64)
+	if firstErr != nil || secondErr != nil || firstUID <= 0 || secondUID <= 0 || firstUID >= secondUID {
+		return 0, false
+	}
+	switch ownerUID {
+	case firstUID:
+		return secondUID, true
+	case secondUID:
+		return firstUID, true
+	default:
+		return 0, false
+	}
 }
 
 func (h *ProjectHandler) handleRemoveTopic(w http.ResponseWriter, r *http.Request, projects store.ProjectStore) {
