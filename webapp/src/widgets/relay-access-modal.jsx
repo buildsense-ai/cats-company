@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, CalendarDays, Check, Copy, ExternalLink, Gift, KeyRound, RotateCcw, Server, Sparkles, Trash2, X } from 'lucide-react';
 import { api } from '../api';
+import { InlineFeedback, useFeedback } from '../components/feedback-system';
 
 const FALLBACK_CONFIG = {
   base_url: 'https://relay.catsco.cc',
@@ -339,6 +340,7 @@ function extractPlainRelayKey(data) {
 }
 
 export default function RelayAccessModal({ onClose }) {
+  const feedback = useFeedback();
   const [config, setConfig] = useState(FALLBACK_CONFIG);
   const [relayKey, setRelayKey] = useState(null);
   const [plainKey, setPlainKey] = useState('');
@@ -465,12 +467,19 @@ export default function RelayAccessModal({ onClose }) {
   };
 
   const rotateKey = async () => {
-    if (!window.confirm('重新生成后，旧 Key 会立即失效。确定继续吗？')) return;
+    const confirmed = await feedback.confirm({
+      title: '重新生成 Key？',
+      message: '重新生成后，旧 Key 会立即失效，使用旧 Key 的客户端需要重新配置。',
+      confirmLabel: '重新生成',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     setActionLoading('rotate');
     setError('');
     setPlainKey('');
     try {
       applyKeyResponse(await api.rotateRelayKey());
+      feedback.notify({ tone: 'success', message: 'Key 已重新生成' });
     } catch (err) {
       setError(err.message || '重新生成 Key 失败');
     } finally {
@@ -496,13 +505,20 @@ export default function RelayAccessModal({ onClose }) {
   };
 
   const revokeKey = async () => {
-    if (!window.confirm('撤销后，当前 Key 会失效。确定撤销吗？')) return;
+    const confirmed = await feedback.confirm({
+      title: '撤销当前 Key？',
+      message: '撤销后，当前 Key 会立即失效。',
+      confirmLabel: '撤销 Key',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     setActionLoading('revoke');
     setError('');
     try {
       await api.revokeRelayKey();
       setRelayKey(null);
       setPlainKey('');
+      feedback.notify({ tone: 'success', message: 'Key 已撤销' });
     } catch (err) {
       setError(err.message || '撤销 Key 失败');
     } finally {
@@ -614,7 +630,7 @@ export default function RelayAccessModal({ onClose }) {
 
         <div className="relay-access-body">
           {loading && <div className="oc-settings-secondary">正在读取中转配置...</div>}
-          {error && <div className="oc-form-error">{error}</div>}
+          {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
 
           <div className="relay-access-hero">
             <div className="relay-access-hero-main">

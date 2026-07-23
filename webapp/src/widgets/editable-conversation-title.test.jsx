@@ -53,6 +53,7 @@ describe('EditableConversationTitle', () => {
     });
     const input = container.querySelector('input[aria-label="修改对话标题 Original task"]');
     expect(input).toBeTruthy();
+    expect(input.getAttribute('size')).toBe('15');
 
     await act(async () => {
       Simulate.change(input, { target: { value: 'Renamed task' } });
@@ -104,6 +105,10 @@ describe('EditableConversationTitle', () => {
     )?.[0];
 
     expect(baseRule).toContain('border: 1px solid var(--cc-border);');
+    expect(baseRule).toContain('width: auto;');
+    expect(baseRule).toContain('min-width: 88px;');
+    expect(baseRule).toContain('padding: 4px 6px;');
+    expect(baseRule).toContain('field-sizing: content;');
     expect(focusRule).toContain('border-color: var(--cc-border-strong);');
     expect(focusRule).toContain('outline: none;');
     expect(focusRule).toContain('box-shadow: none;');

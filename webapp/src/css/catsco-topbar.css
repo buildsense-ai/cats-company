@@ -419,7 +419,7 @@
 
 .v3-shell-title-button {
   min-height: 30px;
-  padding: 3px 9px;
+  padding: 3px 5px;
   border: 1px solid transparent;
   border-radius: var(--cc-radius-sm);
   background: transparent;
@@ -439,10 +439,11 @@
 .v3-shell-title-input {
   box-sizing: border-box;
   justify-self: center;
-  width: min(42vw, 480px);
-  min-width: 180px;
+  width: auto;
+  min-width: 88px;
+  max-width: min(34vw, 420px);
   height: 32px;
-  padding: 4px 10px;
+  padding: 4px 6px;
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-sm);
   outline: none;
@@ -452,6 +453,7 @@
   font-size: 14px;
   font-weight: 650;
   text-align: center;
+  field-sizing: content;
 }
 
 .v3-shell-title-input:focus,
@@ -516,8 +518,9 @@
   }
 
   .v3-shell-title-input {
-    width: 34vw;
-    min-width: 120px;
+    width: auto;
+    min-width: 88px;
+    max-width: 34vw;
     font-size: 13px;
   }
 
@@ -598,8 +601,9 @@
   }
 
   .v3-shell-title-input {
-    width: 30vw;
-    min-width: 104px;
+    width: auto;
+    min-width: 80px;
+    max-width: 30vw;
   }
 
   .v3-action-btn {

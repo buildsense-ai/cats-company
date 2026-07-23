@@ -1008,7 +1008,6 @@ export default function MessagesView({
     }
 
     try {
-      setIsUploadingAttachment(true);
       setAttachmentStatus({ tone: 'info', message: `正在上传 ${file.name || '附件'}...` });
       const data = await api.uploadFile(file, type);
 
@@ -1043,8 +1042,6 @@ export default function MessagesView({
         setAttachmentStatus({ tone: 'error', message: formatUploadError(err) });
       }
       return null;
-    } finally {
-      setIsUploadingAttachment(false);
     }
   };
 
@@ -1053,12 +1050,29 @@ export default function MessagesView({
     if (fileList.length === 0 || sendInFlightRef.current) return;
     const uploadTopic = activeTopicRef.current;
     let uploadedCount = 0;
-    for (const file of fileList.slice(0, MAX_DROPPED_FILES)) {
-      const uploaded = await uploadAttachmentFile(file, requestedType, uploadTopic);
-      if (!uploaded) break;
-      uploadedCount += 1;
+    let failedCount = 0;
+    setIsUploadingAttachment(true);
+    try {
+      for (const file of fileList.slice(0, MAX_DROPPED_FILES)) {
+        const uploaded = await uploadAttachmentFile(file, requestedType, uploadTopic);
+        if (uploaded) {
+          uploadedCount += 1;
+        } else {
+          failedCount += 1;
+        }
+      }
+    } finally {
+      setIsUploadingAttachment(false);
     }
-    if (uploadedCount > 1 && activeTopicRef.current === uploadTopic) {
+
+    if (failedCount > 0 && fileList.length > 1 && activeTopicRef.current === uploadTopic) {
+      setAttachmentStatus({
+        tone: 'error',
+        message: uploadedCount > 0
+          ? `已添加 ${uploadedCount} 个附件，另有 ${failedCount} 个上传失败。`
+          : `${failedCount} 个附件上传失败，请检查格式、大小或网络后重试。`,
+      });
+    } else if (uploadedCount > 1 && activeTopicRef.current === uploadTopic) {
       setAttachmentStatus({ tone: 'success', message: `已添加 ${uploadedCount} 个附件，发送后对方可见。` });
     }
   };
@@ -1729,6 +1743,12 @@ export default function MessagesView({
         onCloseMenus={() => {
           setAttachmentMenuOpen(false);
         }}
+        attachments={pendingAttachments}
+        attachmentRemovalDisabled={isUploadingAttachment || isSendingMessage}
+        onRemoveAttachment={(index) => {
+          updateAttachmentDraft(topic, (current) => current.filter((_, attachmentIndex) => attachmentIndex !== index));
+          setAttachmentStatus(null);
+        }}
         overlay={showMentionPicker && isGroup && filteredMembers.length > 0 && (
           <div className="oc-mention-picker v3-composer-mention-picker">
             {filteredMembers.map((member) => (
@@ -1752,25 +1772,21 @@ export default function MessagesView({
                 {isStopRequested ? '已请求 CatsCo 停止当前工作。' : 'CatsCo 正在处理，可点击红色按钮停止。'}
               </div>
             )}
-            {attachmentStatus?.message && (
-              <div className={`v3-live-input-status v3-live-input-status-${attachmentStatus.tone || 'info'}`} role="status">
-                {attachmentStatus.message}
-              </div>
-            )}
-            {(isUploadingAttachment || pendingAttachments.length > 0) && (
-              <div className="v3-composer-attachments">
-                <div className="v3-composer-attachments-copy">
-                  <strong>{isUploadingAttachment ? '正在上传附件...' : `${pendingAttachments.length} 个附件待发送`}</strong>
-                  {!isUploadingAttachment && pendingAttachments.map((attachment, index) => (
-                    <span key={`${attachment.name}-${index}`}>
-                      {attachment.type === 'image' ? '图片' : '文件'}: {attachment.name}
-                      {attachment.size ? ` • ${formatFileSize(attachment.size)}` : ''}
-                    </span>
-                  ))}
-                </div>
-                {pendingAttachments.length > 0 && !isUploadingAttachment && !isSendingMessage && (
-                  <button className="v3-action-btn" aria-label="移除附件" onClick={() => { updateAttachmentDraft(topic, []); setAttachmentStatus(null); }} type="button">×</button>
-                )}
+            {(attachmentStatus?.message || isUploadingAttachment || pendingAttachments.length > 0) && (
+              <div
+                className={`v3-live-input-status v3-attachment-notice v3-live-input-status-${attachmentStatus?.tone || 'info'}`}
+                role="status"
+              >
+                <span>
+                  {attachmentStatus?.tone === 'error'
+                    ? attachmentStatus.message
+                    : isUploadingAttachment
+                      ? (attachmentStatus?.message || '正在上传附件...')
+                      : attachmentStatus?.message
+                        || (pendingAttachments.length > 0
+                          ? `${pendingAttachments.length} 个附件待发送${pendingAttachments.length === 1 ? `：${pendingAttachments[0].name}` : ''}`
+                          : '')}
+                </span>
               </div>
             )}
           </>
@@ -2363,12 +2379,4 @@ function getComparableContent(content) {
     return JSON.stringify(content);
   }
   return String(content ?? '');
-}
-
-function formatFileSize(size) {
-  if (!size || size <= 0) return '';
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }

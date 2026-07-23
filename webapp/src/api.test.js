@@ -64,6 +64,20 @@ describe('WebSocket connection recovery', () => {
     expect(onMessage).toHaveBeenCalledWith({ _type: 'ws_open' });
   });
 
+  test('notifies onWSMessage subscribers when the socket opens', () => {
+    const onMessage = vi.fn();
+    const subscriber = vi.fn();
+    const unsubscribe = api.onWSMessage(subscriber);
+
+    api.connectWS(onMessage);
+    MockWebSocket.instances[0].open();
+
+    expect(subscriber).toHaveBeenCalledTimes(1);
+    expect(subscriber).toHaveBeenCalledWith({ _type: 'ws_open' });
+
+    unsubscribe();
+  });
+
   test('retries quickly with capped backoff after a dropped socket', () => {
     const onMessage = vi.fn();
     api.connectWS(onMessage);

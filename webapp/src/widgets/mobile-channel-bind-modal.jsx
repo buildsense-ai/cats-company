@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Copy, RefreshCw, Unlink, X } from 'lucide-react';
 import { api } from '../api';
+import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import QRCode from './qr-code';
 
 const MOBILE_CHANNELS = [
@@ -14,6 +15,7 @@ const channelMeta = (value) => (
 );
 
 export default function MobileChannelBindModal({ agentUid, agentName, groupId, topicId, groupName, onClose }) {
+  const feedback = useFeedback();
   const [channel, setChannel] = useState('weixin');
   const [linkInfo, setLinkInfo] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -106,7 +108,13 @@ export default function MobileChannelBindModal({ agentUid, agentName, groupId, t
 
   const handleUnlink = async (binding) => {
     const targetLabel = isGroupTarget ? `群聊“${targetName}”` : `虚拟员工“${targetName}”`;
-    if (!window.confirm(`解除“${binding.display_name}”与${targetLabel}的飞书绑定？解绑后，该账号的飞书私聊将停止同步；已建立的飞书群聊不受影响。`)) return;
+    const confirmed = await feedback.confirm({
+      title: '解除飞书绑定？',
+      message: `将解除“${binding.display_name}”与${targetLabel}的绑定。该账号的飞书私聊将停止同步；已建立的飞书群聊不受影响。`,
+      confirmLabel: '解除绑定',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     try {
       bindingsRequestSeqRef.current += 1;
       setBindingsLoading(false);
@@ -233,7 +241,7 @@ export default function MobileChannelBindModal({ agentUid, agentName, groupId, t
 
         <div className="mobile-channel-qr-wrap">
           {loading && <div className="mobile-channel-placeholder">正在生成...</div>}
-          {!loading && error && <div className="mobile-channel-error">{error}</div>}
+          {!loading && error && <InlineFeedback tone="error" className="mobile-channel-error">{error}</InlineFeedback>}
           {!loading && !error && channelImageURL && (
             <img className="mobile-channel-qr-img" src={channelImageURL} alt={`${activeChannel.displayName}移动端绑定二维码`} />
           )}
