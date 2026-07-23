@@ -180,6 +180,7 @@ func TestPostgresStoreContract(t *testing.T) {
 	if err := db.SetBotVisibility(botID, "private"); err != nil {
 		t.Fatalf("set bot visibility: %v", err)
 	}
+	assertConversationTaskStatusAggregation(t, db, groupID, botID)
 	nativeIdentity := &types.ChannelNativeGroupBinding{
 		Channel: "feishu", ChannelAppID: "cli_test", TenantKey: "tenant_test",
 		ConversationID: "oc_event_order", ConversationName: "飞书｜事件顺序", OperatorChannelUserID: "ou_owner",
@@ -317,6 +318,97 @@ func TestPostgresStoreContract(t *testing.T) {
 		Attachments: []types.FeedbackAttachment{{FileKey: "file-key", URL: "/uploads/a.png", Name: "a.png"}},
 	}); err != nil {
 		t.Fatalf("create feedback report: %v", err)
+	}
+}
+
+func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID, firstBotID int64) {
+	t.Helper()
+	secondBotID, err := db.CreateUser(&types.User{
+		Username:    "statusbot",
+		DisplayName: "Status Bot",
+		AccountType: types.AccountBot,
+		PassHash:    []byte("status-bot-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create second task status bot: %v", err)
+	}
+
+	topicID := fmt.Sprintf("grp_%d", groupID)
+	expiry := time.Now().UTC().Add(time.Hour)
+	upsert := func(sourceUID int64, runID, state string) *types.ConversationTaskStatus {
+		t.Helper()
+		status, upsertErr := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+			TopicID:   topicID,
+			RunID:     runID,
+			State:     state,
+			Summary:   state,
+			SourceUID: sourceUID,
+			ExpiresAt: func() *time.Time {
+				if state == "running" {
+					return &expiry
+				}
+				return nil
+			}(),
+		})
+		if upsertErr != nil {
+			t.Fatalf("upsert task status source=%d state=%s: %v", sourceUID, state, upsertErr)
+		}
+		return status
+	}
+
+	upsert(firstBotID, "run-first", "running")
+	upsert(secondBotID, "run-second", "running")
+	aggregate := upsert(firstBotID, "run-first", "completed")
+	if aggregate.State != "running" || aggregate.SourceUID != secondBotID {
+		t.Fatalf("first completion must preserve second active source: %+v", aggregate)
+	}
+	firstSource, err := db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || firstSource == nil || firstSource.State != "completed" {
+		t.Fatalf("first source status mismatch: status=%+v err=%v", firstSource, err)
+	}
+
+	aggregate = upsert(secondBotID, "run-second", "completed")
+	if aggregate.State != "completed" {
+		t.Fatalf("all completed aggregate mismatch: %+v", aggregate)
+	}
+
+	upsert(firstBotID, "run-first-race", "running")
+	upsert(secondBotID, "run-second-race", "running")
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, item := range []struct {
+		uid   int64
+		runID string
+	}{
+		{uid: firstBotID, runID: "run-first-race"},
+		{uid: secondBotID, runID: "run-second-race"},
+	} {
+		wg.Add(1)
+		go func(uid int64, runID string) {
+			defer wg.Done()
+			<-start
+			_, updateErr := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+				TopicID: topicID, RunID: runID, State: "completed", Summary: "completed", SourceUID: uid,
+			})
+			errs <- updateErr
+		}(item.uid, item.runID)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent task completion: %v", err)
+		}
+	}
+
+	aggregates, err := db.GetConversationTaskStatuses([]string{topicID})
+	if err != nil {
+		t.Fatalf("load task status aggregate: %v", err)
+	}
+	if aggregate = aggregates[topicID]; aggregate == nil || aggregate.State != "completed" {
+		t.Fatalf("concurrent completions left stale aggregate: %+v", aggregate)
 	}
 }
 

@@ -62,11 +62,11 @@ func TestValidateTaskStatusTransitionRejectsLateProgressForTerminalRun(t *testin
 	}
 }
 
-func TestValidateTaskStatusTransitionRejectsAnotherActiveSource(t *testing.T) {
+func TestValidateTaskStatusTransitionAllowsAnotherActiveSource(t *testing.T) {
 	current := taskStatusForTransition("run-1", "running", 42)
 	next := taskStatusForTransition("run-2", "running", 43)
-	if err := validateTaskStatusTransition(current, next); err == nil {
-		t.Fatal("expected active status to reject another source")
+	if err := validateTaskStatusTransition(current, next); err != nil {
+		t.Fatalf("different source should not be rejected: %v", err)
 	}
 }
 

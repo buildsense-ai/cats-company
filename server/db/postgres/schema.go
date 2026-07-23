@@ -17,6 +17,7 @@ func (a *Adapter) CreateSchema() error {
 		createConversationTitlesTable,
 		createMessagesTable,
 		createConversationTaskStatusesTable,
+		createConversationTaskStatusSourcesTable,
 		createBotConfigTable,
 		createRateLimitTable,
 		createGroupsTable,
@@ -228,6 +229,21 @@ CREATE TABLE IF NOT EXISTS conversation_task_statuses (
     expires_at TIMESTAMPTZ DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+`
+
+const createConversationTaskStatusSourcesTable = `
+CREATE TABLE IF NOT EXISTS conversation_task_status_sources (
+    topic_id VARCHAR(64) NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    source_uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    run_id VARCHAR(128) DEFAULT '',
+    state VARCHAR(20) NOT NULL DEFAULT 'idle' CHECK (state IN ('idle','running','completed','failed','cancelled','stale','waiting')),
+    summary TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    expires_at TIMESTAMPTZ DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (topic_id, source_uid)
 );
 `
 
@@ -713,6 +729,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_messages_client_msg_id ON messages (topic_i
 const createConversationTaskStatusIndexes = `
 CREATE INDEX IF NOT EXISTS idx_conversation_task_statuses_updated_at ON conversation_task_statuses (updated_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_task_statuses_state ON conversation_task_statuses (state);
+CREATE INDEX IF NOT EXISTS idx_conversation_task_status_sources_updated_at ON conversation_task_status_sources (updated_at);
+CREATE INDEX IF NOT EXISTS idx_conversation_task_status_sources_state ON conversation_task_status_sources (state);
 `
 const createBotConfigIndexes = `
 CREATE UNIQUE INDEX IF NOT EXISTS uk_bot_config_api_key ON bot_config (api_key) WHERE api_key IS NOT NULL;
@@ -779,6 +797,8 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_feedback_reports_updated_at BEFORE UPDATE ON feedback_reports
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_conversation_task_statuses_updated_at BEFORE UPDATE ON conversation_task_statuses
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_conversation_task_status_sources_updated_at BEFORE UPDATE ON conversation_task_status_sources
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_auth_services_updated_at BEFORE UPDATE ON auth_services
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
