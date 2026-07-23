@@ -100,7 +100,7 @@ func (h *DesktopConnectHandler) HandleExchange(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "user account is disabled"})
 		return
 	}
-	token, err := GenerateToken(user.ID, user.Username, user.Email)
+	token, err := GeneratePersistentUserToken(user.ID, user.Username, user.Email)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
 		return
@@ -115,6 +115,7 @@ func (h *DesktopConnectHandler) HandleExchange(w http.ResponseWriter, r *http.Re
 		"display_name":  user.DisplayName,
 		"avatar_url":    user.AvatarURL,
 		"account_type":  user.AccountType,
+		"persistent":    true,
 		"http_base_url": httpBaseURL,
 		"server_url":    wsURL,
 	})

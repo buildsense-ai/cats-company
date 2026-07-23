@@ -1,16 +1,58 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
+
+func TestUserTokenExpirationPolicy(t *testing.T) {
+	oldSecret := append([]byte(nil), jwtSecret...)
+	defer func() { jwtSecret = oldSecret }()
+	SetJWTSecret("user-token-expiration-test-secret")
+
+	webToken, err := GenerateToken(1, "alice", "alice@example.com")
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	webClaims, err := ParseToken(webToken)
+	if err != nil {
+		t.Fatalf("ParseToken web: %v", err)
+	}
+	if webClaims.TokenType != userTokenType {
+		t.Fatalf("web token type=%q", webClaims.TokenType)
+	}
+	if webClaims.ExpiresAt == nil {
+		t.Fatal("ordinary web token must expire")
+	}
+	remaining := time.Until(webClaims.ExpiresAt.Time)
+	if remaining < 6*24*time.Hour || remaining > 8*24*time.Hour {
+		t.Fatalf("ordinary web token lifetime=%v, want about 7 days", remaining)
+	}
+
+	persistentToken, err := GeneratePersistentUserToken(1, "alice", "alice@example.com")
+	if err != nil {
+		t.Fatalf("GeneratePersistentUserToken: %v", err)
+	}
+	persistentClaims, err := ParseToken(persistentToken)
+	if err != nil {
+		t.Fatalf("ParseToken persistent: %v", err)
+	}
+	if persistentClaims.TokenType != persistentUserTokenType {
+		t.Fatalf("persistent token type=%q", persistentClaims.TokenType)
+	}
+	if persistentClaims.ExpiresAt != nil {
+		t.Fatalf("persistent token unexpectedly expires at %v", persistentClaims.ExpiresAt.Time)
+	}
+}
 
 type authStateTestStore struct {
 	store.Store
@@ -57,6 +99,14 @@ func TestAuthMiddlewareWithDBRejectsDisabledJWTAndDisabledBotAPIKey(t *testing.T
 	if err != nil {
 		t.Fatalf("GenerateToken disabled: %v", err)
 	}
+	activePersistentToken, err := GeneratePersistentUserToken(1, "alice", "alice@example.com")
+	if err != nil {
+		t.Fatalf("GeneratePersistentUserToken active: %v", err)
+	}
+	disabledPersistentToken, err := GeneratePersistentUserToken(2, "bob", "bob@example.com")
+	if err != nil {
+		t.Fatalf("GeneratePersistentUserToken disabled: %v", err)
+	}
 
 	const activeBotKey = "cc_7_test"
 	const disabledBotKey = "cc_8_test"
@@ -80,6 +130,8 @@ func TestAuthMiddlewareWithDBRejectsDisabledJWTAndDisabledBotAPIKey(t *testing.T
 	}{
 		{name: "active jwt", authorization: "Bearer " + activeToken, wantStatus: http.StatusOK},
 		{name: "disabled jwt", authorization: "Bearer " + disabledToken, wantStatus: http.StatusForbidden},
+		{name: "active persistent jwt", authorization: "Bearer " + activePersistentToken, wantStatus: http.StatusOK},
+		{name: "disabled persistent jwt", authorization: "Bearer " + disabledPersistentToken, wantStatus: http.StatusForbidden},
 		{name: "active bot api key", authorization: "ApiKey " + activeBotKey, wantStatus: http.StatusOK},
 		{name: "disabled bot api key", authorization: "ApiKey " + disabledBotKey, wantStatus: http.StatusForbidden},
 	}
@@ -202,6 +254,72 @@ func TestLoginRejectsDisabledUser(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
+func TestLoginPersistentTokenRequiresExplicitRequest(t *testing.T) {
+	oldSecret := append([]byte(nil), jwtSecret...)
+	defer func() { jwtSecret = oldSecret }()
+	SetJWTSecret("persistent-login-test-secret")
+
+	passHash, err := bcrypt.GenerateFromPassword([]byte("pass123456"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	handler := NewUserHandler(authStateTestStore{users: map[int64]*types.User{
+		6: {
+			ID:          6,
+			Username:    "desktop-user",
+			Email:       "desktop@example.com",
+			PassHash:    passHash,
+			AccountType: types.AccountHuman,
+			State:       0,
+		},
+	}})
+
+	for _, tc := range []struct {
+		name       string
+		body       string
+		persistent bool
+	}{
+		{
+			name: "ordinary web login",
+			body: `{"account":"desktop@example.com","password":"pass123456"}`,
+		},
+		{
+			name:       "persistent desktop login",
+			body:       `{"account":"desktop@example.com","password":"pass123456","persistent":true}`,
+			persistent: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			handler.HandleLogin(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var response struct {
+				Token      string `json:"token"`
+				Persistent bool   `json:"persistent"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if response.Persistent != tc.persistent {
+				t.Fatalf("persistent=%v want=%v", response.Persistent, tc.persistent)
+			}
+			claims, err := ParseToken(response.Token)
+			if err != nil {
+				t.Fatalf("ParseToken: %v", err)
+			}
+			if tc.persistent && claims.ExpiresAt != nil {
+				t.Fatalf("persistent token unexpectedly expires at %v", claims.ExpiresAt.Time)
+			}
+			if !tc.persistent && claims.ExpiresAt == nil {
+				t.Fatal("ordinary web login token must expire")
+			}
+		})
 	}
 }
 
