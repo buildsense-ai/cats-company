@@ -50,7 +50,12 @@ func (h *ImageGenerationProxyHandler) HandleEdit(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if err := h.EditConfigError(); err != nil {
+	providerPolicy, err := requestedImageProviderPolicy(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := h.EditConfigError(); err != nil && providerPolicy != "dreamina" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
