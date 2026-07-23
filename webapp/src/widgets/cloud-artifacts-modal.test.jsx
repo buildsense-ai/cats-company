@@ -60,7 +60,7 @@ describe('CloudArtifactsModal', () => {
   test('loads active metadata and exposes open and copy actions', async () => {
     await renderModal();
 
-    expect(api.getCloudArtifacts).toHaveBeenCalledWith('active');
+    expect(api.getCloudArtifacts).toHaveBeenCalledWith(440, 'active');
     expect(container.textContent).toContain('课堂小游戏');
     expect(container.textContent).toContain('发布 v2');
     expect(container.textContent).toContain('豆包');
@@ -103,7 +103,7 @@ describe('CloudArtifactsModal', () => {
     });
 
     expect(api.deleteCloudArtifact).toHaveBeenCalledTimes(1);
-    expect(api.deleteCloudArtifact).toHaveBeenCalledWith('lesson-game');
+    expect(api.deleteCloudArtifact).toHaveBeenCalledWith(440, 'lesson-game');
     expect(container.textContent).not.toContain('课堂小游戏');
   });
 
@@ -124,7 +124,7 @@ describe('CloudArtifactsModal', () => {
       await Promise.resolve();
     });
 
-    expect(api.deleteCloudArtifact).toHaveBeenCalledWith('witch-poison-game-2');
+    expect(api.deleteCloudArtifact).toHaveBeenCalledWith(440, 'witch-poison-game-2');
     expect(container.textContent).toContain('版本一');
     expect(container.textContent).not.toContain('版本二');
     expect(container.textContent).toContain('版本三');
@@ -157,7 +157,7 @@ describe('CloudArtifactsModal', () => {
       await Promise.resolve();
     });
 
-    expect(api.getCloudArtifacts).toHaveBeenLastCalledWith('deleted');
+    expect(api.getCloudArtifacts).toHaveBeenLastCalledWith(440, 'deleted');
     expect(container.querySelector('.cloud-artifact-main')?.tagName).toBe('DIV');
     expect(container.querySelector('button[aria-label="复制 课堂小游戏 链接"]')).toBeNull();
 
@@ -165,7 +165,7 @@ describe('CloudArtifactsModal', () => {
       container.querySelector('button[aria-label="恢复 课堂小游戏"]').click();
       await Promise.resolve();
     });
-    expect(api.restoreCloudArtifact).toHaveBeenCalledWith('lesson-game');
+    expect(api.restoreCloudArtifact).toHaveBeenCalledWith(440, 'lesson-game');
     expect(container.textContent).not.toContain('课堂小游戏');
   });
 
@@ -183,7 +183,7 @@ describe('CloudArtifactsModal', () => {
 
   async function renderModal() {
     await act(async () => {
-      root.render(<CloudArtifactsModal onClose={vi.fn()} />);
+      root.render(<CloudArtifactsModal agentUid={440} onClose={vi.fn()} />);
       await Promise.resolve();
     });
   }

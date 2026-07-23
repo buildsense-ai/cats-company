@@ -32,7 +32,7 @@ function artifactMeta(artifact) {
   return items;
 }
 
-export default function CloudArtifactsModal({ onClose }) {
+export default function CloudArtifactsModal({ agentUid, onClose }) {
   const [tab, setTab] = useState('active');
   const [artifacts, setArtifacts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -45,14 +45,14 @@ export default function CloudArtifactsModal({ onClose }) {
     setLoading(true);
     setError('');
     try {
-      const result = await api.getCloudArtifacts(tab);
+      const result = await api.getCloudArtifacts(agentUid, tab);
       setArtifacts(Array.isArray(result?.artifacts) ? result.artifacts : []);
     } catch (err) {
       setError(err.message || '云端产物读取失败');
     } finally {
       setLoading(false);
     }
-  }, [tab]);
+  }, [agentUid, tab]);
 
   useEffect(() => {
     setArtifacts([]);
@@ -85,7 +85,7 @@ export default function CloudArtifactsModal({ onClose }) {
     setPendingID(artifact.id);
     setError('');
     try {
-      await api.deleteCloudArtifact(artifact.id);
+      await api.deleteCloudArtifact(agentUid, artifact.id);
       setArtifacts((current) => current.filter((item) => item.id !== artifact.id));
       setConfirmArtifact(null);
     } catch (err) {
@@ -100,7 +100,7 @@ export default function CloudArtifactsModal({ onClose }) {
     setPendingID(artifact.id);
     setError('');
     try {
-      await api.restoreCloudArtifact(artifact.id);
+      await api.restoreCloudArtifact(agentUid, artifact.id);
       setArtifacts((current) => current.filter((item) => item.id !== artifact.id));
     } catch (err) {
       setError(err.message || '恢复失败，请稍后重试');

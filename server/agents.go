@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,7 +19,6 @@ type AgentHandler struct {
 	hub                       *Hub
 	relayAdmin                *RelayAdminClient
 	deviceModelStatusResolver func(uid int64, bodyID string) (DeviceModelStatus, bool)
-	cloudArtifactAgentUIDs    map[int64]struct{}
 	quotaMu                   sync.Mutex
 	quotaCache                map[string]agentQuotaCacheEntry
 }
@@ -54,10 +52,9 @@ type botModelConfigReader interface {
 // NewAgentHandler creates an AgentHandler.
 func NewAgentHandler(db store.Store, hub *Hub) *AgentHandler {
 	return &AgentHandler{
-		db:                     db,
-		hub:                    hub,
-		cloudArtifactAgentUIDs: parseAgentUIDSet(os.Getenv("CATSCO_CLOUD_ARTIFACT_AGENT_UIDS")),
-		quotaCache:             make(map[string]agentQuotaCacheEntry),
+		db:         db,
+		hub:        hub,
+		quotaCache: make(map[string]agentQuotaCacheEntry),
 	}
 }
 
@@ -429,7 +426,7 @@ func (h *AgentHandler) agentFromBotMap(viewerUID int64, bot map[string]interface
 		IsOnline:              h.agentRuntimeOnline(uid),
 		Visibility:            mapString(bot["visibility"]),
 		DeploymentStatus:      mapString(bot["deployment_status"]),
-		CloudArtifactsEnabled: h.cloudArtifactsEnabled(uid),
+		CloudArtifactsEnabled: strings.TrimSpace(mapString(bot["tenant_name"])) != "",
 	}
 	return agent, true
 }
@@ -451,28 +448,11 @@ func (h *AgentHandler) agentFromUser(viewerUID int64, user *types.User, relation
 }
 
 func (h *AgentHandler) cloudArtifactsEnabled(uid int64) bool {
-	if h == nil || uid <= 0 {
+	if h == nil || h.db == nil || uid <= 0 {
 		return false
 	}
-	_, ok := h.cloudArtifactAgentUIDs[uid]
-	return ok
-}
-
-func parseAgentUIDSet(value string) map[int64]struct{} {
-	uids := make(map[int64]struct{})
-	for _, field := range strings.FieldsFunc(value, func(r rune) bool {
-		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\r' || r == '\n'
-	}) {
-		field = strings.TrimSpace(field)
-		if len(field) >= 3 && strings.EqualFold(field[:3], "usr") {
-			field = field[3:]
-		}
-		uid, err := strconv.ParseInt(field, 10, 64)
-		if err == nil && uid > 0 {
-			uids[uid] = struct{}{}
-		}
-	}
-	return uids
+	tenantName, err := h.db.GetTenantName(uid)
+	return err == nil && strings.TrimSpace(tenantName) != ""
 }
 
 func (h *AgentHandler) agentRuntimeOnline(uid int64) bool {

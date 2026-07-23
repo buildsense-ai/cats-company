@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/openchat/openchat/server/store"
 )
 
 const (
@@ -32,6 +34,7 @@ type CloudArtifactHandler struct {
 	managementURL   string
 	managementToken string
 	httpClient      *http.Client
+	db              store.Store
 	configErr       error
 	managementErr   error
 }
@@ -63,6 +66,7 @@ type cloudArtifact struct {
 	CreatedAt      string `json:"created_at,omitempty"`
 	UpdatedAt      string `json:"updated_at"`
 	PublishVersion *int   `json:"publish_version,omitempty"`
+	AgentUID       string `json:"agent_uid,omitempty"`
 	AgentName      string `json:"agent_name,omitempty"`
 	SourceTitle    string `json:"source_title,omitempty"`
 	DeletedAt      string `json:"deleted_at,omitempty"`
@@ -87,6 +91,13 @@ func NewCloudArtifactHandler(indexURL string, client *http.Client) *CloudArtifac
 // NewCloudArtifactManagementHandler enables list, delete, and restore through the protected host API.
 func NewCloudArtifactManagementHandler(indexURL, managementURL, managementToken string, client *http.Client) *CloudArtifactHandler {
 	return newCloudArtifactHandler(indexURL, managementURL, managementToken, client)
+}
+
+// SetStore enables access checks for agent-scoped artifact routes.
+func (h *CloudArtifactHandler) SetStore(db store.Store) {
+	if h != nil {
+		h.db = db
+	}
 }
 
 func newCloudArtifactHandler(indexURL, managementURL, managementToken string, client *http.Client) *CloudArtifactHandler {
@@ -158,12 +169,82 @@ func (h *CloudArtifactHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case action == "delete" && r.Method == http.MethodDelete:
-		h.handleMutation(w, r, artifactID, "", uid)
+		h.handleMutation(w, r, artifactID, "", uid, h.managementURL, 0)
 	case action == "restore" && r.Method == http.MethodPost:
-		h.handleMutation(w, r, artifactID, "/restore", uid)
+		h.handleMutation(w, r, artifactID, "/restore", uid, h.managementURL, 0)
 	default:
 		w.Header().Set("Allow", allowedArtifactMethod(action))
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+// HandleAgentArtifacts serves artifact operations scoped to one managed virtual employee.
+func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *http.Request) {
+	viewerUID := UIDFromContext(r.Context())
+	if viewerUID <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	route, ok := parseAgentArtifactAPIPath(r.URL.Path)
+	if !ok {
+		writeArtifactError(w, http.StatusNotFound, "artifact_not_found")
+		return
+	}
+	if h == nil || h.db == nil {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return
+	}
+	if _, _, status, err := accessibleAgentUser(h.db, viewerUID, route.agentUID); err != nil {
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	tenantName, err := h.db.GetTenantName(route.agentUID)
+	if err != nil || strings.TrimSpace(tenantName) == "" {
+		writeArtifactError(w, http.StatusNotFound, "artifact_not_found")
+		return
+	}
+	if h.managementErr != nil || h.managementURL == "" {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return
+	}
+	collectionURL, err := h.agentManagementCollectionURL(route.agentUID)
+	if err != nil {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return
+	}
+
+	switch route.action {
+	case "list":
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		status := strings.TrimSpace(r.URL.Query().Get("status"))
+		if status == "" {
+			status = "active"
+		}
+		if status != "active" && status != "deleted" {
+			writeArtifactError(w, http.StatusBadRequest, "artifact_status_invalid")
+			return
+		}
+		h.handleManagedList(w, r, status, collectionURL, route.agentUID)
+	case "delete":
+		if r.Method != http.MethodDelete {
+			w.Header().Set("Allow", http.MethodDelete)
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		h.handleMutation(w, r, route.artifactID, "", viewerUID, collectionURL, route.agentUID)
+	case "restore":
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		h.handleMutation(w, r, route.artifactID, "/restore", viewerUID, collectionURL, route.agentUID)
+	default:
+		writeArtifactError(w, http.StatusNotFound, "artifact_not_found")
 	}
 }
 
@@ -194,7 +275,7 @@ func (h *CloudArtifactHandler) HandleList(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if h.managementURL != "" {
-		h.handleManagedList(w, r, status)
+		h.handleManagedList(w, r, status, h.managementURL, 0)
 		return
 	}
 	if status == "deleted" {
@@ -204,8 +285,13 @@ func (h *CloudArtifactHandler) HandleList(w http.ResponseWriter, r *http.Request
 	h.handlePublicIndexList(w, r)
 }
 
-func (h *CloudArtifactHandler) handleManagedList(w http.ResponseWriter, r *http.Request, status string) {
-	target := h.managementURL + "?status=" + url.QueryEscape(status)
+func (h *CloudArtifactHandler) handleManagedList(
+	w http.ResponseWriter,
+	r *http.Request,
+	status, collectionURL string,
+	agentUID int64,
+) {
+	target := collectionURL + "?status=" + url.QueryEscape(status)
 	body, err := h.requestManagement(r, http.MethodGet, target, nil)
 	if err != nil {
 		writeArtifactUpstreamError(w, err)
@@ -213,6 +299,10 @@ func (h *CloudArtifactHandler) handleManagedList(w http.ResponseWriter, r *http.
 	}
 	var list cloudArtifactManagementList
 	if err := json.Unmarshal(body, &list); err != nil || validateManagedArtifactList(list, status) != nil {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return
+	}
+	if agentUID > 0 && validateManagedArtifactAgentUIDs(list.Artifacts, agentUID) != nil {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
 		return
 	}
@@ -261,9 +351,16 @@ func (h *CloudArtifactHandler) handlePublicIndexList(w http.ResponseWriter, r *h
 	writeJSON(w, http.StatusOK, index)
 }
 
-func (h *CloudArtifactHandler) handleMutation(w http.ResponseWriter, r *http.Request, artifactID, suffix string, uid int64) {
+func (h *CloudArtifactHandler) handleMutation(
+	w http.ResponseWriter,
+	r *http.Request,
+	artifactID, suffix string,
+	uid int64,
+	collectionURL string,
+	agentUID int64,
+) {
 	payload, _ := json.Marshal(map[string]string{"actor_uid": strconv.FormatInt(uid, 10)})
-	target := h.managementURL + "/" + url.PathEscape(artifactID) + suffix
+	target := collectionURL + "/" + url.PathEscape(artifactID) + suffix
 	body, err := h.requestManagement(r, r.Method, target, payload)
 	if err != nil {
 		writeArtifactUpstreamError(w, err)
@@ -278,8 +375,32 @@ func (h *CloudArtifactHandler) handleMutation(w http.ResponseWriter, r *http.Req
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
 		return
 	}
+	if agentUID > 0 && operation.Artifact.AgentUID != strconv.FormatInt(agentUID, 10) {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, operation)
+}
+
+func (h *CloudArtifactHandler) agentManagementCollectionURL(agentUID int64) (string, error) {
+	if h == nil || agentUID <= 0 {
+		return "", errors.New("invalid artifact agent")
+	}
+	parsed, err := url.Parse(h.managementURL)
+	if err != nil {
+		return "", err
+	}
+	basePath := strings.TrimRight(parsed.Path, "/")
+	if !strings.HasSuffix(basePath, "/artifacts") {
+		return "", errors.New("artifact management URL must end with /artifacts")
+	}
+	basePath = strings.TrimSuffix(basePath, "/artifacts")
+	parsed.Path = basePath + "/agents/" + strconv.FormatInt(agentUID, 10) + "/artifacts"
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
 func (h *CloudArtifactHandler) requestManagement(r *http.Request, method, target string, payload []byte) ([]byte, error) {
@@ -352,6 +473,16 @@ func validateManagedArtifactList(list cloudArtifactManagementList, expectedStatu
 	return nil
 }
 
+func validateManagedArtifactAgentUIDs(artifacts []cloudArtifact, expectedAgentUID int64) error {
+	expected := strconv.FormatInt(expectedAgentUID, 10)
+	for _, artifact := range artifacts {
+		if artifact.AgentUID != expected {
+			return errors.New("artifact agent UID mismatch")
+		}
+	}
+	return nil
+}
+
 func validateManagedArtifact(artifact cloudArtifact) error {
 	if err := validateArtifactIdentity(artifact); err != nil {
 		return err
@@ -410,6 +541,45 @@ func parseArtifactAPIPath(value string) (string, string, bool) {
 		return artifactID, "restore", true
 	}
 	return "", "", false
+}
+
+type agentArtifactAPIRoute struct {
+	agentUID   int64
+	artifactID string
+	action     string
+}
+
+func parseAgentArtifactAPIPath(value string) (agentArtifactAPIRoute, bool) {
+	relative := strings.TrimPrefix(value, "/api/agents/")
+	if relative == value {
+		return agentArtifactAPIRoute{}, false
+	}
+	parts := strings.Split(strings.Trim(relative, "/"), "/")
+	if len(parts) < 2 || len(parts) > 4 || parts[1] != "artifacts" {
+		return agentArtifactAPIRoute{}, false
+	}
+	agentUID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || agentUID <= 0 {
+		return agentArtifactAPIRoute{}, false
+	}
+	if len(parts) == 2 {
+		return agentArtifactAPIRoute{agentUID: agentUID, action: "list"}, true
+	}
+	artifactID, err := url.PathUnescape(parts[2])
+	if err != nil || !artifactIDPattern.MatchString(artifactID) {
+		return agentArtifactAPIRoute{}, false
+	}
+	if len(parts) == 3 {
+		return agentArtifactAPIRoute{
+			agentUID: agentUID, artifactID: artifactID, action: "delete",
+		}, true
+	}
+	if parts[3] == "restore" {
+		return agentArtifactAPIRoute{
+			agentUID: agentUID, artifactID: artifactID, action: "restore",
+		}, true
+	}
+	return agentArtifactAPIRoute{}, false
 }
 
 func allowedArtifactMethod(action string) string {
