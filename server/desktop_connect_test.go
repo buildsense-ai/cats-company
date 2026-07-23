@@ -55,15 +55,26 @@ func TestDesktopConnectSessionExchangeIsSingleUse(t *testing.T) {
 		t.Fatalf("exchange status=%d body=%s", exchangeRec.Code, exchangeRec.Body.String())
 	}
 	var exchanged struct {
-		Token     string `json:"token"`
-		UID       int64  `json:"uid"`
-		ServerURL string `json:"server_url"`
+		Token      string `json:"token"`
+		UID        int64  `json:"uid"`
+		Persistent bool   `json:"persistent"`
+		ServerURL  string `json:"server_url"`
 	}
 	if err := json.Unmarshal(exchangeRec.Body.Bytes(), &exchanged); err != nil {
 		t.Fatalf("decode exchange response: %v", err)
 	}
 	if exchanged.Token == "" || exchanged.UID != 42 || exchanged.ServerURL == "" {
 		t.Fatalf("unexpected exchange response: %+v", exchanged)
+	}
+	if !exchanged.Persistent {
+		t.Fatal("desktop exchange must return a persistent token")
+	}
+	claims, err := ParseToken(exchanged.Token)
+	if err != nil {
+		t.Fatalf("parse exchange token: %v", err)
+	}
+	if claims.TokenType != persistentUserTokenType || claims.ExpiresAt != nil {
+		t.Fatalf("unexpected desktop token claims: type=%q expires_at=%v", claims.TokenType, claims.ExpiresAt)
 	}
 
 	reuseReq := httptest.NewRequest(http.MethodPost, "/api/desktop-connect/exchange", bytes.NewReader(body))

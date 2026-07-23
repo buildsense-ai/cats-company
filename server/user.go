@@ -47,8 +47,9 @@ type ResetPasswordRequest struct {
 
 // LoginRequest is the JSON body for login.
 type LoginRequest struct {
-	Account  string `json:"account"` // 支持用户名或邮箱
-	Password string `json:"password"`
+	Account    string `json:"account"` // 支持用户名或邮箱
+	Password   string `json:"password"`
+	Persistent bool   `json:"persistent,omitempty"`
 }
 
 // UpdateProfileRequest is the JSON body for updating the current user's profile.
@@ -285,7 +286,11 @@ func (h *UserHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := GenerateToken(user.ID, user.Username, user.Email)
+	tokenGenerator := GenerateToken
+	if req.Persistent {
+		tokenGenerator = GeneratePersistentUserToken
+	}
+	token, err := tokenGenerator(user.ID, user.Username, user.Email)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
 		return
@@ -299,6 +304,7 @@ func (h *UserHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		"display_name": user.DisplayName,
 		"avatar_url":   user.AvatarURL,
 		"account_type": user.AccountType,
+		"persistent":   req.Persistent,
 	})
 }
 
