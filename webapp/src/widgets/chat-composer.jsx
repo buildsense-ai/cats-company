@@ -12,6 +12,7 @@ export default function ChatComposer({
   onChange,
   onKeyDown,
   onPaste,
+  textareaProps = {},
   onAttachmentToggle,
   attachmentOpen = false,
   attachmentDisabled = false,
@@ -86,6 +87,7 @@ export default function ChatComposer({
           </div>
 
           <textarea
+            {...textareaProps}
             ref={textareaRef}
             className="v3-composer-input"
             rows={1}

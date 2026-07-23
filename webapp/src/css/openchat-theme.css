@@ -6018,16 +6018,51 @@ button.catsco-download-action:disabled {
   border: 1px solid var(--v3-border) !important;
   border-radius: var(--v3-radius) !important;
   box-shadow: 0 12px 24px rgba(0,0,0,0.5) !important;
-  overflow: hidden !important;
+  left: 20px !important;
+  right: auto !important;
+  width: min(320px, calc(100% - 40px));
+  max-height: 240px;
+  overflow-y: auto !important;
+  z-index: 100;
 }
 
-.oc-mention-picker > div {
+.oc-mention-item {
+  width: 100%;
   color: var(--v3-text-main) !important;
-  padding: 8px 16px !important;
-  border-bottom: 1px solid rgba(255,255,255,0.02) !important;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgba(255,255,255,0.02);
+  text-align: left;
 }
 
-.oc-mention-picker > div:hover {
+.oc-mention-item-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.oc-mention-item-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oc-mention-item-handle {
+  color: var(--v3-text-muted);
+  font-size: 11px;
+}
+
+.oc-mention-empty {
+  color: var(--v3-text-muted);
+  padding: 12px 16px;
+  font-size: 12px;
+}
+
+.oc-mention-item:hover,
+.oc-mention-item.is-active {
   background: var(--v3-bg-message-hover) !important;
   color: var(--v3-text-name) !important;
 }

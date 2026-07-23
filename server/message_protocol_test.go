@@ -329,6 +329,9 @@ func TestFanoutMessageAddsCanonicalCatscoIdentityForBotRecipient(t *testing.T) {
 	if actor["user_id"] != "usr7" || actor["display_name"] != "Alice" {
 		t.Fatalf("unexpected actor identity: %#v", actor)
 	}
+	if actor["account_type"] != string(types.AccountHuman) || actor["is_bot"] != false {
+		t.Fatalf("unexpected actor account type: %#v", actor)
+	}
 	if agent["agent_id"] != "usr42" || agent["body_id"] != "body-mac" || agent["display_name"] != "Dev Agent Runtime" {
 		t.Fatalf("unexpected agent identity: %#v", agent)
 	}
@@ -545,6 +548,12 @@ func TestHandleGetMessagesBuildsAgentContextForGroupHistory(t *testing.T) {
 		if message["context_eligible"] != wantEligible[i] || message["context_role"] != wantRoles[i] {
 			t.Fatalf("message %d context=%#v, want eligible=%v role=%s", i, message, wantEligible[i], wantRoles[i])
 		}
+	}
+	otherAgentMetadata := nestedMap(t, body.Messages[4], "metadata")
+	otherAgentIdentity := nestedMap(t, otherAgentMetadata, "catsco_identity")
+	otherAgentActor := nestedMap(t, otherAgentIdentity, "actor")
+	if otherAgentActor["account_type"] != string(types.AccountBot) || otherAgentActor["is_bot"] != true {
+		t.Fatalf("unexpected restored bot actor identity: %#v", otherAgentActor)
 	}
 }
 

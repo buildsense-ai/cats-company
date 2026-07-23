@@ -128,7 +128,7 @@ func (a *Adapter) GetGroupMembers(groupID int64) ([]*types.GroupMember, error) {
 	rows, err := a.db.Query(
 		`SELECT gm.id, gm.group_id, gm.user_id, gm.role, COALESCE(gm.muted, false), gm.joined_at,
 		        u.username, u.display_name, u.avatar_url,
-		        u.account_type, COALESCE(u.bot_disclose, false)
+		        u.account_type
 		 FROM group_members gm
 		 JOIN users u ON u.id = gm.user_id
 		 WHERE gm.group_id = $1
@@ -145,17 +145,14 @@ func (a *Adapter) GetGroupMembers(groupID int64) ([]*types.GroupMember, error) {
 		m := &types.GroupMember{}
 		var avatarURL *string
 		var acctType string
-		var botDisclose bool
 		if err := rows.Scan(&m.ID, &m.GroupID, &m.UserID, &m.Role, &m.Muted, &m.JoinedAt,
-			&m.Username, &m.DisplayName, &avatarURL, &acctType, &botDisclose); err != nil {
+			&m.Username, &m.DisplayName, &avatarURL, &acctType); err != nil {
 			return nil, fmt.Errorf("scan group member: %w", err)
 		}
 		if avatarURL != nil {
 			m.AvatarURL = *avatarURL
 		}
-		if botDisclose && acctType == "bot" {
-			m.IsBot = true
-		}
+		m.IsBot = acctType == string(types.AccountBot)
 		members = append(members, m)
 	}
 	return members, rows.Err()

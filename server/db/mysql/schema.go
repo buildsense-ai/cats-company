@@ -17,6 +17,7 @@ func (a *Adapter) CreateSchema() error {
 		createConversationTitlesTable,
 		createMessagesTable,
 		createConversationTaskStatusesTable,
+		createConversationTaskStatusSourcesTable,
 		createBotConfigTable,
 		createRateLimitTable,
 		createGroupsTable,
@@ -266,6 +267,25 @@ CREATE TABLE IF NOT EXISTS conversation_task_statuses (
     INDEX idx_conversation_task_statuses_state (state),
     FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
     FOREIGN KEY (source_uid) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createConversationTaskStatusSourcesTable = `
+CREATE TABLE IF NOT EXISTS conversation_task_status_sources (
+    topic_id VARCHAR(64) NOT NULL,
+    source_uid BIGINT NOT NULL,
+    run_id VARCHAR(128) DEFAULT '',
+    state ENUM('idle','running','completed','failed','cancelled','stale','waiting') NOT NULL DEFAULT 'idle',
+    summary TEXT NOT NULL,
+    error TEXT NOT NULL,
+    expires_at TIMESTAMP NULL DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (topic_id, source_uid),
+    INDEX idx_conversation_task_status_sources_updated_at (updated_at),
+    INDEX idx_conversation_task_status_sources_state (state),
+    FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_uid) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 

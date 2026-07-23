@@ -337,6 +337,14 @@ func (s *conversationTestStore) GetConversationTaskStatuses(topicIDs []string) (
 	return out, nil
 }
 
+func (s *conversationTestStore) GetConversationTaskStatusForSource(topicID string, sourceUID int64) (*types.ConversationTaskStatus, error) {
+	status := s.taskStatuses[topicID]
+	if status == nil || status.SourceUID != sourceUID {
+		return nil, nil
+	}
+	return status, nil
+}
+
 func (s *conversationTestStore) UpsertConversationTaskStatus(status *types.ConversationTaskStatus) (*types.ConversationTaskStatus, error) {
 	if s.taskStatuses == nil {
 		s.taskStatuses = make(map[string]*types.ConversationTaskStatus)

@@ -548,6 +548,12 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 	if opts.IdentityUsers != nil {
 		if actor := opts.IdentityUsers[actorUID]; actor != nil {
 			actorMap := identity["actor"].(map[string]interface{})
+			accountType := actor.AccountType
+			if accountType == "" {
+				accountType = types.AccountHuman
+			}
+			actorMap["account_type"] = accountType
+			actorMap["is_bot"] = accountType == types.AccountBot
 			if actor.DisplayName != "" {
 				actorMap["display_name"] = actor.DisplayName
 			}
@@ -558,6 +564,12 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 	} else if h != nil && h.db != nil {
 		if actor, err := h.db.GetUser(actorUID); err == nil && actor != nil {
 			actorMap := identity["actor"].(map[string]interface{})
+			accountType := actor.AccountType
+			if accountType == "" {
+				accountType = types.AccountHuman
+			}
+			actorMap["account_type"] = accountType
+			actorMap["is_bot"] = accountType == types.AccountBot
 			if actor.DisplayName != "" {
 				actorMap["display_name"] = actor.DisplayName
 			}
