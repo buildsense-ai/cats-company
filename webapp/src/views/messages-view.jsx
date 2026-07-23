@@ -19,6 +19,13 @@ const STICK_TO_BOTTOM_THRESHOLD = 96;
 const QUESTION_NAV_BOTTOM_EPSILON = 2;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
+const GROUP_MEMBER_REFRESH_EVENTS = new Set([
+  'members_invited',
+  'member_left',
+  'member_kicked',
+  'role_updated',
+  'group_updated',
+]);
 const PREVIEW_WIDTH_STORAGE_KEY = 'cc_file_preview_width_v1';
 const PREVIEW_WIDTH_MIN = 360;
 const PREVIEW_WIDTH_DEFAULT = 640;
@@ -443,6 +450,15 @@ export default function MessagesView({
   // Listen for incoming WebSocket messages
   useEffect(() => {
     const unsub = onWSMessage((msg) => {
+      if (
+        isGroup
+        && groupId
+        && msg.pres?.topic === topic
+        && GROUP_MEMBER_REFRESH_EVENTS.has(msg.pres.what)
+      ) {
+        loadGroupMembers();
+      }
+
       // New message from server
       if (msg.data && msg.data.topic === topic) {
         if (isStreamCancel(msg.data)) {
@@ -560,7 +576,7 @@ export default function MessagesView({
     });
 
     return () => unsub();
-  }, [clearLiveWorking, markLiveWorking, topic, user.uid]);
+  }, [clearLiveWorking, groupId, isGroup, markLiveWorking, topic, user.uid]);
 
   // Auto-scroll to bottom or restore scroll anchor depending on state
   React.useLayoutEffect(() => {
