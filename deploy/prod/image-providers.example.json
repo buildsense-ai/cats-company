@@ -17,6 +17,15 @@
       "api_key_file": "/run/catsco-secrets/pptoken.key",
       "edit_transport": "multipart",
       "timeout_seconds": 260
+    },
+    {
+      "id": "codexapis",
+      "generation_url": "https://codexapis.com/v1/images/generations",
+      "edit_url": "https://codexapis.com/v1/images/edits",
+      "model": "gpt-image-2",
+      "api_key_file": "/run/catsco-secrets/codexapis.key",
+      "edit_transport": "multipart",
+      "timeout_seconds": 260
     }
   ]
 }

@@ -37,11 +37,12 @@ func completeProviderDocument() map[string]interface{} {
 		"providers": []map[string]interface{}{
 			completeProviderEntry("code-newcli", "http://127.0.0.1:18081", "secret-a", "json_data_url"),
 			completeProviderEntry("pptoken", "http://127.0.0.1:18082", "secret-b", "multipart"),
+			completeProviderEntry("codexapis", "http://127.0.0.1:18083", "secret-c", "multipart"),
 		},
 	}
 }
 
-func TestLoadImageUpstreamProvidersFileRequiresTwoCompleteProviders(t *testing.T) {
+func TestLoadImageUpstreamProvidersFileRequiresThreeCompleteProviders(t *testing.T) {
 	document := completeProviderDocument()
 	providersDocument := document["providers"].([]map[string]interface{})
 	secretPath := filepath.Join(t.TempDir(), "pptoken-key")
@@ -56,7 +57,7 @@ func TestLoadImageUpstreamProvidersFileRequiresTwoCompleteProviders(t *testing.T
 	if err != nil {
 		t.Fatalf("load provider pool: %v", err)
 	}
-	if len(providers) != 2 {
+	if len(providers) != 3 {
 		t.Fatalf("providers=%d", len(providers))
 	}
 	if providers[0].id != "code-newcli" || providers[0].model != "company-image-model" || providers[0].client.Timeout != 12*time.Second {
@@ -70,6 +71,9 @@ func TestLoadImageUpstreamProvidersFileRequiresTwoCompleteProviders(t *testing.T
 	}
 	if providers[1].editTransport != imageEditTransportMultipart {
 		t.Fatalf("second edit transport=%q", providers[1].editTransport)
+	}
+	if providers[2].id != "codexapis" || providers[2].editTransport != imageEditTransportMultipart {
+		t.Fatalf("unexpected third provider: %#v", providers[2])
 	}
 	for _, provider := range providers {
 		if !provider.supports(imageOperationGeneration) || !provider.supports(imageOperationEdit) {
@@ -89,7 +93,25 @@ func TestLoadImageUpstreamProvidersFileRejectsIncompleteOrAmbiguousConfig(t *tes
 			mutate: func(document map[string]interface{}) {
 				document["providers"] = document["providers"].([]map[string]interface{})[:1]
 			},
-			contains: "exactly 2 providers",
+			contains: "exactly 3 providers",
+		},
+		{
+			name: "two providers",
+			mutate: func(document map[string]interface{}) {
+				document["providers"] = document["providers"].([]map[string]interface{})[:2]
+			},
+			contains: "exactly 3 providers",
+		},
+		{
+			name: "four providers",
+			mutate: func(document map[string]interface{}) {
+				providers := document["providers"].([]map[string]interface{})
+				document["providers"] = append(
+					providers,
+					completeProviderEntry("fourth", "http://127.0.0.1:18084", "secret-d", "multipart"),
+				)
+			},
+			contains: "exactly 3 providers",
 		},
 		{
 			name: "duplicate ids",
@@ -158,7 +180,7 @@ func TestImageGenerationProxyHandlerFromEnvPrefersCompleteProviderPool(t *testin
 	if err := handler.ConfigError(); err != nil {
 		t.Fatalf("pool configuration failed: %v", err)
 	}
-	if !handler.raceEnabled || len(handler.providers) != 2 {
+	if !handler.raceEnabled || len(handler.providers) != 3 {
 		t.Fatalf("race pool not enabled: providers=%d", len(handler.providers))
 	}
 	if handler.raceDeadline != 270*time.Second || handler.retryBackoff != 250*time.Millisecond || handler.maxAttemptsPerProvider != 3 {
@@ -168,7 +190,7 @@ func TestImageGenerationProxyHandlerFromEnvPrefersCompleteProviderPool(t *testin
 		t.Fatalf("max response bytes=%d", handler.maxResponseBytes)
 	}
 	if err := handler.EditConfigError(); err != nil {
-		t.Fatalf("both providers should support edit: %v", err)
+		t.Fatalf("all providers should support edit: %v", err)
 	}
 	if handler.apiKey == "ignored-legacy-secret" {
 		t.Fatal("legacy provider configuration was used instead of the pool")
@@ -218,10 +240,15 @@ func TestProductionImageProviderExampleMatchesLoader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load production provider example: %v", err)
 	}
-	if len(providers) != 2 || providers[0].id != "code-newcli" || providers[1].id != "pptoken" {
+	if len(providers) != 3 ||
+		providers[0].id != "code-newcli" ||
+		providers[1].id != "pptoken" ||
+		providers[2].id != "codexapis" {
 		t.Fatalf("unexpected production provider example")
 	}
-	if providers[0].editTransport != imageEditTransportJSONDataURL || providers[1].editTransport != imageEditTransportMultipart {
+	if providers[0].editTransport != imageEditTransportJSONDataURL ||
+		providers[1].editTransport != imageEditTransportMultipart ||
+		providers[2].editTransport != imageEditTransportMultipart {
 		t.Fatalf("unexpected production edit transports")
 	}
 }
