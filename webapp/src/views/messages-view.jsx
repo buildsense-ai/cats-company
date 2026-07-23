@@ -72,6 +72,12 @@ function resolvePhoneUploadLink(uploadUrl) {
   return `${window.location.origin}${normalizedPath}`;
 }
 
+export function extractStructuredMentionsFromText(text) {
+  if (typeof text !== 'string' || !text) return [];
+  const matches = text.matchAll(/(?:^|\s)@((?:usr)\d+)(?=\s|$|[，。！？,.!?])/gu);
+  return [...new Set(Array.from(matches, (match) => match[1]))];
+}
+
 export default function MessagesView({
   topic,
   topicName,
@@ -852,7 +858,10 @@ export default function MessagesView({
         }]));
       }
 
-      const result = await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined);
+      const mentions = isGroup ? extractStructuredMentionsFromText(input) : [];
+      const result = mentions.length > 0
+        ? await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
+        : await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
       if (switchesTopic) {
         if (activeTopicRef.current === topic) {

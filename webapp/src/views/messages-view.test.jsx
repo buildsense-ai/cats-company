@@ -91,7 +91,7 @@ vi.mock('../api', () => ({
   updateTopicSeq: vi.fn(),
 }));
 
-import MessagesView from './messages-view';
+import MessagesView, { extractStructuredMentionsFromText } from './messages-view';
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { api, onWSMessage, wsSendStreamCancel } from '../api';
 
@@ -206,6 +206,16 @@ async function flushPromises(count = 8) {
     await Promise.resolve();
   }
 }
+
+describe('extractStructuredMentionsFromText', () => {
+  it('extracts and deduplicates canonical user targets', () => {
+    expect(extractStructuredMentionsFromText('@usr42 请和 @usr43 对齐，再找 @usr42。')).toEqual(['usr42', 'usr43']);
+  });
+
+  it('does not treat a bare at sign or display name as a target', () => {
+    expect(extractStructuredMentionsFromText('联系 @Saturday，或者只写 @')).toEqual([]);
+  });
+});
 
 describe('MessagesView composer draft isolation', () => {
   let container;
@@ -959,6 +969,14 @@ describe('MessagesView composer draft isolation', () => {
     expect(textarea.value).toBe('@usr43 ');
     expect(container.querySelector('.oc-mention-picker')).toBeNull();
     expect(api.sendMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      typeDraft(textarea, '@usr43 请处理');
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43', undefined, ['usr43']);
   });
 
   it('opens the bot picker from the toolbar and inserts at the cursor', async () => {

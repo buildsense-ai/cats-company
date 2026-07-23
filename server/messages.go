@@ -36,6 +36,7 @@ type SendMessageRequest struct {
 	Mode          string                 `json:"mode,omitempty"`
 	Role          string                 `json:"role,omitempty"`
 	ReplyTo       int                    `json:"reply_to,omitempty"`
+	Mentions      []string               `json:"mentions,omitempty"`
 }
 
 type normalizedMessagePayload struct {
@@ -49,6 +50,7 @@ type normalizedMessagePayload struct {
 	Metadata            map[string]interface{}
 	Mode                string
 	Role                string
+	Mentions            []string
 }
 
 type savedMessageResult struct {
@@ -221,12 +223,13 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 		if groupID == 0 {
 			return
 		}
-		mentions := parseMentions(payload.DisplayContent)
+		mentions := payload.Mentions
+		trustedChannelTrigger := trustedChannelBindingDeliveryMetadata(payload.Metadata) && metadataBool(payload.Metadata, "channel_native_group_triggered")
 		dataMsg.Data.Mentions = mentions
 		if !h.isChannelManagedGroup(groupID) {
 			h.SendToUserExcept(uid, dataMsg, exclude)
 		}
-		h.broadcastToGroupWithMentions(groupID, dataMsg, uid, mentions, uid)
+		h.broadcastToGroupWithMentions(groupID, dataMsg, uid, mentions, uid, trustedChannelTrigger)
 		h.forwardChannelGroupBotReply(uid, topicID, payload, msgID)
 		return
 	}
@@ -934,7 +937,7 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 		reason = "other_agent_message"
 	}
 
-	mentions := parseMentions(normalizeContentText(formatted["content"]))
+	mentions := structuredMentionsFromMessage(formatted)
 	if eligible && isGroupTopic(message.TopicID) && role == "user" && len(mentions) > 0 {
 		agentID := formatUID(agentUID)
 		if !containsString(mentions, agentID) {
@@ -974,6 +977,77 @@ func isDurableAgentContextMessage(message *types.Message, displayType string) bo
 	}
 }
 
+func structuredMentionsFromMessage(message map[string]interface{}) []string {
+	if message == nil {
+		return nil
+	}
+	values := make([]string, 0)
+	switch blocks := message["content_blocks"].(type) {
+	case []types.ContentBlock:
+		for _, block := range blocks {
+			values = append(values, mentionValues(block.Payload["mentions"])...)
+		}
+	case []interface{}:
+		for _, rawBlock := range blocks {
+			block, _ := rawBlock.(map[string]interface{})
+			payload, _ := block["payload"].(map[string]interface{})
+			values = append(values, mentionValues(payload["mentions"])...)
+		}
+	}
+	if len(values) == 0 {
+		metadata, _ := message["metadata"].(map[string]interface{})
+		values = append(values, mentionValues(metadata["mentions"])...)
+	}
+	return normalizeStructuredMentions(values)
+}
+
+func mentionValues(raw interface{}) []string {
+	switch values := raw.(type) {
+	case []string:
+		return values
+	case []interface{}:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if text, ok := value.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func withStructuredMentionBlocks(blocks []types.ContentBlock, displayContent interface{}, mentions []string) []types.ContentBlock {
+	if len(mentions) == 0 {
+		return blocks
+	}
+	result := append([]types.ContentBlock(nil), blocks...)
+	for index := range result {
+		if result[index].Type != "text" {
+			continue
+		}
+		payload := make(map[string]interface{}, len(result[index].Payload)+1)
+		for key, value := range result[index].Payload {
+			payload[key] = value
+		}
+		payload["mentions"] = append([]string(nil), mentions...)
+		result[index].Payload = payload
+		return result
+	}
+	text := normalizeContentText(displayContent)
+	if text == "" {
+		return result
+	}
+	return append([]types.ContentBlock{{
+		Type: "text",
+		Text: text,
+		Payload: map[string]interface{}{
+			"mentions": append([]string(nil), mentions...),
+		},
+	}}, result...)
+}
+
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
@@ -1000,6 +1074,13 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 
 	blocks := sanitizeContentBlocks(req.ContentBlocks)
 	metadata := sanitizeMessageMap(req.Metadata)
+	mentions := normalizeStructuredMentions(req.Mentions)
+	if len(mentions) > 0 {
+		if metadata == nil {
+			metadata = make(map[string]interface{})
+		}
+		metadata["mentions"] = mentions
+	}
 	mode := stripMessageNullBytes(strings.TrimSpace(req.Mode))
 	role := stripMessageNullBytes(strings.TrimSpace(req.Role))
 	if len(blocks) == 0 && isStructuredDisplayType(displayType) {
@@ -1011,6 +1092,7 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 			role = "assistant"
 		}
 	}
+	blocks = withStructuredMentionBlocks(blocks, displayContent, mentions)
 
 	if storedContent == "" && len(blocks) == 0 {
 		return nil, errors.New("topic_id and content/content_blocks required")
@@ -1027,7 +1109,40 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 		Metadata:            metadata,
 		Mode:                mode,
 		Role:                role,
+		Mentions:            mentions,
 	}, nil
+}
+
+func isCanonicalMentionTarget(value string) bool {
+	if !strings.HasPrefix(value, "usr") || len(value) == len("usr") {
+		return false
+	}
+	for _, char := range value[len("usr"):] {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeStructuredMentions(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	mentions := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		uid := strings.TrimSpace(stripMessageNullBytes(value))
+		if !isCanonicalMentionTarget(uid) {
+			continue
+		}
+		if _, exists := seen[uid]; exists {
+			continue
+		}
+		seen[uid] = struct{}{}
+		mentions = append(mentions, uid)
+	}
+	return mentions
 }
 
 func normalizeClientMsgID(raw string, metadata map[string]interface{}) string {

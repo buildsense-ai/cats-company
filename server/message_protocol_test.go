@@ -511,8 +511,8 @@ func TestHandleGetMessagesBuildsAgentContextForGroupHistory(t *testing.T) {
 		},
 		history: []*types.Message{
 			{ID: 1, TopicID: "grp_80", FromUID: 7, Content: "大家看一下", MsgType: "text"},
-			{ID: 2, TopicID: "grp_80", FromUID: 7, Content: "@usr43 只让另一个机器人处理", MsgType: "text"},
-			{ID: 3, TopicID: "grp_80", FromUID: 7, Content: "@usr42 请继续", MsgType: "text"},
+			{ID: 2, TopicID: "grp_80", FromUID: 7, Content: "@usr43 只让另一个机器人处理", MsgType: "text", ContentBlocks: []types.ContentBlock{{Type: "text", Text: "@usr43 只让另一个机器人处理", Payload: map[string]interface{}{"mentions": []string{"usr43"}}}}},
+			{ID: 3, TopicID: "grp_80", FromUID: 7, Content: "@usr42 请继续", MsgType: "text", ContentBlocks: []types.ContentBlock{{Type: "text", Text: "@usr42 请继续", Payload: map[string]interface{}{"mentions": []string{"usr42"}}}}},
 			{ID: 4, TopicID: "grp_80", FromUID: 42, Content: "我来处理", MsgType: "text"},
 			{ID: 5, TopicID: "grp_80", FromUID: 43, Content: "另一个机器人的回答", MsgType: "text"},
 			{
