@@ -42,20 +42,51 @@ describe('ProfileEditor appearance settings', () => {
     });
   }
 
-  it('shows the current theme in settings and invokes the theme toggle', async () => {
-    const onToggleTheme = vi.fn();
-    await renderEditor({ onToggleTheme });
+  it('shows three explicit themes and selects an available theme', async () => {
+    const onThemeChange = vi.fn();
+    await renderEditor({ onThemeChange });
 
-    const toggle = container.querySelector('button[aria-label="切换日夜模式"]');
-    expect(toggle).toBeTruthy();
-    expect(toggle.querySelector('.oc-settings-theme-value').textContent).toBe('浅色');
+    const picker = container.querySelector('[role="radiogroup"][aria-label="界面主题"]');
+    expect(picker).toBeTruthy();
+    expect(picker.querySelectorAll('[role="radio"]')).toHaveLength(3);
+    expect(container.querySelector('[aria-label="浅色主题"]').getAttribute('aria-checked')).toBe('true');
 
-    await act(async () => Simulate.click(toggle));
-    expect(onToggleTheme).toHaveBeenCalledTimes(1);
+    await act(async () => Simulate.click(container.querySelector('[aria-label="深色主题"]')));
+    expect(onThemeChange).toHaveBeenCalledWith('dark');
   });
 
-  it('labels the active dark theme correctly', async () => {
-    await renderEditor({ theme: 'dark', onToggleTheme: vi.fn() });
-    expect(container.querySelector('.oc-settings-theme-value').textContent).toBe('深色');
+  it('opens password verification instead of selecting a locked liquid theme', async () => {
+    const onThemeChange = vi.fn();
+    const onUnlockLiquidTheme = vi.fn().mockResolvedValue({ ok: true });
+    await renderEditor({ onThemeChange, onUnlockLiquidTheme });
+
+    await act(async () => Simulate.click(container.querySelector('[aria-label="液态主题，需要密码"]')));
+    expect(onThemeChange).not.toHaveBeenCalled();
+    const passwordInput = container.querySelector('[aria-label="液态主题密码"]');
+    expect(passwordInput).toBeTruthy();
+    expect(passwordInput.getAttribute('type')).toBe('password');
+
+    await act(async () => {
+      Simulate.change(passwordInput, { target: { value: 'test-password' } });
+    });
+    await act(async () => {
+      Simulate.submit(container.querySelector('.oc-liquid-unlock'));
+      await Promise.resolve();
+    });
+    expect(onUnlockLiquidTheme).toHaveBeenCalledWith('test-password');
+  });
+
+  it('allows an entitled account to select the liquid theme directly', async () => {
+    const onThemeChange = vi.fn();
+    await renderEditor({
+      theme: 'dark',
+      onThemeChange,
+      liquidThemeAccess: { loading: false, unlocked: true },
+    });
+
+    const liquid = container.querySelector('[aria-label="液态主题"]');
+    expect(liquid).toBeTruthy();
+    await act(async () => Simulate.click(liquid));
+    expect(onThemeChange).toHaveBeenCalledWith('liquid');
   });
 });

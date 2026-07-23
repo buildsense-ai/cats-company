@@ -213,6 +213,26 @@ describe('ChatListView sidebar sections', () => {
     expect(contactsToggle.querySelector('.lucide-user-round')).toBeNull();
   });
 
+  it('places a compact friend-request count immediately before contact actions', async () => {
+    api.getAgents.mockResolvedValue({ agents: [] });
+    api.getPendingRequests.mockResolvedValue({
+      requests: [{ id: 91, from_user_id: 8, display_name: 'Alice' }],
+    });
+
+    await mount();
+
+    const section = container.querySelector('.cc-contacts-section');
+    const toggle = section.querySelector('.cc-section-toggle');
+    const badge = section.querySelector('.cc-section-request-badge');
+    const moreButton = section.querySelector('.cc-contact-section-menu-trigger');
+
+    expect(badge).toBeTruthy();
+    expect(badge.textContent).toBe('1');
+    expect(badge.parentElement).toBe(section);
+    expect(toggle.contains(badge)).toBe(false);
+    expect(badge.nextElementSibling).toBe(moreButton);
+  });
+
   it('keeps all group work in tasks and people in contacts', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [

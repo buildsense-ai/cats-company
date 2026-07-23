@@ -1793,10 +1793,16 @@ export default function ChatListView({
               <span className="cc-section-unread-dot" role="status" aria-label="联系人有新消息" />
             )}
             <ChevronRight size={14} />
-            {(pending.length + agentPendingRequests.length) > 0 && (
-              <span className="v3-agent-request-badge">{pending.length + agentPendingRequests.length}</span>
-            )}
           </button>
+          {(pending.length + agentPendingRequests.length) > 0 && (
+            <span
+              className="v3-agent-request-badge cc-section-request-badge"
+              role="status"
+              aria-label={`${pending.length + agentPendingRequests.length} 个待处理好友申请`}
+            >
+              {pending.length + agentPendingRequests.length}
+            </span>
+          )}
           <button
             type="button"
             className="cc-section-add cc-contact-section-menu-trigger"

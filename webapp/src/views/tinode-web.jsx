@@ -24,6 +24,7 @@ import CloudArtifactsModal from '../widgets/cloud-artifacts-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
+import AuthFlowBackground from '../components/auth-flow-background';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
 import BotModelSelector, {
@@ -47,6 +48,13 @@ import {
 } from '../utils/conversation-model-state';
 import { createAgentTaskTopicRecord } from '../utils/agent-task-topic';
 import { formatEmptyTaskGreeting } from '../utils/empty-task-greeting';
+import {
+  THEME_STORAGE_KEY,
+  isLiquidThemeUnlocked,
+  normalizeTheme,
+  saveLiquidThemeUnlock,
+  verifyLiquidThemePassword,
+} from '../utils/theme-access';
 import { Bug, Cloud, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
@@ -60,6 +68,12 @@ const DEV_PREVIEW_ENABLED = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPA
 const DEV_PREVIEW_UID = Number(import.meta.env.VITE_DEV_PREVIEW_UID || 100);
 const DEV_PREVIEW_ACCOUNT = import.meta.env.VITE_DEV_PREVIEW_ACCOUNT || 'ui-reviewer';
 const DEV_PREVIEW_PASSWORD = import.meta.env.VITE_DEV_PREVIEW_PASSWORD || 'demo123456';
+const requestedThemePreview = import.meta.env.DEV
+  ? new URLSearchParams(window.location.search).get('theme_preview')
+  : '';
+const DEV_THEME_PREVIEW = ['light', 'dark', 'liquid'].includes(requestedThemePreview)
+  ? requestedThemePreview
+  : '';
 const DEV_PREVIEW_USER = {
   uid: 'local-preview',
   username: 'preview',
@@ -83,6 +97,7 @@ function normalizeUserProfile(raw) {
 }
 
 function getInitialUser() {
+  if (DEV_THEME_PREVIEW) return { ...DEV_PREVIEW_USER, uid: 'theme-preview' };
   if (DEV_PREVIEW_ENABLED) return null;
 
   const token = getToken();
@@ -179,7 +194,11 @@ function TinodeWebApp() {
   const [sidebarViewportWidth, setSidebarViewportWidth] = useState(() => window.innerWidth);
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [theme, setTheme] = useState(() => localStorage.getItem('catsco_theme') || 'light');
+  const [theme, setTheme] = useState(() => DEV_THEME_PREVIEW || normalizeTheme(localStorage.getItem(THEME_STORAGE_KEY)));
+  const [liquidThemeAccess, setLiquidThemeAccess] = useState(() => ({
+    loading: false,
+    unlocked: DEV_THEME_PREVIEW === 'liquid' || isLiquidThemeUnlocked(),
+  }));
   const [currentModelName, setCurrentModelName] = useState(DEFAULT_MODEL_NAME);
   const [activeAgentModel, setActiveAgentModel] = useState(null);
   const [activeAgentState, setActiveAgentState] = useState(null);
@@ -223,8 +242,36 @@ function TinodeWebApp() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem('catsco_theme', theme);
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (DEV_THEME_PREVIEW) {
+      setLiquidThemeAccess({ loading: false, unlocked: DEV_THEME_PREVIEW === 'liquid' });
+      setTheme(DEV_THEME_PREVIEW);
+      return;
+    }
+
+    const unlocked = isLiquidThemeUnlocked();
+    setLiquidThemeAccess({ loading: false, unlocked });
+    if (!unlocked) setTheme((current) => current === 'liquid' ? 'light' : current);
+  }, []);
+
+  const selectTheme = useCallback((nextTheme) => {
+    const normalized = normalizeTheme(nextTheme);
+    if (normalized === 'liquid' && !liquidThemeAccess.unlocked) return false;
+    setTheme(normalized);
+    return true;
+  }, [liquidThemeAccess.unlocked]);
+
+  const unlockLiquidTheme = useCallback(async (password) => {
+    const unlocked = await verifyLiquidThemePassword(password);
+    if (!unlocked) throw new Error('密码不正确。');
+    saveLiquidThemeUnlock();
+    setLiquidThemeAccess({ loading: false, unlocked: true });
+    setTheme('liquid');
+    return { ok: true };
+  }, []);
 
   useEffect(() => {
     const handleViewportResize = () => setSidebarViewportWidth(window.innerWidth);
@@ -512,7 +559,7 @@ function TinodeWebApp() {
 
   useEffect(() => {
     if (!user?.uid) return;
-    if (DEV_PREVIEW_ENABLED) return undefined;
+    if (DEV_PREVIEW_ENABLED || DEV_THEME_PREVIEW) return undefined;
 
     let cancelled = false;
     api.getMe()
@@ -945,7 +992,9 @@ function TinodeWebApp() {
         <ProfileEditor
           user={user}
           theme={theme}
-          onToggleTheme={() => setTheme((value) => value === 'light' ? 'dark' : 'light')}
+          onThemeChange={selectTheme}
+          liquidThemeAccess={liquidThemeAccess}
+          onUnlockLiquidTheme={unlockLiquidTheme}
           onClose={() => setShowProfileEditor(false)}
           onSaved={handleUserUpdated}
           onOpenRelay={() => setShowRelayModal(true)}
@@ -1184,6 +1233,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
 
   const authShell = (content) => (
     <div className="oc-auth">
+      <AuthFlowBackground />
       {content}
     </div>
   );
@@ -1191,7 +1241,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
   if (mode === 'reset') {
     return authShell(
       <div className="oc-auth-card">
-        <div className="oc-auth-logo"><span className="catsco-brand-mark" aria-hidden="true" /><span>CatsCo</span></div>
+        <div className="oc-auth-logo">CatsCo</div>
         <div className="oc-settings-secondary" style={{ marginBottom: 14 }}>
           输入注册邮箱，验证后设置新密码。
         </div>
@@ -1205,7 +1255,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
 
   return authShell(
     <form className="oc-auth-card" onSubmit={handleSubmit}>
-      <div className="oc-auth-logo"><span className="catsco-brand-mark" aria-hidden="true" /><span>CatsCo</span></div>
+      <div className="oc-auth-logo">CatsCo</div>
       {error && <div style={{ color: '#FA5151', marginBottom: 12, fontSize: 13 }}>{error}</div>}
 
       {mode === 'login' ? (
