@@ -291,12 +291,12 @@ func newImageGenerationProxyHandlerWithProviders(providers []imageUpstreamProvid
 			editProviders++
 		}
 	}
-	if len(handler.providers) != requiredImageRaceProviders {
-		handler.configError = fmt.Errorf("image provider pool requires exactly %d providers", requiredImageRaceProviders)
-	} else if generationProviders != requiredImageRaceProviders {
+	if len(handler.providers) == 0 {
+		handler.configError = errors.New("image provider pool is empty")
+	} else if generationProviders != len(handler.providers) {
 		handler.configError = errors.New("every image race provider must support generation")
 	}
-	if editProviders != requiredImageRaceProviders {
+	if editProviders != len(handler.providers) {
 		handler.editConfigError = errors.New("every image race provider must support edit")
 	}
 

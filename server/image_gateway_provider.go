@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	requiredImageRaceProviders = 2
+	requiredImageRaceProviders = 3
 )
 
 var imageProviderIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -95,7 +95,10 @@ func loadImageUpstreamProvidersFile(path string, defaultModel string, defaultTim
 		return nil, errors.New("CATSCO_IMAGE_UPSTREAMS_FILE must contain one JSON object")
 	}
 	if len(document.Providers) != requiredImageRaceProviders {
-		return nil, fmt.Errorf("CATSCO_IMAGE_UPSTREAMS_FILE must configure exactly %d providers", requiredImageRaceProviders)
+		return nil, fmt.Errorf(
+			"CATSCO_IMAGE_UPSTREAMS_FILE must configure exactly %d providers",
+			requiredImageRaceProviders,
+		)
 	}
 
 	modelFallback := strings.TrimSpace(defaultModel)
