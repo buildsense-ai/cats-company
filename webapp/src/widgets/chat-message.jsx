@@ -1,5 +1,5 @@
-import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, CornerUpLeft, MoreHorizontal, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
+import React, { memo, useEffect, useMemo, useState } from 'react';
+import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -698,10 +698,8 @@ function WorkingProcess({ blocks }) {
 }
 
 function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
-  const [actionsOpen, setActionsOpen] = useState(false);
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
-  const actionsRef = useRef(null);
   const content = message.content;
   const effectiveWorkingMessages = workingMessages || message._working || [];
   const storedBlocks = useMemo(() => Array.isArray(message.content_blocks) ? message.content_blocks : [], [message.content_blocks]);
@@ -757,21 +755,11 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
 
   const handleReplyClick = (event) => {
     event.stopPropagation();
-    setActionsOpen(false);
     onReply?.();
-  };
-
-  const handleMoreClick = (event) => {
-    event.stopPropagation();
-    setActionsOpen((open) => {
-      if (!open) setCopyState('');
-      return !open;
-    });
   };
 
   const handleEditClick = (event) => {
     event.stopPropagation();
-    setActionsOpen(false);
     onEdit?.(message);
   };
 
@@ -796,28 +784,6 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
       setRegenerateState('failed');
     }
   };
-
-  useEffect(() => {
-    if (!actionsOpen) return undefined;
-
-    const closeFromOutside = (event) => {
-      if (!actionsRef.current?.contains(event.target)) {
-        setActionsOpen(false);
-      }
-    };
-    const closeFromKeyboard = (event) => {
-      if (event.key === 'Escape') {
-        setActionsOpen(false);
-      }
-    };
-
-    document.addEventListener('pointerdown', closeFromOutside);
-    document.addEventListener('keydown', closeFromKeyboard);
-    return () => {
-      document.removeEventListener('pointerdown', closeFromOutside);
-      document.removeEventListener('keydown', closeFromKeyboard);
-    };
-  }, [actionsOpen]);
 
   if (!hasText && richBlocks.length === 0 && workingBlocks.length === 0) return null;
 
@@ -881,8 +847,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
 
         {!workingOnly && <div className="v3-message-footer">
           <div
-            ref={actionsRef}
-            className={`v3-message-actions${actionsOpen ? ' open' : ''}`}
+            className="v3-message-actions"
             onClick={(event) => event.stopPropagation()}
           >
             <button
@@ -907,7 +872,18 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                 <RotateCcw size={18} />
               </button>
             )}
-            {onEdit ? (
+            {!onEdit && onReply && (
+              <button
+                className="v3-action-btn v3-reply-action"
+                onClick={handleReplyClick}
+                aria-label={t('chat_reply')}
+                title={t('chat_reply')}
+                type="button"
+              >
+                <CornerUpLeft size={14} />
+              </button>
+            )}
+            {onEdit && (
               <button
                 className="v3-action-btn"
                 onClick={handleEditClick}
@@ -917,28 +893,6 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
               >
                 <Pencil size={14} />
               </button>
-            ) : (
-              <button
-                className="v3-action-btn"
-                onClick={handleMoreClick}
-                aria-label="更多操作"
-                aria-haspopup="menu"
-                aria-expanded={actionsOpen}
-                title="更多操作"
-                type="button"
-              >
-                <MoreHorizontal size={14} />
-              </button>
-            )}
-            {!onEdit && actionsOpen && (
-              <div className="v3-message-action-menu" role="menu">
-                {onReply && (
-                  <button type="button" role="menuitem" onClick={handleReplyClick}>
-                    <CornerUpLeft size={14} />
-                    <span>{t('chat_reply')}</span>
-                  </button>
-                )}
-              </div>
             )}
           </div>
           <time className="v3-msg-time" dateTime={message.created_at || undefined}>{timeString}</time>

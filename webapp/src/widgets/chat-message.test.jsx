@@ -717,7 +717,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(directActions.map((button) => button.getAttribute('aria-label'))).toEqual([
       '复制',
       '重新生成',
-      '更多操作',
+      '回复',
     ]);
 
     await act(async () => {
@@ -736,42 +736,11 @@ describe('ChatMessage rich file rendering', () => {
     expect(onRegenerate).toHaveBeenCalledWith(expect.objectContaining({ id: 20 }));
 
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="更多操作"]'));
-      await Promise.resolve();
-    });
-    const menu = container.querySelector('.v3-message-action-menu');
-    expect(menu).not.toBeNull();
-    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(1);
-    expect(menu.textContent).toContain('回复');
-
-    await act(async () => {
-      document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
-      await Promise.resolve();
-    });
-    expect(container.querySelector('.v3-message-action-menu')).toBeNull();
-
-    await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="更多操作"]'));
-      await Promise.resolve();
-    });
-    expect(container.querySelector('.v3-message-action-menu')).not.toBeNull();
-
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-      await Promise.resolve();
-    });
-    expect(container.querySelector('.v3-message-action-menu')).toBeNull();
-
-    await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="更多操作"]'));
-      await Promise.resolve();
-    });
-    const replyMenuItem = container.querySelector('.v3-message-action-menu [role="menuitem"]');
-    await act(async () => {
-      Simulate.click(replyMenuItem);
+      Simulate.click(container.querySelector('[aria-label="回复"]'));
       await Promise.resolve();
     });
     expect(onReply).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[aria-label="更多操作"]')).toBeNull();
     expect(container.querySelector('.v3-message-action-menu')).toBeNull();
   });
 
