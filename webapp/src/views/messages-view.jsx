@@ -197,6 +197,7 @@ export default function MessagesView({
   const [previewWidth, setPreviewWidth] = useState(() => loadPreviewWidth());
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [refreshingHistory, setRefreshingHistory] = useState(false);
   const [historyError, setHistoryError] = useState('');
   const [olderHistoryError, setOlderHistoryError] = useState('');
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -463,6 +464,7 @@ export default function MessagesView({
     historyOffsetRef.current = cachedHistory?.offset || 0;
     historyBeforeIDRef.current = cachedHistory?.nextBeforeID || 0;
     hasMoreHistoryRef.current = Boolean(cachedHistory?.hasMore);
+    previousScrollRef.current = null;
     loadingOlderRef.current = false;
     stickToBottomRef.current = true;
     setHasMoreHistory(Boolean(cachedHistory?.hasMore));
@@ -715,6 +717,8 @@ export default function MessagesView({
     const cacheKey = historyCacheKey(user.uid, targetTopic);
     const hasCachedHistory = historyCacheRef.current.has(cacheKey);
     historyLoadingRef.current = true;
+    previousScrollRef.current = null;
+    setRefreshingHistory(true);
     setHistoryError('');
     setOlderHistoryError('');
     loadingOlderRef.current = false;
@@ -758,6 +762,7 @@ export default function MessagesView({
     } finally {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
         historyLoadingRef.current = false;
+        setRefreshingHistory(false);
         setHistoryLoaded(true);
       }
     }
@@ -800,6 +805,7 @@ export default function MessagesView({
       setHasMoreHistory(hasMore);
     } catch (e) {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
+        previousScrollRef.current = null;
         setOlderHistoryError('更早的聊天记录加载失败。');
       }
     } finally {
@@ -812,11 +818,12 @@ export default function MessagesView({
 
   useEffect(() => {
     const el = timelineRef.current;
-    if (!el || !hasMoreHistory || loadingOlder || historyError || olderHistoryError) return;
-    if (el.scrollHeight <= el.clientHeight + HISTORY_AUTO_LOAD_THRESHOLD) {
+    if (!el || refreshingHistory || !hasMoreHistory || loadingOlder || historyError || olderHistoryError) return;
+    if (el.scrollTop <= HISTORY_AUTO_LOAD_THRESHOLD
+      || el.scrollHeight <= el.clientHeight + HISTORY_AUTO_LOAD_THRESHOLD) {
       loadOlderHistory();
     }
-  }, [messages.length, hasMoreHistory, loadingOlder, historyError, olderHistoryError, loadOlderHistory]);
+  }, [messages.length, refreshingHistory, hasMoreHistory, loadingOlder, historyError, olderHistoryError, loadOlderHistory]);
 
   const workingState = useMemo(() => {
     let lastWorkingIndex = -1;

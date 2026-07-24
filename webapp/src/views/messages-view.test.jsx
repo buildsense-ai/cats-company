@@ -1527,6 +1527,66 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('[data-message-content="fresh topic A"]')).not.toBeNull();
   });
 
+  it('resumes older history loading after a cached topic refresh finishes at the top', async () => {
+    const initialTopicA = deferred();
+    const refreshedTopicA = deferred();
+    const latest = Array.from({ length: 50 }, (_, index) => ({
+      id: 101 + index,
+      seq_id: 101 + index,
+      topic_id: 'p2p_1_2',
+      from_uid: index % 2 === 0 ? 1 : 2,
+      type: 'text',
+      content: `latest-${index}`,
+    }));
+    api.getMessages
+      .mockImplementationOnce(() => initialTopicA.promise)
+      .mockResolvedValueOnce({
+        messages: [{ id: 201, topic_id: 'p2p_1_3', from_uid: 3, type: 'text', content: 'topic B' }],
+        has_more: false,
+      })
+      .mockImplementationOnce(() => refreshedTopicA.promise)
+      .mockResolvedValueOnce({
+        messages: [{ id: 100, seq_id: 100, topic_id: 'p2p_1_2', from_uid: 2, type: 'text', content: 'older after refresh' }],
+        has_more: false,
+        next_before_id: 100,
+      });
+
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    Object.defineProperty(timeline, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    timeline.scrollTop = 500;
+    await act(async () => {
+      initialTopicA.resolve({ messages: latest, has_more: true, next_before_id: 101 });
+      await flushPromises();
+    });
+    expect(api.getMessages).toHaveBeenCalledTimes(1);
+
+    await mountTopic(root, 'p2p_1_3');
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      renderTopic(root, 'p2p_1_2');
+      await Promise.resolve();
+    });
+
+    timeline.scrollTop = 0;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+    expect(api.getMessages).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      refreshedTopicA.resolve({ messages: latest, has_more: true, next_before_id: 101 });
+      await flushPromises();
+    });
+
+    expect(api.getMessages).toHaveBeenNthCalledWith(4, 'p2p_1_2', 50, 50, true, 101);
+    expect(container.querySelector('[data-message-content="older after refresh"]')).not.toBeNull();
+  });
+
   it('downloads tutorial media and fills the selected prompt', async () => {
     mockTutorialAgentPeer();
     await mountTopic(root, 'p2p_1_2', { localAssistantStatus: 'connected' });
