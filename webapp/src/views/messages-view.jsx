@@ -72,6 +72,12 @@ function resolvePhoneUploadLink(uploadUrl) {
   return `${window.location.origin}${normalizedPath}`;
 }
 
+function isStructuredMentionSelectionIntact(text, target, start, end) {
+  if (start < 0 || end > text.length || text.slice(start, end) !== `@${target}`) return false;
+  const trailingCharacter = text.slice(end, end + 1);
+  return !trailingCharacter || !/[\p{L}\p{N}_]/u.test(trailingCharacter);
+}
+
 export function reconcileStructuredMentionSelections(previousText, nextText, selections = []) {
   const previous = typeof previousText === 'string' ? previousText : '';
   const next = typeof nextText === 'string' ? nextText : '';
@@ -94,11 +100,18 @@ export function reconcileStructuredMentionSelections(previousText, nextText, sel
   }
 
   const delta = next.length - previous.length;
+  const nextChangedText = next.slice(prefixLength, nextSuffixStart);
   return selections.flatMap((selection) => {
     const target = typeof selection?.target === 'string' ? selection.target : '';
     let start = Number.isInteger(selection?.start) ? selection.start : -1;
     let end = Number.isInteger(selection?.end) ? selection.end : -1;
     if (!/^usr\d+$/u.test(target) || start < 0 || end <= start) return [];
+
+    const touchesRightBoundary = prefixLength === end
+      && /[\p{L}\p{N}_]/u.test(nextChangedText.slice(0, 1));
+    const touchesLeftBoundary = previousSuffixStart === start
+      && /[\p{L}\p{N}_]/u.test(nextChangedText.slice(-1));
+    if (touchesRightBoundary || touchesLeftBoundary) return [];
 
     if (end <= prefixLength) {
       // The selected token is before the edit and remains unchanged.
@@ -109,7 +122,7 @@ export function reconcileStructuredMentionSelections(previousText, nextText, sel
       return [];
     }
 
-    if (start < 0 || end > next.length || next.slice(start, end) !== `@${target}`) return [];
+    if (!isStructuredMentionSelectionIntact(next, target, start, end)) return [];
     return [{ target, start, end }];
   });
 }
@@ -122,7 +135,7 @@ export function collectStructuredMentionTargets(text, selections = []) {
     const start = Number.isInteger(selection?.start) ? selection.start : -1;
     const end = Number.isInteger(selection?.end) ? selection.end : -1;
     if (!/^usr\d+$/u.test(target) || start < 0 || end <= start) return [];
-    return value.slice(start, end) === `@${target}` ? [target] : [];
+    return isStructuredMentionSelectionIntact(value, target, start, end) ? [target] : [];
   }))];
 }
 

@@ -227,6 +227,12 @@ describe('structured composer mention provenance', () => {
     const selection = [{ target: 'usr42', start: 0, end: 6 }];
     expect(reconcileStructuredMentionSelections('@usr42 ', '@usr43 ', selection)).toEqual([]);
   });
+
+  it('drops picker provenance when text is inserted against the token boundary', () => {
+    const selection = [{ target: 'usr42', start: 0, end: 6 }];
+    expect(reconcileStructuredMentionSelections('@usr42 ', '@usr42x ', selection)).toEqual([]);
+    expect(collectStructuredMentionTargets('@usr42x ', selection)).toEqual([]);
+  });
 });
 
 describe('MessagesView composer draft isolation', () => {
@@ -1006,6 +1012,41 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined, ['usr43']);
+  });
+
+  it('does not send structured mentions after typing against the picker token boundary', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 43, display_name: 'Wanyu', username: 'catsco-agent-worker1', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@wan');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe('@usr43 ');
+
+    await act(async () => {
+      typeDraft(textarea, '@usr43x 请处理');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43x 请处理', undefined);
   });
 
   it('restores picker provenance and original text after a send failure', async () => {
