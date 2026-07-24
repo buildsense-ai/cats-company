@@ -103,6 +103,14 @@ jobs:
           export SKIP_IMAGE_PULL=1
           "$root/compose/remote-deploy.sh" "$root" "$revision"
           "$root/compose/remote-status.sh" "$root"
+          for endpoint in /api/bot/definition /api/bot/identity; do
+            status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+              "http://127.0.0.1:16061${endpoint}")"
+            if [ "$status" != "401" ]; then
+              echo "Expected ${endpoint} to require Bot authentication (401), got ${status}" >&2
+              exit 1
+            fi
+          done
           EOF
 
       - name: Dump remote status on failure

@@ -289,6 +289,8 @@ func main() {
 	botHandler.SetHub(hub)
 	botModelStore, _ := db.(store.BotModelConfigStore)
 	botModelConfigHandler := server.NewBotModelConfigHandler(db, botModelStore)
+	botDefinitionStore, _ := db.(store.BotDefinitionStore)
+	botDefinitionHandler := server.NewBotDefinitionHandler(botModelConfigHandler, botDefinitionStore)
 	botModelCloudPublicEnabled := envBool("CATSCO_BOT_MODEL_CLOUD_ENABLED")
 	botModelCloudTestUIDs := envInt64Set("CATSCO_BOT_MODEL_CLOUD_TEST_UIDS")
 	botModelConfigHandler.SetRollout(botModelCloudPublicEnabled, botModelCloudTestUIDs)
@@ -564,6 +566,8 @@ func main() {
 	mux.HandleFunc("/api/bots/avatar", ownerAuthWithDB(botHandler.HandleUpdateBotAvatar))
 	mux.HandleFunc("/api/bots/friends", ownerAuthWithDB(botHandler.HandleGetBotFriends))
 	mux.HandleFunc("/api/bots/model-config", ownerAuthWithDB(botModelConfigHandler.HandleOwnerConfig))
+	mux.HandleFunc("/api/bot/definition", botAPIKeyAuthWithDB(botDefinitionHandler.Handle))
+	mux.HandleFunc("/api/bot/identity", botAPIKeyAuthWithDB(server.BotIdentityHandler))
 	mux.HandleFunc("/api/bot/model-config", botAPIKeyAuthWithDB(botModelConfigHandler.HandleRuntimeConfig))
 	mux.HandleFunc("/api/bot/model-config/ack", botAPIKeyAuthWithDB(botModelConfigHandler.HandleRuntimeAck))
 

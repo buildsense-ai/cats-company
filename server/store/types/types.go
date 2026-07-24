@@ -365,6 +365,30 @@ type BotModelConfig struct {
 	LastError           string `json:"last_error,omitempty"`
 }
 
+// BotSkillRef is an immutable SkillHub package reference stored in a bot
+// definition. The package content and download metadata remain owned by
+// SkillHub.
+type BotSkillRef struct {
+	SkillID string `json:"skillId"`
+	Version string `json:"version"`
+}
+
+// BotDefinitionSkillsState is the independently versioned skills portion of a
+// portable XiaoBa bot definition.
+type BotDefinitionSkillsState struct {
+	Schema    string        `json:"schema"`
+	Skills    []BotSkillRef `json:"skills"`
+	Revision  int64         `json:"revision"`
+	UpdatedAt string        `json:"updatedAt"`
+}
+
+// BotDefinitionSnapshot is read from one bot_config.config value so the model
+// and skills revisions describe the same database snapshot.
+type BotDefinitionSnapshot struct {
+	Model  *BotModelConfig
+	Skills *BotDefinitionSkillsState
+}
+
 const (
 	ChannelAgentAccessPublic           = "public"
 	ChannelAgentAccessApprovalRequired = "approval_required"

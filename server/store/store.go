@@ -145,6 +145,18 @@ type BotModelConfigStore interface {
 	AckBotModelConfig(botUID, revision int64, kind, modelID, reasoningEffort, applyError string) (*types.BotModelConfig, error)
 }
 
+// BotDefinitionStore persists only the skills node of a portable bot
+// definition. The existing cloud-model node remains the canonical model
+// source and is returned in the same snapshot for strong ETag generation.
+type BotDefinitionStore interface {
+	GetBotDefinition(botUID int64) (*types.BotDefinitionSnapshot, error)
+	CreateBotDefinition(botUID int64, skills []types.BotSkillRef) (*types.BotDefinitionSnapshot, error)
+	UpdateBotDefinition(
+		botUID, expectedModelRevision, expectedSkillsRevision int64,
+		skills []types.BotSkillRef,
+	) (*types.BotDefinitionSnapshot, error)
+}
+
 // FeedbackStore contains user feedback persistence operations.
 type FeedbackStore interface {
 	CreateFeedbackReport(report *types.FeedbackReport) (int64, error)
