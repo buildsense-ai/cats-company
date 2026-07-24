@@ -985,6 +985,101 @@ describe('ChatMessage rich file rendering', () => {
     expect(downloadLink.getAttribute('download')).toBe('report.pdf');
   });
 
+  it('closes the file preview from its backdrop and the Escape key', async () => {
+    const message = {
+      id: 41,
+      from_uid: 2,
+      content: '[文件] mobile-report.pdf',
+      content_blocks: [{
+        type: 'file',
+        payload: {
+          name: 'mobile-report.pdf',
+          url: '/uploads/files/mobile-report.pdf',
+          size: 2048,
+          mime_type: 'application/pdf',
+        },
+      }],
+      created_at: '2026-06-09T00:00:00Z',
+    };
+
+    await act(async () => {
+      root.render(<PreviewHarness message={message} />);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-file-preview-panel')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-file-preview-backdrop'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-file-preview-panel')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+  });
+
+  it('closes the mobile file preview when its handle is dragged down past the threshold', async () => {
+    const onClose = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={{
+            name: 'mobile-report.pdf',
+            url: '/uploads/files/mobile-report.pdf',
+            size: 2048,
+            mime_type: 'application/pdf',
+          }}
+          onClose={onClose}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const handle = container.querySelector('.v3-file-preview-drag-handle');
+    expect(handle).not.toBeNull();
+
+    await act(async () => {
+      Simulate.pointerDown(handle, { pointerId: 1, pointerType: 'touch', clientY: 100 });
+      Simulate.pointerMove(handle, { pointerId: 1, pointerType: 'touch', clientY: 160 });
+      Simulate.pointerUp(handle, { pointerId: 1, pointerType: 'touch', clientY: 160 });
+      await Promise.resolve();
+    });
+
+    const panel = container.querySelector('.v3-file-preview-panel');
+    expect(onClose).not.toHaveBeenCalled();
+    expect(panel.style.getPropertyValue('--v3-preview-drag-offset')).toBe('0px');
+
+    await act(async () => {
+      Simulate.pointerDown(handle, { pointerId: 1, pointerType: 'touch', clientY: 100 });
+      Simulate.pointerMove(handle, { pointerId: 1, pointerType: 'touch', clientY: 180 });
+      Simulate.pointerUp(handle, { pointerId: 1, pointerType: 'touch', clientY: 180 });
+      await Promise.resolve();
+    });
+
+    expect(panel.className).toContain('is-dismissing');
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 240));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('switches the side preview when another file card is clicked', async () => {
     await act(async () => {
       root.render(
