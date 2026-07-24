@@ -774,6 +774,10 @@ type latestMessagesBeforeStore interface {
 	GetLatestMessagesBefore(topicID string, beforeID int64, limit int) ([]*types.Message, error)
 }
 
+type usersByIDsStore interface {
+	GetUsersByIDs(ids []int64) (map[int64]*types.User, error)
+}
+
 // HandleGetMessages handles GET /api/messages?topic_id=xxx&limit=50&offset=0
 func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Request) {
 	uid := UIDFromContext(r.Context())
@@ -816,7 +820,7 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load agent context history"})
 			return
 		}
-		identityUsers := h.loadAgentContextUsers(uid, rawMsgs)
+		identityUsers := h.loadHistoryUsers(uid, rawMsgs)
 		msgs := make([]map[string]interface{}, 0, len(rawMsgs))
 		for _, message := range rawMsgs {
 			if formatted := h.hub.agentContextHistoryAPIMessageForRecipient(uid, message, identityUsers); formatted != nil {
@@ -833,10 +837,23 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if limit <= 0 {
+		limit = 50
+	}
+
 	var rawMsgs []*types.Message
 	var err error
 	if latest {
-		rawMsgs, err = h.db.GetLatestMessages(topicID, limit, offset)
+		queryLimit := limit + 1
+		if beforeID > 0 {
+			if storeWithCursor, ok := h.db.(latestMessagesBeforeStore); ok {
+				rawMsgs, err = storeWithCursor.GetLatestMessagesBefore(topicID, beforeID, queryLimit)
+			} else {
+				rawMsgs, err = h.db.GetLatestMessages(topicID, queryLimit, offset)
+			}
+		} else {
+			rawMsgs, err = h.db.GetLatestMessages(topicID, queryLimit, offset)
+		}
 	} else {
 		rawMsgs, err = h.db.GetMessages(topicID, limit, offset)
 	}
@@ -844,10 +861,20 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load messages"})
 		return
 	}
+	hasMore := latest && len(rawMsgs) > limit
+	if hasMore {
+		rawMsgs = rawMsgs[len(rawMsgs)-limit:]
+	}
+	nextBeforeID := int64(0)
+	if latest && len(rawMsgs) > 0 {
+		nextBeforeID = rawMsgs[0].ID
+	}
+
 	msgs := make([]map[string]interface{}, 0, len(rawMsgs))
 	if h.hub != nil {
+		identityUsers := h.loadHistoryUsers(uid, rawMsgs)
 		for _, message := range rawMsgs {
-			if formatted := h.hub.historyAPIMessageForRecipient(uid, message); formatted != nil {
+			if formatted := h.hub.historyAPIMessageForRecipient(uid, message, identityUsers); formatted != nil {
 				msgs = append(msgs, formatted)
 			}
 		}
@@ -866,7 +893,12 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"messages": msgs})
+	response := map[string]interface{}{"messages": msgs}
+	if latest {
+		response["has_more"] = hasMore
+		response["next_before_id"] = nextBeforeID
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *MessageHandler) loadAgentContextHistory(topicID string, beforeID int64, limit int) ([]*types.Message, bool, int64, error) {
@@ -899,15 +931,28 @@ func (h *MessageHandler) loadAgentContextHistory(topicID string, beforeID int64,
 	return messages, hasMore, nextBeforeID, nil
 }
 
-func (h *MessageHandler) loadAgentContextUsers(agentUID int64, messages []*types.Message) map[int64]*types.User {
-	users := make(map[int64]*types.User)
-	uids := map[int64]struct{}{agentUID: {}}
+func (h *MessageHandler) loadHistoryUsers(recipientUID int64, messages []*types.Message) map[int64]*types.User {
+	uids := map[int64]struct{}{recipientUID: {}}
 	for _, message := range messages {
 		if message != nil && message.FromUID > 0 {
 			uids[message.FromUID] = struct{}{}
 		}
 	}
+
+	ids := make([]int64, 0, len(uids))
 	for uid := range uids {
+		if uid > 0 {
+			ids = append(ids, uid)
+		}
+	}
+	if batchStore, ok := h.db.(usersByIDsStore); ok {
+		if users, err := batchStore.GetUsersByIDs(ids); err == nil {
+			return users
+		}
+	}
+
+	users := make(map[int64]*types.User, len(ids))
+	for _, uid := range ids {
 		if user, err := h.db.GetUser(uid); err == nil && user != nil {
 			users[uid] = user
 		}

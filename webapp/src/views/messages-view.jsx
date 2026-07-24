@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, Smartphone, X } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, LoaderCircle, RefreshCw, Smartphone, X } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { FilePreviewPanel } from '../widgets/chat-message';
@@ -10,6 +10,7 @@ import ChatComposer from '../widgets/chat-composer';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 
 const PAGE_SIZE = 50;
+const HISTORY_CACHE_MAX_TOPICS = 12;
 const TYPING_TIMEOUT_MS = 10000;
 const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
 const WORKING_TEXT_PREFIX = 'AI文本:';
@@ -139,6 +140,31 @@ export function collectStructuredMentionTargets(text, selections = []) {
   }))];
 }
 
+function historyMessageID(message) {
+  const id = Number(message?.seq_id || message?.id || 0);
+  return Number.isFinite(id) && id > 0 ? id : 0;
+}
+
+function oldestHistoryMessageID(messages) {
+  for (const message of messages || []) {
+    const id = historyMessageID(message);
+    if (id > 0) return id;
+  }
+  return 0;
+}
+
+function historyCacheKey(userID, topic) {
+  return `${userID || 'anonymous'}:${topic}`;
+}
+
+function cacheHistoryPage(cache, key, entry) {
+  cache.delete(key);
+  cache.set(key, entry);
+  while (cache.size > HISTORY_CACHE_MAX_TOPICS) {
+    cache.delete(cache.keys().next().value);
+  }
+}
+
 export default function MessagesView({
   topic,
   topicName,
@@ -171,6 +197,8 @@ export default function MessagesView({
   const [previewWidth, setPreviewWidth] = useState(() => loadPreviewWidth());
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [historyError, setHistoryError] = useState('');
+  const [olderHistoryError, setOlderHistoryError] = useState('');
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [isStopRequested, setIsStopRequested] = useState(false);
   const [suppressedWorkingKey, setSuppressedWorkingKey] = useState('');
@@ -208,6 +236,10 @@ export default function MessagesView({
   const runtimePlanRef = useRef(null);
   const runtimePlanClearTimer = useRef(null);
   const historyOffsetRef = useRef(0);
+  const historyBeforeIDRef = useRef(0);
+  const historyRequestRef = useRef(0);
+  const historyLoadingRef = useRef(false);
+  const historyCacheRef = useRef(new Map());
   const hasMoreHistoryRef = useRef(false);
   const loadingOlderRef = useRef(false);
   const activeTopicRef = useRef(topic);
@@ -406,7 +438,9 @@ export default function MessagesView({
     if (!topic) return;
     activeTopicRef.current = topic;
     setInput(composerDraftsRef.current.get(topic) || '');
-    setMessages([]);
+    const cacheKey = historyCacheKey(user.uid, topic);
+    const cachedHistory = historyCacheRef.current.get(cacheKey);
+    setMessages(cachedHistory?.messages || []);
     const attachmentDraft = attachmentDraftsRef.current.get(topic) || [];
     pendingAttachmentsRef.current = attachmentDraft;
     setPendingAttachments(attachmentDraft);
@@ -423,12 +457,15 @@ export default function MessagesView({
     setMembers([]);
     setGroupInfo(null);
     setPeerProfile(null);
-    setHistoryLoaded(false);
-    historyOffsetRef.current = 0;
-    hasMoreHistoryRef.current = false;
+    setHistoryLoaded(Boolean(cachedHistory));
+    setHistoryError('');
+    setOlderHistoryError('');
+    historyOffsetRef.current = cachedHistory?.offset || 0;
+    historyBeforeIDRef.current = cachedHistory?.nextBeforeID || 0;
+    hasMoreHistoryRef.current = Boolean(cachedHistory?.hasMore);
     loadingOlderRef.current = false;
     stickToBottomRef.current = true;
-    setHasMoreHistory(false);
+    setHasMoreHistory(Boolean(cachedHistory?.hasMore));
     setLoadingOlder(false);
     setIsStopRequested(false);
     setSuppressedWorkingKey('');
@@ -452,7 +489,7 @@ export default function MessagesView({
     } else {
       loadPeerProfile();
     }
-  }, [topic]);
+  }, [topic, user.uid]);
 
   useEffect(() => {
     const preventBrowserFileOpen = (event) => {
@@ -674,26 +711,62 @@ export default function MessagesView({
   }, [messages, runtimePlan, peerTyping]);
 
   const loadHistory = async (targetTopic = topic) => {
+    const requestID = ++historyRequestRef.current;
+    const cacheKey = historyCacheKey(user.uid, targetTopic);
+    const hasCachedHistory = historyCacheRef.current.has(cacheKey);
+    historyLoadingRef.current = true;
+    setHistoryError('');
+    setOlderHistoryError('');
+    loadingOlderRef.current = false;
+    setLoadingOlder(false);
+    if (!hasCachedHistory) {
+      setHistoryLoaded(false);
+    }
     try {
       const res = await api.getMessages(targetTopic, PAGE_SIZE, 0, true);
-      if (activeTopicRef.current !== targetTopic) return;
-      if (res.messages) {
-        const { visibleMessages } = normalizeHistoryMessages(res.messages);
-        setMessages(visibleMessages);
-        historyOffsetRef.current = (res.messages || []).length;
-        setHasMoreHistory((res.messages || []).length === PAGE_SIZE);
-        hasMoreHistoryRef.current = (res.messages || []).length === PAGE_SIZE;
-      }
+      if (activeTopicRef.current !== targetTopic || historyRequestRef.current !== requestID) return;
+      const rawMessages = res.messages || [];
+      const { visibleMessages } = normalizeHistoryMessages(rawMessages);
+      const hasMore = typeof res.has_more === 'boolean'
+        ? res.has_more
+        : rawMessages.length === PAGE_SIZE;
+      const nextBeforeID = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
+      const newestHistoryID = rawMessages.reduce(
+        (latestID, message) => Math.max(latestID, historyMessageID(message)),
+        0,
+      );
+      setMessages((current) => {
+        const newerMessages = rawMessages.length === 0
+          ? current.filter((message) => message._pending)
+          : current.filter((message) => message._pending || historyMessageID(message) > newestHistoryID);
+        return mergeMessages(visibleMessages, newerMessages);
+      });
+      historyOffsetRef.current = rawMessages.length;
+      historyBeforeIDRef.current = nextBeforeID;
+      hasMoreHistoryRef.current = hasMore;
+      setHasMoreHistory(hasMore);
+      cacheHistoryPage(historyCacheRef.current, cacheKey, {
+        messages: visibleMessages,
+        offset: rawMessages.length,
+        nextBeforeID,
+        hasMore,
+      });
     } catch (e) {
+      if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
+        setHistoryError('聊天记录加载失败，请检查网络后重试。');
+      }
     } finally {
-      if (activeTopicRef.current === targetTopic) {
+      if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
+        historyLoadingRef.current = false;
         setHistoryLoaded(true);
       }
     }
   };
 
   const loadOlderHistory = useCallback(async () => {
-    if (loadingOlderRef.current || !hasMoreHistoryRef.current) return;
+    if (historyLoadingRef.current || loadingOlderRef.current || !hasMoreHistoryRef.current) return;
+    const targetTopic = topic;
+    const requestID = historyRequestRef.current;
     
     // Capture the absolute scroll geometry BEFORE rendering the older batch
     if (timelineRef.current) {
@@ -705,28 +778,45 @@ export default function MessagesView({
     
     loadingOlderRef.current = true;
     setLoadingOlder(true);
+    setOlderHistoryError('');
     try {
-      const res = await api.getMessages(topic, PAGE_SIZE, historyOffsetRef.current, true);
-      const { visibleMessages } = normalizeHistoryMessages(res.messages);
+      const res = await api.getMessages(
+        targetTopic,
+        PAGE_SIZE,
+        historyOffsetRef.current,
+        true,
+        historyBeforeIDRef.current,
+      );
+      if (activeTopicRef.current !== targetTopic || historyRequestRef.current !== requestID) return;
+      const rawMessages = res.messages || [];
+      const { visibleMessages } = normalizeHistoryMessages(rawMessages);
       setMessages((prev) => mergeMessages(visibleMessages, prev));
-      historyOffsetRef.current += (res.messages || []).length;
-      const hasMore = (res.messages || []).length === PAGE_SIZE;
+      historyOffsetRef.current += rawMessages.length;
+      historyBeforeIDRef.current = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
+      const hasMore = typeof res.has_more === 'boolean'
+        ? res.has_more
+        : rawMessages.length === PAGE_SIZE;
       hasMoreHistoryRef.current = hasMore;
       setHasMoreHistory(hasMore);
     } catch (e) {
+      if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
+        setOlderHistoryError('更早的聊天记录加载失败。');
+      }
     } finally {
-      loadingOlderRef.current = false;
-      setLoadingOlder(false);
+      if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
+        loadingOlderRef.current = false;
+        setLoadingOlder(false);
+      }
     }
   }, [topic]);
 
   useEffect(() => {
     const el = timelineRef.current;
-    if (!el || !hasMoreHistory || loadingOlder) return;
+    if (!el || !hasMoreHistory || loadingOlder || historyError || olderHistoryError) return;
     if (el.scrollHeight <= el.clientHeight + HISTORY_AUTO_LOAD_THRESHOLD) {
       loadOlderHistory();
     }
-  }, [messages.length, hasMoreHistory, loadingOlder, loadOlderHistory]);
+  }, [messages.length, hasMoreHistory, loadingOlder, historyError, olderHistoryError, loadOlderHistory]);
 
   const workingState = useMemo(() => {
     let lastWorkingIndex = -1;
@@ -1790,14 +1880,52 @@ export default function MessagesView({
               <div className="v3-date-divider">
                 <span>聊天记录</span>
               </div>
-        
+
+        {!historyLoaded && (
+          <div className="v3-history-state" role="status" aria-live="polite">
+            <LoaderCircle className="is-spinning" size={18} aria-hidden="true" />
+            <span>正在加载聊天记录...</span>
+          </div>
+        )}
+
+        {historyLoaded && historyError && messages.length === 0 && (
+          <div className="v3-history-state" role="alert">
+            <span>{historyError}</span>
+            <button type="button" className="v3-history-retry" onClick={() => loadHistory(topic)}>
+              <RefreshCw size={15} aria-hidden="true" />
+              重新加载
+            </button>
+          </div>
+        )}
+
+        {historyLoaded && historyError && messages.length > 0 && (
+          <div className="v3-history-state is-compact" role="status">
+            <span>已显示上次记录，本次刷新失败。</span>
+            <button type="button" className="v3-history-retry" onClick={() => loadHistory(topic)}>
+              <RefreshCw size={14} aria-hidden="true" />
+              重试
+            </button>
+          </div>
+        )}
+
+        {olderHistoryError && (
+          <div className="v3-history-state is-compact" role="status">
+            <span>{olderHistoryError}</span>
+            <button type="button" className="v3-history-retry" onClick={loadOlderHistory}>
+              <RefreshCw size={14} aria-hidden="true" />
+              重试
+            </button>
+          </div>
+        )}
+
         {loadingOlder && (
-          <div className="oc-history-load" style={{textAlign:'center', padding:'10px 0 24px 0'}}>
+          <div className="v3-history-state is-compact oc-history-load" role="status">
+            <LoaderCircle className="is-spinning" size={15} aria-hidden="true" />
             <span>{t('loading')}</span>
           </div>
         )}
         
-        {supportsTutorialTasks && historyLoaded && messages.length === 0 && !runtimePlan && !peerTyping && !tutorialDismissed && (
+        {supportsTutorialTasks && historyLoaded && !historyError && messages.length === 0 && !runtimePlan && !peerTyping && !tutorialDismissed && (
           <TutorialEmptyState tasks={tutorialTasks} onSelectTask={openTutorialTask} onDismiss={dismissTutorialEmptyState} />
         )}
 

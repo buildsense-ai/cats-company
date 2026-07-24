@@ -183,8 +183,11 @@ export const api = {
   },
 
   // REST fallback for message history
-  getMessages: (topicId, limit, offset, latest = false) =>
-    request('GET', `/api/messages?topic_id=${encodeURIComponent(topicId)}&limit=${limit || 50}&offset=${offset || 0}${latest ? '&latest=1' : ''}`),
+  getMessages: (topicId, limit, offset, latest = false, beforeId = 0) =>
+    request(
+      'GET',
+      `/api/messages?topic_id=${encodeURIComponent(topicId)}&limit=${limit || 50}&offset=${offset || 0}${latest ? '&latest=1' : ''}${beforeId > 0 ? `&before_id=${encodeURIComponent(beforeId)}` : ''}`,
+    ),
   getConversations: () => request('GET', '/api/conversations'),
   getProjects: () => request('GET', '/api/projects'),
   createProject: (name) => request('POST', '/api/projects', { name }),
