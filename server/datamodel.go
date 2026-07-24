@@ -197,7 +197,7 @@ type MsgServerData struct {
 	Mode          string                 `json:"mode,omitempty"`
 	Role          string                 `json:"role,omitempty"`
 	ReplyTo       int                    `json:"reply_to,omitempty"`
-	Mentions      []string               `json:"mentions,omitempty"` // Structured @mention targets (for example ["usr123"]).
+	Mentions      []string               `json:"mentions,omitempty"` // Structured @mention targets (for example ["usr123"] or ["all"]).
 	MemberCount   int                    `json:"member_count,omitempty"`
 }
 

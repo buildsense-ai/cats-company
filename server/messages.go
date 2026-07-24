@@ -13,6 +13,8 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+const structuredMentionAllBots = "all"
+
 // MessageHandler handles message-related API requests.
 type MessageHandler struct {
 	db  store.Store
@@ -985,7 +987,9 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 	mentions := structuredMentionsFromMessage(formatted)
 	if eligible && isGroupTopic(message.TopicID) && role == "user" && len(mentions) > 0 {
 		agentID := formatUID(agentUID)
-		if !containsString(mentions, agentID) {
+		if containsString(mentions, structuredMentionAllBots) {
+			reason = "group_message_targets_all_agents"
+		} else if !containsString(mentions, agentID) {
 			eligible = false
 			reason = "group_message_targets_another_member"
 		} else {
@@ -1159,6 +1163,9 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 }
 
 func isCanonicalMentionTarget(value string) bool {
+	if value == structuredMentionAllBots {
+		return true
+	}
 	if !strings.HasPrefix(value, "usr") || len(value) == len("usr") {
 		return false
 	}

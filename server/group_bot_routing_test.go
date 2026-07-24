@@ -226,6 +226,48 @@ func TestGroupFanoutHumanMessageOnlyWakesMentionedBot(t *testing.T) {
 	assertNoQueuedServerMessage(t, otherBot.send)
 }
 
+func TestGroupFanoutHumanMentionAllWakesEveryBot(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			42: {ID: 42, AccountType: types.AccountBot},
+			43: {ID: 43, AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 42, IsBot: true},
+			{GroupID: 80, UserID: 43, IsBot: true},
+		},
+	}
+	hub := NewHub(store, nil)
+	botA := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	botB := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(botA)
+	hub.addClient(botB)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID:  "grp_80",
+		Content:  json.RawMessage(`"@所有人 一起处理"`),
+		Mentions: []string{structuredMentionAllBots},
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 32, nil)
+
+	for index, bot := range []*Client{botA, botB} {
+		var delivered ServerMessage
+		decodeQueuedServerMessage(t, bot.send, &delivered)
+		if !reflect.DeepEqual(delivered.Data.Mentions, []string{structuredMentionAllBots}) {
+			t.Fatalf("bot %d mentions = %#v, want all", index, delivered.Data.Mentions)
+		}
+		if delivered.Data.MemberCount != 3 {
+			t.Fatalf("bot %d member_count = %d, want 3", index, delivered.Data.MemberCount)
+		}
+	}
+}
+
 func TestGroupFanoutBotMessageWithoutMentionsSkipsOtherBots(t *testing.T) {
 	store := &identityMessageStore{
 		users: map[int64]*types.User{
@@ -265,6 +307,47 @@ func TestGroupFanoutBotMessageWithoutMentionsSkipsOtherBots(t *testing.T) {
 		t.Fatalf("unexpected bot actor identity: %#v", actor)
 	}
 	assertNoQueuedServerMessage(t, otherBot.send)
+}
+
+func TestGroupFanoutBotMentionAllDoesNotWakeOtherBots(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			42: {ID: 42, AccountType: types.AccountBot},
+			43: {ID: 43, AccountType: types.AccountBot},
+			44: {ID: 44, AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 42, IsBot: true},
+			{GroupID: 80, UserID: 43, IsBot: true},
+			{GroupID: 80, UserID: 44, IsBot: true},
+		},
+	}
+	hub := NewHub(store, nil)
+	sender := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	botA := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	botB := &Client{uid: 44, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	human := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 1)}
+	hub.addClient(sender)
+	hub.addClient(botA)
+	hub.addClient(botB)
+	hub.addClient(human)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID:  "grp_80",
+		Content:  json.RawMessage(`"@所有人 我已经完成"`),
+		Mentions: []string{structuredMentionAllBots},
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	hub.fanoutNormalizedMessage(42, "grp_80", 0, payload, 33, sender)
+
+	decodeQueuedServerMessage(t, human.send, &ServerMessage{})
+	assertNoQueuedServerMessage(t, botA.send)
+	assertNoQueuedServerMessage(t, botB.send)
 }
 
 func TestGroupFanoutBotMessageOnlyWakesMentionedBot(t *testing.T) {

@@ -1712,6 +1712,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 
 	channelManaged := h.isChannelManagedGroup(groupID)
 	senderIsBot := h.isBotUser(senderUID)
+	mentionAllBots := mentionSet[structuredMentionAllBots] && !senderIsBot
 	for _, m := range members {
 		if m.UserID == excludeUID {
 			continue
@@ -1730,7 +1731,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 		if isBot {
 			userIDStr := formatUID(m.UserID)
 			requiresMention := !trustedChannelTrigger && (senderIsBot || memberCount > 2)
-			if requiresMention && !mentionSet[userIDStr] {
+			if requiresMention && !mentionAllBots && !mentionSet[userIDStr] {
 				continue
 			}
 		}

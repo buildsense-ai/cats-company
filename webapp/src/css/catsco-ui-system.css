@@ -2809,6 +2809,7 @@ select:disabled {
 }
 .v3-composer-mention-picker { position: absolute; left: max(20px, calc((100% - 760px) / 2)); bottom: calc(100% - 2px); z-index: 100; }
 .v3-composer-mention-picker .oc-mention-item { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--cc-border); background: var(--cc-panel); color: var(--cc-text); cursor: pointer; }
+.v3-composer-mention-picker .oc-mention-all-icon { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 24px; border-radius: 6px; background: color-mix(in srgb, var(--cc-accent) 14%, transparent); color: var(--cc-accent); }
 
 /* Shared overlays and panels */
 .name-dialog-overlay,

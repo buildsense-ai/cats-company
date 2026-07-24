@@ -223,6 +223,15 @@ describe('structured composer mention provenance', () => {
     expect(collectStructuredMentionTargets('请 @usr42 处理', reconciled)).toEqual(['usr42']);
   });
 
+  it('keeps the picker-only all-bots target across surrounding edits', () => {
+    const selection = [{ target: 'all', start: 0, end: 4 }];
+    const afterAppending = reconcileStructuredMentionSelections('@所有人 ', '@所有人 一起处理', selection);
+    const reconciled = reconcileStructuredMentionSelections('@所有人 一起处理', '请 @所有人 一起处理', afterAppending);
+    expect(reconciled).toEqual([{ target: 'all', start: 2, end: 6 }]);
+    expect(collectStructuredMentionTargets('请 @所有人 一起处理', reconciled)).toEqual(['all']);
+    expect(collectStructuredMentionTargets('@所有人 一起处理', [])).toEqual([]);
+  });
+
   it('drops picker provenance when the selected token is edited', () => {
     const selection = [{ target: 'usr42', start: 0, end: 6 }];
     expect(reconcileStructuredMentionSelections('@usr42 ', '@usr43 ', selection)).toEqual([]);
@@ -884,7 +893,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('button[aria-label="发送"]')).not.toBeNull();
   });
 
-  it('lists only bots from the current group after typing @', async () => {
+  it('lists all bots plus the all-bots option from the current group after typing @', async () => {
     api.getGroupInfo.mockResolvedValueOnce({
       group: { id: 80, name: 'Agent Room' },
       members: [
@@ -907,8 +916,9 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     const options = [...container.querySelectorAll('.oc-mention-item')];
-    expect(options).toHaveLength(2);
+    expect(options).toHaveLength(3);
     expect(options.map((option) => option.textContent)).toEqual([
+      '所有人全部机器人',
       'Saturday@usr42',
       'Wanyu@usr43',
     ]);
@@ -953,9 +963,54 @@ describe('MessagesView composer draft isolation', () => {
     const options = [...container.querySelectorAll('.oc-mention-item')];
     expect(api.getGroupInfo).toHaveBeenCalledTimes(2);
     expect(options.map((option) => option.textContent)).toEqual([
+      '所有人全部机器人',
       'Saturday@usr42',
       'Wanyu@usr43',
     ]);
+  });
+
+  it('inserts and sends the structured all-bots mention from the picker', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 42, display_name: 'Saturday', username: 'bot-saturday', is_bot: true },
+        { user_id: 43, display_name: 'Wanyu', username: 'catsco-agent-worker1', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@所有');
+    });
+    expect(container.querySelectorAll('.oc-mention-item')).toHaveLength(1);
+    expect(container.querySelector('.oc-mention-item')?.textContent).toBe('所有人全部机器人');
+
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe('@所有人 ');
+
+    await act(async () => {
+      typeDraft(textarea, '@所有人 一起处理');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith(
+      'grp_80',
+      '@所有人 一起处理',
+      undefined,
+      ['all'],
+    );
   });
 
   it('does not send structured mentions for hand-typed uid-like text', async () => {
@@ -1158,7 +1213,8 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(textarea.value).toBe('前@后');
-    const option = container.querySelector('.oc-mention-item');
+    const option = [...container.querySelectorAll('.oc-mention-item')]
+      .find((item) => item.textContent.includes('Saturday'));
     expect(option).toBeTruthy();
 
     await act(async () => {

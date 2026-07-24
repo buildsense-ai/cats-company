@@ -516,16 +516,17 @@ func TestHandleGetMessagesBuildsAgentContextForGroupHistory(t *testing.T) {
 			{ID: 1, TopicID: "grp_80", FromUID: 7, Content: "大家看一下", MsgType: "text"},
 			{ID: 2, TopicID: "grp_80", FromUID: 7, Content: "@usr43 只让另一个机器人处理", MsgType: "text", ContentBlocks: []types.ContentBlock{{Type: "text", Text: "@usr43 只让另一个机器人处理", Payload: map[string]interface{}{"mentions": []string{"usr43"}}}}},
 			{ID: 3, TopicID: "grp_80", FromUID: 7, Content: "@usr42 请继续", MsgType: "text", ContentBlocks: []types.ContentBlock{{Type: "text", Text: "@usr42 请继续", Payload: map[string]interface{}{"mentions": []string{"usr42"}}}}},
-			{ID: 4, TopicID: "grp_80", FromUID: 42, Content: "我来处理", MsgType: "text"},
-			{ID: 5, TopicID: "grp_80", FromUID: 43, Content: "另一个机器人的回答", MsgType: "text"},
+			{ID: 4, TopicID: "grp_80", FromUID: 7, Content: "@所有人 一起处理", MsgType: "text", ContentBlocks: []types.ContentBlock{{Type: "text", Text: "@所有人 一起处理", Payload: map[string]interface{}{"mentions": []string{structuredMentionAllBots}}}}},
+			{ID: 5, TopicID: "grp_80", FromUID: 42, Content: "我来处理", MsgType: "text"},
+			{ID: 6, TopicID: "grp_80", FromUID: 43, Content: "另一个机器人的回答", MsgType: "text"},
 			{
-				ID: 6, TopicID: "grp_80", FromUID: 42, Content: "处理中", MsgType: "text",
+				ID: 7, TopicID: "grp_80", FromUID: 42, Content: "处理中", MsgType: "text",
 				ContentBlocks: []types.ContentBlock{{Type: "thinking", Thinking: "处理中"}},
 			},
 		},
 	}
 	handler := NewMessageHandler(store, NewHub(store, nil))
-	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=grp_80&agent_context=1&before_id=7&limit=20", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=grp_80&agent_context=1&before_id=8&limit=20", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
 	rec := httptest.NewRecorder()
 	handler.HandleGetMessages(rec, req)
@@ -541,18 +542,21 @@ func TestHandleGetMessagesBuildsAgentContextForGroupHistory(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode agent context response: %v", err)
 	}
-	if body.AgentUID != 42 || body.HasMore || len(body.Messages) != 6 {
+	if body.AgentUID != 42 || body.HasMore || len(body.Messages) != 7 {
 		t.Fatalf("unexpected agent context envelope: %#v", body)
 	}
 
-	wantEligible := []bool{true, false, true, true, false, false}
-	wantRoles := []string{"user", "user", "user", "assistant", "other_agent", "assistant"}
+	wantEligible := []bool{true, false, true, true, true, false, false}
+	wantRoles := []string{"user", "user", "user", "user", "assistant", "other_agent", "assistant"}
 	for i, message := range body.Messages {
 		if message["context_eligible"] != wantEligible[i] || message["context_role"] != wantRoles[i] {
 			t.Fatalf("message %d context=%#v, want eligible=%v role=%s", i, message, wantEligible[i], wantRoles[i])
 		}
 	}
-	otherAgentMetadata := nestedMap(t, body.Messages[4], "metadata")
+	if body.Messages[3]["context_reason"] != "group_message_targets_all_agents" {
+		t.Fatalf("all-bots context reason=%#v", body.Messages[3]["context_reason"])
+	}
+	otherAgentMetadata := nestedMap(t, body.Messages[5], "metadata")
 	otherAgentIdentity := nestedMap(t, otherAgentMetadata, "catsco_identity")
 	otherAgentActor := nestedMap(t, otherAgentIdentity, "actor")
 	if otherAgentActor["account_type"] != string(types.AccountBot) || otherAgentActor["is_bot"] != true {

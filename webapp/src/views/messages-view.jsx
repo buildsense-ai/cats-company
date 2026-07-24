@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, LoaderCircle, RefreshCw, Smartphone, X } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { FilePreviewPanel } from '../widgets/chat-message';
@@ -11,6 +11,7 @@ import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, infer
 
 const PAGE_SIZE = 50;
 const HISTORY_CACHE_MAX_TOPICS = 12;
+const STRUCTURED_MENTION_ALL = 'all';
 const TYPING_TIMEOUT_MS = 10000;
 const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
 const WORKING_TEXT_PREFIX = 'AI文本:';
@@ -74,7 +75,8 @@ function resolvePhoneUploadLink(uploadUrl) {
 }
 
 function isStructuredMentionSelectionIntact(text, target, start, end) {
-  if (start < 0 || end > text.length || text.slice(start, end) !== `@${target}`) return false;
+  const token = target === STRUCTURED_MENTION_ALL ? '@所有人' : `@${target}`;
+  if (start < 0 || end > text.length || text.slice(start, end) !== token) return false;
   const trailingCharacter = text.slice(end, end + 1);
   return !trailingCharacter || !/[\p{L}\p{N}_]/u.test(trailingCharacter);
 }
@@ -106,7 +108,8 @@ export function reconcileStructuredMentionSelections(previousText, nextText, sel
     const target = typeof selection?.target === 'string' ? selection.target : '';
     let start = Number.isInteger(selection?.start) ? selection.start : -1;
     let end = Number.isInteger(selection?.end) ? selection.end : -1;
-    if (!/^usr\d+$/u.test(target) || start < 0 || end <= start) return [];
+    if (target !== STRUCTURED_MENTION_ALL && !/^usr\d+$/u.test(target)) return [];
+    if (start < 0 || end <= start) return [];
 
     const touchesRightBoundary = prefixLength === end
       && /[\p{L}\p{N}_]/u.test(nextChangedText.slice(0, 1));
@@ -135,7 +138,8 @@ export function collectStructuredMentionTargets(text, selections = []) {
     const target = typeof selection?.target === 'string' ? selection.target : '';
     const start = Number.isInteger(selection?.start) ? selection.start : -1;
     const end = Number.isInteger(selection?.end) ? selection.end : -1;
-    if (!/^usr\d+$/u.test(target) || start < 0 || end <= start) return [];
+    if (target !== STRUCTURED_MENTION_ALL && !/^usr\d+$/u.test(target)) return [];
+    if (start < 0 || end <= start) return [];
     return isStructuredMentionSelectionIntact(value, target, start, end) ? [target] : [];
   }))];
 }
@@ -1224,8 +1228,8 @@ export default function MessagesView({
     if (!textarea) return;
     const range = mentionRangeRef.current;
     if (!range || range.start < 0 || range.end < range.start || range.end > input.length) return;
-    const target = `usr${member.user_id}`;
-    const mention = `@${target} `;
+    const target = member.mention_target || `usr${member.user_id}`;
+    const mention = target === STRUCTURED_MENTION_ALL ? '@所有人 ' : `@${target} `;
     const newText = input.slice(0, range.start) + mention + input.slice(range.end);
     const reconciledSelections = reconcileStructuredMentionSelections(
       input,
@@ -1482,16 +1486,33 @@ export default function MessagesView({
   };
 
 
-  const mentionableBots = members.filter((m) => {
+  const groupBots = members.filter((m) => {
     if (m.user_id === user.uid) return false;
-    if (m.is_bot !== true && m.account_type !== 'bot') return false;
-    if (!mentionFilter) return true;
-    const searchable = [m.display_name, m.username, `usr${m.user_id}`]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-    return searchable.includes(mentionFilter);
+    return m.is_bot === true || m.account_type === 'bot';
   });
+  const normalizedMentionFilter = mentionFilter.toLowerCase();
+  const mentionAllAliases = ['所有人', '所有机器人', '全部机器人', 'all'];
+  const mentionAllMatches = groupBots.length > 0 && (
+    !normalizedMentionFilter
+    || mentionAllAliases.some((alias) => alias.includes(normalizedMentionFilter))
+  );
+  const mentionableBots = [
+    ...(mentionAllMatches ? [{
+      user_id: STRUCTURED_MENTION_ALL,
+      mention_target: STRUCTURED_MENTION_ALL,
+      display_name: '所有人',
+      username: '全部机器人',
+      is_all: true,
+    }] : []),
+    ...groupBots.filter((m) => {
+      if (!mentionFilter) return true;
+      const searchable = [m.display_name, m.username, `usr${m.user_id}`]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return searchable.includes(mentionFilter);
+    }),
+  ];
 
   const peerUID = useMemo(() => {
     if (isGroup || !topic || !String(topic).startsWith('p2p_')) return 0;
@@ -2127,10 +2148,12 @@ export default function MessagesView({
                 }}
                 onMouseEnter={() => setMentionActiveIndex(index)}
               >
-                <Avatar name={m.display_name || m.username} src={m.avatar_url} size={24} isBot />
+                {m.is_all
+                  ? <span className="oc-mention-all-icon" aria-hidden="true"><Users size={15} /></span>
+                  : <Avatar name={m.display_name || m.username} src={m.avatar_url} size={24} isBot />}
                 <span className="oc-mention-item-copy">
                   <span className="oc-mention-item-name">{m.display_name || m.username || `usr${m.user_id}`}</span>
-                  <span className="oc-mention-item-handle">@usr{m.user_id}</span>
+                  <span className="oc-mention-item-handle">{m.is_all ? '全部机器人' : `@usr${m.user_id}`}</span>
                 </span>
               </button>
             ))}
