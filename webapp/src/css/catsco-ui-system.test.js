@@ -9,6 +9,25 @@ const ruleFor = (selector) => css.match(
   new RegExp(`(?:^|\\r?\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{[^}]*\\}`),
 )?.[0] || '';
 
+const hexColorFor = (rule, property) => rule.match(
+  new RegExp(`${property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*(#[\\da-f]{6})`, 'i'),
+)?.[1] || '';
+
+const relativeLuminance = (hex) => {
+  const channels = hex.match(/[\da-f]{2}/gi).map((channel) => {
+    const value = Number.parseInt(channel, 16) / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return (0.2126 * channels[0]) + (0.7152 * channels[1]) + (0.0722 * channels[2]);
+};
+
+const contrastRatio = (foreground, background) => {
+  const foregroundLuminance = relativeLuminance(foreground);
+  const backgroundLuminance = relativeLuminance(background);
+  return (Math.max(foregroundLuminance, backgroundLuminance) + 0.05)
+    / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
+};
+
 const readLosslessWebpDimensions = (buffer) => {
   if (
     buffer.subarray(0, 4).toString('ascii') !== 'RIFF'
@@ -39,6 +58,31 @@ describe('CatsCo shell styling', () => {
     expect(brandRule).toContain('contain no-repeat');
     expect(brandRule).toContain('-webkit-mask: none;');
     expect(brandRule).toContain('mask: none;');
+    expect(ruleFor('.v3-brand-title')).toContain('gap: 9px;');
+    expect(ruleFor('.v3-brand-title')).toContain('font-size: 16px;');
+    expect(ruleFor('.v3-brand-title')).toContain('font-weight: var(--cc-font-weight-bold);');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('gap: 4px;');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('font-size: 20px;');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('line-height: 22px;');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title'))
+      .toContain('font-weight: var(--cc-font-weight-brand);');
+    expect(ruleFor(':root')).toContain('--cc-brand-text-start: #177d65;');
+    expect(ruleFor(':root')).toContain('--cc-brand-text-end: #0f705a;');
+    expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-brand-text-start: #58cbb5;');
+    expect(ruleFor('html[data-theme="liquid"]')).toContain('--cc-brand-text-end: #2bb18a;');
+    expect(ruleFor('.v3-sidebar-header .catsco-brand-name')).toContain(
+      'var(--cc-brand-text-start) 0%',
+    );
+    expect(ruleFor('.v3-sidebar-header .catsco-brand-name')).toContain('letter-spacing: 0.01em;');
+    expect(css).toMatch(
+      /@media \(forced-colors: active\)[\s\S]*?\.v3-sidebar-header \.catsco-brand-name\s*\{[^}]*-webkit-text-fill-color: currentColor;/,
+    );
+    const rootRule = ruleFor(':root');
+    const lightBackground = hexColorFor(rootRule, '--cc-bg');
+    expect(contrastRatio(hexColorFor(rootRule, '--cc-brand-text-start'), lightBackground))
+      .toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(hexColorFor(rootRule, '--cc-brand-text-end'), lightBackground))
+      .toBeGreaterThanOrEqual(4.5);
     expect(ruleFor('.v3-sidebar.collapsed .v3-sidebar-collapse-btn .catsco-brand-mark'))
       .toContain('width: 34px;');
   });
@@ -52,7 +96,7 @@ describe('CatsCo shell styling', () => {
     const footerRule = ruleFor('.v3-profile-footer');
 
     expect(headerRule).toContain('flex: 0 0 56px;');
-    expect(sidebarRule).toContain('font-family: Inter, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", DengXian, sans-serif;');
+    expect(sidebarRule).toContain('font-family: var(--cc-font-sans);');
     expect(collapseButtonRule).toContain('width: 38px;');
     expect(collapseButtonRule).toContain('height: 38px;');
     expect(ruleFor('.v3-sidebar-collapse-btn > svg')).toContain('width: 20px;');
@@ -61,7 +105,7 @@ describe('CatsCo shell styling', () => {
     expect(listRule).toContain('flex: 1 1 auto;');
     expect(listRule).toContain('overflow-y: auto;');
     expect(footerRule).toContain('flex: 0 0 auto;');
-    expect(ruleFor('.v3-chat-item')).toContain('font-weight: 535;');
+    expect(ruleFor('.v3-chat-item')).toContain('font-weight: 400;');
   });
 
   it('uses the requested chat surfaces without changing sidebar or border colors', () => {
@@ -254,7 +298,7 @@ describe('CatsCo shell styling', () => {
     expect(flowRule).toContain('pointer-events: none;');
     expect(cardRule).toContain('z-index: 1;');
     expect(logoRule).toContain('color: var(--cc-accent);');
-    expect(logoRule).toContain('font-weight: 750;');
+    expect(logoRule).toContain('font-weight: 700;');
   });
 
   it('centers the sidebar settings icon inside its hover surface', () => {
@@ -331,9 +375,77 @@ describe('CatsCo shell styling', () => {
   });
 
   it('makes top-level sidebar section titles distinct from expanded items', () => {
-    expect(ruleFor('.cc-top-level-section')).toContain('font-weight: 650;');
-    expect(ruleFor('.cc-history-section')).toContain('font-weight: 535;');
-    expect(ruleFor('.v3-chat-item')).toContain('font-weight: 535;');
+    expect(ruleFor('.cc-top-level-section')).toContain('font-weight: 600;');
+    expect(ruleFor('.cc-history-section')).toContain('font-weight: 500;');
+    expect(ruleFor('.v3-chat-item')).toContain('font-weight: 400;');
+  });
+
+  it('reveals top-level section actions without adding a row hover surface', () => {
+    const actionRevealRule = ruleFor(
+      `.v3-chat-section:hover > .cc-section-add,
+.v3-chat-section:focus-within > .cc-section-add,
+.cc-section-add:focus-visible`,
+    );
+    const nestedHoverRule = ruleFor('.v3-chat-section:not(.cc-top-level-section):hover');
+
+    expect(actionRevealRule).toContain('opacity: 1;');
+    expect(actionRevealRule).toContain('visibility: visible;');
+    expect(nestedHoverRule).toContain('background: var(--cc-hover);');
+    expect(css).not.toContain('.v3-chat-section:hover {\n  background: var(--cc-hover);');
+  });
+
+  it('stacks sidebar section titles while their content scrolls underneath', () => {
+    const stickyRule = ruleFor(
+      '.v3-chat-list > :is(.cc-contacts-section, .cc-project-section, .cc-conversation-section)',
+    );
+    const sectionGapRule = ruleFor('.v3-chat-list > .cc-section-after-expanded-content');
+    const contactsRule = ruleFor('.v3-chat-list > .cc-contacts-section');
+    const projectsRule = ruleFor('.v3-chat-list > .cc-project-section');
+    const conversationsRule = ruleFor('.v3-chat-list > .cc-conversation-section');
+    const compactProjectsRule = projectsRule.replace(/\s+/g, ' ');
+    const compactConversationsRule = conversationsRule.replace(/\s+/g, ' ');
+
+    expect(stickyRule).toContain('position: sticky;');
+    expect(stickyRule).toContain('z-index: 12;');
+    expect(stickyRule).toContain('border-radius: 0;');
+    expect(stickyRule).toContain('background: var(--cc-bg);');
+    expect(stickyRule).toContain(
+      '0 calc(-1 * var(--cc-sidebar-row-gap)) 0 0 var(--cc-bg),',
+    );
+    expect(stickyRule).toContain(
+      '0 var(--cc-sidebar-row-gap) 0 0 var(--cc-bg);',
+    );
+    expect(ruleFor('.v3-chat-list')).toContain('--cc-sidebar-group-gap: 12px;');
+    expect(ruleFor('.v3-chat-list')).toContain('--cc-sidebar-list-padding-top: 8px;');
+    expect(ruleFor('.v3-chat-list')).toContain('scrollbar-gutter: stable;');
+    expect(sectionGapRule).toContain(
+      'margin-top: calc(var(--cc-sidebar-group-gap) - var(--cc-sidebar-row-gap)) !important;',
+    );
+    expect(contactsRule).toContain('top: var(--cc-sidebar-row-gap);');
+    expect(contactsRule).toContain('z-index: 14;');
+    expect(contactsRule).toContain(
+      '0 calc(-1 * var(--cc-sidebar-list-padding-top) - var(--cc-sidebar-row-gap)) 0 0 var(--cc-bg),',
+    );
+    expect(compactProjectsRule).toContain(
+      'top: calc( var(--cc-sidebar-row-height) + var(--cc-sidebar-row-gap) + var(--cc-sidebar-row-gap) + var(--cc-sidebar-row-gap) );',
+    );
+    expect(projectsRule).toContain('z-index: 13;');
+    expect(compactConversationsRule).toContain(
+      'var(--cc-sidebar-row-height) + var(--cc-sidebar-row-height) + var(--cc-sidebar-row-gap) + var(--cc-sidebar-row-gap) + var(--cc-sidebar-row-gap) + var(--cc-sidebar-row-gap) + var(--cc-sidebar-row-gap)',
+    );
+
+    const liquidStickyRule = ruleFor(
+      'html[data-theme="liquid"] .v3-chat-list > :is(.cc-contacts-section, .cc-project-section, .cc-conversation-section)',
+    );
+    expect(liquidStickyRule).toContain('background: rgb(18, 24, 22);');
+    expect(liquidStickyRule).not.toContain('rgba(18, 24, 22, 0.96)');
+
+    const liquidContactsRule = ruleFor(
+      'html[data-theme="liquid"] .v3-chat-list > .cc-contacts-section',
+    );
+    expect(liquidContactsRule).toContain(
+      '0 calc(-1 * var(--cc-sidebar-list-padding-top) - var(--cc-sidebar-row-gap)) 0 0 rgb(18, 24, 22),',
+    );
   });
 
   it('uses the project row geometry for every sidebar hierarchy level', () => {
@@ -355,7 +467,7 @@ describe('CatsCo shell styling', () => {
     expect(listRule).toContain('--cc-sidebar-row-padding-y: 6px;');
     expect(listRule).toContain('--cc-sidebar-action-size: 28px;');
     expect(sectionRule).toContain('min-height: var(--cc-sidebar-row-height);');
-    expect(sectionRule).toContain('line-height: var(--cc-sidebar-row-height);');
+    expect(sectionRule).toContain('line-height: 20px;');
     expect(itemRule).toContain('min-height: var(--cc-sidebar-row-height);');
     expect(itemRule).toContain('margin: var(--cc-sidebar-row-gap) 0;');
     expect(historyRule).toContain('min-height: var(--cc-sidebar-row-height);');
@@ -376,6 +488,36 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.cc-project-task-option.is-selected .cc-project-task-selection-indicator svg')).toContain('color: #fff;');
   });
 
+  it('keeps project selection controls inside their scroll rail', () => {
+    const listRule = ruleFor('.cc-new-task-agent-list');
+    const optionRule = ruleFor('.cc-new-task-agent');
+
+    expect(listRule).toContain('min-width: 0;');
+    expect(listRule).toContain('overflow-x: hidden;');
+    expect(listRule).toContain('scrollbar-gutter: stable;');
+    expect(optionRule).toContain('box-sizing: border-box;');
+    expect(optionRule).toContain('min-width: 0;');
+    expect(optionRule).toContain('overflow: hidden;');
+  });
+
+  it('keeps group member actions on one desktop row without overlapping members', () => {
+    const memberRule = ruleFor('.oc-group-settings-modal .oc-settings-member-item');
+    const actionsRule = ruleFor('.oc-group-settings-modal .oc-settings-member-actions');
+
+    expect(memberRule).toContain('grid-template-columns: 32px minmax(0, 1fr) auto;');
+    expect(memberRule).toContain('align-items: center;');
+    expect(actionsRule).toContain('max-width: none;');
+    expect(actionsRule).toContain('flex-wrap: nowrap;');
+    expect(css).toContain('@media (max-width: 640px)');
+    expect(css).toContain('grid-column: 2;');
+  });
+
+  it('shows the narrow-screen sidebar shadow only while the drawer is open', () => {
+    expect(css).toContain('.v3-sidebar:not(.collapsed) {\n    position: fixed;');
+    expect(css).toContain('flex-basis: min(86vw, 300px);\n    box-shadow: none;');
+    expect(css).toContain('.v3-sidebar:not(.collapsed).open {\n    box-shadow: 16px 0 40px rgba(0, 0, 0, 0.34);');
+  });
+
   it('zooms compact task artwork without resizing its button and shows a fixed label', () => {
     const buttonRule = ruleFor('.cc-compact-new-chat,\n.cc-compact-conversation');
     const avatarRule = ruleFor('.cc-compact-conversation .oc-avatar');
@@ -389,6 +531,28 @@ describe('CatsCo shell styling', () => {
     expect(hintRule).toContain('pointer-events: none;');
   });
 
+  it('overlays compact task status on the avatar without changing rail geometry', () => {
+    const compactButtonRule = ruleFor('.cc-compact-conversation');
+    const dotRule = ruleFor('.cc-compact-task-status:not(.running)');
+    const runningRule = ruleFor('.cc-compact-task-status.running');
+    const spinnerRule = ruleFor('.cc-compact-task-status.running svg');
+
+    expect(compactButtonRule).toContain('position: relative;');
+    expect(css).toContain('.cc-compact-conversation {\n  overflow: hidden;');
+    expect(dotRule).toContain('right: 3px;');
+    expect(dotRule).toContain('bottom: 3px;');
+    expect(dotRule).toContain('width: 9px;');
+    expect(dotRule).toContain('box-shadow: 0 0 0 2px var(--cc-bg);');
+    expect(runningRule).toContain('inset: 0;');
+    expect(runningRule).toContain('justify-content: center;');
+    expect(spinnerRule).toContain('animation: catsco-spin 0.9s linear infinite;');
+    expect(spinnerRule).not.toContain('filter:');
+    expect(ruleFor('.cc-compact-task-status.completed')).toContain('color: var(--v3-primary);');
+    expect(ruleFor('.cc-compact-task-status.failed')).toContain('color: #ef5b5b;');
+    expect(css).toContain('.cc-compact-task-status.cancelled,\n.cc-compact-task-status.stale');
+    expect(css).toContain('.cc-task-row-status.running svg,\n  .cc-compact-task-status.running svg');
+  });
+
   it('zooms the collapsed profile avatar without changing the footer frame', () => {
     const footerRule = ruleFor('.v3-sidebar.collapsed .v3-profile-footer');
     const avatarRule = ruleFor('.v3-sidebar.collapsed .v3-profile-avatar.oc-avatar');
@@ -398,6 +562,16 @@ describe('CatsCo shell styling', () => {
     expect(avatarRule).toContain('transition: transform 150ms ease;');
     expect(css).toContain('.v3-sidebar.collapsed .v3-profile-footer:hover .v3-profile-avatar.oc-avatar');
     expect(css).toContain('transform: scale(1.14);');
+  });
+
+  it('positions the collapsed profile menu beside the rail without widening it', () => {
+    const popoverRule = ruleFor('.v3-profile-popover');
+    const compactRule = ruleFor('.v3-profile-popover.is-compact');
+
+    expect(popoverRule).toContain('position: fixed;');
+    expect(compactRule).toContain('left: calc(var(--cc-sidebar-collapsed) + 8px);');
+    expect(compactRule).toContain('bottom: 12px;');
+    expect(compactRule).toContain('width: min(220px, calc(100vw - var(--cc-sidebar-collapsed) - 20px));');
   });
 
   it('tightens feedback upload copy and separates profile theme text', () => {
@@ -421,16 +595,32 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-empty-task-bg: #0f0f0f;');
     expect(emptyTaskRule).toContain('background: var(--cc-empty-task-bg);');
     expect(headingRule).toContain('display: flex;');
-    expect(headingRule).toContain('align-items: center;');
+    expect(headingRule).toContain('align-items: flex-end;');
     expect(headingRule).toContain('justify-content: center;');
-    expect(headingRule).toContain('gap: 18px;');
-    expect(headingRule).toContain('margin-bottom: 28px;');
-    expect(headingRule).toContain('transform: translateY(8px);');
-    expect(markRule).toContain('width: 128px;');
-    expect(markRule).toContain('height: 56px;');
+    expect(headingRule).toContain('gap: 16px;');
+    expect(headingRule).toContain('margin-bottom: 24px;');
+    expect(headingRule).not.toContain('transform:');
+    expect(markRule).toContain('width: 112px;');
+    expect(markRule).toContain('height: 48px;');
     expect(markRule).toContain('margin: 0;');
     expect(ruleFor('.cc-empty-task h1')).toContain('margin: 0;');
+    expect(ruleFor('.cc-empty-task h1')).toContain('font-size: 28px;');
     expect(ruleFor('.cc-empty-task h1')).toContain('font-weight: 500;');
+    expect(ruleFor('.cc-empty-task h1')).toContain('line-height: 36px;');
+  });
+
+  it('uses integer line heights for the primary desktop text rails', () => {
+    expect(ruleFor('.cc-sidebar-search input')).toContain('font-size: 14px;');
+    expect(ruleFor('.cc-sidebar-search input')).toContain('line-height: 20px;');
+    expect(ruleFor('.v3-chat-section')).toContain('font-size: 14px;');
+    expect(ruleFor('.v3-chat-section')).toContain('line-height: 20px;');
+    expect(ruleFor('.v3-chat-item')).toContain('font-size: 13px;');
+    expect(ruleFor('.v3-chat-item')).toContain('line-height: 19px;');
+    expect(ruleFor('.v3-chat-item-identity')).toContain('font-size: 12px;');
+    expect(ruleFor('.v3-chat-item-identity')).toContain('line-height: 18px;');
+    expect(ruleFor('.v3-composer-input')).toContain('font-size: 15px;');
+    expect(ruleFor('.v3-composer-input')).toContain('line-height: 22px;');
+    expect(ruleFor('.v3-composer-hint')).toContain('line-height: 18px;');
   });
 
   it('aligns peer messages and typing status to the unchanged composer rail', () => {
@@ -453,9 +643,9 @@ describe('CatsCo shell styling', () => {
     expect(css).toContain('animation-duration: 2400ms;');
     expect(ruleFor('.v3-composer-box')).toContain('width: min(760px, 100%);');
     expect(stackedNoticeRule).toContain('width: 85%;');
-    expect(stackedNoticeRule).toContain('margin: 0 auto -13px;');
+    expect(stackedNoticeRule).toContain('margin: 0 auto -11px;');
     expect(stackedNoticeRule).toContain('border-radius: 22px 22px 0 0;');
-    expect(stackedNoticeRule).toContain('padding: 9px 14px 13px;');
+    expect(stackedNoticeRule).toContain('padding: 8px 14px 11px;');
     expect(stackedNoticeRule).toContain('text-align: center;');
     expect(ruleFor('.v3-composer-notices + .v3-composer-box')).toContain('z-index: 1;');
     expect(ruleFor('.v3-attachment-notice')).toContain('justify-content: center;');

@@ -180,13 +180,14 @@ function SidebarSectionHeader({
   label,
   expanded,
   onToggle,
+  sectionRef = null,
   toggleContent = null,
   status = null,
   action = null,
   children = null,
 }) {
   return (
-    <div className={`v3-chat-section cc-sidebar-section-row cc-top-level-section ${className}`.trim()}>
+    <div ref={sectionRef} className={`v3-chat-section cc-sidebar-section-row cc-top-level-section ${className}`.trim()}>
       <button type="button" className="cc-section-toggle" onClick={onToggle} aria-expanded={expanded}>
         <span>{label}</span>
         {toggleContent}
@@ -261,6 +262,7 @@ export default function ChatListView({
   const [showAgentStore, setShowAgentStore] = useState(false);
   const [showNewChat, setShowNewChat] = useState(false);
   const [collapsed, setCollapsed] = useState(() => loadCollapsedSections(user?.uid));
+  const [scrollCollapsed, setScrollCollapsed] = useState({ contacts: false, projects: false });
   const [mobileLinkAgent, setMobileLinkAgent] = useState(null);
   const [mobileLinkGroup, setMobileLinkGroup] = useState(null);
   const [collaborationUpgradeTask, setCollaborationUpgradeTask] = useState(null);
@@ -304,6 +306,13 @@ export default function ChatListView({
   const agentsRef = useRef(agents);
   const friendSyncPromiseRef = useRef(null);
   const friendSyncQueuedRef = useRef(false);
+  const sidebarListRef = useRef(null);
+  const contactsSectionRef = useRef(null);
+  const projectsSectionRef = useRef(null);
+  const conversationsSectionRef = useRef(null);
+  const previousSidebarScrollTopRef = useRef(0);
+  const pendingSidebarScrollAnchorRef = useRef(null);
+  const pendingSidebarRevealRef = useRef('');
 
   useEffect(() => {
     setCollapsed(loadCollapsedSections(user?.uid));
@@ -312,7 +321,18 @@ export default function ChatListView({
     setHiddenHistoryIds(loadHiddenHistoryIds(user?.uid));
     setDismissedTaskStatuses(loadDismissedTaskStatuses(user?.uid));
     setUnreadFriendTopicIds(new Set());
+    setScrollCollapsed({ contacts: false, projects: false });
+    previousSidebarScrollTopRef.current = 0;
+    pendingSidebarScrollAnchorRef.current = null;
+    pendingSidebarRevealRef.current = '';
   }, [user?.uid]);
+
+  useLayoutEffect(() => {
+    setScrollCollapsed({ contacts: false, projects: false });
+    previousSidebarScrollTopRef.current = 0;
+    pendingSidebarScrollAnchorRef.current = null;
+    pendingSidebarRevealRef.current = '';
+  }, [compact]);
 
   useEffect(() => {
     activeTopicRef.current = activeTopic;
@@ -449,6 +469,14 @@ export default function ChatListView({
   }, []);
 
   const toggleCollapsed = (section) => {
+    if (scrollCollapsed[section]) {
+      pendingSidebarRevealRef.current = section;
+      setScrollCollapsed((previous) => ({ ...previous, [section]: false }));
+      return;
+    }
+    if ((section === 'contacts' || section === 'projects') && collapsed[section]) {
+      pendingSidebarRevealRef.current = section;
+    }
     setCollapsed((prev) => {
       const next = { ...prev, [section]: !prev[section] };
       saveCollapsedSections(user?.uid, next);
@@ -978,6 +1006,120 @@ export default function ChatListView({
   const trimmedSearch = search.trim();
   const lowerSearch = trimmedSearch.toLowerCase();
   const isSearching = trimmedSearch.length > 0;
+  const contactsCollapsed = collapsed.contacts || scrollCollapsed.contacts;
+  const projectsCollapsed = collapsed.projects || scrollCollapsed.projects;
+
+  useLayoutEffect(() => {
+    const list = sidebarListRef.current;
+    if (!list) return;
+
+    const revealSection = pendingSidebarRevealRef.current;
+    if (revealSection) {
+      // A sticky header's offsetTop can reflect its pinned position instead of
+      // its normal-flow position. Returning to the top guarantees that content
+      // restored above the viewport is immediately visible.
+      list.scrollTop = 0;
+      pendingSidebarRevealRef.current = '';
+      pendingSidebarScrollAnchorRef.current = null;
+      previousSidebarScrollTopRef.current = list.scrollTop;
+      return;
+    }
+
+    const pendingAnchor = pendingSidebarScrollAnchorRef.current;
+    if (!pendingAnchor) {
+      pendingSidebarScrollAnchorRef.current = null;
+      return;
+    }
+    const heightDelta = list.scrollHeight - pendingAnchor.scrollHeight;
+    list.scrollTop = Math.max(0, pendingAnchor.scrollTop + heightDelta);
+    pendingSidebarScrollAnchorRef.current = null;
+    previousSidebarScrollTopRef.current = list.scrollTop;
+  }, [contactsCollapsed, projectsCollapsed]);
+
+  useEffect(() => {
+    const list = sidebarListRef.current;
+    if (compact || !list) return undefined;
+
+    previousSidebarScrollTopRef.current = list.scrollTop;
+    const coarsePointer = window.matchMedia?.('(hover: none), (pointer: coarse)')?.matches ?? false;
+    const focusSectionToggleBeforeCollapse = (sectionRef, boundaryRef = null) => {
+      const activeElement = document.activeElement;
+      const sectionHeader = sectionRef.current;
+      const boundary = boundaryRef?.current || null;
+      if (!(activeElement instanceof HTMLElement) || !sectionHeader) return;
+
+      let contentNode = sectionHeader.nextElementSibling;
+      while (contentNode && contentNode !== boundary) {
+        if (contentNode.contains(activeElement)) {
+          sectionHeader.querySelector('.cc-section-toggle')?.focus();
+          return;
+        }
+        contentNode = contentNode.nextElementSibling;
+      }
+    };
+    const onSidebarScroll = () => {
+      const nextScrollTop = list.scrollTop;
+      const isScrollingDown = nextScrollTop > previousSidebarScrollTopRef.current + 0.5;
+      previousSidebarScrollTopRef.current = nextScrollTop;
+
+      if (!isScrollingDown || isSearching || coarsePointer) return;
+
+      const contactsRect = contactsSectionRef.current?.getBoundingClientRect();
+      const projectsRect = projectsSectionRef.current?.getBoundingClientRect();
+      const conversationsRect = conversationsSectionRef.current?.getBoundingClientRect();
+
+      if (
+        !contactsCollapsed
+        && contactsRect
+        && projectsRect
+        && projectsRect.top <= contactsRect.bottom + 6
+        && !showContactActions
+        && !openFriendMenuId
+        && !openChatMenuKey
+      ) {
+        focusSectionToggleBeforeCollapse(contactsSectionRef, projectsSectionRef);
+        pendingSidebarScrollAnchorRef.current = {
+          scrollTop: list.scrollTop,
+          scrollHeight: list.scrollHeight,
+        };
+        setScrollCollapsed((previous) => (
+          previous.contacts ? previous : { ...previous, contacts: true }
+        ));
+        return;
+      }
+
+      if (
+        contactsCollapsed
+        && !projectsCollapsed
+        && projectsRect
+        && conversationsRect
+        && conversationsRect.top <= projectsRect.bottom + 6
+        && openProjectMenuId == null
+        && !openChatMenuKey
+      ) {
+        focusSectionToggleBeforeCollapse(projectsSectionRef, conversationsSectionRef);
+        pendingSidebarScrollAnchorRef.current = {
+          scrollTop: list.scrollTop,
+          scrollHeight: list.scrollHeight,
+        };
+        setScrollCollapsed((previous) => (
+          previous.projects ? previous : { ...previous, projects: true }
+        ));
+      }
+    };
+
+    list.addEventListener('scroll', onSidebarScroll, { passive: true });
+    return () => list.removeEventListener('scroll', onSidebarScroll);
+  }, [
+    compact,
+    contactsCollapsed,
+    isSearching,
+    openChatMenuKey,
+    openFriendMenuId,
+    openProjectMenuId,
+    projectsCollapsed,
+    showContactActions,
+  ]);
   const recentChats = sortConversationsByRecent(chats);
   const visibleRecentChats = recentChats.filter((chat) => (
     !isHistoryTask(chat) || chat.isGroup || !hiddenHistoryIds.has(String(chat.id))
@@ -1530,12 +1672,16 @@ export default function ChatListView({
     return timestamp ? formatSidebarTime(timestamp, sidebarTimeNowMs) : chat.time || '';
   };
 
+  const taskStatusForDisplay = (chat) => (
+    activeTopic === chat.id && normalizeTaskStatus(chat.taskStatus)?.state === 'completed'
+      ? null
+      : visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id)
+  );
+
   const renderTaskControls = (chat, menuKey, { showPin = false, showTime = false } = {}) => {
     const isPinned = pinnedHistoryIds.has(String(chat.id))
       || (chat.isGroup && pinnedGroupIds.has(String(chat.id)));
-    const visibleStatus = activeTopic === chat.id && normalizeTaskStatus(chat.taskStatus)?.state === 'completed'
-      ? null
-      : visibleTaskStatus(chat.taskStatus, dismissedTaskStatuses, chat.id);
+    const visibleStatus = taskStatusForDisplay(chat);
     const canDeleteGroup = chat.isGroup
       && groupOwnerById.get(String(chat.groupId)) === String(user.uid);
     const assignedProjectId = projectIdFor(chat);
@@ -2122,40 +2268,44 @@ export default function ChatListView({
             <Plus size={20} />
           </button>
           <div className="cc-compact-conversations" aria-label="最近任务">
-            {compactChats.map((chat) => (
-              <button
-                type="button"
-                key={chat.id}
-                className={`cc-compact-conversation${activeTopic === chat.id ? ' active' : ''}`}
-                onClick={() => {
-                  setCompactTaskHint(null);
-                  selectConversation(chat);
-                }}
-                onPointerEnter={(event) => {
-                  const rect = event.currentTarget.getBoundingClientRect();
-                  setCompactTaskHint({
-                    id: chat.id,
-                    name: chat.name,
-                    left: rect.right + 8,
-                    top: rect.top + (rect.height / 2),
-                  });
-                }}
-                onPointerLeave={() => setCompactTaskHint(null)}
-                onFocus={(event) => {
-                  const rect = event.currentTarget.getBoundingClientRect();
-                  setCompactTaskHint({
-                    id: chat.id,
-                    name: chat.name,
-                    left: rect.right + 8,
-                    top: rect.top + (rect.height / 2),
-                  });
-                }}
-                onBlur={() => setCompactTaskHint(null)}
-                aria-label={`打开任务：${chat.name}`}
-              >
-                <Avatar name={chat.name} src={chat.avatar_url} size={32} />
-              </button>
-            ))}
+            {compactChats.map((chat) => {
+              const visibleStatus = taskStatusForDisplay(chat);
+              return (
+                <button
+                  type="button"
+                  key={chat.id}
+                  className={`cc-compact-conversation${activeTopic === chat.id ? ' active' : ''}`}
+                  onClick={() => {
+                    setCompactTaskHint(null);
+                    selectConversation(chat);
+                  }}
+                  onPointerEnter={(event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    setCompactTaskHint({
+                      id: chat.id,
+                      name: chat.name,
+                      left: rect.right + 8,
+                      top: rect.top + (rect.height / 2),
+                    });
+                  }}
+                  onPointerLeave={() => setCompactTaskHint(null)}
+                  onFocus={(event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    setCompactTaskHint({
+                      id: chat.id,
+                      name: chat.name,
+                      left: rect.right + 8,
+                      top: rect.top + (rect.height / 2),
+                    });
+                  }}
+                  onBlur={() => setCompactTaskHint(null)}
+                  aria-label={`打开任务：${chat.name}`}
+                >
+                  <Avatar name={chat.name} src={chat.avatar_url} size={32} />
+                  <CompactTaskStatusIndicator status={visibleStatus} />
+                </button>
+              );
+            })}
           </div>
           {compactTaskHint && createPortal(
             <span
@@ -2186,12 +2336,13 @@ export default function ChatListView({
         </label>
       </div>}
 
-      {!compact && <div className="v3-chat-list">
+      {!compact && <div ref={sidebarListRef} className="v3-chat-list">
 
-        {/* 任务：只承载单人 + Agent 与多人 + Agent 两种工作会话 */}
+        {/* 历史任务：只承载单人 + Agent 与多人 + Agent 两种工作会话 */}
         <SidebarSectionHeader
-          className="cc-conversation-section"
-          label="任务"
+          className={`cc-conversation-section${(isSearching || !projectsCollapsed) ? ' cc-section-after-expanded-content' : ''}`}
+          label="历史任务"
+          sectionRef={conversationsSectionRef}
           expanded={!collapsed.conversations}
           onToggle={() => toggleCollapsed('conversations')}
           action={(
@@ -2210,7 +2361,8 @@ export default function ChatListView({
         <SidebarSectionHeader
           className="cc-contacts-section"
           label="联系人"
-          expanded={!collapsed.contacts}
+          sectionRef={contactsSectionRef}
+          expanded={isSearching || !contactsCollapsed}
           onToggle={() => toggleCollapsed('contacts')}
           toggleContent={hasUnreadFriendMessages && (
             <span className="cc-section-unread-dot" role="status" aria-label="联系人有新消息" />
@@ -2287,7 +2439,7 @@ export default function ChatListView({
             </div>
           )}
         </SidebarSectionHeader>
-        {(isSearching || !collapsed.contacts) && (
+        {(isSearching || !contactsCollapsed) && (
           <>
             {!isSearching && pending.length > 0 && (
               <div className="cc-contact-requests">
@@ -2308,9 +2460,10 @@ export default function ChatListView({
           </>
         )}
         <SidebarSectionHeader
-          className="cc-project-section"
+          className={`cc-project-section${(isSearching || !contactsCollapsed) ? ' cc-section-after-expanded-content' : ''}`}
           label="项目"
-          expanded={!collapsed.projects}
+          sectionRef={projectsSectionRef}
+          expanded={isSearching || !projectsCollapsed}
           onToggle={() => toggleCollapsed('projects')}
           action={(
             <button
@@ -2328,7 +2481,7 @@ export default function ChatListView({
             </button>
           )}
         />
-        {(isSearching || !collapsed.projects) && (filteredProjects.length === 0 && !isSearching ? (
+        {(isSearching || !projectsCollapsed) && (filteredProjects.length === 0 && !isSearching ? (
           <div className="cc-sidebar-empty cc-project-empty">暂无项目</div>
         ) : (
           filteredProjects.map((project) => {
@@ -2809,7 +2962,7 @@ function removeSetValue(previous, value) {
   return next;
 }
 
-function TaskRowStatusIndicator({ status, time, showTime }) {
+function useUnexpiredTaskStatus(status) {
   const expiresAtMs = taskStatusExpiresMs(status);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -2824,6 +2977,50 @@ function TaskRowStatusIndicator({ status, time, showTime }) {
 
   const normalized = normalizeTaskStatus(status);
   if (!normalized || normalized.state === 'idle' || (expiresAtMs && expiresAtMs <= nowMs)) {
+    return null;
+  }
+  return normalized;
+}
+
+function CompactTaskStatusIndicator({ status }) {
+  const normalized = useUnexpiredTaskStatus(status);
+  if (!normalized) return null;
+
+  const detail = normalized.summary || normalized.error;
+  if (normalized.state === 'running') {
+    return (
+      <span className="cc-compact-task-status running" title={detail || '任务进行中'} aria-label="任务进行中" role="status">
+        <LoaderCircle size={17} strokeWidth={2.4} />
+      </span>
+    );
+  }
+
+  if (normalized.state === 'completed') {
+    return (
+      <span className="cc-compact-task-status completed" title={detail || '任务已完成'} aria-label="任务已完成" role="status" />
+    );
+  }
+
+  if (normalized.state === 'failed') {
+    return (
+      <span className="cc-compact-task-status failed" title={detail || '任务执行失败'} aria-label="任务执行失败" role="status" />
+    );
+  }
+
+  if (normalized.state === 'cancelled' || normalized.state === 'stale') {
+    const isStale = normalized.state === 'stale';
+    const label = isStale ? '任务已自动中止' : '任务已中止';
+    return (
+      <span className={`cc-compact-task-status ${normalized.state}`} title={detail || label} aria-label={label} role="status" />
+    );
+  }
+
+  return null;
+}
+
+function TaskRowStatusIndicator({ status, time, showTime }) {
+  const normalized = useUnexpiredTaskStatus(status);
+  if (!normalized) {
     return showTime && time ? <span className="cc-chat-row-time">{time}</span> : null;
   }
 

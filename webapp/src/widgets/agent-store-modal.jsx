@@ -501,7 +501,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
               <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 16 }}>
                 <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>API KEY</div>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-primary)', fontFamily: 'monospace', fontSize: 13, userSelect: 'all' }}>
+                  <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-primary)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
                     {createdBot.api_key}
                   </code>
                   <button className="oc-btn oc-btn-default" onClick={() => handleCopy('api', createdBot.api_key)}>
@@ -513,7 +513,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
               <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
                 <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>WebSocket 连接地址</div>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-text-main)', fontFamily: 'monospace', fontSize: 13, userSelect: 'all' }}>
+                  <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-text-main)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
                     {wsUrl}
                   </code>
                   <button className="oc-btn oc-btn-default" onClick={() => handleCopy('ws', wsUrl)}>
@@ -609,7 +609,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                 <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
                   <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>API Key</div>
                   <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-                    <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: editingBot.api_key ? 'var(--v3-primary)' : 'var(--v3-text-muted)', fontFamily: 'monospace', fontSize: 13, userSelect: 'all' }}>
+                    <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: editingBot.api_key ? 'var(--v3-primary)' : 'var(--v3-text-muted)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
                       {editingBot.api_key || '点击复制加载 API Key'}
                     </code>
                     <button
@@ -624,7 +624,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
 
                   <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>WebSocket 连接地址</div>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-text-main)', fontFamily: 'monospace', fontSize: 13, userSelect: 'all' }}>
+                    <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-text-main)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
                       {wsUrl}
                     </code>
                     <button type="button" className="oc-btn oc-btn-default" onClick={() => handleCopy('ws_edit', wsUrl)}>

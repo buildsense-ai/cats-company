@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { api, setToken, getToken, connectWS, reconnectWS, disconnectWS } from '../api';
 import t from '../i18n';
 import ChatListView from './sidepanel-view';
@@ -56,7 +57,7 @@ import {
   saveLiquidThemeUnlock,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
-import { Bug, Cloud, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Cloud, Download, Frown, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 
@@ -910,9 +911,9 @@ function TinodeWebApp() {
         />
 
         {showProfilePopover && (
-          <div className="v3-profile-popover" ref={profilePopoverRef}>
+          <ProfilePopover compact={appSidebarCollapsed} popoverRef={profilePopoverRef}>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowFeedbackModal(true); }}>
-              <Bug size={16} style={{marginRight: 10}} /> 意见反馈
+              <Frown size={16} strokeWidth={1.8} style={{marginRight: 10}} /> 意见反馈
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDownloadModal(true); }}>
               <Download size={16} style={{marginRight: 10}} /> 下载 CatsCo 桌面端
@@ -929,7 +930,7 @@ function TinodeWebApp() {
             <div className="v3-popover-item danger" onClick={() => { localStorage.clear(); window.location.reload(); }}>
               <LogOut size={16} style={{marginRight: 10}} /> 退出登录
             </div>
-          </div>
+          </ProfilePopover>
         )}
 
         <SidebarResizeHandle
@@ -1142,6 +1143,19 @@ function SidebarContent({
       compact={compact}
       onManageGroup={onManageGroup}
     />
+  );
+}
+
+export function ProfilePopover({ compact = false, popoverRef, children }) {
+  if (typeof document === 'undefined') return null;
+  return createPortal(
+    <div
+      className={`v3-profile-popover${compact ? ' is-compact' : ''}`}
+      ref={popoverRef}
+    >
+      {children}
+    </div>,
+    document.body,
   );
 }
 
