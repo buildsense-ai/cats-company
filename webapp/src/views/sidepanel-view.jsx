@@ -20,6 +20,31 @@ const HIDDEN_HISTORY_STORAGE_PREFIX = 'cc_hidden_history_v1';
 const TASK_STATUS_DISMISSED_STORAGE_PREFIX = 'cc_task_status_dismissed_v1';
 const FRIEND_SYNC_STORAGE_PREFIX = 'cc_friend_sync_v1';
 
+export function shouldAutoCollapseSidebarSection({
+  scrollTop,
+  scrollHeight,
+  clientHeight,
+  scrollViewportTop,
+  nextSectionTop,
+  nextSectionStickyTop,
+  tolerance = 1,
+}) {
+  const safeStickyTop = Number.isFinite(nextSectionStickyTop) ? nextSectionStickyTop : 0;
+  const reachedStickyLane = (
+    Number.isFinite(scrollViewportTop)
+    && Number.isFinite(nextSectionTop)
+    && nextSectionTop <= scrollViewportTop + safeStickyTop + tolerance
+  );
+  const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
+  if (maxScrollTop <= 0) return false;
+
+  const reachedScrollableEnd = (
+    scrollTop >= maxScrollTop - tolerance
+  );
+
+  return reachedStickyLane || reachedScrollableEnd;
+}
+
 function sidebarCollapsedStorageKey(uid) {
   return `${SIDEBAR_COLLAPSED_STORAGE_PREFIX}:${uid || 'guest'}`;
 }
@@ -1057,22 +1082,35 @@ export default function ChatListView({
         contentNode = contentNode.nextElementSibling;
       }
     };
-    const onSidebarScroll = () => {
+    const evaluateSidebarAutoCollapse = ({ allowUnchangedScrollTop = false } = {}) => {
       const nextScrollTop = list.scrollTop;
       const isScrollingDown = nextScrollTop > previousSidebarScrollTopRef.current + 0.5;
       previousSidebarScrollTopRef.current = nextScrollTop;
 
-      if (!isScrollingDown || isSearching || coarsePointer) return;
+      if ((!isScrollingDown && !allowUnchangedScrollTop) || isSearching || coarsePointer) return;
 
-      const contactsRect = contactsSectionRef.current?.getBoundingClientRect();
-      const projectsRect = projectsSectionRef.current?.getBoundingClientRect();
-      const conversationsRect = conversationsSectionRef.current?.getBoundingClientRect();
+      const scrollViewportTop = list.getBoundingClientRect().top + list.clientTop;
+      const projectsSection = projectsSectionRef.current;
+      const conversationsSection = conversationsSectionRef.current;
+      const projectsRect = projectsSection?.getBoundingClientRect();
+      const conversationsRect = conversationsSection?.getBoundingClientRect();
+      const hasReachedAutoCollapseBoundary = (section, sectionRect) => {
+        const computedStickyTop = Number.parseFloat(window.getComputedStyle(section).top);
+        return shouldAutoCollapseSidebarSection({
+          scrollTop: nextScrollTop,
+          scrollHeight: list.scrollHeight,
+          clientHeight: list.clientHeight,
+          scrollViewportTop,
+          nextSectionTop: sectionRect.top,
+          nextSectionStickyTop: computedStickyTop,
+        });
+      };
 
       if (
         !contactsCollapsed
-        && contactsRect
+        && projectsSection
         && projectsRect
-        && projectsRect.top <= contactsRect.bottom + 6
+        && hasReachedAutoCollapseBoundary(projectsSection, projectsRect)
         && !showContactActions
         && !openFriendMenuId
         && !openChatMenuKey
@@ -1091,9 +1129,10 @@ export default function ChatListView({
       if (
         contactsCollapsed
         && !projectsCollapsed
+        && conversationsSection
         && projectsRect
         && conversationsRect
-        && conversationsRect.top <= projectsRect.bottom + 6
+        && hasReachedAutoCollapseBoundary(conversationsSection, conversationsRect)
         && openProjectMenuId == null
         && !openChatMenuKey
       ) {
@@ -1107,9 +1146,27 @@ export default function ChatListView({
         ));
       }
     };
+    const onSidebarScroll = () => {
+      evaluateSidebarAutoCollapse();
+    };
+    const onSidebarWheel = (event) => {
+      if (event.ctrlKey || event.metaKey || event.deltaY <= 0) return;
+
+      const maxScrollTop = Math.max(0, list.scrollHeight - list.clientHeight);
+      if (maxScrollTop <= 0 || list.scrollTop < maxScrollTop - 1) return;
+
+      // A wheel gesture at the scroll limit does not emit another scroll event.
+      // Evaluate once more so each additional downward gesture can collapse the
+      // next sticky section without collapsing multiple sections in one frame.
+      evaluateSidebarAutoCollapse({ allowUnchangedScrollTop: true });
+    };
 
     list.addEventListener('scroll', onSidebarScroll, { passive: true });
-    return () => list.removeEventListener('scroll', onSidebarScroll);
+    list.addEventListener('wheel', onSidebarWheel, { passive: true });
+    return () => {
+      list.removeEventListener('scroll', onSidebarScroll);
+      list.removeEventListener('wheel', onSidebarWheel);
+    };
   }, [
     compact,
     contactsCollapsed,

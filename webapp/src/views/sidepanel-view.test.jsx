@@ -110,7 +110,7 @@ vi.mock('../api', () => ({
   updateTopicSeq: vi.fn(),
 }));
 
-import ChatListView from './sidepanel-view';
+import ChatListView, { shouldAutoCollapseSidebarSection } from './sidepanel-view';
 import { api, onWSMessage } from '../api';
 
 const user = {
@@ -246,6 +246,35 @@ describe('ChatListView sidebar sections', () => {
     const [tasksToggle, contactsToggle] = container.querySelectorAll('.cc-top-level-section > .cc-section-toggle');
     expect(tasksToggle.querySelector('.lucide-message-square')).toBeNull();
     expect(contactsToggle.querySelector('.lucide-user-round')).toBeNull();
+  });
+
+  it('recognizes real sticky lanes and the reachable scroll end as auto-collapse boundaries', () => {
+    expect(shouldAutoCollapseSidebarSection({
+      scrollTop: 260,
+      scrollHeight: 1130,
+      clientHeight: 691,
+      scrollViewportTop: 160,
+      nextSectionTop: 199.5,
+      nextSectionStickyTop: 39,
+    })).toBe(true);
+
+    expect(shouldAutoCollapseSidebarSection({
+      scrollTop: 439,
+      scrollHeight: 1130,
+      clientHeight: 691,
+      scrollViewportTop: 160,
+      nextSectionTop: 264.7,
+      nextSectionStickyTop: 39,
+    })).toBe(true);
+
+    expect(shouldAutoCollapseSidebarSection({
+      scrollTop: 300,
+      scrollHeight: 1130,
+      clientHeight: 691,
+      scrollViewportTop: 160,
+      nextSectionTop: 264.7,
+      nextSectionStickyTop: 39,
+    })).toBe(false);
   });
 
   it('adds extra section spacing only after expanded section content', async () => {
@@ -2174,6 +2203,8 @@ describe('ChatListView sidebar sections', () => {
     const tasksSection = container.querySelector('.cc-conversation-section');
     const contactsToggle = contactsSection.querySelector('.cc-section-toggle');
     const projectsToggle = projectsSection.querySelector('.cc-section-toggle');
+    projectsSection.style.top = '39px';
+    tasksSection.style.top = '77px';
     expect(contactsToggle.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelector('[data-contact-kind="agent"]')).toBeTruthy();
     Object.defineProperty(list, 'scrollHeight', {
@@ -2247,6 +2278,84 @@ describe('ChatListView sidebar sections', () => {
     }
   });
 
+  it('collapses sticky sections at the real reachable scroll end without requiring header overlap', async () => {
+    await mount();
+
+    const list = container.querySelector('.v3-chat-list');
+    const contactsSection = container.querySelector('.cc-contacts-section');
+    const projectsSection = container.querySelector('.cc-project-section');
+    const tasksSection = container.querySelector('.cc-conversation-section');
+    const contactsToggle = contactsSection.querySelector('.cc-section-toggle');
+    const projectsToggle = projectsSection.querySelector('.cc-section-toggle');
+    projectsSection.style.top = '39px';
+    tasksSection.style.top = '77px';
+    Object.defineProperty(list, 'clientHeight', {
+      configurable: true,
+      value: 691,
+    });
+    Object.defineProperty(list, 'scrollHeight', {
+      configurable: true,
+      get: () => {
+        const contactsHeight = contactsToggle.getAttribute('aria-expanded') === 'true' ? 140 : 0;
+        const projectsHeight = projectsToggle.getAttribute('aria-expanded') === 'true' ? 100 : 0;
+        return 890 + contactsHeight + projectsHeight;
+      },
+    });
+
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+    const makeRect = (top, bottom) => ({
+      top,
+      bottom,
+      height: bottom - top,
+      left: 0,
+      right: 260,
+      width: 260,
+      x: 0,
+      y: top,
+      toJSON: () => ({}),
+    });
+    HTMLElement.prototype.getBoundingClientRect = vi.fn(function getBoundingClientRect() {
+      if (this === list) return makeRect(160, 851);
+      if (this === contactsSection) return makeRect(162, 198);
+      if (this === projectsSection) return makeRect(264.7, 300.7);
+      if (this === tasksSection) return makeRect(500, 536);
+      return makeRect(0, 0);
+    });
+
+    try {
+      list.scrollTop = 439;
+      await act(async () => {
+        list.dispatchEvent(new Event('scroll'));
+        await Promise.resolve();
+      });
+
+      expect(contactsToggle.getAttribute('aria-expanded')).toBe('false');
+      expect(projectsToggle.getAttribute('aria-expanded')).toBe('true');
+      expect(list.scrollTop).toBe(299);
+
+      await act(async () => {
+        list.dispatchEvent(new WheelEvent('wheel', { deltaY: -80 }));
+        await Promise.resolve();
+      });
+      expect(projectsToggle.getAttribute('aria-expanded')).toBe('true');
+
+      await act(async () => {
+        list.dispatchEvent(new WheelEvent('wheel', { ctrlKey: true, deltaY: 80 }));
+        await Promise.resolve();
+      });
+      expect(projectsToggle.getAttribute('aria-expanded')).toBe('true');
+
+      await act(async () => {
+        list.dispatchEvent(new WheelEvent('wheel', { deltaY: 80 }));
+        await Promise.resolve();
+      });
+      expect(projectsToggle.getAttribute('aria-expanded')).toBe('false');
+      expect(list.scrollTop).toBe(199);
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+    }
+  });
+
   it('clears temporary scroll collapse state when compact mode changes', async () => {
     await mount();
 
@@ -2255,6 +2364,16 @@ describe('ChatListView sidebar sections', () => {
     const projectsSection = container.querySelector('.cc-project-section');
     const tasksSection = container.querySelector('.cc-conversation-section');
     const contactsToggle = contactsSection.querySelector('.cc-section-toggle');
+    projectsSection.style.top = '39px';
+    tasksSection.style.top = '77px';
+    Object.defineProperty(list, 'clientHeight', {
+      configurable: true,
+      value: 500,
+    });
+    Object.defineProperty(list, 'scrollHeight', {
+      configurable: true,
+      value: 700,
+    });
     const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
     const makeRect = (top, bottom) => ({
       top,
@@ -2347,6 +2466,7 @@ describe('ChatListView sidebar sections', () => {
     const projectsSection = container.querySelector('.cc-project-section');
     const contactsToggle = contactsSection.querySelector('.cc-section-toggle');
     let projectsTop = 120;
+    projectsSection.style.top = '39px';
     const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
     const makeRect = (top, bottom) => ({
       top,
@@ -2398,6 +2518,8 @@ describe('ChatListView sidebar sections', () => {
     const tasksSection = container.querySelector('.cc-conversation-section');
     const contactsToggle = contactsSection.querySelector('.cc-section-toggle');
     const projectsToggle = projectsSection.querySelector('.cc-section-toggle');
+    projectsSection.style.top = '39px';
+    tasksSection.style.top = '77px';
     Object.defineProperty(list, 'scrollHeight', {
       configurable: true,
       get: () => {
