@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -1410,6 +1409,7 @@ func messageRequestFromPub(msg *MsgClientPub) *SendMessageRequest {
 		Mode:          msg.Mode,
 		Role:          msg.Role,
 		ReplyTo:       msg.ReplyTo,
+		Mentions:      msg.Mentions,
 	}
 }
 
@@ -1689,53 +1689,22 @@ func max64(a, b int64) int64 {
 	return b
 }
 
-// parseMentions extracts @usr123 style mentions from message content.
-func parseMentions(content interface{}) []string {
-	var text string
-	switch v := content.(type) {
-	case string:
-		text = v
-	case map[string]interface{}:
-		if t, ok := v["text"].(string); ok {
-			text = t
-		}
-	}
-
-	if text == "" {
-		return nil
-	}
-
-	// Match @usr123 pattern
-	re := regexp.MustCompile(`@usr(\d+)`)
-	matches := re.FindAllStringSubmatch(text, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-
-	mentions := make([]string, 0, len(matches))
-	seen := make(map[string]bool)
-	for _, m := range matches {
-		if len(m) > 1 {
-			uid := "usr" + m[1]
-			if !seen[uid] {
-				seen[uid] = true
-				mentions = append(mentions, uid)
-			}
-		}
-	}
-	return mentions
-}
-
-// broadcastToGroupWithMentions sends a message to all online members with Bot @trigger filtering.
-// Human messages without mentions may wake every bot. Bot messages only wake explicitly mentioned bots.
-func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, excludeUID int64, mentions []string, senderUID int64) {
+// broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.
+// Groups larger than two members require a structured mention of the target bot.
+// Groups with at most two members preserve the legacy automatic human-to-bot activation.
+func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, excludeUID int64, mentions []string, senderUID int64, trustedChannelTrigger bool) {
 	members, err := h.db.GetGroupMembers(groupID)
 	if err != nil {
 		log.Printf("broadcastToGroupWithMentions: failed to get members for group %d: %v", groupID, err)
 		return
 	}
 
-	// Convert mentions to a set for quick lookup
+	memberCount := len(members)
+	if msg != nil && msg.Data != nil {
+		msg.Data.MemberCount = memberCount
+	}
+
+	// Convert structured mentions to a set for quick lookup.
 	mentionSet := make(map[string]bool)
 	for _, m := range mentions {
 		mentionSet[m] = true
@@ -1760,11 +1729,8 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 
 		if isBot {
 			userIDStr := formatUID(m.UserID)
-			if len(mentions) > 0 {
-				if !mentionSet[userIDStr] {
-					continue
-				}
-			} else if senderIsBot {
+			requiresMention := !trustedChannelTrigger && (senderIsBot || memberCount > 2)
+			if requiresMention && !mentionSet[userIDStr] {
 				continue
 			}
 		}

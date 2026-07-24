@@ -72,6 +72,73 @@ function resolvePhoneUploadLink(uploadUrl) {
   return `${window.location.origin}${normalizedPath}`;
 }
 
+function isStructuredMentionSelectionIntact(text, target, start, end) {
+  if (start < 0 || end > text.length || text.slice(start, end) !== `@${target}`) return false;
+  const trailingCharacter = text.slice(end, end + 1);
+  return !trailingCharacter || !/[\p{L}\p{N}_]/u.test(trailingCharacter);
+}
+
+export function reconcileStructuredMentionSelections(previousText, nextText, selections = []) {
+  const previous = typeof previousText === 'string' ? previousText : '';
+  const next = typeof nextText === 'string' ? nextText : '';
+  if (!Array.isArray(selections) || selections.length === 0) return [];
+
+  let prefixLength = 0;
+  while (prefixLength < previous.length
+    && prefixLength < next.length
+    && previous[prefixLength] === next[prefixLength]) {
+    prefixLength += 1;
+  }
+
+  let previousSuffixStart = previous.length;
+  let nextSuffixStart = next.length;
+  while (previousSuffixStart > prefixLength
+    && nextSuffixStart > prefixLength
+    && previous[previousSuffixStart - 1] === next[nextSuffixStart - 1]) {
+    previousSuffixStart -= 1;
+    nextSuffixStart -= 1;
+  }
+
+  const delta = next.length - previous.length;
+  const nextChangedText = next.slice(prefixLength, nextSuffixStart);
+  return selections.flatMap((selection) => {
+    const target = typeof selection?.target === 'string' ? selection.target : '';
+    let start = Number.isInteger(selection?.start) ? selection.start : -1;
+    let end = Number.isInteger(selection?.end) ? selection.end : -1;
+    if (!/^usr\d+$/u.test(target) || start < 0 || end <= start) return [];
+
+    const touchesRightBoundary = prefixLength === end
+      && /[\p{L}\p{N}_]/u.test(nextChangedText.slice(0, 1));
+    const touchesLeftBoundary = previousSuffixStart === start
+      && /[\p{L}\p{N}_]/u.test(nextChangedText.slice(-1));
+    if (touchesRightBoundary || touchesLeftBoundary) return [];
+
+    if (end <= prefixLength) {
+      // The selected token is before the edit and remains unchanged.
+    } else if (start >= previousSuffixStart) {
+      start += delta;
+      end += delta;
+    } else {
+      return [];
+    }
+
+    if (!isStructuredMentionSelectionIntact(next, target, start, end)) return [];
+    return [{ target, start, end }];
+  });
+}
+
+export function collectStructuredMentionTargets(text, selections = []) {
+  const value = typeof text === 'string' ? text : '';
+  if (!Array.isArray(selections)) return [];
+  return [...new Set(selections.flatMap((selection) => {
+    const target = typeof selection?.target === 'string' ? selection.target : '';
+    const start = Number.isInteger(selection?.start) ? selection.start : -1;
+    const end = Number.isInteger(selection?.end) ? selection.end : -1;
+    if (!/^usr\d+$/u.test(target) || start < 0 || end <= start) return [];
+    return isStructuredMentionSelectionIntact(value, target, start, end) ? [target] : [];
+  }))];
+}
+
 export default function MessagesView({
   topic,
   topicName,
@@ -145,6 +212,7 @@ export default function MessagesView({
   const loadingOlderRef = useRef(false);
   const activeTopicRef = useRef(topic);
   const composerDraftsRef = useRef(new Map());
+  const structuredMentionDraftsRef = useRef(new Map());
   const attachmentDraftsRef = useRef(new Map());
   const pendingAttachmentsRef = useRef([]);
   const previewWidthRef = useRef(previewWidth);
@@ -181,6 +249,15 @@ export default function MessagesView({
       composerDraftsRef.current.set(draftTopic, value);
     } else {
       composerDraftsRef.current.delete(draftTopic);
+    }
+  }, []);
+
+  const updateStructuredMentionDraft = useCallback((draftTopic, selections) => {
+    if (!draftTopic) return;
+    if (Array.isArray(selections) && selections.length > 0) {
+      structuredMentionDraftsRef.current.set(draftTopic, selections);
+    } else {
+      structuredMentionDraftsRef.current.delete(draftTopic);
     }
   }, []);
 
@@ -782,7 +859,8 @@ export default function MessagesView({
   }, []);
 
   const handleSend = useCallback(async () => {
-    const initialText = input.trim();
+    const originalInput = input;
+    const initialText = originalInput.trim();
     const initialAttachments = attachmentDraftsRef.current.get(topic) || pendingAttachmentsRef.current;
     if (!initialText && initialAttachments.length === 0) return;
     if (isUploadingAttachment || sendInFlightRef.current) return;
@@ -800,6 +878,10 @@ export default function MessagesView({
     let attachmentsToSend = [...initialAttachments];
     const text = initialText;
     const originalReplyTo = replyTo;
+    const originalStructuredMentions = structuredMentionDraftsRef.current.get(topic) || [];
+    const mentions = isGroup
+      ? collectStructuredMentionTargets(input, originalStructuredMentions)
+      : [];
     const tempId = Date.now();
 
     try {
@@ -825,6 +907,7 @@ export default function MessagesView({
         : text;
 
       updateComposerDraft(topic, '');
+      updateStructuredMentionDraft(topic, []);
       updateAttachmentDraft(topic, []);
       stateCleared = true;
       if (activeTopicRef.current === topic) {
@@ -852,7 +935,9 @@ export default function MessagesView({
         }]));
       }
 
-      const result = await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined);
+      const result = mentions.length > 0
+        ? await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
+        : await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
       if (switchesTopic) {
         if (activeTopicRef.current === topic) {
@@ -875,12 +960,13 @@ export default function MessagesView({
 
       if (optimisticMessageAdded && activeTopicRef.current === topic) removeOptimisticMessage(tempId);
       if (stateCleared) {
-        updateComposerDraft(topic, text);
+        updateComposerDraft(topic, originalInput);
+        updateStructuredMentionDraft(topic, originalStructuredMentions);
         updateAttachmentDraft(topic, attachmentsToSend);
       }
       if (activeTopicRef.current === topic) {
         if (stateCleared) {
-          setInput(text);
+          setInput(originalInput);
           setReplyTo(originalReplyTo);
         }
         setAttachmentStatus({
@@ -892,7 +978,7 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, user.uid]);
+  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
     if (!activeBotWorking || isStopRequested) return;
@@ -998,8 +1084,14 @@ export default function MessagesView({
 
   const handleInputChange = (e) => {
     const val = e.target.value;
+    const nextStructuredMentions = reconcileStructuredMentionSelections(
+      input,
+      val,
+      structuredMentionDraftsRef.current.get(topic) || [],
+    );
     setInput(val);
     updateComposerDraft(topic, val);
+    updateStructuredMentionDraft(topic, nextStructuredMentions);
 
     // Detect @mention trigger
     if (isGroup) {
@@ -1035,8 +1127,18 @@ export default function MessagesView({
     if (!textarea) return;
     const range = mentionRangeRef.current;
     if (!range || range.start < 0 || range.end < range.start || range.end > input.length) return;
-    const mention = `@usr${member.user_id} `;
+    const target = `usr${member.user_id}`;
+    const mention = `@${target} `;
     const newText = input.slice(0, range.start) + mention + input.slice(range.end);
+    const reconciledSelections = reconcileStructuredMentionSelections(
+      input,
+      newText,
+      structuredMentionDraftsRef.current.get(topic) || [],
+    );
+    updateStructuredMentionDraft(topic, [
+      ...reconciledSelections,
+      { target, start: range.start, end: range.start + mention.length - 1 },
+    ]);
     setInput(newText);
     updateComposerDraft(topic, newText);
     setShowMentionPicker(false);
@@ -1056,8 +1158,14 @@ export default function MessagesView({
     if (!isGroup || !textarea) return;
     const cursorPos = textarea.selectionStart;
     const nextInput = input.slice(0, cursorPos) + '@' + input.slice(cursorPos);
+    const nextStructuredMentions = reconcileStructuredMentionSelections(
+      input,
+      nextInput,
+      structuredMentionDraftsRef.current.get(topic) || [],
+    );
     setInput(nextInput);
     updateComposerDraft(topic, nextInput);
+    updateStructuredMentionDraft(topic, nextStructuredMentions);
     setShowMentionPicker(true);
     setMentionFilter('');
     setMentionActiveIndex(0);
@@ -1545,6 +1653,7 @@ export default function MessagesView({
   const applyTutorialPrompt = (prompt) => {
     setInput(prompt);
     updateComposerDraft(topic, prompt);
+    updateStructuredMentionDraft(topic, []);
     setAttachmentStatus({ tone: 'success', message: '已填入示例任务，你可以直接发送。' });
     setSelectedTutorialTask(null);
     window.setTimeout(() => {
@@ -1558,6 +1667,7 @@ export default function MessagesView({
     if (!originalText.trim()) return;
     setInput(originalText);
     updateComposerDraft(topic, originalText);
+    updateStructuredMentionDraft(topic, []);
     setReplyTo(null);
     setAttachmentStatus({ tone: 'success', message: '已将原指令放回输入框，编辑后可直接发送。' });
     window.setTimeout(() => {
@@ -1567,7 +1677,7 @@ export default function MessagesView({
       textarea.setSelectionRange(originalText.length, originalText.length);
       resizeComposerInput();
     }, 0);
-  }, [resizeComposerInput, topic, updateComposerDraft]);
+  }, [resizeComposerInput, topic, updateComposerDraft, updateStructuredMentionDraft]);
 
   const questionNavigationItems = useMemo(() => groupedMessages.reduce((items, group, index) => {
     if (group.type !== 'text' || group.message?.from_uid !== user.uid) return items;

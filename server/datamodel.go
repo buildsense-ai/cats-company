@@ -88,6 +88,7 @@ type MsgClientPub struct {
 	Mode          string                 `json:"mode,omitempty"`
 	Role          string                 `json:"role,omitempty"`
 	ReplyTo       int                    `json:"reply_to,omitempty"`
+	Mentions      []string               `json:"mentions,omitempty"`
 }
 
 type MsgClientGet struct {
@@ -196,7 +197,8 @@ type MsgServerData struct {
 	Mode          string                 `json:"mode,omitempty"`
 	Role          string                 `json:"role,omitempty"`
 	ReplyTo       int                    `json:"reply_to,omitempty"`
-	Mentions      []string               `json:"mentions,omitempty"` // @mentioned user IDs (e.g., ["usr123"])
+	Mentions      []string               `json:"mentions,omitempty"` // Structured @mention targets (for example ["usr123"]).
+	MemberCount   int                    `json:"member_count,omitempty"`
 }
 
 type MsgServerPres struct {

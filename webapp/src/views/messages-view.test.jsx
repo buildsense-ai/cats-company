@@ -91,7 +91,10 @@ vi.mock('../api', () => ({
   updateTopicSeq: vi.fn(),
 }));
 
-import MessagesView from './messages-view';
+import MessagesView, {
+  collectStructuredMentionTargets,
+  reconcileStructuredMentionSelections,
+} from './messages-view';
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { api, onWSMessage, wsSendStreamCancel } from '../api';
 
@@ -206,6 +209,31 @@ async function flushPromises(count = 8) {
     await Promise.resolve();
   }
 }
+
+describe('structured composer mention provenance', () => {
+  it('does not promote hand-typed uid-like text into structured targets', () => {
+    expect(collectStructuredMentionTargets('@usr42 请处理', [])).toEqual([]);
+  });
+
+  it('keeps picker selections across edits outside the selected token', () => {
+    const selection = [{ target: 'usr42', start: 0, end: 6 }];
+    const afterAppending = reconcileStructuredMentionSelections('@usr42 ', '@usr42 处理', selection);
+    const reconciled = reconcileStructuredMentionSelections('@usr42 处理', '请 @usr42 处理', afterAppending);
+    expect(reconciled).toEqual([{ target: 'usr42', start: 2, end: 8 }]);
+    expect(collectStructuredMentionTargets('请 @usr42 处理', reconciled)).toEqual(['usr42']);
+  });
+
+  it('drops picker provenance when the selected token is edited', () => {
+    const selection = [{ target: 'usr42', start: 0, end: 6 }];
+    expect(reconcileStructuredMentionSelections('@usr42 ', '@usr43 ', selection)).toEqual([]);
+  });
+
+  it('drops picker provenance when text is inserted against the token boundary', () => {
+    const selection = [{ target: 'usr42', start: 0, end: 6 }];
+    expect(reconcileStructuredMentionSelections('@usr42 ', '@usr42x ', selection)).toEqual([]);
+    expect(collectStructuredMentionTargets('@usr42x ', selection)).toEqual([]);
+  });
+});
 
 describe('MessagesView composer draft isolation', () => {
   let container;
@@ -930,6 +958,21 @@ describe('MessagesView composer draft isolation', () => {
     ]);
   });
 
+  it('does not send structured mentions for hand-typed uid-like text', async () => {
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@usr43 请处理');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined);
+  });
+
   it('filters bot names and inserts the canonical uid mention with Enter', async () => {
     api.getGroupInfo.mockResolvedValueOnce({
       group: { id: 80, name: 'Agent Room' },
@@ -959,6 +1002,135 @@ describe('MessagesView composer draft isolation', () => {
     expect(textarea.value).toBe('@usr43 ');
     expect(container.querySelector('.oc-mention-picker')).toBeNull();
     expect(api.sendMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      typeDraft(textarea, '@usr43 请处理');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined, ['usr43']);
+  });
+
+  it('does not send structured mentions after typing against the picker token boundary', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 43, display_name: 'Wanyu', username: 'catsco-agent-worker1', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@wan');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe('@usr43 ');
+
+    await act(async () => {
+      typeDraft(textarea, '@usr43x 请处理');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43x 请处理', undefined);
+  });
+
+  it('restores picker provenance and original text after a send failure', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 43, display_name: 'Wanyu', username: 'catsco-agent-worker1', is_bot: true },
+      ],
+    });
+    api.sendMessage.mockRejectedValueOnce(new Error('send failed'));
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@wan');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      typeDraft(textarea, '  @usr43 ');
+    });
+    await act(async () => {
+      typeDraft(textarea, '  @usr43 请处理  ');
+    });
+
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenNthCalledWith(1, 'grp_80', '@usr43 请处理', undefined, ['usr43']);
+    expect(textarea.value).toBe('  @usr43 请处理  ');
+
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenNthCalledWith(2, 'grp_80', '@usr43 请处理', undefined, ['usr43']);
+  });
+
+  it('drops structured mention provenance after the picker token is removed', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 43, display_name: 'Wanyu', username: 'catsco-agent-worker1', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@wan');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe('@usr43 ');
+
+    await act(async () => {
+      typeDraft(textarea, '请处理');
+    });
+    await act(async () => {
+      typeDraft(textarea, '@usr43 请处理');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined);
   });
 
   it('opens the bot picker from the toolbar and inserts at the cursor', async () => {
