@@ -904,33 +904,59 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *MessageHandler) loadAgentContextHistory(topicID string, beforeID int64, limit int) ([]*types.Message, bool, int64, error) {
-	queryLimit := limit + 1
-	var (
-		messages []*types.Message
-		err      error
-	)
-	if beforeID > 0 {
-		if storeWithCursor, ok := h.db.(latestMessagesBeforeStore); ok {
-			messages, err = storeWithCursor.GetLatestMessagesBefore(topicID, beforeID, queryLimit)
-		} else {
-			return nil, false, 0, errors.New("message store does not support stable before cursor")
-		}
-	} else {
-		messages, err = h.db.GetLatestMessages(topicID, queryLimit, 0)
-	}
-	if err != nil {
-		return nil, false, 0, err
+	storeWithCursor, ok := h.db.(latestMessagesBeforeStore)
+	if !ok {
+		return nil, false, 0, errors.New("message store does not support stable before cursor")
 	}
 
-	hasMore := len(messages) > limit
+	const scanBatchSize = maxAgentContextHistoryLimit
+	cursor := beforeID
+	eligible := make([]*types.Message, 0, limit+1)
+	for {
+		var (
+			rawMessages []*types.Message
+			err         error
+		)
+		if cursor > 0 {
+			rawMessages, err = storeWithCursor.GetLatestMessagesBefore(topicID, cursor, scanBatchSize+1)
+		} else {
+			rawMessages, err = h.db.GetLatestMessages(topicID, scanBatchSize+1, 0)
+		}
+		if err != nil {
+			return nil, false, 0, err
+		}
+
+		hasOlderRawMessages := len(rawMessages) > scanBatchSize
+		if hasOlderRawMessages {
+			rawMessages = rawMessages[len(rawMessages)-scanBatchSize:]
+		}
+		pageEligible := make([]*types.Message, 0, len(rawMessages))
+		for _, message := range rawMessages {
+			if isDurableAgentContextStoredMessage(message) {
+				pageEligible = append(pageEligible, message)
+			}
+		}
+		eligible = append(pageEligible, eligible...)
+
+		if len(eligible) > limit || !hasOlderRawMessages || len(rawMessages) == 0 {
+			break
+		}
+		nextCursor := rawMessages[0].ID
+		if nextCursor <= 0 || (cursor > 0 && nextCursor >= cursor) {
+			return nil, false, 0, errors.New("agent context history cursor did not advance")
+		}
+		cursor = nextCursor
+	}
+
+	hasMore := len(eligible) > limit
 	if hasMore {
-		messages = messages[len(messages)-limit:]
+		eligible = eligible[len(eligible)-limit:]
 	}
 	nextBeforeID := int64(0)
-	if len(messages) > 0 {
-		nextBeforeID = messages[0].ID
+	if len(eligible) > 0 {
+		nextBeforeID = eligible[0].ID
 	}
-	return messages, hasMore, nextBeforeID, nil
+	return eligible, hasMore, nextBeforeID, nil
 }
 
 func (h *MessageHandler) loadHistoryUsers(recipientUID int64, messages []*types.Message) map[int64]*types.User {
@@ -1007,6 +1033,16 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 		formatted["mentions"] = mentions
 	}
 	return formatted
+}
+
+func isDurableAgentContextStoredMessage(message *types.Message) bool {
+	if message == nil {
+		return false
+	}
+	return isDurableAgentContextMessage(
+		message,
+		inferDisplayTypeFromStoredMessage(message.MsgType, message.Content, message.ContentBlocks),
+	)
 }
 
 func isDurableAgentContextMessage(message *types.Message, displayType string) bool {

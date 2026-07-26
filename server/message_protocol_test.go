@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -519,14 +520,15 @@ func TestHandleGetMessagesBuildsAgentContextForGroupHistory(t *testing.T) {
 			{ID: 4, TopicID: "grp_80", FromUID: 7, Content: "@所有人 一起处理", MsgType: "text", ContentBlocks: []types.ContentBlock{{Type: "text", Text: "@所有人 一起处理", Payload: map[string]interface{}{"mentions": []string{structuredMentionAllBots}}}}},
 			{ID: 5, TopicID: "grp_80", FromUID: 42, Content: "我来处理", MsgType: "text"},
 			{ID: 6, TopicID: "grp_80", FromUID: 43, Content: "另一个机器人的回答", MsgType: "text"},
+			{ID: 7, TopicID: "grp_80", FromUID: 99, Content: "身份暂不可用但消息必须保留", MsgType: "text"},
 			{
-				ID: 7, TopicID: "grp_80", FromUID: 42, Content: "处理中", MsgType: "text",
+				ID: 8, TopicID: "grp_80", FromUID: 42, Content: "处理中", MsgType: "text",
 				ContentBlocks: []types.ContentBlock{{Type: "thinking", Thinking: "处理中"}},
 			},
 		},
 	}
 	handler := NewMessageHandler(store, NewHub(store, nil))
-	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=grp_80&agent_context=1&before_id=8&limit=20", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=grp_80&agent_context=1&before_id=9&limit=20", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
 	rec := httptest.NewRecorder()
 	handler.HandleGetMessages(rec, req)
@@ -546,8 +548,8 @@ func TestHandleGetMessagesBuildsAgentContextForGroupHistory(t *testing.T) {
 		t.Fatalf("unexpected agent context envelope: %#v", body)
 	}
 
-	wantEligible := []bool{true, true, true, true, true, true, false}
-	wantRoles := []string{"user", "user", "user", "user", "assistant", "user", "assistant"}
+	wantEligible := []bool{true, true, true, true, true, true, true}
+	wantRoles := []string{"user", "user", "user", "user", "assistant", "user", "user"}
 	for i, message := range body.Messages {
 		if message["context_eligible"] != wantEligible[i] || message["context_role"] != wantRoles[i] {
 			t.Fatalf("message %d context=%#v, want eligible=%v role=%s", i, message, wantEligible[i], wantRoles[i])
@@ -562,11 +564,54 @@ func TestHandleGetMessagesBuildsAgentContextForGroupHistory(t *testing.T) {
 	if body.Messages[5]["context_reason"] != "other_agent_message" {
 		t.Fatalf("other Agent reply must remain identifiable group context: %#v", body.Messages[5])
 	}
+	if body.Messages[6]["context_reason"] != "sender_classification_failed" || body.Messages[6]["context_eligible"] != true {
+		t.Fatalf("durable message with degraded sender identity must remain context: %#v", body.Messages[6])
+	}
 	otherAgentMetadata := nestedMap(t, body.Messages[5], "metadata")
 	otherAgentIdentity := nestedMap(t, otherAgentMetadata, "catsco_identity")
 	otherAgentActor := nestedMap(t, otherAgentIdentity, "actor")
 	if otherAgentActor["account_type"] != string(types.AccountBot) || otherAgentActor["is_bot"] != true {
 		t.Fatalf("unexpected restored bot actor identity: %#v", otherAgentActor)
+	}
+}
+
+func TestHandleGetMessagesAgentContextSkipsNonDurableMessagesBeforePaging(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", AccountType: types.AccountHuman},
+			42: {ID: 42, Username: "dev_agent", AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{{GroupID: 80, UserID: 7}, {GroupID: 80, UserID: 42}},
+	}
+	for id := int64(1); id <= 207; id++ {
+		message := &types.Message{ID: id, TopicID: "grp_80", FromUID: 7, Content: fmt.Sprintf("durable-%d", id), MsgType: "text"}
+		if id > 3 {
+			message.Content = "internal progress"
+			message.ContentBlocks = []types.ContentBlock{{Type: "thinking", Thinking: "internal progress"}}
+		}
+		store.history = append(store.history, message)
+	}
+	handler := NewMessageHandler(store, NewHub(store, nil))
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=grp_80&agent_context=1&before_id=208&limit=2", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
+	rec := httptest.NewRecorder()
+	handler.HandleGetMessages(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("agent context status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Messages     []map[string]interface{} `json:"messages"`
+		HasMore      bool                     `json:"has_more"`
+		NextBeforeID float64                  `json:"next_before_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode agent context response: %v", err)
+	}
+	if !body.HasMore || body.NextBeforeID != 2 || len(body.Messages) != 2 {
+		t.Fatalf("non-durable messages must not consume the context page: %#v", body)
+	}
+	if body.Messages[0]["id"] != float64(2) || body.Messages[1]["id"] != float64(3) {
+		t.Fatalf("context page=%#v, want durable ids 2,3", body.Messages)
 	}
 }
 
