@@ -976,11 +976,11 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 		role = "assistant"
 		reason = "current_agent_message"
 	} else if sender := identityUsers[message.FromUID]; sender == nil {
-		eligible = false
 		reason = "sender_classification_failed"
 	} else if sender.AccountType == types.AccountBot {
-		role = "other_agent"
-		eligible = false
+		// A different Agent is another participant from the active Agent's
+		// point of view. Keep its stable identity metadata and restore the
+		// durable message as user context rather than assistant output.
 		reason = "other_agent_message"
 	}
 
@@ -989,11 +989,12 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 		agentID := formatUID(agentUID)
 		if containsString(mentions, structuredMentionAllBots) {
 			reason = "group_message_targets_all_agents"
-		} else if !containsString(mentions, agentID) {
-			eligible = false
-			reason = "group_message_targets_another_member"
-		} else {
+		} else if containsString(mentions, agentID) {
 			reason = "group_message_targets_agent"
+		} else {
+			// Mentions select which Agent is activated; they do not filter the
+			// durable group history restored for an already active Agent.
+			reason = "group_message_targets_another_member"
 		}
 	}
 

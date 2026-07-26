@@ -546,15 +546,21 @@ func TestHandleGetMessagesBuildsAgentContextForGroupHistory(t *testing.T) {
 		t.Fatalf("unexpected agent context envelope: %#v", body)
 	}
 
-	wantEligible := []bool{true, false, true, true, true, false, false}
-	wantRoles := []string{"user", "user", "user", "user", "assistant", "other_agent", "assistant"}
+	wantEligible := []bool{true, true, true, true, true, true, false}
+	wantRoles := []string{"user", "user", "user", "user", "assistant", "user", "assistant"}
 	for i, message := range body.Messages {
 		if message["context_eligible"] != wantEligible[i] || message["context_role"] != wantRoles[i] {
 			t.Fatalf("message %d context=%#v, want eligible=%v role=%s", i, message, wantEligible[i], wantRoles[i])
 		}
 	}
+	if body.Messages[1]["context_reason"] != "group_message_targets_another_member" {
+		t.Fatalf("message targeting another Agent must remain ordinary group context: %#v", body.Messages[1])
+	}
 	if body.Messages[3]["context_reason"] != "group_message_targets_all_agents" {
 		t.Fatalf("all-bots context reason=%#v", body.Messages[3]["context_reason"])
+	}
+	if body.Messages[5]["context_reason"] != "other_agent_message" {
+		t.Fatalf("other Agent reply must remain identifiable group context: %#v", body.Messages[5])
 	}
 	otherAgentMetadata := nestedMap(t, body.Messages[5], "metadata")
 	otherAgentIdentity := nestedMap(t, otherAgentMetadata, "catsco_identity")
