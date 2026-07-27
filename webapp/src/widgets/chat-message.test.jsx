@@ -1012,8 +1012,8 @@ describe('ChatMessage rich file rendering', () => {
     const originalMatchMedia = window.matchMedia;
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
-      value: vi.fn(() => ({
-        matches: true,
+      value: vi.fn((query) => ({
+        matches: query === '(max-width: 1024px)',
         addEventListener: vi.fn(),
         removeEventListener: vi.fn(),
       })),
@@ -1080,6 +1080,61 @@ describe('ChatMessage rich file rendering', () => {
       expect(chatColumn.hasAttribute('inert')).toBe(false);
       expect(chatColumn.hasAttribute('aria-hidden')).toBe(false);
       expect(document.activeElement).toBe(opener);
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+    }
+  });
+
+  it('dismisses the mobile file preview immediately when reduced motion is requested', async () => {
+    const originalMatchMedia = window.matchMedia;
+    const matchMedia = vi.fn((query) => ({
+      matches: query === '(max-width: 1024px)' || query === '(prefers-reduced-motion: reduce)',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: matchMedia,
+    });
+
+    try {
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{
+              id: 43,
+              from_uid: 2,
+              content: '[文件] reduced-motion-report.pdf',
+              content_blocks: [{
+                type: 'file',
+                payload: {
+                  name: 'reduced-motion-report.pdf',
+                  url: '/uploads/files/reduced-motion-report.pdf',
+                  size: 2048,
+                  mime_type: 'application/pdf',
+                },
+              }],
+              created_at: '2026-06-09T00:00:00Z',
+            }}
+          />,
+        );
+        await flushAsync();
+      });
+
+      await act(async () => {
+        Simulate.click(container.querySelector('.v3-artifact-main'));
+        await flushAsync();
+      });
+      const handle = container.querySelector('.v3-file-preview-drag-handle');
+      expect(handle).not.toBeNull();
+
+      await act(async () => {
+        Simulate.keyDown(handle, { key: 'Enter' });
+        await Promise.resolve();
+      });
+
+      expect(matchMedia).toHaveBeenCalledWith('(prefers-reduced-motion: reduce)');
+      expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
     } finally {
       Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
     }

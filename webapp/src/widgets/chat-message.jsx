@@ -1437,6 +1437,10 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
 
   const startDismiss = () => {
     if (isDismissing) return;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      finishDismiss();
+      return;
+    }
     setIsDismissing(true);
     setDragOffset(Math.max(window.innerHeight || 800, dragStateRef.current.offset));
     dismissTimerRef.current = window.setTimeout(finishDismiss, 500);

@@ -2173,6 +2173,12 @@ select:disabled {
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .v3-file-preview-backdrop,
+    .v3-file-preview-panel,
+    .v3-file-preview-panel.is-dismissing {
+      transition: none;
+    }
+
     .v3-file-preview-panel {
       animation: none;
     }

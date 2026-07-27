@@ -728,4 +728,13 @@ describe('CatsCo shell styling', () => {
     expect(css).not.toContain('min-height: 380px;');
   });
 
+  it('removes file preview sheet dismissal transitions for reduced motion', () => {
+    expect(css).toContain(`@media (prefers-reduced-motion: reduce) {
+    .v3-file-preview-backdrop,
+    .v3-file-preview-panel,
+    .v3-file-preview-panel.is-dismissing {
+      transition: none;
+    }`);
+  });
+
 });
