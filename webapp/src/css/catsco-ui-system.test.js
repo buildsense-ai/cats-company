@@ -719,4 +719,22 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.cc-agent-role-chevron')).toContain('top: 50%;');
     expect(ruleFor('.cc-agent-role-chevron')).toContain('transform: translateY(-50%);');
   });
+
+  it('uses the existing narrow preview breakpoint and keeps the file preview sheet inside short viewports', () => {
+    expect(css).toContain('@media (max-width: 1024px) {');
+    expect(css).not.toContain('@container catsco-main (max-width: 719px)');
+    expect(css).toContain('grid-template-rows: minmax(0, 1fr);');
+    expect(css).toContain('height: min(68svh, 620px, calc(100svh - max(76px, env(safe-area-inset-top)) - max(10px, env(safe-area-inset-bottom))));');
+    expect(css).not.toContain('min-height: 380px;');
+  });
+
+  it('removes file preview sheet dismissal transitions for reduced motion', () => {
+    expect(css).toContain(`@media (prefers-reduced-motion: reduce) {
+    .v3-file-preview-backdrop,
+    .v3-file-preview-panel,
+    .v3-file-preview-panel.is-dismissing {
+      transition: none;
+    }`);
+  });
+
 });

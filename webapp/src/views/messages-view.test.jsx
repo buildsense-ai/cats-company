@@ -58,8 +58,15 @@ vi.mock('../widgets/chat-message', () => ({
       </div>
     );
   },
-  FilePreviewPanel: function MockFilePreviewPanel({ file }) {
-    return <aside className="mock-file-preview">{file?.name || 'preview'}</aside>;
+  FilePreviewPanel: function MockFilePreviewPanel({ file, backgroundRef }) {
+    return (
+      <aside
+        className="mock-file-preview"
+        data-background-class={backgroundRef?.current?.className || ''}
+      >
+        {file?.name || 'preview'}
+      </aside>
+    );
   },
 }));
 
@@ -1256,7 +1263,9 @@ describe('MessagesView composer draft isolation', () => {
 
     const workspace = container.querySelector('.v3-message-workspace');
     const handle = container.querySelector('.v3-preview-resize-handle');
+    const preview = container.querySelector('.mock-file-preview');
     expect(workspace.className).toContain('has-preview');
+    expect(preview.getAttribute('data-background-class')).toContain('v3-chat-column');
     expect(handle).not.toBeNull();
 
     await act(async () => {

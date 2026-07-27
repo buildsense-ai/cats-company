@@ -225,6 +225,7 @@ export default function MessagesView({
     return saved === null ? true : saved === 'true';
   });
   const bottomRef = useRef(null);
+  const chatColumnRef = useRef(null);
   const lastTypingSent = useRef(0);
   const peerTypingTimer = useRef(null);
   const liveWorkingTimer = useRef(null);
@@ -1891,7 +1892,7 @@ export default function MessagesView({
         className={`v3-message-workspace${previewFile ? ' has-preview' : ''}`}
         style={previewFile ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
       >
-        <div className="v3-chat-column">
+        <div ref={chatColumnRef} className="v3-chat-column">
           <div
             className={`v3-timeline${isDragActive ? ' is-drag-active' : ''}`}
             ref={timelineRef}
@@ -2245,7 +2246,7 @@ export default function MessagesView({
               onKeyDown={handlePreviewResizeKeyDown}
               title="拖动调整预览宽度"
             />
-            <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} />
+            <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} backgroundRef={chatColumnRef} />
           </div>
         )}
       </div>
