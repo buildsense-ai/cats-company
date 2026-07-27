@@ -51,6 +51,31 @@ func TestHandleUploadAllowsHTMLAsFileAttachment(t *testing.T) {
 	}
 }
 
+func TestHandleUploadAllowsWebMVideoAttachment(t *testing.T) {
+	handler := NewUploadHandler(t.TempDir(), "/uploads")
+	req := buildUploadRequest(t, "/api/upload?type=file", "demo.webm", []byte("webm video bytes"))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUpload(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		FileKey  string `json:"file_key"`
+		MimeType string `json:"mime_type"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.HasSuffix(body.FileKey, ".webm") {
+		t.Fatalf("file_key = %q, want .webm suffix", body.FileKey)
+	}
+	if body.MimeType != "video/webm" {
+		t.Fatalf("mime_type = %q, want video/webm", body.MimeType)
+	}
+}
+
 func TestHandleServeFileAllowsGeneratedFeedbackImage(t *testing.T) {
 	dir := t.TempDir()
 	fileName := "20260428_0123456789abcdef0123456789abcdef.png"
@@ -153,6 +178,101 @@ func TestHandleServeFileServesPDFFilesInline(t *testing.T) {
 	}
 	if got := rec.Header().Get("Content-Disposition"); !strings.Contains(got, "inline") {
 		t.Fatalf("Content-Disposition = %q, want inline", got)
+	}
+}
+
+func TestHandleServeFileServesMP4FilesInlineWithRangeSupport(t *testing.T) {
+	dir := t.TempDir()
+	fileName := "20260727_0123456789abcdef0123456789abcdef.mp4"
+	fullPath := filepath.Join(dir, "files", fileName)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	videoBytes := []byte("0123456789abcdef")
+	if err := os.WriteFile(fullPath, videoBytes, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewUploadHandler(dir, "/uploads")
+	url := "/uploads/files/" + fileName
+
+	rec := httptest.NewRecorder()
+	handler.HandleServeFile(rec, httptest.NewRequest(http.MethodGet, url, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "video/mp4" {
+		t.Fatalf("Content-Type = %q, want video/mp4", got)
+	}
+	if got := rec.Header().Get("Content-Disposition"); !strings.Contains(got, "inline") {
+		t.Fatalf("Content-Disposition = %q, want inline", got)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), videoBytes) {
+		t.Fatalf("body = %q, want %q", rec.Body.Bytes(), videoBytes)
+	}
+
+	rangeReq := httptest.NewRequest(http.MethodGet, url, nil)
+	rangeReq.Header.Set("Range", "bytes=0-3")
+	rangeRec := httptest.NewRecorder()
+	handler.HandleServeFile(rangeRec, rangeReq)
+	if rangeRec.Code != http.StatusPartialContent {
+		t.Fatalf("range status = %d, want %d", rangeRec.Code, http.StatusPartialContent)
+	}
+	if got := rangeRec.Header().Get("Accept-Ranges"); got != "bytes" {
+		t.Fatalf("Accept-Ranges = %q, want bytes", got)
+	}
+	if got := rangeRec.Header().Get("Content-Range"); got != "bytes 0-3/16" {
+		t.Fatalf("Content-Range = %q, want bytes 0-3/16", got)
+	}
+	if got := rangeRec.Body.String(); got != "0123" {
+		t.Fatalf("range body = %q, want 0123", got)
+	}
+
+	downloadRec := httptest.NewRecorder()
+	handler.HandleServeFile(downloadRec, httptest.NewRequest(http.MethodGet, url+"?download=1", nil))
+	if got := downloadRec.Header().Get("Content-Disposition"); got != "attachment" {
+		t.Fatalf("download Content-Disposition = %q, want attachment", got)
+	}
+}
+
+func TestHandleServeFileServesBrowserVideoFormatsInline(t *testing.T) {
+	testCases := []struct {
+		ext      string
+		mimeType string
+	}{
+		{ext: ".webm", mimeType: "video/webm"},
+		{ext: ".ogg", mimeType: "video/ogg"},
+		{ext: ".ogv", mimeType: "video/ogg"},
+		{ext: ".m4v", mimeType: "video/mp4"},
+		{ext: ".mov", mimeType: "video/quicktime"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.ext, func(t *testing.T) {
+			dir := t.TempDir()
+			fileName := "20260727_0123456789abcdef0123456789abcdef" + tc.ext
+			fullPath := filepath.Join(dir, "files", fileName)
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(fullPath, []byte("video bytes"), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			handler := NewUploadHandler(dir, "/uploads")
+			rec := httptest.NewRecorder()
+			handler.HandleServeFile(rec, httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName, nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			if got := rec.Header().Get("Content-Type"); got != tc.mimeType {
+				t.Fatalf("Content-Type = %q, want %q", got, tc.mimeType)
+			}
+			if got := rec.Header().Get("Content-Disposition"); !strings.Contains(got, "inline") {
+				t.Fatalf("Content-Disposition = %q, want inline", got)
+			}
+		})
 	}
 }
 

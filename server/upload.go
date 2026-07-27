@@ -63,7 +63,8 @@ var allowedFileExts = map[string]bool{
 	".xls": true, ".xlsx": true, ".ppt": true, ".pptx": true,
 	".zip": true, ".rar": true, ".7z": true,
 	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
-	".mp3": true, ".mp4": true, ".wav": true,
+	".mp3": true, ".mp4": true, ".webm": true, ".ogg": true, ".ogv": true,
+	".m4v": true, ".mov": true, ".wav": true,
 	".csv": true, ".json": true, ".xml": true,
 	".html": true, ".htm": true,
 	".md": true, ".go": true, ".py": true, ".js": true,
@@ -468,6 +469,9 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 	if subDir == "files" {
 		forceDownload := r.URL.Query().Get("download") == "1"
 		w.Header().Set("Content-Disposition", contentDispositionForUploadFile(fileName, ext, forceDownload))
+		if videoMime, ok := inlineVideoMimeType(ext); ok {
+			w.Header().Set("Content-Type", videoMime)
+		}
 	}
 	http.ServeFile(w, r, fullPath)
 }
@@ -484,13 +488,37 @@ func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) s
 		return "attachment"
 	}
 	disposition := "attachment"
-	if strings.EqualFold(ext, ".pdf") {
+	if strings.EqualFold(ext, ".pdf") || isInlineVideoExt(ext) {
 		disposition = "inline"
 	}
 	return fmt.Sprintf("%s; filename=%q", disposition, fileName)
 }
 
+func isInlineVideoExt(ext string) bool {
+	_, ok := inlineVideoMimeType(ext)
+	return ok
+}
+
+func inlineVideoMimeType(ext string) (string, bool) {
+	switch strings.ToLower(ext) {
+	case ".mp4", ".m4v":
+		return "video/mp4", true
+	case ".webm":
+		return "video/webm", true
+	case ".ogg", ".ogv":
+		return "video/ogg", true
+	case ".mov":
+		return "video/quicktime", true
+	default:
+		return "", false
+	}
+}
+
 func normalizedUploadMimeType(ext, headerType string) string {
+	if videoMime, ok := inlineVideoMimeType(ext); ok {
+		return videoMime
+	}
+
 	switch strings.ToLower(ext) {
 	case ".md":
 		return "text/markdown"
