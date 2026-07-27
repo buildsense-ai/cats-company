@@ -1626,7 +1626,7 @@ export default function ChatListView({
         ? '删除后无法在任务列表中继续访问该任务。'
         : '此操作只影响当前浏览器，不会删除历史消息。',
       confirmLabel: actionLabel,
-      tone: onDeleteHistoryTask ? 'danger' : 'default',
+      tone: 'danger',
     });
     if (!confirmed) return;
 

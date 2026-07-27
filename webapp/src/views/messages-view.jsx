@@ -11,6 +11,7 @@ import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, infer
 
 const PAGE_SIZE = 50;
 const HISTORY_CACHE_MAX_TOPICS = 12;
+const QUESTION_HISTORY_PAGE_SIZE = 500;
 const STRUCTURED_MENTION_ALL = 'all';
 const TYPING_TIMEOUT_MS = 10000;
 const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
@@ -174,6 +175,7 @@ export default function MessagesView({
   topicName,
   user,
   isGroup,
+  isExclusiveAgentTask = false,
   groupId,
   topicAvatarUrl,
   localAssistantStatus = 'connected',
@@ -220,6 +222,7 @@ export default function MessagesView({
   const [availableAgents, setAvailableAgents] = useState([]);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [activeQuestionKey, setActiveQuestionKey] = useState('');
+  const [questionHistoryMessages, setQuestionHistoryMessages] = useState([]);
   const [showThinking, setShowThinking] = useState(() => {
     const saved = localStorage.getItem('cc_show_thinking');
     return saved === null ? true : saved === 'true';
@@ -249,6 +252,10 @@ export default function MessagesView({
   const hasMoreHistoryRef = useRef(false);
   const loadingOlderRef = useRef(false);
   const activeTopicRef = useRef(topic);
+  const questionHistoryMessagesRef = useRef([]);
+  const questionHistoryRawCountRef = useRef(0);
+  const questionHistoryCompleteRef = useRef(false);
+  const questionHistoryRequestRef = useRef(0);
   const composerDraftsRef = useRef(new Map());
   const structuredMentionDraftsRef = useRef(new Map());
   const attachmentDraftsRef = useRef(new Map());
@@ -431,6 +438,7 @@ export default function MessagesView({
   }, []);
 
   useEffect(() => () => {
+    questionHistoryRequestRef.current += 1;
     if (runtimePlanClearTimer.current) {
       clearTimeout(runtimePlanClearTimer.current);
     }
@@ -471,9 +479,14 @@ export default function MessagesView({
     hasMoreHistoryRef.current = Boolean(cachedHistory?.hasMore);
     previousScrollRef.current = null;
     loadingOlderRef.current = false;
+    questionHistoryRequestRef.current += 1;
+    questionHistoryMessagesRef.current = [];
+    questionHistoryRawCountRef.current = 0;
+    questionHistoryCompleteRef.current = false;
     stickToBottomRef.current = true;
     setHasMoreHistory(Boolean(cachedHistory?.hasMore));
     setLoadingOlder(false);
+    setQuestionHistoryMessages([]);
     setIsStopRequested(false);
     setSuppressedWorkingKey('');
     setLiveWorkingKey('');
@@ -717,7 +730,64 @@ export default function MessagesView({
     }
   }, [messages, runtimePlan, peerTyping]);
 
+  const loadQuestionNavigationHistory = async (
+    targetTopic,
+    firstRawMessages,
+    firstVisibleMessages,
+    requestId,
+    firstHasMore,
+    firstBeforeId,
+  ) => {
+    let rawBatch = firstRawMessages;
+    let offset = rawBatch.length;
+    let beforeId = Number(firstBeforeId) || oldestHistoryMessageID(rawBatch);
+    let completeMessages = firstVisibleMessages;
+    let shouldLoadMore = typeof firstHasMore === 'boolean'
+      ? firstHasMore
+      : rawBatch.length === PAGE_SIZE;
+
+    questionHistoryMessagesRef.current = completeMessages;
+    questionHistoryRawCountRef.current = offset;
+    setQuestionHistoryMessages(completeMessages);
+
+    try {
+      while (shouldLoadMore) {
+        const res = await api.getMessages(
+          targetTopic,
+          QUESTION_HISTORY_PAGE_SIZE,
+          offset,
+          true,
+          beforeId,
+        );
+        if (
+          activeTopicRef.current !== targetTopic
+          || questionHistoryRequestRef.current !== requestId
+        ) {
+          return;
+        }
+        rawBatch = Array.isArray(res.messages) ? res.messages : [];
+        const { visibleMessages } = normalizeHistoryMessages(rawBatch);
+        completeMessages = mergeMessages(visibleMessages, completeMessages);
+        offset += rawBatch.length;
+        beforeId = Number(res.next_before_id) || oldestHistoryMessageID(rawBatch);
+        questionHistoryMessagesRef.current = completeMessages;
+        questionHistoryRawCountRef.current = offset;
+        shouldLoadMore = rawBatch.length > 0 && (
+          typeof res.has_more === 'boolean'
+            ? res.has_more
+            : rawBatch.length === QUESTION_HISTORY_PAGE_SIZE
+        );
+      }
+      questionHistoryCompleteRef.current = true;
+      setQuestionHistoryMessages(completeMessages);
+    } catch (e) {
+      // Keep the pages already indexed. Ordinary scroll pagination remains available.
+      setQuestionHistoryMessages(completeMessages);
+    }
+  };
+
   const loadHistory = async (targetTopic = topic) => {
+    const questionRequestId = questionHistoryRequestRef.current;
     const requestID = ++historyRequestRef.current;
     const cacheKey = historyCacheKey(user.uid, targetTopic);
     const hasCachedHistory = historyCacheRef.current.has(cacheKey);
@@ -760,6 +830,14 @@ export default function MessagesView({
         nextBeforeID,
         hasMore,
       });
+      void loadQuestionNavigationHistory(
+        targetTopic,
+        rawMessages,
+        visibleMessages,
+        questionRequestId,
+        hasMore,
+        nextBeforeID,
+      );
     } catch (e) {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
         setHistoryError('聊天记录加载失败，请检查网络后重试。');
@@ -801,6 +879,11 @@ export default function MessagesView({
       const rawMessages = res.messages || [];
       const { visibleMessages } = normalizeHistoryMessages(rawMessages);
       setMessages((prev) => mergeMessages(visibleMessages, prev));
+      setQuestionHistoryMessages((prev) => {
+        const next = mergeMessages(visibleMessages, prev);
+        questionHistoryMessagesRef.current = next;
+        return next;
+      });
       historyOffsetRef.current += rawMessages.length;
       historyBeforeIDRef.current = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
       const hasMore = typeof res.has_more === 'boolean'
@@ -833,6 +916,27 @@ export default function MessagesView({
   const workingState = useMemo(() => {
     let lastWorkingIndex = -1;
     let lastBotTextIndex = -1;
+    const groupBotUIDs = new Set([
+      ...members
+        .filter((member) => member?.is_bot || member?.account_type === 'bot')
+        .map((member) => Number(member.user_id)),
+      ...availableAgents
+        .map((agent) => Number(agent.uid || agent.id)),
+    ].filter((uid) => Number.isFinite(uid) && uid > 0));
+    const currentUserUID = Number(user.uid);
+    const groupMemberUIDs = new Set(
+      members
+        .map((member) => Number(member?.user_id))
+        .filter((uid) => Number.isFinite(uid) && uid > 0),
+    );
+    const exclusiveToCurrentUser = isGroup
+      && Number.isFinite(currentUserUID)
+      && currentUserUID > 0
+      && groupMemberUIDs.size === 2
+      && groupMemberUIDs.has(currentUserUID)
+      && Array.from(groupMemberUIDs).some(
+        (uid) => uid !== currentUserUID && groupBotUIDs.has(uid),
+      );
 
     messages.forEach((message, index) => {
       if (message.from_uid === user.uid) return;
@@ -850,11 +954,22 @@ export default function MessagesView({
     return {
       active,
       key: active ? workingMessageKey(messages[lastWorkingIndex], lastWorkingIndex) : '',
+      initiatorUid: active && isGroup
+        ? resolveWorkingInitiatorUid(messages, lastWorkingIndex, groupBotUIDs)
+        : Number(user.uid),
+      exclusiveToCurrentUser,
     };
-  }, [messages, user.uid]);
+  }, [availableAgents, isGroup, members, messages, user.uid]);
   const activeBotWorking = workingState.active
     && (peerTyping || workingState.key === liveWorkingKey)
     && workingState.key !== suppressedWorkingKey;
+  const canStopActiveBotWorking = activeBotWorking
+    && (
+      !isGroup
+      || isExclusiveAgentTask
+      || workingState.exclusiveToCurrentUser
+      || workingState.initiatorUid === Number(user.uid)
+    );
 
   useEffect(() => {
     if (!activeBotWorking) {
@@ -1083,7 +1198,7 @@ export default function MessagesView({
   }, [clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
-    if (!activeBotWorking || isStopRequested) return;
+    if (!canStopActiveBotWorking || isStopRequested) return;
     setIsStopRequested(true);
     try {
       await wsSendStreamCancel(topic);
@@ -1096,7 +1211,7 @@ export default function MessagesView({
     } catch (err) {
       setIsStopRequested(false);
     }
-  }, [activeBotWorking, clearLiveWorking, clearRuntimePlan, isStopRequested, topic, workingState.key]);
+  }, [canStopActiveBotWorking, clearLiveWorking, clearRuntimePlan, isStopRequested, topic, workingState.key]);
 
   const handleRegenerateMessage = useCallback(async (message) => {
     if (sendInFlightRef.current) {
@@ -1558,6 +1673,16 @@ export default function MessagesView({
     );
     return memberUIDs.size === 2 && memberUIDs.has(Number(user.uid));
   }, [isGroup, members, user.uid]);
+  const isOneUserOneAgentGroup = useMemo(() => {
+    if (!isTwoPersonGroupWithCurrentUser) return false;
+    const peerMember = members.find((member) => Number(member?.user_id) !== Number(user.uid));
+    if (!peerMember) return false;
+    return Boolean(
+      peerMember.is_bot
+      || peerMember.account_type === 'bot'
+      || availableAgentUIDs.has(Number(peerMember.user_id)),
+    );
+  }, [availableAgentUIDs, isTwoPersonGroupWithCurrentUser, members, user.uid]);
   const supportsTutorialTasks = isGroup
     ? Boolean(
       isAgentTask
@@ -1565,6 +1690,13 @@ export default function MessagesView({
       || members.some((member) => member?.is_bot),
     )
     : peerIsBot;
+  const composerPlaceholder = isGroup
+    ? (
+      isOneUserOneAgentGroup
+        ? '输入指令，我帮您完成'
+        : (supportsTutorialTasks ? '输入消息，@机器人即可回复' : '输入消息')
+    )
+    : (peerIsBot ? '输入指令，我帮您完成' : '输入消息');
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const canRegenerateAssistantMessages = !isGroup || isAgentTask;
@@ -1798,14 +1930,20 @@ export default function MessagesView({
     }, 0);
   }, [resizeComposerInput, topic, updateComposerDraft, updateStructuredMentionDraft]);
 
-  const questionNavigationItems = useMemo(() => groupedMessages.reduce((items, group, index) => {
-    if (group.type !== 'text' || group.message?.from_uid !== user.uid) return items;
+  const questionNavigationMessages = useMemo(
+    () => mergeMessages(questionHistoryMessages, messages),
+    [messages, questionHistoryMessages],
+  );
+
+  const questionNavigationItems = useMemo(() => questionNavigationMessages.reduce((items, message, index) => {
+    const type = message?.type || message?.msg_type || '';
+    if (type !== 'text' || message?.from_uid !== user.uid || isWorkingMessage(message)) return items;
     items.push({
-      key: questionNavigationKey(group.message, index),
-      label: questionNavigationLabel(group.message),
+      key: questionNavigationKey(message, index),
+      label: questionNavigationLabel(message),
     });
     return items;
-  }, []), [groupedMessages, user.uid]);
+  }, []), [questionNavigationMessages, user.uid]);
 
   const clearPendingQuestionJump = useCallback(() => {
     pendingQuestionJumpRef.current = '';
@@ -1848,9 +1986,9 @@ export default function MessagesView({
   }, []);
 
   React.useLayoutEffect(() => {
-    clearPendingQuestionJump();
+    if (pendingQuestionJumpRef.current) return;
     syncActiveQuestion();
-  }, [clearPendingQuestionJump, questionNavigationItems, syncActiveQuestion]);
+  }, [questionNavigationItems, syncActiveQuestion]);
 
   useEffect(() => () => {
     if (questionJumpReleaseTimerRef.current) {
@@ -1863,13 +2001,43 @@ export default function MessagesView({
     if (!timeline) return;
     const target = Array.from(timeline.querySelectorAll('[data-conversation-question]'))
       .find((anchor) => anchor.dataset.conversationQuestion === questionKey);
-    if (!target) return;
     clearPendingQuestionJump();
     pendingQuestionJumpRef.current = questionKey;
-    scheduleQuestionJumpRelease();
     setActiveQuestionKey(questionKey);
-    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (target) {
+      scheduleQuestionJumpRelease();
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+
+    const archivedQuestion = questionHistoryMessagesRef.current.some(
+      (message, index) => questionNavigationKey(message, index) === questionKey,
+    );
+    if (!archivedQuestion) {
+      clearPendingQuestionJump();
+      return;
+    }
+
+    stickToBottomRef.current = false;
+    previousScrollRef.current = null;
+    setMessages((prev) => mergeMessages(questionHistoryMessagesRef.current, prev));
+    if (questionHistoryCompleteRef.current) {
+      historyOffsetRef.current = questionHistoryRawCountRef.current;
+      hasMoreHistoryRef.current = false;
+      setHasMoreHistory(false);
+    }
   }, [clearPendingQuestionJump, scheduleQuestionJumpRelease]);
+
+  React.useLayoutEffect(() => {
+    const questionKey = pendingQuestionJumpRef.current;
+    const timeline = timelineRef.current;
+    if (!questionKey || !timeline) return;
+    const target = Array.from(timeline.querySelectorAll('[data-conversation-question]'))
+      .find((anchor) => anchor.dataset.conversationQuestion === questionKey);
+    if (!target) return;
+    scheduleQuestionJumpRelease();
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [messages, scheduleQuestionJumpRelease]);
 
   const handleTimelineScroll = (e) => {
     const el = e.target;
@@ -2093,7 +2261,7 @@ export default function MessagesView({
         }}
         textareaRef={textareaRef}
         value={input}
-        placeholder="输入指令，我帮您完成"
+        placeholder={composerPlaceholder}
         disabled={isSendingMessage}
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
@@ -2121,7 +2289,7 @@ export default function MessagesView({
         )}
         onSend={handleSend}
         sendDisabled={isSendingMessage || isUploadingAttachment || (!input.trim() && pendingAttachments.length === 0)}
-        stop={activeBotWorking && !input.trim() && pendingAttachments.length === 0}
+        stop={canStopActiveBotWorking && !input.trim() && pendingAttachments.length === 0}
         stopDisabled={isStopRequested}
         onStop={handleStopGeneration}
         onCloseMenus={() => {
@@ -2173,7 +2341,9 @@ export default function MessagesView({
           <>
             {activeBotWorking && (
               <div className="v3-live-input-status" role="status">
-                {isStopRequested ? '已请求 CatsCo 停止当前工作。' : 'CatsCo 正在处理，可点击红色按钮停止。'}
+                {canStopActiveBotWorking
+                  ? (isStopRequested ? '已请求 CatsCo 停止当前工作。' : 'CatsCo 正在处理，可点击红色按钮停止。')
+                  : 'CatsCo 正在回复其他成员。'}
               </div>
             )}
             {(attachmentStatus?.message || isUploadingAttachment || pendingAttachments.length > 0) && (
@@ -2724,6 +2894,46 @@ function isWorkingMessage(message) {
   if (WORKING_MESSAGE_TYPES.has(message?.type)) return true;
   if (isWorkingTextMessage(message)) return true;
   return Boolean(inferWorkingTypeFromBlocks(message?.content_blocks));
+}
+
+function resolveWorkingInitiatorUid(messages, workingIndex, botUIDs) {
+  const workingMessage = messages[workingIndex];
+  const replyTo = Number(workingMessage?.reply_to || 0);
+  if (replyTo > 0) {
+    const repliedMessage = messages.find((message) => Number(message?.id || message?.seq_id) === replyTo);
+    const repliedUID = Number(repliedMessage?.from_uid);
+    if (
+      repliedMessage
+      && isFinalTextMessage(repliedMessage)
+      && Number.isFinite(repliedUID)
+      && repliedUID > 0
+      && !botUIDs.has(repliedUID)
+      && !isAssistantAuthoredMessage(repliedMessage)
+    ) {
+      return repliedUID;
+    }
+  }
+
+  const metadata = workingMessage?.metadata || {};
+  const metadataUID = Number(
+    metadata.initiator_uid
+    ?? metadata.requester_uid
+    ?? metadata.trigger_uid
+    ?? 0,
+  );
+  if (Number.isFinite(metadataUID) && metadataUID > 0 && !botUIDs.has(metadataUID)) {
+    return metadataUID;
+  }
+
+  for (let index = workingIndex - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!isFinalTextMessage(message)) continue;
+    const senderUID = Number(message?.from_uid);
+    if (!Number.isFinite(senderUID) || senderUID <= 0) continue;
+    if (botUIDs.has(senderUID) || isAssistantAuthoredMessage(message)) continue;
+    return senderUID;
+  }
+  return 0;
 }
 
 function workingMessageKey(message) {

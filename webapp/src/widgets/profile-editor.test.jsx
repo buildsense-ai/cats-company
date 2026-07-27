@@ -42,13 +42,13 @@ describe('ProfileEditor appearance settings', () => {
     });
   }
 
-  it('shows three explicit themes and selects an available theme', async () => {
+  it('shows four explicit themes and selects an available theme', async () => {
     const onThemeChange = vi.fn();
     await renderEditor({ onThemeChange });
 
     const picker = container.querySelector('[role="radiogroup"][aria-label="界面主题"]');
     expect(picker).toBeTruthy();
-    expect(picker.querySelectorAll('[role="radio"]')).toHaveLength(3);
+    expect(picker.querySelectorAll('[role="radio"]')).toHaveLength(4);
     expect(container.querySelector('[aria-label="浅色主题"]').getAttribute('aria-checked')).toBe('true');
 
     await act(async () => Simulate.click(container.querySelector('[aria-label="深色主题"]')));
@@ -60,7 +60,7 @@ describe('ProfileEditor appearance settings', () => {
     const onUnlockLiquidTheme = vi.fn().mockResolvedValue({ ok: true });
     await renderEditor({ onThemeChange, onUnlockLiquidTheme });
 
-    await act(async () => Simulate.click(container.querySelector('[aria-label="液态主题，需要密码"]')));
+    await act(async () => Simulate.click(container.querySelector('[aria-label="液态浅色主题，需要密码"]')));
     expect(onThemeChange).not.toHaveBeenCalled();
     const passwordInput = container.querySelector('[aria-label="液态主题密码"]');
     expect(passwordInput).toBeTruthy();
@@ -73,7 +73,26 @@ describe('ProfileEditor appearance settings', () => {
       Simulate.submit(container.querySelector('.oc-liquid-unlock'));
       await Promise.resolve();
     });
-    expect(onUnlockLiquidTheme).toHaveBeenCalledWith('test-password');
+    expect(onUnlockLiquidTheme).toHaveBeenCalledWith('test-password', 'liquid');
+  });
+
+  it('unlocks directly into the selected green liquid variant', async () => {
+    const onUnlockLiquidTheme = vi.fn().mockResolvedValue({ ok: true });
+    await renderEditor({ onThemeChange: vi.fn(), onUnlockLiquidTheme });
+
+    await act(async () => Simulate.click(
+      container.querySelector('[aria-label="液态绿色主题，需要密码"]'),
+    ));
+    const passwordInput = container.querySelector('[aria-label="液态主题密码"]');
+    await act(async () => {
+      Simulate.change(passwordInput, { target: { value: 'test-password' } });
+    });
+    await act(async () => {
+      Simulate.submit(container.querySelector('.oc-liquid-unlock'));
+      await Promise.resolve();
+    });
+
+    expect(onUnlockLiquidTheme).toHaveBeenCalledWith('test-password', 'liquid-green');
   });
 
   it('allows an entitled account to select the liquid theme directly', async () => {
@@ -84,9 +103,14 @@ describe('ProfileEditor appearance settings', () => {
       liquidThemeAccess: { loading: false, unlocked: true },
     });
 
-    const liquid = container.querySelector('[aria-label="液态主题"]');
+    const liquid = container.querySelector('[aria-label="液态浅色主题"]');
     expect(liquid).toBeTruthy();
     await act(async () => Simulate.click(liquid));
     expect(onThemeChange).toHaveBeenCalledWith('liquid');
+
+    const greenLiquid = container.querySelector('[aria-label="液态绿色主题"]');
+    expect(greenLiquid).toBeTruthy();
+    await act(async () => Simulate.click(greenLiquid));
+    expect(onThemeChange).toHaveBeenCalledWith('liquid-green');
   });
 });

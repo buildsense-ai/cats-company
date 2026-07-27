@@ -52,6 +52,7 @@ import { createAgentTaskTopicRecord } from '../utils/agent-task-topic';
 import { formatEmptyTaskGreeting } from '../utils/empty-task-greeting';
 import {
   THEME_STORAGE_KEY,
+  isLiquidTheme,
   isLiquidThemeUnlocked,
   normalizeTheme,
   saveLiquidThemeUnlock,
@@ -60,6 +61,7 @@ import {
 import { Cloud, Download, Frown, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
+import '../css/catsco-liquid-green.css';
 
 const TABS = {
   CHATS: 'chats'
@@ -73,7 +75,7 @@ const DEV_PREVIEW_PASSWORD = import.meta.env.VITE_DEV_PREVIEW_PASSWORD || 'demo1
 const requestedThemePreview = import.meta.env.DEV
   ? new URLSearchParams(window.location.search).get('theme_preview')
   : '';
-const DEV_THEME_PREVIEW = ['light', 'dark', 'liquid'].includes(requestedThemePreview)
+const DEV_THEME_PREVIEW = ['light', 'dark', 'liquid', 'liquid-green'].includes(requestedThemePreview)
   ? requestedThemePreview
   : '';
 const DEV_PREVIEW_USER = {
@@ -98,21 +100,43 @@ function normalizeUserProfile(raw) {
   };
 }
 
+export function resolveInitialUser({
+  themePreview = '',
+  previewEnabled = false,
+  token = '',
+  savedUser = null,
+} = {}) {
+  const authenticatedUser = token ? normalizeUserProfile(savedUser) : null;
+  if (authenticatedUser) return authenticatedUser;
+  if (themePreview) return { ...DEV_PREVIEW_USER, uid: 'theme-preview' };
+  if (previewEnabled || !token) return null;
+  return null;
+}
+
+export function isExclusiveAgentTaskTopic(topic) {
+  return Boolean(
+    topic?.isGroup
+    && (topic.hasBot || topic.isAgentTask)
+    && Number(topic.memberCount) === 2
+  );
+}
+
 function getInitialUser() {
-  if (DEV_THEME_PREVIEW) return { ...DEV_PREVIEW_USER, uid: 'theme-preview' };
-  if (DEV_PREVIEW_ENABLED) return null;
-
   const token = getToken();
-  if (!token) return null;
-
+  let savedUser = null;
   try {
-    const saved = localStorage.getItem('oc_user');
-    return saved ? normalizeUserProfile(JSON.parse(saved)) : null;
+    const saved = token ? localStorage.getItem('oc_user') : '';
+    savedUser = saved ? JSON.parse(saved) : null;
   } catch (error) {
     console.warn('Failed to restore saved user from localStorage:', error);
     localStorage.removeItem('oc_user');
-    return null;
   }
+  return resolveInitialUser({
+    themePreview: DEV_THEME_PREVIEW,
+    previewEnabled: DEV_PREVIEW_ENABLED,
+    token,
+    savedUser,
+  });
 }
 
 function loadAppSidebarCollapsed() {
@@ -200,7 +224,7 @@ function TinodeWebApp() {
   const [theme, setTheme] = useState(() => DEV_THEME_PREVIEW || normalizeTheme(localStorage.getItem(THEME_STORAGE_KEY)));
   const [liquidThemeAccess, setLiquidThemeAccess] = useState(() => ({
     loading: false,
-    unlocked: DEV_THEME_PREVIEW === 'liquid' || isLiquidThemeUnlocked(),
+    unlocked: isLiquidTheme(DEV_THEME_PREVIEW) || isLiquidThemeUnlocked(),
   }));
   const [currentModelName, setCurrentModelName] = useState(DEFAULT_MODEL_NAME);
   const [activeAgentModel, setActiveAgentModel] = useState(null);
@@ -244,35 +268,42 @@ function TinodeWebApp() {
   }, []);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
+    const greenLiquid = theme === 'liquid-green';
+    document.documentElement.dataset.theme = greenLiquid ? 'liquid' : theme;
+    if (greenLiquid) {
+      document.documentElement.dataset.liquidVariant = 'green';
+    } else {
+      delete document.documentElement.dataset.liquidVariant;
+    }
     localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
   useEffect(() => {
     if (DEV_THEME_PREVIEW) {
-      setLiquidThemeAccess({ loading: false, unlocked: DEV_THEME_PREVIEW === 'liquid' });
+      setLiquidThemeAccess({ loading: false, unlocked: isLiquidTheme(DEV_THEME_PREVIEW) });
       setTheme(DEV_THEME_PREVIEW);
       return;
     }
 
     const unlocked = isLiquidThemeUnlocked();
     setLiquidThemeAccess({ loading: false, unlocked });
-    if (!unlocked) setTheme((current) => current === 'liquid' ? 'light' : current);
+    if (!unlocked) setTheme((current) => isLiquidTheme(current) ? 'light' : current);
   }, []);
 
   const selectTheme = useCallback((nextTheme) => {
     const normalized = normalizeTheme(nextTheme);
-    if (normalized === 'liquid' && !liquidThemeAccess.unlocked) return false;
+    if (isLiquidTheme(normalized) && !liquidThemeAccess.unlocked) return false;
     setTheme(normalized);
     return true;
   }, [liquidThemeAccess.unlocked]);
 
-  const unlockLiquidTheme = useCallback(async (password) => {
+  const unlockLiquidTheme = useCallback(async (password, requestedTheme = 'liquid') => {
     const unlocked = await verifyLiquidThemePassword(password);
     if (!unlocked) throw new Error('密码不正确。');
     saveLiquidThemeUnlock();
     setLiquidThemeAccess({ loading: false, unlocked: true });
-    setTheme('liquid');
+    const normalized = normalizeTheme(requestedTheme);
+    setTheme(isLiquidTheme(normalized) ? normalized : 'liquid');
     return { ok: true };
   }, []);
 
@@ -381,8 +412,9 @@ function TinodeWebApp() {
         });
         if (cancelled) return;
         setToken(session.token);
+        const profile = normalizeUserProfile(await api.getMe().catch(() => null));
         if (cancelled) return;
-        persistUser({
+        persistUser(profile || {
           ...DEV_PREVIEW_USER,
           uid: DEV_PREVIEW_UID,
         });
@@ -562,7 +594,7 @@ function TinodeWebApp() {
 
   useEffect(() => {
     if (!user?.uid) return;
-    if (DEV_PREVIEW_ENABLED || DEV_THEME_PREVIEW) return undefined;
+    if (!getToken()) return undefined;
 
     let cancelled = false;
     api.getMe()
@@ -972,6 +1004,7 @@ function TinodeWebApp() {
             topicName={activeTopic.name}
             user={user}
             isGroup={activeTopic.isGroup || (activeTopic.topicId && activeTopic.topicId.startsWith('grp_'))}
+            isExclusiveAgentTask={isExclusiveAgentTaskTopic(activeTopic)}
             groupId={activeTopic.groupId}
             topicAvatarUrl={activeTopic.avatar_url}
             localAssistantStatus={localAgentStatus}

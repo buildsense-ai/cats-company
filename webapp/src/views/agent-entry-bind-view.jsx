@@ -101,7 +101,7 @@ export default function AgentEntryBindView({ sceneKey }) {
           </div>
         ) : status ? (
           <div style={{ textAlign: 'center' }}>
-            <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(16,185,129,0.14)', color: 'var(--v3-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px', fontSize: 28 }}>✓</div>
+            <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'color-mix(in srgb, var(--v3-primary) 14%, transparent)', color: 'var(--v3-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px', fontSize: 28 }}>✓</div>
             <div style={{ color: 'var(--v3-text-name)', fontSize: 18, fontWeight: 700, marginBottom: 8 }}>绑定完成</div>
             <div style={{ color: 'var(--v3-text-muted)', fontSize: 14, lineHeight: 1.6 }}>{status}</div>
           </div>
