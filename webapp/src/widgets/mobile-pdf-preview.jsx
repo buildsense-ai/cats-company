@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
 
 const MIN_ZOOM = 0.5;
@@ -6,6 +6,8 @@ const MAX_ZOOM = 3;
 const ZOOM_STEP = 0.25;
 const MAX_CANVAS_PIXELS = 8_000_000;
 const MAX_CANVAS_DIMENSION = 8192;
+const MAX_LAYOUT_PIXELS = 8_000_000;
+const MAX_LAYOUT_DIMENSION = 8192;
 
 let pdfJsPromise;
 
@@ -18,6 +20,19 @@ function pointerDistance(points) {
   return Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
 }
 
+function boundedPageViewport(page, scale) {
+  const requestedViewport = page.getViewport({ scale });
+  const layoutPixelScale = Math.sqrt(
+    MAX_LAYOUT_PIXELS / Math.max(1, requestedViewport.width * requestedViewport.height),
+  );
+  const layoutDimensionScale = Math.min(
+    MAX_LAYOUT_DIMENSION / Math.max(1, requestedViewport.width),
+    MAX_LAYOUT_DIMENSION / Math.max(1, requestedViewport.height),
+  );
+  const boundedScale = Math.min(1, layoutPixelScale, layoutDimensionScale);
+  return boundedScale < 1 ? page.getViewport({ scale: scale * boundedScale }) : requestedViewport;
+}
+
 function canvasOutputScale(viewport) {
   const requestedScale = Math.min(window.devicePixelRatio || 1, 2);
   const pixelBudgetScale = Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, viewport.width * viewport.height));
@@ -28,7 +43,34 @@ function canvasOutputScale(viewport) {
   return Math.max(Number.EPSILON, Math.min(requestedScale, pixelBudgetScale, dimensionScale));
 }
 
-async function defaultLoadDocument(url, { signal } = {}) {
+function clearCanvas(canvas) {
+  if (!canvas) return;
+  canvas.width = 0;
+  canvas.height = 0;
+  canvas.style.width = '0px';
+  canvas.style.height = '0px';
+  canvas.style.transform = '';
+  canvas.style.transformOrigin = '';
+}
+
+function clearTextLayer(container) {
+  container?.replaceChildren?.();
+}
+
+function pageTextFromContent(textContent) {
+  if (!Array.isArray(textContent?.items)) return '';
+  return textContent.items
+    .map((item) => {
+      if (!item || typeof item.str !== 'string') return '';
+      return `${item.str}${item.hasEOL ? '\n' : ' '}`;
+    })
+    .join('')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+async function loadPdfJs() {
   if (!pdfJsPromise) {
     pdfJsPromise = Promise.all([
       import('pdfjs-dist/legacy/build/pdf.mjs'),
@@ -41,18 +83,29 @@ async function defaultLoadDocument(url, { signal } = {}) {
       throw error;
     });
   }
-  const pdfjs = await pdfJsPromise;
+  return pdfJsPromise;
+}
+
+async function defaultLoadDocument(url, { signal } = {}) {
+  const pdfjs = await loadPdfJs();
   if (signal?.aborted) return null;
-  return pdfjs.getDocument({ url, withCredentials: true });
+  return {
+    loadingTask: pdfjs.getDocument({ url, withCredentials: true }),
+    TextLayer: pdfjs.TextLayer,
+  };
 }
 
 export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocument }) {
   const canvasRef = useRef(null);
   const viewportRef = useRef(null);
+  const textLayerContainerRef = useRef(null);
   const renderTaskRef = useRef(null);
+  const textLayerTaskRef = useRef(null);
+  const textLayerConstructorRef = useRef(null);
   const pointersRef = useRef(new Map());
   const panRef = useRef(null);
   const pinchRef = useRef(null);
+  const hintId = useId();
   const [pdfDocument, setPdfDocument] = useState(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [pageCount, setPageCount] = useState(0);
@@ -62,32 +115,56 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
   const [renderState, setRenderState] = useState('idle');
   const [error, setError] = useState('');
 
+  function resetPointerInteraction() {
+    pointersRef.current.clear();
+    panRef.current = null;
+    pinchRef.current = null;
+    if (canvasRef.current) {
+      canvasRef.current.style.transform = '';
+      canvasRef.current.style.transformOrigin = '';
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
     let loadingTask = null;
     let loadedDocument = null;
     const loadController = new AbortController();
 
+    renderTaskRef.current?.cancel?.();
+    renderTaskRef.current = null;
+    textLayerTaskRef.current?.cancel?.();
+    textLayerTaskRef.current = null;
+    textLayerConstructorRef.current = null;
+    resetPointerInteraction();
+    clearCanvas(canvasRef.current);
+    clearTextLayer(textLayerContainerRef.current);
     setPdfDocument(null);
     setPageNumber(1);
     setPageCount(0);
     setZoom(1);
     setError('');
     setLoadState('loading');
+    setRenderState('idle');
 
     const loadPdf = async () => {
       try {
         const loadResult = await loadDocument(url, { signal: loadController.signal });
         if (!loadResult) return;
-        if (loadResult?.promise && typeof loadResult.promise.then === 'function') {
+        if (loadResult?.loadingTask) {
+          loadingTask = loadResult.loadingTask;
+          textLayerConstructorRef.current = loadResult.TextLayer || null;
+        } else if (loadResult?.promise && typeof loadResult.promise.then === 'function') {
           loadingTask = loadResult;
+        } else {
+          loadedDocument = loadResult;
+        }
+        if (loadingTask) {
           if (cancelled) {
             await loadingTask.destroy?.();
             return;
           }
           loadedDocument = await loadingTask.promise;
-        } else {
-          loadedDocument = loadResult;
         }
         if (cancelled) {
           if (loadingTask?.destroy) await loadingTask.destroy();
@@ -108,6 +185,8 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
     return () => {
       cancelled = true;
       loadController.abort();
+      renderTaskRef.current?.cancel?.();
+      textLayerTaskRef.current?.cancel?.();
       if (loadingTask?.destroy) loadingTask.destroy();
       else loadedDocument?.destroy?.();
     };
@@ -141,17 +220,20 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
         if (cancelled) return;
         const baseViewport = page.getViewport({ scale: 1 });
         const availableWidth = Math.max((viewportWidth || viewportRef.current?.clientWidth || 320) - 24, 240);
-        const fitScale = availableWidth / baseViewport.width;
-        const viewport = page.getViewport({ scale: fitScale * zoom });
+        const fitScale = availableWidth / Math.max(1, baseViewport.width);
+        const viewport = boundedPageViewport(page, fitScale * zoom);
         const outputScale = canvasOutputScale(viewport);
         const canvas = canvasRef.current;
         const context = canvas.getContext('2d', { alpha: false });
+        const textLayerContainer = textLayerContainerRef.current;
 
-        canvas.style.transform = '';
+        resetPointerInteraction();
+        textLayerTaskRef.current?.cancel?.();
+        clearTextLayer(textLayerContainer);
         canvas.width = Math.max(1, Math.floor(viewport.width * outputScale));
         canvas.height = Math.max(1, Math.floor(viewport.height * outputScale));
-        canvas.style.width = `${Math.floor(viewport.width)}px`;
-        canvas.style.height = `${Math.floor(viewport.height)}px`;
+        canvas.style.width = `${Math.max(1, Math.floor(viewport.width))}px`;
+        canvas.style.height = `${Math.max(1, Math.floor(viewport.height))}px`;
 
         renderTaskRef.current?.cancel?.();
         const renderTask = page.render({
@@ -160,7 +242,28 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
           transform: outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0],
         });
         renderTaskRef.current = renderTask;
-        await renderTask.promise;
+
+        const TextLayer = textLayerConstructorRef.current;
+        if (TextLayer && textLayerContainer && typeof page.streamTextContent === 'function') {
+          const textLayerTask = new TextLayer({
+            textContentSource: page.streamTextContent({ includeMarkedContent: true }),
+            container: textLayerContainer,
+            viewport,
+          });
+          textLayerTaskRef.current = textLayerTask;
+          await Promise.all([renderTask.promise, textLayerTask.render()]);
+        } else {
+          await renderTask.promise;
+          const textContent = await page.getTextContent?.({ includeMarkedContent: true });
+          if (!cancelled && textLayerContainer) {
+            const pageText = pageTextFromContent(textContent);
+            if (pageText) {
+              const paragraph = document.createElement('p');
+              paragraph.textContent = pageText;
+              textLayerContainer.replaceChildren(paragraph);
+            }
+          }
+        }
         if (!cancelled) setRenderState('ready');
       } catch (renderError) {
         if (cancelled || renderError?.name === 'RenderingCancelledException') return;
@@ -174,6 +277,8 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
       cancelled = true;
       renderTaskRef.current?.cancel?.();
       renderTaskRef.current = null;
+      textLayerTaskRef.current?.cancel?.();
+      textLayerTaskRef.current = null;
     };
   }, [pageNumber, pdfDocument, viewportWidth, zoom]);
 
@@ -233,7 +338,10 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
     if (pinchRef.current && pointersRef.current.size < 2) {
       const targetZoom = pinchRef.current.targetZoom;
       pinchRef.current = null;
-      if (canvasRef.current) canvasRef.current.style.transform = '';
+      if (canvasRef.current) {
+        canvasRef.current.style.transform = '';
+        canvasRef.current.style.transformOrigin = '';
+      }
       if (targetZoom !== zoom) changeZoom(targetZoom);
     }
 
@@ -252,7 +360,13 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
     }
   };
 
+  const handleLostPointerCapture = (event) => {
+    if (!pointersRef.current.has(event.pointerId)) return;
+    resetPointerInteraction();
+  };
+
   const controlsDisabled = loadState !== 'ready';
+  const pageLabel = pageCount ? `PDF 第 ${pageNumber} 页，共 ${pageCount} 页` : 'PDF 页面';
 
   return (
     <section className="v3-mobile-pdf-preview" aria-label="PDF 阅读器">
@@ -311,13 +425,26 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
           </button>
         </div>
       </div>
+      <a
+        className="v3-mobile-pdf-accessible-link"
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        使用系统 PDF 阅读器打开可访问版本
+      </a>
       <div
         ref={viewportRef}
         className="v3-mobile-pdf-viewport"
+        role="region"
+        aria-label="PDF 页面滚动区域"
+        aria-describedby={hintId}
+        tabIndex={0}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerEnd}
         onPointerCancel={handlePointerEnd}
+        onLostPointerCapture={handleLostPointerCapture}
       >
         {(loadState === 'loading' || renderState === 'rendering') && !error && (
           <div className="v3-mobile-pdf-status" role="status">正在加载 PDF…</div>
@@ -326,10 +453,18 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
         <canvas
           ref={canvasRef}
           className="v3-mobile-pdf-canvas"
-          aria-label={pageCount ? `PDF 第 ${pageNumber} 页，共 ${pageCount} 页` : 'PDF 页面'}
+          aria-hidden="true"
+        />
+        <div
+          ref={textLayerContainerRef}
+          className="textLayer v3-mobile-pdf-text-layer"
+          role="document"
+          aria-label={pageLabel}
         />
       </div>
-      <p className="v3-mobile-pdf-hint">双指缩放，拖动查看页面</p>
+      <p id={hintId} className="v3-mobile-pdf-hint">
+        双指缩放，拖动查看页面；键盘可使用方向键或 Page Up / Page Down 滚动
+      </p>
     </section>
   );
 }

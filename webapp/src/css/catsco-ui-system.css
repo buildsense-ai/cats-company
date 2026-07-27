@@ -2306,6 +2306,32 @@ select:disabled {
     min-width: 42px;
   }
 
+  .v3-mobile-pdf-accessible-link {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .v3-mobile-pdf-accessible-link:focus {
+    position: static;
+    z-index: 3;
+    width: auto;
+    height: auto;
+    padding: 8px 10px;
+    clip: auto;
+    clip-path: none;
+    border-bottom: 1px solid var(--v3-border);
+    background: var(--v3-bg-sidebar);
+    color: var(--v3-primary);
+    font-size: 12px;
+    text-align: center;
+  }
+
   .v3-mobile-pdf-viewport {
     position: relative;
     min-height: 0;
@@ -2316,11 +2342,27 @@ select:disabled {
     -webkit-overflow-scrolling: touch;
   }
 
+  .v3-mobile-pdf-viewport:focus-visible {
+    outline: 2px solid var(--v3-primary);
+    outline-offset: -2px;
+  }
+
   .v3-mobile-pdf-canvas {
     display: block;
     margin: 12px auto;
     background: #fff;
     box-shadow: 0 2px 12px rgba(0, 0, 0, 0.28);
+  }
+
+  .v3-mobile-pdf-text-layer {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: normal;
   }
 
   .v3-mobile-pdf-status {
