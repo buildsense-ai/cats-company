@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, ExternalLink, CornerUpLeft, MoreHorizontal, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
+import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
