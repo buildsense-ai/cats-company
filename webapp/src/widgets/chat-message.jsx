@@ -11,6 +11,7 @@ import {
   shouldRenderMarkdown,
 } from './markdown-utils';
 import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
+import MobilePdfPreview from './mobile-pdf-preview';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -1538,7 +1539,11 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
         </div>
         <div className="v3-file-preview-body">
           {isPdf ? (
-            <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />
+            isSheetMode ? (
+              <MobilePdfPreview url={fetchableMediaURL(url)} />
+            ) : (
+              <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />
+            )
           ) : loadingText ? (
             <div className="v3-file-preview-state">加载中...</div>
           ) : previewError ? (
