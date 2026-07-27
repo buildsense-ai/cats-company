@@ -255,6 +255,8 @@ describe('LocalAssistantBar model selector', () => {
     expect(m3?.textContent).toContain('上下文 1M');
     expect(deepseek?.textContent).toContain('上下文 1M');
     expect(terra?.textContent).toContain('上下文 256K');
+    expect(terra?.textContent).not.toContain('OpenAI Responses');
+    expect(terra?.textContent).not.toContain('精细推理强度');
     expect(m3?.textContent).toContain('剩余 75% · ¥75.00');
     expect(deepseek?.textContent).toContain('剩余 10% · ¥5.00');
     expect(deepseek?.querySelector('.v3-model-menu-quota.warning')).toBeTruthy();
