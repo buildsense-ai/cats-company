@@ -31,6 +31,7 @@ const CUSTOM_PROTOCOLS = [
 ];
 
 const CUSTOM_REASONING_EFFORTS = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'disabled'];
+const CUSTOM_CONTEXT_WINDOW_OPTIONS = [128000, 200000, 256000, 512000, 1000000];
 
 function customDraftFromConfig(config) {
   const custom = config?.custom;
@@ -109,6 +110,28 @@ function reasoningEffortLabel(effort) {
     disabled: 'disabled · 关闭推理',
   };
   return labels[effort] || effort;
+}
+
+function customContextWindowOptions(currentValue) {
+  const current = Number(currentValue);
+  if (!Number.isInteger(current) || current <= 0 || CUSTOM_CONTEXT_WINDOW_OPTIONS.includes(current)) {
+    return CUSTOM_CONTEXT_WINDOW_OPTIONS;
+  }
+  return [current, ...CUSTOM_CONTEXT_WINDOW_OPTIONS];
+}
+
+export function formatModelContextWindowTokens(tokens) {
+  const value = Number(tokens);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000;
+    return `${Number.isInteger(millions) ? millions : Number(millions.toFixed(1))}M`;
+  }
+  if (value >= 1_000) {
+    const thousands = value / 1_000;
+    return `${Number.isInteger(thousands) ? thousands : Number(thousands.toFixed(1))}K`;
+  }
+  return String(Math.round(value));
 }
 
 export function describeModelConfigRequestError(error, action = '切换') {
@@ -455,7 +478,11 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
               <div className="v3-custom-model-grid">
                 <label>
                   <span>上下文 Token</span>
-                  <input type="number" min="1024" max="4000000" required value={customDraft.context_window_tokens} onChange={(event) => setCustomDraft({ ...customDraft, context_window_tokens: event.target.value })} />
+                  <select required value={customDraft.context_window_tokens} onChange={(event) => setCustomDraft({ ...customDraft, context_window_tokens: event.target.value })}>
+                    {customContextWindowOptions(customDraft.context_window_tokens).map((tokens) => (
+                      <option key={tokens} value={tokens}>{formatModelContextWindowTokens(tokens)}</option>
+                    ))}
+                  </select>
                 </label>
                 <label>
                   <span>最大输出 Token</span>
@@ -493,6 +520,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                 const efforts = model.reasoning_efforts || [];
                 const hasReasoning = efforts.length > 0;
                 const selected = desiredKind === 'catalog' && desiredModelID === model.id;
+                const contextWindow = formatModelContextWindowTokens(model.context_window_tokens);
                 return (
                   <div
                     key={model.id}
@@ -512,7 +540,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                     >
                       <span>
                         <strong>{model.label}</strong>
-                        <small>{model.description}</small>
+                        <small>{model.description}{contextWindow ? ` · 上下文 ${contextWindow}` : ''}</small>
                         <small className={`v3-model-menu-quota ${modelQuotaTone(model.quota)}`.trim()}>{modelQuotaLabel(model.quota, modelConfig?.quota_error ? 'error' : usageState)}</small>
                       </span>
                       {hasReasoning ? <ChevronRight size={15} /> : selected && <Check size={15} />}
