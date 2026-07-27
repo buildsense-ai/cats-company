@@ -1344,6 +1344,108 @@ describe('ChatMessage rich file rendering', () => {
     expect(actions[1].getAttribute('download')).toBe('【电商带货主播_广州 4-6K】何荧 25年应届生.pdf');
   });
 
+  it('embeds MP4 file attachments as inline video players', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 8,
+            from_uid: 2,
+            content: '[文件] product-demo.mp4',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'product-demo.mp4',
+                url: '/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4',
+                size: 4096,
+                mime_type: 'video/mp4',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const video = container.querySelector('video.oc-rich-video-player');
+    expect(video).not.toBeNull();
+    expect(video.getAttribute('src')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4');
+    expect(video.controls).toBe(true);
+    expect(video.playsInline).toBe(true);
+    expect(video.preload).toBe('metadata');
+    expect(video.getAttribute('aria-label')).toBe('product-demo.mp4');
+    expect(container.querySelector('.v3-attachment-card')).toBeNull();
+    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+  });
+
+  it('embeds WebM attachments by extension', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 9,
+            from_uid: 2,
+            content: '[文件] product-demo.webm',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'product-demo.webm',
+                url: '/uploads/files/20260727_abcdef1234567890abcdef1234567890.webm',
+                size: 4096,
+                mime_type: 'application/octet-stream',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const video = container.querySelector('video.oc-rich-video-player');
+    expect(video).not.toBeNull();
+    expect(video.getAttribute('src')).toContain('.webm');
+    expect(video.getAttribute('aria-label')).toBe('product-demo.webm');
+  });
+
+  it('recognizes Ogg video by MIME and falls back to the file card after a playback error', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 10,
+            from_uid: 2,
+            content: '[文件] product-demo.bin',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'product-demo.bin',
+                url: '/uploads/files/20260727_fedcba0987654321fedcba0987654321.bin',
+                size: 4096,
+                mime_type: 'video/ogg',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const video = container.querySelector('video.oc-rich-video-player');
+    expect(video).not.toBeNull();
+
+    await act(async () => {
+      Simulate.error(video);
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('video.oc-rich-video-player')).toBeNull();
+    expect(container.querySelector('.v3-attachment-name').textContent).toBe('product-demo.bin');
+    expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
+  });
+
   it('marks DOCX as downloadable without claiming browser preview support', async () => {
     await act(async () => {
       root.render(

@@ -1031,6 +1031,19 @@ function fileMimeType(payload) {
   return String(payload?.mime_type || payload?.mime || payload?.content_type || '').toLowerCase();
 }
 
+const INLINE_VIDEO_EXTENSIONS = new Set(['MP4', 'WEBM', 'OGG', 'OGV', 'M4V', 'MOV']);
+const INLINE_VIDEO_MIME_TYPES = new Set([
+  'video/mp4',
+  'video/webm',
+  'video/ogg',
+  'video/x-m4v',
+  'video/quicktime',
+]);
+
+function isInlineVideoFile(payload, ext = fileExtension(payload)) {
+  return INLINE_VIDEO_EXTENSIONS.has(ext) || INLINE_VIDEO_MIME_TYPES.has(fileMimeType(payload));
+}
+
 function isHtmlFile(payload, ext = fileExtension(payload)) {
   const mime = fileMimeType(payload);
   return HTML_FILE_EXTENSIONS.has(ext) || mime === 'text/html' || mime === 'application/xhtml+xml';
@@ -1196,7 +1209,35 @@ function spreadsheetPreviewTooLargeMessage() {
   return `表格文件较大，当前最多预览 ${formatFileSize(SPREADSHEET_PREVIEW_MAX_BYTES)}，请下载后查看。`;
 }
 
-function FileContent({ payload, onPreviewFile, activePreviewFile }) {
+function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
+  const [playbackFailed, setPlaybackFailed] = useState(false);
+  const src = resolveMediaURL(payload?.url);
+
+  if (!payload || !src || playbackFailed) {
+    return <FileContent payload={payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} inlineVideo={false} />;
+  }
+
+  return (
+    <div className="oc-rich-video">
+      <video
+        aria-label={payload.name || '视频'}
+        className="oc-rich-video-player"
+        controls
+        onError={() => setPlaybackFailed(true)}
+        playsInline
+        preload="metadata"
+        src={src}
+      >
+        您的浏览器暂不支持视频播放。
+      </video>
+    </div>
+  );
+}
+
+function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = true }) {
+  if (inlineVideo && payload && isInlineVideoFile(payload)) {
+    return <VideoContent payload={payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
+  }
   if (!payload) return null;
   const descriptor = previewFileDescriptor(payload);
   const { url, ext, canPreview, meta, sizeStr, key } = descriptor;
