@@ -71,7 +71,11 @@ function PreviewHarness({ message }) {
           activePreviewFile={previewFile}
         />
       </div>
-      {previewFile && <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} />}
+      {previewFile && (
+        <div className="v3-file-preview-shell">
+          <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} />
+        </div>
+      )}
     </div>
   );
 }
@@ -1001,6 +1005,109 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
     expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+  });
+
+  it('makes the narrow file preview modal, traps focus, and restores the chat on close', async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({
+        matches: true,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    });
+    const message = {
+      id: 42,
+      from_uid: 2,
+      content: '[文件] accessible-report.pdf',
+      content_blocks: [{
+        type: 'file',
+        payload: {
+          name: 'accessible-report.pdf',
+          url: '/uploads/files/accessible-report.pdf',
+          size: 2048,
+          mime_type: 'application/pdf',
+        },
+      }],
+      created_at: '2026-06-09T00:00:00Z',
+    };
+
+    try {
+      await act(async () => {
+        root.render(<PreviewHarness message={message} />);
+        await Promise.resolve();
+      });
+      const opener = container.querySelector('.v3-artifact-main');
+      opener.focus();
+
+      await act(async () => {
+        Simulate.click(opener);
+        await flushAsync();
+      });
+
+      const panel = container.querySelector('.v3-file-preview-panel');
+      const chatColumn = container.querySelector('.v3-chat-column');
+      const closeButton = panel.querySelector('button[aria-label="关闭预览"]');
+      expect(panel.getAttribute('role')).toBe('dialog');
+      expect(panel.getAttribute('aria-modal')).toBe('true');
+      expect(chatColumn.hasAttribute('inert')).toBe(true);
+      expect(chatColumn.getAttribute('aria-hidden')).toBe('true');
+      expect(document.activeElement).toBe(closeButton);
+
+      const focusable = panel.querySelectorAll('button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])');
+      focusable[focusable.length - 1].focus();
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(document.activeElement).toBe(panel.querySelector('.v3-file-preview-drag-handle'));
+
+      await act(async () => {
+        Simulate.click(closeButton);
+        await Promise.resolve();
+      });
+      expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+      expect(chatColumn.hasAttribute('inert')).toBe(false);
+      expect(chatColumn.hasAttribute('aria-hidden')).toBe(false);
+      expect(document.activeElement).toBe(opener);
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+    }
+  });
+
+  it('keeps the desktop file preview as a non-modal side panel', async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    });
+
+    try {
+      await act(async () => {
+        root.render(
+          <FilePreviewPanel
+            file={{
+              name: 'desktop-report.pdf',
+              url: '/uploads/files/desktop-report.pdf',
+              size: 2048,
+              mime_type: 'application/pdf',
+            }}
+            onClose={vi.fn()}
+          />,
+        );
+        await flushAsync();
+      });
+      const panel = container.querySelector('.v3-file-preview-panel');
+      expect(panel.hasAttribute('role')).toBe(false);
+      expect(panel.hasAttribute('aria-modal')).toBe(false);
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+    }
   });
 
   it('closes the mobile file preview when its handle is dragged down past the threshold', async () => {

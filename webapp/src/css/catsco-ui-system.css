@@ -2054,26 +2054,14 @@ select:disabled {
   display: none;
 }
 
-@container catsco-main (max-width: 719px) {
+@media (max-width: 1024px) {
   .v3-message-workspace.has-preview {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) minmax(280px, 42vh);
-  }
-
-  .v3-file-preview-panel {
-    border-left: 0;
-    border-top: 1px solid var(--v3-border);
+    grid-template-rows: minmax(0, 1fr);
   }
 
   .v3-preview-resize-handle {
     display: none;
-  }
-}
-
-@container catsco-main (max-width: 719px) {
-  .v3-message-workspace.has-preview {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
   }
 
   .v3-file-preview-shell {

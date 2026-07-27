@@ -720,8 +720,10 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.cc-agent-role-chevron')).toContain('transform: translateY(-50%);');
   });
 
-  it('uses the narrow chat container breakpoint and keeps the file preview sheet inside short viewports', () => {
-    expect(css.match(/@container catsco-main \(max-width: 719px\) \{/g)).toHaveLength(2);
+  it('uses the existing narrow preview breakpoint and keeps the file preview sheet inside short viewports', () => {
+    expect(css).toContain('@media (max-width: 1024px) {');
+    expect(css).not.toContain('@container catsco-main (max-width: 719px)');
+    expect(css).toContain('grid-template-rows: minmax(0, 1fr);');
     expect(css).toContain('height: min(68svh, 620px, calc(100svh - max(76px, env(safe-area-inset-top)) - max(10px, env(safe-area-inset-bottom))));');
     expect(css).not.toContain('min-height: 380px;');
   });

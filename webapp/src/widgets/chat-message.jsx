@@ -28,6 +28,7 @@ const SPREADSHEET_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ]);
 const HTML_PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals';
+const FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function shouldHideToolProgressName(name) {
   return HIDDEN_TOOL_PROGRESS_NAMES.has(String(name || '').trim());
@@ -1265,6 +1266,12 @@ export function FilePreviewPanel({ file, onClose }) {
   const dragStateRef = useRef({ active: false, startY: 0, offset: 0 });
   const dismissTimerRef = useRef(null);
   const hasDismissedRef = useRef(false);
+  const panelRef = useRef(null);
+  const closeButtonRef = useRef(null);
+  const focusBeforeSheetRef = useRef(null);
+  const [isSheetMode, setIsSheetMode] = useState(
+    () => window.matchMedia?.('(max-width: 1024px)').matches ?? window.innerWidth <= 1024,
+  );
 
   const descriptor = useMemo(() => previewFileDescriptor(file), [file]);
   const url = descriptor?.url || '';
@@ -1337,13 +1344,85 @@ export function FilePreviewPanel({ file, onClose }) {
   }, [descriptor?.canPreview, file, isPdf, isSpreadsheet, url]);
 
   useEffect(() => {
+    if (!preview) {
+      setIsSheetMode(false);
+      return undefined;
+    }
+
+    const media = window.matchMedia?.('(max-width: 1024px)');
+    const syncSheetMode = () => setIsSheetMode(media?.matches ?? window.innerWidth <= 1024);
+    syncSheetMode();
+    if (media?.addEventListener) media.addEventListener('change', syncSheetMode);
+    else media?.addListener?.(syncSheetMode);
+    window.addEventListener('resize', syncSheetMode);
+    return () => {
+      if (media?.removeEventListener) media.removeEventListener('change', syncSheetMode);
+      else media?.removeListener?.(syncSheetMode);
+      window.removeEventListener('resize', syncSheetMode);
+    };
+  }, [preview]);
+
+  useEffect(() => {
     if (!preview) return undefined;
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') onClose?.();
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onClose?.();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose, preview]);
+
+  useEffect(() => {
+    if (!preview || !isSheetMode) return undefined;
+
+    focusBeforeSheetRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const shell = panelRef.current?.closest('.v3-file-preview-shell');
+    const chatColumn = shell?.previousElementSibling?.matches('.v3-chat-column')
+      ? shell.previousElementSibling
+      : null;
+    const hadInert = chatColumn?.hasAttribute('inert');
+    const previousAriaHidden = chatColumn?.getAttribute('aria-hidden');
+    closeButtonRef.current?.focus({ preventScroll: true });
+    if (chatColumn) {
+      chatColumn.setAttribute('inert', '');
+      chatColumn.setAttribute('aria-hidden', 'true');
+    }
+
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(panelRef.current?.querySelectorAll(FOCUSABLE_SELECTOR) || []);
+      const firstFocusable = focusable[0];
+      const lastFocusable = focusable[focusable.length - 1];
+      if (!firstFocusable || !lastFocusable) {
+        event.preventDefault();
+        return;
+      }
+      const focusIsOutsidePanel = !panelRef.current?.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === firstFocusable || focusIsOutsidePanel)) {
+        event.preventDefault();
+        lastFocusable.focus();
+      } else if (!event.shiftKey && (document.activeElement === lastFocusable || focusIsOutsidePanel)) {
+        event.preventDefault();
+        firstFocusable.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (chatColumn) {
+        if (!hadInert) chatColumn.removeAttribute('inert');
+        if (previousAriaHidden == null) chatColumn.removeAttribute('aria-hidden');
+        else chatColumn.setAttribute('aria-hidden', previousAriaHidden);
+      }
+      const priorFocus = focusBeforeSheetRef.current;
+      if (priorFocus?.isConnected) priorFocus.focus({ preventScroll: true });
+      focusBeforeSheetRef.current = null;
+    };
+  }, [isSheetMode, preview]);
 
   useEffect(() => () => {
     if (dismissTimerRef.current) window.clearTimeout(dismissTimerRef.current);
@@ -1414,7 +1493,10 @@ export function FilePreviewPanel({ file, onClose }) {
         style={{ '--v3-preview-backdrop-opacity': backdropOpacity }}
       />
       <aside
+        ref={panelRef}
         className={`v3-file-preview-panel ${dragStateRef.current.active ? 'is-dragging' : ''} ${isDismissing ? 'is-dismissing' : ''} ${isHtml || isPdf || isSpreadsheet ? 'wide' : ''}`}
+        role={isSheetMode ? 'dialog' : undefined}
+        aria-modal={isSheetMode || undefined}
         aria-label="文件预览"
         style={{ '--v3-preview-drag-offset': `${dragOffset}px` }}
         onTransitionEnd={handlePanelTransitionEnd}
@@ -1443,7 +1525,7 @@ export function FilePreviewPanel({ file, onClose }) {
             <a href={url} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
               <ExternalLink size={18} />
             </a>
-            <button aria-label="关闭预览" onClick={onClose} type="button">
+            <button ref={closeButtonRef} aria-label="关闭预览" onClick={onClose} type="button">
               <X size={18} />
             </button>
           </div>
