@@ -6335,6 +6335,44 @@ html[data-theme="liquid"] :is(
   }
 }
 
+/* Inline videos use the same message flow as images and GIFs. */
+.v3-message .oc-rich-video {
+  width: min(480px, 100%);
+  max-width: 100%;
+  margin: 4px auto 0;
+  overflow: hidden;
+  border: 1px solid var(--cc-border);
+  border-radius: 11px;
+  background: #000;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+
+.v3-message.has-file-only .oc-rich-video {
+  margin: 0 auto;
+  align-self: center;
+}
+
+.v3-message .oc-rich-video-player {
+  display: block;
+  width: 100%;
+  max-height: min(60vh, 480px);
+  background: #000;
+  object-fit: contain;
+}
+
+html[data-theme="liquid"] .v3-message .oc-rich-video {
+  border-color: var(--cc-liquid-edge);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 3px 9px rgba(0, 9, 7, 0.16);
+}
+
+@media (max-width: 520px) {
+  .v3-message .oc-rich-video {
+    width: min(320px, 100%);
+  }
+}
+
 /* Compact file messages: one neutral surface instead of a card nested in a chat bubble. */
 .v3-message.has-file-only .v3-message-content {
   display: flex;
