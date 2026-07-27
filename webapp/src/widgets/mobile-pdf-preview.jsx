@@ -20,17 +20,10 @@ function pointerDistance(points) {
   return Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
 }
 
-function boundedPageViewport(page, scale) {
-  const requestedViewport = page.getViewport({ scale });
-  const layoutPixelScale = Math.sqrt(
-    MAX_LAYOUT_PIXELS / Math.max(1, requestedViewport.width * requestedViewport.height),
-  );
-  const layoutDimensionScale = Math.min(
-    MAX_LAYOUT_DIMENSION / Math.max(1, requestedViewport.width),
-    MAX_LAYOUT_DIMENSION / Math.max(1, requestedViewport.height),
-  );
-  const boundedScale = Math.min(1, layoutPixelScale, layoutDimensionScale);
-  return boundedScale < 1 ? page.getViewport({ scale: scale * boundedScale }) : requestedViewport;
+function pageViewportIsSupported(viewport) {
+  return viewport.width <= MAX_LAYOUT_DIMENSION
+    && viewport.height <= MAX_LAYOUT_DIMENSION
+    && viewport.width * viewport.height <= MAX_LAYOUT_PIXELS;
 }
 
 function canvasOutputScale(viewport) {
@@ -211,6 +204,13 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
     if (!pdfDocument || !canvasRef.current) return undefined;
 
     let cancelled = false;
+    renderTaskRef.current?.cancel?.();
+    renderTaskRef.current = null;
+    textLayerTaskRef.current?.cancel?.();
+    textLayerTaskRef.current = null;
+    resetPointerInteraction();
+    clearCanvas(canvasRef.current);
+    clearTextLayer(textLayerContainerRef.current);
     setRenderState('rendering');
     setError('');
 
@@ -221,15 +221,17 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
         const baseViewport = page.getViewport({ scale: 1 });
         const availableWidth = Math.max((viewportWidth || viewportRef.current?.clientWidth || 320) - 24, 240);
         const fitScale = availableWidth / Math.max(1, baseViewport.width);
-        const viewport = boundedPageViewport(page, fitScale * zoom);
+        const viewport = page.getViewport({ scale: fitScale * zoom });
+        if (!pageViewportIsSupported(viewport)) {
+          setError('此 PDF 页面尺寸超出内置阅读器支持范围，请使用系统 PDF 阅读器打开。');
+          setRenderState('error');
+          return;
+        }
         const outputScale = canvasOutputScale(viewport);
         const canvas = canvasRef.current;
         const context = canvas.getContext('2d', { alpha: false });
         const textLayerContainer = textLayerContainerRef.current;
 
-        resetPointerInteraction();
-        textLayerTaskRef.current?.cancel?.();
-        clearTextLayer(textLayerContainer);
         canvas.width = Math.max(1, Math.floor(viewport.width * outputScale));
         canvas.height = Math.max(1, Math.floor(viewport.height * outputScale));
         canvas.style.width = `${Math.max(1, Math.floor(viewport.width))}px`;
@@ -284,7 +286,15 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
 
   const changeZoom = (nextZoom) => setZoom(clampZoom(nextZoom));
   const changePage = (nextPage) => {
-    setPageNumber(Math.min(pageCount, Math.max(1, nextPage)));
+    const boundedPage = Math.min(pageCount, Math.max(1, nextPage));
+    if (boundedPage === pageNumber) return;
+    renderTaskRef.current?.cancel?.();
+    textLayerTaskRef.current?.cancel?.();
+    resetPointerInteraction();
+    clearCanvas(canvasRef.current);
+    clearTextLayer(textLayerContainerRef.current);
+    setRenderState('rendering');
+    setPageNumber(boundedPage);
     viewportRef.current?.scrollTo?.({ top: 0, left: 0 });
   };
 

@@ -256,7 +256,38 @@ describe('MobilePdfPreview', () => {
     expect(firstFixture.document.destroy).toHaveBeenCalledTimes(1);
   });
 
-  it('caps both the backing canvas and CSS layout for extremely tall PDF pages', async () => {
+  it('clears the rendered page before awaiting a slow next page', async () => {
+    const fixture = createPdfFixture();
+    const pendingPage = new Promise(() => {});
+    fixture.document.getPage
+      .mockResolvedValueOnce(fixture.page)
+      .mockReturnValueOnce(pendingPage);
+
+    await act(async () => {
+      root.render(
+        <MobilePdfPreview url="/uploads/report.pdf" loadDocument={() => Promise.resolve(fixture.document)} />,
+      );
+      await flushAsync();
+    });
+
+    const canvas = container.querySelector('canvas');
+    const textLayer = container.querySelector('.v3-mobile-pdf-text-layer');
+    expect(canvas.width).toBeGreaterThan(0);
+    expect(textLayer.textContent).toContain('Accessible PDF heading');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="下一页"]'));
+      await flushAsync();
+    });
+
+    expect(fixture.document.getPage).toHaveBeenLastCalledWith(2);
+    expect(canvas.width).toBe(0);
+    expect(canvas.height).toBe(0);
+    expect(textLayer.textContent).toBe('');
+    expect(container.querySelector('[role="status"]')).not.toBeNull();
+  });
+
+  it('falls back to the system reader for unsupported page geometry', async () => {
     const fixture = createPdfFixture(1, { width: 600, height: 6_000_000 });
 
     await act(async () => {
@@ -267,14 +298,11 @@ describe('MobilePdfPreview', () => {
     });
 
     const canvas = container.querySelector('canvas');
-    const cssWidth = Number.parseFloat(canvas.style.width);
-    const cssHeight = Number.parseFloat(canvas.style.height);
-    expect(canvas.width).toBeLessThanOrEqual(8192);
-    expect(canvas.height).toBeLessThanOrEqual(8192);
-    expect(canvas.width * canvas.height).toBeLessThanOrEqual(8_000_000);
-    expect(cssWidth).toBeLessThanOrEqual(8192);
-    expect(cssHeight).toBeLessThanOrEqual(8192);
-    expect(cssWidth * cssHeight).toBeLessThanOrEqual(8_000_000);
+    expect(canvas.width).toBe(0);
+    expect(canvas.height).toBe(0);
+    expect(fixture.page.render).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]').textContent).toContain('系统 PDF 阅读器');
+    expect(container.querySelector('.v3-mobile-pdf-accessible-link').getAttribute('href')).toBe('/uploads/tall.pdf');
   });
 
   it('keeps navigation available after a page render error', async () => {

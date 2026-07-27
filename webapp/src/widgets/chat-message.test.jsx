@@ -1088,6 +1088,25 @@ describe('ChatMessage rich file rendering', () => {
       expect(chatColumn.hasAttribute('inert')).toBe(false);
       expect(chatColumn.hasAttribute('aria-hidden')).toBe(false);
       expect(document.activeElement).toBe(opener);
+
+      const committedFrames = [];
+      const observer = new MutationObserver((records) => {
+        records.forEach((record) => record.addedNodes.forEach((node) => {
+          if (node.nodeType !== Node.ELEMENT_NODE) return;
+          if (node.matches?.('iframe.v3-file-preview-frame')) committedFrames.push(node);
+          committedFrames.push(...node.querySelectorAll?.('iframe.v3-file-preview-frame') || []);
+        }));
+      });
+      observer.observe(container, { childList: true, subtree: true });
+      await act(async () => {
+        Simulate.click(opener);
+        await flushAsync();
+      });
+      observer.disconnect();
+
+      expect(committedFrames).toHaveLength(0);
+      expect(container.querySelector('.v3-mobile-pdf-preview-mock')).not.toBeNull();
+      expect(container.querySelector('iframe.v3-file-preview-frame')).toBeNull();
     } finally {
       Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
     }
