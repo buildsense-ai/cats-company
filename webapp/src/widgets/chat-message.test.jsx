@@ -59,9 +59,10 @@ const catscoUiSystemCss = readFileSync(
 
 function PreviewHarness({ message }) {
   const [previewFile, setPreviewFile] = React.useState(null);
+  const chatColumnRef = React.useRef(null);
   return (
     <div className={`v3-message-workspace${previewFile ? ' has-preview' : ''}`}>
-      <div className="v3-chat-column">
+      <div ref={chatColumnRef} className="v3-chat-column">
         <ChatMessage
           message={message}
           isSelf={false}
@@ -71,7 +72,11 @@ function PreviewHarness({ message }) {
           activePreviewFile={previewFile}
         />
       </div>
-      {previewFile && <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} />}
+      {previewFile && (
+        <div className="v3-file-preview-shell">
+          <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} backgroundRef={chatColumnRef} />
+        </div>
+      )}
     </div>
   );
 }
@@ -954,6 +959,268 @@ describe('ChatMessage rich file rendering', () => {
     const downloadLink = panel.querySelector('.v3-file-preview-actions a');
     expect(downloadLink.getAttribute('href')).toBe('/uploads/files/report.pdf?download=1');
     expect(downloadLink.getAttribute('download')).toBe('report.pdf');
+  });
+
+  it('closes the file preview from its backdrop and the Escape key', async () => {
+    const message = {
+      id: 41,
+      from_uid: 2,
+      content: '[文件] mobile-report.pdf',
+      content_blocks: [{
+        type: 'file',
+        payload: {
+          name: 'mobile-report.pdf',
+          url: '/uploads/files/mobile-report.pdf',
+          size: 2048,
+          mime_type: 'application/pdf',
+        },
+      }],
+      created_at: '2026-06-09T00:00:00Z',
+    };
+
+    await act(async () => {
+      root.render(<PreviewHarness message={message} />);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-file-preview-panel')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-file-preview-backdrop'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-file-preview-panel')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+  });
+
+  it('makes the narrow file preview modal, traps focus, and restores the chat on close', async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn((query) => ({
+        matches: query === '(max-width: 1024px)',
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    });
+    const message = {
+      id: 42,
+      from_uid: 2,
+      content: '[文件] accessible-report.pdf',
+      content_blocks: [{
+        type: 'file',
+        payload: {
+          name: 'accessible-report.pdf',
+          url: '/uploads/files/accessible-report.pdf',
+          size: 2048,
+          mime_type: 'application/pdf',
+        },
+      }],
+      created_at: '2026-06-09T00:00:00Z',
+    };
+
+    try {
+      await act(async () => {
+        root.render(<PreviewHarness message={message} />);
+        await Promise.resolve();
+      });
+      const opener = container.querySelector('.v3-artifact-main');
+      opener.focus();
+
+      await act(async () => {
+        Simulate.click(opener);
+        await flushAsync();
+      });
+
+      const panel = container.querySelector('.v3-file-preview-panel');
+      const chatColumn = container.querySelector('.v3-chat-column');
+      const closeButton = panel.querySelector('button[aria-label="关闭预览"]');
+      expect(panel.getAttribute('role')).toBe('dialog');
+      expect(panel.getAttribute('aria-modal')).toBe('true');
+      expect(chatColumn.hasAttribute('inert')).toBe(true);
+      expect(chatColumn.getAttribute('aria-hidden')).toBe('true');
+      expect(document.activeElement).toBe(closeButton);
+
+      const focusable = panel.querySelectorAll('button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])');
+      focusable[focusable.length - 1].focus();
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(document.activeElement).toBe(panel.querySelector('.v3-file-preview-drag-handle'));
+
+      const dragHandle = panel.querySelector('.v3-file-preview-drag-handle');
+      expect(document.activeElement).toBe(dragHandle);
+      await act(async () => {
+        Simulate.keyDown(dragHandle, { key: 'Enter' });
+        await Promise.resolve();
+      });
+      expect(panel.className).toContain('is-dismissing');
+
+      await act(async () => {
+        Simulate.transitionEnd(panel, { propertyName: 'transform' });
+        await Promise.resolve();
+      });
+      expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+      expect(chatColumn.hasAttribute('inert')).toBe(false);
+      expect(chatColumn.hasAttribute('aria-hidden')).toBe(false);
+      expect(document.activeElement).toBe(opener);
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+    }
+  });
+
+  it('dismisses the mobile file preview immediately when reduced motion is requested', async () => {
+    const originalMatchMedia = window.matchMedia;
+    const matchMedia = vi.fn((query) => ({
+      matches: query === '(max-width: 1024px)' || query === '(prefers-reduced-motion: reduce)',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: matchMedia,
+    });
+
+    try {
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{
+              id: 43,
+              from_uid: 2,
+              content: '[文件] reduced-motion-report.pdf',
+              content_blocks: [{
+                type: 'file',
+                payload: {
+                  name: 'reduced-motion-report.pdf',
+                  url: '/uploads/files/reduced-motion-report.pdf',
+                  size: 2048,
+                  mime_type: 'application/pdf',
+                },
+              }],
+              created_at: '2026-06-09T00:00:00Z',
+            }}
+          />,
+        );
+        await flushAsync();
+      });
+
+      await act(async () => {
+        Simulate.click(container.querySelector('.v3-artifact-main'));
+        await flushAsync();
+      });
+      const handle = container.querySelector('.v3-file-preview-drag-handle');
+      expect(handle).not.toBeNull();
+
+      await act(async () => {
+        Simulate.keyDown(handle, { key: 'Enter' });
+        await Promise.resolve();
+      });
+
+      expect(matchMedia).toHaveBeenCalledWith('(prefers-reduced-motion: reduce)');
+      expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+    }
+  });
+
+  it('keeps the desktop file preview as a non-modal side panel', async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    });
+
+    try {
+      await act(async () => {
+        root.render(
+          <FilePreviewPanel
+            file={{
+              name: 'desktop-report.pdf',
+              url: '/uploads/files/desktop-report.pdf',
+              size: 2048,
+              mime_type: 'application/pdf',
+            }}
+            onClose={vi.fn()}
+          />,
+        );
+        await flushAsync();
+      });
+      const panel = container.querySelector('.v3-file-preview-panel');
+      expect(panel.hasAttribute('role')).toBe(false);
+      expect(panel.hasAttribute('aria-modal')).toBe(false);
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+    }
+  });
+
+  it('closes the mobile file preview when its handle is dragged down past the threshold', async () => {
+    const onClose = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={{
+            name: 'mobile-report.pdf',
+            url: '/uploads/files/mobile-report.pdf',
+            size: 2048,
+            mime_type: 'application/pdf',
+          }}
+          onClose={onClose}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const handle = container.querySelector('.v3-file-preview-drag-handle');
+    expect(handle).not.toBeNull();
+
+    await act(async () => {
+      Simulate.pointerDown(handle, { pointerId: 1, pointerType: 'touch', clientY: 100 });
+      Simulate.pointerMove(handle, { pointerId: 1, pointerType: 'touch', clientY: 160 });
+      Simulate.pointerUp(handle, { pointerId: 1, pointerType: 'touch', clientY: 160 });
+      await Promise.resolve();
+    });
+
+    const panel = container.querySelector('.v3-file-preview-panel');
+    expect(onClose).not.toHaveBeenCalled();
+    expect(panel.style.getPropertyValue('--v3-preview-drag-offset')).toBe('0px');
+
+    await act(async () => {
+      Simulate.pointerDown(handle, { pointerId: 1, pointerType: 'touch', clientY: 100 });
+      Simulate.pointerMove(handle, { pointerId: 1, pointerType: 'touch', clientY: 180 });
+      Simulate.pointerUp(handle, { pointerId: 1, pointerType: 'touch', clientY: 180 });
+      await Promise.resolve();
+    });
+
+    expect(panel.className).toContain('is-dismissing');
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      Simulate.transitionEnd(panel, { propertyName: 'transform' });
+      await Promise.resolve();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('switches the side preview when another file card is clicked', async () => {

@@ -1,5 +1,5 @@
-import React, { memo, useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
+import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -28,6 +28,7 @@ const SPREADSHEET_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ]);
 const HTML_PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals';
+const FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function shouldHideToolProgressName(name) {
   return HIDDEN_TOOL_PROGRESS_NAMES.has(String(name || '').trim());
@@ -1254,12 +1255,23 @@ function FileContent({ payload, onPreviewFile, activePreviewFile }) {
   );
 }
 
-export function FilePreviewPanel({ file, onClose }) {
+export function FilePreviewPanel({ file, onClose, backgroundRef }) {
   const [preview, setPreview] = useState(false);
   const [textContent, setTextContent] = useState(null);
   const [binaryContent, setBinaryContent] = useState(null);
   const [loadingText, setLoadingText] = useState(false);
   const [previewError, setPreviewError] = useState('');
+  const [dragOffset, setDragOffset] = useState(0);
+  const [isDismissing, setIsDismissing] = useState(false);
+  const dragStateRef = useRef({ active: false, startY: 0, offset: 0 });
+  const dismissTimerRef = useRef(null);
+  const hasDismissedRef = useRef(false);
+  const panelRef = useRef(null);
+  const closeButtonRef = useRef(null);
+  const focusBeforeSheetRef = useRef(null);
+  const [isSheetMode, setIsSheetMode] = useState(
+    () => window.matchMedia?.('(max-width: 1024px)').matches ?? window.innerWidth <= 1024,
+  );
 
   const descriptor = useMemo(() => previewFileDescriptor(file), [file]);
   const url = descriptor?.url || '';
@@ -1277,6 +1289,14 @@ export function FilePreviewPanel({ file, onClose }) {
     setTextContent(null);
     setBinaryContent(null);
     setPreviewError('');
+    setDragOffset(0);
+    setIsDismissing(false);
+    hasDismissedRef.current = false;
+    dragStateRef.current = { active: false, startY: 0, offset: 0 };
+    if (dismissTimerRef.current) {
+      window.clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = null;
+    }
     if (!file || !descriptor?.canPreview || isPdf) {
       setLoadingText(false);
       return () => {
@@ -1323,58 +1343,240 @@ export function FilePreviewPanel({ file, onClose }) {
     };
   }, [descriptor?.canPreview, file, isPdf, isSpreadsheet, url]);
 
+  useEffect(() => {
+    if (!preview) {
+      setIsSheetMode(false);
+      return undefined;
+    }
+
+    const media = window.matchMedia?.('(max-width: 1024px)');
+    const syncSheetMode = () => setIsSheetMode(media?.matches ?? window.innerWidth <= 1024);
+    syncSheetMode();
+    if (media?.addEventListener) media.addEventListener('change', syncSheetMode);
+    else media?.addListener?.(syncSheetMode);
+    window.addEventListener('resize', syncSheetMode);
+    return () => {
+      if (media?.removeEventListener) media.removeEventListener('change', syncSheetMode);
+      else media?.removeListener?.(syncSheetMode);
+      window.removeEventListener('resize', syncSheetMode);
+    };
+  }, [preview]);
+
+  useEffect(() => {
+    if (!preview) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onClose?.();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose, preview]);
+
+  useEffect(() => {
+    if (!preview || !isSheetMode) return undefined;
+
+    focusBeforeSheetRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const background = backgroundRef?.current || null;
+    const hadInert = background?.hasAttribute('inert');
+    const previousAriaHidden = background?.getAttribute('aria-hidden');
+    closeButtonRef.current?.focus({ preventScroll: true });
+    if (background) {
+      background.setAttribute('inert', '');
+      background.setAttribute('aria-hidden', 'true');
+    }
+
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(panelRef.current?.querySelectorAll(FOCUSABLE_SELECTOR) || []);
+      const firstFocusable = focusable[0];
+      const lastFocusable = focusable[focusable.length - 1];
+      if (!firstFocusable || !lastFocusable) {
+        event.preventDefault();
+        return;
+      }
+      const focusIsOutsidePanel = !panelRef.current?.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === firstFocusable || focusIsOutsidePanel)) {
+        event.preventDefault();
+        lastFocusable.focus();
+      } else if (!event.shiftKey && (document.activeElement === lastFocusable || focusIsOutsidePanel)) {
+        event.preventDefault();
+        firstFocusable.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (background) {
+        if (!hadInert) background.removeAttribute('inert');
+        if (previousAriaHidden == null) background.removeAttribute('aria-hidden');
+        else background.setAttribute('aria-hidden', previousAriaHidden);
+      }
+      const priorFocus = focusBeforeSheetRef.current;
+      if (priorFocus?.isConnected) priorFocus.focus({ preventScroll: true });
+      focusBeforeSheetRef.current = null;
+    };
+  }, [backgroundRef, isSheetMode, preview]);
+
+  useEffect(() => () => {
+    if (dismissTimerRef.current) window.clearTimeout(dismissTimerRef.current);
+  }, []);
+
+  const finishDismiss = () => {
+    if (hasDismissedRef.current) return;
+    hasDismissedRef.current = true;
+    if (dismissTimerRef.current) {
+      window.clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = null;
+    }
+    onClose?.();
+  };
+
+  const startDismiss = () => {
+    if (isDismissing) return;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      finishDismiss();
+      return;
+    }
+    setIsDismissing(true);
+    setDragOffset(Math.max(window.innerHeight || 800, dragStateRef.current.offset));
+    dismissTimerRef.current = window.setTimeout(finishDismiss, 500);
+  };
+
+  const handlePanelTransitionEnd = (event) => {
+    if (event.target !== event.currentTarget || event.propertyName !== 'transform' || !isDismissing) return;
+    finishDismiss();
+  };
+
+  const handleDragStart = (event) => {
+    if (isDismissing) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    dragStateRef.current = { active: true, startY: event.clientY, offset: 0 };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  };
+
+  const handleDragMove = (event) => {
+    if (!dragStateRef.current.active) return;
+    const offset = Math.max(0, event.clientY - dragStateRef.current.startY);
+    dragStateRef.current.offset = offset;
+    setDragOffset(offset);
+  };
+
+  const handleDragEnd = (event) => {
+    if (!dragStateRef.current.active) return;
+    const shouldClose = dragStateRef.current.offset >= 72;
+    dragStateRef.current.active = false;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    if (shouldClose) {
+      startDismiss();
+      return;
+    }
+    dragStateRef.current.offset = 0;
+    setDragOffset(0);
+  };
+
+  const backdropOpacity = isDismissing ? 0 : Math.max(0.35, 1 - (dragOffset / 220));
+
   if (!preview || !file) return null;
   if (!descriptor?.canPreview) return null;
 
   return (
-    <aside className={`v3-file-preview-panel ${isHtml || isPdf || isSpreadsheet ? 'wide' : ''}`} aria-label="文件预览">
-      <div className="v3-file-preview-header">
-        <div className="v3-file-preview-title">
-          <FileText size={18} />
-          <div>
-            <h3>{file.name}</h3>
-            <span>{meta.label}{sizeStr ? ` · ${sizeStr}` : ''}</span>
+    <>
+      <button
+        className={`v3-file-preview-backdrop ${isDismissing ? 'is-dismissing' : ''}`}
+        type="button"
+        aria-label="关闭文件预览"
+        onClick={onClose}
+        style={{ '--v3-preview-backdrop-opacity': backdropOpacity }}
+      />
+      <aside
+        ref={panelRef}
+        className={`v3-file-preview-panel ${dragStateRef.current.active ? 'is-dragging' : ''} ${isDismissing ? 'is-dismissing' : ''} ${isHtml || isPdf || isSpreadsheet ? 'wide' : ''}`}
+        role={isSheetMode ? 'dialog' : undefined}
+        aria-modal={isSheetMode || undefined}
+        aria-label="文件预览"
+        style={{ '--v3-preview-drag-offset': `${dragOffset}px` }}
+        onTransitionEnd={handlePanelTransitionEnd}
+      >
+        <button
+          className="v3-file-preview-drag-handle"
+          type="button"
+          aria-label="向下拖动关闭预览"
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            startDismiss();
+          }}
+          onPointerDown={handleDragStart}
+          onPointerMove={handleDragMove}
+          onPointerUp={handleDragEnd}
+          onPointerCancel={handleDragEnd}
+        />
+        <div className="v3-file-preview-header">
+          <div className="v3-file-preview-title">
+            <FileText size={18} />
+            <div>
+              <h3>{file.name}</h3>
+              <span>{meta.label}{sizeStr ? ` · ${sizeStr}` : ''}</span>
+            </div>
+          </div>
+          <div className="v3-file-preview-actions">
+            <a href={downloadURL} download={file.name || true} title="下载原文件" target="_blank" rel="noopener noreferrer" aria-label="下载原文件">
+              <Download size={18} />
+            </a>
+            <a href={url} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
+              <ExternalLink size={18} />
+            </a>
+            <button ref={closeButtonRef} aria-label="关闭预览" onClick={onClose} type="button">
+              <X size={18} />
+            </button>
           </div>
         </div>
-        <div className="v3-file-preview-actions">
-          <a href={downloadURL} download={file.name || true} title="下载原文件" target="_blank" rel="noopener noreferrer">
-            <Download size={18} />
-          </a>
-          <button aria-label="关闭预览" onClick={onClose} type="button">
-            <X size={18} />
-          </button>
+        <div className="v3-file-preview-body">
+          {isPdf ? (
+            <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />
+          ) : loadingText ? (
+            <div className="v3-file-preview-state">加载中...</div>
+          ) : previewError ? (
+            <div className="v3-file-preview-state error">{previewError}</div>
+          ) : isHtml ? (
+            <iframe
+              className="v3-file-preview-frame"
+              title="HTML Report Preview"
+              sandbox={HTML_PREVIEW_SANDBOX}
+              referrerPolicy="no-referrer"
+              srcDoc={textContent || '<!doctype html><meta charset="utf-8"><body></body>'}
+            />
+          ) : isMarkdown ? (
+            <iframe
+              className="v3-file-preview-frame"
+              title="Markdown Preview"
+              sandbox=""
+              referrerPolicy="no-referrer"
+              srcDoc={markdownPreviewDocument(textContent || '')}
+            />
+          ) : isSpreadsheet ? (
+            <SpreadsheetPreview buffer={binaryContent} kind={descriptor.spreadsheetKind} />
+          ) : (
+            <pre className="v3-file-preview-text">{textContent || '暂无可预览内容。'}</pre>
+          )}
         </div>
-      </div>
-      <div className="v3-file-preview-body">
-        {isPdf ? (
-          <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />
-        ) : loadingText ? (
-          <div className="v3-file-preview-state">加载中...</div>
-        ) : previewError ? (
-          <div className="v3-file-preview-state error">{previewError}</div>
-        ) : isHtml ? (
-          <iframe
-            className="v3-file-preview-frame"
-            title="HTML Report Preview"
-            sandbox={HTML_PREVIEW_SANDBOX}
-            referrerPolicy="no-referrer"
-            srcDoc={textContent || '<!doctype html><meta charset="utf-8"><body></body>'}
-          />
-        ) : isMarkdown ? (
-          <iframe
-            className="v3-file-preview-frame"
-            title="Markdown Preview"
-            sandbox=""
-            referrerPolicy="no-referrer"
-            srcDoc={markdownPreviewDocument(textContent || '')}
-          />
-        ) : isSpreadsheet ? (
-          <SpreadsheetPreview buffer={binaryContent} kind={descriptor.spreadsheetKind} />
-        ) : (
-          <pre className="v3-file-preview-text">{textContent || '暂无可预览内容。'}</pre>
-        )}
-      </div>
-    </aside>
+        <div className="v3-file-preview-mobile-actions">
+          <button type="button" onClick={onClose}>
+            <X size={17} />
+            <span>关闭预览</span>
+          </button>
+          <a href={downloadURL} download={file.name || true} target="_blank" rel="noopener noreferrer">
+            <Download size={17} />
+            <span>下载原文件</span>
+          </a>
+        </div>
+      </aside>
+    </>
   );
 }
 
