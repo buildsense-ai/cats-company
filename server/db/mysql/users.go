@@ -4,6 +4,7 @@ package mysql
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/openchat/openchat/server/store/types"
 )
@@ -35,6 +36,41 @@ func (a *Adapter) GetUser(id int64) (*types.User, error) {
 		return nil, fmt.Errorf("get user: %w", err)
 	}
 	return u, nil
+}
+
+// GetUsersByIDs retrieves users in one round trip for history rendering.
+func (a *Adapter) GetUsersByIDs(ids []int64) (map[int64]*types.User, error) {
+	users := make(map[int64]*types.User, len(ids))
+	if len(ids) == 0 {
+		return users, nil
+	}
+
+	args := make([]interface{}, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+	rows, err := a.db.Query(
+		fmt.Sprintf(
+			`SELECT id, username, COALESCE(email,''), COALESCE(phone,''), display_name, COALESCE(avatar_url,''), account_type, state, created_at, updated_at
+			 FROM users WHERE id IN (%s)`,
+			placeholders,
+		),
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get users by ids: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		u := &types.User{}
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Phone, &u.DisplayName, &u.AvatarURL, &u.AccountType, &u.State, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan user by ids: %w", err)
+		}
+		users[u.ID] = u
+	}
+	return users, rows.Err()
 }
 
 // ListAdminUsers returns users for local account administration.

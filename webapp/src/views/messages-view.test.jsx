@@ -91,7 +91,10 @@ vi.mock('../api', () => ({
   updateTopicSeq: vi.fn(),
 }));
 
-import MessagesView from './messages-view';
+import MessagesView, {
+  collectStructuredMentionTargets,
+  reconcileStructuredMentionSelections,
+} from './messages-view';
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { api, onWSMessage, wsSendStreamCancel } from '../api';
 
@@ -206,6 +209,40 @@ async function flushPromises(count = 8) {
     await Promise.resolve();
   }
 }
+
+describe('structured composer mention provenance', () => {
+  it('does not promote hand-typed uid-like text into structured targets', () => {
+    expect(collectStructuredMentionTargets('@usr42 请处理', [])).toEqual([]);
+  });
+
+  it('keeps picker selections across edits outside the selected token', () => {
+    const selection = [{ target: 'usr42', start: 0, end: 6 }];
+    const afterAppending = reconcileStructuredMentionSelections('@usr42 ', '@usr42 处理', selection);
+    const reconciled = reconcileStructuredMentionSelections('@usr42 处理', '请 @usr42 处理', afterAppending);
+    expect(reconciled).toEqual([{ target: 'usr42', start: 2, end: 8 }]);
+    expect(collectStructuredMentionTargets('请 @usr42 处理', reconciled)).toEqual(['usr42']);
+  });
+
+  it('keeps the picker-only all-bots target across surrounding edits', () => {
+    const selection = [{ target: 'all', start: 0, end: 4 }];
+    const afterAppending = reconcileStructuredMentionSelections('@所有人 ', '@所有人 一起处理', selection);
+    const reconciled = reconcileStructuredMentionSelections('@所有人 一起处理', '请 @所有人 一起处理', afterAppending);
+    expect(reconciled).toEqual([{ target: 'all', start: 2, end: 6 }]);
+    expect(collectStructuredMentionTargets('请 @所有人 一起处理', reconciled)).toEqual(['all']);
+    expect(collectStructuredMentionTargets('@所有人 一起处理', [])).toEqual([]);
+  });
+
+  it('drops picker provenance when the selected token is edited', () => {
+    const selection = [{ target: 'usr42', start: 0, end: 6 }];
+    expect(reconcileStructuredMentionSelections('@usr42 ', '@usr43 ', selection)).toEqual([]);
+  });
+
+  it('drops picker provenance when text is inserted against the token boundary', () => {
+    const selection = [{ target: 'usr42', start: 0, end: 6 }];
+    expect(reconcileStructuredMentionSelections('@usr42 ', '@usr42x ', selection)).toEqual([]);
+    expect(collectStructuredMentionTargets('@usr42x ', selection)).toEqual([]);
+  });
+});
 
 describe('MessagesView composer draft isolation', () => {
   let container;
@@ -856,7 +893,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('button[aria-label="发送"]')).not.toBeNull();
   });
 
-  it('lists only bots from the current group after typing @', async () => {
+  it('lists all bots plus the all-bots option from the current group after typing @', async () => {
     api.getGroupInfo.mockResolvedValueOnce({
       group: { id: 80, name: 'Agent Room' },
       members: [
@@ -879,8 +916,9 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     const options = [...container.querySelectorAll('.oc-mention-item')];
-    expect(options).toHaveLength(2);
+    expect(options).toHaveLength(3);
     expect(options.map((option) => option.textContent)).toEqual([
+      '所有人全部机器人',
       'Saturday@usr42',
       'Wanyu@usr43',
     ]);
@@ -925,9 +963,69 @@ describe('MessagesView composer draft isolation', () => {
     const options = [...container.querySelectorAll('.oc-mention-item')];
     expect(api.getGroupInfo).toHaveBeenCalledTimes(2);
     expect(options.map((option) => option.textContent)).toEqual([
+      '所有人全部机器人',
       'Saturday@usr42',
       'Wanyu@usr43',
     ]);
+  });
+
+  it('inserts and sends the structured all-bots mention from the picker', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 42, display_name: 'Saturday', username: 'bot-saturday', is_bot: true },
+        { user_id: 43, display_name: 'Wanyu', username: 'catsco-agent-worker1', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@所有');
+    });
+    expect(container.querySelectorAll('.oc-mention-item')).toHaveLength(1);
+    expect(container.querySelector('.oc-mention-item')?.textContent).toBe('所有人全部机器人');
+
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe('@所有人 ');
+
+    await act(async () => {
+      typeDraft(textarea, '@所有人 一起处理');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith(
+      'grp_80',
+      '@所有人 一起处理',
+      undefined,
+      ['all'],
+    );
+  });
+
+  it('does not send structured mentions for hand-typed uid-like text', async () => {
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@usr43 请处理');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined);
   });
 
   it('filters bot names and inserts the canonical uid mention with Enter', async () => {
@@ -959,6 +1057,135 @@ describe('MessagesView composer draft isolation', () => {
     expect(textarea.value).toBe('@usr43 ');
     expect(container.querySelector('.oc-mention-picker')).toBeNull();
     expect(api.sendMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      typeDraft(textarea, '@usr43 请处理');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined, ['usr43']);
+  });
+
+  it('does not send structured mentions after typing against the picker token boundary', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 43, display_name: 'Wanyu', username: 'catsco-agent-worker1', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@wan');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe('@usr43 ');
+
+    await act(async () => {
+      typeDraft(textarea, '@usr43x 请处理');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43x 请处理', undefined);
+  });
+
+  it('restores picker provenance and original text after a send failure', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 43, display_name: 'Wanyu', username: 'catsco-agent-worker1', is_bot: true },
+      ],
+    });
+    api.sendMessage.mockRejectedValueOnce(new Error('send failed'));
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@wan');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      typeDraft(textarea, '  @usr43 ');
+    });
+    await act(async () => {
+      typeDraft(textarea, '  @usr43 请处理  ');
+    });
+
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenNthCalledWith(1, 'grp_80', '@usr43 请处理', undefined, ['usr43']);
+    expect(textarea.value).toBe('  @usr43 请处理  ');
+
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenNthCalledWith(2, 'grp_80', '@usr43 请处理', undefined, ['usr43']);
+  });
+
+  it('drops structured mention provenance after the picker token is removed', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [
+        { user_id: 43, display_name: 'Wanyu', username: 'catsco-agent-worker1', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '@wan');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe('@usr43 ');
+
+    await act(async () => {
+      typeDraft(textarea, '请处理');
+    });
+    await act(async () => {
+      typeDraft(textarea, '@usr43 请处理');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined);
   });
 
   it('opens the bot picker from the toolbar and inserts at the cursor', async () => {
@@ -986,7 +1213,8 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(textarea.value).toBe('前@后');
-    const option = container.querySelector('.oc-mention-item');
+    const option = [...container.querySelectorAll('.oc-mention-item')]
+      .find((item) => item.textContent.includes('Saturday'));
     expect(option).toBeTruthy();
 
     await act(async () => {
@@ -1089,6 +1317,46 @@ describe('MessagesView composer draft isolation', () => {
     expect(api.uploadFile).toHaveBeenCalledWith(image, 'image');
     expect(container.textContent).toContain('已添加图片：cat.jpg');
     expect(container.textContent).toContain('cat.jpg');
+    expect(container.querySelectorAll('.v3-composer-box .v3-composer-attachment-chip')).toHaveLength(1);
+  });
+
+  it('continues a multi-image upload after one file fails and keeps successful images removable', async () => {
+    api.uploadFile
+      .mockRejectedValueOnce(new Error('first upload failed'))
+      .mockResolvedValueOnce({
+        file_key: '20260610_dog.jpg',
+        url: '/uploads/images/20260610_dog.jpg',
+        name: 'dog.jpg',
+        size: 14,
+        mime_type: 'image/jpeg',
+      });
+
+    await mountTopic(root, 'p2p_1_2');
+
+    const input = container.querySelector('input[accept*="image/jpeg"]');
+    const firstImage = new File(['first'], 'cat.jpg', { type: 'image/jpeg' });
+    const secondImage = new File(['second'], 'dog.jpg', { type: 'image/jpeg' });
+
+    await act(async () => {
+      Simulate.change(input, {
+        target: {
+          files: [firstImage, secondImage],
+          value: 'C:\\fakepath\\dog.jpg',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(api.uploadFile).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('已添加 1 个附件，另有 1 个上传失败');
+    expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(1);
+    expect(container.querySelector('.v3-composer-attachment-chip img')?.getAttribute('src'))
+      .toBe('/uploads/images/20260610_dog.jpg');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="移除附件：dog.jpg"]'));
+    });
+    expect(container.querySelector('.v3-composer-attachment-chip')).toBeNull();
   });
 
   it('opens a phone upload QR dialog from the composer', async () => {
@@ -1176,7 +1444,9 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain('8 个附件待发送');
+    expect(container.textContent).toContain('手机已上传 8 个附件');
+    expect(container.querySelectorAll('.v3-attachment-notice')).toHaveLength(1);
+    expect(container.querySelector('.v3-composer-attachments')).toBeNull();
 
     await act(async () => {
       Simulate.click(container.querySelector('button[aria-label="关闭手机上传"]'));
@@ -1187,7 +1457,7 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain('9 个附件待发送');
+    expect(container.textContent).toContain('手机已上传 9 个附件');
     vi.useRealTimers();
   });
 
@@ -1223,6 +1493,154 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(container.querySelector('.cc-tutorial-empty')).not.toBeNull();
+  });
+
+  it('shows an actionable state when initial history loading fails', async () => {
+    api.getMessages.mockRejectedValueOnce(new Error('network unavailable'));
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.textContent).toContain('聊天记录加载失败');
+    const retryButton = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('重新加载'));
+    expect(retryButton).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(retryButton);
+      await flushPromises();
+    });
+
+    expect(container.textContent).not.toContain('聊天记录加载失败');
+  });
+
+  it('uses a stable before cursor when loading older history', async () => {
+    const latest = Array.from({ length: 50 }, (_, index) => ({
+      id: 101 + index,
+      seq_id: 101 + index,
+      topic_id: 'p2p_1_2',
+      from_uid: index % 2 === 0 ? 1 : 2,
+      type: 'text',
+      content: `latest-${index}`,
+    }));
+    api.getMessages
+      .mockResolvedValueOnce({ messages: latest, has_more: true, next_before_id: 101 })
+      .mockResolvedValueOnce({
+        messages: [{ id: 100, seq_id: 100, topic_id: 'p2p_1_2', from_uid: 2, type: 'text', content: 'older' }],
+        has_more: false,
+        next_before_id: 100,
+      });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(api.getMessages).toHaveBeenNthCalledWith(1, 'p2p_1_2', 50, 0, true);
+    expect(api.getMessages).toHaveBeenNthCalledWith(2, 'p2p_1_2', 50, 50, true, 101);
+    expect(container.querySelector('[data-message-content="older"]')).not.toBeNull();
+  });
+
+  it('shows cached history immediately when returning to a topic', async () => {
+    const refreshed = deferred();
+    api.getMessages
+      .mockResolvedValueOnce({
+        messages: [{ id: 1, topic_id: 'p2p_1_2', from_uid: 2, type: 'text', content: 'cached topic A' }],
+        has_more: false,
+      })
+      .mockResolvedValueOnce({
+        messages: [{ id: 2, topic_id: 'p2p_1_3', from_uid: 3, type: 'text', content: 'topic B' }],
+        has_more: false,
+      })
+      .mockImplementationOnce(() => refreshed.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+    await mountTopic(root, 'p2p_1_3');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    await act(async () => {
+      renderTopic(root, 'p2p_1_2');
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-message-content="cached topic A"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('正在加载聊天记录');
+
+    await act(async () => {
+      refreshed.resolve({
+        messages: [{ id: 3, topic_id: 'p2p_1_2', from_uid: 2, type: 'text', content: 'fresh topic A' }],
+        has_more: false,
+      });
+      await flushPromises();
+    });
+    expect(container.querySelector('[data-message-content="fresh topic A"]')).not.toBeNull();
+  });
+
+  it('resumes older history loading after a cached topic refresh finishes at the top', async () => {
+    const initialTopicA = deferred();
+    const refreshedTopicA = deferred();
+    const latest = Array.from({ length: 50 }, (_, index) => ({
+      id: 101 + index,
+      seq_id: 101 + index,
+      topic_id: 'p2p_1_2',
+      from_uid: index % 2 === 0 ? 1 : 2,
+      type: 'text',
+      content: `latest-${index}`,
+    }));
+    api.getMessages
+      .mockImplementationOnce(() => initialTopicA.promise)
+      .mockResolvedValueOnce({
+        messages: [{ id: 201, topic_id: 'p2p_1_3', from_uid: 3, type: 'text', content: 'topic B' }],
+        has_more: false,
+      })
+      .mockImplementationOnce(() => refreshedTopicA.promise)
+      .mockResolvedValueOnce({
+        messages: [{ id: 100, seq_id: 100, topic_id: 'p2p_1_2', from_uid: 2, type: 'text', content: 'older after refresh' }],
+        has_more: false,
+        next_before_id: 100,
+      });
+
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    Object.defineProperty(timeline, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    timeline.scrollTop = 500;
+    await act(async () => {
+      initialTopicA.resolve({ messages: latest, has_more: true, next_before_id: 101 });
+      await flushPromises();
+    });
+    expect(api.getMessages).toHaveBeenCalledTimes(1);
+
+    await mountTopic(root, 'p2p_1_3');
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      renderTopic(root, 'p2p_1_2');
+      await Promise.resolve();
+    });
+
+    timeline.scrollTop = 0;
+    await act(async () => {
+      Simulate.scroll(timeline);
+      await Promise.resolve();
+    });
+    expect(api.getMessages).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      refreshedTopicA.resolve({ messages: latest, has_more: true, next_before_id: 101 });
+      await flushPromises();
+    });
+
+    expect(api.getMessages).toHaveBeenNthCalledWith(4, 'p2p_1_2', 50, 50, true, 101);
+    expect(container.querySelector('[data-message-content="older after refresh"]')).not.toBeNull();
   });
 
   it('downloads tutorial media and fills the selected prompt', async () => {

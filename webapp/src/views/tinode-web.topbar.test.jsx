@@ -6,6 +6,7 @@ import {
   describeModelApplyError,
   describeModelConfigRequestError,
   LocalAssistantBar,
+  ProfilePopover,
   resolveDisplayedActiveAgent,
 } from './tinode-web';
 import { api } from '../api';
@@ -81,6 +82,30 @@ describe('cloud artifact action visibility', () => {
     expect(canOpenCloudArtifacts({ topicId: 'grp_8', isGroup: true }, doubao)).toBe(true);
     expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, { uid: 441 })).toBe(false);
     expect(canOpenCloudArtifacts(null, doubao)).toBe(false);
+  });
+});
+
+describe('ProfilePopover', () => {
+  it('escapes the collapsed sidebar clipping context and marks the compact flyout', async () => {
+    const sidebar = document.createElement('aside');
+    document.body.appendChild(sidebar);
+    const root = createRoot(sidebar);
+
+    await act(async () => {
+      root.render(
+        <ProfilePopover compact>
+          <button type="button">设置与资料</button>
+        </ProfilePopover>,
+      );
+    });
+
+    const popover = document.body.querySelector('.v3-profile-popover.is-compact');
+    expect(popover).toBeTruthy();
+    expect(popover?.textContent).toContain('设置与资料');
+    expect(sidebar.querySelector('.v3-profile-popover')).toBeNull();
+
+    await act(async () => root.unmount());
+    sidebar.remove();
   });
 });
 

@@ -698,10 +698,8 @@ function WorkingProcess({ blocks }) {
 }
 
 function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
-  const [actionsOpen, setActionsOpen] = useState(false);
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
-  const actionsRef = useRef(null);
   const content = message.content;
   const effectiveWorkingMessages = workingMessages || message._working || [];
   const storedBlocks = useMemo(() => Array.isArray(message.content_blocks) ? message.content_blocks : [], [message.content_blocks]);
@@ -729,6 +727,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
       ? renderedTextContent.trim().length > 0
       : renderedTextContent != null
   ), [renderedTextContent]);
+  const hasFileOnly = !hasText && richBlocks.length > 0 && richBlocks.every((block) => block.type === 'file');
 
   const parsed = useMemo(() => {
     if (storedBlocks.length > 0) return null;
@@ -756,21 +755,11 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
 
   const handleReplyClick = (event) => {
     event.stopPropagation();
-    setActionsOpen(false);
     onReply?.();
-  };
-
-  const handleMoreClick = (event) => {
-    event.stopPropagation();
-    setActionsOpen((open) => {
-      if (!open) setCopyState('');
-      return !open;
-    });
   };
 
   const handleEditClick = (event) => {
     event.stopPropagation();
-    setActionsOpen(false);
     onEdit?.(message);
   };
 
@@ -796,33 +785,11 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     }
   };
 
-  useEffect(() => {
-    if (!actionsOpen) return undefined;
-
-    const closeFromOutside = (event) => {
-      if (!actionsRef.current?.contains(event.target)) {
-        setActionsOpen(false);
-      }
-    };
-    const closeFromKeyboard = (event) => {
-      if (event.key === 'Escape') {
-        setActionsOpen(false);
-      }
-    };
-
-    document.addEventListener('pointerdown', closeFromOutside);
-    document.addEventListener('keydown', closeFromKeyboard);
-    return () => {
-      document.removeEventListener('pointerdown', closeFromOutside);
-      document.removeEventListener('keydown', closeFromKeyboard);
-    };
-  }, [actionsOpen]);
-
   if (!hasText && richBlocks.length === 0 && workingBlocks.length === 0) return null;
 
   return (
     <div
-      className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}`}
+      className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}${hasFileOnly ? ' has-file-only' : ''}`}
       data-conversation-question={questionAnchorKey || undefined}
     >
       <div className="v3-avatar-col">
@@ -880,8 +847,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
 
         {!workingOnly && <div className="v3-message-footer">
           <div
-            ref={actionsRef}
-            className={`v3-message-actions${actionsOpen ? ' open' : ''}`}
+            className="v3-message-actions"
             onClick={(event) => event.stopPropagation()}
           >
             <button
@@ -906,7 +872,18 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                 <RotateCcw size={18} />
               </button>
             )}
-            {onEdit ? (
+            {!onEdit && onReply && (
+              <button
+                className="v3-action-btn v3-reply-action"
+                onClick={handleReplyClick}
+                aria-label={t('chat_reply')}
+                title={t('chat_reply')}
+                type="button"
+              >
+                <CornerUpLeft size={14} />
+              </button>
+            )}
+            {onEdit && (
               <button
                 className="v3-action-btn"
                 onClick={handleEditClick}
@@ -916,28 +893,6 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
               >
                 <Pencil size={14} />
               </button>
-            ) : (
-              <button
-                className="v3-action-btn"
-                onClick={handleMoreClick}
-                aria-label="更多操作"
-                aria-haspopup="menu"
-                aria-expanded={actionsOpen}
-                title="更多操作"
-                type="button"
-              >
-                <MoreHorizontal size={14} />
-              </button>
-            )}
-            {!onEdit && actionsOpen && (
-              <div className="v3-message-action-menu" role="menu">
-                {onReply && (
-                  <button type="button" role="menuitem" onClick={handleReplyClick}>
-                    <CornerUpLeft size={14} />
-                    <span>{t('chat_reply')}</span>
-                  </button>
-                )}
-              </div>
             )}
           </div>
           <time className="v3-msg-time" dateTime={message.created_at || undefined}>{timeString}</time>
@@ -1246,7 +1201,7 @@ function FileContent({ payload, onPreviewFile, activePreviewFile }) {
   const { url, ext, canPreview, meta, sizeStr, key } = descriptor;
   const activeKey = activePreviewFile ? previewFileDescriptor(activePreviewFile)?.key : '';
   const isActive = canPreview && activeKey === key;
-  const subtitle = [meta.label, meta.subtitle, sizeStr, fileMimeType(payload) || ext].filter(Boolean).join(' · ');
+  const subtitle = [meta.label, sizeStr].filter(Boolean).join(' · ');
   const downloadURL = downloadableMediaURL(url, payload.name);
   const openFile = () => {
     if (canPreview && onPreviewFile) onPreviewFile(payload);
@@ -1309,6 +1264,7 @@ export function FilePreviewPanel({ file, onClose }) {
   const [isDismissing, setIsDismissing] = useState(false);
   const dragStateRef = useRef({ active: false, startY: 0, offset: 0 });
   const dismissTimerRef = useRef(null);
+  const hasDismissedRef = useRef(false);
 
   const descriptor = useMemo(() => previewFileDescriptor(file), [file]);
   const url = descriptor?.url || '';
@@ -1328,6 +1284,7 @@ export function FilePreviewPanel({ file, onClose }) {
     setPreviewError('');
     setDragOffset(0);
     setIsDismissing(false);
+    hasDismissedRef.current = false;
     dragStateRef.current = { active: false, startY: 0, offset: 0 };
     if (dismissTimerRef.current) {
       window.clearTimeout(dismissTimerRef.current);
@@ -1392,6 +1349,28 @@ export function FilePreviewPanel({ file, onClose }) {
     if (dismissTimerRef.current) window.clearTimeout(dismissTimerRef.current);
   }, []);
 
+  const finishDismiss = () => {
+    if (hasDismissedRef.current) return;
+    hasDismissedRef.current = true;
+    if (dismissTimerRef.current) {
+      window.clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = null;
+    }
+    onClose?.();
+  };
+
+  const startDismiss = () => {
+    if (isDismissing) return;
+    setIsDismissing(true);
+    setDragOffset(Math.max(window.innerHeight || 800, dragStateRef.current.offset));
+    dismissTimerRef.current = window.setTimeout(finishDismiss, 500);
+  };
+
+  const handlePanelTransitionEnd = (event) => {
+    if (event.target !== event.currentTarget || event.propertyName !== 'transform' || !isDismissing) return;
+    finishDismiss();
+  };
+
   const handleDragStart = (event) => {
     if (isDismissing) return;
     if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -1413,12 +1392,7 @@ export function FilePreviewPanel({ file, onClose }) {
     dragStateRef.current.active = false;
     event.currentTarget.releasePointerCapture?.(event.pointerId);
     if (shouldClose) {
-      setIsDismissing(true);
-      setDragOffset(Math.max(window.innerHeight || 800, dragStateRef.current.offset));
-      dismissTimerRef.current = window.setTimeout(() => {
-        dismissTimerRef.current = null;
-        onClose?.();
-      }, 220);
+      startDismiss();
       return;
     }
     dragStateRef.current.offset = 0;
@@ -1443,6 +1417,7 @@ export function FilePreviewPanel({ file, onClose }) {
         className={`v3-file-preview-panel ${dragStateRef.current.active ? 'is-dragging' : ''} ${isDismissing ? 'is-dismissing' : ''} ${isHtml || isPdf || isSpreadsheet ? 'wide' : ''}`}
         aria-label="文件预览"
         style={{ '--v3-preview-drag-offset': `${dragOffset}px` }}
+        onTransitionEnd={handlePanelTransitionEnd}
       >
         <button
           className="v3-file-preview-drag-handle"

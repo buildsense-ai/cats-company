@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import t from '../i18n';
+import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import Avatar from './avatar';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
 import { UserPlus, X } from 'lucide-react';
 
 export default function GroupSettings({ groupId, currentUser, onClose, onSaved }) {
+  const feedback = useFeedback();
   const fileInputRef = useRef(null);
   const [group, setGroup] = useState(null);
   const [members, setMembers] = useState([]);
@@ -143,7 +145,7 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
     }
   };
 
-  const runMemberAction = async (action) => {
+  const runMemberAction = async (action, successMessage = '') => {
     setSaving(true);
     setError('');
     setNotice('');
@@ -151,6 +153,7 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
       await action();
       const refreshedGroup = await refreshGroupInfo();
       if (onSaved) onSaved(refreshedGroup);
+      if (successMessage) feedback.notify({ tone: 'success', message: successMessage });
     } catch (err) {
       setError(err.message || t('error_server'));
     } finally {
@@ -158,24 +161,38 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
     }
   };
 
-  const handleRoleChange = (member) => {
+  const handleRoleChange = async (member) => {
     const nextRole = member.role === 'admin' ? 'member' : 'admin';
     const displayName = member.display_name || member.username;
-    if (!window.confirm(t('confirm_update_group_role', { name: displayName }))) return;
-    runMemberAction(() => api.updateMemberRole(groupId, member.user_id, nextRole));
+    const confirmed = await feedback.confirm({
+      title: '更改成员角色？',
+      message: t('confirm_update_group_role', { name: displayName }),
+      confirmLabel: '确认更改',
+    });
+    if (!confirmed) return;
+    runMemberAction(
+      () => api.updateMemberRole(groupId, member.user_id, nextRole),
+      '成员角色已更新',
+    );
   };
 
   const handleMuteToggle = (member) => {
     const action = member.muted
       ? () => api.unmuteMember(groupId, member.user_id)
       : () => api.muteMember(groupId, member.user_id);
-    runMemberAction(action);
+    runMemberAction(action, member.muted ? '已取消成员禁言' : '成员已被禁言');
   };
 
-  const handleKick = (member) => {
+  const handleKick = async (member) => {
     const displayName = member.display_name || member.username;
-    if (!window.confirm(t('confirm_kick_group_member', { name: displayName }))) return;
-    runMemberAction(() => api.kickMember(groupId, member.user_id));
+    const confirmed = await feedback.confirm({
+      title: `移除成员“${displayName}”？`,
+      message: t('confirm_kick_group_member', { name: displayName }),
+      confirmLabel: '移除成员',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    runMemberAction(() => api.kickMember(groupId, member.user_id), '成员已移除');
   };
 
   const handleInviteRequest = (request, action) => {
@@ -183,13 +200,20 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
   };
 
   const handleLeave = async () => {
-    if (!window.confirm(t('confirm_leave_group'))) return;
+    const confirmed = await feedback.confirm({
+      title: '退出群聊？',
+      message: t('confirm_leave_group'),
+      confirmLabel: '退出群聊',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     setSaving(true);
     setError('');
     try {
       await api.leaveGroup(groupId);
       if (onSaved) onSaved(null);
       window.dispatchEvent(new Event('cc:data-changed'));
+      feedback.notify({ tone: 'success', message: '已退出群聊' });
       onClose();
     } catch (err) {
       setError(err.message || t('error_server'));
@@ -199,13 +223,20 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
   };
 
   const handleDisband = async () => {
-    if (!window.confirm(t('confirm_disband_group'))) return;
+    const confirmed = await feedback.confirm({
+      title: '解散群聊？',
+      message: t('confirm_disband_group'),
+      confirmLabel: '永久解散',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     setSaving(true);
     setError('');
     try {
       await api.disbandGroup(groupId);
       if (onSaved) onSaved(null);
       window.dispatchEvent(new Event('cc:data-changed'));
+      feedback.notify({ tone: 'success', message: '群聊已解散' });
       onClose();
     } catch (err) {
       setError(err.message || t('error_server'));
@@ -421,8 +452,8 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
             </div>
           )}
 
-          {error && <div className="oc-form-error">{error}</div>}
-          {notice && <div className="oc-form-notice">{notice}</div>}
+          {error && <InlineFeedback tone="error" className="oc-form-error">{error}</InlineFeedback>}
+          {notice && <InlineFeedback tone="success" className="oc-form-notice">{notice}</InlineFeedback>}
         </div>
         <div className="oc-settings-actions oc-settings-actions-split">
           <div>

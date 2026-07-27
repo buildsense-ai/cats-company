@@ -102,13 +102,18 @@ func deliverInboundChannelMessageToGroupWithTrigger(db store.Store, hub *Hub, ac
 	if strings.TrimSpace(text) == "" && len(files) == 1 {
 		messageType = files[0].Type
 	}
+	trustedMetadata := make(map[string]interface{}, len(metadata)+1)
+	for key, value := range metadata {
+		trustedMetadata[key] = value
+	}
+	trustedMetadata[channelBindingDeliveryTrustMetadataKey] = channelBindingDeliveryTrustToken{}
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
 		TopicID:       binding.TopicID,
 		ClientMsgID:   clientMsgID,
 		Content:       rawContent,
 		Type:          messageType,
 		ContentBlocks: contentBlocks,
-		Metadata:      metadata,
+		Metadata:      trustedMetadata,
 	})
 	if err != nil {
 		return err

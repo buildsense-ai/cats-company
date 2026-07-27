@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, Smartphone, X } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { FilePreviewPanel } from '../widgets/chat-message';
@@ -10,6 +10,8 @@ import ChatComposer from '../widgets/chat-composer';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 
 const PAGE_SIZE = 50;
+const HISTORY_CACHE_MAX_TOPICS = 12;
+const STRUCTURED_MENTION_ALL = 'all';
 const TYPING_TIMEOUT_MS = 10000;
 const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
 const WORKING_TEXT_PREFIX = 'AI文本:';
@@ -72,6 +74,101 @@ function resolvePhoneUploadLink(uploadUrl) {
   return `${window.location.origin}${normalizedPath}`;
 }
 
+function isStructuredMentionSelectionIntact(text, target, start, end) {
+  const token = target === STRUCTURED_MENTION_ALL ? '@所有人' : `@${target}`;
+  if (start < 0 || end > text.length || text.slice(start, end) !== token) return false;
+  const trailingCharacter = text.slice(end, end + 1);
+  return !trailingCharacter || !/[\p{L}\p{N}_]/u.test(trailingCharacter);
+}
+
+export function reconcileStructuredMentionSelections(previousText, nextText, selections = []) {
+  const previous = typeof previousText === 'string' ? previousText : '';
+  const next = typeof nextText === 'string' ? nextText : '';
+  if (!Array.isArray(selections) || selections.length === 0) return [];
+
+  let prefixLength = 0;
+  while (prefixLength < previous.length
+    && prefixLength < next.length
+    && previous[prefixLength] === next[prefixLength]) {
+    prefixLength += 1;
+  }
+
+  let previousSuffixStart = previous.length;
+  let nextSuffixStart = next.length;
+  while (previousSuffixStart > prefixLength
+    && nextSuffixStart > prefixLength
+    && previous[previousSuffixStart - 1] === next[nextSuffixStart - 1]) {
+    previousSuffixStart -= 1;
+    nextSuffixStart -= 1;
+  }
+
+  const delta = next.length - previous.length;
+  const nextChangedText = next.slice(prefixLength, nextSuffixStart);
+  return selections.flatMap((selection) => {
+    const target = typeof selection?.target === 'string' ? selection.target : '';
+    let start = Number.isInteger(selection?.start) ? selection.start : -1;
+    let end = Number.isInteger(selection?.end) ? selection.end : -1;
+    if (target !== STRUCTURED_MENTION_ALL && !/^usr\d+$/u.test(target)) return [];
+    if (start < 0 || end <= start) return [];
+
+    const touchesRightBoundary = prefixLength === end
+      && /[\p{L}\p{N}_]/u.test(nextChangedText.slice(0, 1));
+    const touchesLeftBoundary = previousSuffixStart === start
+      && /[\p{L}\p{N}_]/u.test(nextChangedText.slice(-1));
+    if (touchesRightBoundary || touchesLeftBoundary) return [];
+
+    if (end <= prefixLength) {
+      // The selected token is before the edit and remains unchanged.
+    } else if (start >= previousSuffixStart) {
+      start += delta;
+      end += delta;
+    } else {
+      return [];
+    }
+
+    if (!isStructuredMentionSelectionIntact(next, target, start, end)) return [];
+    return [{ target, start, end }];
+  });
+}
+
+export function collectStructuredMentionTargets(text, selections = []) {
+  const value = typeof text === 'string' ? text : '';
+  if (!Array.isArray(selections)) return [];
+  return [...new Set(selections.flatMap((selection) => {
+    const target = typeof selection?.target === 'string' ? selection.target : '';
+    const start = Number.isInteger(selection?.start) ? selection.start : -1;
+    const end = Number.isInteger(selection?.end) ? selection.end : -1;
+    if (target !== STRUCTURED_MENTION_ALL && !/^usr\d+$/u.test(target)) return [];
+    if (start < 0 || end <= start) return [];
+    return isStructuredMentionSelectionIntact(value, target, start, end) ? [target] : [];
+  }))];
+}
+
+function historyMessageID(message) {
+  const id = Number(message?.seq_id || message?.id || 0);
+  return Number.isFinite(id) && id > 0 ? id : 0;
+}
+
+function oldestHistoryMessageID(messages) {
+  for (const message of messages || []) {
+    const id = historyMessageID(message);
+    if (id > 0) return id;
+  }
+  return 0;
+}
+
+function historyCacheKey(userID, topic) {
+  return `${userID || 'anonymous'}:${topic}`;
+}
+
+function cacheHistoryPage(cache, key, entry) {
+  cache.delete(key);
+  cache.set(key, entry);
+  while (cache.size > HISTORY_CACHE_MAX_TOPICS) {
+    cache.delete(cache.keys().next().value);
+  }
+}
+
 export default function MessagesView({
   topic,
   topicName,
@@ -104,6 +201,9 @@ export default function MessagesView({
   const [previewWidth, setPreviewWidth] = useState(() => loadPreviewWidth());
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [refreshingHistory, setRefreshingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState('');
+  const [olderHistoryError, setOlderHistoryError] = useState('');
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [isStopRequested, setIsStopRequested] = useState(false);
   const [suppressedWorkingKey, setSuppressedWorkingKey] = useState('');
@@ -141,10 +241,15 @@ export default function MessagesView({
   const runtimePlanRef = useRef(null);
   const runtimePlanClearTimer = useRef(null);
   const historyOffsetRef = useRef(0);
+  const historyBeforeIDRef = useRef(0);
+  const historyRequestRef = useRef(0);
+  const historyLoadingRef = useRef(false);
+  const historyCacheRef = useRef(new Map());
   const hasMoreHistoryRef = useRef(false);
   const loadingOlderRef = useRef(false);
   const activeTopicRef = useRef(topic);
   const composerDraftsRef = useRef(new Map());
+  const structuredMentionDraftsRef = useRef(new Map());
   const attachmentDraftsRef = useRef(new Map());
   const pendingAttachmentsRef = useRef([]);
   const previewWidthRef = useRef(previewWidth);
@@ -181,6 +286,15 @@ export default function MessagesView({
       composerDraftsRef.current.set(draftTopic, value);
     } else {
       composerDraftsRef.current.delete(draftTopic);
+    }
+  }, []);
+
+  const updateStructuredMentionDraft = useCallback((draftTopic, selections) => {
+    if (!draftTopic) return;
+    if (Array.isArray(selections) && selections.length > 0) {
+      structuredMentionDraftsRef.current.set(draftTopic, selections);
+    } else {
+      structuredMentionDraftsRef.current.delete(draftTopic);
     }
   }, []);
 
@@ -329,7 +443,9 @@ export default function MessagesView({
     if (!topic) return;
     activeTopicRef.current = topic;
     setInput(composerDraftsRef.current.get(topic) || '');
-    setMessages([]);
+    const cacheKey = historyCacheKey(user.uid, topic);
+    const cachedHistory = historyCacheRef.current.get(cacheKey);
+    setMessages(cachedHistory?.messages || []);
     const attachmentDraft = attachmentDraftsRef.current.get(topic) || [];
     pendingAttachmentsRef.current = attachmentDraft;
     setPendingAttachments(attachmentDraft);
@@ -346,12 +462,16 @@ export default function MessagesView({
     setMembers([]);
     setGroupInfo(null);
     setPeerProfile(null);
-    setHistoryLoaded(false);
-    historyOffsetRef.current = 0;
-    hasMoreHistoryRef.current = false;
+    setHistoryLoaded(Boolean(cachedHistory));
+    setHistoryError('');
+    setOlderHistoryError('');
+    historyOffsetRef.current = cachedHistory?.offset || 0;
+    historyBeforeIDRef.current = cachedHistory?.nextBeforeID || 0;
+    hasMoreHistoryRef.current = Boolean(cachedHistory?.hasMore);
+    previousScrollRef.current = null;
     loadingOlderRef.current = false;
     stickToBottomRef.current = true;
-    setHasMoreHistory(false);
+    setHasMoreHistory(Boolean(cachedHistory?.hasMore));
     setLoadingOlder(false);
     setIsStopRequested(false);
     setSuppressedWorkingKey('');
@@ -375,7 +495,7 @@ export default function MessagesView({
     } else {
       loadPeerProfile();
     }
-  }, [topic]);
+  }, [topic, user.uid]);
 
   useEffect(() => {
     const preventBrowserFileOpen = (event) => {
@@ -597,26 +717,65 @@ export default function MessagesView({
   }, [messages, runtimePlan, peerTyping]);
 
   const loadHistory = async (targetTopic = topic) => {
+    const requestID = ++historyRequestRef.current;
+    const cacheKey = historyCacheKey(user.uid, targetTopic);
+    const hasCachedHistory = historyCacheRef.current.has(cacheKey);
+    historyLoadingRef.current = true;
+    previousScrollRef.current = null;
+    setRefreshingHistory(true);
+    setHistoryError('');
+    setOlderHistoryError('');
+    loadingOlderRef.current = false;
+    setLoadingOlder(false);
+    if (!hasCachedHistory) {
+      setHistoryLoaded(false);
+    }
     try {
       const res = await api.getMessages(targetTopic, PAGE_SIZE, 0, true);
-      if (activeTopicRef.current !== targetTopic) return;
-      if (res.messages) {
-        const { visibleMessages } = normalizeHistoryMessages(res.messages);
-        setMessages(visibleMessages);
-        historyOffsetRef.current = (res.messages || []).length;
-        setHasMoreHistory((res.messages || []).length === PAGE_SIZE);
-        hasMoreHistoryRef.current = (res.messages || []).length === PAGE_SIZE;
-      }
+      if (activeTopicRef.current !== targetTopic || historyRequestRef.current !== requestID) return;
+      const rawMessages = res.messages || [];
+      const { visibleMessages } = normalizeHistoryMessages(rawMessages);
+      const hasMore = typeof res.has_more === 'boolean'
+        ? res.has_more
+        : rawMessages.length === PAGE_SIZE;
+      const nextBeforeID = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
+      const newestHistoryID = rawMessages.reduce(
+        (latestID, message) => Math.max(latestID, historyMessageID(message)),
+        0,
+      );
+      setMessages((current) => {
+        const newerMessages = rawMessages.length === 0
+          ? current.filter((message) => message._pending)
+          : current.filter((message) => message._pending || historyMessageID(message) > newestHistoryID);
+        return mergeMessages(visibleMessages, newerMessages);
+      });
+      historyOffsetRef.current = rawMessages.length;
+      historyBeforeIDRef.current = nextBeforeID;
+      hasMoreHistoryRef.current = hasMore;
+      setHasMoreHistory(hasMore);
+      cacheHistoryPage(historyCacheRef.current, cacheKey, {
+        messages: visibleMessages,
+        offset: rawMessages.length,
+        nextBeforeID,
+        hasMore,
+      });
     } catch (e) {
+      if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
+        setHistoryError('聊天记录加载失败，请检查网络后重试。');
+      }
     } finally {
-      if (activeTopicRef.current === targetTopic) {
+      if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
+        historyLoadingRef.current = false;
+        setRefreshingHistory(false);
         setHistoryLoaded(true);
       }
     }
   };
 
   const loadOlderHistory = useCallback(async () => {
-    if (loadingOlderRef.current || !hasMoreHistoryRef.current) return;
+    if (historyLoadingRef.current || loadingOlderRef.current || !hasMoreHistoryRef.current) return;
+    const targetTopic = topic;
+    const requestID = historyRequestRef.current;
     
     // Capture the absolute scroll geometry BEFORE rendering the older batch
     if (timelineRef.current) {
@@ -628,28 +787,47 @@ export default function MessagesView({
     
     loadingOlderRef.current = true;
     setLoadingOlder(true);
+    setOlderHistoryError('');
     try {
-      const res = await api.getMessages(topic, PAGE_SIZE, historyOffsetRef.current, true);
-      const { visibleMessages } = normalizeHistoryMessages(res.messages);
+      const res = await api.getMessages(
+        targetTopic,
+        PAGE_SIZE,
+        historyOffsetRef.current,
+        true,
+        historyBeforeIDRef.current,
+      );
+      if (activeTopicRef.current !== targetTopic || historyRequestRef.current !== requestID) return;
+      const rawMessages = res.messages || [];
+      const { visibleMessages } = normalizeHistoryMessages(rawMessages);
       setMessages((prev) => mergeMessages(visibleMessages, prev));
-      historyOffsetRef.current += (res.messages || []).length;
-      const hasMore = (res.messages || []).length === PAGE_SIZE;
+      historyOffsetRef.current += rawMessages.length;
+      historyBeforeIDRef.current = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
+      const hasMore = typeof res.has_more === 'boolean'
+        ? res.has_more
+        : rawMessages.length === PAGE_SIZE;
       hasMoreHistoryRef.current = hasMore;
       setHasMoreHistory(hasMore);
     } catch (e) {
+      if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
+        previousScrollRef.current = null;
+        setOlderHistoryError('更早的聊天记录加载失败。');
+      }
     } finally {
-      loadingOlderRef.current = false;
-      setLoadingOlder(false);
+      if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
+        loadingOlderRef.current = false;
+        setLoadingOlder(false);
+      }
     }
   }, [topic]);
 
   useEffect(() => {
     const el = timelineRef.current;
-    if (!el || !hasMoreHistory || loadingOlder) return;
-    if (el.scrollHeight <= el.clientHeight + HISTORY_AUTO_LOAD_THRESHOLD) {
+    if (!el || refreshingHistory || !hasMoreHistory || loadingOlder || historyError || olderHistoryError) return;
+    if (el.scrollTop <= HISTORY_AUTO_LOAD_THRESHOLD
+      || el.scrollHeight <= el.clientHeight + HISTORY_AUTO_LOAD_THRESHOLD) {
       loadOlderHistory();
     }
-  }, [messages.length, hasMoreHistory, loadingOlder, loadOlderHistory]);
+  }, [messages.length, refreshingHistory, hasMoreHistory, loadingOlder, historyError, olderHistoryError, loadOlderHistory]);
 
   const workingState = useMemo(() => {
     let lastWorkingIndex = -1;
@@ -782,7 +960,8 @@ export default function MessagesView({
   }, []);
 
   const handleSend = useCallback(async () => {
-    const initialText = input.trim();
+    const originalInput = input;
+    const initialText = originalInput.trim();
     const initialAttachments = attachmentDraftsRef.current.get(topic) || pendingAttachmentsRef.current;
     if (!initialText && initialAttachments.length === 0) return;
     if (isUploadingAttachment || sendInFlightRef.current) return;
@@ -800,6 +979,10 @@ export default function MessagesView({
     let attachmentsToSend = [...initialAttachments];
     const text = initialText;
     const originalReplyTo = replyTo;
+    const originalStructuredMentions = structuredMentionDraftsRef.current.get(topic) || [];
+    const mentions = isGroup
+      ? collectStructuredMentionTargets(input, originalStructuredMentions)
+      : [];
     const tempId = Date.now();
 
     try {
@@ -825,6 +1008,7 @@ export default function MessagesView({
         : text;
 
       updateComposerDraft(topic, '');
+      updateStructuredMentionDraft(topic, []);
       updateAttachmentDraft(topic, []);
       stateCleared = true;
       if (activeTopicRef.current === topic) {
@@ -852,7 +1036,9 @@ export default function MessagesView({
         }]));
       }
 
-      const result = await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined);
+      const result = mentions.length > 0
+        ? await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
+        : await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
       if (switchesTopic) {
         if (activeTopicRef.current === topic) {
@@ -875,12 +1061,13 @@ export default function MessagesView({
 
       if (optimisticMessageAdded && activeTopicRef.current === topic) removeOptimisticMessage(tempId);
       if (stateCleared) {
-        updateComposerDraft(topic, text);
+        updateComposerDraft(topic, originalInput);
+        updateStructuredMentionDraft(topic, originalStructuredMentions);
         updateAttachmentDraft(topic, attachmentsToSend);
       }
       if (activeTopicRef.current === topic) {
         if (stateCleared) {
-          setInput(text);
+          setInput(originalInput);
           setReplyTo(originalReplyTo);
         }
         setAttachmentStatus({
@@ -892,7 +1079,7 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, user.uid]);
+  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
     if (!activeBotWorking || isStopRequested) return;
@@ -998,8 +1185,14 @@ export default function MessagesView({
 
   const handleInputChange = (e) => {
     const val = e.target.value;
+    const nextStructuredMentions = reconcileStructuredMentionSelections(
+      input,
+      val,
+      structuredMentionDraftsRef.current.get(topic) || [],
+    );
     setInput(val);
     updateComposerDraft(topic, val);
+    updateStructuredMentionDraft(topic, nextStructuredMentions);
 
     // Detect @mention trigger
     if (isGroup) {
@@ -1035,8 +1228,18 @@ export default function MessagesView({
     if (!textarea) return;
     const range = mentionRangeRef.current;
     if (!range || range.start < 0 || range.end < range.start || range.end > input.length) return;
-    const mention = `@usr${member.user_id} `;
+    const target = member.mention_target || `usr${member.user_id}`;
+    const mention = target === STRUCTURED_MENTION_ALL ? '@所有人 ' : `@${target} `;
     const newText = input.slice(0, range.start) + mention + input.slice(range.end);
+    const reconciledSelections = reconcileStructuredMentionSelections(
+      input,
+      newText,
+      structuredMentionDraftsRef.current.get(topic) || [],
+    );
+    updateStructuredMentionDraft(topic, [
+      ...reconciledSelections,
+      { target, start: range.start, end: range.start + mention.length - 1 },
+    ]);
     setInput(newText);
     updateComposerDraft(topic, newText);
     setShowMentionPicker(false);
@@ -1056,8 +1259,14 @@ export default function MessagesView({
     if (!isGroup || !textarea) return;
     const cursorPos = textarea.selectionStart;
     const nextInput = input.slice(0, cursorPos) + '@' + input.slice(cursorPos);
+    const nextStructuredMentions = reconcileStructuredMentionSelections(
+      input,
+      nextInput,
+      structuredMentionDraftsRef.current.get(topic) || [],
+    );
     setInput(nextInput);
     updateComposerDraft(topic, nextInput);
+    updateStructuredMentionDraft(topic, nextStructuredMentions);
     setShowMentionPicker(true);
     setMentionFilter('');
     setMentionActiveIndex(0);
@@ -1077,7 +1286,6 @@ export default function MessagesView({
     }
 
     try {
-      setIsUploadingAttachment(true);
       setAttachmentStatus({ tone: 'info', message: `正在上传 ${file.name || '附件'}...` });
       const data = await api.uploadFile(file, type);
 
@@ -1112,8 +1320,6 @@ export default function MessagesView({
         setAttachmentStatus({ tone: 'error', message: formatUploadError(err) });
       }
       return null;
-    } finally {
-      setIsUploadingAttachment(false);
     }
   };
 
@@ -1122,12 +1328,29 @@ export default function MessagesView({
     if (fileList.length === 0 || sendInFlightRef.current) return;
     const uploadTopic = activeTopicRef.current;
     let uploadedCount = 0;
-    for (const file of fileList.slice(0, MAX_DROPPED_FILES)) {
-      const uploaded = await uploadAttachmentFile(file, requestedType, uploadTopic);
-      if (!uploaded) break;
-      uploadedCount += 1;
+    let failedCount = 0;
+    setIsUploadingAttachment(true);
+    try {
+      for (const file of fileList.slice(0, MAX_DROPPED_FILES)) {
+        const uploaded = await uploadAttachmentFile(file, requestedType, uploadTopic);
+        if (uploaded) {
+          uploadedCount += 1;
+        } else {
+          failedCount += 1;
+        }
+      }
+    } finally {
+      setIsUploadingAttachment(false);
     }
-    if (uploadedCount > 1 && activeTopicRef.current === uploadTopic) {
+
+    if (failedCount > 0 && fileList.length > 1 && activeTopicRef.current === uploadTopic) {
+      setAttachmentStatus({
+        tone: 'error',
+        message: uploadedCount > 0
+          ? `已添加 ${uploadedCount} 个附件，另有 ${failedCount} 个上传失败。`
+          : `${failedCount} 个附件上传失败，请检查格式、大小或网络后重试。`,
+      });
+    } else if (uploadedCount > 1 && activeTopicRef.current === uploadTopic) {
       setAttachmentStatus({ tone: 'success', message: `已添加 ${uploadedCount} 个附件，发送后对方可见。` });
     }
   };
@@ -1263,16 +1486,33 @@ export default function MessagesView({
   };
 
 
-  const mentionableBots = members.filter((m) => {
+  const groupBots = members.filter((m) => {
     if (m.user_id === user.uid) return false;
-    if (m.is_bot !== true && m.account_type !== 'bot') return false;
-    if (!mentionFilter) return true;
-    const searchable = [m.display_name, m.username, `usr${m.user_id}`]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-    return searchable.includes(mentionFilter);
+    return m.is_bot === true || m.account_type === 'bot';
   });
+  const normalizedMentionFilter = mentionFilter.toLowerCase();
+  const mentionAllAliases = ['所有人', '所有机器人', '全部机器人', 'all'];
+  const mentionAllMatches = groupBots.length > 0 && (
+    !normalizedMentionFilter
+    || mentionAllAliases.some((alias) => alias.includes(normalizedMentionFilter))
+  );
+  const mentionableBots = [
+    ...(mentionAllMatches ? [{
+      user_id: STRUCTURED_MENTION_ALL,
+      mention_target: STRUCTURED_MENTION_ALL,
+      display_name: '所有人',
+      username: '全部机器人',
+      is_all: true,
+    }] : []),
+    ...groupBots.filter((m) => {
+      if (!mentionFilter) return true;
+      const searchable = [m.display_name, m.username, `usr${m.user_id}`]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return searchable.includes(mentionFilter);
+    }),
+  ];
 
   const peerUID = useMemo(() => {
     if (isGroup || !topic || !String(topic).startsWith('p2p_')) return 0;
@@ -1531,6 +1771,7 @@ export default function MessagesView({
   const applyTutorialPrompt = (prompt) => {
     setInput(prompt);
     updateComposerDraft(topic, prompt);
+    updateStructuredMentionDraft(topic, []);
     setAttachmentStatus({ tone: 'success', message: '已填入示例任务，你可以直接发送。' });
     setSelectedTutorialTask(null);
     window.setTimeout(() => {
@@ -1544,6 +1785,7 @@ export default function MessagesView({
     if (!originalText.trim()) return;
     setInput(originalText);
     updateComposerDraft(topic, originalText);
+    updateStructuredMentionDraft(topic, []);
     setReplyTo(null);
     setAttachmentStatus({ tone: 'success', message: '已将原指令放回输入框，编辑后可直接发送。' });
     window.setTimeout(() => {
@@ -1553,7 +1795,7 @@ export default function MessagesView({
       textarea.setSelectionRange(originalText.length, originalText.length);
       resizeComposerInput();
     }, 0);
-  }, [resizeComposerInput, topic, updateComposerDraft]);
+  }, [resizeComposerInput, topic, updateComposerDraft, updateStructuredMentionDraft]);
 
   const questionNavigationItems = useMemo(() => groupedMessages.reduce((items, group, index) => {
     if (group.type !== 'text' || group.message?.from_uid !== user.uid) return items;
@@ -1666,14 +1908,52 @@ export default function MessagesView({
               <div className="v3-date-divider">
                 <span>聊天记录</span>
               </div>
-        
+
+        {!historyLoaded && (
+          <div className="v3-history-state" role="status" aria-live="polite">
+            <LoaderCircle className="is-spinning" size={18} aria-hidden="true" />
+            <span>正在加载聊天记录...</span>
+          </div>
+        )}
+
+        {historyLoaded && historyError && messages.length === 0 && (
+          <div className="v3-history-state" role="alert">
+            <span>{historyError}</span>
+            <button type="button" className="v3-history-retry" onClick={() => loadHistory(topic)}>
+              <RefreshCw size={15} aria-hidden="true" />
+              重新加载
+            </button>
+          </div>
+        )}
+
+        {historyLoaded && historyError && messages.length > 0 && (
+          <div className="v3-history-state is-compact" role="status">
+            <span>已显示上次记录，本次刷新失败。</span>
+            <button type="button" className="v3-history-retry" onClick={() => loadHistory(topic)}>
+              <RefreshCw size={14} aria-hidden="true" />
+              重试
+            </button>
+          </div>
+        )}
+
+        {olderHistoryError && (
+          <div className="v3-history-state is-compact" role="status">
+            <span>{olderHistoryError}</span>
+            <button type="button" className="v3-history-retry" onClick={loadOlderHistory}>
+              <RefreshCw size={14} aria-hidden="true" />
+              重试
+            </button>
+          </div>
+        )}
+
         {loadingOlder && (
-          <div className="oc-history-load" style={{textAlign:'center', padding:'10px 0 24px 0'}}>
+          <div className="v3-history-state is-compact oc-history-load" role="status">
+            <LoaderCircle className="is-spinning" size={15} aria-hidden="true" />
             <span>{t('loading')}</span>
           </div>
         )}
         
-        {supportsTutorialTasks && historyLoaded && messages.length === 0 && !runtimePlan && !peerTyping && !tutorialDismissed && (
+        {supportsTutorialTasks && historyLoaded && !historyError && messages.length === 0 && !runtimePlan && !peerTyping && !tutorialDismissed && (
           <TutorialEmptyState tasks={tutorialTasks} onSelectTask={openTutorialTask} onDismiss={dismissTutorialEmptyState} />
         )}
 
@@ -1846,6 +2126,12 @@ export default function MessagesView({
         onCloseMenus={() => {
           setAttachmentMenuOpen(false);
         }}
+        attachments={pendingAttachments}
+        attachmentRemovalDisabled={isUploadingAttachment || isSendingMessage}
+        onRemoveAttachment={(index) => {
+          updateAttachmentDraft(topic, (current) => current.filter((_, attachmentIndex) => attachmentIndex !== index));
+          setAttachmentStatus(null);
+        }}
         overlay={showMentionPicker && isGroup && (
           <div id="mention-picker" className="oc-mention-picker v3-composer-mention-picker" role="listbox" aria-label="可提及的机器人">
             {mentionableBots.map((m, index) => (
@@ -1862,10 +2148,12 @@ export default function MessagesView({
                 }}
                 onMouseEnter={() => setMentionActiveIndex(index)}
               >
-                <Avatar name={m.display_name || m.username} src={m.avatar_url} size={24} isBot />
+                {m.is_all
+                  ? <span className="oc-mention-all-icon" aria-hidden="true"><Users size={15} /></span>
+                  : <Avatar name={m.display_name || m.username} src={m.avatar_url} size={24} isBot />}
                 <span className="oc-mention-item-copy">
                   <span className="oc-mention-item-name">{m.display_name || m.username || `usr${m.user_id}`}</span>
-                  <span className="oc-mention-item-handle">@usr{m.user_id}</span>
+                  <span className="oc-mention-item-handle">{m.is_all ? '全部机器人' : `@usr${m.user_id}`}</span>
                 </span>
               </button>
             ))}
@@ -1887,25 +2175,21 @@ export default function MessagesView({
                 {isStopRequested ? '已请求 CatsCo 停止当前工作。' : 'CatsCo 正在处理，可点击红色按钮停止。'}
               </div>
             )}
-            {attachmentStatus?.message && (
-              <div className={`v3-live-input-status v3-live-input-status-${attachmentStatus.tone || 'info'}`} role="status">
-                {attachmentStatus.message}
-              </div>
-            )}
-            {(isUploadingAttachment || pendingAttachments.length > 0) && (
-              <div className="v3-composer-attachments">
-                <div className="v3-composer-attachments-copy">
-                  <strong>{isUploadingAttachment ? '正在上传附件...' : `${pendingAttachments.length} 个附件待发送`}</strong>
-                  {!isUploadingAttachment && pendingAttachments.map((attachment, index) => (
-                    <span key={`${attachment.name}-${index}`}>
-                      {attachment.type === 'image' ? '图片' : '文件'}: {attachment.name}
-                      {attachment.size ? ` • ${formatFileSize(attachment.size)}` : ''}
-                    </span>
-                  ))}
-                </div>
-                {pendingAttachments.length > 0 && !isUploadingAttachment && !isSendingMessage && (
-                  <button className="v3-action-btn" aria-label="移除附件" onClick={() => { updateAttachmentDraft(topic, []); setAttachmentStatus(null); }} type="button">×</button>
-                )}
+            {(attachmentStatus?.message || isUploadingAttachment || pendingAttachments.length > 0) && (
+              <div
+                className={`v3-live-input-status v3-attachment-notice v3-live-input-status-${attachmentStatus?.tone || 'info'}`}
+                role="status"
+              >
+                <span>
+                  {attachmentStatus?.tone === 'error'
+                    ? attachmentStatus.message
+                    : isUploadingAttachment
+                      ? (attachmentStatus?.message || '正在上传附件...')
+                      : attachmentStatus?.message
+                        || (pendingAttachments.length > 0
+                          ? `${pendingAttachments.length} 个附件待发送${pendingAttachments.length === 1 ? `：${pendingAttachments[0].name}` : ''}`
+                          : '')}
+                </span>
               </div>
             )}
           </>
@@ -2498,12 +2782,4 @@ function getComparableContent(content) {
     return JSON.stringify(content);
   }
   return String(content ?? '');
-}
-
-function formatFileSize(size) {
-  if (!size || size <= 0) return '';
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }

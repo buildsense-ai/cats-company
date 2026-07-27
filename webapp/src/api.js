@@ -151,7 +151,7 @@ export const api = {
     request('GET', `/api/users/search?q=${encodeURIComponent(q)}&mode=${encodeURIComponent(mode)}`),
 
   // Send message via REST
-  sendMessage: (topicId, content, replyTo) => {
+  sendMessage: (topicId, content, replyTo, mentions = []) => {
     const payload = { topic_id: topicId };
 
     if (typeof content === 'string') {
@@ -178,12 +178,16 @@ export const api = {
     }
 
     if (replyTo) payload.reply_to = replyTo;
+    if (Array.isArray(mentions) && mentions.length > 0) payload.mentions = mentions;
     return request('POST', '/api/messages/send', payload);
   },
 
   // REST fallback for message history
-  getMessages: (topicId, limit, offset, latest = false) =>
-    request('GET', `/api/messages?topic_id=${encodeURIComponent(topicId)}&limit=${limit || 50}&offset=${offset || 0}${latest ? '&latest=1' : ''}`),
+  getMessages: (topicId, limit, offset, latest = false, beforeId = 0) =>
+    request(
+      'GET',
+      `/api/messages?topic_id=${encodeURIComponent(topicId)}&limit=${limit || 50}&offset=${offset || 0}${latest ? '&latest=1' : ''}${beforeId > 0 ? `&before_id=${encodeURIComponent(beforeId)}` : ''}`,
+    ),
   getConversations: () => request('GET', '/api/conversations'),
   getProjects: () => request('GET', '/api/projects'),
   createProject: (name) => request('POST', '/api/projects', { name }),
@@ -466,7 +470,9 @@ export function connectWS(onMessage, { force = false } = {}) {
     Object.keys(topicLastSeq).forEach((tid) => {
       requestMissedMessages(tid);
     });
-    onMessage({ _type: 'ws_open' });
+    const openMessage = { _type: 'ws_open' };
+    onMessage(openMessage);
+    msgHandlers.forEach((handler) => handler(openMessage));
   };
 
   conn.onclose = () => {
@@ -547,16 +553,17 @@ export function sendWS(msg) {
 }
 
 // Send a chat message via WebSocket, with REST fallback
-export async function wsSendMessage(topicId, content, replyTo) {
+export async function wsSendMessage(topicId, content, replyTo, mentions = []) {
   if (wsConn && wsConn.readyState === WebSocket.OPEN) {
     const id = nextMsgId();
     const pub = { id, topic: topicId, content };
     if (replyTo) pub.reply_to = replyTo;
+    if (Array.isArray(mentions) && mentions.length > 0) pub.mentions = mentions;
     sendWS({ pub });
     return id;
   }
   // Fallback to REST if WebSocket is not connected
-  await api.sendMessage(topicId, content);
+  await api.sendMessage(topicId, content, replyTo, mentions);
   return null;
 }
 

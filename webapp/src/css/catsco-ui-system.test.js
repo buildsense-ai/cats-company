@@ -9,6 +9,25 @@ const ruleFor = (selector) => css.match(
   new RegExp(`(?:^|\\r?\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{[^}]*\\}`),
 )?.[0] || '';
 
+const hexColorFor = (rule, property) => rule.match(
+  new RegExp(`${property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*(#[\\da-f]{6})`, 'i'),
+)?.[1] || '';
+
+const relativeLuminance = (hex) => {
+  const channels = hex.match(/[\da-f]{2}/gi).map((channel) => {
+    const value = Number.parseInt(channel, 16) / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return (0.2126 * channels[0]) + (0.7152 * channels[1]) + (0.0722 * channels[2]);
+};
+
+const contrastRatio = (foreground, background) => {
+  const foregroundLuminance = relativeLuminance(foreground);
+  const backgroundLuminance = relativeLuminance(background);
+  return (Math.max(foregroundLuminance, backgroundLuminance) + 0.05)
+    / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
+};
+
 const readLosslessWebpDimensions = (buffer) => {
   if (
     buffer.subarray(0, 4).toString('ascii') !== 'RIFF'
@@ -39,6 +58,31 @@ describe('CatsCo shell styling', () => {
     expect(brandRule).toContain('contain no-repeat');
     expect(brandRule).toContain('-webkit-mask: none;');
     expect(brandRule).toContain('mask: none;');
+    expect(ruleFor('.v3-brand-title')).toContain('gap: 9px;');
+    expect(ruleFor('.v3-brand-title')).toContain('font-size: 16px;');
+    expect(ruleFor('.v3-brand-title')).toContain('font-weight: var(--cc-font-weight-bold);');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('gap: 4px;');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('font-size: 20px;');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('line-height: 22px;');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title'))
+      .toContain('font-weight: var(--cc-font-weight-brand);');
+    expect(ruleFor(':root')).toContain('--cc-brand-text-start: #177d65;');
+    expect(ruleFor(':root')).toContain('--cc-brand-text-end: #0f705a;');
+    expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-brand-text-start: #58cbb5;');
+    expect(ruleFor('html[data-theme="liquid"]')).toContain('--cc-brand-text-end: #2bb18a;');
+    expect(ruleFor('.v3-sidebar-header .catsco-brand-name')).toContain(
+      'var(--cc-brand-text-start) 0%',
+    );
+    expect(ruleFor('.v3-sidebar-header .catsco-brand-name')).toContain('letter-spacing: 0.01em;');
+    expect(css).toMatch(
+      /@media \(forced-colors: active\)[\s\S]*?\.v3-sidebar-header \.catsco-brand-name\s*\{[^}]*-webkit-text-fill-color: currentColor;/,
+    );
+    const rootRule = ruleFor(':root');
+    const lightBackground = hexColorFor(rootRule, '--cc-bg');
+    expect(contrastRatio(hexColorFor(rootRule, '--cc-brand-text-start'), lightBackground))
+      .toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(hexColorFor(rootRule, '--cc-brand-text-end'), lightBackground))
+      .toBeGreaterThanOrEqual(4.5);
     expect(ruleFor('.v3-sidebar.collapsed .v3-sidebar-collapse-btn .catsco-brand-mark'))
       .toContain('width: 34px;');
   });
@@ -52,7 +96,7 @@ describe('CatsCo shell styling', () => {
     const footerRule = ruleFor('.v3-profile-footer');
 
     expect(headerRule).toContain('flex: 0 0 56px;');
-    expect(sidebarRule).toContain('font-family: Inter, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", DengXian, sans-serif;');
+    expect(sidebarRule).toContain('font-family: var(--cc-font-sans);');
     expect(collapseButtonRule).toContain('width: 38px;');
     expect(collapseButtonRule).toContain('height: 38px;');
     expect(ruleFor('.v3-sidebar-collapse-btn > svg')).toContain('width: 20px;');
@@ -61,7 +105,7 @@ describe('CatsCo shell styling', () => {
     expect(listRule).toContain('flex: 1 1 auto;');
     expect(listRule).toContain('overflow-y: auto;');
     expect(footerRule).toContain('flex: 0 0 auto;');
-    expect(ruleFor('.v3-chat-item')).toContain('font-weight: 535;');
+    expect(ruleFor('.v3-chat-item')).toContain('font-weight: 400;');
   });
 
   it('uses the requested chat surfaces without changing sidebar or border colors', () => {
@@ -199,6 +243,19 @@ describe('CatsCo shell styling', () => {
     expect(composerInputRule).toContain('box-shadow: none;');
   });
 
+  it('keeps sidebar friend requests readable at the fixed sidebar width', () => {
+    const requestRule = ruleFor('.cc-contact-requests .oc-friend-request');
+    const infoRule = ruleFor('.cc-contact-requests .oc-friend-request-info');
+    const actionsRule = ruleFor('.cc-contact-requests .oc-friend-request-actions');
+    const buttonRule = ruleFor('.cc-contact-requests .oc-friend-request-actions .oc-btn');
+
+    expect(requestRule).toContain('grid-template-columns: 40px minmax(0, 1fr);');
+    expect(requestRule).toContain('"actions actions";');
+    expect(infoRule).toContain('min-width: 0;');
+    expect(actionsRule).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));');
+    expect(buttonRule).toContain('white-space: nowrap;');
+  });
+
   it('scopes the unified liquid control states away from the light and dark themes', () => {
     const primaryRule = ruleFor('html[data-theme="liquid"] :is(\n  .oc-btn-primary,\n  .oc-auth-btn,\n  .v3-custom-model-save,\n  .relay-access-primary-btn,\n  .v3-agent-request-action.primary\n)');
     const neutralRule = ruleFor('html[data-theme="liquid"] :is(\n  .oc-btn-default,\n  .v3-btn-secondary,\n  .cc-agent-empty-action,\n  .v3-model-status-button,\n  .v3-agent-picker-button,\n  .oc-settings-small-btn,\n  .catsco-download-action,\n  .relay-access-copy-btn,\n  .relay-access-open-btn,\n  .relay-access-key-actions button,\n  .relay-access-secret-box button\n)');
@@ -241,7 +298,7 @@ describe('CatsCo shell styling', () => {
     expect(flowRule).toContain('pointer-events: none;');
     expect(cardRule).toContain('z-index: 1;');
     expect(logoRule).toContain('color: var(--cc-accent);');
-    expect(logoRule).toContain('font-weight: 750;');
+    expect(logoRule).toContain('font-weight: 700;');
   });
 
   it('centers the sidebar settings icon inside its hover surface', () => {
@@ -253,8 +310,12 @@ describe('CatsCo shell styling', () => {
     expect(settingsRule).toContain('width: 32px;');
     expect(settingsRule).toContain('height: 32px;');
     expect(settingsRule).toContain('padding: 0;');
+    expect(settingsRule).toContain('border: 1px solid transparent;');
     expect(settingsRule).toContain('line-height: 0;');
     expect(iconRule).toContain('display: block;');
+    expect(css).toContain('.v3-profile-footer:focus-visible .v3-profile-settings');
+    expect(css).toContain('background: var(--cc-pressed);');
+    expect(css).toContain('color: var(--cc-text);');
   });
 
   it('keeps friend requests visible and gives approval a consistent green interaction', () => {
@@ -272,14 +333,245 @@ describe('CatsCo shell styling', () => {
     expect(approvalActiveRule).toContain('color: #fff;');
   });
 
-  it('keeps the contact request count compact beside the more button', () => {
+  it('keeps the contact request count at the right edge until the more button appears', () => {
     const badgeRule = ruleFor('.cc-section-request-badge');
+    const menuRule = ruleFor('.cc-top-level-section > .cc-section-add');
 
     expect(badgeRule).toContain('min-width: 16px;');
     expect(badgeRule).toContain('height: 16px;');
     expect(badgeRule).toContain('padding: 0 4px;');
-    expect(badgeRule).toContain('margin-right: 2px;');
+    expect(badgeRule).toContain('margin-left: auto;');
+    expect(badgeRule).toContain('margin-right: 0;');
     expect(badgeRule).toContain('font-size: 10px;');
+    expect(menuRule).toContain('position: absolute;');
+    expect(menuRule).toContain('right: 4px;');
+    expect(css).toContain('.cc-contacts-section:hover > .cc-section-request-badge');
+    expect(css).toContain('transform: translateX(-30px);');
+  });
+
+  it('right-aligns every top-level action and keeps its chevron close to the title', () => {
+    const sectionRule = ruleFor('.cc-top-level-section');
+    const toggleRule = ruleFor('.cc-section-toggle');
+    const actionRule = ruleFor('.cc-top-level-section > .cc-section-add');
+
+    expect(sectionRule).toContain('position: relative;');
+    expect(toggleRule).toContain('gap: 3px;');
+    expect(actionRule).toContain('position: absolute;');
+    expect(actionRule).toContain('right: 4px;');
+  });
+
+  it('aligns contact and project conversation actions with regular task actions', () => {
+    const actionRule = ruleFor('.v3-chat-item .cc-chat-row-actions');
+    const agentActionRule = ruleFor('.cc-agent-row-trailing .v3-agent-row-actions');
+    const projectActionRule = ruleFor('.cc-project-menu-trigger');
+
+    expect(actionRule).toContain('justify-content: flex-end;');
+    expect(actionRule).toContain('right: -5px;');
+    expect(agentActionRule).toContain('justify-content: flex-end;');
+    expect(agentActionRule).toContain('gap: 2px;');
+    expect(agentActionRule).toContain('right: -5px;');
+    expect(projectActionRule).toContain('flex: 0 0 var(--cc-sidebar-action-size);');
+    expect(css).not.toContain('.cc-history-item .cc-chat-row-actions');
+  });
+
+  it('makes top-level sidebar section titles distinct from expanded items', () => {
+    expect(ruleFor('.cc-top-level-section')).toContain('font-weight: 600;');
+    expect(ruleFor('.cc-history-section')).toContain('font-weight: 500;');
+    expect(ruleFor('.v3-chat-item')).toContain('font-weight: 400;');
+  });
+
+  it('reveals top-level section actions without adding a row hover surface', () => {
+    const actionRevealRule = ruleFor(
+      `.v3-chat-section:hover > .cc-section-add,
+.v3-chat-section:focus-within > .cc-section-add,
+.cc-section-add:focus-visible`,
+    );
+    const nestedHoverRule = ruleFor('.v3-chat-section:not(.cc-top-level-section):hover');
+
+    expect(actionRevealRule).toContain('opacity: 1;');
+    expect(actionRevealRule).toContain('visibility: visible;');
+    expect(nestedHoverRule).toContain('background: var(--cc-hover);');
+    expect(css).not.toContain('.v3-chat-section:hover {\n  background: var(--cc-hover);');
+  });
+
+  it('stacks sidebar section titles while their content scrolls underneath', () => {
+    const stickyRule = ruleFor(
+      '.v3-chat-list > :is(.cc-contacts-section, .cc-project-section, .cc-conversation-section)',
+    );
+    const sectionGapRule = ruleFor('.v3-chat-list > .cc-section-after-expanded-content');
+    const contactsRule = ruleFor('.v3-chat-list > .cc-contacts-section');
+    const projectsRule = ruleFor('.v3-chat-list > .cc-project-section');
+    const conversationsRule = ruleFor('.v3-chat-list > .cc-conversation-section');
+    const compactProjectsRule = projectsRule.replace(/\s+/g, ' ');
+    const compactConversationsRule = conversationsRule.replace(/\s+/g, ' ');
+
+    expect(stickyRule).toContain('position: sticky;');
+    expect(stickyRule).toContain('z-index: 12;');
+    expect(stickyRule).toContain('border-radius: 0;');
+    expect(stickyRule).toContain('background: var(--cc-bg);');
+    expect(stickyRule).toContain(
+      '0 calc(-1 * var(--cc-sidebar-row-gap)) 0 0 var(--cc-bg),',
+    );
+    expect(stickyRule).toContain(
+      '0 var(--cc-sidebar-row-gap) 0 0 var(--cc-bg);',
+    );
+    expect(ruleFor('.v3-chat-list')).toContain('--cc-sidebar-group-gap: 12px;');
+    expect(ruleFor('.v3-chat-list')).toContain('--cc-sidebar-list-padding-top: 8px;');
+    expect(ruleFor('.v3-chat-list')).toContain('scrollbar-gutter: stable;');
+    expect(sectionGapRule).toContain(
+      'margin-top: calc(var(--cc-sidebar-group-gap) - var(--cc-sidebar-row-gap)) !important;',
+    );
+    expect(contactsRule).toContain('top: var(--cc-sidebar-row-gap);');
+    expect(contactsRule).toContain('z-index: 14;');
+    expect(contactsRule).toContain(
+      '0 calc(-1 * var(--cc-sidebar-list-padding-top) - var(--cc-sidebar-row-gap)) 0 0 var(--cc-bg),',
+    );
+    expect(compactProjectsRule).toContain(
+      'top: calc( var(--cc-sidebar-row-height) + var(--cc-sidebar-row-gap) + var(--cc-sidebar-row-gap) + var(--cc-sidebar-row-gap) );',
+    );
+    expect(projectsRule).toContain('z-index: 13;');
+    expect(compactConversationsRule).toContain(
+      'var(--cc-sidebar-row-height) + var(--cc-sidebar-row-height) + var(--cc-sidebar-row-gap) + var(--cc-sidebar-row-gap) + var(--cc-sidebar-row-gap) + var(--cc-sidebar-row-gap) + var(--cc-sidebar-row-gap)',
+    );
+
+    const liquidStickyRule = ruleFor(
+      'html[data-theme="liquid"] .v3-chat-list > :is(.cc-contacts-section, .cc-project-section, .cc-conversation-section)',
+    );
+    expect(liquidStickyRule).toContain('background: rgb(18, 24, 22);');
+    expect(liquidStickyRule).not.toContain('rgba(18, 24, 22, 0.96)');
+
+    const liquidContactsRule = ruleFor(
+      'html[data-theme="liquid"] .v3-chat-list > .cc-contacts-section',
+    );
+    expect(liquidContactsRule).toContain(
+      '0 calc(-1 * var(--cc-sidebar-list-padding-top) - var(--cc-sidebar-row-gap)) 0 0 rgb(18, 24, 22),',
+    );
+  });
+
+  it('uses the project row geometry for every sidebar hierarchy level', () => {
+    const listRule = ruleFor('.v3-chat-list');
+    const sectionRule = ruleFor('.v3-chat-section');
+    const itemRule = ruleFor('.v3-chat-item');
+    const historyRule = ruleFor('.cc-history-item');
+    const projectRowRule = ruleFor('.cc-project-row');
+    const projectItemRule = ruleFor('.cc-project-row > .cc-project-item');
+    const projectTaskRule = ruleFor('.cc-project-task-item');
+    const nestedItemRule = ruleFor('.cc-sidebar-item-level-2');
+    const contactRule = ruleFor('.cc-contact-item');
+    const compactContactRule = ruleFor(
+      '.cc-contact-item[data-contact-kind="friend"],\n.cc-contact-item[data-contact-kind="agent"]',
+    );
+
+    expect(listRule).toContain('--cc-sidebar-row-height: 36px;');
+    expect(listRule).toContain('--cc-sidebar-row-gap: 1px;');
+    expect(listRule).toContain('--cc-sidebar-row-padding-y: 6px;');
+    expect(listRule).toContain('--cc-sidebar-action-size: 28px;');
+    expect(sectionRule).toContain('min-height: var(--cc-sidebar-row-height);');
+    expect(sectionRule).toContain('line-height: 20px;');
+    expect(itemRule).toContain('min-height: var(--cc-sidebar-row-height);');
+    expect(itemRule).toContain('margin: var(--cc-sidebar-row-gap) 0;');
+    expect(historyRule).toContain('min-height: var(--cc-sidebar-row-height);');
+    expect(historyRule).toContain('padding-top: var(--cc-sidebar-row-padding-y);');
+    expect(historyRule).toContain('padding-bottom: var(--cc-sidebar-row-padding-y);');
+    expect(projectRowRule).toContain('position: relative;');
+    expect(projectItemRule).toContain('margin: 0;');
+    expect(projectTaskRule).toContain('width: 100%;');
+    expect(nestedItemRule).toContain('padding-left: 28px;');
+    expect(contactRule).toContain('min-height: var(--cc-sidebar-row-height);');
+    expect(compactContactRule).toContain('min-height: var(--cc-sidebar-row-height);');
+    expect(compactContactRule).toContain('padding-top: var(--cc-sidebar-row-padding-y);');
+    expect(compactContactRule).toContain('padding-bottom: var(--cc-sidebar-row-padding-y);');
+  });
+
+  it('keeps the selected project-task checkmark visible against its accent fill', () => {
+    expect(ruleFor('.cc-project-task-selection-indicator svg')).toContain('color: currentColor;');
+    expect(ruleFor('.cc-project-task-option.is-selected .cc-project-task-selection-indicator svg')).toContain('color: #fff;');
+  });
+
+  it('keeps project selection controls inside their scroll rail', () => {
+    const listRule = ruleFor('.cc-new-task-agent-list');
+    const optionRule = ruleFor('.cc-new-task-agent');
+
+    expect(listRule).toContain('min-width: 0;');
+    expect(listRule).toContain('overflow-x: hidden;');
+    expect(listRule).toContain('scrollbar-gutter: stable;');
+    expect(optionRule).toContain('box-sizing: border-box;');
+    expect(optionRule).toContain('min-width: 0;');
+    expect(optionRule).toContain('overflow: hidden;');
+  });
+
+  it('keeps group member actions on one desktop row without overlapping members', () => {
+    const memberRule = ruleFor('.oc-group-settings-modal .oc-settings-member-item');
+    const actionsRule = ruleFor('.oc-group-settings-modal .oc-settings-member-actions');
+
+    expect(memberRule).toContain('grid-template-columns: 32px minmax(0, 1fr) auto;');
+    expect(memberRule).toContain('align-items: center;');
+    expect(actionsRule).toContain('max-width: none;');
+    expect(actionsRule).toContain('flex-wrap: nowrap;');
+    expect(css).toContain('@media (max-width: 640px)');
+    expect(css).toContain('grid-column: 2;');
+  });
+
+  it('shows the narrow-screen sidebar shadow only while the drawer is open', () => {
+    expect(css).toContain('.v3-sidebar:not(.collapsed) {\n    position: fixed;');
+    expect(css).toContain('flex-basis: min(86vw, 300px);\n    box-shadow: none;');
+    expect(css).toContain('.v3-sidebar:not(.collapsed).open {\n    box-shadow: 16px 0 40px rgba(0, 0, 0, 0.34);');
+  });
+
+  it('zooms compact task artwork without resizing its button and shows a fixed label', () => {
+    const buttonRule = ruleFor('.cc-compact-new-chat,\n.cc-compact-conversation');
+    const avatarRule = ruleFor('.cc-compact-conversation .oc-avatar');
+    const hintRule = ruleFor('.cc-compact-task-hint');
+
+    expect(buttonRule).toContain('width: 42px;');
+    expect(buttonRule).toContain('height: 42px;');
+    expect(avatarRule).toContain('transition: transform 150ms ease;');
+    expect(css).toContain('transform: scale(1.14);');
+    expect(hintRule).toContain('position: fixed;');
+    expect(hintRule).toContain('pointer-events: none;');
+  });
+
+  it('overlays compact task status on the avatar without changing rail geometry', () => {
+    const compactButtonRule = ruleFor('.cc-compact-conversation');
+    const dotRule = ruleFor('.cc-compact-task-status:not(.running)');
+    const runningRule = ruleFor('.cc-compact-task-status.running');
+    const spinnerRule = ruleFor('.cc-compact-task-status.running svg');
+
+    expect(compactButtonRule).toContain('position: relative;');
+    expect(css).toContain('.cc-compact-conversation {\n  overflow: hidden;');
+    expect(dotRule).toContain('right: 3px;');
+    expect(dotRule).toContain('bottom: 3px;');
+    expect(dotRule).toContain('width: 9px;');
+    expect(dotRule).toContain('box-shadow: 0 0 0 2px var(--cc-bg);');
+    expect(runningRule).toContain('inset: 0;');
+    expect(runningRule).toContain('justify-content: center;');
+    expect(spinnerRule).toContain('animation: catsco-spin 0.9s linear infinite;');
+    expect(spinnerRule).not.toContain('filter:');
+    expect(ruleFor('.cc-compact-task-status.completed')).toContain('color: var(--v3-primary);');
+    expect(ruleFor('.cc-compact-task-status.failed')).toContain('color: #ef5b5b;');
+    expect(css).toContain('.cc-compact-task-status.cancelled,\n.cc-compact-task-status.stale');
+    expect(css).toContain('.cc-task-row-status.running svg,\n  .cc-compact-task-status.running svg');
+  });
+
+  it('zooms the collapsed profile avatar without changing the footer frame', () => {
+    const footerRule = ruleFor('.v3-sidebar.collapsed .v3-profile-footer');
+    const avatarRule = ruleFor('.v3-sidebar.collapsed .v3-profile-avatar.oc-avatar');
+
+    expect(footerRule).toContain('width: 100%;');
+    expect(footerRule).toContain('min-height: 64px;');
+    expect(avatarRule).toContain('transition: transform 150ms ease;');
+    expect(css).toContain('.v3-sidebar.collapsed .v3-profile-footer:hover .v3-profile-avatar.oc-avatar');
+    expect(css).toContain('transform: scale(1.14);');
+  });
+
+  it('positions the collapsed profile menu beside the rail without widening it', () => {
+    const popoverRule = ruleFor('.v3-profile-popover');
+    const compactRule = ruleFor('.v3-profile-popover.is-compact');
+
+    expect(popoverRule).toContain('position: fixed;');
+    expect(compactRule).toContain('left: calc(var(--cc-sidebar-collapsed) + 8px);');
+    expect(compactRule).toContain('bottom: 12px;');
+    expect(compactRule).toContain('width: min(220px, calc(100vw - var(--cc-sidebar-collapsed) - 20px));');
   });
 
   it('tightens feedback upload copy and separates profile theme text', () => {
@@ -303,19 +595,37 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-empty-task-bg: #0f0f0f;');
     expect(emptyTaskRule).toContain('background: var(--cc-empty-task-bg);');
     expect(headingRule).toContain('display: flex;');
-    expect(headingRule).toContain('align-items: center;');
+    expect(headingRule).toContain('align-items: flex-end;');
     expect(headingRule).toContain('justify-content: center;');
-    expect(headingRule).toContain('gap: 18px;');
-    expect(headingRule).toContain('margin-bottom: 28px;');
-    expect(headingRule).toContain('transform: translateY(8px);');
-    expect(markRule).toContain('width: 128px;');
-    expect(markRule).toContain('height: 56px;');
+    expect(headingRule).toContain('gap: 16px;');
+    expect(headingRule).toContain('margin-bottom: 24px;');
+    expect(headingRule).not.toContain('transform:');
+    expect(markRule).toContain('width: 112px;');
+    expect(markRule).toContain('height: 48px;');
     expect(markRule).toContain('margin: 0;');
     expect(ruleFor('.cc-empty-task h1')).toContain('margin: 0;');
+    expect(ruleFor('.cc-empty-task h1')).toContain('font-size: 28px;');
     expect(ruleFor('.cc-empty-task h1')).toContain('font-weight: 500;');
+    expect(ruleFor('.cc-empty-task h1')).toContain('line-height: 36px;');
+  });
+
+  it('uses integer line heights for the primary desktop text rails', () => {
+    expect(ruleFor('.cc-sidebar-search input')).toContain('font-size: 14px;');
+    expect(ruleFor('.cc-sidebar-search input')).toContain('line-height: 20px;');
+    expect(ruleFor('.v3-chat-section')).toContain('font-size: 14px;');
+    expect(ruleFor('.v3-chat-section')).toContain('line-height: 20px;');
+    expect(ruleFor('.v3-chat-item')).toContain('font-size: 13px;');
+    expect(ruleFor('.v3-chat-item')).toContain('line-height: 19px;');
+    expect(ruleFor('.v3-chat-item-identity')).toContain('font-size: 12px;');
+    expect(ruleFor('.v3-chat-item-identity')).toContain('line-height: 18px;');
+    expect(ruleFor('.v3-composer-input')).toContain('font-size: 15px;');
+    expect(ruleFor('.v3-composer-input')).toContain('line-height: 22px;');
+    expect(ruleFor('.v3-composer-hint')).toContain('line-height: 18px;');
   });
 
   it('aligns peer messages and typing status to the unchanged composer rail', () => {
+    const stackedNoticeRule = ruleFor('.v3-composer-notices .v3-live-input-status:last-child');
+
     expect(ruleFor('.v3-timeline')).toContain('padding: 18px 20px 140px;');
     expect(ruleFor('.v3-timeline-inner')).toContain('max-width: 760px;');
     expect(ruleFor('.v3-message.is-peer .v3-avatar-col')).toContain('margin-right: 10px;');
@@ -332,6 +642,21 @@ describe('CatsCo shell styling', () => {
     expect(css).toContain('opacity: 0.88;');
     expect(css).toContain('animation-duration: 2400ms;');
     expect(ruleFor('.v3-composer-box')).toContain('width: min(760px, 100%);');
+    expect(stackedNoticeRule).toContain('width: 85%;');
+    expect(stackedNoticeRule).toContain('margin: 0 auto -11px;');
+    expect(stackedNoticeRule).toContain('border-radius: 22px 22px 0 0;');
+    expect(stackedNoticeRule).toContain('padding: 8px 14px 11px;');
+    expect(stackedNoticeRule).toContain('text-align: center;');
+    expect(ruleFor('.v3-composer-notices + .v3-composer-box')).toContain('z-index: 1;');
+    expect(ruleFor('.v3-attachment-notice')).toContain('justify-content: center;');
+    expect(ruleFor('.v3-attachment-notice > span')).toContain('text-overflow: ellipsis;');
+    expect(ruleFor('.v3-composer-attachment-tray')).toContain('overflow-x: auto;');
+    expect(ruleFor('.v3-composer-attachment-chip')).toContain('height: 56px;');
+    expect(ruleFor('.v3-composer-attachment-chip.is-image')).toContain('width: 56px;');
+    expect(ruleFor('.v3-composer-attachment-remove')).toContain('position: absolute;');
+    expect(ruleFor('.v3-composer-attachment-preview')).toContain('cursor: zoom-in;');
+    expect(ruleFor('.v3-composer-image-preview-backdrop')).toContain('position: fixed;');
+    expect(css).not.toContain('.v3-composer-attachments {');
   });
 
   it('uses a lighter self-message bubble in light mode and a deeper one in dark mode', () => {
@@ -339,6 +664,21 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-self-message: #303032;');
     expect(ruleFor('.v3-message.is-self .v3-message-bubble'))
       .toContain('background: var(--cc-self-message);');
+  });
+
+  it('renders sent files as a compact neutral card', () => {
+    const cardRule = ruleFor('.v3-message .v3-attachment-card.v3-artifact-card');
+    const iconRule = ruleFor('.v3-message .v3-attachment-icon');
+    const actionRule = ruleFor('.v3-message .v3-artifact-action');
+
+    expect(cardRule).toContain('width: min(390px, 100%);');
+    expect(cardRule).toContain('background: var(--cc-panel);');
+    expect(cardRule).toContain('border: 1px solid var(--cc-border);');
+    expect(iconRule).toContain('width: 30px;');
+    expect(iconRule).toContain('height: 30px;');
+    expect(actionRule).toContain('height: 28px;');
+    expect(actionRule).toContain('background: transparent;');
+    expect(css).toContain('.v3-message.is-self.has-file-only .v3-message-bubble');
   });
 
   it('uses the same solid online color for friend and task icons while keeping agents outlined', () => {
@@ -357,4 +697,33 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.cc-contact-item .cc-agent-contact-icon.online')).toContain('stroke: var(--cc-online-icon);');
     expect(ruleFor('.cc-contact-item .cc-agent-contact-icon.online')).toContain('fill: none;');
   });
+
+  it('keeps the member search surface unified and clearly marks the active member type', () => {
+    const searchInputRule = ruleFor('.oc-member-search input');
+    const searchFocusRule = ruleFor('.oc-member-search input:focus,\n.oc-member-search input:focus-visible');
+    const activeTypeRule = ruleFor('.oc-member-search .oc-segmented-control button.active');
+    const groupNameFocusRule = ruleFor('.oc-create-group-dialog .oc-collaboration-input:focus-visible');
+
+    expect(searchInputRule).toContain('background: transparent !important;');
+    expect(searchInputRule).toContain('box-shadow: none !important;');
+    expect(searchFocusRule).toContain('background: transparent !important;');
+    expect(activeTypeRule).toContain('var(--cc-accent)');
+    expect(activeTypeRule).toContain('color: #fff;');
+    expect(groupNameFocusRule).toContain('outline: 0;');
+    expect(groupNameFocusRule).toContain('box-shadow: none;');
+  });
+
+  it('centers the assistant role chevron against the select control itself', () => {
+    expect(ruleFor('.cc-agent-role-field')).toContain('position: relative;');
+    expect(ruleFor('.cc-agent-basic-card .cc-agent-role-select')).toContain('margin-bottom: 0;');
+    expect(ruleFor('.cc-agent-role-chevron')).toContain('top: 50%;');
+    expect(ruleFor('.cc-agent-role-chevron')).toContain('transform: translateY(-50%);');
+  });
+
+  it('uses the narrow chat container breakpoint and keeps the file preview sheet inside short viewports', () => {
+    expect(css.match(/@container catsco-main \(max-width: 719px\) \{/g)).toHaveLength(2);
+    expect(css).toContain('height: min(68svh, 620px, calc(100svh - max(76px, env(safe-area-inset-top)) - max(10px, env(safe-area-inset-bottom))));');
+    expect(css).not.toContain('min-height: 380px;');
+  });
+
 });

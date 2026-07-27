@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { api, setToken, getToken, connectWS, reconnectWS, disconnectWS } from '../api';
 import t from '../i18n';
 import ChatListView from './sidepanel-view';
@@ -25,6 +26,7 @@ import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
 import AuthFlowBackground from '../components/auth-flow-background';
+import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
 import BotModelSelector, {
@@ -55,7 +57,7 @@ import {
   saveLiquidThemeUnlock,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
-import { Bug, Cloud, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Cloud, Download, Frown, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 
@@ -155,6 +157,7 @@ export default function TinodeWeb() {
 }
 
 function TinodeWebApp() {
+  const feedback = useFeedback();
   const entryMatch = window.location.pathname.match(/^\/e\/([^/]+)$/);
   const entrySceneKey = entryMatch ? decodeURIComponent(entryMatch[1]) : '';
   const channelDeviceLink = window.location.pathname === '/channel-device-link';
@@ -720,11 +723,12 @@ function TinodeWebApp() {
         current?.topicId === topic.topicId ? { ...current, name: nextName } : current
       ));
       window.dispatchEvent(new Event('cc:data-changed'));
+      feedback.notify({ tone: 'success', message: '对话标题已更新' });
     } catch (error) {
-      window.alert(error.message || '修改对话标题失败');
+      feedback.notify({ tone: 'error', title: '修改标题失败', message: error.message || '请稍后重试' });
       throw error;
     }
-  }, [activeTopic, setActiveTopic]);
+  }, [activeTopic, feedback, setActiveTopic]);
 
   const resolveAgentTopic = useCallback(async (agent) => {
     const agentUid = agent?.uid || agent?.id;
@@ -907,9 +911,9 @@ function TinodeWebApp() {
         />
 
         {showProfilePopover && (
-          <div className="v3-profile-popover" ref={profilePopoverRef}>
+          <ProfilePopover compact={appSidebarCollapsed} popoverRef={profilePopoverRef}>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowFeedbackModal(true); }}>
-              <Bug size={16} style={{marginRight: 10}} /> 意见反馈
+              <Frown size={16} strokeWidth={1.8} style={{marginRight: 10}} /> 意见反馈
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDownloadModal(true); }}>
               <Download size={16} style={{marginRight: 10}} /> 下载 CatsCo 桌面端
@@ -926,7 +930,7 @@ function TinodeWebApp() {
             <div className="v3-popover-item danger" onClick={() => { localStorage.clear(); window.location.reload(); }}>
               <LogOut size={16} style={{marginRight: 10}} /> 退出登录
             </div>
-          </div>
+          </ProfilePopover>
         )}
 
         <SidebarResizeHandle
@@ -1142,6 +1146,19 @@ function SidebarContent({
   );
 }
 
+export function ProfilePopover({ compact = false, popoverRef, children }) {
+  if (typeof document === 'undefined') return null;
+  return createPortal(
+    <div
+      className={`v3-profile-popover${compact ? ' is-compact' : ''}`}
+      ref={popoverRef}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 function ProfileFooter({ user, wsStatus, popoverOpen, onTogglePopover }) {
   const connected = wsStatus === 'connected';
   const reconnecting = wsStatus === 'connecting' || wsStatus === 'reconnecting';
@@ -1256,7 +1273,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
   return authShell(
     <form className="oc-auth-card" onSubmit={handleSubmit}>
       <div className="oc-auth-logo">CatsCo</div>
-      {error && <div style={{ color: '#FA5151', marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      {error && <InlineFeedback tone="error" className="oc-auth-feedback">{error}</InlineFeedback>}
 
       {mode === 'login' ? (
         <>
