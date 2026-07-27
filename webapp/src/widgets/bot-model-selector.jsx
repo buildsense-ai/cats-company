@@ -540,7 +540,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                     >
                       <span>
                         <strong>{model.label}</strong>
-                        <small>{model.description}{contextWindow ? ` · 上下文 ${contextWindow}` : ''}</small>
+                        <small>{contextWindow ? `上下文 ${contextWindow}` : model.description}</small>
                         <small className={`v3-model-menu-quota ${modelQuotaTone(model.quota)}`.trim()}>{modelQuotaLabel(model.quota, modelConfig?.quota_error ? 'error' : usageState)}</small>
                       </span>
                       {hasReasoning ? <ChevronRight size={15} /> : selected && <Check size={15} />}
