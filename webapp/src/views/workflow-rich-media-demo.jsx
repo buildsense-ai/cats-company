@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import ChatMessage, { FilePreviewPanel } from '../widgets/chat-message';
 
 const demoUser = {
@@ -178,6 +178,7 @@ const demoMessages = [
 
 export default function WorkflowRichMediaDemo() {
   const [previewFile, setPreviewFile] = useState(null);
+  const chatColumnRef = useRef(null);
 
   return (
     <div className="v3-app v3-workflow-demo">
@@ -210,7 +211,7 @@ export default function WorkflowRichMediaDemo() {
       </aside>
       <main className="v3-main">
         <div className={`v3-message-workspace${previewFile ? ' has-preview' : ''}`}>
-          <div className="v3-chat-column">
+          <div ref={chatColumnRef} className="v3-chat-column">
             <div className="v3-message-view">
               <div className="v3-chat-header">
                 <div>
@@ -251,7 +252,7 @@ export default function WorkflowRichMediaDemo() {
             </div>
           </div>
           {previewFile && (
-            <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} />
+            <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} backgroundRef={chatColumnRef} />
           )}
         </div>
       </main>

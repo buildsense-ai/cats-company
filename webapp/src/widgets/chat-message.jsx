@@ -1255,7 +1255,7 @@ function FileContent({ payload, onPreviewFile, activePreviewFile }) {
   );
 }
 
-export function FilePreviewPanel({ file, onClose }) {
+export function FilePreviewPanel({ file, onClose, backgroundRef }) {
   const [preview, setPreview] = useState(false);
   const [textContent, setTextContent] = useState(null);
   const [binaryContent, setBinaryContent] = useState(null);
@@ -1379,16 +1379,13 @@ export function FilePreviewPanel({ file, onClose }) {
     focusBeforeSheetRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
-    const shell = panelRef.current?.closest('.v3-file-preview-shell');
-    const chatColumn = shell?.previousElementSibling?.matches('.v3-chat-column')
-      ? shell.previousElementSibling
-      : null;
-    const hadInert = chatColumn?.hasAttribute('inert');
-    const previousAriaHidden = chatColumn?.getAttribute('aria-hidden');
+    const background = backgroundRef?.current || null;
+    const hadInert = background?.hasAttribute('inert');
+    const previousAriaHidden = background?.getAttribute('aria-hidden');
     closeButtonRef.current?.focus({ preventScroll: true });
-    if (chatColumn) {
-      chatColumn.setAttribute('inert', '');
-      chatColumn.setAttribute('aria-hidden', 'true');
+    if (background) {
+      background.setAttribute('inert', '');
+      background.setAttribute('aria-hidden', 'true');
     }
 
     const handleKeyDown = (event) => {
@@ -1413,16 +1410,16 @@ export function FilePreviewPanel({ file, onClose }) {
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
-      if (chatColumn) {
-        if (!hadInert) chatColumn.removeAttribute('inert');
-        if (previousAriaHidden == null) chatColumn.removeAttribute('aria-hidden');
-        else chatColumn.setAttribute('aria-hidden', previousAriaHidden);
+      if (background) {
+        if (!hadInert) background.removeAttribute('inert');
+        if (previousAriaHidden == null) background.removeAttribute('aria-hidden');
+        else background.setAttribute('aria-hidden', previousAriaHidden);
       }
       const priorFocus = focusBeforeSheetRef.current;
       if (priorFocus?.isConnected) priorFocus.focus({ preventScroll: true });
       focusBeforeSheetRef.current = null;
     };
-  }, [isSheetMode, preview]);
+  }, [backgroundRef, isSheetMode, preview]);
 
   useEffect(() => () => {
     if (dismissTimerRef.current) window.clearTimeout(dismissTimerRef.current);
@@ -1505,6 +1502,11 @@ export function FilePreviewPanel({ file, onClose }) {
           className="v3-file-preview-drag-handle"
           type="button"
           aria-label="向下拖动关闭预览"
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            startDismiss();
+          }}
           onPointerDown={handleDragStart}
           onPointerMove={handleDragMove}
           onPointerUp={handleDragEnd}

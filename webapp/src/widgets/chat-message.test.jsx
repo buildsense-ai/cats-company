@@ -59,9 +59,10 @@ const catscoUiSystemCss = readFileSync(
 
 function PreviewHarness({ message }) {
   const [previewFile, setPreviewFile] = React.useState(null);
+  const chatColumnRef = React.useRef(null);
   return (
     <div className={`v3-message-workspace${previewFile ? ' has-preview' : ''}`}>
-      <div className="v3-chat-column">
+      <div ref={chatColumnRef} className="v3-chat-column">
         <ChatMessage
           message={message}
           isSelf={false}
@@ -73,7 +74,7 @@ function PreviewHarness({ message }) {
       </div>
       {previewFile && (
         <div className="v3-file-preview-shell">
-          <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} />
+          <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} backgroundRef={chatColumnRef} />
         </div>
       )}
     </div>
@@ -1063,8 +1064,16 @@ describe('ChatMessage rich file rendering', () => {
       });
       expect(document.activeElement).toBe(panel.querySelector('.v3-file-preview-drag-handle'));
 
+      const dragHandle = panel.querySelector('.v3-file-preview-drag-handle');
+      expect(document.activeElement).toBe(dragHandle);
       await act(async () => {
-        Simulate.click(closeButton);
+        Simulate.keyDown(dragHandle, { key: 'Enter' });
+        await Promise.resolve();
+      });
+      expect(panel.className).toContain('is-dismissing');
+
+      await act(async () => {
+        Simulate.transitionEnd(panel, { propertyName: 'transform' });
         await Promise.resolve();
       });
       expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
