@@ -21,15 +21,23 @@ const baseConfig = {
   custom_supported: true,
   models: [
     {
+      id: 'minimax-m2.7',
+      label: 'MiniMax M2.7',
+      description: '标准额度，适合日常任务',
+      context_window_tokens: 204800,
+    },
+    {
       id: 'minimax-m3',
       label: 'MiniMax M3',
       description: '支持多模态与长上下文',
+      context_window_tokens: 1000000,
       quota: { model: 'minimax-m3', limit_cny: 100, remaining_cny: 75, percent: 25, status: 'normal' },
     },
     {
       id: 'deepseek-v4-flash',
       label: 'DeepSeek V4 Flash',
       description: '低额度 Flash，支持推理强度',
+      context_window_tokens: 1000000,
       quota: { model: 'deepseek-v4-flash', limit_cny: 50, remaining_cny: 5, percent: 90, status: 'high' },
       reasoning_efforts: ['high', 'max', 'disabled'],
       default_reasoning_effort: 'high',
@@ -38,6 +46,7 @@ const baseConfig = {
       id: 'gpt-5.6-terra',
       label: 'GPT-5.6 Terra',
       description: 'OpenAI Responses，支持精细推理强度',
+      context_window_tokens: 256000,
       reasoning_efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
       default_reasoning_effort: 'medium',
     },
@@ -236,8 +245,16 @@ describe('LocalAssistantBar model selector', () => {
     expect(getConfig).toHaveBeenCalledWith(43, { includeUsage: true });
     const m3 = [...container.querySelectorAll('.v3-model-menu-item')]
       .find((item) => item.textContent.includes('MiniMax M3'));
+    const m27 = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('MiniMax M2.7'));
     const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]
       .find((item) => item.textContent.includes('DeepSeek V4 Flash'));
+    const terra = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('GPT-5.6 Terra'));
+    expect(m27?.textContent).toContain('上下文 204.8K');
+    expect(m3?.textContent).toContain('上下文 1M');
+    expect(deepseek?.textContent).toContain('上下文 1M');
+    expect(terra?.textContent).toContain('上下文 256K');
     expect(m3?.textContent).toContain('剩余 75% · ¥75.00');
     expect(deepseek?.textContent).toContain('剩余 10% · ¥5.00');
     expect(deepseek?.querySelector('.v3-model-menu-quota.warning')).toBeTruthy();
@@ -269,14 +286,14 @@ describe('LocalAssistantBar model selector', () => {
   it('edits a cloud custom model without receiving or resending the stored API key', async () => {
     const customConfig = {
       ...baseConfig,
-      desired: { kind: 'custom', model_id: 'private-model', reasoning_effort: 'high', revision: 4 },
+      desired: { kind: 'custom', model_id: 'gpt-5.6-sol', reasoning_effort: 'high', revision: 4 },
       custom: {
         protocol: 'openai-responses',
         api_base: 'https://models.example.com/v1',
-        model: 'private-model',
+        model: 'gpt-5.6-sol',
         api_key_configured: true,
         api_key_hint: '****cret',
-        context_window_tokens: 256000,
+        context_window_tokens: 1000000,
         reasoning_effort: 'high',
       },
     };
@@ -292,6 +309,12 @@ describe('LocalAssistantBar model selector', () => {
     const keyInput = container.querySelector('input[type="password"]');
     expect(keyInput.value).toBe('');
     expect(keyInput.placeholder).toContain('****cret');
+    const contextSelect = [...container.querySelectorAll('.v3-custom-model-editor select')]
+      .find((select) => [...select.options].some((option) => option.textContent === '1M'));
+    expect([...contextSelect.options].map((option) => option.textContent)).toEqual([
+      '128K', '200K', '256K', '512K', '1M',
+    ]);
+    expect(contextSelect.value).toBe('1000000');
     await act(async () => {
       container.querySelector('.v3-custom-model-editor').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
@@ -300,8 +323,42 @@ describe('LocalAssistantBar model selector', () => {
       kind: 'custom',
       model_id: 'custom',
       custom: expect.objectContaining({
-        protocol: 'openai-responses', model: 'private-model', api_key: '', context_window_tokens: 256000,
+        protocol: 'openai-responses', model: 'gpt-5.6-sol', api_key: '', context_window_tokens: 1000000,
       }),
+    }));
+  });
+
+  it('preserves a legacy custom context value while keeping the standard choices available', async () => {
+    const legacyConfig = {
+      ...baseConfig,
+      desired: { kind: 'custom', model_id: 'legacy-model', reasoning_effort: '', revision: 4 },
+      custom: {
+        protocol: 'openai-chat',
+        api_base: 'https://models.example.com/v1',
+        model: 'legacy-model',
+        api_key_configured: true,
+        context_window_tokens: 272000,
+      },
+    };
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(legacyConfig);
+    const update = vi.spyOn(api, 'updateBotModelConfig').mockResolvedValue({ ...legacyConfig, status: 'pending' });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    await act(async () => container.querySelector('.v3-model-status-button').click());
+    const customEntry = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('自定义模型'));
+    await act(async () => customEntry.click());
+
+    const contextSelect = [...container.querySelectorAll('.v3-custom-model-editor select')]
+      .find((select) => select.value === '272000');
+    expect([...contextSelect.options].map((option) => option.textContent)).toEqual([
+      '272K', '128K', '200K', '256K', '512K', '1M',
+    ]);
+    await act(async () => {
+      container.querySelector('.v3-custom-model-editor').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    expect(update).toHaveBeenCalledWith(43, expect.objectContaining({
+      custom: expect.objectContaining({ context_window_tokens: 272000 }),
     }));
   });
 
