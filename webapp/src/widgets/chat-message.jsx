@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
+import { ChevronDown, ChevronRight, Terminal, Brain, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -29,6 +29,8 @@ const SPREADSHEET_MIME_TYPES = new Set([
 ]);
 const HTML_PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals';
 const FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const REMOTE_ARTIFACT_PREVIEW_SANDBOX = `${HTML_PREVIEW_SANDBOX} allow-same-origin`;
+const trustedArtifactPreviewPayloads = new WeakSet();
 
 function shouldHideToolProgressName(name) {
   return HIDDEN_TOOL_PROGRESS_NAMES.has(String(name || '').trim());
@@ -698,7 +700,7 @@ function WorkingProcess({ blocks }) {
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [] }) {
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
   const content = message.content;
@@ -832,7 +834,15 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                   onPreviewFile={onPreviewFile}
                   activePreviewFile={activePreviewFile}
                 />
-              ) : <TextContent content={renderedTextContent} isGroup={isGroup} />)}
+              ) : (
+                <TextContent
+                  content={renderedTextContent}
+                  isGroup={isGroup}
+                  knownArtifacts={knownArtifacts}
+                  onPreviewFile={onPreviewFile}
+                  activePreviewFile={activePreviewFile}
+                />
+              ))}
               {richBlocks.map((block, index) => (
                 <RichContent
                   key={`${block.type}-${index}`}
@@ -919,69 +929,246 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.showThinking === nextProps.showThinking &&
     prevProps.isConsecutive === nextProps.isConsecutive &&
     prevProps.onPreviewFile === nextProps.onPreviewFile &&
-    prevProps.activePreviewFile === nextProps.activePreviewFile;
+    prevProps.activePreviewFile === nextProps.activePreviewFile &&
+    prevProps.knownArtifacts === nextProps.knownArtifacts;
 });
 
 export default ChatMessage;
 
-function TextContent({ content, isGroup }) {
+function TextContent({ content, isGroup, knownArtifacts = [], onPreviewFile, activePreviewFile }) {
   const text = useMemo(() => messageContentText(content), [content]);
+  const matchedArtifacts = useMemo(() => findKnownArtifactsInText(text, knownArtifacts), [knownArtifacts, text]);
+  const plainText = useMemo(() => removeKnownArtifactURLs(text, matchedArtifacts), [matchedArtifacts, text]);
   const renderableTable = useMemo(() => hasRenderableTable(text), [text]);
   const plainTextTableLike = useMemo(() => (
     !renderableTable && hasPlainTextTableLikeBlock(text)
   ), [renderableTable, text]);
   const plainTextParagraphs = useMemo(() => (
-    text.split(/\r?\n(?:[\t ]*\r?\n)+/)
-  ), [text]);
+    plainText.split(/\r?\n(?:[\t ]*\r?\n)+/)
+  ), [plainText]);
 
   const markdownHtml = useMemo(() => {
     if (plainTextTableLike) return null;
     if (!shouldRenderMarkdown(text, { plainTextTables: true })) return null;
     try {
-      return renderSafeMarkdown(text, { plainTextTables: true });
+      return decorateArtifactMarkdown(renderSafeMarkdown(text, { plainTextTables: true }), matchedArtifacts);
     } catch (e) {
       console.error('Markdown parse error:', e);
       return null;
     }
-  }, [plainTextTableLike, text]);
+  }, [matchedArtifacts, plainTextTableLike, text]);
   const markdownClassName = useMemo(() => (
     renderableTable ? 'oc-markdown oc-markdown-table' : 'oc-markdown'
   ), [renderableTable]);
 
   if (markdownHtml) {
-    return <div dangerouslySetInnerHTML={{ __html: markdownHtml }} className={markdownClassName} />;
+    return (
+      <>
+        <div dangerouslySetInnerHTML={{ __html: markdownHtml }} className={markdownClassName} />
+        <ArtifactMessageCards
+          artifacts={matchedArtifacts}
+          onPreviewFile={onPreviewFile}
+          activePreviewFile={activePreviewFile}
+        />
+      </>
+    );
   }
 
   if (plainTextTableLike) {
-    return <pre className="oc-plain-text-table">{text}</pre>;
+    return (
+      <>
+        <pre className="oc-plain-text-table">{plainText}</pre>
+        <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+      </>
+    );
   }
 
   if (isGroup) {
-    const parts = text.split(/(@usr\d+)/g);
+    const parts = removeKnownArtifactURLs(text, matchedArtifacts).split(/(@usr\d+)/g);
     return (
-      <span style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-        {parts.map((part, i) =>
-          part.match(/^@usr\d+$/) ? (
-            <span key={i} className="oc-mention">{part}</span>
-          ) : (
-            <span key={i}>{part}</span>
-          )
-        )}
-      </span>
+      <>
+        <span style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+          {parts.map((part, i) =>
+            part.match(/^@usr\d+$/) ? (
+              <span key={i} className="oc-mention">{part}</span>
+            ) : (
+              <span key={i}>{part}</span>
+            )
+          )}
+        </span>
+        <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+      </>
     );
   }
 
   if (plainTextParagraphs.length > 1) {
     return (
-      <div className="oc-plain-text-paragraphs">
-        {plainTextParagraphs.map((paragraph, index) => (
-          <p className="oc-plain-text-paragraph" key={index}>{paragraph}</p>
-        ))}
-      </div>
+      <>
+        <div className="oc-plain-text-paragraphs">
+          {plainTextParagraphs.map((paragraph, index) => (
+            <p className="oc-plain-text-paragraph" key={index}>{paragraph}</p>
+          ))}
+        </div>
+        <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+      </>
     );
   }
 
-  return <span style={{ whiteSpace: 'pre-wrap' }}>{text}</span>;
+  return (
+    <>
+      <span style={{ whiteSpace: 'pre-wrap' }}>{removeKnownArtifactURLs(text, matchedArtifacts)}</span>
+      <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+    </>
+  );
+}
+
+function normalizeArtifactURL(value) {
+  try {
+    const base = typeof window !== 'undefined' ? window.location.origin : 'https://app.catsco.cc';
+    const parsed = new URL(String(value || ''), base);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    return parsed.toString();
+  } catch (e) {
+    return '';
+  }
+}
+
+function extractHTTPURLTokens(text) {
+  const value = String(text || '');
+  const tokens = [];
+  for (const match of value.matchAll(/https?:\/\/[^\s<>"'`]+/gi)) {
+    const previousCharacter = match.index > 0 ? value[match.index - 1] : '';
+    if (/[A-Za-z0-9_]/.test(previousCharacter)) continue;
+    const raw = trimURLToken(match[0]);
+    const normalizedURL = normalizeArtifactURL(raw);
+    if (!raw || !normalizedURL) continue;
+    tokens.push({
+      raw,
+      normalizedURL,
+      start: match.index,
+      end: match.index + raw.length,
+    });
+  }
+  return tokens;
+}
+
+function trimURLToken(value) {
+  let token = String(value || '');
+  while (/[.,;:!?，。；：！？]$/.test(token)) {
+    token = token.slice(0, -1);
+  }
+  const pairs = { ')': '(', ']': '[', '}': '{' };
+  while (pairs[token.at(-1)]) {
+    const closing = token.at(-1);
+    const opening = pairs[closing];
+    const openingCount = token.split(opening).length - 1;
+    const closingCount = token.split(closing).length - 1;
+    if (closingCount <= openingCount) break;
+    token = token.slice(0, -1);
+  }
+  return token;
+}
+
+function findKnownArtifactsInText(text, knownArtifacts) {
+  const presentURLs = new Set(extractHTTPURLTokens(text).map((token) => token.normalizedURL));
+  const seen = new Set();
+  return (Array.isArray(knownArtifacts) ? knownArtifacts : []).filter((artifact) => {
+    const normalizedURL = normalizeArtifactURL(artifact?.url);
+    if (!normalizedURL || seen.has(normalizedURL) || !presentURLs.has(normalizedURL)) return false;
+    seen.add(normalizedURL);
+    return true;
+  });
+}
+
+function decorateArtifactMarkdown(html, artifacts) {
+  if (!html || !Array.isArray(artifacts) || artifacts.length === 0 || typeof document === 'undefined') return html;
+  const knownURLs = new Set(artifacts.map((artifact) => normalizeArtifactURL(artifact.url)).filter(Boolean));
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  template.content.querySelectorAll('a[href]').forEach((anchor) => {
+    if (!knownURLs.has(normalizeArtifactURL(anchor.getAttribute('href')))) return;
+    anchor.classList.add('oc-artifact-source-link');
+    anchor.setAttribute('aria-hidden', 'true');
+    anchor.setAttribute('tabindex', '-1');
+  });
+  return template.innerHTML;
+}
+
+function removeKnownArtifactURLs(text, artifacts) {
+  const value = String(text || '');
+  const knownURLs = new Set(
+    (artifacts || []).map((artifact) => normalizeArtifactURL(artifact?.url)).filter(Boolean),
+  );
+  const matches = extractHTTPURLTokens(value).filter((token) => knownURLs.has(token.normalizedURL));
+  if (matches.length === 0) return value.replace(/[ \t]+(?=\r?$)/gm, '').trimEnd();
+
+  let cursor = 0;
+  let result = '';
+  for (const match of matches) {
+    result += value.slice(cursor, match.start);
+    cursor = match.end;
+  }
+  result += value.slice(cursor);
+  return result.replace(/[ \t]+(?=\r?$)/gm, '').trimEnd();
+}
+
+function cloudArtifactPreviewPayload(artifact) {
+  const payload = {
+    name: artifact.title || artifact.id || 'Cloud artifact',
+    url: artifact.url,
+    mime_type: 'text/html',
+    artifact_id: artifact.id || artifact.artifact_id || '',
+    publish_version: artifact.publish_version || null,
+  };
+  trustedArtifactPreviewPayloads.add(payload);
+  return payload;
+}
+
+function ArtifactMessageCards({ artifacts, onPreviewFile, activePreviewFile }) {
+  if (!Array.isArray(artifacts) || artifacts.length === 0) return null;
+  return (
+    <div className="v3-message-artifact-list">
+      {artifacts.map((artifact) => (
+        <ArtifactMessageCard
+          key={`${artifact.id || artifact.artifact_id || ''}|${artifact.url}`}
+          artifact={artifact}
+          onPreviewFile={onPreviewFile}
+          activePreviewFile={activePreviewFile}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
+  const payload = cloudArtifactPreviewPayload(artifact);
+  const descriptor = previewFileDescriptor(payload);
+  const activeKey = activePreviewFile ? previewFileDescriptor(activePreviewFile)?.key : '';
+  const isActive = descriptor?.canPreview && descriptor.key === activeKey;
+  const version = Number(artifact.publish_version || 0);
+  const subtitle = ['HTML', '云端生成物', version > 0 ? `v${version}` : ''].filter(Boolean).join(' · ');
+  const previewArtifact = () => {
+    if (descriptor?.canPreview) onPreviewFile?.(payload);
+  };
+  return (
+    <div className={`v3-attachment-card v3-artifact-card cloud-static${isActive ? ' active' : ''}`}>
+      <button className="v3-artifact-main" onClick={previewArtifact} title="预览生成物" type="button">
+        <div className="v3-attachment-icon"><FileCode2 size={18} strokeWidth={1.5} /></div>
+        <div className="v3-attachment-info">
+          <span className="v3-attachment-name" title={payload.name}>{payload.name}</span>
+          <span className="v3-attachment-size">{subtitle}</span>
+        </div>
+      </button>
+      <div className="v3-artifact-actions">
+        <button className="v3-artifact-action" onClick={previewArtifact} title="预览" type="button">
+          <Eye size={15} /><span>预览</span>
+        </button>
+        <a className="v3-artifact-action" href={artifact.url} onClick={(event) => event.stopPropagation()} rel="noopener noreferrer" target="_blank" title="在新标签页打开">
+          <ExternalLink size={15} /><span>打开</span>
+        </a>
+      </div>
+    </div>
+  );
 }
 
 function RichContent({ content, onPreviewFile, activePreviewFile }) {
@@ -1174,8 +1361,11 @@ function previewFileDescriptor(payload) {
   const isHtml = isHtmlFile(payload, ext);
   const isMarkdown = isMarkdownFile(payload, ext);
   const isSpreadsheet = isSpreadsheetPreviewFile(payload, ext);
+  const isRemoteArtifact = trustedArtifactPreviewPayloads.has(payload)
+    && isHtml
+    && Boolean(normalizeArtifactURL(url));
   const spreadsheetKind = isCsvFile(payload, ext) ? 'csv' : isXlsxFile(payload, ext) ? 'xlsx' : '';
-  const canPreview = isPreviewableFile(payload, ext) && isTrustedPreviewURL(url);
+  const canPreview = isRemoteArtifact || (isPreviewableFile(payload, ext) && isTrustedPreviewURL(url));
   return {
     payload,
     url,
@@ -1185,6 +1375,7 @@ function previewFileDescriptor(payload) {
     isHtml,
     isMarkdown,
     isSpreadsheet,
+    isRemoteArtifact,
     spreadsheetKind,
     canPreview,
     sizeStr: payload.size ? formatFileSize(payload.size) : '',
@@ -1261,6 +1452,7 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
   const [binaryContent, setBinaryContent] = useState(null);
   const [loadingText, setLoadingText] = useState(false);
   const [previewError, setPreviewError] = useState('');
+  const [remoteFrameState, setRemoteFrameState] = useState('idle');
   const [dragOffset, setDragOffset] = useState(0);
   const [isDismissing, setIsDismissing] = useState(false);
   const dragStateRef = useRef({ active: false, startY: 0, offset: 0 });
@@ -1279,6 +1471,7 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
   const isHtml = descriptor?.isHtml || false;
   const isMarkdown = descriptor?.isMarkdown || false;
   const isSpreadsheet = descriptor?.isSpreadsheet || false;
+  const isRemoteArtifact = descriptor?.isRemoteArtifact || false;
   const meta = descriptor?.meta || artifactMeta(file || {});
   const sizeStr = descriptor?.sizeStr || '';
   const downloadURL = downloadableMediaURL(url, file?.name);
@@ -1289,6 +1482,7 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
     setTextContent(null);
     setBinaryContent(null);
     setPreviewError('');
+    setRemoteFrameState(isRemoteArtifact ? 'loading' : 'idle');
     setDragOffset(0);
     setIsDismissing(false);
     hasDismissedRef.current = false;
@@ -1297,7 +1491,7 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
       window.clearTimeout(dismissTimerRef.current);
       dismissTimerRef.current = null;
     }
-    if (!file || !descriptor?.canPreview || isPdf) {
+    if (!file || !descriptor?.canPreview || isPdf || isRemoteArtifact) {
       setLoadingText(false);
       return () => {
         cancelled = true;
@@ -1341,7 +1535,7 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
     return () => {
       cancelled = true;
     };
-  }, [descriptor?.canPreview, file, isPdf, isSpreadsheet, url]);
+  }, [descriptor?.canPreview, file, isPdf, isRemoteArtifact, isSpreadsheet, url]);
 
   useEffect(() => {
     if (!preview) {
@@ -1525,9 +1719,11 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
             </div>
           </div>
           <div className="v3-file-preview-actions">
-            <a href={downloadURL} download={file.name || true} title="下载原文件" target="_blank" rel="noopener noreferrer" aria-label="下载原文件">
-              <Download size={18} />
-            </a>
+            {!isRemoteArtifact && (
+              <a href={downloadURL} download={file.name || true} title="下载原文件" target="_blank" rel="noopener noreferrer" aria-label="下载原文件">
+                <Download size={18} />
+              </a>
+            )}
             <a href={url} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
               <ExternalLink size={18} />
             </a>
@@ -1537,7 +1733,30 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
           </div>
         </div>
         <div className="v3-file-preview-body">
-          {isPdf ? (
+          {isRemoteArtifact ? (
+            <div className="v3-remote-artifact-preview">
+              <iframe
+                src={url}
+                className="v3-file-preview-frame"
+                title="Cloud Artifact Preview"
+                sandbox={REMOTE_ARTIFACT_PREVIEW_SANDBOX}
+                credentialless=""
+                referrerPolicy="no-referrer"
+                tabIndex={isSheetMode ? -1 : undefined}
+                onLoad={() => setRemoteFrameState('ready')}
+                onError={() => setRemoteFrameState('error')}
+              />
+              {remoteFrameState === 'loading' && (
+                <div className="v3-remote-artifact-preview-state" role="status">正在加载云端生成物...</div>
+              )}
+              {remoteFrameState === 'error' && (
+                <div className="v3-remote-artifact-preview-state error" role="alert">
+                  <span>预览加载失败</span>
+                  <a href={url} rel="noopener noreferrer" target="_blank">在新标签页打开</a>
+                </div>
+              )}
+            </div>
+          ) : isPdf ? (
             <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />
           ) : loadingText ? (
             <div className="v3-file-preview-state">加载中...</div>
@@ -1570,10 +1789,17 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
             <X size={17} />
             <span>关闭预览</span>
           </button>
-          <a href={downloadURL} download={file.name || true} target="_blank" rel="noopener noreferrer">
-            <Download size={17} />
-            <span>下载原文件</span>
-          </a>
+          {isRemoteArtifact ? (
+            <a href={url} target="_blank" rel="noopener noreferrer">
+              <ExternalLink size={17} />
+              <span>新标签页打开</span>
+            </a>
+          ) : (
+            <a href={downloadURL} download={file.name || true} target="_blank" rel="noopener noreferrer">
+              <Download size={17} />
+              <span>下载原文件</span>
+            </a>
+          )}
         </div>
       </aside>
     </>

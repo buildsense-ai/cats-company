@@ -11,6 +11,14 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 
+const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
+
+function notifyArtifactsChanged(agentUid) {
+  window.dispatchEvent(new CustomEvent(CLOUD_ARTIFACTS_CHANGED_EVENT, {
+    detail: { agentUid: Number(agentUid) || 0 },
+  }));
+}
+
 function formatUpdatedAt(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
@@ -88,6 +96,7 @@ export default function CloudArtifactsModal({ agentUid, onClose }) {
       await api.deleteCloudArtifact(agentUid, artifact.id);
       setArtifacts((current) => current.filter((item) => item.id !== artifact.id));
       setConfirmArtifact(null);
+      notifyArtifactsChanged(agentUid);
     } catch (err) {
       setError(err.message || '删除失败，请稍后重试');
     } finally {
@@ -102,6 +111,7 @@ export default function CloudArtifactsModal({ agentUid, onClose }) {
     try {
       await api.restoreCloudArtifact(agentUid, artifact.id);
       setArtifacts((current) => current.filter((item) => item.id !== artifact.id));
+      notifyArtifactsChanged(agentUid);
     } catch (err) {
       setError(err.message || '恢复失败，请稍后重试');
     } finally {

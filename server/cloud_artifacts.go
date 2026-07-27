@@ -37,6 +37,8 @@ type CloudArtifactHandler struct {
 	db              store.Store
 	configErr       error
 	managementErr   error
+	nodeRegistry    *artifactNodeRegistry
+	nodeRegistryErr error
 }
 
 type cloudArtifactIndex struct {
@@ -143,7 +145,9 @@ func NewCloudArtifactHandlerFromEnv() *CloudArtifactHandler {
 	if managementURL == "" && managementToken != "" {
 		managementURL = defaultArtifactManagementURL
 	}
-	return newCloudArtifactHandler(indexURL, managementURL, managementToken, nil)
+	handler := newCloudArtifactHandler(indexURL, managementURL, managementToken, nil)
+	handler.nodeRegistry, handler.nodeRegistryErr = loadArtifactNodeRegistryFromEnv()
+	return handler
 }
 
 // Handle routes the artifact collection and exact-ID mutation endpoints.
@@ -155,6 +159,14 @@ func (h *CloudArtifactHandler) Handle(w http.ResponseWriter, r *http.Request) {
 	uid := UIDFromContext(r.Context())
 	if uid <= 0 {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if h != nil && h.nodeRegistryErr != nil {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return
+	}
+	if h != nil && h.nodeRegistry != nil {
+		writeArtifactError(w, http.StatusGone, "artifact_agent_required")
 		return
 	}
 	artifactID, action, ok := parseArtifactAPIPath(r.URL.Path)
@@ -169,9 +181,9 @@ func (h *CloudArtifactHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case action == "delete" && r.Method == http.MethodDelete:
-		h.handleMutation(w, r, artifactID, "", uid, h.managementURL, 0)
+		h.handleMutation(w, r, artifactID, "", uid, h.managementURL, h.managementToken, "", 0)
 	case action == "restore" && r.Method == http.MethodPost:
-		h.handleMutation(w, r, artifactID, "/restore", uid, h.managementURL, 0)
+		h.handleMutation(w, r, artifactID, "/restore", uid, h.managementURL, h.managementToken, "", 0)
 	default:
 		w.Header().Set("Allow", allowedArtifactMethod(action))
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -203,11 +215,12 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 		writeArtifactError(w, http.StatusNotFound, "artifact_not_found")
 		return
 	}
-	if h.managementErr != nil || h.managementURL == "" {
+	node, err := h.resolveArtifactNode(route.agentUID)
+	if err != nil {
 		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
 		return
 	}
-	collectionURL, err := h.agentManagementCollectionURL(route.agentUID)
+	collectionURL, err := agentManagementCollectionURL(node.managementURL, route.agentUID)
 	if err != nil {
 		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
 		return
@@ -228,21 +241,21 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 			writeArtifactError(w, http.StatusBadRequest, "artifact_status_invalid")
 			return
 		}
-		h.handleManagedList(w, r, status, collectionURL, route.agentUID)
+		h.handleManagedList(w, r, status, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID)
 	case "delete":
 		if r.Method != http.MethodDelete {
 			w.Header().Set("Allow", http.MethodDelete)
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		h.handleMutation(w, r, route.artifactID, "", viewerUID, collectionURL, route.agentUID)
+		h.handleMutation(w, r, route.artifactID, "", viewerUID, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID)
 	case "restore":
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
-		h.handleMutation(w, r, route.artifactID, "/restore", viewerUID, collectionURL, route.agentUID)
+		h.handleMutation(w, r, route.artifactID, "/restore", viewerUID, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID)
 	default:
 		writeArtifactError(w, http.StatusNotFound, "artifact_not_found")
 	}
@@ -256,6 +269,14 @@ func (h *CloudArtifactHandler) HandleList(w http.ResponseWriter, r *http.Request
 	}
 	if UIDFromContext(r.Context()) <= 0 {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if h != nil && h.nodeRegistryErr != nil {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return
+	}
+	if h != nil && h.nodeRegistry != nil {
+		writeArtifactError(w, http.StatusGone, "artifact_agent_required")
 		return
 	}
 	if h == nil || h.configErr != nil {
@@ -275,7 +296,7 @@ func (h *CloudArtifactHandler) HandleList(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if h.managementURL != "" {
-		h.handleManagedList(w, r, status, h.managementURL, 0)
+		h.handleManagedList(w, r, status, h.managementURL, h.managementToken, "", 0)
 		return
 	}
 	if status == "deleted" {
@@ -289,10 +310,11 @@ func (h *CloudArtifactHandler) handleManagedList(
 	w http.ResponseWriter,
 	r *http.Request,
 	status, collectionURL string,
+	managementToken, publicBaseURL string,
 	agentUID int64,
 ) {
 	target := collectionURL + "?status=" + url.QueryEscape(status)
-	body, err := h.requestManagement(r, http.MethodGet, target, nil)
+	body, err := h.requestManagement(r, http.MethodGet, target, nil, managementToken)
 	if err != nil {
 		writeArtifactUpstreamError(w, err)
 		return
@@ -303,6 +325,10 @@ func (h *CloudArtifactHandler) handleManagedList(
 		return
 	}
 	if agentUID > 0 && validateManagedArtifactAgentUIDs(list.Artifacts, agentUID) != nil {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return
+	}
+	if validateManagedArtifactNodeURLs(list.Artifacts, publicBaseURL, agentUID) != nil {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
 		return
 	}
@@ -357,11 +383,12 @@ func (h *CloudArtifactHandler) handleMutation(
 	artifactID, suffix string,
 	uid int64,
 	collectionURL string,
+	managementToken, publicBaseURL string,
 	agentUID int64,
 ) {
 	payload, _ := json.Marshal(map[string]string{"actor_uid": strconv.FormatInt(uid, 10)})
 	target := collectionURL + "/" + url.PathEscape(artifactID) + suffix
-	body, err := h.requestManagement(r, r.Method, target, payload)
+	body, err := h.requestManagement(r, r.Method, target, payload, managementToken)
 	if err != nil {
 		writeArtifactUpstreamError(w, err)
 		return
@@ -379,15 +406,19 @@ func (h *CloudArtifactHandler) handleMutation(
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
 		return
 	}
+	if validateArtifactNodeURL(operation.Artifact.URL, publicBaseURL, agentUID) != nil {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, operation)
 }
 
-func (h *CloudArtifactHandler) agentManagementCollectionURL(agentUID int64) (string, error) {
-	if h == nil || agentUID <= 0 {
+func agentManagementCollectionURL(managementURL string, agentUID int64) (string, error) {
+	if agentUID <= 0 {
 		return "", errors.New("invalid artifact agent")
 	}
-	parsed, err := url.Parse(h.managementURL)
+	parsed, err := url.Parse(managementURL)
 	if err != nil {
 		return "", err
 	}
@@ -403,7 +434,24 @@ func (h *CloudArtifactHandler) agentManagementCollectionURL(agentUID int64) (str
 	return strings.TrimRight(parsed.String(), "/"), nil
 }
 
-func (h *CloudArtifactHandler) requestManagement(r *http.Request, method, target string, payload []byte) ([]byte, error) {
+func (h *CloudArtifactHandler) resolveArtifactNode(agentUID int64) (artifactNode, error) {
+	if h == nil || agentUID <= 0 || h.nodeRegistryErr != nil {
+		return artifactNode{}, errors.New("artifact node is unavailable")
+	}
+	if h.nodeRegistry != nil {
+		return h.nodeRegistry.resolve(agentUID)
+	}
+	if h.managementErr != nil || h.managementURL == "" || h.managementToken == "" {
+		return artifactNode{}, errors.New("artifact management is unavailable")
+	}
+	return artifactNode{
+		id:              "legacy",
+		managementURL:   h.managementURL,
+		managementToken: h.managementToken,
+	}, nil
+}
+
+func (h *CloudArtifactHandler) requestManagement(r *http.Request, method, target string, payload []byte, managementToken string) ([]byte, error) {
 	var body io.Reader
 	if payload != nil {
 		body = bytes.NewReader(payload)
@@ -413,7 +461,7 @@ func (h *CloudArtifactHandler) requestManagement(r *http.Request, method, target
 		return nil, err
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+h.managementToken)
+	request.Header.Set("Authorization", "Bearer "+managementToken)
 	request.Header.Set("User-Agent", "catsco-cloud-artifacts/1.0")
 	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
@@ -478,6 +526,15 @@ func validateManagedArtifactAgentUIDs(artifacts []cloudArtifact, expectedAgentUI
 	for _, artifact := range artifacts {
 		if artifact.AgentUID != expected {
 			return errors.New("artifact agent UID mismatch")
+		}
+	}
+	return nil
+}
+
+func validateManagedArtifactNodeURLs(artifacts []cloudArtifact, publicBaseURL string, expectedAgentUID int64) error {
+	for _, artifact := range artifacts {
+		if err := validateArtifactNodeURL(artifact.URL, publicBaseURL, expectedAgentUID); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -651,6 +708,7 @@ func writeArtifactError(w http.ResponseWriter, status int, code string) {
 		"artifact_path_invalid":           "产物标识无效",
 		"artifact_operation_conflict":     "产物状态已变化，请刷新后重试",
 		"artifact_status_invalid":         "产物列表状态无效",
+		"artifact_agent_required":         "请从具体虚拟员工的生成物入口访问",
 		"artifact_management_unavailable": "产物管理服务暂不可用",
 		"artifact_index_unavailable":      "产物列表暂不可用",
 		"artifact_response_invalid":       "产物服务返回了无效数据",
