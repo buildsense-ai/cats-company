@@ -44,6 +44,7 @@ type Hub struct {
 	deviceRPC     *deviceRPCRouter
 	thinToolRPC   *thinToolRPCRouter
 	channelOut    *ChannelOutboundDispatcher
+	groupTurns    *groupAgentTurnTracker
 }
 
 type presenceEvent struct {
@@ -100,6 +101,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		deviceClients: make(map[int64]map[string]*Client),
 		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
 		thinToolRPC:   newThinToolRPCRouter(defaultThinToolRPCTTL),
+		groupTurns:    newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
@@ -1229,8 +1231,22 @@ func (h *Hub) handleStreamPub(client *Client, msg *MsgClientPub, topic string) {
 			return
 		}
 
+		if streamType == "stream_cancel" {
+			targetBotUID, members, code, text := h.authorizeGroupStreamCancel(groupID, uid, msg.Metadata)
+			if code != 0 {
+				h.SendToClient(client, &ServerMessage{
+					Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: code, Text: text},
+				})
+				return
+			}
+			h.SendToClient(client, streamDeltaAck(msg.ID, topic, streamID))
+			h.fanoutGroupStreamCancel(uid, topic, streamID, targetBotUID, msg.Metadata, members)
+			h.groupTurns.clear(groupID, targetBotUID)
+			return
+		}
+
 		h.SendToClient(client, streamDeltaAck(msg.ID, topic, streamID))
-		if delta != "" || streamType == "stream_cancel" {
+		if delta != "" {
 			h.fanoutStreamEvent(uid, topic, streamType, delta, msg.Metadata, client)
 		}
 		return
@@ -1690,8 +1706,8 @@ func max64(a, b int64) int64 {
 }
 
 // broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.
-// Groups larger than two members require a structured mention of the target bot.
-// Groups with at most two members preserve the legacy automatic human-to-bot activation.
+// Agent-task groups route unmentioned human messages to their current default agent.
+// Explicit mentions target other agents, while two-member groups preserve legacy automatic activation.
 func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, excludeUID int64, mentions []string, senderUID int64, trustedChannelTrigger bool) {
 	members, err := h.db.GetGroupMembers(groupID)
 	if err != nil {
@@ -1742,6 +1758,9 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			requiresMention := !trustedChannelTrigger && (senderIsBot || memberCount > 2)
 			if requiresMention && !mentionAllBots && !mentionSet[userIDStr] && m.UserID != defaultAgentUID {
 				continue
+			}
+			if !senderIsBot && isGroupAgentTurnRequest(msg) {
+				h.groupTurns.begin(groupID, m.UserID, senderUID, msg.Data.SeqID)
 			}
 		}
 

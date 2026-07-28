@@ -78,6 +78,25 @@ describe('WebSocket connection recovery', () => {
     unsubscribe();
   });
 
+  test('includes the authoritative target agent in stream cancel metadata', async () => {
+    api.connectWS(vi.fn());
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+
+    await api.wsSendStreamCancel('grp_80', 42);
+
+    const envelope = JSON.parse(socket.send.mock.calls.at(-1)[0]);
+    expect(envelope.pub).toMatchObject({
+      topic: 'grp_80',
+      type: 'stream_cancel',
+      metadata: {
+        stream_event: 'cancel',
+        control: 'interrupt',
+        target_bot_uid: 42,
+      },
+    });
+  });
+
   test('retries quickly with capped backoff after a dropped socket', () => {
     const onMessage = vi.fn();
     api.connectWS(onMessage);

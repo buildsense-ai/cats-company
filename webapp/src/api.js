@@ -568,8 +568,9 @@ export async function wsSendMessage(topicId, content, replyTo, mentions = []) {
 }
 
 // Send a non-persistent cancel event to stop the active agent turn.
-export async function wsSendStreamCancel(topicId) {
+export async function wsSendStreamCancel(topicId, targetBotUid = 0) {
   const streamId = `cancel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const normalizedTargetBotUid = Number(targetBotUid);
   if (wsConn && wsConn.readyState === WebSocket.OPEN) {
     const id = nextMsgId();
     sendWS({
@@ -583,6 +584,9 @@ export async function wsSendStreamCancel(topicId) {
           stream_id: streamId,
           stream_event: 'cancel',
           control: 'interrupt',
+          ...(Number.isFinite(normalizedTargetBotUid) && normalizedTargetBotUid > 0
+            ? { target_bot_uid: normalizedTargetBotUid }
+            : {}),
         },
       },
     });

@@ -9,8 +9,11 @@ import { Check, Droplets, LockKeyhole, Moon, Sun, X } from 'lucide-react';
 const THEME_OPTIONS = [
   { id: 'light', label: '浅色', description: '明亮、克制的工作界面。', Icon: Sun },
   { id: 'dark', label: '深色', description: '低亮度的专注工作界面。', Icon: Moon },
-  { id: 'liquid', label: '液态', description: '绿色主导、蓝紫折射的液态玻璃。', Icon: Droplets },
+  { id: 'liquid', label: '液态浅色', description: '浅色玻璃、蓝紫折射的通透界面。', Icon: Droplets },
+  { id: 'liquid-green', label: '液态绿色', description: '深色玻璃、绿色高光的经典界面。', Icon: Droplets },
 ];
+
+const isLiquidThemeOption = (theme) => theme === 'liquid' || theme === 'liquid-green';
 
 export default function ProfileEditor({
   user,
@@ -34,6 +37,7 @@ export default function ProfileEditor({
   const [copyStatus, setCopyStatus] = useState('');
   const [showPasswordReset, setShowPasswordReset] = useState(false);
   const [showLiquidUnlock, setShowLiquidUnlock] = useState(false);
+  const [pendingLiquidTheme, setPendingLiquidTheme] = useState('liquid');
   const [liquidPassword, setLiquidPassword] = useState('');
   const [liquidPasswordLoading, setLiquidPasswordLoading] = useState(false);
   const [liquidPasswordError, setLiquidPasswordError] = useState('');
@@ -91,7 +95,8 @@ export default function ProfileEditor({
   };
 
   const handleThemeChoice = (nextTheme) => {
-    if (nextTheme === 'liquid' && !liquidThemeAccess.unlocked) {
+    if (isLiquidThemeOption(nextTheme) && !liquidThemeAccess.unlocked) {
+      setPendingLiquidTheme(nextTheme);
       setShowLiquidUnlock(true);
       setLiquidPasswordError('');
       return;
@@ -111,7 +116,7 @@ export default function ProfileEditor({
     setLiquidPasswordError('');
     try {
       if (!onUnlockLiquidTheme) throw new Error('密码验证暂不可用。');
-      await onUnlockLiquidTheme(password);
+      await onUnlockLiquidTheme(password, pendingLiquidTheme);
       setLiquidPassword('');
       setShowLiquidUnlock(false);
     } catch (err) {
@@ -172,7 +177,7 @@ export default function ProfileEditor({
               <div className="oc-settings-section-title">外观</div>
               <div className="oc-theme-picker" role="radiogroup" aria-label="界面主题">
                 {THEME_OPTIONS.map(({ id, label, description, Icon }) => {
-                  const locked = id === 'liquid' && !liquidThemeAccess.unlocked;
+                  const locked = isLiquidThemeOption(id) && !liquidThemeAccess.unlocked;
                   const selected = theme === id;
                   return (
                     <button
@@ -182,7 +187,7 @@ export default function ProfileEditor({
                       role="radio"
                       aria-checked={selected}
                       aria-label={`${label}主题${locked ? '，需要密码' : ''}`}
-                      disabled={id === 'liquid' && liquidThemeAccess.loading}
+                      disabled={isLiquidThemeOption(id) && liquidThemeAccess.loading}
                       onClick={() => handleThemeChoice(id)}
                     >
                       <span className={`oc-theme-preview oc-theme-preview-${id}`} aria-hidden="true">

@@ -51,7 +51,7 @@ export default function ChannelDeviceLinkView({ bindingId, linkToken, user }) {
   return (
     <div className="v3-app" style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
       <div style={{ width: '100%', maxWidth: 420, background: 'var(--v3-bg-sidebar)', border: '1px solid var(--v3-border)', borderRadius: 12, padding: 28, boxShadow: '0 24px 80px rgba(0,0,0,0.25)', textAlign: 'center' }}>
-        <div style={{ width: 56, height: 56, borderRadius: '50%', background: status === 'error' ? 'rgba(250,81,81,0.1)' : 'rgba(16,185,129,0.14)', color: status === 'error' ? '#FA5151' : 'var(--v3-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px', fontSize: 28 }}>
+        <div style={{ width: 56, height: 56, borderRadius: '50%', background: status === 'error' ? 'rgba(250,81,81,0.1)' : 'color-mix(in srgb, var(--v3-primary) 14%, transparent)', color: status === 'error' ? '#FA5151' : 'var(--v3-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px', fontSize: 28 }}>
           {status === 'linked' ? '✓' : status === 'error' ? '!' : '...'}
         </div>
         <div style={{ color: 'var(--v3-text-name)', fontSize: 18, fontWeight: 700, marginBottom: 8 }}>{title}</div>

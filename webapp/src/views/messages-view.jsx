@@ -11,6 +11,9 @@ import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, infer
 
 const PAGE_SIZE = 50;
 const HISTORY_CACHE_MAX_TOPICS = 12;
+const QUESTION_HISTORY_PAGE_SIZE = 500;
+const QUESTION_INDEX_MAX_SCANNED_PER_LOAD = 2000;
+const QUESTION_INDEX_MAX_ITEMS = 250;
 const STRUCTURED_MENTION_ALL = 'all';
 const TYPING_TIMEOUT_MS = 10000;
 const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
@@ -45,6 +48,49 @@ function questionNavigationLabel(message) {
     : (content && typeof content === 'object' && typeof content.text === 'string' ? content.text : '');
   const normalized = rawText.replace(/\s+/g, ' ').trim();
   return normalized ? normalized.slice(0, 60) : '附件指令';
+}
+
+function questionNavigationItem(message, index, userUID) {
+  const type = message?.type || message?.msg_type || '';
+  if (
+    type !== 'text'
+    || Number(message?.from_uid) !== Number(userUID)
+    || isWorkingMessage(message)
+  ) {
+    return null;
+  }
+  return {
+    key: questionNavigationKey(message, index),
+    id: historyMessageID(message),
+    label: questionNavigationLabel(message),
+  };
+}
+
+function collectQuestionNavigationItems(messages, userUID) {
+  return (messages || [])
+    .map((message, index) => questionNavigationItem(message, index, userUID))
+    .filter(Boolean);
+}
+
+function mergeQuestionNavigationItems(...collections) {
+  const byKey = new Map();
+  collections.flat().forEach((item) => {
+    if (item?.key) byKey.set(item.key, item);
+  });
+  return Array.from(byKey.values())
+    .sort((left, right) => {
+      if (left.id > 0 && right.id > 0) return left.id - right.id;
+      return left.key.localeCompare(right.key);
+    })
+    .slice(-QUESTION_INDEX_MAX_ITEMS);
+}
+
+function cacheQuestionIndex(cache, key, entry) {
+  cache.delete(key);
+  cache.set(key, entry);
+  while (cache.size > HISTORY_CACHE_MAX_TOPICS) {
+    cache.delete(cache.keys().next().value);
+  }
 }
 
 function clampPreviewWidth(width) {
@@ -235,6 +281,10 @@ export default function MessagesView({
   const [availableAgents, setAvailableAgents] = useState([]);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [activeQuestionKey, setActiveQuestionKey] = useState('');
+  const [questionIndexItems, setQuestionIndexItems] = useState([]);
+  const [questionIndexLoading, setQuestionIndexLoading] = useState(false);
+  const [questionIndexHasMore, setQuestionIndexHasMore] = useState(false);
+  const [questionIndexLimitReached, setQuestionIndexLimitReached] = useState(false);
   const [showThinking, setShowThinking] = useState(() => {
     const saved = localStorage.getItem('cc_show_thinking');
     return saved === null ? true : saved === 'true';
@@ -267,6 +317,9 @@ export default function MessagesView({
   const hasMoreHistoryRef = useRef(false);
   const loadingOlderRef = useRef(false);
   const activeTopicRef = useRef(topic);
+  const questionIndexCacheRef = useRef(new Map());
+  const questionIndexRequestRef = useRef(0);
+  const questionIndexLoadingRef = useRef(false);
   const composerDraftsRef = useRef(new Map());
   const structuredMentionDraftsRef = useRef(new Map());
   const attachmentDraftsRef = useRef(new Map());
@@ -449,6 +502,7 @@ export default function MessagesView({
   }, []);
 
   useEffect(() => () => {
+    questionIndexRequestRef.current += 1;
     if (runtimePlanClearTimer.current) {
       clearTimeout(runtimePlanClearTimer.current);
     }
@@ -466,7 +520,13 @@ export default function MessagesView({
     setInput(composerDraftsRef.current.get(topic) || '');
     const cacheKey = historyCacheKey(user.uid, topic);
     const cachedHistory = historyCacheRef.current.get(cacheKey);
+    const cachedQuestionIndex = questionIndexCacheRef.current.get(cacheKey);
     setMessages(cachedHistory?.messages || []);
+    setQuestionIndexItems(cachedQuestionIndex?.items || []);
+    setQuestionIndexHasMore(Boolean(cachedQuestionIndex?.hasMore));
+    setQuestionIndexLimitReached(Boolean(cachedQuestionIndex?.limitReached));
+    setQuestionIndexLoading(false);
+    questionIndexLoadingRef.current = false;
     const attachmentDraft = attachmentDraftsRef.current.get(topic) || [];
     pendingAttachmentsRef.current = attachmentDraft;
     setPendingAttachments(attachmentDraft);
@@ -491,6 +551,7 @@ export default function MessagesView({
     hasMoreHistoryRef.current = Boolean(cachedHistory?.hasMore);
     previousScrollRef.current = null;
     loadingOlderRef.current = false;
+    questionIndexRequestRef.current += 1;
     stickToBottomRef.current = true;
     setHasMoreHistory(Boolean(cachedHistory?.hasMore));
     setLoadingOlder(false);
@@ -744,6 +805,85 @@ export default function MessagesView({
     }
   }, [messages, runtimePlan, peerTyping]);
 
+  const loadQuestionNavigationHistory = useCallback(async ({ continueOlder = false } = {}) => {
+    const targetTopic = topic;
+    const cacheKey = historyCacheKey(user.uid, targetTopic);
+    const cached = questionIndexCacheRef.current.get(cacheKey);
+    if (
+      !targetTopic
+      || questionIndexLoadingRef.current
+      || !cached?.hasMore
+      || cached.limitReached
+      || (cached.requested && !continueOlder)
+    ) {
+      return;
+    }
+
+    const requestId = ++questionIndexRequestRef.current;
+    let entry = { ...cached, requested: true };
+    let scannedThisLoad = 0;
+    questionIndexLoadingRef.current = true;
+    setQuestionIndexLoading(true);
+    cacheQuestionIndex(questionIndexCacheRef.current, cacheKey, entry);
+
+    try {
+      while (
+        entry.hasMore
+        && !entry.limitReached
+        && scannedThisLoad < QUESTION_INDEX_MAX_SCANNED_PER_LOAD
+      ) {
+        const res = await api.getMessages(
+          targetTopic,
+          QUESTION_HISTORY_PAGE_SIZE,
+          entry.offset,
+          true,
+          entry.beforeId,
+        );
+        if (
+          activeTopicRef.current !== targetTopic
+          || questionIndexRequestRef.current !== requestId
+        ) {
+          return;
+        }
+
+        const rawBatch = Array.isArray(res.messages) ? res.messages : [];
+        const { visibleMessages } = normalizeHistoryMessages(rawBatch);
+        const batchItems = collectQuestionNavigationItems(visibleMessages, user.uid);
+        const mergedItems = mergeQuestionNavigationItems(entry.items, batchItems);
+        const hasMore = rawBatch.length > 0 && (
+          typeof res.has_more === 'boolean'
+            ? res.has_more
+            : rawBatch.length === QUESTION_HISTORY_PAGE_SIZE
+        );
+        const limitReached = mergedItems.length >= QUESTION_INDEX_MAX_ITEMS && hasMore;
+        entry = {
+          ...entry,
+          items: mergedItems,
+          offset: entry.offset + rawBatch.length,
+          beforeId: Number(res.next_before_id) || oldestHistoryMessageID(rawBatch),
+          hasMore,
+          limitReached,
+        };
+        scannedThisLoad += rawBatch.length;
+        cacheQuestionIndex(questionIndexCacheRef.current, cacheKey, entry);
+        setQuestionIndexItems(mergedItems);
+        setQuestionIndexHasMore(hasMore);
+        setQuestionIndexLimitReached(limitReached);
+        if (rawBatch.length === 0) break;
+      }
+    } catch (e) {
+      // Keep the lightweight anchors already collected; normal scroll history is unaffected.
+    } finally {
+      if (
+        activeTopicRef.current === targetTopic
+        && questionIndexRequestRef.current === requestId
+      ) {
+        questionIndexLoadingRef.current = false;
+        setQuestionIndexLoading(false);
+      }
+    }
+  }, [topic, user.uid]);
+
   const loadHistory = async (targetTopic = topic) => {
     const requestID = ++historyRequestRef.current;
     const cacheKey = historyCacheKey(user.uid, targetTopic);
@@ -787,6 +927,19 @@ export default function MessagesView({
         nextBeforeID,
         hasMore,
       });
+      const cachedQuestionIndex = questionIndexCacheRef.current.get(cacheKey);
+      if (!cachedQuestionIndex) {
+        const nextQuestionIndex = {
+          items: [],
+          offset: rawMessages.length,
+          beforeId: nextBeforeID,
+          hasMore,
+          requested: false,
+          limitReached: false,
+        };
+        cacheQuestionIndex(questionIndexCacheRef.current, cacheKey, nextQuestionIndex);
+        setQuestionIndexHasMore(hasMore);
+      }
     } catch (e) {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
         setHistoryError('聊天记录加载失败，请检查网络后重试。');
@@ -835,6 +988,35 @@ export default function MessagesView({
         : rawMessages.length === PAGE_SIZE;
       hasMoreHistoryRef.current = hasMore;
       setHasMoreHistory(hasMore);
+      const cacheKey = historyCacheKey(user.uid, targetTopic);
+      const cachedQuestionIndex = questionIndexCacheRef.current.get(cacheKey);
+      if (cachedQuestionIndex) {
+        const ordinaryReachedFurther = historyOffsetRef.current >= cachedQuestionIndex.offset
+          || (
+            historyBeforeIDRef.current > 0
+            && cachedQuestionIndex.beforeId > 0
+            && historyBeforeIDRef.current < cachedQuestionIndex.beforeId
+          );
+        const nextQuestionItems = mergeQuestionNavigationItems(
+          cachedQuestionIndex.items,
+          collectQuestionNavigationItems(visibleMessages, user.uid),
+        );
+        const nextQuestionIndex = {
+          ...cachedQuestionIndex,
+          items: nextQuestionItems,
+          offset: Math.max(cachedQuestionIndex.offset, historyOffsetRef.current),
+          beforeId: ordinaryReachedFurther
+            ? historyBeforeIDRef.current
+            : cachedQuestionIndex.beforeId,
+          hasMore: ordinaryReachedFurther ? hasMore : cachedQuestionIndex.hasMore,
+          limitReached: nextQuestionItems.length >= QUESTION_INDEX_MAX_ITEMS
+            && (ordinaryReachedFurther ? hasMore : cachedQuestionIndex.hasMore),
+        };
+        cacheQuestionIndex(questionIndexCacheRef.current, cacheKey, nextQuestionIndex);
+        setQuestionIndexItems(nextQuestionItems);
+        setQuestionIndexHasMore(nextQuestionIndex.hasMore);
+        setQuestionIndexLimitReached(nextQuestionIndex.limitReached);
+      }
     } catch (e) {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
         previousScrollRef.current = null;
@@ -846,7 +1028,7 @@ export default function MessagesView({
         setLoadingOlder(false);
       }
     }
-  }, [topic]);
+  }, [topic, user.uid]);
 
   useEffect(() => {
     const el = timelineRef.current;
@@ -860,6 +1042,27 @@ export default function MessagesView({
   const workingState = useMemo(() => {
     let lastWorkingIndex = -1;
     let lastBotTextIndex = -1;
+    const groupBotUIDs = new Set([
+      ...members
+        .filter((member) => member?.is_bot || member?.account_type === 'bot')
+        .map((member) => Number(member.user_id)),
+      ...availableAgents
+        .map((agent) => Number(agent.uid || agent.id)),
+    ].filter((uid) => Number.isFinite(uid) && uid > 0));
+    const currentUserUID = Number(user.uid);
+    const groupMemberUIDs = new Set(
+      members
+        .map((member) => Number(member?.user_id))
+        .filter((uid) => Number.isFinite(uid) && uid > 0),
+    );
+    const exclusiveToCurrentUser = isGroup
+      && Number.isFinite(currentUserUID)
+      && currentUserUID > 0
+      && groupMemberUIDs.size === 2
+      && groupMemberUIDs.has(currentUserUID)
+      && Array.from(groupMemberUIDs).some(
+        (uid) => uid !== currentUserUID && groupBotUIDs.has(uid),
+      );
 
     messages.forEach((message, index) => {
       if (message.from_uid === user.uid) return;
@@ -877,11 +1080,22 @@ export default function MessagesView({
     return {
       active,
       key: active ? workingMessageKey(messages[lastWorkingIndex], lastWorkingIndex) : '',
+      initiatorUid: active && isGroup
+        ? resolveWorkingInitiatorUid(messages, lastWorkingIndex, groupBotUIDs)
+        : Number(user.uid),
+      responderUid: active ? Number(messages[lastWorkingIndex]?.from_uid || 0) : 0,
+      exclusiveToCurrentUser,
     };
-  }, [messages, user.uid]);
+  }, [availableAgents, isGroup, members, messages, user.uid]);
   const activeBotWorking = workingState.active
     && (peerTyping || workingState.key === liveWorkingKey)
     && workingState.key !== suppressedWorkingKey;
+  const canStopActiveBotWorking = activeBotWorking
+    && (
+      !isGroup
+      || workingState.exclusiveToCurrentUser
+      || workingState.initiatorUid === Number(user.uid)
+    );
 
   useEffect(() => {
     if (!activeBotWorking) {
@@ -1110,10 +1324,10 @@ export default function MessagesView({
   }, [clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
-    if (!activeBotWorking || isStopRequested) return;
+    if (!canStopActiveBotWorking || isStopRequested) return;
     setIsStopRequested(true);
     try {
-      await wsSendStreamCancel(topic);
+      await wsSendStreamCancel(topic, workingState.responderUid);
       setSuppressedWorkingKey(workingState.key);
       clearRuntimePlan();
       clearLiveWorking();
@@ -1123,7 +1337,7 @@ export default function MessagesView({
     } catch (err) {
       setIsStopRequested(false);
     }
-  }, [activeBotWorking, clearLiveWorking, clearRuntimePlan, isStopRequested, topic, workingState.key]);
+  }, [canStopActiveBotWorking, clearLiveWorking, clearRuntimePlan, isStopRequested, topic, workingState.key, workingState.responderUid]);
 
   const handleRegenerateMessage = useCallback(async (message) => {
     if (sendInFlightRef.current) {
@@ -1585,6 +1799,16 @@ export default function MessagesView({
     );
     return memberUIDs.size === 2 && memberUIDs.has(Number(user.uid));
   }, [isGroup, members, user.uid]);
+  const isOneUserOneAgentGroup = useMemo(() => {
+    if (!isTwoPersonGroupWithCurrentUser) return false;
+    const peerMember = members.find((member) => Number(member?.user_id) !== Number(user.uid));
+    if (!peerMember) return false;
+    return Boolean(
+      peerMember.is_bot
+      || peerMember.account_type === 'bot'
+      || availableAgentUIDs.has(Number(peerMember.user_id)),
+    );
+  }, [availableAgentUIDs, isTwoPersonGroupWithCurrentUser, members, user.uid]);
   const supportsTutorialTasks = isGroup
     ? Boolean(
       isAgentTask
@@ -1592,6 +1816,13 @@ export default function MessagesView({
       || members.some((member) => member?.is_bot),
     )
     : peerIsBot;
+  const composerPlaceholder = isGroup
+    ? (
+      isOneUserOneAgentGroup
+        ? '输入指令，我帮您完成'
+        : (supportsTutorialTasks ? '输入消息，@机器人即可回复' : '输入消息')
+    )
+    : (peerIsBot ? '输入指令，我帮您完成' : '输入消息');
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const canRegenerateAssistantMessages = !isGroup || isAgentTask;
@@ -1899,14 +2130,13 @@ export default function MessagesView({
     }, 0);
   }, [resizeComposerInput, topic, updateComposerDraft, updateStructuredMentionDraft]);
 
-  const questionNavigationItems = useMemo(() => groupedMessages.reduce((items, group, index) => {
-    if (group.type !== 'text' || group.message?.from_uid !== user.uid) return items;
-    items.push({
-      key: questionNavigationKey(group.message, index),
-      label: questionNavigationLabel(group.message),
-    });
-    return items;
-  }, []), [groupedMessages, user.uid]);
+  const questionNavigationItems = useMemo(
+    () => mergeQuestionNavigationItems(
+      questionIndexItems,
+      collectQuestionNavigationItems(messages, user.uid),
+    ),
+    [messages, questionIndexItems, user.uid],
+  );
 
   const clearPendingQuestionJump = useCallback(() => {
     pendingQuestionJumpRef.current = '';
@@ -1949,9 +2179,9 @@ export default function MessagesView({
   }, []);
 
   React.useLayoutEffect(() => {
-    clearPendingQuestionJump();
+    if (pendingQuestionJumpRef.current) return;
     syncActiveQuestion();
-  }, [clearPendingQuestionJump, questionNavigationItems, syncActiveQuestion]);
+  }, [questionNavigationItems, syncActiveQuestion]);
 
   useEffect(() => () => {
     if (questionJumpReleaseTimerRef.current) {
@@ -1959,18 +2189,63 @@ export default function MessagesView({
     }
   }, []);
 
-  const jumpToQuestion = useCallback((questionKey) => {
+  const jumpToQuestion = useCallback(async (questionKey) => {
     const timeline = timelineRef.current;
     if (!timeline) return;
     const target = Array.from(timeline.querySelectorAll('[data-conversation-question]'))
       .find((anchor) => anchor.dataset.conversationQuestion === questionKey);
-    if (!target) return;
     clearPendingQuestionJump();
     pendingQuestionJumpRef.current = questionKey;
-    scheduleQuestionJumpRelease();
     setActiveQuestionKey(questionKey);
+    if (target) {
+      scheduleQuestionJumpRelease();
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+
+    const archivedQuestion = questionNavigationItems.find((item) => item.key === questionKey);
+    if (!archivedQuestion?.id) {
+      clearPendingQuestionJump();
+      return;
+    }
+
+    stickToBottomRef.current = false;
+    previousScrollRef.current = null;
+    try {
+      const res = await api.getMessages(
+        topic,
+        PAGE_SIZE,
+        0,
+        true,
+        archivedQuestion.id + 1,
+      );
+      if (activeTopicRef.current !== topic) {
+        clearPendingQuestionJump();
+        return;
+      }
+      const { visibleMessages } = normalizeHistoryMessages(res.messages || []);
+      if (!visibleMessages.some(
+        (message, index) => questionNavigationKey(message, index) === questionKey,
+      )) {
+        clearPendingQuestionJump();
+        return;
+      }
+      setMessages((prev) => mergeMessages(visibleMessages, prev));
+    } catch (error) {
+      clearPendingQuestionJump();
+    }
+  }, [clearPendingQuestionJump, questionNavigationItems, scheduleQuestionJumpRelease, topic]);
+
+  React.useLayoutEffect(() => {
+    const questionKey = pendingQuestionJumpRef.current;
+    const timeline = timelineRef.current;
+    if (!questionKey || !timeline) return;
+    const target = Array.from(timeline.querySelectorAll('[data-conversation-question]'))
+      .find((anchor) => anchor.dataset.conversationQuestion === questionKey);
+    if (!target) return;
+    scheduleQuestionJumpRelease();
     target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, [clearPendingQuestionJump, scheduleQuestionJumpRelease]);
+  }, [messages, scheduleQuestionJumpRelease]);
 
   const handleTimelineScroll = (e) => {
     const el = e.target;
@@ -2120,9 +2395,23 @@ export default function MessagesView({
         </div>
       </div>
 
-      {questionNavigationItems.length >= 2 && (
-        <nav className="cc-question-navigator" aria-label="对话问题导航">
+      {(questionNavigationItems.length >= 2 || questionIndexHasMore) && (
+        <nav
+          className="cc-question-navigator"
+          aria-label="对话问题导航"
+          onMouseEnter={() => void loadQuestionNavigationHistory()}
+          onFocusCapture={() => void loadQuestionNavigationHistory()}
+        >
           <div className="cc-question-navigator-dots">
+            {questionNavigationItems.length === 0 && questionIndexHasMore && (
+              <button
+                type="button"
+                className="cc-question-navigator-item"
+                aria-label="加载问题导航"
+                title="加载问题导航"
+                onClick={() => void loadQuestionNavigationHistory()}
+              />
+            )}
             {questionNavigationItems.map((item, index) => {
               const isActive = activeQuestionKey === item.key;
               const title = `问题 ${index + 1}：${item.label}`;
@@ -2162,6 +2451,23 @@ export default function MessagesView({
                 );
               })}
             </div>
+            {(questionIndexLoading || questionIndexLimitReached || questionIndexHasMore) && (
+              <div className="cc-question-index-status">
+                {questionIndexLoading && <span>正在索引更早问题…</span>}
+                {!questionIndexLoading && questionIndexLimitReached && (
+                  <span>仅显示最近 {QUESTION_INDEX_MAX_ITEMS} 个问题</span>
+                )}
+                {!questionIndexLoading && !questionIndexLimitReached && questionIndexHasMore && (
+                  <button
+                    type="button"
+                    className="cc-question-index-action"
+                    onClick={() => void loadQuestionNavigationHistory({ continueOlder: true })}
+                  >
+                    加载更早问题
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </nav>
       )}
@@ -2196,7 +2502,7 @@ export default function MessagesView({
         }}
         textareaRef={textareaRef}
         value={input}
-        placeholder="输入指令，我帮您完成"
+        placeholder={composerPlaceholder}
         disabled={isSendingMessage}
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
@@ -2224,7 +2530,7 @@ export default function MessagesView({
         )}
         onSend={handleSend}
         sendDisabled={isSendingMessage || isUploadingAttachment || (!input.trim() && pendingAttachments.length === 0)}
-        stop={activeBotWorking && !input.trim() && pendingAttachments.length === 0}
+        stop={canStopActiveBotWorking && !input.trim() && pendingAttachments.length === 0}
         stopDisabled={isStopRequested}
         onStop={handleStopGeneration}
         onCloseMenus={() => {
@@ -2276,7 +2582,9 @@ export default function MessagesView({
           <>
             {activeBotWorking && (
               <div className="v3-live-input-status" role="status">
-                {isStopRequested ? '已请求 CatsCo 停止当前工作。' : 'CatsCo 正在处理，可点击红色按钮停止。'}
+                {canStopActiveBotWorking
+                  ? (isStopRequested ? '已请求 CatsCo 停止当前工作。' : 'CatsCo 正在处理，可点击红色按钮停止。')
+                  : 'CatsCo 正在回复其他成员。'}
               </div>
             )}
             {(attachmentStatus?.message || isUploadingAttachment || pendingAttachments.length > 0) && (
@@ -2827,6 +3135,46 @@ function isWorkingMessage(message) {
   if (WORKING_MESSAGE_TYPES.has(message?.type)) return true;
   if (isWorkingTextMessage(message)) return true;
   return Boolean(inferWorkingTypeFromBlocks(message?.content_blocks));
+}
+
+function resolveWorkingInitiatorUid(messages, workingIndex, botUIDs) {
+  const workingMessage = messages[workingIndex];
+  const replyTo = Number(workingMessage?.reply_to || 0);
+  if (replyTo > 0) {
+    const repliedMessage = messages.find((message) => Number(message?.id || message?.seq_id) === replyTo);
+    const repliedUID = Number(repliedMessage?.from_uid);
+    if (
+      repliedMessage
+      && isFinalTextMessage(repliedMessage)
+      && Number.isFinite(repliedUID)
+      && repliedUID > 0
+      && !botUIDs.has(repliedUID)
+      && !isAssistantAuthoredMessage(repliedMessage)
+    ) {
+      return repliedUID;
+    }
+  }
+
+  const metadata = workingMessage?.metadata || {};
+  const metadataUID = Number(
+    metadata.initiator_uid
+    ?? metadata.requester_uid
+    ?? metadata.trigger_uid
+    ?? 0,
+  );
+  if (Number.isFinite(metadataUID) && metadataUID > 0 && !botUIDs.has(metadataUID)) {
+    return metadataUID;
+  }
+
+  for (let index = workingIndex - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!isFinalTextMessage(message)) continue;
+    const senderUID = Number(message?.from_uid);
+    if (!Number.isFinite(senderUID) || senderUID <= 0) continue;
+    if (botUIDs.has(senderUID) || isAssistantAuthoredMessage(message)) continue;
+    return senderUID;
+  }
+  return 0;
 }
 
 function workingMessageKey(message) {

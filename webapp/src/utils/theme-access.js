@@ -5,8 +5,12 @@ const LIQUID_THEME_PASSWORD_SALT = 'catsco-liquid-theme-v1';
 const LIQUID_THEME_PASSWORD_ITERATIONS = 210000;
 const LIQUID_THEME_PASSWORD_VERIFIER = 'q3V748DOo0hRhrrZ8n8N5T7yVPS0uQCFU4xRuO8CW1s=';
 
+export function isLiquidTheme(value) {
+  return value === 'liquid' || value === 'liquid-green';
+}
+
 export function normalizeTheme(value) {
-  return value === 'dark' || value === 'liquid' ? value : 'light';
+  return value === 'dark' || isLiquidTheme(value) ? value : 'light';
 }
 
 export function isLiquidThemeUnlocked(storage = globalThis.localStorage) {

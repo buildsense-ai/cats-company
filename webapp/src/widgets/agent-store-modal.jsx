@@ -494,7 +494,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
           {/* SUCCESS (API KEY) TAB */}
           {tab === 'success' && createdBot && (
             <div style={{ maxWidth: 460, margin: '0 auto', textAlign: 'center' }}>
-              <div style={{ width: 64, height: 64, background: 'rgba(16, 185, 129, 0.1)', color: 'var(--v3-primary)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32, margin: '0 auto 20px' }}>✓</div>
+              <div style={{ width: 64, height: 64, background: 'color-mix(in srgb, var(--v3-primary) 10%, transparent)', color: 'var(--v3-primary)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32, margin: '0 auto 20px' }}>✓</div>
               <h2 style={{ margin: '0 0 8px 0', color: 'var(--v3-text-name)' }}>创建成功</h2>
               <p style={{ margin: '0 0 24px 0', color: 'var(--v3-text-muted)', fontSize: 14 }}>AI 助手 <b style={{color: 'var(--v3-text-name)'}}>{createdBot.display_name}</b> 已准备好连接。</p>
 
