@@ -107,6 +107,36 @@ describe('MobilePdfPreview', () => {
     expect(container.querySelector('button[aria-label="适合宽度"]').disabled).toBe(true);
   });
 
+  it('keeps a normal page renderable at 300% in a tablet-width preview', async () => {
+    const fixture = createPdfFixture(1, { width: 600, height: 800 });
+    const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1024);
+
+    try {
+      await act(async () => {
+        root.render(
+          <MobilePdfPreview url="/uploads/report.pdf" loadDocument={() => Promise.resolve(fixture.document)} />,
+        );
+        await flushAsync();
+      });
+    } finally {
+      clientWidth.mockRestore();
+    }
+
+    for (let step = 0; step < 8; step += 1) {
+      await act(async () => {
+        Simulate.click(container.querySelector('button[aria-label="放大"]'));
+        await flushAsync();
+      });
+    }
+
+    const canvas = container.querySelector('canvas');
+    expect(container.querySelector('.v3-mobile-pdf-zoom').textContent).toBe('300%');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(canvas.style.width).toBe('3000px');
+    expect(canvas.style.height).toBe('4000px');
+    expect(canvas.width * canvas.height).toBeLessThanOrEqual(8_000_000);
+  });
+
   it('uses the PDF.js TextLayer implementation when the loader provides it', async () => {
     const fixture = createPdfFixture();
     const textLayerInstances = [];
@@ -211,16 +241,22 @@ describe('MobilePdfPreview', () => {
     expect(viewport.scrollTop).toBe(40);
   });
 
-  it('cancels a pending PDF.js loading task when the preview closes', async () => {
+  it('cancels a pending PDF.js loading task and handles teardown rejection when the preview closes', async () => {
     const neverResolves = new Promise(() => {});
-    const loadingTask = { promise: neverResolves, destroy: vi.fn() };
+    const loadingTask = {
+      promise: neverResolves,
+      destroy: vi.fn().mockRejectedValue(new Error('worker teardown failed')),
+    };
     const loadDocument = vi.fn().mockResolvedValue(loadingTask);
 
     await act(async () => {
       root.render(<MobilePdfPreview url="/uploads/slow.pdf" loadDocument={loadDocument} />);
       await flushAsync();
     });
-    await act(async () => root.unmount());
+    await act(async () => {
+      root.unmount();
+      await flushAsync();
+    });
     expect(loadingTask.destroy).toHaveBeenCalledTimes(1);
     root = createRoot(container);
   });

@@ -6,7 +6,6 @@ const MAX_ZOOM = 3;
 const ZOOM_STEP = 0.25;
 const MAX_CANVAS_PIXELS = 8_000_000;
 const MAX_CANVAS_DIMENSION = 8192;
-const MAX_LAYOUT_PIXELS = 8_000_000;
 const MAX_LAYOUT_DIMENSION = 8192;
 
 let pdfJsPromise;
@@ -22,8 +21,7 @@ function pointerDistance(points) {
 
 function pageViewportIsSupported(viewport) {
   return viewport.width <= MAX_LAYOUT_DIMENSION
-    && viewport.height <= MAX_LAYOUT_DIMENSION
-    && viewport.width * viewport.height <= MAX_LAYOUT_PIXELS;
+    && viewport.height <= MAX_LAYOUT_DIMENSION;
 }
 
 function canvasOutputScale(viewport) {
@@ -122,7 +120,18 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
     let cancelled = false;
     let loadingTask = null;
     let loadedDocument = null;
+    let disposalPromise = null;
     const loadController = new AbortController();
+    const disposePdf = () => {
+      const resource = loadingTask?.destroy ? loadingTask : loadedDocument;
+      if (!resource?.destroy) return Promise.resolve();
+      if (!disposalPromise) {
+        disposalPromise = Promise.resolve()
+          .then(() => resource.destroy())
+          .catch(() => {});
+      }
+      return disposalPromise;
+    };
 
     renderTaskRef.current?.cancel?.();
     renderTaskRef.current = null;
@@ -154,14 +163,13 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
         }
         if (loadingTask) {
           if (cancelled) {
-            await loadingTask.destroy?.();
+            await disposePdf();
             return;
           }
           loadedDocument = await loadingTask.promise;
         }
         if (cancelled) {
-          if (loadingTask?.destroy) await loadingTask.destroy();
-          else await loadedDocument?.destroy?.();
+          await disposePdf();
           return;
         }
         setPdfDocument(loadedDocument);
@@ -180,8 +188,7 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
       loadController.abort();
       renderTaskRef.current?.cancel?.();
       textLayerTaskRef.current?.cancel?.();
-      if (loadingTask?.destroy) loadingTask.destroy();
-      else loadedDocument?.destroy?.();
+      void disposePdf();
     };
   }, [loadDocument, url]);
 
@@ -221,12 +228,15 @@ export default function MobilePdfPreview({ url, loadDocument = defaultLoadDocume
         const baseViewport = page.getViewport({ scale: 1 });
         const availableWidth = Math.max((viewportWidth || viewportRef.current?.clientWidth || 320) - 24, 240);
         const fitScale = availableWidth / Math.max(1, baseViewport.width);
-        const viewport = page.getViewport({ scale: fitScale * zoom });
-        if (!pageViewportIsSupported(viewport)) {
+        const fitViewport = page.getViewport({ scale: fitScale });
+        if (!pageViewportIsSupported(fitViewport)) {
           setError('此 PDF 页面尺寸超出内置阅读器支持范围，请使用系统 PDF 阅读器打开。');
           setRenderState('error');
           return;
         }
+        const viewport = zoom === 1
+          ? fitViewport
+          : page.getViewport({ scale: fitScale * zoom });
         const outputScale = canvasOutputScale(viewport);
         const canvas = canvasRef.current;
         const context = canvas.getContext('2d', { alpha: false });
