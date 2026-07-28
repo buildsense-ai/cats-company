@@ -985,6 +985,43 @@ describe('ChatMessage rich file rendering', () => {
     expect(panel.querySelector('.v3-remote-artifact-preview-state.error a').getAttribute('href')).toBe(artifact.url);
   });
 
+  it('opens a same-origin registry Artifact in a new tab instead of embedding it', async () => {
+    const artifactURL = new URL('/artifacts/by-agent/440/same-origin/latest/', window.location.origin).toString();
+    const artifact = {
+      id: 'same-origin',
+      title: 'Same-origin artifact',
+      kind: 'html',
+      url: artifactURL,
+      publish_version: 1,
+    };
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 37,
+            from_uid: 440,
+            content: `Published: ${artifactURL}`,
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          knownArtifacts={[artifact]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const previewButton = container.querySelector('.v3-artifact-actions button');
+    expect(previewButton.disabled).toBe(true);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await Promise.resolve();
+    });
+
+    expect(window.open).toHaveBeenCalledWith(artifactURL, '_blank', 'noopener,noreferrer');
+    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+    expect(container.querySelector('iframe.v3-file-preview-frame')).toBeNull();
+  });
+
   it('keeps an unknown external URL as an ordinary link', async () => {
     await act(async () => {
       root.render(

@@ -71,10 +71,18 @@ func loadArtifactNodeRegistryFromEnv() (*artifactNodeRegistry, error) {
 			return nil, fmt.Errorf("read artifact node config: %w", err)
 		}
 	}
-	return parseArtifactNodeRegistry(data, os.LookupEnv)
+	applicationBaseURL := strings.TrimSpace(os.Getenv("CATSCO_PUBLIC_BASE_URL"))
+	if applicationBaseURL == "" {
+		return nil, errors.New("CATSCO_PUBLIC_BASE_URL is required when artifact nodes are configured")
+	}
+	return parseArtifactNodeRegistry(data, os.LookupEnv, applicationBaseURL)
 }
 
-func parseArtifactNodeRegistry(data []byte, lookupEnv func(string) (string, bool)) (*artifactNodeRegistry, error) {
+func parseArtifactNodeRegistry(
+	data []byte,
+	lookupEnv func(string) (string, bool),
+	applicationBaseURL string,
+) (*artifactNodeRegistry, error) {
 	if len(data) == 0 || len(data) > artifactNodeConfigMaxBytes {
 		return nil, errors.New("artifact node config is empty or too large")
 	}
@@ -96,6 +104,10 @@ func parseArtifactNodeRegistry(data []byte, lookupEnv func(string) (string, bool
 	if len(document.Nodes) == 0 || len(document.Agents) == 0 {
 		return nil, errors.New("artifact node config requires non-empty nodes and agents")
 	}
+	applicationOrigin, err := parseArtifactURLOrigin(applicationBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("CATSCO_PUBLIC_BASE_URL: %w", err)
+	}
 
 	registry := &artifactNodeRegistry{
 		nodes:  make(map[string]artifactNode, len(document.Nodes)),
@@ -109,6 +121,16 @@ func parseArtifactNodeRegistry(data []byte, lookupEnv func(string) (string, bool
 		publicBaseURL, err := parseArtifactNodeBaseURL(entry.PublicBaseURL)
 		if err != nil {
 			return nil, fmt.Errorf("artifact node %s public URL: %w", nodeID, err)
+		}
+		publicOrigin, err := parseArtifactURLOrigin(publicBaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("artifact node %s public URL: %w", nodeID, err)
+		}
+		if publicOrigin == applicationOrigin {
+			return nil, fmt.Errorf(
+				"artifact node %s public URL must use a different origin from CATSCO_PUBLIC_BASE_URL",
+				nodeID,
+			)
 		}
 		managementURL, err := parseArtifactNodeManagementURL(entry.ManagementURL)
 		if err != nil {
@@ -212,6 +234,33 @@ func parseArtifactNodeManagementURL(value string) (string, error) {
 		return "", errors.New("artifact management URL must end with /artifacts")
 	}
 	return parsed.String(), nil
+}
+
+type artifactURLOrigin struct {
+	scheme   string
+	hostname string
+	port     string
+}
+
+func parseArtifactURLOrigin(value string) (artifactURLOrigin, error) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.User != nil {
+		return artifactURLOrigin{}, errors.New("must be an absolute HTTP(S) URL")
+	}
+	port := parsed.Port()
+	if port == "" {
+		if parsed.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return artifactURLOrigin{
+		scheme:   strings.ToLower(parsed.Scheme),
+		hostname: strings.TrimSuffix(strings.ToLower(parsed.Hostname()), "."),
+		port:     port,
+	}, nil
 }
 
 func parseCanonicalArtifactNodeURL(value string, management bool) (string, error) {

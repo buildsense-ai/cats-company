@@ -122,6 +122,9 @@ base URL, protected management URL, and exactly one bearer-token source:
 `management_token_env` or `management_token_file`. The token itself must not be
 written into the JSON. Prefer a separate file under `/run/catsco-secrets` for
 each node; the directory is already mounted read-only in the server container.
+Every `public_base_url` must use a different origin (scheme, host, or port) from
+`CATSCO_PUBLIC_BASE_URL`. The server rejects a same-origin registry at startup
+so executable Artifact HTML cannot share the CatsCo application origin.
 For example:
 
 ```bash

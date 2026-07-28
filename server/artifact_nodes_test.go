@@ -13,6 +13,8 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+const testArtifactApplicationBaseURL = "https://app.catsco.cc"
+
 func TestCloudArtifactHandlerRoutesAgentsToConfiguredNodes(t *testing.T) {
 	const tokenA = "node-a-management-token-abcdefghijklmnopqrstuvwxyz"
 	const tokenB = "node-b-management-token-abcdefghijklmnopqrstuvwxyz"
@@ -316,9 +318,63 @@ func TestParseArtifactNodeRegistryRejectsIncompleteMappings(t *testing.T) {
 			data, _ := json.Marshal(tc.document)
 			_, err := parseArtifactNodeRegistry(data, func(key string) (string, bool) {
 				return token, key == "NODE_A_TOKEN"
-			})
+			}, testArtifactApplicationBaseURL)
 			if err == nil || !strings.Contains(err.Error(), tc.contains) {
 				t.Fatalf("error = %v, want %q", err, tc.contains)
+			}
+		})
+	}
+}
+
+func TestParseArtifactNodeRegistryRequiresArtifactNodesOnADifferentOrigin(t *testing.T) {
+	const token = "node-a-management-token-abcdefghijklmnopqrstuvwxyz"
+	tests := []struct {
+		name               string
+		applicationBaseURL string
+		publicBaseURL      string
+		wantError          bool
+	}{
+		{
+			name:               "same hostname and default HTTPS port",
+			applicationBaseURL: "https://app.catsco.cc/console",
+			publicBaseURL:      "https://APP.catsco.cc:443/artifacts",
+			wantError:          true,
+		},
+		{
+			name:               "different non-default port",
+			applicationBaseURL: "https://app.catsco.cc",
+			publicBaseURL:      "https://app.catsco.cc:9000/artifacts",
+		},
+		{
+			name:               "different hostname",
+			applicationBaseURL: "https://app.catsco.cc",
+			publicBaseURL:      "https://artifacts.catsco.cc/artifacts",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			document := map[string]any{
+				"nodes": map[string]any{
+					"node-a": map[string]string{
+						"public_base_url":      tc.publicBaseURL,
+						"management_url":       "https://management.example/internal/artifacts",
+						"management_token_env": "NODE_A_TOKEN",
+					},
+				},
+				"agents": map[string]string{"440": "node-a"},
+			}
+			data, _ := json.Marshal(document)
+			_, err := parseArtifactNodeRegistry(data, func(key string) (string, bool) {
+				return token, key == "NODE_A_TOKEN"
+			}, tc.applicationBaseURL)
+			if tc.wantError {
+				if err == nil || !strings.Contains(err.Error(), "different origin") {
+					t.Fatalf("error = %v, want different origin", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("error = %v", err)
 			}
 		})
 	}
@@ -337,7 +393,7 @@ func TestParseArtifactNodeRegistryRejectsDuplicateJSONKeys(t *testing.T) {
 	}`
 	_, err := parseArtifactNodeRegistry([]byte(document), func(key string) (string, bool) {
 		return "node-a-management-token-abcdefghijklmnopqrstuvwxyz", key == "NODE_A_TOKEN"
-	})
+	}, testArtifactApplicationBaseURL)
 	if err == nil || !strings.Contains(err.Error(), "duplicate key") {
 		t.Fatalf("error = %v, want duplicate key", err)
 	}
@@ -360,7 +416,7 @@ func TestParseArtifactNodeRegistryReadsIndependentTokenFile(t *testing.T) {
 		"agents": map[string]string{"440": "node-a"},
 	}
 	data, _ := json.Marshal(document)
-	registry, err := parseArtifactNodeRegistry(data, nil)
+	registry, err := parseArtifactNodeRegistry(data, nil, testArtifactApplicationBaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +438,7 @@ func mustArtifactNodeRegistry(t *testing.T, environment map[string]string, docum
 	registry, err := parseArtifactNodeRegistry(data, func(key string) (string, bool) {
 		value, ok := environment[key]
 		return value, ok
-	})
+	}, testArtifactApplicationBaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}

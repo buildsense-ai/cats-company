@@ -1150,9 +1150,16 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
   const previewArtifact = () => {
     if (descriptor?.canPreview) onPreviewFile?.(payload);
   };
+  const openArtifact = () => {
+    if (descriptor?.canPreview) {
+      previewArtifact();
+    } else if (payload.url) {
+      window.open(payload.url, '_blank', 'noopener,noreferrer');
+    }
+  };
   return (
     <div className={`v3-attachment-card v3-artifact-card cloud-static${isActive ? ' active' : ''}`}>
-      <button className="v3-artifact-main" onClick={previewArtifact} title="预览生成物" type="button">
+      <button className="v3-artifact-main" onClick={openArtifact} title="预览生成物" type="button">
         <div className="v3-attachment-icon"><FileCode2 size={18} strokeWidth={1.5} /></div>
         <div className="v3-attachment-info">
           <span className="v3-attachment-name" title={payload.name}>{payload.name}</span>
@@ -1160,7 +1167,7 @@ function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
         </div>
       </button>
       <div className="v3-artifact-actions">
-        <button className="v3-artifact-action" onClick={previewArtifact} title="预览" type="button">
+        <button className="v3-artifact-action" disabled={!descriptor?.canPreview} onClick={previewArtifact} title="预览" type="button">
           <Eye size={15} /><span>预览</span>
         </button>
         <a className="v3-artifact-action" href={artifact.url} onClick={(event) => event.stopPropagation()} rel="noopener noreferrer" target="_blank" title="在新标签页打开">
@@ -1352,6 +1359,15 @@ function isTrustedPreviewURL(url) {
   }
 }
 
+function isSameOriginURL(url) {
+  if (!url || typeof window === 'undefined' || !window.location?.origin) return false;
+  try {
+    return new URL(url, window.location.origin).origin === window.location.origin;
+  } catch (e) {
+    return false;
+  }
+}
+
 function previewFileDescriptor(payload) {
   if (!payload) return null;
   const url = resolveMediaURL(payload.url);
@@ -1361,11 +1377,15 @@ function previewFileDescriptor(payload) {
   const isHtml = isHtmlFile(payload, ext);
   const isMarkdown = isMarkdownFile(payload, ext);
   const isSpreadsheet = isSpreadsheetPreviewFile(payload, ext);
-  const isRemoteArtifact = trustedArtifactPreviewPayloads.has(payload)
+  const isManagedRemoteArtifact = trustedArtifactPreviewPayloads.has(payload)
     && isHtml
     && Boolean(normalizeArtifactURL(url));
+  const isSameOriginRemoteArtifact = isManagedRemoteArtifact && isSameOriginURL(url);
+  const isRemoteArtifact = isManagedRemoteArtifact && !isSameOriginRemoteArtifact;
   const spreadsheetKind = isCsvFile(payload, ext) ? 'csv' : isXlsxFile(payload, ext) ? 'xlsx' : '';
-  const canPreview = isRemoteArtifact || (isPreviewableFile(payload, ext) && isTrustedPreviewURL(url));
+  const canPreview = isManagedRemoteArtifact
+    ? isRemoteArtifact
+    : isPreviewableFile(payload, ext) && isTrustedPreviewURL(url);
   return {
     payload,
     url,
@@ -1376,6 +1396,7 @@ function previewFileDescriptor(payload) {
     isMarkdown,
     isSpreadsheet,
     isRemoteArtifact,
+    isSameOriginRemoteArtifact,
     spreadsheetKind,
     canPreview,
     sizeStr: payload.size ? formatFileSize(payload.size) : '',
