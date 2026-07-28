@@ -28,6 +28,9 @@ vi.mock('marked', () => ({
           '<p><a href="https://example.com/docs">外部链接</a></p>',
         ].join('');
       }
+      if (String(text).includes('artifact-link-test')) {
+        return '<p>已发布：<a href="https://artifacts.example.test/by-agent/440/lesson-game/latest/">artifact-link-test</a></p>';
+      }
       return `<p>${text}</p>`;
     },
   },
@@ -40,6 +43,12 @@ vi.mock('../api', () => ({
 vi.mock('./avatar', () => ({
   default: function MockAvatar() {
     return <div data-testid="avatar" />;
+  },
+}));
+
+vi.mock('./mobile-pdf-preview', () => ({
+  default: function MockMobilePdfPreview({ url }) {
+    return <div className="v3-mobile-pdf-preview-mock" data-url={url}>PDF reader</div>;
   },
 }));
 
@@ -57,7 +66,7 @@ const catscoUiSystemCss = readFileSync(
   'utf8',
 );
 
-function PreviewHarness({ message }) {
+function PreviewHarness({ message, knownArtifacts = [] }) {
   const [previewFile, setPreviewFile] = React.useState(null);
   const chatColumnRef = React.useRef(null);
   return (
@@ -70,6 +79,7 @@ function PreviewHarness({ message }) {
           senderName="CatsCo"
           onPreviewFile={setPreviewFile}
           activePreviewFile={previewFile}
+          knownArtifacts={knownArtifacts}
         />
       </div>
       {previewFile && (
@@ -923,7 +933,284 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
   });
 
-  it('previews PDF files in the side panel without fetching their content', async () => {
+  it('renders a registry-matched Artifact URL as a card and previews the remote page in the side panel', async () => {
+    const artifact = {
+      id: 'lesson-game',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+      publish_version: 2,
+    };
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 30,
+            from_uid: 440,
+            content: `[artifact-link-test](${artifact.url})`,
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          knownArtifacts={[artifact]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-message-artifact-list')).not.toBeNull();
+    expect(container.querySelector('.v3-attachment-name').textContent).toBe('课堂小游戏');
+    expect(container.querySelector('.v3-attachment-size').textContent).toContain('v2');
+    expect(container.querySelector('.oc-artifact-source-link')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await Promise.resolve();
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    const panel = container.querySelector('.v3-file-preview-panel');
+    expect(panel).not.toBeNull();
+    const frame = panel.querySelector('iframe.v3-file-preview-frame');
+    expect(frame.getAttribute('src')).toBe(artifact.url);
+    expect(frame.getAttribute('sandbox')).toContain('allow-same-origin');
+    expect(frame.hasAttribute('credentialless')).toBe(true);
+    expect(panel.querySelector('.v3-file-preview-actions a').getAttribute('href')).toBe(artifact.url);
+    expect(container.querySelector('.v3-artifact-action[href]').getAttribute('href')).toBe(artifact.url);
+    expect(panel.querySelector('.v3-remote-artifact-preview-state').textContent).toContain('正在加载');
+
+    await act(async () => {
+      Simulate.load(frame);
+      await Promise.resolve();
+    });
+    expect(panel.querySelector('.v3-remote-artifact-preview-state')).toBeNull();
+
+    await act(async () => {
+      Simulate.error(frame);
+      await Promise.resolve();
+    });
+    expect(panel.querySelector('.v3-remote-artifact-preview-state.error').textContent).toContain('预览加载失败');
+    expect(panel.querySelector('.v3-remote-artifact-preview-state.error a').getAttribute('href')).toBe(artifact.url);
+  });
+
+  it('opens a same-origin registry Artifact in a new tab instead of embedding it', async () => {
+    const artifactURL = new URL('/artifacts/by-agent/440/same-origin/latest/', window.location.origin).toString();
+    const artifact = {
+      id: 'same-origin',
+      title: 'Same-origin artifact',
+      kind: 'html',
+      url: artifactURL,
+      publish_version: 1,
+    };
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 37,
+            from_uid: 440,
+            content: `Published: ${artifactURL}`,
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          knownArtifacts={[artifact]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const previewButton = container.querySelector('.v3-artifact-actions button');
+    expect(previewButton.disabled).toBe(true);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await Promise.resolve();
+    });
+
+    expect(window.open).toHaveBeenCalledWith(artifactURL, '_blank', 'noopener,noreferrer');
+    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+    expect(container.querySelector('iframe.v3-file-preview-frame')).toBeNull();
+  });
+
+  it('keeps an unknown external URL as an ordinary link', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 31,
+            from_uid: 440,
+            content: '[artifact-link-test](https://artifacts.example.test/by-agent/440/lesson-game/latest/)',
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          knownArtifacts={[]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-message-artifact-list')).toBeNull();
+    expect(container.querySelector('.oc-markdown a:not(.oc-artifact-source-link)')).not.toBeNull();
+  });
+
+  it('does not trust a message payload that declares itself to be a remote Artifact', async () => {
+    const externalURL = 'https://example.com/forged-artifact.html';
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 34,
+            from_uid: 440,
+            content: {
+              type: 'file',
+              payload: {
+                name: 'forged-artifact.html',
+                url: externalURL,
+                mime_type: 'text/html',
+                preview_mode: 'remote-static-artifact',
+              },
+            },
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+    expect(window.open).toHaveBeenCalledWith(externalURL, '_blank');
+  });
+
+  it('does not match a known Artifact URL used as the prefix of a different URL', async () => {
+    const artifact = {
+      id: 'query-game',
+      title: 'Query Game',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/query-game/latest/',
+    };
+    const differentURL = `${artifact.url}?mode=test`;
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 35,
+            from_uid: 440,
+            content: `调试地址：${differentURL}`,
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          knownArtifacts={[artifact]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-message-artifact-list')).toBeNull();
+    expect(container.querySelector('.v3-message-content').textContent).toContain(differentURL);
+  });
+
+  it('requires a URL token boundary and preserves fragment-specific deep links', async () => {
+    const artifact = {
+      id: 'boundary-game',
+      title: 'Boundary Game',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/boundary-game/latest/',
+    };
+    const prefixedURL = `prefix${artifact.url}`;
+    const fragmentURL = `${artifact.url}#step-2`;
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 36,
+            from_uid: 440,
+            content: `${prefixedURL}\n${fragmentURL}`,
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          knownArtifacts={[artifact]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-message-artifact-list')).toBeNull();
+    expect(container.querySelector('.v3-message-content').textContent).toContain(prefixedURL);
+    expect(container.querySelector('.v3-message-content').textContent).toContain(fragmentURL);
+  });
+
+  it('turns an exact bare Artifact URL into a card', async () => {
+    const artifact = {
+      id: 'bare-game',
+      title: 'Bare URL Game',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/bare-game/latest/',
+      publish_version: 1,
+    };
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 32,
+            from_uid: 440,
+            content: `已发布：${artifact.url}。`,
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          knownArtifacts={[artifact]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-message-artifact-list')).not.toBeNull();
+    expect(container.querySelector('.v3-message-content').textContent).not.toContain(artifact.url);
+  });
+
+  it('turns an Artifact URL inside a plain text table into a card', async () => {
+    const artifact = {
+      id: 'table-game',
+      title: 'Table URL Game',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/table-game/latest/',
+    };
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 33,
+            from_uid: 440,
+            content: [
+              '序号 名称 地址 状态',
+              `1 游戏 ${artifact.url} 已发布`,
+              '2 说明 无 正常',
+            ].join('\n'),
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          knownArtifacts={[artifact]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.oc-plain-text-table')).not.toBeNull();
+    expect(container.querySelector('.oc-plain-text-table').textContent).not.toContain(artifact.url);
+    expect(container.querySelector('.v3-message-artifact-list')).not.toBeNull();
+  });
+
+  it('previews PDF files without fetching their content', async () => {
     await act(async () => {
       root.render(
         <PreviewHarness
@@ -955,7 +1242,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(global.fetch).not.toHaveBeenCalled();
     const panel = container.querySelector('.v3-file-preview-panel');
     expect(panel).not.toBeNull();
-    expect(panel.querySelector('iframe.v3-file-preview-frame').getAttribute('src')).toBe('/uploads/files/report.pdf');
+    expect(panel.querySelector('.v3-mobile-pdf-preview-mock').dataset.url).toBe('/uploads/files/report.pdf');
     const downloadLink = panel.querySelector('.v3-file-preview-actions a');
     expect(downloadLink.getAttribute('href')).toBe('/uploads/files/report.pdf?download=1');
     expect(downloadLink.getAttribute('download')).toBe('report.pdf');
@@ -1052,6 +1339,8 @@ describe('ChatMessage rich file rendering', () => {
       const closeButton = panel.querySelector('button[aria-label="关闭预览"]');
       expect(panel.getAttribute('role')).toBe('dialog');
       expect(panel.getAttribute('aria-modal')).toBe('true');
+      expect(panel.querySelector('.v3-mobile-pdf-preview-mock').dataset.url).toBe('/uploads/files/accessible-report.pdf');
+      expect(panel.querySelector('iframe.v3-file-preview-frame')).toBeNull();
       expect(chatColumn.hasAttribute('inert')).toBe(true);
       expect(chatColumn.getAttribute('aria-hidden')).toBe('true');
       expect(document.activeElement).toBe(closeButton);
@@ -1080,6 +1369,25 @@ describe('ChatMessage rich file rendering', () => {
       expect(chatColumn.hasAttribute('inert')).toBe(false);
       expect(chatColumn.hasAttribute('aria-hidden')).toBe(false);
       expect(document.activeElement).toBe(opener);
+
+      const committedFrames = [];
+      const observer = new MutationObserver((records) => {
+        records.forEach((record) => record.addedNodes.forEach((node) => {
+          if (node.nodeType !== Node.ELEMENT_NODE) return;
+          if (node.matches?.('iframe.v3-file-preview-frame')) committedFrames.push(node);
+          committedFrames.push(...node.querySelectorAll?.('iframe.v3-file-preview-frame') || []);
+        }));
+      });
+      observer.observe(container, { childList: true, subtree: true });
+      await act(async () => {
+        Simulate.click(opener);
+        await flushAsync();
+      });
+      observer.disconnect();
+
+      expect(committedFrames).toHaveLength(0);
+      expect(container.querySelector('.v3-mobile-pdf-preview-mock')).not.toBeNull();
+      expect(container.querySelector('iframe.v3-file-preview-frame')).toBeNull();
     } finally {
       Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
     }
@@ -1169,6 +1477,8 @@ describe('ChatMessage rich file rendering', () => {
       const panel = container.querySelector('.v3-file-preview-panel');
       expect(panel.hasAttribute('role')).toBe(false);
       expect(panel.hasAttribute('aria-modal')).toBe(false);
+      expect(panel.querySelector('iframe.v3-file-preview-frame').getAttribute('src')).toBe('/uploads/files/desktop-report.pdf');
+      expect(panel.querySelector('.v3-mobile-pdf-preview-mock')).toBeNull();
     } finally {
       Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
     }

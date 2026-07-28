@@ -5482,6 +5482,23 @@ button.catsco-download-action:disabled {
   border-color: rgba(59, 130, 246, 0.32);
   background: rgba(59, 130, 246, 0.08);
 }
+.oc-artifact-source-link {
+  display: none;
+}
+.v3-message-artifact-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 6px;
+}
+.v3-artifact-card.cloud-static {
+  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.08);
+}
+.v3-artifact-card.cloud-static.active {
+  border-color: var(--v3-primary);
+}
 .v3-artifact-actions {
   flex: 0 0 auto;
   display: flex;
@@ -5634,6 +5651,31 @@ button.catsco-download-action:disabled {
   border: 0;
   display: block;
   background: #fff;
+}
+.v3-remote-artifact-preview {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.v3-remote-artifact-preview-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  background: var(--v3-bg-app);
+  color: var(--v3-text-muted);
+}
+.v3-remote-artifact-preview-state.error {
+  flex-direction: column;
+  color: #fca5a5;
+}
+.v3-remote-artifact-preview-state a {
+  color: var(--v3-primary);
+  font-weight: 700;
 }
 .v3-file-preview-text {
   width: 100%;

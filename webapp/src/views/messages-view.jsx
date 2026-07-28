@@ -35,6 +35,7 @@ const PREVIEW_WIDTH_STORAGE_KEY = 'cc_file_preview_width_v1';
 const PREVIEW_WIDTH_MIN = 360;
 const PREVIEW_WIDTH_DEFAULT = 640;
 const PREVIEW_WIDTH_MAX = 980;
+const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 
 function questionNavigationKey(message, index) {
   return String(message?.id ?? message?.seq_id ?? `question-${index}`);
@@ -207,6 +208,18 @@ function historyCacheKey(userID, topic) {
   return `${userID || 'anonymous'}:${topic}`;
 }
 
+function artifactURLsInMessage(message) {
+  if (message?._streaming) return [];
+  const textBlocks = Array.isArray(message?.content_blocks)
+    ? message.content_blocks.filter((block) => block?.type === 'text').map((block) => block.text || '')
+    : [];
+  const text = [typeof message?.content === 'string' ? message.content : '', ...textBlocks].join('\n');
+  return (text.match(/https?:\/\/[^\s<>"'`]+/gi) || [])
+    .map((url) => url.replace(/[)\]}>.,;:!?，。；：！？]+$/g, ''))
+    .filter(Boolean)
+    .sort();
+}
+
 function cacheHistoryPage(cache, key, entry) {
   cache.delete(key);
   cache.set(key, entry);
@@ -244,6 +257,8 @@ export default function MessagesView({
   const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
   const [replyTo, setReplyTo] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
+  const [artifactRegistryState, setArtifactRegistryState] = useState({ agentUID: 0, artifacts: [] });
+  const [artifactRegistryRefreshEpoch, setArtifactRegistryRefreshEpoch] = useState(0);
   const [previewWidth, setPreviewWidth] = useState(() => loadPreviewWidth());
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
@@ -295,6 +310,9 @@ export default function MessagesView({
   const historyBeforeIDRef = useRef(0);
   const historyRequestRef = useRef(0);
   const historyLoadingRef = useRef(false);
+  const groupMembersRequestRef = useRef(0);
+  const peerProfileRequestRef = useRef(0);
+  const artifactRegistryRequestRef = useRef(0);
   const historyCacheRef = useRef(new Map());
   const hasMoreHistoryRef = useRef(false);
   const loadingOlderRef = useRef(false);
@@ -496,6 +514,8 @@ export default function MessagesView({
   // Load message history and group members when topic changes
   useEffect(() => {
     if (!topic) return;
+    groupMembersRequestRef.current += 1;
+    peerProfileRequestRef.current += 1;
     activeTopicRef.current = topic;
     setInput(composerDraftsRef.current.get(topic) || '');
     const cacheKey = historyCacheKey(user.uid, topic);
@@ -557,7 +577,7 @@ export default function MessagesView({
     } else {
       loadPeerProfile();
     }
-  }, [topic, user.uid]);
+  }, [groupId, isGroup, topic, user.uid]);
 
   useEffect(() => {
     const preventBrowserFileOpen = (event) => {
@@ -583,8 +603,12 @@ export default function MessagesView({
   }, []);
 
   const loadGroupMembers = async () => {
+    const requestID = ++groupMembersRequestRef.current;
+    const requestTopic = topic;
+    const requestGroupID = groupId;
     try {
-      const res = await api.getGroupInfo(groupId);
+      const res = await api.getGroupInfo(requestGroupID);
+      if (requestID !== groupMembersRequestRef.current || activeTopicRef.current !== requestTopic) return;
       if (res.members) {
         setMembers(res.members);
       }
@@ -596,8 +620,10 @@ export default function MessagesView({
   };
 
   const loadPeerProfile = async () => {
+    const requestID = ++peerProfileRequestRef.current;
+    const requestTopic = topic;
     try {
-      const [left, right] = topic.replace('p2p_', '').split('_').map((n) => parseInt(n, 10));
+      const [left, right] = requestTopic.replace('p2p_', '').split('_').map((n) => parseInt(n, 10));
       const peerId = left === user.uid ? right : left;
       const [friendsRes, agentsRes] = await Promise.all([
         api.getFriends().catch(() => ({})),
@@ -608,6 +634,7 @@ export default function MessagesView({
       const friendPeer = friends.find((friend) => friend.id === peerId);
       const agentPeer = agents.find((agent) => agent.uid === peerId || agent.id === peerId);
       const peer = agentPeer ? { ...friendPeer, ...agentPeer } : friendPeer;
+      if (requestID !== peerProfileRequestRef.current || activeTopicRef.current !== requestTopic) return;
       if (peer) setPeerProfile(peer);
     } catch (e) {
     }
@@ -1799,9 +1826,83 @@ export default function MessagesView({
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const canRegenerateAssistantMessages = !isGroup || isAgentTask;
+  const groupAgentUID = Number(groupAgent?.uid || groupAgent?.id || 0);
+  const groupSupportsArtifacts = groupAgent?.cloud_artifacts_enabled === true
+    && ((isAgentTask && taskBotUID > 0 && groupAgentUID === taskBotUID)
+      || (isTwoPersonGroupWithCurrentUser && groupAgentUID > 0));
+  const activeArtifactAgentUID = isGroup
+    ? (groupSupportsArtifacts ? groupAgentUID : 0)
+    : (peerIsBot && peerUID > 0 && resolvedPeerProfile?.cloud_artifacts_enabled === true ? peerUID : 0);
+  const knownArtifacts = artifactRegistryState.agentUID === activeArtifactAgentUID
+    ? artifactRegistryState.artifacts
+    : [];
+  const artifactRegistryRefreshKey = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      const urls = artifactURLsInMessage(message);
+      if (urls.length > 0) {
+        return `${String(message.id || message.seq_id || message.created_at || index)}|${urls.join('|')}`;
+      }
+    }
+    return '';
+  }, [messages]);
+
+  useEffect(() => {
+    const handleArtifactsChanged = (event) => {
+      const changedAgentUID = Number(event?.detail?.agentUid || 0);
+      if (changedAgentUID > 0 && changedAgentUID !== activeArtifactAgentUID) return;
+      setArtifactRegistryRefreshEpoch((current) => current + 1);
+    };
+    window.addEventListener(CLOUD_ARTIFACTS_CHANGED_EVENT, handleArtifactsChanged);
+    return () => window.removeEventListener(CLOUD_ARTIFACTS_CHANGED_EVENT, handleArtifactsChanged);
+  }, [activeArtifactAgentUID]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let retryTimer = null;
+    let hadSuccessfulResponse = false;
+    const requestID = ++artifactRegistryRequestRef.current;
+    if (activeArtifactAgentUID <= 0) return () => {
+      cancelled = true;
+    };
+
+    const requestAgentUID = activeArtifactAgentUID;
+    const retryDelays = artifactRegistryRefreshKey ? [750, 1750] : [];
+    const isCurrentRequest = () => (
+      !cancelled && requestID === artifactRegistryRequestRef.current
+    );
+    const loadArtifacts = async (attempt = 0) => {
+      try {
+        const result = await api.getCloudArtifacts(requestAgentUID, 'active');
+        if (!isCurrentRequest()) return;
+        hadSuccessfulResponse = true;
+        setArtifactRegistryState({
+          agentUID: requestAgentUID,
+          artifacts: Array.isArray(result?.artifacts) ? result.artifacts : [],
+        });
+      } catch {
+        if (!isCurrentRequest()) return;
+        if (attempt >= retryDelays.length && !hadSuccessfulResponse) {
+          setArtifactRegistryState({ agentUID: requestAgentUID, artifacts: [] });
+        }
+      }
+
+      if (!isCurrentRequest() || attempt >= retryDelays.length) return;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        loadArtifacts(attempt + 1);
+      }, retryDelays[attempt]);
+    };
+
+    loadArtifacts();
+    return () => {
+      cancelled = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+    };
+  }, [activeArtifactAgentUID, artifactRegistryRefreshEpoch, artifactRegistryRefreshKey]);
+
   useEffect(() => {
     if (isGroup) {
-      const groupAgentUID = Number(groupAgent?.uid || groupAgent?.id || 0);
       const isSingleAgentTask = isAgentTask && taskBotUID > 0 && groupAgentUID === taskBotUID;
       const isTwoPersonArtifactGroup = isTwoPersonGroupWithCurrentUser
         && groupAgentUID > 0
@@ -2251,6 +2352,7 @@ export default function MessagesView({
                   isConsecutive={group.isConsecutive}
                   onPreviewFile={setPreviewFile}
                   activePreviewFile={previewFile}
+                  knownArtifacts={knownArtifacts}
                 />
               </div>
             );
@@ -2279,6 +2381,7 @@ export default function MessagesView({
               isConsecutive={group.isConsecutive}
               onPreviewFile={setPreviewFile}
               activePreviewFile={previewFile}
+              knownArtifacts={knownArtifacts}
             />
           );
         })}

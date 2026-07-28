@@ -15,6 +15,7 @@ vi.mock('../widgets/chat-message', () => ({
         data-message-id={props.message?.id}
         data-message-content={typeof props.message?.content === 'string' ? props.message.content : ''}
         data-consecutive={String(Boolean(props.isConsecutive))}
+        data-known-artifact-count={String(props.knownArtifacts?.length || 0)}
       >
         {props.onReply && (
           <button
@@ -89,6 +90,7 @@ vi.mock('../api', () => ({
     createMobileUploadSession: vi.fn(),
     getMobileUploadSession: vi.fn(),
     getTutorialTasks: vi.fn(),
+    getCloudArtifacts: vi.fn(),
   },
   wsSendMessage: vi.fn(),
   wsSendStreamCancel: vi.fn(),
@@ -267,6 +269,7 @@ describe('MessagesView composer draft isolation', () => {
     api.getGroupInfo.mockResolvedValue({ members: [], group: null });
     api.sendMessage.mockResolvedValue({ seq_id: 100 });
     api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
     api.uploadFile.mockResolvedValue({
       file_key: '20260610_default.jpg',
       url: '/uploads/images/20260610_default.jpg',
@@ -2341,6 +2344,7 @@ describe('MessagesView composer draft isolation', () => {
       isOwner: false,
       cloud_artifacts_enabled: true,
     });
+    expect(api.getCloudArtifacts).toHaveBeenCalledWith(440, 'active');
   });
 
   it('hides the model for a multi-Agent task', async () => {
@@ -2433,6 +2437,310 @@ describe('MessagesView composer draft isolation', () => {
       isOwner: false,
       cloud_artifacts_enabled: true,
     });
+  });
+
+  it('ignores a late group-info response after switching to another Artifact-enabled group', async () => {
+    const onActiveAgentChange = vi.fn();
+    const firstGroup = deferred();
+    const secondGroup = deferred();
+    api.getAgents.mockResolvedValue({
+      agents: [
+        {
+          uid: 440,
+          username: 'doubao',
+          display_name: '豆包',
+          relation: 'friend',
+          is_bot: true,
+          cloud_artifacts_enabled: true,
+        },
+        {
+          uid: 310,
+          username: 'hakimi',
+          display_name: '哈基米',
+          relation: 'friend',
+          is_bot: true,
+          cloud_artifacts_enabled: true,
+        },
+      ],
+    });
+    api.getGroupInfo.mockImplementation((requestedGroupID) => (
+      requestedGroupID === 21 ? firstGroup.promise : secondGroup.promise
+    ));
+
+    await mountTopic(root, 'grp_21', {
+      isGroup: true,
+      groupId: 21,
+      onActiveAgentChange,
+    });
+    await act(async () => {
+      renderTopic(root, 'grp_22', {
+        isGroup: true,
+        groupId: 22,
+        onActiveAgentChange,
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      secondGroup.resolve({
+        group: { id: 22, name: '我和哈基米', kind: 'agent_task', is_agent_task: true },
+        members: [
+          { user_id: 1, display_name: 'Me', is_bot: false },
+          { user_id: 310, display_name: '哈基米', is_bot: true },
+        ],
+      });
+      await flushPromises();
+    });
+
+    expect(api.getCloudArtifacts).toHaveBeenCalledWith(310, 'active');
+    expect(onActiveAgentChange).toHaveBeenLastCalledWith(expect.objectContaining({ uid: 310 }));
+
+    await act(async () => {
+      firstGroup.resolve({
+        group: { id: 21, name: '我和豆包', kind: 'agent_task', is_agent_task: true },
+        members: [
+          { user_id: 1, display_name: 'Me', is_bot: false },
+          { user_id: 440, display_name: '豆包', is_bot: true },
+        ],
+      });
+      await flushPromises();
+    });
+
+    expect(api.getCloudArtifacts).not.toHaveBeenCalledWith(440, 'active');
+    expect(onActiveAgentChange).toHaveBeenLastCalledWith(expect.objectContaining({ uid: 310 }));
+  });
+
+  it('reloads group ownership when groupId changes under the same topic', async () => {
+    const onActiveAgentChange = vi.fn();
+    const staleGroup = deferred();
+    api.getAgents.mockResolvedValue({
+      agents: [
+        {
+          uid: 440,
+          username: 'doubao',
+          relation: 'friend',
+          is_bot: true,
+          cloud_artifacts_enabled: true,
+        },
+        {
+          uid: 310,
+          username: 'hakimi',
+          relation: 'friend',
+          is_bot: true,
+          cloud_artifacts_enabled: true,
+        },
+      ],
+    });
+    api.getGroupInfo.mockImplementation((requestedGroupID) => (
+      requestedGroupID === 31
+        ? staleGroup.promise
+        : Promise.resolve({
+          group: { id: 32, name: '已修正群', kind: 'agent_task', is_agent_task: true },
+          members: [
+            { user_id: 1, is_bot: false },
+            { user_id: 310, is_bot: true },
+          ],
+        })
+    ));
+
+    await mountTopic(root, 'grp_pending', {
+      isGroup: true,
+      groupId: 31,
+      onActiveAgentChange,
+    });
+    await act(async () => {
+      renderTopic(root, 'grp_pending', {
+        isGroup: true,
+        groupId: 32,
+        onActiveAgentChange,
+      });
+      await flushPromises();
+    });
+
+    expect(api.getGroupInfo).toHaveBeenCalledWith(32);
+    expect(onActiveAgentChange).toHaveBeenLastCalledWith(expect.objectContaining({ uid: 310 }));
+
+    await act(async () => {
+      staleGroup.resolve({
+        group: { id: 31, name: '过期资料', kind: 'agent_task', is_agent_task: true },
+        members: [
+          { user_id: 1, is_bot: false },
+          { user_id: 440, is_bot: true },
+        ],
+      });
+      await flushPromises();
+    });
+
+    expect(onActiveAgentChange).toHaveBeenLastCalledWith(expect.objectContaining({ uid: 310 }));
+    expect(api.getCloudArtifacts).not.toHaveBeenCalledWith(440, 'active');
+  });
+
+  it('refreshes the active Artifact registry after a delete or restore event', async () => {
+    let currentArtifacts = [{
+      id: 'lesson-game',
+      title: '课堂小游戏',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+    }];
+    api.getMessages.mockResolvedValue({
+      messages: [{
+        id: 701,
+        from_uid: 440,
+        content: '已发布课堂小游戏',
+        created_at: '2026-07-27T00:00:00Z',
+      }],
+    });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        topic_id: 'p2p_1_440',
+        username: 'doubao',
+        display_name: '豆包',
+        relation: 'friend',
+        is_bot: true,
+        account_type: 'bot',
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.getCloudArtifacts.mockImplementation(() => Promise.resolve({ artifacts: currentArtifacts }));
+
+    await mountTopic(root, 'p2p_1_440');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('1');
+    const callsBeforeChange = api.getCloudArtifacts.mock.calls.length;
+    currentArtifacts = [];
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('cc:cloud-artifacts-changed', {
+        detail: { agentUid: 440 },
+      }));
+      await flushPromises();
+    });
+
+    expect(api.getCloudArtifacts.mock.calls.length).toBeGreaterThan(callsBeforeChange);
+    expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('0');
+  });
+
+  it('lets only the latest Artifact registry request update the active Agent state', async () => {
+    const firstRegistry = deferred();
+    const refreshedRegistry = deferred();
+    api.getMessages.mockResolvedValue({
+      messages: [{
+        id: 702,
+        from_uid: 440,
+        content: '等待产物列表',
+        created_at: '2026-07-27T00:00:00Z',
+      }],
+    });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        topic_id: 'p2p_1_440',
+        username: 'doubao',
+        relation: 'friend',
+        is_bot: true,
+        account_type: 'bot',
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.getCloudArtifacts
+      .mockImplementationOnce(() => firstRegistry.promise)
+      .mockImplementationOnce(() => refreshedRegistry.promise);
+
+    await mountTopic(root, 'p2p_1_440');
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(api.getCloudArtifacts).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('cc:cloud-artifacts-changed', {
+        detail: { agentUid: 440 },
+      }));
+      await flushPromises();
+    });
+    expect(api.getCloudArtifacts).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      refreshedRegistry.resolve({
+        artifacts: [{
+          id: 'latest',
+          url: 'https://artifacts.example.test/by-agent/440/latest/latest/',
+        }],
+      });
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('1');
+
+    await act(async () => {
+      firstRegistry.resolve({ artifacts: [] });
+      await flushPromises();
+    });
+    expect(container.querySelector('.mock-chat-message')?.dataset.knownArtifactCount).toBe('1');
+  });
+
+  it('waits for a streamed Artifact URL message to finish before refreshing the registry', async () => {
+    api.getMessages.mockResolvedValue({ messages: [] });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        topic_id: 'p2p_1_440',
+        username: 'doubao',
+        relation: 'friend',
+        is_bot: true,
+        account_type: 'bot',
+        cloud_artifacts_enabled: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_440');
+    await act(async () => {
+      await flushPromises();
+    });
+    const callsBeforeStream = api.getCloudArtifacts.mock.calls.length;
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_440',
+          from: 'usr440',
+          type: 'stream_delta',
+          content: '已发布：https://artifacts.',
+          metadata: { stream_id: 'artifact-stream-1' },
+        },
+      });
+      wsHandler({
+        data: {
+          topic: 'p2p_1_440',
+          from: 'usr440',
+          type: 'stream_delta',
+          content: 'example.test/by-agent/440/game/latest/',
+          metadata: { stream_id: 'artifact-stream-1' },
+        },
+      });
+      await flushPromises();
+    });
+    expect(api.getCloudArtifacts).toHaveBeenCalledTimes(callsBeforeStream);
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_440',
+          from: 'usr440',
+          seq_id: 703,
+          type: 'text',
+          content: '已发布：https://artifacts.example.test/by-agent/440/game/latest/',
+          metadata: { stream_id: 'artifact-stream-1' },
+        },
+      });
+      await flushPromises();
+    });
+    expect(api.getCloudArtifacts).toHaveBeenCalledTimes(callsBeforeStream + 1);
   });
 
   it('recognizes the only task Agent from the Agent roster when member disclosure is absent', async () => {
