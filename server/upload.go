@@ -156,8 +156,9 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Generate unique file key
-	fileKey := generateFileKey(ext)
+	// Preserve the audio/video distinction for Ogg containers in the stored key.
+	storedExt := normalizedUploadExtension(ext, header.Header.Get("Content-Type"))
+	fileKey := generateFileKey(storedExt)
 	subDir := "files"
 	if uploadType == "image" {
 		subDir = "images"
@@ -193,7 +194,7 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		Name:     header.Filename,
 		Size:     written,
 		Type:     uploadType,
-		MimeType: normalizedUploadMimeType(ext, header.Header.Get("Content-Type")),
+		MimeType: normalizedUploadMimeType(storedExt, header.Header.Get("Content-Type")),
 	})
 }
 
@@ -364,7 +365,8 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	fileKey := generateFileKey(ext)
+	storedExt := normalizedUploadExtension(ext, header.Header.Get("Content-Type"))
+	fileKey := generateFileKey(storedExt)
 	subDir := "files"
 	if uploadType == "image" {
 		subDir = "images"
@@ -393,7 +395,7 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 		Name:     header.Filename,
 		Size:     written,
 		Type:     uploadType,
-		MimeType: normalizedUploadMimeType(ext, header.Header.Get("Content-Type")),
+		MimeType: normalizedUploadMimeType(storedExt, header.Header.Get("Content-Type")),
 	}
 
 	h.mobileMu.Lock()
@@ -544,6 +546,17 @@ func normalizedUploadMimeType(ext, headerType string) string {
 	}
 
 	return "application/octet-stream"
+}
+
+func normalizedUploadExtension(ext, headerType string) string {
+	if !strings.EqualFold(ext, ".ogg") {
+		return ext
+	}
+	mediaType, _, err := mime.ParseMediaType(headerType)
+	if err == nil && strings.EqualFold(mediaType, "video/ogg") {
+		return ".ogv"
+	}
+	return ext
 }
 
 func generateFileKey(ext string) string {

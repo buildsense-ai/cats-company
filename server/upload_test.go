@@ -76,24 +76,79 @@ func TestHandleUploadAllowsWebMVideoAttachment(t *testing.T) {
 	}
 }
 
-func TestHandleUploadTreatsOggExtensionAsAudio(t *testing.T) {
+func TestHandleUploadKeepsOggAudioAsAttachment(t *testing.T) {
 	handler := NewUploadHandler(t.TempDir(), "/uploads")
-	req := buildUploadRequestWithPartContentType(t, "/api/upload?type=file", "demo.ogg", "video/ogg", []byte("ogg bytes"))
+	req := buildUploadRequestWithPartContentType(t, "/api/upload?type=file", "demo.ogg", "audio/ogg", []byte("ogg audio bytes"))
 	rec := httptest.NewRecorder()
 
 	handler.HandleUpload(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		t.Fatalf("upload status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	var body struct {
+		FileKey  string `json:"file_key"`
+		URL      string `json:"url"`
 		MimeType string `json:"mime_type"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode response: %v", err)
+		t.Fatalf("decode upload response: %v", err)
+	}
+	if !strings.HasSuffix(body.FileKey, ".ogg") {
+		t.Fatalf("file_key = %q, want .ogg suffix", body.FileKey)
 	}
 	if body.MimeType != "audio/ogg" {
 		t.Fatalf("mime_type = %q, want audio/ogg", body.MimeType)
+	}
+
+	serveRec := httptest.NewRecorder()
+	handler.HandleServeFile(serveRec, httptest.NewRequest(http.MethodGet, body.URL, nil))
+	if serveRec.Code != http.StatusOK {
+		t.Fatalf("serve status = %d, want %d", serveRec.Code, http.StatusOK)
+	}
+	if got := serveRec.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment") {
+		t.Fatalf("content-disposition = %q, want attachment", got)
+	}
+}
+
+func TestHandleUploadNormalizesOggVideoToOGV(t *testing.T) {
+	handler := NewUploadHandler(t.TempDir(), "/uploads")
+	req := buildUploadRequestWithPartContentType(t, "/api/upload?type=file", "demo.ogg", "video/ogg", []byte("ogg video bytes"))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUpload(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		FileKey  string `json:"file_key"`
+		URL      string `json:"url"`
+		MimeType string `json:"mime_type"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode upload response: %v", err)
+	}
+	if !strings.HasSuffix(body.FileKey, ".ogv") {
+		t.Fatalf("file_key = %q, want .ogv suffix", body.FileKey)
+	}
+	if !strings.HasSuffix(body.URL, ".ogv") {
+		t.Fatalf("url = %q, want .ogv suffix", body.URL)
+	}
+	if body.MimeType != "video/ogg" {
+		t.Fatalf("mime_type = %q, want video/ogg", body.MimeType)
+	}
+
+	serveRec := httptest.NewRecorder()
+	handler.HandleServeFile(serveRec, httptest.NewRequest(http.MethodGet, body.URL, nil))
+	if serveRec.Code != http.StatusOK {
+		t.Fatalf("serve status = %d, want %d", serveRec.Code, http.StatusOK)
+	}
+	if got := serveRec.Header().Get("Content-Type"); got != "video/ogg" {
+		t.Fatalf("content-type = %q, want video/ogg", got)
+	}
+	if got := serveRec.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "inline") {
+		t.Fatalf("content-disposition = %q, want inline", got)
 	}
 }
 
