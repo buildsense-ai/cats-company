@@ -12,6 +12,8 @@ const defaultGroupAgentTurnTTL = 30 * time.Minute
 
 type groupAgentTurn struct {
 	initiatorUID int64
+	requestSeqID int
+	runID        string
 	updatedAt    time.Time
 }
 
@@ -31,20 +33,29 @@ func newGroupAgentTurnTracker(ttl time.Duration) *groupAgentTurnTracker {
 	}
 }
 
-func (t *groupAgentTurnTracker) record(groupID, botUID, initiatorUID int64) {
-	if t == nil || groupID <= 0 || botUID <= 0 || initiatorUID <= 0 {
-		return
+// begin reserves an agent's next active turn for the first routed request.
+// Later messages cannot replace that initiator until an explicit lifecycle
+// event clears the turn.
+func (t *groupAgentTurnTracker) begin(groupID, botUID, initiatorUID int64, requestSeqID int) bool {
+	if t == nil || groupID <= 0 || botUID <= 0 || initiatorUID <= 0 || requestSeqID <= 0 {
+		return false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.pruneExpiredLocked(time.Now())
+	now := time.Now()
+	t.pruneExpiredLocked(now)
 	if t.turns[groupID] == nil {
 		t.turns[groupID] = make(map[int64]groupAgentTurn)
 	}
+	if _, active := t.turns[groupID][botUID]; active {
+		return false
+	}
 	t.turns[groupID][botUID] = groupAgentTurn{
 		initiatorUID: initiatorUID,
-		updatedAt:    time.Now(),
+		requestSeqID: requestSeqID,
+		updatedAt:    now,
 	}
+	return true
 }
 
 func (t *groupAgentTurnTracker) initiatedBy(groupID, botUID, requesterUID int64) bool {
@@ -68,6 +79,43 @@ func (t *groupAgentTurnTracker) initiatedBy(groupID, botUID, requesterUID int64)
 	return turn.initiatorUID == requesterUID
 }
 
+// observeTaskStatus binds the reserved request to the agent's explicit run ID.
+// Only a terminal event for that same run may release the turn.
+func (t *groupAgentTurnTracker) observeTaskStatus(groupID, botUID int64, runID, state string) {
+	if t == nil || groupID <= 0 || botUID <= 0 {
+		return
+	}
+	runID = strings.TrimSpace(runID)
+	state = normalizeTaskStatusState(state)
+	if runID == "" || (state != "running" && state != "waiting" && !isTerminalTaskStatus(state)) {
+		return
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := time.Now()
+	t.pruneExpiredLocked(now)
+	groupTurns := t.turns[groupID]
+	turn, ok := groupTurns[botUID]
+	if !ok {
+		return
+	}
+
+	if state == "running" || state == "waiting" {
+		if turn.runID != "" && turn.runID != runID {
+			return
+		}
+		turn.runID = runID
+		turn.updatedAt = now
+		groupTurns[botUID] = turn
+		return
+	}
+	if turn.runID != runID {
+		return
+	}
+	t.clearLocked(groupID, botUID)
+}
+
 func (t *groupAgentTurnTracker) pruneExpiredLocked(now time.Time) {
 	for groupID, groupTurns := range t.turns {
 		for botUID, turn := range groupTurns {
@@ -87,6 +135,10 @@ func (t *groupAgentTurnTracker) clear(groupID, botUID int64) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.clearLocked(groupID, botUID)
+}
+
+func (t *groupAgentTurnTracker) clearLocked(groupID, botUID int64) {
 	groupTurns := t.turns[groupID]
 	delete(groupTurns, botUID)
 	if len(groupTurns) == 0 {
@@ -102,16 +154,15 @@ func isGroupAgentTurnRequest(msg *ServerMessage) bool {
 	return msgType == "text" && strings.TrimSpace(normalizeContentText(msg.Data.Content)) != ""
 }
 
-func isFinalGroupAgentTurnMessage(msg *ServerMessage) bool {
-	if msg == nil || msg.Data == nil || msg.Data.SeqID <= 0 {
-		return false
+func (h *Hub) observeGroupAgentTaskStatus(status *types.ConversationTaskStatus) {
+	if h == nil || h.groupTurns == nil || status == nil || !isGroupTopic(status.TopicID) {
+		return
 	}
-	msgType := strings.TrimSpace(firstNonEmpty(msg.Data.Type, msg.Data.MsgType))
-	content := strings.TrimSpace(normalizeContentText(msg.Data.Content))
-	return msgType == "text" &&
-		content != "" &&
-		!strings.HasPrefix(content, "AI文本:") &&
-		!strings.HasPrefix(content, "AI文本：")
+	groupID := extractGroupID(status.TopicID)
+	if groupID <= 0 || status.SourceUID <= 0 {
+		return
+	}
+	h.groupTurns.observeTaskStatus(groupID, status.SourceUID, status.RunID, status.State)
 }
 
 func (h *Hub) authorizeGroupStreamCancel(groupID, requesterUID int64, metadata map[string]interface{}) (int64, []*types.GroupMember, int, string) {

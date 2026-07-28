@@ -9,7 +9,8 @@ import (
 
 type groupStreamCancelStore struct {
 	store.Store
-	members []*types.GroupMember
+	members    []*types.GroupMember
+	taskStatus *types.ConversationTaskStatus
 }
 
 func (s *groupStreamCancelStore) IsChannelManagedGroup(int64) (bool, error) {
@@ -44,6 +45,38 @@ func (s *groupStreamCancelStore) GetUser(userID int64) (*types.User, error) {
 	return &types.User{ID: userID, AccountType: accountType}, nil
 }
 
+func (s *groupStreamCancelStore) UpsertConversationTaskStatus(status *types.ConversationTaskStatus) (*types.ConversationTaskStatus, error) {
+	if status == nil {
+		return nil, nil
+	}
+	copyOfStatus := *status
+	s.taskStatus = &copyOfStatus
+	return &copyOfStatus, nil
+}
+
+func (s *groupStreamCancelStore) GetConversationTaskStatusForSource(topicID string, sourceUID int64) (*types.ConversationTaskStatus, error) {
+	if s.taskStatus == nil || s.taskStatus.TopicID != topicID || s.taskStatus.SourceUID != sourceUID {
+		return nil, nil
+	}
+	copyOfStatus := *s.taskStatus
+	return &copyOfStatus, nil
+}
+
+func (s *groupStreamCancelStore) GetConversationTaskStatuses(topicIDs []string) (map[string]*types.ConversationTaskStatus, error) {
+	statuses := make(map[string]*types.ConversationTaskStatus)
+	if s.taskStatus == nil {
+		return statuses, nil
+	}
+	for _, topicID := range topicIDs {
+		if topicID == s.taskStatus.TopicID {
+			copyOfStatus := *s.taskStatus
+			statuses[topicID] = &copyOfStatus
+			break
+		}
+	}
+	return statuses, nil
+}
+
 func streamCancelMessage(id string, targetBotUID int64) *MsgClientPub {
 	metadata := map[string]interface{}{
 		"stream_id":    "cancel-" + id,
@@ -74,7 +107,7 @@ func TestGroupStreamCancelRejectsThirdMemberAfterTurnStarts(t *testing.T) {
 	bot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 4)}
 	hub.addClient(initiator)
 	hub.addClient(bot)
-	hub.groupTurns.record(80, 42, 7)
+	hub.groupTurns.begin(80, 42, 7, 1)
 
 	thirdMember := &Client{uid: 8, accountType: types.AccountHuman, send: make(chan []byte, 4)}
 	db.members = append(db.members, &types.GroupMember{GroupID: 80, UserID: 8})
@@ -105,7 +138,7 @@ func TestGroupStreamCancelRequiresTargetAgentInMultiMemberGroup(t *testing.T) {
 	bot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 4)}
 	hub.addClient(initiator)
 	hub.addClient(bot)
-	hub.groupTurns.record(80, 42, 7)
+	hub.groupTurns.begin(80, 42, 7, 1)
 
 	hub.handleStreamPub(initiator, streamCancelMessage("missing-target", 0), "grp_80")
 
@@ -189,7 +222,7 @@ func TestGroupStreamCancelAllowsInitiatorAndTargetsOnlyTheirAgent(t *testing.T) 
 	hub.addClient(observer)
 	hub.addClient(targetBot)
 	hub.addClient(otherBot)
-	hub.groupTurns.record(80, 42, 7)
+	hub.groupTurns.begin(80, 42, 7, 1)
 
 	hub.handleStreamPub(initiator, streamCancelMessage("allowed", 42), "grp_80")
 
@@ -251,5 +284,215 @@ func TestHumanMessageRecordsAuthoritativeGroupAgentTurn(t *testing.T) {
 	}
 	if hub.groupTurns.initiatedBy(80, 42, 8) {
 		t.Fatal("another member must not inherit cancel authorization")
+	}
+}
+
+func TestGroupStreamCancelDoesNotTransferAnActiveTurnToAnotherRequester(t *testing.T) {
+	db := &groupStreamCancelStore{
+		members: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 8},
+			{GroupID: 80, UserID: 42, IsBot: true},
+		},
+	}
+	hub := NewHub(db, nil)
+	initiator := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 8)}
+	secondRequester := &Client{uid: 8, accountType: types.AccountHuman, send: make(chan []byte, 8)}
+	bot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 8)}
+	hub.addClient(initiator)
+	hub.addClient(secondRequester)
+	hub.addClient(bot)
+
+	hub.broadcastToGroupWithMentions(80, groupTextMessage(7, 101, "first request"), 7, []string{"usr42"}, 7, false)
+	drainMessages(secondRequester.send)
+	drainMessages(bot.send)
+	if !hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("the first requester must own the active agent turn")
+	}
+
+	hub.broadcastToGroupWithMentions(80, groupTextMessage(8, 102, "second request"), 8, []string{"usr42"}, 8, false)
+	drainMessages(initiator.send)
+	drainMessages(bot.send)
+	if !hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("a second request must not replace the active turn initiator")
+	}
+	if hub.groupTurns.initiatedBy(80, 42, 8) {
+		t.Fatal("the second requester must not inherit the active turn")
+	}
+
+	hub.handleStreamPub(secondRequester, streamCancelMessage("second-requester", 42), "grp_80")
+	var denied ServerMessage
+	decodeQueuedServerMessage(t, secondRequester.send, &denied)
+	if denied.Ctrl == nil || denied.Ctrl.Code != 403 {
+		t.Fatalf("second requester cancel response = %#v, want 403", denied.Ctrl)
+	}
+	if drainOne(bot.send) || drainOne(initiator.send) {
+		t.Fatal("the denied cancel must not be fanned out")
+	}
+
+	hub.handleStreamPub(initiator, streamCancelMessage("initiator", 42), "grp_80")
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, initiator.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != 200 {
+		t.Fatalf("initiator cancel response = %#v, want 200", ack.Ctrl)
+	}
+}
+
+func TestGroupStreamCancelSurvivesAnIntermediateAgentReply(t *testing.T) {
+	db := &groupStreamCancelStore{
+		members: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 8},
+			{GroupID: 80, UserID: 42, IsBot: true},
+		},
+	}
+	hub := NewHub(db, nil)
+	initiator := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 8)}
+	observer := &Client{uid: 8, accountType: types.AccountHuman, send: make(chan []byte, 8)}
+	bot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 8)}
+	hub.addClient(initiator)
+	hub.addClient(observer)
+	hub.addClient(bot)
+
+	hub.broadcastToGroupWithMentions(80, groupTextMessage(7, 201, "start work"), 7, []string{"usr42"}, 7, false)
+	drainMessages(observer.send)
+	drainMessages(bot.send)
+
+	hub.broadcastToGroupWithMentions(80, groupTextMessage(42, 202, "intermediate answer"), 42, nil, 42, false)
+	drainMessages(initiator.send)
+	drainMessages(observer.send)
+	if !hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("an ordinary agent reply must not finish the active turn")
+	}
+
+	hub.handleStreamPub(initiator, streamCancelMessage("after-intermediate", 42), "grp_80")
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, initiator.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != 200 {
+		t.Fatalf("cancel after intermediate reply = %#v, want 200", ack.Ctrl)
+	}
+}
+
+func TestGroupStreamCancelTransfersOnlyAfterExplicitTurnCompletion(t *testing.T) {
+	db := &groupStreamCancelStore{
+		members: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 8},
+			{GroupID: 80, UserID: 42, IsBot: true},
+		},
+	}
+	hub := NewHub(db, nil)
+	firstRequester := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 16)}
+	secondRequester := &Client{uid: 8, accountType: types.AccountHuman, send: make(chan []byte, 16)}
+	bot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 16)}
+	hub.addClient(firstRequester)
+	hub.addClient(secondRequester)
+	hub.addClient(bot)
+
+	hub.broadcastToGroupWithMentions(80, groupTextMessage(7, 301, "first turn"), 7, []string{"usr42"}, 7, false)
+	drainMessages(secondRequester.send)
+	drainMessages(bot.send)
+	publishGroupTaskStatus(t, hub, bot, "run-a", "running")
+	drainMessages(firstRequester.send)
+	drainMessages(secondRequester.send)
+
+	hub.broadcastToGroupWithMentions(80, groupTextMessage(8, 302, "premature second turn"), 8, []string{"usr42"}, 8, false)
+	drainMessages(firstRequester.send)
+	drainMessages(bot.send)
+	if !hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("the first requester must retain ownership while run-a is active")
+	}
+
+	hub.broadcastToGroupWithMentions(80, groupTextMessage(42, 303, "intermediate answer"), 42, nil, 42, false)
+	drainMessages(firstRequester.send)
+	drainMessages(secondRequester.send)
+	if !hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("the intermediate answer must not complete run-a")
+	}
+
+	publishGroupTaskStatus(t, hub, bot, "run-a", "completed")
+	drainMessages(firstRequester.send)
+	drainMessages(secondRequester.send)
+	if hub.groupTurns.initiatedBy(80, 42, 7) {
+		t.Fatal("the matching completed event must close run-a")
+	}
+
+	hub.broadcastToGroupWithMentions(80, groupTextMessage(8, 304, "next second turn"), 8, []string{"usr42"}, 8, false)
+	drainMessages(firstRequester.send)
+	drainMessages(bot.send)
+	if !hub.groupTurns.initiatedBy(80, 42, 8) {
+		t.Fatal("the second requester may own the next turn only after run-a completes")
+	}
+
+	hub.handleStreamPub(secondRequester, streamCancelMessage("second-turn", 42), "grp_80")
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, secondRequester.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != 200 {
+		t.Fatalf("second requester next-turn cancel response = %#v, want 200", ack.Ctrl)
+	}
+}
+
+func TestGroupAgentTurnIgnoresAStaleTerminalStatusFromThePreviousRun(t *testing.T) {
+	tracker := newGroupAgentTurnTracker(defaultGroupAgentTurnTTL)
+	if !tracker.begin(80, 42, 7, 401) {
+		t.Fatal("expected the first turn to start")
+	}
+	tracker.observeTaskStatus(80, 42, "run-a", "running")
+	tracker.observeTaskStatus(80, 42, "run-a", "completed")
+
+	if !tracker.begin(80, 42, 8, 402) {
+		t.Fatal("expected the next turn to start after run-a completed")
+	}
+	tracker.observeTaskStatus(80, 42, "run-a", "completed")
+	if !tracker.initiatedBy(80, 42, 8) {
+		t.Fatal("a duplicate terminal status from run-a must not clear the next turn")
+	}
+
+	tracker.observeTaskStatus(80, 42, "run-b", "running")
+	tracker.observeTaskStatus(80, 42, "run-a", "failed")
+	if !tracker.initiatedBy(80, 42, 8) {
+		t.Fatal("a mismatched terminal status must not clear the active run")
+	}
+	tracker.observeTaskStatus(80, 42, "run-b", "completed")
+	if tracker.initiatedBy(80, 42, 8) {
+		t.Fatal("the matching terminal status must clear the active run")
+	}
+}
+
+func groupTextMessage(senderUID int64, seqID int, content string) *ServerMessage {
+	return &ServerMessage{Data: &MsgServerData{
+		Topic:   "grp_80",
+		From:    formatUID(senderUID),
+		SeqID:   seqID,
+		Content: content,
+		Type:    "text",
+		MsgType: "text",
+	}}
+}
+
+func publishGroupTaskStatus(t *testing.T, hub *Hub, bot *Client, runID, state string) {
+	t.Helper()
+	hub.handleTaskStatusPub(
+		bot,
+		&MsgClientPub{ID: "status-" + runID + "-" + state, Topic: "grp_80"},
+		"grp_80",
+		&normalizedMessagePayload{
+			DisplayType:         taskStatusType,
+			ExplicitDisplayType: true,
+			DisplayContent: map[string]interface{}{
+				"run_id": runID,
+				"state":  state,
+			},
+		},
+	)
+	var ack ServerMessage
+	decodeQueuedServerMessage(t, bot.send, &ack)
+	if ack.Ctrl == nil || ack.Ctrl.Code != 200 {
+		t.Fatalf("task status %s/%s response = %#v, want 200", runID, state, ack.Ctrl)
+	}
+}
+
+func drainMessages(messages <-chan []byte) {
+	for drainOne(messages) {
 	}
 }

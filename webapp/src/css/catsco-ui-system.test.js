@@ -43,10 +43,14 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-brand-title')).toContain('font-size: 16px;');
     expect(ruleFor('.v3-brand-title')).toContain('font-weight: var(--cc-font-weight-bold);');
     expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('gap: 4px;');
-    expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('font-size: 20px;');
-    expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('line-height: 22px;');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('font-size: 19px;');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('line-height: 20.9px;');
     expect(ruleFor('.v3-sidebar-header > .v3-brand-title'))
       .toContain('font-weight: var(--cc-font-weight-brand);');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title .catsco-brand-mark'))
+      .toContain('width: 45.6px;');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title .catsco-brand-mark'))
+      .toContain('height: 20.9px;');
     expect(ruleFor(':root')).toContain('--cc-brand-text-start: #29bc95;');
     expect(ruleFor(':root')).toContain('--cc-brand-text-end: #29bc95;');
     expect(ruleFor(':root')).toContain('--cc-accent: #29bc95;');
@@ -76,12 +80,17 @@ describe('CatsCo shell styling', () => {
     const listRule = ruleFor('.v3-chat-list');
     const footerRule = ruleFor('.v3-profile-footer');
 
-    expect(headerRule).toContain('flex: 0 0 56px;');
+    expect(headerRule).toContain('height: 44.8px;');
+    expect(headerRule).toContain('min-height: 44.8px;');
+    expect(headerRule).toContain('flex: 0 0 44.8px;');
+    expect(headerRule).toContain('border-bottom: 0;');
     expect(sidebarRule).toContain('font-family: var(--cc-font-sans);');
-    expect(collapseButtonRule).toContain('width: 38px;');
-    expect(collapseButtonRule).toContain('height: 38px;');
-    expect(ruleFor('.v3-sidebar-collapse-btn > svg')).toContain('width: 20px;');
+    expect(collapseButtonRule).toContain('width: 30.4px;');
+    expect(collapseButtonRule).toContain('height: 30.4px;');
+    expect(ruleFor('.v3-sidebar-collapse-btn > svg')).toContain('width: 19px;');
+    expect(ruleFor('.v3-sidebar-collapse-btn > svg')).toContain('height: 19px;');
     expect(toolsRule).toContain('flex: 0 0 auto;');
+    expect(toolsRule).toContain('padding: 0 8px 7px;');
     expect(listRule).toContain('min-height: 0;');
     expect(listRule).toContain('flex: 1 1 auto;');
     expect(listRule).toContain('overflow-y: auto;');
@@ -104,8 +113,11 @@ describe('CatsCo shell styling', () => {
     expect(collaborationRule).toContain('var(--cc-muted) 7%');
     expect(listRule).toContain('var(--cc-muted) 18%');
     expect(interactiveListRule).toContain('var(--cc-muted) 42%');
-    expect(scrollbarRule).toContain('width: 4px;');
-    expect(scrollbarRule).toContain('height: 4px;');
+    expect(css).toMatch(
+      /@supports selector\(::-webkit-scrollbar\)\s*\{[\s\S]*?\.v3-chat-list,\s*\.v3-chat-list:hover,\s*\.v3-chat-list:focus-within\s*\{[^}]*scrollbar-width: auto;[^}]*scrollbar-color: auto;/,
+    );
+    expect(scrollbarRule).toContain('width: 3px;');
+    expect(scrollbarRule).toContain('height: 3px;');
     expect(thumbRule).toContain('border-radius: 999px;');
     expect(thumbRule).toContain('var(--cc-muted) 18%');
     expect(interactiveThumbRule).toContain('var(--cc-muted) 42%');
@@ -378,10 +390,19 @@ describe('CatsCo shell styling', () => {
   it('right-aligns every top-level action and keeps its chevron close to the title', () => {
     const sectionRule = ruleFor('.cc-top-level-section');
     const toggleRule = ruleFor('.cc-section-toggle');
+    const activeUnreadRule = ruleFor(
+      `.cc-contacts-section:hover .cc-section-unread-dot,
+.cc-contacts-section:focus-within .cc-section-unread-dot`,
+    );
     const actionRule = ruleFor('.cc-top-level-section > .cc-section-add');
+    const unreadRule = ruleFor('.cc-section-unread-dot');
 
     expect(sectionRule).toContain('position: relative;');
     expect(toggleRule).toContain('gap: 3px;');
+    expect(toggleRule).toContain('padding: 0;');
+    expect(unreadRule).toContain('margin-left: auto;');
+    expect(unreadRule).toContain('transition: opacity 120ms ease, transform 120ms ease;');
+    expect(activeUnreadRule).toContain('opacity: 0;');
     expect(actionRule).toContain('position: absolute;');
     expect(actionRule).toContain('right: 4px;');
   });
@@ -390,6 +411,15 @@ describe('CatsCo shell styling', () => {
     const actionRule = ruleFor('.v3-chat-item .cc-chat-row-actions');
     const agentActionRule = ruleFor('.cc-agent-row-trailing .v3-agent-row-actions');
     const projectActionRule = ruleFor('.cc-project-menu-trigger');
+    const friendUnreadRule = ruleFor('.cc-chat-row-trailing > .cc-friend-unread-dot');
+    const rowHoverMetadataRule = ruleFor(
+      `.v3-chat-item:hover .cc-chat-row-time,
+.v3-chat-item:focus-within .cc-chat-row-time,
+.v3-chat-item:hover .cc-task-row-status,
+.v3-chat-item:focus-within .cc-task-row-status,
+.v3-chat-item:hover .cc-friend-unread-dot,
+.v3-chat-item:focus-within .cc-friend-unread-dot`,
+    );
 
     expect(actionRule).toContain('justify-content: flex-end;');
     expect(actionRule).toContain('right: -5px;');
@@ -397,6 +427,9 @@ describe('CatsCo shell styling', () => {
     expect(agentActionRule).toContain('gap: 2px;');
     expect(agentActionRule).toContain('right: -5px;');
     expect(projectActionRule).toContain('flex: 0 0 var(--cc-sidebar-action-size);');
+    expect(friendUnreadRule).toContain('right: -1px;');
+    expect(friendUnreadRule).toContain('transition: opacity 120ms ease, transform 120ms ease;');
+    expect(rowHoverMetadataRule).toContain('opacity: 0;');
     expect(css).not.toContain('.cc-history-item .cc-chat-row-actions');
   });
 
@@ -551,7 +584,9 @@ describe('CatsCo shell styling', () => {
 
     expect(buttonRule).toContain('width: 42px;');
     expect(buttonRule).toContain('height: 42px;');
-    expect(avatarRule).toContain('transition: transform 150ms ease;');
+    expect(avatarRule).toContain(
+      'transition: transform 150ms ease, filter 150ms ease, opacity 150ms ease;',
+    );
     expect(css).toContain('transform: scale(1.14);');
     expect(hintRule).toContain('position: fixed;');
     expect(hintRule).toContain('pointer-events: none;');
@@ -559,12 +594,17 @@ describe('CatsCo shell styling', () => {
 
   it('overlays compact task status on the avatar without changing rail geometry', () => {
     const compactButtonRule = ruleFor('.cc-compact-conversation');
+    const runningAvatarRule = ruleFor(
+      '.cc-compact-conversation:has(.cc-compact-task-status.running) .oc-avatar',
+    );
     const dotRule = ruleFor('.cc-compact-task-status:not(.running)');
     const runningRule = ruleFor('.cc-compact-task-status.running');
     const spinnerRule = ruleFor('.cc-compact-task-status.running svg');
 
     expect(compactButtonRule).toContain('position: relative;');
     expect(css).toContain('.cc-compact-conversation {\n  overflow: hidden;');
+    expect(runningAvatarRule).toContain('filter: brightness(0.74) saturate(0.88);');
+    expect(runningAvatarRule).toContain('opacity: 0.86;');
     expect(dotRule).toContain('right: 3px;');
     expect(dotRule).toContain('bottom: 3px;');
     expect(dotRule).toContain('width: 9px;');

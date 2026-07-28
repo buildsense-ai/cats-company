@@ -628,6 +628,104 @@ describe('ChatListView sidebar sections', () => {
     });
   });
 
+  it('keeps multiple project folders expanded independently', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Alpha Task',
+          is_group: false,
+          is_bot: true,
+          project_id: 12,
+          project_name: 'Alpha',
+        },
+        {
+          id: 'p2p_7_43',
+          friend_id: 43,
+          name: 'Beta Task',
+          is_group: false,
+          is_bot: true,
+          project_id: 13,
+          project_name: 'Beta',
+        },
+      ],
+    });
+    api.getProjects.mockResolvedValue({
+      projects: [
+        { id: 12, name: 'Alpha', task_count: 1 },
+        { id: 13, name: 'Beta', task_count: 1 },
+      ],
+    });
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="打开项目 Alpha"]'));
+      Simulate.click(container.querySelector('[aria-label="打开项目 Beta"]'));
+    });
+
+    expect(container.querySelector('[aria-label="收起项目 Alpha"]').getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[aria-label="收起项目 Beta"]').getAttribute('aria-expanded')).toBe('true');
+    expect(container.textContent).toContain('Alpha Task');
+    expect(container.textContent).toContain('Beta Task');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="收起项目 Alpha"]'));
+    });
+
+    expect(container.querySelector('[aria-label="打开项目 Alpha"]').getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[aria-label="收起项目 Beta"]').getAttribute('aria-expanded')).toBe('true');
+    expect(container.textContent).not.toContain('Alpha Task');
+    expect(container.textContent).toContain('Beta Task');
+  });
+
+  it('allows a joined collaboration group to be assigned to a personal project', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'grp_77',
+        group_id: 77,
+        name: 'Member Collaboration',
+        is_group: true,
+        is_agent_task: true,
+        has_bot: true,
+        member_count: 3,
+      }],
+    });
+    api.getGroups.mockResolvedValue({
+      groups: [{
+        id: 77,
+        name: 'Member Collaboration',
+        owner_id: 99,
+        kind: 'agent_task',
+        is_agent_task: true,
+        has_bot: true,
+        member_count: 3,
+      }],
+    });
+    api.getProjects.mockResolvedValue({
+      projects: [{ id: 12, name: 'Website', task_count: 0 }],
+    });
+
+    await mount();
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Member Collaboration 更多操作"]'));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="加入项目 Member Collaboration"]'));
+    });
+    const dialog = document.body.querySelector('[role="dialog"][aria-label="选择项目"]');
+    expect(dialog).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(Array.from(dialog.querySelectorAll('.cc-new-task-agent'))
+        .find((button) => button.textContent.includes('Website')));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.assignProjectTopic).toHaveBeenCalledWith(12, 'grp_77');
+  });
+
   it('shows a friend without conversation history in contacts and opens a synthetic direct topic', async () => {
     api.getFriends.mockResolvedValue({
       friends: [{ id: 8, username: 'alice', display_name: 'Alice' }],
@@ -683,12 +781,17 @@ describe('ChatListView sidebar sections', () => {
     await act(async () => {
       wsHandler({ data: { topic: 'p2p_7_8', from: 'usr8', content: 'New message', seq: 12 } });
     });
-    expect(container.querySelector('.cc-contacts-section .cc-section-unread-dot')).toBeTruthy();
+    const sectionUnreadDot = container.querySelector('.cc-contacts-section .cc-section-unread-dot');
+    const sectionChevron = container.querySelector('.cc-contacts-section .cc-section-toggle .lucide-chevron-right');
+    expect(sectionUnreadDot).toBeTruthy();
+    expect(sectionChevron.compareDocumentPosition(sectionUnreadDot) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
     expect(container.querySelector('[data-contact-kind="friend"]')).toBeFalsy();
 
     await act(async () => {
       Simulate.click(contactsToggle);
     });
+    expect(container.querySelector('.cc-contacts-section .cc-section-unread-dot')).toBeTruthy();
     const friend = container.querySelector('[data-contact-kind="friend"]');
     expect(friend.dataset.unread).toBe('true');
     expect(friend.querySelector('.cc-friend-unread-dot')).toBeTruthy();
@@ -2714,6 +2817,49 @@ describe('ChatListView sidebar sections', () => {
     });
 
     expect(document.body.querySelector('.cc-new-task-dialog')).toBeTruthy();
+  });
+
+  it('shows project and unassigned tasks together in compact mode by global recency', async () => {
+    localStorage.setItem('cc_pinned_history_v1:7', JSON.stringify(['p2p_7_43']));
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Newest project task',
+          is_group: false,
+          is_bot: true,
+          project_id: 12,
+          project_name: 'Website',
+          last_time: '2026-07-20T08:03:00Z',
+        },
+        {
+          id: 'p2p_7_43',
+          friend_id: 43,
+          name: 'Pinned older task',
+          is_group: false,
+          is_bot: true,
+          last_time: '2026-07-20T08:01:00Z',
+        },
+        {
+          id: 'p2p_7_44',
+          friend_id: 44,
+          name: 'Middle unassigned task',
+          is_group: false,
+          is_bot: true,
+          last_time: '2026-07-20T08:02:00Z',
+        },
+      ],
+    });
+
+    await mount({ compact: true });
+
+    const compactTasks = Array.from(container.querySelectorAll('.cc-compact-conversation'));
+    expect(compactTasks.map((button) => button.getAttribute('aria-label'))).toEqual([
+      '打开任务：Newest project task',
+      '打开任务：Middle unassigned task',
+      '打开任务：Pinned older task',
+    ]);
   });
 
   it('shows task states on compact avatars and dismisses a terminal state when opened', async () => {

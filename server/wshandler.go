@@ -1729,9 +1729,6 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 	channelManaged := h.isChannelManagedGroup(groupID)
 	senderIsBot := h.isBotUser(senderUID)
 	mentionAllBots := mentionSet[structuredMentionAllBots] && !senderIsBot
-	if senderIsBot && isFinalGroupAgentTurnMessage(msg) {
-		h.groupTurns.clear(groupID, senderUID)
-	}
 	defaultAgentUID := int64(0)
 	if !trustedChannelTrigger && !senderIsBot && memberCount > 2 && len(mentionSet) == 0 {
 		group, groupErr := h.db.GetGroup(groupID)
@@ -1763,7 +1760,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 				continue
 			}
 			if !senderIsBot && isGroupAgentTurnRequest(msg) {
-				h.groupTurns.record(groupID, m.UserID, senderUID)
+				h.groupTurns.begin(groupID, m.UserID, senderUID, msg.Data.SeqID)
 			}
 		}
 
