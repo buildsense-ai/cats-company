@@ -1031,7 +1031,7 @@ function fileMimeType(payload) {
   return String(payload?.mime_type || payload?.mime || payload?.content_type || '').toLowerCase();
 }
 
-const INLINE_VIDEO_EXTENSIONS = new Set(['MP4', 'WEBM', 'OGG', 'OGV', 'M4V', 'MOV']);
+const INLINE_VIDEO_EXTENSIONS = new Set(['MP4', 'WEBM', 'OGV', 'M4V', 'MOV']);
 const INLINE_VIDEO_MIME_TYPES = new Set([
   'video/mp4',
   'video/webm',
