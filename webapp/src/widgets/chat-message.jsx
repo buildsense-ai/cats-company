@@ -1219,7 +1219,7 @@ function ImageContent({ payload }) {
 }
 
 function fileExtension(payload) {
-  const name = payload?.name || payload?.url || '';
+  const name = String(payload?.name || payload?.url || '').split(/[?#]/, 1)[0];
   const raw = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : '';
   return raw ? raw.toUpperCase() : 'FILE';
 }
@@ -1430,6 +1430,8 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
   const previewRef = useRef(null);
   const triggerRef = useRef(null);
   const closeButtonRef = useRef(null);
+  const fallbackActionRef = useRef(null);
+  const shouldFocusFallbackRef = useRef(false);
   const src = resolveMediaURL(payload?.url);
 
   useEffect(() => {
@@ -1472,13 +1474,37 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
     };
   }, [playbackFailed, previewOpen]);
 
+  useEffect(() => {
+    if (!playbackFailed || !shouldFocusFallbackRef.current) return;
+    fallbackActionRef.current?.focus({ preventScroll: true });
+    shouldFocusFallbackRef.current = false;
+  }, [playbackFailed]);
+
   const handlePlaybackError = () => {
+    const activeElement = document.activeElement;
+    shouldFocusFallbackRef.current = triggerRef.current === activeElement
+      || Boolean(previewRef.current?.contains(activeElement));
     setPreviewOpen(false);
     setPlaybackFailed(true);
   };
 
   if (!payload || !src || playbackFailed) {
-    return <FileContent payload={payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} inlineVideo={false} />;
+    return (
+      <div className="oc-rich-video-fallback">
+        {playbackFailed && (
+          <span className="oc-visually-hidden" role="status">
+            视频无法播放，已显示下载选项。
+          </span>
+        )}
+        <FileContent
+          actionRef={fallbackActionRef}
+          activePreviewFile={activePreviewFile}
+          inlineVideo={false}
+          onPreviewFile={onPreviewFile}
+          payload={payload}
+        />
+      </div>
+    );
   }
 
   return (
@@ -1541,7 +1567,7 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
   );
 }
 
-function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = true }) {
+function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = true, actionRef = null }) {
   if (inlineVideo && payload && isInlineVideoFile(payload)) {
     return <VideoContent payload={payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
   }
@@ -1564,6 +1590,7 @@ function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = 
       <button
         className="v3-artifact-main"
         onClick={openFile}
+        ref={actionRef}
         title={canPreview ? '预览文件' : '打开或下载文件'}
         type="button"
       >

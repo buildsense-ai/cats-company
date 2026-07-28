@@ -1774,6 +1774,32 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('button.oc-rich-video-trigger').getAttribute('aria-label')).toBe('预览视频 product-demo.webm');
   });
 
+  it('recognizes signed video URLs when name and MIME metadata are absent', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 91,
+            from_uid: 2,
+            content: '[文件] signed video',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                url: 'https://media.example.com/product-demo.mp4?token=abc123#preview',
+                size: 4096,
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('video.oc-rich-video-thumb')).not.toBeNull();
+    expect(container.querySelector('.v3-attachment-card')).toBeNull();
+  });
+
   it('recognizes Ogg video by MIME and falls back to the file card after a playback error', async () => {
     await act(async () => {
       root.render(
@@ -1809,6 +1835,48 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('video.oc-rich-video-thumb')).toBeNull();
     expect(container.querySelector('.v3-attachment-name').textContent).toBe('product-demo.ogg');
     expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
+  });
+
+  it('moves focus to the download fallback and announces a preview playback error', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 101,
+            from_uid: 2,
+            content: '[文件] broken-preview.mp4',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'broken-preview.mp4',
+                url: '/uploads/files/broken-preview.mp4',
+                size: 4096,
+                mime_type: 'video/mp4',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.oc-rich-video-trigger'));
+      await Promise.resolve();
+    });
+    const player = container.querySelector('.oc-rich-video-player');
+    player.focus();
+
+    await act(async () => {
+      Simulate.error(player);
+      await Promise.resolve();
+    });
+
+    const fallbackAction = container.querySelector('.v3-artifact-main');
+    expect(document.activeElement).toBe(fallbackAction);
+    expect(container.querySelector('[role="status"]').textContent).toContain('视频无法播放');
+    expect(container.querySelector('.oc-rich-video-preview')).toBeNull();
   });
 
   it('keeps audio/ogg attachments as file cards', async () => {

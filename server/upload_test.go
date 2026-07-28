@@ -152,6 +152,72 @@ func TestHandleUploadNormalizesOggVideoToOGV(t *testing.T) {
 	}
 }
 
+func TestHandleUploadDetectsTheoraVideoWithAmbiguousOggMime(t *testing.T) {
+	for _, contentType := range []string{"", "application/ogg"} {
+		t.Run(contentType, func(t *testing.T) {
+			handler := NewUploadHandler(t.TempDir(), "/uploads")
+			req := buildUploadRequestWithPartContentType(
+				t,
+				"/api/upload?type=file",
+				"demo.ogg",
+				contentType,
+				[]byte("OggS\x00\x02theora stream \x80theora"),
+			)
+			rec := httptest.NewRecorder()
+
+			handler.HandleUpload(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("upload status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			var body struct {
+				FileKey  string `json:"file_key"`
+				MimeType string `json:"mime_type"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode upload response: %v", err)
+			}
+			if !strings.HasSuffix(body.FileKey, ".ogv") {
+				t.Fatalf("file_key = %q, want .ogv suffix", body.FileKey)
+			}
+			if body.MimeType != "video/ogg" {
+				t.Fatalf("mime_type = %q, want video/ogg", body.MimeType)
+			}
+		})
+	}
+}
+
+func TestHandleUploadKeepsAmbiguousVorbisOggAsAudio(t *testing.T) {
+	handler := NewUploadHandler(t.TempDir(), "/uploads")
+	req := buildUploadRequestWithPartContentType(
+		t,
+		"/api/upload?type=file",
+		"recording.ogg",
+		"application/ogg",
+		[]byte("OggS\x00\x02audio stream \x01vorbis"),
+	)
+	rec := httptest.NewRecorder()
+
+	handler.HandleUpload(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		FileKey  string `json:"file_key"`
+		MimeType string `json:"mime_type"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode upload response: %v", err)
+	}
+	if !strings.HasSuffix(body.FileKey, ".ogg") {
+		t.Fatalf("file_key = %q, want .ogg suffix", body.FileKey)
+	}
+	if body.MimeType != "audio/ogg" {
+		t.Fatalf("mime_type = %q, want audio/ogg", body.MimeType)
+	}
+}
+
 func TestHandleServeFileAllowsGeneratedFeedbackImage(t *testing.T) {
 	dir := t.TempDir()
 	fileName := "20260428_0123456789abcdef0123456789abcdef.png"
@@ -532,6 +598,19 @@ func TestMobileUploadSessionAcceptsPhoneUploadsAndListsFiles(t *testing.T) {
 		t.Fatalf("upload status = %d, body=%s", uploadRec.Code, uploadRec.Body.String())
 	}
 
+	videoUploadReq := buildUploadRequestWithPartContentType(
+		t,
+		"/api/mobile-upload/sessions/"+created.SessionID+"/files?type=file",
+		"demo.ogg",
+		"application/ogg",
+		[]byte("OggS\x00\x02theora stream \x80theora"),
+	)
+	videoUploadRec := httptest.NewRecorder()
+	handler.HandleMobileUploadSession(videoUploadRec, videoUploadReq)
+	if videoUploadRec.Code != http.StatusOK {
+		t.Fatalf("video upload status = %d, body=%s", videoUploadRec.Code, videoUploadRec.Body.String())
+	}
+
 	listReq := httptest.NewRequest(http.MethodGet, "/api/mobile-upload/sessions/"+created.SessionID, nil)
 	listRec := httptest.NewRecorder()
 	handler.HandleMobileUploadSession(listRec, listReq)
@@ -555,11 +634,14 @@ func TestMobileUploadSessionAcceptsPhoneUploadsAndListsFiles(t *testing.T) {
 	if listed.Topic != "p2p_1_2" {
 		t.Fatalf("topic = %q, want p2p_1_2", listed.Topic)
 	}
-	if len(listed.Files) != 1 {
-		t.Fatalf("files = %+v, want one file", listed.Files)
+	if len(listed.Files) != 2 {
+		t.Fatalf("files = %+v, want two files", listed.Files)
 	}
 	if listed.Files[0].Name != "paper.jpg" || listed.Files[0].Type != "image" || !strings.HasPrefix(listed.Files[0].URL, "/uploads/images/") {
 		t.Fatalf("unexpected file result: %+v", listed.Files[0])
+	}
+	if listed.Files[1].Name != "demo.ogg" || listed.Files[1].MimeType != "video/ogg" || !strings.HasSuffix(listed.Files[1].FileKey, ".ogv") {
+		t.Fatalf("unexpected video result: %+v", listed.Files[1])
 	}
 }
 

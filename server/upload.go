@@ -2,6 +2,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -157,7 +158,7 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Preserve the audio/video distinction for Ogg containers in the stored key.
-	storedExt := normalizedUploadExtension(ext, header.Header.Get("Content-Type"))
+	storedExt, mimeType := normalizedUploadMetadata(ext, header.Header.Get("Content-Type"), file)
 	fileKey := generateFileKey(storedExt)
 	subDir := "files"
 	if uploadType == "image" {
@@ -194,7 +195,7 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		Name:     header.Filename,
 		Size:     written,
 		Type:     uploadType,
-		MimeType: normalizedUploadMimeType(storedExt, header.Header.Get("Content-Type")),
+		MimeType: mimeType,
 	})
 }
 
@@ -365,7 +366,7 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	storedExt := normalizedUploadExtension(ext, header.Header.Get("Content-Type"))
+	storedExt, mimeType := normalizedUploadMetadata(ext, header.Header.Get("Content-Type"), file)
 	fileKey := generateFileKey(storedExt)
 	subDir := "files"
 	if uploadType == "image" {
@@ -395,7 +396,7 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 		Name:     header.Filename,
 		Size:     written,
 		Type:     uploadType,
-		MimeType: normalizedUploadMimeType(storedExt, header.Header.Get("Content-Type")),
+		MimeType: mimeType,
 	}
 
 	h.mobileMu.Lock()
@@ -562,15 +563,29 @@ func normalizedUploadMimeType(ext, headerType string) string {
 	return "application/octet-stream"
 }
 
-func normalizedUploadExtension(ext, headerType string) string {
+func normalizedUploadMetadata(ext, headerType string, file io.ReaderAt) (string, string) {
+	storedExt := normalizedUploadExtension(ext, headerType, file)
+	return storedExt, normalizedUploadMimeType(storedExt, headerType)
+}
+
+func normalizedUploadExtension(ext, headerType string, file io.ReaderAt) string {
 	if !strings.EqualFold(ext, ".ogg") {
 		return ext
 	}
 	mediaType, _, err := mime.ParseMediaType(headerType)
-	if err == nil && strings.EqualFold(mediaType, "video/ogg") {
+	if (err == nil && strings.EqualFold(mediaType, "video/ogg")) || containsTheoraIdentificationHeader(file) {
 		return ".ogv"
 	}
 	return ext
+}
+
+func containsTheoraIdentificationHeader(file io.ReaderAt) bool {
+	if file == nil {
+		return false
+	}
+	probe := make([]byte, 64<<10)
+	n, _ := file.ReadAt(probe, 0)
+	return bytes.Contains(probe[:n], []byte("\x80theora"))
 }
 
 func generateFileKey(ext string) string {
