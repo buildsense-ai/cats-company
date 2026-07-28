@@ -264,6 +264,34 @@ func TestCloudArtifactHandlerListsArtifactsForAccessibleManagedAgent(t *testing.
 	}
 }
 
+func TestCloudArtifactHandlerListsArtifactsForAccessibleSelfHostedBot(t *testing.T) {
+	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/agents/440/artifacts" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(managedAgentListJSON("440", "active")))
+	}))
+	defer upstream.Close()
+
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		upstream.URL+"/internal/artifacts",
+		token,
+		upstream.Client(),
+	)
+	handler.SetStore(managedArtifactAgentStore(7, 440, false))
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(
+		rec,
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/artifacts?status=active"),
+	)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCloudArtifactHandlerDeletesOnlyThroughRequestedAgentNamespace(t *testing.T) {
 	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -332,7 +360,7 @@ func TestCloudArtifactHandlerRestoresThroughRequestedAgentNamespace(t *testing.T
 	}
 }
 
-func TestCloudArtifactHandlerRejectsInaccessibleOrUnmanagedAgent(t *testing.T) {
+func TestCloudArtifactHandlerRejectsInaccessibleAndAllowsAccessibleSelfHostedBot(t *testing.T) {
 	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
 	var upstreamCalls int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -357,17 +385,19 @@ func TestCloudArtifactHandlerRejectsInaccessibleOrUnmanagedAgent(t *testing.T) {
 		t.Fatalf("forbidden status = %d, body = %s", forbidden.Code, forbidden.Body.String())
 	}
 
-	handler.SetStore(managedArtifactAgentStore(7, 440, false))
-	unmanaged := httptest.NewRecorder()
+	selfHostedStore := managedArtifactAgentStore(7, 440, false)
+	selfHostedStore.botBodyIDs = map[int64]string{440: "body-self-hosted-agent"}
+	handler.SetStore(selfHostedStore)
+	selfHosted := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
-		unmanaged,
+		selfHosted,
 		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/artifacts"),
 	)
-	if unmanaged.Code != http.StatusNotFound {
-		t.Fatalf("unmanaged status = %d, body = %s", unmanaged.Code, unmanaged.Body.String())
+	if selfHosted.Code != http.StatusOK {
+		t.Fatalf("self-hosted status = %d, body = %s", selfHosted.Code, selfHosted.Body.String())
 	}
-	if upstreamCalls != 0 {
-		t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+	if upstreamCalls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", upstreamCalls)
 	}
 }
 

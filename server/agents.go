@@ -426,7 +426,7 @@ func (h *AgentHandler) agentFromBotMap(viewerUID int64, bot map[string]interface
 		IsOnline:              h.agentRuntimeOnline(uid),
 		Visibility:            mapString(bot["visibility"]),
 		DeploymentStatus:      mapString(bot["deployment_status"]),
-		CloudArtifactsEnabled: strings.TrimSpace(mapString(bot["tenant_name"])) != "",
+		CloudArtifactsEnabled: true,
 	}
 	return agent, true
 }
@@ -443,16 +443,8 @@ func (h *AgentHandler) agentFromUser(viewerUID int64, user *types.User, relation
 		TopicID:               p2pTopicID(viewerUID, user.ID),
 		IsBot:                 true,
 		IsOnline:              h.agentRuntimeOnline(user.ID),
-		CloudArtifactsEnabled: h.cloudArtifactsEnabled(user.ID),
+		CloudArtifactsEnabled: true,
 	}
-}
-
-func (h *AgentHandler) cloudArtifactsEnabled(uid int64) bool {
-	if h == nil || h.db == nil || uid <= 0 {
-		return false
-	}
-	tenantName, err := h.db.GetTenantName(uid)
-	return err == nil && strings.TrimSpace(tenantName) != ""
 }
 
 func (h *AgentHandler) agentRuntimeOnline(uid int64) bool {

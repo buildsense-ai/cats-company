@@ -174,16 +174,18 @@ func TestHandleListAgentsIncludesOwnedAndFriendBots(t *testing.T) {
 	}
 }
 
-func TestHandleListAgentsMarksManagedCloudArtifactAgents(t *testing.T) {
+func TestHandleListAgentsEnablesCloudArtifactsForAllBots(t *testing.T) {
 	store := &agentTestStore{
 		ownerBots: []map[string]interface{}{
 			{"id": int64(42), "username": "owner-agent", "tenant_name": "tenant-owner"},
 			{"id": int64(44), "username": "ordinary-agent"},
+			{"id": int64(45), "username": "historical-virtual-employee"},
 		},
 		friends: []*types.User{
 			{ID: 43, Username: "friend-agent", AccountType: types.AccountBot},
 		},
 		tenantNames: map[int64]string{43: "tenant-friend"},
+		botBodyIDs:  map[int64]string{44: "body-self-hosted-agent"},
 	}
 	handler := NewAgentHandler(store, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
@@ -205,11 +207,10 @@ func TestHandleListAgentsMarksManagedCloudArtifactAgents(t *testing.T) {
 	for _, agent := range body.Agents {
 		enabled[agent.UID] = agent.CloudArtifactsEnabled
 	}
-	if !enabled[42] || !enabled[43] {
-		t.Fatalf("managed agents missing capability: %+v", enabled)
-	}
-	if enabled[44] {
-		t.Fatalf("ordinary agent unexpectedly has capability: %+v", enabled)
+	for _, uid := range []int64{42, 43, 44, 45} {
+		if !enabled[uid] {
+			t.Fatalf("bot %d missing cloud Artifact entry: %+v", uid, enabled)
+		}
 	}
 }
 
