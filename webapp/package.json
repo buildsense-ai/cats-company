@@ -27,5 +27,8 @@
     "start": "vite",
     "test": "vitest run",
     "build": "vite build"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.8"
   }
 }
