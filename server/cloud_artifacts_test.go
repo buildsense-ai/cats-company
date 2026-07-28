@@ -264,6 +264,36 @@ func TestCloudArtifactHandlerListsArtifactsForAccessibleManagedAgent(t *testing.
 	}
 }
 
+func TestCloudArtifactHandlerListsArtifactsForBodyBoundHistoricalAgent(t *testing.T) {
+	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/agents/440/artifacts" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(managedAgentListJSON("440", "active")))
+	}))
+	defer upstream.Close()
+
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		upstream.URL+"/internal/artifacts",
+		token,
+		upstream.Client(),
+	)
+	historicalStore := managedArtifactAgentStore(7, 440, false)
+	historicalStore.botBodyIDs = map[int64]string{440: "body-historical-agent"}
+	handler.SetStore(historicalStore)
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(
+		rec,
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/artifacts?status=active"),
+	)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCloudArtifactHandlerDeletesOnlyThroughRequestedAgentNamespace(t *testing.T) {
 	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

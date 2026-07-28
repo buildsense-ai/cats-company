@@ -426,7 +426,7 @@ func (h *AgentHandler) agentFromBotMap(viewerUID int64, bot map[string]interface
 		IsOnline:              h.agentRuntimeOnline(uid),
 		Visibility:            mapString(bot["visibility"]),
 		DeploymentStatus:      mapString(bot["deployment_status"]),
-		CloudArtifactsEnabled: strings.TrimSpace(mapString(bot["tenant_name"])) != "",
+		CloudArtifactsEnabled: cloudArtifactsEnabledForAgent(h.db, uid, mapString(bot["tenant_name"])),
 	}
 	return agent, true
 }
@@ -443,16 +443,22 @@ func (h *AgentHandler) agentFromUser(viewerUID int64, user *types.User, relation
 		TopicID:               p2pTopicID(viewerUID, user.ID),
 		IsBot:                 true,
 		IsOnline:              h.agentRuntimeOnline(user.ID),
-		CloudArtifactsEnabled: h.cloudArtifactsEnabled(user.ID),
+		CloudArtifactsEnabled: cloudArtifactsEnabledForAgent(h.db, user.ID, ""),
 	}
 }
 
-func (h *AgentHandler) cloudArtifactsEnabled(uid int64) bool {
-	if h == nil || h.db == nil || uid <= 0 {
+func cloudArtifactsEnabledForAgent(db store.Store, uid int64, knownTenantName string) bool {
+	if db == nil || uid <= 0 {
 		return false
 	}
-	tenantName, err := h.db.GetTenantName(uid)
-	return err == nil && strings.TrimSpace(tenantName) != ""
+	if strings.TrimSpace(knownTenantName) != "" {
+		return true
+	}
+	if tenantName, err := db.GetTenantName(uid); err == nil && strings.TrimSpace(tenantName) != "" {
+		return true
+	}
+	bodyID, err := db.GetBotBodyID(uid)
+	return err == nil && strings.TrimSpace(bodyID) != ""
 }
 
 func (h *AgentHandler) agentRuntimeOnline(uid int64) bool {

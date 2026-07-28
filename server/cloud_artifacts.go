@@ -210,8 +210,7 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
-	tenantName, err := h.db.GetTenantName(route.agentUID)
-	if err != nil || strings.TrimSpace(tenantName) == "" {
+	if !cloudArtifactsEnabledForAgent(h.db, route.agentUID, "") {
 		writeArtifactError(w, http.StatusNotFound, "artifact_not_found")
 		return
 	}
