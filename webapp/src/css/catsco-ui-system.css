@@ -6541,6 +6541,15 @@ html[data-theme="liquid"] .v3-message.is-self.has-file-only .v3-message-bubble {
   color: var(--cc-text);
 }
 
+.v3-message .v3-message-artifact-list {
+  width: min(390px, 100%);
+  max-width: 100%;
+}
+
+.v3-message .v3-artifact-card.cloud-static {
+  margin-top: 0;
+}
+
 .v3-message.has-file-only .v3-attachment-card {
   margin-top: 0;
 }

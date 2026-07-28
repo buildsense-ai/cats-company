@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/openchat/openchat/server/store/types"
 )
 
 func TestCloudArtifactHandlerListsValidatedIndex(t *testing.T) {
@@ -223,6 +225,176 @@ func TestCloudArtifactHandlerMutationRequiresAuthentication(t *testing.T) {
 	}
 }
 
+func TestCloudArtifactHandlerListsArtifactsForAccessibleManagedAgent(t *testing.T) {
+	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/agents/440/artifacts" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("status"); got != "active" {
+			t.Fatalf("status = %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+token {
+			t.Fatalf("Authorization = %q", got)
+		}
+		_, _ = w.Write([]byte(managedAgentListJSON("440", "active")))
+	}))
+	defer upstream.Close()
+
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		upstream.URL+"/internal/artifacts",
+		token,
+		upstream.Client(),
+	)
+	friendStore := managedArtifactAgentStore(8, 440, true)
+	friendStore.friendPairs[agentPairKey(7, 440)] = true
+	handler.SetStore(friendStore)
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(
+		rec,
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/artifacts?status=active"),
+	)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"agent_uid":"440"`) {
+		t.Fatalf("agent metadata missing: %s", rec.Body.String())
+	}
+}
+
+func TestCloudArtifactHandlerDeletesOnlyThroughRequestedAgentNamespace(t *testing.T) {
+	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/internal/agents/440/artifacts/shared-game" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"actor_uid":"7"`) {
+			t.Fatalf("actor body = %s", body)
+		}
+		_, _ = w.Write([]byte(managedAgentOperationJSON("440", "shared-game", "deleted")))
+	}))
+	defer upstream.Close()
+
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		upstream.URL+"/internal/artifacts",
+		token,
+		upstream.Client(),
+	)
+	handler.SetStore(managedArtifactAgentStore(7, 440, true))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodDelete,
+		"/api/agents/440/artifacts/shared-game",
+		strings.NewReader(`{"actor_uid":"999"}`),
+	)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	handler.HandleAgentArtifacts(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCloudArtifactHandlerRestoresThroughRequestedAgentNamespace(t *testing.T) {
+	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/internal/agents/440/artifacts/shared-game/restore" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"actor_uid":"7"`) {
+			t.Fatalf("actor body = %s", body)
+		}
+		_, _ = w.Write([]byte(managedAgentOperationJSON("440", "shared-game", "active")))
+	}))
+	defer upstream.Close()
+
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		upstream.URL+"/internal/artifacts",
+		token,
+		upstream.Client(),
+	)
+	handler.SetStore(managedArtifactAgentStore(7, 440, true))
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(
+		rec,
+		authenticatedArtifactRequestPath(
+			http.MethodPost,
+			"/api/agents/440/artifacts/shared-game/restore",
+		),
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCloudArtifactHandlerRejectsInaccessibleOrUnmanagedAgent(t *testing.T) {
+	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
+	var upstreamCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		_, _ = w.Write([]byte(managedAgentListJSON("440", "active")))
+	}))
+	defer upstream.Close()
+
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		upstream.URL+"/internal/artifacts",
+		token,
+		upstream.Client(),
+	)
+	handler.SetStore(managedArtifactAgentStore(8, 440, true))
+	forbidden := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(
+		forbidden,
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/artifacts"),
+	)
+	if forbidden.Code != http.StatusForbidden {
+		t.Fatalf("forbidden status = %d, body = %s", forbidden.Code, forbidden.Body.String())
+	}
+
+	handler.SetStore(managedArtifactAgentStore(7, 440, false))
+	unmanaged := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(
+		unmanaged,
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/artifacts"),
+	)
+	if unmanaged.Code != http.StatusNotFound {
+		t.Fatalf("unmanaged status = %d, body = %s", unmanaged.Code, unmanaged.Body.String())
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+	}
+}
+
+func TestCloudArtifactHandlerRejectsMismatchedAgentMetadata(t *testing.T) {
+	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(managedAgentListJSON("512", "active")))
+	}))
+	defer upstream.Close()
+
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		upstream.URL+"/internal/artifacts",
+		token,
+		upstream.Client(),
+	)
+	handler.SetStore(managedArtifactAgentStore(7, 440, true))
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(
+		rec,
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/artifacts"),
+	)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func authenticatedArtifactRequest(method string) *http.Request {
 	req := httptest.NewRequest(method, "/api/artifacts", nil)
 	return req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
@@ -231,6 +403,58 @@ func authenticatedArtifactRequest(method string) *http.Request {
 func authenticatedArtifactRequestPath(method, target string) *http.Request {
 	req := httptest.NewRequest(method, target, nil)
 	return req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+}
+
+func managedArtifactAgentStore(ownerUID, agentUID int64, managed bool) *agentTestStore {
+	tenantName := ""
+	if managed {
+		tenantName = "tenant-managed-agent"
+	}
+	return &agentTestStore{
+		users: map[int64]*types.User{
+			agentUID: {
+				ID: agentUID, Username: "managed-agent", AccountType: types.AccountBot,
+			},
+		},
+		owners:      map[int64]int64{agentUID: ownerUID},
+		friendPairs: map[string]bool{},
+		tenantNames: map[int64]string{agentUID: tenantName},
+	}
+}
+
+func managedAgentListJSON(agentUID, status string) string {
+	artifact := cloudArtifact{
+		ID:         "shared-game",
+		Title:      "Shared game",
+		Kind:       "html",
+		URL:        "https://example.test/by-agent/" + agentUID + "/shared-game/latest/",
+		Status:     status,
+		CreatedAt:  "2026-07-22T05:00:00.000Z",
+		UpdatedAt:  "2026-07-22T07:00:00.000Z",
+		AgentUID:   agentUID,
+		DeletedAt:  "",
+		CanDelete:  status == "active",
+		CanRestore: status == "deleted",
+	}
+	if status == "deleted" {
+		artifact.DeletedAt = "2026-07-22T07:00:00.000Z"
+	}
+	payload := cloudArtifactManagementList{
+		ContractVersion: artifactManagementContract,
+		Status:          status,
+		Count:           1,
+		Artifacts:       []cloudArtifact{artifact},
+	}
+	body, _ := json.Marshal(payload)
+	return string(body)
+}
+
+func managedAgentOperationJSON(agentUID, id, status string) string {
+	var payload cloudArtifactOperation
+	_ = json.Unmarshal([]byte(managedOperationJSON(id, status)), &payload)
+	payload.Artifact.AgentUID = agentUID
+	body, _ := json.Marshal(payload)
+	return string(body)
 }
 
 func managedOperationJSON(id, status string) string {

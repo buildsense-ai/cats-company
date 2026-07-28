@@ -56,4 +56,17 @@ describe('WorkflowRichMediaDemo file preview', () => {
     expect(chatColumn.hasAttribute('inert')).toBe(true);
     expect(chatColumn.getAttribute('aria-hidden')).toBe('true');
   });
+
+  it('includes a registry-matched cloud Artifact card', async () => {
+    await act(async () => {
+      root.render(<WorkflowRichMediaDemo />);
+      await Promise.resolve();
+    });
+
+    const card = container.querySelector('.v3-artifact-card.cloud-static');
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain('教研数据复盘看板');
+    expect(card.textContent).toContain('v2');
+    expect(container.querySelector('.oc-artifact-source-link')).not.toBeNull();
+  });
 });

@@ -104,6 +104,49 @@ legacy path is represented internally as a one-provider pool.
 base64 references; its 24 MiB default remains below the bundled Nginx 32 MiB
 body limit.
 
+## Distributed artifact nodes
+
+With no node registry configured, artifact management keeps using the legacy
+`CATSCO_ARTIFACT_MANAGEMENT_URL` and `CATSCO_ARTIFACT_MANAGEMENT_TOKEN`.
+
+To route each managed Agent to the artifact host on its deployment node, copy
+`deploy/prod/artifact-nodes.example.json` to the persistent secrets directory
+and set:
+
+```env
+CATSCO_ARTIFACT_NODES_FILE=/run/catsco-secrets/artifact-nodes.json
+```
+
+The JSON maps an Agent UID to one node. Each node declares its public artifact
+base URL, protected management URL, and exactly one bearer-token source:
+`management_token_env` or `management_token_file`. The token itself must not be
+written into the JSON. Prefer a separate file under `/run/catsco-secrets` for
+each node; the directory is already mounted read-only in the server container.
+Every `public_base_url` must use a different origin (scheme, host, or port) from
+`CATSCO_PUBLIC_BASE_URL`. The server rejects a same-origin registry at startup
+so executable Artifact HTML cannot share the CatsCo application origin.
+For example:
+
+```bash
+printf '%s' '<node-b-token>' > /srv/catscompany-prod/secrets/artifact-node-b.token
+chmod 600 /srv/catscompany-prod/secrets/artifact-node-b.token
+```
+
+`management_token_env` remains useful for the legacy node or local testing.
+Several nodes may reference `CATSCO_ARTIFACT_MANAGEMENT_TOKEN` only when those
+nodes intentionally share one service token.
+
+Once a node registry is enabled, an unmapped Agent fails closed. CatsCo does
+not send that Agent's list, delete, or restore request to the legacy host.
+Update the mapping as part of provisioning or moving a managed Agent.
+The registry is loaded at server startup, so changing a node, mapping, or token
+file requires recreating the CatsCo server container.
+
+When the node registry is enabled, the old unscoped `/api/artifacts` endpoint is
+disabled. All list, delete, and restore requests must use
+`/api/agents/{uid}/artifacts`, which prevents a request from silently falling
+back to the legacy node.
+
 ## Manual start
 
 ```bash
