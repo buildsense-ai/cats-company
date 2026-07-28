@@ -1416,12 +1416,12 @@ describe('ChatMessage rich file rendering', () => {
           message={{
             id: 10,
             from_uid: 2,
-            content: '[文件] product-demo.bin',
+            content: '[文件] product-demo.ogg',
             content_blocks: [{
               type: 'file',
               payload: {
-                name: 'product-demo.bin',
-                url: '/uploads/files/20260727_fedcba0987654321fedcba0987654321.bin',
+                name: 'product-demo.ogg',
+                url: '/uploads/files/20260727_fedcba0987654321fedcba0987654321.ogg',
                 size: 4096,
                 mime_type: 'video/ogg',
               },
@@ -1442,7 +1442,36 @@ describe('ChatMessage rich file rendering', () => {
     });
 
     expect(container.querySelector('video.oc-rich-video-player')).toBeNull();
-    expect(container.querySelector('.v3-attachment-name').textContent).toBe('product-demo.bin');
+    expect(container.querySelector('.v3-attachment-name').textContent).toBe('product-demo.ogg');
+    expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
+  });
+
+  it('keeps audio/ogg attachments as file cards', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 11,
+            from_uid: 2,
+            content: '[文件] recording.ogg',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'recording.ogg',
+                url: '/uploads/files/20260727_00112233445566778899aabbccddeeff.ogg',
+                size: 4096,
+                mime_type: 'audio/ogg',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('video.oc-rich-video-player')).toBeNull();
+    expect(container.querySelector('.v3-attachment-name').textContent).toBe('recording.ogg');
     expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
   });
 
