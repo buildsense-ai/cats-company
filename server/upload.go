@@ -497,7 +497,7 @@ func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) s
 
 func isHTMLUploadExtension(ext string) bool {
 	switch strings.ToLower(ext) {
-	case ".html", ".htm", ".xhtml":
+	case ".html", ".htm":
 		return true
 	default:
 		return false
