@@ -76,7 +76,7 @@ func TestHandleServeFileAllowsGeneratedFeedbackImage(t *testing.T) {
 	}
 }
 
-func TestHandleServeFileServesHTMLFilesAsAttachments(t *testing.T) {
+func TestHandleServeFileServesHTMLFilesInlineWithSandbox(t *testing.T) {
 	dir := t.TempDir()
 	fileName := "20260428_0123456789abcdef0123456789abcdef.html"
 	fullPath := filepath.Join(dir, "files", fileName)
@@ -99,8 +99,39 @@ func TestHandleServeFileServesHTMLFilesAsAttachments(t *testing.T) {
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
 	}
-	if got := rec.Header().Get("Content-Disposition"); !strings.Contains(got, "attachment") {
+	if got := rec.Header().Get("Content-Disposition"); !strings.Contains(got, "inline") {
+		t.Fatalf("Content-Disposition = %q, want inline", got)
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); got != "sandbox allow-scripts allow-forms allow-popups allow-modals" {
+		t.Fatalf("Content-Security-Policy = %q, want sandboxed HTML", got)
+	}
+}
+
+func TestHandleServeFileForcesHTMLDownloadWithoutSandbox(t *testing.T) {
+	dir := t.TempDir()
+	fileName := "20260428_0123456789abcdef0123456789abcdef.html"
+	fullPath := filepath.Join(dir, "files", fileName)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("<!doctype html><h1>Report</h1>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewUploadHandler(dir, "/uploads")
+	req := httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?download=1", nil)
+	rec := httptest.NewRecorder()
+
+	handler.HandleServeFile(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != "attachment" {
 		t.Fatalf("Content-Disposition = %q, want attachment", got)
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); got != "" {
+		t.Fatalf("Content-Security-Policy = %q, want empty for downloads", got)
 	}
 }
 

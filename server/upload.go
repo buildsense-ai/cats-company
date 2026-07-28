@@ -468,6 +468,11 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 	if subDir == "files" {
 		forceDownload := r.URL.Query().Get("download") == "1"
 		w.Header().Set("Content-Disposition", contentDispositionForUploadFile(fileName, ext, forceDownload))
+		if isHTMLUploadExtension(ext) && !forceDownload {
+			// Uploaded HTML may contain active content. Let browsers render it for
+			// navigation/preview, but keep it in an opaque sandboxed origin.
+			w.Header().Set("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-popups allow-modals")
+		}
 	}
 	http.ServeFile(w, r, fullPath)
 }
@@ -484,10 +489,19 @@ func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) s
 		return "attachment"
 	}
 	disposition := "attachment"
-	if strings.EqualFold(ext, ".pdf") {
+	if strings.EqualFold(ext, ".pdf") || isHTMLUploadExtension(ext) {
 		disposition = "inline"
 	}
 	return fmt.Sprintf("%s; filename=%q", disposition, fileName)
+}
+
+func isHTMLUploadExtension(ext string) bool {
+	switch strings.ToLower(ext) {
+	case ".html", ".htm", ".xhtml":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizedUploadMimeType(ext, headerType string) string {
