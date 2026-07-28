@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api, setToken, getToken, connectWS, reconnectWS, disconnectWS } from '../api';
+import { cleanupPushSubscription } from '../utils/push-notifications';
 import t from '../i18n';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
@@ -710,12 +711,7 @@ function TinodeWebApp() {
 
   const handleLogout = async () => {
     try {
-      const registration = await navigator.serviceWorker?.ready;
-      const subscription = await registration?.pushManager?.getSubscription();
-      if (subscription) {
-        await api.unsubscribePush(subscription.endpoint);
-        await subscription.unsubscribe();
-      }
+      await cleanupPushSubscription(api.unsubscribePush);
     } catch (error) {
       console.warn('Push subscription cleanup failed during logout:', error);
     }

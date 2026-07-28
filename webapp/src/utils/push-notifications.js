@@ -29,3 +29,35 @@ export function serializePushSubscription(subscription) {
     keys: {},
   };
 }
+
+export async function ensurePushSubscription(publicKey) {
+  const registration = await navigator.serviceWorker.ready;
+  const existing = await registration.pushManager.getSubscription();
+  if (existing) return existing;
+  return registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(publicKey),
+  });
+}
+
+export async function cleanupPushSubscription(unsubscribeOnServer) {
+  if (!('serviceWorker' in navigator)) return false;
+  const registration = await navigator.serviceWorker.getRegistration();
+  const subscription = await registration?.pushManager?.getSubscription();
+  if (!subscription) return false;
+
+  if (unsubscribeOnServer) {
+    try {
+      await unsubscribeOnServer(subscription.endpoint);
+    } catch (error) {
+      console.warn('Failed to remove push subscription from server:', error);
+    }
+  }
+
+  try {
+    await subscription.unsubscribe();
+  } catch (error) {
+    console.warn('Failed to remove browser push subscription:', error);
+  }
+  return true;
+}

@@ -3,10 +3,11 @@ import { registerSW } from 'virtual:pwa-register';
 import { api } from '../api';
 import {
   canUsePush,
+  cleanupPushSubscription,
+  ensurePushSubscription,
   PUSH_DISMISSED_KEY,
   serializePushSubscription,
   shouldOfferPush,
-  urlBase64ToUint8Array,
 } from '../utils/push-notifications';
 import './pwa-controller.css';
 
@@ -49,6 +50,34 @@ export default function PwaController({ loggedIn }) {
     return () => window.clearTimeout(timer);
   }, [offlineReady]);
 
+  useEffect(() => {
+    if (!canUsePush()) return undefined;
+    if (!loggedIn) {
+      cleanupPushSubscription().catch((error) => {
+        console.warn('Push cleanup after logout failed:', error);
+      });
+      return undefined;
+    }
+    if (Notification.permission !== 'granted') return undefined;
+
+    let cancelled = false;
+    const reconcilePush = async () => {
+      try {
+        const config = await api.getPushConfig();
+        const publicKey = config.public_key || config.vapid_public_key || config.vapidPublicKey;
+        if (!config.enabled || !publicKey) return;
+        const subscription = await ensurePushSubscription(publicKey);
+        await api.subscribePush(serializePushSubscription(subscription));
+      } catch (error) {
+        if (!cancelled) console.warn('Push subscription reconciliation failed:', error);
+      }
+    };
+    reconcilePush();
+    return () => {
+      cancelled = true;
+    };
+  }, [loggedIn]);
+
   const offerPush = shouldOfferPush({ loggedIn, permission, dismissed });
 
   const dismissPush = useCallback(() => {
@@ -73,15 +102,7 @@ export default function PwaController({ loggedIn }) {
         return;
       }
 
-      const registration = await navigator.serviceWorker.ready;
-
-      let subscription = await registration.pushManager.getSubscription();
-      if (!subscription) {
-        subscription = await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(publicKey),
-        });
-      }
+      const subscription = await ensurePushSubscription(publicKey);
       await api.subscribePush(serializePushSubscription(subscription));
       setDismissed(true);
     } catch (error) {

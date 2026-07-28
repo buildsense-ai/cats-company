@@ -133,6 +133,30 @@ func TestPushNotificationDisabledSendIsNoOp(t *testing.T) {
 	}
 }
 
+func TestValidatePushEndpointRejectsLocalAndPrivateTargets(t *testing.T) {
+	tests := []string{
+		"https://localhost/push",
+		"https://service.local/push",
+		"https://127.0.0.1/push",
+		"https://10.0.0.1/push",
+		"https://192.168.1.1/push",
+		"https://[::1]/push",
+		"https://push.example.test:8443/push",
+	}
+	for _, endpoint := range tests {
+		t.Run(endpoint, func(t *testing.T) {
+			if _, err := validatePushEndpoint(endpoint); err == nil {
+				t.Fatalf("validatePushEndpoint(%q) error = nil", endpoint)
+			}
+		})
+	}
+
+	const valid = "https://push.example.test/subscription/one"
+	if endpoint, err := validatePushEndpoint(valid); err != nil || endpoint != valid {
+		t.Fatalf("validatePushEndpoint(%q) = %q, %v", valid, endpoint, err)
+	}
+}
+
 func TestPushNotificationSubscribeUsesAuthenticatedUID(t *testing.T) {
 	store := &memoryPushSubscriptionStore{}
 	service := enabledPushService(store)

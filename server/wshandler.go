@@ -1714,7 +1714,7 @@ func max64(a, b int64) int64 {
 }
 
 func (h *Hub) notifyOfflineUser(uid int64) {
-	if h == nil || h.push == nil || uid <= 0 || h.IsOnline(uid) {
+	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 || h.IsOnline(uid) {
 		return
 	}
 	user, err := h.db.GetUser(uid)

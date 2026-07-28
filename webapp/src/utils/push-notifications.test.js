@@ -1,4 +1,6 @@
 import {
+  cleanupPushSubscription,
+  ensurePushSubscription,
   serializePushSubscription,
   shouldOfferPush,
   urlBase64ToUint8Array,
@@ -30,5 +32,34 @@ describe('push notification helpers', () => {
   test('uses the browser subscription JSON representation', () => {
     const json = { endpoint: 'https://push.example/sub', keys: { p256dh: 'a', auth: 'b' } };
     expect(serializePushSubscription({ toJSON: () => json })).toEqual(json);
+  });
+
+  test('reuses an existing browser subscription', async () => {
+    const existing = { endpoint: 'https://push.example/sub' };
+    const subscribe = vi.fn();
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: { ready: Promise.resolve({ pushManager: { getSubscription: vi.fn().mockResolvedValue(existing), subscribe } }) },
+    });
+
+    await expect(ensurePushSubscription('AQID')).resolves.toBe(existing);
+    expect(subscribe).not.toHaveBeenCalled();
+  });
+
+  test('unsubscribes in the browser even when server cleanup fails', async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    const serverCleanup = vi.fn().mockRejectedValue(new Error('offline'));
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: {
+        getRegistration: vi.fn().mockResolvedValue({
+          pushManager: { getSubscription: vi.fn().mockResolvedValue({ endpoint: 'https://push.example/sub', unsubscribe }) },
+        }),
+      },
+    });
+
+    await expect(cleanupPushSubscription(serverCleanup)).resolves.toBe(true);
+    expect(serverCleanup).toHaveBeenCalledWith('https://push.example/sub');
+    expect(unsubscribe).toHaveBeenCalled();
   });
 });

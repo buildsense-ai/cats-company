@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -224,6 +225,18 @@ func validatePushEndpoint(raw string) (string, error) {
 	parsed, err := url.ParseRequestURI(raw)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
 		return "", errors.New("endpoint must be an absolute HTTPS URL")
+	}
+	if parsed.Port() != "" && parsed.Port() != "443" {
+		return "", errors.New("endpoint must use the standard HTTPS port")
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
+		return "", errors.New("endpoint host is local")
+	}
+	if ip := net.ParseIP(host); ip != nil && !ip.IsGlobalUnicast() {
+		return "", errors.New("endpoint IP is not globally routable")
+	} else if ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()) {
+		return "", errors.New("endpoint IP is private")
 	}
 	return parsed.String(), nil
 }
