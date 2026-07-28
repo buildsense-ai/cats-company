@@ -316,6 +316,12 @@ export const api = {
   getBotModelConfig: (uid, { includeUsage = false } = {}) =>
     request('GET', `/api/bots/model-config?uid=${uid}${includeUsage ? '&include_usage=1' : ''}`),
   updateBotModelConfig: (uid, modelConfig) => request('PATCH', `/api/bots/model-config?uid=${uid}`, modelConfig),
+  getBotDefinition: (uid) => request('GET', `/api/bots/definition?uid=${uid}`),
+  updateBotDefinition: (uid, expectedRevision, changes) =>
+    request('PATCH', `/api/bots/definition?uid=${uid}`, {
+      expected_revision: expectedRevision,
+      ...changes,
+    }),
   getBotFriends: (uid) => request('GET', `/api/bots/friends?uid=${uid}`),
   removeBotFriend: (uid, userId) => request('DELETE', `/api/bots/friends?uid=${uid}&user_id=${userId}`),
   acceptFriendAsBot: async (apiKey, userId) => {

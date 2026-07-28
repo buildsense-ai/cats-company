@@ -365,6 +365,66 @@ type BotModelConfig struct {
 	LastError           string `json:"last_error,omitempty"`
 }
 
+// BotDefinition is the portable, cloud-canonical part of a bot. Runtime
+// credentials for catalog models deliberately do not belong here.
+type BotDefinition struct {
+	Schema           string                    `json:"schema"`
+	BotID            string                    `json:"botId"`
+	Model            BotDefinitionModel        `json:"model"`
+	SavedCustomModel *BotDefinitionCustomModel `json:"savedCustomModel,omitempty"`
+	Prompt           BotDefinitionPrompt       `json:"prompt"`
+}
+
+type BotDefinitionModel struct {
+	Kind string `json:"kind"`
+
+	ModelID         string `json:"modelId,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+
+	Protocol            string   `json:"protocol,omitempty"`
+	APIBase             string   `json:"apiBase,omitempty"`
+	Model               string   `json:"model,omitempty"`
+	APIKeyEncrypted     string   `json:"apiKeyEncrypted,omitempty"`
+	ContextWindowTokens int64    `json:"contextWindowTokens,omitempty"`
+	MaxTokens           int64    `json:"maxTokens,omitempty"`
+	Temperature         *float64 `json:"temperature,omitempty"`
+	ClearSavedCustom    bool     `json:"-"`
+}
+
+type BotDefinitionCustomModel struct {
+	Kind                string   `json:"kind"`
+	Protocol            string   `json:"protocol"`
+	APIBase             string   `json:"apiBase"`
+	Model               string   `json:"model"`
+	APIKeyEncrypted     string   `json:"apiKeyEncrypted,omitempty"`
+	ContextWindowTokens int64    `json:"contextWindowTokens"`
+	MaxTokens           int64    `json:"maxTokens,omitempty"`
+	Temperature         *float64 `json:"temperature,omitempty"`
+	ReasoningEffort     string   `json:"reasoningEffort,omitempty"`
+}
+
+type BotDefinitionPrompt struct {
+	Selected           string `json:"selected"`
+	CustomSystemPrompt string `json:"customSystemPrompt,omitempty"`
+}
+
+// BotDefinitionRecord wraps the canonical value with optimistic concurrency
+// metadata. Revision is not part of the portable Definition itself.
+type BotDefinitionRecord struct {
+	Definition BotDefinition `json:"definition"`
+	Revision   int64         `json:"revision"`
+	UpdatedAt  string        `json:"updatedAt,omitempty"`
+}
+
+type BotDefinitionApplyState struct {
+	DesiredRevision   int64  `json:"desiredRevision"`
+	AppliedRevision   int64  `json:"appliedRevision"`
+	AppliedAt         string `json:"appliedAt,omitempty"`
+	LastAttemptAt     string `json:"lastAttemptAt,omitempty"`
+	LastError         string `json:"lastError,omitempty"`
+	LastErrorRevision int64  `json:"lastErrorRevision,omitempty"`
+}
+
 const (
 	ChannelAgentAccessPublic           = "public"
 	ChannelAgentAccessApprovalRequired = "approval_required"

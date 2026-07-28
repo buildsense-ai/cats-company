@@ -33,12 +33,19 @@ type botModelOwnershipStore interface {
 type BotModelConfigHandler struct {
 	owners            botModelOwnershipStore
 	models            store.BotModelConfigStore
+	definitions       store.BotDefinitionStore
 	relayAdmin        *RelayAdminClient
 	secretCodec       *botModelSecretCodec
 	secretCodecError  error
 	rolloutConfigured bool
 	publicEnabled     bool
 	testUIDs          map[int64]bool
+}
+
+func (h *BotModelConfigHandler) SetBotDefinitionStore(definitions store.BotDefinitionStore) {
+	if h != nil {
+		h.definitions = definitions
+	}
 }
 
 type botModelCatalogItem struct {
@@ -217,6 +224,18 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 		}
 		kind := strings.ToLower(strings.TrimSpace(req.Kind))
 		if strings.EqualFold(strings.TrimSpace(req.ModelID), "local") || kind == "local" {
+			if h.definitions != nil {
+				if definition, _, definitionErr := h.definitions.GetBotDefinition(botUID); definitionErr != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load bot definition"})
+					return
+				} else if definition != nil {
+					writeJSON(w, http.StatusConflict, map[string]string{
+						"error":   "bot_definition_managed",
+						"message": "This bot is managed by BotDefinition; update it through /api/bots/definition.",
+					})
+					return
+				}
+			}
 			localApplied := !configured && storedConfig.Revision > 0 &&
 				storedConfig.AppliedRevision == storedConfig.Revision &&
 				storedConfig.AppliedKind == "local" && storedConfig.AppliedModelID == "local" &&
@@ -261,6 +280,13 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 			}
 		}
 		if err != nil {
+			if errors.Is(err, store.ErrBotDefinitionManaged) {
+				writeJSON(w, http.StatusConflict, map[string]string{
+					"error":   "bot_definition_managed",
+					"message": "This bot is managed by BotDefinition; update it through /api/bots/definition.",
+				})
+				return
+			}
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save bot model configuration"})
 			return
 		}

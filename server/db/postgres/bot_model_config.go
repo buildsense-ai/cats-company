@@ -92,12 +92,64 @@ func (a *Adapter) updateBotModelConfig(
 	if err != nil {
 		return nil, fmt.Errorf("decode bot model config: %w", err)
 	}
-	if err := update(config, time.Now().UTC().Format(time.RFC3339)); err != nil {
+	previousKind := config.Kind
+	previousModelID := config.ModelID
+	previousReasoning := config.ReasoningEffort
+	previousCiphertext := config.CustomCiphertext
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := update(config, now); err != nil {
 		return nil, err
+	}
+	desiredChanged := previousKind != config.Kind ||
+		previousModelID != config.ModelID ||
+		previousReasoning != config.ReasoningEffort ||
+		previousCiphertext != config.CustomCiphertext
+	if desiredChanged && config.ModelID == "" {
+		record, _, decodeErr := store.DecodeBotDefinitionJSON(raw)
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode bot definition: %w", decodeErr)
+		}
+		if record != nil {
+			return nil, store.ErrBotDefinitionManaged
+		}
 	}
 	next, err := store.EncodeBotModelConfigJSON(raw, config)
 	if err != nil {
 		return nil, fmt.Errorf("encode bot model config: %w", err)
+	}
+	if desiredChanged && config.ModelID != "" {
+		record, apply, decodeErr := store.DecodeBotDefinitionJSON(next)
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode bot definition: %w", decodeErr)
+		}
+		if record != nil {
+			record.Definition.Model = types.BotDefinitionModel{
+				Kind:            config.Kind,
+				ModelID:         config.ModelID,
+				ReasoningEffort: config.ReasoningEffort,
+			}
+			if config.Kind == "custom" {
+				record.Definition.Model.Model = config.ModelID
+				record.Definition.Model.ModelID = ""
+				record.Definition.Model.APIKeyEncrypted = config.CustomCiphertext
+			}
+			if config.CustomCiphertext != "" {
+				record.Definition.SavedCustomModel = &types.BotDefinitionCustomModel{
+					Kind:            "custom",
+					APIKeyEncrypted: config.CustomCiphertext,
+				}
+			}
+			record.Revision++
+			record.UpdatedAt = now
+			apply.DesiredRevision = record.Revision
+			apply.LastAttemptAt = ""
+			apply.LastError = ""
+			apply.LastErrorRevision = 0
+			next, err = store.EncodeBotDefinitionJSON(next, record, apply)
+			if err != nil {
+				return nil, fmt.Errorf("encode bot definition: %w", err)
+			}
+		}
 	}
 	if _, err := tx.Exec(`UPDATE bot_config SET config = $1::jsonb WHERE user_id = $2`, next, botUID); err != nil {
 		return nil, fmt.Errorf("save bot model config: %w", err)

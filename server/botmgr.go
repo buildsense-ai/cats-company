@@ -18,9 +18,10 @@ import (
 
 // BotHandler handles bot management API requests.
 type BotHandler struct {
-	db       store.Store
-	deployer *Deployer // nil = deploy functionality not available
-	hub      *Hub
+	db          store.Store
+	deployer    *Deployer // nil = deploy functionality not available
+	hub         *Hub
+	definitions store.BotDefinitionStore
 }
 
 // NewBotHandler creates a new BotHandler.
@@ -30,6 +31,10 @@ func NewBotHandler(db store.Store, deployer *Deployer) *BotHandler {
 
 func (h *BotHandler) SetHub(hub *Hub) {
 	h.hub = hub
+}
+
+func (h *BotHandler) SetBotDefinitionStore(definitions store.BotDefinitionStore) {
+	h.definitions = definitions
 }
 
 // HandleBotsRouter routes /api/bots by HTTP method.
@@ -103,6 +108,12 @@ func (h *BotHandler) HandleRegisterBot(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.SaveBotConfig(uid, req.APIEndpoint, req.Model); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config save failed"})
 		return
+	}
+	if h.definitions != nil {
+		if err := h.definitions.InitializeDefaultBotDefinition(uid); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "definition initialization failed"})
+			return
+		}
 	}
 
 	// Generate and store API key
@@ -290,6 +301,11 @@ func (h *BotHandler) createBotAccount(ownerUID int64, req BotRegisterRequest) (*
 
 	if err := h.db.SaveBotConfigWithOwner(uid, ownerUID, req.APIEndpoint, req.Model); err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("config save failed")
+	}
+	if h.definitions != nil {
+		if err := h.definitions.InitializeDefaultBotDefinition(uid); err != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("definition initialization failed")
+		}
 	}
 
 	apiKey := GenerateAPIKey(uid)

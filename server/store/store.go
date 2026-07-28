@@ -145,6 +145,15 @@ type BotModelConfigStore interface {
 	AckBotModelConfig(botUID, revision int64, kind, modelID, reasoningEffort, applyError string) (*types.BotModelConfig, error)
 }
 
+// BotDefinitionStore is optional so narrow Store test doubles do not need to
+// implement portable Definition persistence.
+type BotDefinitionStore interface {
+	GetBotDefinition(botUID int64) (*types.BotDefinitionRecord, *types.BotDefinitionApplyState, error)
+	SaveBotDefinition(botUID, expectedRevision int64, definition *types.BotDefinition) (*types.BotDefinitionRecord, *types.BotDefinitionApplyState, error)
+	AckBotDefinition(botUID, revision int64, applyError string) (*types.BotDefinitionRecord, *types.BotDefinitionApplyState, error)
+	InitializeDefaultBotDefinition(botUID int64) error
+}
+
 // FeedbackStore contains user feedback persistence operations.
 type FeedbackStore interface {
 	CreateFeedbackReport(report *types.FeedbackReport) (int64, error)
