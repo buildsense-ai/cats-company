@@ -388,14 +388,24 @@ type BotPromptDefinition struct {
 	CustomSystemPrompt string `json:"customSystemPrompt,omitempty"`
 }
 
+// BotSkillRef identifies one exact, immutable SkillHub package version.
+// Package content and display metadata remain owned by SkillHub.
+type BotSkillRef struct {
+	Source      string `json:"source"`
+	SkillID     string `json:"skillId"`
+	Version     string `json:"version"`
+	ContentHash string `json:"contentHash"`
+}
+
 // BotDefinition is the deliberately small portable identity of a XiaoBa bot.
-// Device runtime material, sessions, skills, quotas, and device identities do
-// not belong here.
+// Device runtime material, sessions, quotas, and device identities do not
+// belong here. Skills are immutable SkillHub references rather than packages.
 type BotDefinition struct {
 	Schema string               `json:"schema"`
 	BotID  string               `json:"botId"`
 	Model  BotDefinitionModel   `json:"model"`
 	Prompt *BotPromptDefinition `json:"prompt,omitempty"`
+	Skills []BotSkillRef        `json:"skills"`
 }
 
 // BotDefinitionRuntime tracks application progress without polluting the

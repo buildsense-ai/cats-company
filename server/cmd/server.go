@@ -573,7 +573,9 @@ func main() {
 	mux.HandleFunc("/api/bots/definition", ownerAuthWithDB(botDefinitionHandler.HandleOwnerDefinition))
 	mux.HandleFunc("/api/bots/definition/model", ownerAuthWithDB(botDefinitionHandler.HandleOwnerModel))
 	mux.HandleFunc("/api/bots/definition/prompt", ownerAuthWithDB(botDefinitionHandler.HandleOwnerPrompt))
+	mux.HandleFunc("/api/bots/definition/skills", ownerAuthWithDB(botDefinitionHandler.HandleOwnerSkills))
 	mux.HandleFunc("/api/bot/definition", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefinition))
+	mux.HandleFunc("/api/bot/definition/skills", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeSkills))
 	mux.HandleFunc("/api/bot/definition/ack", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeAck))
 
 	// Groups (require auth)

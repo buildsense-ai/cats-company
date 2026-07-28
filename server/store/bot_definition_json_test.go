@@ -18,6 +18,10 @@ func TestEncodeBotDefinitionJSONPreservesUnrelatedConfiguration(t *testing.T) {
 				ModelID: "minimax-m3",
 			},
 			Prompt: &types.BotPromptDefinition{Selected: "custom", CustomSystemPrompt: "Stay concise."},
+			Skills: []types.BotSkillRef{{
+				Source: "skillhub", SkillID: "lin/review", Version: "1.2.0",
+				ContentHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			}},
 		},
 		Runtime: types.BotDefinitionRuntime{DesiredRevision: 3},
 		Exists:  true,
@@ -43,8 +47,29 @@ func TestEncodeBotDefinitionJSONPreservesUnrelatedConfiguration(t *testing.T) {
 		decoded.Definition.Prompt == nil ||
 		decoded.Definition.Prompt.Selected != "custom" ||
 		decoded.Definition.Prompt.CustomSystemPrompt != "Stay concise." ||
+		len(decoded.Definition.Skills) != 1 ||
+		decoded.Definition.Skills[0].SkillID != "lin/review" ||
 		decoded.Runtime.DesiredRevision != 3 {
 		t.Fatalf("decoded=%+v", decoded)
+	}
+}
+
+func TestEncodeBotDefinitionJSONRemovesLegacyIndependentSkills(t *testing.T) {
+	raw := []byte(`{"bot_skills":{"revision":9},"channel":"feishu"}`)
+	record := defaultBotDefinitionRecord(43)
+	next, err := EncodeBotDefinitionJSON(raw, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(next, &root); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := root[legacyBotSkillsJSONKey]; exists {
+		t.Fatalf("legacy bot_skills remained: %s", next)
+	}
+	if string(root["channel"]) != `"feishu"` {
+		t.Fatalf("unrelated config changed: %s", next)
 	}
 }
 

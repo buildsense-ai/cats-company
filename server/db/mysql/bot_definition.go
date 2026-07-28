@@ -3,6 +3,7 @@ package mysql
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/openchat/openchat/server/store"
@@ -34,6 +35,9 @@ func (a *Adapter) CreateBotDefinitionIfAbsent(botUID int64, definition types.Bot
 				prompt := *definition.Prompt
 				record.Definition.Prompt = &prompt
 			}
+			if len(record.Definition.Skills) == 0 && len(definition.Skills) > 0 {
+				record.Definition.Skills = append([]types.BotSkillRef(nil), definition.Skills...)
+			}
 			record.Definition.Schema = definition.Schema
 			record.Definition.BotID = definition.BotID
 			record.Exists = true
@@ -45,6 +49,9 @@ func (a *Adapter) CreateBotDefinitionIfAbsent(botUID int64, definition types.Bot
 		if record.Definition.Prompt == nil && definition.Prompt != nil {
 			prompt := *definition.Prompt
 			record.Definition.Prompt = &prompt
+		}
+		if len(record.Definition.Skills) == 0 && len(definition.Skills) > 0 {
+			record.Definition.Skills = append([]types.BotSkillRef(nil), definition.Skills...)
 		}
 		return nil
 	})
@@ -86,6 +93,34 @@ func (a *Adapter) UpdateBotDefinitionPrompt(
 				Kind:    "catalog",
 				ModelID: "minimax-m3",
 			}
+		}
+		record.Runtime.DesiredRevision++
+		record.Runtime.UpdatedAt = now
+		record.Runtime.LastAttemptRevision = 0
+		record.Runtime.LastAttemptAt = ""
+		record.Runtime.LastError = ""
+		record.Exists = true
+		return nil
+	})
+}
+
+func (a *Adapter) UpdateBotDefinitionSkills(
+	botUID, expectedRevision int64,
+	skills []types.BotSkillRef,
+) (*types.BotDefinitionRecord, error) {
+	return a.updateBotDefinition(botUID, func(record *types.BotDefinitionRecord, now string) error {
+		if expectedRevision >= 0 && record.Runtime.DesiredRevision != expectedRevision {
+			return store.ErrStaleBotModelRevision
+		}
+		if reflect.DeepEqual(record.Definition.Skills, skills) {
+			return nil
+		}
+		record.Definition.Skills = append([]types.BotSkillRef(nil), skills...)
+		if record.Definition.Model.Kind == "" {
+			record.Definition.Model = types.BotDefinitionModel{Kind: "catalog", ModelID: "minimax-m3"}
+		}
+		if record.Definition.Prompt == nil {
+			record.Definition.Prompt = &types.BotPromptDefinition{Selected: "default"}
 		}
 		record.Runtime.DesiredRevision++
 		record.Runtime.UpdatedAt = now

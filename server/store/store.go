@@ -150,6 +150,7 @@ type BotDefinitionStore interface {
 	CreateBotDefinitionIfAbsent(botUID int64, definition types.BotDefinition) (*types.BotDefinitionRecord, error)
 	UpdateBotDefinitionModel(botUID, expectedRevision int64, model types.BotDefinitionModel) (*types.BotDefinitionRecord, error)
 	UpdateBotDefinitionPrompt(botUID, expectedRevision int64, prompt types.BotPromptDefinition) (*types.BotDefinitionRecord, error)
+	UpdateBotDefinitionSkills(botUID, expectedRevision int64, skills []types.BotSkillRef) (*types.BotDefinitionRecord, error)
 	AckBotDefinition(botUID, revision int64, applyError string) (*types.BotDefinitionRecord, error)
 }
 
