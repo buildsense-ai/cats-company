@@ -11,9 +11,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/openchat/openchat/server/store"
@@ -24,7 +26,34 @@ const (
 	maxPushRequestBody = 8 << 10
 	maxPushEndpointLen = 512
 	maxPushPayloadLen  = 4096
+	pushRequestTimeout = 15 * time.Second
 )
+
+var nonPublicPushPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.31.196.0/24"),
+	netip.MustParsePrefix("192.52.193.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("192.175.48.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("224.0.0.0/3"),
+	netip.MustParsePrefix("::/96"),
+	netip.MustParsePrefix("::ffff:0:0:0/96"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("3fff::/20"),
+	netip.MustParsePrefix("5f00::/16"),
+	netip.MustParsePrefix("fec0::/10"),
+}
 
 // PushNotification is the complete payload sent to a browser. Keep this type
 // deliberately small: notification payloads must not contain message IDs,
@@ -45,6 +74,8 @@ type PushNotificationConfig struct {
 }
 
 type pushSendFunc func(context.Context, []byte, *webpush.Subscription, *webpush.Options) (*http.Response, error)
+type pushLookupIPFunc func(context.Context, string) ([]net.IPAddr, error)
+type pushDialContextFunc func(context.Context, string, string) (net.Conn, error)
 
 // PushNotificationService owns the Web Push API and delivery behavior. The
 // service is disabled unless a subscription store and all VAPID values exist.
@@ -52,6 +83,7 @@ type PushNotificationService struct {
 	store  store.PushSubscriptionStore
 	config PushNotificationConfig
 	send   pushSendFunc
+	client webpush.HTTPClient
 	logf   func(string, ...interface{})
 }
 
@@ -74,8 +106,76 @@ func NewPushNotificationServiceWithConfig(subscriptionStore store.PushSubscripti
 		store:  subscriptionStore,
 		config: config,
 		send:   webpush.SendNotificationWithContext,
+		client: newPushHTTPClient(),
 		logf:   log.Printf,
 	}
+}
+
+func newPushHTTPClient() *http.Client {
+	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+	return newPushHTTPClientWithNetwork(net.DefaultResolver.LookupIPAddr, dialer.DialContext, pushRequestTimeout)
+}
+
+func newPushHTTPClientWithNetwork(lookup pushLookupIPFunc, dial pushDialContextFunc, timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = pushRequestTimeout
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Resolve and dial the endpoint directly so proxies and DNS rebinding cannot
+	// bypass the public-address check.
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, fmt.Errorf("parse push endpoint address: %w", err)
+		}
+		addresses, err := lookup(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("resolve push endpoint %q: %w", host, err)
+		}
+		if len(addresses) == 0 {
+			return nil, fmt.Errorf("resolve push endpoint %q: no addresses", host)
+		}
+		for _, resolved := range addresses {
+			if !isPublicPushIP(resolved.IP) {
+				return nil, fmt.Errorf("push endpoint %q resolved to non-publicly routable address %s", host, resolved.IP)
+			}
+		}
+
+		var dialErrors []error
+		for _, resolved := range addresses {
+			connection, dialErr := dial(ctx, network, net.JoinHostPort(resolved.IP.String(), port))
+			if dialErr == nil {
+				return connection, nil
+			}
+			dialErrors = append(dialErrors, dialErr)
+		}
+		return nil, fmt.Errorf("dial push endpoint %q: %w", host, errors.Join(dialErrors...))
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func isPublicPushIP(ip net.IP) bool {
+	address, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	address = address.Unmap()
+	if !address.IsGlobalUnicast() || address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() {
+		return false
+	}
+	for _, prefix := range nonPublicPushPrefixes {
+		if prefix.Contains(address) {
+			return false
+		}
+	}
+	return true
 }
 
 // Enabled reports whether delivery and subscription mutation are available.
@@ -309,6 +409,7 @@ func (s *PushNotificationService) SendToUser(ctx context.Context, uid int64, not
 				Auth:   subscription.Auth,
 			},
 		}, &webpush.Options{
+			HTTPClient:      s.client,
 			Subscriber:      s.config.Subject,
 			VAPIDPublicKey:  s.config.PublicKey,
 			VAPIDPrivateKey: s.config.PrivateKey,

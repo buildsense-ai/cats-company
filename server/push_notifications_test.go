@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/openchat/openchat/server/store/types"
@@ -157,6 +159,130 @@ func TestValidatePushEndpointRejectsLocalAndPrivateTargets(t *testing.T) {
 	}
 }
 
+func TestPushHTTPClientRejectsPrivateDNSResolution(t *testing.T) {
+	dialed := false
+	client := newPushHTTPClientWithNetwork(
+		func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+		},
+		func(context.Context, string, string) (net.Conn, error) {
+			dialed = true
+			return nil, errors.New("unexpected dial")
+		},
+		pushRequestTimeout,
+	)
+
+	_, err := client.Get("https://push.example.test/subscription")
+	if err == nil || !strings.Contains(err.Error(), "non-publicly routable") {
+		t.Fatalf("private DNS resolution error = %v", err)
+	}
+	if dialed {
+		t.Fatal("private DNS resolution reached the network dialer")
+	}
+}
+
+func TestPublicPushIPAddressPolicy(t *testing.T) {
+	tests := []struct {
+		address string
+		public  bool
+	}{
+		{address: "0.0.0.1"},
+		{address: "10.0.0.1"},
+		{address: "100.64.0.1"},
+		{address: "127.0.0.1"},
+		{address: "169.254.1.1"},
+		{address: "192.0.2.1"},
+		{address: "198.18.0.1"},
+		{address: "240.0.0.1"},
+		{address: "::1"},
+		{address: "::192.0.2.1"},
+		{address: "::ffff:0:127.0.0.1"},
+		{address: "64:ff9b::a00:1"},
+		{address: "100::1"},
+		{address: "2001:db8::1"},
+		{address: "fc00::1"},
+		{address: "fe80::1"},
+		{address: "fec0::1"},
+		{address: "8.8.8.8", public: true},
+		{address: "2606:4700:4700::1111", public: true},
+	}
+	for _, test := range tests {
+		t.Run(test.address, func(t *testing.T) {
+			if got := isPublicPushIP(net.ParseIP(test.address)); got != test.public {
+				t.Fatalf("isPublicPushIP(%q) = %t, want %t", test.address, got, test.public)
+			}
+		})
+	}
+}
+
+func TestPushHTTPClientDoesNotFollowRedirects(t *testing.T) {
+	targetHit := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHit = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+
+	start := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer start.Close()
+
+	var dialedAddress string
+	client := newPushHTTPClientWithNetwork(
+		func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+		},
+		func(ctx context.Context, network, address string) (net.Conn, error) {
+			dialedAddress = address
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, network, start.Listener.Addr().String())
+		},
+		pushRequestTimeout,
+	)
+
+	response, err := client.Get("http://push.example.test/subscription")
+	if err != nil {
+		t.Fatalf("redirect request: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusTemporaryRedirect)
+	}
+	if targetHit {
+		t.Fatal("push HTTP client followed a redirect")
+	}
+	if dialedAddress != "93.184.216.34:80" {
+		t.Fatalf("dialed address = %q, want resolved public IP", dialedAddress)
+	}
+	if client.Timeout != 15*time.Second {
+		t.Fatalf("timeout = %v, want 15s", client.Timeout)
+	}
+}
+
+func TestPushHTTPClientTimesOutStalledConnections(t *testing.T) {
+	client := newPushHTTPClientWithNetwork(
+		func(context.Context, string) ([]net.IPAddr, error) {
+			return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+		},
+		func(ctx context.Context, _, _ string) (net.Conn, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		20*time.Millisecond,
+	)
+
+	started := time.Now()
+	_, err := client.Get("https://push.example.test/subscription")
+	if err == nil || !strings.Contains(err.Error(), "Client.Timeout") {
+		t.Fatalf("stalled request error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("stalled request took %v, want under 1s", elapsed)
+	}
+}
+
 func TestPushNotificationSubscribeUsesAuthenticatedUID(t *testing.T) {
 	store := &memoryPushSubscriptionStore{}
 	service := enabledPushService(store)
@@ -254,7 +380,10 @@ func TestPushNotificationSendCleansExpiredSubscriptions(t *testing.T) {
 	}}
 	service := enabledPushService(store)
 	var payloads [][]byte
-	service.send = func(_ context.Context, payload []byte, subscription *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+	service.send = func(_ context.Context, payload []byte, subscription *webpush.Subscription, options *webpush.Options) (*http.Response, error) {
+		if options.HTTPClient == nil {
+			t.Fatal("push delivery omitted the restricted HTTP client")
+		}
 		payloads = append(payloads, bytes.Clone(payload))
 		status := http.StatusCreated
 		switch subscription.Endpoint {
