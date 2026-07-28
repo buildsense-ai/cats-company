@@ -15,36 +15,6 @@ import (
 
 const testArtifactApplicationBaseURL = "https://app.catsco.cc"
 
-func TestCloudArtifactCapabilityUsesNodeMappingAsAuthority(t *testing.T) {
-	const token = "node-a-management-token-abcdefghijklmnopqrstuvwxyz"
-	registry := mustArtifactNodeRegistry(t, map[string]string{"NODE_A_TOKEN": token}, map[string]any{
-		"nodes": map[string]any{
-			"node-a": map[string]string{
-				"public_base_url":      "https://artifacts-a.example.test",
-				"management_url":       "https://artifacts-a.example.test/internal/artifacts",
-				"management_token_env": "NODE_A_TOKEN",
-			},
-		},
-		"agents": map[string]string{"440": "node-a"},
-	})
-	handler := NewCloudArtifactManagementHandler(
-		"https://legacy.example.test/artifacts-index.json",
-		"https://legacy.example.test/internal/artifacts",
-		"legacy-management-token-abcdefghijklmnopqrstuvwxyz",
-		nil,
-	)
-	handler.nodeRegistry = registry
-	handler.explicitAgentUIDs = map[int64]struct{}{310: {}}
-	handler.SetStore(twoManagedArtifactAgentsStore())
-
-	if !handler.SupportsAgent(440, "") {
-		t.Fatal("mapped Agent should expose Artifact capability")
-	}
-	if handler.SupportsAgent(310, "tenant-310") {
-		t.Fatal("unmapped Agent must not inherit legacy or tenant capability")
-	}
-}
-
 func TestCloudArtifactHandlerRoutesAgentsToConfiguredNodes(t *testing.T) {
 	const tokenA = "node-a-management-token-abcdefghijklmnopqrstuvwxyz"
 	const tokenB = "node-b-management-token-abcdefghijklmnopqrstuvwxyz"

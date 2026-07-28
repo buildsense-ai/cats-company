@@ -19,7 +19,6 @@ type AgentHandler struct {
 	hub                       *Hub
 	relayAdmin                *RelayAdminClient
 	deviceModelStatusResolver func(uid int64, bodyID string) (DeviceModelStatus, bool)
-	cloudArtifactResolver     func(uid int64, knownTenantName string) bool
 	quotaMu                   sync.Mutex
 	quotaCache                map[string]agentQuotaCacheEntry
 }
@@ -66,13 +65,6 @@ func (h *AgentHandler) SetRelayUsageDependencies(admin *RelayAdminClient, resolv
 	}
 	h.relayAdmin = admin
 	h.deviceModelStatusResolver = resolver
-}
-
-// SetCloudArtifactResolver keeps roster capability flags aligned with artifact routing.
-func (h *AgentHandler) SetCloudArtifactResolver(resolver func(uid int64, knownTenantName string) bool) {
-	if h != nil {
-		h.cloudArtifactResolver = resolver
-	}
 }
 
 // AgentSummary is the lightweight roster item used by the WebApp.
@@ -434,7 +426,7 @@ func (h *AgentHandler) agentFromBotMap(viewerUID int64, bot map[string]interface
 		IsOnline:              h.agentRuntimeOnline(uid),
 		Visibility:            mapString(bot["visibility"]),
 		DeploymentStatus:      mapString(bot["deployment_status"]),
-		CloudArtifactsEnabled: h.cloudArtifactsEnabled(uid, mapString(bot["tenant_name"])),
+		CloudArtifactsEnabled: true,
 	}
 	return agent, true
 }
@@ -451,35 +443,8 @@ func (h *AgentHandler) agentFromUser(viewerUID int64, user *types.User, relation
 		TopicID:               p2pTopicID(viewerUID, user.ID),
 		IsBot:                 true,
 		IsOnline:              h.agentRuntimeOnline(user.ID),
-		CloudArtifactsEnabled: h.cloudArtifactsEnabled(user.ID, ""),
+		CloudArtifactsEnabled: true,
 	}
-}
-
-func (h *AgentHandler) cloudArtifactsEnabled(uid int64, knownTenantName string) bool {
-	if h == nil || uid <= 0 {
-		return false
-	}
-	if h.cloudArtifactResolver != nil {
-		return h.cloudArtifactResolver(uid, knownTenantName)
-	}
-	return managedCloudArtifactsEnabled(h.db, uid, knownTenantName, nil)
-}
-
-func managedCloudArtifactsEnabled(db store.Store, uid int64, knownTenantName string, explicitlyEnabled map[int64]struct{}) bool {
-	if uid <= 0 {
-		return false
-	}
-	if _, ok := explicitlyEnabled[uid]; ok {
-		return true
-	}
-	if strings.TrimSpace(knownTenantName) != "" {
-		return true
-	}
-	if db == nil {
-		return false
-	}
-	tenantName, err := db.GetTenantName(uid)
-	return err == nil && strings.TrimSpace(tenantName) != ""
 }
 
 func (h *AgentHandler) agentRuntimeOnline(uid int64) bool {

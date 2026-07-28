@@ -30,16 +30,15 @@ var artifactIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$
 
 // CloudArtifactHandler proxies the public index and the protected artifact-management service.
 type CloudArtifactHandler struct {
-	indexURL          string
-	managementURL     string
-	managementToken   string
-	httpClient        *http.Client
-	db                store.Store
-	configErr         error
-	managementErr     error
-	nodeRegistry      *artifactNodeRegistry
-	nodeRegistryErr   error
-	explicitAgentUIDs map[int64]struct{}
+	indexURL        string
+	managementURL   string
+	managementToken string
+	httpClient      *http.Client
+	db              store.Store
+	configErr       error
+	managementErr   error
+	nodeRegistry    *artifactNodeRegistry
+	nodeRegistryErr error
 }
 
 type cloudArtifactIndex struct {
@@ -103,18 +102,6 @@ func (h *CloudArtifactHandler) SetStore(db store.Store) {
 	}
 }
 
-// SupportsAgent reports whether routing is configured for an Agent's artifacts.
-func (h *CloudArtifactHandler) SupportsAgent(uid int64, knownTenantName string) bool {
-	if h == nil || uid <= 0 || h.nodeRegistryErr != nil {
-		return false
-	}
-	if h.nodeRegistry != nil {
-		_, err := h.nodeRegistry.resolve(uid)
-		return err == nil
-	}
-	return managedCloudArtifactsEnabled(h.db, uid, knownTenantName, h.explicitAgentUIDs)
-}
-
 func newCloudArtifactHandler(indexURL, managementURL, managementToken string, client *http.Client) *CloudArtifactHandler {
 	h := &CloudArtifactHandler{httpClient: client}
 	if h.httpClient == nil {
@@ -159,26 +146,8 @@ func NewCloudArtifactHandlerFromEnv() *CloudArtifactHandler {
 		managementURL = defaultArtifactManagementURL
 	}
 	handler := newCloudArtifactHandler(indexURL, managementURL, managementToken, nil)
-	handler.explicitAgentUIDs = parseArtifactAgentUIDSet(os.Getenv("CATSCO_CLOUD_ARTIFACT_AGENT_UIDS"))
 	handler.nodeRegistry, handler.nodeRegistryErr = loadArtifactNodeRegistryFromEnv()
 	return handler
-}
-
-func parseArtifactAgentUIDSet(value string) map[int64]struct{} {
-	uids := make(map[int64]struct{})
-	for _, field := range strings.FieldsFunc(value, func(r rune) bool {
-		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\r' || r == '\n'
-	}) {
-		field = strings.TrimSpace(field)
-		if len(field) >= 3 && strings.EqualFold(field[:3], "usr") {
-			field = field[3:]
-		}
-		uid, err := strconv.ParseInt(field, 10, 64)
-		if err == nil && uid > 0 {
-			uids[uid] = struct{}{}
-		}
-	}
-	return uids
 }
 
 // Handle routes the artifact collection and exact-ID mutation endpoints.
@@ -239,14 +208,6 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 	}
 	if _, _, status, err := accessibleAgentUser(h.db, viewerUID, route.agentUID); err != nil {
 		writeJSON(w, status, map[string]string{"error": err.Error()})
-		return
-	}
-	if h.nodeRegistryErr != nil {
-		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
-		return
-	}
-	if h.nodeRegistry == nil && !h.SupportsAgent(route.agentUID, "") {
-		writeArtifactError(w, http.StatusNotFound, "artifact_not_found")
 		return
 	}
 	node, err := h.resolveArtifactNode(route.agentUID)
