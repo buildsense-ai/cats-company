@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Terminal, Brain, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -1115,7 +1115,7 @@ function removeKnownArtifactURLs(text, artifacts) {
   return result.replace(/[ \t]+(?=\r?$)/gm, '').trimEnd();
 }
 
-function cloudArtifactPreviewPayload(artifact) {
+export function createCloudArtifactPreviewFile(artifact) {
   const payload = {
     name: artifact.title || artifact.id || 'Cloud artifact',
     url: artifact.url,
@@ -1144,7 +1144,7 @@ function ArtifactMessageCards({ artifacts, onPreviewFile, activePreviewFile }) {
 }
 
 function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
-  const payload = cloudArtifactPreviewPayload(artifact);
+  const payload = createCloudArtifactPreviewFile(artifact);
   const descriptor = previewFileDescriptor(payload);
   const activeKey = activePreviewFile ? previewFileDescriptor(activePreviewFile)?.key : '';
   const isActive = descriptor?.canPreview && descriptor.key === activeKey;
@@ -1633,7 +1633,7 @@ function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = 
   );
 }
 
-export function FilePreviewPanel({ file, onClose, backgroundRef }) {
+export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
   const [preview, setPreview] = useState(false);
   const [textContent, setTextContent] = useState(null);
   const [binaryContent, setBinaryContent] = useState(null);
@@ -1899,6 +1899,17 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
         />
         <div className="v3-file-preview-header">
           <div className="v3-file-preview-title">
+            {onBack && (
+              <button
+                className="v3-file-preview-back"
+                type="button"
+                aria-label="返回生成物列表"
+                title="返回生成物列表"
+                onClick={onBack}
+              >
+                <ArrowLeft size={18} />
+              </button>
+            )}
             <FileText size={18} />
             <div>
               <h3>{file.name}</h3>

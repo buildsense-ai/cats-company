@@ -57,7 +57,7 @@ vi.mock('read-excel-file/browser', () => ({
   default: vi.fn(),
 }));
 
-import ChatMessage, { FilePreviewPanel } from './chat-message';
+import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from './chat-message';
 import { markdownPreviewDocument } from './markdown-utils';
 import readExcelFile from 'read-excel-file/browser';
 
@@ -989,6 +989,39 @@ describe('ChatMessage rich file rendering', () => {
     });
     expect(panel.querySelector('.v3-remote-artifact-preview-state.error').textContent).toContain('预览加载失败');
     expect(panel.querySelector('.v3-remote-artifact-preview-state.error a').getAttribute('href')).toBe(artifact.url);
+  });
+
+  it('reuses the side preview external-open action and returns to the managed Artifact list', async () => {
+    const artifact = {
+      id: 'managed-game',
+      title: 'Managed Game',
+      url: 'https://artifacts.example.test/by-agent/440/managed-game/latest/',
+      publish_version: 3,
+    };
+    const onBack = vi.fn();
+    const onClose = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={createCloudArtifactPreviewFile(artifact)}
+          onBack={onBack}
+          onClose={onClose}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const panel = container.querySelector('.v3-file-preview-panel');
+    const externalLink = panel.querySelector('a[aria-label="在新窗口打开"]');
+    expect(externalLink?.getAttribute('href')).toBe(artifact.url);
+    expect(panel.querySelector('a[download]')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(panel.querySelector('button[aria-label="返回生成物列表"]'));
+    });
+    expect(onBack).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('opens a same-origin registry Artifact in a new tab instead of embedding it', async () => {

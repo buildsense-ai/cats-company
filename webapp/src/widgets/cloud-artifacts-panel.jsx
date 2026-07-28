@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Cloud,
   Copy,
-  ExternalLink,
+  Eye,
   FileCode2,
   RefreshCw,
   RotateCcw,
@@ -40,7 +40,7 @@ function artifactMeta(artifact) {
   return items;
 }
 
-export default function CloudArtifactsModal({ agentUid, onClose }) {
+export default function CloudArtifactsPanel({ agentUid, onClose, onPreviewArtifact }) {
   const [tab, setTab] = useState('active');
   const [artifacts, setArtifacts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -122,14 +122,20 @@ export default function CloudArtifactsModal({ agentUid, onClose }) {
   const emptyText = tab === 'active' ? '还没有已部署的云端产物' : '回收站是空的';
 
   return (
-    <div className="oc-modal-overlay" onClick={onClose}>
-      <section
-        className="oc-modal cloud-artifacts-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="云端产物"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <>
+      <button
+        className="v3-file-preview-backdrop"
+        type="button"
+        aria-label="关闭云端产物"
+        onClick={onClose}
+      />
+      <section className="v3-file-preview-panel cloud-artifacts-panel" aria-label="云端产物">
+        <button
+          className="v3-file-preview-drag-handle"
+          type="button"
+          aria-label="关闭云端产物"
+          onClick={onClose}
+        />
         <header className="cloud-artifacts-header">
           <div className="cloud-artifacts-heading">
             <span className="cloud-artifacts-heading-icon" aria-hidden="true"><Cloud size={20} /></span>
@@ -187,16 +193,15 @@ export default function CloudArtifactsModal({ agentUid, onClose }) {
               {artifacts.map((artifact) => (
                 <article className="cloud-artifact-item" key={artifact.id}>
                   {tab === 'active' ? (
-                    <a
+                    <button
+                      type="button"
                       className="cloud-artifact-main"
-                      href={artifact.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      aria-label={'打开 ' + artifact.title}
+                      onClick={() => onPreviewArtifact?.(artifact)}
+                      aria-label={'预览 ' + artifact.title}
                     >
                       <ArtifactSummary artifact={artifact} />
-                      <ExternalLink className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
-                    </a>
+                      <Eye className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
+                    </button>
                   ) : (
                     <div className="cloud-artifact-main is-deleted">
                       <ArtifactSummary artifact={artifact} />
@@ -269,7 +274,7 @@ export default function CloudArtifactsModal({ agentUid, onClose }) {
           </div>
         )}
       </section>
-    </div>
+    </>
   );
 }
 

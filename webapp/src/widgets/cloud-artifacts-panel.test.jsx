@@ -10,7 +10,7 @@ vi.mock('../api', () => ({
 }));
 
 import { api } from '../api';
-import CloudArtifactsModal from './cloud-artifacts-modal';
+import CloudArtifactsPanel from './cloud-artifacts-panel';
 
 const activeArtifact = {
   id: 'lesson-game',
@@ -35,14 +35,16 @@ const deletedArtifact = {
   can_restore: true,
 };
 
-describe('CloudArtifactsModal', () => {
+describe('CloudArtifactsPanel', () => {
   let container;
   let root;
+  let onPreviewArtifact;
 
   beforeEach(() => {
     api.getCloudArtifacts.mockReset().mockResolvedValue({ artifacts: [activeArtifact] });
     api.deleteCloudArtifact.mockReset().mockResolvedValue({ ok: true, artifact: deletedArtifact });
     api.restoreCloudArtifact.mockReset().mockResolvedValue({ ok: true, artifact: activeArtifact });
+    onPreviewArtifact = vi.fn();
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -57,17 +59,21 @@ describe('CloudArtifactsModal', () => {
     container.remove();
   });
 
-  test('loads active metadata and exposes open and copy actions', async () => {
-    await renderModal();
+  test('loads active metadata and previews the selected artifact in the parent workspace', async () => {
+    await renderPanel();
 
     expect(api.getCloudArtifacts).toHaveBeenCalledWith(440, 'active');
     expect(container.textContent).toContain('课堂小游戏');
     expect(container.textContent).toContain('发布 v2');
     expect(container.textContent).toContain('豆包');
     expect(container.textContent).toContain('课堂任务');
-    const artifactLink = container.querySelector('.cloud-artifact-main');
-    expect(artifactLink?.href).toBe('https://example.test/lesson-game/latest/');
-    expect(artifactLink?.target).toBe('_blank');
+    const artifactButton = container.querySelector('.cloud-artifact-main');
+    expect(artifactButton?.tagName).toBe('BUTTON');
+
+    await act(async () => {
+      artifactButton.click();
+    });
+    expect(onPreviewArtifact).toHaveBeenCalledWith(activeArtifact);
 
     await act(async () => {
       container.querySelector('button[aria-label="复制 课堂小游戏 链接"]').click();
@@ -77,7 +83,7 @@ describe('CloudArtifactsModal', () => {
   });
 
   test('cancels deletion without making a request', async () => {
-    await renderModal();
+    await renderPanel();
 
     await act(async () => {
       container.querySelector('button[aria-label="删除 课堂小游戏"]').click();
@@ -92,7 +98,7 @@ describe('CloudArtifactsModal', () => {
   });
 
   test('deletes one exact artifact after confirmation', async () => {
-    await renderModal();
+    await renderPanel();
 
     await act(async () => {
       container.querySelector('button[aria-label="删除 课堂小游戏"]').click();
@@ -114,7 +120,7 @@ describe('CloudArtifactsModal', () => {
       { ...activeArtifact, id: 'witch-poison-game-3', title: '版本三' },
     ];
     api.getCloudArtifacts.mockResolvedValueOnce({ artifacts: siblings });
-    await renderModal();
+    await renderPanel();
 
     await act(async () => {
       container.querySelector('button[aria-label="删除 版本二"]').click();
@@ -132,7 +138,7 @@ describe('CloudArtifactsModal', () => {
 
   test('keeps an artifact visible when deletion fails', async () => {
     api.deleteCloudArtifact.mockRejectedValueOnce(new Error('删除暂时失败'));
-    await renderModal();
+    await renderPanel();
 
     await act(async () => {
       container.querySelector('button[aria-label="删除 课堂小游戏"]').click();
@@ -150,7 +156,7 @@ describe('CloudArtifactsModal', () => {
     api.getCloudArtifacts
       .mockResolvedValueOnce({ artifacts: [activeArtifact] })
       .mockResolvedValueOnce({ artifacts: [deletedArtifact] });
-    await renderModal();
+    await renderPanel();
 
     await act(async () => {
       container.querySelector('button[role="tab"][aria-selected="false"]').click();
@@ -171,7 +177,7 @@ describe('CloudArtifactsModal', () => {
 
   test('refreshes the current tab and shows an empty state', async () => {
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
-    await renderModal();
+    await renderPanel();
     expect(container.textContent).toContain('还没有已部署的云端产物');
 
     await act(async () => {
@@ -181,9 +187,15 @@ describe('CloudArtifactsModal', () => {
     expect(api.getCloudArtifacts).toHaveBeenCalledTimes(2);
   });
 
-  async function renderModal() {
+  async function renderPanel() {
     await act(async () => {
-      root.render(<CloudArtifactsModal agentUid={440} onClose={vi.fn()} />);
+      root.render(
+        <CloudArtifactsPanel
+          agentUid={440}
+          onClose={vi.fn()}
+          onPreviewArtifact={onPreviewArtifact}
+        />,
+      );
       await Promise.resolve();
     });
   }

@@ -1257,20 +1257,17 @@ body {
   background: var(--v3-bg-message-hover);
 }
 
-.oc-modal.cloud-artifacts-modal {
+.cloud-artifacts-panel {
   position: relative;
-  width: 620px;
-  max-width: calc(100vw - 32px);
-  max-height: min(720px, calc(100vh - 32px));
-  padding: 0;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
   color: var(--v3-text-main);
-  background: #171717;
-  border: 1px solid var(--v3-border);
-  border-radius: 8px;
 }
 
 .cloud-artifacts-header {
+  flex: 0 0 auto;
   min-height: 72px;
   padding: 16px 18px;
   display: flex;
@@ -1395,8 +1392,9 @@ body {
 }
 
 .cloud-artifacts-body {
+  flex: 1 1 auto;
   min-height: 220px;
-  max-height: calc(min(720px, 100vh - 32px) - 117px);
+  max-height: none;
   padding: 12px;
   overflow-y: auto;
 }
@@ -1418,6 +1416,7 @@ body {
 }
 
 .cloud-artifact-main {
+  width: 100%;
   min-width: 0;
   min-height: 64px;
   padding: 12px;
@@ -1425,8 +1424,13 @@ body {
   grid-template-columns: 38px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
+  border: 0;
   color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
   text-decoration: none;
+  cursor: pointer;
 }
 
 .cloud-artifact-main:hover {
@@ -1590,16 +1594,9 @@ body {
 }
 
 @media (max-width: 640px) {
-  .oc-modal.cloud-artifacts-modal {
-    width: calc(100vw - 20px);
-    max-width: none;
-    max-height: calc(100vh - 20px);
-    height: auto !important;
-    align-self: center;
-  }
-
-  .cloud-artifacts-body {
-    max-height: calc(100vh - 137px);
+  .cloud-artifacts-header {
+    min-height: 68px;
+    padding: 22px 12px 10px;
   }
 
   .cloud-artifact-main {
@@ -5597,6 +5594,23 @@ button.catsco-download-action:disabled {
   align-items: center;
   gap: 12px;
   min-width: 0;
+}
+.v3-file-preview-back {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--v3-border);
+  border-radius: 7px;
+  color: var(--v3-text-muted);
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+}
+.v3-file-preview-back:hover {
+  color: var(--v3-text-name);
+  border-color: #55585B;
 }
 .v3-file-preview-title h3 {
   margin: 0;

@@ -2,8 +2,9 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
-import ChatMessage, { FilePreviewPanel } from '../widgets/chat-message';
+import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
+import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import ChatComposer from '../widgets/chat-composer';
@@ -241,6 +242,7 @@ export default function MessagesView({
   onActivateTopic,
   onAgentModelChange,
   onActiveAgentChange,
+  cloudArtifactsRequest,
 }) {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
@@ -257,6 +259,8 @@ export default function MessagesView({
   const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
   const [replyTo, setReplyTo] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
+  const [cloudArtifactsAgentUID, setCloudArtifactsAgentUID] = useState(0);
+  const [cloudArtifactsListOpen, setCloudArtifactsListOpen] = useState(false);
   const [artifactRegistryState, setArtifactRegistryState] = useState({ agentUID: 0, artifacts: [] });
   const [artifactRegistryRefreshEpoch, setArtifactRegistryRefreshEpoch] = useState(0);
   const [previewWidth, setPreviewWidth] = useState(() => loadPreviewWidth());
@@ -289,6 +293,7 @@ export default function MessagesView({
     const saved = localStorage.getItem('cc_show_thinking');
     return saved === null ? true : saved === 'true';
   });
+  const sidePanelOpen = Boolean(previewFile || (cloudArtifactsListOpen && cloudArtifactsAgentUID > 0));
   const bottomRef = useRef(null);
   const chatColumnRef = useRef(null);
   const lastTypingSent = useRef(0);
@@ -399,7 +404,7 @@ export default function MessagesView({
   }, []);
 
   const handlePreviewResizePointerDown = useCallback((event) => {
-    if (!previewFile) return;
+    if (!sidePanelOpen) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
     const startX = event.clientX;
@@ -416,10 +421,10 @@ export default function MessagesView({
 
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
-  }, [previewFile, updatePreviewWidth]);
+  }, [sidePanelOpen, updatePreviewWidth]);
 
   const handlePreviewResizeKeyDown = useCallback((event) => {
-    if (!previewFile) return;
+    if (!sidePanelOpen) return;
     if (event.key === 'ArrowLeft') {
       event.preventDefault();
       updatePreviewWidth(previewWidthRef.current + 40);
@@ -433,7 +438,29 @@ export default function MessagesView({
       event.preventDefault();
       updatePreviewWidth(PREVIEW_WIDTH_MAX);
     }
-  }, [previewFile, updatePreviewWidth]);
+  }, [sidePanelOpen, updatePreviewWidth]);
+
+  const openFilePreview = useCallback((file) => {
+    setCloudArtifactsAgentUID(0);
+    setCloudArtifactsListOpen(false);
+    setPreviewFile(file);
+  }, []);
+
+  const closeSidePanel = useCallback(() => {
+    setPreviewFile(null);
+    setCloudArtifactsAgentUID(0);
+    setCloudArtifactsListOpen(false);
+  }, []);
+
+  const previewCloudArtifact = useCallback((artifact) => {
+    setPreviewFile(createCloudArtifactPreviewFile(artifact));
+    setCloudArtifactsListOpen(false);
+  }, []);
+
+  const returnToCloudArtifacts = useCallback(() => {
+    setPreviewFile(null);
+    setCloudArtifactsListOpen(true);
+  }, []);
 
   const resizeComposerInput = useCallback(() => {
     const textarea = textareaRef.current;
@@ -540,6 +567,8 @@ export default function MessagesView({
     clearRuntimePlan();
     setReplyTo(null);
     setPreviewFile(null);
+    setCloudArtifactsAgentUID(0);
+    setCloudArtifactsListOpen(false);
     setMembers([]);
     setGroupInfo(null);
     setPeerProfile(null);
@@ -578,6 +607,14 @@ export default function MessagesView({
       loadPeerProfile();
     }
   }, [groupId, isGroup, topic, user.uid]);
+
+  useEffect(() => {
+    const agentUID = Number(cloudArtifactsRequest?.agentUid || 0);
+    if (agentUID <= 0 || !cloudArtifactsRequest?.requestId) return;
+    setPreviewFile(null);
+    setCloudArtifactsAgentUID(agentUID);
+    setCloudArtifactsListOpen(true);
+  }, [cloudArtifactsRequest]);
 
   useEffect(() => {
     const preventBrowserFileOpen = (event) => {
@@ -2265,8 +2302,8 @@ export default function MessagesView({
   return (
     <>
       <div
-        className={`v3-message-workspace${previewFile ? ' has-preview' : ''}`}
-        style={previewFile ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
+        className={`v3-message-workspace${sidePanelOpen ? ' has-preview' : ''}`}
+        style={sidePanelOpen ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
       >
         <div ref={chatColumnRef} className="v3-chat-column">
           <div
@@ -2350,7 +2387,7 @@ export default function MessagesView({
                   workingOnly
                   showThinking={showThinking}
                   isConsecutive={group.isConsecutive}
-                  onPreviewFile={setPreviewFile}
+                  onPreviewFile={openFilePreview}
                   activePreviewFile={previewFile}
                   knownArtifacts={knownArtifacts}
                 />
@@ -2379,7 +2416,7 @@ export default function MessagesView({
                 : undefined}
               showThinking={showThinking}
               isConsecutive={group.isConsecutive}
-              onPreviewFile={setPreviewFile}
+              onPreviewFile={openFilePreview}
               activePreviewFile={previewFile}
               knownArtifacts={knownArtifacts}
             />
@@ -2645,7 +2682,7 @@ export default function MessagesView({
         </div>
       )}
       </div>
-        {previewFile && (
+        {sidePanelOpen && (
           <div className="v3-file-preview-shell">
             <div
               className="v3-preview-resize-handle"
@@ -2657,7 +2694,20 @@ export default function MessagesView({
               onKeyDown={handlePreviewResizeKeyDown}
               title="拖动调整预览宽度"
             />
-            <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} backgroundRef={chatColumnRef} />
+            {cloudArtifactsListOpen && cloudArtifactsAgentUID > 0 ? (
+              <CloudArtifactsPanel
+                agentUid={cloudArtifactsAgentUID}
+                onClose={closeSidePanel}
+                onPreviewArtifact={previewCloudArtifact}
+              />
+            ) : (
+              <FilePreviewPanel
+                file={previewFile}
+                onBack={cloudArtifactsAgentUID > 0 ? returnToCloudArtifacts : undefined}
+                onClose={closeSidePanel}
+                backgroundRef={chatColumnRef}
+              />
+            )}
           </div>
         )}
       </div>

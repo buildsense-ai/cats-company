@@ -63,12 +63,19 @@ vi.mock('../widgets/chat-message', () => ({
     return (
       <aside
         className="mock-file-preview"
+        data-url={file?.url || ''}
         data-background-class={backgroundRef?.current?.className || ''}
       >
         {file?.name || 'preview'}
       </aside>
     );
   },
+  createCloudArtifactPreviewFile: (artifact) => ({
+    name: artifact.title || artifact.id,
+    url: artifact.url,
+    mime_type: 'text/html',
+    artifact_id: artifact.id,
+  }),
 }));
 
 vi.mock('../widgets/avatar', () => ({
@@ -91,6 +98,8 @@ vi.mock('../api', () => ({
     getMobileUploadSession: vi.fn(),
     getTutorialTasks: vi.fn(),
     getCloudArtifacts: vi.fn(),
+    deleteCloudArtifact: vi.fn(),
+    restoreCloudArtifact: vi.fn(),
   },
   wsSendMessage: vi.fn(),
   wsSendStreamCancel: vi.fn(),
@@ -1615,6 +1624,42 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(workspace.style.getPropertyValue('--v3-file-preview-width')).toBe('760px');
     expect(localStorage.getItem('cc_file_preview_width_v1')).toBe('760');
+  });
+
+  it('opens cloud artifact management in the preview area and previews a selected artifact there', async () => {
+    const artifact = {
+      id: 'lesson-game',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const workspace = container.querySelector('.v3-message-workspace');
+    expect(workspace.className).toContain('has-preview');
+    expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    expect(api.getCloudArtifacts).toHaveBeenCalledWith(440, 'active');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+    const preview = container.querySelector('.mock-file-preview');
+    expect(preview?.textContent).toContain('课堂小游戏');
+    expect(preview?.getAttribute('data-url')).toBe(artifact.url);
   });
 
   it('shows an inline error when an unsupported image is selected', async () => {
