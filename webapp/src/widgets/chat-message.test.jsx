@@ -1879,6 +1879,34 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.oc-rich-video-preview')).toBeNull();
   });
 
+  it('recognizes Ogg video MIME types with codec parameters', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 102,
+            from_uid: 2,
+            content: '[文件] product-demo.ogg',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'product-demo.ogg',
+                url: '/uploads/files/20260727_fedcba0987654321fedcba0987654321.ogg',
+                size: 4096,
+                mime_type: 'video/ogg; codecs=theora',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('video.oc-rich-video-thumb')).not.toBeNull();
+    expect(container.querySelector('.v3-attachment-card')).toBeNull();
+  });
+
   it('keeps audio/ogg attachments as file cards', async () => {
     await act(async () => {
       root.render(

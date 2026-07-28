@@ -1225,7 +1225,10 @@ function fileExtension(payload) {
 }
 
 function fileMimeType(payload) {
-  return String(payload?.mime_type || payload?.mime || payload?.content_type || '').toLowerCase();
+  return String(payload?.mime_type || payload?.mime || payload?.content_type || '')
+    .split(';', 1)[0]
+    .trim()
+    .toLowerCase();
 }
 
 const INLINE_VIDEO_EXTENSIONS = new Set(['MP4', 'WEBM', 'OGV', 'M4V', 'MOV']);
