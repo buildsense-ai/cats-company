@@ -1286,7 +1286,33 @@ html[data-theme="liquid"] .catsco-brand-mark {
   padding: var(--cc-sidebar-list-padding-top) 7px 76px;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
-  scrollbar-color: var(--cc-border-strong) transparent;
+  scrollbar-color: color-mix(in srgb, var(--cc-muted) 18%, transparent) transparent;
+}
+
+.v3-chat-list:hover,
+.v3-chat-list:focus-within {
+  scrollbar-color: color-mix(in srgb, var(--cc-muted) 42%, transparent) transparent;
+}
+
+.v3-chat-list::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.v3-chat-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.v3-chat-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cc-muted) 18%, transparent);
+}
+
+.v3-chat-list:hover::-webkit-scrollbar-thumb,
+.v3-chat-list:focus-within::-webkit-scrollbar-thumb,
+.v3-chat-list::-webkit-scrollbar-thumb:hover,
+.v3-chat-list::-webkit-scrollbar-thumb:active {
+  background: color-mix(in srgb, var(--cc-muted) 42%, transparent);
 }
 
 .v3-chat-list > .cc-conversation-section,
@@ -1793,8 +1819,8 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .cc-item-kind-agent {
-  color: color-mix(in srgb, #6f7fd5 78%, var(--cc-text));
-  background: color-mix(in srgb, #6f7fd5 12%, transparent);
+  color: color-mix(in srgb, var(--cc-muted) 76%, transparent);
+  background: color-mix(in srgb, var(--cc-muted) 7%, transparent);
 }
 
 .cc-contact-item {
@@ -1912,7 +1938,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .cc-chat-row-time {
-  color: var(--cc-muted);
+  color: color-mix(in srgb, var(--cc-muted) 76%, transparent);
   font-size: 10px;
   font-weight: 400;
   font-variant-numeric: tabular-nums;

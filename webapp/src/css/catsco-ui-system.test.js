@@ -89,6 +89,28 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-chat-item')).toContain('font-weight: 400;');
   });
 
+  it('keeps sidebar metadata quiet and reveals its slim scrollbar on interaction', () => {
+    const listRule = ruleFor('.v3-chat-list');
+    const interactiveListRule = ruleFor('.v3-chat-list:hover,\n.v3-chat-list:focus-within');
+    const scrollbarRule = ruleFor('.v3-chat-list::-webkit-scrollbar');
+    const thumbRule = ruleFor('.v3-chat-list::-webkit-scrollbar-thumb');
+    const interactiveThumbRule = ruleFor(
+      '.v3-chat-list:hover::-webkit-scrollbar-thumb,\n.v3-chat-list:focus-within::-webkit-scrollbar-thumb,\n.v3-chat-list::-webkit-scrollbar-thumb:hover,\n.v3-chat-list::-webkit-scrollbar-thumb:active',
+    );
+    const collaborationRule = ruleFor('.cc-item-kind-agent');
+
+    expect(ruleFor('.cc-chat-row-time')).toContain('var(--cc-muted) 76%');
+    expect(collaborationRule).toContain('var(--cc-muted) 76%');
+    expect(collaborationRule).toContain('var(--cc-muted) 7%');
+    expect(listRule).toContain('var(--cc-muted) 18%');
+    expect(interactiveListRule).toContain('var(--cc-muted) 42%');
+    expect(scrollbarRule).toContain('width: 4px;');
+    expect(scrollbarRule).toContain('height: 4px;');
+    expect(thumbRule).toContain('border-radius: 999px;');
+    expect(thumbRule).toContain('var(--cc-muted) 18%');
+    expect(interactiveThumbRule).toContain('var(--cc-muted) 42%');
+  });
+
   it('uses the requested chat surfaces without changing sidebar or border colors', () => {
     expect(ruleFor(':root')).toContain('--cc-main-bg: #f8f8f8;');
     expect(ruleFor(':root')).toContain('--cc-main-header-bg: #f8f8f8;');
