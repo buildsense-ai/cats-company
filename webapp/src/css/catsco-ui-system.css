@@ -34,6 +34,7 @@
   --cc-online-icon: #5ea693;
   --cc-danger: #e05757;
   --cc-code: #f5f5f6;
+  --cc-media-black: #111111;
   --cc-hover: #f1f1f2;
   --cc-selected: #e9e9eb;
   --cc-self-message: #efeff0;
@@ -6343,7 +6344,7 @@ html[data-theme="liquid"] :is(
   overflow: hidden;
   border: 1px solid var(--cc-border);
   border-radius: 11px;
-  background: #000;
+  background: var(--cc-media-black);
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
 }
 
@@ -6356,7 +6357,7 @@ html[data-theme="liquid"] :is(
   display: block;
   width: 100%;
   max-height: min(60vh, 480px);
-  background: #000;
+  background: var(--cc-media-black);
   object-fit: contain;
 }
 
