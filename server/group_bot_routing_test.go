@@ -8,6 +8,15 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+type agentTaskGroupRoutingStore struct {
+	*identityMessageStore
+	group *types.Group
+}
+
+func (s *agentTaskGroupRoutingStore) GetGroup(groupID int64) (*types.Group, error) {
+	return s.group, nil
+}
+
 func TestGroupFanoutLargeGroupHumanMessageWithoutMentionsSkipsAllBots(t *testing.T) {
 	store := &identityMessageStore{
 		users: map[int64]*types.User{
@@ -39,6 +48,139 @@ func TestGroupFanoutLargeGroupHumanMessageWithoutMentionsSkipsAllBots(t *testing
 
 	assertNoQueuedServerMessage(t, botA.send)
 	assertNoQueuedServerMessage(t, botB.send)
+}
+
+func TestGroupFanoutMultiBotAgentTaskDefaultsToPrimaryBot(t *testing.T) {
+	baseStore := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			42: {ID: 42, AccountType: types.AccountBot},
+			43: {ID: 43, AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 42, IsBot: true},
+			{GroupID: 80, UserID: 43, IsBot: true},
+		},
+	}
+	store := &agentTaskGroupRoutingStore{
+		identityMessageStore: baseStore,
+		group: &types.Group{
+			ID:       80,
+			Kind:     types.GroupKindAgentTask,
+			AgentIDs: []int64{42, 43},
+		},
+	}
+	hub := NewHub(store, nil)
+	primaryBot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	collaboratorBot := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(primaryBot)
+	hub.addClient(collaboratorBot)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "grp_80",
+		Content: json.RawMessage(`"继续处理这个任务"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 34, nil)
+
+	var delivered ServerMessage
+	decodeQueuedServerMessage(t, primaryBot.send, &delivered)
+	if delivered.Data.MemberCount != 3 {
+		t.Fatalf("member_count = %d, want 3", delivered.Data.MemberCount)
+	}
+	assertNoQueuedServerMessage(t, collaboratorBot.send)
+}
+
+func TestGroupFanoutMultiBotAgentTaskMentionOverridesPrimaryBot(t *testing.T) {
+	baseStore := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			42: {ID: 42, AccountType: types.AccountBot},
+			43: {ID: 43, AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 42, IsBot: true},
+			{GroupID: 80, UserID: 43, IsBot: true},
+		},
+	}
+	store := &agentTaskGroupRoutingStore{
+		identityMessageStore: baseStore,
+		group: &types.Group{
+			ID:       80,
+			Kind:     types.GroupKindAgentTask,
+			AgentIDs: []int64{42, 43},
+		},
+	}
+	hub := NewHub(store, nil)
+	primaryBot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	collaboratorBot := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(primaryBot)
+	hub.addClient(collaboratorBot)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID:  "grp_80",
+		Content:  json.RawMessage(`"@usr43 请接手"`),
+		Mentions: []string{"usr43"},
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 35, nil)
+
+	var delivered ServerMessage
+	decodeQueuedServerMessage(t, collaboratorBot.send, &delivered)
+	if !reflect.DeepEqual(delivered.Data.Mentions, []string{"usr43"}) {
+		t.Fatalf("mentions = %#v, want usr43", delivered.Data.Mentions)
+	}
+	assertNoQueuedServerMessage(t, primaryBot.send)
+}
+
+func TestGroupFanoutAgentTaskPromotesRemainingBotAfterPrimaryRemoval(t *testing.T) {
+	baseStore := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, AccountType: types.AccountHuman},
+			8:  {ID: 8, AccountType: types.AccountHuman},
+			43: {ID: 43, AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: 80, UserID: 7},
+			{GroupID: 80, UserID: 8},
+			{GroupID: 80, UserID: 43, IsBot: true},
+		},
+	}
+	store := &agentTaskGroupRoutingStore{
+		identityMessageStore: baseStore,
+		group: &types.Group{
+			ID:       80,
+			Kind:     types.GroupKindAgentTask,
+			AgentIDs: []int64{43},
+		},
+	}
+	hub := NewHub(store, nil)
+	remainingBot := &Client{uid: 43, accountType: types.AccountBot, send: make(chan []byte, 1)}
+	hub.addClient(remainingBot)
+
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID: "grp_80",
+		Content: json.RawMessage(`"原机器人已移除，请继续"`),
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	hub.fanoutNormalizedMessage(7, "grp_80", 0, payload, 36, nil)
+
+	var delivered ServerMessage
+	decodeQueuedServerMessage(t, remainingBot.send, &delivered)
+	if delivered.Data.MemberCount != 3 {
+		t.Fatalf("member_count = %d, want 3", delivered.Data.MemberCount)
+	}
 }
 
 func TestGroupFanoutTwoMemberGroupPreservesAutomaticBotActivation(t *testing.T) {

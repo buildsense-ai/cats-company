@@ -1706,8 +1706,8 @@ func max64(a, b int64) int64 {
 }
 
 // broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.
-// Groups larger than two members require a structured mention of the target bot.
-// Groups with at most two members preserve the legacy automatic human-to-bot activation.
+// Agent-task groups route unmentioned human messages to their current default agent.
+// Explicit mentions target other agents, while two-member groups preserve legacy automatic activation.
 func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, excludeUID int64, mentions []string, senderUID int64, trustedChannelTrigger bool) {
 	members, err := h.db.GetGroupMembers(groupID)
 	if err != nil {
@@ -1732,6 +1732,15 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 	if senderIsBot && isFinalGroupAgentTurnMessage(msg) {
 		h.groupTurns.clear(groupID, senderUID)
 	}
+	defaultAgentUID := int64(0)
+	if !trustedChannelTrigger && !senderIsBot && memberCount > 2 && len(mentionSet) == 0 {
+		group, groupErr := h.db.GetGroup(groupID)
+		if groupErr == nil && group != nil && group.Kind == types.GroupKindAgentTask && len(group.AgentIDs) > 0 {
+			// The first current task agent is the default. If it leaves, the
+			// next current agent takes over; other agents still require @.
+			defaultAgentUID = group.AgentIDs[0]
+		}
+	}
 	for _, m := range members {
 		if m.UserID == excludeUID {
 			continue
@@ -1750,7 +1759,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 		if isBot {
 			userIDStr := formatUID(m.UserID)
 			requiresMention := !trustedChannelTrigger && (senderIsBot || memberCount > 2)
-			if requiresMention && !mentionAllBots && !mentionSet[userIDStr] {
+			if requiresMention && !mentionAllBots && !mentionSet[userIDStr] && m.UserID != defaultAgentUID {
 				continue
 			}
 			if !senderIsBot && isGroupAgentTurnRequest(msg) {
