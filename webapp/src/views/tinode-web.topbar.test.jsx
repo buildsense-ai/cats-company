@@ -7,7 +7,6 @@ import {
   canOpenCloudArtifacts,
   describeModelApplyError,
   describeModelConfigRequestError,
-  isExclusiveAgentTaskTopic,
   LocalAssistantBar,
   ProfilePopover,
   resolveInitialUser,
@@ -97,25 +96,6 @@ describe('preview user identity', () => {
       uid: 'theme-preview',
       username: 'preview',
     });
-  });
-});
-
-describe('exclusive agent task classification', () => {
-  it('requires an explicit two-member agent group', () => {
-    expect(isExclusiveAgentTaskTopic({
-      isGroup: true,
-      hasBot: true,
-      memberCount: 2,
-    })).toBe(true);
-    expect(isExclusiveAgentTaskTopic({
-      isGroup: true,
-      hasBot: true,
-    })).toBe(false);
-    expect(isExclusiveAgentTaskTopic({
-      isGroup: true,
-      isAgentTask: true,
-      memberCount: 3,
-    })).toBe(false);
   });
 });
 

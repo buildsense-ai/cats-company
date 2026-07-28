@@ -747,7 +747,38 @@ describe('MessagesView composer draft isolation', () => {
     expect(questionButtons[0].getAttribute('aria-current')).toBe('true');
   });
 
-  it('indexes every history page for question navigation and renders an older target on demand', async () => {
+  it('indexes older questions only on intent and fetches one nearby page for a jump', async () => {
+    const originalScrollHeight = Object.getOwnPropertyDescriptor(
+      window.HTMLElement.prototype,
+      'scrollHeight',
+    );
+    const originalClientHeight = Object.getOwnPropertyDescriptor(
+      window.HTMLElement.prototype,
+      'clientHeight',
+    );
+    const originalScrollTop = Object.getOwnPropertyDescriptor(
+      window.HTMLElement.prototype,
+      'scrollTop',
+    );
+    Object.defineProperty(window.HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList?.contains('v3-timeline') ? 1000 : 0;
+      },
+    });
+    Object.defineProperty(window.HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.classList?.contains('v3-timeline') ? 500 : 0;
+      },
+    });
+    Object.defineProperty(window.HTMLElement.prototype, 'scrollTop', {
+      configurable: true,
+      get() {
+        return this.classList?.contains('v3-timeline') ? 500 : 0;
+      },
+      set() {},
+    });
     const latestMessages = Array.from({ length: 50 }, (_, index) => ({
       id: 101 + index,
       seq_id: 101 + index,
@@ -777,37 +808,107 @@ describe('MessagesView composer draft isolation', () => {
       },
     ];
     api.getMessages
-      .mockResolvedValueOnce({ messages: latestMessages })
-      .mockResolvedValueOnce({ messages: olderMessages });
+      .mockResolvedValueOnce({
+        messages: latestMessages,
+        has_more: true,
+        next_before_id: 101,
+      })
+      .mockResolvedValueOnce({
+        messages: olderMessages,
+        has_more: false,
+        next_before_id: 1,
+      })
+      .mockResolvedValueOnce({
+        messages: olderMessages,
+        has_more: false,
+        next_before_id: 1,
+      });
 
-    await mountTopic(root, 'p2p_1_2');
-    await act(async () => {
-      await flushPromises(16);
-    });
+    try {
+      await mountTopic(root, 'p2p_1_2');
+      await act(async () => {
+        await flushPromises(16);
+      });
 
-    expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 50, 0, true);
-    expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 500, 50, true, 101);
+      expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 50, 0, true);
+      expect(api.getMessages).not.toHaveBeenCalledWith('p2p_1_2', 500, 50, true, 101);
 
-    const navigator = container.querySelector('.cc-question-navigator');
-    expect(navigator).not.toBeNull();
-    const questionListButtons = Array.from(
-      navigator.querySelectorAll('.cc-question-list-item'),
-    );
-    const oldestQuestionButton = questionListButtons.find(
-      (button) => button.textContent.includes('Oldest question'),
-    );
-    expect(oldestQuestionButton).not.toBeNull();
-    expect(container.querySelector('[data-conversation-question="1"]')).toBeNull();
+      const navigator = container.querySelector('.cc-question-navigator');
+      expect(navigator).not.toBeNull();
+      await act(async () => {
+        Simulate.mouseEnter(navigator);
+        await flushPromises();
+      });
+      expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 500, 50, true, 101);
 
-    await act(async () => {
-      Simulate.click(oldestQuestionButton);
-      await flushPromises();
-    });
+      const questionListButtons = Array.from(
+        navigator.querySelectorAll('.cc-question-list-item'),
+      );
+      const oldestQuestionButton = questionListButtons.find(
+        (button) => button.textContent.includes('Oldest question'),
+      );
+      expect(oldestQuestionButton).not.toBeNull();
+      expect(container.querySelector('[data-conversation-question="1"]')).toBeNull();
 
-    const oldestQuestion = container.querySelector('[data-conversation-question="1"]');
-    expect(oldestQuestion).not.toBeNull();
-    expect(window.HTMLElement.prototype.scrollIntoView)
-      .toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+      await act(async () => {
+        Simulate.click(oldestQuestionButton);
+        await flushPromises();
+      });
+
+      expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 50, 0, true, 2);
+      const oldestQuestion = container.querySelector('[data-conversation-question="1"]');
+      expect(oldestQuestion).not.toBeNull();
+      expect(window.HTMLElement.prototype.scrollIntoView)
+        .toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+
+      const indexRequestCount = api.getMessages.mock.calls
+        .filter(([, limit]) => limit === 500)
+        .length;
+      api.getMessages
+        .mockResolvedValueOnce({
+          messages: [{ id: 201, topic_id: 'p2p_1_3', from_uid: 3, type: 'text', content: 'Topic B' }],
+          has_more: false,
+        })
+        .mockResolvedValueOnce({
+          messages: latestMessages,
+          has_more: true,
+          next_before_id: 101,
+        });
+      await mountTopic(root, 'p2p_1_3');
+      await act(async () => {
+        await flushPromises();
+      });
+      await mountTopic(root, 'p2p_1_2');
+      await act(async () => {
+        await flushPromises();
+      });
+
+      const restoredNavigator = container.querySelector('.cc-question-navigator');
+      expect(restoredNavigator.textContent).toContain('Oldest question');
+      await act(async () => {
+        Simulate.mouseEnter(restoredNavigator);
+        await flushPromises();
+      });
+      expect(api.getMessages.mock.calls.filter(([, limit]) => limit === 500)).toHaveLength(
+        indexRequestCount,
+      );
+    } finally {
+      if (originalScrollHeight) {
+        Object.defineProperty(window.HTMLElement.prototype, 'scrollHeight', originalScrollHeight);
+      } else {
+        delete window.HTMLElement.prototype.scrollHeight;
+      }
+      if (originalClientHeight) {
+        Object.defineProperty(window.HTMLElement.prototype, 'clientHeight', originalClientHeight);
+      } else {
+        delete window.HTMLElement.prototype.clientHeight;
+      }
+      if (originalScrollTop) {
+        Object.defineProperty(window.HTMLElement.prototype, 'scrollTop', originalScrollTop);
+      } else {
+        delete window.HTMLElement.prototype.scrollTop;
+      }
+    }
   });
 
   it('regenerates a bot reply by resending the preceding user task', async () => {
@@ -964,7 +1065,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(wsSendStreamCancel).toHaveBeenCalledWith('p2p_1_2');
+    expect(wsSendStreamCancel).toHaveBeenCalledWith('p2p_1_2', 2);
     expect(container.querySelector('button[aria-label="停止当前工作"]')).toBeNull();
     expect(container.querySelector('button[aria-label="发送"]')).not.toBeNull();
     expect(container.querySelector('textarea.v3-composer-input').disabled).toBe(false);
@@ -1047,22 +1148,30 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.v3-live-input-status')?.textContent).toContain('可点击红色按钮停止');
   });
 
-  it('uses the solo-task classification when truncated history and members omit the initiator', async () => {
-    api.getGroupInfo.mockResolvedValueOnce({
-      group: { id: 83, name: 'Solo Agent Task', has_bot: true, is_agent_task: true },
-      members: [],
-    });
+  it('removes stop access when a third member joins an active two-member task', async () => {
+    api.getGroupInfo
+      .mockResolvedValueOnce({
+        group: { id: 83, name: 'Solo Agent Task', has_bot: true, is_agent_task: true },
+        members: [
+          { user_id: 1, display_name: 'Me', is_bot: false },
+          { user_id: 42, display_name: 'Saturday', is_bot: true },
+        ],
+      })
+      .mockResolvedValueOnce({
+        group: { id: 83, name: 'Shared Agent Task', has_bot: true, is_agent_task: true },
+        members: [
+          { user_id: 1, display_name: 'Me', is_bot: false },
+          { user_id: 7, display_name: 'Alice', is_bot: false },
+          { user_id: 42, display_name: 'Saturday', is_bot: true },
+        ],
+      });
     api.getMessages.mockResolvedValueOnce({
       messages: [
         { id: 57, from_uid: 42, type: 'thinking', content: '正在处理', created_at: '2026-07-17T02:30:01Z' },
       ],
     });
 
-    await mountTopic(root, 'grp_83', {
-      isGroup: true,
-      isExclusiveAgentTask: true,
-      groupId: 83,
-    });
+    await mountTopic(root, 'grp_83', { isGroup: true, groupId: 83 });
     await act(async () => {
       await flushPromises();
       wsHandler({ info: { topic: 'grp_83', what: 'kp', from: 'usr42' } });
@@ -1070,6 +1179,14 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(container.querySelector('button[aria-label="停止当前工作"]')).not.toBeNull();
     expect(container.querySelector('.v3-live-input-status')?.textContent).toContain('可点击红色按钮停止');
+
+    await act(async () => {
+      wsHandler({ pres: { topic: 'grp_83', what: 'members_invited' } });
+      await flushPromises();
+    });
+
+    expect(container.querySelector('button[aria-label="停止当前工作"]')).toBeNull();
+    expect(container.querySelector('.v3-live-input-status')?.textContent).toContain('CatsCo 正在回复其他成员');
   });
 
   it('keeps the stop action available when cancel delivery fails', async () => {
@@ -1772,7 +1889,6 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(api.getMessages).toHaveBeenNthCalledWith(1, 'p2p_1_2', 50, 0, true);
-    expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 500, 50, true, 101);
     expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 50, 50, true, 101);
     expect(container.querySelector('[data-message-content="older"]')).not.toBeNull();
   });
@@ -1859,8 +1975,6 @@ describe('MessagesView composer draft isolation', () => {
       initialTopicA.resolve({ messages: latest, has_more: true, next_before_id: 101 });
       await flushPromises();
     });
-    expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 500, 50, true, 101);
-
     await mountTopic(root, 'p2p_1_3');
     await act(async () => {
       await flushPromises();

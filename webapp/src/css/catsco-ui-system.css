@@ -1066,6 +1066,10 @@ html[data-theme="liquid"] .catsco-brand-mark {
   scrollbar-width: none;
 }
 
+.cc-question-navigator-panel:has(.cc-question-index-status) .cc-question-navigator-list {
+  max-height: calc(min(48vh, 360px) - 69px);
+}
+
 .cc-question-list-item {
   display: grid;
   min-width: 0;
@@ -1122,6 +1126,33 @@ html[data-theme="liquid"] .catsco-brand-mark {
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.cc-question-index-status {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 7px 1px;
+  color: var(--cc-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.cc-question-index-action {
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--v3-primary);
+  background: color-mix(in srgb, var(--v3-primary) 10%, transparent);
+  cursor: pointer;
+  font: inherit;
+}
+
+.cc-question-index-action:hover,
+.cc-question-index-action:focus-visible {
+  background: color-mix(in srgb, var(--v3-primary) 16%, transparent);
+  outline: none;
 }
 
 .v3-timeline {

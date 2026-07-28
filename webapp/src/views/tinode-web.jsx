@@ -113,14 +113,6 @@ export function resolveInitialUser({
   return null;
 }
 
-export function isExclusiveAgentTaskTopic(topic) {
-  return Boolean(
-    topic?.isGroup
-    && (topic.hasBot || topic.isAgentTask)
-    && Number(topic.memberCount) === 2
-  );
-}
-
 function getInitialUser() {
   const token = getToken();
   let savedUser = null;
@@ -1004,7 +996,6 @@ function TinodeWebApp() {
             topicName={activeTopic.name}
             user={user}
             isGroup={activeTopic.isGroup || (activeTopic.topicId && activeTopic.topicId.startsWith('grp_'))}
-            isExclusiveAgentTask={isExclusiveAgentTaskTopic(activeTopic)}
             groupId={activeTopic.groupId}
             topicAvatarUrl={activeTopic.avatar_url}
             localAssistantStatus={localAgentStatus}
