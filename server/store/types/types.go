@@ -365,6 +365,62 @@ type BotModelConfig struct {
 	LastError           string `json:"last_error,omitempty"`
 }
 
+const BotDefinitionSchema = "xiaoba.bot-definition.v1"
+
+// BotDefinitionModel is the portable model selection stored in the canonical
+// bot definition. API keys are encrypted before reaching this persistence
+// boundary.
+type BotDefinitionModel struct {
+	Kind                string   `json:"kind"`
+	ModelID             string   `json:"modelId,omitempty"`
+	ReasoningEffort     string   `json:"reasoningEffort,omitempty"`
+	Protocol            string   `json:"protocol,omitempty"`
+	APIBase             string   `json:"apiBase,omitempty"`
+	Model               string   `json:"model,omitempty"`
+	APIKeyCiphertext    string   `json:"apiKeyCiphertext,omitempty"`
+	ContextWindowTokens int64    `json:"contextWindowTokens,omitempty"`
+	MaxTokens           int64    `json:"maxTokens,omitempty"`
+	Temperature         *float64 `json:"temperature,omitempty"`
+}
+
+type BotPromptDefinition struct {
+	Selected           string `json:"selected"`
+	CustomSystemPrompt string `json:"customSystemPrompt,omitempty"`
+}
+
+// BotDefinition is the deliberately small portable identity of a XiaoBa bot.
+// Device runtime material, sessions, skills, quotas, and device identities do
+// not belong here.
+type BotDefinition struct {
+	Schema string               `json:"schema"`
+	BotID  string               `json:"botId"`
+	Model  BotDefinitionModel   `json:"model"`
+	Prompt *BotPromptDefinition `json:"prompt,omitempty"`
+}
+
+// BotDefinitionRuntime tracks application progress without polluting the
+// portable definition itself.
+type BotDefinitionRuntime struct {
+	DesiredRevision     int64  `json:"desiredRevision"`
+	UpdatedAt           string `json:"updatedAt,omitempty"`
+	RuntimeProtocol     string `json:"runtimeProtocol,omitempty"`
+	RuntimeProtocolSeen string `json:"runtimeProtocolSeenAt,omitempty"`
+	AppliedKind         string `json:"appliedKind,omitempty"`
+	AppliedModelID      string `json:"appliedModelId,omitempty"`
+	AppliedReasoning    string `json:"appliedReasoningEffort,omitempty"`
+	AppliedRevision     int64  `json:"appliedRevision,omitempty"`
+	AppliedAt           string `json:"appliedAt,omitempty"`
+	LastAttemptRevision int64  `json:"lastAttemptRevision,omitempty"`
+	LastAttemptAt       string `json:"lastAttemptAt,omitempty"`
+	LastError           string `json:"lastError,omitempty"`
+}
+
+type BotDefinitionRecord struct {
+	Definition BotDefinition
+	Runtime    BotDefinitionRuntime
+	Exists     bool
+}
+
 const (
 	ChannelAgentAccessPublic           = "public"
 	ChannelAgentAccessApprovalRequired = "approval_required"

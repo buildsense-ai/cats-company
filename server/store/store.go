@@ -145,6 +145,14 @@ type BotModelConfigStore interface {
 	AckBotModelConfig(botUID, revision int64, kind, modelID, reasoningEffort, applyError string) (*types.BotModelConfig, error)
 }
 
+type BotDefinitionStore interface {
+	GetBotDefinition(botUID int64) (*types.BotDefinitionRecord, error)
+	CreateBotDefinitionIfAbsent(botUID int64, definition types.BotDefinition) (*types.BotDefinitionRecord, error)
+	UpdateBotDefinitionModel(botUID, expectedRevision int64, model types.BotDefinitionModel) (*types.BotDefinitionRecord, error)
+	UpdateBotDefinitionPrompt(botUID, expectedRevision int64, prompt types.BotPromptDefinition) (*types.BotDefinitionRecord, error)
+	AckBotDefinition(botUID, revision int64, applyError string) (*types.BotDefinitionRecord, error)
+}
+
 // FeedbackStore contains user feedback persistence operations.
 type FeedbackStore interface {
 	CreateFeedbackReport(report *types.FeedbackReport) (int64, error)
