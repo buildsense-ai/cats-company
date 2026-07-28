@@ -174,7 +174,10 @@ func TestHandleListAgentsIncludesOwnedAndFriendBots(t *testing.T) {
 	}
 }
 
-func TestHandleListAgentsMarksManagedCloudArtifactAgents(t *testing.T) {
+func TestHandleListAgentsMarksConfiguredCloudArtifactAgents(t *testing.T) {
+	t.Setenv("CATSCO_CLOUD_ARTIFACT_AGENT_UIDS", "usr45, invalid 0 -1")
+	t.Setenv("CATSCO_ARTIFACT_NODES_JSON", "")
+	t.Setenv("CATSCO_ARTIFACT_NODES_FILE", "")
 	store := &agentTestStore{
 		ownerBots: []map[string]interface{}{
 			{"id": int64(42), "username": "owner-agent", "tenant_name": "tenant-owner"},
@@ -185,9 +188,12 @@ func TestHandleListAgentsMarksManagedCloudArtifactAgents(t *testing.T) {
 			{ID: 43, Username: "friend-agent", AccountType: types.AccountBot},
 		},
 		tenantNames: map[int64]string{43: "tenant-friend"},
-		botBodyIDs:  map[int64]string{45: "body-historical-agent"},
+		botBodyIDs:  map[int64]string{44: "body-self-hosted-agent"},
 	}
+	artifactHandler := NewCloudArtifactHandlerFromEnv()
+	artifactHandler.SetStore(store)
 	handler := NewAgentHandler(store, nil)
+	handler.SetCloudArtifactResolver(artifactHandler.SupportsAgent)
 	req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
 	rec := httptest.NewRecorder()
@@ -208,10 +214,10 @@ func TestHandleListAgentsMarksManagedCloudArtifactAgents(t *testing.T) {
 		enabled[agent.UID] = agent.CloudArtifactsEnabled
 	}
 	if !enabled[42] || !enabled[43] || !enabled[45] {
-		t.Fatalf("managed agents missing capability: %+v", enabled)
+		t.Fatalf("configured agents missing capability: %+v", enabled)
 	}
 	if enabled[44] {
-		t.Fatalf("ordinary agent unexpectedly has capability: %+v", enabled)
+		t.Fatalf("body-bound self-hosted agent unexpectedly has capability: %+v", enabled)
 	}
 }
 

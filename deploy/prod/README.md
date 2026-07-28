@@ -108,6 +108,11 @@ body limit.
 
 With no node registry configured, artifact management keeps using the legacy
 `CATSCO_ARTIFACT_MANAGEMENT_URL` and `CATSCO_ARTIFACT_MANAGEMENT_TOKEN`.
+In that mode, `CATSCO_CLOUD_ARTIFACT_AGENT_UIDS` is an explicit compatibility
+allowlist for historical managed Agents that do not have `tenant_name`.
+It is a capability declaration, not a runtime-presence check: `body_id` never
+enables Artifact management. The distributed Agent-to-node mapping takes
+precedence when a node registry is configured.
 
 To route each managed Agent to the artifact host on its deployment node, copy
 `deploy/prod/artifact-nodes.example.json` to the persistent secrets directory

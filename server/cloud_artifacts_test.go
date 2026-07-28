@@ -264,7 +264,7 @@ func TestCloudArtifactHandlerListsArtifactsForAccessibleManagedAgent(t *testing.
 	}
 }
 
-func TestCloudArtifactHandlerListsArtifactsForBodyBoundHistoricalAgent(t *testing.T) {
+func TestCloudArtifactHandlerListsArtifactsForExplicitLegacyAgent(t *testing.T) {
 	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/internal/agents/440/artifacts" {
@@ -280,8 +280,8 @@ func TestCloudArtifactHandlerListsArtifactsForBodyBoundHistoricalAgent(t *testin
 		token,
 		upstream.Client(),
 	)
+	handler.explicitAgentUIDs = map[int64]struct{}{440: {}}
 	historicalStore := managedArtifactAgentStore(7, 440, false)
-	historicalStore.botBodyIDs = map[int64]string{440: "body-historical-agent"}
 	handler.SetStore(historicalStore)
 	rec := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
@@ -387,7 +387,9 @@ func TestCloudArtifactHandlerRejectsInaccessibleOrUnmanagedAgent(t *testing.T) {
 		t.Fatalf("forbidden status = %d, body = %s", forbidden.Code, forbidden.Body.String())
 	}
 
-	handler.SetStore(managedArtifactAgentStore(7, 440, false))
+	bodyBoundUnmanagedStore := managedArtifactAgentStore(7, 440, false)
+	bodyBoundUnmanagedStore.botBodyIDs = map[int64]string{440: "body-self-hosted-agent"}
+	handler.SetStore(bodyBoundUnmanagedStore)
 	unmanaged := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
 		unmanaged,
