@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/elliptic"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -28,6 +30,7 @@ const (
 	maxPushPayloadLen           = 4096
 	maxPushSubscriptionsPerUser = 10
 	maxConcurrentPushDeliveries = 8
+	maxQueuedPushDeliveries     = 128
 	pushRequestTimeout          = 15 * time.Second
 	pushDeliveryTimeout         = 20 * time.Second
 )
@@ -80,6 +83,12 @@ type pushSendFunc func(context.Context, []byte, *webpush.Subscription, *webpush.
 type pushLookupIPFunc func(context.Context, string) ([]net.IPAddr, error)
 type pushDialContextFunc func(context.Context, string, string) (net.Conn, error)
 
+type pushDeliveryJob struct {
+	uid          int64
+	notification PushNotification
+	queuedAt     time.Time
+}
+
 // PushNotificationService owns the Web Push API and delivery behavior. The
 // service is disabled unless a subscription store and all VAPID values exist.
 type PushNotificationService struct {
@@ -88,7 +97,8 @@ type PushNotificationService struct {
 	send          pushSendFunc
 	client        webpush.HTTPClient
 	logf          func(string, ...interface{})
-	deliverySlots chan struct{}
+	deliveryQueue chan pushDeliveryJob
+	startWorkers  sync.Once
 }
 
 // NewPushNotificationService reads VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and
@@ -112,7 +122,7 @@ func NewPushNotificationServiceWithConfig(subscriptionStore store.PushSubscripti
 		send:          webpush.SendNotificationWithContext,
 		client:        newPushHTTPClient(),
 		logf:          log.Printf,
-		deliverySlots: make(chan struct{}, maxConcurrentPushDeliveries),
+		deliveryQueue: make(chan pushDeliveryJob, maxQueuedPushDeliveries),
 	}
 }
 
@@ -380,6 +390,22 @@ func decodePushKey(value string) ([]byte, error) {
 	return base64.URLEncoding.DecodeString(value)
 }
 
+func pushEndpointLogID(endpoint string) string {
+	digest := sha256.Sum256([]byte(endpoint))
+	host := "unknown"
+	if parsed, err := url.Parse(endpoint); err == nil && parsed.Hostname() != "" {
+		host = strings.ToLower(parsed.Hostname())
+	}
+	return fmt.Sprintf("%s#%x", host, digest[:6])
+}
+
+func redactPushEndpointError(err error, endpoint string) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New(strings.ReplaceAll(err.Error(), endpoint, pushEndpointLogID(endpoint)))
+}
+
 // SendToUser sends one privacy-minimized notification to every subscription
 // belonging to uid. Disabled service is a no-op, so Hub callers do not need
 // configuration checks.
@@ -421,6 +447,7 @@ func (s *PushNotificationService) SendToUser(ctx context.Context, uid int64, not
 			break
 		}
 		deliveries++
+		endpointID := pushEndpointLogID(subscription.Endpoint)
 		response, sendErr := s.send(ctx, payload, &webpush.Subscription{
 			Endpoint: subscription.Endpoint,
 			Keys: webpush.Keys{
@@ -441,27 +468,27 @@ func (s *PushNotificationService) SendToUser(ctx context.Context, uid int64, not
 			status = response.StatusCode
 			if response.Body != nil {
 				if closeErr := response.Body.Close(); closeErr != nil {
-					s.logf("web push: close response for endpoint %q: %v", subscription.Endpoint, closeErr)
+					s.logf("web push: close response for provider %q: %v", endpointID, closeErr)
 				}
 			}
 		}
 
 		if sendErr != nil {
-			deliveryErr := fmt.Errorf("send to endpoint %q: %w", subscription.Endpoint, sendErr)
+			deliveryErr := fmt.Errorf("send to provider %q: %w", endpointID, redactPushEndpointError(sendErr, subscription.Endpoint))
 			s.logf("web push: %v", deliveryErr)
 			deliveryErrors = append(deliveryErrors, deliveryErr)
 			continue
 		}
 		if status == http.StatusNotFound || status == http.StatusGone {
-			if deleteErr := s.store.DeletePushSubscriptionByEndpoint(ctx, subscription.Endpoint); deleteErr != nil {
-				cleanupErr := fmt.Errorf("remove expired endpoint %q: %w", subscription.Endpoint, deleteErr)
+			if deleteErr := s.store.DeletePushSubscription(ctx, uid, subscription.Endpoint); deleteErr != nil {
+				cleanupErr := fmt.Errorf("remove expired provider %q: %w", endpointID, redactPushEndpointError(deleteErr, subscription.Endpoint))
 				s.logf("web push: %v", cleanupErr)
 				deliveryErrors = append(deliveryErrors, cleanupErr)
 			}
 			continue
 		}
 		if status < http.StatusOK || status >= http.StatusMultipleChoices {
-			deliveryErr := fmt.Errorf("endpoint %q returned HTTP %d", subscription.Endpoint, status)
+			deliveryErr := fmt.Errorf("provider %q returned HTTP %d", endpointID, status)
 			s.logf("web push: %v", deliveryErr)
 			deliveryErrors = append(deliveryErrors, deliveryErr)
 		}
@@ -469,25 +496,36 @@ func (s *PushNotificationService) SendToUser(ctx context.Context, uid int64, not
 	return errors.Join(deliveryErrors...)
 }
 
-// EnqueueToUser starts a best-effort delivery only when bounded worker capacity
-// is available. Push delivery must never create backpressure on chat fanout.
+func (s *PushNotificationService) runDeliveryWorkers() {
+	for range maxConcurrentPushDeliveries {
+		go func() {
+			for job := range s.deliveryQueue {
+				ctx, cancel := context.WithDeadline(context.Background(), job.queuedAt.Add(pushDeliveryTimeout))
+				if err := s.SendToUser(ctx, job.uid, job.notification); err != nil {
+					s.logf("send offline push: uid=%d err=%v", job.uid, err)
+				}
+				cancel()
+			}
+		}()
+	}
+}
+
+// EnqueueToUser queues a best-effort delivery without adding backpressure to
+// chat fanout. A fixed worker pool bounds concurrency while the bounded queue
+// absorbs ordinary message bursts.
 func (s *PushNotificationService) EnqueueToUser(uid int64, notification PushNotification) bool {
 	if !s.Enabled() || uid <= 0 {
 		return false
 	}
+	s.startWorkers.Do(s.runDeliveryWorkers)
 	select {
-	case s.deliverySlots <- struct{}{}:
+	case s.deliveryQueue <- pushDeliveryJob{
+		uid:          uid,
+		notification: notification,
+		queuedAt:     time.Now(),
+	}:
+		return true
 	default:
 		return false
 	}
-
-	go func() {
-		defer func() { <-s.deliverySlots }()
-		ctx, cancel := context.WithTimeout(context.Background(), pushDeliveryTimeout)
-		defer cancel()
-		if err := s.SendToUser(ctx, uid, notification); err != nil {
-			s.logf("send offline push: uid=%d err=%v", uid, err)
-		}
-	}()
-	return true
 }

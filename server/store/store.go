@@ -38,7 +38,6 @@ type PushSubscriptionStore interface {
 	UpsertPushSubscription(ctx context.Context, subscription *types.PushSubscription, maxSubscriptions int) (bool, error)
 	ListPushSubscriptions(ctx context.Context, uid int64) ([]*types.PushSubscription, error)
 	DeletePushSubscription(ctx context.Context, uid int64, endpoint string) error
-	DeletePushSubscriptionByEndpoint(ctx context.Context, endpoint string) error
 }
 
 // FriendStore contains friend relationship persistence operations.

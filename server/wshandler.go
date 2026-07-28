@@ -1718,7 +1718,7 @@ func (h *Hub) notifyOfflineUser(uid int64) {
 		return
 	}
 	user, err := h.db.GetUser(uid)
-	if err != nil || user == nil || user.AccountType != types.AccountHuman {
+	if err != nil || user == nil || user.AccountType != types.AccountHuman || user.State != 0 {
 		return
 	}
 	notification := PushNotification{

@@ -171,7 +171,7 @@ const createPushSubscriptionsTable = `
 CREATE TABLE IF NOT EXISTS push_subscriptions (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     uid BIGINT NOT NULL,
-    endpoint VARCHAR(512) NOT NULL,
+    endpoint VARCHAR(512) COLLATE utf8mb4_bin NOT NULL,
     p256dh VARCHAR(256) NOT NULL,
     auth VARCHAR(128) NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

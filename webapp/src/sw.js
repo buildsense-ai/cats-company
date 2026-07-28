@@ -65,7 +65,7 @@ function notificationFromEvent(event) {
     options: {
       body: notification.body || '您有一条新消息',
       icon: notification.icon || '/pwa-192x192.png',
-      badge: notification.badge || '/pwa-192x192.png',
+      badge: notification.badge || '/pwa-notification-badge-96x96.png',
       tag: notification.tag,
       renotify: Boolean(notification.renotify),
       data: {

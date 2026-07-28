@@ -116,14 +116,3 @@ func (a *Adapter) DeletePushSubscription(ctx context.Context, uid int64, endpoin
 	}
 	return nil
 }
-
-// DeletePushSubscriptionByEndpoint removes an endpoint regardless of owner.
-func (a *Adapter) DeletePushSubscriptionByEndpoint(ctx context.Context, endpoint string) error {
-	if _, err := a.db.ExecContext(ctx,
-		`DELETE FROM push_subscriptions WHERE endpoint = ?`,
-		endpoint,
-	); err != nil {
-		return fmt.Errorf("delete push subscription by endpoint: %w", err)
-	}
-	return nil
-}

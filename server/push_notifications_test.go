@@ -23,16 +23,15 @@ import (
 )
 
 type memoryPushSubscriptionStore struct {
-	subscriptions  []*types.PushSubscription
-	upserted       *types.PushSubscription
-	deletedUID     int64
-	deleted        string
-	deletedStale   []string
-	upsertErr      error
-	listErr        error
-	listBlock      <-chan struct{}
-	deleteErr      error
-	staleDeleteErr error
+	subscriptions []*types.PushSubscription
+	upserted      *types.PushSubscription
+	deletedUID    int64
+	deleted       string
+	deletedScoped []string
+	upsertErr     error
+	listErr       error
+	listBlock     <-chan struct{}
+	deleteErr     error
 }
 
 type pushHubUserStore struct {
@@ -83,14 +82,7 @@ func (m *memoryPushSubscriptionStore) DeletePushSubscription(_ context.Context, 
 	}
 	m.deletedUID = uid
 	m.deleted = endpoint
-	return nil
-}
-
-func (m *memoryPushSubscriptionStore) DeletePushSubscriptionByEndpoint(_ context.Context, endpoint string) error {
-	if m.staleDeleteErr != nil {
-		return m.staleDeleteErr
-	}
-	m.deletedStale = append(m.deletedStale, endpoint)
+	m.deletedScoped = append(m.deletedScoped, fmt.Sprintf("%d:%s", uid, endpoint))
 	return nil
 }
 
@@ -463,8 +455,12 @@ func TestPushNotificationSendCleansExpiredSubscriptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendToUser returned error: %v", err)
 	}
-	if len(store.deletedStale) != 2 || store.deletedStale[0] != "https://push.example.test/gone" || store.deletedStale[1] != "https://push.example.test/missing" {
-		t.Fatalf("deleted stale endpoints = %#v", store.deletedStale)
+	wantDeleted := []string{
+		"15:https://push.example.test/gone",
+		"15:https://push.example.test/missing",
+	}
+	if fmt.Sprint(store.deletedScoped) != fmt.Sprint(wantDeleted) {
+		t.Fatalf("deleted scoped endpoints = %#v, want %#v", store.deletedScoped, wantDeleted)
 	}
 	if len(payloads) != 3 {
 		t.Fatalf("sent payload count = %d, want 3", len(payloads))
@@ -514,9 +510,9 @@ func TestPushNotificationEnqueueBoundsConcurrencyAndSetsDeadline(t *testing.T) {
 		Auth:     "auth",
 	}}}
 	service := enabledPushService(store)
-	started := make(chan struct{}, 8)
+	started := make(chan struct{}, 9)
 	release := make(chan struct{})
-	completed := make(chan struct{}, 8)
+	completed := make(chan struct{}, 9)
 	service.send = func(ctx context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
 		deadline, ok := ctx.Deadline()
 		if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > 21*time.Second {
@@ -536,12 +532,58 @@ func TestPushNotificationEnqueueBoundsConcurrencyAndSetsDeadline(t *testing.T) {
 	for index := 0; index < 8; index++ {
 		<-started
 	}
-	if service.EnqueueToUser(15, PushNotification{Title: "overflow"}) {
-		t.Fatal("enqueue beyond the concurrency bound was accepted")
+	if !service.EnqueueToUser(15, PushNotification{Title: "queued"}) {
+		t.Fatal("enqueue was rejected while workers were busy")
+	}
+	select {
+	case <-started:
+		t.Fatal("delivery exceeded the worker concurrency bound")
+	case <-time.After(20 * time.Millisecond):
 	}
 
 	close(release)
-	for index := 0; index < 8; index++ {
+	for index := 0; index < 9; index++ {
+		<-completed
+	}
+}
+
+func TestPushNotificationQueueIsBounded(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/subscription/slow",
+		P256DH:   "p256dh",
+		Auth:     "auth",
+	}}}
+	service := enabledPushService(store)
+	totalAccepted := maxConcurrentPushDeliveries + maxQueuedPushDeliveries
+	started := make(chan struct{}, totalAccepted)
+	completed := make(chan struct{}, totalAccepted)
+	release := make(chan struct{})
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		started <- struct{}{}
+		<-release
+		completed <- struct{}{}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	for index := 0; index < maxConcurrentPushDeliveries; index++ {
+		if !service.EnqueueToUser(15, PushNotification{Title: "running"}) {
+			t.Fatalf("running delivery %d was rejected", index)
+		}
+	}
+	for index := 0; index < maxConcurrentPushDeliveries; index++ {
+		<-started
+	}
+	for index := 0; index < maxQueuedPushDeliveries; index++ {
+		if !service.EnqueueToUser(15, PushNotification{Title: "queued"}) {
+			t.Fatalf("queued delivery %d was rejected", index)
+		}
+	}
+	if service.EnqueueToUser(15, PushNotification{Title: "overflow"}) {
+		t.Fatal("delivery beyond the queue bound was accepted")
+	}
+
+	close(release)
+	for index := 0; index < totalAccepted; index++ {
 		<-completed
 	}
 }
@@ -571,12 +613,14 @@ func TestNotifyOfflineUserQueuesOnlyOfflineHumans(t *testing.T) {
 	tests := []struct {
 		name        string
 		accountType types.AccountType
+		state       int
 		online      bool
 		wantPush    bool
 	}{
 		{name: "offline human", accountType: types.AccountHuman, wantPush: true},
 		{name: "online human", accountType: types.AccountHuman, online: true},
 		{name: "offline bot", accountType: types.AccountBot},
+		{name: "disabled human", accountType: types.AccountHuman, state: 1},
 	}
 
 	for _, test := range tests {
@@ -594,7 +638,7 @@ func TestNotifyOfflineUserQueuesOnlyOfflineHumans(t *testing.T) {
 				return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
 			}
 			hub := NewHub(pushHubUserStore{users: map[int64]*types.User{
-				uid: {ID: uid, AccountType: test.accountType},
+				uid: {ID: uid, AccountType: test.accountType, State: test.state},
 			}}, nil)
 			hub.SetPushNotificationService(service)
 			if test.online {
@@ -665,6 +709,54 @@ func TestGroupBroadcastQueuesPushOnlyForOfflineHumans(t *testing.T) {
 	}
 }
 
+func TestGroupBroadcastQueuesBurstBeyondWorkerCount(t *testing.T) {
+	const (
+		groupID   int64 = 81
+		senderUID int64 = 7
+	)
+	db := &identityMessageStore{
+		users: map[int64]*types.User{
+			senderUID: {ID: senderUID, AccountType: types.AccountHuman},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: groupID, UserID: senderUID},
+		},
+	}
+	for index := 0; index < maxConcurrentPushDeliveries+1; index++ {
+		uid := int64(100 + index)
+		db.users[uid] = &types.User{ID: uid, AccountType: types.AccountHuman}
+		db.groupMembers = append(db.groupMembers, &types.GroupMember{GroupID: groupID, UserID: uid})
+	}
+
+	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/subscription/group-burst",
+		P256DH:   "p256dh",
+		Auth:     "auth",
+	}}}
+	service := enabledPushService(pushStore)
+	wantDeliveries := maxConcurrentPushDeliveries + 1
+	delivered := make(chan struct{}, wantDeliveries)
+	release := make(chan struct{})
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		<-release
+		delivered <- struct{}{}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	hub := NewHub(db, nil)
+	hub.SetPushNotificationService(service)
+
+	hub.broadcastToGroupWithMentions(groupID, nil, senderUID, nil, senderUID, false)
+	close(release)
+
+	for index := 0; index < wantDeliveries; index++ {
+		select {
+		case <-delivered:
+		case <-time.After(time.Second):
+			t.Fatalf("group burst delivered %d pushes, want %d", index, wantDeliveries)
+		}
+	}
+}
+
 func TestPushNotificationSendReportsProviderErrors(t *testing.T) {
 	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
 		{Endpoint: "https://push.example.test/error", P256DH: "p256dh", Auth: "auth"},
@@ -681,7 +773,34 @@ func TestPushNotificationSendReportsProviderErrors(t *testing.T) {
 	if err := service.SendToUser(context.Background(), 15, PushNotification{Title: "title"}); err == nil {
 		t.Fatal("SendToUser error = nil, want provider errors")
 	}
-	if len(store.deletedStale) != 0 {
-		t.Fatalf("non-expired subscriptions were deleted: %#v", store.deletedStale)
+	if len(store.deletedScoped) != 0 {
+		t.Fatalf("non-expired subscriptions were deleted: %#v", store.deletedScoped)
+	}
+}
+
+func TestPushNotificationDeliveryErrorsRedactEndpointCapability(t *testing.T) {
+	const endpoint = "https://push.example.test/subscription/secret-capability-token"
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{Endpoint: endpoint, P256DH: "p256dh", Auth: "auth"},
+	}}
+	service := enabledPushService(store)
+	var logs []string
+	service.logf = func(format string, args ...interface{}) {
+		logs = append(logs, fmt.Sprintf(format, args...))
+	}
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		return nil, fmt.Errorf("POST %s: network failure", endpoint)
+	}
+
+	err := service.SendToUser(context.Background(), 15, PushNotification{Title: "title"})
+	if err == nil {
+		t.Fatal("SendToUser error = nil, want provider error")
+	}
+	combined := err.Error() + "\n" + strings.Join(logs, "\n")
+	if strings.Contains(combined, endpoint) || strings.Contains(combined, "secret-capability-token") {
+		t.Fatalf("delivery diagnostics exposed push endpoint capability: %s", combined)
+	}
+	if !strings.Contains(combined, "push.example.test#") {
+		t.Fatalf("delivery diagnostics omitted redacted provider identity: %s", combined)
 	}
 }
