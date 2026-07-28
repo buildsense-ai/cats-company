@@ -246,6 +246,7 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 
 	h.SendToUserExcept(uid, dataMsg, exclude)
 	h.SendToUser(peerUID, h.messageForRecipient(uid, peerUID, topicID, replyTo, payload, msgID))
+	h.notifyOfflineUser(peerUID)
 	h.forwardChannelBotReply(uid, peerUID, topicID, payload, msgID)
 
 	if senderClient := h.getClient(uid); senderClient != nil && senderClient.accountType == types.AccountBot {

@@ -31,6 +31,17 @@ type User struct {
 	UpdatedAt   time.Time   `json:"updated_at"`
 }
 
+// PushSubscription stores the Web Push credentials for one browser endpoint.
+type PushSubscription struct {
+	ID        int64     `json:"id"`
+	UID       int64     `json:"uid"`
+	Endpoint  string    `json:"endpoint"`
+	P256DH    string    `json:"p256dh"`
+	Auth      string    `json:"auth"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // AuthService represents a trusted internal service which can verify CatsCo
 // user tokens through the account center.
 type AuthService struct {

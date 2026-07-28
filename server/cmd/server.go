@@ -299,6 +299,14 @@ func main() {
 	}
 	desktopConnectHandler := server.NewDesktopConnectHandler(db)
 	msgHandler := server.NewMessageHandler(db, hub)
+	pushSubscriptionStore, _ := db.(store.PushSubscriptionStore)
+	pushNotificationService := server.NewPushNotificationService(pushSubscriptionStore)
+	hub.SetPushNotificationService(pushNotificationService)
+	if pushNotificationService.Enabled() {
+		log.Printf("web push notifications are enabled")
+	} else {
+		log.Printf("web push notifications are disabled; configure VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT")
+	}
 	deviceHandler := server.NewDeviceHandler(db, hub)
 	deviceConnectorHandler := server.NewDeviceConnectorHandler(db, hub)
 	uploadHandler := server.NewUploadHandler("./uploads", "/uploads")
@@ -486,6 +494,8 @@ func main() {
 	// Messages (require auth — JWT or API Key for bot access)
 	mux.HandleFunc("/api/messages/send", authWithDB(msgHandler.HandleSendMessage))
 	mux.HandleFunc("/api/messages", authWithDB(msgHandler.HandleGetMessages))
+	mux.HandleFunc("/api/push/config", pushNotificationService.HandleStatus)
+	mux.HandleFunc("/api/push/subscriptions", jwtAuthWithDB(pushNotificationService.HandleSubscription))
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))
 	mux.HandleFunc("/api/projects/topic", authWithDB(projectHandler.HandleProjectTopic))

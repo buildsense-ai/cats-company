@@ -31,6 +31,15 @@ type UserStore interface {
 	UpdateUserAvatar(id int64, avatarURL string) error
 }
 
+// PushSubscriptionStore persists optional Web Push subscriptions without
+// expanding the core Store boundary used by focused adapters and test stores.
+type PushSubscriptionStore interface {
+	UpsertPushSubscription(subscription *types.PushSubscription) error
+	ListPushSubscriptions(uid int64) ([]*types.PushSubscription, error)
+	DeletePushSubscription(uid int64, endpoint string) error
+	DeletePushSubscriptionByEndpoint(endpoint string) error
+}
+
 // FriendStore contains friend relationship persistence operations.
 type FriendStore interface {
 	CreateFriendRequest(fromUID, toUID int64, message string) (int64, error)

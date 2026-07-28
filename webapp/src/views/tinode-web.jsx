@@ -684,7 +684,17 @@ function TinodeWebApp() {
     await handleLogin(email, password);
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      const registration = await navigator.serviceWorker?.ready;
+      const subscription = await registration?.pushManager?.getSubscription();
+      if (subscription) {
+        await api.unsubscribePush(subscription.endpoint);
+        await subscription.unsubscribe();
+      }
+    } catch (error) {
+      console.warn('Push subscription cleanup failed during logout:', error);
+    }
     disconnectWS();
     setToken(null);
     localStorage.removeItem('oc_user');

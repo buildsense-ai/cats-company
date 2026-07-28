@@ -1,0 +1,93 @@
+/// <reference lib="webworker" />
+
+import { clientsClaim } from 'workbox-core';
+import { cleanupOutdatedCaches, precacheAndRoute } from 'workbox-precaching';
+import { registerRoute, NavigationRoute } from 'workbox-routing';
+import { NetworkFirst, NetworkOnly } from 'workbox-strategies';
+
+clientsClaim();
+cleanupOutdatedCaches();
+precacheAndRoute(self.__WB_MANIFEST);
+
+const neverCache = ({ url }) => (
+  url.origin === self.location.origin
+  && (
+    url.pathname === '/api'
+    || url.pathname.startsWith('/api/')
+    || url.pathname === '/v1'
+    || url.pathname.startsWith('/v1/')
+    || url.pathname === '/local'
+    || url.pathname.startsWith('/local/')
+    || url.pathname === '/uploads'
+    || url.pathname.startsWith('/uploads/')
+  )
+);
+
+registerRoute(neverCache, new NetworkOnly(), 'GET');
+registerRoute(neverCache, new NetworkOnly(), 'POST');
+registerRoute(neverCache, new NetworkOnly(), 'PUT');
+registerRoute(neverCache, new NetworkOnly(), 'PATCH');
+registerRoute(neverCache, new NetworkOnly(), 'DELETE');
+
+const navigationHandler = new NetworkFirst({
+  cacheName: 'catsco-navigation-v1',
+  networkTimeoutSeconds: 4,
+  plugins: [{
+    cacheWillUpdate: async ({ response }) => {
+      if (!response || response.status !== 200) return null;
+      return response;
+    },
+    handlerDidError: async () => caches.match('/offline.html', { ignoreSearch: true }),
+  }],
+});
+
+registerRoute(new NavigationRoute(navigationHandler, {
+  denylist: [/^\/api(?:\/|$)/, /^\/v1(?:\/|$)/, /^\/local(?:\/|$)/, /^\/uploads(?:\/|$)/],
+}));
+
+function notificationFromEvent(event) {
+  let payload = {};
+  if (event.data) {
+    try {
+      payload = event.data.json();
+    } catch {
+      payload = { body: event.data.text() };
+    }
+  }
+
+  const notification = payload.notification || payload;
+  return {
+    title: notification.title || 'CatsCo',
+    options: {
+      body: notification.body || '您有一条新消息',
+      icon: notification.icon || '/pwa-192x192.png',
+      badge: notification.badge || '/pwa-192x192.png',
+      tag: notification.tag,
+      renotify: Boolean(notification.renotify),
+      data: {
+        ...(notification.data || payload.data || {}),
+        url: notification.url || notification.data?.url || payload.data?.url || '/',
+      },
+    },
+  };
+}
+
+self.addEventListener('push', (event) => {
+  const { title, options } = notificationFromEvent(event);
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = new URL(event.notification.data?.url || '/', self.location.origin).href;
+
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const sameOriginWindow = windows.find((client) => new URL(client.url).origin === self.location.origin);
+    if (sameOriginWindow) {
+      await sameOriginWindow.navigate(target);
+      return sameOriginWindow.focus();
+    }
+    return self.clients.openWindow(target);
+  })());
+});

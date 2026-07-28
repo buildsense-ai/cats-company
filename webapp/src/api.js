@@ -32,6 +32,7 @@ export function setToken(t) {
   token = t;
   if (t) localStorage.setItem('oc_token', t);
   else localStorage.removeItem('oc_token');
+  window.dispatchEvent(new CustomEvent('cc:auth-changed', { detail: { loggedIn: Boolean(t) } }));
 }
 
 export function getToken() {
@@ -127,6 +128,9 @@ export const api = {
   register: (data) => request('POST', '/api/auth/register', data),
   login: (data) => request('POST', '/api/auth/login', data),
   getMe: () => request('GET', '/api/me'),
+  getPushConfig: () => request('GET', '/api/push/config'),
+  subscribePush: (subscription) => request('POST', '/api/push/subscriptions', subscription),
+  unsubscribePush: (endpoint) => request('DELETE', '/api/push/subscriptions', { endpoint }),
   updateMe: (displayName, avatarUrl) =>
     request('POST', '/api/me/update', { display_name: displayName, avatar_url: avatarUrl }),
 

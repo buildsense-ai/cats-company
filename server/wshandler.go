@@ -44,6 +44,7 @@ type Hub struct {
 	deviceRPC     *deviceRPCRouter
 	thinToolRPC   *thinToolRPCRouter
 	channelOut    *ChannelOutboundDispatcher
+	push          *PushNotificationService
 }
 
 type presenceEvent struct {
@@ -107,6 +108,13 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	go hub.runPresence()
 	go hub.runDeviceRPCTimeouts()
 	return hub
+}
+
+// SetPushNotificationService enables optional Web Push delivery for offline users.
+func (h *Hub) SetPushNotificationService(service *PushNotificationService) {
+	if h != nil {
+		h.push = service
+	}
 }
 
 // BotStats returns the hub's bot stats tracker.
@@ -1689,6 +1697,27 @@ func max64(a, b int64) int64 {
 	return b
 }
 
+func (h *Hub) notifyOfflineUser(uid int64) {
+	if h == nil || h.push == nil || uid <= 0 || h.IsOnline(uid) {
+		return
+	}
+	user, err := h.db.GetUser(uid)
+	if err != nil || user == nil || user.AccountType != types.AccountHuman {
+		return
+	}
+	notification := PushNotification{
+		Title: "CatsCo",
+		Body:  "你有一条新消息",
+		URL:   "/",
+		Tag:   "catsco-new-message",
+	}
+	go func() {
+		if err := h.push.SendToUserBackground(uid, notification); err != nil {
+			log.Printf("send offline push: uid=%d err=%v", uid, err)
+		}
+	}()
+}
+
 // broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.
 // Groups larger than two members require a structured mention of the target bot.
 // Groups with at most two members preserve the legacy automatic human-to-bot activation.
@@ -1758,5 +1787,8 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			)
 		}
 		h.SendToUser(m.UserID, out)
+		if !isBot {
+			h.notifyOfflineUser(m.UserID)
+		}
 	}
 }
