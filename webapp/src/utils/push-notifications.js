@@ -47,11 +47,11 @@ export async function cleanupPushSubscription(unsubscribeOnServer) {
   if (!subscription) return false;
 
   if (unsubscribeOnServer) {
-    try {
-      await unsubscribeOnServer(subscription.endpoint);
-    } catch (error) {
-      console.warn('Failed to remove push subscription from server:', error);
-    }
+    void Promise.resolve()
+      .then(() => unsubscribeOnServer(subscription.endpoint))
+      .catch((error) => {
+        console.warn('Failed to remove push subscription from server:', error);
+      });
   }
 
   try {

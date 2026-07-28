@@ -393,6 +393,9 @@ func main() {
 	uploadUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "upload_user", Limit: 30, Window: time.Minute, Burst: 10,
 	})
+	pushSubscriptionUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "push_subscription_user", Limit: 30, Window: time.Minute, Burst: 10,
+	})
 	readerIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "reader_ip", Limit: 20, Window: time.Minute, Burst: 5,
 	})
@@ -495,7 +498,11 @@ func main() {
 	mux.HandleFunc("/api/messages/send", authWithDB(msgHandler.HandleSendMessage))
 	mux.HandleFunc("/api/messages", authWithDB(msgHandler.HandleGetMessages))
 	mux.HandleFunc("/api/push/config", pushNotificationService.HandleStatus)
-	mux.HandleFunc("/api/push/subscriptions", jwtAuthWithDB(pushNotificationService.HandleSubscription))
+	mux.HandleFunc("/api/push/subscriptions", chainHTTP(
+		pushNotificationService.HandleSubscription,
+		jwtAuthWithDB,
+		pushSubscriptionUserLimit,
+	))
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))
 	mux.HandleFunc("/api/projects/topic", authWithDB(projectHandler.HandleProjectTopic))

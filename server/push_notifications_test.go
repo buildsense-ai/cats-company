@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -28,27 +30,54 @@ type memoryPushSubscriptionStore struct {
 	deletedStale   []string
 	upsertErr      error
 	listErr        error
+	listBlock      <-chan struct{}
 	deleteErr      error
 	staleDeleteErr error
 }
 
-func (m *memoryPushSubscriptionStore) UpsertPushSubscription(subscription *types.PushSubscription) error {
+type pushHubUserStore struct {
+	store.Store
+	users map[int64]*types.User
+}
+
+func (s pushHubUserStore) GetUser(uid int64) (*types.User, error) {
+	return s.users[uid], nil
+}
+
+func (m *memoryPushSubscriptionStore) UpsertPushSubscription(_ context.Context, subscription *types.PushSubscription, maxSubscriptions int) (bool, error) {
 	if m.upsertErr != nil {
-		return m.upsertErr
+		return false, m.upsertErr
+	}
+	existingEndpoint := false
+	for _, existing := range m.subscriptions {
+		if existing != nil && existing.Endpoint == subscription.Endpoint {
+			existingEndpoint = true
+			break
+		}
+	}
+	if !existingEndpoint && len(m.subscriptions) >= maxSubscriptions {
+		return false, nil
 	}
 	copy := *subscription
 	m.upserted = &copy
-	return nil
+	return true, nil
 }
 
-func (m *memoryPushSubscriptionStore) ListPushSubscriptions(uid int64) ([]*types.PushSubscription, error) {
+func (m *memoryPushSubscriptionStore) ListPushSubscriptions(ctx context.Context, uid int64) ([]*types.PushSubscription, error) {
+	if m.listBlock != nil {
+		select {
+		case <-m.listBlock:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if m.listErr != nil {
 		return nil, m.listErr
 	}
 	return m.subscriptions, nil
 }
 
-func (m *memoryPushSubscriptionStore) DeletePushSubscription(uid int64, endpoint string) error {
+func (m *memoryPushSubscriptionStore) DeletePushSubscription(_ context.Context, uid int64, endpoint string) error {
 	if m.deleteErr != nil {
 		return m.deleteErr
 	}
@@ -57,7 +86,7 @@ func (m *memoryPushSubscriptionStore) DeletePushSubscription(uid int64, endpoint
 	return nil
 }
 
-func (m *memoryPushSubscriptionStore) DeletePushSubscriptionByEndpoint(endpoint string) error {
+func (m *memoryPushSubscriptionStore) DeletePushSubscriptionByEndpoint(_ context.Context, endpoint string) error {
 	if m.staleDeleteErr != nil {
 		return m.staleDeleteErr
 	}
@@ -302,6 +331,35 @@ func TestPushNotificationSubscribeUsesAuthenticatedUID(t *testing.T) {
 	}
 }
 
+func TestPushNotificationSubscriptionLimitRejectsOnlyNewEndpoints(t *testing.T) {
+	store := &memoryPushSubscriptionStore{}
+	for index := 0; index < 10; index++ {
+		store.subscriptions = append(store.subscriptions, &types.PushSubscription{
+			UID:      73,
+			Endpoint: fmt.Sprintf("https://push.example.test/subscription/%d", index),
+		})
+	}
+	service := enabledPushService(store)
+	p256dh, auth := validPushKeys(t)
+
+	recorder := httptest.NewRecorder()
+	body := `{"endpoint":"https://push.example.test/subscription/new","keys":{"p256dh":"` + p256dh + `","auth":"` + auth + `"}}`
+	service.HandleSubscription(recorder, pushRequest(t, http.MethodPost, body, 73))
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("new endpoint status = %d, want %d; body=%s", recorder.Code, http.StatusConflict, recorder.Body.String())
+	}
+	if store.upserted != nil {
+		t.Fatalf("subscription beyond the limit was stored: %+v", store.upserted)
+	}
+
+	recorder = httptest.NewRecorder()
+	body = `{"endpoint":"https://push.example.test/subscription/0","keys":{"p256dh":"` + p256dh + `","auth":"` + auth + `"}}`
+	service.HandleSubscription(recorder, pushRequest(t, http.MethodPost, body, 73))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("existing endpoint status = %d, want %d; body=%s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+}
+
 func TestPushNotificationSubscriptionRequiresJWTContextAndStrictBody(t *testing.T) {
 	store := &memoryPushSubscriptionStore{}
 	service := enabledPushService(store)
@@ -422,6 +480,188 @@ func TestPushNotificationSendCleansExpiredSubscriptions(t *testing.T) {
 		if _, ok := payload[key]; !ok {
 			t.Fatalf("payload missing %q: %s", key, payloads[0])
 		}
+	}
+}
+
+func TestPushNotificationSendCapsDeliveriesPerUser(t *testing.T) {
+	store := &memoryPushSubscriptionStore{}
+	for index := 0; index < maxPushSubscriptionsPerUser+1; index++ {
+		store.subscriptions = append(store.subscriptions, &types.PushSubscription{
+			Endpoint: fmt.Sprintf("https://push.example.test/subscription/%d", index),
+			P256DH:   "p256dh",
+			Auth:     "auth",
+		})
+	}
+	service := enabledPushService(store)
+	deliveries := 0
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		deliveries++
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	if err := service.SendToUser(context.Background(), 15, PushNotification{Title: "title"}); err != nil {
+		t.Fatalf("SendToUser returned error: %v", err)
+	}
+	if deliveries != maxPushSubscriptionsPerUser {
+		t.Fatalf("deliveries = %d, want %d", deliveries, maxPushSubscriptionsPerUser)
+	}
+}
+
+func TestPushNotificationEnqueueBoundsConcurrencyAndSetsDeadline(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/subscription/slow",
+		P256DH:   "p256dh",
+		Auth:     "auth",
+	}}}
+	service := enabledPushService(store)
+	started := make(chan struct{}, 8)
+	release := make(chan struct{})
+	completed := make(chan struct{}, 8)
+	service.send = func(ctx context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > 21*time.Second {
+			t.Errorf("delivery deadline = %v, ok=%t", deadline, ok)
+		}
+		started <- struct{}{}
+		<-release
+		completed <- struct{}{}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	for index := 0; index < 8; index++ {
+		if !service.EnqueueToUser(15, PushNotification{Title: "title"}) {
+			t.Fatalf("enqueue %d was rejected", index)
+		}
+	}
+	for index := 0; index < 8; index++ {
+		<-started
+	}
+	if service.EnqueueToUser(15, PushNotification{Title: "overflow"}) {
+		t.Fatal("enqueue beyond the concurrency bound was accepted")
+	}
+
+	close(release)
+	for index := 0; index < 8; index++ {
+		<-completed
+	}
+}
+
+func TestPushNotificationDeadlineCoversSubscriptionLookup(t *testing.T) {
+	release := make(chan struct{})
+	store := &memoryPushSubscriptionStore{listBlock: release}
+	service := enabledPushService(store)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		close(release)
+	}()
+
+	started := time.Now()
+	err := service.SendToUser(ctx, 15, PushNotification{Title: "title"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SendToUser error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 75*time.Millisecond {
+		t.Fatalf("subscription lookup ignored deadline for %v", elapsed)
+	}
+}
+
+func TestNotifyOfflineUserQueuesOnlyOfflineHumans(t *testing.T) {
+	tests := []struct {
+		name        string
+		accountType types.AccountType
+		online      bool
+		wantPush    bool
+	}{
+		{name: "offline human", accountType: types.AccountHuman, wantPush: true},
+		{name: "online human", accountType: types.AccountHuman, online: true},
+		{name: "offline bot", accountType: types.AccountBot},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			const uid int64 = 42
+			pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+				Endpoint: "https://push.example.test/subscription/hub",
+				P256DH:   "p256dh",
+				Auth:     "auth",
+			}}}
+			service := enabledPushService(pushStore)
+			delivered := make(chan struct{}, 1)
+			service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+				delivered <- struct{}{}
+				return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+			}
+			hub := NewHub(pushHubUserStore{users: map[int64]*types.User{
+				uid: {ID: uid, AccountType: test.accountType},
+			}}, nil)
+			hub.SetPushNotificationService(service)
+			if test.online {
+				hub.addClient(&Client{uid: uid, send: make(chan []byte, 1)})
+			}
+
+			hub.notifyOfflineUser(uid)
+
+			select {
+			case <-delivered:
+				if !test.wantPush {
+					t.Fatal("unexpected push delivery")
+				}
+			case <-time.After(100 * time.Millisecond):
+				if test.wantPush {
+					t.Fatal("expected push delivery")
+				}
+			}
+		})
+	}
+}
+
+func TestGroupBroadcastQueuesPushOnlyForOfflineHumans(t *testing.T) {
+	const (
+		groupID    int64 = 80
+		senderUID  int64 = 7
+		offlineUID int64 = 8
+		onlineUID  int64 = 9
+	)
+	db := &identityMessageStore{
+		users: map[int64]*types.User{
+			senderUID:  {ID: senderUID, AccountType: types.AccountHuman},
+			offlineUID: {ID: offlineUID, AccountType: types.AccountHuman},
+			onlineUID:  {ID: onlineUID, AccountType: types.AccountHuman},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: groupID, UserID: senderUID},
+			{GroupID: groupID, UserID: offlineUID},
+			{GroupID: groupID, UserID: onlineUID},
+		},
+	}
+	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/subscription/group",
+		P256DH:   "p256dh",
+		Auth:     "auth",
+	}}}
+	service := enabledPushService(pushStore)
+	delivered := make(chan struct{}, 2)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		delivered <- struct{}{}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	hub := NewHub(db, nil)
+	hub.SetPushNotificationService(service)
+	hub.addClient(&Client{uid: onlineUID, accountType: types.AccountHuman, send: make(chan []byte, 1)})
+
+	hub.broadcastToGroupWithMentions(groupID, nil, senderUID, nil, senderUID, false)
+
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("offline group member did not receive push")
+	}
+	select {
+	case <-delivered:
+		t.Fatal("group broadcast queued more than the offline member push")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

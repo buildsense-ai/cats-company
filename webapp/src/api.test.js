@@ -47,6 +47,7 @@ describe('WebSocket connection recovery', () => {
 
   afterEach(() => {
     api.disconnectWS();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -187,5 +188,35 @@ describe('WebSocket connection recovery', () => {
     expect(api.connectWS(onMessage)).toBe(false);
     expect(MockWebSocket.instances).toHaveLength(0);
     expect(onMessage).toHaveBeenCalledWith({ _type: 'ws_auth_expired' });
+  });
+
+  test('uses the captured logout token for push unsubscription', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ subscribed: false }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    api.setToken(null);
+
+    const request = api.api.unsubscribePush('https://push.example/sub', 'captured-token');
+    await request;
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/push/subscriptions', expect.objectContaining({
+      method: 'DELETE',
+      headers: expect.objectContaining({ Authorization: 'Bearer captured-token' }),
+    }));
+  });
+
+  test('aborts push unsubscription after the cleanup timeout', async () => {
+    const fetchMock = vi.fn().mockImplementation((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = api.api.unsubscribePush('https://push.example/sub', 'captured-token');
+    const rejection = expect(request).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+    await vi.advanceTimersByTimeAsync(3000);
+
+    await rejection;
   });
 });

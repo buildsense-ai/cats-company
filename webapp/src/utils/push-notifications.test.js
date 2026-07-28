@@ -62,4 +62,26 @@ describe('push notification helpers', () => {
     expect(serverCleanup).toHaveBeenCalledWith('https://push.example/sub');
     expect(unsubscribe).toHaveBeenCalled();
   });
+
+  test('does not wait for server cleanup before unsubscribing in the browser', async () => {
+    let finishServerCleanup;
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    const serverCleanup = vi.fn().mockImplementation(() => new Promise((resolve) => {
+      finishServerCleanup = resolve;
+    }));
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: {
+        getRegistration: vi.fn().mockResolvedValue({
+          pushManager: { getSubscription: vi.fn().mockResolvedValue({ endpoint: 'https://push.example/sub', unsubscribe }) },
+        }),
+      },
+    });
+
+    const cleanup = cleanupPushSubscription(serverCleanup);
+
+    await vi.waitFor(() => expect(unsubscribe).toHaveBeenCalled());
+    finishServerCleanup();
+    await expect(cleanup).resolves.toBe(true);
+  });
 });

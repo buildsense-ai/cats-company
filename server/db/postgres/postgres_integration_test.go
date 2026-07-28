@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -63,6 +64,50 @@ func TestPostgresStoreContract(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create owner: %v", err)
+	}
+	const pushSubscriptionLimit = 10
+	pushResults := make(chan bool, pushSubscriptionLimit+2)
+	pushErrors := make(chan error, pushSubscriptionLimit+2)
+	var pushWG sync.WaitGroup
+	for index := 0; index < pushSubscriptionLimit+2; index++ {
+		pushWG.Add(1)
+		go func(index int) {
+			defer pushWG.Done()
+			stored, err := db.UpsertPushSubscription(context.Background(), &types.PushSubscription{
+				UID:      ownerID,
+				Endpoint: fmt.Sprintf("https://push.example.test/subscription/%d", index),
+				P256DH:   "p256dh",
+				Auth:     "auth",
+			}, pushSubscriptionLimit)
+			if err != nil {
+				pushErrors <- err
+				return
+			}
+			pushResults <- stored
+		}(index)
+	}
+	pushWG.Wait()
+	close(pushErrors)
+	for err := range pushErrors {
+		t.Fatalf("concurrent push subscription upsert: %v", err)
+	}
+	close(pushResults)
+	storedCount := 0
+	for stored := range pushResults {
+		if stored {
+			storedCount++
+		}
+	}
+	if storedCount != pushSubscriptionLimit {
+		t.Fatalf("stored push subscriptions = %d, want %d", storedCount, pushSubscriptionLimit)
+	}
+	pushSubscriptions, err := db.ListPushSubscriptions(context.Background(), ownerID)
+	if err != nil || len(pushSubscriptions) != pushSubscriptionLimit {
+		t.Fatalf("list push subscriptions: count=%d err=%v", len(pushSubscriptions), err)
+	}
+	stored, err := db.UpsertPushSubscription(context.Background(), pushSubscriptions[0], pushSubscriptionLimit)
+	if err != nil || !stored {
+		t.Fatalf("refresh existing push subscription: stored=%t err=%v", stored, err)
 	}
 	owner, err := db.GetUserByUsername("alice")
 	if err != nil || owner == nil || owner.ID != ownerID {

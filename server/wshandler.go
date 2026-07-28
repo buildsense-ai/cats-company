@@ -1727,11 +1727,7 @@ func (h *Hub) notifyOfflineUser(uid int64) {
 		URL:   "/",
 		Tag:   "catsco-new-message",
 	}
-	go func() {
-		if err := h.push.SendToUserBackground(uid, notification); err != nil {
-			log.Printf("send offline push: uid=%d err=%v", uid, err)
-		}
-	}()
+	h.push.EnqueueToUser(uid, notification)
 }
 
 // broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.

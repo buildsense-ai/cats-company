@@ -14,6 +14,7 @@ let topicLastSeq = {};
 
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 const WS_CONNECT_TIMEOUT_MS = 10000;
+const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
 
 export function updateTopicSeq(topicId, seq) {
   if (!topicLastSeq[topicId] || seq > topicLastSeq[topicId]) {
@@ -77,9 +78,10 @@ export function isTokenExpired(candidate = token) {
   }
 }
 
-async function request(method, path, body) {
+async function request(method, path, body, options = {}) {
   const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const authToken = options.authToken === undefined ? token : options.authToken;
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
 
   let res;
   try {
@@ -87,6 +89,7 @@ async function request(method, path, body) {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
+      signal: options.signal,
     });
   } catch (cause) {
     const error = new Error('网络连接失败，请检查后端服务是否运行');
@@ -130,7 +133,14 @@ export const api = {
   getMe: () => request('GET', '/api/me'),
   getPushConfig: () => request('GET', '/api/push/config'),
   subscribePush: (subscription) => request('POST', '/api/push/subscriptions', subscription),
-  unsubscribePush: (endpoint) => request('DELETE', '/api/push/subscriptions', { endpoint }),
+  unsubscribePush: (endpoint, authToken = token) => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), PUSH_UNSUBSCRIBE_TIMEOUT_MS);
+    return request('DELETE', '/api/push/subscriptions', { endpoint }, {
+      authToken,
+      signal: controller.signal,
+    }).finally(() => window.clearTimeout(timer));
+  },
   updateMe: (displayName, avatarUrl) =>
     request('POST', '/api/me/update', { display_name: displayName, avatar_url: avatarUrl }),
 

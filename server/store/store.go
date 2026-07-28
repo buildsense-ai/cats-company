@@ -2,6 +2,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 
 	"github.com/openchat/openchat/server/store/types"
@@ -34,10 +35,10 @@ type UserStore interface {
 // PushSubscriptionStore persists optional Web Push subscriptions without
 // expanding the core Store boundary used by focused adapters and test stores.
 type PushSubscriptionStore interface {
-	UpsertPushSubscription(subscription *types.PushSubscription) error
-	ListPushSubscriptions(uid int64) ([]*types.PushSubscription, error)
-	DeletePushSubscription(uid int64, endpoint string) error
-	DeletePushSubscriptionByEndpoint(endpoint string) error
+	UpsertPushSubscription(ctx context.Context, subscription *types.PushSubscription, maxSubscriptions int) (bool, error)
+	ListPushSubscriptions(ctx context.Context, uid int64) ([]*types.PushSubscription, error)
+	DeletePushSubscription(ctx context.Context, uid int64, endpoint string) error
+	DeletePushSubscriptionByEndpoint(ctx context.Context, endpoint string) error
 }
 
 // FriendStore contains friend relationship persistence operations.

@@ -709,12 +709,11 @@ function TinodeWebApp() {
     await handleLogin(email, password);
   };
 
-  const handleLogout = async () => {
-    try {
-      await cleanupPushSubscription(api.unsubscribePush);
-    } catch (error) {
+  const handleLogout = () => {
+    const authToken = getToken();
+    cleanupPushSubscription((endpoint) => api.unsubscribePush(endpoint, authToken)).catch((error) => {
       console.warn('Push subscription cleanup failed during logout:', error);
-    }
+    });
     disconnectWS();
     setToken(null);
     localStorage.removeItem('oc_user');

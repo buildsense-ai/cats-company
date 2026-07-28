@@ -1,18 +1,55 @@
 package mysql
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/openchat/openchat/server/store/types"
 )
 
-// UpsertPushSubscription creates or refreshes the subscription identified by
-// its globally unique endpoint.
-func (a *Adapter) UpsertPushSubscription(subscription *types.PushSubscription) error {
+// UpsertPushSubscription atomically creates or refreshes a subscription while
+// enforcing the per-user limit across all server replicas.
+func (a *Adapter) UpsertPushSubscription(ctx context.Context, subscription *types.PushSubscription, maxSubscriptions int) (bool, error) {
 	if subscription == nil {
-		return fmt.Errorf("push subscription is nil")
+		return false, fmt.Errorf("push subscription is nil")
 	}
-	_, err := a.db.Exec(
+	if maxSubscriptions <= 0 {
+		return false, fmt.Errorf("push subscription limit must be positive")
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin push subscription upsert: %w", err)
+	}
+	defer tx.Rollback()
+
+	var lockedUID int64
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE id = ? FOR UPDATE`, subscription.UID).Scan(&lockedUID); err != nil {
+		return false, fmt.Errorf("lock push subscription user: %w", err)
+	}
+
+	var existingUID int64
+	existingErr := tx.QueryRowContext(ctx,
+		`SELECT uid FROM push_subscriptions WHERE endpoint = ?`,
+		subscription.Endpoint,
+	).Scan(&existingUID)
+	if existingErr != nil && existingErr != sql.ErrNoRows {
+		return false, fmt.Errorf("find push subscription endpoint: %w", existingErr)
+	}
+	if existingErr == sql.ErrNoRows || existingUID != subscription.UID {
+		var count int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM push_subscriptions WHERE uid = ?`,
+			subscription.UID,
+		).Scan(&count); err != nil {
+			return false, fmt.Errorf("count push subscriptions: %w", err)
+		}
+		if count >= maxSubscriptions {
+			return false, nil
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO push_subscriptions (uid, endpoint, p256dh, auth)
 		 VALUES (?, ?, ?, ?)
 		 ON DUPLICATE KEY UPDATE
@@ -23,16 +60,18 @@ func (a *Adapter) UpsertPushSubscription(subscription *types.PushSubscription) e
 		subscription.Endpoint,
 		subscription.P256DH,
 		subscription.Auth,
-	)
-	if err != nil {
-		return fmt.Errorf("upsert push subscription: %w", err)
+	); err != nil {
+		return false, fmt.Errorf("upsert push subscription: %w", err)
 	}
-	return nil
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit push subscription upsert: %w", err)
+	}
+	return true, nil
 }
 
 // ListPushSubscriptions returns all subscriptions owned by uid.
-func (a *Adapter) ListPushSubscriptions(uid int64) ([]*types.PushSubscription, error) {
-	rows, err := a.db.Query(
+func (a *Adapter) ListPushSubscriptions(ctx context.Context, uid int64) ([]*types.PushSubscription, error) {
+	rows, err := a.db.QueryContext(ctx,
 		`SELECT id, uid, endpoint, p256dh, auth, created_at, updated_at
 		 FROM push_subscriptions
 		 WHERE uid = ?
@@ -67,8 +106,8 @@ func (a *Adapter) ListPushSubscriptions(uid int64) ([]*types.PushSubscription, e
 }
 
 // DeletePushSubscription removes one endpoint if it belongs to uid.
-func (a *Adapter) DeletePushSubscription(uid int64, endpoint string) error {
-	if _, err := a.db.Exec(
+func (a *Adapter) DeletePushSubscription(ctx context.Context, uid int64, endpoint string) error {
+	if _, err := a.db.ExecContext(ctx,
 		`DELETE FROM push_subscriptions WHERE uid = ? AND endpoint = ?`,
 		uid,
 		endpoint,
@@ -79,8 +118,8 @@ func (a *Adapter) DeletePushSubscription(uid int64, endpoint string) error {
 }
 
 // DeletePushSubscriptionByEndpoint removes an endpoint regardless of owner.
-func (a *Adapter) DeletePushSubscriptionByEndpoint(endpoint string) error {
-	if _, err := a.db.Exec(
+func (a *Adapter) DeletePushSubscriptionByEndpoint(ctx context.Context, endpoint string) error {
+	if _, err := a.db.ExecContext(ctx,
 		`DELETE FROM push_subscriptions WHERE endpoint = ?`,
 		endpoint,
 	); err != nil {

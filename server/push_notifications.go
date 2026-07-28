@@ -23,10 +23,13 @@ import (
 )
 
 const (
-	maxPushRequestBody = 8 << 10
-	maxPushEndpointLen = 512
-	maxPushPayloadLen  = 4096
-	pushRequestTimeout = 15 * time.Second
+	maxPushRequestBody          = 8 << 10
+	maxPushEndpointLen          = 512
+	maxPushPayloadLen           = 4096
+	maxPushSubscriptionsPerUser = 10
+	maxConcurrentPushDeliveries = 8
+	pushRequestTimeout          = 15 * time.Second
+	pushDeliveryTimeout         = 20 * time.Second
 )
 
 var nonPublicPushPrefixes = []netip.Prefix{
@@ -80,11 +83,12 @@ type pushDialContextFunc func(context.Context, string, string) (net.Conn, error)
 // PushNotificationService owns the Web Push API and delivery behavior. The
 // service is disabled unless a subscription store and all VAPID values exist.
 type PushNotificationService struct {
-	store  store.PushSubscriptionStore
-	config PushNotificationConfig
-	send   pushSendFunc
-	client webpush.HTTPClient
-	logf   func(string, ...interface{})
+	store         store.PushSubscriptionStore
+	config        PushNotificationConfig
+	send          pushSendFunc
+	client        webpush.HTTPClient
+	logf          func(string, ...interface{})
+	deliverySlots chan struct{}
 }
 
 // NewPushNotificationService reads VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and
@@ -103,11 +107,12 @@ func NewPushNotificationServiceWithConfig(subscriptionStore store.PushSubscripti
 	config.PrivateKey = strings.TrimSpace(config.PrivateKey)
 	config.Subject = strings.TrimSpace(config.Subject)
 	return &PushNotificationService{
-		store:  subscriptionStore,
-		config: config,
-		send:   webpush.SendNotificationWithContext,
-		client: newPushHTTPClient(),
-		logf:   log.Printf,
+		store:         subscriptionStore,
+		config:        config,
+		send:          webpush.SendNotificationWithContext,
+		client:        newPushHTTPClient(),
+		logf:          log.Printf,
+		deliverySlots: make(chan struct{}, maxConcurrentPushDeliveries),
 	}
 }
 
@@ -272,14 +277,19 @@ func (s *PushNotificationService) handleSubscribe(w http.ResponseWriter, r *http
 		return
 	}
 
-	if err := s.store.UpsertPushSubscription(&types.PushSubscription{
+	stored, err := s.store.UpsertPushSubscription(r.Context(), &types.PushSubscription{
 		UID:      uid,
 		Endpoint: endpoint,
 		P256DH:   p256dh,
 		Auth:     auth,
-	}); err != nil {
+	}, maxPushSubscriptionsPerUser)
+	if err != nil {
 		s.logf("web push: save subscription for uid %d: %v", uid, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save subscription"})
+		return
+	}
+	if !stored {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "push subscription limit reached"})
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]bool{"subscribed": true})
@@ -296,7 +306,7 @@ func (s *PushNotificationService) handleUnsubscribe(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid endpoint"})
 		return
 	}
-	if err := s.store.DeletePushSubscription(uid, endpoint); err != nil {
+	if err := s.store.DeletePushSubscription(r.Context(), uid, endpoint); err != nil {
 		s.logf("web push: delete subscription for uid %d: %v", uid, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete subscription"})
 		return
@@ -392,16 +402,25 @@ func (s *PushNotificationService) SendToUser(ctx context.Context, uid int64, not
 		return errors.New("push notification payload is too large")
 	}
 
-	subscriptions, err := s.store.ListPushSubscriptions(uid)
+	subscriptions, err := s.store.ListPushSubscriptions(ctx, uid)
 	if err != nil {
 		return fmt.Errorf("list push subscriptions: %w", err)
 	}
 
 	var deliveryErrors []error
+	deliveries := 0
 	for _, subscription := range subscriptions {
 		if subscription == nil {
 			continue
 		}
+		if deliveries >= maxPushSubscriptionsPerUser {
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			deliveryErrors = append(deliveryErrors, err)
+			break
+		}
+		deliveries++
 		response, sendErr := s.send(ctx, payload, &webpush.Subscription{
 			Endpoint: subscription.Endpoint,
 			Keys: webpush.Keys{
@@ -434,7 +453,7 @@ func (s *PushNotificationService) SendToUser(ctx context.Context, uid int64, not
 			continue
 		}
 		if status == http.StatusNotFound || status == http.StatusGone {
-			if deleteErr := s.store.DeletePushSubscriptionByEndpoint(subscription.Endpoint); deleteErr != nil {
+			if deleteErr := s.store.DeletePushSubscriptionByEndpoint(ctx, subscription.Endpoint); deleteErr != nil {
 				cleanupErr := fmt.Errorf("remove expired endpoint %q: %w", subscription.Endpoint, deleteErr)
 				s.logf("web push: %v", cleanupErr)
 				deliveryErrors = append(deliveryErrors, cleanupErr)
@@ -450,7 +469,25 @@ func (s *PushNotificationService) SendToUser(ctx context.Context, uid int64, not
 	return errors.Join(deliveryErrors...)
 }
 
-// SendToUserBackground is a convenience for callers without a request context.
-func (s *PushNotificationService) SendToUserBackground(uid int64, notification PushNotification) error {
-	return s.SendToUser(context.Background(), uid, notification)
+// EnqueueToUser starts a best-effort delivery only when bounded worker capacity
+// is available. Push delivery must never create backpressure on chat fanout.
+func (s *PushNotificationService) EnqueueToUser(uid int64, notification PushNotification) bool {
+	if !s.Enabled() || uid <= 0 {
+		return false
+	}
+	select {
+	case s.deliverySlots <- struct{}{}:
+	default:
+		return false
+	}
+
+	go func() {
+		defer func() { <-s.deliverySlots }()
+		ctx, cancel := context.WithTimeout(context.Background(), pushDeliveryTimeout)
+		defer cancel()
+		if err := s.SendToUser(ctx, uid, notification); err != nil {
+			s.logf("send offline push: uid=%d err=%v", uid, err)
+		}
+	}()
+	return true
 }
