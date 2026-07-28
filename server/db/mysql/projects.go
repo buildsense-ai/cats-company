@@ -110,16 +110,22 @@ func (a *Adapter) DeleteProject(ownerUID, projectID int64) error {
 	return nil
 }
 
-// AssignTopicToProject moves an owned topic into the selected project.
+// AssignTopicToProject moves an accessible topic into the selected personal project.
 func (a *Adapter) AssignTopicToProject(ownerUID, projectID int64, topicID string) error {
 	result, err := a.db.Exec(
 		`INSERT INTO project_topics (owner_uid, topic_id, project_id)
 		 SELECT ?, t.id, p.id
 		 FROM projects p
-		 JOIN topics t ON t.id = ? AND t.owner_id = ?
-		 WHERE p.id = ? AND p.owner_uid = ?
+		 JOIN topics t ON t.id = ?
+		 LEFT JOIN group_members gm
+		   ON t.type = 'group'
+		  AND t.id = CONCAT('grp_', gm.group_id)
+		  AND gm.user_id = ?
+		 WHERE p.id = ?
+		   AND p.owner_uid = ?
+		   AND (t.owner_id = ? OR gm.user_id IS NOT NULL)
 		 ON DUPLICATE KEY UPDATE project_id = VALUES(project_id), created_at = CURRENT_TIMESTAMP`,
-		ownerUID, topicID, ownerUID, projectID, ownerUID,
+		ownerUID, topicID, ownerUID, projectID, ownerUID, ownerUID,
 	)
 	if err != nil {
 		return fmt.Errorf("assign topic to project: %w", err)
@@ -131,8 +137,17 @@ func (a *Adapter) AssignTopicToProject(ownerUID, projectID int64, topicID string
 	if affected == 0 {
 		var exists int
 		err := a.db.QueryRow(
-			`SELECT 1 FROM projects p JOIN topics t ON t.id = ? AND t.owner_id = ? WHERE p.id = ? AND p.owner_uid = ?`,
-			topicID, ownerUID, projectID, ownerUID,
+			`SELECT 1
+			 FROM projects p
+			 JOIN topics t ON t.id = ?
+			 LEFT JOIN group_members gm
+			   ON t.type = 'group'
+			  AND t.id = CONCAT('grp_', gm.group_id)
+			  AND gm.user_id = ?
+			 WHERE p.id = ?
+			   AND p.owner_uid = ?
+			   AND (t.owner_id = ? OR gm.user_id IS NOT NULL)`,
+			topicID, ownerUID, projectID, ownerUID, ownerUID,
 		).Scan(&exists)
 		if errors.Is(err, sql.ErrNoRows) {
 			return store.ErrProjectTopicNotFound

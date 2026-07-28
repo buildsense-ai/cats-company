@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Terminal, Brain, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
+import { ChevronDown, ChevronRight, Terminal, Brain, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -731,7 +731,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
       ? renderedTextContent.trim().length > 0
       : renderedTextContent != null
   ), [renderedTextContent]);
-  const hasFileOnly = !hasText && richBlocks.length > 0 && richBlocks.every((block) => block.type === 'file');
+  const hasFileOnly = !hasText && richBlocks.length > 0 && richBlocks.every(
+    (block) => block.type === 'file' && !isInlineVideoFile(block.payload),
+  );
 
   const parsed = useMemo(() => {
     if (storedBlocks.length > 0) return null;
@@ -1217,13 +1219,29 @@ function ImageContent({ payload }) {
 }
 
 function fileExtension(payload) {
-  const name = payload?.name || payload?.url || '';
+  const name = String(payload?.name || payload?.url || '').split(/[?#]/, 1)[0];
   const raw = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : '';
   return raw ? raw.toUpperCase() : 'FILE';
 }
 
 function fileMimeType(payload) {
-  return String(payload?.mime_type || payload?.mime || payload?.content_type || '').toLowerCase();
+  return String(payload?.mime_type || payload?.mime || payload?.content_type || '')
+    .split(';', 1)[0]
+    .trim()
+    .toLowerCase();
+}
+
+const INLINE_VIDEO_EXTENSIONS = new Set(['MP4', 'WEBM', 'OGV', 'M4V', 'MOV']);
+const INLINE_VIDEO_MIME_TYPES = new Set([
+  'video/mp4',
+  'video/webm',
+  'video/ogg',
+  'video/x-m4v',
+  'video/quicktime',
+]);
+
+function isInlineVideoFile(payload, ext = fileExtension(payload)) {
+  return INLINE_VIDEO_EXTENSIONS.has(ext) || INLINE_VIDEO_MIME_TYPES.has(fileMimeType(payload));
 }
 
 function isHtmlFile(payload, ext = fileExtension(payload)) {
@@ -1409,7 +1427,153 @@ function spreadsheetPreviewTooLargeMessage() {
   return `表格文件较大，当前最多预览 ${formatFileSize(SPREADSHEET_PREVIEW_MAX_BYTES)}，请下载后查看。`;
 }
 
-function FileContent({ payload, onPreviewFile, activePreviewFile }) {
+function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
+  const [playbackFailed, setPlaybackFailed] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const previewRef = useRef(null);
+  const triggerRef = useRef(null);
+  const closeButtonRef = useRef(null);
+  const fallbackActionRef = useRef(null);
+  const shouldFocusFallbackRef = useRef(false);
+  const src = resolveMediaURL(payload?.url);
+
+  useEffect(() => {
+    setPlaybackFailed(false);
+    setPreviewOpen(false);
+  }, [src]);
+
+  useEffect(() => {
+    if (!previewOpen || playbackFailed) return undefined;
+
+    closeButtonRef.current?.focus({ preventScroll: true });
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setPreviewOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(previewRef.current?.querySelectorAll(FOCUSABLE_SELECTOR) || []);
+      const firstFocusable = focusable[0];
+      const lastFocusable = focusable[focusable.length - 1];
+      if (!firstFocusable || !lastFocusable) {
+        event.preventDefault();
+        return;
+      }
+      const focusIsOutsidePreview = !previewRef.current?.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === firstFocusable || focusIsOutsidePreview)) {
+        event.preventDefault();
+        lastFocusable.focus();
+      } else if (!event.shiftKey && (document.activeElement === lastFocusable || focusIsOutsidePreview)) {
+        event.preventDefault();
+        firstFocusable.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (triggerRef.current?.isConnected) triggerRef.current.focus({ preventScroll: true });
+    };
+  }, [playbackFailed, previewOpen]);
+
+  useEffect(() => {
+    if (!playbackFailed || !shouldFocusFallbackRef.current) return;
+    fallbackActionRef.current?.focus({ preventScroll: true });
+    shouldFocusFallbackRef.current = false;
+  }, [playbackFailed]);
+
+  const handlePlaybackError = () => {
+    const activeElement = document.activeElement;
+    shouldFocusFallbackRef.current = triggerRef.current === activeElement
+      || Boolean(previewRef.current?.contains(activeElement));
+    setPreviewOpen(false);
+    setPlaybackFailed(true);
+  };
+
+  if (!payload || !src || playbackFailed) {
+    return (
+      <div className="oc-rich-video-fallback">
+        {playbackFailed && (
+          <span className="oc-visually-hidden" role="status">
+            视频无法播放，已显示下载选项。
+          </span>
+        )}
+        <FileContent
+          actionRef={fallbackActionRef}
+          activePreviewFile={activePreviewFile}
+          inlineVideo={false}
+          onPreviewFile={onPreviewFile}
+          payload={payload}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="oc-rich-image oc-rich-video">
+      <button
+        aria-label={`预览视频 ${payload.name || ''}`.trim()}
+        className="oc-rich-video-trigger"
+        onClick={() => setPreviewOpen(true)}
+        ref={triggerRef}
+        type="button"
+      >
+        <video
+          aria-hidden="true"
+          className="oc-rich-video-thumb"
+          muted
+          onError={handlePlaybackError}
+          playsInline
+          preload="metadata"
+          src={src}
+        />
+        <span className="oc-rich-video-play" aria-hidden="true">
+          <Play fill="currentColor" size={20} />
+        </span>
+      </button>
+      {previewOpen && (
+        <div
+          aria-label={`视频预览 ${payload.name || ''}`.trim()}
+          aria-modal="true"
+          className="oc-modal-overlay oc-rich-video-preview"
+          onClick={() => setPreviewOpen(false)}
+          ref={previewRef}
+          role="dialog"
+        >
+          <button
+            aria-label="关闭视频预览"
+            className="oc-rich-video-preview-close"
+            onClick={() => setPreviewOpen(false)}
+            ref={closeButtonRef}
+            type="button"
+          >
+            <X size={20} />
+          </button>
+          <video
+            aria-label={payload.name || '视频'}
+            autoPlay
+            className="oc-rich-video-player"
+            controls
+            onClick={(event) => event.stopPropagation()}
+            onError={handlePlaybackError}
+            playsInline
+            preload="metadata"
+            src={src}
+            tabIndex={0}
+          >
+            您的浏览器暂不支持视频播放。
+          </video>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = true, actionRef = null }) {
+  if (inlineVideo && payload && isInlineVideoFile(payload)) {
+    return <VideoContent payload={payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
+  }
   if (!payload) return null;
   const descriptor = previewFileDescriptor(payload);
   const { url, ext, canPreview, meta, sizeStr, key } = descriptor;
@@ -1429,6 +1593,7 @@ function FileContent({ payload, onPreviewFile, activePreviewFile }) {
       <button
         className="v3-artifact-main"
         onClick={openFile}
+        ref={actionRef}
         title={canPreview ? '预览文件' : '打开或下载文件'}
         type="button"
       >

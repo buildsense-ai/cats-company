@@ -332,6 +332,59 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('textarea.v3-composer-input').value).toBe('another draft');
   });
 
+  it('adapts the composer placeholder to agent groups, agent chats, and human chats', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      members: [
+        { user_id: 1, display_name: 'Me', account_type: 'human' },
+        { user_id: 5, display_name: 'Teammate', account_type: 'human' },
+        { user_id: 2, display_name: 'Design Agent', account_type: 'bot', is_bot: true },
+      ],
+      group: { id: 9, name: 'Mixed group', has_bot: true },
+    });
+
+    await mountTopic(root, 'grp_9', { isGroup: true, groupId: 9 });
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(container.querySelector('textarea.v3-composer-input').placeholder)
+      .toBe('输入消息，@机器人即可回复');
+
+    api.getGroupInfo.mockResolvedValueOnce({
+      members: [
+        { user_id: 1, display_name: 'Me', account_type: 'human' },
+        { user_id: 2, display_name: 'Design Agent', account_type: 'bot', is_bot: true },
+      ],
+      group: { id: 10, name: 'Agent task', has_bot: true, is_agent_task: true },
+    });
+    await mountTopic(root, 'grp_10', { isGroup: true, groupId: 10 });
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(container.querySelector('textarea.v3-composer-input').placeholder)
+      .toBe('输入指令，我帮您完成');
+
+    api.getAgents.mockResolvedValueOnce({
+      agents: [{ uid: 3, username: 'agent', display_name: 'Agent', is_bot: true }],
+    });
+    await mountTopic(root, 'p2p_1_3', { isGroup: false, groupId: null });
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(container.querySelector('textarea.v3-composer-input').placeholder)
+      .toBe('输入指令，我帮您完成');
+
+    api.getFriends.mockResolvedValueOnce({
+      friends: [{ id: 4, username: 'friend', display_name: 'Friend', account_type: 'human' }],
+    });
+    api.getAgents.mockResolvedValueOnce({ agents: [] });
+    await mountTopic(root, 'p2p_1_4', { isGroup: false, groupId: null });
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(container.querySelector('textarea.v3-composer-input').placeholder)
+      .toBe('输入消息');
+  });
+
   it('does not restore a failed old-topic draft after the user has switched topics', async () => {
     let rejectSend;
     api.sendMessage.mockImplementationOnce(() => new Promise((resolve, reject) => {
@@ -697,6 +750,170 @@ describe('MessagesView composer draft isolation', () => {
     expect(questionButtons[0].getAttribute('aria-current')).toBe('true');
   });
 
+  it('indexes older questions only on intent and fetches one nearby page for a jump', async () => {
+    const originalScrollHeight = Object.getOwnPropertyDescriptor(
+      window.HTMLElement.prototype,
+      'scrollHeight',
+    );
+    const originalClientHeight = Object.getOwnPropertyDescriptor(
+      window.HTMLElement.prototype,
+      'clientHeight',
+    );
+    const originalScrollTop = Object.getOwnPropertyDescriptor(
+      window.HTMLElement.prototype,
+      'scrollTop',
+    );
+    Object.defineProperty(window.HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList?.contains('v3-timeline') ? 1000 : 0;
+      },
+    });
+    Object.defineProperty(window.HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.classList?.contains('v3-timeline') ? 500 : 0;
+      },
+    });
+    Object.defineProperty(window.HTMLElement.prototype, 'scrollTop', {
+      configurable: true,
+      get() {
+        return this.classList?.contains('v3-timeline') ? 500 : 0;
+      },
+      set() {},
+    });
+    const latestMessages = Array.from({ length: 50 }, (_, index) => ({
+      id: 101 + index,
+      seq_id: 101 + index,
+      topic_id: 'p2p_1_2',
+      from_uid: index === 0 || index === 49 ? 1 : 2,
+      type: 'text',
+      content: index === 0
+        ? 'Recent question one'
+        : (index === 49 ? 'Recent question two' : `Recent answer ${index}`),
+    }));
+    const olderMessages = [
+      {
+        id: 1,
+        seq_id: 1,
+        topic_id: 'p2p_1_2',
+        from_uid: 1,
+        type: 'text',
+        content: 'Oldest question',
+      },
+      {
+        id: 2,
+        seq_id: 2,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: 'Oldest answer',
+      },
+    ];
+    api.getMessages
+      .mockResolvedValueOnce({
+        messages: latestMessages,
+        has_more: true,
+        next_before_id: 101,
+      })
+      .mockResolvedValueOnce({
+        messages: olderMessages,
+        has_more: false,
+        next_before_id: 1,
+      })
+      .mockResolvedValueOnce({
+        messages: olderMessages,
+        has_more: false,
+        next_before_id: 1,
+      });
+
+    try {
+      await mountTopic(root, 'p2p_1_2');
+      await act(async () => {
+        await flushPromises(16);
+      });
+
+      expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 50, 0, true);
+      expect(api.getMessages).not.toHaveBeenCalledWith('p2p_1_2', 500, 50, true, 101);
+
+      const navigator = container.querySelector('.cc-question-navigator');
+      expect(navigator).not.toBeNull();
+      await act(async () => {
+        Simulate.mouseEnter(navigator);
+        await flushPromises();
+      });
+      expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 500, 50, true, 101);
+
+      const questionListButtons = Array.from(
+        navigator.querySelectorAll('.cc-question-list-item'),
+      );
+      const oldestQuestionButton = questionListButtons.find(
+        (button) => button.textContent.includes('Oldest question'),
+      );
+      expect(oldestQuestionButton).not.toBeNull();
+      expect(container.querySelector('[data-conversation-question="1"]')).toBeNull();
+
+      await act(async () => {
+        Simulate.click(oldestQuestionButton);
+        await flushPromises();
+      });
+
+      expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 50, 0, true, 2);
+      const oldestQuestion = container.querySelector('[data-conversation-question="1"]');
+      expect(oldestQuestion).not.toBeNull();
+      expect(window.HTMLElement.prototype.scrollIntoView)
+        .toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+
+      const indexRequestCount = api.getMessages.mock.calls
+        .filter(([, limit]) => limit === 500)
+        .length;
+      api.getMessages
+        .mockResolvedValueOnce({
+          messages: [{ id: 201, topic_id: 'p2p_1_3', from_uid: 3, type: 'text', content: 'Topic B' }],
+          has_more: false,
+        })
+        .mockResolvedValueOnce({
+          messages: latestMessages,
+          has_more: true,
+          next_before_id: 101,
+        });
+      await mountTopic(root, 'p2p_1_3');
+      await act(async () => {
+        await flushPromises();
+      });
+      await mountTopic(root, 'p2p_1_2');
+      await act(async () => {
+        await flushPromises();
+      });
+
+      const restoredNavigator = container.querySelector('.cc-question-navigator');
+      expect(restoredNavigator.textContent).toContain('Oldest question');
+      await act(async () => {
+        Simulate.mouseEnter(restoredNavigator);
+        await flushPromises();
+      });
+      expect(api.getMessages.mock.calls.filter(([, limit]) => limit === 500)).toHaveLength(
+        indexRequestCount,
+      );
+    } finally {
+      if (originalScrollHeight) {
+        Object.defineProperty(window.HTMLElement.prototype, 'scrollHeight', originalScrollHeight);
+      } else {
+        delete window.HTMLElement.prototype.scrollHeight;
+      }
+      if (originalClientHeight) {
+        Object.defineProperty(window.HTMLElement.prototype, 'clientHeight', originalClientHeight);
+      } else {
+        delete window.HTMLElement.prototype.clientHeight;
+      }
+      if (originalScrollTop) {
+        Object.defineProperty(window.HTMLElement.prototype, 'scrollTop', originalScrollTop);
+      } else {
+        delete window.HTMLElement.prototype.scrollTop;
+      }
+    }
+  });
+
   it('regenerates a bot reply by resending the preceding user task', async () => {
     api.getMessages.mockResolvedValueOnce({
       messages: [
@@ -851,10 +1068,128 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(wsSendStreamCancel).toHaveBeenCalledWith('p2p_1_2');
+    expect(wsSendStreamCancel).toHaveBeenCalledWith('p2p_1_2', 2);
     expect(container.querySelector('button[aria-label="停止当前工作"]')).toBeNull();
     expect(container.querySelector('button[aria-label="发送"]')).not.toBeNull();
     expect(container.querySelector('textarea.v3-composer-input').disabled).toBe(false);
+  });
+
+  it('does not let a group member stop an agent response requested by someone else', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room', has_bot: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 7, display_name: 'Alice', is_bot: false },
+        { user_id: 42, display_name: 'Saturday', is_bot: true },
+      ],
+    });
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 52, from_uid: 7, type: 'text', content: '@Saturday 帮我分析', created_at: '2026-07-17T02:00:00Z' },
+        { id: 53, from_uid: 42, type: 'thinking', content: '正在分析', created_at: '2026-07-17T02:00:01Z' },
+      ],
+    });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => {
+      await flushPromises();
+      wsHandler({ info: { topic: 'grp_80', what: 'kp', from: 'usr42' } });
+    });
+
+    expect(container.querySelector('button[aria-label="停止当前工作"]')).toBeNull();
+    expect(container.querySelector('.v3-live-input-status')?.textContent).toContain('CatsCo 正在回复其他成员');
+    expect(wsSendStreamCancel).not.toHaveBeenCalled();
+  });
+
+  it('lets the requesting group member stop their own agent response', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 81, name: 'Agent Room', has_bot: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 7, display_name: 'Alice', is_bot: false },
+        { user_id: 42, display_name: 'Saturday', is_bot: true },
+      ],
+    });
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 54, from_uid: 1, type: 'text', content: '@Saturday 帮我分析', created_at: '2026-07-17T02:10:00Z' },
+        { id: 55, from_uid: 42, type: 'thinking', content: '正在分析', created_at: '2026-07-17T02:10:01Z' },
+      ],
+    });
+
+    await mountTopic(root, 'grp_81', { isGroup: true, groupId: 81 });
+    await act(async () => {
+      await flushPromises();
+      wsHandler({ info: { topic: 'grp_81', what: 'kp', from: 'usr42' } });
+    });
+
+    expect(container.querySelector('button[aria-label="停止当前工作"]')).not.toBeNull();
+    expect(container.querySelector('.v3-live-input-status')?.textContent).toContain('可点击红色按钮停止');
+  });
+
+  it('keeps stop available in a one-user one-agent task when history has no initiator message', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 82, name: 'Solo Agent Task', has_bot: true, is_agent_task: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 42, display_name: 'Saturday', is_bot: true },
+      ],
+    });
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 56, from_uid: 42, type: 'thinking', content: '正在处理', created_at: '2026-07-17T02:20:01Z' },
+      ],
+    });
+
+    await mountTopic(root, 'grp_82', { isGroup: true, groupId: 82 });
+    await act(async () => {
+      await flushPromises();
+      wsHandler({ info: { topic: 'grp_82', what: 'kp', from: 'usr42' } });
+    });
+
+    expect(container.querySelector('button[aria-label="停止当前工作"]')).not.toBeNull();
+    expect(container.querySelector('.v3-live-input-status')?.textContent).toContain('可点击红色按钮停止');
+  });
+
+  it('removes stop access when a third member joins an active two-member task', async () => {
+    api.getGroupInfo
+      .mockResolvedValueOnce({
+        group: { id: 83, name: 'Solo Agent Task', has_bot: true, is_agent_task: true },
+        members: [
+          { user_id: 1, display_name: 'Me', is_bot: false },
+          { user_id: 42, display_name: 'Saturday', is_bot: true },
+        ],
+      })
+      .mockResolvedValueOnce({
+        group: { id: 83, name: 'Shared Agent Task', has_bot: true, is_agent_task: true },
+        members: [
+          { user_id: 1, display_name: 'Me', is_bot: false },
+          { user_id: 7, display_name: 'Alice', is_bot: false },
+          { user_id: 42, display_name: 'Saturday', is_bot: true },
+        ],
+      });
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 57, from_uid: 42, type: 'thinking', content: '正在处理', created_at: '2026-07-17T02:30:01Z' },
+      ],
+    });
+
+    await mountTopic(root, 'grp_83', { isGroup: true, groupId: 83 });
+    await act(async () => {
+      await flushPromises();
+      wsHandler({ info: { topic: 'grp_83', what: 'kp', from: 'usr42' } });
+    });
+
+    expect(container.querySelector('button[aria-label="停止当前工作"]')).not.toBeNull();
+    expect(container.querySelector('.v3-live-input-status')?.textContent).toContain('可点击红色按钮停止');
+
+    await act(async () => {
+      wsHandler({ pres: { topic: 'grp_83', what: 'members_invited' } });
+      await flushPromises();
+    });
+
+    expect(container.querySelector('button[aria-label="停止当前工作"]')).toBeNull();
+    expect(container.querySelector('.v3-live-input-status')?.textContent).toContain('CatsCo 正在回复其他成员');
   });
 
   it('keeps the stop action available when cancel delivery fails', async () => {
@@ -1537,13 +1872,19 @@ describe('MessagesView composer draft isolation', () => {
       type: 'text',
       content: `latest-${index}`,
     }));
-    api.getMessages
-      .mockResolvedValueOnce({ messages: latest, has_more: true, next_before_id: 101 })
-      .mockResolvedValueOnce({
+    api.getMessages.mockImplementation((topic, limit, offset, latestPage, beforeId) => {
+      if (limit === 500) {
+        return Promise.resolve({ messages: [], has_more: false, next_before_id: 0 });
+      }
+      if (beforeId === 101) {
+        return Promise.resolve({
         messages: [{ id: 100, seq_id: 100, topic_id: 'p2p_1_2', from_uid: 2, type: 'text', content: 'older' }],
         has_more: false,
         next_before_id: 100,
       });
+      }
+      return Promise.resolve({ messages: latest, has_more: true, next_before_id: 101 });
+    });
 
     await mountTopic(root, 'p2p_1_2');
     await act(async () => {
@@ -1551,7 +1892,7 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(api.getMessages).toHaveBeenNthCalledWith(1, 'p2p_1_2', 50, 0, true);
-    expect(api.getMessages).toHaveBeenNthCalledWith(2, 'p2p_1_2', 50, 50, true, 101);
+    expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 50, 50, true, 101);
     expect(container.querySelector('[data-message-content="older"]')).not.toBeNull();
   });
 
@@ -1606,18 +1947,27 @@ describe('MessagesView composer draft isolation', () => {
       type: 'text',
       content: `latest-${index}`,
     }));
-    api.getMessages
-      .mockImplementationOnce(() => initialTopicA.promise)
-      .mockResolvedValueOnce({
+    let topicALatestRequests = 0;
+    api.getMessages.mockImplementation((topic, limit, offset, latestPage, beforeId) => {
+      if (limit === 500) {
+        return Promise.resolve({ messages: [], has_more: false, next_before_id: 0 });
+      }
+      if (topic === 'p2p_1_2' && beforeId === 101) {
+        return Promise.resolve({
+          messages: [{ id: 100, seq_id: 100, topic_id: 'p2p_1_2', from_uid: 2, type: 'text', content: 'older after refresh' }],
+          has_more: false,
+          next_before_id: 100,
+        });
+      }
+      if (topic === 'p2p_1_3') {
+        return Promise.resolve({
         messages: [{ id: 201, topic_id: 'p2p_1_3', from_uid: 3, type: 'text', content: 'topic B' }],
         has_more: false,
-      })
-      .mockImplementationOnce(() => refreshedTopicA.promise)
-      .mockResolvedValueOnce({
-        messages: [{ id: 100, seq_id: 100, topic_id: 'p2p_1_2', from_uid: 2, type: 'text', content: 'older after refresh' }],
-        has_more: false,
-        next_before_id: 100,
-      });
+        });
+      }
+      topicALatestRequests += 1;
+      return topicALatestRequests === 1 ? initialTopicA.promise : refreshedTopicA.promise;
+    });
 
     await mountTopic(root, 'p2p_1_2');
     const timeline = container.querySelector('.v3-timeline');
@@ -1628,8 +1978,6 @@ describe('MessagesView composer draft isolation', () => {
       initialTopicA.resolve({ messages: latest, has_more: true, next_before_id: 101 });
       await flushPromises();
     });
-    expect(api.getMessages).toHaveBeenCalledTimes(1);
-
     await mountTopic(root, 'p2p_1_3');
     await act(async () => {
       await flushPromises();
@@ -1644,14 +1992,14 @@ describe('MessagesView composer draft isolation', () => {
       Simulate.scroll(timeline);
       await Promise.resolve();
     });
-    expect(api.getMessages).toHaveBeenCalledTimes(3);
+    expect(api.getMessages).not.toHaveBeenCalledWith('p2p_1_2', 50, 50, true, 101);
 
     await act(async () => {
       refreshedTopicA.resolve({ messages: latest, has_more: true, next_before_id: 101 });
       await flushPromises();
     });
 
-    expect(api.getMessages).toHaveBeenNthCalledWith(4, 'p2p_1_2', 50, 50, true, 101);
+    expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 50, 50, true, 101);
     expect(container.querySelector('[data-message-content="older after refresh"]')).not.toBeNull();
   });
 

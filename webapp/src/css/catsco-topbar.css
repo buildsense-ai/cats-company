@@ -90,7 +90,6 @@
   top: calc(100% + 7px);
   left: 0;
   width: min(320px, calc(100vw - 28px));
-  max-height: min(70vh, 560px);
   overflow: visible;
 }
 
@@ -143,7 +142,7 @@
 }
 
 .v3-model-menu-item .v3-model-menu-quota {
-  color: #059669;
+  color: var(--cc-accent);
   font-weight: 600;
 }
 
@@ -343,7 +342,7 @@
   flex: 0 0 auto;
   padding-left: 9px;
   border-left: 1px solid var(--cc-border);
-  color: #059669;
+  color: var(--cc-accent);
   font-size: 11px;
   font-weight: 600;
   line-height: 16px;
@@ -532,15 +531,6 @@
   .v3-action-btn {
     width: 32px;
     height: 32px;
-  }
-}
-
-@media (max-width: 900px) {
-  .v3-model-reasoning-menu {
-    position: static;
-    min-width: 0;
-    margin: 2px 4px 5px 18px;
-    box-shadow: none;
   }
 }
 

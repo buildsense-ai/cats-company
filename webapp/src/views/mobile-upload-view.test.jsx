@@ -69,4 +69,20 @@ describe('MobileUploadView', () => {
     expect(container.querySelector('.mobile-upload-counter').getAttribute('aria-label')).toBe('已上传 3 个文件');
     expect(container.textContent).toContain('继续选择图片或文件');
   });
+
+  it('lets mobile users select every supported inline video format', async () => {
+    await act(async () => {
+      root.render(<MobileUploadView sessionId="session-1" />);
+      await Promise.resolve();
+    });
+
+    const accept = container.querySelector('input[type="file"]').getAttribute('accept');
+    expect(accept).toContain('.mp4');
+    expect(accept).toContain('.webm');
+    expect(accept).toContain('.ogg');
+    expect(accept).toContain('.ogv');
+    expect(accept).toContain('.m4v');
+    expect(accept).toContain('.mov');
+    expect(accept).toContain('video/ogg');
+  });
 });

@@ -96,6 +96,8 @@ describe('feedback system', () => {
     const dialog = document.body.querySelector('[role="alertdialog"]');
     expect(dialog?.textContent).toContain('删除项目？');
     expect(document.activeElement).toBe(dialog.querySelector('.cc-confirm-cancel'));
+    expect(dialog.querySelector('.cc-confirm-symbol')).toBeNull();
+    expect(dialog.querySelector('[aria-label="关闭确认"]')).not.toBeNull();
 
     await act(async () => {
       Simulate.click(dialog.querySelector('.cc-confirm-submit'));
@@ -114,6 +116,22 @@ describe('feedback system', () => {
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeFalsy();
+    expect(document.body.querySelector('.cc-toast-success')).toBeFalsy();
+  });
+
+  it('cancels confirmation from the titlebar close button', async () => {
+    await mount();
+    await act(async () => {
+      Simulate.click(Array.from(container.querySelectorAll('button')).find((button) => button.textContent === '确认'));
+    });
+
+    const dialog = document.body.querySelector('[role="alertdialog"]');
+    await act(async () => {
+      Simulate.click(dialog.querySelector('[aria-label="关闭确认"]'));
       await Promise.resolve();
     });
 

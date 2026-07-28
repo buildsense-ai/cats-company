@@ -6,6 +6,7 @@ import {
   AUTH_FLOW_PARTICLE_COUNT,
   AUTH_FLOW_POINTER_RADIUS,
   authFlowProgress,
+  authFlowPalette,
   authFlowSurfacePoint,
   createAuthFlowScene,
   displacedAuthFlowPoint,
@@ -13,6 +14,13 @@ import {
 } from './auth-flow-background';
 
 describe('AuthFlowBackground', () => {
+  it('uses theme-specific particles for both liquid variants', () => {
+    expect(authFlowPalette('liquid')).toEqual({ r: 86, g: 98, b: 217 });
+    expect(authFlowPalette('liquid-green')).toEqual({ r: 88, g: 203, b: 181 });
+    expect(authFlowPalette('dark')).toEqual({ r: 124, g: 220, b: 194 });
+    expect(authFlowPalette('light')).toEqual({ r: 14, g: 137, b: 104 });
+  });
+
   it('builds a dense deterministic triangular surface and particle stream', () => {
     const scene = createAuthFlowScene(1187, 898);
     const duplicate = createAuthFlowScene(1187, 898);

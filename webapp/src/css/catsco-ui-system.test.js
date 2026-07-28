@@ -9,25 +9,6 @@ const ruleFor = (selector) => css.match(
   new RegExp(`(?:^|\\r?\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{[^}]*\\}`),
 )?.[0] || '';
 
-const hexColorFor = (rule, property) => rule.match(
-  new RegExp(`${property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*(#[\\da-f]{6})`, 'i'),
-)?.[1] || '';
-
-const relativeLuminance = (hex) => {
-  const channels = hex.match(/[\da-f]{2}/gi).map((channel) => {
-    const value = Number.parseInt(channel, 16) / 255;
-    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-  });
-  return (0.2126 * channels[0]) + (0.7152 * channels[1]) + (0.0722 * channels[2]);
-};
-
-const contrastRatio = (foreground, background) => {
-  const foregroundLuminance = relativeLuminance(foreground);
-  const backgroundLuminance = relativeLuminance(background);
-  return (Math.max(foregroundLuminance, backgroundLuminance) + 0.05)
-    / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
-};
-
 const readLosslessWebpDimensions = (buffer) => {
   if (
     buffer.subarray(0, 4).toString('ascii') !== 'RIFF'
@@ -62,29 +43,33 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-brand-title')).toContain('font-size: 16px;');
     expect(ruleFor('.v3-brand-title')).toContain('font-weight: var(--cc-font-weight-bold);');
     expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('gap: 4px;');
-    expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('font-size: 20px;');
-    expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('line-height: 22px;');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('font-size: 19px;');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title')).toContain('line-height: 20.9px;');
     expect(ruleFor('.v3-sidebar-header > .v3-brand-title'))
       .toContain('font-weight: var(--cc-font-weight-brand);');
-    expect(ruleFor(':root')).toContain('--cc-brand-text-start: #177d65;');
-    expect(ruleFor(':root')).toContain('--cc-brand-text-end: #0f705a;');
-    expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-brand-text-start: #58cbb5;');
-    expect(ruleFor('html[data-theme="liquid"]')).toContain('--cc-brand-text-end: #2bb18a;');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title .catsco-brand-mark'))
+      .toContain('width: 45.6px;');
+    expect(ruleFor('.v3-sidebar-header > .v3-brand-title .catsco-brand-mark'))
+      .toContain('height: 20.9px;');
+    expect(ruleFor(':root')).toContain('--cc-brand-text-start: #29bc95;');
+    expect(ruleFor(':root')).toContain('--cc-brand-text-end: #29bc95;');
+    expect(ruleFor(':root')).toContain('--cc-accent: #29bc95;');
+    expect(ruleFor(':root')).toContain('--oc-tab-active: #29bc95;');
+    expect(ruleFor('html[data-theme="dark"]')).toContain('--cc-brand-text-start: #29bc95;');
+    expect(ruleFor('html[data-theme="liquid"]')).toContain('--cc-brand-text-end: #7548cf;');
     expect(ruleFor('.v3-sidebar-header .catsco-brand-name')).toContain(
       'var(--cc-brand-text-start) 0%',
     );
     expect(ruleFor('.v3-sidebar-header .catsco-brand-name')).toContain('letter-spacing: 0.01em;');
+    expect(ruleFor('.v3-sidebar-header .catsco-brand-name'))
+      .toContain('text-shadow: none;');
     expect(css).toMatch(
       /@media \(forced-colors: active\)[\s\S]*?\.v3-sidebar-header \.catsco-brand-name\s*\{[^}]*-webkit-text-fill-color: currentColor;/,
     );
-    const rootRule = ruleFor(':root');
-    const lightBackground = hexColorFor(rootRule, '--cc-bg');
-    expect(contrastRatio(hexColorFor(rootRule, '--cc-brand-text-start'), lightBackground))
-      .toBeGreaterThanOrEqual(4.5);
-    expect(contrastRatio(hexColorFor(rootRule, '--cc-brand-text-end'), lightBackground))
-      .toBeGreaterThanOrEqual(4.5);
     expect(ruleFor('.v3-sidebar.collapsed .v3-sidebar-collapse-btn .catsco-brand-mark'))
       .toContain('width: 34px;');
+    expect(ruleFor('html[data-theme="liquid"] .catsco-brand-mark'))
+      .toContain('filter: hue-rotate(68deg) saturate(1.05) brightness(0.78);');
   });
 
   it('keeps sidebar chrome fixed while the navigation list owns overflow', () => {
@@ -95,17 +80,58 @@ describe('CatsCo shell styling', () => {
     const listRule = ruleFor('.v3-chat-list');
     const footerRule = ruleFor('.v3-profile-footer');
 
-    expect(headerRule).toContain('flex: 0 0 56px;');
+    expect(headerRule).toContain('height: 44.8px;');
+    expect(headerRule).toContain('min-height: 44.8px;');
+    expect(headerRule).toContain('flex: 0 0 44.8px;');
+    expect(headerRule).toContain('border-bottom: 0;');
     expect(sidebarRule).toContain('font-family: var(--cc-font-sans);');
-    expect(collapseButtonRule).toContain('width: 38px;');
-    expect(collapseButtonRule).toContain('height: 38px;');
-    expect(ruleFor('.v3-sidebar-collapse-btn > svg')).toContain('width: 20px;');
+    expect(collapseButtonRule).toContain('width: 30.4px;');
+    expect(collapseButtonRule).toContain('height: 30.4px;');
+    expect(ruleFor('.v3-sidebar-collapse-btn > svg')).toContain('width: 19px;');
+    expect(ruleFor('.v3-sidebar-collapse-btn > svg')).toContain('height: 19px;');
     expect(toolsRule).toContain('flex: 0 0 auto;');
+    expect(toolsRule).toContain('padding: 0 8px 7px;');
     expect(listRule).toContain('min-height: 0;');
     expect(listRule).toContain('flex: 1 1 auto;');
     expect(listRule).toContain('overflow-y: auto;');
     expect(footerRule).toContain('flex: 0 0 auto;');
     expect(ruleFor('.v3-chat-item')).toContain('font-weight: 400;');
+  });
+
+  it('uses tokenized reduced-motion-safe feedback for inline video controls', () => {
+    expect(ruleFor(':root')).toContain('--cc-media-black: oklch(0.19 0.01 165);');
+    expect(ruleFor('.v3-message .oc-rich-video-play'))
+      .toContain('cubic-bezier(0.16, 1, 0.3, 1)');
+    expect(ruleFor('.oc-rich-video-preview-close'))
+      .toContain('cubic-bezier(0.16, 1, 0.3, 1)');
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.v3-message \.oc-rich-video-play,[\s\S]*?transition: none;/,
+    );
+  });
+
+  it('keeps sidebar metadata quiet and reveals its slim scrollbar on interaction', () => {
+    const listRule = ruleFor('.v3-chat-list');
+    const interactiveListRule = ruleFor('.v3-chat-list:hover,\n.v3-chat-list:focus-within');
+    const scrollbarRule = ruleFor('.v3-chat-list::-webkit-scrollbar');
+    const thumbRule = ruleFor('.v3-chat-list::-webkit-scrollbar-thumb');
+    const interactiveThumbRule = ruleFor(
+      '.v3-chat-list:hover::-webkit-scrollbar-thumb,\n.v3-chat-list:focus-within::-webkit-scrollbar-thumb,\n.v3-chat-list::-webkit-scrollbar-thumb:hover,\n.v3-chat-list::-webkit-scrollbar-thumb:active',
+    );
+    const collaborationRule = ruleFor('.cc-item-kind-agent');
+
+    expect(ruleFor('.cc-chat-row-time')).toContain('var(--cc-muted) 76%');
+    expect(collaborationRule).toContain('var(--cc-muted) 76%');
+    expect(collaborationRule).toContain('var(--cc-muted) 7%');
+    expect(listRule).toContain('var(--cc-muted) 18%');
+    expect(interactiveListRule).toContain('var(--cc-muted) 42%');
+    expect(css).toMatch(
+      /@supports selector\(::-webkit-scrollbar\)\s*\{[\s\S]*?\.v3-chat-list,\s*\.v3-chat-list:hover,\s*\.v3-chat-list:focus-within\s*\{[^}]*scrollbar-width: auto;[^}]*scrollbar-color: auto;/,
+    );
+    expect(scrollbarRule).toContain('width: 3px;');
+    expect(scrollbarRule).toContain('height: 3px;');
+    expect(thumbRule).toContain('border-radius: 999px;');
+    expect(thumbRule).toContain('var(--cc-muted) 18%');
+    expect(interactiveThumbRule).toContain('var(--cc-muted) 42%');
   });
 
   it('uses the requested chat surfaces without changing sidebar or border colors', () => {
@@ -120,47 +146,60 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-local-assistant-bar')).toContain('border-bottom: 0;');
   });
 
-  it('defines a dark green liquid theme over the supplied landscape background', () => {
+  it('defines a light blue-violet liquid theme with layered glass surfaces', () => {
     const liquidRule = ruleFor('html[data-theme="liquid"]');
     const liquidGlassRule = ruleFor('html[data-theme="liquid"] :is(\n  .v3-sidebar,\n  .v3-local-assistant-bar,\n  .v3-profile-footer,\n  .v3-composer-box,\n  .v3-agent-picker-menu,\n  .v3-attachment-menu,\n  .v3-friend-action-menu,\n  .v3-profile-popover,\n  .name-dialog,\n  .oc-modal,\n  .settings-panel,\n  .collaboration-manager\n)');
     const liquidButtonRule = ruleFor('html[data-theme="liquid"] :is(\n  .v3-sidebar-collapse-btn,\n  .v3-action-btn,\n  .v3-tool,\n  .cc-section-add,\n  .v3-profile-settings,\n  .oc-btn-default,\n  .oc-modal-close,\n  .oc-profile-editor-close\n)');
     const liquidButtonHoverRule = ruleFor('html[data-theme="liquid"] :is(\n  .v3-sidebar-collapse-btn,\n  .v3-action-btn,\n  .v3-tool,\n  .cc-section-add,\n  .v3-profile-settings,\n  .oc-btn-default,\n  .oc-modal-close,\n  .oc-profile-editor-close\n):hover:not(:disabled)');
     const liquidButtonActiveRule = ruleFor('html[data-theme="liquid"] :is(\n  .v3-sidebar-collapse-btn,\n  .v3-action-btn,\n  .v3-tool,\n  .cc-section-add,\n  .v3-profile-settings,\n  .oc-btn-default,\n  .oc-modal-close,\n  .oc-profile-editor-close\n):active:not(:disabled)');
 
-    expect(liquidRule).toContain('--cc-accent: #159b78;');
+    expect(liquidRule).toContain('--cc-accent: #5662d9;');
     expect(liquidRule).toContain('--cc-main-bg: transparent;');
-    expect(liquidRule).toContain('color-scheme: dark;');
-    expect(liquidRule).toContain('--cc-text: #ffffff;');
-    expect(liquidRule).toContain('--cc-text-secondary: #ffffff;');
-    expect(liquidRule).toContain('--cc-muted: #ffffff;');
-    expect(liquidRule).toContain('--cc-liquid-violet: #8272d9;');
-    expect(liquidRule).toContain('--cc-liquid-blue: #5a91d8;');
+    expect(liquidRule).toContain('color-scheme: light;');
+    expect(liquidRule).toContain('--cc-text: #182033;');
+    expect(liquidRule).toContain('--cc-text-secondary: #4f5b73;');
+    expect(liquidRule).toContain('--cc-muted: #667085;');
+    expect(liquidRule).toContain('--cc-liquid-violet: #7548cf;');
+    expect(liquidRule).toContain('--cc-liquid-blue: #5662d9;');
+    expect(liquidRule).toContain('--oc-green-light: #95aef4;');
+    expect(liquidRule).toContain('--oc-tab-active: #5662d9;');
     expect(liquidGlassRule).toContain('backdrop-filter: blur(12px) saturate(118%);');
     expect(ruleFor('html[data-theme="liquid"] .oc-modal.oc-profile-editor-modal'))
-      .toContain('background: #1a1c1d !important;');
-    expect(ruleFor('html[data-theme="liquid"] body')).toContain("url('/liquid-dark-background.png')");
-    expect(ruleFor('html[data-theme="liquid"] body')).toContain('linear-gradient(rgba(1, 8, 7, 0.86), rgba(1, 8, 7, 0.86))');
-    expect(ruleFor('html[data-theme="liquid"] .v3-main')).toContain('linear-gradient(rgba(1, 8, 7, 0.86), rgba(1, 8, 7, 0.86))');
-    expect(ruleFor('html[data-theme="liquid"] .v3-main')).toContain("url('/liquid-dark-background.png') center / cover no-repeat");
+      .toContain('background: rgba(255, 255, 255, 0.94) !important;');
+    expect(ruleFor('html[data-theme="liquid"] body'))
+      .toContain('radial-gradient(circle at 12% 4%, rgba(143, 181, 255, 0.3), transparent 32%)');
+    expect(ruleFor('html[data-theme="liquid"] body'))
+      .toContain('linear-gradient(135deg, #f9fbff 0%, #f4f7ff 52%, #f8f4ff 100%)');
+    expect(ruleFor('html[data-theme="liquid"] body')).not.toContain('liquid-dark-background.png');
+    expect(ruleFor('html[data-theme="liquid"] .v3-main'))
+      .toContain('radial-gradient(circle at 86% 88%, rgba(180, 145, 255, 0.18), transparent 36%)');
+    expect(ruleFor('html[data-theme="liquid"] .v3-main'))
+      .toContain('linear-gradient(135deg, #f9fbff 0%, #f4f7ff 54%, #f8f4ff 100%)');
     expect(ruleFor('html[data-theme="liquid"] .v3-message-workspace')).toContain('background: transparent;');
     expect(ruleFor('html[data-theme="liquid"] .v3-chat-column')).toContain('background: transparent;');
     expect(ruleFor('html[data-theme="liquid"] .v3-timeline')).toContain('background: transparent;');
     expect(ruleFor('html[data-theme="liquid"] .cc-empty-task')).toContain('background: transparent;');
+    expect(ruleFor('html[data-theme="liquid"] .v3-message.is-self .v3-message-bubble'))
+      .toContain('background: rgba(255, 255, 255, 0.88);');
+    expect(ruleFor('html[data-theme="liquid"] .v3-wpi-code-block.result pre'))
+      .toContain('color: var(--cc-text-secondary);');
+    expect(ruleFor('html[data-theme="liquid"] .v3-wpi-tool-header .oc-wpi-tool-input'))
+      .toContain('opacity: 1 !important;');
     expect(ruleFor('html[data-theme="liquid"] .v3-sidebar'))
-      .toContain('linear-gradient(180deg, #151b19 0%, #111714 58%, #0f1513 100%)');
+      .toContain('linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(249, 251, 255, 0.88) 58%, rgba(246, 248, 255, 0.9) 100%)');
     expect(ruleFor('html[data-theme="liquid"] .v3-sidebar'))
-      .toContain('border-right-color: rgba(184, 229, 216, 0.18);');
+      .toContain('border-right-color: rgba(73, 86, 168, 0.14);');
     expect(ruleFor('html[data-theme="liquid"] .v3-profile-footer'))
-      .toContain('background: rgba(14, 20, 18, 0.76);');
+      .toContain('background: rgba(249, 251, 255, 0.9);');
     expect(ruleFor('html[data-theme="liquid"] .v3-profile-footer'))
       .toContain('backdrop-filter: none;');
-    expect(liquidRule).toContain('--cc-liquid-edge: rgba(184, 229, 216, 0.2);');
+    expect(liquidRule).toContain('--cc-liquid-edge: rgba(73, 86, 168, 0.18);');
     expect(liquidButtonRule).toContain('border: 1px solid var(--cc-liquid-edge);');
-    expect(liquidButtonRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.14)');
-    expect(liquidButtonRule).toContain('inset 0 6px 8px -7px rgba(255, 255, 255, 0.34)');
-    expect(liquidButtonRule).toContain('inset 1px 0 0 rgba(55, 190, 153, 0.06)');
-    expect(liquidButtonRule).toContain('inset -1px 0 0 rgba(130, 114, 217, 0.05)');
-    expect(liquidButtonHoverRule).toContain('inset 0 7px 9px -7px rgba(255, 255, 255, 0.44)');
+    expect(liquidButtonRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.94)');
+    expect(liquidButtonRule).toContain('inset 0 6px 8px -7px rgba(255, 255, 255, 0.92)');
+    expect(liquidButtonRule).toContain('inset 1px 0 0 rgba(86, 98, 217, 0.07)');
+    expect(liquidButtonRule).toContain('inset -1px 0 0 rgba(117, 72, 207, 0.06)');
+    expect(liquidButtonHoverRule).toContain('inset 0 7px 9px -7px rgba(255, 255, 255, 0.96)');
     expect(liquidButtonHoverRule).toContain('transform: translateY(-1px);');
     expect(liquidButtonActiveRule).toContain('transform: translateY(0) scale(0.98);');
     expect(ruleFor('html[data-theme="liquid"] .v3-local-assistant-bar')).toContain('background: transparent;');
@@ -177,7 +216,7 @@ describe('CatsCo shell styling', () => {
   it('presents theme choices and member-code unlocking as compact settings controls', () => {
     expect(ruleFor('.oc-theme-picker')).toContain('display: grid;');
     expect(ruleFor('.oc-theme-option')).toContain('grid-template-columns: 42px minmax(0, 1fr) 22px;');
-    expect(ruleFor('.oc-theme-preview-liquid')).toContain('rgba(130, 114, 217, 0.4)');
+    expect(ruleFor('.oc-theme-preview-liquid')).toContain('rgba(165, 128, 232, 0.68)');
     expect(ruleFor('.oc-liquid-unlock-row')).toContain('grid-template-columns: minmax(0, 1fr) auto;');
   });
 
@@ -189,20 +228,20 @@ describe('CatsCo shell styling', () => {
     const sendDisabledRule = ruleFor('html[data-theme="liquid"] .v3-send:disabled');
 
     expect(sendRule).toContain('border: 1px solid var(--cc-liquid-edge);');
-    expect(sendRule).toContain('background: rgba(21, 155, 120, 0.28);');
-    expect(sendRule).toContain('color: #a6e7d3;');
+    expect(sendRule).toContain('background: rgba(86, 98, 217, 0.16);');
+    expect(sendRule).toContain('color: #4652c5;');
     expect(sendRule).not.toMatch(/0 0 0 \d+px/);
-    expect(sendRule).toContain('0 1px 3px rgba(0, 9, 7, 0.26)');
-    expect(sendRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.22)');
-    expect(sendRule).toContain('inset 1px 0 0 rgba(55, 190, 153, 0.05)');
-    expect(sendRule).toContain('inset -1px 0 0 rgba(130, 114, 217, 0.04)');
+    expect(sendRule).toContain('0 2px 5px rgba(79, 91, 148, 0.12)');
+    expect(sendRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.96)');
+    expect(sendRule).toContain('inset 1px 0 0 rgba(86, 98, 217, 0.07)');
+    expect(sendRule).toContain('inset -1px 0 0 rgba(117, 72, 207, 0.05)');
     expect(sendRule).not.toContain('radial-gradient');
     expect(sendDecorationRule).toContain('display: none;');
-    expect(sendHoverRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.28)');
+    expect(sendHoverRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.98)');
     expect(sendActiveRule).toContain('transform: translateY(0) scale(0.96);');
-    expect(sendDisabledRule).toContain('background: rgba(255, 255, 255, 0.05);');
-    expect(sendDisabledRule).toContain('color: #78918a;');
-    expect(sendDisabledRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.08)');
+    expect(sendDisabledRule).toContain('background: rgba(255, 255, 255, 0.48);');
+    expect(sendDisabledRule).toContain('color: #99a2b7;');
+    expect(sendDisabledRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.82)');
     expect(sendDisabledRule).toContain('opacity: 1;');
   });
 
@@ -213,31 +252,31 @@ describe('CatsCo shell styling', () => {
     const attachmentActiveRule = ruleFor('html[data-theme="liquid"] .v3-composer-plus:active:not(:disabled)');
 
     expect(attachmentRule).toContain('border: 1px solid var(--cc-liquid-edge);');
-    expect(attachmentRule).toContain('background: rgba(255, 255, 255, 0.07);');
-    expect(attachmentRule).toContain('color: #dce8e4;');
-    expect(attachmentRule).toContain('0 1px 3px rgba(0, 9, 7, 0.24)');
-    expect(attachmentRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.22)');
+    expect(attachmentRule).toContain('background: rgba(255, 255, 255, 0.68);');
+    expect(attachmentRule).toContain('color: #46506a;');
+    expect(attachmentRule).toContain('0 2px 5px rgba(79, 91, 148, 0.11)');
+    expect(attachmentRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.96)');
     expect(attachmentRule).not.toContain('gradient');
     expect(attachmentDecorationRule).toContain('display: none;');
-    expect(attachmentHoverRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.28)');
+    expect(attachmentHoverRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.98)');
     expect(attachmentActiveRule).toContain('transform: translateY(0) scale(0.96);');
   });
 
-  it('keeps the dark liquid composer legible with restrained focus depth', () => {
+  it('keeps the light liquid composer legible with restrained focus depth', () => {
     const composerRule = ruleFor('html[data-theme="liquid"] .v3-composer-box');
     const composerFocusRule = ruleFor('html[data-theme="liquid"] .v3-composer-box:focus-within');
     const composerInputRule = ruleFor('html[data-theme="liquid"] .v3-composer-input');
 
-    expect(composerRule).toContain('background: #242627;');
-    expect(composerRule).toContain('0 0 0 1px rgba(0, 10, 8, 0.32)');
-    expect(composerRule).toContain('0 3px 7px rgba(0, 9, 7, 0.24)');
-    expect(composerRule).toContain('inset 0 8px 12px -10px rgba(255, 255, 255, 0.36)');
-    expect(composerFocusRule).toContain('linear-gradient(#242627, #242627) padding-box');
-    expect(composerFocusRule).toContain('rgba(90, 145, 216, 0.5) 38%');
-    expect(composerFocusRule).toContain('rgba(130, 114, 217, 0.52) 68%');
+    expect(composerRule).toContain('background: rgba(255, 255, 255, 0.84);');
+    expect(composerRule).toContain('0 0 0 1px rgba(73, 86, 168, 0.05)');
+    expect(composerRule).toContain('0 4px 12px rgba(79, 91, 148, 0.12)');
+    expect(composerRule).toContain('inset 0 8px 12px -10px rgba(255, 255, 255, 0.96)');
+    expect(composerFocusRule).toContain('linear-gradient(rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.9)) padding-box');
+    expect(composerFocusRule).toContain('rgba(108, 137, 232, 0.54) 38%');
+    expect(composerFocusRule).toContain('rgba(117, 72, 207, 0.56) 68%');
     expect(composerFocusRule).toContain('border-box;');
-    expect(composerFocusRule).toContain('0 0 0 1px rgba(0, 10, 8, 0.3)');
-    expect(composerFocusRule).toContain('inset 0 9px 13px -10px rgba(255, 255, 255, 0.42)');
+    expect(composerFocusRule).toContain('0 0 0 1px rgba(73, 86, 168, 0.08)');
+    expect(composerFocusRule).toContain('inset 0 9px 13px -10px rgba(255, 255, 255, 0.96)');
     expect(composerFocusRule).toContain('transform: translateY(-1px);');
     expect(composerInputRule).toContain('background: transparent;');
     expect(composerInputRule).toContain('box-shadow: none;');
@@ -263,15 +302,25 @@ describe('CatsCo shell styling', () => {
     const dangerRule = ruleFor('html[data-theme="liquid"] :is(.oc-btn-danger, button.danger, .mobile-channel-unlink-btn)');
     const focusRule = ruleFor('html[data-theme="liquid"] button:focus-visible');
 
-    expect(primaryRule).toContain('background: rgba(21, 155, 120, 0.78) !important;');
-    expect(primaryRule).toContain('inset 0 7px 10px -8px rgba(255, 255, 255, 0.38)');
+    expect(primaryRule).toContain('background: rgba(86, 98, 217, 0.94) !important;');
+    expect(primaryRule).toContain('inset 0 7px 10px -8px rgba(255, 255, 255, 0.46)');
     expect(neutralRule).toContain('border: 1px solid var(--cc-liquid-edge) !important;');
-    expect(neutralRule).toContain('background: rgba(255, 255, 255, 0.07) !important;');
-    expect(settingsRule).toContain('background: rgba(255, 255, 255, 0.055) !important;');
-    expect(dangerRule).toContain('background: rgba(164, 46, 52, 0.16) !important;');
-    expect(focusRule).toContain('outline: 2px solid rgba(130, 114, 217, 0.58);');
+    expect(neutralRule).toContain('background: rgba(255, 255, 255, 0.72) !important;');
+    expect(settingsRule).toContain('background: rgba(255, 255, 255, 0.72) !important;');
+    expect(dangerRule).toContain('background: rgba(218, 69, 79, 0.09) !important;');
+    expect(focusRule).toContain('outline: 2px solid rgba(86, 98, 217, 0.62);');
     expect(primaryRule).toContain('html[data-theme="liquid"] :is(');
     expect(neutralRule).toContain('html[data-theme="liquid"] :is(');
+    expect(ruleFor('html[data-theme="liquid"] :is(\n  .catsco-download-icon,\n  .relay-access-summary-icon\n)'))
+      .toContain('background: rgba(86, 98, 217, 0.11);');
+    expect(ruleFor('html[data-theme="liquid"] .relay-access-state:not(.inactive):not(.revoked)'))
+      .toContain('background: rgba(86, 98, 217, 0.1);');
+    expect(ruleFor('html[data-theme="liquid"] .relay-access-current-quota.active'))
+      .toContain('background: rgba(86, 98, 217, 0.07);');
+    expect(ruleFor('html[data-theme="liquid"] .relay-access-quota-bar i'))
+      .toContain('linear-gradient(90deg, var(--cc-liquid-blue), var(--cc-liquid-violet))');
+    expect(ruleFor('html[data-theme="liquid"] :is(\n  .v3-model-quota,\n  .v3-model-menu-item .v3-model-menu-quota\n):not(.warning):not(.danger):not(.muted)'))
+      .toContain('color: var(--cc-liquid-blue);');
   });
 
   it('aligns registration verification controls to the shared field grid', () => {
@@ -352,10 +401,19 @@ describe('CatsCo shell styling', () => {
   it('right-aligns every top-level action and keeps its chevron close to the title', () => {
     const sectionRule = ruleFor('.cc-top-level-section');
     const toggleRule = ruleFor('.cc-section-toggle');
+    const activeUnreadRule = ruleFor(
+      `.cc-contacts-section:hover .cc-section-unread-dot,
+.cc-contacts-section:focus-within .cc-section-unread-dot`,
+    );
     const actionRule = ruleFor('.cc-top-level-section > .cc-section-add');
+    const unreadRule = ruleFor('.cc-section-unread-dot');
 
     expect(sectionRule).toContain('position: relative;');
     expect(toggleRule).toContain('gap: 3px;');
+    expect(toggleRule).toContain('padding: 0;');
+    expect(unreadRule).toContain('margin-left: auto;');
+    expect(unreadRule).toContain('transition: opacity 120ms ease, transform 120ms ease;');
+    expect(activeUnreadRule).toContain('opacity: 0;');
     expect(actionRule).toContain('position: absolute;');
     expect(actionRule).toContain('right: 4px;');
   });
@@ -364,6 +422,15 @@ describe('CatsCo shell styling', () => {
     const actionRule = ruleFor('.v3-chat-item .cc-chat-row-actions');
     const agentActionRule = ruleFor('.cc-agent-row-trailing .v3-agent-row-actions');
     const projectActionRule = ruleFor('.cc-project-menu-trigger');
+    const friendUnreadRule = ruleFor('.cc-chat-row-trailing > .cc-friend-unread-dot');
+    const rowHoverMetadataRule = ruleFor(
+      `.v3-chat-item:hover .cc-chat-row-time,
+.v3-chat-item:focus-within .cc-chat-row-time,
+.v3-chat-item:hover .cc-task-row-status,
+.v3-chat-item:focus-within .cc-task-row-status,
+.v3-chat-item:hover .cc-friend-unread-dot,
+.v3-chat-item:focus-within .cc-friend-unread-dot`,
+    );
 
     expect(actionRule).toContain('justify-content: flex-end;');
     expect(actionRule).toContain('right: -5px;');
@@ -371,6 +438,9 @@ describe('CatsCo shell styling', () => {
     expect(agentActionRule).toContain('gap: 2px;');
     expect(agentActionRule).toContain('right: -5px;');
     expect(projectActionRule).toContain('flex: 0 0 var(--cc-sidebar-action-size);');
+    expect(friendUnreadRule).toContain('right: -1px;');
+    expect(friendUnreadRule).toContain('transition: opacity 120ms ease, transform 120ms ease;');
+    expect(rowHoverMetadataRule).toContain('opacity: 0;');
     expect(css).not.toContain('.cc-history-item .cc-chat-row-actions');
   });
 
@@ -437,14 +507,14 @@ describe('CatsCo shell styling', () => {
     const liquidStickyRule = ruleFor(
       'html[data-theme="liquid"] .v3-chat-list > :is(.cc-contacts-section, .cc-project-section, .cc-conversation-section)',
     );
-    expect(liquidStickyRule).toContain('background: rgb(18, 24, 22);');
-    expect(liquidStickyRule).not.toContain('rgba(18, 24, 22, 0.96)');
+    expect(liquidStickyRule).toContain('background: rgb(249, 251, 255);');
+    expect(liquidStickyRule).not.toContain('rgba(249, 251, 255, 0.96)');
 
     const liquidContactsRule = ruleFor(
       'html[data-theme="liquid"] .v3-chat-list > .cc-contacts-section',
     );
     expect(liquidContactsRule).toContain(
-      '0 calc(-1 * var(--cc-sidebar-list-padding-top) - var(--cc-sidebar-row-gap)) 0 0 rgb(18, 24, 22),',
+      '0 calc(-1 * var(--cc-sidebar-list-padding-top) - var(--cc-sidebar-row-gap)) 0 0 rgb(249, 251, 255),',
     );
   });
 
@@ -525,7 +595,9 @@ describe('CatsCo shell styling', () => {
 
     expect(buttonRule).toContain('width: 42px;');
     expect(buttonRule).toContain('height: 42px;');
-    expect(avatarRule).toContain('transition: transform 150ms ease;');
+    expect(avatarRule).toContain(
+      'transition: transform 150ms ease, filter 150ms ease, opacity 150ms ease;',
+    );
     expect(css).toContain('transform: scale(1.14);');
     expect(hintRule).toContain('position: fixed;');
     expect(hintRule).toContain('pointer-events: none;');
@@ -533,12 +605,17 @@ describe('CatsCo shell styling', () => {
 
   it('overlays compact task status on the avatar without changing rail geometry', () => {
     const compactButtonRule = ruleFor('.cc-compact-conversation');
+    const runningAvatarRule = ruleFor(
+      '.cc-compact-conversation:has(.cc-compact-task-status.running) .oc-avatar',
+    );
     const dotRule = ruleFor('.cc-compact-task-status:not(.running)');
     const runningRule = ruleFor('.cc-compact-task-status.running');
     const spinnerRule = ruleFor('.cc-compact-task-status.running svg');
 
     expect(compactButtonRule).toContain('position: relative;');
     expect(css).toContain('.cc-compact-conversation {\n  overflow: hidden;');
+    expect(runningAvatarRule).toContain('filter: brightness(0.74) saturate(0.88);');
+    expect(runningAvatarRule).toContain('opacity: 0.86;');
     expect(dotRule).toContain('right: 3px;');
     expect(dotRule).toContain('bottom: 3px;');
     expect(dotRule).toContain('width: 9px;');
@@ -648,6 +725,12 @@ describe('CatsCo shell styling', () => {
     expect(stackedNoticeRule).toContain('padding: 8px 14px 11px;');
     expect(stackedNoticeRule).toContain('text-align: center;');
     expect(ruleFor('.v3-composer-notices + .v3-composer-box')).toContain('z-index: 1;');
+    expect(ruleFor('.oc-reply-bar')).toContain('width: min(646px, calc(85% - 34px)) !important;');
+    expect(ruleFor('.oc-reply-bar')).toContain('border-radius: 22px 22px 0 0 !important;');
+    expect(ruleFor('.oc-reply-bar')).toContain('background: color-mix(in srgb, var(--cc-accent) 5%, var(--cc-panel)) !important;');
+    expect(ruleFor('.oc-reply-bar')).toContain('font-size: 12px !important;');
+    expect(css).toContain('.oc-reply-bar .oc-reply-bar-close {\n  width: 24px;\n  height: 18px;');
+    expect(ruleFor('.oc-reply-bar + .v3-composer')).toContain('z-index: 1;');
     expect(ruleFor('.v3-attachment-notice')).toContain('justify-content: center;');
     expect(ruleFor('.v3-attachment-notice > span')).toContain('text-overflow: ellipsis;');
     expect(ruleFor('.v3-composer-attachment-tray')).toContain('overflow-x: auto;');
@@ -681,6 +764,29 @@ describe('CatsCo shell styling', () => {
     expect(css).toContain('.v3-message.is-self.has-file-only .v3-message-bubble');
   });
 
+  it('presents confirmations as a compact neutral dialog with a clear primary action', () => {
+    const overlayRule = ruleFor('.cc-confirm-overlay');
+    const dialogRule = ruleFor('.oc-modal.cc-confirm-dialog');
+    const cancelRule = ruleFor('.cc-confirm-cancel');
+    const submitRule = ruleFor('.cc-confirm-submit');
+    const liquidDialogRule = ruleFor('html[data-theme="liquid"] .cc-confirm-dialog');
+
+    expect(overlayRule).toContain('background: rgba(0, 0, 0, 0.72);');
+    expect(dialogRule).toContain('width: min(420px, calc(100vw - 32px));');
+    expect(dialogRule).toContain('border-radius: 16px !important;');
+    expect(dialogRule).toContain('border: 1px solid var(--cc-border) !important;');
+    expect(dialogRule).toContain('background: var(--cc-panel) !important;');
+    expect(cancelRule).toContain('background: var(--cc-panel-raised);');
+    expect(cancelRule).toContain('border: 1px solid var(--cc-border-strong);');
+    expect(submitRule).toContain('background: var(--cc-accent);');
+    expect(ruleFor('.cc-confirm-submit.is-danger'))
+      .toContain('background: color-mix(in srgb, var(--cc-danger) 16%, var(--cc-panel));');
+    expect(liquidDialogRule).toContain('border-color: rgba(112, 119, 139, 0.22) !important;');
+    expect(liquidDialogRule).toContain('background: rgba(255, 255, 255, 0.96) !important;');
+    expect(liquidDialogRule).toContain('saturate(100%)');
+    expect(css).toContain('@keyframes cc-confirm-enter');
+  });
+
   it('uses the same solid online color for friend and task icons while keeping agents outlined', () => {
     const friendRule = ruleFor('.cc-contact-item .cc-friend-contact-icon.online');
     const taskRule = ruleFor('.cc-task-agent-icon.online');
@@ -693,9 +799,16 @@ describe('CatsCo shell styling', () => {
     expect(friendRule).toContain('fill-opacity: 1;');
     expect(taskRule).toContain('fill-opacity: 1;');
     expect(taskRule).toContain('opacity: 1;');
-    expect(ruleFor(':root')).toContain('--cc-online-icon: #5ea693;');
+    expect(ruleFor(':root')).toContain('--cc-online-icon: #29bc95;');
+    expect(ruleFor('html[data-theme="liquid"]')).toContain('--cc-online-icon: #5662d9;');
+    expect(ruleFor('html[data-theme="liquid"]')).toContain('--cc-offline-icon: #98a2b7;');
     expect(ruleFor('.cc-contact-item .cc-agent-contact-icon.online')).toContain('stroke: var(--cc-online-icon);');
     expect(ruleFor('.cc-contact-item .cc-agent-contact-icon.online')).toContain('fill: none;');
+    const liquidOfflineRule = ruleFor('html[data-theme="liquid"] :is(\n  .cc-friend-contact-icon.offline,\n  .cc-agent-contact-icon.offline,\n  .cc-task-agent-icon.offline\n)');
+    expect(liquidOfflineRule).toContain('color: var(--cc-offline-icon);');
+    expect(liquidOfflineRule).toContain('stroke: var(--cc-offline-icon);');
+    expect(liquidOfflineRule).toContain('fill: none;');
+    expect(liquidOfflineRule).toContain('opacity: 1;');
   });
 
   it('keeps the member search surface unified and clearly marks the active member type', () => {

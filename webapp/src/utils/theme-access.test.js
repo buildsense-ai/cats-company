@@ -1,5 +1,6 @@
 import {
   LIQUID_THEME_UNLOCK_STORAGE_KEY,
+  isLiquidTheme,
   isLiquidThemeUnlocked,
   normalizeTheme,
   saveLiquidThemeUnlock,
@@ -11,7 +12,11 @@ describe('theme access', () => {
     expect(normalizeTheme('light')).toBe('light');
     expect(normalizeTheme('dark')).toBe('dark');
     expect(normalizeTheme('liquid')).toBe('liquid');
+    expect(normalizeTheme('liquid-green')).toBe('liquid-green');
     expect(normalizeTheme('neon')).toBe('light');
+    expect(isLiquidTheme('liquid')).toBe(true);
+    expect(isLiquidTheme('liquid-green')).toBe(true);
+    expect(isLiquidTheme('dark')).toBe(false);
   });
 
   it('stores the local liquid-theme unlock without storing a password', () => {
