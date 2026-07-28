@@ -2,6 +2,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -63,7 +64,8 @@ var allowedFileExts = map[string]bool{
 	".xls": true, ".xlsx": true, ".ppt": true, ".pptx": true,
 	".zip": true, ".rar": true, ".7z": true,
 	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
-	".mp3": true, ".mp4": true, ".wav": true,
+	".mp3": true, ".mp4": true, ".webm": true, ".ogg": true, ".ogv": true,
+	".m4v": true, ".mov": true, ".wav": true,
 	".csv": true, ".json": true, ".xml": true,
 	".html": true, ".htm": true,
 	".md": true, ".go": true, ".py": true, ".js": true,
@@ -155,8 +157,9 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Generate unique file key
-	fileKey := generateFileKey(ext)
+	// Preserve the audio/video distinction for Ogg containers in the stored key.
+	storedExt, mimeType := normalizedUploadMetadata(ext, header.Header.Get("Content-Type"), file)
+	fileKey := generateFileKey(storedExt)
 	subDir := "files"
 	if uploadType == "image" {
 		subDir = "images"
@@ -192,7 +195,7 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		Name:     header.Filename,
 		Size:     written,
 		Type:     uploadType,
-		MimeType: normalizedUploadMimeType(ext, header.Header.Get("Content-Type")),
+		MimeType: mimeType,
 	})
 }
 
@@ -363,7 +366,8 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	fileKey := generateFileKey(ext)
+	storedExt, mimeType := normalizedUploadMetadata(ext, header.Header.Get("Content-Type"), file)
+	fileKey := generateFileKey(storedExt)
 	subDir := "files"
 	if uploadType == "image" {
 		subDir = "images"
@@ -392,7 +396,7 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 		Name:     header.Filename,
 		Size:     written,
 		Type:     uploadType,
-		MimeType: normalizedUploadMimeType(ext, header.Header.Get("Content-Type")),
+		MimeType: mimeType,
 	}
 
 	h.mobileMu.Lock()
@@ -468,6 +472,9 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 	if subDir == "files" {
 		forceDownload := r.URL.Query().Get("download") == "1"
 		w.Header().Set("Content-Disposition", contentDispositionForUploadFile(fileName, ext, forceDownload))
+		if videoMime, ok := inlineVideoMimeType(ext); ok {
+			w.Header().Set("Content-Type", videoMime)
+		}
 		if isHTMLUploadExtension(ext) && !forceDownload {
 			// Uploaded HTML may contain active content. Let browsers render it for
 			// navigation/preview, but keep it in an opaque sandboxed origin.
@@ -489,10 +496,30 @@ func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) s
 		return "attachment"
 	}
 	disposition := "attachment"
-	if strings.EqualFold(ext, ".pdf") || isHTMLUploadExtension(ext) {
+	if strings.EqualFold(ext, ".pdf") || isHTMLUploadExtension(ext) || isInlineVideoExt(ext) {
 		disposition = "inline"
 	}
 	return fmt.Sprintf("%s; filename=%q", disposition, fileName)
+}
+
+func isInlineVideoExt(ext string) bool {
+	_, ok := inlineVideoMimeType(ext)
+	return ok
+}
+
+func inlineVideoMimeType(ext string) (string, bool) {
+	switch strings.ToLower(ext) {
+	case ".mp4", ".m4v":
+		return "video/mp4", true
+	case ".webm":
+		return "video/webm", true
+	case ".ogv":
+		return "video/ogg", true
+	case ".mov":
+		return "video/quicktime", true
+	default:
+		return "", false
+	}
 }
 
 func isHTMLUploadExtension(ext string) bool {
@@ -505,6 +532,13 @@ func isHTMLUploadExtension(ext string) bool {
 }
 
 func normalizedUploadMimeType(ext, headerType string) string {
+	if videoMime, ok := inlineVideoMimeType(ext); ok {
+		return videoMime
+	}
+	if strings.EqualFold(ext, ".ogg") {
+		return "audio/ogg"
+	}
+
 	switch strings.ToLower(ext) {
 	case ".md":
 		return "text/markdown"
@@ -527,6 +561,31 @@ func normalizedUploadMimeType(ext, headerType string) string {
 	}
 
 	return "application/octet-stream"
+}
+
+func normalizedUploadMetadata(ext, headerType string, file io.ReaderAt) (string, string) {
+	storedExt := normalizedUploadExtension(ext, headerType, file)
+	return storedExt, normalizedUploadMimeType(storedExt, headerType)
+}
+
+func normalizedUploadExtension(ext, headerType string, file io.ReaderAt) string {
+	if !strings.EqualFold(ext, ".ogg") {
+		return ext
+	}
+	mediaType, _, err := mime.ParseMediaType(headerType)
+	if (err == nil && strings.EqualFold(mediaType, "video/ogg")) || containsTheoraIdentificationHeader(file) {
+		return ".ogv"
+	}
+	return ext
+}
+
+func containsTheoraIdentificationHeader(file io.ReaderAt) bool {
+	if file == nil {
+		return false
+	}
+	probe := make([]byte, 64<<10)
+	n, _ := file.ReadAt(probe, 0)
+	return bytes.Contains(probe[:n], []byte("\x80theora"))
 }
 
 func generateFileKey(ext string) string {
