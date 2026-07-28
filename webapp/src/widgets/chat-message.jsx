@@ -1531,6 +1531,7 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
             playsInline
             preload="metadata"
             src={src}
+            tabIndex={0}
           >
             您的浏览器暂不支持视频播放。
           </video>

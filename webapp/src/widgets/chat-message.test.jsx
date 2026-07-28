@@ -1708,11 +1708,19 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.oc-rich-video-preview').getAttribute('role')).toBe('dialog');
     expect(document.activeElement).toBe(closeButton);
 
+    preview.focus();
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
       await Promise.resolve();
     });
     expect(document.activeElement).toBe(closeButton);
+
+    closeButton.focus();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(document.activeElement).toBe(preview);
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
