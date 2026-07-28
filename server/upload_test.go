@@ -76,6 +76,27 @@ func TestHandleUploadAllowsWebMVideoAttachment(t *testing.T) {
 	}
 }
 
+func TestHandleUploadTreatsOggExtensionAsAudio(t *testing.T) {
+	handler := NewUploadHandler(t.TempDir(), "/uploads")
+	req := buildUploadRequestWithPartContentType(t, "/api/upload?type=file", "demo.ogg", "video/ogg", []byte("ogg bytes"))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUpload(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		MimeType string `json:"mime_type"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.MimeType != "audio/ogg" {
+		t.Fatalf("mime_type = %q, want audio/ogg", body.MimeType)
+	}
+}
+
 func TestHandleServeFileAllowsGeneratedFeedbackImage(t *testing.T) {
 	dir := t.TempDir()
 	fileName := "20260428_0123456789abcdef0123456789abcdef.png"
@@ -241,7 +262,6 @@ func TestHandleServeFileServesBrowserVideoFormatsInline(t *testing.T) {
 		mimeType string
 	}{
 		{ext: ".webm", mimeType: "video/webm"},
-		{ext: ".ogg", mimeType: "video/ogg"},
 		{ext: ".ogv", mimeType: "video/ogg"},
 		{ext: ".m4v", mimeType: "video/mp4"},
 		{ext: ".mov", mimeType: "video/quicktime"},
@@ -273,6 +293,32 @@ func TestHandleServeFileServesBrowserVideoFormatsInline(t *testing.T) {
 				t.Fatalf("Content-Disposition = %q, want inline", got)
 			}
 		})
+	}
+}
+
+func TestHandleServeFileServesOggFilesAsAttachments(t *testing.T) {
+	dir := t.TempDir()
+	fileName := "20260727_0123456789abcdef0123456789abcdef.ogg"
+	fullPath := filepath.Join(dir, "files", fileName)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("ogg bytes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewUploadHandler(dir, "/uploads")
+	rec := httptest.NewRecorder()
+	handler.HandleServeFile(rec, httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName, nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "audio/ogg" {
+		t.Fatalf("Content-Type = %q, want audio/ogg", got)
+	}
+	if got := rec.Header().Get("Content-Disposition"); !strings.Contains(got, "attachment") {
+		t.Fatalf("Content-Disposition = %q, want attachment", got)
 	}
 }
 
