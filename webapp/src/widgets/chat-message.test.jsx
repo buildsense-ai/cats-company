@@ -1344,7 +1344,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(actions[1].getAttribute('download')).toBe('【电商带货主播_广州 4-6K】何荧 25年应届生.pdf');
   });
 
-  it('embeds MP4 file attachments as inline video players', async () => {
+  it('renders MP4 attachments as image-sized thumbnails that open a video preview', async () => {
     await act(async () => {
       root.render(
         <PreviewHarness
@@ -1368,15 +1368,49 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
 
-    const video = container.querySelector('video.oc-rich-video-player');
-    expect(video).not.toBeNull();
-    expect(video.getAttribute('src')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4');
-    expect(video.controls).toBe(true);
-    expect(video.playsInline).toBe(true);
-    expect(video.preload).toBe('metadata');
-    expect(video.getAttribute('aria-label')).toBe('product-demo.mp4');
+    const thumbnail = container.querySelector('video.oc-rich-video-thumb');
+    const trigger = container.querySelector('button.oc-rich-video-trigger');
+    expect(thumbnail).not.toBeNull();
+    expect(thumbnail.getAttribute('src')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4');
+    expect(thumbnail.muted).toBe(true);
+    expect(thumbnail.playsInline).toBe(true);
+    expect(thumbnail.preload).toBe('metadata');
+    expect(trigger.getAttribute('aria-label')).toBe('预览视频 product-demo.mp4');
+    expect(container.querySelector('video.oc-rich-video-player')).toBeNull();
     expect(container.querySelector('.v3-attachment-card')).toBeNull();
     expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(trigger);
+      await Promise.resolve();
+    });
+
+    const preview = container.querySelector('video.oc-rich-video-player');
+    expect(preview).not.toBeNull();
+    expect(preview.getAttribute('src')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4');
+    expect(preview.controls).toBe(true);
+    expect(preview.autoplay).toBe(true);
+    expect(preview.getAttribute('aria-label')).toBe('product-demo.mp4');
+    expect(container.querySelector('.oc-rich-video-preview').getAttribute('role')).toBe('dialog');
+
+    await act(async () => {
+      Simulate.keyDown(container.querySelector('.oc-rich-video-preview'), { key: 'Escape' });
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.oc-rich-video-preview')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(trigger);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button.oc-rich-video-preview-close'));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.oc-rich-video-preview')).toBeNull();
   });
 
   it('embeds WebM attachments by extension', async () => {
@@ -1403,10 +1437,10 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
 
-    const video = container.querySelector('video.oc-rich-video-player');
+    const video = container.querySelector('video.oc-rich-video-thumb');
     expect(video).not.toBeNull();
     expect(video.getAttribute('src')).toContain('.webm');
-    expect(video.getAttribute('aria-label')).toBe('product-demo.webm');
+    expect(container.querySelector('button.oc-rich-video-trigger').getAttribute('aria-label')).toBe('预览视频 product-demo.webm');
   });
 
   it('recognizes Ogg video by MIME and falls back to the file card after a playback error', async () => {
@@ -1433,7 +1467,7 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
 
-    const video = container.querySelector('video.oc-rich-video-player');
+    const video = container.querySelector('video.oc-rich-video-thumb');
     expect(video).not.toBeNull();
 
     await act(async () => {
@@ -1441,7 +1475,7 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelector('video.oc-rich-video-player')).toBeNull();
+    expect(container.querySelector('video.oc-rich-video-thumb')).toBeNull();
     expect(container.querySelector('.v3-attachment-name').textContent).toBe('product-demo.ogg');
     expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
   });
@@ -1473,6 +1507,43 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('video.oc-rich-video-player')).toBeNull();
     expect(container.querySelector('.v3-attachment-name').textContent).toBe('recording.ogg');
     expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
+  });
+
+  it('restores the video thumbnail when a reused attachment changes URL', async () => {
+    const renderVideo = async (url) => {
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{
+              id: 12,
+              from_uid: 2,
+              content: '[文件] product-demo.mp4',
+              content_blocks: [{
+                type: 'file',
+                payload: {
+                  name: 'product-demo.mp4',
+                  url,
+                  size: 4096,
+                  mime_type: 'video/mp4',
+                },
+              }],
+              created_at: '2026-06-09T00:00:00Z',
+            }}
+          />,
+        );
+        await Promise.resolve();
+      });
+    };
+
+    await renderVideo('/uploads/files/first.mp4');
+    await act(async () => {
+      Simulate.error(container.querySelector('video.oc-rich-video-thumb'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('video.oc-rich-video-thumb')).toBeNull();
+
+    await renderVideo('/uploads/files/second.mp4');
+    expect(container.querySelector('video.oc-rich-video-thumb').getAttribute('src')).toBe('/uploads/files/second.mp4');
   });
 
   it('marks DOCX as downloadable without claiming browser preview support', async () => {

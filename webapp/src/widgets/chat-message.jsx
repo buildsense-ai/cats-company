@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
+import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -1211,25 +1211,74 @@ function spreadsheetPreviewTooLargeMessage() {
 
 function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
   const [playbackFailed, setPlaybackFailed] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const src = resolveMediaURL(payload?.url);
+
+  useEffect(() => {
+    setPlaybackFailed(false);
+    setPreviewOpen(false);
+  }, [src]);
 
   if (!payload || !src || playbackFailed) {
     return <FileContent payload={payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} inlineVideo={false} />;
   }
 
   return (
-    <div className="oc-rich-video">
-      <video
-        aria-label={payload.name || '视频'}
-        className="oc-rich-video-player"
-        controls
-        onError={() => setPlaybackFailed(true)}
-        playsInline
-        preload="metadata"
-        src={src}
+    <div className="oc-rich-image oc-rich-video">
+      <button
+        aria-label={`预览视频 ${payload.name || ''}`.trim()}
+        className="oc-rich-video-trigger"
+        onClick={() => setPreviewOpen(true)}
+        type="button"
       >
-        您的浏览器暂不支持视频播放。
-      </video>
+        <video
+          aria-hidden="true"
+          className="oc-rich-video-thumb"
+          muted
+          onError={() => setPlaybackFailed(true)}
+          playsInline
+          preload="metadata"
+          src={src}
+        />
+        <span className="oc-rich-video-play" aria-hidden="true">
+          <Play fill="currentColor" size={20} />
+        </span>
+      </button>
+      {previewOpen && (
+        <div
+          aria-label={`视频预览 ${payload.name || ''}`.trim()}
+          aria-modal="true"
+          className="oc-modal-overlay oc-rich-video-preview"
+          onClick={() => setPreviewOpen(false)}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setPreviewOpen(false);
+          }}
+          role="dialog"
+        >
+          <button
+            aria-label="关闭视频预览"
+            autoFocus
+            className="oc-rich-video-preview-close"
+            onClick={() => setPreviewOpen(false)}
+            type="button"
+          >
+            <X size={20} />
+          </button>
+          <video
+            aria-label={payload.name || '视频'}
+            autoPlay
+            className="oc-rich-video-player"
+            controls
+            onClick={(event) => event.stopPropagation()}
+            onError={() => setPlaybackFailed(true)}
+            playsInline
+            preload="metadata"
+            src={src}
+          >
+            您的浏览器暂不支持视频播放。
+          </video>
+        </div>
+      )}
     </div>
   );
 }

@@ -6336,42 +6336,91 @@ html[data-theme="liquid"] :is(
   }
 }
 
-/* Inline videos use the same message flow as images and GIFs. */
+/* Inline videos use the same compact footprint as images and open into a focused preview. */
 .v3-message .oc-rich-video {
-  width: min(480px, 100%);
+  width: fit-content;
   max-width: 100%;
-  margin: 4px auto 0;
-  overflow: hidden;
-  border: 1px solid var(--cc-border);
-  border-radius: 11px;
-  background: var(--cc-media-black);
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+  margin: 0;
 }
 
-.v3-message.has-file-only .oc-rich-video {
-  margin: 0 auto;
-  align-self: center;
-}
-
-.v3-message .oc-rich-video-player {
+.v3-message .oc-rich-video-trigger {
+  position: relative;
   display: block;
-  width: 100%;
-  max-height: min(60vh, 480px);
+  width: fit-content;
+  max-width: 100%;
+  max-height: 240px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 4px;
   background: var(--cc-media-black);
+  color: oklch(0.96 0.008 165);
+  cursor: pointer;
+}
+
+.v3-message .oc-rich-video-trigger:focus-visible {
+  outline: 2px solid var(--cc-accent);
+  outline-offset: 3px;
+}
+
+.v3-message .oc-rich-video-thumb {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(240px, 100%);
+  max-height: 240px;
   object-fit: contain;
 }
 
-html[data-theme="liquid"] .v3-message .oc-rich-video {
-  border-color: var(--cc-liquid-edge);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 3px 9px rgba(0, 9, 7, 0.16);
+.v3-message .oc-rich-video-play {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid oklch(0.96 0.008 165 / 0.3);
+  border-radius: 50%;
+  background: oklch(0.19 0.01 165 / 0.72);
+  box-shadow: 0 8px 24px oklch(0.12 0.008 165 / 0.28);
+  transform: translate(-50%, -50%);
 }
 
-@media (max-width: 520px) {
-  .v3-message .oc-rich-video {
-    width: min(320px, 100%);
-  }
+.oc-rich-video-preview {
+  padding: 24px;
+}
+
+.oc-rich-video-preview .oc-rich-video-player {
+  display: block;
+  width: auto;
+  max-width: min(960px, 90vw);
+  max-height: 90vh;
+  border-radius: 8px;
+  background: var(--cc-media-black);
+  box-shadow: 0 18px 56px oklch(0.12 0.008 165 / 0.46);
+  object-fit: contain;
+}
+
+.oc-rich-video-preview-close {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 1;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid oklch(0.96 0.008 165 / 0.24);
+  border-radius: 50%;
+  background: oklch(0.19 0.01 165 / 0.72);
+  color: oklch(0.96 0.008 165);
+  cursor: pointer;
+}
+
+.oc-rich-video-preview-close:focus-visible {
+  outline: 2px solid oklch(0.8 0.1 165);
+  outline-offset: 3px;
 }
 
 /* Compact file messages: one neutral surface instead of a card nested in a chat bubble. */
