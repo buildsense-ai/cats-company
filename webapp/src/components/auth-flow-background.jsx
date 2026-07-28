@@ -194,6 +194,13 @@ function rgba(palette, opacity) {
   return `rgba(${palette.r}, ${palette.g}, ${palette.b}, ${opacity})`;
 }
 
+export function authFlowPalette(theme) {
+  if (theme === 'dark') return { r: 124, g: 220, b: 194 };
+  if (theme === 'liquid-green') return { r: 88, g: 203, b: 181 };
+  if (theme === 'liquid') return { r: 86, g: 98, b: 217 };
+  return { r: 14, g: 137, b: 104 };
+}
+
 export default function AuthFlowBackground() {
   const canvasRef = useRef(null);
 
@@ -213,9 +220,11 @@ export default function AuthFlowBackground() {
     let lastFrame = 0;
     let scene = createAuthFlowScene(1, 1);
 
-    const palette = () => document.documentElement.dataset.theme === 'dark'
-      ? { r: 124, g: 220, b: 194 }
-      : { r: 14, g: 137, b: 104 };
+    const palette = () => authFlowPalette(
+      document.documentElement.dataset.liquidVariant === 'green'
+        ? 'liquid-green'
+        : document.documentElement.dataset.theme,
+    );
 
     const draw = (timestamp = 0) => {
       const seconds = timestamp / 1000;
@@ -348,7 +357,10 @@ export default function AuthFlowBackground() {
       ? new MutationObserver(() => draw(lastFrame))
       : null;
     resizeObserver?.observe(canvas);
-    themeObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    themeObserver?.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme', 'data-liquid-variant'],
+    });
     window.addEventListener('resize', resize);
     resize();
     if (!reduceMotion) {

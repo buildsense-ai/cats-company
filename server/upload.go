@@ -474,6 +474,11 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 		if videoMime, ok := inlineVideoMimeType(ext); ok {
 			w.Header().Set("Content-Type", videoMime)
 		}
+		if isHTMLUploadExtension(ext) && !forceDownload {
+			// Uploaded HTML may contain active content. Let browsers render it for
+			// navigation/preview, but keep it in an opaque sandboxed origin.
+			w.Header().Set("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-popups allow-modals")
+		}
 	}
 	http.ServeFile(w, r, fullPath)
 }
@@ -490,7 +495,7 @@ func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) s
 		return "attachment"
 	}
 	disposition := "attachment"
-	if strings.EqualFold(ext, ".pdf") || isInlineVideoExt(ext) {
+	if strings.EqualFold(ext, ".pdf") || isHTMLUploadExtension(ext) || isInlineVideoExt(ext) {
 		disposition = "inline"
 	}
 	return fmt.Sprintf("%s; filename=%q", disposition, fileName)
@@ -513,6 +518,15 @@ func inlineVideoMimeType(ext string) (string, bool) {
 		return "video/quicktime", true
 	default:
 		return "", false
+	}
+}
+
+func isHTMLUploadExtension(ext string) bool {
+	switch strings.ToLower(ext) {
+	case ".html", ".htm":
+		return true
+	default:
+		return false
 	}
 }
 

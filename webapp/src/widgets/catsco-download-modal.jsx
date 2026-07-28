@@ -264,6 +264,7 @@ export default function CatsCoDownloadModal({ onClose }) {
           </button>
         </div>
 
+        <div className="catsco-download-body">
         <div className="catsco-download-list">
           <div className="catsco-download-card" style={{ alignItems: 'flex-start' }}>
             <span className="catsco-download-icon">
@@ -332,7 +333,8 @@ export default function CatsCoDownloadModal({ onClose }) {
           ))}
         </div>
 
-        <div className="catsco-download-list">
+        <h4 className="catsco-download-section-title">可下载版本</h4>
+        <div className="catsco-download-list catsco-download-release-list">
           {downloadOptions.map((option) => {
             const Icon = option.icon;
             return (
@@ -357,6 +359,7 @@ export default function CatsCoDownloadModal({ onClose }) {
               </a>
             );
           })}
+        </div>
         </div>
       </div>
     </div>

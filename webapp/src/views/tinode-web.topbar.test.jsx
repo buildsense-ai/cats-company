@@ -1,5 +1,7 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import {
   canOpenCloudArtifacts,
@@ -7,9 +9,15 @@ import {
   describeModelConfigRequestError,
   LocalAssistantBar,
   ProfilePopover,
+  resolveInitialUser,
   resolveDisplayedActiveAgent,
 } from './tinode-web';
 import { api } from '../api';
+
+const topbarCss = readFileSync(
+  resolve(process.cwd(), 'src/css/catsco-topbar.css'),
+  'utf8',
+);
 
 const baseConfig = {
   uid: 43,
@@ -60,6 +68,60 @@ const relayState = {
     source: 'relay', model: 'minimax-m3', limit_cny: 100, percent: 25, remaining_percent: 75, status: 'normal',
   },
 };
+
+describe('preview user identity', () => {
+  it('restores the authenticated backend identity while previewing a theme', () => {
+    expect(resolveInitialUser({
+      themePreview: 'liquid',
+      previewEnabled: true,
+      token: 'existing-session',
+      savedUser: {
+        id: 38,
+        username: 'cycren',
+        display_name: 'Cycren',
+        account_type: 'human',
+      },
+    })).toMatchObject({
+      uid: 38,
+      username: 'cycren',
+      display_name: 'Cycren',
+    });
+  });
+
+  it('uses the visual-only placeholder when no authenticated preview session exists', () => {
+    expect(resolveInitialUser({
+      themePreview: 'liquid',
+      previewEnabled: true,
+    })).toMatchObject({
+      uid: 'theme-preview',
+      username: 'preview',
+    });
+  });
+});
+
+describe('model reasoning menu placement', () => {
+  it('keeps reasoning choices attached to the right side of their model at every viewport size', () => {
+    expect(topbarCss).toMatch(
+      /\.v3-model-reasoning-menu\s*\{[^}]*left:\s*calc\(100% - 2px\);/s,
+    );
+    expect(topbarCss).not.toMatch(
+      /\.v3-model-reasoning-menu\s*\{[^}]*position:\s*static;/s,
+    );
+    expect(topbarCss).not.toContain('.v3-model-menu:not(.custom-open)');
+  });
+
+  it('keeps comfortable space below the custom model entry', () => {
+    expect(topbarCss).toMatch(
+      /\.v3-model-menu,\s*\.v3-model-reasoning-menu\s*\{[^}]*padding:\s*6px;/s,
+    );
+    expect(topbarCss).toMatch(
+      /\.v3-model-menu\s*\{[^}]*overflow:\s*visible;/s,
+    );
+    expect(topbarCss).toMatch(
+      /\.v3-model-menu\.custom-open\s*\{[^}]*max-height:/s,
+    );
+  });
+});
 
 describe('resolveDisplayedActiveAgent', () => {
   it('exposes an owned draft agent to the model selector before the task is created', () => {

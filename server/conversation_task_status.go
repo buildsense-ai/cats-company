@@ -44,6 +44,7 @@ func (h *MessageHandler) handleTaskStatus(uid int64, topicID string, payload *no
 		return nil, err
 	}
 	if h != nil && h.hub != nil {
+		h.hub.observeGroupAgentTaskStatus(status)
 		h.hub.fanoutConversationTaskStatus(uid, status, nil)
 	}
 	return status, nil
@@ -67,6 +68,7 @@ func (h *Hub) handleTaskStatusPub(client *Client, msg *MsgClientPub, topicID str
 		return
 	}
 	h.SendToClient(client, taskStatusAck(msg.ID, topicID, status))
+	h.observeGroupAgentTaskStatus(status)
 	h.fanoutConversationTaskStatus(client.uid, status, client)
 }
 

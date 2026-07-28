@@ -182,15 +182,18 @@ function ConfirmDialog({ confirmation, onResolve }) {
         aria-labelledby={titleId}
         aria-describedby={confirmation.message ? descriptionId : undefined}
       >
-        <div className={`cc-confirm-symbol cc-confirm-symbol-${confirmation.tone}`}>
-          {confirmation.tone === 'danger'
-            ? <AlertTriangle aria-hidden="true" />
-            : <Info aria-hidden="true" />}
-        </div>
         <div className="cc-confirm-copy">
           <h2 id={titleId}>{confirmation.title}</h2>
           {confirmation.message && <p id={descriptionId}>{confirmation.message}</p>}
         </div>
+        <button
+          type="button"
+          className="cc-confirm-close"
+          onClick={() => onResolve(false)}
+          aria-label="关闭确认"
+        >
+          <X size={18} />
+        </button>
         <div className="cc-confirm-actions">
           <button
             ref={cancelButtonRef}

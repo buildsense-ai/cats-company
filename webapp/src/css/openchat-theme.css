@@ -29,7 +29,7 @@
   --oc-text-secondary: #6b7280;
 
   /* UI elements */
-  --oc-tab-active: #10b981;
+  --oc-tab-active: var(--cc-accent, #29bc95);
   --oc-tab-inactive: #9ca3af;
   --oc-danger: #ef4444;
 
@@ -1182,8 +1182,8 @@ body {
   --v3-text-main: #D1D2D3;
   --v3-text-muted: #ABABAD;
   --v3-text-name: #E8E8E8;
-  --v3-primary: #10B981;
-  --v3-primary-hover: #059669;
+  --v3-primary: var(--cc-accent, #29bc95);
+  --v3-primary-hover: var(--cc-accent-hover, #219f7e);
   --v3-accent: #007A5A;
   --v3-radius: 8px;
 }
@@ -2071,8 +2071,8 @@ body {
 }
 
 .cc-tutorial-card:hover {
-  border-color: rgba(16, 185, 129, 0.55);
-  background: rgba(16, 185, 129, 0.08);
+  border-color: color-mix(in srgb, var(--v3-primary) 55%, transparent);
+  background: color-mix(in srgb, var(--v3-primary) 8%, transparent);
 }
 
 .cc-tutorial-card.compact {
@@ -2086,7 +2086,7 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(16, 185, 129, 0.12);
+  background: color-mix(in srgb, var(--v3-primary) 12%, transparent);
   color: var(--v3-primary);
   flex: 0 0 auto;
 }
@@ -2472,7 +2472,7 @@ body {
 
 .v3-composer.is-drag-active .v3-composer-box {
   border-color: rgba(52, 211, 153, 0.95);
-  box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.65), 0 16px 40px rgba(16, 185, 129, 0.16);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--v3-primary) 65%, transparent), 0 16px 40px color-mix(in srgb, var(--v3-primary) 16%, transparent);
 }
 
 .v3-drop-overlay {
@@ -2487,7 +2487,7 @@ body {
   padding: 18px;
   text-align: center;
   color: #D1FAE5;
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.24), rgba(12, 14, 18, 0.92));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--v3-primary) 24%, transparent), rgba(12, 14, 18, 0.92));
   border-radius: inherit;
   pointer-events: none;
   backdrop-filter: blur(2px);
@@ -2590,7 +2590,7 @@ body {
   padding: 9px 11px;
   border: 1px solid rgba(52, 211, 153, 0.32);
   border-radius: 10px;
-  background: rgba(16, 185, 129, 0.1);
+  background: color-mix(in srgb, var(--v3-primary) 10%, transparent);
   color: #BFFFE4;
   font-size: 12px;
   line-height: 1.45;
@@ -2604,7 +2604,7 @@ body {
 
 .v3-live-input-status-success {
   border-color: rgba(52, 211, 153, 0.32);
-  background: rgba(16, 185, 129, 0.1);
+  background: color-mix(in srgb, var(--v3-primary) 10%, transparent);
   color: #BFFFE4;
 }
 
@@ -2746,7 +2746,7 @@ body {
   border: 1px solid rgba(63, 185, 80, 0.28);
   border-radius: 999px;
   color: #a7f3d0;
-  background: rgba(16, 185, 129, 0.11);
+  background: color-mix(in srgb, var(--v3-primary) 11%, transparent);
   font-size: 11px;
   font-weight: 600;
   line-height: 18px;
@@ -2888,8 +2888,8 @@ button.catsco-download-action {
 }
 
 button.catsco-download-action:hover:not(:disabled) {
-  background: rgba(52, 199, 89, 0.12);
-  border-color: rgba(52, 199, 89, 0.28);
+  background: color-mix(in srgb, var(--v3-primary) 12%, transparent);
+  border-color: color-mix(in srgb, var(--v3-primary) 28%, transparent);
 }
 
 button.catsco-download-action:disabled {
@@ -2909,7 +2909,7 @@ button.catsco-download-action:disabled {
   width: 40px;
   height: 40px;
   border-radius: 10px;
-  background: rgba(52, 199, 89, 0.12);
+  background: color-mix(in srgb, var(--v3-primary) 12%, transparent);
 }
 
 .catsco-download-copy {
@@ -3020,7 +3020,7 @@ button.catsco-download-action:disabled {
   height: 38px;
   border-radius: 10px;
   color: var(--v3-accent);
-  background: rgba(52, 199, 89, 0.12);
+  background: color-mix(in srgb, var(--v3-primary) 12%, transparent);
 }
 
 .relay-access-list {
@@ -3172,8 +3172,8 @@ button.catsco-download-action:disabled {
 }
 
 .relay-access-current-quota.active {
-  border-color: rgba(52, 199, 89, 0.22);
-  background: rgba(52, 199, 89, 0.06);
+  border-color: color-mix(in srgb, var(--v3-primary) 22%, transparent);
+  background: color-mix(in srgb, var(--v3-primary) 6%, transparent);
 }
 
 .relay-access-current-quota.warning {
@@ -3236,7 +3236,7 @@ button.catsco-download-action:disabled {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #23c483, #d6a84f);
+  background: linear-gradient(90deg, var(--v3-primary), #d6a84f);
 }
 
 .relay-access-current-quota.danger .relay-access-quota-bar i {
@@ -3316,14 +3316,14 @@ button.catsco-download-action:disabled {
 }
 
 .relay-access-invite-form input:focus {
-  border-color: rgba(52, 199, 89, 0.38);
+  border-color: color-mix(in srgb, var(--v3-primary) 38%, transparent);
 }
 
 .relay-access-invite-form button {
   min-height: 38px;
-  border: 1px solid rgba(52, 199, 89, 0.28);
+  border: 1px solid color-mix(in srgb, var(--v3-primary) 28%, transparent);
   border-radius: 8px;
-  background: rgba(52, 199, 89, 0.12);
+  background: color-mix(in srgb, var(--v3-primary) 12%, transparent);
   color: var(--v3-accent);
   cursor: pointer;
   padding: 0 14px;
@@ -3352,10 +3352,10 @@ button.catsco-download-action:disabled {
   align-items: center;
   min-height: 24px;
   padding: 0 9px;
-  border: 1px solid rgba(52, 199, 89, 0.28);
+  border: 1px solid color-mix(in srgb, var(--v3-primary) 28%, transparent);
   border-radius: 999px;
   color: var(--v3-accent);
-  background: rgba(52, 199, 89, 0.1);
+  background: color-mix(in srgb, var(--v3-primary) 10%, transparent);
   font-size: 12px;
   font-weight: 700;
 }
@@ -3386,9 +3386,9 @@ button.catsco-download-action:disabled {
   align-items: center;
   justify-content: center;
   gap: 7px;
-  border: 1px solid rgba(52, 199, 89, 0.28);
+  border: 1px solid color-mix(in srgb, var(--v3-primary) 28%, transparent);
   border-radius: 8px;
-  background: rgba(52, 199, 89, 0.12);
+  background: color-mix(in srgb, var(--v3-primary) 12%, transparent);
   color: var(--v3-accent);
   cursor: pointer;
   min-height: 34px;
@@ -3399,7 +3399,7 @@ button.catsco-download-action:disabled {
 .relay-access-primary-btn:hover,
 .relay-access-key-actions button:hover,
 .relay-access-secret-box button:hover {
-  background: rgba(52, 199, 89, 0.18);
+  background: color-mix(in srgb, var(--v3-primary) 18%, transparent);
 }
 
 .relay-access-primary-btn:disabled,
@@ -4676,7 +4676,7 @@ button.catsco-download-action:disabled {
 .oc-feedback-category.active {
   border-color: var(--v3-primary);
   color: var(--v3-text-name);
-  background: rgba(16, 185, 129, 0.12);
+  background: color-mix(in srgb, var(--v3-primary) 12%, transparent);
 }
 
 .oc-feedback-textarea {
@@ -4702,7 +4702,7 @@ button.catsco-download-action:disabled {
 .oc-feedback-dropzone.dragging,
 .oc-feedback-dropzone:hover {
   border-color: var(--v3-primary);
-  background: rgba(16, 185, 129, 0.08);
+  background: color-mix(in srgb, var(--v3-primary) 8%, transparent);
 }
 
 .oc-feedback-dropzone input {
@@ -5256,7 +5256,7 @@ button.catsco-download-action:disabled {
 }
 
 .v3-wpi-subagent-status.completed {
-  color: #10b981;
+  color: var(--v3-primary);
 }
 
 .v3-wpi-subagent-status.failed {
@@ -5292,9 +5292,9 @@ button.catsco-download-action:disabled {
   max-width: 680px;
   min-width: 0;
   padding: 10px 12px;
-  border: 1px solid rgba(16, 185, 129, 0.35);
+  border: 1px solid color-mix(in srgb, var(--v3-primary) 35%, transparent);
   border-radius: 7px;
-  background: rgba(16, 185, 129, 0.06);
+  background: color-mix(in srgb, var(--v3-primary) 6%, transparent);
   color: var(--v3-text-main);
 }
 
@@ -5377,7 +5377,7 @@ button.catsco-download-action:disabled {
 }
 
 .v3-wpi-code-block.result {
-  border-color: rgba(16, 185, 129, 0.3); /* subtle primary tint */
+  border-color: color-mix(in srgb, var(--v3-primary) 30%, transparent); /* subtle primary tint */
 }
 
 /* V3 Directory Modal */
@@ -5475,8 +5475,8 @@ button.catsco-download-action:disabled {
   background: rgba(15, 23, 42, 0.36);
 }
 .v3-artifact-card.report {
-  border-color: rgba(16, 185, 129, 0.35);
-  background: rgba(16, 185, 129, 0.08);
+  border-color: color-mix(in srgb, var(--v3-primary) 35%, transparent);
+  background: color-mix(in srgb, var(--v3-primary) 8%, transparent);
 }
 .v3-artifact-card.dataset {
   border-color: rgba(59, 130, 246, 0.32);
@@ -5862,8 +5862,8 @@ button.catsco-download-action:disabled {
   background: rgba(255, 255, 255, 0.02);
 }
 .v3-workflow-demo-thread.active {
-  border-color: rgba(16, 185, 129, 0.32);
-  background: rgba(16, 185, 129, 0.08);
+  border-color: color-mix(in srgb, var(--v3-primary) 32%, transparent);
+  background: color-mix(in srgb, var(--v3-primary) 8%, transparent);
 }
 .v3-workflow-demo-thread span {
   color: var(--v3-primary);
@@ -6186,6 +6186,20 @@ button.catsco-download-action:disabled {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+.catsco-download-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.catsco-download-modal .catsco-download-list {
+  flex: none;
+  min-height: auto;
+  overflow: visible;
 }
 
 .oc-modal.catsco-download-modal {

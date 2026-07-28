@@ -97,7 +97,7 @@ type ConversationTaskStatusStore interface {
 	GetConversationTaskStatuses(topicIDs []string) (map[string]*types.ConversationTaskStatus, error)
 }
 
-// ProjectStore persists user-owned projects and their conversation assignments.
+// ProjectStore persists user-owned projects and assignments for conversations the user can access.
 // It remains optional so narrow server test stores do not need project methods.
 type ProjectStore interface {
 	CreateProject(ownerUID int64, name string) (*types.Project, error)

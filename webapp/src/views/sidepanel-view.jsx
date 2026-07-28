@@ -215,8 +215,8 @@ function SidebarSectionHeader({
     <div ref={sectionRef} className={`v3-chat-section cc-sidebar-section-row cc-top-level-section ${className}`.trim()}>
       <button type="button" className="cc-section-toggle" onClick={onToggle} aria-expanded={expanded}>
         <span>{label}</span>
-        {toggleContent}
         <ChevronRight size={14} />
+        {toggleContent}
       </button>
       {status}
       {action}
@@ -312,7 +312,7 @@ export default function ChatListView({
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [projectActionTopicId, setProjectActionTopicId] = useState('');
-  const [expandedProjectId, setExpandedProjectId] = useState(null);
+  const [expandedProjectIds, setExpandedProjectIds] = useState(() => new Set());
   const [editingProject, setEditingProject] = useState(null);
   const [projectNameDraft, setProjectNameDraft] = useState('');
   const [projectActionId, setProjectActionId] = useState(null);
@@ -346,6 +346,7 @@ export default function ChatListView({
     setHiddenHistoryIds(loadHiddenHistoryIds(user?.uid));
     setDismissedTaskStatuses(loadDismissedTaskStatuses(user?.uid));
     setUnreadFriendTopicIds(new Set());
+    setExpandedProjectIds(new Set());
     setScrollCollapsed({ contacts: false, projects: false });
     previousSidebarScrollTopRef.current = 0;
     pendingSidebarScrollAnchorRef.current = null;
@@ -1278,7 +1279,13 @@ export default function ChatListView({
     || left.name.localeCompare(right.name, 'zh-CN')
   ));
   const hasSearchResults = conversationChats.length > 0 || contactItems.length > 0 || filteredProjects.length > 0;
-  const compactChats = conversationChats.slice(0, 12);
+  const compactChats = sortConversationsByRecent([
+    ...visibleRecentChats.filter((chat) => !chat.isGroup),
+    ...mergedGroups,
+  ].filter((chat) => (
+    isHistoryTask(chat)
+    && (chat.isGroup || !hiddenHistoryIds.has(String(chat.id)))
+  ))).slice(0, 12);
 
   const selectConversation = (chat) => {
     rememberDismissedTaskStatus(chat.id, chat.taskStatus);
@@ -1458,6 +1465,28 @@ export default function ChatListView({
     });
   };
 
+  const expandProject = (projectId) => {
+    const normalizedProjectId = Number(projectId);
+    if (!normalizedProjectId) return;
+    setExpandedProjectIds((previous) => {
+      if (previous.has(normalizedProjectId)) return previous;
+      const next = new Set(previous);
+      next.add(normalizedProjectId);
+      return next;
+    });
+  };
+
+  const toggleProjectExpansion = (projectId) => {
+    const normalizedProjectId = Number(projectId);
+    if (!normalizedProjectId) return;
+    setExpandedProjectIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(normalizedProjectId)) next.delete(normalizedProjectId);
+      else next.add(normalizedProjectId);
+      return next;
+    });
+  };
+
   const handleAddTasksToProject = async () => {
     if (!taskPickerProject?.id || selectedProjectTaskIds.size === 0) return;
     const project = taskPickerProject;
@@ -1481,7 +1510,7 @@ export default function ChatListView({
       }
 
       if (completedCount > 0) {
-        setExpandedProjectId(Number(project.id));
+        expandProject(project.id);
         await loadAll();
         window.dispatchEvent(new Event('cc:data-changed'));
       }
@@ -1510,7 +1539,7 @@ export default function ChatListView({
     setProjectActionTopicId(projectPickerTask.id);
     try {
       await api.assignProjectTopic(project.id, projectPickerTask.id);
-      setExpandedProjectId(Number(project.id));
+      expandProject(project.id);
       await loadAll();
       closeProjectDialog();
       window.dispatchEvent(new Event('cc:data-changed'));
@@ -1549,7 +1578,7 @@ export default function ChatListView({
       const project = res.project;
       if (pendingTask && project?.id) {
         await api.assignProjectTopic(project.id, pendingTask.id);
-        setExpandedProjectId(Number(project.id));
+        expandProject(project.id);
       }
       await loadAll();
       closeProjectDialog();
@@ -1607,7 +1636,12 @@ export default function ChatListView({
     setProjectActionId(projectId);
     try {
       await api.deleteProject(projectId);
-      if (expandedProjectId === projectId) setExpandedProjectId(null);
+      setExpandedProjectIds((previous) => {
+        if (!previous.has(projectId)) return previous;
+        const next = new Set(previous);
+        next.delete(projectId);
+        return next;
+      });
       await loadAll();
       window.dispatchEvent(new Event('cc:data-changed'));
       feedback.notify({ tone: 'success', message: '项目已删除，任务已回到任务列表' });
@@ -1626,7 +1660,7 @@ export default function ChatListView({
         ? '删除后无法在任务列表中继续访问该任务。'
         : '此操作只影响当前浏览器，不会删除历史消息。',
       confirmLabel: actionLabel,
-      tone: onDeleteHistoryTask ? 'danger' : 'default',
+      tone: 'danger',
     });
     if (!confirmed) return;
 
@@ -2547,7 +2581,7 @@ export default function ChatListView({
             const projectTasks = (projectTasksById.get(projectId) || []).filter((chat) => (
               !isSearching || projectNameMatches || chat.name.toLowerCase().includes(lowerSearch)
             ));
-            const expanded = isSearching ? projectTasks.length > 0 : expandedProjectId === projectId;
+            const expanded = isSearching ? projectTasks.length > 0 : expandedProjectIds.has(projectId);
             return (
               <React.Fragment key={project.id}>
                 <SidebarItemRow className="cc-project-row">
@@ -2556,7 +2590,7 @@ export default function ChatListView({
                     className="cc-project-item cc-sidebar-row-main"
                     aria-label={`${expanded ? '收起项目' : '打开项目'} ${project.name}`}
                     aria-expanded={expanded}
-                    onClick={() => setExpandedProjectId(expanded ? null : projectId)}
+                    onClick={() => toggleProjectExpansion(projectId)}
                   >
                     {expanded
                       ? <FolderOpen size={14} className="prefix cc-chat-row-icon" />
