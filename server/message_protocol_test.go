@@ -695,6 +695,10 @@ func (s *identityMessageStore) GetGroupMembers(groupID int64) ([]*types.GroupMem
 	return members, nil
 }
 
+func (s *identityMessageStore) GetGroup(groupID int64) (*types.Group, error) {
+	return &types.Group{ID: groupID, Kind: types.GroupKindStandard}, nil
+}
+
 func (s *identityMessageStore) IsChannelManagedGroup(groupID int64) (bool, error) {
 	return false, nil
 }
