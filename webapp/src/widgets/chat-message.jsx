@@ -11,6 +11,7 @@ import {
   shouldRenderMarkdown,
 } from './markdown-utils';
 import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
+import MobilePdfPreview from './mobile-pdf-preview';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -1272,6 +1273,9 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
   const [isSheetMode, setIsSheetMode] = useState(
     () => window.matchMedia?.('(max-width: 1024px)').matches ?? window.innerWidth <= 1024,
   );
+  const shouldUseSheetMode = preview
+    ? (window.matchMedia?.('(max-width: 1024px)').matches ?? window.innerWidth <= 1024)
+    : isSheetMode;
 
   const descriptor = useMemo(() => previewFileDescriptor(file), [file]);
   const url = descriptor?.url || '';
@@ -1344,10 +1348,7 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
   }, [descriptor?.canPreview, file, isPdf, isSpreadsheet, url]);
 
   useEffect(() => {
-    if (!preview) {
-      setIsSheetMode(false);
-      return undefined;
-    }
+    if (!preview) return undefined;
 
     const media = window.matchMedia?.('(max-width: 1024px)');
     const syncSheetMode = () => setIsSheetMode(media?.matches ?? window.innerWidth <= 1024);
@@ -1374,7 +1375,7 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
   }, [onClose, preview]);
 
   useEffect(() => {
-    if (!preview || !isSheetMode) return undefined;
+    if (!preview || !shouldUseSheetMode) return undefined;
 
     focusBeforeSheetRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
@@ -1419,7 +1420,7 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
       if (priorFocus?.isConnected) priorFocus.focus({ preventScroll: true });
       focusBeforeSheetRef.current = null;
     };
-  }, [backgroundRef, isSheetMode, preview]);
+  }, [backgroundRef, preview, shouldUseSheetMode]);
 
   useEffect(() => () => {
     if (dismissTimerRef.current) window.clearTimeout(dismissTimerRef.current);
@@ -1496,8 +1497,8 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
       <aside
         ref={panelRef}
         className={`v3-file-preview-panel ${dragStateRef.current.active ? 'is-dragging' : ''} ${isDismissing ? 'is-dismissing' : ''} ${isHtml || isPdf || isSpreadsheet ? 'wide' : ''}`}
-        role={isSheetMode ? 'dialog' : undefined}
-        aria-modal={isSheetMode || undefined}
+        role={shouldUseSheetMode ? 'dialog' : undefined}
+        aria-modal={shouldUseSheetMode || undefined}
         aria-label="文件预览"
         style={{ '--v3-preview-drag-offset': `${dragOffset}px` }}
         onTransitionEnd={handlePanelTransitionEnd}
@@ -1538,7 +1539,11 @@ export function FilePreviewPanel({ file, onClose, backgroundRef }) {
         </div>
         <div className="v3-file-preview-body">
           {isPdf ? (
-            <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />
+            shouldUseSheetMode ? (
+              <MobilePdfPreview url={fetchableMediaURL(url)} />
+            ) : (
+              <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />
+            )
           ) : loadingText ? (
             <div className="v3-file-preview-state">加载中...</div>
           ) : previewError ? (

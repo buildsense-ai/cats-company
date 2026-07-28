@@ -43,6 +43,12 @@ vi.mock('./avatar', () => ({
   },
 }));
 
+vi.mock('./mobile-pdf-preview', () => ({
+  default: function MockMobilePdfPreview({ url }) {
+    return <div className="v3-mobile-pdf-preview-mock" data-url={url}>PDF reader</div>;
+  },
+}));
+
 vi.mock('read-excel-file/browser', () => ({
   __esModule: true,
   default: vi.fn(),
@@ -923,7 +929,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
   });
 
-  it('previews PDF files in the side panel without fetching their content', async () => {
+  it('previews PDF files without fetching their content', async () => {
     await act(async () => {
       root.render(
         <PreviewHarness
@@ -955,7 +961,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(global.fetch).not.toHaveBeenCalled();
     const panel = container.querySelector('.v3-file-preview-panel');
     expect(panel).not.toBeNull();
-    expect(panel.querySelector('iframe.v3-file-preview-frame').getAttribute('src')).toBe('/uploads/files/report.pdf');
+    expect(panel.querySelector('.v3-mobile-pdf-preview-mock').dataset.url).toBe('/uploads/files/report.pdf');
     const downloadLink = panel.querySelector('.v3-file-preview-actions a');
     expect(downloadLink.getAttribute('href')).toBe('/uploads/files/report.pdf?download=1');
     expect(downloadLink.getAttribute('download')).toBe('report.pdf');
@@ -1052,6 +1058,8 @@ describe('ChatMessage rich file rendering', () => {
       const closeButton = panel.querySelector('button[aria-label="关闭预览"]');
       expect(panel.getAttribute('role')).toBe('dialog');
       expect(panel.getAttribute('aria-modal')).toBe('true');
+      expect(panel.querySelector('.v3-mobile-pdf-preview-mock').dataset.url).toBe('/uploads/files/accessible-report.pdf');
+      expect(panel.querySelector('iframe.v3-file-preview-frame')).toBeNull();
       expect(chatColumn.hasAttribute('inert')).toBe(true);
       expect(chatColumn.getAttribute('aria-hidden')).toBe('true');
       expect(document.activeElement).toBe(closeButton);
@@ -1080,6 +1088,25 @@ describe('ChatMessage rich file rendering', () => {
       expect(chatColumn.hasAttribute('inert')).toBe(false);
       expect(chatColumn.hasAttribute('aria-hidden')).toBe(false);
       expect(document.activeElement).toBe(opener);
+
+      const committedFrames = [];
+      const observer = new MutationObserver((records) => {
+        records.forEach((record) => record.addedNodes.forEach((node) => {
+          if (node.nodeType !== Node.ELEMENT_NODE) return;
+          if (node.matches?.('iframe.v3-file-preview-frame')) committedFrames.push(node);
+          committedFrames.push(...node.querySelectorAll?.('iframe.v3-file-preview-frame') || []);
+        }));
+      });
+      observer.observe(container, { childList: true, subtree: true });
+      await act(async () => {
+        Simulate.click(opener);
+        await flushAsync();
+      });
+      observer.disconnect();
+
+      expect(committedFrames).toHaveLength(0);
+      expect(container.querySelector('.v3-mobile-pdf-preview-mock')).not.toBeNull();
+      expect(container.querySelector('iframe.v3-file-preview-frame')).toBeNull();
     } finally {
       Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
     }
@@ -1169,6 +1196,8 @@ describe('ChatMessage rich file rendering', () => {
       const panel = container.querySelector('.v3-file-preview-panel');
       expect(panel.hasAttribute('role')).toBe(false);
       expect(panel.hasAttribute('aria-modal')).toBe(false);
+      expect(panel.querySelector('iframe.v3-file-preview-frame').getAttribute('src')).toBe('/uploads/files/desktop-report.pdf');
+      expect(panel.querySelector('.v3-mobile-pdf-preview-mock')).toBeNull();
     } finally {
       Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
     }
