@@ -505,7 +505,7 @@ func inlineVideoMimeType(ext string) (string, bool) {
 		return "video/mp4", true
 	case ".webm":
 		return "video/webm", true
-	case ".ogg", ".ogv":
+	case ".ogv":
 		return "video/ogg", true
 	case ".mov":
 		return "video/quicktime", true
@@ -517,6 +517,9 @@ func inlineVideoMimeType(ext string) (string, bool) {
 func normalizedUploadMimeType(ext, headerType string) string {
 	if videoMime, ok := inlineVideoMimeType(ext); ok {
 		return videoMime
+	}
+	if strings.EqualFold(ext, ".ogg") {
+		return "audio/ogg"
 	}
 
 	switch strings.ToLower(ext) {
