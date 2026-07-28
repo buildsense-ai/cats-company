@@ -1026,7 +1026,10 @@ function TinodeWebApp() {
       )}
 
       {showCloudArtifactsModal && (
-        <CloudArtifactsModal onClose={() => setShowCloudArtifactsModal(false)} />
+        <CloudArtifactsModal
+          agentUid={displayedActiveAgent?.uid}
+          onClose={() => setShowCloudArtifactsModal(false)}
+        />
       )}
 
       {managedGroup?.groupId && (

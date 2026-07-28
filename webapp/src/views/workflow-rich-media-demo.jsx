@@ -15,6 +15,17 @@ const demoBot = {
   isBot: true,
 };
 
+const demoCloudArtifact = {
+  id: 'teaching-review-dashboard',
+  title: '教研数据复盘看板',
+  kind: 'static_web',
+  url: new URL(
+    '/demo-artifacts/teaching-report.html',
+    typeof window !== 'undefined' ? window.location.origin : 'https://app.catsco.cc',
+  ).toString(),
+  publish_version: 2,
+};
+
 const demoMessages = [
   {
     id: 1,
@@ -174,6 +185,18 @@ const demoMessages = [
       '共 15 个页面，全绿。双击打开就能看。',
     ].join('\n'),
   },
+  {
+    id: 11,
+    from_uid: demoUser.uid,
+    created_at: '2026-06-09T09:42:00Z',
+    content: '把正式版发布成一个可以直接打开的网页。',
+  },
+  {
+    id: 12,
+    from_uid: demoBot.uid,
+    created_at: '2026-06-09T09:42:18Z',
+    content: `已发布：[教研数据复盘看板](${demoCloudArtifact.url})`,
+  },
 ];
 
 export default function WorkflowRichMediaDemo() {
@@ -239,6 +262,7 @@ export default function WorkflowRichMediaDemo() {
                         isConsecutive={isConsecutive}
                         onPreviewFile={setPreviewFile}
                         activePreviewFile={previewFile}
+                        knownArtifacts={[demoCloudArtifact]}
                       />
                     );
                   })}
