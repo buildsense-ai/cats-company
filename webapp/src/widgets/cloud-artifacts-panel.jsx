@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Cloud,
   Copy,
@@ -81,13 +81,18 @@ export default function CloudArtifactsPanel({
   const [copiedID, setCopiedID] = useState('');
   const [pendingID, setPendingID] = useState('');
   const [confirmArtifact, setConfirmArtifact] = useState(null);
+  const requestSequenceRef = useRef(0);
 
   const loadContent = useCallback(async ({ append = false, beforeId = 0 } = {}) => {
+    const requestID = requestSequenceRef.current + 1;
+    requestSequenceRef.current = requestID;
+    const isCurrentRequest = () => requestSequenceRef.current === requestID;
     setLoading(true);
     setError('');
     try {
       if (tab === 'files') {
         const result = await api.getAgentFiles(agentUid, { beforeId, limit: 40 });
+        if (!isCurrentRequest()) return;
         const nextFiles = Array.isArray(result?.files) ? result.files : [];
         setFiles((current) => append ? [...current, ...nextFiles] : nextFiles);
         setFileCursor(Number(result?.next_before_id || 0));
@@ -95,11 +100,13 @@ export default function CloudArtifactsPanel({
         return;
       }
       const result = await api.getCloudArtifacts(agentUid, tab);
+      if (!isCurrentRequest()) return;
       setArtifacts(Array.isArray(result?.artifacts) ? result.artifacts : []);
     } catch (err) {
+      if (!isCurrentRequest()) return;
       setError(err.message || (tab === 'files' ? '历史文件读取失败' : '云端产物读取失败'));
     } finally {
-      setLoading(false);
+      if (isCurrentRequest()) setLoading(false);
     }
   }, [agentUid, tab]);
 
@@ -109,6 +116,9 @@ export default function CloudArtifactsPanel({
     setFileCursor(0);
     setFileHasMore(false);
     loadContent();
+    return () => {
+      requestSequenceRef.current += 1;
+    };
   }, [loadContent]);
 
   useEffect(() => {

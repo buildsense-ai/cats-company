@@ -49,6 +49,16 @@ const historicalFile = {
   created_at: '2026-07-29T02:20:00.000Z',
 };
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('CloudArtifactsPanel', () => {
   let container;
   let root;
@@ -196,6 +206,50 @@ describe('CloudArtifactsPanel', () => {
     });
     expect(api.restoreCloudArtifact).toHaveBeenCalledWith(440, 'lesson-game');
     expect(container.textContent).not.toContain('课堂小游戏');
+  });
+
+  test('ignores an older active request that resolves after the recycle bin', async () => {
+    const activeRequest = deferred();
+    const deletedRequest = deferred();
+    const staleActiveArtifact = {
+      ...activeArtifact,
+      id: 'stale-active',
+      title: '较早的网页结果',
+    };
+    const currentDeletedArtifact = {
+      ...deletedArtifact,
+      id: 'current-deleted',
+      title: '当前回收站结果',
+    };
+    api.getCloudArtifacts.mockImplementation((_agentUid, status) => (
+      status === 'active' ? activeRequest.promise : deletedRequest.promise
+    ));
+    await renderPanel();
+
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '回收站')
+        .click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      deletedRequest.resolve({ artifacts: [currentDeletedArtifact] });
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('当前回收站结果');
+
+    await act(async () => {
+      activeRequest.resolve({ artifacts: [staleActiveArtifact] });
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('当前回收站结果');
+    expect(container.textContent).not.toContain('较早的网页结果');
+    expect(
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '回收站')
+        .getAttribute('aria-selected'),
+    ).toBe('true');
   });
 
   test('indexes historical agent files and opens one in the parent preview', async () => {
