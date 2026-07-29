@@ -46,6 +46,7 @@ type Hub struct {
 	channelOut    *ChannelOutboundDispatcher
 	groupTurns    *groupAgentTurnTracker
 	push          *PushNotificationService
+	agentPush     *agentPushTurnCoordinator
 }
 
 type presenceEvent struct {
@@ -103,6 +104,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
 		thinToolRPC:   newThinToolRPCRouter(defaultThinToolRPCTTL),
 		groupTurns:    newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
+		agentPush:     newAgentPushTurnCoordinator(),
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
@@ -1720,37 +1722,23 @@ func shouldNotifyOfflineForMessage(msg *ServerMessage) bool {
 
 	data := msg.Data
 	displayType := strings.ToLower(strings.TrimSpace(firstNonEmpty(data.Type, data.MsgType)))
-	switch displayType {
-	case "runtime_plan", "thinking", "tool_use", "tool_result", "debug",
-		"stream_delta", "stream_cancel", taskStatusType:
+	if !isUserVisibleMessageType(displayType) {
 		return false
 	}
-
-	text := strings.TrimSpace(normalizeContentText(data.Content))
-	if strings.HasPrefix(text, "AI文本:") || strings.HasPrefix(text, "AI文本：") {
-		return false
-	}
-
-	hasInternalBlock := false
-	hasUserVisibleBlock := false
-	for _, block := range data.ContentBlocks {
-		switch strings.ToLower(strings.TrimSpace(block.Type)) {
-		case "runtime_plan", "thinking", "tool_use", "tool_result":
-			hasInternalBlock = true
-		case "text", "assistant_text", "image", "voice", "file":
-			hasUserVisibleBlock = true
-		}
-	}
-	return !hasInternalBlock || hasUserVisibleBlock
+	return !isInternalAgentWorkingMessage(displayType, data.Content, data.ContentBlocks)
 }
 
 func (h *Hub) notifyOfflineUser(uid int64) {
+	h.enqueueOfflineUserPush(uid)
+}
+
+func (h *Hub) enqueueOfflineUserPush(uid int64) bool {
 	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 || h.IsOnline(uid) {
-		return
+		return false
 	}
 	user, err := h.db.GetUser(uid)
 	if err != nil || user == nil || user.AccountType != types.AccountHuman || user.State != 0 {
-		return
+		return false
 	}
 	notification := PushNotification{
 		Title: "CatsCo",
@@ -1758,7 +1746,21 @@ func (h *Hub) notifyOfflineUser(uid int64) {
 		URL:   "/",
 		Tag:   "catsco-new-message",
 	}
-	h.push.EnqueueToUser(uid, notification)
+	return h.push.EnqueueToUser(uid, notification)
+}
+
+func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessage, senderIsBot bool) {
+	if !senderIsBot {
+		h.notifyOfflineUser(uid)
+		return
+	}
+	if h == nil || h.agentPush == nil || h.IsOnline(uid) {
+		return
+	}
+	key, ttl := agentPushTurnKey(uid, senderUID, msg)
+	h.agentPush.schedule(key, ttl, func() bool {
+		return h.enqueueOfflineUserPush(uid)
+	})
 }
 
 // broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.
@@ -1835,7 +1837,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 		}
 		h.SendToUser(m.UserID, out)
 		if !isBot && shouldNotifyOffline {
-			h.notifyOfflineUser(m.UserID)
+			h.notifyOfflineUserForMessage(m.UserID, senderUID, out, senderIsBot)
 		}
 	}
 }

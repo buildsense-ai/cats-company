@@ -682,6 +682,7 @@ func TestShouldNotifyOfflineForFinalUserVisibleMessagesOnly(t *testing.T) {
 		{name: "stream delta", data: &MsgServerData{SeqID: 1, Type: "stream_delta"}},
 		{name: "stream cancel", data: &MsgServerData{SeqID: 1, Type: "stream_cancel"}},
 		{name: "task status", data: &MsgServerData{SeqID: 1, Type: taskStatusType}},
+		{name: "unknown progress type", data: &MsgServerData{SeqID: 1, Type: "progress"}},
 		{name: "legacy working text", data: &MsgServerData{SeqID: 1, Type: "text", Content: "AI文本: 正在工作"}},
 		{
 			name: "internal blocks only",
@@ -733,13 +734,14 @@ func TestP2PAgentWorkingMessagesNotifyOnlyOnFinalAnswer(t *testing.T) {
 		Auth:     "auth",
 	}}}
 	service := enabledPushService(pushStore)
-	delivered := make(chan struct{}, 1)
+	delivered := make(chan struct{}, 3)
 	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
 		delivered <- struct{}{}
 		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
 	}
 	hub := NewHub(db, nil)
 	hub.SetPushNotificationService(service)
+	hub.agentPush.delay = 10 * time.Millisecond
 
 	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
 		DisplayContent: "working",
@@ -755,15 +757,70 @@ func TestP2PAgentWorkingMessagesNotifyOnlyOnFinalAnswer(t *testing.T) {
 	}
 
 	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
-		DisplayContent: "final answer",
+		DisplayContent: "first final segment",
 		DisplayType:    "text",
 		StoredType:     "text",
+		Metadata:       map[string]interface{}{"turn_id": "turn-1"},
 	}, 2, nil)
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "second final segment",
+		DisplayType:    "text",
+		StoredType:     "text",
+		Metadata:       map[string]interface{}{"turn_id": "turn-1"},
+	}, 3, nil)
 
 	select {
 	case <-delivered:
 	case <-time.After(time.Second):
 		t.Fatal("agent final answer did not deliver a push")
+	}
+	select {
+	case <-delivered:
+		t.Fatal("one agent turn delivered more than one push")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "next turn final answer",
+		DisplayType:    "text",
+		StoredType:     "text",
+		Metadata:       map[string]interface{}{"turn_id": "turn-2"},
+	}, 4, nil)
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("a different agent turn did not deliver a push")
+	}
+
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "fallback segment one",
+		DisplayType:    "text",
+		StoredType:     "text",
+	}, 5, nil)
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "fallback segment two",
+		DisplayType:    "text",
+		StoredType:     "text",
+	}, 6, nil)
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("agent messages without a turn key did not deliver a push")
+	}
+	select {
+	case <-delivered:
+		t.Fatal("fallback agent segments delivered more than one push")
+	case <-time.After(100 * time.Millisecond):
+	}
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "later fallback turn",
+		DisplayType:    "text",
+		StoredType:     "text",
+	}, 7, nil)
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("a later unkeyed agent turn was incorrectly deduplicated")
 	}
 }
 
@@ -776,12 +833,12 @@ func TestGroupBroadcastQueuesPushOnlyForOfflineHumans(t *testing.T) {
 	)
 	db := &identityMessageStore{
 		users: map[int64]*types.User{
-			senderUID:  {ID: senderUID, AccountType: types.AccountHuman},
+			senderUID:  {ID: senderUID, AccountType: types.AccountBot},
 			offlineUID: {ID: offlineUID, AccountType: types.AccountHuman},
 			onlineUID:  {ID: onlineUID, AccountType: types.AccountHuman},
 		},
 		groupMembers: []*types.GroupMember{
-			{GroupID: groupID, UserID: senderUID},
+			{GroupID: groupID, UserID: senderUID, IsBot: true},
 			{GroupID: groupID, UserID: offlineUID},
 			{GroupID: groupID, UserID: onlineUID},
 		},
@@ -799,6 +856,7 @@ func TestGroupBroadcastQueuesPushOnlyForOfflineHumans(t *testing.T) {
 	}
 	hub := NewHub(db, nil)
 	hub.SetPushNotificationService(service)
+	hub.agentPush.delay = 10 * time.Millisecond
 	hub.addClient(&Client{uid: onlineUID, accountType: types.AccountHuman, send: make(chan []byte, 2)})
 
 	hub.broadcastToGroupWithMentions(groupID, &ServerMessage{Data: &MsgServerData{
@@ -817,12 +875,13 @@ func TestGroupBroadcastQueuesPushOnlyForOfflineHumans(t *testing.T) {
 	}
 
 	hub.broadcastToGroupWithMentions(groupID, &ServerMessage{Data: &MsgServerData{
-		Topic:   "grp_80",
-		From:    formatUID(senderUID),
-		SeqID:   2,
-		Content: "final answer",
-		Type:    "text",
-		MsgType: "text",
+		Topic:    "grp_80",
+		From:     formatUID(senderUID),
+		SeqID:    2,
+		Content:  "final answer",
+		Type:     "text",
+		MsgType:  "text",
+		Metadata: map[string]interface{}{"turn_id": "group-turn-1"},
 	}}, senderUID, nil, senderUID, false)
 
 	select {

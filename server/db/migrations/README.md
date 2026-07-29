@@ -9,6 +9,11 @@ Current state:
 - Do not edit an already-applied migration. Add a new one.
 - MySQL is not part of the migration system. Keep MySQL compatibility fixes in code only unless the product explicitly reintroduces MySQL migrations.
 
+Historical note:
+
+- Two independent branches introduced different `000002` migrations. The earlier commercial migration keeps version 2, the later Weixin migration is version 6, and version 7 idempotently reconciles the commercial schema for databases whose recorded version 2 came from the Weixin branch.
+- The version-6 and version-7 down migrations are intentionally no-ops because reconciliation must never delete schema that may have existed before migration tracking was corrected.
+
 Sensitive values never belong here:
 
 - real database URLs or passwords

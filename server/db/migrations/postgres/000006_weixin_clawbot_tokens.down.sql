@@ -1,2 +1,4 @@
-DROP TRIGGER IF EXISTS trg_weixin_clawbot_tokens_updated_at ON weixin_clawbot_tokens;
-DROP TABLE IF EXISTS weixin_clawbot_tokens;
+-- Deliberately irreversible: some databases created this table under the
+-- historical conflicting version 000002. Rolling version 000006 back must not
+-- delete a table that predates the corrected migration number.
+SELECT 1;

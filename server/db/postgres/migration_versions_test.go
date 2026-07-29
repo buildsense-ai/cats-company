@@ -72,3 +72,38 @@ func TestPostgresMigrationVersionsAreUniqueAndPaired(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionTwoReconciliationRestoresCommercialSchema(t *testing.T) {
+	migration, err := os.ReadFile("../migrations/postgres/000007_reconcile_commercial_relay_foundation.up.sql")
+	if err != nil {
+		t.Fatalf("read version-two reconciliation migration: %v", err)
+	}
+
+	sql := string(migration)
+	for _, table := range []string{
+		"commercial_plans",
+		"commercial_invite_codes",
+		"commercial_entitlements",
+		"commercial_quota_grants",
+		"commercial_quota_ledger",
+	} {
+		if !strings.Contains(sql, "CREATE TABLE IF NOT EXISTS "+table) {
+			t.Errorf("reconciliation migration does not restore %s", table)
+		}
+	}
+}
+
+func TestHistoricalMigrationReconciliationDownsAreNonDestructive(t *testing.T) {
+	for _, name := range []string{
+		"000006_weixin_clawbot_tokens.down.sql",
+		"000007_reconcile_commercial_relay_foundation.down.sql",
+	} {
+		migration, err := os.ReadFile(filepath.Join("../migrations/postgres", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if strings.Contains(strings.ToUpper(string(migration)), "DROP TABLE") {
+			t.Errorf("%s must not delete historically ambiguous schema", name)
+		}
+	}
+}

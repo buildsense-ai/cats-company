@@ -248,7 +248,7 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 	peerMessage := h.messageForRecipient(uid, peerUID, topicID, replyTo, payload, msgID)
 	h.SendToUser(peerUID, peerMessage)
 	if shouldNotifyOfflineForMessage(peerMessage) {
-		h.notifyOfflineUser(peerUID)
+		h.notifyOfflineUserForMessage(peerUID, uid, peerMessage, h.isBotUser(uid))
 	}
 	h.forwardChannelBotReply(uid, peerUID, topicID, payload, msgID)
 
@@ -1016,18 +1016,10 @@ func isDurableAgentContextMessage(message *types.Message, displayType string) bo
 	if message == nil {
 		return false
 	}
-	for _, block := range message.ContentBlocks {
-		switch block.Type {
-		case "thinking", "tool_use", "tool_result", "runtime_plan":
-			return false
-		}
-	}
-	switch displayType {
-	case "text", "image", "voice", "file":
-		return true
-	default:
+	if !isUserVisibleMessageType(displayType) {
 		return false
 	}
+	return !isInternalAgentWorkingMessage(displayType, decodeStoredContent(message.Content), message.ContentBlocks)
 }
 
 func structuredMentionsFromMessage(message map[string]interface{}) []string {
