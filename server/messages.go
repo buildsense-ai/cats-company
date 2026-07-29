@@ -768,8 +768,9 @@ func topicTypeForID(topicID string) string {
 }
 
 const (
-	defaultAgentContextHistoryLimit = 100
-	maxAgentContextHistoryLimit     = 200
+	defaultAgentContextHistoryLimit   = 100
+	maxAgentContextHistoryLimit       = 200
+	maxAgentContextHistoryScanBatches = 4
 )
 
 type latestMessagesBeforeStore interface {
@@ -912,7 +913,8 @@ func (h *MessageHandler) loadAgentContextHistory(topicID string, beforeID int64,
 	const scanBatchSize = maxAgentContextHistoryLimit
 	cursor := beforeID
 	eligible := make([]*types.Message, 0, limit+1)
-	for {
+	continuationCursor := int64(0)
+	for scanBatch := 0; scanBatch < maxAgentContextHistoryScanBatches; scanBatch++ {
 		var (
 			rawMessages []*types.Message
 			err         error
@@ -945,15 +947,21 @@ func (h *MessageHandler) loadAgentContextHistory(topicID string, beforeID int64,
 		if nextCursor <= 0 || (cursor > 0 && nextCursor >= cursor) {
 			return nil, false, 0, errors.New("agent context history cursor did not advance")
 		}
+		if scanBatch+1 == maxAgentContextHistoryScanBatches {
+			// Bound work per request. Continue before the oldest raw message
+			// scanned, even if this page contained only filtered runtime data.
+			continuationCursor = nextCursor
+			break
+		}
 		cursor = nextCursor
 	}
 
-	hasMore := len(eligible) > limit
-	if hasMore {
+	hasMore := len(eligible) > limit || continuationCursor > 0
+	if len(eligible) > limit {
 		eligible = eligible[len(eligible)-limit:]
 	}
-	nextBeforeID := int64(0)
-	if len(eligible) > 0 {
+	nextBeforeID := continuationCursor
+	if nextBeforeID == 0 && len(eligible) > 0 {
 		nextBeforeID = eligible[0].ID
 	}
 	return eligible, hasMore, nextBeforeID, nil

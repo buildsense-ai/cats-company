@@ -615,6 +615,60 @@ func TestHandleGetMessagesAgentContextSkipsNonDurableMessagesBeforePaging(t *tes
 	}
 }
 
+func TestHandleGetMessagesAgentContextBoundsFilteredOnlyBatchScanning(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", AccountType: types.AccountHuman},
+			42: {ID: 42, Username: "dev_agent", AccountType: types.AccountBot},
+		},
+		groupMembers: []*types.GroupMember{{GroupID: 80, UserID: 7}, {GroupID: 80, UserID: 42}},
+	}
+	for id := int64(1); id <= 1005; id++ {
+		message := &types.Message{ID: id, TopicID: "grp_80", FromUID: 7, Content: "internal progress", MsgType: "text", ContentBlocks: []types.ContentBlock{{Type: "thinking", Thinking: "internal progress"}}}
+		if id == 1 {
+			message.Content = "old durable message"
+			message.ContentBlocks = nil
+		}
+		store.history = append(store.history, message)
+	}
+	handler := NewMessageHandler(store, NewHub(store, nil))
+	requestPage := func(beforeID int64) struct {
+		Messages     []map[string]interface{} `json:"messages"`
+		HasMore      bool                     `json:"has_more"`
+		NextBeforeID float64                  `json:"next_before_id"`
+	} {
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/messages?topic_id=grp_80&agent_context=1&before_id=%d&limit=1", beforeID), nil)
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
+		rec := httptest.NewRecorder()
+		handler.HandleGetMessages(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("agent context status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Messages     []map[string]interface{} `json:"messages"`
+			HasMore      bool                     `json:"has_more"`
+			NextBeforeID float64                  `json:"next_before_id"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode agent context response: %v", err)
+		}
+		return body
+	}
+
+	first := requestPage(1006)
+	if store.latestBeforeCalls != maxAgentContextHistoryScanBatches {
+		t.Fatalf("raw batch queries=%d, want bounded %d", store.latestBeforeCalls, maxAgentContextHistoryScanBatches)
+	}
+	if !first.HasMore || first.NextBeforeID != 206 || len(first.Messages) != 0 {
+		t.Fatalf("filtered-only bounded page=%#v, want empty page with cursor 206", first)
+	}
+
+	second := requestPage(int64(first.NextBeforeID))
+	if second.HasMore || second.NextBeforeID != 1 || len(second.Messages) != 1 || second.Messages[0]["id"] != float64(1) {
+		t.Fatalf("continuation page=%#v, want durable id 1 without history loss", second)
+	}
+}
+
 func TestHandleGetMessagesAgentContextRequiresBotCredentials(t *testing.T) {
 	store := &identityMessageStore{
 		users: map[int64]*types.User{
@@ -716,6 +770,7 @@ type identityMessageStore struct {
 	groupMembers       []*types.GroupMember
 	history            []*types.Message
 	getUsersByIDsCalls int
+	latestBeforeCalls  int
 }
 
 func (s *identityMessageStore) GetUser(id int64) (*types.User, error) {
@@ -804,6 +859,7 @@ func (s *identityMessageStore) GetLatestMessages(topicID string, limit, offset i
 }
 
 func (s *identityMessageStore) GetLatestMessagesBefore(topicID string, beforeID int64, limit int) ([]*types.Message, error) {
+	s.latestBeforeCalls++
 	var messages []*types.Message
 	for _, message := range s.history {
 		if message.TopicID == topicID && (beforeID <= 0 || message.ID < beforeID) {
