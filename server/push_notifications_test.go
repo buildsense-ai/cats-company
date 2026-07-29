@@ -933,6 +933,47 @@ func TestAgentPushWaitsForMatchingTerminalTaskStatus(t *testing.T) {
 	}
 }
 
+func TestLegacyP2PAgentReplyNotifiesWithoutTurnMetadata(t *testing.T) {
+	const (
+		senderUID  int64 = 7
+		offlineUID int64 = 8
+	)
+	db := &identityMessageStore{users: map[int64]*types.User{
+		senderUID:  {ID: senderUID, AccountType: types.AccountBot},
+		offlineUID: {ID: offlineUID, AccountType: types.AccountHuman},
+	}}
+	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/subscription/legacy-agent",
+		P256DH:   "p256dh",
+		Auth:     "auth",
+	}}}
+	service := enabledPushService(pushStore)
+	delivered := make(chan struct{}, 1)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		delivered <- struct{}{}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	hub := NewHub(db, nil)
+	hub.SetPushNotificationService(service)
+
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "legacy final answer",
+		DisplayType:    "text",
+		StoredType:     "text",
+	}, 1, nil)
+
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("legacy agent reply without turn metadata did not notify the offline recipient")
+	}
+	select {
+	case <-delivered:
+		t.Fatal("one legacy agent reply delivered more than one push")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestP2PAgentWorkingMessagesNotifyOnlyOnFinalAnswer(t *testing.T) {
 	const (
 		senderUID  int64 = 7

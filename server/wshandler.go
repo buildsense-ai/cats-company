@@ -1759,7 +1759,12 @@ func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessa
 	}
 	deliver := func() bool { return h.enqueueOfflineUserPush(uid) }
 	if !isCompletedAgentMessage(msg) {
-		h.agentPush.observeVisibleMessage(uid, senderUID, msg, deliver)
+		if h.agentPush.observeVisibleMessage(uid, senderUID, msg, deliver) {
+			return
+		}
+		if key, _ := agentPushTurnKey(uid, senderUID, msg); key == "" {
+			deliver()
+		}
 		return
 	}
 	key, ttl := agentPushTurnKey(uid, senderUID, msg)
