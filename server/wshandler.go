@@ -1713,6 +1713,37 @@ func max64(a, b int64) int64 {
 	return b
 }
 
+func shouldNotifyOfflineForMessage(msg *ServerMessage) bool {
+	if msg == nil || msg.Data == nil || msg.Data.SeqID <= 0 {
+		return false
+	}
+
+	data := msg.Data
+	displayType := strings.ToLower(strings.TrimSpace(firstNonEmpty(data.Type, data.MsgType)))
+	switch displayType {
+	case "runtime_plan", "thinking", "tool_use", "tool_result", "debug",
+		"stream_delta", "stream_cancel", taskStatusType:
+		return false
+	}
+
+	text := strings.TrimSpace(normalizeContentText(data.Content))
+	if strings.HasPrefix(text, "AI文本:") || strings.HasPrefix(text, "AI文本：") {
+		return false
+	}
+
+	hasInternalBlock := false
+	hasUserVisibleBlock := false
+	for _, block := range data.ContentBlocks {
+		switch strings.ToLower(strings.TrimSpace(block.Type)) {
+		case "runtime_plan", "thinking", "tool_use", "tool_result":
+			hasInternalBlock = true
+		case "text", "assistant_text", "image", "voice", "file":
+			hasUserVisibleBlock = true
+		}
+	}
+	return !hasInternalBlock || hasUserVisibleBlock
+}
+
 func (h *Hub) notifyOfflineUser(uid int64) {
 	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 || h.IsOnline(uid) {
 		return
@@ -1739,6 +1770,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 		log.Printf("broadcastToGroupWithMentions: failed to get members for group %d: %v", groupID, err)
 		return
 	}
+	shouldNotifyOffline := shouldNotifyOfflineForMessage(msg)
 
 	memberCount := len(members)
 	if msg != nil && msg.Data != nil {
@@ -1802,7 +1834,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			)
 		}
 		h.SendToUser(m.UserID, out)
-		if !isBot {
+		if !isBot && shouldNotifyOffline {
 			h.notifyOfflineUser(m.UserID)
 		}
 	}

@@ -661,6 +661,112 @@ func TestNotifyOfflineUserQueuesOnlyOfflineHumans(t *testing.T) {
 	}
 }
 
+func TestShouldNotifyOfflineForFinalUserVisibleMessagesOnly(t *testing.T) {
+	tests := []struct {
+		name string
+		data *MsgServerData
+		want bool
+	}{
+		{name: "missing message"},
+		{name: "transient text", data: &MsgServerData{SeqID: 0, Type: "text"}},
+		{name: "final text", data: &MsgServerData{SeqID: 1, Type: "text"}, want: true},
+		{name: "final image", data: &MsgServerData{SeqID: 1, Type: "image"}, want: true},
+		{name: "final voice", data: &MsgServerData{SeqID: 1, Type: "voice"}, want: true},
+		{name: "final file", data: &MsgServerData{SeqID: 1, Type: "file"}, want: true},
+		{name: "future user-visible type", data: &MsgServerData{SeqID: 1, Type: "video"}, want: true},
+		{name: "runtime plan", data: &MsgServerData{SeqID: 1, Type: "runtime_plan"}},
+		{name: "thinking", data: &MsgServerData{SeqID: 1, Type: "thinking"}},
+		{name: "tool use", data: &MsgServerData{SeqID: 1, Type: "tool_use"}},
+		{name: "tool result", data: &MsgServerData{SeqID: 1, Type: "tool_result"}},
+		{name: "debug", data: &MsgServerData{SeqID: 1, Type: "debug"}},
+		{name: "stream delta", data: &MsgServerData{SeqID: 1, Type: "stream_delta"}},
+		{name: "stream cancel", data: &MsgServerData{SeqID: 1, Type: "stream_cancel"}},
+		{name: "task status", data: &MsgServerData{SeqID: 1, Type: taskStatusType}},
+		{name: "legacy working text", data: &MsgServerData{SeqID: 1, Type: "text", Content: "AI文本: 正在工作"}},
+		{
+			name: "internal blocks only",
+			data: &MsgServerData{
+				SeqID:         1,
+				Type:          "text",
+				ContentBlocks: []types.ContentBlock{{Type: "tool_result", Content: "private output"}},
+			},
+		},
+		{
+			name: "final answer block with thinking",
+			data: &MsgServerData{
+				SeqID: 1,
+				Type:  "text",
+				ContentBlocks: []types.ContentBlock{
+					{Type: "thinking", Thinking: "working"},
+					{Type: "assistant_text", Text: "final answer"},
+				},
+			},
+			want: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var msg *ServerMessage
+			if test.data != nil {
+				msg = &ServerMessage{Data: test.data}
+			}
+			if got := shouldNotifyOfflineForMessage(msg); got != test.want {
+				t.Fatalf("shouldNotifyOfflineForMessage() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestP2PAgentWorkingMessagesNotifyOnlyOnFinalAnswer(t *testing.T) {
+	const (
+		senderUID  int64 = 7
+		offlineUID int64 = 8
+	)
+	db := &identityMessageStore{users: map[int64]*types.User{
+		senderUID:  {ID: senderUID, AccountType: types.AccountBot},
+		offlineUID: {ID: offlineUID, AccountType: types.AccountHuman},
+	}}
+	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/subscription/p2p-agent",
+		P256DH:   "p256dh",
+		Auth:     "auth",
+	}}}
+	service := enabledPushService(pushStore)
+	delivered := make(chan struct{}, 1)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		delivered <- struct{}{}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	hub := NewHub(db, nil)
+	hub.SetPushNotificationService(service)
+
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "working",
+		DisplayType:    "thinking",
+		StoredType:     "text",
+		ContentBlocks:  []types.ContentBlock{{Type: "thinking", Thinking: "working"}},
+	}, 1, nil)
+
+	select {
+	case <-delivered:
+		t.Fatal("agent working message unexpectedly delivered a push")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "final answer",
+		DisplayType:    "text",
+		StoredType:     "text",
+	}, 2, nil)
+
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("agent final answer did not deliver a push")
+	}
+}
+
 func TestGroupBroadcastQueuesPushOnlyForOfflineHumans(t *testing.T) {
 	const (
 		groupID    int64 = 80
@@ -693,9 +799,31 @@ func TestGroupBroadcastQueuesPushOnlyForOfflineHumans(t *testing.T) {
 	}
 	hub := NewHub(db, nil)
 	hub.SetPushNotificationService(service)
-	hub.addClient(&Client{uid: onlineUID, accountType: types.AccountHuman, send: make(chan []byte, 1)})
+	hub.addClient(&Client{uid: onlineUID, accountType: types.AccountHuman, send: make(chan []byte, 2)})
 
-	hub.broadcastToGroupWithMentions(groupID, nil, senderUID, nil, senderUID, false)
+	hub.broadcastToGroupWithMentions(groupID, &ServerMessage{Data: &MsgServerData{
+		Topic:   "grp_80",
+		From:    formatUID(senderUID),
+		SeqID:   1,
+		Content: "working",
+		Type:    "thinking",
+		MsgType: "text",
+	}}, senderUID, nil, senderUID, false)
+
+	select {
+	case <-delivered:
+		t.Fatal("agent working message unexpectedly delivered a group push")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	hub.broadcastToGroupWithMentions(groupID, &ServerMessage{Data: &MsgServerData{
+		Topic:   "grp_80",
+		From:    formatUID(senderUID),
+		SeqID:   2,
+		Content: "final answer",
+		Type:    "text",
+		MsgType: "text",
+	}}, senderUID, nil, senderUID, false)
 
 	select {
 	case <-delivered:
@@ -745,7 +873,14 @@ func TestGroupBroadcastQueuesBurstBeyondWorkerCount(t *testing.T) {
 	hub := NewHub(db, nil)
 	hub.SetPushNotificationService(service)
 
-	hub.broadcastToGroupWithMentions(groupID, nil, senderUID, nil, senderUID, false)
+	hub.broadcastToGroupWithMentions(groupID, &ServerMessage{Data: &MsgServerData{
+		Topic:   "grp_81",
+		From:    formatUID(senderUID),
+		SeqID:   1,
+		Content: "final answer",
+		Type:    "text",
+		MsgType: "text",
+	}}, senderUID, nil, senderUID, false)
 	close(release)
 
 	for index := 0; index < wantDeliveries; index++ {
