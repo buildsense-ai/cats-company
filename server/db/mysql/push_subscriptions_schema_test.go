@@ -11,3 +11,13 @@ func TestPushSubscriptionEndpointUsesCaseSensitiveCollation(t *testing.T) {
 		t.Fatalf("push subscription endpoint must be case-sensitive; schema=%s", createPushSubscriptionsTable)
 	}
 }
+
+func TestPushSubscriptionRegistrationIDUsesCaseSensitiveCollation(t *testing.T) {
+	const registrationIDColumn = "registration_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL"
+	if !strings.Contains(createPushSubscriptionsTable, registrationIDColumn) {
+		t.Fatalf("push subscription registration id must be case-sensitive; schema=%s", createPushSubscriptionsTable)
+	}
+	if !strings.Contains(migratePushSubscriptionsRegistrationIDBinary, "COLLATE utf8mb4_bin") {
+		t.Fatalf("existing registration ids must be migrated to a case-sensitive collation; migration=%s", migratePushSubscriptionsRegistrationIDBinary)
+	}
+}

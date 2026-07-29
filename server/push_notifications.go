@@ -325,7 +325,7 @@ func (s *PushNotificationService) handleUnsubscribe(w http.ResponseWriter, r *ht
 		return
 	}
 	registrationID := strings.TrimSpace(req.RegistrationID)
-	if len(registrationID) > 64 {
+	if registrationID == "" || len(registrationID) > 64 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid registration id"})
 		return
 	}

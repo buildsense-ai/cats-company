@@ -120,9 +120,12 @@ func TestPostgresStoreContract(t *testing.T) {
 	if err := db.DeletePushSubscription(context.Background(), ownerID, pushSubscriptions[0].Endpoint, "session-old"); err != nil {
 		t.Fatalf("delete old push generation: %v", err)
 	}
+	if err := db.DeletePushSubscription(context.Background(), ownerID, pushSubscriptions[0].Endpoint, ""); err != nil {
+		t.Fatalf("delete empty push generation: %v", err)
+	}
 	remainingPushSubscriptions, err := db.ListPushSubscriptions(context.Background(), ownerID)
 	if err != nil || len(remainingPushSubscriptions) != pushSubscriptionLimit {
-		t.Fatalf("old delete removed new push generation: count=%d err=%v", len(remainingPushSubscriptions), err)
+		t.Fatalf("stale delete removed new push generation: count=%d err=%v", len(remainingPushSubscriptions), err)
 	}
 	if remainingPushSubscriptions[0].RegistrationID != "session-new" {
 		t.Fatalf("new push generation changed: %+v", remainingPushSubscriptions[0])
@@ -453,6 +456,60 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 		legacyTopicID,
 	); err != nil {
 		t.Fatalf("clean up legacy task status aggregate: %v", err)
+	}
+
+	mixedVersionTopicID := topicID
+	activeSourceUpdatedAt := time.Now().UTC().Add(-time.Hour)
+	staleAggregateUpdatedAt := activeSourceUpdatedAt.Add(30 * time.Minute)
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_status_sources
+		   (topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at)
+		 VALUES ($1, $2, 'new-run', 'running', 'new run active', '', $3, $4)`,
+		mixedVersionTopicID,
+		firstBotID,
+		expiry,
+		activeSourceUpdatedAt,
+	); err != nil {
+		t.Fatalf("seed active new-run source status: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_statuses
+		   (topic_id, run_id, state, summary, error, source_uid, expires_at, updated_at)
+		 VALUES ($1, 'old-run', 'completed', 'old run completed', '', $2, NULL, $3)`,
+		mixedVersionTopicID,
+		firstBotID,
+		staleAggregateUpdatedAt,
+	); err != nil {
+		t.Fatalf("seed stale terminal aggregate: %v", err)
+	}
+	mixedVersionAggregate, err := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+		TopicID:   mixedVersionTopicID,
+		RunID:     "other-source-run",
+		State:     "completed",
+		Summary:   "other source completed",
+		SourceUID: secondBotID,
+	})
+	if err != nil {
+		t.Fatalf("upsert alongside mixed-version task status: %v", err)
+	}
+	if mixedVersionAggregate.State != "running" || mixedVersionAggregate.RunID != "new-run" || mixedVersionAggregate.SourceUID != firstBotID {
+		t.Fatalf("stale terminal aggregate overwrote active new run: %+v", mixedVersionAggregate)
+	}
+	activeSource, err := db.GetConversationTaskStatusForSource(mixedVersionTopicID, firstBotID)
+	if err != nil || activeSource == nil || activeSource.RunID != "new-run" || activeSource.State != "running" {
+		t.Fatalf("active new-run source was not preserved: status=%+v err=%v", activeSource, err)
+	}
+	if _, err := db.db.Exec(
+		`DELETE FROM conversation_task_status_sources WHERE topic_id = $1`,
+		mixedVersionTopicID,
+	); err != nil {
+		t.Fatalf("clean up mixed-version task status sources: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`DELETE FROM conversation_task_statuses WHERE topic_id = $1`,
+		mixedVersionTopicID,
+	); err != nil {
+		t.Fatalf("clean up mixed-version task status aggregate: %v", err)
 	}
 
 	upsert := func(sourceUID int64, runID, state string) *types.ConversationTaskStatus {

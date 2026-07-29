@@ -111,10 +111,9 @@ func (a *Adapter) ListPushSubscriptions(ctx context.Context, uid int64) ([]*type
 // DeletePushSubscription removes one endpoint if it belongs to uid.
 func (a *Adapter) DeletePushSubscription(ctx context.Context, uid int64, endpoint, registrationID string) error {
 	if _, err := a.db.ExecContext(ctx,
-		`DELETE FROM push_subscriptions WHERE uid = ? AND endpoint = ? AND (? = '' OR registration_id = ?)`,
+		`DELETE FROM push_subscriptions WHERE uid = ? AND endpoint = ? AND registration_id = ?`,
 		uid,
 		endpoint,
-		registrationID,
 		registrationID,
 	); err != nil {
 		return fmt.Errorf("delete push subscription: %w", err)

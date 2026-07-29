@@ -33,6 +33,7 @@ type memoryPushSubscriptionStore struct {
 	listErr               error
 	listBlock             <-chan struct{}
 	deleteErr             error
+	beforeDelete          func()
 }
 
 type pushHubUserStore struct {
@@ -81,10 +82,19 @@ func (m *memoryPushSubscriptionStore) DeletePushSubscription(_ context.Context, 
 	if m.deleteErr != nil {
 		return m.deleteErr
 	}
+	if m.beforeDelete != nil {
+		m.beforeDelete()
+	}
 	m.deletedUID = uid
 	m.deleted = endpoint
 	m.deletedRegistrationID = registrationID
 	m.deletedScoped = append(m.deletedScoped, fmt.Sprintf("%d:%s", uid, endpoint))
+	for index, subscription := range m.subscriptions {
+		if subscription != nil && subscription.UID == uid && subscription.Endpoint == endpoint && subscription.RegistrationID == registrationID {
+			m.subscriptions = append(m.subscriptions[:index], m.subscriptions[index+1:]...)
+			break
+		}
+	}
 	return nil
 }
 
@@ -427,6 +437,20 @@ func TestPushNotificationDeleteSubscription(t *testing.T) {
 	}
 }
 
+func TestPushNotificationDeleteSubscriptionRequiresRegistrationID(t *testing.T) {
+	store := &memoryPushSubscriptionStore{}
+	service := enabledPushService(store)
+	recorder := httptest.NewRecorder()
+	service.HandleSubscription(recorder, pushRequest(t, http.MethodDelete, `{"endpoint":"https://push.example.test/subscription/delete","registration_id":" "}`, 104))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	if store.deleted != "" {
+		t.Fatalf("delete called for empty registration id: endpoint=%q", store.deleted)
+	}
+}
+
 func TestPushNotificationSendCleansExpiredSubscriptions(t *testing.T) {
 	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
 		{Endpoint: "https://push.example.test/gone", P256DH: "p256dh", Auth: "auth"},
@@ -481,6 +505,35 @@ func TestPushNotificationSendCleansExpiredSubscriptions(t *testing.T) {
 		if _, ok := payload[key]; !ok {
 			t.Fatalf("payload missing %q: %s", key, payloads[0])
 		}
+	}
+}
+
+func TestPushNotificationExpiredCleanupDoesNotDeleteUpgradedLegacySubscription(t *testing.T) {
+	const endpoint = "https://push.example.test/legacy-upgraded"
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		UID:            15,
+		Endpoint:       endpoint,
+		P256DH:         "p256dh",
+		Auth:           "auth",
+		RegistrationID: "",
+	}}}
+	store.beforeDelete = func() {
+		store.subscriptions[0].RegistrationID = "session-new"
+	}
+	service := enabledPushService(store)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusGone, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	err := service.SendToUser(context.Background(), 15, PushNotification{Title: "New message"})
+	if err != nil {
+		t.Fatalf("SendToUser returned error: %v", err)
+	}
+	if len(store.subscriptions) != 1 || store.subscriptions[0].RegistrationID != "session-new" {
+		t.Fatalf("stale cleanup removed upgraded subscription: %+v", store.subscriptions)
+	}
+	if store.deletedRegistrationID != "" {
+		t.Fatalf("cleanup registration id = %q, want legacy empty generation", store.deletedRegistrationID)
 	}
 }
 

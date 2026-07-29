@@ -42,18 +42,30 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 		return nil, fmt.Errorf("lock conversation task aggregate: %w", err)
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO conversation_task_status_sources
+		`DELETE source
+		 FROM conversation_task_status_sources AS source
+		 JOIN conversation_task_statuses AS aggregate
+		   ON source.topic_id = aggregate.topic_id
+		  AND source.source_uid = aggregate.source_uid
+		 WHERE aggregate.topic_id = ?
+		   AND aggregate.source_uid IS NOT NULL
+		   AND aggregate.updated_at > source.updated_at
+		   AND NOT (
+		     source.state IN ('running', 'waiting')
+		     AND (source.expires_at IS NULL OR source.expires_at > CURRENT_TIMESTAMP)
+		     AND source.run_id <> aggregate.run_id
+		     AND aggregate.state NOT IN ('running', 'waiting')
+		   )`,
+		status.TopicID,
+	); err != nil {
+		return nil, fmt.Errorf("remove stale conversation task source status: %w", err)
+	}
+	if _, err := tx.Exec(
+		`INSERT IGNORE INTO conversation_task_status_sources
 		   (topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at)
 		 SELECT topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at
 		 FROM conversation_task_statuses
-		 WHERE topic_id = ? AND source_uid IS NOT NULL
-		 ON DUPLICATE KEY UPDATE
-		   run_id = IF(VALUES(updated_at) > updated_at, VALUES(run_id), run_id),
-		   state = IF(VALUES(updated_at) > updated_at, VALUES(state), state),
-		   summary = IF(VALUES(updated_at) > updated_at, VALUES(summary), summary),
-		   error = IF(VALUES(updated_at) > updated_at, VALUES(error), error),
-		   expires_at = IF(VALUES(updated_at) > updated_at, VALUES(expires_at), expires_at),
-		   updated_at = GREATEST(updated_at, VALUES(updated_at))`,
+		 WHERE topic_id = ? AND source_uid IS NOT NULL`,
 		status.TopicID,
 	); err != nil {
 		return nil, fmt.Errorf("backfill legacy conversation task source status: %w", err)
