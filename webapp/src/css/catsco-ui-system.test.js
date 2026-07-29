@@ -700,6 +700,12 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-composer-hint')).toContain('line-height: 18px;');
   });
 
+  it('prevents iOS focus zoom without changing non-text form controls', () => {
+    expect(css).toContain('@media (max-width: 768px), (hover: none) and (pointer: coarse) {\n  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),\n  textarea,\n  select {\n    font-size: 16px !important;\n  }\n}');
+    expect(css).not.toContain('user-scalable=no');
+    expect(css).not.toContain('maximum-scale=1');
+  });
+
   it('aligns peer messages and typing status to the unchanged composer rail', () => {
     const stackedNoticeRule = ruleFor('.v3-composer-notices .v3-live-input-status:last-child');
 

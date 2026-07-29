@@ -7131,3 +7131,12 @@ html[data-theme="liquid"] .v3-message .v3-attachment-icon {
     display: none;
   }
 }
+
+/* iOS Safari zooms the viewport when a focused form control renders below 16px. */
+@media (max-width: 768px), (hover: none) and (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
