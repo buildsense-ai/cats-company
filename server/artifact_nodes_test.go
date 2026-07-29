@@ -102,7 +102,7 @@ func TestCloudArtifactHandlerListsMappedPublicIndexNode(t *testing.T) {
 	var upstream *httptest.Server
 	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls++
-		if r.Method != http.MethodGet || r.URL.Path != "/artifacts/artifacts-index.json" {
+		if r.Method != http.MethodGet || r.URL.Path != "/artifacts/by-agent/440/artifacts-index.json" {
 			t.Fatalf("public index request = %s %s", r.Method, r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "" {
@@ -115,7 +115,7 @@ func TestCloudArtifactHandlerListsMappedPublicIndexNode(t *testing.T) {
 				ID:        "lesson-game",
 				Title:     "Lesson game",
 				Kind:      "html",
-				URL:       upstream.URL + "/artifacts/lesson-game/latest/",
+				URL:       upstream.URL + "/artifacts/by-agent/440/lesson-game/latest/",
 				UpdatedAt: "2026-07-29T06:34:31.224Z",
 			}},
 		})
@@ -182,6 +182,142 @@ func TestCloudArtifactHandlerListsMappedPublicIndexNode(t *testing.T) {
 	}
 	if upstreamCalls != 1 {
 		t.Fatalf("public index calls = %d, want 1", upstreamCalls)
+	}
+}
+
+func TestCloudArtifactHandlerIsolatesAgentsOnSharedPublicIndexNode(t *testing.T) {
+	upstreamCalls := map[string]int{}
+	var upstream *httptest.Server
+	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		agentUID := ""
+		switch r.URL.Path {
+		case "/artifacts/by-agent/440/artifacts-index.json":
+			agentUID = "440"
+		case "/artifacts/by-agent/310/artifacts-index.json":
+			agentUID = "310"
+		default:
+			t.Fatalf("public index request = %s %s", r.Method, r.URL.Path)
+		}
+		upstreamCalls[agentUID]++
+		artifactID := "agent-" + agentUID + "-private-report"
+		data, _ := json.Marshal(cloudArtifactIndex{
+			ContractVersion: artifactIndexContract,
+			UpdatedAt:       "2026-07-29T06:34:31.224Z",
+			Artifacts: []cloudArtifact{{
+				ID:        artifactID,
+				Title:     "Private report for " + agentUID,
+				Kind:      "html",
+				URL:       upstream.URL + "/artifacts/by-agent/" + agentUID + "/" + artifactID + "/latest/",
+				UpdatedAt: "2026-07-29T06:34:31.224Z",
+			}},
+		})
+		_, _ = w.Write(data)
+	}))
+	defer upstream.Close()
+
+	registry := mustArtifactNodeRegistry(t, nil, map[string]any{
+		"nodes": map[string]any{
+			"shared-static-node": map[string]string{
+				"public_base_url": upstream.URL + "/artifacts",
+			},
+		},
+		"agents": map[string]string{
+			"440": "shared-static-node",
+			"310": "shared-static-node",
+		},
+	})
+	handler := NewCloudArtifactManagementHandler(
+		"https://legacy.example.test/artifacts-index.json",
+		"https://legacy.example.test/internal/artifacts",
+		"legacy-management-token-abcdefghijklmnopqrstuvwxyz",
+		upstream.Client(),
+	)
+	handler.nodeRegistry = registry
+	handler.SetStore(twoManagedArtifactAgentsStore())
+
+	for _, test := range []struct {
+		agentUID   string
+		artifactID string
+	}{
+		{agentUID: "440", artifactID: "agent-440-private-report"},
+		{agentUID: "310", artifactID: "agent-310-private-report"},
+	} {
+		rec := httptest.NewRecorder()
+		handler.HandleAgentArtifacts(
+			rec,
+			authenticatedArtifactRequestPath(
+				http.MethodGet,
+				"/api/agents/"+test.agentUID+"/artifacts?status=active",
+			),
+		)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("agent %s status = %d, body = %s", test.agentUID, rec.Code, rec.Body.String())
+		}
+		var list cloudArtifactManagementList
+		if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+			t.Fatal(err)
+		}
+		if list.Count != 1 || len(list.Artifacts) != 1 {
+			t.Fatalf("agent %s list = %+v", test.agentUID, list)
+		}
+		artifact := list.Artifacts[0]
+		if artifact.ID != test.artifactID || artifact.AgentUID != test.agentUID {
+			t.Fatalf("agent %s artifact = %+v", test.agentUID, artifact)
+		}
+	}
+	if upstreamCalls["440"] != 1 || upstreamCalls["310"] != 1 {
+		t.Fatalf("public index calls = %+v, want one namespaced request per agent", upstreamCalls)
+	}
+}
+
+func TestCloudArtifactHandlerRejectsPublicIndexURLFromWrongAgentNamespace(t *testing.T) {
+	var upstream *httptest.Server
+	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/artifacts/by-agent/310/artifacts-index.json" {
+			t.Fatalf("public index request path = %s", r.URL.Path)
+		}
+		data, _ := json.Marshal(cloudArtifactIndex{
+			ContractVersion: artifactIndexContract,
+			UpdatedAt:       "2026-07-29T06:34:31.224Z",
+			Artifacts: []cloudArtifact{{
+				ID:        "agent-440-private-report",
+				Title:     "Agent 440 private report",
+				Kind:      "html",
+				URL:       upstream.URL + "/artifacts/by-agent/440/agent-440-private-report/latest/",
+				UpdatedAt: "2026-07-29T06:34:31.224Z",
+			}},
+		})
+		_, _ = w.Write(data)
+	}))
+	defer upstream.Close()
+
+	registry := mustArtifactNodeRegistry(t, nil, map[string]any{
+		"nodes": map[string]any{
+			"shared-static-node": map[string]string{
+				"public_base_url": upstream.URL + "/artifacts",
+			},
+		},
+		"agents": map[string]string{"310": "shared-static-node"},
+	})
+	handler := NewCloudArtifactManagementHandler(
+		"https://legacy.example.test/artifacts-index.json",
+		"https://legacy.example.test/internal/artifacts",
+		"legacy-management-token-abcdefghijklmnopqrstuvwxyz",
+		upstream.Client(),
+	)
+	handler.nodeRegistry = registry
+	handler.SetStore(managedArtifactAgentStore(7, 310, true))
+
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(
+		rec,
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/310/artifacts?status=active"),
+	)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"artifact_response_invalid"`) {
+		t.Fatalf("body = %s", rec.Body.String())
 	}
 }
 

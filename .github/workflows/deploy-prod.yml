@@ -57,6 +57,7 @@ jobs:
           cp deploy/prod/remote-status.sh "${tmpdir}/compose/"
           cp deploy/prod/ensure-image-timeout-nginx.sh "${tmpdir}/compose/"
           cp deploy/prod/update-nginx-v1-timeout.py "${tmpdir}/compose/"
+          cp deploy/prod/sync-artifact-node-env.py "${tmpdir}/compose/"
           cp deploy/prod/docker-compose.yml "${tmpdir}/compose/"
           cp deploy/prod/tinode.prod.conf "${tmpdir}/compose/"
           cp deploy/prod/env.prod.example "${tmpdir}/env/"
@@ -83,6 +84,8 @@ jobs:
           root="${PROD_STACK_ROOT}"
           revision="${IMAGE_TAG}"
           owner="${GHCR_OWNER}"
+          export CATSCO_ARTIFACT_NODES_JSON=
+          export CATSCO_ARTIFACT_NODES_FILE=
           if [ -n "${CATSCO_ARTIFACT_NODES_JSON_B64:-}" ]; then
             mkdir -p "$root/secrets"
             artifact_nodes_temp="$root/secrets/artifact-nodes.json.new"

@@ -88,7 +88,6 @@ updates = {
     "CATSCO_ARTIFACT_INDEX_URL": os.environ.get("CATSCO_ARTIFACT_INDEX_URL", ""),
     "CATSCO_ARTIFACT_MANAGEMENT_URL": os.environ.get("CATSCO_ARTIFACT_MANAGEMENT_URL", ""),
     "CATSCO_ARTIFACT_MANAGEMENT_TOKEN": os.environ.get("CATSCO_ARTIFACT_MANAGEMENT_TOKEN", ""),
-    "CATSCO_ARTIFACT_NODES_FILE": os.environ.get("CATSCO_ARTIFACT_NODES_FILE", ""),
 }
 
 lines = []
@@ -108,6 +107,8 @@ for key, value in updates.items():
 
 p.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
+
+python3 "$compose_dir/sync-artifact-node-env.py" "$env_file"
 
 allow_shared_db_user="$(sed -n 's/^ALLOW_SHARED_DB_USER=//p' "$env_file" | tail -n 1)"
 db_driver="$(sed -n 's/^OC_DB_DRIVER=//p' "$env_file" | tail -n 1)"

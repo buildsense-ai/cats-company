@@ -377,17 +377,18 @@ func (h *CloudArtifactHandler) handleNodePublicIndexList(
 		return
 	}
 
-	indexURL := strings.TrimRight(node.publicBaseURL, "/") + "/artifacts-index.json"
+	agentID := strconv.FormatInt(agentUID, 10)
+	indexURL := strings.TrimRight(node.publicBaseURL, "/") +
+		"/by-agent/" + agentID + "/artifacts-index.json"
 	index, ok := h.readPublicArtifactIndex(w, r, indexURL)
 	if !ok {
 		return
 	}
-	if validateManagedArtifactNodeURLs(index.Artifacts, node.publicBaseURL, 0) != nil {
+	if validateManagedArtifactNodeURLs(index.Artifacts, node.publicBaseURL, agentUID) != nil {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
 		return
 	}
 
-	agentID := strconv.FormatInt(agentUID, 10)
 	list.Artifacts = append(list.Artifacts, index.Artifacts...)
 	for i := range list.Artifacts {
 		list.Artifacts[i].Status = "active"
