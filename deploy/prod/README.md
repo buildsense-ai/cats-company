@@ -121,9 +121,11 @@ The JSON maps an Agent UID to one node. Every node declares its public artifact
 base URL. A fully managed node also declares a protected management URL and
 exactly one bearer-token source: `management_token_env` or
 `management_token_file`. A static-only node may omit all three management
-fields; CatsCo then reads `<public_base_url>/artifacts-index.json`, does not
-offer delete or restore, and returns an empty recycle bin. The token itself must
-not be written into the JSON. Prefer a separate file under
+fields; CatsCo then reads
+`<public_base_url>/by-agent/<uid>/artifacts-index.json`, verifies that every
+artifact URL stays inside the same Agent namespace, does not offer delete or
+restore, and returns an empty recycle bin. The token itself must not be written
+into the JSON. Prefer a separate file under
 `/run/catsco-secrets` for each managed node; the directory is already mounted
 read-only in the server container.
 Every `public_base_url` must use a different origin (scheme, host, or port) from
