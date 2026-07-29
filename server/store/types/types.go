@@ -69,13 +69,16 @@ type CommercialPlan struct {
 	Currency      string             `json:"currency"`
 	SaleState     string             `json:"sale_state"`
 	PurchaseLimit int                `json:"purchase_limit"`
-	MonthlyBudget float64            `json:"monthly_budget_cny"`
+	MonthlyBudget float64            `json:"monthly_budget_cny,omitempty"`
 	ModelBudgets  map[string]float64 `json:"model_budgets,omitempty"`
-	DurationDays  int                `json:"duration_days"`
-	State         int                `json:"state"`
-	SortOrder     int                `json:"sort_order"`
-	CreatedAt     time.Time          `json:"created_at"`
-	UpdatedAt     time.Time          `json:"updated_at"`
+	// InternalQuotaTokens is an operator-only SOL-equivalent capacity reference.
+	// Relay enforcement continues to use the CNY budgets above.
+	InternalQuotaTokens int64     `json:"internal_quota_tokens,omitempty"`
+	DurationDays        int       `json:"duration_days"`
+	State               int       `json:"state"`
+	SortOrder           int       `json:"sort_order"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 // CommercialOrder is an immutable purchase snapshot plus its payment and
@@ -89,14 +92,14 @@ type CommercialOrder struct {
 	PlanName          string             `json:"plan_name"`
 	PlanDescription   string             `json:"plan_description,omitempty"`
 	PlanDurationDays  int                `json:"plan_duration_days"`
-	PlanMonthlyBudget float64            `json:"plan_monthly_budget_cny"`
+	PlanMonthlyBudget float64            `json:"plan_monthly_budget_cny,omitempty"`
 	PlanModelBudgets  map[string]float64 `json:"plan_model_budgets,omitempty"`
 	AmountFen         int64              `json:"amount_fen"`
 	Currency          string             `json:"currency"`
 	Channel           string             `json:"channel"`
 	Status            string             `json:"status"`
 	ProviderTradeNo   string             `json:"provider_trade_no,omitempty"`
-	CodeURL           string             `json:"code_url,omitempty"`
+	CheckoutURL       string             `json:"checkout_url,omitempty"`
 	ClientRequestID   string             `json:"-"`
 	ExpiresAt         *time.Time         `json:"expires_at,omitempty"`
 	PaidAt            *time.Time         `json:"paid_at,omitempty"`

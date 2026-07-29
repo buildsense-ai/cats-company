@@ -12,7 +12,7 @@ import (
 )
 
 const commercialPlanColumns = `id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-	monthly_budget_cny, model_budgets, duration_days, state, sort_order, created_at, updated_at`
+	monthly_budget_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, created_at, updated_at`
 
 func (a *Adapter) GetCommercialPlan(id int64) (*types.CommercialPlan, error) {
 	if id <= 0 {
@@ -61,7 +61,7 @@ func scanCommercialOrder(scanner interface {
 		&order.Channel,
 		&order.Status,
 		&order.ProviderTradeNo,
-		&order.CodeURL,
+		&order.CheckoutURL,
 		&order.ClientRequestID,
 		&expiresAt,
 		&paidAt,
@@ -83,7 +83,7 @@ func scanCommercialOrder(scanner interface {
 
 const commercialOrderColumns = `id, order_no, uid, plan_id, plan_slug, plan_name, plan_description,
 	plan_duration_days, plan_monthly_budget_cny, plan_model_budgets, amount_fen, currency, channel,
-	status, provider_trade_no, code_url, client_request_id, expires_at, paid_at, fulfilled_at,
+	status, provider_trade_no, checkout_url, client_request_id, expires_at, paid_at, fulfilled_at,
 	closed_at, last_error, created_at, updated_at`
 
 func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.CommercialOrder, error) {
@@ -117,7 +117,7 @@ func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.Co
 	if err != nil {
 		return nil, fmt.Errorf("load commercial plan: %w", err)
 	}
-	if plan.State != 0 || plan.PriceFen <= 0 {
+	if plan.State != 0 || plan.PriceFen <= 0 || plan.DurationDays <= 0 || !commercialPlanHasPositiveBudget(plan) {
 		return nil, fmt.Errorf("commercial plan is not purchasable")
 	}
 	if plan.PurchaseLimit > 0 {
@@ -125,7 +125,7 @@ func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.Co
 			return nil, fmt.Errorf("lock commercial purchase limit: %w", err)
 		}
 		if _, err := tx.Exec(`
-			UPDATE commercial_orders SET status = 'closed', closed_at = CURRENT_TIMESTAMP, code_url = ''
+			UPDATE commercial_orders SET status = 'closed', closed_at = CURRENT_TIMESTAMP, checkout_url = ''
 			WHERE uid = $1 AND plan_id = $2 AND status IN ('created','pending') AND expires_at <= CURRENT_TIMESTAMP`, order.UID, plan.ID); err != nil {
 			return nil, fmt.Errorf("close expired commercial reservations: %w", err)
 		}
@@ -179,10 +179,25 @@ func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.Co
 	return created, nil
 }
 
+func commercialPlanHasPositiveBudget(plan *types.CommercialPlan) bool {
+	if plan == nil {
+		return false
+	}
+	if plan.MonthlyBudget > 0 {
+		return true
+	}
+	for _, amount := range plan.ModelBudgets {
+		if amount > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *Adapter) BeginCommercialOrderPayment(orderNo string, expiresAt time.Time) (*types.CommercialOrder, bool, error) {
 	order, err := scanCommercialOrder(a.db.QueryRow(`
 		UPDATE commercial_orders
-		SET status = 'pending', code_url = '', expires_at = $2, closed_at = NULL, last_error = ''
+		SET status = 'pending', checkout_url = '', expires_at = $2, closed_at = NULL, last_error = ''
 		WHERE order_no = $1 AND status IN ('created','failed')
 		RETURNING `+commercialOrderColumns, strings.TrimSpace(orderNo), expiresAt.UTC()))
 	if err == nil {
@@ -201,12 +216,12 @@ func (a *Adapter) BeginCommercialOrderPayment(orderNo string, expiresAt time.Tim
 	return order, false, nil
 }
 
-func (a *Adapter) SetCommercialOrderPaymentIntent(orderNo, codeURL string, expiresAt time.Time) (*types.CommercialOrder, error) {
+func (a *Adapter) SetCommercialOrderPaymentIntent(orderNo, checkoutURL string, expiresAt time.Time) (*types.CommercialOrder, error) {
 	order, err := scanCommercialOrder(a.db.QueryRow(`
 		UPDATE commercial_orders
-		SET status = 'pending', code_url = $2, expires_at = $3, last_error = ''
+		SET status = 'pending', checkout_url = $2, expires_at = $3, last_error = ''
 		WHERE order_no = $1 AND status = 'pending'
-		RETURNING `+commercialOrderColumns, strings.TrimSpace(orderNo), strings.TrimSpace(codeURL), expiresAt.UTC()))
+		RETURNING `+commercialOrderColumns, strings.TrimSpace(orderNo), strings.TrimSpace(checkoutURL), expiresAt.UTC()))
 	if err == sql.ErrNoRows {
 		return a.GetCommercialOrder(0, orderNo)
 	}
@@ -298,7 +313,7 @@ func (a *Adapter) CloseExpiredCommercialOrders(limit int) (int64, error) {
 			FOR UPDATE SKIP LOCKED
 		)
 		UPDATE commercial_orders o
-		SET status = 'closed', closed_at = CURRENT_TIMESTAMP, code_url = ''
+		SET status = 'closed', closed_at = CURRENT_TIMESTAMP, checkout_url = ''
 		FROM expired
 		WHERE o.id = expired.id`, limit)
 	if err != nil {
@@ -377,7 +392,7 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	fulfilled, err := scanCommercialOrder(tx.QueryRow(`
 		UPDATE commercial_orders
 		SET status = 'fulfilled', provider_trade_no = $2, paid_at = $3, fulfilled_at = CURRENT_TIMESTAMP,
-		    code_url = '', last_error = ''
+		    checkout_url = '', last_error = ''
 		WHERE order_no = $1
 		RETURNING `+commercialOrderColumns, order.OrderNo, strings.TrimSpace(confirmation.ProviderTradeNo), paidAt))
 	if err != nil {

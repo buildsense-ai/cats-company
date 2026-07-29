@@ -3449,7 +3449,7 @@ button.catsco-download-action:disabled {
 .relay-access-trial-row div,
 .relay-access-plan-row > div,
 .relay-access-checkout-head > div,
-.relay-access-payment-qr > div {
+.relay-access-payment-redirect > div {
   min-width: 0;
 }
 
@@ -3460,15 +3460,15 @@ button.catsco-download-action:disabled {
 .relay-access-plan-row em,
 .relay-access-checkout-head strong,
 .relay-access-checkout-head span,
-.relay-access-payment-qr strong,
-.relay-access-payment-qr span {
+.relay-access-payment-redirect strong,
+.relay-access-payment-redirect span {
   display: block;
 }
 
 .relay-access-trial-row strong,
 .relay-access-plan-row strong,
 .relay-access-checkout-head strong,
-.relay-access-payment-qr strong {
+.relay-access-payment-redirect strong {
   color: var(--v3-text-name);
 }
 
@@ -3476,7 +3476,7 @@ button.catsco-download-action:disabled {
 .relay-access-plan-row span,
 .relay-access-plan-row em,
 .relay-access-checkout-head span,
-.relay-access-payment-qr span,
+.relay-access-payment-redirect span,
 .relay-access-storefront-head > div > span {
   margin-top: 3px;
   color: var(--v3-text-muted);
@@ -3507,7 +3507,7 @@ button.catsco-download-action:disabled {
 .relay-access-plan-row button:disabled,
 .relay-access-test-payment:disabled {
   opacity: 0.55;
-  cursor: wait;
+  cursor: not-allowed;
 }
 
 .relay-access-storefront,
@@ -3544,32 +3544,114 @@ button.catsco-download-action:disabled {
 
 .relay-access-plan-list {
   display: grid;
-  gap: 8px;
-  margin-top: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .relay-access-plan-row {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  min-height: 280px;
+  padding: 14px;
+  border: 1px solid var(--v3-border);
+  border-radius: 8px;
+  background: var(--v3-panel);
+}
+
+.relay-access-plan-row.recommended {
+  border-color: rgba(214, 168, 79, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(214, 168, 79, 0.2);
+}
+
+.relay-access-plan-row.wide {
+  grid-column: 1 / -1;
+}
+
+.relay-access-plan-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding-top: 10px;
-  border-top: 1px solid var(--v3-border);
+  min-height: 22px;
+  gap: 8px;
 }
 
-.relay-access-plan-row:first-child {
-  padding-top: 0;
-  border-top: 0;
+.relay-access-plan-row .relay-access-plan-kicker {
+  margin: 0;
+  color: #b88628;
+  font-size: 11px;
+  font-weight: 700;
 }
 
-.relay-access-plan-row > div:last-child {
-  display: grid;
-  justify-items: end;
-  gap: 7px;
+.relay-access-plan-row .relay-access-plan-badge {
+  margin: 0;
+  border-radius: 999px;
+  background: #d6a84f;
+  color: #19150c;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
-.relay-access-plan-row > div:last-child > strong {
-  font-size: 17px;
+.relay-access-plan-row .relay-access-plan-name {
+  margin-top: 8px;
+  font-size: 19px;
+  line-height: 1.2;
+}
+
+.relay-access-plan-price {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.relay-access-plan-price > strong {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.relay-access-plan-row .relay-access-plan-price > span {
+  margin: 0;
+  font-size: 12px;
+}
+
+.relay-access-plan-row .relay-access-plan-tagline {
+  margin-top: 9px;
+  color: var(--v3-text-main);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.relay-access-plan-row p {
+  min-height: 66px;
+  margin: 7px 0 0;
+  color: var(--v3-text-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.relay-access-plan-row em {
+  margin-top: 9px;
+  overflow-wrap: anywhere;
+}
+
+.relay-access-plan-row .relay-access-plan-audience {
+  margin-top: 8px;
+  color: var(--v3-text-muted);
+  font-size: 11px;
+}
+
+.relay-access-plan-action {
+  display: flex;
+  align-items: flex-end;
+  margin-top: 12px;
+}
+
+.relay-access-plan-action button {
+  width: 100%;
 }
 
 .relay-access-checkout.pending {
@@ -3580,20 +3662,31 @@ button.catsco-download-action:disabled {
   border-color: rgba(52, 199, 89, 0.3);
 }
 
-.relay-access-payment-qr {
+.relay-access-payment-redirect {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 16px;
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--v3-border);
 }
 
-.relay-access-payment-qr svg {
+.relay-access-payment-redirect a {
+  display: inline-flex;
   flex: 0 0 auto;
-  width: 156px;
-  height: 156px;
-  border-radius: 6px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgba(214, 168, 79, 0.4);
+  border-radius: 8px;
+  background: rgba(214, 168, 79, 0.12);
+  color: var(--v3-accent);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
 }
 
 .relay-access-test-payment {
@@ -3973,24 +4066,26 @@ button.catsco-download-action:disabled {
 
   .relay-access-trial-row,
   .relay-access-storefront-head,
-  .relay-access-plan-row,
-  .relay-access-payment-qr {
+  .relay-access-payment-redirect {
     align-items: stretch;
     flex-direction: column;
   }
 
+  .relay-access-plan-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .relay-access-plan-row,
+  .relay-access-plan-row.wide {
+    grid-column: auto;
+    min-height: 0;
+  }
+
   .relay-access-trial-row button,
   .relay-access-plan-row button,
+  .relay-access-payment-redirect a,
   .relay-access-storefront-head select {
     width: 100%;
-  }
-
-  .relay-access-plan-row > div:last-child {
-    justify-items: stretch;
-  }
-
-  .relay-access-payment-qr svg {
-    align-self: center;
   }
 }
 

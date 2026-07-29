@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, CalendarDays, Check, Copy, CreditCard, ExternalLink, Gift, KeyRound, ReceiptText, RotateCcw, Server, Sparkles, Trash2, X } from 'lucide-react';
-import { QRCodeSVG } from 'qrcode.react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 
@@ -14,6 +13,41 @@ const FALLBACK_CONFIG = {
   key_hint: '访问凭证由 CatsCo 管理员发放。请妥善保存，泄露后可联系管理员撤销并重建。',
   docs_url: 'https://relay.catsco.cc',
   self_service_enabled: false,
+};
+
+const COMMERCIAL_PLAN_PRESENTATION = {
+  'catsco-trial-3d': {
+    kicker: '先感受',
+    tagline: '先跑一次真实任务',
+    audience: '首次体验 · 每位用户限购一次',
+    usageLabel: '体验用量',
+  },
+  'catsco-plus-minus': {
+    kicker: '轻松开始',
+    tagline: '轻量日常助手',
+    audience: '轻度使用 · 从体验转向月度使用',
+    usageLabel: '轻量用量',
+  },
+  'catsco-plus': {
+    kicker: '日常主力',
+    tagline: '稳定日常协作',
+    audience: '稳定日用 · 默认推荐',
+    usageLabel: '标准用量',
+    recommended: true,
+  },
+  'catsco-plus-plus': {
+    kicker: '高频推进',
+    tagline: '复杂任务与高频推进',
+    audience: '个人高频 · 专业工作流',
+    usageLabel: '高频用量',
+  },
+  'catsco-team-monthly': {
+    kicker: '多人协作',
+    tagline: '多人共享与并行协作',
+    audience: '多人使用 · 重度协作',
+    usageLabel: '团队用量',
+    wide: true,
+  },
 };
 
 function protocolLabel(protocol) {
@@ -85,9 +119,24 @@ function formatShortDateTime(value) {
   });
 }
 
-
 function formatPriceFen(value) {
-  return `¥${(Number(value || 0) / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `¥${(Number(value || 0) / 100).toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+}
+
+function commercialPlanPresentation(plan) {
+  return COMMERCIAL_PLAN_PRESENTATION[plan?.slug] || {
+    kicker: '协作套餐',
+    tagline: plan?.name || '稳定协作',
+    audience: `${Number(plan?.duration_days || 30)} 天有效`,
+    usageLabel: '套餐用量',
+  };
+}
+
+function commercialPlanCycle(plan) {
+  const durationDays = Number(plan?.duration_days || 30);
+  if (durationDays === 3) return '/ 3天';
+  if (durationDays === 30) return '/ 月';
+  return `/ ${durationDays}天`;
 }
 
 function commercialOrderStatus(status) {
@@ -120,19 +169,13 @@ function modelBudgetLabel(model) {
 }
 
 function summarizeCommercial(summary) {
-  const models = summary?.models || [];
+  const models = commercialModels(summary);
   if (!models.length) return '暂无已发放额度';
-  return `已发放 ${models.length} 项模型额度`;
+  return `${models.length} 个模型额度可用 · 具体容量按用量百分比展示`;
 }
 
-function commercialBudgetTextForUser(plan) {
-  const entries = Object.entries(plan?.model_budgets || {}).filter(([, amount]) => Number(amount) > 0);
-  if (Number(plan?.monthly_budget_cny || 0) > 0) {
-    entries.unshift(['*', plan.monthly_budget_cny]);
-  }
-  if (!entries.length) return `${Number(plan?.duration_days || 30)} 天有效`;
-  const preview = entries.slice(0, 3).map(([model, amount]) => `${modelBudgetLabel(model)} ${formatCNY(amount)}`).join(' · ');
-  return `${preview}${entries.length > 3 ? ` 等 ${entries.length} 项` : ''} · ${Number(plan?.duration_days || 30)} 天`;
+function commercialUsageTextForUser(plan, presentation) {
+  return `${presentation?.usageLabel || '套餐用量'} · ${Number(plan?.duration_days || 30)} 天有效`;
 }
 
 function activeEntitlements(summary) {
@@ -285,7 +328,7 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
       className: 'inactive',
       model: summary.model || fallbackModel,
       title: '当前模型未设置额度',
-      meta: `${summary.provider ? `${summary.provider} · ` : ''}额度未配置`,
+      meta: `${summary.provider ? `${summary.provider} · ` : ''}用量待同步`,
       detail: '等待模型限额同步',
       percent: 0,
       note: '管理员同步模型额度后，这里会显示剩余额度和用量百分比。',
@@ -296,12 +339,14 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
   const remainingPercent = Math.max(0, Number(summary.remaining_percent ?? (100 - percent)));
   const overLimit = summary.status === 'over_limit';
   const high = !overLimit && (summary.status === 'high' || percent >= 90);
+  const usedLabel = overLimit ? '已用 100%+' : `已用 ${formatPercent(percent)}`;
+  const remainingLabel = overLimit ? '剩余 0%' : `剩余 ${formatPercent(remainingPercent)}`;
   return {
     className: overLimit ? 'danger' : high ? 'warning' : 'active',
     model: summary.model || fallbackModel,
     title: overLimit ? '当前模型已超额' : high ? '当前模型接近上限' : '当前模型额度',
-    meta: `${summary.provider ? `${summary.provider} · ` : ''}已用 ${overLimit ? '100%+' : formatPercent(percent)}`,
-    detail: overLimit ? '剩余额度 0%' : `剩余 ${formatPercent(remainingPercent)}`,
+    meta: `${summary.provider ? `${summary.provider} · ` : ''}${usedLabel}`,
+    detail: remainingLabel,
     percent,
     note: overLimit
       ? '这组模型额度已超出，后续调用应被 relay 拦截；请联系管理员补额或重置。'
@@ -309,19 +354,23 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
   };
 }
 
-function budgetUsageMeta(model, usageByModel) {
+function budgetUsageDisplay(model, usageByModel) {
   const { loading, summary: usage } = usageStateForModel(usageByModel, model);
-  if (loading) return '额度读取中';
-  if (!usage) return '额度未同步';
-  if (usage.source === 'custom' || usage.status === 'custom') return '自定义模型不计入模型服务套餐';
-  if (!usage.model || usage.quota_configured !== true) return '额度未同步';
+  if (loading) return { label: '读取中', meta: '用量读取中' };
+  if (!usage) return { label: '待同步', meta: '未同步到 relay' };
+  if (usage.source === 'custom' || usage.status === 'custom') {
+    return { label: '自备额度', meta: '自定义模型不计入模型服务套餐' };
+  }
+  if (!usage.model || usage.quota_configured !== true) return { label: '待同步', meta: '未同步到 relay' };
+  const overLimit = usage.status === 'over_limit';
   const rawPercent = Number(usage.percent || 0);
   const percent = Math.min(100, Math.max(0, rawPercent));
-  const overLimit = usage.status === 'over_limit';
+  const remainingPercent = Math.max(0, Number(usage.remaining_percent ?? (100 - percent)));
   const resetLabel = usage.reset_duration ? ` · ${resetDurationLabel(usage.reset_duration)}` : '';
-  const usedLabel = overLimit ? '100%+' : formatPercent(percent);
-  const remainingLabel = overLimit ? '0%' : formatPercent(100 - percent);
-  return `${overLimit ? '已超额 · ' : ''}已用 ${usedLabel} · 剩余 ${remainingLabel}${resetLabel}`;
+  return {
+    label: overLimit ? '已用 100%+' : `已用 ${formatPercent(percent)}`,
+    meta: `${overLimit ? '已超额 · ' : ''}剩余 ${formatPercent(overLimit ? 0 : remainingPercent)}${resetLabel}`,
+  };
 }
 
 function nearestPackageExpiry(packages) {
@@ -336,6 +385,14 @@ function commercialRolloutLabel(commercial) {
   if (commercial?.enforce_enabled) return '已接管';
   if (commercial?.enabled) return '账本灰度';
   return '未开放';
+}
+
+function paymentChannelLabel(channels, channel) {
+  const configured = channels.find(item => item.id === channel)?.label;
+  if (configured) return configured;
+  if (channel === 'alipay_page') return '支付宝支付';
+  if (channel === 'test') return '灰度测试支付';
+  return '在线支付';
 }
 
 function extractPlainRelayKey(data) {
@@ -573,8 +630,9 @@ export default function RelayAccessModal({ onClose }) {
   const commercialEnforced = commercial?.enforce_enabled === true;
   const salePlans = Array.isArray(commercialCatalog?.plans) ? commercialCatalog.plans : [];
   const paymentChannels = Array.isArray(commercialCatalog?.channels) ? commercialCatalog.channels : [];
+  const checkoutPaymentLabel = paymentChannelLabel(paymentChannels, checkoutOrder?.channel);
   const activePackages = activeEntitlements(commercialSummary);
-  const modelTotals = commercialModels(commercialSummary);
+  const packageModels = commercialModels(commercialSummary);
   const packageExpiry = nearestPackageExpiry(activePackages);
   const packageExpiryText = activePackages.length > 0 ? formatShortDate(packageExpiry) : '无套餐';
   const currentResetInfo = usageResetInfo(currentUsage);
@@ -596,7 +654,7 @@ export default function RelayAccessModal({ onClose }) {
 
   useEffect(() => {
     let cancelled = false;
-    const models = modelTotals.map((model) => modelUsageKey(model)).filter(Boolean);
+    const models = packageModels.map(modelUsageKey).filter(Boolean);
     if (!commercialEnabled || models.length === 0) {
       setUsageByModel({});
       return () => {
@@ -631,7 +689,7 @@ export default function RelayAccessModal({ onClose }) {
     return () => {
       cancelled = true;
     };
-  }, [commercialEnabled, JSON.stringify(modelTotals)]);
+  }, [commercialEnabled, JSON.stringify(packageModels)]);
 
   const redeemInvite = async () => {
     const code = inviteCode.trim();
@@ -828,8 +886,8 @@ export default function RelayAccessModal({ onClose }) {
               <div className="relay-access-commerce-card">
                 <Sparkles size={17} />
                 <div>
-                  <strong>{commercialEnabled ? `${modelTotals.length} 项` : '无套餐'}</strong>
-                  <span>模型额度</span>
+                  <strong>{commercialEnabled && currentUsage ? formatPercent(currentQuota.percent) : '待同步'}</strong>
+                  <span>当前模型用量</span>
                 </div>
               </div>
               <div className="relay-access-commerce-card">
@@ -872,8 +930,8 @@ export default function RelayAccessModal({ onClose }) {
               <div className="relay-access-storefront">
                 <div className="relay-access-storefront-head">
                   <div>
-                    <div className="relay-access-mini-title">购买套餐</div>
-                    <span>支付完成后自动到账，无需再输入邀请码。</span>
+                    <div className="relay-access-mini-title">选一档，开始你的协作节奏</div>
+                    <span>先选与你当前节奏匹配的一档，需要更多时再升级。</span>
                   </div>
                   {paymentChannels.length > 1 ? (
                     <select value={paymentChannel} onChange={(event) => setPaymentChannel(event.target.value)}>
@@ -886,29 +944,44 @@ export default function RelayAccessModal({ onClose }) {
                   ) : null}
                 </div>
                 <div className="relay-access-plan-list">
-                  {salePlans.map((plan) => (
-                    <div className="relay-access-plan-row" key={plan.id}>
-                      <div>
-                        <strong>{plan.name}</strong>
-                        <span>{plan.description || `${plan.duration_days} 天有效`}</span>
-                        <em>{commercialBudgetTextForUser(plan)}</em>
-                      </div>
-                      <div>
-                        <strong>{formatPriceFen(plan.price_fen)}</strong>
-                        <button
-                          type="button"
-                          onClick={() => createCommercialOrder(plan)}
-                          disabled={!paymentChannel || Boolean(paymentLoading)}
-                        >
-                          <CreditCard size={15} />
-                          {paymentLoading === `create:${plan.id}` ? '创建中...' : '购买'}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                  {salePlans.map((plan) => {
+                    const presentation = commercialPlanPresentation(plan);
+                    return (
+                      <article
+                        className={`relay-access-plan-row${presentation.recommended ? ' recommended' : ''}${presentation.wide ? ' wide' : ''}`}
+                        key={plan.id}
+                      >
+                        <div className="relay-access-plan-heading">
+                          <span className="relay-access-plan-kicker">{presentation.kicker}</span>
+                          {presentation.recommended && <span className="relay-access-plan-badge">推荐</span>}
+                        </div>
+                        <strong className="relay-access-plan-name">{plan.name}</strong>
+                        <div className="relay-access-plan-price">
+                          <strong>{formatPriceFen(plan.price_fen)}</strong>
+                          <span>{commercialPlanCycle(plan)}</span>
+                        </div>
+                        <span className="relay-access-plan-tagline">{presentation.tagline}</span>
+                        <p>{plan.description || `${plan.duration_days} 天有效`}</p>
+                        <em>{commercialUsageTextForUser(plan, presentation)}</em>
+                        <span className="relay-access-plan-audience">适合：{presentation.audience}</span>
+                        <div className="relay-access-plan-action">
+                          <button
+                            type="button"
+                            onClick={() => createCommercialOrder(plan)}
+                            disabled={!paymentChannel || Boolean(paymentLoading)}
+                          >
+                            <CreditCard size={15} />
+                            {paymentLoading === `create:${plan.id}`
+                              ? '创建中...'
+                              : paymentChannels.length === 0 ? '暂未开放' : '购买'}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
                 </div>
                 {paymentChannels.length === 0 && (
-                  <div className="relay-access-period-note">支付通道还未配置，套餐暂时只能通过邀请码或后台发放。</div>
+                  <div className="relay-access-period-note">支付宝材料与支付通道仍在准备，当前套餐只能通过邀请码或后台发放。</div>
                 )}
               </div>
             )}
@@ -922,13 +995,20 @@ export default function RelayAccessModal({ onClose }) {
                   </div>
                   <em>{commercialOrderStatus(checkoutOrder.status)}</em>
                 </div>
-                {checkoutOrder.status === 'pending' && checkoutOrder.code_url && (
-                  <div className="relay-access-payment-qr">
-                    <QRCodeSVG value={checkoutOrder.code_url} size={156} level="M" marginSize={2} />
+                {checkoutOrder.status === 'pending' && checkoutOrder.checkout_url && (
+                  <div className="relay-access-payment-redirect">
                     <div>
-                      <strong>微信扫码支付 {formatPriceFen(checkoutOrder.amount_fen)}</strong>
-                      <span>支付成功后此处会自动更新，订单约 20 分钟失效。</span>
+                      <strong>{checkoutPaymentLabel} {formatPriceFen(checkoutOrder.amount_fen)}</strong>
+                      <span>将在支付宝官方收银台完成付款；支付成功后此处会自动更新。</span>
                     </div>
+                    <a
+                      href={checkoutOrder.checkout_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      前往支付宝付款
+                      <ExternalLink size={15} />
+                    </a>
                   </div>
                 )}
                 {checkoutOrder.status === 'pending' && checkoutOrder.channel === 'test' && commercialCatalog?.test_mode && (
@@ -984,17 +1064,20 @@ export default function RelayAccessModal({ onClose }) {
               </div>
             )}
 
-            {commercialEnabled && modelTotals.length > 0 && (
+            {commercialEnabled && packageModels.length > 0 && (
               <div className="relay-access-budget-list">
-                {modelTotals.map((model) => (
-                  <div key={model}>
-                    <span>
-                      <strong>{modelBudgetLabel(model)}</strong>
-                      <em>{budgetUsageMeta(model, usageByModel)}</em>
-                    </span>
-                    <strong>额度</strong>
-                  </div>
-                ))}
+                {packageModels.map((model) => {
+                  const usageDisplay = budgetUsageDisplay(model, usageByModel);
+                  return (
+                    <div key={model}>
+                      <span>
+                        <strong>{modelBudgetLabel(model)}</strong>
+                        <em>{usageDisplay.meta}</em>
+                      </span>
+                      <strong>{usageDisplay.label}</strong>
+                    </div>
+                  );
+                })}
               </div>
             )}
 

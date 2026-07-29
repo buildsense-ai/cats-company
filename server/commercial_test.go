@@ -207,6 +207,7 @@ func TestAccountAdminCommercialPlanInviteAndGrant(t *testing.T) {
 	planReq := httptest.NewRequest(http.MethodPost, "/local/account-admin/commercial/plans", strings.NewReader(`{
 		"slug":"teacher-trial",
 		"name":"教师试用包",
+		"internal_quota_tokens":5000000,
 		"model_budgets":{"MiniMax-M3":500},
 		"duration_days":30
 	}`))
@@ -216,6 +217,9 @@ func TestAccountAdminCommercialPlanInviteAndGrant(t *testing.T) {
 	handler.HandleCommercialPlans(planRec, planReq)
 	if planRec.Code != http.StatusOK {
 		t.Fatalf("plan status=%d body=%s", planRec.Code, planRec.Body.String())
+	}
+	if len(store.plans) != 1 || store.plans[0].InternalQuotaTokens != 5_000_000 {
+		t.Fatalf("internal plan capacity was not saved: %#v", store.plans)
 	}
 
 	inviteReq := httptest.NewRequest(http.MethodPost, "/local/account-admin/commercial/invites", strings.NewReader(`{"code":"SCHOOL2026","plan_id":1,"max_redemptions":3}`))
@@ -534,6 +538,51 @@ func TestCommercialRelayDryRunBuildsBudgetDiff(t *testing.T) {
 		update := findCommercialRelayUpdate(t, dryRun, provider)
 		if update.MaxLimit != 100 {
 			t.Fatalf("unexpected proposed update for %s: %+v", provider, update)
+		}
+	}
+}
+
+func TestCommercialRelayDryRunAggregatesSharedGPT56BudgetOnce(t *testing.T) {
+	models := []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"}
+	summary := &types.CommercialSummary{
+		UID: 38,
+		TotalsByModel: map[string]float64{
+			"gpt-5.6-terra": 87.5,
+			"gpt-5.6-sol":   87.5,
+			"gpt-5.6-luna":  87.5,
+		},
+		TotalCNY: 262.5,
+	}
+	limits := make([]commercialRelayModelLimit, 0, len(models))
+	for _, model := range models {
+		limits = append(limits, commercialRelayModelLimit{
+			Provider:      "newcli-codex-openai",
+			Model:         model,
+			AllowedModels: models,
+			SharedBudget:  true,
+			Budget:        commercialRelayBudget{MaxLimit: 100, CurrentUsage: 12.5, ResetDuration: "1M"},
+		})
+	}
+	relayUser := &commercialRelayUsageUser{
+		UID:        38,
+		Username:   "ck",
+		Configured: true,
+		Limits:     commercialRelayLimits{ModelLimits: limits},
+	}
+
+	dryRun := compareCommercialRelayBudgets(38, summary, relayUser)
+
+	if len(dryRun.ProposedUpdates) != 1 {
+		t.Fatalf("expected one shared provider budget update, got %+v", dryRun.ProposedUpdates)
+	}
+	update := dryRun.ProposedUpdates[0]
+	if update.Provider != "newcli-codex-openai" || update.MaxLimit != 262.5 {
+		t.Fatalf("expected one 262.5 CNY shared budget, got %+v", update)
+	}
+	for _, model := range models {
+		row := findCommercialRelayComparison(t, dryRun, model)
+		if row.CommercialLimit != 262.5 {
+			t.Fatalf("expected %s to reference the shared 262.5 CNY limit, got %+v", model, row)
 		}
 	}
 }

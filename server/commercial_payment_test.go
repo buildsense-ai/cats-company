@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +18,7 @@ import (
 	"time"
 
 	"github.com/openchat/openchat/server/store/types"
-	"github.com/wechatpay-apiv3/wechatpay-go/services/payments"
+	"github.com/smartwalle/alipay/v3"
 )
 
 type commercialPaymentTestStore struct {
@@ -33,9 +35,9 @@ type queryCommercialPaymentProvider struct {
 }
 
 func (p *queryCommercialPaymentProvider) Channel() string {
-	return commercialPaymentChannelWeChatNative
+	return commercialPaymentChannelAlipayPage
 }
-func (p *queryCommercialPaymentProvider) Label() string { return "微信支付" }
+func (p *queryCommercialPaymentProvider) Label() string { return "支付宝" }
 func (p *queryCommercialPaymentProvider) CreatePayment(context.Context, *types.CommercialOrder) (*CommercialPaymentIntent, error) {
 	return nil, context.Canceled
 }
@@ -45,6 +47,33 @@ func (p *queryCommercialPaymentProvider) ParseNotification(context.Context, *htt
 func (p *queryCommercialPaymentProvider) QueryPayment(context.Context, *types.CommercialOrder) (*types.CommercialPaymentConfirmation, bool, error) {
 	p.calls++
 	return p.confirmation, p.paid, nil
+}
+
+type fakeAlipayPaymentClient struct {
+	pageURL          *url.URL
+	pageErr          error
+	query            *alipay.TradeQueryRsp
+	queryErr         error
+	notification     *alipay.Notification
+	notificationErr  error
+	lastPagePay      alipay.TradePagePay
+	lastQuery        alipay.TradeQuery
+	lastNotification url.Values
+}
+
+func (c *fakeAlipayPaymentClient) TradePagePay(request alipay.TradePagePay) (*url.URL, error) {
+	c.lastPagePay = request
+	return c.pageURL, c.pageErr
+}
+
+func (c *fakeAlipayPaymentClient) TradeQuery(_ context.Context, request alipay.TradeQuery) (*alipay.TradeQueryRsp, error) {
+	c.lastQuery = request
+	return c.query, c.queryErr
+}
+
+func (c *fakeAlipayPaymentClient) DecodeNotification(_ context.Context, values url.Values) (*alipay.Notification, error) {
+	c.lastNotification = values
+	return c.notification, c.notificationErr
 }
 
 func newCommercialPaymentTestStore() *commercialPaymentTestStore {
@@ -101,10 +130,10 @@ func (s *commercialPaymentTestStore) CreateCommercialOrder(order *types.Commerci
 	return &copy, nil
 }
 
-func (s *commercialPaymentTestStore) SetCommercialOrderPaymentIntent(orderNo, codeURL string, expiresAt time.Time) (*types.CommercialOrder, error) {
+func (s *commercialPaymentTestStore) SetCommercialOrderPaymentIntent(orderNo, checkoutURL string, expiresAt time.Time) (*types.CommercialOrder, error) {
 	order := s.orders[orderNo]
 	order.Status = "pending"
-	order.CodeURL = codeURL
+	order.CheckoutURL = checkoutURL
 	order.ExpiresAt = &expiresAt
 	copy := *order
 	return &copy, nil
@@ -120,7 +149,7 @@ func (s *commercialPaymentTestStore) BeginCommercialOrderPayment(orderNo string,
 		return &copy, false, nil
 	}
 	order.Status = "pending"
-	order.CodeURL = ""
+	order.CheckoutURL = ""
 	order.ExpiresAt = &expiresAt
 	copy := *order
 	return &copy, true, nil
@@ -191,9 +220,10 @@ func commercialPaymentRequest(method, path, body string, uid int64) *http.Reques
 func TestCommercialCatalogRespectsSaleRollout(t *testing.T) {
 	store := newCommercialPaymentTestStore()
 	store.plans = []*types.CommercialPlan{
-		{ID: 1, Slug: "hidden", Name: "Hidden", PriceFen: 100, Currency: "CNY", SaleState: "hidden", State: 0},
-		{ID: 2, Slug: "test", Name: "Test", PriceFen: 200, Currency: "CNY", SaleState: "test", State: 0},
-		{ID: 3, Slug: "public", Name: "Public", PriceFen: 300, Currency: "CNY", SaleState: "public", State: 0},
+		{ID: 1, Slug: "hidden", Name: "Hidden", PriceFen: 100, Currency: "CNY", SaleState: "hidden", DurationDays: 30, State: 0, ModelBudgets: map[string]float64{"MiniMax-M3": 1}},
+		{ID: 2, Slug: "test", Name: "Test", PriceFen: 200, Currency: "CNY", SaleState: "test", DurationDays: 30, State: 0, InternalQuotaTokens: 50_000_000, ModelBudgets: map[string]float64{"MiniMax-M3": 2}},
+		{ID: 3, Slug: "public", Name: "Public", PriceFen: 300, Currency: "CNY", SaleState: "public", DurationDays: 30, State: 0, ModelBudgets: map[string]float64{"MiniMax-M3": 3}},
+		{ID: 4, Slug: "empty", Name: "Empty", PriceFen: 400, Currency: "CNY", SaleState: "test", DurationDays: 30, State: 0},
 	}
 	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
 		TestUIDs:     map[int64]bool{38: true},
@@ -214,6 +244,12 @@ func TestCommercialCatalogRespectsSaleRollout(t *testing.T) {
 	}
 	if len(payload.Plans) != 2 || payload.Plans[0].Slug != "test" || payload.Plans[1].Slug != "public" {
 		t.Fatalf("unexpected plans: %#v", payload.Plans)
+	}
+	if payload.Plans[0].InternalQuotaTokens != 0 || len(payload.Plans[0].ModelBudgets) != 0 || payload.Plans[0].MonthlyBudget != 0 {
+		t.Fatalf("public catalog leaked internal quota data: %#v", payload.Plans[0])
+	}
+	if strings.Contains(recorder.Body.String(), "internal_quota_tokens") || strings.Contains(recorder.Body.String(), "model_budgets") || strings.Contains(recorder.Body.String(), "monthly_budget_cny") {
+		t.Fatalf("public catalog leaked internal quota fields: %s", recorder.Body.String())
 	}
 	if len(payload.Channels) != 1 || payload.Channels[0].ID != commercialPaymentChannelTest {
 		t.Fatalf("unexpected channels: %#v", payload.Channels)
@@ -249,6 +285,7 @@ func TestCommercialTestPaymentOrderAndFulfillment(t *testing.T) {
 	store := newCommercialPaymentTestStore()
 	store.plans = []*types.CommercialPlan{{
 		ID: 7, Slug: "gray", Name: "Gray", PriceFen: 2990, Currency: "CNY", SaleState: "test", DurationDays: 30, State: 0,
+		ModelBudgets: map[string]float64{"MiniMax-M3": 500},
 	}}
 	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
 		TestUIDs:     map[int64]bool{38: true},
@@ -268,6 +305,12 @@ func TestCommercialTestPaymentOrderAndFulfillment(t *testing.T) {
 	}
 	if created.Order == nil || created.Order.Status != "pending" || created.Order.AmountFen != 2990 {
 		t.Fatalf("unexpected order: %#v", created.Order)
+	}
+	if len(created.Order.PlanModelBudgets) != 0 || created.Order.PlanMonthlyBudget != 0 {
+		t.Fatalf("user order leaked internal plan budgets: %#v", created.Order)
+	}
+	if strings.Contains(createRecorder.Body.String(), "plan_model_budgets") || strings.Contains(createRecorder.Body.String(), "plan_monthly_budget_cny") {
+		t.Fatalf("user order response leaked internal plan fields: %s", createRecorder.Body.String())
 	}
 	confirmRecorder := httptest.NewRecorder()
 	handler.HandleTestConfirm(confirmRecorder, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders/test-confirm", `{"order_no":"`+created.Order.OrderNo+`"}`, 38))
@@ -297,12 +340,12 @@ func TestCommercialPendingOrderUsesProviderQueryFallback(t *testing.T) {
 	store := newCommercialPaymentTestStore()
 	store.orders["CC-QUERY"] = &types.CommercialOrder{
 		OrderNo: "CC-QUERY", UID: 38, PlanName: "查询兜底套餐", AmountFen: 2990, Currency: "CNY",
-		Channel: commercialPaymentChannelWeChatNative, Status: "pending",
+		Channel: commercialPaymentChannelAlipayPage, Status: "pending",
 	}
 	provider := &queryCommercialPaymentProvider{
 		paid: true,
 		confirmation: &types.CommercialPaymentConfirmation{
-			Channel: commercialPaymentChannelWeChatNative, EventID: "WX-QUERY-1", ProviderTradeNo: "WX-QUERY-1",
+			Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-QUERY-1", ProviderTradeNo: "ALI-QUERY-1",
 			AmountFen: 2990, Currency: "CNY", PaidAt: time.Now().UTC(),
 		},
 	}
@@ -324,7 +367,7 @@ func TestCommercialPendingOrderQueriesAreThrottled(t *testing.T) {
 	store := newCommercialPaymentTestStore()
 	store.orders["CC-PENDING"] = &types.CommercialOrder{
 		OrderNo: "CC-PENDING", UID: 38, AmountFen: 2990, Currency: "CNY",
-		Channel: commercialPaymentChannelWeChatNative, Status: "pending",
+		Channel: commercialPaymentChannelAlipayPage, Status: "pending",
 	}
 	provider := &queryCommercialPaymentProvider{}
 	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
@@ -399,18 +442,18 @@ func TestTruncateUTF8DoesNotSplitRune(t *testing.T) {
 	}
 }
 
-func TestWeChatPaymentStaysDisabledWithoutSecrets(t *testing.T) {
+func TestAlipayPaymentStaysDisabledWithoutSecrets(t *testing.T) {
 	for _, name := range []string{
-		"CATS_WECHAT_PAY_APP_ID",
-		"CATS_WECHAT_PAY_MCH_ID",
-		"CATS_WECHAT_PAY_MCH_CERT_SERIAL",
-		"CATS_WECHAT_PAY_MCH_PRIVATE_KEY_FILE",
-		"CATS_WECHAT_PAY_API_V3_KEY_FILE",
-		"CATS_WECHAT_PAY_NOTIFY_URL",
+		"CATS_ALIPAY_APP_ID",
+		"CATS_ALIPAY_SELLER_ID",
+		"CATS_ALIPAY_PRIVATE_KEY_FILE",
+		"CATS_ALIPAY_PUBLIC_KEY_FILE",
+		"CATS_ALIPAY_NOTIFY_URL",
+		"CATS_ALIPAY_RETURN_URL",
 	} {
 		t.Setenv(name, "")
 	}
-	provider, missing, err := NewWeChatNativePaymentProviderFromEnv(context.Background())
+	provider, missing, err := NewAlipayPagePaymentProviderFromEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,69 +462,300 @@ func TestWeChatPaymentStaysDisabledWithoutSecrets(t *testing.T) {
 	}
 }
 
-func TestWeChatPaymentSupportsPublicKeyMode(t *testing.T) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
+func TestAlipayPaymentRejectsUnsafeNotifyURL(t *testing.T) {
+	t.Setenv("CATS_ALIPAY_APP_ID", "2026000000000001")
+	t.Setenv("CATS_ALIPAY_SELLER_ID", "2088000000000001")
+	t.Setenv("CATS_ALIPAY_PRIVATE_KEY_FILE", "unused-private-key.pem")
+	t.Setenv("CATS_ALIPAY_PUBLIC_KEY_FILE", "unused-public-key.pem")
+	t.Setenv("CATS_ALIPAY_NOTIFY_URL", "http://app.catsco.cc/api/payments/alipay/notify?source=test")
+	t.Setenv("CATS_ALIPAY_RETURN_URL", "https://app.catsco.cc/")
+
+	provider, missing, err := NewAlipayPagePaymentProviderFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "HTTPS URL without query or fragment") {
+		t.Fatalf("expected unsafe notify URL to be rejected, got provider=%#v missing=%#v err=%v", provider, missing, err)
 	}
+}
+
+func TestAlipayPaymentRejectsUnsafeReturnURL(t *testing.T) {
+	t.Setenv("CATS_ALIPAY_APP_ID", "2026000000000001")
+	t.Setenv("CATS_ALIPAY_SELLER_ID", "2088000000000001")
+	t.Setenv("CATS_ALIPAY_PRIVATE_KEY_FILE", "unused-private-key.pem")
+	t.Setenv("CATS_ALIPAY_PUBLIC_KEY_FILE", "unused-public-key.pem")
+	t.Setenv("CATS_ALIPAY_NOTIFY_URL", "https://app.catsco.cc/api/payments/alipay/notify")
+	t.Setenv("CATS_ALIPAY_RETURN_URL", "javascript:alert(1)")
+
+	provider, missing, err := NewAlipayPagePaymentProviderFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "HTTPS URL without fragment") {
+		t.Fatalf("expected unsafe return URL to be rejected, got provider=%#v missing=%#v err=%v", provider, missing, err)
+	}
+}
+
+func TestAlipayPaymentLoadsFileBackedKeys(t *testing.T) {
+	appPrivatePEM, _ := generateAlipayTestKeyPair(t)
+	_, alipayPublicPEM := generateAlipayTestKeyPair(t)
 	dir := t.TempDir()
-	privateKeyPath := filepath.Join(dir, "apiclient_key.pem")
-	publicKeyPath := filepath.Join(dir, "wechatpay_pub.pem")
-	apiV3KeyPath := filepath.Join(dir, "api_v3_key")
-	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	privatePEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})
-	publicDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	publicPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER})
+	privateKeyPath := filepath.Join(dir, "app_private_key.pem")
+	publicKeyPath := filepath.Join(dir, "alipay_public_key.pem")
 	for path, content := range map[string][]byte{
-		privateKeyPath: privatePEM,
-		publicKeyPath:  publicPEM,
-		apiV3KeyPath:   []byte("12345678901234567890123456789012"),
+		privateKeyPath: appPrivatePEM,
+		publicKeyPath:  alipayPublicPEM,
 	} {
 		if err := os.WriteFile(path, content, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("CATS_WECHAT_PAY_APP_ID", "wx-test-app")
-	t.Setenv("CATS_WECHAT_PAY_MCH_ID", "1900000000")
-	t.Setenv("CATS_WECHAT_PAY_MCH_CERT_SERIAL", "TEST-CERT-SERIAL")
-	t.Setenv("CATS_WECHAT_PAY_MCH_PRIVATE_KEY_FILE", privateKeyPath)
-	t.Setenv("CATS_WECHAT_PAY_API_V3_KEY_FILE", apiV3KeyPath)
-	t.Setenv("CATS_WECHAT_PAY_NOTIFY_URL", "https://app.catsco.cc/api/payments/wechat/notify")
-	t.Setenv("CATS_WECHAT_PAY_PUBLIC_KEY_ID", "PUB_KEY_ID_TEST")
-	t.Setenv("CATS_WECHAT_PAY_PUBLIC_KEY_FILE", publicKeyPath)
-	provider, missing, err := NewWeChatNativePaymentProviderFromEnv(context.Background())
+	t.Setenv("CATS_ALIPAY_APP_ID", "2026000000000001")
+	t.Setenv("CATS_ALIPAY_SELLER_ID", "2088000000000001")
+	t.Setenv("CATS_ALIPAY_PRIVATE_KEY_FILE", privateKeyPath)
+	t.Setenv("CATS_ALIPAY_PUBLIC_KEY_FILE", publicKeyPath)
+	t.Setenv("CATS_ALIPAY_NOTIFY_URL", "https://app.catsco.cc/api/payments/alipay/notify")
+	t.Setenv("CATS_ALIPAY_RETURN_URL", "https://app.catsco.cc/")
+	t.Setenv("CATS_ALIPAY_PRODUCTION", "0")
+	provider, missing, err := NewAlipayPagePaymentProviderFromEnv()
 	if err != nil || provider == nil || len(missing) != 0 {
 		t.Fatalf("provider=%#v missing=%#v err=%v", provider, missing, err)
 	}
+	if provider.(*alipayPagePaymentProvider).production {
+		t.Fatal("Alipay should default to sandbox unless production is explicitly enabled")
+	}
 }
 
-func TestWeChatPaymentNormalizesVerifiedTransaction(t *testing.T) {
-	provider := &weChatNativePaymentProvider{appID: "wx-test-app", mchID: "1900000000"}
-	tradeState := "SUCCESS"
+func TestAlipayPaymentCreatesExactPageIntent(t *testing.T) {
 	orderNo := "CC202607140000000000000000000001"
-	transactionID := "4200000000202607140000000001"
-	currency := "CNY"
-	amount := int64(2990)
-	transaction := &payments.Transaction{
-		Appid:         &provider.appID,
-		Mchid:         &provider.mchID,
-		OutTradeNo:    &orderNo,
-		TradeState:    &tradeState,
-		TransactionId: &transactionID,
-		Amount:        &payments.TransactionAmount{Total: &amount, Currency: &currency},
+	paymentURL, err := url.Parse("https://openapi-sandbox.dl.alipaydev.com/gateway.do?method=alipay.trade.page.pay")
+	if err != nil {
+		t.Fatal(err)
 	}
-	gotOrderNo, confirmation, err := provider.confirmationFromTransaction(transaction, strings.Repeat("b", 64))
-	if err != nil || gotOrderNo != orderNo || confirmation.EventID != transactionID || confirmation.AmountFen != amount {
-		t.Fatalf("normalize WeChat transaction: order=%q confirmation=%#v err=%v", gotOrderNo, confirmation, err)
+	fake := &fakeAlipayPaymentClient{pageURL: paymentURL}
+	expiresAt := time.Now().UTC().Add(20 * time.Minute).Truncate(time.Second)
+	provider := &alipayPagePaymentProvider{
+		appID: "2026000000000001", sellerID: "2088000000000001",
+		notifyURL: "https://app.catsco.cc/api/payments/alipay/notify",
+		returnURL: "https://app.catsco.cc/", client: fake,
 	}
-	transaction.TransactionId = nil
-	if _, _, err := provider.confirmationFromTransaction(transaction, ""); err == nil || !strings.Contains(err.Error(), "transaction_id") {
-		t.Fatalf("expected missing transaction id rejection, got %v", err)
+	intent, err := provider.CreatePayment(context.Background(), &types.CommercialOrder{
+		OrderNo: orderNo, PlanName: "教师套餐", AmountFen: 2990, Currency: "CNY", ExpiresAt: &expiresAt,
+	})
+	if err != nil || intent == nil || intent.CheckoutURL != paymentURL.String() {
+		t.Fatalf("create Alipay intent: intent=%#v err=%v", intent, err)
 	}
+	trade := fake.lastPagePay.Trade
+	if trade.OutTradeNo != orderNo || trade.TotalAmount != "29.90" || trade.ProductCode != alipayProductCodePagePay ||
+		trade.SellerId != provider.sellerID || trade.NotifyURL != provider.notifyURL ||
+		trade.ReturnURL != provider.returnURL || trade.GoodsType != "0" ||
+		fake.lastPagePay.IntegrationType != alipayIntegrationTypePCWeb {
+		t.Fatalf("unexpected page pay request: %#v", fake.lastPagePay)
+	}
+	if trade.TimeExpire != expiresAt.In(alipayChinaLocation).Format(alipayTimeLayout) {
+		t.Fatalf("unexpected expiry %q", trade.TimeExpire)
+	}
+}
+
+func TestAlipayPaymentNormalizesVerifiedNotification(t *testing.T) {
+	fake := &fakeAlipayPaymentClient{notification: &alipay.Notification{
+		AppId: "2026000000000001", SellerId: "2088000000000001",
+		NotifyType: alipay.NotifyTypeTradeStatusSync, TradeStatus: alipay.TradeStatusSuccess,
+		OutTradeNo: "CC202607140000000000000000000001", TradeNo: "2026071422000000000001",
+		TotalAmount: "29.90", GmtPayment: "2026-07-14 12:34:56",
+	}}
+	provider := &alipayPagePaymentProvider{
+		appID: fake.notification.AppId, sellerID: fake.notification.SellerId,
+		client: fake,
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader("notify_type=trade_status_sync"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	orderNo, confirmation, err := provider.ParseNotification(context.Background(), request)
+	if err != nil || orderNo != fake.notification.OutTradeNo || confirmation.EventID != fake.notification.TradeNo ||
+		confirmation.AmountFen != 2990 || confirmation.Currency != "CNY" || len(confirmation.PayloadHash) != 64 {
+		t.Fatalf("normalize Alipay notification: order=%q confirmation=%#v err=%v", orderNo, confirmation, err)
+	}
+	fake.notification.SellerId = "unexpected"
+	request = httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader("notify_type=trade_status_sync"))
+	if _, _, err := provider.ParseNotification(context.Background(), request); err == nil || !strings.Contains(err.Error(), "seller mismatch") {
+		t.Fatalf("expected seller mismatch, got %v", err)
+	}
+}
+
+func TestAlipayPaymentRejectsOversizedNotification(t *testing.T) {
+	provider := &alipayPagePaymentProvider{client: &fakeAlipayPaymentClient{}}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/payments/alipay/notify",
+		strings.NewReader(strings.Repeat("x", maxAlipayNotificationBytes+1)),
+	)
+
+	if _, _, err := provider.ParseNotification(context.Background(), request); err == nil ||
+		!strings.Contains(err.Error(), "request body is too large") {
+		t.Fatalf("expected oversized notification to be rejected, got %v", err)
+	}
+}
+
+func TestAlipayPaymentVerifiesRealRSA2Notification(t *testing.T) {
+	appPrivatePEM, _ := generateAlipayTestKeyPair(t)
+	alipayPrivatePEM, alipayPublicPEM := generateAlipayTestKeyPair(t)
+	receiver, err := alipay.New("2026000000000001", string(appPrivatePEM), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := receiver.LoadAliPayPublicKey(string(alipayPublicPEM)); err != nil {
+		t.Fatal(err)
+	}
+	signer, err := alipay.New("signer", string(alipayPrivatePEM), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := url.Values{
+		"app_id":       {"2026000000000001"},
+		"seller_id":    {"2088000000000001"},
+		"notify_type":  {alipay.NotifyTypeTradeStatusSync},
+		"trade_status": {string(alipay.TradeStatusSuccess)},
+		"out_trade_no": {"CC202607140000000000000000000001"},
+		"trade_no":     {"2026071422000000000001"},
+		"total_amount": {"29.90"},
+		"gmt_payment":  {"2026-07-14 12:34:56"},
+	}
+	signature, err := signer.SignValues(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values.Set("sign_type", "RSA2")
+	values.Set("sign", base64.StdEncoding.EncodeToString(signature))
+	provider := &alipayPagePaymentProvider{
+		appID: "2026000000000001", sellerID: "2088000000000001", client: receiver,
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader(values.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if _, confirmation, err := provider.ParseNotification(context.Background(), request); err != nil || confirmation.AmountFen != 2990 {
+		t.Fatalf("verify signed Alipay notification: confirmation=%#v err=%v", confirmation, err)
+	}
+	values.Set("total_amount", "0.01")
+	request = httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader(values.Encode()))
+	if _, _, err := provider.ParseNotification(context.Background(), request); err == nil {
+		t.Fatal("tampered Alipay notification should fail signature verification")
+	}
+}
+
+func TestAlipayPaymentQueryFallbackNormalizesPaidOrder(t *testing.T) {
+	fake := &fakeAlipayPaymentClient{query: &alipay.TradeQueryRsp{
+		Error:   alipay.Error{Code: alipay.Code("10000")},
+		TradeNo: "2026071422000000000001", OutTradeNo: "CC-QUERY-PAID",
+		TradeStatus: alipay.TradeStatusSuccess, TotalAmount: "29.90", SendPayDate: "2026-07-14 12:34:56",
+	}}
+	provider := &alipayPagePaymentProvider{client: fake}
+	confirmation, paid, err := provider.QueryPayment(context.Background(), &types.CommercialOrder{OrderNo: "CC-QUERY-PAID"})
+	if err != nil || !paid || confirmation.AmountFen != 2990 || confirmation.ProviderTradeNo != fake.query.TradeNo {
+		t.Fatalf("query paid order: paid=%v confirmation=%#v err=%v", paid, confirmation, err)
+	}
+	if fake.lastQuery.OutTradeNo != "CC-QUERY-PAID" {
+		t.Fatalf("unexpected query request: %#v", fake.lastQuery)
+	}
+}
+
+func TestAlipayNotifyHandlerAcknowledgesOnlyFulfilledOrders(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-ALI-NOTIFY"] = &types.CommercialOrder{
+		OrderNo: "CC-ALI-NOTIFY", UID: 38, Channel: commercialPaymentChannelAlipayPage,
+		Status: "pending", AmountFen: 2990, Currency: "CNY",
+	}
+	fake := &fakeAlipayPaymentClient{notification: &alipay.Notification{
+		AppId: "2026000000000001", SellerId: "2088000000000001",
+		NotifyType: alipay.NotifyTypeTradeStatusSync, TradeStatus: alipay.TradeStatusSuccess,
+		OutTradeNo: "CC-ALI-NOTIFY", TradeNo: "2026071422000000000001", TotalAmount: "29.90",
+	}}
+	provider := &alipayPagePaymentProvider{appID: fake.notification.AppId, sellerID: fake.notification.SellerId, client: fake}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{Providers: []CommercialPaymentProvider{provider}})
+	for range 2 {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader("notify_type=trade_status_sync"))
+		handler.HandleAlipayNotify(recorder, request)
+		if recorder.Code != http.StatusOK || recorder.Body.String() != "success" {
+			t.Fatalf("notify response status=%d body=%q", recorder.Code, recorder.Body.String())
+		}
+	}
+	if store.orders["CC-ALI-NOTIFY"].Status != "fulfilled" {
+		t.Fatalf("order was not fulfilled: %#v", store.orders["CC-ALI-NOTIFY"])
+	}
+}
+
+func TestAlipayNotifyHandlerRejectsUnavailableAndMismatchedPayments(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-ALI-MISMATCH"] = &types.CommercialOrder{
+		OrderNo: "CC-ALI-MISMATCH", UID: 38, Channel: commercialPaymentChannelAlipayPage,
+		Status: "pending", AmountFen: 2990, Currency: "CNY",
+	}
+
+	disabledHandler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{})
+	recorder := httptest.NewRecorder()
+	disabledHandler.HandleAlipayNotify(
+		recorder,
+		httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader("")),
+	)
+	if recorder.Code != http.StatusServiceUnavailable || recorder.Body.String() != "failure" {
+		t.Fatalf("disabled notify response status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+
+	fake := &fakeAlipayPaymentClient{notification: &alipay.Notification{
+		AppId: "2026000000000001", SellerId: "2088000000000001",
+		NotifyType: alipay.NotifyTypeTradeStatusSync, TradeStatus: alipay.TradeStatusSuccess,
+		OutTradeNo: "CC-ALI-MISMATCH", TradeNo: "2026071422000000000002", TotalAmount: "0.01",
+	}}
+	provider := &alipayPagePaymentProvider{
+		appID: fake.notification.AppId, sellerID: fake.notification.SellerId, client: fake,
+	}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		Providers: []CommercialPaymentProvider{provider},
+	})
+
+	recorder = httptest.NewRecorder()
+	handler.HandleAlipayNotify(
+		recorder,
+		httptest.NewRequest(http.MethodGet, "/api/payments/alipay/notify", nil),
+	)
+	if recorder.Code != http.StatusMethodNotAllowed || recorder.Body.String() != "failure" {
+		t.Fatalf("method notify response status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.HandleAlipayNotify(
+		recorder,
+		httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader("notify_type=trade_status_sync")),
+	)
+	if recorder.Code != http.StatusConflict || recorder.Body.String() != "failure" {
+		t.Fatalf("mismatched notify response status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if store.orders["CC-ALI-MISMATCH"].Status != "pending" {
+		t.Fatalf("mismatched payment must not fulfill order: %#v", store.orders["CC-ALI-MISMATCH"])
+	}
+}
+
+func TestAlipayMoneyParsingIsExact(t *testing.T) {
+	for input, expected := range map[string]int64{"0.01": 1, "1": 100, "29.9": 2990, "29.90": 2990} {
+		actual, err := parseCNYFen(input)
+		if err != nil || actual != expected {
+			t.Fatalf("parse %q: actual=%d expected=%d err=%v", input, actual, expected, err)
+		}
+	}
+	for _, input := range []string{"", "-1.00", "+1.00", "1.001", "1.", ".01", "abc", "92233720368547758.08"} {
+		if _, err := parseCNYFen(input); err == nil {
+			t.Fatalf("expected %q to be rejected", input)
+		}
+	}
+}
+
+func generateAlipayTestKeyPair(t *testing.T) ([]byte, []byte) {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER}),
+		pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER})
 }

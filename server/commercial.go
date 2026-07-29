@@ -41,6 +41,66 @@ type RelayCommercialOptions struct {
 	Syncer         *CommercialRelaySyncer
 }
 
+type commercialUserSummary struct {
+	UID          int64                          `json:"uid"`
+	Plans        []*types.CommercialPlan        `json:"plans"`
+	Entitlements []*types.CommercialEntitlement `json:"entitlements"`
+	Models       []string                       `json:"models"`
+}
+
+func commercialPlanForUser(plan *types.CommercialPlan) *types.CommercialPlan {
+	if plan == nil {
+		return nil
+	}
+	copy := *plan
+	copy.MonthlyBudget = 0
+	copy.ModelBudgets = nil
+	copy.InternalQuotaTokens = 0
+	return &copy
+}
+
+func commercialUsageSummaryForUser(summary *types.CommercialSummary) *commercialUserSummary {
+	out := &commercialUserSummary{
+		Plans:        []*types.CommercialPlan{},
+		Entitlements: []*types.CommercialEntitlement{},
+		Models:       []string{},
+	}
+	if summary == nil {
+		return out
+	}
+	out.UID = summary.UID
+	out.Entitlements = summary.Entitlements
+	for model, amount := range summary.TotalsByModel {
+		if strings.TrimSpace(model) != "" && amount > 0 {
+			out.Models = append(out.Models, strings.TrimSpace(model))
+		}
+	}
+	sort.Strings(out.Models)
+	return out
+}
+
+func (h *RelayCommercialHandler) summaryForUser(uid int64, summary *types.CommercialSummary) *commercialUserSummary {
+	out := commercialUsageSummaryForUser(summary)
+	if out.UID <= 0 {
+		out.UID = uid
+	}
+	if summary == nil {
+		return out
+	}
+	for _, plan := range summary.Plans {
+		if plan == nil || plan.State != 0 || plan.PriceFen <= 0 || !commercialPlanHasBenefits(plan) {
+			continue
+		}
+		if plan.SaleState == "public" && (h.publicEnabled || h.testUIDs[uid]) {
+			out.Plans = append(out.Plans, commercialPlanForUser(plan))
+		}
+		if plan.SaleState == "test" && h.testUIDs[uid] {
+			out.Plans = append(out.Plans, commercialPlanForUser(plan))
+		}
+	}
+	return out
+}
+
 func NewRelayCommercialHandler(store CommercialStore, publicEnabled ...bool) *RelayCommercialHandler {
 	enabled := true
 	if len(publicEnabled) > 0 {
@@ -112,19 +172,6 @@ func (h *RelayCommercialHandler) HandleSummary(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load commercial summary"})
 		return
 	}
-	visiblePlans := make([]*types.CommercialPlan, 0, len(summary.Plans))
-	for _, plan := range summary.Plans {
-		if plan == nil || plan.State != 0 || plan.PriceFen <= 0 {
-			continue
-		}
-		if plan.SaleState == "public" && (h.publicEnabled || h.testUIDs[uid]) {
-			visiblePlans = append(visiblePlans, plan)
-		}
-		if plan.SaleState == "test" && h.testUIDs[uid] {
-			visiblePlans = append(visiblePlans, plan)
-		}
-	}
-	summary.Plans = visiblePlans
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"enabled":         true,
 		"rollout":         h.rolloutFor(uid),
@@ -679,6 +726,7 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			PurchaseLimit int                `json:"purchase_limit"`
 			MonthlyBudget float64            `json:"monthly_budget_cny"`
 			ModelBudgets  map[string]float64 `json:"model_budgets"`
+			InternalQuota int64              `json:"internal_quota_tokens"`
 			DurationDays  int                `json:"duration_days"`
 			State         int                `json:"state"`
 			SortOrder     int                `json:"sort_order"`
@@ -701,8 +749,8 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "monthly budget must be non-negative"})
 			return
 		}
-		if req.PriceFen < 0 || req.PurchaseLimit < 0 {
-			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "price and purchase limit must be non-negative"})
+		if req.PriceFen < 0 || req.PurchaseLimit < 0 || req.InternalQuota < 0 {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "price, purchase limit and internal quota must be non-negative"})
 			return
 		}
 		req.Currency = strings.ToUpper(strings.TrimSpace(req.Currency))
@@ -726,18 +774,19 @@ func (h *AccountAdminHandler) HandleCommercialPlans(w http.ResponseWriter, r *ht
 			return
 		}
 		id, err := store.CreateCommercialPlan(&types.CommercialPlan{
-			Slug:          req.Slug,
-			Name:          req.Name,
-			Description:   req.Description,
-			PriceFen:      req.PriceFen,
-			Currency:      req.Currency,
-			SaleState:     req.SaleState,
-			PurchaseLimit: req.PurchaseLimit,
-			MonthlyBudget: req.MonthlyBudget,
-			ModelBudgets:  parseCommercialBudgets(req.ModelBudgets),
-			DurationDays:  req.DurationDays,
-			State:         req.State,
-			SortOrder:     req.SortOrder,
+			Slug:                req.Slug,
+			Name:                req.Name,
+			Description:         req.Description,
+			PriceFen:            req.PriceFen,
+			Currency:            req.Currency,
+			SaleState:           req.SaleState,
+			PurchaseLimit:       req.PurchaseLimit,
+			MonthlyBudget:       req.MonthlyBudget,
+			ModelBudgets:        parseCommercialBudgets(req.ModelBudgets),
+			InternalQuotaTokens: req.InternalQuota,
+			DurationDays:        req.DurationDays,
+			State:               req.State,
+			SortOrder:           req.SortOrder,
 		})
 		if err != nil {
 			writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save plan"})

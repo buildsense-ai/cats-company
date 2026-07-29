@@ -869,21 +869,26 @@
         <div class="commercial-panel">
           <h3>套餐</h3>
           <div class="commercial-model-actions" aria-label="套餐预设">
-            <button type="button" data-plan-preset="teacher-trial">教师试用包</button>
-            <button type="button" data-plan-preset="teacher-standard">教师标准包</button>
-            <button type="button" data-plan-preset="internal-large">内部大额包</button>
+            <button type="button" data-plan-preset="catsco-trial-3d">3天体验</button>
+            <button type="button" data-plan-preset="catsco-plus-minus">Plus−</button>
+            <button type="button" data-plan-preset="catsco-plus">Plus</button>
+            <button type="button" data-plan-preset="catsco-plus-plus">Plus+</button>
+            <button type="button" data-plan-preset="catsco-team-monthly">团队月卡</button>
             <button type="button" data-plan-preset="blank">空白套餐</button>
           </div>
+          <div class="commercial-meta">SOL 等价 token 仅作内部容量参考，不会展示给用户，也不会直接写入 Relay。填写真实成本额度并完成 Dry-run 后再开放；团队月卡在多人权益上线前保持隐藏。</div>
           <form id="commercial-plan-form">
-            <input id="commercial-plan-slug" autocomplete="off" placeholder="套餐标识，例如 trial-teacher" />
-            <input id="commercial-plan-name" autocomplete="off" placeholder="显示名称，例如 教师试用包" />
-            <input id="commercial-plan-price" inputmode="decimal" placeholder="售价 CNY，例如 29.90；内部包填 0" />
+            <input id="commercial-plan-slug" autocomplete="off" placeholder="套餐标识，例如 catsco-plus" />
+            <input id="commercial-plan-name" autocomplete="off" placeholder="显示名称，例如 Plus" />
+            <textarea id="commercial-plan-description" placeholder="套餐介绍文案"></textarea>
+            <input id="commercial-plan-price" inputmode="decimal" placeholder="售价 CNY，例如 99" />
             <select id="commercial-plan-sale-state">
               <option value="hidden">不展示（内部/邀请码）</option>
               <option value="test">仅灰度账号可购买</option>
               <option value="public">公开可购买</option>
             </select>
             <input id="commercial-plan-purchase-limit" inputmode="numeric" placeholder="每用户限购次数，0 表示不限" />
+            <input id="commercial-plan-internal-quota" inputmode="numeric" placeholder="内部 SOL 等价 token，例如 50000000；用户端不显示" />
             <input id="commercial-plan-monthly" inputmode="decimal" placeholder="通用账本额度 CNY，内测建议填 0" />
             <textarea id="commercial-plan-model-budgets" placeholder='模型额度 JSON，会同步到 relay，例如 {"MiniMax-M3":500,"deepseek-v4-flash":100}'></textarea>
             <div class="commercial-model-actions" aria-label="套餐模型额度模板">
@@ -893,6 +898,7 @@
               <button type="button" data-model-budget-template="clear">清空额度</button>
             </div>
             <input id="commercial-plan-duration" inputmode="numeric" placeholder="有效天数，默认 30" />
+            <input id="commercial-plan-sort-order" inputmode="numeric" placeholder="展示顺序，数字越小越靠前" />
             <button id="commercial-plan-button" type="submit">保存套餐</button>
           </form>
           <div id="commercial-plan-error" class="error"></div>
@@ -1519,49 +1525,102 @@ http://127.0.0.1:26061/local/account-admin</code>
       clear: {},
     };
     const commercialPlanPresets = {
-      'teacher-trial': {
-        slug: 'teacher-trial',
-        name: '教师试用包',
-        price_cny: 0,
-        sale_state: 'hidden',
+      'catsco-trial-3d': {
+        slug: 'catsco-trial-3d',
+        name: '3天体验',
+        description: '用三天跑一遍真实任务，感受 CatsCo 如何理解需求、持续沟通并协助交付。适合第一次接触，低成本确认是否合拍。',
+        price_cny: 9.9,
+        sale_state: 'test',
+        purchase_limit: 1,
+        internal_quota_tokens: 5000000,
         monthly_budget_cny: 0,
-        duration_days: 30,
-        model_budgets: modelBudgetTemplates['teacher-trial'],
-      },
-      'teacher-standard': {
-        slug: 'teacher-standard',
-        name: '教师标准包',
-        price_cny: 0,
-        sale_state: 'hidden',
-        monthly_budget_cny: 0,
-        duration_days: 30,
+        duration_days: 3,
+        sort_order: 10,
         model_budgets: {
-          'MiniMax-M3': 1500,
-          'MiniMax-M2.7': 2000,
-          'deepseek-v4-flash': 300,
+          'gpt-5.6-terra': 87.5,
+          'gpt-5.6-sol': 87.5,
+          'gpt-5.6-luna': 87.5,
         },
       },
-      'internal-large': {
-        slug: 'internal-large',
-        name: '内部大额包',
-        price_cny: 0,
-        sale_state: 'hidden',
+      'catsco-plus-minus': {
+        slug: 'catsco-plus-minus',
+        name: 'Plus−',
+        description: '为偶尔使用和轻量任务留出从容空间。查资料、润色内容、梳理思路时，随时叫上你的 Agent。',
+        price_cny: 49,
+        sale_state: 'test',
+        purchase_limit: 0,
+        internal_quota_tokens: 25000000,
         monthly_budget_cny: 0,
         duration_days: 30,
+        sort_order: 20,
         model_budgets: {
-          'MiniMax-M3': 5000,
-          'MiniMax-M2.7': 5000,
-          'deepseek-v4-flash': 1000,
-          'glm-5.1': 3000,
+          'gpt-5.6-terra': 437.5,
+          'gpt-5.6-sol': 437.5,
+          'gpt-5.6-luna': 437.5,
+        },
+      },
+      'catsco-plus': {
+        slug: 'catsco-plus',
+        name: 'Plus',
+        description: '覆盖多数人的日常协作节奏，让 Agent 更稳定地参与内容处理、信息整理和持续任务，是兼顾使用体验与价格的均衡选择。',
+        price_cny: 99,
+        sale_state: 'test',
+        purchase_limit: 0,
+        internal_quota_tokens: 50000000,
+        monthly_budget_cny: 0,
+        duration_days: 30,
+        sort_order: 30,
+        model_budgets: {
+          'gpt-5.6-terra': 875,
+          'gpt-5.6-sol': 875,
+          'gpt-5.6-luna': 875,
+        },
+      },
+      'catsco-plus-plus': {
+        slug: 'catsco-plus-plus',
+        name: 'Plus+',
+        description: '面向更长对话、更复杂任务与更高调用频率，让复杂项目连续推进，减少工作被频繁打断。',
+        price_cny: 199,
+        sale_state: 'test',
+        purchase_limit: 0,
+        internal_quota_tokens: 100000000,
+        monthly_budget_cny: 0,
+        duration_days: 30,
+        sort_order: 40,
+        model_budgets: {
+          'gpt-5.6-terra': 1750,
+          'gpt-5.6-sol': 1750,
+          'gpt-5.6-luna': 1750,
+        },
+      },
+      'catsco-team-monthly': {
+        slug: 'catsco-team-monthly',
+        name: '团队月卡',
+        description: '让更多成员共享稳定的 Agent 协作能力，适合团队协作、重度任务或多场景并行推进。',
+        price_cny: 399,
+        sale_state: 'hidden',
+        purchase_limit: 0,
+        internal_quota_tokens: 200000000,
+        monthly_budget_cny: 0,
+        duration_days: 30,
+        sort_order: 50,
+        model_budgets: {
+          'gpt-5.6-terra': 3500,
+          'gpt-5.6-sol': 3500,
+          'gpt-5.6-luna': 3500,
         },
       },
       blank: {
         slug: '',
         name: '',
+        description: '',
         price_cny: 0,
         sale_state: 'hidden',
+        purchase_limit: 0,
+        internal_quota_tokens: 0,
         monthly_budget_cny: 0,
         duration_days: 30,
+        sort_order: 100,
         model_budgets: {},
       },
     };
@@ -1609,20 +1668,36 @@ http://127.0.0.1:26061/local/account-admin</code>
       return parts.length ? parts.join('；') : '未设置额度';
     }
 
+    function formatInternalQuotaTokens(value) {
+      const tokens = Math.max(0, Number(value || 0));
+      if (!Number.isFinite(tokens) || tokens <= 0) return '未设置内部容量参考';
+      if (tokens >= 100000000 && tokens % 100000000 === 0) return `${tokens / 100000000}亿 SOL 等价 token`;
+      if (tokens >= 10000 && tokens % 10000 === 0) return `${tokens / 10000}万 SOL 等价 token`;
+      return `${tokens.toLocaleString('zh-CN')} SOL 等价 token`;
+    }
+
     function renderCommercialPlans(plans) {
       commercialPlans = Array.isArray(plans) ? plans : [];
       if (!commercialPlans.length) {
         commercialPlanList.innerHTML = '<div class="commercial-item"><div><strong>暂无套餐</strong><div class="commercial-meta">先创建一个试用套餐。</div></div></div>';
       } else {
-        commercialPlanList.innerHTML = commercialPlans.map((plan) => `
-          <div class="commercial-item">
-            <div>
-              <strong>${escapeHTML(plan.name || plan.slug)}</strong>
-              <div class="commercial-meta">slug=${escapeHTML(plan.slug)} · 售价 ¥${escapeHTML((Number(plan.price_fen || 0) / 100).toFixed(2))} · ${escapeHTML(plan.sale_state || 'hidden')} · ${escapeHTML(commercialBudgetText(plan))} · ${plan.duration_days || 30} 天 · ${Number(plan.state || 0) === 0 ? '启用' : '停用'}</div>
+        commercialPlanList.innerHTML = commercialPlans.map((plan) => {
+          const budgetText = commercialBudgetText(plan);
+          const internalQuotaText = formatInternalQuotaTokens(plan.internal_quota_tokens);
+          const price = (Number(plan.price_fen || 0) / 100).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+          const purchaseLimit = Number(plan.purchase_limit || 0);
+          return `
+            <div class="commercial-item">
+              <div>
+                <strong>${escapeHTML(plan.name || plan.slug)}</strong>
+                ${plan.description ? `<div class="commercial-meta">${escapeHTML(plan.description)}</div>` : ''}
+                <div class="commercial-meta">slug=${escapeHTML(plan.slug)} · 售价 ¥${escapeHTML(price)} · ${escapeHTML(plan.sale_state || 'hidden')} · 内部参考 ${escapeHTML(internalQuotaText)} · 执行额度 ${escapeHTML(budgetText)} · ${plan.duration_days || 30} 天 · 限购 ${purchaseLimit > 0 ? escapeHTML(purchaseLimit) : '不限'} · 排序 ${escapeHTML(plan.sort_order || 100)} · ${Number(plan.state || 0) === 0 ? '启用' : '停用'}</div>
+                ${budgetText === '未设置额度' && Number(plan.price_fen || 0) > 0 ? '<div class="commercial-meta error visible">未设置权益：该套餐不会出现在用户目录，也不能创建订单。</div>' : ''}
+              </div>
+              <span class="badge">#${escapeHTML(plan.id)}</span>
             </div>
-            <span class="badge">#${escapeHTML(plan.id)}</span>
-          </div>
-        `).join('');
+          `;
+        }).join('');
       }
       commercialInvitePlan.innerHTML = commercialPlans.length
         ? commercialPlans.map((plan) => `<option value="${escapeHTML(plan.id)}">${escapeHTML(plan.name || plan.slug)} (#${escapeHTML(plan.id)})</option>`).join('')
@@ -1803,11 +1878,14 @@ http://127.0.0.1:26061/local/account-admin</code>
         const preset = commercialPlanPresets[button.dataset.planPreset] || commercialPlanPresets.blank;
         document.querySelector('#commercial-plan-slug').value = preset.slug || '';
         document.querySelector('#commercial-plan-name').value = preset.name || '';
+        document.querySelector('#commercial-plan-description').value = preset.description || '';
         document.querySelector('#commercial-plan-price').value = String(preset.price_cny || 0);
         document.querySelector('#commercial-plan-sale-state').value = preset.sale_state || 'hidden';
-        document.querySelector('#commercial-plan-purchase-limit').value = '0';
+        document.querySelector('#commercial-plan-purchase-limit').value = String(preset.purchase_limit || 0);
+        document.querySelector('#commercial-plan-internal-quota').value = String(preset.internal_quota_tokens || 0);
         document.querySelector('#commercial-plan-monthly').value = String(preset.monthly_budget_cny || 0);
         document.querySelector('#commercial-plan-duration').value = String(preset.duration_days || 30);
+        document.querySelector('#commercial-plan-sort-order').value = String(preset.sort_order || 100);
         document.querySelector('#commercial-plan-model-budgets').value = Object.keys(preset.model_budgets || {}).length
           ? JSON.stringify(preset.model_budgets, null, 2)
           : '';
@@ -1822,14 +1900,17 @@ http://127.0.0.1:26061/local/account-admin</code>
         const payload = {
           slug: document.querySelector('#commercial-plan-slug').value.trim(),
           name: document.querySelector('#commercial-plan-name').value.trim(),
+          description: document.querySelector('#commercial-plan-description').value.trim(),
           price_fen: Math.round(Number(document.querySelector('#commercial-plan-price').value || 0) * 100),
           currency: 'CNY',
           sale_state: document.querySelector('#commercial-plan-sale-state').value,
           purchase_limit: Number(document.querySelector('#commercial-plan-purchase-limit').value || 0),
+          internal_quota_tokens: Number(document.querySelector('#commercial-plan-internal-quota').value || 0),
           monthly_budget_cny: Number(document.querySelector('#commercial-plan-monthly').value || 0),
           model_budgets: parseModelBudgetsInput(document.querySelector('#commercial-plan-model-budgets').value),
           duration_days: Number(document.querySelector('#commercial-plan-duration').value || 30),
           state: 0,
+          sort_order: Number(document.querySelector('#commercial-plan-sort-order').value || 100),
         };
         const resp = await fetch('/local/account-admin/commercial/plans', {
           method: 'POST',

@@ -52,6 +52,7 @@ func scanCommercialPlan(scanner interface {
 		&plan.PurchaseLimit,
 		&plan.MonthlyBudget,
 		&budgets,
+		&plan.InternalQuotaTokens,
 		&plan.DurationDays,
 		&plan.State,
 		&plan.SortOrder,
@@ -71,7 +72,7 @@ func (a *Adapter) ListCommercialPlans(includeDisabled bool) ([]*types.Commercial
 	}
 	rows, err := a.db.Query(`
 		SELECT id, slug, name, description, price_fen, currency, sale_state, purchase_limit,
-		       monthly_budget_cny, model_budgets, duration_days, state, sort_order, created_at, updated_at
+		       monthly_budget_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order, created_at, updated_at
 		FROM commercial_plans
 		` + where + `
 		ORDER BY sort_order ASC, id ASC`)
@@ -94,6 +95,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	if plan == nil {
 		return 0, fmt.Errorf("commercial plan is nil")
 	}
+	if plan.InternalQuotaTokens < 0 {
+		return 0, fmt.Errorf("commercial plan internal quota must be non-negative")
+	}
 	budgets, err := encodeModelBudgets(plan.ModelBudgets)
 	if err != nil {
 		return 0, fmt.Errorf("encode model budgets: %w", err)
@@ -110,9 +114,9 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 	err = a.db.QueryRow(`
 		INSERT INTO commercial_plans(
 			slug, name, description, price_fen, currency, sale_state, purchase_limit,
-			monthly_budget_cny, model_budgets, duration_days, state, sort_order
+			monthly_budget_cny, model_budgets, internal_quota_tokens, duration_days, state, sort_order
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13)
 		ON CONFLICT(slug) DO UPDATE SET
 			name = EXCLUDED.name,
 			description = EXCLUDED.description,
@@ -122,6 +126,7 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 			purchase_limit = EXCLUDED.purchase_limit,
 			monthly_budget_cny = EXCLUDED.monthly_budget_cny,
 			model_budgets = EXCLUDED.model_budgets,
+			internal_quota_tokens = EXCLUDED.internal_quota_tokens,
 			duration_days = EXCLUDED.duration_days,
 			state = EXCLUDED.state,
 			sort_order = EXCLUDED.sort_order
@@ -135,6 +140,7 @@ func (a *Adapter) CreateCommercialPlan(plan *types.CommercialPlan) (int64, error
 		maxInt(plan.PurchaseLimit, 0),
 		plan.MonthlyBudget,
 		string(budgets),
+		plan.InternalQuotaTokens,
 		durationDays,
 		plan.State,
 		sortOrder,

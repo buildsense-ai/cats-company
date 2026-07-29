@@ -204,7 +204,7 @@ describe('RelayAccessModal commercial rollout', () => {
     await renderModal();
 
     expect(container.textContent).toContain('账本灰度');
-    expect(container.textContent).toContain('模型额度');
+    expect(container.textContent).toContain('当前模型用量');
     expect(container.textContent).toContain('需要管理员后台对账/同步后');
     expect(container.textContent).toContain('当前有效套餐');
     expect(container.textContent).toContain('套餐最近到期');
@@ -275,7 +275,8 @@ describe('RelayAccessModal commercial rollout', () => {
     await renderModal();
 
     expect(container.textContent).toContain('当前模型已超额');
-    expect(container.textContent).toContain('剩余额度 0%');
+    expect(container.textContent).toContain('剩余 0%');
+    expect(container.textContent).toContain('已用 100%+');
     expect(container.textContent).not.toContain('CNY');
     expect(container.textContent).toContain('请联系管理员补额或重置');
   });
@@ -320,11 +321,82 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
 
-    expect(container.textContent).toContain('购买套餐');
+    expect(container.textContent).toContain('选一档，开始你的协作节奏');
     expect(container.textContent).toContain('灰度标准包');
-    expect(container.textContent).toContain('¥29.90');
+    expect(container.textContent).toContain('¥29.9');
     expect(container.textContent).toContain('灰度测试支付');
     expect(container.textContent).toContain('领取体验包');
+  });
+
+  it('renders the CatsCo five-tier catalog with the reviewed pricing copy', async () => {
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      test_mode: true,
+      trial_available: false,
+      channels: [],
+      plans: [
+        {
+          id: 1,
+          slug: 'catsco-trial-3d',
+          name: '3天体验',
+          description: '用三天跑一遍真实任务。',
+          price_fen: 990,
+          duration_days: 3,
+          model_budgets: { 'MiniMax-M3': 10 },
+        },
+        {
+          id: 2,
+          slug: 'catsco-plus-minus',
+          name: 'Plus−',
+          price_fen: 4900,
+          duration_days: 30,
+          model_budgets: { 'MiniMax-M3': 20 },
+        },
+        {
+          id: 3,
+          slug: 'catsco-plus',
+          name: 'Plus',
+          price_fen: 9900,
+          duration_days: 30,
+          model_budgets: { 'MiniMax-M3': 30 },
+        },
+        {
+          id: 4,
+          slug: 'catsco-plus-plus',
+          name: 'Plus+',
+          price_fen: 19900,
+          duration_days: 30,
+          model_budgets: { 'MiniMax-M3': 40 },
+        },
+        {
+          id: 5,
+          slug: 'catsco-team-monthly',
+          name: '团队月卡',
+          price_fen: 39900,
+          duration_days: 30,
+          model_budgets: { 'MiniMax-M3': 50 },
+        },
+      ],
+    });
+
+    await renderModal();
+
+    expect(container.textContent).toContain('选一档，开始你的协作节奏');
+    expect(container.textContent).toContain('¥9.9');
+    expect(container.textContent).toContain('¥49');
+    expect(container.textContent).toContain('¥99');
+    expect(container.textContent).toContain('¥199');
+    expect(container.textContent).toContain('¥399');
+    expect(container.textContent).toContain('首次体验 · 每位用户限购一次');
+    expect(container.textContent).toContain('稳定日用 · 默认推荐');
+    expect(container.textContent).toContain('体验用量 · 3 天有效');
+    expect(container.textContent).toContain('标准用量 · 30 天有效');
+    expect(container.textContent).toContain('支付宝材料与支付通道仍在准备');
+    expect(container.textContent).not.toContain('MiniMax-M3 10.00');
+    expect(container.textContent).not.toContain('MiniMax-M3 30.00');
+    expect(container.querySelector('.relay-access-plan-row.recommended')?.textContent).toContain('Plus');
+    expect(container.querySelector('.relay-access-plan-row.wide')?.textContent).toContain('团队月卡');
+    expect(Array.from(container.querySelectorAll('.relay-access-plan-row button')).every((button) => button.disabled)).toBe(true);
   });
 
   it('creates and confirms a gray payment from the user purchase flow', async () => {
@@ -382,5 +454,85 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(api.confirmCommercialTestPayment).toHaveBeenCalledWith('CCWEBTEST0001');
     expect(container.textContent).toContain('支付成功');
     expect(container.textContent).toContain('已到账');
+  });
+
+  it('renders an Alipay page checkout without exposing the test confirmation action', async () => {
+    const plan = {
+      id: 10,
+      slug: 'alipay-plan',
+      name: '支付宝灰度包',
+      price_fen: 990,
+      currency: 'CNY',
+      sale_state: 'test',
+      duration_days: 30,
+      model_budgets: { 'MiniMax-M3': 100 },
+    };
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      test_mode: false,
+      trial_available: false,
+      channels: [{ id: 'alipay_page', label: '支付宝支付', test_mode: false }],
+      plans: [plan],
+    });
+    api.createCommercialOrder.mockResolvedValue({
+      order: {
+        order_no: 'CCALIPAYWEB0001',
+        plan_name: plan.name,
+        amount_fen: plan.price_fen,
+        currency: 'CNY',
+        channel: 'alipay_page',
+        status: 'pending',
+        checkout_url: 'https://openapi.alipay.test/gateway.do',
+        created_at: '2026-07-14T06:00:00Z',
+      },
+    });
+
+    await renderModal();
+    const purchaseButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('购买'));
+    await act(async () => {
+      purchaseButton.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.createCommercialOrder).toHaveBeenCalledWith(10, 'alipay_page', expect.stringMatching(/^order_/));
+    expect(container.textContent).toContain('支付宝支付 ¥9.9');
+    const paymentLink = container.querySelector('.relay-access-payment-redirect a');
+    expect(paymentLink?.getAttribute('href')).toBe('https://openapi.alipay.test/gateway.do');
+    expect(paymentLink?.getAttribute('target')).toBe('_blank');
+    expect(paymentLink?.getAttribute('rel')).toContain('noopener');
+    expect(container.textContent).not.toContain('完成灰度测试支付');
+  });
+
+  it('keeps the Alipay label on a pending order after the channel is disabled', async () => {
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      test_mode: false,
+      trial_available: false,
+      channels: [],
+      plans: [],
+    });
+    api.getCommercialOrders.mockResolvedValue({
+      orders: [{
+        order_no: 'CCALIPAYWEB0002',
+        plan_name: '历史支付宝订单',
+        amount_fen: 990,
+        currency: 'CNY',
+        channel: 'alipay_page',
+        status: 'pending',
+        checkout_url: 'https://openapi.alipay.test/gateway.do',
+        created_at: '2026-07-14T06:00:00Z',
+      }],
+    });
+
+    await renderModal();
+    const orderButton = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent.includes('历史支付宝订单'));
+    await act(async () => {
+      orderButton.click();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('支付宝支付 ¥9.9');
   });
 });

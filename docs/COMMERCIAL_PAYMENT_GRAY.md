@@ -1,15 +1,38 @@
 # 商业化支付灰度
 
-本阶段在原有套餐、邀请码、人工调额和 Relay 对账基础上，增加可售套餐、体验包、订单、灰度测试支付、微信 Native 支付以及自动额度同步。
+本阶段在原有套餐、邀请码、人工调额和 Relay 对账基础上，增加可售套餐、体验包、订单、灰度测试支付、支付宝电脑网站支付以及自动额度同步。
 
 ## 默认安全状态
 
 - `CATS_RELAY_COMMERCIAL_ENABLED=0`：不向普通用户开放商业化入口。
 - `CATS_COMMERCIAL_TEST_PAYMENT_ENABLED=0`：不开放测试支付。
-- `CATS_WECHAT_PAY_ENABLED=0`：不初始化微信支付。
+- `CATS_ALIPAY_ENABLED=0`：不初始化支付宝客户端，也不展示真实支付渠道。
+- `CATS_ALIPAY_PRODUCTION=0`：使用支付宝沙箱；生产 Compose 默认显式设为 `1`。
 - 新增套餐的 `sale_state` 默认是 `hidden`，旧套餐升级后也不会自动出现在购买列表。
-- 商户私钥和 APIv3 Key 只从容器内的 secret 文件读取，不支持写进前端或仓库配置。
-- 支付回调只保存订单字段和 SHA-256 摘要，不保存原始解密报文。
+- 应用私钥只从容器内的 secret 文件读取，不支持写进前端或仓库配置。
+- 支付回调只保存订单字段和 SHA-256 摘要，不保存原始通知正文。
+
+## 套餐价格与当前开放状态
+
+套餐价格按 2026-07 审阅稿固定为以下五档。内部触发报告同时给出了 SOL 等价 token 容量参考；该数字按 Relay 当前 SOL 等价价表折成 CNY 执行额度，不返回给普通用户。
+
+| slug | 套餐 | 价格 | 内部 SOL 等价 token | Relay 总额度 | 有效期 | 限购 | 灰度默认 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `catsco-trial-3d` | 3天体验 | ¥9.9 | 500 万 | ¥262.5 | 3 天 | 每 UID 1 次 | `test` |
+| `catsco-plus-minus` | Plus− | ¥49 | 2500 万 | ¥1312.5 | 30 天 | 不限 | `test` |
+| `catsco-plus` | Plus | ¥99 | 5000 万 | ¥2625 | 30 天 | 不限 | `test`，用户侧标记推荐 |
+| `catsco-plus-plus` | Plus+ | ¥199 | 1 亿 | ¥5250 | 30 天 | 不限 | `test` |
+| `catsco-team-monthly` | 团队月卡 | ¥399 | 2 亿 | ¥10500 | 30 天 | 不限 | `hidden` |
+
+换算采用 `SOL 等价 token ÷ 1,000,000 × 7.5 USD × 7 CNY/USD`，即每 100 万 SOL 等价 token 对应 ¥52.5 Relay 额度。等价 token 已包含价差权重：普通输入 `1x`、输出 `6x`、缓存读取 `0.1x`、缓存写入 `0.2x`，不能再把缓存或输出重复加价。
+
+当前 GPT-5.6 Terra、Sol、Luna 共用 Relay provider budget。套餐预设将总额度平均记入三个模型账本，Relay 同步时按共享 provider 汇总为一份总上限。例如 3 天体验内部记为每模型 ¥87.5，最终共享上限仍是 ¥262.5，不是三份 ¥262.5。若未来三个模型拆成独立 provider budget，必须同时迁移套餐额度分配规则。
+
+用户端只显示“体验/轻量/标准/高频/团队用量”、已用百分比和剩余百分比，不显示 SOL 等价 token、CNY 执行额度、模型预算或内部成本。用户商业化接口也不返回套餐的 `internal_quota_tokens`、`model_budgets` 和 `monthly_budget_cny`。
+
+`3天体验` 是付费、限购一次的短周期套餐，不是免费领取体验包。`CATS_COMMERCIAL_TRIAL_PLAN_SLUG` 只能指向售价为 0、状态为 `hidden` 且包含有效额度的独立套餐，不能填写 `catsco-trial-3d`。
+
+当前权益和 Relay 同步仍按单个 UID 发放。团队月卡的“多人共享”需要单独的成员、席位和共享额度归属机制；完成前必须保持 `hidden`，不能把单账号大额包当成团队套餐公开售卖。
 
 ## 灰度流程
 
@@ -21,51 +44,56 @@
 
 体验包采用显式领取：把一个已启用、隐藏、售价为 0 且包含有效额度的套餐 slug 写入 `CATS_COMMERCIAL_TRIAL_PLAN_SLUG`。正式售卖套餐不能被误配成体验包；同一账号终身只能领取一次体验套餐。
 
-## 微信支付需要准备
+## 支付宝需要准备
 
-开通微信支付 Native 支付后，需要准备：
+开通支付宝“电脑网站支付”后，需要准备：
 
-- 关联商户号的 AppID：`CATS_WECHAT_PAY_APP_ID`
-- 微信支付商户号：`CATS_WECHAT_PAY_MCH_ID`
-- 商户 API 证书序列号：`CATS_WECHAT_PAY_MCH_CERT_SERIAL`
-- 商户 API 私钥 `apiclient_key.pem`
-- 32 字节 APIv3 Key
-- 若新商户采用微信支付公钥模式：微信支付公钥 ID 和 `wechatpay_pub.pem`
-- 公网 HTTPS 回调地址：`https://app.catsco.cc/api/payments/wechat/notify`
+- 支付宝开放平台应用 AppID：`CATS_ALIPAY_APP_ID`
+- 收款支付宝用户 ID（seller_id/PID）：`CATS_ALIPAY_SELLER_ID`
+- 应用 RSA2 私钥 `app_private_key.pem`
+- 支付宝 RSA2 公钥 `alipay_public_key.pem`
+- 公网 HTTPS 回调地址：`https://app.catsco.cc/api/payments/alipay/notify`
+- 用户支付完成后的 HTTPS 返回地址：`https://app.catsco.cc/`
 
-运行时不需要把 `apiclient_cert.pem` 放进应用容器；证书用于确认序列号，SDK 签名使用 `apiclient_key.pem`。默认由官方 SDK 自动下载微信支付平台证书并用于回调验签。若商户采用微信支付公钥模式，则同时配置 `CATS_WECHAT_PAY_PUBLIC_KEY_ID` 和公钥文件，应用会改用公钥验签。
+当前版本采用普通公钥模式，先不接公钥证书模式。应用公钥需要上传到支付宝开放平台，服务端保存的是与之对应的应用私钥和支付宝提供的验签公钥。应用私钥只用于请求签名，支付宝公钥只用于响应及回调验签。
 
 生产机文件布局：
 
 ```text
-${PROD_STACK_ROOT}/secrets/wechat-pay/
-  apiclient_key.pem
-  api_v3_key
-  wechatpay_pub.pem  # 仅公钥模式需要
+${PROD_STACK_ROOT}/secrets/alipay/
+  app_private_key.pem
+  alipay_public_key.pem
 ```
 
-建议目录权限为 `700`，其中的 secret 文件权限为 `600`。`api_v3_key` 文件只放 APIv3 Key 本身。该目录随 secrets 根目录通过 compose 只读挂载到 `/run/catsco-secrets/wechat-pay`。
+建议目录权限为 `700`，私钥权限为 `600`。该目录随 secrets 根目录只读挂载到 `/run/catsco-secrets/alipay`。
 
 生产环境变量：
 
 ```dotenv
-CATS_WECHAT_PAY_ENABLED=1
-CATS_WECHAT_PAY_APP_ID=
-CATS_WECHAT_PAY_MCH_ID=
-CATS_WECHAT_PAY_MCH_CERT_SERIAL=
-CATS_WECHAT_PAY_PUBLIC_KEY_ID=  # 平台证书模式留空
-CATS_WECHAT_PAY_NOTIFY_URL=https://app.catsco.cc/api/payments/wechat/notify
+CATS_ALIPAY_ENABLED=1
+CATS_ALIPAY_PRODUCTION=1
+CATS_ALIPAY_APP_ID=
+CATS_ALIPAY_SELLER_ID=
+CATS_ALIPAY_NOTIFY_URL=https://app.catsco.cc/api/payments/alipay/notify
+CATS_ALIPAY_RETURN_URL=https://app.catsco.cc/
 ```
 
-不要把真实值、私钥、APIv3 Key、商户证书压缩包或支付回调样本提交到 GitHub。仓库只保留变量名和示例路径。
+沙箱环境设置 `CATS_ALIPAY_PRODUCTION=0`，并使用沙箱 AppID、私钥、公钥和买家账号。不要把正式与沙箱材料混用。
+
+不要把真实值、应用私钥、支付宝公钥包或支付回调样本提交到 GitHub。仓库只保留变量名和示例路径。
 
 ## 订单和履约边界
 
 - 创建订单使用 `(uid, client_request_id)` 幂等，重复点击不会产生重复订单。
+- 下单使用 `alipay.trade.page.pay` 和产品码 `FAST_INSTANT_TRADE_PAY`，前端只跳转支付宝官方收银台，不自行伪造支付页面。
 - 支付事件使用 `(channel, event_id)` 幂等，重复通知不会重复发套餐。
 - 履约事务同时写入订单、支付事件、权益、额度 grant 和 ledger。
-- 回调必须通过官方 SDK 验签和解密，并校验 AppID、商户号、订单号、金额和币种。
-- 待支付页面轮询本地订单时会按 10 秒节流主动查询微信订单；即使回调延迟或最终丢失，已支付订单仍能进入同一套幂等履约事务。
+- 支付宝回调使用 RSA2 验签，并校验 AppID、seller_id、通知类型、交易状态、订单号和金额。
+- 回调请求正文限制为 64 KiB，只保存 SHA-256 摘要，不保存原始表单。
+- 只有 `TRADE_SUCCESS` 或 `TRADE_FINISHED` 可以履约。
+- 成功处理后只返回纯文本 `success`；任何验签、订单或金额错误均返回 `failure`，让支付宝继续重试。
+- 待支付页面轮询本地订单时会按 10 秒节流调用 `alipay.trade.query`；即使回调延迟或最终丢失，已支付订单仍能进入同一套幂等履约事务。
+- 金额始终以整数“分”存储，调用支付宝时转换为两位小数的人民币“元”，不使用浮点数。
 - 自动同步只处理 `commercial_managed_relay_budgets` 中由 CatsCompany 接管的模型额度，不改管理员手工维护的其他模型预算。
 - 套餐到期后不能把 Relay 预算写成 `0`，因为 `0` 表示移除限制；系统会写入 `0.000001 CNY` 的阻断额度并保留接管记录，防止额度过期后模型意外变成无限制。
 - Relay 同步失败不会回滚已经确认的支付；后台 worker 会定时重试。支付和账本始终是事实来源。
@@ -73,9 +101,11 @@ CATS_WECHAT_PAY_NOTIFY_URL=https://app.catsco.cc/api/payments/wechat/notify
 ## 上线顺序
 
 1. 先部署代码，保持所有新增开关关闭。
-2. 建立测试套餐和体验套餐。
+2. 用账号后台预设建立五档价格，填入经过成本核算的模型额度；团队月卡保持隐藏。
 3. 只给内部 UID 开测试支付与 Relay enforce，完成创建、支付、到账、重复通知和到期清退测试。
-4. 准备微信商户材料和 secret 文件，开启微信支付，但套餐继续保持 `test`。
-5. 完成真实小额支付与退款人工流程演练后，再把套餐改为 `public` 并开启公共商业化入口。
+4. 准备支付宝沙箱应用和 secret 文件，开启沙箱支付，但套餐继续保持 `test`。
+5. 完成沙箱收银台支付、回调重放、主动查单和金额篡改测试。
+6. 更换正式应用材料，设置 `CATS_ALIPAY_PRODUCTION=1`，完成一笔真实小额支付。
+7. 完成人工退款和额度回收演练后，再把套餐改为 `public` 并开启公共商业化入口。
 
 退款自动化、发票和对账单下载不在本阶段范围内；订单状态已预留 `refunding/refunded`，上线真实支付前需明确人工退款 SOP。

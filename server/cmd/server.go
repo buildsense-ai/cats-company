@@ -393,15 +393,15 @@ func main() {
 		paymentProviders = append(paymentProviders, server.NewTestCommercialPaymentProvider())
 		log.Printf("commercial test payment is enabled for %d uid(s)", len(paymentTestUIDs))
 	}
-	if envBool("CATS_WECHAT_PAY_ENABLED") {
-		provider, missing, err := server.NewWeChatNativePaymentProviderFromEnv(context.Background())
+	if envBool("CATS_ALIPAY_ENABLED") {
+		provider, missing, err := server.NewAlipayPagePaymentProviderFromEnv()
 		if err != nil {
-			log.Printf("WeChat Pay is disabled due to configuration error: %v", err)
+			log.Printf("Alipay is disabled due to configuration error: %v", err)
 		} else if provider == nil {
-			log.Printf("WeChat Pay is waiting for configuration: %s", strings.Join(missing, ", "))
+			log.Printf("Alipay is waiting for configuration: %s", strings.Join(missing, ", "))
 		} else {
 			paymentProviders = append(paymentProviders, provider)
-			log.Printf("WeChat Native payment is enabled")
+			log.Printf("Alipay page payment is enabled")
 		}
 	}
 	commercialPaymentHandler := server.NewCommercialPaymentHandler(commercialPaymentStore, server.CommercialPaymentHandlerOptions{
@@ -496,7 +496,7 @@ func main() {
 		Name: "commercial_test_payment_user", Limit: 10, Window: time.Minute, Burst: 3,
 	})
 	commercialNotifyIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
-		Name: "commercial_wechat_notify_ip", Limit: 3000, Window: time.Minute, Burst: 500,
+		Name: "commercial_alipay_notify_ip", Limit: 3000, Window: time.Minute, Burst: 500,
 	})
 
 	// HTTP routes
@@ -634,7 +634,7 @@ func main() {
 	mux.HandleFunc("/api/relay/commercial/orders", chainHTTP(commercialPaymentHandler.HandleOrders, ownerAuthWithDB, limitHTTPMethod(http.MethodPost, commercialOrderUserLimit)))
 	mux.HandleFunc("/api/relay/commercial/orders/test-confirm", chainHTTP(commercialPaymentHandler.HandleTestConfirm, ownerAuthWithDB, commercialTestPaymentUserLimit))
 	mux.HandleFunc("/api/relay/commercial/trial/claim", chainHTTP(commercialPaymentHandler.HandleClaimTrial, ownerAuthWithDB, commercialTrialUserLimit))
-	mux.HandleFunc("/api/payments/wechat/notify", commercialNotifyIPLimit(commercialPaymentHandler.HandleWeChatNotify))
+	mux.HandleFunc("/api/payments/alipay/notify", commercialNotifyIPLimit(commercialPaymentHandler.HandleAlipayNotify))
 	mux.HandleFunc("/api/relay/session", ownerAuthWithDB(relayConfigHandler.HandleSession))
 	mux.HandleFunc("/api/relay/key", ownerAuthWithDB(relayKeyHandler.HandleKey))
 	mux.HandleFunc("/api/relay/key/rotate", ownerAuthWithDB(relayKeyHandler.HandleRotate))

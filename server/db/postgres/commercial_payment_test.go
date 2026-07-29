@@ -17,21 +17,38 @@ func TestTruncateCommercialErrorPreservesUTF8(t *testing.T) {
 	}
 }
 
+func TestCommercialPlanHasPositiveBudget(t *testing.T) {
+	if commercialPlanHasPositiveBudget(&types.CommercialPlan{}) {
+		t.Fatal("empty plan must not be purchasable")
+	}
+	if !commercialPlanHasPositiveBudget(&types.CommercialPlan{MonthlyBudget: 1}) {
+		t.Fatal("monthly budget should make a plan purchasable")
+	}
+	if !commercialPlanHasPositiveBudget(&types.CommercialPlan{ModelBudgets: map[string]float64{"MiniMax-M3": 1}}) {
+		t.Fatal("model budget should make a plan purchasable")
+	}
+}
+
 func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	t.Helper()
 
 	paidPlanID, err := db.CreateCommercialPlan(&types.CommercialPlan{
-		Slug:          "pg-paid-plan",
-		Name:          "PostgreSQL 付费包",
-		PriceFen:      2990,
-		Currency:      "CNY",
-		SaleState:     "test",
-		PurchaseLimit: 1,
-		ModelBudgets:  map[string]float64{"MiniMax-M3": 30},
-		DurationDays:  30,
+		Slug:                "pg-paid-plan",
+		Name:                "PostgreSQL 付费包",
+		PriceFen:            2990,
+		Currency:            "CNY",
+		SaleState:           "test",
+		PurchaseLimit:       1,
+		ModelBudgets:        map[string]float64{"MiniMax-M3": 30},
+		InternalQuotaTokens: 50_000_000,
+		DurationDays:        30,
 	})
 	if err != nil {
 		t.Fatalf("create paid commercial plan: %v", err)
+	}
+	savedPlan, err := db.GetCommercialPlan(paidPlanID)
+	if err != nil || savedPlan == nil || savedPlan.InternalQuotaTokens != 50_000_000 {
+		t.Fatalf("persist internal plan capacity: plan=%#v err=%v", savedPlan, err)
 	}
 
 	expiresAt := time.Now().UTC().Add(20 * time.Minute)
@@ -70,8 +87,8 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	if err != nil || claimedAgain {
 		t.Fatalf("commercial payment intent was claimed twice: claimed=%v err=%v", claimedAgain, err)
 	}
-	pending, err = db.SetCommercialOrderPaymentIntent(created.OrderNo, "weixin://wxpay/test", expiresAt)
-	if err != nil || pending.CodeURL == "" {
+	pending, err = db.SetCommercialOrderPaymentIntent(created.OrderNo, "https://openapi.alipay.test/gateway.do", expiresAt)
+	if err != nil || pending.CheckoutURL == "" {
 		t.Fatalf("save commercial payment intent: order=%#v err=%v", pending, err)
 	}
 

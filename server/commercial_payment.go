@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	commercialPaymentChannelTest         = "test"
-	commercialPaymentChannelWeChatNative = "wechat_native"
+	commercialPaymentChannelTest       = "test"
+	commercialPaymentChannelAlipayPage = "alipay_page"
 )
 
 type CommercialPaymentStore interface {
@@ -28,7 +28,7 @@ type CommercialPaymentStore interface {
 	GetCommercialPlanBySlug(slug string) (*types.CommercialPlan, error)
 	CreateCommercialOrder(order *types.CommercialOrder) (*types.CommercialOrder, error)
 	BeginCommercialOrderPayment(orderNo string, expiresAt time.Time) (*types.CommercialOrder, bool, error)
-	SetCommercialOrderPaymentIntent(orderNo, codeURL string, expiresAt time.Time) (*types.CommercialOrder, error)
+	SetCommercialOrderPaymentIntent(orderNo, checkoutURL string, expiresAt time.Time) (*types.CommercialOrder, error)
 	FailCommercialOrder(orderNo, message string) error
 	GetCommercialOrder(uid int64, orderNo string) (*types.CommercialOrder, error)
 	ListCommercialOrders(uid int64, limit int) ([]*types.CommercialOrder, error)
@@ -39,8 +39,8 @@ type CommercialPaymentStore interface {
 }
 
 type CommercialPaymentIntent struct {
-	CodeURL   string
-	ExpiresAt time.Time
+	CheckoutURL string
+	ExpiresAt   time.Time
 }
 
 type CommercialPaymentProvider interface {
@@ -120,7 +120,8 @@ func (h *CommercialPaymentHandler) testAllowedFor(uid int64) bool {
 }
 
 func (h *CommercialPaymentHandler) planVisibleFor(uid int64, plan *types.CommercialPlan) bool {
-	if plan == nil || plan.State != 0 || plan.PriceFen <= 0 || !strings.EqualFold(plan.Currency, "CNY") {
+	if plan == nil || plan.State != 0 || plan.PriceFen <= 0 || plan.DurationDays <= 0 ||
+		!strings.EqualFold(plan.Currency, "CNY") || !commercialPlanHasBenefits(plan) {
 		return false
 	}
 	switch plan.SaleState {
@@ -133,8 +134,8 @@ func (h *CommercialPaymentHandler) planVisibleFor(uid int64, plan *types.Commerc
 	}
 }
 
-func commercialTrialPlanAvailable(plan *types.CommercialPlan) bool {
-	if plan == nil || plan.State != 0 || plan.PriceFen != 0 || plan.SaleState != "hidden" || plan.DurationDays <= 0 {
+func commercialPlanHasBenefits(plan *types.CommercialPlan) bool {
+	if plan == nil {
 		return false
 	}
 	if plan.MonthlyBudget > 0 {
@@ -148,9 +149,36 @@ func commercialTrialPlanAvailable(plan *types.CommercialPlan) bool {
 	return false
 }
 
+func commercialTrialPlanAvailable(plan *types.CommercialPlan) bool {
+	if plan == nil || plan.State != 0 || plan.PriceFen != 0 || plan.SaleState != "hidden" || plan.DurationDays <= 0 {
+		return false
+	}
+	return commercialPlanHasBenefits(plan)
+}
+
+func commercialOrderForUser(order *types.CommercialOrder) *types.CommercialOrder {
+	if order == nil {
+		return nil
+	}
+	copy := *order
+	copy.PlanMonthlyBudget = 0
+	copy.PlanModelBudgets = nil
+	return &copy
+}
+
+func commercialOrdersForUser(orders []*types.CommercialOrder) []*types.CommercialOrder {
+	out := make([]*types.CommercialOrder, 0, len(orders))
+	for _, order := range orders {
+		if sanitized := commercialOrderForUser(order); sanitized != nil {
+			out = append(out, sanitized)
+		}
+	}
+	return out
+}
+
 func (h *CommercialPaymentHandler) channelsFor(uid int64) []commercialPaymentChannel {
 	channels := []commercialPaymentChannel{}
-	for _, id := range []string{commercialPaymentChannelWeChatNative, commercialPaymentChannelTest} {
+	for _, id := range []string{commercialPaymentChannelAlipayPage, commercialPaymentChannelTest} {
 		provider := h.providers[id]
 		if provider == nil || (id == commercialPaymentChannelTest && !h.testAllowedFor(uid)) {
 			continue
@@ -178,7 +206,7 @@ func (h *CommercialPaymentHandler) HandleCatalog(w http.ResponseWriter, r *http.
 	visible := make([]*types.CommercialPlan, 0, len(plans))
 	for _, plan := range plans {
 		if h.planVisibleFor(uid, plan) {
-			visible = append(visible, plan)
+			visible = append(visible, commercialPlanForUser(plan))
 		}
 	}
 	trialAvailable := false
@@ -220,7 +248,7 @@ func (h *CommercialPaymentHandler) HandleOrders(w http.ResponseWriter, r *http.R
 				return
 			}
 			order = h.refreshPendingCommercialOrder(r.Context(), order)
-			writeJSON(w, http.StatusOK, map[string]interface{}{"order": order})
+			writeJSON(w, http.StatusOK, map[string]interface{}{"order": commercialOrderForUser(order)})
 			return
 		}
 		orders, err := h.store.ListCommercialOrders(uid, 20)
@@ -228,7 +256,7 @@ func (h *CommercialPaymentHandler) HandleOrders(w http.ResponseWriter, r *http.R
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load orders"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"orders": orders})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"orders": commercialOrdersForUser(orders)})
 	case http.MethodPost:
 		h.createOrder(w, r, uid)
 	default:
@@ -347,7 +375,7 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if order.Status != "created" && order.Status != "failed" {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"order": order})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"order": commercialOrderForUser(order)})
 		return
 	}
 	order, claimed, err := h.store.BeginCommercialOrderPayment(order.OrderNo, expiresAt)
@@ -356,7 +384,7 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if !claimed {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"order": order})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"order": commercialOrderForUser(order)})
 		return
 	}
 	intent, err := provider.CreatePayment(r.Context(), order)
@@ -370,12 +398,12 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "payment provider returned an invalid intent"})
 		return
 	}
-	order, err = h.store.SetCommercialOrderPaymentIntent(order.OrderNo, intent.CodeURL, intent.ExpiresAt)
+	order, err = h.store.SetCommercialOrderPaymentIntent(order.OrderNo, intent.CheckoutURL, intent.ExpiresAt)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save payment order"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"order": order})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"order": commercialOrderForUser(order)})
 }
 
 func decodeCommercialJSON(r *http.Request, target interface{}) error {
@@ -437,7 +465,7 @@ func (h *CommercialPaymentHandler) HandleTestConfirm(w http.ResponseWriter, r *h
 		h.enqueueRelaySync(fulfilled.UID)
 	}
 	summary, _ := h.store.GetCommercialSummary(uid)
-	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "order": fulfilled, "summary": summary})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "order": commercialOrderForUser(fulfilled), "summary": commercialUsageSummaryForUser(summary)})
 }
 
 func (h *CommercialPaymentHandler) HandleClaimTrial(w http.ResponseWriter, r *http.Request) {
@@ -460,49 +488,53 @@ func (h *CommercialPaymentHandler) HandleClaimTrial(w http.ResponseWriter, r *ht
 		return
 	}
 	h.enqueueRelaySync(uid)
-	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "summary": summary})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "summary": commercialUsageSummaryForUser(summary)})
 }
 
-func (h *CommercialPaymentHandler) HandleWeChatNotify(w http.ResponseWriter, r *http.Request) {
+func (h *CommercialPaymentHandler) HandleAlipayNotify(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeWeChatNotifyResponse(w, http.StatusMethodNotAllowed, "FAIL", "method not allowed")
+		writeAlipayNotifyResponse(w, http.StatusMethodNotAllowed, false)
 		return
 	}
 	if h == nil || h.store == nil {
-		writeWeChatNotifyResponse(w, http.StatusServiceUnavailable, "FAIL", "payment service unavailable")
+		writeAlipayNotifyResponse(w, http.StatusServiceUnavailable, false)
 		return
 	}
-	provider := h.providers[commercialPaymentChannelWeChatNative]
+	provider := h.providers[commercialPaymentChannelAlipayPage]
 	if provider == nil {
-		writeWeChatNotifyResponse(w, http.StatusServiceUnavailable, "FAIL", "payment channel unavailable")
+		writeAlipayNotifyResponse(w, http.StatusServiceUnavailable, false)
 		return
 	}
 	orderNo, confirmation, err := provider.ParseNotification(r.Context(), r)
 	if err != nil {
-		writeWeChatNotifyResponse(w, http.StatusBadRequest, "FAIL", "invalid notification")
+		writeAlipayNotifyResponse(w, http.StatusBadRequest, false)
 		return
 	}
 	order, err := h.store.GetCommercialOrder(0, orderNo)
 	if err != nil || order == nil {
-		writeWeChatNotifyResponse(w, http.StatusNotFound, "FAIL", "order not found")
+		writeAlipayNotifyResponse(w, http.StatusNotFound, false)
 		return
 	}
 	fulfilled, changed, err := h.store.FulfillCommercialOrder(orderNo, confirmation)
 	if err != nil {
-		writeWeChatNotifyResponse(w, http.StatusConflict, "FAIL", "fulfillment failed")
+		writeAlipayNotifyResponse(w, http.StatusConflict, false)
 		return
 	}
 	if changed {
 		h.enqueueRelaySync(fulfilled.UID)
 	}
-	writeWeChatNotifyResponse(w, http.StatusOK, "SUCCESS", "success")
+	writeAlipayNotifyResponse(w, http.StatusOK, true)
 }
 
-func writeWeChatNotifyResponse(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+func writeAlipayNotifyResponse(w http.ResponseWriter, status int, success bool) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": message})
+	if success {
+		_, _ = w.Write([]byte("success"))
+		return
+	}
+	_, _ = w.Write([]byte("failure"))
 }
 
 func (h *CommercialPaymentHandler) enqueueRelaySync(uid int64) {

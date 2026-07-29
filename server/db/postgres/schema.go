@@ -29,6 +29,7 @@ func (a *Adapter) CreateSchema() error {
 		createAuthServicesTable,
 		createCommercialPlansTable,
 		migrateCommercialPlansAddSaleFields,
+		migrateCommercialPlansAddInternalQuota,
 		createCommercialInviteCodesTable,
 		createCommercialEntitlementsTable,
 		createCommercialQuotaGrantsTable,
@@ -419,6 +420,7 @@ CREATE TABLE IF NOT EXISTS commercial_plans (
 	purchase_limit INT NOT NULL DEFAULT 0,
     monthly_budget_cny NUMERIC(14,6) NOT NULL DEFAULT 0,
     model_budgets JSONB NOT NULL DEFAULT '{}'::jsonb,
+    internal_quota_tokens BIGINT NOT NULL DEFAULT 0,
     duration_days INT NOT NULL DEFAULT 30,
     state SMALLINT NOT NULL DEFAULT 0,
     sort_order INT NOT NULL DEFAULT 100,
@@ -428,6 +430,7 @@ CREATE TABLE IF NOT EXISTS commercial_plans (
 	CONSTRAINT chk_commercial_plans_price CHECK (price_fen >= 0),
 	CONSTRAINT chk_commercial_plans_sale_state CHECK (sale_state IN ('hidden','test','public')),
 	CONSTRAINT chk_commercial_plans_purchase_limit CHECK (purchase_limit >= 0),
+    CONSTRAINT chk_commercial_plans_internal_quota_tokens CHECK (internal_quota_tokens >= 0),
     CONSTRAINT chk_commercial_plans_duration CHECK (duration_days > 0),
     CONSTRAINT chk_commercial_plans_budget CHECK (monthly_budget_cny >= 0)
 );
@@ -447,6 +450,15 @@ DO $$ BEGIN
 	END IF;
 	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_commercial_plans_purchase_limit') THEN
 		ALTER TABLE commercial_plans ADD CONSTRAINT chk_commercial_plans_purchase_limit CHECK (purchase_limit >= 0);
+	END IF;
+END $$;
+`
+
+const migrateCommercialPlansAddInternalQuota = `
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS internal_quota_tokens BIGINT NOT NULL DEFAULT 0;
+DO $$ BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_commercial_plans_internal_quota_tokens') THEN
+		ALTER TABLE commercial_plans ADD CONSTRAINT chk_commercial_plans_internal_quota_tokens CHECK (internal_quota_tokens >= 0);
 	END IF;
 END $$;
 `
@@ -535,7 +547,7 @@ CREATE TABLE IF NOT EXISTS commercial_orders (
 	channel VARCHAR(32) NOT NULL,
 	status VARCHAR(24) NOT NULL DEFAULT 'created',
 	provider_trade_no VARCHAR(128) NOT NULL DEFAULT '',
-	code_url TEXT NOT NULL DEFAULT '',
+	checkout_url TEXT NOT NULL DEFAULT '',
 	client_request_id VARCHAR(64) NOT NULL,
 	expires_at TIMESTAMPTZ DEFAULT NULL,
 	paid_at TIMESTAMPTZ DEFAULT NULL,
