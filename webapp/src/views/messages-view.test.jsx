@@ -98,6 +98,7 @@ vi.mock('../api', () => ({
     getMobileUploadSession: vi.fn(),
     getTutorialTasks: vi.fn(),
     getCloudArtifacts: vi.fn(),
+    getAgentFiles: vi.fn(),
     deleteCloudArtifact: vi.fn(),
     restoreCloudArtifact: vi.fn(),
   },
@@ -279,6 +280,7 @@ describe('MessagesView composer draft isolation', () => {
     api.sendMessage.mockResolvedValue({ seq_id: 100 });
     api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
+    api.getAgentFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
     api.uploadFile.mockResolvedValue({
       file_key: '20260610_default.jpg',
       url: '/uploads/images/20260610_default.jpg',
@@ -1660,6 +1662,43 @@ describe('MessagesView composer draft isolation', () => {
     const preview = container.querySelector('.mock-file-preview');
     expect(preview?.textContent).toContain('课堂小游戏');
     expect(preview?.getAttribute('data-url')).toBe(artifact.url);
+  });
+
+  it('finds an agent file from history and opens it in the existing file preview', async () => {
+    const historicalFile = {
+      id: '820:0',
+      name: '期末学情报告.pdf',
+      url: '/uploads/files/term-report.pdf',
+      mime_type: 'application/pdf',
+      size: 728341,
+      topic_name: '期末材料',
+    };
+    api.getAgentFiles.mockResolvedValue({
+      files: [historicalFile],
+      has_more: false,
+      next_before_id: 0,
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '文件'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getAgentFiles).toHaveBeenCalledWith(440, { beforeId: 0, limit: 40 });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览文件 期末学情报告.pdf"]'));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.cloud-artifacts-panel')).toBeNull();
+    const preview = container.querySelector('.mock-file-preview');
+    expect(preview?.textContent).toContain('期末学情报告.pdf');
+    expect(preview?.getAttribute('data-url')).toBe(historicalFile.url);
   });
 
   it('shows an inline error when an unsupported image is selected', async () => {

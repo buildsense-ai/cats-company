@@ -1903,8 +1903,8 @@ export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
               <button
                 className="v3-file-preview-back"
                 type="button"
-                aria-label="返回生成物列表"
-                title="返回生成物列表"
+                aria-label="返回产物列表"
+                title="返回产物列表"
                 onClick={onBack}
               >
                 <ArrowLeft size={18} />

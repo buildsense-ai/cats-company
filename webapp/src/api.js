@@ -376,6 +376,12 @@ export const api = {
   getTutorialTasks: () => request('GET', '/api/tutorial-tasks'),
   getCloudArtifacts: (agentUid, status = 'active') =>
     request('GET', `/api/agents/${encodeURIComponent(agentUid)}/artifacts?status=${encodeURIComponent(status)}`),
+  getAgentFiles: (agentUid, { beforeId = 0, limit = 40 } = {}) => {
+    const params = new URLSearchParams();
+    params.set('limit', String(limit));
+    if (beforeId > 0) params.set('before_id', String(beforeId));
+    return request('GET', `/api/agents/${encodeURIComponent(agentUid)}/files?${params.toString()}`);
+  },
   deleteCloudArtifact: (agentUid, artifactId) =>
     request('DELETE', `/api/agents/${encodeURIComponent(agentUid)}/artifacts/${encodeURIComponent(artifactId)}`),
   restoreCloudArtifact: (agentUid, artifactId) =>

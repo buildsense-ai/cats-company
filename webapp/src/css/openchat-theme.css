@@ -1461,6 +1461,12 @@ body {
   border-color: rgba(56, 189, 248, 0.22);
 }
 
+.cloud-artifact-kind-icon.file {
+  color: #a7f3d0;
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.24);
+}
+
 .cloud-artifact-copy {
   min-width: 0;
 }
@@ -1499,6 +1505,27 @@ body {
 .cloud-artifact-actions button:disabled {
   cursor: wait;
   opacity: 0.5;
+}
+
+.cloud-artifacts-load-more {
+  width: 100%;
+  min-height: 38px;
+  margin-top: 10px;
+  border: 1px solid var(--v3-border);
+  border-radius: 7px;
+  color: var(--v3-text-muted);
+  background: rgba(255, 255, 255, 0.025);
+  cursor: pointer;
+}
+
+.cloud-artifacts-load-more:hover:not(:disabled) {
+  color: var(--v3-text-main);
+  background: var(--v3-bg-message-hover);
+}
+
+.cloud-artifacts-load-more:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .cloud-artifacts-status {

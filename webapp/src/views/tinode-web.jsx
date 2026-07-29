@@ -1098,7 +1098,7 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
       <EditableConversationTitle title={title} editable={Boolean(onRenameTitle)} onSave={onRenameTitle} />
       <div className="v3-shell-actions">
         {onOpenCloudArtifacts && (
-          <button type="button" className="v3-action-btn" onClick={onOpenCloudArtifacts} aria-label="打开生成物" title="生成物">
+          <button type="button" className="v3-action-btn" onClick={onOpenCloudArtifacts} aria-label="打开产物" title="产物">
             <Cloud size={17} />
           </button>
         )}

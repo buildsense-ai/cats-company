@@ -217,13 +217,13 @@ describe('LocalAssistantBar model selector', () => {
   it('renders the generated-artifacts button only when the parent enables it', async () => {
     const onOpenCloudArtifacts = vi.fn();
     await renderBar({ onOpenCloudArtifacts });
-    const button = container.querySelector('button[aria-label="打开生成物"]');
+    const button = container.querySelector('button[aria-label="打开产物"]');
     expect(button).toBeTruthy();
     await act(async () => button.click());
     expect(onOpenCloudArtifacts).toHaveBeenCalledTimes(1);
 
     await renderBar({ onOpenCloudArtifacts: undefined });
-    expect(container.querySelector('button[aria-label="打开生成物"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="打开产物"]')).toBeNull();
   });
 
   it('keeps the current model and quota together in the header', async () => {

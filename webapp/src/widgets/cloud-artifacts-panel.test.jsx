@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 vi.mock('../api', () => ({
   api: {
     getCloudArtifacts: vi.fn(),
+    getAgentFiles: vi.fn(),
     deleteCloudArtifact: vi.fn(),
     restoreCloudArtifact: vi.fn(),
   },
@@ -35,16 +36,36 @@ const deletedArtifact = {
   can_restore: true,
 };
 
+const historicalFile = {
+  id: '820:0',
+  name: '期末学情报告.pdf',
+  url: '/uploads/files/term-report.pdf',
+  file_key: 'term-report.pdf',
+  mime_type: 'application/pdf',
+  size: 728341,
+  message_id: 820,
+  topic_id: 'grp_term_review',
+  topic_name: '期末材料',
+  created_at: '2026-07-29T02:20:00.000Z',
+};
+
 describe('CloudArtifactsPanel', () => {
   let container;
   let root;
   let onPreviewArtifact;
+  let onPreviewFile;
 
   beforeEach(() => {
     api.getCloudArtifacts.mockReset().mockResolvedValue({ artifacts: [activeArtifact] });
+    api.getAgentFiles.mockReset().mockResolvedValue({
+      files: [historicalFile],
+      has_more: false,
+      next_before_id: 0,
+    });
     api.deleteCloudArtifact.mockReset().mockResolvedValue({ ok: true, artifact: deletedArtifact });
     api.restoreCloudArtifact.mockReset().mockResolvedValue({ ok: true, artifact: activeArtifact });
     onPreviewArtifact = vi.fn();
+    onPreviewFile = vi.fn();
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -159,7 +180,9 @@ describe('CloudArtifactsPanel', () => {
     await renderPanel();
 
     await act(async () => {
-      container.querySelector('button[role="tab"][aria-selected="false"]').click();
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '回收站')
+        .click();
       await Promise.resolve();
     });
 
@@ -175,13 +198,74 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).not.toContain('课堂小游戏');
   });
 
+  test('indexes historical agent files and opens one in the parent preview', async () => {
+    await renderPanel();
+
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '文件')
+        .click();
+      await Promise.resolve();
+    });
+
+    expect(api.getAgentFiles).toHaveBeenCalledWith(440, { beforeId: 0, limit: 40 });
+    expect(container.textContent).toContain('期末学情报告.pdf');
+    expect(container.textContent).toContain('PDF');
+    expect(container.textContent).toContain('711.3 KB');
+    expect(container.textContent).toContain('期末材料');
+
+    await act(async () => {
+      container.querySelector('button[aria-label="预览文件 期末学情报告.pdf"]').click();
+    });
+    expect(onPreviewFile).toHaveBeenCalledWith(historicalFile);
+  });
+
+  test('loads older historical files with a stable message cursor', async () => {
+    const olderFile = {
+      ...historicalFile,
+      id: '700:0',
+      name: '复习清单.docx',
+      url: '/uploads/files/review-list.docx',
+      message_id: 700,
+    };
+    api.getAgentFiles
+      .mockResolvedValueOnce({
+        files: [historicalFile],
+        has_more: true,
+        next_before_id: 820,
+      })
+      .mockResolvedValueOnce({
+        files: [olderFile],
+        has_more: false,
+        next_before_id: 0,
+      });
+    await renderPanel();
+
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '文件')
+        .click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      [...container.querySelectorAll('button')]
+        .find((button) => button.textContent === '加载更多')
+        .click();
+      await Promise.resolve();
+    });
+
+    expect(api.getAgentFiles).toHaveBeenLastCalledWith(440, { beforeId: 820, limit: 40 });
+    expect(container.textContent).toContain('期末学情报告.pdf');
+    expect(container.textContent).toContain('复习清单.docx');
+  });
+
   test('refreshes the current tab and shows an empty state', async () => {
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
     await renderPanel();
-    expect(container.textContent).toContain('还没有已部署的云端产物');
+    expect(container.textContent).toContain('还没有已部署的网页');
 
     await act(async () => {
-      container.querySelector('button[aria-label="刷新云端产物"]').click();
+      container.querySelector('button[aria-label="刷新产物"]').click();
       await Promise.resolve();
     });
     expect(api.getCloudArtifacts).toHaveBeenCalledTimes(2);
@@ -194,6 +278,7 @@ describe('CloudArtifactsPanel', () => {
           agentUid={440}
           onClose={vi.fn()}
           onPreviewArtifact={onPreviewArtifact}
+          onPreviewFile={onPreviewFile}
         />,
       );
       await Promise.resolve();

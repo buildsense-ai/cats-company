@@ -1018,7 +1018,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(panel.querySelector('a[download]')).toBeNull();
 
     await act(async () => {
-      Simulate.click(panel.querySelector('button[aria-label="返回生成物列表"]'));
+      Simulate.click(panel.querySelector('button[aria-label="返回产物列表"]'));
     });
     expect(onBack).toHaveBeenCalledTimes(1);
     expect(onClose).not.toHaveBeenCalled();

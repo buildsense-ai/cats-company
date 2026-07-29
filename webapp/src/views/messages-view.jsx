@@ -457,6 +457,17 @@ export default function MessagesView({
     setCloudArtifactsListOpen(false);
   }, []);
 
+  const previewAgentFile = useCallback((file) => {
+    setPreviewFile({
+      name: file.name,
+      url: file.url,
+      file_key: file.file_key,
+      mime_type: file.mime_type,
+      size: file.size,
+    });
+    setCloudArtifactsListOpen(false);
+  }, []);
+
   const returnToCloudArtifacts = useCallback(() => {
     setPreviewFile(null);
     setCloudArtifactsListOpen(true);
@@ -2699,6 +2710,7 @@ export default function MessagesView({
                 agentUid={cloudArtifactsAgentUID}
                 onClose={closeSidePanel}
                 onPreviewArtifact={previewCloudArtifact}
+                onPreviewFile={previewAgentFile}
               />
             ) : (
               <FilePreviewPanel
