@@ -27,22 +27,13 @@ func (a *Adapter) GetBotDefinition(botUID int64) (*types.BotDefinitionRecord, er
 
 func (a *Adapter) CreateBotDefinitionIfAbsent(botUID int64, definition types.BotDefinition) (*types.BotDefinitionRecord, error) {
 	return a.updateBotDefinition(botUID, func(record *types.BotDefinitionRecord, _ string) error {
-		if !record.Exists {
-			if record.Definition.Model.Kind == "" {
-				record.Definition.Model = definition.Model
-			}
-			if record.Definition.Prompt == nil && definition.Prompt != nil {
-				prompt := *definition.Prompt
-				record.Definition.Prompt = &prompt
-			}
-			if len(record.Definition.Skills) == 0 && len(definition.Skills) > 0 {
-				record.Definition.Skills = append([]types.BotSkillRef(nil), definition.Skills...)
-			}
-			record.Definition.Schema = definition.Schema
-			record.Definition.BotID = definition.BotID
-			record.Exists = true
-			return nil
-		}
+		initializeBotDefinitionIfAbsent(record, definition)
+		return nil
+	})
+}
+
+func initializeBotDefinitionIfAbsent(record *types.BotDefinitionRecord, definition types.BotDefinition) {
+	if !record.Exists {
 		if record.Definition.Model.Kind == "" {
 			record.Definition.Model = definition.Model
 		}
@@ -53,8 +44,18 @@ func (a *Adapter) CreateBotDefinitionIfAbsent(botUID int64, definition types.Bot
 		if len(record.Definition.Skills) == 0 && len(definition.Skills) > 0 {
 			record.Definition.Skills = append([]types.BotSkillRef(nil), definition.Skills...)
 		}
-		return nil
-	})
+		record.Definition.Schema = definition.Schema
+		record.Definition.BotID = definition.BotID
+		record.Exists = true
+		return
+	}
+	if record.Definition.Model.Kind == "" {
+		record.Definition.Model = definition.Model
+	}
+	if record.Definition.Prompt == nil && definition.Prompt != nil {
+		prompt := *definition.Prompt
+		record.Definition.Prompt = &prompt
+	}
 }
 
 func (a *Adapter) UpdateBotDefinitionModel(
