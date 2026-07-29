@@ -59,7 +59,7 @@ vi.mock('../widgets/chat-message', () => ({
       </div>
     );
   },
-  FilePreviewPanel: function MockFilePreviewPanel({ file, backgroundRef }) {
+  FilePreviewPanel: function MockFilePreviewPanel({ file, onBack, backgroundRef }) {
     return (
       <aside
         className="mock-file-preview"
@@ -67,6 +67,11 @@ vi.mock('../widgets/chat-message', () => ({
         data-background-class={backgroundRef?.current?.className || ''}
       >
         {file?.name || 'preview'}
+        {onBack && (
+          <button type="button" aria-label="返回产物列表" onClick={onBack}>
+            back
+          </button>
+        )}
       </aside>
     );
   },
@@ -1720,6 +1725,18 @@ describe('MessagesView composer draft isolation', () => {
     const preview = container.querySelector('.mock-file-preview');
     expect(preview?.textContent).toContain('期末学情报告.pdf');
     expect(preview?.getAttribute('data-url')).toBe(historicalFile.url);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="返回产物列表"]'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    expect([...container.querySelectorAll('button[role="tab"]')]
+      .find((button) => button.textContent === '文件')
+      ?.getAttribute('aria-selected')).toBe('true');
+    expect(api.getAgentFiles).toHaveBeenCalledTimes(2);
   });
 
   it('shows an inline error when an unsupported image is selected', async () => {

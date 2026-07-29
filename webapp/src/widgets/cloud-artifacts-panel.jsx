@@ -70,11 +70,14 @@ function fileMeta(file) {
 
 export default function CloudArtifactsPanel({
   agentUid,
+  tab: controlledTab,
+  onTabChange,
   onClose,
   onPreviewArtifact,
   onPreviewFile,
 }) {
-  const [tab, setTab] = useState('active');
+  const [localTab, setLocalTab] = useState('active');
+  const tab = controlledTab ?? localTab;
   const [artifacts, setArtifacts] = useState([]);
   const [files, setFiles] = useState([]);
   const [fileCursor, setFileCursor] = useState(0);
@@ -85,6 +88,11 @@ export default function CloudArtifactsPanel({
   const [pendingID, setPendingID] = useState('');
   const [confirmArtifact, setConfirmArtifact] = useState(null);
   const requestSequenceRef = useRef(0);
+
+  const selectTab = (nextTab) => {
+    if (controlledTab == null) setLocalTab(nextTab);
+    onTabChange?.(nextTab);
+  };
 
   const loadContent = useCallback(async ({ append = false, beforeId = 0 } = {}) => {
     const requestID = requestSequenceRef.current + 1;
@@ -222,7 +230,7 @@ export default function CloudArtifactsPanel({
             role="tab"
             aria-selected={tab === 'active'}
             className={tab === 'active' ? 'active' : ''}
-            onClick={() => setTab('active')}
+            onClick={() => selectTab('active')}
           >
             网页
           </button>
@@ -231,7 +239,7 @@ export default function CloudArtifactsPanel({
             role="tab"
             aria-selected={tab === 'files'}
             className={tab === 'files' ? 'active' : ''}
-            onClick={() => setTab('files')}
+            onClick={() => selectTab('files')}
           >
             文件
           </button>
@@ -240,7 +248,7 @@ export default function CloudArtifactsPanel({
             role="tab"
             aria-selected={tab === 'deleted'}
             className={tab === 'deleted' ? 'active' : ''}
-            onClick={() => setTab('deleted')}
+            onClick={() => selectTab('deleted')}
           >
             回收站
           </button>
