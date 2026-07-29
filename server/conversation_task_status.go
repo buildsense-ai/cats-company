@@ -103,19 +103,11 @@ func persistConversationTaskStatus(db store.Store, uid int64, topicID string, pa
 }
 
 func validateTaskStatusTransition(current, next *types.ConversationTaskStatus) error {
-	if current == nil || next == nil {
-		return nil
-	}
-	// A run identifier lets us reject late progress events after that run has
-	// reached a terminal state, while still allowing a new run to supersede it.
-	if current.RunID != "" && current.RunID == next.RunID && isTerminalTaskStatus(current.State) && !isTerminalTaskStatus(next.State) {
-		return errors.New("cannot resume a terminal task run; publish a new run_id")
-	}
-	return nil
+	return types.ValidateConversationTaskStatusTransition(current, next, time.Now())
 }
 
 func isTerminalTaskStatus(state string) bool {
-	return state == "completed" || state == "failed" || state == "cancelled" || state == "stale"
+	return types.IsTerminalConversationTaskState(state)
 }
 
 func normalizeConversationTaskStatus(uid int64, topicID string, payload *normalizedMessagePayload) (*types.ConversationTaskStatus, error) {

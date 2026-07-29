@@ -72,12 +72,15 @@ func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskS
 				expiresAt = now.Add(defaultActiveTaskStatusTTL)
 			}
 		}
-		if active := c.active[scope]; active == nil || active.runID != runID {
-			if active == nil && len(c.active) >= maxActiveAgentPushTurns {
+		if active := c.active[scope]; active == nil {
+			if len(c.active) >= maxActiveAgentPushTurns {
 				c.mu.Unlock()
 				return
 			}
 			c.active[scope] = &activeAgentPushTurn{runID: runID, candidates: make(map[int64]func() bool), expiresAt: expiresAt}
+		} else if active.runID != runID {
+			c.mu.Unlock()
+			return
 		} else {
 			active.expiresAt = expiresAt
 		}
@@ -146,6 +149,9 @@ func (c *agentPushTurnCoordinator) schedule(key string, ttl time.Duration, deliv
 	if previous == nil && len(c.pending) >= maxPendingAgentPushTurns {
 		return false
 	}
+	if previous == nil && ttl > 0 && len(c.delivered)+len(c.pending) >= maxDeliveredAgentPushTurns {
+		return false
+	}
 
 	pending := &pendingAgentPush{deliver: deliver, ttl: ttl}
 	pending.timer = time.AfterFunc(c.delay, func() {
@@ -166,10 +172,8 @@ func (c *agentPushTurnCoordinator) fire(key string, pending *pendingAgentPush) {
 	expiresAt := time.Time{}
 	if pending.ttl > 0 {
 		if len(c.delivered) >= maxDeliveredAgentPushTurns {
-			for deliveredKey := range c.delivered {
-				delete(c.delivered, deliveredKey)
-				break
-			}
+			c.mu.Unlock()
+			return
 		}
 		expiresAt = time.Now().Add(pending.ttl)
 		c.delivered[key] = expiresAt

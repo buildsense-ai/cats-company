@@ -765,6 +765,31 @@ func TestAgentPushCoordinatorReschedulesExistingTurnAtCapacity(t *testing.T) {
 	coordinator.mu.Unlock()
 }
 
+func TestAgentPushCoordinatorPreservesDeliveredDedupKeysAtCapacity(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.delay = time.Hour
+	expiresAt := time.Now().Add(agentPushTurnDedupTTL)
+	for index := 0; index < maxDeliveredAgentPushTurns-1; index++ {
+		coordinator.delivered[fmt.Sprintf("delivered-%d", index)] = expiresAt
+	}
+
+	if !coordinator.schedule("last-capacity-slot", agentPushTurnDedupTTL, func() bool { return true }) {
+		t.Fatal("last available dedup capacity slot was rejected")
+	}
+	if coordinator.schedule("over-capacity", agentPushTurnDedupTTL, func() bool { return true }) {
+		t.Fatal("new turn was accepted after delivered and pending dedup capacity was exhausted")
+	}
+	if len(coordinator.delivered) != maxDeliveredAgentPushTurns-1 {
+		t.Fatal("an unexpired delivered key was evicted to accept a new turn")
+	}
+
+	coordinator.mu.Lock()
+	for _, pending := range coordinator.pending {
+		pending.timer.Stop()
+	}
+	coordinator.mu.Unlock()
+}
+
 func TestAgentPushRunningHeartbeatExtendsActiveTurn(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
 	coordinator.delay = 0

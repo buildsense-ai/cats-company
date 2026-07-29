@@ -455,6 +455,50 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 	if aggregate = aggregates[topicID]; aggregate == nil || aggregate.State != "completed" {
 		t.Fatalf("concurrent completions left stale aggregate: %+v", aggregate)
 	}
+
+	start = make(chan struct{})
+	type overlappingRunResult struct {
+		runID string
+		err   error
+	}
+	overlapResults := make(chan overlappingRunResult, 2)
+	for _, runID := range []string{"overlap-a", "overlap-b"} {
+		wg.Add(1)
+		go func(runID string) {
+			defer wg.Done()
+			<-start
+			runExpiry := time.Now().UTC().Add(time.Hour)
+			_, updateErr := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+				TopicID: topicID, RunID: runID, State: "running", Summary: "running",
+				SourceUID: firstBotID, ExpiresAt: &runExpiry,
+			})
+			overlapResults <- overlappingRunResult{runID: runID, err: updateErr}
+		}(runID)
+	}
+	close(start)
+	wg.Wait()
+	close(overlapResults)
+
+	successfulRunID := ""
+	rejectedRuns := 0
+	for result := range overlapResults {
+		if result.err == nil {
+			if successfulRunID != "" {
+				t.Fatalf("two overlapping runs were accepted: %s and %s", successfulRunID, result.runID)
+			}
+			successfulRunID = result.runID
+		} else {
+			rejectedRuns++
+		}
+	}
+	if successfulRunID == "" || rejectedRuns != 1 {
+		t.Fatalf("overlapping run results: successful=%q rejected=%d", successfulRunID, rejectedRuns)
+	}
+	currentSource, err := db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || currentSource == nil || currentSource.RunID != successfulRunID || currentSource.State != "running" {
+		t.Fatalf("accepted overlapping run was not preserved: status=%+v err=%v", currentSource, err)
+	}
+	upsert(firstBotID, successfulRunID, "completed")
 }
 
 func dsnWithSearchPath(t *testing.T, rawDSN, schemaName string) string {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/openchat/openchat/server/store/types"
 )
@@ -39,6 +40,48 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 		status.TopicID,
 	).Scan(&lockedTopicID); err != nil {
 		return nil, fmt.Errorf("lock conversation task aggregate: %w", err)
+	}
+
+	current := &types.ConversationTaskStatus{}
+	err = tx.QueryRow(
+		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, expires_at
+		 FROM conversation_task_status_sources
+		 WHERE topic_id = ? AND source_uid = ?
+		 FOR UPDATE`,
+		status.TopicID,
+		status.SourceUID,
+	).Scan(
+		&current.TopicID,
+		&current.RunID,
+		&current.State,
+		&current.Summary,
+		&current.Error,
+		&current.SourceUID,
+		&current.UpdatedAt,
+		&current.ExpiresAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		var aggregateSource sql.NullInt64
+		err = tx.QueryRow(
+			`SELECT run_id, state, source_uid, expires_at
+			 FROM conversation_task_statuses
+			 WHERE topic_id = ?`,
+			status.TopicID,
+		).Scan(&current.RunID, &current.State, &aggregateSource, &current.ExpiresAt)
+		if err != nil {
+			return nil, fmt.Errorf("load legacy conversation task status: %w", err)
+		}
+		if !aggregateSource.Valid || aggregateSource.Int64 != status.SourceUID {
+			current = nil
+		} else {
+			current.TopicID = status.TopicID
+			current.SourceUID = aggregateSource.Int64
+		}
+	} else if err != nil {
+		return nil, fmt.Errorf("load current conversation task status: %w", err)
+	}
+	if err := types.ValidateConversationTaskStatusTransition(current, status, time.Now()); err != nil {
+		return nil, err
 	}
 
 	if _, err := tx.Exec(

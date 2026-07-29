@@ -66,7 +66,10 @@ export default function PwaController({ loggedIn }) {
         const config = await api.getPushConfig();
         const publicKey = config.public_key || config.vapid_public_key || config.vapidPublicKey;
         if (!config.enabled || !publicKey) return;
-        const subscription = await ensurePushSubscription(publicKey);
+        const subscription = await ensurePushSubscription(
+          publicKey,
+          (endpoint) => api.unsubscribePush(endpoint),
+        );
         await api.subscribePush(serializePushSubscription(subscription));
       } catch (error) {
         if (!cancelled) console.warn('Push subscription reconciliation failed:', error);
@@ -102,7 +105,10 @@ export default function PwaController({ loggedIn }) {
         return;
       }
 
-      const subscription = await ensurePushSubscription(publicKey);
+      const subscription = await ensurePushSubscription(
+        publicKey,
+        (endpoint) => api.unsubscribePush(endpoint),
+      );
       await api.subscribePush(serializePushSubscription(subscription));
       setDismissed(true);
     } catch (error) {

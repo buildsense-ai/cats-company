@@ -31,13 +31,38 @@ export function serializePushSubscription(subscription) {
   };
 }
 
-export async function ensurePushSubscription(publicKey) {
+function pushKeyBytes(value) {
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  return null;
+}
+
+function pushSubscriptionUsesKey(subscription, expectedKey) {
+  const currentKey = pushKeyBytes(subscription?.options?.applicationServerKey);
+  if (!currentKey || currentKey.length !== expectedKey.length) return false;
+  return currentKey.every((value, index) => value === expectedKey[index]);
+}
+
+export async function ensurePushSubscription(publicKey, unsubscribeOnServer) {
   const registration = await navigator.serviceWorker.ready;
+  const applicationServerKey = urlBase64ToUint8Array(publicKey);
   const existing = await registration.pushManager.getSubscription();
-  if (existing) return existing;
+  if (existing && pushSubscriptionUsesKey(existing, applicationServerKey)) return existing;
+  if (existing) {
+    if (unsubscribeOnServer) {
+      try {
+        await unsubscribeOnServer(existing.endpoint);
+      } catch (error) {
+        console.warn('Failed to remove rotated push subscription from server:', error);
+      }
+    }
+    await existing.unsubscribe();
+  }
   return registration.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(publicKey),
+    applicationServerKey,
   });
 }
 

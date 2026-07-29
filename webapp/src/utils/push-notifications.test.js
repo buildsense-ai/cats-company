@@ -43,7 +43,10 @@ describe('push notification helpers', () => {
   });
 
   test('reuses an existing browser subscription', async () => {
-    const existing = { endpoint: 'https://push.example/sub' };
+    const existing = {
+      endpoint: 'https://push.example/sub',
+      options: { applicationServerKey: new Uint8Array([1, 2, 3]).buffer },
+    };
     const subscribe = vi.fn();
     Object.defineProperty(navigator, 'serviceWorker', {
       configurable: true,
@@ -52,6 +55,61 @@ describe('push notification helpers', () => {
 
     await expect(ensurePushSubscription('AQID')).resolves.toBe(existing);
     expect(subscribe).not.toHaveBeenCalled();
+  });
+
+  test('replaces a browser subscription created with a different VAPID key', async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    const removeFromServer = vi.fn().mockResolvedValue(undefined);
+    const replacement = { endpoint: 'https://push.example/replacement' };
+    const subscribe = vi.fn().mockResolvedValue(replacement);
+    const existing = {
+      endpoint: 'https://push.example/old',
+      options: { applicationServerKey: new Uint8Array([9, 9, 9]).buffer },
+      unsubscribe,
+    };
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: {
+        ready: Promise.resolve({
+          pushManager: {
+            getSubscription: vi.fn().mockResolvedValue(existing),
+            subscribe,
+          },
+        }),
+      },
+    });
+
+    await expect(ensurePushSubscription('AQID', removeFromServer)).resolves.toBe(replacement);
+    expect(removeFromServer).toHaveBeenCalledWith(existing.endpoint);
+    expect(unsubscribe).toHaveBeenCalled();
+    expect(subscribe).toHaveBeenCalledWith({
+      userVisibleOnly: true,
+      applicationServerKey: new Uint8Array([1, 2, 3]),
+    });
+  });
+
+  test('creates a replacement when the old subscription was already deactivated', async () => {
+    const replacement = { endpoint: 'https://push.example/replacement' };
+    const subscribe = vi.fn().mockResolvedValue(replacement);
+    const existing = {
+      endpoint: 'https://push.example/old',
+      options: { applicationServerKey: new Uint8Array([9, 9, 9]).buffer },
+      unsubscribe: vi.fn().mockResolvedValue(false),
+    };
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: {
+        ready: Promise.resolve({
+          pushManager: {
+            getSubscription: vi.fn().mockResolvedValue(existing),
+            subscribe,
+          },
+        }),
+      },
+    });
+
+    await expect(ensurePushSubscription('AQID')).resolves.toBe(replacement);
+    expect(subscribe).toHaveBeenCalled();
   });
 
   test('unsubscribes in the browser even when server cleanup fails', async () => {

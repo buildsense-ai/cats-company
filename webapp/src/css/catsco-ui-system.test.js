@@ -702,11 +702,12 @@ describe('CatsCo shell styling', () => {
 
   it('prevents iOS focus zoom without changing non-text form controls', () => {
     const selectorList = css.match(
-      /@media \(max-width: 768px\), \(hover: none\) and \(pointer: coarse\) \{\s*([^{}]+)\s*\{\s*font-size: 16px !important;/,
+      /@media \(hover: none\) and \(pointer: coarse\) \{\s*([^{}]+)\s*\{\s*font-size: 16px !important;/,
     )?.[1];
     const input = document.createElement('input');
 
     expect(selectorList).toBeTruthy();
+    expect(css).not.toContain('@media (max-width: 768px), (hover: none) and (pointer: coarse)');
     for (const type of ['text', 'search', 'email', 'password', 'tel', 'url', 'number']) {
       input.type = type;
       expect(input.matches(selectorList)).toBe(true);
