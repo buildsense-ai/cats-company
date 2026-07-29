@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -78,6 +79,28 @@ func (s *botDefinitionTestStore) UpdateBotDefinitionPrompt(
 	return cloneBotDefinitionRecord(record), nil
 }
 
+func (s *botDefinitionTestStore) UpdateBotDefinitionSkills(
+	botUID, expectedRevision int64,
+	skills []types.BotSkillRef,
+) (*types.BotDefinitionRecord, error) {
+	record := s.ensure(botUID)
+	if expectedRevision >= 0 && expectedRevision != record.Runtime.DesiredRevision {
+		return nil, store.ErrStaleBotModelRevision
+	}
+	if reflect.DeepEqual(record.Definition.Skills, skills) {
+		return cloneBotDefinitionRecord(record), nil
+	}
+	record.Definition.Skills = append([]types.BotSkillRef(nil), skills...)
+	if record.Definition.Model.Kind == "" {
+		record.Definition.Model = types.BotDefinitionModel{Kind: "catalog", ModelID: "minimax-m3"}
+	}
+	if record.Definition.Prompt == nil {
+		record.Definition.Prompt = &types.BotPromptDefinition{Selected: "default"}
+	}
+	record.Runtime.DesiredRevision++
+	return cloneBotDefinitionRecord(record), nil
+}
+
 func (s *botDefinitionTestStore) AckBotDefinition(
 	botUID, revision int64,
 	applyError string,
@@ -127,6 +150,10 @@ func TestBotDefinitionFieldUpdatesPreserveTheOtherField(t *testing.T) {
 					BotID:  "43",
 					Model:  types.BotDefinitionModel{Kind: "catalog", ModelID: "minimax-m3"},
 					Prompt: &types.BotPromptDefinition{Selected: "custom", CustomSystemPrompt: "Keep me."},
+					Skills: []types.BotSkillRef{{
+						Source: "skillhub", SkillID: "lin/review", Version: "1.2.0",
+						ContentHash: testSkillHash,
+					}},
 				},
 				Runtime: types.BotDefinitionRuntime{DesiredRevision: 2},
 				Exists:  true,
@@ -148,6 +175,8 @@ func TestBotDefinitionFieldUpdatesPreserveTheOtherField(t *testing.T) {
 	if got := db.records[43]; got.Definition.Model.ModelID != "gpt-5.6-sol" ||
 		got.Definition.Prompt == nil ||
 		got.Definition.Prompt.CustomSystemPrompt != "Keep me." ||
+		len(got.Definition.Skills) != 1 ||
+		got.Definition.Skills[0].SkillID != "lin/review" ||
 		got.Runtime.DesiredRevision != 3 {
 		t.Fatalf("record after model update=%+v", got)
 	}
@@ -164,6 +193,8 @@ func TestBotDefinitionFieldUpdatesPreserveTheOtherField(t *testing.T) {
 	if got := db.records[43]; got.Definition.Model.ModelID != "gpt-5.6-sol" ||
 		got.Definition.Prompt == nil ||
 		got.Definition.Prompt.Selected != "default" ||
+		len(got.Definition.Skills) != 1 ||
+		got.Definition.Skills[0].SkillID != "lin/review" ||
 		got.Runtime.DesiredRevision != 4 {
 		t.Fatalf("record after prompt update=%+v", got)
 	}

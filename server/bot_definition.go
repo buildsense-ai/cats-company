@@ -424,6 +424,7 @@ func (h *BotDefinitionHandler) definitionResponse(
 		"schema": record.Definition.Schema,
 		"botId":  record.Definition.BotID,
 		"model":  modelResponse,
+		"skills": append([]types.BotSkillRef(nil), record.Definition.Skills...),
 	}
 	if record.Definition.Prompt != nil {
 		definition["prompt"] = record.Definition.Prompt

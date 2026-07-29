@@ -11,6 +11,7 @@ import (
 const (
 	botDefinitionJSONKey        = "bot_definition"
 	botDefinitionRuntimeJSONKey = "bot_definition_runtime"
+	legacyBotSkillsJSONKey      = "bot_skills"
 )
 
 // DecodeBotDefinitionJSON reads the canonical definition nodes while
@@ -67,6 +68,7 @@ func EncodeBotDefinitionJSON(raw []byte, record *types.BotDefinitionRecord) ([]b
 	root[botDefinitionJSONKey] = definition
 	root[botDefinitionRuntimeJSONKey] = runtime
 	delete(root, botModelConfigJSONKey)
+	delete(root, legacyBotSkillsJSONKey)
 	return json.Marshal(root)
 }
 
@@ -85,6 +87,7 @@ func defaultBotDefinitionRecord(botUID int64) *types.BotDefinitionRecord {
 				ModelID: "minimax-m3",
 			},
 			Prompt: &types.BotPromptDefinition{Selected: "default"},
+			Skills: []types.BotSkillRef{},
 		},
 		Exists: true,
 	}
@@ -110,6 +113,9 @@ func normalizeDefinitionRecord(record *types.BotDefinitionRecord, botUID int64) 
 	if record.Definition.Model.Kind == "" && record.Definition.Model.ModelID != "" {
 		record.Definition.Model.Kind = "catalog"
 	}
+	if record.Definition.Skills == nil {
+		record.Definition.Skills = []types.BotSkillRef{}
+	}
 }
 
 func definitionFromLegacyModelConfig(botUID int64, config *types.BotModelConfig) types.BotDefinition {
@@ -127,6 +133,7 @@ func definitionFromLegacyModelConfig(botUID int64, config *types.BotModelConfig)
 		BotID:  strconv.FormatInt(botUID, 10),
 		Model:  model,
 		Prompt: &types.BotPromptDefinition{Selected: "default"},
+		Skills: []types.BotSkillRef{},
 	}
 }
 
