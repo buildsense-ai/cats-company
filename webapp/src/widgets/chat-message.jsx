@@ -1387,7 +1387,7 @@ function isSameOriginURL(url) {
   }
 }
 
-function previewFileDescriptor(payload) {
+export function previewFileDescriptor(payload) {
   if (!payload) return null;
   const url = resolveMediaURL(payload.url);
   const ext = fileExtension(payload);
@@ -1418,6 +1418,7 @@ function previewFileDescriptor(payload) {
     isSameOriginRemoteArtifact,
     spreadsheetKind,
     canPreview,
+    downloadURL: downloadableMediaURL(url, payload.name),
     sizeStr: payload.size ? formatFileSize(payload.size) : '',
     key: `${url}|${payload.name || ''}|${payload.size || ''}`,
   };
@@ -1576,11 +1577,10 @@ function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = 
   }
   if (!payload) return null;
   const descriptor = previewFileDescriptor(payload);
-  const { url, ext, canPreview, meta, sizeStr, key } = descriptor;
+  const { url, ext, canPreview, downloadURL, meta, sizeStr, key } = descriptor;
   const activeKey = activePreviewFile ? previewFileDescriptor(activePreviewFile)?.key : '';
   const isActive = canPreview && activeKey === key;
   const subtitle = [meta.label, sizeStr].filter(Boolean).join(' · ');
-  const downloadURL = downloadableMediaURL(url, payload.name);
   const openFile = () => {
     if (canPreview && onPreviewFile) onPreviewFile(payload);
     else if (url) window.open(url, '_blank');
@@ -1664,7 +1664,7 @@ export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
   const isRemoteArtifact = descriptor?.isRemoteArtifact || false;
   const meta = descriptor?.meta || artifactMeta(file || {});
   const sizeStr = descriptor?.sizeStr || '';
-  const downloadURL = downloadableMediaURL(url, file?.name);
+  const downloadURL = descriptor?.downloadURL || url;
 
   useEffect(() => {
     let cancelled = false;

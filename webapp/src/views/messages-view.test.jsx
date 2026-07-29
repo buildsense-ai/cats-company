@@ -76,6 +76,15 @@ vi.mock('../widgets/chat-message', () => ({
     mime_type: 'text/html',
     artifact_id: artifact.id,
   }),
+  previewFileDescriptor: (file) => {
+    const name = String(file?.name || file?.url || '').toLowerCase();
+    const canPreview = /\.(?:csv|html?|json|md|pdf|txt|xlsx|xml)(?:[?#].*)?$/.test(name);
+    return {
+      url: file?.url || '',
+      canPreview,
+      downloadURL: file?.url || '',
+    };
+  },
 }));
 
 vi.mock('../widgets/avatar', () => ({

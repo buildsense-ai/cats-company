@@ -1329,7 +1329,8 @@ body {
 }
 
 .cloud-artifacts-header-actions button,
-.cloud-artifact-actions button {
+.cloud-artifact-actions button,
+.cloud-artifact-actions a {
   width: 34px;
   height: 34px;
   display: inline-flex;
@@ -1340,10 +1341,12 @@ body {
   color: var(--v3-text-muted);
   background: transparent;
   cursor: pointer;
+  text-decoration: none;
 }
 
 .cloud-artifacts-header-actions button:hover,
-.cloud-artifact-actions button:hover {
+.cloud-artifact-actions button:hover,
+.cloud-artifact-actions a:hover {
   color: var(--v3-text-main);
   background: var(--v3-bg-message-hover);
 }
@@ -1490,6 +1493,8 @@ body {
 
 .cloud-artifact-actions {
   padding-right: 12px;
+  display: flex;
+  gap: 6px;
 }
 
 .cloud-artifact-actions button.danger {

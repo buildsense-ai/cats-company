@@ -2,7 +2,9 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Cloud,
   Copy,
+  Download,
   Eye,
+  ExternalLink,
   FileCode2,
   FileText,
   RefreshCw,
@@ -11,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../api';
+import { previewFileDescriptor } from './chat-message';
 
 const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 
@@ -260,17 +263,11 @@ export default function CloudArtifactsPanel({
             <>
               <div className="cloud-artifacts-list">
                 {files.map((file) => (
-                  <article className="cloud-artifact-item cloud-file-item" key={file.id}>
-                    <button
-                      type="button"
-                      className="cloud-artifact-main"
-                      onClick={() => onPreviewFile?.(file)}
-                      aria-label={'预览文件 ' + file.name}
-                    >
-                      <FileSummary file={file} />
-                      <Eye className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
-                    </button>
-                  </article>
+                  <HistoricalFileItem
+                    file={file}
+                    key={file.id}
+                    onPreviewFile={onPreviewFile}
+                  />
                 ))}
               </div>
               {fileHasMore && (
@@ -404,5 +401,53 @@ function FileSummary({ file }) {
         </p>
       </div>
     </>
+  );
+}
+
+function HistoricalFileItem({ file, onPreviewFile }) {
+  const descriptor = previewFileDescriptor(file);
+  const canPreview = Boolean(descriptor?.canPreview);
+  const openURL = descriptor?.url || file.url || '';
+  const downloadURL = descriptor?.downloadURL || openURL;
+
+  return (
+    <article className="cloud-artifact-item cloud-file-item">
+      {canPreview ? (
+        <button
+          type="button"
+          className="cloud-artifact-main"
+          onClick={() => onPreviewFile?.(file)}
+          aria-label={'预览文件 ' + file.name}
+        >
+          <FileSummary file={file} />
+          <Eye className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
+        </button>
+      ) : (
+        <a
+          className="cloud-artifact-main"
+          href={openURL}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={'在新窗口打开 ' + file.name}
+        >
+          <FileSummary file={file} />
+          <ExternalLink className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
+        </a>
+      )}
+      {!canPreview && downloadURL && (
+        <div className="cloud-artifact-actions">
+          <a
+            href={downloadURL}
+            download={file.name || true}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={'下载 ' + file.name}
+            title="下载"
+          >
+            <Download size={17} />
+          </a>
+        </div>
+      )}
+    </article>
   );
 }

@@ -2,6 +2,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
 vi.mock('../api', () => ({
+  resolveMediaURL: vi.fn((url) => url),
   api: {
     getCloudArtifacts: vi.fn(),
     getAgentFiles: vi.fn(),
@@ -272,6 +273,53 @@ describe('CloudArtifactsPanel', () => {
       container.querySelector('button[aria-label="预览文件 期末学情报告.pdf"]').click();
     });
     expect(onPreviewFile).toHaveBeenCalledWith(historicalFile);
+  });
+
+  test('keeps unpreviewable DOCX and ZIP files in the list with open and download actions', async () => {
+    const docxFile = {
+      ...historicalFile,
+      id: '810:0',
+      name: '复习清单.docx',
+      url: '/uploads/files/review-list.docx',
+      mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    };
+    const zipFile = {
+      ...historicalFile,
+      id: '800:0',
+      name: '课程素材.zip',
+      url: '/uploads/files/course-assets.zip',
+      mime_type: 'application/zip',
+    };
+    api.getAgentFiles.mockResolvedValueOnce({
+      files: [docxFile, zipFile],
+      has_more: false,
+      next_before_id: 0,
+    });
+    await renderPanel();
+
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '文件')
+        .click();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('button[aria-label="预览文件 复习清单.docx"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="预览文件 课程素材.zip"]')).toBeNull();
+    expect(
+      container.querySelector('a[aria-label="在新窗口打开 复习清单.docx"]')?.getAttribute('href'),
+    ).toBe('/uploads/files/review-list.docx');
+    expect(
+      container.querySelector('a[aria-label="下载 复习清单.docx"]')?.getAttribute('href'),
+    ).toBe('/uploads/files/review-list.docx?download=1');
+    expect(
+      container.querySelector('a[aria-label="在新窗口打开 课程素材.zip"]')?.getAttribute('href'),
+    ).toBe('/uploads/files/course-assets.zip');
+    expect(
+      container.querySelector('a[aria-label="下载 课程素材.zip"]')?.getAttribute('href'),
+    ).toBe('/uploads/files/course-assets.zip?download=1');
+    expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    expect(onPreviewFile).not.toHaveBeenCalled();
   });
 
   test('loads older historical files with a stable message cursor', async () => {
