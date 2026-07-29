@@ -198,17 +198,17 @@ async function handleMessage(context: MessageContext): Promise<void> {
     reply = await context.withTyping(() => callLLM(context.topic, context.text));
   } catch (error: unknown) {
     console.error(`[error] task failed: ${errorMessage(error)}`);
+    try {
+      await context.reply('抱歉，我暂时无法回复，请稍后再试。');
+    } catch (replyError: unknown) {
+      console.error(`[error] fallback reply failed: ${errorMessage(replyError)}`);
+    }
     enqueueTopicStatus(context, {
       run_id: runID,
       state: 'failed',
       summary: '任务执行失败',
       error: '任务执行失败',
     });
-    try {
-      await context.reply('抱歉，我暂时无法回复，请稍后再试。');
-    } catch (replyError: unknown) {
-      console.error(`[error] fallback reply failed: ${errorMessage(replyError)}`);
-    }
     return;
   }
 

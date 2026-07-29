@@ -30,12 +30,23 @@ func isInternalAgentWorkingMessage(displayType string, content interface{}, bloc
 	hasInternalBlock := false
 	hasUserVisibleBlock := false
 	for _, block := range blocks {
-		switch strings.ToLower(strings.TrimSpace(block.Type)) {
-		case "runtime_plan", "thinking", "tool_use", "tool_result":
+		if isInternalAgentContentBlock(block.Type) {
 			hasInternalBlock = true
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(block.Type)) {
 		case "text", "assistant_text", "image", "voice", "file", "video":
 			hasUserVisibleBlock = true
 		}
 	}
 	return hasInternalBlock && !hasUserVisibleBlock
+}
+
+func isInternalAgentContentBlock(blockType string) bool {
+	switch strings.ToLower(strings.TrimSpace(blockType)) {
+	case "runtime_plan", "thinking", "tool_use", "tool_result", "debug":
+		return true
+	default:
+		return false
+	}
 }

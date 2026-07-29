@@ -34,11 +34,21 @@ bot.on('ready', (uid, name) => {
 
 bot.on('message', async (ctx) => {
   console.log(`收到消息: ${ctx.text}`);
-  await ctx.reply('你好！');
+  const runId = crypto.randomUUID();
+  await bot.sendTaskStatus(ctx.topic, { run_id: runId, state: 'running' });
+  try {
+    await ctx.reply('你好！');
+    await bot.sendTaskStatus(ctx.topic, { run_id: runId, state: 'completed' });
+  } catch (error) {
+    await bot.sendTaskStatus(ctx.topic, { run_id: runId, state: 'failed' });
+    throw error;
+  }
 });
 
 bot.run();
 ```
+
+`task_status` 的终态必须在最终用户可见消息发送成功后发布。服务端据此把同一 turn 的分段合并为一次离线通知；不要依赖分段之间的静默时间表示完成。
 
 ## 4. 消息类型
 

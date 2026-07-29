@@ -160,18 +160,18 @@ async function handleMessage(context) {
     }
     catch (error) {
         console.error(`[error] task failed: ${errorMessage(error)}`);
-        enqueueTopicStatus(context, {
-            run_id: runID,
-            state: 'failed',
-            summary: '任务执行失败',
-            error: '任务执行失败',
-        });
         try {
             await context.reply('抱歉，我暂时无法回复，请稍后再试。');
         }
         catch (replyError) {
             console.error(`[error] fallback reply failed: ${errorMessage(replyError)}`);
         }
+        enqueueTopicStatus(context, {
+            run_id: runID,
+            state: 'failed',
+            summary: '任务执行失败',
+            error: '任务执行失败',
+        });
         return;
     }
     try {

@@ -1019,7 +1019,15 @@ func isDurableAgentContextMessage(message *types.Message, displayType string) bo
 	if !isUserVisibleMessageType(displayType) {
 		return false
 	}
-	return !isInternalAgentWorkingMessage(displayType, decodeStoredContent(message.Content), message.ContentBlocks)
+	if isInternalAgentWorkingMessage(displayType, decodeStoredContent(message.Content), message.ContentBlocks) {
+		return false
+	}
+	for _, block := range message.ContentBlocks {
+		if isInternalAgentContentBlock(block.Type) {
+			return false
+		}
+	}
+	return true
 }
 
 func structuredMentionsFromMessage(message map[string]interface{}) []string {

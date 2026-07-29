@@ -719,6 +719,195 @@ func TestShouldNotifyOfflineForFinalUserVisibleMessagesOnly(t *testing.T) {
 	}
 }
 
+func TestAgentPushCompletionRequiresExplicitFinalSignal(t *testing.T) {
+	working := &ServerMessage{Data: &MsgServerData{
+		Topic:    "p2p_7_8",
+		From:     formatUID(7),
+		SeqID:    1,
+		Type:     "text",
+		Content:  "still working",
+		Metadata: map[string]interface{}{"turn_id": "turn-1"},
+	}}
+	if isCompletedAgentMessage(working) {
+		t.Fatal("a persisted visible segment without an explicit final signal was treated as complete")
+	}
+
+	final := &ServerMessage{Data: &MsgServerData{
+		Topic:    "p2p_7_8",
+		From:     formatUID(7),
+		SeqID:    2,
+		Type:     "text",
+		Content:  "final answer",
+		Metadata: map[string]interface{}{"turn_id": "turn-1", "turn_complete": true},
+	}}
+	if !isCompletedAgentMessage(final) {
+		t.Fatal("an explicitly completed visible agent message was not treated as complete")
+	}
+}
+
+func TestAgentPushCoordinatorReschedulesExistingTurnAtCapacity(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.delay = time.Hour
+	for index := 0; index < maxPendingAgentPushTurns; index++ {
+		key := fmt.Sprintf("turn-%d", index)
+		if !coordinator.schedule(key, agentPushTurnDedupTTL, func() bool { return true }) {
+			t.Fatalf("failed to fill pending slot %d", index)
+		}
+	}
+	if !coordinator.schedule("turn-0", agentPushTurnDedupTTL, func() bool { return true }) {
+		t.Fatal("rescheduling an existing turn was rejected at capacity")
+	}
+
+	coordinator.mu.Lock()
+	for _, pending := range coordinator.pending {
+		pending.timer.Stop()
+	}
+	coordinator.mu.Unlock()
+}
+
+func TestAgentPushRunningHeartbeatExtendsActiveTurn(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.delay = 0
+	firstExpiry := time.Now().Add(20 * time.Millisecond)
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7, ExpiresAt: &firstExpiry,
+	})
+	refreshedExpiry := time.Now().Add(time.Hour)
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "waiting", SourceUID: 7, ExpiresAt: &refreshedExpiry,
+	})
+	time.Sleep(30 * time.Millisecond)
+
+	delivered := make(chan struct{}, 1)
+	msg := &ServerMessage{Data: &MsgServerData{Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "done"}}
+	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool {
+		delivered <- struct{}{}
+		return true
+	}) {
+		t.Fatal("refreshed active turn expired at its original deadline")
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
+	})
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("refreshed active turn did not deliver after completion")
+	}
+}
+
+func TestAgentPushIgnoresExpiredRunningStatus(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	expired := time.Now().Add(-time.Second)
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-expired", State: "running", SourceUID: 7, ExpiresAt: &expired,
+	})
+	msg := &ServerMessage{Data: &MsgServerData{Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "late"}}
+	if coordinator.observeVisibleMessage(8, 7, msg, func() bool { return true }) {
+		t.Fatal("an expired task status opened an active notification turn")
+	}
+}
+
+type aggregateTaskStatusPushStore struct {
+	*identityMessageStore
+	source    *types.ConversationTaskStatus
+	aggregate *types.ConversationTaskStatus
+}
+
+func (s *aggregateTaskStatusPushStore) CreateTopic(string, string, int64) error {
+	return nil
+}
+
+func (s *aggregateTaskStatusPushStore) GetConversationTaskStatusForSource(topicID string, sourceUID int64) (*types.ConversationTaskStatus, error) {
+	if s.source == nil || s.source.TopicID != topicID || s.source.SourceUID != sourceUID {
+		return nil, nil
+	}
+	copyOfStatus := *s.source
+	return &copyOfStatus, nil
+}
+
+func (s *aggregateTaskStatusPushStore) UpsertConversationTaskStatus(status *types.ConversationTaskStatus) (*types.ConversationTaskStatus, error) {
+	copyOfStatus := *status
+	s.source = &copyOfStatus
+	aggregate := *s.aggregate
+	return &aggregate, nil
+}
+
+func (s *aggregateTaskStatusPushStore) GetConversationTaskStatuses([]string) (map[string]*types.ConversationTaskStatus, error) {
+	return map[string]*types.ConversationTaskStatus{}, nil
+}
+
+func TestAgentPushWaitsForMatchingTerminalTaskStatus(t *testing.T) {
+	const (
+		senderUID  int64 = 7
+		offlineUID int64 = 8
+	)
+	db := &aggregateTaskStatusPushStore{
+		identityMessageStore: &identityMessageStore{users: map[int64]*types.User{
+			senderUID:  {ID: senderUID, AccountType: types.AccountBot},
+			offlineUID: {ID: offlineUID, AccountType: types.AccountHuman},
+		}},
+		aggregate: &types.ConversationTaskStatus{
+			TopicID: "p2p_7_8", RunID: "other-agent-run", State: "running", SourceUID: 99,
+		},
+	}
+	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/subscription/task-status",
+		P256DH:   "p256dh",
+		Auth:     "auth",
+	}}}
+	service := enabledPushService(pushStore)
+	delivered := make(chan struct{}, 1)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		delivered <- struct{}{}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	hub := NewHub(db, nil)
+	hub.SetPushNotificationService(service)
+	hub.agentPush.delay = 0
+	handler := NewMessageHandler(db, hub)
+
+	if _, err := handler.handleTaskStatus(senderUID, "p2p_7_8", &normalizedMessagePayload{
+		DisplayType:         taskStatusType,
+		ExplicitDisplayType: true,
+		DisplayContent:      map[string]interface{}{"run_id": "run-1", "state": "running"},
+	}); err != nil {
+		t.Fatalf("publish running task status: %v", err)
+	}
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "final answer",
+		DisplayType:    "text",
+		StoredType:     "text",
+	}, 1, nil)
+	select {
+	case <-delivered:
+		t.Fatal("agent message notified before the task reached a terminal state")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	hub.observeAgentPushTaskStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "old-run", State: "completed", SourceUID: senderUID,
+	})
+	select {
+	case <-delivered:
+		t.Fatal("a stale terminal status completed the active agent turn")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if _, err := handler.handleTaskStatus(senderUID, "p2p_7_8", &normalizedMessagePayload{
+		DisplayType:         taskStatusType,
+		ExplicitDisplayType: true,
+		DisplayContent:      map[string]interface{}{"run_id": "run-1", "state": "completed"},
+	}); err != nil {
+		t.Fatalf("publish completed task status: %v", err)
+	}
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("matching terminal task status did not notify the offline recipient")
+	}
+}
+
 func TestP2PAgentWorkingMessagesNotifyOnlyOnFinalAnswer(t *testing.T) {
 	const (
 		senderUID  int64 = 7
@@ -741,7 +930,6 @@ func TestP2PAgentWorkingMessagesNotifyOnlyOnFinalAnswer(t *testing.T) {
 	}
 	hub := NewHub(db, nil)
 	hub.SetPushNotificationService(service)
-	hub.agentPush.delay = 10 * time.Millisecond
 
 	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
 		DisplayContent: "working",
@@ -762,11 +950,16 @@ func TestP2PAgentWorkingMessagesNotifyOnlyOnFinalAnswer(t *testing.T) {
 		StoredType:     "text",
 		Metadata:       map[string]interface{}{"turn_id": "turn-1"},
 	}, 2, nil)
+	select {
+	case <-delivered:
+		t.Fatal("an incomplete agent segment delivered a push")
+	case <-time.After(100 * time.Millisecond):
+	}
 	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
 		DisplayContent: "second final segment",
 		DisplayType:    "text",
 		StoredType:     "text",
-		Metadata:       map[string]interface{}{"turn_id": "turn-1"},
+		Metadata:       map[string]interface{}{"turn_id": "turn-1", "turn_complete": true},
 	}, 3, nil)
 
 	select {
@@ -784,7 +977,7 @@ func TestP2PAgentWorkingMessagesNotifyOnlyOnFinalAnswer(t *testing.T) {
 		DisplayContent: "next turn final answer",
 		DisplayType:    "text",
 		StoredType:     "text",
-		Metadata:       map[string]interface{}{"turn_id": "turn-2"},
+		Metadata:       map[string]interface{}{"turn_id": "turn-2", "turn_complete": true},
 	}, 4, nil)
 	select {
 	case <-delivered:
@@ -793,34 +986,15 @@ func TestP2PAgentWorkingMessagesNotifyOnlyOnFinalAnswer(t *testing.T) {
 	}
 
 	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
-		DisplayContent: "fallback segment one",
+		DisplayContent: "duplicate completion",
 		DisplayType:    "text",
 		StoredType:     "text",
+		Metadata:       map[string]interface{}{"turn_id": "turn-2", "turn_complete": true},
 	}, 5, nil)
-	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
-		DisplayContent: "fallback segment two",
-		DisplayType:    "text",
-		StoredType:     "text",
-	}, 6, nil)
 	select {
 	case <-delivered:
-	case <-time.After(time.Second):
-		t.Fatal("agent messages without a turn key did not deliver a push")
-	}
-	select {
-	case <-delivered:
-		t.Fatal("fallback agent segments delivered more than one push")
+		t.Fatal("duplicate completion for one agent turn delivered another push")
 	case <-time.After(100 * time.Millisecond):
-	}
-	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
-		DisplayContent: "later fallback turn",
-		DisplayType:    "text",
-		StoredType:     "text",
-	}, 7, nil)
-	select {
-	case <-delivered:
-	case <-time.After(time.Second):
-		t.Fatal("a later unkeyed agent turn was incorrectly deduplicated")
 	}
 }
 
@@ -856,8 +1030,10 @@ func TestGroupBroadcastQueuesPushOnlyForOfflineHumans(t *testing.T) {
 	}
 	hub := NewHub(db, nil)
 	hub.SetPushNotificationService(service)
-	hub.agentPush.delay = 10 * time.Millisecond
 	hub.addClient(&Client{uid: onlineUID, accountType: types.AccountHuman, send: make(chan []byte, 2)})
+	hub.agentPush.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "grp_80", RunID: "group-turn-1", State: "running", SourceUID: senderUID,
+	})
 
 	hub.broadcastToGroupWithMentions(groupID, &ServerMessage{Data: &MsgServerData{
 		Topic:   "grp_80",
@@ -875,15 +1051,22 @@ func TestGroupBroadcastQueuesPushOnlyForOfflineHumans(t *testing.T) {
 	}
 
 	hub.broadcastToGroupWithMentions(groupID, &ServerMessage{Data: &MsgServerData{
-		Topic:    "grp_80",
-		From:     formatUID(senderUID),
-		SeqID:    2,
-		Content:  "final answer",
-		Type:     "text",
-		MsgType:  "text",
-		Metadata: map[string]interface{}{"turn_id": "group-turn-1"},
+		Topic:   "grp_80",
+		From:    formatUID(senderUID),
+		SeqID:   2,
+		Content: "final answer",
+		Type:    "text",
+		MsgType: "text",
 	}}, senderUID, nil, senderUID, false)
 
+	select {
+	case <-delivered:
+		t.Fatal("group agent message notified before task completion")
+	case <-time.After(100 * time.Millisecond):
+	}
+	hub.agentPush.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "grp_80", RunID: "group-turn-1", State: "completed", SourceUID: senderUID,
+	})
 	select {
 	case <-delivered:
 	case <-time.After(time.Second):

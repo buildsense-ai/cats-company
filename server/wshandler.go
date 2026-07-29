@@ -1757,10 +1757,13 @@ func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessa
 	if h == nil || h.agentPush == nil || h.IsOnline(uid) {
 		return
 	}
+	deliver := func() bool { return h.enqueueOfflineUserPush(uid) }
+	if !isCompletedAgentMessage(msg) {
+		h.agentPush.observeVisibleMessage(uid, senderUID, msg, deliver)
+		return
+	}
 	key, ttl := agentPushTurnKey(uid, senderUID, msg)
-	h.agentPush.schedule(key, ttl, func() bool {
-		return h.enqueueOfflineUserPush(uid)
-	})
+	h.agentPush.schedule(key, ttl, deliver)
 }
 
 // broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.

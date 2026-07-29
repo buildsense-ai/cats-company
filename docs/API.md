@@ -478,6 +478,7 @@ npm install @catscompany/bot-sdk
 | `run()` | connect + 保持连接（含自动重连） |
 | `disconnect()` | 断开连接 |
 | `sendMessage(topic, content, replyTo?)` | 发送消息，返回 seq |
+| `sendTaskStatus(topic, status)` | 发布带 `run_id` 的任务状态，用于标记 agent turn 生命周期 |
 | `sendImage(topic, upload, opts?)` | 发送图片（需先 upload） |
 | `sendFile(topic, upload, mimeType?)` | 发送文件（需先 upload） |
 | `sendLinkPreview(topic, payload)` | 发送链接预览卡片 |
@@ -553,6 +554,7 @@ bot.run();
 说明：
 
 - 外部 Bot 建议统一连接 nginx 暴露的入口：`wss://app.catsco.cc/v0/channels`
+- 需要 Web Push 的 agent 应在开始生成前发布同一 `run_id` 的 `running`，发送完最终用户可见消息后再发布 `completed`、`failed`、`cancelled` 或 `stale`。服务端只在匹配的终态到达后为该 turn 通知一次，不会根据消息片段之间的时间间隔猜测是否完成。
 - `connectTimeout` 控制 TCP/WebSocket 建连阶段超时
 - `handshakeTimeout` 控制 `hi -> ctrl` 握手阶段超时
 - 如果升级请求在握手前被 HTTP 拒绝，SDK 会直接抛出带 `statusCode` 的 `HandshakeError`
