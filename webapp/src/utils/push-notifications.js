@@ -22,11 +22,12 @@ export function shouldOfferPush({ loggedIn, permission, dismissed }) {
 }
 
 export function serializePushSubscription(subscription) {
-  if (typeof subscription?.toJSON === 'function') return subscription.toJSON();
+  const serialized = typeof subscription?.toJSON === 'function'
+    ? subscription.toJSON()
+    : subscription;
   return {
-    endpoint: subscription.endpoint,
-    expirationTime: subscription.expirationTime || null,
-    keys: {},
+    endpoint: serialized.endpoint,
+    keys: serialized.keys || {},
   };
 }
 

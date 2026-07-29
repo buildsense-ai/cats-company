@@ -29,9 +29,17 @@ describe('push notification helpers', () => {
     expect(shouldOfferPush({ loggedIn: true, permission: 'default', dismissed: true })).toBe(false);
   });
 
-  test('uses the browser subscription JSON representation', () => {
-    const json = { endpoint: 'https://push.example/sub', keys: { p256dh: 'a', auth: 'b' } };
-    expect(serializePushSubscription({ toJSON: () => json })).toEqual(json);
+  test('serializes only the fields accepted by the push subscription API', () => {
+    const json = {
+      endpoint: 'https://push.example/sub',
+      expirationTime: 1_774_915_200_000,
+      keys: { p256dh: 'a', auth: 'b' },
+    };
+
+    expect(serializePushSubscription({ toJSON: () => json })).toEqual({
+      endpoint: json.endpoint,
+      keys: json.keys,
+    });
   });
 
   test('reuses an existing browser subscription', async () => {
