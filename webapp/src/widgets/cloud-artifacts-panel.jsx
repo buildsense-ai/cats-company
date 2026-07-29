@@ -59,12 +59,12 @@ function formatFileSize(bytes) {
 }
 
 function fileMeta(file) {
-  const items = [fileExtension(file)];
+  const items = [{ key: 'type', value: fileExtension(file) }];
   const size = formatFileSize(file.size);
-  if (size) items.push(size);
-  if (file.topic_name) items.push(file.topic_name);
+  if (size) items.push({ key: 'size', value: size });
+  if (file.topic_name) items.push({ key: 'source', value: file.topic_name });
   const time = formatUpdatedAt(file.created_at);
-  if (time) items.push(time);
+  if (time) items.push({ key: 'time', value: time });
   return items;
 }
 
@@ -397,7 +397,9 @@ function FileSummary({ file }) {
       <div className="cloud-artifact-copy">
         <h4>{file.name}</h4>
         <p>
-          {fileMeta(file).map((item, index) => <span key={index}>{item}</span>)}
+          {fileMeta(file).map((item) => (
+            <span className={'cloud-file-meta-' + item.key} key={item.key}>{item.value}</span>
+          ))}
         </p>
       </div>
     </>

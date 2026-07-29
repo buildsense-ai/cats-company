@@ -1487,8 +1487,53 @@ body {
   display: flex;
   overflow: hidden;
   flex-wrap: wrap;
-  gap: 10px;
+  column-gap: 10px;
+  row-gap: 2px;
   max-height: 34px;
+  line-height: 16px;
+}
+
+@media (max-width: 480px) {
+  .cloud-file-item .cloud-artifact-copy p {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: repeat(2, 16px);
+  }
+
+  .cloud-file-meta-type {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .cloud-file-meta-size {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .cloud-file-meta-source {
+    min-width: 0;
+    grid-column: 1;
+    grid-row: 2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .cloud-file-meta-time {
+    grid-column: 2;
+    grid-row: 2;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 340px) {
+  .cloud-file-meta-source {
+    grid-column: 1 / -1;
+  }
+
+  .cloud-file-meta-time {
+    display: none;
+  }
 }
 
 .cloud-artifact-actions {

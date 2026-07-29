@@ -561,6 +561,18 @@ describe('MessagesView composer draft isolation', () => {
     );
   });
 
+  it('keeps historical file metadata within two complete rows on narrow screens', () => {
+    expect(openchatThemeCss).toMatch(
+      /\.cloud-artifact-copy p \{[^}]*column-gap: 10px;[^}]*row-gap: 2px;[^}]*max-height: 34px;[^}]*line-height: 16px;/s,
+    );
+    expect(openchatThemeCss).toMatch(
+      /@media \(max-width: 480px\) \{[\s\S]*?\.cloud-file-item \.cloud-artifact-copy p \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto;[^}]*grid-template-rows: repeat\(2, 16px\);/,
+    );
+    expect(openchatThemeCss).toMatch(
+      /@media \(max-width: 340px\) \{[\s\S]*?\.cloud-file-meta-time \{\s*display: none;/,
+    );
+  });
+
   it('merges adjacent assistant text chunks into one visual reply', async () => {
     mockTutorialAgentPeer();
     api.getMessages.mockResolvedValueOnce({
