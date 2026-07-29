@@ -88,22 +88,11 @@ func persistConversationTaskStatus(db store.Store, uid int64, topicID string, pa
 			return nil, nil, fmt.Errorf("ensure task status topic: %w", err)
 		}
 	}
-	if current, err := statusStore.GetConversationTaskStatusForSource(topicID, uid); err != nil {
-		return nil, nil, fmt.Errorf("load current task status: %w", err)
-	} else if current != nil {
-		if err := validateTaskStatusTransition(current, status); err != nil {
-			return nil, nil, err
-		}
-	}
 	aggregate, err := statusStore.UpsertConversationTaskStatus(status)
 	if err != nil {
 		return nil, nil, err
 	}
 	return aggregate, status, nil
-}
-
-func validateTaskStatusTransition(current, next *types.ConversationTaskStatus) error {
-	return types.ValidateConversationTaskStatusTransition(current, next, time.Now())
 }
 
 func isTerminalTaskStatus(state string) bool {
