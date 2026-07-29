@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   deploy-prod:
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.event == 'push' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     environment: prod
     env:
@@ -23,6 +23,7 @@ jobs:
       IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
       CATSCO_ARTIFACT_INDEX_URL: https://logs.catsco.fun:9000/artifacts/artifacts-index.json
       CATSCO_ARTIFACT_MANAGEMENT_URL: https://logs.catsco.fun:9000/internal/artifacts
+      CATSCO_ARTIFACT_NODES_JSON: ${{ vars.CATSCO_ARTIFACT_NODES_JSON }}
 
     steps:
       - name: Checkout tested revision
@@ -75,12 +76,23 @@ jobs:
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
-          ssh ${SSH_OPTS} "${REMOTE}" "IMAGE_TAG=${IMAGE_TAG} PROD_STACK_ROOT=${PROD_STACK_ROOT} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} CATSCO_ARTIFACT_INDEX_URL=${CATSCO_ARTIFACT_INDEX_URL} CATSCO_ARTIFACT_MANAGEMENT_URL=${CATSCO_ARTIFACT_MANAGEMENT_URL} CATSCO_ARTIFACT_MANAGEMENT_TOKEN=${CATSCO_ARTIFACT_MANAGEMENT_TOKEN} bash -s" <<'EOF'
+          CATSCO_ARTIFACT_NODES_JSON_B64="$(printf '%s' "${CATSCO_ARTIFACT_NODES_JSON}" | base64 -w 0)"
+          ssh ${SSH_OPTS} "${REMOTE}" "IMAGE_TAG=${IMAGE_TAG} PROD_STACK_ROOT=${PROD_STACK_ROOT} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} CATSCO_ARTIFACT_INDEX_URL=${CATSCO_ARTIFACT_INDEX_URL} CATSCO_ARTIFACT_MANAGEMENT_URL=${CATSCO_ARTIFACT_MANAGEMENT_URL} CATSCO_ARTIFACT_MANAGEMENT_TOKEN=${CATSCO_ARTIFACT_MANAGEMENT_TOKEN} CATSCO_ARTIFACT_NODES_JSON_B64=${CATSCO_ARTIFACT_NODES_JSON_B64} bash -s" <<'EOF'
           set -euo pipefail
 
           root="${PROD_STACK_ROOT}"
           revision="${IMAGE_TAG}"
           owner="${GHCR_OWNER}"
+          if [ -n "${CATSCO_ARTIFACT_NODES_JSON_B64:-}" ]; then
+            mkdir -p "$root/secrets"
+            artifact_nodes_temp="$root/secrets/artifact-nodes.json.new"
+            printf '%s' "$CATSCO_ARTIFACT_NODES_JSON_B64" \
+              | base64 --decode > "$artifact_nodes_temp"
+            python3 -m json.tool "$artifact_nodes_temp" >/dev/null
+            chmod 600 "$artifact_nodes_temp"
+            mv "$artifact_nodes_temp" "$root/secrets/artifact-nodes.json"
+            export CATSCO_ARTIFACT_NODES_FILE=/run/catsco-secrets/artifact-nodes.json
+          fi
           chmod +x "$root/compose/bootstrap-server.sh" "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh" "$root/compose/ensure-image-timeout-nginx.sh"
           "$root/compose/bootstrap-server.sh" "$root"
           "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"

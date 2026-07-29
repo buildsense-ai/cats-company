@@ -117,11 +117,15 @@ and set:
 CATSCO_ARTIFACT_NODES_FILE=/run/catsco-secrets/artifact-nodes.json
 ```
 
-The JSON maps an Agent UID to one node. Each node declares its public artifact
-base URL, protected management URL, and exactly one bearer-token source:
-`management_token_env` or `management_token_file`. The token itself must not be
-written into the JSON. Prefer a separate file under `/run/catsco-secrets` for
-each node; the directory is already mounted read-only in the server container.
+The JSON maps an Agent UID to one node. Every node declares its public artifact
+base URL. A fully managed node also declares a protected management URL and
+exactly one bearer-token source: `management_token_env` or
+`management_token_file`. A static-only node may omit all three management
+fields; CatsCo then reads `<public_base_url>/artifacts-index.json`, does not
+offer delete or restore, and returns an empty recycle bin. The token itself must
+not be written into the JSON. Prefer a separate file under
+`/run/catsco-secrets` for each managed node; the directory is already mounted
+read-only in the server container.
 Every `public_base_url` must use a different origin (scheme, host, or port) from
 `CATSCO_PUBLIC_BASE_URL`. The server rejects a same-origin registry at startup
 so executable Artifact HTML cannot share the CatsCo application origin.
@@ -136,9 +140,12 @@ chmod 600 /srv/catscompany-prod/secrets/artifact-node-b.token
 Several nodes may reference `CATSCO_ARTIFACT_MANAGEMENT_TOKEN` only when those
 nodes intentionally share one service token.
 
-Once a node registry is enabled, an unmapped Agent fails closed. CatsCo does
-not send that Agent's list, delete, or restore request to the legacy host.
-Update the mapping as part of provisioning or moving a managed Agent.
+Once a node registry is enabled, an unmapped Agent fails closed by default.
+During a staged migration, set `"fallback_to_legacy": true` to keep unmapped
+Agents on the legacy `CATSCO_ARTIFACT_MANAGEMENT_URL`. Explicit mappings still
+take priority. Remove the fallback after every managed Agent has a node.
+Without that flag, CatsCo does not send an unmapped Agent's list, delete, or
+restore request to the legacy host.
 The registry is loaded at server startup, so changing a node, mapping, or token
 file requires recreating the CatsCo server container.
 
