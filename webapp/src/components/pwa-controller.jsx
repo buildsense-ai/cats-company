@@ -2,7 +2,7 @@ import React, {
   useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
 import { registerSW } from 'virtual:pwa-register';
-import { api } from '../api';
+import { api, getPushRegistrationID } from '../api';
 import {
   canUsePush,
   cleanupPushSubscription,
@@ -79,6 +79,7 @@ export default function PwaController({
     if (Notification.permission !== 'granted') return undefined;
 
     const controller = new AbortController();
+    const registrationID = getPushRegistrationID();
     const reconcilePush = async () => {
       try {
         const config = await api.getPushConfig(controller.signal);
@@ -87,11 +88,11 @@ export default function PwaController({
         if (!config.enabled || !publicKey) return;
         const subscription = await ensurePushSubscription(
           publicKey,
-          (endpoint) => api.unsubscribePush(endpoint),
+          (endpoint) => api.unsubscribePush(endpoint, undefined, registrationID),
           isCurrent,
         );
         if (!subscription || !isCurrent()) return;
-        await api.subscribePush(serializePushSubscription(subscription), controller.signal);
+        await api.subscribePush(serializePushSubscription(subscription), registrationID, controller.signal);
       } catch (error) {
         if (!cancelled) console.warn('Push subscription reconciliation failed:', error);
       }
@@ -117,6 +118,7 @@ export default function PwaController({
       sessionRevisionRef.current === requestedRevision
     );
     const controller = new AbortController();
+    const registrationID = getPushRegistrationID();
     const abortOnSessionChange = () => controller.abort();
     window.addEventListener('cc:auth-changed', abortOnSessionChange, { once: true });
     setBusy(true);
@@ -139,11 +141,11 @@ export default function PwaController({
 
         const subscription = await ensurePushSubscription(
           publicKey,
-          (endpoint) => api.unsubscribePush(endpoint),
+          (endpoint) => api.unsubscribePush(endpoint, undefined, registrationID),
           isCurrent,
         );
         if (!subscription || !isCurrent()) return;
-        await api.subscribePush(serializePushSubscription(subscription), controller.signal);
+        await api.subscribePush(serializePushSubscription(subscription), registrationID, controller.signal);
         if (isCurrent()) setDismissed(true);
       });
     } catch (error) {

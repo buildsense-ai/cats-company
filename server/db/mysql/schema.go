@@ -45,6 +45,7 @@ func (a *Adapter) CreateSchema() error {
 
 	// Run migrations (safe to re-run; uses IF NOT EXISTS / column checks)
 	migrations := []string{
+		migratePushSubscriptionsAddRegistrationID,
 		migrateBotConfigAddAPIKey,
 		migrateUsersAddBotDisclose,
 		migrateMessagesAddReplyTo,
@@ -174,11 +175,16 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     endpoint VARCHAR(512) COLLATE utf8mb4_bin NOT NULL,
     p256dh VARCHAR(256) NOT NULL,
     auth VARCHAR(128) NOT NULL,
+    registration_id VARCHAR(64) NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_push_subscriptions_endpoint (endpoint),
     INDEX idx_push_subscriptions_uid (uid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const migratePushSubscriptionsAddRegistrationID = `
+ALTER TABLE push_subscriptions ADD COLUMN registration_id VARCHAR(64) NOT NULL DEFAULT '';
 `
 
 const createFriendsTable = `

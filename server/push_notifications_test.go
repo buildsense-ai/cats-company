@@ -23,15 +23,16 @@ import (
 )
 
 type memoryPushSubscriptionStore struct {
-	subscriptions []*types.PushSubscription
-	upserted      *types.PushSubscription
-	deletedUID    int64
-	deleted       string
-	deletedScoped []string
-	upsertErr     error
-	listErr       error
-	listBlock     <-chan struct{}
-	deleteErr     error
+	subscriptions         []*types.PushSubscription
+	upserted              *types.PushSubscription
+	deletedUID            int64
+	deleted               string
+	deletedRegistrationID string
+	deletedScoped         []string
+	upsertErr             error
+	listErr               error
+	listBlock             <-chan struct{}
+	deleteErr             error
 }
 
 type pushHubUserStore struct {
@@ -76,12 +77,13 @@ func (m *memoryPushSubscriptionStore) ListPushSubscriptions(ctx context.Context,
 	return m.subscriptions, nil
 }
 
-func (m *memoryPushSubscriptionStore) DeletePushSubscription(_ context.Context, uid int64, endpoint string) error {
+func (m *memoryPushSubscriptionStore) DeletePushSubscription(_ context.Context, uid int64, endpoint, registrationID string) error {
 	if m.deleteErr != nil {
 		return m.deleteErr
 	}
 	m.deletedUID = uid
 	m.deleted = endpoint
+	m.deletedRegistrationID = registrationID
 	m.deletedScoped = append(m.deletedScoped, fmt.Sprintf("%d:%s", uid, endpoint))
 	return nil
 }
@@ -412,13 +414,16 @@ func TestPushNotificationDeleteSubscription(t *testing.T) {
 	store := &memoryPushSubscriptionStore{}
 	service := enabledPushService(store)
 	recorder := httptest.NewRecorder()
-	service.HandleSubscription(recorder, pushRequest(t, http.MethodDelete, `{"endpoint":"https://push.example.test/subscription/delete"}`, 104))
+	service.HandleSubscription(recorder, pushRequest(t, http.MethodDelete, `{"endpoint":"https://push.example.test/subscription/delete","registration_id":"session-old"}`, 104))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 	if store.deletedUID != 104 || store.deleted != "https://push.example.test/subscription/delete" {
 		t.Fatalf("delete called with uid=%d endpoint=%q", store.deletedUID, store.deleted)
+	}
+	if store.deletedRegistrationID != "session-old" {
+		t.Fatalf("delete registration id = %q", store.deletedRegistrationID)
 	}
 }
 

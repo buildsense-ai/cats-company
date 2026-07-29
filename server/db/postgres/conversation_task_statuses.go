@@ -43,6 +43,18 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 		return nil, fmt.Errorf("lock conversation task aggregate: %w", err)
 	}
 	if _, err := tx.Exec(
+		`DELETE FROM conversation_task_status_sources AS source
+		 USING conversation_task_statuses AS aggregate
+		 WHERE source.topic_id = aggregate.topic_id
+		   AND source.source_uid = aggregate.source_uid
+		   AND aggregate.topic_id = $1
+		   AND aggregate.source_uid IS NOT NULL
+		   AND aggregate.updated_at > source.updated_at`,
+		status.TopicID,
+	); err != nil {
+		return nil, fmt.Errorf("remove stale conversation task source status: %w", err)
+	}
+	if _, err := tx.Exec(
 		`INSERT INTO conversation_task_status_sources
 		   (topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at)
 		 SELECT topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at

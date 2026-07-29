@@ -32,7 +32,7 @@ func TestUpsertConversationTaskStatusPreservesLegacyActiveSource(t *testing.T) {
 	)).
 		WithArgs(topicID).
 		WillReturnRows(sqlmock.NewRows([]string{"topic_id"}).AddRow(topicID))
-	mock.ExpectExec(regexp.QuoteMeta("INSERT IGNORE INTO conversation_task_status_sources")).
+	mock.ExpectExec(`INSERT INTO conversation_task_status_sources[\s\S]+ON DUPLICATE KEY UPDATE[\s\S]+IF\(VALUES\(updated_at\) > updated_at`).
 		WithArgs(topicID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(regexp.QuoteMeta(

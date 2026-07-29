@@ -3,6 +3,14 @@ const DEFAULT_WS_SCHEME = window.location.protocol === 'https:' ? 'wss' : 'ws';
 const WS_URL = import.meta.env.VITE_WS_URL || `${DEFAULT_WS_SCHEME}://${window.location.host}/v0/channels`;
 
 let token = localStorage.getItem('oc_token');
+const PUSH_REGISTRATION_ID_KEY = 'oc_push_registration_id';
+const newPushRegistrationID = () => {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+};
+let pushRegistrationID = token ? (localStorage.getItem(PUSH_REGISTRATION_ID_KEY) || newPushRegistrationID()) : '';
+if (pushRegistrationID) localStorage.setItem(PUSH_REGISTRATION_ID_KEY, pushRegistrationID);
 let authRevision = 0;
 let wsConn = null;
 let wsReconnectTimer = null;
@@ -32,9 +40,12 @@ export function requestMissedMessages(topicId) {
 
 export function setToken(t, { pushCleanupHandled = false } = {}) {
   token = t;
+  pushRegistrationID = t ? newPushRegistrationID() : '';
   authRevision += 1;
   if (t) localStorage.setItem('oc_token', t);
   else localStorage.removeItem('oc_token');
+  if (pushRegistrationID) localStorage.setItem(PUSH_REGISTRATION_ID_KEY, pushRegistrationID);
+  else localStorage.removeItem(PUSH_REGISTRATION_ID_KEY);
   window.dispatchEvent(new CustomEvent('cc:auth-changed', {
     detail: {
       loggedIn: Boolean(t),
@@ -51,6 +62,8 @@ export function getToken() {
 export function getAuthRevision() {
   return authRevision;
 }
+
+export function getPushRegistrationID() { return pushRegistrationID; }
 
 export function getWebSocketURL() {
   return WS_URL;
@@ -144,13 +157,13 @@ export const api = {
   login: (data) => request('POST', '/api/auth/login', data),
   getMe: () => request('GET', '/api/me'),
   getPushConfig: (signal) => request('GET', '/api/push/config', undefined, { signal }),
-  subscribePush: (subscription, signal) => (
-    request('POST', '/api/push/subscriptions', subscription, { signal })
+  subscribePush: (subscription, registrationID, signal) => (
+    request('POST', '/api/push/subscriptions', { ...subscription, registration_id: registrationID }, { signal })
   ),
-  unsubscribePush: (endpoint, authToken = token) => {
+  unsubscribePush: (endpoint, authToken = token, registrationID = pushRegistrationID) => {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), PUSH_UNSUBSCRIBE_TIMEOUT_MS);
-    return request('DELETE', '/api/push/subscriptions', { endpoint }, {
+    return request('DELETE', '/api/push/subscriptions', { endpoint, registration_id: registrationID }, {
       authToken,
       signal: controller.signal,
     }).finally(() => window.clearTimeout(timer));

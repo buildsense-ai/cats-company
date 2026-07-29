@@ -50,16 +50,18 @@ func (a *Adapter) UpsertPushSubscription(ctx context.Context, subscription *type
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO push_subscriptions (uid, endpoint, p256dh, auth)
-		 VALUES (?, ?, ?, ?)
+		`INSERT INTO push_subscriptions (uid, endpoint, p256dh, auth, registration_id)
+		 VALUES (?, ?, ?, ?, ?)
 		 ON DUPLICATE KEY UPDATE
 		   uid = VALUES(uid),
 		   p256dh = VALUES(p256dh),
-		   auth = VALUES(auth)`,
+		   auth = VALUES(auth),
+		   registration_id = VALUES(registration_id)`,
 		subscription.UID,
 		subscription.Endpoint,
 		subscription.P256DH,
 		subscription.Auth,
+		subscription.RegistrationID,
 	); err != nil {
 		return false, fmt.Errorf("upsert push subscription: %w", err)
 	}
@@ -72,7 +74,7 @@ func (a *Adapter) UpsertPushSubscription(ctx context.Context, subscription *type
 // ListPushSubscriptions returns all subscriptions owned by uid.
 func (a *Adapter) ListPushSubscriptions(ctx context.Context, uid int64) ([]*types.PushSubscription, error) {
 	rows, err := a.db.QueryContext(ctx,
-		`SELECT id, uid, endpoint, p256dh, auth, created_at, updated_at
+		`SELECT id, uid, endpoint, p256dh, auth, registration_id, created_at, updated_at
 		 FROM push_subscriptions
 		 WHERE uid = ?
 		 ORDER BY id ASC`,
@@ -92,6 +94,7 @@ func (a *Adapter) ListPushSubscriptions(ctx context.Context, uid int64) ([]*type
 			&subscription.Endpoint,
 			&subscription.P256DH,
 			&subscription.Auth,
+			&subscription.RegistrationID,
 			&subscription.CreatedAt,
 			&subscription.UpdatedAt,
 		); err != nil {
@@ -106,11 +109,13 @@ func (a *Adapter) ListPushSubscriptions(ctx context.Context, uid int64) ([]*type
 }
 
 // DeletePushSubscription removes one endpoint if it belongs to uid.
-func (a *Adapter) DeletePushSubscription(ctx context.Context, uid int64, endpoint string) error {
+func (a *Adapter) DeletePushSubscription(ctx context.Context, uid int64, endpoint, registrationID string) error {
 	if _, err := a.db.ExecContext(ctx,
-		`DELETE FROM push_subscriptions WHERE uid = ? AND endpoint = ?`,
+		`DELETE FROM push_subscriptions WHERE uid = ? AND endpoint = ? AND (? = '' OR registration_id = ?)`,
 		uid,
 		endpoint,
+		registrationID,
+		registrationID,
 	); err != nil {
 		return fmt.Errorf("delete push subscription: %w", err)
 	}

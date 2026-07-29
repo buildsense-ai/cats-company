@@ -129,7 +129,7 @@ describe('push notification helpers', () => {
     expect(unsubscribe).toHaveBeenCalled();
   });
 
-  test('does not wait for server cleanup before unsubscribing in the browser', async () => {
+  test('waits for server cleanup before unsubscribing in the browser', async () => {
     let finishServerCleanup;
     const unsubscribe = vi.fn().mockResolvedValue(true);
     const serverCleanup = vi.fn().mockImplementation(() => new Promise((resolve) => {
@@ -146,9 +146,12 @@ describe('push notification helpers', () => {
 
     const cleanup = cleanupPushSubscription(serverCleanup);
 
-    await vi.waitFor(() => expect(unsubscribe).toHaveBeenCalled());
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(unsubscribe).not.toHaveBeenCalled();
     finishServerCleanup();
     await expect(cleanup).resolves.toBe(true);
+    expect(unsubscribe).toHaveBeenCalled();
   });
 
   test('does not create a subscription after the authenticated session changes', async () => {

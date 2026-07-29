@@ -218,8 +218,9 @@ func (s *PushNotificationService) HandleStatus(w http.ResponseWriter, r *http.Re
 }
 
 type pushSubscriptionRequest struct {
-	Endpoint string                `json:"endpoint"`
-	Keys     *pushSubscriptionKeys `json:"keys"`
+	Endpoint       string                `json:"endpoint"`
+	Keys           *pushSubscriptionKeys `json:"keys"`
+	RegistrationID string                `json:"registration_id"`
 }
 
 type pushSubscriptionKeys struct {
@@ -228,7 +229,8 @@ type pushSubscriptionKeys struct {
 }
 
 type deletePushSubscriptionRequest struct {
-	Endpoint string `json:"endpoint"`
+	Endpoint       string `json:"endpoint"`
+	RegistrationID string `json:"registration_id"`
 }
 
 // HandleSubscription serves POST and DELETE for the authenticated user. Mount
@@ -286,12 +288,18 @@ func (s *PushNotificationService) handleSubscribe(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid subscription keys"})
 		return
 	}
+	registrationID := strings.TrimSpace(req.RegistrationID)
+	if len(registrationID) > 64 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid registration id"})
+		return
+	}
 
 	stored, err := s.store.UpsertPushSubscription(r.Context(), &types.PushSubscription{
-		UID:      uid,
-		Endpoint: endpoint,
-		P256DH:   p256dh,
-		Auth:     auth,
+		UID:            uid,
+		Endpoint:       endpoint,
+		P256DH:         p256dh,
+		Auth:           auth,
+		RegistrationID: registrationID,
 	}, maxPushSubscriptionsPerUser)
 	if err != nil {
 		s.logf("web push: save subscription for uid %d: %v", uid, err)
@@ -316,7 +324,12 @@ func (s *PushNotificationService) handleUnsubscribe(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid endpoint"})
 		return
 	}
-	if err := s.store.DeletePushSubscription(r.Context(), uid, endpoint); err != nil {
+	registrationID := strings.TrimSpace(req.RegistrationID)
+	if len(registrationID) > 64 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid registration id"})
+		return
+	}
+	if err := s.store.DeletePushSubscription(r.Context(), uid, endpoint, registrationID); err != nil {
 		s.logf("web push: delete subscription for uid %d: %v", uid, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete subscription"})
 		return
@@ -480,7 +493,7 @@ func (s *PushNotificationService) SendToUser(ctx context.Context, uid int64, not
 			continue
 		}
 		if status == http.StatusNotFound || status == http.StatusGone {
-			if deleteErr := s.store.DeletePushSubscription(ctx, uid, subscription.Endpoint); deleteErr != nil {
+			if deleteErr := s.store.DeletePushSubscription(ctx, uid, subscription.Endpoint, subscription.RegistrationID); deleteErr != nil {
 				cleanupErr := fmt.Errorf("remove expired provider %q: %w", endpointID, redactPushEndpointError(deleteErr, subscription.Endpoint))
 				s.logf("web push: %v", cleanupErr)
 				deliveryErrors = append(deliveryErrors, cleanupErr)

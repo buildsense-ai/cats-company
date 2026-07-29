@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { api, setToken, getToken, connectWS, reconnectWS, disconnectWS } from '../api';
+import { api, setToken, getToken, getPushRegistrationID, connectWS, reconnectWS, disconnectWS } from '../api';
 import { cleanupPushSubscription } from '../utils/push-notifications';
 import { enqueuePushOperation } from '../utils/push-operation';
 import t from '../i18n';
@@ -461,8 +461,9 @@ function TinodeWebApp() {
 
   const clearAuthenticatedSession = useCallback((authToken = getToken()) => {
     if (!authToken || getToken() !== authToken) return;
+    const registrationID = getPushRegistrationID();
     enqueuePushOperation(() => cleanupPushSubscription(
-      (endpoint) => api.unsubscribePush(endpoint, authToken),
+      (endpoint) => api.unsubscribePush(endpoint, authToken, registrationID),
       () => {
         const currentToken = getToken();
         return !currentToken || currentToken === authToken;

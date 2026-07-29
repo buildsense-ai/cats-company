@@ -82,11 +82,11 @@ export async function cleanupPushSubscription(unsubscribeOnServer, isCurrent = (
   if (!subscription) return false;
 
   if (unsubscribeOnServer) {
-    void Promise.resolve()
-      .then(() => unsubscribeOnServer(subscription.endpoint))
-      .catch((error) => {
-        console.warn('Failed to remove push subscription from server:', error);
-      });
+    try {
+      await unsubscribeOnServer(subscription.endpoint);
+    } catch (error) {
+      console.warn('Failed to remove push subscription from server:', error);
+    }
   }
 
   if (!isCurrent()) return true;

@@ -109,6 +109,24 @@ func TestPostgresStoreContract(t *testing.T) {
 	if err != nil || !stored {
 		t.Fatalf("refresh existing push subscription: stored=%t err=%v", stored, err)
 	}
+	pushSubscriptions[0].RegistrationID = "session-old"
+	if stored, err = db.UpsertPushSubscription(context.Background(), pushSubscriptions[0], pushSubscriptionLimit); err != nil || !stored {
+		t.Fatalf("register old push generation: stored=%t err=%v", stored, err)
+	}
+	pushSubscriptions[0].RegistrationID = "session-new"
+	if stored, err = db.UpsertPushSubscription(context.Background(), pushSubscriptions[0], pushSubscriptionLimit); err != nil || !stored {
+		t.Fatalf("register new push generation: stored=%t err=%v", stored, err)
+	}
+	if err := db.DeletePushSubscription(context.Background(), ownerID, pushSubscriptions[0].Endpoint, "session-old"); err != nil {
+		t.Fatalf("delete old push generation: %v", err)
+	}
+	remainingPushSubscriptions, err := db.ListPushSubscriptions(context.Background(), ownerID)
+	if err != nil || len(remainingPushSubscriptions) != pushSubscriptionLimit {
+		t.Fatalf("old delete removed new push generation: count=%d err=%v", len(remainingPushSubscriptions), err)
+	}
+	if remainingPushSubscriptions[0].RegistrationID != "session-new" {
+		t.Fatalf("new push generation changed: %+v", remainingPushSubscriptions[0])
+	}
 	owner, err := db.GetUserByUsername("alice")
 	if err != nil || owner == nil || owner.ID != ownerID {
 		t.Fatalf("case-insensitive username lookup failed: owner=%#v err=%v", owner, err)
@@ -381,13 +399,26 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 	topicID := fmt.Sprintf("grp_%d", groupID)
 	expiry := time.Now().UTC().Add(time.Hour)
 	legacyTopicID := topicID
+	legacySourceUpdatedAt := time.Now().UTC().Add(-time.Hour)
+	legacyAggregateUpdatedAt := legacySourceUpdatedAt.Add(30 * time.Minute)
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_status_sources
+		   (topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at)
+		 VALUES ($1, $2, 'older-run', 'completed', 'older completed', '', NULL, $3)`,
+		legacyTopicID,
+		firstBotID,
+		legacySourceUpdatedAt,
+	); err != nil {
+		t.Fatalf("seed older conversation task source status: %v", err)
+	}
 	if _, err := db.db.Exec(
 		`INSERT INTO conversation_task_statuses
 		   (topic_id, run_id, state, summary, error, source_uid, expires_at, updated_at)
-		 VALUES ($1, 'legacy-run', 'running', 'legacy running', '', $2, $3, CURRENT_TIMESTAMP)`,
+		 VALUES ($1, 'legacy-run', 'running', 'legacy running', '', $2, $3, $4)`,
 		legacyTopicID,
 		firstBotID,
 		expiry,
+		legacyAggregateUpdatedAt,
 	); err != nil {
 		t.Fatalf("seed legacy conversation task status: %v", err)
 	}
@@ -405,8 +436,11 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 		t.Fatalf("new source overwrote active legacy aggregate: %+v", legacyAggregate)
 	}
 	legacySource, err := db.GetConversationTaskStatusForSource(legacyTopicID, firstBotID)
-	if err != nil || legacySource == nil || legacySource.RunID != "legacy-run" {
+	if err != nil || legacySource == nil || legacySource.RunID != "legacy-run" || legacySource.State != "running" {
 		t.Fatalf("legacy source was not preserved: status=%+v err=%v", legacySource, err)
+	}
+	if !legacySource.UpdatedAt.Equal(legacyAggregateUpdatedAt.Truncate(time.Microsecond)) {
+		t.Fatalf("legacy source timestamp changed during backfill: got=%v want=%v", legacySource.UpdatedAt, legacyAggregateUpdatedAt)
 	}
 	if _, err := db.db.Exec(
 		`DELETE FROM conversation_task_status_sources WHERE topic_id = $1`,
