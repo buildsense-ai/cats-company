@@ -41,6 +41,16 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 	).Scan(&lockedTopicID); err != nil {
 		return nil, fmt.Errorf("lock conversation task aggregate: %w", err)
 	}
+	if _, err := tx.Exec(
+		`INSERT IGNORE INTO conversation_task_status_sources
+		   (topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at)
+		 SELECT topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at
+		 FROM conversation_task_statuses
+		 WHERE topic_id = ? AND source_uid IS NOT NULL`,
+		status.TopicID,
+	); err != nil {
+		return nil, fmt.Errorf("backfill legacy conversation task source status: %w", err)
+	}
 
 	current := &types.ConversationTaskStatus{}
 	err = tx.QueryRow(

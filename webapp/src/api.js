@@ -3,6 +3,7 @@ const DEFAULT_WS_SCHEME = window.location.protocol === 'https:' ? 'wss' : 'ws';
 const WS_URL = import.meta.env.VITE_WS_URL || `${DEFAULT_WS_SCHEME}://${window.location.host}/v0/channels`;
 
 let token = localStorage.getItem('oc_token');
+let authRevision = 0;
 let wsConn = null;
 let wsReconnectTimer = null;
 let wsConnectTimer = null;
@@ -29,15 +30,26 @@ export function requestMissedMessages(topicId) {
   }
 }
 
-export function setToken(t) {
+export function setToken(t, { pushCleanupHandled = false } = {}) {
   token = t;
+  authRevision += 1;
   if (t) localStorage.setItem('oc_token', t);
   else localStorage.removeItem('oc_token');
-  window.dispatchEvent(new CustomEvent('cc:auth-changed', { detail: { loggedIn: Boolean(t) } }));
+  window.dispatchEvent(new CustomEvent('cc:auth-changed', {
+    detail: {
+      loggedIn: Boolean(t),
+      revision: authRevision,
+      pushCleanupHandled,
+    },
+  }));
 }
 
 export function getToken() {
   return token;
+}
+
+export function getAuthRevision() {
+  return authRevision;
 }
 
 export function getWebSocketURL() {
@@ -131,8 +143,10 @@ export const api = {
   register: (data) => request('POST', '/api/auth/register', data),
   login: (data) => request('POST', '/api/auth/login', data),
   getMe: () => request('GET', '/api/me'),
-  getPushConfig: () => request('GET', '/api/push/config'),
-  subscribePush: (subscription) => request('POST', '/api/push/subscriptions', subscription),
+  getPushConfig: (signal) => request('GET', '/api/push/config', undefined, { signal }),
+  subscribePush: (subscription, signal) => (
+    request('POST', '/api/push/subscriptions', subscription, { signal })
+  ),
   unsubscribePush: (endpoint, authToken = token) => {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), PUSH_UNSUBSCRIBE_TIMEOUT_MS);

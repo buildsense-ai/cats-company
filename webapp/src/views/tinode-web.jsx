@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { api, setToken, getToken, connectWS, reconnectWS, disconnectWS } from '../api';
 import { cleanupPushSubscription } from '../utils/push-notifications';
+import { enqueuePushOperation } from '../utils/push-operation';
 import t from '../i18n';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
@@ -458,15 +459,30 @@ function TinodeWebApp() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [mobileSidebarOpen]);
 
+  const clearAuthenticatedSession = useCallback((authToken = getToken()) => {
+    if (!authToken || getToken() !== authToken) return;
+    enqueuePushOperation(() => cleanupPushSubscription(
+      (endpoint) => api.unsubscribePush(endpoint, authToken),
+      () => {
+        const currentToken = getToken();
+        return !currentToken || currentToken === authToken;
+      },
+    )).catch((error) => {
+      console.warn('Push subscription cleanup failed while clearing session:', error);
+    });
+    disconnectWS();
+    setToken(null, { pushCleanupHandled: true });
+    localStorage.removeItem('oc_user');
+    setUser(null);
+    setOnlineUsers({});
+    setTaskDraft(null);
+    setActiveTopic(null);
+  }, [setActiveTopic]);
+
   // WebSocket message handler
   const handleWSMessage = useCallback((msg) => {
     if (msg._type === 'ws_auth_expired') {
-      disconnectWS();
-      setToken(null);
-      localStorage.removeItem('oc_user');
-      setUser(null);
-      setTaskDraft(null);
-      setActiveTopic(null);
+      clearAuthenticatedSession();
       return;
     }
     if (msg._type === 'ws_open') {
@@ -507,7 +523,7 @@ function TinodeWebApp() {
         });
       }
     }
-  }, [setActiveTopic]);
+  }, [clearAuthenticatedSession, setActiveTopic]);
 
   useEffect(() => {
     if (user?.uid) {
@@ -587,7 +603,8 @@ function TinodeWebApp() {
 
   useEffect(() => {
     if (!user?.uid) return;
-    if (!getToken()) return undefined;
+    const requestToken = getToken();
+    if (!requestToken) return undefined;
 
     let cancelled = false;
     api.getMe()
@@ -599,19 +616,15 @@ function TinodeWebApp() {
       })
       .catch((error) => {
         console.warn('Failed to refresh current user profile:', error);
-        if (!cancelled && error?.status === 401) {
-          disconnectWS();
-          setToken(null);
-          localStorage.removeItem('oc_user');
-          setUser(null);
-          setActiveTopic(null);
+        if (!cancelled && error?.status === 401 && getToken() === requestToken) {
+          clearAuthenticatedSession(requestToken);
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [user?.uid, persistUser]);
+  }, [user?.uid, persistUser, clearAuthenticatedSession]);
 
   const refreshLocalAgentStatus = useCallback(async ({ allowDailyPrompt = false } = {}) => {
     if (!user?.uid) return;
@@ -710,17 +723,7 @@ function TinodeWebApp() {
   };
 
   const handleLogout = () => {
-    const authToken = getToken();
-    cleanupPushSubscription((endpoint) => api.unsubscribePush(endpoint, authToken)).catch((error) => {
-      console.warn('Push subscription cleanup failed during logout:', error);
-    });
-    disconnectWS();
-    setToken(null);
-    localStorage.removeItem('oc_user');
-    setUser(null);
-    setOnlineUsers({});
-    setTaskDraft(null);
-    setActiveTopic(null);
+    clearAuthenticatedSession();
   };
 
   const handleUserUpdated = (nextUser) => {

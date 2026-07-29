@@ -1,4 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, {
+  useCallback, useEffect, useMemo, useRef, useState,
+} from 'react';
 import { registerSW } from 'virtual:pwa-register';
 import { api } from '../api';
 import {
@@ -9,13 +11,20 @@ import {
   serializePushSubscription,
   shouldOfferPush,
 } from '../utils/push-notifications';
+import { enqueuePushOperation } from '../utils/push-operation';
 import './pwa-controller.css';
 
 function readDismissed() {
   return localStorage.getItem(PUSH_DISMISSED_KEY) === 'true';
 }
 
-export default function PwaController({ loggedIn }) {
+export default function PwaController({
+  loggedIn,
+  sessionRevision,
+  pushCleanupHandled = false,
+}) {
+  const sessionRevisionRef = useRef(sessionRevision);
+  sessionRevisionRef.current = sessionRevision;
   const [online, setOnline] = useState(() => navigator.onLine);
   const [dismissed, setDismissed] = useState(readDismissed);
   const [permission, setPermission] = useState(() => (
@@ -52,34 +61,47 @@ export default function PwaController({ loggedIn }) {
 
   useEffect(() => {
     if (!canUsePush()) return undefined;
+    let cancelled = false;
+    const isCurrent = () => (
+      !cancelled && sessionRevisionRef.current === sessionRevision
+    );
     if (!loggedIn) {
-      cleanupPushSubscription().catch((error) => {
+      if (pushCleanupHandled) return undefined;
+      enqueuePushOperation(
+        () => cleanupPushSubscription(undefined, isCurrent),
+      ).catch((error) => {
         console.warn('Push cleanup after logout failed:', error);
       });
-      return undefined;
+      return () => {
+        cancelled = true;
+      };
     }
     if (Notification.permission !== 'granted') return undefined;
 
-    let cancelled = false;
+    const controller = new AbortController();
     const reconcilePush = async () => {
       try {
-        const config = await api.getPushConfig();
+        const config = await api.getPushConfig(controller.signal);
+        if (!isCurrent()) return;
         const publicKey = config.public_key || config.vapid_public_key || config.vapidPublicKey;
         if (!config.enabled || !publicKey) return;
         const subscription = await ensurePushSubscription(
           publicKey,
           (endpoint) => api.unsubscribePush(endpoint),
+          isCurrent,
         );
-        await api.subscribePush(serializePushSubscription(subscription));
+        if (!subscription || !isCurrent()) return;
+        await api.subscribePush(serializePushSubscription(subscription), controller.signal);
       } catch (error) {
         if (!cancelled) console.warn('Push subscription reconciliation failed:', error);
       }
     };
-    reconcilePush();
+    enqueuePushOperation(reconcilePush);
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [loggedIn]);
+  }, [loggedIn, pushCleanupHandled, sessionRevision]);
 
   const offerPush = shouldOfferPush({ loggedIn, permission, dismissed });
 
@@ -90,33 +112,47 @@ export default function PwaController({ loggedIn }) {
 
   const enablePush = useCallback(async () => {
     if (!canUsePush() || busy) return;
+    const requestedRevision = sessionRevision;
+    const isCurrent = () => (
+      sessionRevisionRef.current === requestedRevision
+    );
+    const controller = new AbortController();
+    const abortOnSessionChange = () => controller.abort();
+    window.addEventListener('cc:auth-changed', abortOnSessionChange, { once: true });
     setBusy(true);
     setPushError('');
     try {
-      const config = await api.getPushConfig();
-      const publicKey = config.public_key || config.vapid_public_key || config.vapidPublicKey;
-      if (!config.enabled || !publicKey) throw new Error('推送服务尚未配置');
+      await enqueuePushOperation(async () => {
+        const config = await api.getPushConfig(controller.signal);
+        if (!isCurrent()) return;
+        const publicKey = config.public_key || config.vapid_public_key || config.vapidPublicKey;
+        if (!config.enabled || !publicKey) throw new Error('推送服务尚未配置');
 
-      const nextPermission = await Notification.requestPermission();
-      setPermission(nextPermission);
-      if (nextPermission !== 'granted') {
-        localStorage.setItem(PUSH_DISMISSED_KEY, 'true');
-        setDismissed(true);
-        return;
-      }
+        const nextPermission = await Notification.requestPermission();
+        if (!isCurrent()) return;
+        setPermission(nextPermission);
+        if (nextPermission !== 'granted') {
+          localStorage.setItem(PUSH_DISMISSED_KEY, 'true');
+          setDismissed(true);
+          return;
+        }
 
-      const subscription = await ensurePushSubscription(
-        publicKey,
-        (endpoint) => api.unsubscribePush(endpoint),
-      );
-      await api.subscribePush(serializePushSubscription(subscription));
-      setDismissed(true);
+        const subscription = await ensurePushSubscription(
+          publicKey,
+          (endpoint) => api.unsubscribePush(endpoint),
+          isCurrent,
+        );
+        if (!subscription || !isCurrent()) return;
+        await api.subscribePush(serializePushSubscription(subscription), controller.signal);
+        if (isCurrent()) setDismissed(true);
+      });
     } catch (error) {
-      setPushError(error?.message || '通知开启失败，请稍后重试');
+      if (isCurrent()) setPushError(error?.message || '通知开启失败，请稍后重试');
     } finally {
+      window.removeEventListener('cc:auth-changed', abortOnSessionChange);
       setBusy(false);
     }
-  }, [busy]);
+  }, [busy, sessionRevision]);
 
   return (
     <div className="cc-pwa-status" aria-live="polite">

@@ -380,6 +380,47 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 
 	topicID := fmt.Sprintf("grp_%d", groupID)
 	expiry := time.Now().UTC().Add(time.Hour)
+	legacyTopicID := topicID
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_statuses
+		   (topic_id, run_id, state, summary, error, source_uid, expires_at, updated_at)
+		 VALUES ($1, 'legacy-run', 'running', 'legacy running', '', $2, $3, CURRENT_TIMESTAMP)`,
+		legacyTopicID,
+		firstBotID,
+		expiry,
+	); err != nil {
+		t.Fatalf("seed legacy conversation task status: %v", err)
+	}
+	legacyAggregate, err := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+		TopicID:   legacyTopicID,
+		RunID:     "new-source-run",
+		State:     "completed",
+		Summary:   "new source completed",
+		SourceUID: secondBotID,
+	})
+	if err != nil {
+		t.Fatalf("upsert new source alongside legacy status: %v", err)
+	}
+	if legacyAggregate.State != "running" || legacyAggregate.SourceUID != firstBotID {
+		t.Fatalf("new source overwrote active legacy aggregate: %+v", legacyAggregate)
+	}
+	legacySource, err := db.GetConversationTaskStatusForSource(legacyTopicID, firstBotID)
+	if err != nil || legacySource == nil || legacySource.RunID != "legacy-run" {
+		t.Fatalf("legacy source was not preserved: status=%+v err=%v", legacySource, err)
+	}
+	if _, err := db.db.Exec(
+		`DELETE FROM conversation_task_status_sources WHERE topic_id = $1`,
+		legacyTopicID,
+	); err != nil {
+		t.Fatalf("clean up legacy task status sources: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`DELETE FROM conversation_task_statuses WHERE topic_id = $1`,
+		legacyTopicID,
+	); err != nil {
+		t.Fatalf("clean up legacy task status aggregate: %v", err)
+	}
+
 	upsert := func(sourceUID int64, runID, state string) *types.ConversationTaskStatus {
 		t.Helper()
 		status, upsertErr := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{

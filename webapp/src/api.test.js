@@ -207,6 +207,38 @@ describe('WebSocket connection recovery', () => {
     }));
   });
 
+  test('publishes session revisions and whether push cleanup is already owned', () => {
+    const onAuthChanged = vi.fn();
+    window.addEventListener('cc:auth-changed', onAuthChanged);
+
+    api.setToken(null, { pushCleanupHandled: true });
+
+    expect(onAuthChanged).toHaveBeenLastCalledWith(expect.objectContaining({
+      detail: expect.objectContaining({
+        loggedIn: false,
+        pushCleanupHandled: true,
+        revision: api.getAuthRevision(),
+      }),
+    }));
+    window.removeEventListener('cc:auth-changed', onAuthChanged);
+  });
+
+  test('allows a session change to abort push reconciliation requests', async () => {
+    const fetchMock = vi.fn().mockImplementation((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+
+    const request = api.api.getPushConfig(controller.signal);
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+    expect(fetchMock).toHaveBeenCalledWith('/api/push/config', expect.objectContaining({
+      signal: controller.signal,
+    }));
+  });
+
   test('aborts push unsubscription after the cleanup timeout', async () => {
     const fetchMock = vi.fn().mockImplementation((_url, options) => new Promise((_resolve, reject) => {
       options.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));

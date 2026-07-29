@@ -150,4 +150,61 @@ describe('push notification helpers', () => {
     finishServerCleanup();
     await expect(cleanup).resolves.toBe(true);
   });
+
+  test('does not create a subscription after the authenticated session changes', async () => {
+    let resolveExisting;
+    let current = true;
+    const subscribe = vi.fn();
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: {
+        ready: Promise.resolve({
+          pushManager: {
+            getSubscription: vi.fn().mockImplementation(() => new Promise((resolve) => {
+              resolveExisting = resolve;
+            })),
+            subscribe,
+          },
+        }),
+      },
+    });
+
+    const reconcile = ensurePushSubscription('AQID', undefined, () => current);
+    await vi.waitFor(() => expect(resolveExisting).toBeTypeOf('function'));
+    current = false;
+    resolveExisting(null);
+
+    await expect(reconcile).resolves.toBeNull();
+    expect(subscribe).not.toHaveBeenCalled();
+  });
+
+  test('removes the old server record without deleting a new session browser subscription', async () => {
+    let resolveSubscription;
+    let current = true;
+    const unsubscribe = vi.fn();
+    const serverCleanup = vi.fn();
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: {
+        getRegistration: vi.fn().mockResolvedValue({
+          pushManager: {
+            getSubscription: vi.fn().mockImplementation(() => new Promise((resolve) => {
+              resolveSubscription = resolve;
+            })),
+          },
+        }),
+      },
+    });
+
+    const cleanup = cleanupPushSubscription(serverCleanup, () => current);
+    await vi.waitFor(() => expect(resolveSubscription).toBeTypeOf('function'));
+    current = false;
+    resolveSubscription({ endpoint: 'https://push.example/new-session', unsubscribe });
+
+    await expect(cleanup).resolves.toBe(true);
+    await vi.waitFor(() => expect(serverCleanup).toHaveBeenCalledWith(
+      'https://push.example/new-session',
+    ));
+    expect(unsubscribe).not.toHaveBeenCalled();
+  });
 });

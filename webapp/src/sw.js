@@ -6,6 +6,10 @@ import { registerRoute, NavigationRoute } from 'workbox-routing';
 import { NetworkFirst, NetworkOnly } from 'workbox-strategies';
 
 import { sameOriginNotificationURL } from './utils/notification-url';
+import {
+  cleanupNavigationCaches,
+  NAVIGATION_CACHE_NAME,
+} from './utils/navigation-cache';
 
 clientsClaim();
 cleanupOutdatedCaches();
@@ -13,6 +17,10 @@ precacheAndRoute(self.__WB_MANIFEST);
 
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(cleanupNavigationCaches(caches));
 });
 
 const neverCache = ({ url }) => (
@@ -36,7 +44,7 @@ registerRoute(neverCache, new NetworkOnly(), 'PATCH');
 registerRoute(neverCache, new NetworkOnly(), 'DELETE');
 
 const navigationHandler = new NetworkFirst({
-  cacheName: 'catsco-navigation-v1',
+  cacheName: NAVIGATION_CACHE_NAME,
   networkTimeoutSeconds: 4,
   plugins: [{
     cacheWillUpdate: async ({ response }) => {

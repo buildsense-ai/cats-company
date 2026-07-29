@@ -45,10 +45,16 @@ function pushSubscriptionUsesKey(subscription, expectedKey) {
   return currentKey.every((value, index) => value === expectedKey[index]);
 }
 
-export async function ensurePushSubscription(publicKey, unsubscribeOnServer) {
+export async function ensurePushSubscription(
+  publicKey,
+  unsubscribeOnServer,
+  isCurrent = () => true,
+) {
   const registration = await navigator.serviceWorker.ready;
+  if (!isCurrent()) return null;
   const applicationServerKey = urlBase64ToUint8Array(publicKey);
   const existing = await registration.pushManager.getSubscription();
+  if (!isCurrent()) return null;
   if (existing && pushSubscriptionUsesKey(existing, applicationServerKey)) return existing;
   if (existing) {
     if (unsubscribeOnServer) {
@@ -58,7 +64,9 @@ export async function ensurePushSubscription(publicKey, unsubscribeOnServer) {
         console.warn('Failed to remove rotated push subscription from server:', error);
       }
     }
+    if (!isCurrent()) return null;
     await existing.unsubscribe();
+    if (!isCurrent()) return null;
   }
   return registration.pushManager.subscribe({
     userVisibleOnly: true,
@@ -66,9 +74,10 @@ export async function ensurePushSubscription(publicKey, unsubscribeOnServer) {
   });
 }
 
-export async function cleanupPushSubscription(unsubscribeOnServer) {
+export async function cleanupPushSubscription(unsubscribeOnServer, isCurrent = () => true) {
   if (!('serviceWorker' in navigator)) return false;
   const registration = await navigator.serviceWorker.getRegistration();
+  if (!isCurrent() && !unsubscribeOnServer) return false;
   const subscription = await registration?.pushManager?.getSubscription();
   if (!subscription) return false;
 
@@ -80,6 +89,7 @@ export async function cleanupPushSubscription(unsubscribeOnServer) {
       });
   }
 
+  if (!isCurrent()) return true;
   try {
     await subscription.unsubscribe();
   } catch (error) {
