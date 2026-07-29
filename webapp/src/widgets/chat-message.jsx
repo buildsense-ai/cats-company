@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Terminal, Brain, FileText, FileCode2, Downlo
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
+import { formatGroupMentions } from '../utils/group-delivery';
 import {
   hasPlainTextTableLikeBlock,
   hasRenderableTable,
@@ -701,7 +702,7 @@ function WorkingProcess({ blocks }) {
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [] }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, isSelf, isGroup, mentionMembers = [], senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [] }) {
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
   const content = message.content;
@@ -726,11 +727,16 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
       .map((block) => block.text)
       .join('\n\n');
   }, [storedBlocks, content]);
+  const visibleTextContent = useMemo(() => (
+    isGroup && typeof renderedTextContent === 'string'
+      ? formatGroupMentions(renderedTextContent, mentionMembers)
+      : renderedTextContent
+  ), [isGroup, mentionMembers, renderedTextContent]);
   const hasText = useMemo(() => (
-    typeof renderedTextContent === 'string'
-      ? renderedTextContent.trim().length > 0
-      : renderedTextContent != null
-  ), [renderedTextContent]);
+    typeof visibleTextContent === 'string'
+      ? visibleTextContent.trim().length > 0
+      : visibleTextContent != null
+  ), [visibleTextContent]);
   const hasFileOnly = !hasText && richBlocks.length > 0 && richBlocks.every(
     (block) => block.type === 'file' && !isInlineVideoFile(block.payload),
   );
@@ -756,8 +762,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   ), [message.created_at]);
   const displayName = senderName || message.from_name || `User ${message.from_uid || ''}`;
   const copyText = useMemo(() => (
-    buildMessageCopyText(content, renderedTextContent, richBlocks, parsed)
-  ), [content, renderedTextContent, richBlocks, parsed]);
+    buildMessageCopyText(content, visibleTextContent, richBlocks, parsed)
+  ), [content, visibleTextContent, richBlocks, parsed]);
 
   const handleReplyClick = (event) => {
     event.stopPropagation();
@@ -839,7 +845,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                 />
               ) : (
                 <TextContent
-                  content={renderedTextContent}
+                  content={visibleTextContent}
                   isGroup={isGroup}
                   knownArtifacts={knownArtifacts}
                   onPreviewFile={onPreviewFile}
@@ -922,6 +928,7 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.workingOnly === nextProps.workingOnly &&
     prevProps.isSelf === nextProps.isSelf &&
     prevProps.isGroup === nextProps.isGroup &&
+    prevProps.mentionMembers === nextProps.mentionMembers &&
     prevProps.senderName === nextProps.senderName &&
     prevProps.senderAvatarUrl === nextProps.senderAvatarUrl &&
     prevProps.senderIsBot === nextProps.senderIsBot &&

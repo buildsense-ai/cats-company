@@ -768,8 +768,9 @@ func topicTypeForID(topicID string) string {
 }
 
 const (
-	defaultAgentContextHistoryLimit = 100
-	maxAgentContextHistoryLimit     = 200
+	defaultAgentContextHistoryLimit   = 100
+	maxAgentContextHistoryLimit       = 200
+	maxAgentContextHistoryScanBatches = 4
 )
 
 type latestMessagesBeforeStore interface {
@@ -904,33 +905,66 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *MessageHandler) loadAgentContextHistory(topicID string, beforeID int64, limit int) ([]*types.Message, bool, int64, error) {
-	queryLimit := limit + 1
-	var (
-		messages []*types.Message
-		err      error
-	)
-	if beforeID > 0 {
-		if storeWithCursor, ok := h.db.(latestMessagesBeforeStore); ok {
-			messages, err = storeWithCursor.GetLatestMessagesBefore(topicID, beforeID, queryLimit)
-		} else {
-			return nil, false, 0, errors.New("message store does not support stable before cursor")
-		}
-	} else {
-		messages, err = h.db.GetLatestMessages(topicID, queryLimit, 0)
-	}
-	if err != nil {
-		return nil, false, 0, err
+	storeWithCursor, ok := h.db.(latestMessagesBeforeStore)
+	if !ok {
+		return nil, false, 0, errors.New("message store does not support stable before cursor")
 	}
 
-	hasMore := len(messages) > limit
-	if hasMore {
-		messages = messages[len(messages)-limit:]
+	const scanBatchSize = maxAgentContextHistoryLimit
+	cursor := beforeID
+	eligible := make([]*types.Message, 0, limit+1)
+	continuationCursor := int64(0)
+	for scanBatch := 0; scanBatch < maxAgentContextHistoryScanBatches; scanBatch++ {
+		var (
+			rawMessages []*types.Message
+			err         error
+		)
+		if cursor > 0 {
+			rawMessages, err = storeWithCursor.GetLatestMessagesBefore(topicID, cursor, scanBatchSize+1)
+		} else {
+			rawMessages, err = h.db.GetLatestMessages(topicID, scanBatchSize+1, 0)
+		}
+		if err != nil {
+			return nil, false, 0, err
+		}
+
+		hasOlderRawMessages := len(rawMessages) > scanBatchSize
+		if hasOlderRawMessages {
+			rawMessages = rawMessages[len(rawMessages)-scanBatchSize:]
+		}
+		pageEligible := make([]*types.Message, 0, len(rawMessages))
+		for _, message := range rawMessages {
+			if isDurableAgentContextStoredMessage(message) {
+				pageEligible = append(pageEligible, message)
+			}
+		}
+		eligible = append(pageEligible, eligible...)
+
+		if len(eligible) > limit || !hasOlderRawMessages || len(rawMessages) == 0 {
+			break
+		}
+		nextCursor := rawMessages[0].ID
+		if nextCursor <= 0 || (cursor > 0 && nextCursor >= cursor) {
+			return nil, false, 0, errors.New("agent context history cursor did not advance")
+		}
+		if scanBatch+1 == maxAgentContextHistoryScanBatches {
+			// Bound work per request. Continue before the oldest raw message
+			// scanned, even if this page contained only filtered runtime data.
+			continuationCursor = nextCursor
+			break
+		}
+		cursor = nextCursor
 	}
-	nextBeforeID := int64(0)
-	if len(messages) > 0 {
-		nextBeforeID = messages[0].ID
+
+	hasMore := len(eligible) > limit || continuationCursor > 0
+	if len(eligible) > limit {
+		eligible = eligible[len(eligible)-limit:]
 	}
-	return messages, hasMore, nextBeforeID, nil
+	nextBeforeID := continuationCursor
+	if nextBeforeID == 0 && len(eligible) > 0 {
+		nextBeforeID = eligible[0].ID
+	}
+	return eligible, hasMore, nextBeforeID, nil
 }
 
 func (h *MessageHandler) loadHistoryUsers(recipientUID int64, messages []*types.Message) map[int64]*types.User {
@@ -976,11 +1010,11 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 		role = "assistant"
 		reason = "current_agent_message"
 	} else if sender := identityUsers[message.FromUID]; sender == nil {
-		eligible = false
 		reason = "sender_classification_failed"
 	} else if sender.AccountType == types.AccountBot {
-		role = "other_agent"
-		eligible = false
+		// A different Agent is another participant from the active Agent's
+		// point of view. Keep its stable identity metadata and restore the
+		// durable message as user context rather than assistant output.
 		reason = "other_agent_message"
 	}
 
@@ -989,11 +1023,12 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 		agentID := formatUID(agentUID)
 		if containsString(mentions, structuredMentionAllBots) {
 			reason = "group_message_targets_all_agents"
-		} else if !containsString(mentions, agentID) {
-			eligible = false
-			reason = "group_message_targets_another_member"
-		} else {
+		} else if containsString(mentions, agentID) {
 			reason = "group_message_targets_agent"
+		} else {
+			// Mentions select which Agent is activated; they do not filter the
+			// durable group history restored for an already active Agent.
+			reason = "group_message_targets_another_member"
 		}
 	}
 
@@ -1006,6 +1041,16 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 		formatted["mentions"] = mentions
 	}
 	return formatted
+}
+
+func isDurableAgentContextStoredMessage(message *types.Message) bool {
+	if message == nil {
+		return false
+	}
+	return isDurableAgentContextMessage(
+		message,
+		inferDisplayTypeFromStoredMessage(message.MsgType, message.Content, message.ContentBlocks),
+	)
 }
 
 func isDurableAgentContextMessage(message *types.Message, displayType string) bool {

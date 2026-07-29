@@ -7131,3 +7131,8 @@ html[data-theme="liquid"] .v3-message .v3-attachment-icon {
     display: none;
   }
 }
+
+.v3-composer-send-target-picker {
+  right: max(20px, calc((100% - 760px) / 2));
+  bottom: calc(100% - 2px);
+}

@@ -1,0 +1,38 @@
+{
+  "source": {
+    "source_worktree": "/home/xiaoba/app/work/pr106-group-context-complete-1785073482",
+    "source_commit": "6b09e540f2689d8d71aaaec994851de7cf40d364",
+    "recorded_at": "2026-07-27T00:25:29+08:00",
+    "video_bytes": 418405,
+    "video_sha256": "47ef884a0b9893c470f9e861215c4fe60ac7500d39250902026225697c0ceb14",
+    "backend": "deterministic local mock API",
+    "scope": "current-code browser send interaction"
+  },
+  "result": {
+    "assertions": {
+      "openedRealGroup": true,
+      "typedMention": true,
+      "mentionPickerSelected": true,
+      "directMentionSent": true,
+      "plainTextOpenedPicker": true,
+      "targetInsertedMention": true,
+      "targetSelectedMessageSent": true,
+      "noPersistentPicker": true
+    },
+    "errors": [
+      "WebSocket connection to 'ws://127.0.0.1:5486/v0/channels?token=proof-token' failed: Error during WebSocket handshake: Unexpected response code: 200",
+      "WebSocket error: Event",
+      "WebSocket connection to 'ws://127.0.0.1:5486/v0/channels?token=proof-token' failed: Error during WebSocket handshake: Unexpected response code: 200",
+      "WebSocket error: Event",
+      "WebSocket connection to 'ws://127.0.0.1:5486/v0/channels?token=proof-token' failed: Error during WebSocket handshake: Unexpected response code: 200",
+      "WebSocket error: Event",
+      "WebSocket connection to 'ws://127.0.0.1:5486/v0/channels?token=proof-token' failed: Error during WebSocket handshake: Unexpected response code: 200",
+      "WebSocket error: Event"
+    ],
+    "at": "2026-07-26T16:25:04.956Z",
+    "expectedMockLimitations": {
+      "websocketUnavailable": true,
+      "filteredErrors": 8
+    }
+  }
+}

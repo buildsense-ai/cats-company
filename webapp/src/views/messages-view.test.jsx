@@ -1264,8 +1264,8 @@ describe('MessagesView composer draft isolation', () => {
     expect(options).toHaveLength(3);
     expect(options.map((option) => option.textContent)).toEqual([
       '所有人全部机器人',
-      'Saturday@usr42',
-      'Wanyu@usr43',
+      'Saturdaybot-saturday',
+      'Wanyucatsco-agent-worker1',
     ]);
     expect(container.querySelector('.oc-mention-picker')?.textContent).not.toContain('Alice');
   });
@@ -1309,8 +1309,8 @@ describe('MessagesView composer draft isolation', () => {
     expect(api.getGroupInfo).toHaveBeenCalledTimes(2);
     expect(options.map((option) => option.textContent)).toEqual([
       '所有人全部机器人',
-      'Saturday@usr42',
-      'Wanyu@usr43',
+      'Saturdaybot-saturday',
+      'Wanyucatsco-agent-worker1',
     ]);
   });
 
@@ -1358,22 +1358,27 @@ describe('MessagesView composer draft isolation', () => {
     );
   });
 
-  it('does not send structured mentions for hand-typed uid-like text', async () => {
+  it('does not let hand-typed uid-like text bypass target selection', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room' },
+      members: [{ user_id: 42, display_name: 'Saturday', username: 'bot-saturday', is_bot: true }],
+    });
     await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
 
     const textarea = container.querySelector('textarea.v3-composer-input');
     await act(async () => {
-      typeDraft(textarea, '@usr43 请处理');
+      typeDraft(textarea, '@Wanyu 请处理');
     });
     await act(async () => {
       Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined);
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(container.querySelector('.v3-agent-picker-menu')?.textContent).toContain('Saturday');
   });
 
-  it('filters bot names and inserts the canonical uid mention with Enter', async () => {
+  it('filters bot names, keeps the nickname visible, and sends the canonical uid mention', async () => {
     api.getGroupInfo.mockResolvedValueOnce({
       group: { id: 80, name: 'Agent Room' },
       members: [
@@ -1399,12 +1404,12 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(textarea.value).toBe('@usr43 ');
+    expect(textarea.value).toBe('@Wanyu ');
     expect(container.querySelector('.oc-mention-picker')).toBeNull();
     expect(api.sendMessage).not.toHaveBeenCalled();
 
     await act(async () => {
-      typeDraft(textarea, '@usr43 请处理');
+      typeDraft(textarea, '@Wanyu 请处理');
     });
     await act(async () => {
       Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1436,17 +1441,18 @@ describe('MessagesView composer draft isolation', () => {
       Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
       await Promise.resolve();
     });
-    expect(textarea.value).toBe('@usr43 ');
+    expect(textarea.value).toBe('@Wanyu ');
 
     await act(async () => {
-      typeDraft(textarea, '@usr43x 请处理');
+      typeDraft(textarea, '@Wanyux 请处理');
     });
     await act(async () => {
       Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43x 请处理', undefined);
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(container.querySelector('.v3-agent-picker-menu')).not.toBeNull();
   });
 
   it('restores picker provenance and original text after a send failure', async () => {
@@ -1473,10 +1479,10 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
     await act(async () => {
-      typeDraft(textarea, '  @usr43 ');
+      typeDraft(textarea, '  @Wanyu ');
     });
     await act(async () => {
-      typeDraft(textarea, '  @usr43 请处理  ');
+      typeDraft(textarea, '  @Wanyu 请处理  ');
     });
 
     await act(async () => {
@@ -1485,7 +1491,7 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(api.sendMessage).toHaveBeenNthCalledWith(1, 'grp_80', '@usr43 请处理', undefined, ['usr43']);
-    expect(textarea.value).toBe('  @usr43 请处理  ');
+    expect(textarea.value).toBe('  @Wanyu 请处理  ');
 
     await act(async () => {
       Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
@@ -1517,20 +1523,21 @@ describe('MessagesView composer draft isolation', () => {
       Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
       await Promise.resolve();
     });
-    expect(textarea.value).toBe('@usr43 ');
+    expect(textarea.value).toBe('@Wanyu ');
 
     await act(async () => {
       typeDraft(textarea, '请处理');
     });
     await act(async () => {
-      typeDraft(textarea, '@usr43 请处理');
+      typeDraft(textarea, '@Wanyu 请处理');
     });
     await act(async () => {
       Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined);
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(container.querySelector('.v3-agent-picker-menu')).not.toBeNull();
   });
 
   it('opens the bot picker from the toolbar and inserts at the cursor', async () => {
@@ -1567,7 +1574,67 @@ describe('MessagesView composer draft isolation', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(textarea.value).toBe('前@usr42 后');
+    expect(textarea.value).toBe('前@Saturday 后');
+  });
+
+  it('opens target selection only after sending plain group text', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room', kind: 'standard' },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 42, display_name: 'Saturday', username: 'bot-saturday', is_bot: true },
+      ],
+    });
+    api.sendMessage.mockResolvedValueOnce({ seq_id: 102 });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => { await flushPromises(); });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    expect(container.querySelector('.v3-agent-picker')).toBeNull();
+
+    await act(async () => {
+      typeDraft(textarea, '整理需求');
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(container.querySelector('.v3-agent-picker-menu')?.textContent).toContain('Saturday');
+
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '整理需求 @usr42', undefined, ['usr42']);
+    expect(container.textContent).not.toContain('整理需求 @usr42');
+  });
+
+  it('sends immediately when a picker-selected nickname already activates an Agent', async () => {
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 80, name: 'Agent Room', kind: 'standard' },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 42, display_name: 'Saturday', username: 'bot-saturday', is_bot: true },
+      ],
+    });
+    api.sendMessage.mockResolvedValueOnce({ seq_id: 103 });
+
+    await mountTopic(root, 'grp_80', { isGroup: true, groupId: 80 });
+    await act(async () => { await flushPromises(); });
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => { typeDraft(textarea, '@sat'); });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await Promise.resolve();
+    });
+    expect(textarea.value).toBe('@Saturday ');
+
+    await act(async () => { typeDraft(textarea, '@Saturday 公网能访问么'); });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr42 公网能访问么', undefined, ['usr42']);
+    expect(container.querySelector('.v3-agent-picker-menu')).toBeNull();
   });
 
   it('lets the file preview panel width be adjusted and persisted', async () => {

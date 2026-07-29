@@ -8,6 +8,7 @@ import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import ChatComposer from '../widgets/chat-composer';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
+import { groupBotMembers, groupMemberName } from '../utils/group-delivery';
 
 const PAGE_SIZE = 50;
 const HISTORY_CACHE_MAX_TOPICS = 12;
@@ -121,8 +122,8 @@ function resolvePhoneUploadLink(uploadUrl) {
   return `${window.location.origin}${normalizedPath}`;
 }
 
-function isStructuredMentionSelectionIntact(text, target, start, end) {
-  const token = target === STRUCTURED_MENTION_ALL ? '@所有人' : `@${target}`;
+function isStructuredMentionSelectionIntact(text, target, start, end, label = '') {
+  const token = target === STRUCTURED_MENTION_ALL ? '@所有人' : `@${label || target}`;
   if (start < 0 || end > text.length || text.slice(start, end) !== token) return false;
   const trailingCharacter = text.slice(end, end + 1);
   return !trailingCharacter || !/[\p{L}\p{N}_]/u.test(trailingCharacter);
@@ -153,6 +154,7 @@ export function reconcileStructuredMentionSelections(previousText, nextText, sel
   const nextChangedText = next.slice(prefixLength, nextSuffixStart);
   return selections.flatMap((selection) => {
     const target = typeof selection?.target === 'string' ? selection.target : '';
+    const label = typeof selection?.label === 'string' ? selection.label : '';
     let start = Number.isInteger(selection?.start) ? selection.start : -1;
     let end = Number.isInteger(selection?.end) ? selection.end : -1;
     if (target !== STRUCTURED_MENTION_ALL && !/^usr\d+$/u.test(target)) return [];
@@ -173,8 +175,8 @@ export function reconcileStructuredMentionSelections(previousText, nextText, sel
       return [];
     }
 
-    if (!isStructuredMentionSelectionIntact(next, target, start, end)) return [];
-    return [{ target, start, end }];
+    if (!isStructuredMentionSelectionIntact(next, target, start, end, label)) return [];
+    return [{ target, ...(label ? { label } : {}), start, end }];
   });
 }
 
@@ -183,12 +185,54 @@ export function collectStructuredMentionTargets(text, selections = []) {
   if (!Array.isArray(selections)) return [];
   return [...new Set(selections.flatMap((selection) => {
     const target = typeof selection?.target === 'string' ? selection.target : '';
+    const label = typeof selection?.label === 'string' ? selection.label : '';
     const start = Number.isInteger(selection?.start) ? selection.start : -1;
     const end = Number.isInteger(selection?.end) ? selection.end : -1;
     if (target !== STRUCTURED_MENTION_ALL && !/^usr\d+$/u.test(target)) return [];
     if (start < 0 || end <= start) return [];
-    return isStructuredMentionSelectionIntact(value, target, start, end) ? [target] : [];
+    return isStructuredMentionSelectionIntact(value, target, start, end, label) ? [target] : [];
   }))];
+}
+
+export function serializeStructuredMentionSelections(text, selections = []) {
+  let value = typeof text === 'string' ? text : '';
+  const valid = (Array.isArray(selections) ? selections : [])
+    .filter((selection) => isStructuredMentionSelectionIntact(
+      value,
+      selection?.target,
+      selection?.start,
+      selection?.end,
+      selection?.label,
+    ))
+    .sort((left, right) => right.start - left.start);
+  for (const selection of valid) {
+    const replacement = selection.target === STRUCTURED_MENTION_ALL ? '@所有人' : `@${selection.target}`;
+    value = value.slice(0, selection.start) + replacement + value.slice(selection.end);
+  }
+  return value;
+}
+
+function appendReadableMentionSelection(text, member, members, selections = []) {
+  const current = String(text || '').trimEnd();
+  const target = `usr${member.user_id}`;
+  const label = groupMemberName(member, members);
+  const token = `@${label}`;
+  const existing = (Array.isArray(selections) ? selections : []).find((selection) => (
+    selection?.target === target
+    && isStructuredMentionSelectionIntact(current, target, selection.start, selection.end, selection.label)
+  ));
+  if (existing) return { text: current, selections };
+  const prefix = current ? `${current} ` : '';
+  const start = prefix.length;
+  return {
+    text: `${prefix}${token}`,
+    selections: [...(Array.isArray(selections) ? selections : []), {
+      target,
+      label,
+      start,
+      end: start + token.length,
+    }],
+  };
 }
 
 function historyMessageID(message) {
@@ -255,6 +299,8 @@ export default function MessagesView({
   const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
+  const [showSendConfirmation, setShowSendConfirmation] = useState(false);
+  const [sendTargetActiveIndex, setSendTargetActiveIndex] = useState(0);
   const [replyTo, setReplyTo] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
   const [artifactRegistryState, setArtifactRegistryState] = useState({ agentUID: 0, artifacts: [] });
@@ -536,6 +582,8 @@ export default function MessagesView({
     setShowMentionPicker(false);
     setMentionFilter('');
     setMentionActiveIndex(0);
+    setShowSendConfirmation(false);
+    setSendTargetActiveIndex(0);
     mentionRangeRef.current = null;
     clearRuntimePlan();
     setReplyTo(null);
@@ -1201,9 +1249,22 @@ export default function MessagesView({
     setMessages((prev) => prev.filter((message) => message.id !== tempId));
   }, []);
 
-  const handleSend = useCallback(async () => {
+  const handleSend = useCallback(async (targetOverride = null) => {
     const originalInput = input;
-    const initialText = originalInput.trim();
+    const originalStructuredMentions = structuredMentionDraftsRef.current.get(topic) || [];
+    const chosenTarget = isGroup && targetOverride?.user_id ? targetOverride : null;
+    const prepared = chosenTarget
+      ? appendReadableMentionSelection(originalInput, chosenTarget, members, originalStructuredMentions)
+      : { text: originalInput, selections: originalStructuredMentions };
+    const leadingWhitespace = prepared.text.length - prepared.text.trimStart().length;
+    const initialText = prepared.text.trim();
+    const normalizedSelections = prepared.selections
+      .map((selection) => ({
+        ...selection,
+        start: selection.start - leadingWhitespace,
+        end: selection.end - leadingWhitespace,
+      }))
+      .filter((selection) => selection.start >= 0 && selection.end <= initialText.length);
     const initialAttachments = attachmentDraftsRef.current.get(topic) || pendingAttachmentsRef.current;
     if (!initialText && initialAttachments.length === 0) return;
     if (isUploadingAttachment || sendInFlightRef.current) return;
@@ -1221,10 +1282,12 @@ export default function MessagesView({
     let attachmentsToSend = [...initialAttachments];
     const text = initialText;
     const originalReplyTo = replyTo;
-    const originalStructuredMentions = structuredMentionDraftsRef.current.get(topic) || [];
     const mentions = isGroup
-      ? collectStructuredMentionTargets(input, originalStructuredMentions)
+      ? collectStructuredMentionTargets(text, normalizedSelections)
       : [];
+    const wireText = isGroup
+      ? serializeStructuredMentionSelections(text, normalizedSelections)
+      : text;
     const tempId = Date.now();
 
     try {
@@ -1239,15 +1302,16 @@ export default function MessagesView({
       if (!text && attachmentsToSend.length === 0) return;
 
       const currentReplyTo = switchesTopic ? null : originalReplyTo;
-      const contentBlocks = buildAtomicContentBlocks(text, attachmentsToSend);
+      const contentBlocks = buildAtomicContentBlocks(wireText, attachmentsToSend);
       const displayContent = text || summarizeAttachments(attachmentsToSend);
+      const wireContent = wireText || summarizeAttachments(attachmentsToSend);
       const payload = attachmentsToSend.length > 0
         ? {
             type: 'text',
-            content: displayContent,
+            content: wireContent,
             content_blocks: contentBlocks,
           }
-        : text;
+        : wireText;
 
       updateComposerDraft(topic, '');
       updateStructuredMentionDraft(topic, []);
@@ -1321,7 +1385,46 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
+  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, members, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
+
+  const openSendConfirmation = () => {
+    if (groupBots.length === 0) {
+      setAttachmentStatus({ tone: 'error', message: '当前群里没有可激活的 Agent。' });
+      return;
+    }
+    setSendTargetActiveIndex(0);
+    setShowMentionPicker(false);
+    setShowSendConfirmation(true);
+  };
+
+  const sendFromConfirmation = () => {
+    const target = groupBots[sendTargetActiveIndex];
+    if (!target) return undefined;
+    setShowSendConfirmation(false);
+    return handleSend(target);
+  };
+
+  const requestSend = () => {
+    if (!isGroup) return handleSend();
+    if (showSendConfirmation) return sendFromConfirmation();
+    const selections = structuredMentionDraftsRef.current.get(topic) || [];
+    if (collectStructuredMentionTargets(input, selections).length > 0) return handleSend();
+    openSendConfirmation();
+    return undefined;
+  };
+
+  const selectSendTarget = (target, index) => {
+    setSendTargetActiveIndex(index);
+    const prepared = appendReadableMentionSelection(
+      input,
+      target,
+      members,
+      structuredMentionDraftsRef.current.get(topic) || [],
+    );
+    setInput(prepared.text);
+    updateComposerDraft(topic, prepared.text);
+    updateStructuredMentionDraft(topic, prepared.selections);
+  };
 
   const handleStopGeneration = useCallback(async () => {
     if (!canStopActiveBotWorking || isStopRequested) return;
@@ -1394,6 +1497,28 @@ export default function MessagesView({
       || e.keyCode === 229
       || e.nativeEvent?.keyCode === 229
     ) return;
+    if (showSendConfirmation && groupBots.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSendTargetActiveIndex((current) => (current + 1) % groupBots.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSendTargetActiveIndex((current) => (current - 1 + groupBots.length) % groupBots.length);
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendFromConfirmation();
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowSendConfirmation(false);
+        return;
+      }
+    }
     if (showMentionPicker && mentionableBots.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -1421,7 +1546,7 @@ export default function MessagesView({
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      requestSend();
     }
   };
 
@@ -1471,7 +1596,8 @@ export default function MessagesView({
     const range = mentionRangeRef.current;
     if (!range || range.start < 0 || range.end < range.start || range.end > input.length) return;
     const target = member.mention_target || `usr${member.user_id}`;
-    const mention = target === STRUCTURED_MENTION_ALL ? '@所有人 ' : `@${target} `;
+    const label = target === STRUCTURED_MENTION_ALL ? '所有人' : groupMemberName(member, members);
+    const mention = `@${label} `;
     const newText = input.slice(0, range.start) + mention + input.slice(range.end);
     const reconciledSelections = reconcileStructuredMentionSelections(
       input,
@@ -1480,7 +1606,7 @@ export default function MessagesView({
     );
     updateStructuredMentionDraft(topic, [
       ...reconciledSelections,
-      { target, start: range.start, end: range.start + mention.length - 1 },
+      { target, ...(target === STRUCTURED_MENTION_ALL ? {} : { label }), start: range.start, end: range.start + mention.length - 1 },
     ]);
     setInput(newText);
     updateComposerDraft(topic, newText);
@@ -1728,10 +1854,7 @@ export default function MessagesView({
   };
 
 
-  const groupBots = members.filter((m) => {
-    if (m.user_id === user.uid) return false;
-    return m.is_bot === true || m.account_type === 'bot';
-  });
+  const groupBots = groupBotMembers(members).filter((member) => member.user_id !== user.uid);
   const normalizedMentionFilter = mentionFilter.toLowerCase();
   const mentionAllAliases = ['所有人', '所有机器人', '全部机器人', 'all'];
   const mentionAllMatches = groupBots.length > 0 && (
@@ -2344,6 +2467,7 @@ export default function MessagesView({
                   workingMessages={group.messages}
                   isSelf={group.messages[0].from_uid === user.uid}
                   isGroup={isGroup}
+                  mentionMembers={members}
                   senderName={group.sender.name}
                   senderAvatarUrl={group.sender.avatarUrl}
                   senderIsBot={group.sender.isBot}
@@ -2363,6 +2487,7 @@ export default function MessagesView({
               message={group.message}
               isSelf={group.message.from_uid === user.uid}
               isGroup={isGroup}
+              mentionMembers={members}
               senderName={group.sender.name}
               senderAvatarUrl={group.sender.avatarUrl}
               senderIsBot={group.sender.isBot}
@@ -2528,7 +2653,7 @@ export default function MessagesView({
             {isGroup && <button type="button" aria-label="@机器人" onClick={() => { setAttachmentMenuOpen(false); openMentionPicker(); }}><span className="v3-at-sign">@</span><span>提及机器人</span></button>}
           </div>
         )}
-        onSend={handleSend}
+        onSend={requestSend}
         sendDisabled={isSendingMessage || isUploadingAttachment || (!input.trim() && pendingAttachments.length === 0)}
         stop={canStopActiveBotWorking && !input.trim() && pendingAttachments.length === 0}
         stopDisabled={isStopRequested}
@@ -2542,7 +2667,7 @@ export default function MessagesView({
           updateAttachmentDraft(topic, (current) => current.filter((_, attachmentIndex) => attachmentIndex !== index));
           setAttachmentStatus(null);
         }}
-        overlay={showMentionPicker && isGroup && (
+        overlay={isGroup && (showMentionPicker ? (
           <div id="mention-picker" className="oc-mention-picker v3-composer-mention-picker" role="listbox" aria-label="可提及的机器人">
             {mentionableBots.map((m, index) => (
               <button
@@ -2560,10 +2685,10 @@ export default function MessagesView({
               >
                 {m.is_all
                   ? <span className="oc-mention-all-icon" aria-hidden="true"><Users size={15} /></span>
-                  : <Avatar name={m.display_name || m.username} src={m.avatar_url} size={24} isBot />}
+                  : <Avatar name={groupMemberName(m, members)} src={m.avatar_url} size={24} isBot />}
                 <span className="oc-mention-item-copy">
-                  <span className="oc-mention-item-name">{m.display_name || m.username || `usr${m.user_id}`}</span>
-                  <span className="oc-mention-item-handle">{m.is_all ? '全部机器人' : `@usr${m.user_id}`}</span>
+                  <span className="oc-mention-item-name">{m.is_all ? '所有人' : groupMemberName(m, members)}</span>
+                  <span className="oc-mention-item-handle">{m.is_all ? '全部机器人' : (m.username || 'Agent')}</span>
                 </span>
               </button>
             ))}
@@ -2571,7 +2696,23 @@ export default function MessagesView({
               <div className="oc-mention-empty">没有匹配的机器人</div>
             )}
           </div>
-        )}
+        ) : showSendConfirmation ? (
+          <div className="v3-agent-picker-menu v3-composer-send-target-picker" role="listbox" aria-label="选择要激活的 Agent">
+            {groupBots.map((member, index) => (
+              <button
+                key={member.user_id}
+                type="button"
+                className={sendTargetActiveIndex === index ? 'selected' : ''}
+                aria-selected={sendTargetActiveIndex === index}
+                onMouseEnter={() => setSendTargetActiveIndex(index)}
+                onClick={() => selectSendTarget(member, index)}
+              >
+                <Avatar name={groupMemberName(member, members)} src={member.avatar_url} size={24} isBot />
+                <span>{groupMemberName(member, members)}</span>
+              </button>
+            ))}
+          </div>
+        ) : null)}
         boxOverlay={isDragActive && (
           <div className="v3-drop-overlay" aria-hidden="true">
             <div className="v3-drop-title">拖放文件以上传</div>
