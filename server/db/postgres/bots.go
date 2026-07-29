@@ -3,29 +3,38 @@ package postgres
 import (
 	"fmt"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
 // SaveBotConfig saves or updates bot configuration with owner.
 func (a *Adapter) SaveBotConfig(uid int64, apiEndpoint, model string) error {
-	_, err := a.db.Exec(
-		`INSERT INTO bot_config (user_id, api_endpoint, model, enabled)
-		 VALUES ($1, $2, $3, true)
+	config, err := store.DefaultBotDefinitionJSON(uid)
+	if err != nil {
+		return fmt.Errorf("encode default bot definition: %w", err)
+	}
+	_, err = a.db.Exec(
+		`INSERT INTO bot_config (user_id, api_endpoint, model, enabled, config)
+		 VALUES ($1, $2, $3, true, $4::jsonb)
 		 ON CONFLICT (user_id)
 		 DO UPDATE SET api_endpoint = EXCLUDED.api_endpoint, model = EXCLUDED.model`,
-		uid, apiEndpoint, model,
+		uid, apiEndpoint, model, config,
 	)
 	return err
 }
 
 // SaveBotConfigWithOwner saves bot configuration with owner_id.
 func (a *Adapter) SaveBotConfigWithOwner(uid, ownerID int64, apiEndpoint, model string) error {
-	_, err := a.db.Exec(
-		`INSERT INTO bot_config (user_id, owner_id, api_endpoint, model, enabled)
-		 VALUES ($1, $2, $3, $4, true)
+	config, err := store.DefaultBotDefinitionJSON(uid)
+	if err != nil {
+		return fmt.Errorf("encode default bot definition: %w", err)
+	}
+	_, err = a.db.Exec(
+		`INSERT INTO bot_config (user_id, owner_id, api_endpoint, model, enabled, config)
+		 VALUES ($1, $2, $3, $4, true, $5::jsonb)
 		 ON CONFLICT (user_id)
 		 DO UPDATE SET api_endpoint = EXCLUDED.api_endpoint, model = EXCLUDED.model`,
-		uid, ownerID, apiEndpoint, model,
+		uid, ownerID, apiEndpoint, model, config,
 	)
 	return err
 }
