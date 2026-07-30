@@ -870,8 +870,23 @@ describe('MessagesView composer draft isolation', () => {
         await flushPromises(16);
       });
 
-      expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 50, 0, true);
-      expect(api.getMessages).not.toHaveBeenCalledWith('p2p_1_2', 500, 50, true, 101);
+      expect(api.getMessages).toHaveBeenCalledWith(
+        'p2p_1_2',
+        50,
+        0,
+        true,
+        0,
+        expect.objectContaining({ signal: expect.any(AbortSignal), timeoutMs: 15000 }),
+      );
+      expect(api.getMessages.mock.calls.some(
+        ([targetTopic, limit, offset, latest, beforeId]) => (
+          targetTopic === 'p2p_1_2'
+          && limit === 500
+          && offset === 50
+          && latest === true
+          && beforeId === 101
+        ),
+      )).toBe(false);
 
       const navigator = container.querySelector('.cc-question-navigator');
       expect(navigator).not.toBeNull();
@@ -879,7 +894,14 @@ describe('MessagesView composer draft isolation', () => {
         Simulate.mouseEnter(navigator);
         await flushPromises();
       });
-      expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 500, 50, true, 101);
+      expect(api.getMessages).toHaveBeenCalledWith(
+        'p2p_1_2',
+        500,
+        50,
+        true,
+        101,
+        expect.objectContaining({ signal: expect.any(AbortSignal), timeoutMs: 15000 }),
+      );
 
       const questionListButtons = Array.from(
         navigator.querySelectorAll('.cc-question-list-item'),
@@ -895,7 +917,14 @@ describe('MessagesView composer draft isolation', () => {
         await flushPromises();
       });
 
-      expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 50, 0, true, 2);
+      expect(api.getMessages).toHaveBeenCalledWith(
+        'p2p_1_2',
+        50,
+        0,
+        true,
+        2,
+        expect.objectContaining({ signal: expect.any(AbortSignal), timeoutMs: 15000 }),
+      );
       const oldestQuestion = container.querySelector('[data-conversation-question="1"]');
       expect(oldestQuestion).not.toBeNull();
       expect(window.HTMLElement.prototype.scrollIntoView)
@@ -2013,9 +2042,210 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.getMessages).toHaveBeenNthCalledWith(1, 'p2p_1_2', 50, 0, true);
-    expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 50, 50, true, 101);
+    expect(api.getMessages).toHaveBeenCalledWith(
+      'p2p_1_2',
+      50,
+      0,
+      true,
+      0,
+      expect.objectContaining({ signal: expect.any(AbortSignal), timeoutMs: 15000 }),
+    );
+    expect(api.getMessages).toHaveBeenCalledWith(
+      'p2p_1_2',
+      50,
+      50,
+      true,
+      101,
+      expect.objectContaining({ signal: expect.any(AbortSignal), timeoutMs: 15000 }),
+    );
     expect(container.querySelector('[data-message-content="older"]')).not.toBeNull();
+  });
+
+  it('shows a specific retry state when history loading times out', async () => {
+    const timeoutError = new Error('timeout');
+    timeoutError.code = 'REQUEST_TIMEOUT';
+    api.getMessages.mockRejectedValueOnce(timeoutError);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.textContent).toContain('聊天记录加载超时，请重试');
+    expect(Array.from(container.querySelectorAll('button'))
+      .some((button) => button.textContent.includes('重新加载'))).toBe(true);
+  });
+
+  it('cancels the previous topic history request when switching topics', async () => {
+    const firstHistory = deferred();
+    let firstOptions;
+    api.getMessages
+      .mockImplementationOnce((topic, limit, offset, latest, beforeId, options) => {
+        firstOptions = options;
+        return firstHistory.promise;
+      })
+      .mockResolvedValueOnce({
+        messages: [{ id: 2, topic_id: 'p2p_1_3', from_uid: 3, type: 'text', content: 'topic B' }],
+        has_more: false,
+      });
+
+    await mountTopic(root, 'p2p_1_2');
+    expect(firstOptions.signal.aborted).toBe(false);
+
+    await mountTopic(root, 'p2p_1_3');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(firstOptions.signal.aborted).toBe(true);
+    expect(container.querySelector('[data-message-content="topic B"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('聊天记录加载失败');
+  });
+
+  it('cancels an in-flight question index request when switching topics', async () => {
+    const initialHistory = deferred();
+    const questionIndex = deferred();
+    let questionIndexOptions;
+    api.getMessages
+      .mockImplementationOnce(() => initialHistory.promise)
+      .mockImplementationOnce((topic, limit, offset, latest, beforeId, options) => {
+        questionIndexOptions = options;
+        return questionIndex.promise;
+      })
+      .mockResolvedValueOnce({
+        messages: [{ id: 200, topic_id: 'p2p_1_3', from_uid: 3, type: 'text', content: 'topic B' }],
+        has_more: false,
+      });
+
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    Object.defineProperty(timeline, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    timeline.scrollTop = 500;
+    await act(async () => {
+      initialHistory.resolve({
+        messages: [{
+          id: 100,
+          seq_id: 100,
+          topic_id: 'p2p_1_2',
+          from_uid: 1,
+          type: 'text',
+          content: 'latest question',
+        }],
+        has_more: true,
+        next_before_id: 100,
+      });
+      await flushPromises();
+    });
+    const navigator = container.querySelector('.cc-question-navigator');
+    expect(navigator).not.toBeNull();
+
+    await act(async () => {
+      Simulate.mouseEnter(navigator);
+      await Promise.resolve();
+    });
+    expect(questionIndexOptions.signal.aborted).toBe(false);
+
+    await mountTopic(root, 'p2p_1_3');
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(questionIndexOptions.signal.aborted).toBe(true);
+    expect(container.querySelector('[data-message-content="topic B"]')).not.toBeNull();
+  });
+
+  it('loads past tall working-only pages until ordinary chat content appears', async () => {
+    const initialHistory = deferred();
+    const workingPage = (id) => ({
+      messages: [{
+        id,
+        seq_id: id,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'tool_result',
+        content: `working-${id}`,
+      }],
+      has_more: true,
+      next_before_id: id,
+    });
+    api.getMessages
+      .mockImplementationOnce(() => initialHistory.promise)
+      .mockResolvedValueOnce(workingPage(98))
+      .mockResolvedValueOnce(workingPage(97))
+      .mockResolvedValueOnce({
+        messages: [{
+          id: 96,
+          seq_id: 96,
+          topic_id: 'p2p_1_2',
+          from_uid: 1,
+          type: 'text',
+          content: 'ordinary question',
+        }],
+        has_more: true,
+        next_before_id: 96,
+      });
+
+    await mountTopic(root, 'p2p_1_2');
+    const timeline = container.querySelector('.v3-timeline');
+    Object.defineProperty(timeline, 'scrollHeight', { configurable: true, value: 1200 });
+    Object.defineProperty(timeline, 'clientHeight', { configurable: true, value: 500 });
+    timeline.scrollTop = 500;
+
+    await act(async () => {
+      initialHistory.resolve(workingPage(99));
+      await flushPromises(24);
+    });
+
+    expect(api.getMessages).toHaveBeenCalledTimes(4);
+    expect(container.querySelector('[data-message-content="ordinary question"]')).not.toBeNull();
+  });
+
+  it('caps automatic history loading and lets the user continue explicitly', async () => {
+    const initialHistory = deferred();
+    let page = 100;
+    api.getMessages.mockImplementation(() => Promise.resolve({
+      messages: [{
+        id: page,
+        seq_id: page--,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'tool_result',
+        content: 'working only',
+      }],
+      has_more: true,
+      next_before_id: page,
+    }));
+    api.getMessages.mockImplementationOnce(() => initialHistory.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      initialHistory.resolve({
+        messages: [{
+          id: page,
+          seq_id: page--,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_result',
+          content: 'latest working',
+        }],
+        has_more: true,
+        next_before_id: page,
+      });
+      await flushPromises(40);
+    });
+
+    expect(api.getMessages).toHaveBeenCalledTimes(7);
+    expect(container.textContent).toContain('已暂停自动加载');
+    const continueButton = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('继续加载'));
+    expect(continueButton).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(continueButton);
+      await flushPromises(40);
+    });
+    expect(api.getMessages).toHaveBeenCalledTimes(14);
+    expect(container.textContent).toContain('已暂停自动加载');
   });
 
   it('shows cached history immediately when returning to a topic', async () => {
@@ -2114,14 +2344,29 @@ describe('MessagesView composer draft isolation', () => {
       Simulate.scroll(timeline);
       await Promise.resolve();
     });
-    expect(api.getMessages).not.toHaveBeenCalledWith('p2p_1_2', 50, 50, true, 101);
+    expect(api.getMessages.mock.calls.some(
+      ([targetTopic, limit, offset, latest, beforeId]) => (
+        targetTopic === 'p2p_1_2'
+        && limit === 50
+        && offset === 50
+        && latest === true
+        && beforeId === 101
+      ),
+    )).toBe(false);
 
     await act(async () => {
       refreshedTopicA.resolve({ messages: latest, has_more: true, next_before_id: 101 });
       await flushPromises();
     });
 
-    expect(api.getMessages).toHaveBeenCalledWith('p2p_1_2', 50, 50, true, 101);
+    expect(api.getMessages).toHaveBeenCalledWith(
+      'p2p_1_2',
+      50,
+      50,
+      true,
+      101,
+      expect.objectContaining({ signal: expect.any(AbortSignal), timeoutMs: 15000 }),
+    );
     expect(container.querySelector('[data-message-content="older after refresh"]')).not.toBeNull();
   });
 

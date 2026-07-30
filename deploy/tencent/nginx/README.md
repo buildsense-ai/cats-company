@@ -17,6 +17,7 @@ Install without enabling traffic:
 ```bash
 sudo install -o root -g root -m 644 deploy/tencent/nginx/catscompany-app.conf /etc/nginx/sites-available/catscompany-app
 sudo install -o root -g root -m 644 deploy/tencent/nginx/catscompany-api.conf /etc/nginx/sites-available/catscompany-api
+sudo install -o root -g root -m 644 deploy/tencent/nginx/catsco-safe-log.conf /etc/nginx/conf.d/catsco-safe-log.conf
 sudo nginx -t
 ```
 

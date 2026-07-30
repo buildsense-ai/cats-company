@@ -76,9 +76,26 @@ export function isTokenExpired(candidate = token) {
   }
 }
 
-async function request(method, path, body) {
+async function request(method, path, body, { signal, timeoutMs = 0 } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeoutID = null;
+  const abortFromCaller = () => controller.abort(signal?.reason);
+
+  if (signal?.aborted) {
+    abortFromCaller();
+  } else if (signal) {
+    signal.addEventListener('abort', abortFromCaller, { once: true });
+  }
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timeoutID = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  }
 
   let res;
   try {
@@ -86,27 +103,44 @@ async function request(method, path, body) {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
     });
+
+    let data = {};
+    try {
+      data = await res.json();
+    } catch {
+      data = {};
+    }
+    if (!res.ok) {
+      const error = new Error(data.error || statusMessage(res.status));
+      error.status = res.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
   } catch (cause) {
+    if (timedOut) {
+      const error = new Error('请求超时，请稍后重试');
+      error.code = 'REQUEST_TIMEOUT';
+      error.cause = cause;
+      throw error;
+    }
+    if (signal?.aborted || cause?.name === 'AbortError') {
+      const error = new Error('请求已取消');
+      error.code = 'REQUEST_ABORTED';
+      error.cause = cause;
+      throw error;
+    }
+    if (cause?.status) throw cause;
     const error = new Error('网络连接失败，请检查后端服务是否运行');
     error.code = 'NETWORK_ERROR';
     error.cause = cause;
     throw error;
+  } finally {
+    if (timeoutID) clearTimeout(timeoutID);
+    signal?.removeEventListener('abort', abortFromCaller);
   }
-
-  let data = {};
-  try {
-    data = await res.json();
-  } catch {
-    data = {};
-  }
-  if (!res.ok) {
-    const error = new Error(data.error || statusMessage(res.status));
-    error.status = res.status;
-    error.data = data;
-    throw error;
-  }
-  return data;
 }
 
 function statusMessage(status) {
@@ -183,10 +217,12 @@ export const api = {
   },
 
   // REST fallback for message history
-  getMessages: (topicId, limit, offset, latest = false, beforeId = 0) =>
+  getMessages: (topicId, limit, offset, latest = false, beforeId = 0, options = {}) =>
     request(
       'GET',
       `/api/messages?topic_id=${encodeURIComponent(topicId)}&limit=${limit || 50}&offset=${offset || 0}${latest ? '&latest=1' : ''}${beforeId > 0 ? `&before_id=${encodeURIComponent(beforeId)}` : ''}`,
+      undefined,
+      options,
     ),
   getConversations: () => request('GET', '/api/conversations'),
   getProjects: () => request('GET', '/api/projects'),
