@@ -1483,32 +1483,97 @@ function RichContent({ content, onPreviewFile, activePreviewFile }) {
 
 function ImageContent({ payload }) {
   const [expanded, setExpanded] = useState(false);
+  const previewRef = useRef(null);
+  const triggerRef = useRef(null);
+  const closeButtonRef = useRef(null);
+  const src = payload?.url || payload?.thumbnail;
+
+  useEffect(() => {
+    if (!expanded) return undefined;
+
+    closeButtonRef.current?.focus({ preventScroll: true });
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setExpanded(false);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(previewRef.current?.querySelectorAll(FOCUSABLE_SELECTOR) || []);
+      const firstFocusable = focusable[0];
+      const lastFocusable = focusable[focusable.length - 1];
+      if (!firstFocusable || !lastFocusable) {
+        event.preventDefault();
+        return;
+      }
+      const focusIsOutsidePreview = !previewRef.current?.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === firstFocusable || focusIsOutsidePreview)) {
+        event.preventDefault();
+        lastFocusable.focus();
+      } else if (!event.shiftKey && (document.activeElement === lastFocusable || focusIsOutsidePreview)) {
+        event.preventDefault();
+        firstFocusable.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (triggerRef.current?.isConnected) triggerRef.current.focus({ preventScroll: true });
+    };
+  }, [expanded]);
+
   if (!payload) return null;
-  const src = payload.url || payload.thumbnail;
+
   const preview = expanded ? createPortal(
     <div
+      aria-label={`图片预览 ${payload.name || ''}`.trim()}
+      aria-modal="true"
       className="oc-modal-overlay oc-rich-image-preview"
       onClick={() => setExpanded(false)}
+      ref={previewRef}
+      role="dialog"
     >
+      <button
+        aria-label="关闭图片预览"
+        className="oc-rich-media-preview-close oc-rich-image-preview-close"
+        onClick={() => setExpanded(false)}
+        ref={closeButtonRef}
+        type="button"
+      >
+        <X size={20} />
+      </button>
       <img
         src={resolveMediaURL(payload.url || src)}
         alt={payload.name ? `${payload.name} preview` : 'image preview'}
         className="oc-rich-image-preview-media"
+        onClick={(event) => event.stopPropagation()}
       />
     </div>,
     document.body,
   ) : null;
   return (
     <div className="oc-rich-image">
-      <img
-        src={resolveMediaURL(src)}
-        alt={payload.name || 'image'}
-        className="oc-rich-image-thumb"
-        draggable={canDragChatAttachment({ type: 'image', payload })}
-        onDragStart={(event) => writeChatAttachmentDrag(event.dataTransfer, { type: 'image', payload })}
+      <button
+        aria-label={`预览图片 ${payload.name || ''}`.trim()}
+        className="oc-rich-image-trigger"
         onClick={() => setExpanded(true)}
-        style={{ maxWidth: 240, maxHeight: 240, borderRadius: 4, cursor: 'pointer' }}
-      />
+        onKeyDown={(event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          setExpanded(true);
+        }}
+        ref={triggerRef}
+        type="button"
+      >
+        <img
+          src={resolveMediaURL(src)}
+          alt={payload.name || 'image'}
+          className="oc-rich-image-thumb"
+          draggable={canDragChatAttachment({ type: 'image', payload })}
+          onDragStart={(event) => writeChatAttachmentDrag(event.dataTransfer, { type: 'image', payload })}
+        />
+      </button>
       {preview}
     </div>
   );
@@ -1840,7 +1905,7 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
         >
           <button
             aria-label="关闭视频预览"
-            className="oc-rich-video-preview-close"
+            className="oc-rich-media-preview-close oc-rich-video-preview-close"
             onClick={() => setPreviewOpen(false)}
             ref={closeButtonRef}
             type="button"

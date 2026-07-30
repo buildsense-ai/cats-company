@@ -3878,6 +3878,31 @@ button.catsco-download-action:disabled {
   display: block;
 }
 
+.oc-rich-image-trigger {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.oc-rich-image-trigger:focus-visible {
+  outline: 2px solid var(--v3-primary);
+  outline-offset: 3px;
+}
+
+.oc-rich-image-trigger .oc-rich-image-thumb {
+  width: auto;
+  height: auto;
+  max-width: min(240px, 100%);
+  max-height: 240px;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
 /* Modal overlay for image preview */
 .oc-modal-overlay {
   position: fixed;

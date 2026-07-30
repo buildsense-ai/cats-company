@@ -127,7 +127,7 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor(':root')).toContain('--cc-media-black: oklch(0.19 0.01 165);');
     expect(ruleFor('.v3-message .oc-rich-video-play'))
       .toContain('cubic-bezier(0.16, 1, 0.3, 1)');
-    expect(ruleFor('.oc-rich-video-preview-close'))
+    expect(ruleFor('.oc-rich-media-preview-close'))
       .toContain('cubic-bezier(0.16, 1, 0.3, 1)');
     expect(css).toMatch(
       /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.v3-message \.oc-rich-video-play,[\s\S]*?transition: none;/,
@@ -144,6 +144,9 @@ describe('CatsCo shell styling', () => {
     expect(imageRule).toContain('max-width: min(90vw, calc(100vw - 32px));');
     expect(imageRule).toContain('max-height: calc(100dvh - 32px);');
     expect(imageRule).toContain('object-fit: contain;');
+    expect(ruleIn(openchatCss, '.oc-rich-image-trigger')).toContain('cursor: zoom-in;');
+    expect(ruleIn(openchatCss, '.oc-rich-image-trigger:focus-visible'))
+      .toContain('outline: 2px solid var(--v3-primary);');
   });
 
   it('standardizes scrollbar tiers, states, and browser-specific rendering', () => {
