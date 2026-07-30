@@ -1,6 +1,18 @@
 import { enqueuePushOperation } from './push-operation';
 
 describe('push operation queue', () => {
+  test('serializes operations through a browser-wide lock when available', async () => {
+    const request = vi.fn((_name, operation) => operation());
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: { request },
+    });
+
+    await enqueuePushOperation(() => Promise.resolve('done'));
+
+    expect(request).toHaveBeenCalledWith('catsco-push-subscription', expect.any(Function));
+  });
+
   test('finishes session cleanup before reconciling the next session', async () => {
     let finishOldReconcile;
     const order = [];

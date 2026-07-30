@@ -2,7 +2,7 @@ import React, {
   useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
 import { registerSW } from 'virtual:pwa-register';
-import { api, getPushRegistrationID } from '../api';
+import { api, getPushRegistrationID, retirePushRegistrationID } from '../api';
 import {
   canUsePush,
   cleanupPushSubscription,
@@ -12,6 +12,7 @@ import {
   shouldOfferPush,
 } from '../utils/push-notifications';
 import { enqueuePushOperation } from '../utils/push-operation';
+import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import './pwa-controller.css';
 
 function readDismissed() {
@@ -60,6 +61,13 @@ export default function PwaController({
   }, [offlineReady]);
 
   useEffect(() => {
+    pushTabCoordinator.setActive(
+      loggedIn && canUsePush() && Notification.permission === 'granted',
+    );
+    return () => pushTabCoordinator.setActive(false);
+  }, [loggedIn, permission]);
+
+  useEffect(() => {
     if (!canUsePush()) return undefined;
     let cancelled = false;
     const isCurrent = () => (
@@ -67,8 +75,14 @@ export default function PwaController({
     );
     if (!loggedIn) {
       if (pushCleanupHandled) return undefined;
+      const registrationID = getPushRegistrationID();
       enqueuePushOperation(
-        () => cleanupPushSubscription(undefined, isCurrent),
+        () => cleanupPushSubscription(
+          undefined,
+          isCurrent,
+          () => pushTabCoordinator.getOtherTabState(),
+          () => registrationID && retirePushRegistrationID(registrationID),
+        ),
       ).catch((error) => {
         console.warn('Push cleanup after logout failed:', error);
       });

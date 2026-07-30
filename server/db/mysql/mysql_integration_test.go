@@ -66,7 +66,73 @@ func TestMySQLStoreContract(t *testing.T) {
 	}
 
 	assertMySQLPushSubscriptionGenerations(t, db, firstBotID)
+	assertMySQLConversationTaskStatusUpgradeHandoff(t, db, firstBotID)
 	assertMySQLConversationTaskStatusGeneration(t, db, firstBotID, secondBotID)
+}
+
+func assertMySQLConversationTaskStatusUpgradeHandoff(t *testing.T, db *Adapter, sourceUID int64) {
+	t.Helper()
+	const staleTopicID = "grp_mysql_upgrade_stale"
+	const protectedTopicID = "grp_mysql_upgrade_protected"
+	for _, topicID := range []string{staleTopicID, protectedTopicID} {
+		if err := db.CreateTopic(topicID, "group", sourceUID); err != nil {
+			t.Fatalf("create MySQL upgrade handoff topic %s: %v", topicID, err)
+		}
+	}
+	for _, triggerName := range []string{
+		"trg_conversation_task_statuses_sync_source_insert",
+		"trg_conversation_task_statuses_sync_source_update",
+	} {
+		if _, err := db.db.Exec("DROP TRIGGER " + triggerName); err != nil {
+			t.Fatalf("drop MySQL task status trigger %s: %v", triggerName, err)
+		}
+	}
+	expiry := time.Now().UTC().Add(time.Hour)
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_status_sources
+		   (topic_id, source_uid, run_id, state, summary, error, expires_at)
+		 VALUES (?, ?, 'same-run', 'running', 'stale source', '', ?)`,
+		staleTopicID, sourceUID, expiry,
+	); err != nil {
+		t.Fatalf("seed stale MySQL upgrade source: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_statuses
+		   (topic_id, run_id, state, summary, error, source_uid)
+		 VALUES (?, 'same-run', 'completed', 'aggregate completed', '', ?)`,
+		staleTopicID, sourceUID,
+	); err != nil {
+		t.Fatalf("seed completed MySQL upgrade aggregate: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_status_sources
+		   (topic_id, source_uid, run_id, state, summary, error, expires_at)
+		 VALUES (?, ?, 'new-run', 'running', 'new run active', '', ?)`,
+		protectedTopicID, sourceUID, expiry,
+	); err != nil {
+		t.Fatalf("seed protected MySQL upgrade source: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_statuses
+		   (topic_id, run_id, state, summary, error, source_uid)
+		 VALUES (?, 'old-run', 'completed', 'old run completed', '', ?)`,
+		protectedTopicID, sourceUID,
+	); err != nil {
+		t.Fatalf("seed protected MySQL upgrade aggregate: %v", err)
+	}
+
+	if err := db.CreateSchema(); err != nil {
+		t.Fatalf("run MySQL upgrade handoff: %v", err)
+	}
+
+	staleSource, err := db.GetConversationTaskStatusForSource(staleTopicID, sourceUID)
+	if err != nil || staleSource == nil || staleSource.State != "completed" || staleSource.Summary != "aggregate completed" {
+		t.Fatalf("MySQL upgrade did not reconcile stale source: status=%+v err=%v", staleSource, err)
+	}
+	protectedSource, err := db.GetConversationTaskStatusForSource(protectedTopicID, sourceUID)
+	if err != nil || protectedSource == nil || protectedSource.RunID != "new-run" || protectedSource.State != "running" {
+		t.Fatalf("MySQL upgrade overwrote protected active source: status=%+v err=%v", protectedSource, err)
+	}
 }
 
 func assertMySQLPushSubscriptionGenerations(t *testing.T, db *Adapter, ownerID int64) {
@@ -143,5 +209,50 @@ func assertMySQLConversationTaskStatusGeneration(t *testing.T, db *Adapter, firs
 	activeSource, err := db.GetConversationTaskStatusForSource(topicID, firstBotID)
 	if err != nil || activeSource == nil || activeSource.RunID != "new-run" || activeSource.State != "running" {
 		t.Fatalf("MySQL active new-run source was not preserved: status=%+v err=%v", activeSource, err)
+	}
+
+	const readOnlyTopicID = "grp_mysql_legacy_read"
+	if err := db.CreateTopic(readOnlyTopicID, "group", firstBotID); err != nil {
+		t.Fatalf("create MySQL legacy read topic: %v", err)
+	}
+	sameSecond := time.Now().UTC().Truncate(time.Second)
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_status_sources
+		   (topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at)
+		 VALUES (?, ?, 'read-run', 'running', 'running before old write', '', ?, ?)`,
+		readOnlyTopicID,
+		firstBotID,
+		expiry,
+		sameSecond,
+	); err != nil {
+		t.Fatalf("seed MySQL source before legacy-only write: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_statuses
+		   (topic_id, run_id, state, summary, error, source_uid, expires_at, updated_at)
+		 VALUES (?, 'read-run', 'running', 'running aggregate', '', ?, ?, ?)`,
+		readOnlyTopicID,
+		firstBotID,
+		expiry,
+		sameSecond,
+	); err != nil {
+		t.Fatalf("seed MySQL legacy aggregate: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`UPDATE conversation_task_statuses SET
+		   state = 'completed', summary = 'completed by old node', expires_at = NULL, updated_at = ?
+		 WHERE topic_id = ?`,
+		sameSecond,
+		readOnlyTopicID,
+	); err != nil {
+		t.Fatalf("update MySQL legacy aggregate without new-node upsert: %v", err)
+	}
+	readOnlySource, err := db.GetConversationTaskStatusForSource(readOnlyTopicID, firstBotID)
+	if err != nil || readOnlySource == nil || readOnlySource.State != "completed" {
+		t.Fatalf("MySQL legacy-only write was not visible from source read: status=%+v err=%v", readOnlySource, err)
+	}
+	readOnlyAggregates, err := db.GetConversationTaskStatuses([]string{readOnlyTopicID})
+	if err != nil || readOnlyAggregates[readOnlyTopicID] == nil || readOnlyAggregates[readOnlyTopicID].State != "completed" {
+		t.Fatalf("MySQL legacy-only write was not visible from aggregate read: statuses=%+v err=%v", readOnlyAggregates, err)
 	}
 }

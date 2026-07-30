@@ -223,6 +223,50 @@ describe('WebSocket connection recovery', () => {
     window.removeEventListener('cc:auth-changed', onAuthChanged);
   });
 
+  test('reuses one push generation for renewed tokens of the same account', () => {
+    const tokenFor = (userId, nonce) => {
+      const payload = btoa(JSON.stringify({ userId, nonce }))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      return `header.${payload}.signature`;
+    };
+
+    api.setToken(tokenFor(42, 'first'));
+    const firstRegistrationID = api.getPushRegistrationID();
+    api.setToken(tokenFor(42, 'renewed'));
+
+    expect(api.getPushRegistrationID()).toBe(firstRegistrationID);
+    api.setToken(tokenFor(43, 'different-account'));
+    expect(api.getPushRegistrationID()).not.toBe(firstRegistrationID);
+  });
+
+  test('adopts a same-account push generation written by another tab', () => {
+    const payload = btoa(JSON.stringify({ userId: 42 }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    api.setToken(`header.${payload}.signature`);
+
+    localStorage.setItem('oc_push_registration_id', 'generation-from-other-tab');
+    localStorage.setItem('oc_push_registration_owner', 'user:42');
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'oc_push_registration_owner',
+      newValue: 'user:42',
+    }));
+
+    expect(api.getPushRegistrationID()).toBe('generation-from-other-tab');
+  });
+
+  test('rotates the push generation after the last tab retires it', () => {
+    const payload = btoa(JSON.stringify({ userId: 42 }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const token = `header.${payload}.signature`;
+    api.setToken(token);
+    const retiredRegistrationID = api.getPushRegistrationID();
+
+    expect(api.retirePushRegistrationID(retiredRegistrationID)).toBe(true);
+    api.setToken(token);
+
+    expect(api.getPushRegistrationID()).not.toBe(retiredRegistrationID);
+  });
+
   test('allows a session change to abort push reconciliation requests', async () => {
     const fetchMock = vi.fn().mockImplementation((_url, options) => new Promise((_resolve, reject) => {
       options.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));

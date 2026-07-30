@@ -1,0 +1,4 @@
+DROP TRIGGER IF EXISTS trg_conversation_task_statuses_sync_source
+ON conversation_task_statuses;
+
+DROP FUNCTION IF EXISTS sync_legacy_conversation_task_status_source();

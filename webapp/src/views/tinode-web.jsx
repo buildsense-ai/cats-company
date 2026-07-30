@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { api, setToken, getToken, getPushRegistrationID, connectWS, reconnectWS, disconnectWS } from '../api';
+import { api, setToken, getToken, getPushRegistrationID, retirePushRegistrationID, connectWS, reconnectWS, disconnectWS } from '../api';
 import { cleanupPushSubscription } from '../utils/push-notifications';
 import { enqueuePushOperation } from '../utils/push-operation';
+import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import t from '../i18n';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
@@ -462,12 +463,15 @@ function TinodeWebApp() {
   const clearAuthenticatedSession = useCallback((authToken = getToken()) => {
     if (!authToken || getToken() !== authToken) return;
     const registrationID = getPushRegistrationID();
+    pushTabCoordinator.setActive(false);
     enqueuePushOperation(() => cleanupPushSubscription(
       (endpoint) => api.unsubscribePush(endpoint, authToken, registrationID),
       () => {
         const currentToken = getToken();
         return !currentToken || currentToken === authToken;
       },
+      () => pushTabCoordinator.getOtherTabState(),
+      () => retirePushRegistrationID(registrationID),
     )).catch((error) => {
       console.warn('Push subscription cleanup failed while clearing session:', error);
     });

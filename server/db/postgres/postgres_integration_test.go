@@ -398,6 +398,7 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 	if err != nil {
 		t.Fatalf("create second task status bot: %v", err)
 	}
+	assertPostgresConversationTaskStatusUpgradeHandoff(t, db, firstBotID)
 
 	topicID := fmt.Sprintf("grp_%d", groupID)
 	expiry := time.Now().UTC().Add(time.Hour)
@@ -441,9 +442,6 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 	legacySource, err := db.GetConversationTaskStatusForSource(legacyTopicID, firstBotID)
 	if err != nil || legacySource == nil || legacySource.RunID != "legacy-run" || legacySource.State != "running" {
 		t.Fatalf("legacy source was not preserved: status=%+v err=%v", legacySource, err)
-	}
-	if !legacySource.UpdatedAt.Equal(legacyAggregateUpdatedAt.Truncate(time.Microsecond)) {
-		t.Fatalf("legacy source timestamp changed during backfill: got=%v want=%v", legacySource.UpdatedAt, legacyAggregateUpdatedAt)
 	}
 	if _, err := db.db.Exec(
 		`DELETE FROM conversation_task_status_sources WHERE topic_id = $1`,
@@ -510,6 +508,73 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 		mixedVersionTopicID,
 	); err != nil {
 		t.Fatalf("clean up mixed-version task status aggregate: %v", err)
+	}
+
+	readOnlyTimestamp := time.Now().UTC().Add(-time.Hour)
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_status_sources
+		   (topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at)
+		 VALUES ($1, $2, 'read-run', 'running', 'running before old write', '', $3, $4)`,
+		topicID,
+		firstBotID,
+		expiry,
+		readOnlyTimestamp,
+	); err != nil {
+		t.Fatalf("seed PostgreSQL source before legacy-only write: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_statuses
+		   (topic_id, run_id, state, summary, error, source_uid, expires_at, updated_at)
+		 VALUES ($1, 'read-run', 'running', 'running aggregate', '', $2, $3, $4)`,
+		topicID,
+		firstBotID,
+		expiry,
+		readOnlyTimestamp,
+	); err != nil {
+		t.Fatalf("seed PostgreSQL legacy aggregate: %v", err)
+	}
+	legacyTx, err := db.db.Begin()
+	if err != nil {
+		t.Fatalf("begin PostgreSQL legacy writer transaction: %v", err)
+	}
+	defer legacyTx.Rollback()
+	var legacyTransactionStartedAt time.Time
+	if err := legacyTx.QueryRow(`SELECT CURRENT_TIMESTAMP`).Scan(&legacyTransactionStartedAt); err != nil {
+		t.Fatalf("capture PostgreSQL legacy transaction timestamp: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if _, err := db.db.Exec(
+		`UPDATE conversation_task_status_sources SET summary = 'source updated after old transaction began'
+		 WHERE topic_id = $1 AND source_uid = $2`,
+		topicID,
+		firstBotID,
+	); err != nil {
+		t.Fatalf("refresh PostgreSQL source after legacy transaction began: %v", err)
+	}
+	if _, err := legacyTx.Exec(
+		`UPDATE conversation_task_statuses SET
+		   state = 'completed', summary = 'completed by old node', expires_at = NULL
+		 WHERE topic_id = $1`,
+		topicID,
+	); err != nil {
+		t.Fatalf("update PostgreSQL legacy aggregate from older transaction: %v", err)
+	}
+	if err := legacyTx.Commit(); err != nil {
+		t.Fatalf("commit PostgreSQL legacy aggregate update: %v", err)
+	}
+	readOnlySource, err := db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || readOnlySource == nil || readOnlySource.State != "completed" {
+		t.Fatalf("PostgreSQL legacy-only write was not visible from source read: status=%+v err=%v", readOnlySource, err)
+	}
+	readOnlyAggregates, err := db.GetConversationTaskStatuses([]string{topicID})
+	if err != nil || readOnlyAggregates[topicID] == nil || readOnlyAggregates[topicID].State != "completed" {
+		t.Fatalf("PostgreSQL legacy-only write was not visible from aggregate read: statuses=%+v err=%v", readOnlyAggregates, err)
+	}
+	if _, err := db.db.Exec(`DELETE FROM conversation_task_status_sources WHERE topic_id = $1`, topicID); err != nil {
+		t.Fatalf("clean up legacy-only read source: %v", err)
+	}
+	if _, err := db.db.Exec(`DELETE FROM conversation_task_statuses WHERE topic_id = $1`, topicID); err != nil {
+		t.Fatalf("clean up legacy-only read aggregate: %v", err)
 	}
 
 	upsert := func(sourceUID int64, runID, state string) *types.ConversationTaskStatus {
@@ -631,6 +696,70 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 		t.Fatalf("accepted overlapping run was not preserved: status=%+v err=%v", currentSource, err)
 	}
 	upsert(firstBotID, successfulRunID, "completed")
+}
+
+func assertPostgresConversationTaskStatusUpgradeHandoff(t *testing.T, db *Adapter, sourceUID int64) {
+	t.Helper()
+	const staleTopicID = "grp_pg_upgrade_stale"
+	const protectedTopicID = "grp_pg_upgrade_protected"
+	for _, topicID := range []string{staleTopicID, protectedTopicID} {
+		if err := db.CreateTopic(topicID, "group", sourceUID); err != nil {
+			t.Fatalf("create PostgreSQL upgrade handoff topic %s: %v", topicID, err)
+		}
+	}
+	if _, err := db.db.Exec(`DROP TRIGGER trg_conversation_task_statuses_sync_source ON conversation_task_statuses`); err != nil {
+		t.Fatalf("drop PostgreSQL task status trigger: %v", err)
+	}
+	expiry := time.Now().UTC().Add(time.Hour)
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_status_sources
+		   (topic_id, source_uid, run_id, state, summary, error, expires_at)
+		 VALUES ($1, $2, 'same-run', 'running', 'stale source', '', $3)`,
+		staleTopicID, sourceUID, expiry,
+	); err != nil {
+		t.Fatalf("seed stale PostgreSQL upgrade source: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_statuses
+		   (topic_id, run_id, state, summary, error, source_uid)
+		 VALUES ($1, 'same-run', 'completed', 'aggregate completed', '', $2)`,
+		staleTopicID, sourceUID,
+	); err != nil {
+		t.Fatalf("seed completed PostgreSQL upgrade aggregate: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_status_sources
+		   (topic_id, source_uid, run_id, state, summary, error, expires_at)
+		 VALUES ($1, $2, 'new-run', 'running', 'new run active', '', $3)`,
+		protectedTopicID, sourceUID, expiry,
+	); err != nil {
+		t.Fatalf("seed protected PostgreSQL upgrade source: %v", err)
+	}
+	if _, err := db.db.Exec(
+		`INSERT INTO conversation_task_statuses
+		   (topic_id, run_id, state, summary, error, source_uid)
+		 VALUES ($1, 'old-run', 'completed', 'old run completed', '', $2)`,
+		protectedTopicID, sourceUID,
+	); err != nil {
+		t.Fatalf("seed protected PostgreSQL upgrade aggregate: %v", err)
+	}
+
+	migration, err := os.ReadFile("../migrations/postgres/000009_sync_legacy_conversation_task_status_sources.up.sql")
+	if err != nil {
+		t.Fatalf("read PostgreSQL task status upgrade migration: %v", err)
+	}
+	if _, err := db.db.Exec(string(migration)); err != nil {
+		t.Fatalf("run PostgreSQL upgrade handoff migration: %v", err)
+	}
+
+	staleSource, err := db.GetConversationTaskStatusForSource(staleTopicID, sourceUID)
+	if err != nil || staleSource == nil || staleSource.State != "completed" || staleSource.Summary != "aggregate completed" {
+		t.Fatalf("PostgreSQL upgrade did not reconcile stale source: status=%+v err=%v", staleSource, err)
+	}
+	protectedSource, err := db.GetConversationTaskStatusForSource(protectedTopicID, sourceUID)
+	if err != nil || protectedSource == nil || protectedSource.RunID != "new-run" || protectedSource.State != "running" {
+		t.Fatalf("PostgreSQL upgrade overwrote protected active source: status=%+v err=%v", protectedSource, err)
+	}
 }
 
 func dsnWithSearchPath(t *testing.T, rawDSN, schemaName string) string {

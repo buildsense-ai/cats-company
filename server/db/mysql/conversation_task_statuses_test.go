@@ -32,9 +32,6 @@ func TestUpsertConversationTaskStatusPreservesLegacyActiveSource(t *testing.T) {
 	)).
 		WithArgs(topicID).
 		WillReturnRows(sqlmock.NewRows([]string{"topic_id"}).AddRow(topicID))
-	mock.ExpectExec(`DELETE source[\s\S]+source\.state IN \('running', 'waiting'\)[\s\S]+source\.run_id <> aggregate\.run_id[\s\S]+aggregate\.state NOT IN \('running', 'waiting'\)`).
-		WithArgs(topicID).
-		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`INSERT IGNORE INTO conversation_task_status_sources[\s\S]+SELECT topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at`).
 		WithArgs(topicID).
 		WillReturnResult(sqlmock.NewResult(0, 1))

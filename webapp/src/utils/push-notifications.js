@@ -74,10 +74,20 @@ export async function ensurePushSubscription(
   });
 }
 
-export async function cleanupPushSubscription(unsubscribeOnServer, isCurrent = () => true) {
+export async function cleanupPushSubscription(
+  unsubscribeOnServer,
+  isCurrent = () => true,
+  getOtherTabState = () => 'none',
+  onLastTab = () => {},
+) {
+  const otherTab = getOtherTabState();
+  const resolvedOtherTab = otherTab instanceof Promise ? await otherTab : otherTab;
+  const otherTabState = resolvedOtherTab === true ? 'active' : resolvedOtherTab === false ? 'none' : resolvedOtherTab;
+  if (otherTabState === 'active') return false;
+  if (!isCurrent() && !unsubscribeOnServer) return false;
+  onLastTab();
   if (!('serviceWorker' in navigator)) return false;
   const registration = await navigator.serviceWorker.getRegistration();
-  if (!isCurrent() && !unsubscribeOnServer) return false;
   const subscription = await registration?.pushManager?.getSubscription();
   if (!subscription) return false;
 
@@ -90,6 +100,7 @@ export async function cleanupPushSubscription(unsubscribeOnServer, isCurrent = (
   }
 
   if (!isCurrent()) return true;
+  if (otherTabState === 'unknown') return true;
   try {
     await subscription.unsubscribe();
   } catch (error) {

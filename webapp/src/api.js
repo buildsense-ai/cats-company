@@ -4,13 +4,47 @@ const WS_URL = import.meta.env.VITE_WS_URL || `${DEFAULT_WS_SCHEME}://${window.l
 
 let token = localStorage.getItem('oc_token');
 const PUSH_REGISTRATION_ID_KEY = 'oc_push_registration_id';
+const PUSH_REGISTRATION_OWNER_KEY = 'oc_push_registration_owner';
 const newPushRegistrationID = () => {
   if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
 };
-let pushRegistrationID = token ? (localStorage.getItem(PUSH_REGISTRATION_ID_KEY) || newPushRegistrationID()) : '';
-if (pushRegistrationID) localStorage.setItem(PUSH_REGISTRATION_ID_KEY, pushRegistrationID);
+const decodeTokenPayload = (candidate) => {
+  try {
+    const encodedPayload = candidate?.split('.')[1];
+    if (!encodedPayload) return null;
+    const normalized = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    return JSON.parse(atob(padded));
+  } catch {
+    return null;
+  }
+};
+const pushRegistrationOwner = (candidate) => {
+  const userID = decodeTokenPayload(candidate)?.userId;
+  return userID === undefined || userID === null ? `token:${candidate}` : `user:${userID}`;
+};
+const registrationIDForToken = (candidate) => {
+  const owner = pushRegistrationOwner(candidate);
+  const storedID = localStorage.getItem(PUSH_REGISTRATION_ID_KEY);
+  const storedOwner = localStorage.getItem(PUSH_REGISTRATION_OWNER_KEY);
+  if (storedID && (!storedOwner || storedOwner === owner)) {
+    localStorage.setItem(PUSH_REGISTRATION_OWNER_KEY, owner);
+    return storedID;
+  }
+  const registrationID = newPushRegistrationID();
+  localStorage.setItem(PUSH_REGISTRATION_ID_KEY, registrationID);
+  localStorage.setItem(PUSH_REGISTRATION_OWNER_KEY, owner);
+  return registrationID;
+};
+let pushRegistrationID = token ? registrationIDForToken(token) : '';
+window.addEventListener('storage', (event) => {
+  if (!token || (event.key !== PUSH_REGISTRATION_ID_KEY && event.key !== PUSH_REGISTRATION_OWNER_KEY)) return;
+  const storedOwner = localStorage.getItem(PUSH_REGISTRATION_OWNER_KEY);
+  const storedID = localStorage.getItem(PUSH_REGISTRATION_ID_KEY);
+  if (storedID && storedOwner === pushRegistrationOwner(token)) pushRegistrationID = storedID;
+});
 let authRevision = 0;
 let wsConn = null;
 let wsReconnectTimer = null;
@@ -40,12 +74,10 @@ export function requestMissedMessages(topicId) {
 
 export function setToken(t, { pushCleanupHandled = false } = {}) {
   token = t;
-  pushRegistrationID = t ? newPushRegistrationID() : '';
+  pushRegistrationID = t ? registrationIDForToken(t) : '';
   authRevision += 1;
   if (t) localStorage.setItem('oc_token', t);
   else localStorage.removeItem('oc_token');
-  if (pushRegistrationID) localStorage.setItem(PUSH_REGISTRATION_ID_KEY, pushRegistrationID);
-  else localStorage.removeItem(PUSH_REGISTRATION_ID_KEY);
   window.dispatchEvent(new CustomEvent('cc:auth-changed', {
     detail: {
       loggedIn: Boolean(t),
@@ -64,6 +96,15 @@ export function getAuthRevision() {
 }
 
 export function getPushRegistrationID() { return pushRegistrationID; }
+
+export function retirePushRegistrationID(expectedRegistrationID = '') {
+  const storedRegistrationID = localStorage.getItem(PUSH_REGISTRATION_ID_KEY);
+  if (expectedRegistrationID && storedRegistrationID !== expectedRegistrationID) return false;
+  localStorage.removeItem(PUSH_REGISTRATION_ID_KEY);
+  localStorage.removeItem(PUSH_REGISTRATION_OWNER_KEY);
+  if (!expectedRegistrationID || pushRegistrationID === expectedRegistrationID) pushRegistrationID = '';
+  return true;
+}
 
 export function getWebSocketURL() {
   return WS_URL;
@@ -90,12 +131,9 @@ export function isWSConnected() {
 
 export function isTokenExpired(candidate = token) {
   if (!candidate) return false;
+  const payload = decodeTokenPayload(candidate);
+  if (!payload) return false;
   try {
-    const encodedPayload = candidate.split('.')[1];
-    if (!encodedPayload) return false;
-    const normalized = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-    const payload = JSON.parse(atob(padded));
     const expiresAt = Number(payload.exp);
     return Number.isFinite(expiresAt) && Date.now() >= expiresAt * 1000;
   } catch {

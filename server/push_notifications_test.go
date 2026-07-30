@@ -437,17 +437,17 @@ func TestPushNotificationDeleteSubscription(t *testing.T) {
 	}
 }
 
-func TestPushNotificationDeleteSubscriptionRequiresRegistrationID(t *testing.T) {
+func TestPushNotificationDeleteSubscriptionAllowsLegacyEmptyRegistrationID(t *testing.T) {
 	store := &memoryPushSubscriptionStore{}
 	service := enabledPushService(store)
 	recorder := httptest.NewRecorder()
 	service.HandleSubscription(recorder, pushRequest(t, http.MethodDelete, `{"endpoint":"https://push.example.test/subscription/delete","registration_id":" "}`, 104))
 
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
-	if store.deleted != "" {
-		t.Fatalf("delete called for empty registration id: endpoint=%q", store.deleted)
+	if store.deleted != "https://push.example.test/subscription/delete" || store.deletedRegistrationID != "" {
+		t.Fatalf("legacy delete called with endpoint=%q registration_id=%q", store.deleted, store.deletedRegistrationID)
 	}
 }
 
