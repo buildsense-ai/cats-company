@@ -1268,8 +1268,8 @@ body {
 
 .cloud-artifacts-header {
   flex: 0 0 auto;
-  min-height: 72px;
-  padding: 16px 18px;
+  min-height: 52px;
+  padding: 0 18px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1277,19 +1277,12 @@ body {
   border-bottom: 1px solid var(--v3-border);
 }
 
-.cloud-artifacts-heading,
 .cloud-artifacts-header-actions,
 .cloud-artifact-actions {
   display: flex;
   align-items: center;
 }
 
-.cloud-artifacts-heading {
-  min-width: 0;
-  gap: 12px;
-}
-
-.cloud-artifacts-heading-icon,
 .cloud-artifact-kind-icon {
   flex: 0 0 auto;
   display: inline-flex;
@@ -1300,23 +1293,11 @@ body {
   border: 1px solid rgba(212, 168, 83, 0.24);
 }
 
-.cloud-artifacts-heading-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-}
-
-.cloud-artifacts-heading h3,
 .cloud-artifact-copy h4 {
   margin: 0;
   letter-spacing: 0;
 }
 
-.cloud-artifacts-heading h3 {
-  font-size: 17px;
-}
-
-.cloud-artifacts-heading p,
 .cloud-artifact-copy p {
   margin: 4px 0 0;
   color: var(--v3-text-muted);
@@ -1357,12 +1338,10 @@ body {
 }
 
 .cloud-artifacts-tabs {
-  height: 44px;
-  padding: 0 18px;
+  align-self: stretch;
   display: flex;
   align-items: stretch;
   gap: 20px;
-  border-bottom: 1px solid var(--v3-border);
 }
 
 .cloud-artifacts-tabs button {
@@ -1672,8 +1651,8 @@ body {
 
 @media (max-width: 640px) {
   .cloud-artifacts-header {
-    min-height: 68px;
-    padding: 22px 12px 10px;
+    min-height: 60px;
+    padding: 16px 12px 0;
   }
 
   .cloud-artifact-main {

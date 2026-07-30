@@ -18,7 +18,7 @@ const (
 )
 
 type agentFileMessageStore interface {
-	ListAgentFileMessages(agentUID int64, topicIDs []string, beforeID int64, limit int) ([]*types.Message, error)
+	ListAgentFileMessages(agentUID int64, topicID string, beforeID int64, limit int) ([]*types.Message, error)
 }
 
 type agentFileRecord struct {
@@ -55,20 +55,25 @@ func (h *CloudArtifactHandler) handleAgentFiles(w http.ResponseWriter, r *http.R
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
+	topicID := strings.TrimSpace(r.URL.Query().Get("topic_id"))
+	if topicID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "topic_id is required"})
+		return
+	}
+	topicName, status, err := accessibleAgentFileTopic(h.db, viewerUID, agent, topicID)
+	if err != nil {
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
 	fileDB, ok := h.db.(agentFileMessageStore)
 	if !ok {
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "agent files unavailable"})
 		return
 	}
 
-	topicIDs, topicNames, err := accessibleAgentFileTopics(h.db, viewerUID, agent)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve file history"})
-		return
-	}
 	limit := queryIntInRange(r, "limit", defaultAgentFilesLimit, 1, maxAgentFilesLimit)
 	beforeID := queryInt64(r, "before_id")
-	messages, err := fileDB.ListAgentFileMessages(agentUID, topicIDs, beforeID, limit+1)
+	messages, err := fileDB.ListAgentFileMessages(agentUID, topicID, beforeID, limit+1)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load file history"})
 		return
@@ -78,7 +83,7 @@ func (h *CloudArtifactHandler) handleAgentFiles(w http.ResponseWriter, r *http.R
 	if hasMore {
 		messages = messages[:limit]
 	}
-	files := agentFilesFromMessages(messages, topicNames)
+	files := agentFilesFromMessages(messages, map[string]string{topicID: topicName})
 	nextBeforeID := int64(0)
 	if hasMore && len(messages) > 0 {
 		nextBeforeID = messages[len(messages)-1].ID
@@ -87,6 +92,7 @@ func (h *CloudArtifactHandler) handleAgentFiles(w http.ResponseWriter, r *http.R
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"agent_uid":      agentUID,
+		"topic_id":       topicID,
 		"count":          len(files),
 		"files":          files,
 		"has_more":       hasMore,
@@ -94,34 +100,49 @@ func (h *CloudArtifactHandler) handleAgentFiles(w http.ResponseWriter, r *http.R
 	})
 }
 
-func accessibleAgentFileTopics(db store.Store, viewerUID int64, agent *types.User) ([]string, map[string]string, error) {
-	topicIDs := []string{p2pTopicID(viewerUID, agent.ID)}
-	topicNames := map[string]string{
-		topicIDs[0]: displayNameOrUsername(agent.DisplayName, agent.Username),
-	}
-
-	groups, err := db.GetUserGroups(viewerUID)
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, group := range groups {
-		if group == nil || group.ID <= 0 {
-			continue
+func accessibleAgentFileTopic(db store.Store, viewerUID int64, agent *types.User, topicID string) (string, int, error) {
+	privateTopicID := p2pTopicID(viewerUID, agent.ID)
+	if strings.HasPrefix(topicID, "p2p_") {
+		if topicID != privateTopicID {
+			return "", http.StatusForbidden, fmt.Errorf("conversation is not accessible")
 		}
-		topicID := "grp_" + strconv.FormatInt(group.ID, 10)
-		topicIDs = append(topicIDs, topicID)
-		topicNames[topicID] = strings.TrimSpace(group.Name)
+		topicName := displayNameOrUsername(agent.DisplayName, agent.Username)
+		if titles, ok := db.(conversationTitleStore); ok {
+			customTitles, titleErr := titles.GetConversationTitles(viewerUID, []string{topicID})
+			if titleErr == nil {
+				if title := strings.TrimSpace(customTitles[topicID]); title != "" {
+					topicName = title
+				}
+			}
+		}
+		return topicName, 0, nil
 	}
 
-	if titles, ok := db.(conversationTitleStore); ok {
-		customTitles, titleErr := titles.GetConversationTitles(viewerUID, topicIDs[:1])
-		if titleErr == nil {
-			if title := strings.TrimSpace(customTitles[topicIDs[0]]); title != "" {
-				topicNames[topicIDs[0]] = title
+	if !isGroupTopic(topicID) {
+		return "", http.StatusBadRequest, fmt.Errorf("invalid topic_id")
+	}
+	groupID := extractGroupID(topicID)
+	if groupID <= 0 || topicID != "grp_"+strconv.FormatInt(groupID, 10) {
+		return "", http.StatusBadRequest, fmt.Errorf("invalid topic_id")
+	}
+	isMember, err := db.IsGroupMember(groupID, viewerUID)
+	if err != nil {
+		return "", http.StatusInternalServerError, fmt.Errorf("failed to check conversation access")
+	}
+	if !isMember {
+		return "", http.StatusForbidden, fmt.Errorf("conversation is not accessible")
+	}
+
+	topicName := ""
+	if groups, groupErr := db.GetUserGroups(viewerUID); groupErr == nil {
+		for _, group := range groups {
+			if group != nil && group.ID == groupID {
+				topicName = strings.TrimSpace(group.Name)
+				break
 			}
 		}
 	}
-	return topicIDs, topicNames, nil
+	return topicName, 0, nil
 }
 
 func agentFilesFromMessages(messages []*types.Message, topicNames map[string]string) []agentFileRecord {
