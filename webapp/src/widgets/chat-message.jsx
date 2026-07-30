@@ -1,5 +1,5 @@
-import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play } from 'lucide-react';
+import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -120,6 +120,85 @@ function planFromUpdatePlanTool(item) {
   return planFromUpdatePlanInput(item.input) || planFromUpdatePlanResult(item.result);
 }
 
+function collapsePlanUpdates(items) {
+  const collapsed = [];
+  let planIndex = -1;
+
+  for (const originalItem of items || []) {
+    const item = originalItem?.type === 'subagent_group'
+      ? { ...originalItem, steps: collapsePlanUpdates(originalItem.steps || []) }
+      : originalItem;
+    const isPlan = item?.type === 'tool_pair' && planFromUpdatePlanTool(item);
+
+    if (!isPlan) {
+      collapsed.push(item);
+      continue;
+    }
+
+    if (planIndex === -1) {
+      planIndex = collapsed.length;
+      collapsed.push(item);
+    } else {
+      collapsed[planIndex] = item;
+    }
+  }
+
+  return collapsed;
+}
+
+function attachNarrativesToFollowingTools(items) {
+  const grouped = [];
+  let pendingNarratives = [];
+
+  const flushNarratives = () => {
+    if (pendingNarratives.length === 0) return;
+    grouped.push(...pendingNarratives);
+    pendingNarratives = [];
+  };
+
+  for (const item of items || []) {
+    if (item?.type === 'thinking' || item?.type === 'assistant_text') {
+      pendingNarratives.push(item);
+      continue;
+    }
+    if (item?.type === 'tool_pair' && !planFromUpdatePlanTool(item)) {
+      grouped.push({
+        ...item,
+        narratives: pendingNarratives,
+      });
+      pendingNarratives = [];
+      continue;
+    }
+    flushNarratives();
+    grouped.push(item);
+  }
+
+  flushNarratives();
+  return grouped;
+}
+
+function latestWorkingPlan(items) {
+  const item = latestWorkingPlanItem(items);
+  return item ? planFromUpdatePlanTool(item) : null;
+}
+
+function latestWorkingPlanItem(items) {
+  for (let index = (items?.length || 0) - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.type === 'tool_pair' && planFromUpdatePlanTool(item)) {
+      return item;
+    }
+  }
+  return null;
+}
+
+function isPlanComplete(plan) {
+  return Boolean(
+    plan?.steps?.length > 0
+    && plan.steps.every((step) => step.status === 'completed'),
+  );
+}
+
 function contentBlockCopyText(block) {
   if (!block || typeof block !== 'object') return '';
   if (block.type === 'text') return block.text || block.content || '';
@@ -229,7 +308,7 @@ function groupBlocks(messages) {
       }
     }
   }
-  return items;
+  return attachNarrativesToFollowingTools(collapsePlanUpdates(items));
 }
 
 function groupContentBlocks(blocks) {
@@ -254,6 +333,10 @@ function groupContentBlocks(blocks) {
       continue;
     }
     if (block.type === 'assistant_text') {
+      items.push({ type: 'assistant_text', text: block.text || block.content || '' });
+      continue;
+    }
+    if (block.type === 'text' && block.presentation_role === 'process') {
       items.push({ type: 'assistant_text', text: block.text || block.content || '' });
       continue;
     }
@@ -341,7 +424,7 @@ function groupContentBlocks(blocks) {
     }
   }
 
-  return items;
+  return attachNarrativesToFollowingTools(collapsePlanUpdates(items));
 }
 
 function upsertSubAgentGroup(items, groups, info) {
@@ -498,8 +581,18 @@ function contentBlocksFromMessage(msg) {
       metadata: msg.metadata || null,
     }];
   }
-  if (msg?.type === 'text' && typeof msg.content === 'string' && msg.content.trim().startsWith(WORKING_TEXT_PREFIX)) {
-    return [{ type: 'assistant_text', text: workingTextContent(msg.content) }];
+  if (
+    msg?.type === 'text'
+    && typeof msg.content === 'string'
+    && (
+      msg.content.trim().startsWith(WORKING_TEXT_PREFIX)
+      || msg._display_text_role === 'process'
+    )
+  ) {
+    return [{
+      type: 'assistant_text',
+      text: workingTextContent(msg.content),
+    }];
   }
 
   return [];
@@ -529,45 +622,108 @@ function subAgentStatusText(status, isError) {
   }
 }
 
-function NestedWorkingStep({ item }) {
-  if (item.type === 'thinking' || item.type === 'assistant_text') {
+function serializeToolResult(value) {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    return String(value ?? '');
+  }
+}
+
+function toolResultSizeLabel(value) {
+  if (typeof value !== 'string') return '结构化结果';
+  if (!value) return '';
+  if (value.length < 1000) return `${value.length} 字符`;
+  return `${(value.length / 1000).toFixed(value.length >= 10000 ? 0 : 1)}k 字符`;
+}
+
+function WorkingToolStep({ item, orphan = false }) {
+  const [open, setOpen] = useState(false);
+  const result = orphan ? item.content : item.result;
+  const hasResult = result != null && (typeof result !== 'string' || result.length > 0);
+  const name = orphan ? '工具结果' : (item.name || 'Tool');
+  const resultID = `tool-result-${useId().replace(/:/g, '')}`;
+  const narratives = item.narratives || [];
+
+  if (!hasResult) {
     return (
-      <div className="v3-wpi-thinking">
-        <Brain size={14} className="v3-wpi-icon" />
-        <span className="v3-wpi-text">{item.text}</span>
+      <div className="v3-wpi-tool-step">
+        {narratives.map((narrative, index) => (
+          <WorkingNarrative key={`${narrative.type}-${index}`} item={narrative} />
+        ))}
+        <div className="v3-wpi-tool">
+          <div className="v3-wpi-tool-header">
+            <Terminal size={14} className="v3-wpi-icon" />
+            <span className="v3-wpi-tool-name">{name}</span>
+            {!orphan && (
+              <span className="oc-wpi-tool-input">
+                {toolInputSummary(item.name, item.input)}
+              </span>
+            )}
+          </div>
+        </div>
       </div>
     );
   }
 
-  if (item.type === 'tool_pair') {
-    return (
+  return (
+    <div className="v3-wpi-tool-step">
+      {narratives.map((narrative, index) => (
+        <WorkingNarrative key={`${narrative.type}-${index}`} item={narrative} />
+      ))}
       <div className="v3-wpi-tool">
-        <div className="v3-wpi-tool-header">
+        <button
+          type="button"
+          className="v3-wpi-tool-header is-toggle"
+          aria-expanded={open}
+          aria-controls={resultID}
+          onClick={() => setOpen((current) => !current)}
+        >
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           <Terminal size={14} className="v3-wpi-icon" />
-          <span className="v3-wpi-tool-name">{item.name}</span>
-          <span className="oc-wpi-tool-input" style={{ marginLeft: 8, opacity: 0.7, fontSize: 11 }}>
-            {toolInputSummary(item.name, item.input)}
-          </span>
-        </div>
-        {item.result != null && (
-          <div className="v3-wpi-tool-result">
+          <span className="v3-wpi-tool-name">{name}</span>
+          {!orphan && (
+            <span className="oc-wpi-tool-input">
+              {toolInputSummary(item.name, item.input)}
+            </span>
+          )}
+          <span className="v3-wpi-tool-size">{toolResultSizeLabel(result)}</span>
+        </button>
+        {open && (
+          <div id={resultID} className="v3-wpi-tool-result">
             <div className="v3-wpi-code-block result">
-              <pre><code>{typeof item.result === 'string' ? item.result : JSON.stringify(item.result, null, 2)}</code></pre>
+              <pre><code>{serializeToolResult(result)}</code></pre>
             </div>
           </div>
         )}
       </div>
-    );
+    </div>
+  );
+}
+
+function WorkingNarrative({ item }) {
+  const NarrativeIcon = item.type === 'thinking' ? Brain : MessageSquareText;
+  return (
+    <div className={`v3-wpi-thinking v3-wpi-narrative is-${item.type}`}>
+      <NarrativeIcon size={14} className="v3-wpi-icon" aria-hidden="true" />
+      <span className="v3-wpi-text">{item.text}</span>
+    </div>
+  );
+}
+
+function NestedWorkingStep({ item }) {
+  if (item.type === 'thinking' || item.type === 'assistant_text') {
+    return <WorkingNarrative item={item} />;
+  }
+
+  if (item.type === 'tool_pair') {
+    const plan = planFromUpdatePlanTool(item);
+    return plan ? <WorkingPlanCard item={item} /> : <WorkingToolStep item={item} />;
   }
 
   if (item.type === 'tool_result_orphan') {
-    return (
-      <div className="v3-wpi-tool-result">
-        <div className="v3-wpi-code-block result">
-          <pre><code>{typeof item.content === 'string' ? item.content : JSON.stringify(item.content, null, 2)}</code></pre>
-        </div>
-      </div>
-    );
+    return <WorkingToolStep item={item} orphan />;
   }
 
   return null;
@@ -575,13 +731,22 @@ function NestedWorkingStep({ item }) {
 
 function SubAgentWorkingGroup({ item }) {
   const [open, setOpen] = useState(false);
+  const stepsID = `subagent-steps-${useId().replace(/:/g, '')}`;
   const steps = item.steps || [];
   const status = subAgentStatusText(item.status, item.isError);
 
   return (
     <div className="v3-wpi-subagent">
-      <button className="v3-wpi-subagent-toggle" type="button" onClick={() => setOpen(!open)}>
-        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+      <button
+        className="v3-wpi-subagent-toggle"
+        type="button"
+        aria-expanded={open}
+        aria-controls={stepsID}
+        onClick={() => setOpen(!open)}
+      >
+        {open
+          ? <ChevronDown size={13} aria-hidden="true" />
+          : <ChevronRight size={13} aria-hidden="true" />}
         <span className="v3-wpi-subagent-name">{item.name}</span>
         {item.agentType && <span className="v3-wpi-subagent-type">{item.agentType}</span>}
         <span className={`v3-wpi-subagent-status ${item.status || 'running'}`}>{status}</span>
@@ -589,7 +754,12 @@ function SubAgentWorkingGroup({ item }) {
       </button>
       {item.task && <div className="v3-wpi-subagent-task">{item.task}</div>}
       {open && (
-        <div className="v3-wpi-subagent-steps">
+        <div
+          id={stepsID}
+          className="v3-wpi-subagent-steps"
+          role="region"
+          aria-label={`${item.name} 的执行步骤`}
+        >
           {steps.map((step, index) => (
             <NestedWorkingStep key={index} item={step} />
           ))}
@@ -608,7 +778,7 @@ function WorkingPlanCard({ item }) {
     <div className="v3-wpi-plan" role="status">
       <div className="v3-wpi-plan-header">
         <FileText size={14} className="v3-wpi-icon" />
-        <span className="v3-wpi-plan-title">计划已更新</span>
+        <span className="v3-wpi-plan-title">计划</span>
         <span className="v3-wpi-plan-count">{completed}/{plan.steps.length}</span>
       </div>
       <div className="v3-wpi-plan-steps">
@@ -627,81 +797,114 @@ function WorkingPlanCard({ item }) {
   );
 }
 
-function WorkingProcess({ blocks }) {
+function WorkingProcess({ blocks, complete: completeOverride = false }) {
   const [open, setOpen] = useState(false);
-  if (!blocks || blocks.length === 0) return null;
+  const triggerRef = useRef(null);
+  const stepsID = `working-steps-${useId().replace(/:/g, '')}`;
+  const safeBlocks = blocks || [];
+  const planItem = latestWorkingPlanItem(safeBlocks);
+  const plan = planItem ? planFromUpdatePlanTool(planItem) : null;
+  const detailBlocks = safeBlocks.filter((item) => item !== planItem);
+  const hasDetails = detailBlocks.length > 0;
+  const completedPlanSteps = plan?.steps?.filter((step) => step.status === 'completed').length || 0;
+  const complete = completeOverride || isPlanComplete(plan);
+  const statusLabel = complete ? '已完成' : '正在执行';
+  const lastTool = [...detailBlocks].reverse().find((item) => item.type === 'tool_pair');
+  const summary = plan
+    ? `${completedPlanSteps}/${plan.steps.length}${!complete && lastTool?.name && lastTool.name !== 'update_plan' ? ` · ${lastTool.name}` : ''}`
+    : `${detailBlocks.length} 步${lastTool?.name ? ` · ${lastTool.name}` : ''}`;
+
+  const statusContent = (
+    <>
+      {hasDetails && (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
+      <span className="v3-working-label">{statusLabel}</span>
+      <span className="v3-working-summary">{summary}</span>
+    </>
+  );
+  const planContent = planItem ? (
+    <div className={`v3-working-plan${open && hasDetails ? ' is-after-details' : ''}`}>
+      <WorkingPlanCard item={planItem} />
+    </div>
+  ) : null;
+
+  const handleDetailsToggle = (event) => {
+    event.stopPropagation();
+    setOpen((current) => !current);
+  };
+
+  useEffect(() => {
+    if (!open || !hasDetails) return undefined;
+
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus({ preventScroll: true });
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [hasDetails, open]);
+
+  if (safeBlocks.length === 0) return null;
 
   return (
-    <div className="v3-working-process">
-      <button className="v3-working-toggle" onClick={() => setOpen(!open)}>
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <span className="v3-working-label">WORKING...</span>
-        {!open && <span className="v3-working-hint">展开详情</span>}
-      </button>
-      {open && (
-        <div className="v3-working-steps">
-          {blocks.map((item, i) => {
-            if (item.type === 'thinking') {
-              return (
-                <div key={i} className="v3-wpi-thinking">
-                  <Brain size={14} className="v3-wpi-icon" />
-                  <span className="v3-wpi-text">{item.text}</span>
-                </div>
-              );
-            }
-            if (item.type === 'assistant_text') {
-              return (
-                <div key={i} className="v3-wpi-thinking">
-                  <Brain size={14} className="v3-wpi-icon" />
-                  <span className="v3-wpi-text">{item.text}</span>
-                </div>
-              );
-            }
-            if (item.type === 'subagent_group') {
-              return <SubAgentWorkingGroup key={i} item={item} />;
-            }
-            if (item.type === 'tool_pair') {
-              const plan = planFromUpdatePlanTool(item);
-              if (plan) {
-                return <WorkingPlanCard key={i} item={item} />;
-              }
-              return (
-                <div key={i} className="v3-wpi-tool">
-                  <div className="v3-wpi-tool-header">
-                    <Terminal size={14} className="v3-wpi-icon" />
-                    <span className="v3-wpi-tool-name">{item.name}</span>
-                    <span className="oc-wpi-tool-input" style={{ marginLeft: 8, opacity: 0.7, fontSize: 11 }}>
-                      {toolInputSummary(item.name, item.input)}
-                    </span>
-                  </div>
-                  {item.result != null && (
-                    <div className="v3-wpi-tool-result">
-                      <div className="v3-wpi-code-block result">
-                        <pre><code>{typeof item.result === 'string' ? item.result : JSON.stringify(item.result, null, 2)}</code></pre>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            }
-            if (item.type === 'tool_result_orphan') {
-              return (
-                <div key={i} className="v3-wpi-tool-result">
-                  <div className="v3-wpi-code-block result">
-                     <pre><code>{typeof item.content === 'string' ? item.content : JSON.stringify(item.content, null, 2)}</code></pre>
-                  </div>
-                </div>
-              );
-            }
-            return null;
-          })}
+    <div className={`v3-working-process${planItem ? ' has-persistent-plan' : ''}`}>
+      {hasDetails ? (
+        <button
+          ref={triggerRef}
+          type="button"
+          className="v3-working-toggle"
+          aria-expanded={open}
+          aria-controls={stepsID}
+          aria-label={`${statusLabel} ${summary}，${open ? '收起任务步骤' : '展开任务步骤'}`}
+          onClick={handleDetailsToggle}
+        >
+          {statusContent}
+        </button>
+      ) : (
+        <div className="v3-working-status" role="status">
+          {statusContent}
         </div>
       )}
+      {!open && planContent}
+      {open && hasDetails && (
+        <div
+          id={stepsID}
+          className="v3-working-details-inline"
+          role="region"
+          aria-label="过程详情"
+        >
+          <div className="v3-working-steps">
+            {detailBlocks.map((item, i) => {
+              if (item.type === 'thinking') {
+                return <WorkingNarrative key={i} item={item} />;
+              }
+              if (item.type === 'assistant_text') {
+                return <WorkingNarrative key={i} item={item} />;
+              }
+              if (item.type === 'subagent_group') {
+                return <SubAgentWorkingGroup key={i} item={item} />;
+              }
+              if (item.type === 'tool_pair') {
+                return <WorkingToolStep key={i} item={item} />;
+              }
+              if (item.type === 'tool_result_orphan') {
+                return <WorkingToolStep key={i} item={item} orphan />;
+              }
+              return null;
+            })}
+          </div>
+        </div>
+      )}
+      {open && hasDetails && planContent}
     </div>
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [] }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [] }) {
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
   const content = message.content;
@@ -716,21 +919,33 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     }
     return [];
   }, [effectiveWorkingMessages, storedBlocks]);
+  const workingPlanComplete = isPlanComplete(latestWorkingPlan(workingBlocks));
   const richBlocks = useMemo(() => (
     storedBlocks.filter((block) => block.type === 'image' || block.type === 'file')
   ), [storedBlocks]);
+  const storedTextBlocks = useMemo(() => (
+    storedBlocks.filter(
+      (block) => block.type === 'text'
+        && block.text
+        && block.presentation_role !== 'process',
+    )
+  ), [storedBlocks]);
   const renderedTextContent = useMemo(() => {
     if (storedBlocks.length === 0) return content;
-    return storedBlocks
-      .filter((block) => block.type === 'text' && block.text)
+    return storedTextBlocks
       .map((block) => block.text)
       .join('\n\n');
-  }, [storedBlocks, content]);
+  }, [storedBlocks, storedTextBlocks, content]);
   const hasText = useMemo(() => (
     typeof renderedTextContent === 'string'
       ? renderedTextContent.trim().length > 0
       : renderedTextContent != null
   ), [renderedTextContent]);
+  const workingProcessComplete = workingComplete || workingPlanComplete || (
+    workingBlocks.length > 0
+    && !workingOnly
+    && !message._streaming
+  );
   const hasFileOnly = !hasText && richBlocks.length > 0 && richBlocks.every(
     (block) => block.type === 'file' && !isInlineVideoFile(block.payload),
   );
@@ -758,6 +973,50 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   const copyText = useMemo(() => (
     buildMessageCopyText(content, renderedTextContent, richBlocks, parsed)
   ), [content, renderedTextContent, richBlocks, parsed]);
+  const hasArtifactFirstSummary = artifactsFirst && richBlocks.length > 0 && hasText;
+  const artifactFollowupSections = useMemo(() => {
+    if (!hasArtifactFirstSummary || storedTextBlocks.length === 0) return null;
+    return storedTextBlocks.map((block, index) => {
+      const role = block.presentation_role || 'body';
+      return (
+        <div
+          key={`${role}-${index}`}
+          className={`v3-message-followup-section is-${role}`}
+          data-message-part={role}
+        >
+          <TextContent
+            content={block.text}
+            isGroup={isGroup}
+            knownArtifacts={knownArtifacts}
+            onPreviewFile={onPreviewFile}
+            activePreviewFile={activePreviewFile}
+          />
+        </div>
+      );
+    });
+  }, [
+    activePreviewFile,
+    hasArtifactFirstSummary,
+    isGroup,
+    knownArtifacts,
+    onPreviewFile,
+    storedTextBlocks,
+  ]);
+  const renderedMessageText = hasText && (parsed ? (
+    <RichContent
+      content={parsed}
+      onPreviewFile={onPreviewFile}
+      activePreviewFile={activePreviewFile}
+    />
+  ) : (
+    <TextContent
+      content={renderedTextContent}
+      isGroup={isGroup}
+      knownArtifacts={knownArtifacts}
+      onPreviewFile={onPreviewFile}
+      activePreviewFile={activePreviewFile}
+    />
+  ));
 
   const handleReplyClick = (event) => {
     event.stopPropagation();
@@ -795,21 +1054,23 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
 
   return (
     <div
-      className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}${hasFileOnly ? ' has-file-only' : ''}`}
+      className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}${hasFileOnly ? ' has-file-only' : ''}${artifactsFirst ? ' artifacts-first' : ''}${(workingOnly || message._streaming) && !workingProcessComplete ? ' is-working' : ''}${workingProcessComplete ? ' is-complete' : ''}`}
       data-conversation-question={questionAnchorKey || undefined}
     >
-      <div className="v3-avatar-col">
-        {!isConsecutive && (
-          <Avatar
-            name={displayName}
-            src={senderAvatarUrl}
-            size={36}
-            isBot={senderIsBot}
-            className={`v3-avatar ${senderIsBot ? 'bot' : ''}`}
-            style={{ borderRadius: 6 }}
-          />
-        )}
-      </div>
+      {!isSelf && (
+        <div className="v3-avatar-col">
+          {!isConsecutive && (
+            <Avatar
+              name={displayName}
+              src={senderAvatarUrl}
+              size={36}
+              isBot={senderIsBot}
+              className={`v3-avatar ${senderIsBot ? 'bot' : ''}`}
+              style={{ borderRadius: 6 }}
+            />
+          )}
+        </div>
+      )}
 
       <div className="v3-msg-body">
         <div className="v3-message-bubble">
@@ -820,41 +1081,61 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
           )}
 
           {replyMessage && (
-            <div style={{ padding: '4px 8px', background: 'rgba(255,255,255,0.05)', borderRadius: 4, marginBottom: 4, fontSize: 13, color: '#aaa', borderLeft: '3px solid var(--v3-primary)', width: 'fit-content' }}>
-              <span style={{opacity: 0.8}}>
+            <div
+              className="v3-inline-reply"
+              title={typeof replyMessage.content === 'string' ? replyMessage.content : undefined}
+            >
+              <span>
                 {typeof replyMessage.content === 'string' ? replyMessage.content.slice(0, 80) : '[media]'}
               </span>
             </div>
           )}
 
-          {!isSelf && showThinking && <WorkingProcess blocks={workingBlocks} />}
+          {!isSelf && showThinking && (
+            <WorkingProcess blocks={workingBlocks} complete={workingProcessComplete} />
+          )}
 
           {(hasText || richBlocks.length > 0) && (
             <div className="v3-message-content">
-              {hasText && (parsed ? (
-                <RichContent
-                  content={parsed}
-                  onPreviewFile={onPreviewFile}
-                  activePreviewFile={activePreviewFile}
-                />
+              {hasArtifactFirstSummary ? (
+                <>
+                  <div className="v3-message-deliverables" data-message-part="artifacts">
+                    {richBlocks.map((block, index) => (
+                      <RichContent
+                        key={`${block.type}-${index}`}
+                        content={block}
+                        onPreviewFile={onPreviewFile}
+                        activePreviewFile={activePreviewFile}
+                      />
+                    ))}
+                  </div>
+                  <div className="v3-message-followup-text" data-message-part="summary">
+                    {artifactFollowupSections || renderedMessageText}
+                    {message._streaming && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
+                  </div>
+                </>
               ) : (
-                <TextContent
-                  content={renderedTextContent}
-                  isGroup={isGroup}
-                  knownArtifacts={knownArtifacts}
-                  onPreviewFile={onPreviewFile}
-                  activePreviewFile={activePreviewFile}
-                />
-              ))}
-              {richBlocks.map((block, index) => (
-                <RichContent
-                  key={`${block.type}-${index}`}
-                  content={block}
-                  onPreviewFile={onPreviewFile}
-                  activePreviewFile={activePreviewFile}
-                />
-              ))}
-              {message._streaming && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
+                <>
+                  {artifactsFirst && richBlocks.map((block, index) => (
+                    <RichContent
+                      key={`${block.type}-${index}`}
+                      content={block}
+                      onPreviewFile={onPreviewFile}
+                      activePreviewFile={activePreviewFile}
+                    />
+                  ))}
+                  {renderedMessageText}
+                  {!artifactsFirst && richBlocks.map((block, index) => (
+                    <RichContent
+                      key={`${block.type}-${index}`}
+                      content={block}
+                      onPreviewFile={onPreviewFile}
+                      activePreviewFile={activePreviewFile}
+                    />
+                  ))}
+                  {message._streaming && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
+                </>
+              )}
             </div>
           )}
         </div>
@@ -920,6 +1201,8 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
   return prevProps.message === nextProps.message &&
     prevProps.workingMessages === nextProps.workingMessages &&
     prevProps.workingOnly === nextProps.workingOnly &&
+    prevProps.workingComplete === nextProps.workingComplete &&
+    prevProps.artifactsFirst === nextProps.artifactsFirst &&
     prevProps.isSelf === nextProps.isSelf &&
     prevProps.isGroup === nextProps.isGroup &&
     prevProps.senderName === nextProps.senderName &&

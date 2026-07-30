@@ -373,12 +373,27 @@ describe('LocalAssistantBar model selector', () => {
     const keyInput = container.querySelector('input[type="password"]');
     expect(keyInput.value).toBe('');
     expect(keyInput.placeholder).toContain('****cret');
-    const contextSelect = [...container.querySelectorAll('.v3-custom-model-editor select')]
-      .find((select) => [...select.options].some((option) => option.textContent === '1M'));
-    expect([...contextSelect.options].map((option) => option.textContent)).toEqual([
+    const backButton = container.querySelector('.v3-custom-model-heading button');
+    expect(backButton.getAttribute('aria-label')).toBe('返回模型列表');
+    expect(backButton.textContent).toBe('');
+    const protocolSelect = container.querySelector('.v3-custom-model-select-trigger[aria-label="API 协议"]');
+    expect(protocolSelect.closest('.v3-custom-model-select-wrap')).not.toBeNull();
+    expect(protocolSelect.querySelector('.v3-custom-model-select-chevron')).not.toBeNull();
+    const contextSelect = container.querySelector('.v3-custom-model-select-trigger[aria-label="上下文 Token"]');
+    expect(contextSelect.closest('.v3-custom-model-select-wrap').classList.contains('is-top')).toBe(true);
+    await act(async () => contextSelect.click());
+    const contextOptions = [...document.body.querySelectorAll('.v3-custom-model-select-option')];
+    expect(contextOptions.map((option) => option.textContent)).toEqual([
       '128K', '200K', '256K', '512K', '1M',
     ]);
-    expect(contextSelect.value).toBe('1000000');
+    expect(contextSelect.dataset.value).toBe('1000000');
+    const nextContext = contextOptions.find((option) => option.textContent === '512K');
+    await act(async () => {
+      nextContext.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      nextContext.click();
+    });
+    expect(contextSelect.dataset.value).toBe('512000');
+    expect(container.querySelector('.v3-model-menu')).not.toBeNull();
     await act(async () => {
       container.querySelector('.v3-custom-model-editor').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
@@ -387,7 +402,7 @@ describe('LocalAssistantBar model selector', () => {
       kind: 'custom',
       model_id: 'custom',
       custom: expect.objectContaining({
-        protocol: 'openai-responses', model: 'gpt-5.6-sol', api_key: '', context_window_tokens: 1000000,
+        protocol: 'openai-responses', model: 'gpt-5.6-sol', api_key: '', context_window_tokens: 512000,
       }),
     }));
   });
@@ -412,11 +427,13 @@ describe('LocalAssistantBar model selector', () => {
       .find((item) => item.textContent.includes('自定义模型'));
     await act(async () => customEntry.click());
 
-    const contextSelect = [...container.querySelectorAll('.v3-custom-model-editor select')]
-      .find((select) => select.value === '272000');
-    expect([...contextSelect.options].map((option) => option.textContent)).toEqual([
+    const contextSelect = container.querySelector('.v3-custom-model-select-trigger[aria-label="上下文 Token"]');
+    expect(contextSelect.dataset.value).toBe('272000');
+    await act(async () => contextSelect.click());
+    expect([...document.body.querySelectorAll('.v3-custom-model-select-option')].map((option) => option.textContent)).toEqual([
       '272K', '128K', '200K', '256K', '512K', '1M',
     ]);
+    await act(async () => contextSelect.click());
     await act(async () => {
       container.querySelector('.v3-custom-model-editor').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();

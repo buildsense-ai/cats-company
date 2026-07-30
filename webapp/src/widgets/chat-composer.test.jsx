@@ -86,6 +86,27 @@ describe('ChatComposer', () => {
     expect(textarea.getAttribute('aria-controls')).toBe('mention-picker');
     expect(textarea.getAttribute('aria-expanded')).toBe('true');
     expect(textarea.getAttribute('aria-activedescendant')).toBe('mention-option-42');
+    expect(textarea.getAttribute('aria-label')).toBe('输入指令，我帮您完成');
+    expect(textarea.getAttribute('name')).toBe('message');
+    expect(textarea.getAttribute('autocomplete')).toBe('off');
+  });
+
+  it('keeps reply context and live notices inside the shared composer surface', async () => {
+    await renderComposer({
+      context: <div className="test-context">回复：上一条消息</div>,
+      notices: <div className="v3-live-input-status">CatsCo 正在处理</div>,
+    });
+
+    const box = container.querySelector('.v3-composer-box');
+    const context = box.querySelector('.v3-composer-context');
+    const notices = box.querySelector('.v3-composer-notices');
+    const row = box.querySelector('.v3-composer-row');
+    expect(box.classList.contains('has-context')).toBe(true);
+    expect(box.classList.contains('has-notices')).toBe(true);
+    expect(context?.textContent).toContain('上一条消息');
+    expect(notices?.textContent).toContain('正在处理');
+    expect(context.nextElementSibling).toBe(notices);
+    expect(notices.nextElementSibling).toBe(row);
   });
 
   it('uses the same action slot for stop while working and send after input', async () => {

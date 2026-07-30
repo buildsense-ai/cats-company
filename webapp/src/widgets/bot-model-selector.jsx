@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Check, ChevronDown, ChevronRight, Loader2, Settings2 } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Loader2, Settings2 } from 'lucide-react';
 
 import { api } from '../api';
 import {
@@ -7,6 +7,7 @@ import {
   relayUsageTone,
   resolveConversationModelDisplay,
 } from '../utils/relay-usage';
+import CustomSelect from './custom-select';
 
 const APPLY_POLL_MS = 2000;
 const APPLY_SLOW_POLL_MS = 15000;
@@ -241,7 +242,14 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
   useEffect(() => {
     if (!menuOpen) return undefined;
     const closeOnOutsidePointer = (event) => {
-      if (!menuRef.current?.contains(event.target)) setMenuOpen(false);
+      const target = event.target;
+      if (
+        !menuRef.current?.contains(target)
+        && !(target instanceof Element
+          && target.closest('.v3-custom-model-select-options.is-portal'))
+      ) {
+        setMenuOpen(false);
+      }
     };
     const closeOnEscape = (event) => {
       if (event.key === 'Escape') setMenuOpen(false);
@@ -449,14 +457,25 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
             <form className="v3-custom-model-editor" onSubmit={saveCustomModel}>
               <div className="v3-custom-model-heading">
                 <span><Settings2 size={15} /> 自定义模型</span>
-                <button type="button" onClick={() => setCustomEditorOpen(false)}>返回列表</button>
+                <button
+                  type="button"
+                  aria-label="返回模型列表"
+                  title="返回模型列表"
+                  onClick={() => setCustomEditorOpen(false)}
+                >
+                  <ArrowLeft size={16} aria-hidden="true" />
+                </button>
               </div>
-              <label>
+              <div className="v3-custom-model-field">
                 <span>API 协议</span>
-                <select value={customDraft.protocol} onChange={(event) => setCustomDraft({ ...customDraft, protocol: event.target.value })}>
+                <CustomSelect
+                  ariaLabel="API 协议"
+                  value={customDraft.protocol}
+                  onValueChange={(protocol) => setCustomDraft({ ...customDraft, protocol })}
+                >
                   {CUSTOM_PROTOCOLS.map((protocol) => <option key={protocol.value} value={protocol.value}>{protocol.label}</option>)}
-                </select>
-              </label>
+                </CustomSelect>
+              </div>
               <label>
                 <span>API Base</span>
                 <input type="url" required placeholder="https://api.example.com/v1" value={customDraft.api_base} onChange={(event) => setCustomDraft({ ...customDraft, api_base: event.target.value })} />
@@ -476,14 +495,19 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                 />
               </label>
               <div className="v3-custom-model-grid">
-                <label>
+                <div className="v3-custom-model-field">
                   <span>上下文 Token</span>
-                  <select required value={customDraft.context_window_tokens} onChange={(event) => setCustomDraft({ ...customDraft, context_window_tokens: event.target.value })}>
+                  <CustomSelect
+                    ariaLabel="上下文 Token"
+                    placement="top"
+                    value={customDraft.context_window_tokens}
+                    onValueChange={(contextWindowTokens) => setCustomDraft({ ...customDraft, context_window_tokens: contextWindowTokens })}
+                  >
                     {customContextWindowOptions(customDraft.context_window_tokens).map((tokens) => (
                       <option key={tokens} value={tokens}>{formatModelContextWindowTokens(tokens)}</option>
                     ))}
-                  </select>
-                </label>
+                  </CustomSelect>
+                </div>
                 <label>
                   <span>最大输出 Token</span>
                   <input type="number" min="0" max="1000000" placeholder="使用服务默认" value={customDraft.max_tokens} onChange={(event) => setCustomDraft({ ...customDraft, max_tokens: event.target.value })} />
@@ -492,12 +516,17 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                   <span>温度</span>
                   <input type="number" min="0" max="2" step="0.1" placeholder="使用服务默认" value={customDraft.temperature} onChange={(event) => setCustomDraft({ ...customDraft, temperature: event.target.value })} />
                 </label>
-                <label>
+                <div className="v3-custom-model-field">
                   <span>推理强度</span>
-                  <select value={customDraft.reasoning_effort} onChange={(event) => setCustomDraft({ ...customDraft, reasoning_effort: event.target.value })}>
+                  <CustomSelect
+                    ariaLabel="推理强度"
+                    placement="top"
+                    value={customDraft.reasoning_effort}
+                    onValueChange={(reasoningEffort) => setCustomDraft({ ...customDraft, reasoning_effort: reasoningEffort })}
+                  >
                     {CUSTOM_REASONING_EFFORTS.map((effort) => <option key={effort || 'default'} value={effort}>{effort ? reasoningEffortLabel(effort) : '使用接口默认'}</option>)}
-                  </select>
-                </label>
+                  </CustomSelect>
+                </div>
               </div>
               <button type="submit" className="v3-custom-model-save" disabled={transitioning}>
                 {savingKey ? <Loader2 className="v3-model-switch-spinner" size={14} /> : <Check size={14} />}

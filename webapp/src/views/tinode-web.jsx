@@ -301,7 +301,9 @@ function TinodeWebApp() {
   const unlockLiquidTheme = useCallback(async (password, requestedTheme = 'liquid') => {
     const unlocked = await verifyLiquidThemePassword(password);
     if (!unlocked) throw new Error('密码不正确。');
-    saveLiquidThemeUnlock();
+    if (!saveLiquidThemeUnlock()) {
+      throw new Error('浏览器未能保存解锁状态，请检查站点存储设置。');
+    }
     setLiquidThemeAccess({ loading: false, unlocked: true });
     const normalized = normalizeTheme(requestedTheme);
     setTheme(isLiquidTheme(normalized) ? normalized : 'liquid');
@@ -878,6 +880,18 @@ function TinodeWebApp() {
     return <AgentEntryBindView sceneKey={entrySceneKey} />;
   }
 
+  const localAssistantBar = (
+    <LocalAssistantBar
+      agentModelState={displayedAgentModel}
+      activeAgent={displayedActiveAgent}
+      currentModelName={currentModelName}
+      onDownload={() => setShowDownloadModal(true)}
+      onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
+      title={activeTopic?.name || taskDraftTitle(taskDraft)}
+      onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
+    />
+  );
+
   return (
     <div
       ref={appShellRef}
@@ -990,17 +1004,9 @@ function TinodeWebApp() {
         >
           <PanelLeftOpen size={18} />
         </button>
-        <LocalAssistantBar
-          agentModelState={displayedAgentModel}
-          activeAgent={displayedActiveAgent}
-          currentModelName={currentModelName}
-          onDownload={() => setShowDownloadModal(true)}
-          onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
-          title={activeTopic?.name || taskDraftTitle(taskDraft)}
-          onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
-        />
         {activeTopic ? (
           <MessagesView
+            topBar={localAssistantBar}
             topic={activeTopic.topicId}
             topicName={activeTopic.name}
             user={user}
@@ -1016,13 +1022,16 @@ function TinodeWebApp() {
             cloudArtifactsRequest={cloudArtifactsRequest}
           />
         ) : (
-          <NoActiveTask
-            key={taskDraft?.key || 'new-task'}
-            user={user}
-            initialAgent={taskDraft?.agent}
-            onResolveAgentTopic={createDraftAgentTaskTopic}
-            onActivateTopic={activateResolvedTopic}
-          />
+          <>
+            {localAssistantBar}
+            <NoActiveTask
+              key={taskDraft?.key || 'new-task'}
+              user={user}
+              initialAgent={taskDraft?.agent}
+              onResolveAgentTopic={createDraftAgentTaskTopic}
+              onActivateTopic={activateResolvedTopic}
+            />
+          </>
         )}
       </div>
 

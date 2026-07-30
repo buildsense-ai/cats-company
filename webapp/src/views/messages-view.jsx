@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 import { CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
@@ -24,7 +24,6 @@ const HISTORY_AUTO_LOAD_THRESHOLD = 120;
 const HISTORY_REQUEST_TIMEOUT_MS = 15000;
 const HISTORY_AUTO_FILL_MAX_PAGES = 6;
 const STICK_TO_BOTTOM_THRESHOLD = 96;
-const QUESTION_NAV_BOTTOM_EPSILON = 2;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
@@ -232,6 +231,7 @@ function cacheHistoryPage(cache, key, entry) {
 }
 
 export default function MessagesView({
+  topBar = null,
   topic,
   topicName,
   user,
@@ -306,6 +306,7 @@ export default function MessagesView({
   const timelineRef = useRef(null);
   const pendingQuestionJumpRef = useRef('');
   const questionJumpReleaseTimerRef = useRef(null);
+  const visibleQuestionAnchorsRef = useRef(new Map());
   const previousScrollRef = useRef(null);
   const stickToBottomRef = useRef(true);
   const fileInputRef = useRef(null);
@@ -326,6 +327,7 @@ export default function MessagesView({
   const peerProfileRequestRef = useRef(0);
   const artifactRegistryRequestRef = useRef(0);
   const historyCacheRef = useRef(new Map());
+  const groupProfileCacheRef = useRef(new Map());
   const hasMoreHistoryRef = useRef(false);
   const loadingOlderRef = useRef(false);
   const activeTopicRef = useRef(topic);
@@ -597,8 +599,11 @@ export default function MessagesView({
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
     setCloudArtifactsTab('active');
-    setMembers([]);
-    setGroupInfo(null);
+    const cachedGroupProfile = isGroup && groupId
+      ? groupProfileCacheRef.current.get(String(groupId))
+      : null;
+    setMembers(cachedGroupProfile?.members || []);
+    setGroupInfo(cachedGroupProfile?.group || null);
     setPeerProfile(null);
     setHistoryLoaded(Boolean(cachedHistory));
     setHistoryError('');
@@ -683,13 +688,20 @@ export default function MessagesView({
     try {
       const res = await api.getGroupInfo(requestGroupID);
       if (requestID !== groupMembersRequestRef.current || activeTopicRef.current !== requestTopic) return;
-      if (res.members) {
-        setMembers(res.members);
-      }
-      if (res.group) {
-        setGroupInfo(res.group);
-      }
+      const cachedProfile = groupProfileCacheRef.current.get(String(requestGroupID));
+      const nextMembers = Array.isArray(res.members)
+        ? res.members
+        : (cachedProfile?.members || []);
+      const nextGroup = res.group || cachedProfile?.group || null;
+      groupProfileCacheRef.current.set(String(requestGroupID), {
+        members: nextMembers,
+        group: nextGroup,
+      });
+      setMembers(nextMembers);
+      setGroupInfo(nextGroup);
     } catch (e) {
+      // Cached members, the Agent roster, and message metadata keep sender identity
+      // stable while group details are temporarily unavailable.
     }
   };
 
@@ -1573,6 +1585,11 @@ export default function MessagesView({
     setInput(val);
     updateComposerDraft(topic, val);
     updateStructuredMentionDraft(topic, nextStructuredMentions);
+    if (!val.trim()) {
+      setAttachmentStatus((current) => (
+        current?.source === 'edit-resend' ? null : current
+      ));
+    }
 
     // Detect @mention trigger
     if (isGroup) {
@@ -1861,7 +1878,8 @@ export default function MessagesView({
   // Find the display name for a uid in group context
   const getMemberName = (fromUid) => {
     if (!isGroup || !members.length) return null;
-    const m = members.find((mem) => mem.user_id === fromUid);
+    const normalizedUID = parseUid(fromUid);
+    const m = members.find((mem) => parseUid(mem.user_id) === normalizedUID);
     return m ? (m.display_name || m.username) : `usr${fromUid}`;
   };
 
@@ -1915,11 +1933,15 @@ export default function MessagesView({
   const isAgentTask = isGroup && Boolean(
     groupInfo?.is_agent_task || groupInfo?.kind === 'agent_task',
   );
-  const availableAgentUIDs = useMemo(() => new Set(
+  const availableAgentByUID = useMemo(() => new Map(
     availableAgents
-      .map((agent) => Number(agent.uid || agent.id))
-      .filter((uid) => Number.isFinite(uid) && uid > 0),
+      .map((agent) => [parseUid(agent.uid || agent.id), agent])
+      .filter(([uid]) => uid > 0),
   ), [availableAgents]);
+  const availableAgentUIDs = useMemo(
+    () => new Set(availableAgentByUID.keys()),
+    [availableAgentByUID],
+  );
   const taskBotUIDs = useMemo(() => {
     if (!isAgentTask) return [];
     return members
@@ -2128,10 +2150,27 @@ export default function MessagesView({
   const memberMap = useMemo(() => {
     const map = new Map();
     members.forEach((member) => {
-      map.set(member.user_id, member);
+      const uid = parseUid(member?.user_id);
+      if (uid > 0) map.set(uid, member);
     });
     return map;
   }, [members]);
+  const inferredAgentUIDs = useMemo(() => {
+    const uids = new Set(availableAgentUIDs);
+    members.forEach((member) => {
+      if (member?.is_bot || member?.account_type === 'bot') {
+        const uid = parseUid(member.user_id);
+        if (uid > 0) uids.add(uid);
+      }
+    });
+    messages.forEach((message) => {
+      if (isWorkingMessage(message) || isAssistantAuthoredMessage(message)) {
+        const uid = parseUid(message?.from_uid);
+        if (uid > 0) uids.add(uid);
+      }
+    });
+    return uids;
+  }, [availableAgentUIDs, members, messages]);
 
   const messageById = useMemo(() => {
     const map = new Map();
@@ -2150,11 +2189,22 @@ export default function MessagesView({
       };
     }
     if (isGroup) {
-      const member = memberMap.get(msg.from_uid);
+      const senderUID = parseUid(msg.from_uid);
+      const member = memberMap.get(senderUID);
+      const rosterAgent = availableAgentByUID.get(senderUID);
+      const senderProfile = member || rosterAgent;
       return {
-        name: member ? (member.display_name || member.username) : `usr${msg.from_uid}`,
-        avatarUrl: member?.avatar_url,
-        isBot: member?.is_bot,
+        name: senderProfile
+          ? (senderProfile.display_name || senderProfile.username)
+          : `usr${senderUID || msg.from_uid}`,
+        avatarUrl: senderProfile?.avatar_url,
+        isBot: Boolean(
+          member?.is_bot
+          || member?.account_type === 'bot'
+          || rosterAgent
+          || inferredAgentUIDs.has(senderUID)
+          || isAssistantAuthoredMessage(msg),
+        ),
       };
     }
     return {
@@ -2167,42 +2217,154 @@ export default function MessagesView({
   // Group messages into working areas and text messages with consecutive checking
   const groupedMessages = useMemo(() => {
     const groups = [];
+    const workingByExplicitTurn = new Map();
+    const workingByFallbackTurn = new Map();
     let currentWorking = null;
+    let latestHumanPromptKey = '';
     let prevSenderUid = null;
     let prevTime = 0;
 
-    messages.forEach(msg => {
+    const registerWorkingGroup = (group) => {
+      if (group.explicitTurnKey) {
+        workingByExplicitTurn.set(group.explicitTurnKey, group);
+      }
+      if (group.fallbackTurnKey) {
+        workingByFallbackTurn.set(group.fallbackTurnKey, group);
+      }
+    };
+
+    const flushCurrentWorking = () => {
+      if (!currentWorking) return;
+      groups.push(currentWorking);
+      registerWorkingGroup(currentWorking);
+      currentWorking = null;
+    };
+
+    const findWorkingGroup = ({ explicitTurnKey, fallbackTurnKey }) => {
+      if (explicitTurnKey) {
+        const explicitMatch = workingByExplicitTurn.get(explicitTurnKey);
+        if (explicitMatch) return explicitMatch;
+        const fallbackMatch = fallbackTurnKey
+          ? workingByFallbackTurn.get(fallbackTurnKey)
+          : null;
+        return fallbackMatch && !fallbackMatch.explicitTurnKey ? fallbackMatch : null;
+      }
+      return fallbackTurnKey ? workingByFallbackTurn.get(fallbackTurnKey) : null;
+    };
+
+    const belongsToCurrentWorking = ({ explicitTurnKey, fallbackTurnKey }) => {
+      if (!currentWorking) return false;
+      if (
+        currentWorking.explicitTurnKey
+        && explicitTurnKey
+        && currentWorking.explicitTurnKey !== explicitTurnKey
+      ) {
+        return false;
+      }
+      if (currentWorking.fallbackTurnKey && fallbackTurnKey) {
+        return currentWorking.fallbackTurnKey === fallbackTurnKey;
+      }
+      return true;
+    };
+
+    messages.forEach((msg, index) => {
       const msgTime = new Date(msg.created_at || Date.now()).getTime();
       const senderUid = msg.from_uid;
       const isConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
+      const sender = getSender(msg);
+      const assistantAuthored = isAssistantAuthoredMessage(msg, sender.isBot);
+
+      if (isFinalTextMessage(msg) && !assistantAuthored) {
+        latestHumanPromptKey = messageTurnIdentity(msg, index);
+      }
+
+      const turn = assistantWorkTurn(msg, sender.isBot, latestHumanPromptKey);
 
       if (isWorkingMessage(msg)) {
-        if (!currentWorking) {
-          currentWorking = { type: 'working', messages: [], sender: getSender(msg), isConsecutive: isConsecutive };
+        let leadingNarrativeMessages = [];
+        if (messageHasActionTool(msg)) {
+          const previousGroup = groups[groups.length - 1];
+          const previousMessage = previousGroup?.message;
+          const sameSender = messageSenderIdentity(previousMessage) === messageSenderIdentity(msg);
+          const explicitTurnConflict = Boolean(
+            previousGroup?.explicitTurnKey
+            && turn.explicitTurnKey
+            && previousGroup.explicitTurnKey !== turn.explicitTurnKey
+          );
+          const fallbackTurnConflict = Boolean(
+            previousGroup?.fallbackTurnKey
+            && turn.fallbackTurnKey
+            && previousGroup.fallbackTurnKey !== turn.fallbackTurnKey
+          );
+          if (
+            previousGroup?.type === 'text'
+            && previousGroup.assistantAuthored
+            && sameSender
+            && !explicitTurnConflict
+            && !fallbackTurnConflict
+            && !displayGroupHasDeliveryArtifact(previousGroup)
+          ) {
+            const sourceMessages = previousGroup.sourceMessages || [previousGroup.message];
+            leadingNarrativeMessages = sourceMessages.map(assistantProcessMessage);
+            groups.pop();
+          }
         }
-        currentWorking.messages.push(msg);
+
+        if (currentWorking && !belongsToCurrentWorking(turn)) {
+          flushCurrentWorking();
+        }
+
+        if (currentWorking) {
+          currentWorking.messages.push(...leadingNarrativeMessages, msg);
+          if (!currentWorking.explicitTurnKey && turn.explicitTurnKey) {
+            currentWorking.explicitTurnKey = turn.explicitTurnKey;
+          }
+          if (!currentWorking.fallbackTurnKey && turn.fallbackTurnKey) {
+            currentWorking.fallbackTurnKey = turn.fallbackTurnKey;
+          }
+        } else {
+          const existingWorking = findWorkingGroup(turn);
+          if (existingWorking) {
+            existingWorking.messages.push(...leadingNarrativeMessages, msg);
+            if (!existingWorking.explicitTurnKey && turn.explicitTurnKey) {
+              existingWorking.explicitTurnKey = turn.explicitTurnKey;
+            }
+            if (!existingWorking.fallbackTurnKey && turn.fallbackTurnKey) {
+              existingWorking.fallbackTurnKey = turn.fallbackTurnKey;
+            }
+            registerWorkingGroup(existingWorking);
+          } else {
+            currentWorking = {
+              type: 'working',
+              messages: [...leadingNarrativeMessages, msg],
+              sender,
+              isConsecutive,
+              explicitTurnKey: turn.explicitTurnKey,
+              fallbackTurnKey: turn.fallbackTurnKey,
+            };
+          }
+        }
         prevSenderUid = senderUid;
         prevTime = msgTime;
       } else {
-        if (currentWorking) {
-          groups.push(currentWorking);
-          currentWorking = null;
-        }
+        flushCurrentWorking();
+        const displayMessage = msg;
         // Recalculate isConsecutive in case a working block just processed
         const textIsConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
-        const sender = getSender(msg);
         const previousGroup = groups[groups.length - 1];
         const previousSourceMessages = previousGroup?.type === 'text'
           ? (previousGroup.sourceMessages || [previousGroup.message])
           : [];
         const previousMessage = previousSourceMessages[previousSourceMessages.length - 1];
 
-        if (shouldMergeAssistantReply(previousMessage, msg, previousGroup?.sender, sender, user.uid)) {
-          const sourceMessages = [...previousSourceMessages, msg];
+        if (shouldMergeAssistantReply(previousMessage, displayMessage, previousGroup?.sender, sender, user.uid)) {
+          const sourceMessages = [...previousSourceMessages, displayMessage];
           groups[groups.length - 1] = {
             ...previousGroup,
             message: mergeAssistantDisplayMessages(sourceMessages),
             sourceMessages,
+            explicitTurnKey: previousGroup.explicitTurnKey || turn.explicitTurnKey,
+            fallbackTurnKey: previousGroup.fallbackTurnKey || turn.fallbackTurnKey,
           };
           prevSenderUid = senderUid;
           prevTime = msgTime;
@@ -2211,23 +2373,72 @@ export default function MessagesView({
 
         groups.push({
           type: 'text',
-          message: msg,
-          sourceMessages: [msg],
+          message: displayMessage,
+          sourceMessages: [displayMessage],
           sender,
-          replyMessage: msg.reply_to ? (messageById.get(msg.reply_to) || null) : null,
+          replyMessage: displayMessage.reply_to ? (messageById.get(displayMessage.reply_to) || null) : null,
           isConsecutive: textIsConsecutive,
+          assistantAuthored,
+          explicitTurnKey: turn.explicitTurnKey,
+          fallbackTurnKey: turn.fallbackTurnKey,
         });
         prevSenderUid = senderUid;
         prevTime = msgTime;
       }
     });
 
-    if (currentWorking) {
-      groups.push(currentWorking);
-    }
+    flushCurrentWorking();
 
-    return groups;
-  }, [messages, user.uid, isGroup, memberMap, messageById, peerProfile, peerIsBot, topicName, topic, topicAvatarUrl]);
+    return reorderAssistantTurnGroups(groups);
+  }, [
+    availableAgentByUID,
+    inferredAgentUIDs,
+    isGroup,
+    memberMap,
+    messageById,
+    messages,
+    peerIsBot,
+    peerProfile,
+    topic,
+    topicAvatarUrl,
+    topicName,
+    user.uid,
+  ]);
+  const hasPersistedRuntimePlan = useMemo(() => {
+    if (!runtimePlan) return false;
+
+    let latestHumanPromptIndex = -1;
+    messages.forEach((message, index) => {
+      const senderIsBot = message.from_uid === user.uid
+        ? user.account_type === 'bot'
+        : isGroup
+          ? inferredAgentUIDs.has(parseUid(message.from_uid))
+          : peerIsBot;
+      if (isFinalTextMessage(message) && !isAssistantAuthoredMessage(message, senderIsBot)) {
+        latestHumanPromptIndex = index;
+      }
+    });
+
+    const currentTurnMessages = runtimePlan.turnKey
+      ? messages
+      : messages.slice(latestHumanPromptIndex + 1);
+    const latestPersistedPlan = [...currentTurnMessages].reverse().find((message) => (
+      messageContainsUpdatePlan(message)
+      && runtimePlanSourceMatches(message, runtimePlan)
+    ));
+    return Boolean(
+      latestPersistedPlan
+      && workingPlanMatchesRuntimePlan(latestPersistedPlan, runtimePlan)
+    );
+  }, [
+    isGroup,
+    inferredAgentUIDs,
+    messages,
+    peerIsBot,
+    runtimePlan,
+    user.account_type,
+    user.uid,
+  ]);
 
   const openTutorialTask = (task) => {
     setShowTutorialPicker(false);
@@ -2258,7 +2469,11 @@ export default function MessagesView({
     updateComposerDraft(topic, originalText);
     updateStructuredMentionDraft(topic, []);
     setReplyTo(null);
-    setAttachmentStatus({ tone: 'success', message: '已将原指令放回输入框，编辑后可直接发送。' });
+    setAttachmentStatus({
+      tone: 'success',
+      source: 'edit-resend',
+      message: '已将原指令放回输入框，编辑后可直接发送。',
+    });
     window.setTimeout(() => {
       const textarea = textareaRef.current;
       if (!textarea) return;
@@ -2294,32 +2509,50 @@ export default function MessagesView({
     }, QUESTION_JUMP_RELEASE_DELAY);
   }, []);
 
-  const syncActiveQuestion = useCallback((timeline = timelineRef.current) => {
-    if (!timeline) return;
+  useEffect(() => {
+    const timeline = timelineRef.current;
+    if (!timeline) return undefined;
     const anchors = Array.from(timeline.querySelectorAll('[data-conversation-question]'));
+    visibleQuestionAnchorsRef.current = new Map();
     if (anchors.length === 0) {
       setActiveQuestionKey('');
-      return;
+      return undefined;
     }
 
-    const timelineRect = timeline.getBoundingClientRect();
-    const readingLine = timelineRect.top + Math.min(160, timelineRect.height * 0.28);
-    let nextKey = anchors[0].dataset.conversationQuestion || '';
-    for (const anchor of anchors) {
-      if (anchor.getBoundingClientRect().top > readingLine) break;
-      nextKey = anchor.dataset.conversationQuestion || nextKey;
+    if (typeof window.IntersectionObserver !== 'function') {
+      const fallbackKey = anchors[0].dataset.conversationQuestion || '';
+      setActiveQuestionKey((current) => current || fallbackKey);
+      return undefined;
     }
-    const distanceToBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
-    if (distanceToBottom <= QUESTION_NAV_BOTTOM_EPSILON) {
-      nextKey = anchors[anchors.length - 1].dataset.conversationQuestion || nextKey;
-    }
-    setActiveQuestionKey((current) => current === nextKey ? current : nextKey);
-  }, []);
 
-  React.useLayoutEffect(() => {
-    if (pendingQuestionJumpRef.current) return;
-    syncActiveQuestion();
-  }, [questionNavigationItems, syncActiveQuestion]);
+    const observer = new window.IntersectionObserver((entries) => {
+      if (pendingQuestionJumpRef.current) return;
+      const visibleAnchors = visibleQuestionAnchorsRef.current;
+      entries.forEach((entry) => {
+        const key = entry.target.dataset.conversationQuestion || '';
+        if (!key) return;
+        if (entry.isIntersecting) {
+          visibleAnchors.set(key, entry.boundingClientRect.top);
+        } else {
+          visibleAnchors.delete(key);
+        }
+      });
+      const nextEntry = Array.from(visibleAnchors.entries())
+        .sort((left, right) => left[1] - right[1])[0];
+      if (!nextEntry) return;
+      setActiveQuestionKey((current) => current === nextEntry[0] ? current : nextEntry[0]);
+    }, {
+      root: timeline,
+      rootMargin: '-18% 0px -68% 0px',
+      threshold: 0,
+    });
+
+    anchors.forEach((anchor) => observer.observe(anchor));
+    return () => {
+      observer.disconnect();
+      visibleQuestionAnchorsRef.current = new Map();
+    };
+  }, [questionNavigationItems]);
 
   useEffect(() => () => {
     if (questionJumpReleaseTimerRef.current) {
@@ -2401,8 +2634,9 @@ export default function MessagesView({
     if (pendingQuestionKey) {
       setActiveQuestionKey((current) => current === pendingQuestionKey ? current : pendingQuestionKey);
       scheduleQuestionJumpRelease();
-    } else {
-      syncActiveQuestion(el);
+    } else if (stickToBottomRef.current && questionNavigationItems.length > 0) {
+      const latestQuestionKey = questionNavigationItems[questionNavigationItems.length - 1].key;
+      setActiveQuestionKey((current) => current === latestQuestionKey ? current : latestQuestionKey);
     }
     if (el.scrollTop <= HISTORY_AUTO_LOAD_THRESHOLD) {
       loadOlderHistory({ automatic: true });
@@ -2416,6 +2650,7 @@ export default function MessagesView({
         style={sidePanelOpen ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
       >
         <div ref={chatColumnRef} className="v3-chat-column">
+          {topBar}
           <div
             className={`v3-timeline${isDragActive ? ' is-drag-active' : ''}`}
             ref={timelineRef}
@@ -2504,6 +2739,7 @@ export default function MessagesView({
                   senderAvatarUrl={group.sender.avatarUrl}
                   senderIsBot={group.sender.isBot}
                   workingOnly
+                  workingComplete={group.workingComplete}
                   showThinking={showThinking}
                   isConsecutive={group.isConsecutive}
                   onPreviewFile={openFilePreview}
@@ -2534,14 +2770,17 @@ export default function MessagesView({
                 ? handleRegenerateMessage
                 : undefined}
               showThinking={showThinking}
-              isConsecutive={group.isConsecutive}
+              isConsecutive={showThinking
+                ? group.isConsecutive
+                : (group.isConsecutiveWithoutWorking ?? group.isConsecutive)}
+              artifactsFirst={group.artifactsFirst}
               onPreviewFile={openFilePreview}
               activePreviewFile={previewFile}
               knownArtifacts={knownArtifacts}
             />
           );
         })}
-          {runtimePlan && <RuntimePlanCard plan={runtimePlan} />}
+          {runtimePlan && !hasPersistedRuntimePlan && <RuntimePlanCard plan={runtimePlan} />}
           {peerTyping && (
             <div className="v3-peer-typing" role="status">
               <span className="v3-peer-typing-label">{t('typing')}</span>
@@ -2586,7 +2825,6 @@ export default function MessagesView({
           </div>
 
           <div className="cc-question-navigator-panel" aria-label="问题列表">
-            <div className="cc-question-navigator-heading">问题</div>
             <div className="cc-question-navigator-list">
               {questionNavigationItems.map((item, index) => {
                 const isActive = activeQuestionKey === item.key;
@@ -2626,26 +2864,6 @@ export default function MessagesView({
             )}
           </div>
         </nav>
-      )}
-
-      {/* Reply preview bar */}
-      {replyTo && (
-        <div className="oc-reply-bar">
-          <div className="oc-reply-bar-content">
-            <span className="oc-reply-bar-label">{t('chat_reply')}: </span>
-            <span className="oc-reply-bar-text">
-              {typeof replyTo.content === 'string' ? replyTo.content : '[media]'}
-            </span>
-          </div>
-          <button
-            type="button"
-            className="oc-reply-bar-close"
-            aria-label="取消回复"
-            onClick={() => setReplyTo(null)}
-          >
-            x
-          </button>
-        </div>
       )}
 
       <ChatComposer
@@ -2692,6 +2910,24 @@ export default function MessagesView({
         onCloseMenus={() => {
           setAttachmentMenuOpen(false);
         }}
+        context={replyTo && (
+          <div className="oc-reply-bar">
+            <div className="oc-reply-bar-content">
+              <span className="oc-reply-bar-label">{t('chat_reply')}：</span>
+              <span className="oc-reply-bar-text">
+                {typeof replyTo.content === 'string' ? replyTo.content : '[media]'}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="oc-reply-bar-close"
+              aria-label="取消回复"
+              onClick={() => setReplyTo(null)}
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+        )}
         attachments={pendingAttachments}
         attachmentRemovalDisabled={isUploadingAttachment || isSendingMessage}
         onRemoveAttachment={(index) => {
@@ -3065,8 +3301,15 @@ function runtimePlanFromMessage(data) {
   if (!data) return null;
   const explicitPlan = data.type === 'runtime_plan' || data.msg_type === 'runtime_plan';
   const plan = normalizeRuntimePlan(data.content);
-  if (plan) return plan;
-  return explicitPlan ? normalizeRuntimePlan(data.payload || data.metadata?.plan || data) : null;
+  const normalizedPlan = plan || (
+    explicitPlan ? normalizeRuntimePlan(data.payload || data.metadata?.plan || data) : null
+  );
+  if (!normalizedPlan) return null;
+  return {
+    ...normalizedPlan,
+    senderKey: messageSenderIdentity(data),
+    turnKey: assistantReplyTurnKey(data),
+  };
 }
 
 function normalizeRuntimePlan(content) {
@@ -3119,6 +3362,73 @@ function isRuntimePlanComplete(plan) {
   );
 }
 
+function messageContainsUpdatePlan(message) {
+  const storedBlocks = Array.isArray(message?.content_blocks) ? message.content_blocks : [];
+  return storedBlocks.some((block) => (
+    block?.type === 'tool_use'
+    && String(block?.name || block?.content || '').trim() === 'update_plan'
+  )) || (
+    message?.type === 'tool_use'
+    && String(message?.content || '').trim() === 'update_plan'
+  );
+}
+
+function runtimePlanSourceMatches(message, runtimePlan) {
+  const runtimeSenderKey = String(runtimePlan?.senderKey || '');
+  const messageSenderKey = messageSenderIdentity(message);
+  if (runtimeSenderKey && messageSenderKey && runtimeSenderKey !== messageSenderKey) {
+    return false;
+  }
+
+  const runtimeTurnKey = String(runtimePlan?.turnKey || '');
+  const messageTurnKey = assistantReplyTurnKey(message);
+  if (runtimeTurnKey && messageTurnKey && runtimeTurnKey !== messageTurnKey) {
+    return false;
+  }
+  return true;
+}
+
+function workingPlanMatchesRuntimePlan(message, runtimePlan) {
+  if (!messageContainsUpdatePlan(message) || !runtimePlanSourceMatches(message, runtimePlan)) {
+    return false;
+  }
+  const runtimeSteps = normalizedPlanSteps(runtimePlan?.steps);
+  if (runtimeSteps.length === 0) return false;
+
+  const storedBlocks = Array.isArray(message?.content_blocks) ? message.content_blocks : [];
+  const planBlock = [...storedBlocks].reverse().find((block) => (
+    block?.type === 'tool_use'
+    && String(block?.name || block?.content || '').trim() === 'update_plan'
+  ));
+  const isDirectPlanMessage = message?.type === 'tool_use'
+    && String(message?.content || '').trim() === 'update_plan';
+  if (!planBlock && !isDirectPlanMessage) return false;
+
+  const input = planBlock?.input
+    || planBlock?.metadata?.input
+    || message?.metadata?.input;
+  const persistedSteps = normalizedPlanSteps(input?.steps || input?.plan);
+  return persistedSteps.length === runtimeSteps.length
+    && persistedSteps.every((step, index) => (
+      step.text === runtimeSteps[index].text
+      && step.status === runtimeSteps[index].status
+    ));
+}
+
+function normalizedPlanSteps(steps) {
+  if (!Array.isArray(steps)) return [];
+  return steps
+    .map((step) => ({
+      text: String(
+        typeof step === 'string'
+          ? step
+          : (step?.text || step?.step || step?.title || step?.name || ''),
+      ).trim(),
+      status: normalizePlanStatus(typeof step === 'string' ? 'pending' : step?.status),
+    }))
+    .filter((step) => step.text);
+}
+
 function normalizeHistoryMessages(rawMessages) {
   const visibleMessages = [];
   for (const raw of rawMessages || []) {
@@ -3160,6 +3470,340 @@ function assistantReplyTurnKey(message) {
   return value == null ? '' : String(value).trim();
 }
 
+function messageSenderIdentity(message) {
+  const rawSender = message?.from_uid ?? message?.from ?? '';
+  const parsedSender = parseUid(rawSender);
+  return parsedSender ? String(parsedSender) : String(rawSender).trim();
+}
+
+function messageTurnIdentity(message, index) {
+  const value = message?.id
+    ?? message?.seq_id
+    ?? message?.seq
+    ?? message?.client_msg_id
+    ?? message?.created_at
+    ?? index;
+  return String(value);
+}
+
+function assistantWorkTurn(message, senderIsBot, latestHumanPromptKey) {
+  if (!isWorkingMessage(message) && !isAssistantAuthoredMessage(message, senderIsBot)) {
+    return { explicitTurnKey: '', fallbackTurnKey: '' };
+  }
+
+  const senderKey = messageSenderIdentity(message) || 'agent';
+  const explicitTurn = assistantReplyTurnKey(message);
+  return {
+    explicitTurnKey: explicitTurn ? `${senderKey}:turn:${explicitTurn}` : '',
+    fallbackTurnKey: latestHumanPromptKey ? `${senderKey}:prompt:${latestHumanPromptKey}` : '',
+  };
+}
+
+function assistantProcessMessage(message) {
+  const content = assistantOutputText(message);
+  return {
+    ...message,
+    type: 'text',
+    content,
+    content_blocks: [],
+    _display_text_role: 'process',
+  };
+}
+
+function messageHasDeliveryArtifact(message) {
+  if (Array.isArray(message?.content_blocks)) {
+    if (message.content_blocks.some((block) => block?.type === 'file' || block?.type === 'image')) {
+      return true;
+    }
+  }
+
+  let content = message?.content;
+  if (typeof content === 'string') {
+    try {
+      content = JSON.parse(content);
+    } catch (error) {
+      return false;
+    }
+  }
+  return content?.type === 'file' || content?.type === 'image';
+}
+
+function displayGroupHasDeliveryArtifact(group) {
+  const sourceMessages = group?.sourceMessages || (group?.message ? [group.message] : []);
+  return sourceMessages.some(messageHasDeliveryArtifact);
+}
+
+function deliveryArtifactBlocks(message) {
+  if (Array.isArray(message?.content_blocks)) {
+    const storedBlocks = message.content_blocks.filter(
+      (block) => block?.type === 'file' || block?.type === 'image',
+    );
+    if (storedBlocks.length > 0) return storedBlocks;
+  }
+
+  let content = message?.content;
+  if (typeof content === 'string') {
+    try {
+      content = JSON.parse(content);
+    } catch (error) {
+      return [];
+    }
+  }
+  return content?.type === 'file' || content?.type === 'image' ? [content] : [];
+}
+
+function hasAssistantBlockFormatting(value) {
+  const text = String(value || '');
+  return /(?:^|\n)[\t ]*(?:#{1,6}[\t ]+|[-*+][\t ]+|\d+[.)][\t ]+|>[\t ]+|```|~~~|\|.+\|[\t ]*$)/m.test(text);
+}
+
+function assistantTextFragmentBoundary(previous, next) {
+  if (
+    previous.includes('\n')
+    || next.includes('\n')
+    || hasAssistantBlockFormatting(previous)
+    || hasAssistantBlockFormatting(next)
+  ) {
+    return '\n\n';
+  }
+
+  const previousCharacter = previous.at(-1) || '';
+  const nextCharacter = next.charAt(0);
+  const cjkCharacterOrPunctuation = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/u;
+  if (
+    cjkCharacterOrPunctuation.test(previousCharacter)
+    || cjkCharacterOrPunctuation.test(nextCharacter)
+  ) {
+    return '';
+  }
+  if (
+    /[\s([{'"“‘]$/u.test(previous)
+    || /^[\s,.;:!?)}\]'"”’]/u.test(next)
+  ) {
+    return '';
+  }
+  return ' ';
+}
+
+function mergeAssistantTextFragments(fragments) {
+  const normalized = fragments
+    .map((fragment) => String(fragment || '').trim())
+    .filter(Boolean);
+  let merged = '';
+  let previous = '';
+  for (const next of normalized) {
+    if (!merged) {
+      merged = next;
+    } else {
+      merged += `${assistantTextFragmentBoundary(previous, next)}${next}`;
+    }
+    previous = next;
+  }
+  return merged;
+}
+
+function assistantOutputText(message) {
+  const textBlocks = Array.isArray(message?.content_blocks)
+    ? message.content_blocks
+      .filter((block) => block?.type === 'text')
+      .map((block) => String(block.text || block.content || '').trim())
+      .filter(Boolean)
+    : [];
+  if (textBlocks.length > 0) return textBlocks.join('\n\n');
+
+  const content = typeof message?.content === 'string' ? message.content.trim() : '';
+  if (content) {
+    try {
+      const parsed = JSON.parse(content);
+      if (parsed?.type === 'file' || parsed?.type === 'image') return '';
+    } catch (error) {
+      // Plain assistant text.
+    }
+  }
+  if (/^\[(?:文件|图片)\]\s*[^\n]*$/u.test(content)) return '';
+  return content;
+}
+
+function mergeAssistantOutputGroups(groups) {
+  if (groups.length === 0) return null;
+
+  const sourceMessages = groups.flatMap((group) => (
+    group.sourceMessages || (group.message ? [group.message] : [])
+  ));
+  const artifactBlocks = sourceMessages.flatMap(deliveryArtifactBlocks);
+  const hasArtifacts = artifactBlocks.length > 0;
+  const textByRole = new Map();
+
+  sourceMessages.forEach((message) => {
+    const text = assistantOutputText(message);
+    if (!text) return;
+
+    let role = message?._display_text_role || 'body';
+    if (role === 'body' && hasArtifacts) {
+      role = 'result';
+    }
+    const fragments = textByRole.get(role) || [];
+    fragments.push(text);
+    textByRole.set(role, fragments);
+  });
+
+  const textRoles = hasArtifacts
+    ? ['result', 'body', 'process']
+    : ['body', 'process', 'result'];
+  const textBlocks = textRoles
+    .map((role) => {
+      const text = mergeAssistantTextFragments(textByRole.get(role) || []);
+      return text ? { type: 'text', text, presentation_role: role } : null;
+    })
+    .filter(Boolean);
+  const content = textBlocks.map((block) => block.text).join('\n\n');
+  const contentBlocks = [
+    ...artifactBlocks,
+    ...textBlocks,
+  ];
+  const lastGroup = groups[groups.length - 1];
+
+  return {
+    ...lastGroup,
+    message: {
+      ...lastGroup.message,
+      content,
+      content_blocks: contentBlocks,
+    },
+    sourceMessages,
+    sender: groups[0].sender || lastGroup.sender,
+    replyMessage: lastGroup.replyMessage || null,
+    explicitTurnKey: lastGroup.explicitTurnKey || groups.find((group) => group.explicitTurnKey)?.explicitTurnKey || '',
+    fallbackTurnKey: lastGroup.fallbackTurnKey || groups.find((group) => group.fallbackTurnKey)?.fallbackTurnKey || '',
+    artifactsFirst: artifactBlocks.length > 0,
+  };
+}
+
+function messageHasActionTool(message) {
+  const messageTypes = [message?.type, message?.msg_type].filter(Boolean);
+  if (messageTypes.includes('tool_use')) {
+    return String(message?.content || '').trim() !== 'update_plan';
+  }
+  return Array.isArray(message?.content_blocks) && message.content_blocks.some((block) => (
+    block?.type === 'tool_use'
+    && String(block.name || block.content || '').trim() !== 'update_plan'
+  ));
+}
+
+function displayGroupHasExplicitProcessText(group) {
+  if (displayGroupHasDeliveryArtifact(group)) return false;
+  const sourceMessages = group?.sourceMessages || (group?.message ? [group.message] : []);
+  return sourceMessages.some((message) => (
+    message?._display_text_role === 'process'
+    || isWorkingTextMessage(message)
+    || message?.content_blocks?.some((block) => (
+      block?.type === 'text' && block.presentation_role === 'process'
+    ))
+  ));
+}
+
+function reorderAssistantTurnBundle(groups) {
+  if (!groups.some((group) => group.type === 'working')) {
+    return groups;
+  }
+
+  const firstIsConsecutive = Boolean(groups[0]?.isConsecutive);
+  const sourceWorkingGroups = groups.filter((group) => group.type === 'working');
+  const processGroupIndexes = new Set();
+  groups.forEach((group, index) => {
+    if (group.type !== 'text' || displayGroupHasDeliveryArtifact(group)) return;
+    if (displayGroupHasExplicitProcessText(group)) {
+      processGroupIndexes.add(index);
+    }
+  });
+  const executionMessages = groups.flatMap((group, index) => {
+    if (group.type === 'working') return group.messages || [];
+    if (!processGroupIndexes.has(index)) return [];
+    const sourceMessages = group.sourceMessages || (group.message ? [group.message] : []);
+    return sourceMessages.map(assistantProcessMessage);
+  });
+  const outputGroups = groups.filter((group, index) => (
+    group.type !== 'working' && !processGroupIndexes.has(index)
+  ));
+  const mergedOutput = mergeAssistantOutputGroups(outputGroups);
+  const workingGroups = sourceWorkingGroups.length > 0
+    ? [{
+      ...sourceWorkingGroups[0],
+      messages: executionMessages,
+      workingComplete: Boolean(mergedOutput),
+      explicitTurnKey: [...sourceWorkingGroups].reverse().find((group) => group.explicitTurnKey)?.explicitTurnKey || '',
+      fallbackTurnKey: [...sourceWorkingGroups].reverse().find((group) => group.fallbackTurnKey)?.fallbackTurnKey || '',
+    }]
+    : [];
+  const ordered = [...workingGroups, ...(mergedOutput ? [mergedOutput] : [])];
+  let firstOutputFound = false;
+
+  return ordered.map((group, index) => {
+    const next = {
+      ...group,
+      isConsecutive: index === 0 ? firstIsConsecutive : true,
+    };
+    if (group.type !== 'working') {
+      if (!firstOutputFound) {
+        next.isConsecutiveWithoutWorking = firstIsConsecutive;
+        firstOutputFound = true;
+      }
+      if (displayGroupHasDeliveryArtifact(group)) {
+        next.artifactsFirst = true;
+      }
+    }
+    return next;
+  });
+}
+
+function reorderAssistantSegment(groups) {
+  const entries = [];
+
+  for (const group of groups) {
+    const senderKey = messageSenderIdentity(
+      group?.messages?.[0] || group?.message,
+    ) || String(group?.sender?.name || '');
+    const turnKey = group?.fallbackTurnKey || group?.explicitTurnKey || '';
+    let bundle = entries[entries.length - 1];
+    const conflictsWithCurrentTurn = Boolean(
+      bundle?.turnKey
+      && turnKey
+      && bundle.turnKey !== turnKey
+    );
+    if (!bundle || bundle.senderKey !== senderKey || conflictsWithCurrentTurn) {
+      bundle = { type: 'bundle', senderKey, turnKey, groups: [] };
+      entries.push(bundle);
+    } else if (!bundle.turnKey && turnKey) {
+      bundle.turnKey = turnKey;
+    }
+    bundle.groups.push(group);
+  }
+
+  return entries.flatMap((entry) => reorderAssistantTurnBundle(entry.groups));
+}
+
+function reorderAssistantTurnGroups(groups) {
+  const ordered = [];
+  let assistantSegment = [];
+
+  const flushAssistantSegment = () => {
+    if (assistantSegment.length === 0) return;
+    ordered.push(...reorderAssistantSegment(assistantSegment));
+    assistantSegment = [];
+  };
+
+  for (const group of groups) {
+    if (group.type === 'working' || group.assistantAuthored) {
+      assistantSegment.push(group);
+      continue;
+    }
+    flushAssistantSegment();
+    ordered.push(group);
+  }
+  flushAssistantSegment();
+  return ordered;
+}
+
 function messageCreatedAtMs(message) {
   const timestamp = new Date(message?.created_at || '').getTime();
   return Number.isFinite(timestamp) ? timestamp : null;
@@ -3197,10 +3841,9 @@ function mergeAssistantDisplayMessages(sourceMessages) {
   const lastMessage = sourceMessages[sourceMessages.length - 1];
   return {
     ...lastMessage,
-    content: sourceMessages
-      .map((message) => String(message.content || '').trim())
-      .filter(Boolean)
-      .join('\n\n'),
+    content: mergeAssistantTextFragments(
+      sourceMessages.map((message) => String(message.content || '')),
+    ),
     content_blocks: [],
     _display_source_messages: sourceMessages,
   };
@@ -3208,6 +3851,7 @@ function mergeAssistantDisplayMessages(sourceMessages) {
 
 function RuntimePlanCard({ plan }) {
   const [open, setOpen] = useState(false);
+  const stepsID = `runtime-plan-steps-${useId().replace(/:/g, '')}`;
   if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) return null;
 
   const completed = plan.steps.filter((step) => step.status === 'completed').length;
@@ -3215,14 +3859,27 @@ function RuntimePlanCard({ plan }) {
 
   return (
     <div className="v3-runtime-plan-card" role="status">
-      <button className="v3-runtime-plan-toggle" type="button" onClick={() => setOpen(!open)}>
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+      <button
+        className="v3-runtime-plan-toggle"
+        type="button"
+        aria-expanded={open}
+        aria-controls={stepsID}
+        onClick={() => setOpen(!open)}
+      >
+        {open
+          ? <ChevronDown size={14} aria-hidden="true" />
+          : <ChevronRight size={14} aria-hidden="true" />}
         <span className="v3-runtime-plan-title">计划</span>
         <span className="v3-runtime-plan-count">{completed}/{plan.steps.length}</span>
         {!open && current && <span className="v3-runtime-plan-current">{current.text}</span>}
       </button>
       {open && (
-        <div className="v3-runtime-plan-steps">
+        <div
+          id={stepsID}
+          className="v3-runtime-plan-steps"
+          role="region"
+          aria-label="实时计划步骤"
+        >
           {plan.steps.map((step, index) => (
             <div className={`v3-runtime-plan-step ${step.status}`} key={`${index}-${step.text}`}>
               {step.status === 'completed'

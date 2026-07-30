@@ -153,6 +153,9 @@ func TestPostgresStoreContract(t *testing.T) {
 	if err := db.AddGroupMember(groupID, botID, "member"); err != nil {
 		t.Fatalf("add bot group member: %v", err)
 	}
+	t.Run("project group assignment respects membership", func(t *testing.T) {
+		assertProjectGroupAssignmentAccess(t, db, groupID, friendID)
+	})
 	members, err = db.GetGroupMembers(groupID)
 	if err != nil {
 		t.Fatalf("get group members with bot: %v", err)
@@ -318,6 +321,56 @@ func TestPostgresStoreContract(t *testing.T) {
 		Attachments: []types.FeedbackAttachment{{FileKey: "file-key", URL: "/uploads/a.png", Name: "a.png"}},
 	}); err != nil {
 		t.Fatalf("create feedback report: %v", err)
+	}
+}
+
+func assertProjectGroupAssignmentAccess(t *testing.T, db *Adapter, groupID, memberID int64) {
+	t.Helper()
+
+	if err := db.AddGroupMember(groupID, memberID, "member"); err != nil {
+		t.Fatalf("add project-assignment group member: %v", err)
+	}
+	memberProject, err := db.CreateProject(memberID, "Member group project")
+	if err != nil {
+		t.Fatalf("create group member project: %v", err)
+	}
+	groupTopicID := fmt.Sprintf("grp_%d", groupID)
+	if err := db.AssignTopicToProject(memberID, memberProject.ID, groupTopicID); err != nil {
+		t.Fatalf("group member must be allowed to assign group topic: %v", err)
+	}
+	memberAssignments, err := db.ListProjectTopics(memberID)
+	if err != nil {
+		t.Fatalf("list group member project assignments: %v", err)
+	}
+	if len(memberAssignments) != 1 ||
+		memberAssignments[0].ProjectID != memberProject.ID ||
+		memberAssignments[0].TopicID != groupTopicID {
+		t.Fatalf("group member assignment mismatch: %#v", memberAssignments)
+	}
+
+	nonMemberID, err := db.CreateUser(&types.User{
+		Username:    "project-nonmember",
+		Email:       "project-nonmember@example.com",
+		DisplayName: "Project Nonmember",
+		AccountType: types.AccountHuman,
+		PassHash:    []byte("project-nonmember-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create project-assignment nonmember: %v", err)
+	}
+	nonMemberProject, err := db.CreateProject(nonMemberID, "Nonmember group project")
+	if err != nil {
+		t.Fatalf("create group nonmember project: %v", err)
+	}
+	if err := db.AssignTopicToProject(nonMemberID, nonMemberProject.ID, groupTopicID); !errors.Is(err, store.ErrProjectTopicNotFound) {
+		t.Fatalf("group nonmember assignment error = %v, want %v", err, store.ErrProjectTopicNotFound)
+	}
+	nonMemberAssignments, err := db.ListProjectTopics(nonMemberID)
+	if err != nil {
+		t.Fatalf("list group nonmember project assignments: %v", err)
+	}
+	if len(nonMemberAssignments) != 0 {
+		t.Fatalf("group nonmember must not retain assignments: %#v", nonMemberAssignments)
 	}
 }
 

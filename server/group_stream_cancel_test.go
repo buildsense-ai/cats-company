@@ -10,6 +10,7 @@ import (
 type groupStreamCancelStore struct {
 	store.Store
 	members    []*types.GroupMember
+	mutedUsers map[int64]bool
 	taskStatus *types.ConversationTaskStatus
 }
 
@@ -26,8 +27,8 @@ func (s *groupStreamCancelStore) IsGroupMember(_ int64, userID int64) (bool, err
 	return false, nil
 }
 
-func (s *groupStreamCancelStore) IsMemberMuted(int64, int64) (bool, error) {
-	return false, nil
+func (s *groupStreamCancelStore) IsMemberMuted(_ int64, userID int64) (bool, error) {
+	return s.mutedUsers[userID], nil
 }
 
 func (s *groupStreamCancelStore) GetGroupMembers(int64) ([]*types.GroupMember, error) {
@@ -149,6 +150,81 @@ func TestGroupStreamCancelRequiresTargetAgentInMultiMemberGroup(t *testing.T) {
 	}
 	if drainOne(bot.send) {
 		t.Fatal("targetless multi-member cancel must not reach an agent")
+	}
+}
+
+func TestGroupStreamCancelRejectsInvalidRequesterOrTargetWithoutFanout(t *testing.T) {
+	tests := []struct {
+		name           string
+		members        []*types.GroupMember
+		mutedRequester bool
+		targetBotUID   int64
+	}{
+		{
+			name: "muted requester",
+			members: []*types.GroupMember{
+				{GroupID: 80, UserID: 7},
+				{GroupID: 80, UserID: 42, IsBot: true},
+			},
+			mutedRequester: true,
+			targetBotUID:   42,
+		},
+		{
+			name: "target is a human group member",
+			members: []*types.GroupMember{
+				{GroupID: 80, UserID: 7},
+				{GroupID: 80, UserID: 8},
+				{GroupID: 80, UserID: 42, IsBot: true},
+			},
+			targetBotUID: 8,
+		},
+		{
+			name: "target bot is outside the group",
+			members: []*types.GroupMember{
+				{GroupID: 80, UserID: 7},
+				{GroupID: 80, UserID: 8},
+				{GroupID: 80, UserID: 42, IsBot: true},
+			},
+			targetBotUID: 99,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := &groupStreamCancelStore{
+				members: tc.members,
+				mutedUsers: map[int64]bool{
+					7: tc.mutedRequester,
+				},
+			}
+			hub := NewHub(db, nil)
+			requester := &Client{uid: 7, accountType: types.AccountHuman, send: make(chan []byte, 4)}
+			observer := &Client{uid: 8, accountType: types.AccountHuman, send: make(chan []byte, 4)}
+			groupBot := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 4)}
+			outsideBot := &Client{uid: 99, accountType: types.AccountBot, send: make(chan []byte, 4)}
+			hub.addClient(requester)
+			hub.addClient(observer)
+			hub.addClient(groupBot)
+			hub.addClient(outsideBot)
+			hub.groupTurns.begin(80, 42, 7, 1)
+
+			hub.handleStreamPub(requester, streamCancelMessage("denied", tc.targetBotUID), "grp_80")
+
+			var denied ServerMessage
+			decodeQueuedServerMessage(t, requester.send, &denied)
+			if denied.Ctrl == nil || denied.Ctrl.Code != 403 {
+				t.Fatalf("cancel response = %#v, want 403", denied.Ctrl)
+			}
+			if drainOne(requester.send) ||
+				drainOne(observer.send) ||
+				drainOne(groupBot.send) ||
+				drainOne(outsideBot.send) {
+				t.Fatal("denied cancel must not be fanned out")
+			}
+			if !hub.groupTurns.initiatedBy(80, 42, 7) {
+				t.Fatal("denied cancel must not clear the active group-agent turn")
+			}
+		})
 	}
 }
 

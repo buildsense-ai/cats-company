@@ -178,6 +178,119 @@ describe('ChatMessage rich file rendering', () => {
     expect(frame.getAttribute('srcdoc')).toContain('<h1>Report</h1>');
   });
 
+  it('renders an Agent delivery artifact before text from the same message', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 20,
+            from_uid: 2,
+            content: '交付说明',
+            content_blocks: [
+              { type: 'text', text: '交付说明' },
+              {
+                type: 'file',
+                payload: {
+                  name: 'game.zip',
+                  url: '/uploads/files/game.zip',
+                  size: 4096,
+                  mime_type: 'application/zip',
+                },
+              },
+            ],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          artifactsFirst
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const content = container.querySelector('.v3-message-content');
+    const artifactSection = content.querySelector('.v3-message-deliverables');
+    const summarySection = content.querySelector('.v3-message-followup-text');
+    const artifact = artifactSection?.querySelector('.v3-attachment-card');
+    expect(container.querySelector('.v3-message').classList.contains('artifacts-first')).toBe(true);
+    expect(artifactSection?.dataset.messagePart).toBe('artifacts');
+    expect(summarySection?.dataset.messagePart).toBe('summary');
+    expect(artifact).not.toBeNull();
+    expect(summarySection?.textContent).toBe('交付说明');
+    expect(artifactSection.compareDocumentPosition(summarySection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelectorAll('.v3-message')).toHaveLength(1);
+    expect(container.querySelectorAll('.v3-msg-time')).toHaveLength(1);
+  });
+
+  it('moves Agent process text into the completed tool trace and keeps only the result below the artifact', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 23,
+            from_uid: 2,
+            content: '已完成验收。\n\n文件已经发送。',
+            content_blocks: [
+              {
+                type: 'file',
+                payload: {
+                  name: 'game.zip',
+                  url: '/uploads/files/game.zip',
+                  size: 4096,
+                  mime_type: 'application/zip',
+                },
+              },
+              { type: 'text', text: '已完成验收。', presentation_role: 'process' },
+              {
+                type: 'tool_use',
+                id: 'verify-1',
+                name: 'execute_shell',
+                input: { command: 'npm test' },
+              },
+              {
+                type: 'tool_result',
+                tool_use_id: 'verify-1',
+                content: 'Tests passed',
+              },
+              { type: 'text', text: '文件已经发送。', presentation_role: 'result' },
+            ],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          artifactsFirst
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const sections = container.querySelectorAll('.v3-message-followup-section');
+    expect(sections).toHaveLength(1);
+    expect(sections[0].dataset.messagePart).toBe('result');
+    expect(sections[0].textContent).toBe('文件已经发送。');
+    expect(container.querySelector('.v3-working-label')?.textContent).toBe('已完成');
+    expect(container.querySelector('.v3-working-toggle')?.getAttribute('aria-expanded')).toBe('false');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-working-toggle'));
+      await Promise.resolve();
+    });
+
+    const toolStep = container.querySelector('.v3-wpi-tool-step');
+    const narrative = toolStep?.querySelector('.v3-wpi-narrative');
+    const tool = toolStep?.querySelector('.v3-wpi-tool');
+    expect(narrative?.textContent).toBe('已完成验收。');
+    expect(tool?.querySelector('.v3-wpi-tool-name')?.textContent).toBe('execute_shell');
+    expect(narrative?.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelector('.v3-message-followup-text')?.textContent).not.toContain('已完成验收。');
+    expect(container.querySelectorAll('.v3-message')).toHaveLength(1);
+    expect(container.querySelectorAll('.v3-msg-time')).toHaveLength(1);
+  });
+
   it('preserves line breaks in group plain text messages', async () => {
     await act(async () => {
       root.render(
@@ -201,6 +314,8 @@ describe('ChatMessage rich file rendering', () => {
     expect(textNode).not.toBeUndefined();
     expect(textNode.style.whiteSpace).toBe('pre-wrap');
     expect(textNode.style.overflowWrap).toBe('anywhere');
+    expect(container.querySelector('.v3-message-deliverables')).toBeNull();
+    expect(container.querySelector('.v3-message-followup-text')).toBeNull();
   });
 
   it('uses compact paragraph spacing for direct plain text messages', async () => {
@@ -791,6 +906,45 @@ describe('ChatMessage rich file rendering', () => {
     expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 26 }));
   });
 
+  it('does not create a hidden avatar column for current-user messages', async () => {
+    await act(async () => {
+      root.render(
+        <>
+          <ChatMessage
+            message={{
+              id: 2601,
+              from_uid: 1,
+              content: 'Current-user message',
+              created_at: '2026-06-09T00:00:00Z',
+            }}
+            isSelf
+            isGroup={false}
+            senderName="Me"
+          />
+          <ChatMessage
+            message={{
+              id: 2602,
+              from_uid: 2,
+              content: 'Peer message',
+              created_at: '2026-06-09T00:01:00Z',
+            }}
+            isSelf={false}
+            isGroup={false}
+            senderName="CatsCo"
+          />
+        </>,
+      );
+      await Promise.resolve();
+    });
+
+    const selfMessage = container.querySelector('.v3-message.is-self');
+    const peerMessage = container.querySelector('.v3-message.is-peer');
+    expect(selfMessage.querySelector('.v3-avatar-col')).toBeNull();
+    expect(selfMessage.querySelector('[data-testid="avatar"]')).toBeNull();
+    expect(peerMessage.querySelector('.v3-avatar-col')).not.toBeNull();
+    expect(peerMessage.querySelector('[data-testid="avatar"]')).not.toBeNull();
+  });
+
   it('keeps the larger current-user bubble shrink-wrapped with balanced padding', () => {
     expect(catscoUiSystemCss).toContain('.v3-message.is-self .v3-message-bubble');
     const messageRule = catscoUiSystemCss.match(
@@ -883,17 +1037,246 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
 
+    expect(container.querySelector('.v3-wpi-plan')).not.toBeNull();
+    expect(container.querySelector('.v3-wpi-plan-title').textContent).toBe('计划');
+    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('创建临时工作目录');
+    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('设计 analyzeReply 函数');
+    expect(container.querySelector('.v3-working-status')).not.toBeNull();
+    expect(container.querySelector('.v3-working-toggle')).toBeNull();
+    expect(container.querySelector('.v3-working-steps')).toBeNull();
+    expect(container.querySelector('.v3-wpi-tool-name')).toBeNull();
+    expect(container.querySelector('.v3-message-footer')).toBeNull();
+  });
+
+  it('replaces earlier plan snapshots in place and marks the completed working process once', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 22,
+            from_uid: 2,
+            content: '',
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          workingMessages={[
+            {
+              type: 'tool_use',
+              content: 'update_plan',
+              metadata: {
+                id: 'plan-1',
+                input: {
+                  steps: [
+                    { status: 'in_progress', step: '实现功能' },
+                    { status: 'pending', step: '运行测试' },
+                  ],
+                },
+              },
+            },
+            {
+              type: 'tool_result',
+              content: '计划已更新：0/2 已完成',
+              metadata: { tool_use_id: 'plan-1' },
+            },
+            {
+              type: 'tool_use',
+              content: 'execute_shell',
+              metadata: {
+                id: 'shell-1',
+                input: { command: 'npm test' },
+              },
+            },
+            {
+              type: 'tool_result',
+              content: 'Tests passed',
+              metadata: { tool_use_id: 'shell-1' },
+            },
+            {
+              type: 'tool_use',
+              content: 'update_plan',
+              metadata: {
+                id: 'plan-2',
+                input: {
+                  steps: [
+                    { status: 'completed', step: '实现功能' },
+                    { status: 'completed', step: '运行测试' },
+                  ],
+                },
+              },
+            },
+            {
+              type: 'tool_result',
+              content: '计划已更新：2/2 已完成',
+              metadata: { tool_use_id: 'plan-2' },
+            },
+          ]}
+          workingOnly
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-working-label')?.textContent).toBe('已完成');
+    expect(container.querySelector('.v3-working-summary')?.textContent).toBe('2/2');
+    expect(container.querySelector('.v3-message')?.classList.contains('is-working')).toBe(false);
+    expect(container.querySelector('.v3-message')?.classList.contains('is-complete')).toBe(true);
+    expect(container.querySelectorAll('.v3-wpi-plan')).toHaveLength(1);
+    expect(container.querySelector('.v3-wpi-plan-count')?.textContent).toBe('2/2');
+    expect(container.querySelectorAll('.v3-wpi-plan-step.completed')).toHaveLength(2);
+    expect(container.querySelector('.v3-working-steps')).toBeNull();
+    expect(container.querySelector('.v3-working-plan')?.classList.contains('is-after-details')).toBe(false);
+    expect(container.querySelector('.v3-working-hint')).toBeNull();
+
     await act(async () => {
       Simulate.click(container.querySelector('.v3-working-toggle'));
       await Promise.resolve();
     });
 
-    expect(container.querySelector('.v3-wpi-plan')).not.toBeNull();
-    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('计划已更新');
-    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('创建临时工作目录');
-    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('设计 analyzeReply 函数');
-    expect(container.querySelector('.v3-wpi-tool-name')).toBeNull();
-    expect(container.querySelector('.v3-message-footer')).toBeNull();
+    expect(container.querySelectorAll('.v3-wpi-plan')).toHaveLength(1);
+    const persistentPlan = container.querySelector('.v3-working-plan');
+    const inlineDetails = container.querySelector('.v3-working-details-inline');
+    expect(inlineDetails).not.toBeNull();
+    expect(inlineDetails?.parentElement).toBe(container.querySelector('.v3-working-process'));
+    expect(inlineDetails?.compareDocumentPosition(persistentPlan) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+    expect(persistentPlan?.classList.contains('is-after-details')).toBe(true);
+    expect(inlineDetails?.querySelectorAll('.v3-wpi-tool-name')).toHaveLength(1);
+    expect(inlineDetails?.querySelector('.v3-wpi-tool-name')?.textContent).toBe('execute_shell');
+  });
+
+  it('summarizes working steps and mounts large tool results only on demand', async () => {
+    const longResult = 'result line\n'.repeat(1200);
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 29,
+            from_uid: 2,
+            content: '',
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          workingMessages={[
+            {
+              type: 'tool_use',
+              content: 'execute_shell',
+              metadata: {
+                id: 'shell-1',
+                input: { command: 'npm test' },
+              },
+            },
+            {
+              type: 'tool_result',
+              content: longResult,
+              metadata: { tool_use_id: 'shell-1' },
+            },
+          ]}
+          workingOnly
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const message = container.querySelector('.v3-message');
+    const processToggle = container.querySelector('.v3-working-toggle');
+    expect(message.classList.contains('is-working')).toBe(true);
+    expect(container.querySelector('.v3-working-label')?.textContent).toBe('正在执行');
+    expect(processToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(processToggle.getAttribute('aria-label')).toContain('展开任务步骤');
+    expect(processToggle.getAttribute('aria-controls')).toMatch(/^working-steps-/);
+    expect(container.querySelector('.v3-working-summary')?.textContent).toContain('execute_shell');
+    expect(container.querySelector('.v3-wpi-tool-result')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(processToggle);
+      await Promise.resolve();
+    });
+
+    const inlineDetails = container.querySelector('.v3-working-details-inline');
+    const resultToggle = inlineDetails?.querySelector('.v3-wpi-tool-header.is-toggle');
+    const workingSteps = inlineDetails?.querySelector('.v3-working-steps');
+    expect(resultToggle).not.toBeNull();
+    expect(workingSteps).not.toBeNull();
+    expect(inlineDetails?.parentElement).toBe(container.querySelector('.v3-working-process'));
+    expect(inlineDetails?.id).toBe(processToggle.getAttribute('aria-controls'));
+    expect(resultToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(inlineDetails?.querySelector('.v3-wpi-tool-result')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(resultToggle);
+      await Promise.resolve();
+    });
+
+    expect(resultToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(inlineDetails?.querySelector('.v3-wpi-tool-result')?.textContent)
+      .toContain('result line');
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-working-details-inline')).toBeNull();
+    expect(document.activeElement).toBe(processToggle);
+  });
+
+  it('uses an explicit completed turn signal and strips the process protocol prefix', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 30,
+            from_uid: 2,
+            content: '',
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          workingMessages={[
+            {
+              type: 'text',
+              content: 'AI文本:Checking the implementation.',
+              _display_text_role: 'process',
+            },
+            {
+              type: 'tool_use',
+              content: 'execute_shell',
+              metadata: { id: 'shell-1', input: { command: 'npm test' } },
+            },
+            {
+              type: 'tool_result',
+              content: 'Tests passed',
+              metadata: { tool_use_id: 'shell-1' },
+            },
+          ]}
+          workingOnly
+          workingComplete
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const message = container.querySelector('.v3-message');
+    expect(message.classList.contains('is-working')).toBe(false);
+    expect(message.classList.contains('is-complete')).toBe(true);
+    expect(container.querySelector('.v3-working-label')?.textContent).toBe('已完成');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-working-toggle'));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-wpi-narrative')?.textContent)
+      .toBe('Checking the implementation.');
+    expect(container.textContent).not.toContain('AI文本:');
   });
 
   it('opens external HTML files instead of fetching them into the preview panel', async () => {
