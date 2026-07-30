@@ -142,9 +142,27 @@ export function isTokenExpired(candidate = token) {
 }
 
 async function request(method, path, body, options = {}) {
+  const { signal, timeoutMs = 0 } = options;
   const headers = { 'Content-Type': 'application/json' };
   const authToken = options.authToken === undefined ? token : options.authToken;
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeoutID = null;
+  const abortFromCaller = () => controller.abort(signal?.reason);
+
+  if (signal?.aborted) {
+    abortFromCaller();
+  } else if (signal) {
+    signal.addEventListener('abort', abortFromCaller, { once: true });
+  }
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timeoutID = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  }
 
   let res;
   try {
@@ -152,28 +170,44 @@ async function request(method, path, body, options = {}) {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
-      signal: options.signal,
+      signal: controller.signal,
     });
+
+    let data = {};
+    try {
+      data = await res.json();
+    } catch {
+      data = {};
+    }
+    if (!res.ok) {
+      const error = new Error(data.error || statusMessage(res.status));
+      error.status = res.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
   } catch (cause) {
+    if (timedOut) {
+      const error = new Error('请求超时，请稍后重试');
+      error.code = 'REQUEST_TIMEOUT';
+      error.cause = cause;
+      throw error;
+    }
+    if (signal?.aborted || cause?.name === 'AbortError') {
+      const error = new Error('请求已取消');
+      error.code = 'REQUEST_ABORTED';
+      error.cause = cause;
+      throw error;
+    }
+    if (cause?.status) throw cause;
     const error = new Error('网络连接失败，请检查后端服务是否运行');
     error.code = 'NETWORK_ERROR';
     error.cause = cause;
     throw error;
+  } finally {
+    if (timeoutID) clearTimeout(timeoutID);
+    signal?.removeEventListener('abort', abortFromCaller);
   }
-
-  let data = {};
-  try {
-    data = await res.json();
-  } catch {
-    data = {};
-  }
-  if (!res.ok) {
-    const error = new Error(data.error || statusMessage(res.status));
-    error.status = res.status;
-    error.data = data;
-    throw error;
-  }
-  return data;
 }
 
 function statusMessage(status) {
@@ -262,10 +296,12 @@ export const api = {
   },
 
   // REST fallback for message history
-  getMessages: (topicId, limit, offset, latest = false, beforeId = 0) =>
+  getMessages: (topicId, limit, offset, latest = false, beforeId = 0, options = {}) =>
     request(
       'GET',
       `/api/messages?topic_id=${encodeURIComponent(topicId)}&limit=${limit || 50}&offset=${offset || 0}${latest ? '&latest=1' : ''}${beforeId > 0 ? `&before_id=${encodeURIComponent(beforeId)}` : ''}`,
+      undefined,
+      options,
     ),
   getConversations: () => request('GET', '/api/conversations'),
   getProjects: () => request('GET', '/api/projects'),
@@ -455,6 +491,12 @@ export const api = {
   getTutorialTasks: () => request('GET', '/api/tutorial-tasks'),
   getCloudArtifacts: (agentUid, status = 'active') =>
     request('GET', `/api/agents/${encodeURIComponent(agentUid)}/artifacts?status=${encodeURIComponent(status)}`),
+  getAgentFiles: (agentUid, { beforeId = 0, limit = 40 } = {}) => {
+    const params = new URLSearchParams();
+    params.set('limit', String(limit));
+    if (beforeId > 0) params.set('before_id', String(beforeId));
+    return request('GET', `/api/agents/${encodeURIComponent(agentUid)}/files?${params.toString()}`);
+  },
   deleteCloudArtifact: (agentUid, artifactId) =>
     request('DELETE', `/api/agents/${encodeURIComponent(agentUid)}/artifacts/${encodeURIComponent(artifactId)}`),
   restoreCloudArtifact: (agentUid, artifactId) =>

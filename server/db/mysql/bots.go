@@ -4,27 +4,36 @@ package mysql
 import (
 	"fmt"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
 // SaveBotConfig saves or updates bot configuration with owner.
 func (a *Adapter) SaveBotConfig(uid int64, apiEndpoint, model string) error {
-	_, err := a.db.Exec(
-		`INSERT INTO bot_config (user_id, api_endpoint, model, enabled)
-		 VALUES (?, ?, ?, 1)
+	config, err := store.DefaultBotDefinitionJSON(uid)
+	if err != nil {
+		return fmt.Errorf("encode default bot definition: %w", err)
+	}
+	_, err = a.db.Exec(
+		`INSERT INTO bot_config (user_id, api_endpoint, model, enabled, config)
+		 VALUES (?, ?, ?, 1, CAST(? AS JSON))
 		 ON DUPLICATE KEY UPDATE api_endpoint = ?, model = ?, updated_at = CURRENT_TIMESTAMP`,
-		uid, apiEndpoint, model, apiEndpoint, model,
+		uid, apiEndpoint, model, config, apiEndpoint, model,
 	)
 	return err
 }
 
 // SaveBotConfigWithOwner saves bot configuration with owner_id.
 func (a *Adapter) SaveBotConfigWithOwner(uid, ownerID int64, apiEndpoint, model string) error {
-	_, err := a.db.Exec(
-		`INSERT INTO bot_config (user_id, owner_id, api_endpoint, model, enabled)
-		 VALUES (?, ?, ?, ?, 1)
+	config, err := store.DefaultBotDefinitionJSON(uid)
+	if err != nil {
+		return fmt.Errorf("encode default bot definition: %w", err)
+	}
+	_, err = a.db.Exec(
+		`INSERT INTO bot_config (user_id, owner_id, api_endpoint, model, enabled, config)
+		 VALUES (?, ?, ?, ?, 1, CAST(? AS JSON))
 		 ON DUPLICATE KEY UPDATE api_endpoint = ?, model = ?, updated_at = CURRENT_TIMESTAMP`,
-		uid, ownerID, apiEndpoint, model, apiEndpoint, model,
+		uid, ownerID, apiEndpoint, model, config, apiEndpoint, model,
 	)
 	return err
 }

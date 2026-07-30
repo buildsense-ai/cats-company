@@ -197,6 +197,10 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	if agentUID, ok := parseAgentFilesAPIPath(r.URL.Path); ok {
+		h.handleAgentFiles(w, r, agentUID)
+		return
+	}
 	route, ok := parseAgentArtifactAPIPath(r.URL.Path)
 	if !ok {
 		writeArtifactError(w, http.StatusNotFound, "artifact_not_found")

@@ -275,12 +275,13 @@ describe('WebSocket connection recovery', () => {
     const controller = new AbortController();
 
     const request = api.api.getPushConfig(controller.signal);
+    const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_ABORTED' });
     controller.abort();
 
-    await expect(request).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
-    expect(fetchMock).toHaveBeenCalledWith('/api/push/config', expect.objectContaining({
-      signal: controller.signal,
-    }));
+    await rejection;
+    const requestSignal = fetchMock.mock.calls[0][1].signal;
+    expect(requestSignal).not.toBe(controller.signal);
+    expect(requestSignal.aborted).toBe(true);
   });
 
   test('aborts push unsubscription after the cleanup timeout', async () => {
@@ -290,9 +291,72 @@ describe('WebSocket connection recovery', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const request = api.api.unsubscribePush('https://push.example/sub', 'captured-token');
-    const rejection = expect(request).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+    const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_ABORTED' });
     await vi.advanceTimersByTimeAsync(3000);
 
+    await rejection;
+  });
+});
+
+describe('message history request controls', () => {
+  let api;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    localStorage.clear();
+    api = await import('./api');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  test('aborts a history request when its timeout expires', async () => {
+    global.fetch = vi.fn((url, options) => new Promise((resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+
+    const request = api.api.getMessages(
+      'p2p_1_2',
+      50,
+      0,
+      true,
+      0,
+      { timeoutMs: 15000 },
+    );
+    const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
+
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+    expect(global.fetch.mock.calls[0][1].signal.aborted).toBe(true);
+  });
+
+  test('distinguishes caller cancellation from a timeout', async () => {
+    global.fetch = vi.fn((url, options) => new Promise((resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+    const controller = new AbortController();
+    const request = api.api.getMessages(
+      'p2p_1_2',
+      50,
+      0,
+      true,
+      0,
+      { signal: controller.signal, timeoutMs: 15000 },
+    );
+    const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_ABORTED' });
+
+    controller.abort();
     await rejection;
   });
 });

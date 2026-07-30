@@ -17,7 +17,7 @@ func (a *Adapter) GetBotModelConfig(botUID int64) (*types.BotModelConfig, error)
 	).Scan(&raw); err != nil {
 		return nil, fmt.Errorf("get bot model config: %w", err)
 	}
-	config, err := store.DecodeBotModelConfigJSON(raw)
+	config, err := store.DecodeBotModelConfigJSON(raw, botUID)
 	if err != nil {
 		return nil, fmt.Errorf("decode bot model config: %w", err)
 	}
@@ -88,14 +88,14 @@ func (a *Adapter) updateBotModelConfig(
 		}
 		return nil, fmt.Errorf("lock bot model config: %w", err)
 	}
-	config, err := store.DecodeBotModelConfigJSON(raw)
+	config, err := store.DecodeBotModelConfigJSON(raw, botUID)
 	if err != nil {
 		return nil, fmt.Errorf("decode bot model config: %w", err)
 	}
 	if err := update(config, time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return nil, err
 	}
-	next, err := store.EncodeBotModelConfigJSON(raw, config)
+	next, err := store.EncodeBotModelConfigJSON(raw, config, botUID)
 	if err != nil {
 		return nil, fmt.Errorf("encode bot model config: %w", err)
 	}
