@@ -21,7 +21,6 @@ import FeedbackModal from '../widgets/feedback-modal';
 import CatsCoDownloadModal from '../widgets/catsco-download-modal';
 import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import RelayAccessModal from '../widgets/relay-access-modal';
-import CloudArtifactsModal from '../widgets/cloud-artifacts-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
@@ -205,7 +204,8 @@ function TinodeWebApp() {
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
-  const [showCloudArtifactsModal, setShowCloudArtifactsModal] = useState(false);
+  const [cloudArtifactsRequest, setCloudArtifactsRequest] = useState(null);
+  const cloudArtifactsRequestSequenceRef = useRef(0);
   const [managedGroup, setManagedGroup] = useState(null);
   const appShellRef = useRef(null);
   const [appSidebarCollapsed, setAppSidebarCollapsed] = useState(() => loadAppSidebarCollapsed());
@@ -245,6 +245,15 @@ function TinodeWebApp() {
   }, [activeTopicId]);
   const displayedActiveAgent = resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft);
   const showCloudArtifactsAction = canOpenCloudArtifacts(activeTopic, displayedActiveAgent);
+  const handleOpenCloudArtifacts = useCallback(() => {
+    const agentUid = Number(displayedActiveAgent?.uid || 0);
+    if (agentUid <= 0) return;
+    cloudArtifactsRequestSequenceRef.current += 1;
+    setCloudArtifactsRequest({
+      agentUid,
+      requestId: cloudArtifactsRequestSequenceRef.current,
+    });
+  }, [displayedActiveAgent?.uid]);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
     appSidebarPreferredWidth,
@@ -986,7 +995,7 @@ function TinodeWebApp() {
           activeAgent={displayedActiveAgent}
           currentModelName={currentModelName}
           onDownload={() => setShowDownloadModal(true)}
-          onOpenCloudArtifacts={showCloudArtifactsAction ? () => setShowCloudArtifactsModal(true) : undefined}
+          onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
           title={activeTopic?.name || taskDraftTitle(taskDraft)}
           onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
         />
@@ -1004,6 +1013,7 @@ function TinodeWebApp() {
             onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
             onResolveAgentTopic={resolveAgentTopic}
             onActivateTopic={activateResolvedTopic}
+            cloudArtifactsRequest={cloudArtifactsRequest}
           />
         ) : (
           <NoActiveTask
@@ -1049,13 +1059,6 @@ function TinodeWebApp() {
         <RelayAccessModal onClose={() => setShowRelayModal(false)} />
       )}
 
-      {showCloudArtifactsModal && (
-        <CloudArtifactsModal
-          agentUid={displayedActiveAgent?.uid}
-          onClose={() => setShowCloudArtifactsModal(false)}
-        />
-      )}
-
       {managedGroup?.groupId && (
         <GroupSettings
           groupId={managedGroup.groupId}
@@ -1095,7 +1098,7 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
       <EditableConversationTitle title={title} editable={Boolean(onRenameTitle)} onSave={onRenameTitle} />
       <div className="v3-shell-actions">
         {onOpenCloudArtifacts && (
-          <button type="button" className="v3-action-btn" onClick={onOpenCloudArtifacts} aria-label="打开生成物" title="生成物">
+          <button type="button" className="v3-action-btn" onClick={onOpenCloudArtifacts} aria-label="打开产物" title="产物">
             <Cloud size={17} />
           </button>
         )}
