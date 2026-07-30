@@ -134,30 +134,89 @@ describe('CatsCo shell styling', () => {
     );
   });
 
-  it('keeps sidebar metadata quiet and reveals its slim scrollbar on interaction', () => {
+  it('standardizes scrollbar tiers, states, and browser-specific rendering', () => {
+    const rootRule = ruleFor(':root');
+    const documentRule = ruleFor('html,\nhtml *');
+    const timelineRule = ruleFor('.v3-timeline');
+    const inlineRule = ruleFor('.v3-working-steps,\n.v3-wpi-code-block pre');
     const listRule = ruleFor('.v3-chat-list');
     const interactiveListRule = ruleFor('.v3-chat-list:hover,\n.v3-chat-list:focus-within');
     const scrollbarRule = ruleFor('.v3-chat-list::-webkit-scrollbar');
+    const trackRule = ruleFor('.v3-chat-list::-webkit-scrollbar-track');
     const thumbRule = ruleFor('.v3-chat-list::-webkit-scrollbar-thumb');
     const interactiveThumbRule = ruleFor(
-      '.v3-chat-list:hover::-webkit-scrollbar-thumb,\n.v3-chat-list:focus-within::-webkit-scrollbar-thumb,\n.v3-chat-list::-webkit-scrollbar-thumb:hover,\n.v3-chat-list::-webkit-scrollbar-thumb:active',
+      '.v3-chat-list:hover::-webkit-scrollbar-thumb,\n.v3-chat-list:focus-within::-webkit-scrollbar-thumb,\n.v3-chat-list::-webkit-scrollbar-thumb:hover',
     );
+    const activeThumbRule = ruleFor('.v3-chat-list::-webkit-scrollbar-thumb:active');
+    const globalScrollbarRule = ruleIn(openchatCss, '::-webkit-scrollbar');
+    const globalTrackRule = ruleIn(openchatCss, '::-webkit-scrollbar-track');
+    const globalThumbRule = ruleIn(openchatCss, '::-webkit-scrollbar-thumb');
+    const globalThumbHoverRule = ruleIn(openchatCss, '::-webkit-scrollbar-thumb:hover');
+    const globalThumbActiveRule = ruleIn(openchatCss, '::-webkit-scrollbar-thumb:active');
+    const globalButtonRule = ruleIn(openchatCss, '::-webkit-scrollbar-button');
+    const globalSingleButtonRule = ruleIn(openchatCss, '::-webkit-scrollbar-button:single-button');
+    const globalCornerRule = ruleIn(openchatCss, '::-webkit-scrollbar-corner');
     const collaborationRule = ruleFor('.cc-item-kind-agent');
 
     expect(ruleFor('.cc-chat-row-time')).toContain('color: var(--cc-muted);');
     expect(ruleFor('.cc-chat-row-time')).toContain('font-size: 11px;');
     expect(collaborationRule).toContain('var(--cc-muted) 76%');
     expect(collaborationRule).toContain('var(--cc-muted) 7%');
-    expect(listRule).toContain('var(--cc-muted) 18%');
-    expect(interactiveListRule).toContain('var(--cc-muted) 42%');
+    expect(rootRule).toContain('--cc-scrollbar-page-size: 8px;');
+    expect(rootRule).toContain('--cc-scrollbar-panel-size: 6px;');
+    expect(rootRule).toContain('--cc-scrollbar-inline-size: 6px;');
+    expect(rootRule).toContain('--cc-scrollbar-sidebar-size: 4px;');
+    expect(rootRule).toContain('--cc-scrollbar-track: color-mix(in srgb, var(--cc-muted) 5%, transparent);');
+    expect(rootRule).toContain('--cc-scrollbar-thumb: color-mix(in srgb, var(--cc-muted) 30%, transparent);');
+    expect(rootRule).toContain('--cc-scrollbar-thumb-hover: color-mix(in srgb, var(--cc-muted) 52%, transparent);');
+    expect(rootRule).toContain('--cc-scrollbar-thumb-active: color-mix(in srgb, var(--cc-muted) 70%, transparent);');
+    expect(documentRule).toContain('scrollbar-color: var(--cc-scrollbar-thumb) var(--cc-scrollbar-track);');
+    expect(documentRule).toContain('scrollbar-width: thin;');
+    expect(timelineRule).toContain('--cc-scrollbar-size: var(--cc-scrollbar-page-size);');
+    expect(timelineRule).toContain('--cc-scrollbar-inset: 1.5px;');
+    expect(inlineRule).toContain('--cc-scrollbar-size: var(--cc-scrollbar-inline-size);');
+    expect(inlineRule).toContain('--cc-scrollbar-inset: 1.5px;');
+    expect(listRule).toContain('--cc-scrollbar-size: var(--cc-scrollbar-sidebar-size);');
+    expect(listRule).toContain('--cc-scrollbar-inset: 0.5px;');
+    expect(listRule).toContain('--cc-scrollbar-track: transparent;');
+    expect(listRule).toContain('scrollbar-color: var(--cc-scrollbar-thumb) transparent;');
+    expect(interactiveListRule).toContain('scrollbar-color: var(--cc-scrollbar-thumb-hover) transparent;');
     expect(css).toMatch(
       /@supports selector\(::-webkit-scrollbar\)\s*\{[\s\S]*?\.v3-chat-list,\s*\.v3-chat-list:hover,\s*\.v3-chat-list:focus-within\s*\{[^}]*scrollbar-width: auto;[^}]*scrollbar-color: auto;/,
     );
-    expect(scrollbarRule).toContain('width: 3px;');
-    expect(scrollbarRule).toContain('height: 3px;');
+    expect(scrollbarRule).toContain('width: var(--cc-scrollbar-size);');
+    expect(scrollbarRule).toContain('height: var(--cc-scrollbar-size);');
+    expect(trackRule).toContain('border: var(--cc-scrollbar-inset) solid transparent;');
+    expect(trackRule).toContain('background: var(--cc-scrollbar-track);');
+    expect(trackRule).toContain('background-clip: padding-box;');
+    expect(thumbRule).toContain('min-width: 28px;');
+    expect(thumbRule).toContain('min-height: 28px;');
+    expect(thumbRule).toContain('border: var(--cc-scrollbar-inset) solid transparent;');
     expect(thumbRule).toContain('border-radius: 999px;');
-    expect(thumbRule).toContain('var(--cc-muted) 18%');
-    expect(interactiveThumbRule).toContain('var(--cc-muted) 42%');
+    expect(thumbRule).toContain('background: var(--cc-scrollbar-thumb);');
+    expect(interactiveThumbRule).toContain('background: var(--cc-scrollbar-thumb-hover);');
+    expect(activeThumbRule).toContain('background: var(--cc-scrollbar-thumb-active);');
+    expect(globalScrollbarRule).toContain('width: var(--cc-scrollbar-size, 6px);');
+    expect(globalScrollbarRule).toContain('height: var(--cc-scrollbar-size, 6px);');
+    expect(globalTrackRule).toContain('background: var(--cc-scrollbar-track, rgba(127, 127, 127, 0.05));');
+    expect(globalTrackRule).toContain('background-clip: padding-box;');
+    expect(globalThumbRule).toContain('min-width: 28px;');
+    expect(globalThumbRule).toContain('min-height: 28px;');
+    expect(globalThumbRule).toContain('background: var(--cc-scrollbar-thumb, rgba(127, 127, 127, 0.3));');
+    expect(globalThumbHoverRule).toContain('var(--cc-scrollbar-thumb-hover, rgba(127, 127, 127, 0.52))');
+    expect(globalThumbActiveRule).toContain('var(--cc-scrollbar-thumb-active, rgba(127, 127, 127, 0.7))');
+    expect(globalButtonRule).toContain('-webkit-appearance: none;');
+    expect(globalButtonRule).toContain('appearance: none;');
+    expect(globalButtonRule).toContain('display: none !important;');
+    expect(globalButtonRule).toContain('width: 0;');
+    expect(globalButtonRule).toContain('height: 0;');
+    expect(globalButtonRule).toContain('background: transparent;');
+    expect(globalButtonRule).toContain('background-image: none;');
+    expect(globalSingleButtonRule).toContain('display: none !important;');
+    expect(globalSingleButtonRule).toContain('width: 0;');
+    expect(globalSingleButtonRule).toContain('height: 0;');
+    expect(globalSingleButtonRule).toContain('background-image: none;');
+    expect(globalCornerRule).toContain('background: transparent;');
   });
 
   it('uses the requested chat surfaces without changing sidebar or border colors', () => {

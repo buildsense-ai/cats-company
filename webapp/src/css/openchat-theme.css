@@ -2730,18 +2730,58 @@ body {
 
 /* Production upgrades added to CSS */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: var(--cc-scrollbar-size, 6px);
+  height: var(--cc-scrollbar-size, 6px);
 }
+
 ::-webkit-scrollbar-track {
-  background: transparent;
+  border: var(--cc-scrollbar-inset, 1px) solid transparent;
+  border-radius: 999px;
+  background: var(--cc-scrollbar-track, rgba(127, 127, 127, 0.05));
+  background-clip: padding-box;
 }
+
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 4px;
+  min-width: 28px;
+  min-height: 28px;
+  border: var(--cc-scrollbar-inset, 1px) solid transparent;
+  border-radius: 999px;
+  background: var(--cc-scrollbar-thumb, rgba(127, 127, 127, 0.3));
+  background-clip: padding-box;
 }
+
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.25);
+  background: var(--cc-scrollbar-thumb-hover, rgba(127, 127, 127, 0.52));
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: var(--cc-scrollbar-thumb-active, rgba(127, 127, 127, 0.7));
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-button {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none !important;
+  width: 0;
+  height: 0;
+  border: 0;
+  background: transparent;
+  background-image: none;
+}
+
+::-webkit-scrollbar-button:single-button {
+  display: none !important;
+  width: 0;
+  height: 0;
+  border: 0;
+  background: transparent;
+  background-image: none;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 :focus-visible {

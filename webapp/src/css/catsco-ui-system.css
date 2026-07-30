@@ -48,6 +48,16 @@
   --cc-radius-lg: 12px;
   --cc-sidebar-width: 260px;
   --cc-sidebar-collapsed: 64px;
+  --cc-scrollbar-page-size: 8px;
+  --cc-scrollbar-panel-size: 6px;
+  --cc-scrollbar-inline-size: 6px;
+  --cc-scrollbar-sidebar-size: 4px;
+  --cc-scrollbar-size: var(--cc-scrollbar-panel-size);
+  --cc-scrollbar-inset: 1px;
+  --cc-scrollbar-track: color-mix(in srgb, var(--cc-muted) 5%, transparent);
+  --cc-scrollbar-thumb: color-mix(in srgb, var(--cc-muted) 30%, transparent);
+  --cc-scrollbar-thumb-hover: color-mix(in srgb, var(--cc-muted) 52%, transparent);
+  --cc-scrollbar-thumb-active: color-mix(in srgb, var(--cc-muted) 70%, transparent);
 
   --v3-bg-app: var(--cc-bg);
   --v3-bg-sidebar: var(--cc-bg);
@@ -155,6 +165,18 @@ body,
   min-width: 320px;
   height: 100%;
   margin: 0;
+}
+
+html,
+html * {
+  scrollbar-color: var(--cc-scrollbar-thumb) var(--cc-scrollbar-track);
+  scrollbar-width: thin;
+}
+
+.v3-working-steps,
+.v3-wpi-code-block pre {
+  --cc-scrollbar-size: var(--cc-scrollbar-inline-size);
+  --cc-scrollbar-inset: 1.5px;
 }
 
 body {
@@ -1184,6 +1206,8 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .v3-timeline {
+  --cc-scrollbar-size: var(--cc-scrollbar-page-size);
+  --cc-scrollbar-inset: 1.5px;
   padding: 18px 20px 140px;
   background: var(--cc-main-bg);
 }
@@ -1306,6 +1330,9 @@ html[data-theme="liquid"] .catsco-brand-mark {
   --cc-sidebar-action-size: 32px;
   --cc-sidebar-trailing-width: 68px;
   --cc-sidebar-group-gap: 12px;
+  --cc-scrollbar-size: var(--cc-scrollbar-sidebar-size);
+  --cc-scrollbar-inset: 0.5px;
+  --cc-scrollbar-track: transparent;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1314,12 +1341,12 @@ html[data-theme="liquid"] .catsco-brand-mark {
   padding: var(--cc-sidebar-list-padding-top) 7px 76px;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--cc-muted) 18%, transparent) transparent;
+  scrollbar-color: var(--cc-scrollbar-thumb) transparent;
 }
 
 .v3-chat-list:hover,
 .v3-chat-list:focus-within {
-  scrollbar-color: color-mix(in srgb, var(--cc-muted) 42%, transparent) transparent;
+  scrollbar-color: var(--cc-scrollbar-thumb-hover) transparent;
 }
 
 @supports selector(::-webkit-scrollbar) {
@@ -1332,24 +1359,36 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .v3-chat-list::-webkit-scrollbar {
-  width: 3px;
-  height: 3px;
+  width: var(--cc-scrollbar-size);
+  height: var(--cc-scrollbar-size);
 }
 
 .v3-chat-list::-webkit-scrollbar-track {
-  background: transparent;
+  border: var(--cc-scrollbar-inset) solid transparent;
+  border-radius: 999px;
+  background: var(--cc-scrollbar-track);
+  background-clip: padding-box;
 }
 
 .v3-chat-list::-webkit-scrollbar-thumb {
+  min-width: 28px;
+  min-height: 28px;
+  border: var(--cc-scrollbar-inset) solid transparent;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--cc-muted) 18%, transparent);
+  background: var(--cc-scrollbar-thumb);
+  background-clip: padding-box;
 }
 
 .v3-chat-list:hover::-webkit-scrollbar-thumb,
 .v3-chat-list:focus-within::-webkit-scrollbar-thumb,
-.v3-chat-list::-webkit-scrollbar-thumb:hover,
+.v3-chat-list::-webkit-scrollbar-thumb:hover {
+  background: var(--cc-scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+
 .v3-chat-list::-webkit-scrollbar-thumb:active {
-  background: color-mix(in srgb, var(--cc-muted) 42%, transparent);
+  background: var(--cc-scrollbar-thumb-active);
+  background-clip: padding-box;
 }
 
 .v3-chat-list > .cc-conversation-section,
