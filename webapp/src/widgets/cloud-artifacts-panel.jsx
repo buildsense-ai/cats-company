@@ -1,15 +1,27 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Cloud,
   Copy,
+  Download,
+  Eye,
   ExternalLink,
   FileCode2,
+  FileText,
   RefreshCw,
   RotateCcw,
   Trash2,
   X,
 } from 'lucide-react';
 import { api } from '../api';
+import { previewFileDescriptor } from './chat-message';
+
+const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
+
+function notifyArtifactsChanged(agentUid) {
+  window.dispatchEvent(new CustomEvent(CLOUD_ARTIFACTS_CHANGED_EVENT, {
+    detail: { agentUid: Number(agentUid) || 0 },
+  }));
+}
 
 function formatUpdatedAt(value) {
   const date = new Date(value);
@@ -32,32 +44,93 @@ function artifactMeta(artifact) {
   return items;
 }
 
-export default function CloudArtifactsModal({ onClose }) {
-  const [tab, setTab] = useState('active');
+function fileExtension(file) {
+  const value = String(file?.name || file?.url || '').split(/[?#]/, 1)[0];
+  const extension = value.includes('.') ? value.slice(value.lastIndexOf('.') + 1) : '';
+  return extension ? extension.toUpperCase() : '文件';
+}
+
+function formatFileSize(bytes) {
+  const size = Number(bytes || 0);
+  if (size <= 0) return '';
+  if (size < 1024) return size + ' B';
+  if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB';
+  return (size / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function fileMeta(file) {
+  const items = [{ key: 'type', value: fileExtension(file) }];
+  const size = formatFileSize(file.size);
+  if (size) items.push({ key: 'size', value: size });
+  if (file.topic_name) items.push({ key: 'source', value: file.topic_name });
+  const time = formatUpdatedAt(file.created_at);
+  if (time) items.push({ key: 'time', value: time });
+  return items;
+}
+
+export default function CloudArtifactsPanel({
+  agentUid,
+  tab: controlledTab,
+  onTabChange,
+  onClose,
+  onPreviewArtifact,
+  onPreviewFile,
+}) {
+  const [localTab, setLocalTab] = useState('active');
+  const tab = controlledTab ?? localTab;
   const [artifacts, setArtifacts] = useState([]);
+  const [files, setFiles] = useState([]);
+  const [fileCursor, setFileCursor] = useState(0);
+  const [fileHasMore, setFileHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [copiedID, setCopiedID] = useState('');
   const [pendingID, setPendingID] = useState('');
   const [confirmArtifact, setConfirmArtifact] = useState(null);
+  const requestSequenceRef = useRef(0);
 
-  const loadArtifacts = useCallback(async () => {
+  const selectTab = (nextTab) => {
+    if (controlledTab == null) setLocalTab(nextTab);
+    onTabChange?.(nextTab);
+  };
+
+  const loadContent = useCallback(async ({ append = false, beforeId = 0 } = {}) => {
+    const requestID = requestSequenceRef.current + 1;
+    requestSequenceRef.current = requestID;
+    const isCurrentRequest = () => requestSequenceRef.current === requestID;
     setLoading(true);
     setError('');
     try {
-      const result = await api.getCloudArtifacts(tab);
+      if (tab === 'files') {
+        const result = await api.getAgentFiles(agentUid, { beforeId, limit: 40 });
+        if (!isCurrentRequest()) return;
+        const nextFiles = Array.isArray(result?.files) ? result.files : [];
+        setFiles((current) => append ? [...current, ...nextFiles] : nextFiles);
+        setFileCursor(Number(result?.next_before_id || 0));
+        setFileHasMore(Boolean(result?.has_more));
+        return;
+      }
+      const result = await api.getCloudArtifacts(agentUid, tab);
+      if (!isCurrentRequest()) return;
       setArtifacts(Array.isArray(result?.artifacts) ? result.artifacts : []);
     } catch (err) {
-      setError(err.message || '云端产物读取失败');
+      if (!isCurrentRequest()) return;
+      setError(err.message || (tab === 'files' ? '历史文件读取失败' : '云端产物读取失败'));
     } finally {
-      setLoading(false);
+      if (isCurrentRequest()) setLoading(false);
     }
-  }, [tab]);
+  }, [agentUid, tab]);
 
   useEffect(() => {
     setArtifacts([]);
-    loadArtifacts();
-  }, [loadArtifacts]);
+    setFiles([]);
+    setFileCursor(0);
+    setFileHasMore(false);
+    loadContent();
+    return () => {
+      requestSequenceRef.current += 1;
+    };
+  }, [loadContent]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -85,9 +158,10 @@ export default function CloudArtifactsModal({ onClose }) {
     setPendingID(artifact.id);
     setError('');
     try {
-      await api.deleteCloudArtifact(artifact.id);
+      await api.deleteCloudArtifact(agentUid, artifact.id);
       setArtifacts((current) => current.filter((item) => item.id !== artifact.id));
       setConfirmArtifact(null);
+      notifyArtifactsChanged(agentUid);
     } catch (err) {
       setError(err.message || '删除失败，请稍后重试');
     } finally {
@@ -100,8 +174,9 @@ export default function CloudArtifactsModal({ onClose }) {
     setPendingID(artifact.id);
     setError('');
     try {
-      await api.restoreCloudArtifact(artifact.id);
+      await api.restoreCloudArtifact(agentUid, artifact.id);
       setArtifacts((current) => current.filter((item) => item.id !== artifact.id));
+      notifyArtifactsChanged(agentUid);
     } catch (err) {
       setError(err.message || '恢复失败，请稍后重试');
     } finally {
@@ -109,30 +184,41 @@ export default function CloudArtifactsModal({ onClose }) {
     }
   };
 
-  const emptyText = tab === 'active' ? '还没有已部署的云端产物' : '回收站是空的';
+  const emptyText = tab === 'active'
+    ? '还没有已部署的网页'
+    : tab === 'files'
+      ? '还没有找到这个 Bot 生成的文件'
+      : '回收站是空的';
+  const visibleCount = tab === 'files' ? files.length : artifacts.length;
 
   return (
-    <div className="oc-modal-overlay" onClick={onClose}>
-      <section
-        className="oc-modal cloud-artifacts-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label="云端产物"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <>
+      <button
+        className="v3-file-preview-backdrop"
+        type="button"
+        aria-label="关闭产物"
+        onClick={onClose}
+      />
+      <section className="v3-file-preview-panel cloud-artifacts-panel" aria-label="产物">
+        <button
+          className="v3-file-preview-drag-handle"
+          type="button"
+          aria-label="关闭产物"
+          onClick={onClose}
+        />
         <header className="cloud-artifacts-header">
           <div className="cloud-artifacts-heading">
             <span className="cloud-artifacts-heading-icon" aria-hidden="true"><Cloud size={20} /></span>
             <div>
-              <h3>云端产物</h3>
-              <p>{loading ? '正在读取' : '共 ' + artifacts.length + ' 个'}</p>
+              <h3>产物</h3>
+              <p>{loading ? '正在读取' : '共 ' + visibleCount + ' 个'}</p>
             </div>
           </div>
           <div className="cloud-artifacts-header-actions">
-            <button type="button" onClick={loadArtifacts} disabled={loading} aria-label="刷新云端产物" title="刷新">
+            <button type="button" onClick={() => loadContent()} disabled={loading} aria-label="刷新产物" title="刷新">
               <RefreshCw size={18} className={loading ? 'is-spinning' : ''} />
             </button>
-            <button type="button" onClick={onClose} aria-label="关闭云端产物" title="关闭">
+            <button type="button" onClick={onClose} aria-label="关闭产物" title="关闭">
               <X size={18} />
             </button>
           </div>
@@ -144,49 +230,80 @@ export default function CloudArtifactsModal({ onClose }) {
             role="tab"
             aria-selected={tab === 'active'}
             className={tab === 'active' ? 'active' : ''}
-            onClick={() => setTab('active')}
+            onClick={() => selectTab('active')}
           >
-            生成物
+            网页
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'files'}
+            className={tab === 'files' ? 'active' : ''}
+            onClick={() => selectTab('files')}
+          >
+            文件
           </button>
           <button
             type="button"
             role="tab"
             aria-selected={tab === 'deleted'}
             className={tab === 'deleted' ? 'active' : ''}
-            onClick={() => setTab('deleted')}
+            onClick={() => selectTab('deleted')}
           >
             回收站
           </button>
         </div>
 
         <div className="cloud-artifacts-body">
-          {loading && artifacts.length === 0 && (
-            <div className="cloud-artifacts-status">正在读取云端产物...</div>
+          {loading && visibleCount === 0 && (
+            <div className="cloud-artifacts-status">正在读取产物...</div>
           )}
           {!loading && error && (
             <div className="cloud-artifacts-status error">
               <span>{error}</span>
-              <button type="button" onClick={loadArtifacts}>重试</button>
+              <button type="button" onClick={() => loadContent()}>重试</button>
             </div>
           )}
-          {!loading && !error && artifacts.length === 0 && (
+          {!loading && !error && visibleCount === 0 && (
             <div className="cloud-artifacts-status">{emptyText}</div>
           )}
-          {artifacts.length > 0 && (
+          {tab === 'files' && files.length > 0 && (
+            <>
+              <div className="cloud-artifacts-list">
+                {files.map((file) => (
+                  <HistoricalFileItem
+                    file={file}
+                    key={file.id}
+                    onPreviewFile={onPreviewFile}
+                  />
+                ))}
+              </div>
+              {fileHasMore && (
+                <button
+                  type="button"
+                  className="cloud-artifacts-load-more"
+                  disabled={loading}
+                  onClick={() => loadContent({ append: true, beforeId: fileCursor })}
+                >
+                  {loading ? '正在加载...' : '加载更多'}
+                </button>
+              )}
+            </>
+          )}
+          {tab !== 'files' && artifacts.length > 0 && (
             <div className="cloud-artifacts-list">
               {artifacts.map((artifact) => (
                 <article className="cloud-artifact-item" key={artifact.id}>
                   {tab === 'active' ? (
-                    <a
+                    <button
+                      type="button"
                       className="cloud-artifact-main"
-                      href={artifact.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      aria-label={'打开 ' + artifact.title}
+                      onClick={() => onPreviewArtifact?.(artifact)}
+                      aria-label={'预览 ' + artifact.title}
                     >
                       <ArtifactSummary artifact={artifact} />
-                      <ExternalLink className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
-                    </a>
+                      <Eye className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
+                    </button>
                   ) : (
                     <div className="cloud-artifact-main is-deleted">
                       <ArtifactSummary artifact={artifact} />
@@ -259,7 +376,7 @@ export default function CloudArtifactsModal({ onClose }) {
           </div>
         )}
       </section>
-    </div>
+    </>
   );
 }
 
@@ -276,5 +393,71 @@ function ArtifactSummary({ artifact }) {
         </p>
       </div>
     </>
+  );
+}
+
+function FileSummary({ file }) {
+  return (
+    <>
+      <span className="cloud-artifact-kind-icon file" aria-hidden="true">
+        <FileText size={18} />
+      </span>
+      <div className="cloud-artifact-copy">
+        <h4>{file.name}</h4>
+        <p>
+          {fileMeta(file).map((item) => (
+            <span className={'cloud-file-meta-' + item.key} key={item.key}>{item.value}</span>
+          ))}
+        </p>
+      </div>
+    </>
+  );
+}
+
+function HistoricalFileItem({ file, onPreviewFile }) {
+  const descriptor = previewFileDescriptor(file);
+  const canPreview = Boolean(descriptor?.canPreview);
+  const openURL = descriptor?.url || file.url || '';
+  const downloadURL = descriptor?.downloadURL || openURL;
+
+  return (
+    <article className="cloud-artifact-item cloud-file-item">
+      {canPreview ? (
+        <button
+          type="button"
+          className="cloud-artifact-main"
+          onClick={() => onPreviewFile?.(file)}
+          aria-label={'预览文件 ' + file.name}
+        >
+          <FileSummary file={file} />
+          <Eye className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
+        </button>
+      ) : (
+        <a
+          className="cloud-artifact-main"
+          href={openURL}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={'在新窗口打开 ' + file.name}
+        >
+          <FileSummary file={file} />
+          <ExternalLink className="cloud-artifact-open-icon" size={17} aria-hidden="true" />
+        </a>
+      )}
+      {!canPreview && downloadURL && (
+        <div className="cloud-artifact-actions">
+          <a
+            href={downloadURL}
+            download={file.name || true}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={'下载 ' + file.name}
+            title="下载"
+          >
+            <Download size={17} />
+          </a>
+        </div>
+      )}
+    </article>
   );
 }

@@ -98,4 +98,46 @@ describe('CreateGroup member candidates', () => {
     expect(onCreated).toHaveBeenCalledWith({ group_id: 88, topic: 'grp_88' });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps the current Agent locked and requires a new member when upgrading a task', async () => {
+    const onClose = vi.fn();
+    const onCreated = vi.fn();
+    const onCreate = vi.fn().mockResolvedValue({ group_id: 89, topic: 'grp_89' });
+    await mount({
+      mode: 'task_upgrade',
+      initialName: 'Review Task',
+      lockedMemberIds: [42],
+      onClose,
+      onCreated,
+      onCreate,
+    });
+
+    expect(container.querySelector('.oc-collaboration-input').value).toBe('Review Task');
+    const upgradeButton = Array.from(container.querySelectorAll('.oc-collaboration-modal-footer button'))
+      .find((button) => button.textContent.trim() === '升级并添加');
+    expect(upgradeButton.disabled).toBe(true);
+
+    const friendRow = Array.from(container.querySelectorAll('.oc-member-picker-item'))
+      .find((row) => row.textContent.includes('Alice'));
+    await act(async () => Simulate.change(friendRow.querySelector('input[type="checkbox"]')));
+    expect(upgradeButton.disabled).toBe(false);
+
+    const agentTab = Array.from(container.querySelectorAll('[role="tablist"] button'))
+      .find((button) => button.textContent.trim() === 'Agent');
+    await act(async () => Simulate.click(agentTab));
+    const currentAgentRow = Array.from(container.querySelectorAll('.oc-member-picker-item'))
+      .find((row) => row.textContent.includes('Virtual Catsco'));
+    expect(currentAgentRow.querySelector('input[type="checkbox"]').checked).toBe(true);
+    expect(currentAgentRow.querySelector('input[type="checkbox"]').disabled).toBe(true);
+    expect(currentAgentRow.textContent).toContain('当前任务成员');
+
+    await act(async () => {
+      Simulate.click(upgradeButton);
+      await flushPromises();
+    });
+
+    expect(onCreate).toHaveBeenCalledWith('Review Task', [42, 8]);
+    expect(onCreated).toHaveBeenCalledWith({ group_id: 89, topic: 'grp_89' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

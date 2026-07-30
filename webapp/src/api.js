@@ -76,9 +76,26 @@ export function isTokenExpired(candidate = token) {
   }
 }
 
-async function request(method, path, body) {
+async function request(method, path, body, { signal, timeoutMs = 0 } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeoutID = null;
+  const abortFromCaller = () => controller.abort(signal?.reason);
+
+  if (signal?.aborted) {
+    abortFromCaller();
+  } else if (signal) {
+    signal.addEventListener('abort', abortFromCaller, { once: true });
+  }
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timeoutID = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  }
 
   let res;
   try {
@@ -86,27 +103,44 @@ async function request(method, path, body) {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
     });
+
+    let data = {};
+    try {
+      data = await res.json();
+    } catch {
+      data = {};
+    }
+    if (!res.ok) {
+      const error = new Error(data.error || statusMessage(res.status));
+      error.status = res.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
   } catch (cause) {
+    if (timedOut) {
+      const error = new Error('请求超时，请稍后重试');
+      error.code = 'REQUEST_TIMEOUT';
+      error.cause = cause;
+      throw error;
+    }
+    if (signal?.aborted || cause?.name === 'AbortError') {
+      const error = new Error('请求已取消');
+      error.code = 'REQUEST_ABORTED';
+      error.cause = cause;
+      throw error;
+    }
+    if (cause?.status) throw cause;
     const error = new Error('网络连接失败，请检查后端服务是否运行');
     error.code = 'NETWORK_ERROR';
     error.cause = cause;
     throw error;
+  } finally {
+    if (timeoutID) clearTimeout(timeoutID);
+    signal?.removeEventListener('abort', abortFromCaller);
   }
-
-  let data = {};
-  try {
-    data = await res.json();
-  } catch {
-    data = {};
-  }
-  if (!res.ok) {
-    const error = new Error(data.error || statusMessage(res.status));
-    error.status = res.status;
-    error.data = data;
-    throw error;
-  }
-  return data;
 }
 
 function statusMessage(status) {
@@ -151,7 +185,7 @@ export const api = {
     request('GET', `/api/users/search?q=${encodeURIComponent(q)}&mode=${encodeURIComponent(mode)}`),
 
   // Send message via REST
-  sendMessage: (topicId, content, replyTo) => {
+  sendMessage: (topicId, content, replyTo, mentions = []) => {
     const payload = { topic_id: topicId };
 
     if (typeof content === 'string') {
@@ -178,12 +212,18 @@ export const api = {
     }
 
     if (replyTo) payload.reply_to = replyTo;
+    if (Array.isArray(mentions) && mentions.length > 0) payload.mentions = mentions;
     return request('POST', '/api/messages/send', payload);
   },
 
   // REST fallback for message history
-  getMessages: (topicId, limit, offset, latest = false) =>
-    request('GET', `/api/messages?topic_id=${encodeURIComponent(topicId)}&limit=${limit || 50}&offset=${offset || 0}${latest ? '&latest=1' : ''}`),
+  getMessages: (topicId, limit, offset, latest = false, beforeId = 0, options = {}) =>
+    request(
+      'GET',
+      `/api/messages?topic_id=${encodeURIComponent(topicId)}&limit=${limit || 50}&offset=${offset || 0}${latest ? '&latest=1' : ''}${beforeId > 0 ? `&before_id=${encodeURIComponent(beforeId)}` : ''}`,
+      undefined,
+      options,
+    ),
   getConversations: () => request('GET', '/api/conversations'),
   getProjects: () => request('GET', '/api/projects'),
   createProject: (name) => request('POST', '/api/projects', { name }),
@@ -370,12 +410,18 @@ export const api = {
   uploadFeedbackImage: (file) => api.uploadFile(file, 'feedback'),
   submitFeedback: (data) => request('POST', '/api/feedback', data),
   getTutorialTasks: () => request('GET', '/api/tutorial-tasks'),
-  getCloudArtifacts: (status = 'active') =>
-    request('GET', `/api/artifacts?status=${encodeURIComponent(status)}`),
-  deleteCloudArtifact: (artifactId) =>
-    request('DELETE', `/api/artifacts/${encodeURIComponent(artifactId)}`),
-  restoreCloudArtifact: (artifactId) =>
-    request('POST', `/api/artifacts/${encodeURIComponent(artifactId)}/restore`, {}),
+  getCloudArtifacts: (agentUid, status = 'active') =>
+    request('GET', `/api/agents/${encodeURIComponent(agentUid)}/artifacts?status=${encodeURIComponent(status)}`),
+  getAgentFiles: (agentUid, { beforeId = 0, limit = 40 } = {}) => {
+    const params = new URLSearchParams();
+    params.set('limit', String(limit));
+    if (beforeId > 0) params.set('before_id', String(beforeId));
+    return request('GET', `/api/agents/${encodeURIComponent(agentUid)}/files?${params.toString()}`);
+  },
+  deleteCloudArtifact: (agentUid, artifactId) =>
+    request('DELETE', `/api/agents/${encodeURIComponent(agentUid)}/artifacts/${encodeURIComponent(artifactId)}`),
+  restoreCloudArtifact: (agentUid, artifactId) =>
+    request('POST', `/api/agents/${encodeURIComponent(agentUid)}/artifacts/${encodeURIComponent(artifactId)}/restore`, {}),
 };
 
 // --- WebSocket ---
@@ -466,7 +512,9 @@ export function connectWS(onMessage, { force = false } = {}) {
     Object.keys(topicLastSeq).forEach((tid) => {
       requestMissedMessages(tid);
     });
-    onMessage({ _type: 'ws_open' });
+    const openMessage = { _type: 'ws_open' };
+    onMessage(openMessage);
+    msgHandlers.forEach((handler) => handler(openMessage));
   };
 
   conn.onclose = () => {
@@ -547,22 +595,24 @@ export function sendWS(msg) {
 }
 
 // Send a chat message via WebSocket, with REST fallback
-export async function wsSendMessage(topicId, content, replyTo) {
+export async function wsSendMessage(topicId, content, replyTo, mentions = []) {
   if (wsConn && wsConn.readyState === WebSocket.OPEN) {
     const id = nextMsgId();
     const pub = { id, topic: topicId, content };
     if (replyTo) pub.reply_to = replyTo;
+    if (Array.isArray(mentions) && mentions.length > 0) pub.mentions = mentions;
     sendWS({ pub });
     return id;
   }
   // Fallback to REST if WebSocket is not connected
-  await api.sendMessage(topicId, content);
+  await api.sendMessage(topicId, content, replyTo, mentions);
   return null;
 }
 
 // Send a non-persistent cancel event to stop the active agent turn.
-export async function wsSendStreamCancel(topicId) {
+export async function wsSendStreamCancel(topicId, targetBotUid = 0) {
   const streamId = `cancel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const normalizedTargetBotUid = Number(targetBotUid);
   if (wsConn && wsConn.readyState === WebSocket.OPEN) {
     const id = nextMsgId();
     sendWS({
@@ -576,6 +626,9 @@ export async function wsSendStreamCancel(topicId) {
           stream_id: streamId,
           stream_event: 'cancel',
           control: 'interrupt',
+          ...(Number.isFinite(normalizedTargetBotUid) && normalizedTargetBotUid > 0
+            ? { target_bot_uid: normalizedTargetBotUid }
+            : {}),
         },
       },
     });

@@ -81,6 +81,12 @@ describe('CatsCoDownloadModal', () => {
     });
 
     expect(container.textContent).toContain('当前版本 v1.4.1');
+    expect(container.querySelector('.catsco-download-section-title')?.textContent).toBe('可下载版本');
+    const scrollRegion = container.querySelector('.catsco-download-body');
+    expect(scrollRegion).not.toBeNull();
+    expect(Array.from(scrollRegion.children).filter((element) => (
+      element.classList.contains('catsco-download-list')
+    ))).toHaveLength(2);
   });
 
   test('updates download links from the desktop release API', async () => {

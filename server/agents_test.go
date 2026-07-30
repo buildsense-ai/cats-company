@@ -29,6 +29,7 @@ type agentTestStore struct {
 	createdTopics  []string
 	botBodyIDs     map[int64]string
 	modelConfigs   map[int64]*types.BotModelConfig
+	tenantNames    map[int64]string
 }
 
 func (s *agentTestStore) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, error) {
@@ -83,6 +84,17 @@ func (s *agentTestStore) GetBotModelConfig(botUID int64) (*types.BotModelConfig,
 		return nil, errors.New("not found")
 	}
 	return config, nil
+}
+
+func (s *agentTestStore) GetTenantName(botUID int64) (string, error) {
+	if s.tenantNames == nil {
+		return "", errors.New("not found")
+	}
+	tenantName, ok := s.tenantNames[botUID]
+	if !ok {
+		return "", errors.New("not found")
+	}
+	return tenantName, nil
 }
 
 func (s *agentTestStore) AreFriends(uid1, uid2 int64) (bool, error) {
@@ -162,16 +174,18 @@ func TestHandleListAgentsIncludesOwnedAndFriendBots(t *testing.T) {
 	}
 }
 
-func TestHandleListAgentsMarksConfiguredCloudArtifactAgents(t *testing.T) {
-	t.Setenv("CATSCO_CLOUD_ARTIFACT_AGENT_UIDS", "usr42, 43; invalid 0 -1")
+func TestHandleListAgentsEnablesCloudArtifactsForAllBots(t *testing.T) {
 	store := &agentTestStore{
 		ownerBots: []map[string]interface{}{
-			{"id": int64(42), "username": "owner-agent"},
+			{"id": int64(42), "username": "owner-agent", "tenant_name": "tenant-owner"},
 			{"id": int64(44), "username": "ordinary-agent"},
+			{"id": int64(45), "username": "historical-virtual-employee"},
 		},
 		friends: []*types.User{
 			{ID: 43, Username: "friend-agent", AccountType: types.AccountBot},
 		},
+		tenantNames: map[int64]string{43: "tenant-friend"},
+		botBodyIDs:  map[int64]string{44: "body-self-hosted-agent"},
 	}
 	handler := NewAgentHandler(store, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
@@ -193,11 +207,10 @@ func TestHandleListAgentsMarksConfiguredCloudArtifactAgents(t *testing.T) {
 	for _, agent := range body.Agents {
 		enabled[agent.UID] = agent.CloudArtifactsEnabled
 	}
-	if !enabled[42] || !enabled[43] {
-		t.Fatalf("configured agents missing capability: %+v", enabled)
-	}
-	if enabled[44] {
-		t.Fatalf("ordinary agent unexpectedly has capability: %+v", enabled)
+	for _, uid := range []int64{42, 43, 44, 45} {
+		if !enabled[uid] {
+			t.Fatalf("bot %d missing cloud Artifact entry: %+v", uid, enabled)
+		}
 	}
 }
 

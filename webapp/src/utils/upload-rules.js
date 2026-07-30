@@ -4,6 +4,7 @@ export const MAX_ATTACHMENT_SIZE = MAX_ATTACHMENT_SIZE_MB * 1024 * 1024;
 export const SUPPORTED_IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp']);
 export const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 export const IMAGE_UPLOAD_ACCEPT = '.jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp';
+export const VIDEO_UPLOAD_ACCEPT = '.mp4,.webm,.ogg,.ogv,.m4v,.mov,video/mp4,video/webm,video/ogg,video/x-m4v,video/quicktime';
 
 export function inferAttachmentType(file, requestedType) {
   if (requestedType) return requestedType;

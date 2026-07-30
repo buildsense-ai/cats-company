@@ -1,5 +1,5 @@
-import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Terminal, Brain, FileText, Download, CornerUpLeft, MoreHorizontal, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle } from 'lucide-react';
+import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -12,6 +12,7 @@ import {
   shouldRenderMarkdown,
 } from './markdown-utils';
 import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
+import MobilePdfPreview from './mobile-pdf-preview';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -29,6 +30,9 @@ const SPREADSHEET_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
 ]);
 const HTML_PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals';
+const FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const REMOTE_ARTIFACT_PREVIEW_SANDBOX = `${HTML_PREVIEW_SANDBOX} allow-same-origin`;
+const trustedArtifactPreviewPayloads = new WeakSet();
 
 function shouldHideToolProgressName(name) {
   return HIDDEN_TOOL_PROGRESS_NAMES.has(String(name || '').trim());
@@ -115,6 +119,85 @@ function planFromUpdatePlanResult(result) {
 function planFromUpdatePlanTool(item) {
   if (String(item?.name || '').trim() !== 'update_plan') return null;
   return planFromUpdatePlanInput(item.input) || planFromUpdatePlanResult(item.result);
+}
+
+function collapsePlanUpdates(items) {
+  const collapsed = [];
+  let planIndex = -1;
+
+  for (const originalItem of items || []) {
+    const item = originalItem?.type === 'subagent_group'
+      ? { ...originalItem, steps: collapsePlanUpdates(originalItem.steps || []) }
+      : originalItem;
+    const isPlan = item?.type === 'tool_pair' && planFromUpdatePlanTool(item);
+
+    if (!isPlan) {
+      collapsed.push(item);
+      continue;
+    }
+
+    if (planIndex === -1) {
+      planIndex = collapsed.length;
+      collapsed.push(item);
+    } else {
+      collapsed[planIndex] = item;
+    }
+  }
+
+  return collapsed;
+}
+
+function attachNarrativesToFollowingTools(items) {
+  const grouped = [];
+  let pendingNarratives = [];
+
+  const flushNarratives = () => {
+    if (pendingNarratives.length === 0) return;
+    grouped.push(...pendingNarratives);
+    pendingNarratives = [];
+  };
+
+  for (const item of items || []) {
+    if (item?.type === 'thinking' || item?.type === 'assistant_text') {
+      pendingNarratives.push(item);
+      continue;
+    }
+    if (item?.type === 'tool_pair' && !planFromUpdatePlanTool(item)) {
+      grouped.push({
+        ...item,
+        narratives: pendingNarratives,
+      });
+      pendingNarratives = [];
+      continue;
+    }
+    flushNarratives();
+    grouped.push(item);
+  }
+
+  flushNarratives();
+  return grouped;
+}
+
+function latestWorkingPlan(items) {
+  const item = latestWorkingPlanItem(items);
+  return item ? planFromUpdatePlanTool(item) : null;
+}
+
+function latestWorkingPlanItem(items) {
+  for (let index = (items?.length || 0) - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.type === 'tool_pair' && planFromUpdatePlanTool(item)) {
+      return item;
+    }
+  }
+  return null;
+}
+
+function isPlanComplete(plan) {
+  return Boolean(
+    plan?.steps?.length > 0
+    && plan.steps.every((step) => step.status === 'completed'),
+  );
 }
 
 function contentBlockCopyText(block) {
@@ -226,7 +309,7 @@ function groupBlocks(messages) {
       }
     }
   }
-  return items;
+  return attachNarrativesToFollowingTools(collapsePlanUpdates(items));
 }
 
 function groupContentBlocks(blocks) {
@@ -251,6 +334,10 @@ function groupContentBlocks(blocks) {
       continue;
     }
     if (block.type === 'assistant_text') {
+      items.push({ type: 'assistant_text', text: block.text || block.content || '' });
+      continue;
+    }
+    if (block.type === 'text' && block.presentation_role === 'process') {
       items.push({ type: 'assistant_text', text: block.text || block.content || '' });
       continue;
     }
@@ -338,7 +425,7 @@ function groupContentBlocks(blocks) {
     }
   }
 
-  return items;
+  return attachNarrativesToFollowingTools(collapsePlanUpdates(items));
 }
 
 function upsertSubAgentGroup(items, groups, info) {
@@ -495,8 +582,18 @@ function contentBlocksFromMessage(msg) {
       metadata: msg.metadata || null,
     }];
   }
-  if (msg?.type === 'text' && typeof msg.content === 'string' && msg.content.trim().startsWith(WORKING_TEXT_PREFIX)) {
-    return [{ type: 'assistant_text', text: workingTextContent(msg.content) }];
+  if (
+    msg?.type === 'text'
+    && typeof msg.content === 'string'
+    && (
+      msg.content.trim().startsWith(WORKING_TEXT_PREFIX)
+      || msg._display_text_role === 'process'
+    )
+  ) {
+    return [{
+      type: 'assistant_text',
+      text: workingTextContent(msg.content),
+    }];
   }
 
   return [];
@@ -526,45 +623,108 @@ function subAgentStatusText(status, isError) {
   }
 }
 
-function NestedWorkingStep({ item }) {
-  if (item.type === 'thinking' || item.type === 'assistant_text') {
+function serializeToolResult(value) {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    return String(value ?? '');
+  }
+}
+
+function toolResultSizeLabel(value) {
+  if (typeof value !== 'string') return '结构化结果';
+  if (!value) return '';
+  if (value.length < 1000) return `${value.length} 字符`;
+  return `${(value.length / 1000).toFixed(value.length >= 10000 ? 0 : 1)}k 字符`;
+}
+
+function WorkingToolStep({ item, orphan = false }) {
+  const [open, setOpen] = useState(false);
+  const result = orphan ? item.content : item.result;
+  const hasResult = result != null && (typeof result !== 'string' || result.length > 0);
+  const name = orphan ? '工具结果' : (item.name || 'Tool');
+  const resultID = `tool-result-${useId().replace(/:/g, '')}`;
+  const narratives = item.narratives || [];
+
+  if (!hasResult) {
     return (
-      <div className="v3-wpi-thinking">
-        <Brain size={14} className="v3-wpi-icon" />
-        <span className="v3-wpi-text">{item.text}</span>
+      <div className="v3-wpi-tool-step">
+        {narratives.map((narrative, index) => (
+          <WorkingNarrative key={`${narrative.type}-${index}`} item={narrative} />
+        ))}
+        <div className="v3-wpi-tool">
+          <div className="v3-wpi-tool-header">
+            <Terminal size={14} className="v3-wpi-icon" />
+            <span className="v3-wpi-tool-name">{name}</span>
+            {!orphan && (
+              <span className="oc-wpi-tool-input">
+                {toolInputSummary(item.name, item.input)}
+              </span>
+            )}
+          </div>
+        </div>
       </div>
     );
   }
 
-  if (item.type === 'tool_pair') {
-    return (
+  return (
+    <div className="v3-wpi-tool-step">
+      {narratives.map((narrative, index) => (
+        <WorkingNarrative key={`${narrative.type}-${index}`} item={narrative} />
+      ))}
       <div className="v3-wpi-tool">
-        <div className="v3-wpi-tool-header">
+        <button
+          type="button"
+          className="v3-wpi-tool-header is-toggle"
+          aria-expanded={open}
+          aria-controls={resultID}
+          onClick={() => setOpen((current) => !current)}
+        >
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           <Terminal size={14} className="v3-wpi-icon" />
-          <span className="v3-wpi-tool-name">{item.name}</span>
-          <span className="oc-wpi-tool-input" style={{ marginLeft: 8, opacity: 0.7, fontSize: 11 }}>
-            {toolInputSummary(item.name, item.input)}
-          </span>
-        </div>
-        {item.result != null && (
-          <div className="v3-wpi-tool-result">
+          <span className="v3-wpi-tool-name">{name}</span>
+          {!orphan && (
+            <span className="oc-wpi-tool-input">
+              {toolInputSummary(item.name, item.input)}
+            </span>
+          )}
+          <span className="v3-wpi-tool-size">{toolResultSizeLabel(result)}</span>
+        </button>
+        {open && (
+          <div id={resultID} className="v3-wpi-tool-result">
             <div className="v3-wpi-code-block result">
-              <pre><code>{typeof item.result === 'string' ? item.result : JSON.stringify(item.result, null, 2)}</code></pre>
+              <pre><code>{serializeToolResult(result)}</code></pre>
             </div>
           </div>
         )}
       </div>
-    );
+    </div>
+  );
+}
+
+function WorkingNarrative({ item }) {
+  const NarrativeIcon = item.type === 'thinking' ? Brain : MessageSquareText;
+  return (
+    <div className={`v3-wpi-thinking v3-wpi-narrative is-${item.type}`}>
+      <NarrativeIcon size={14} className="v3-wpi-icon" aria-hidden="true" />
+      <span className="v3-wpi-text">{item.text}</span>
+    </div>
+  );
+}
+
+function NestedWorkingStep({ item }) {
+  if (item.type === 'thinking' || item.type === 'assistant_text') {
+    return <WorkingNarrative item={item} />;
+  }
+
+  if (item.type === 'tool_pair') {
+    const plan = planFromUpdatePlanTool(item);
+    return plan ? <WorkingPlanCard item={item} /> : <WorkingToolStep item={item} />;
   }
 
   if (item.type === 'tool_result_orphan') {
-    return (
-      <div className="v3-wpi-tool-result">
-        <div className="v3-wpi-code-block result">
-          <pre><code>{typeof item.content === 'string' ? item.content : JSON.stringify(item.content, null, 2)}</code></pre>
-        </div>
-      </div>
-    );
+    return <WorkingToolStep item={item} orphan />;
   }
 
   return null;
@@ -572,13 +732,22 @@ function NestedWorkingStep({ item }) {
 
 function SubAgentWorkingGroup({ item }) {
   const [open, setOpen] = useState(false);
+  const stepsID = `subagent-steps-${useId().replace(/:/g, '')}`;
   const steps = item.steps || [];
   const status = subAgentStatusText(item.status, item.isError);
 
   return (
     <div className="v3-wpi-subagent">
-      <button className="v3-wpi-subagent-toggle" type="button" onClick={() => setOpen(!open)}>
-        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+      <button
+        className="v3-wpi-subagent-toggle"
+        type="button"
+        aria-expanded={open}
+        aria-controls={stepsID}
+        onClick={() => setOpen(!open)}
+      >
+        {open
+          ? <ChevronDown size={13} aria-hidden="true" />
+          : <ChevronRight size={13} aria-hidden="true" />}
         <span className="v3-wpi-subagent-name">{item.name}</span>
         {item.agentType && <span className="v3-wpi-subagent-type">{item.agentType}</span>}
         <span className={`v3-wpi-subagent-status ${item.status || 'running'}`}>{status}</span>
@@ -586,7 +755,12 @@ function SubAgentWorkingGroup({ item }) {
       </button>
       {item.task && <div className="v3-wpi-subagent-task">{item.task}</div>}
       {open && (
-        <div className="v3-wpi-subagent-steps">
+        <div
+          id={stepsID}
+          className="v3-wpi-subagent-steps"
+          role="region"
+          aria-label={`${item.name} 的执行步骤`}
+        >
           {steps.map((step, index) => (
             <NestedWorkingStep key={index} item={step} />
           ))}
@@ -605,7 +779,7 @@ function WorkingPlanCard({ item }) {
     <div className="v3-wpi-plan" role="status">
       <div className="v3-wpi-plan-header">
         <FileText size={14} className="v3-wpi-icon" />
-        <span className="v3-wpi-plan-title">计划已更新</span>
+        <span className="v3-wpi-plan-title">计划</span>
         <span className="v3-wpi-plan-count">{completed}/{plan.steps.length}</span>
       </div>
       <div className="v3-wpi-plan-steps">
@@ -624,85 +798,116 @@ function WorkingPlanCard({ item }) {
   );
 }
 
-function WorkingProcess({ blocks }) {
+function WorkingProcess({ blocks, complete: completeOverride = false }) {
   const [open, setOpen] = useState(false);
-  if (!blocks || blocks.length === 0) return null;
+  const triggerRef = useRef(null);
+  const stepsID = `working-steps-${useId().replace(/:/g, '')}`;
+  const safeBlocks = blocks || [];
+  const planItem = latestWorkingPlanItem(safeBlocks);
+  const plan = planItem ? planFromUpdatePlanTool(planItem) : null;
+  const detailBlocks = safeBlocks.filter((item) => item !== planItem);
+  const hasDetails = detailBlocks.length > 0;
+  const completedPlanSteps = plan?.steps?.filter((step) => step.status === 'completed').length || 0;
+  const complete = completeOverride || isPlanComplete(plan);
+  const statusLabel = complete ? '已完成' : '正在执行';
+  const lastTool = [...detailBlocks].reverse().find((item) => item.type === 'tool_pair');
+  const summary = plan
+    ? `${completedPlanSteps}/${plan.steps.length}${!complete && lastTool?.name && lastTool.name !== 'update_plan' ? ` · ${lastTool.name}` : ''}`
+    : `${detailBlocks.length} 步${lastTool?.name ? ` · ${lastTool.name}` : ''}`;
+
+  const statusContent = (
+    <>
+      {hasDetails && (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
+      <span className="v3-working-label">{statusLabel}</span>
+      <span className="v3-working-summary">{summary}</span>
+    </>
+  );
+  const planContent = planItem ? (
+    <div className={`v3-working-plan${open && hasDetails ? ' is-after-details' : ''}`}>
+      <WorkingPlanCard item={planItem} />
+    </div>
+  ) : null;
+
+  const handleDetailsToggle = (event) => {
+    event.stopPropagation();
+    setOpen((current) => !current);
+  };
+
+  useEffect(() => {
+    if (!open || !hasDetails) return undefined;
+
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus({ preventScroll: true });
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [hasDetails, open]);
+
+  if (safeBlocks.length === 0) return null;
 
   return (
-    <div className="v3-working-process">
-      <button className="v3-working-toggle" onClick={() => setOpen(!open)}>
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <span className="v3-working-label">WORKING...</span>
-        {!open && <span className="v3-working-hint">展开详情</span>}
-      </button>
-      {open && (
-        <div className="v3-working-steps">
-          {blocks.map((item, i) => {
-            if (item.type === 'thinking') {
-              return (
-                <div key={i} className="v3-wpi-thinking">
-                  <Brain size={14} className="v3-wpi-icon" />
-                  <span className="v3-wpi-text">{item.text}</span>
-                </div>
-              );
-            }
-            if (item.type === 'assistant_text') {
-              return (
-                <div key={i} className="v3-wpi-thinking">
-                  <Brain size={14} className="v3-wpi-icon" />
-                  <span className="v3-wpi-text">{item.text}</span>
-                </div>
-              );
-            }
-            if (item.type === 'subagent_group') {
-              return <SubAgentWorkingGroup key={i} item={item} />;
-            }
-            if (item.type === 'tool_pair') {
-              const plan = planFromUpdatePlanTool(item);
-              if (plan) {
-                return <WorkingPlanCard key={i} item={item} />;
-              }
-              return (
-                <div key={i} className="v3-wpi-tool">
-                  <div className="v3-wpi-tool-header">
-                    <Terminal size={14} className="v3-wpi-icon" />
-                    <span className="v3-wpi-tool-name">{item.name}</span>
-                    <span className="oc-wpi-tool-input" style={{ marginLeft: 8, opacity: 0.7, fontSize: 11 }}>
-                      {toolInputSummary(item.name, item.input)}
-                    </span>
-                  </div>
-                  {item.result != null && (
-                    <div className="v3-wpi-tool-result">
-                      <div className="v3-wpi-code-block result">
-                        <pre><code>{typeof item.result === 'string' ? item.result : JSON.stringify(item.result, null, 2)}</code></pre>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            }
-            if (item.type === 'tool_result_orphan') {
-              return (
-                <div key={i} className="v3-wpi-tool-result">
-                  <div className="v3-wpi-code-block result">
-                     <pre><code>{typeof item.content === 'string' ? item.content : JSON.stringify(item.content, null, 2)}</code></pre>
-                  </div>
-                </div>
-              );
-            }
-            return null;
-          })}
+    <div className={`v3-working-process${planItem ? ' has-persistent-plan' : ''}`}>
+      {hasDetails ? (
+        <button
+          ref={triggerRef}
+          type="button"
+          className="v3-working-toggle"
+          aria-expanded={open}
+          aria-controls={stepsID}
+          aria-label={`${statusLabel} ${summary}，${open ? '收起任务步骤' : '展开任务步骤'}`}
+          onClick={handleDetailsToggle}
+        >
+          {statusContent}
+        </button>
+      ) : (
+        <div className="v3-working-status" role="status">
+          {statusContent}
         </div>
       )}
+      {!open && planContent}
+      {open && hasDetails && (
+        <div
+          id={stepsID}
+          className="v3-working-details-inline"
+          role="region"
+          aria-label="过程详情"
+        >
+          <div className="v3-working-steps">
+            {detailBlocks.map((item, i) => {
+              if (item.type === 'thinking') {
+                return <WorkingNarrative key={i} item={item} />;
+              }
+              if (item.type === 'assistant_text') {
+                return <WorkingNarrative key={i} item={item} />;
+              }
+              if (item.type === 'subagent_group') {
+                return <SubAgentWorkingGroup key={i} item={item} />;
+              }
+              if (item.type === 'tool_pair') {
+                return <WorkingToolStep key={i} item={item} />;
+              }
+              if (item.type === 'tool_result_orphan') {
+                return <WorkingToolStep key={i} item={item} orphan />;
+              }
+              return null;
+            })}
+          </div>
+        </div>
+      )}
+      {open && hasDetails && planContent}
     </div>
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile }) {
-  const [actionsOpen, setActionsOpen] = useState(false);
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [] }) {
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
-  const actionsRef = useRef(null);
   const content = message.content;
   const effectiveWorkingMessages = workingMessages || message._working || [];
   const storedBlocks = useMemo(() => Array.isArray(message.content_blocks) ? message.content_blocks : [], [message.content_blocks]);
@@ -715,21 +920,36 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     }
     return [];
   }, [effectiveWorkingMessages, storedBlocks]);
+  const workingPlanComplete = isPlanComplete(latestWorkingPlan(workingBlocks));
   const richBlocks = useMemo(() => (
     storedBlocks.filter((block) => block.type === 'image' || block.type === 'file')
   ), [storedBlocks]);
+  const storedTextBlocks = useMemo(() => (
+    storedBlocks.filter(
+      (block) => block.type === 'text'
+        && block.text
+        && block.presentation_role !== 'process',
+    )
+  ), [storedBlocks]);
   const renderedTextContent = useMemo(() => {
     if (storedBlocks.length === 0) return content;
-    return storedBlocks
-      .filter((block) => block.type === 'text' && block.text)
+    return storedTextBlocks
       .map((block) => block.text)
       .join('\n\n');
-  }, [storedBlocks, content]);
+  }, [storedBlocks, storedTextBlocks, content]);
   const hasText = useMemo(() => (
     typeof renderedTextContent === 'string'
       ? renderedTextContent.trim().length > 0
       : renderedTextContent != null
   ), [renderedTextContent]);
+  const workingProcessComplete = workingComplete || workingPlanComplete || (
+    workingBlocks.length > 0
+    && !workingOnly
+    && !message._streaming
+  );
+  const hasFileOnly = !hasText && richBlocks.length > 0 && richBlocks.every(
+    (block) => block.type === 'file' && !isInlineVideoFile(block.payload),
+  );
 
   const parsed = useMemo(() => {
     if (storedBlocks.length > 0) return null;
@@ -754,24 +974,58 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   const copyText = useMemo(() => (
     buildMessageCopyText(content, renderedTextContent, richBlocks, parsed)
   ), [content, renderedTextContent, richBlocks, parsed]);
+  const hasArtifactFirstSummary = artifactsFirst && richBlocks.length > 0 && hasText;
+  const artifactFollowupSections = useMemo(() => {
+    if (!hasArtifactFirstSummary || storedTextBlocks.length === 0) return null;
+    return storedTextBlocks.map((block, index) => {
+      const role = block.presentation_role || 'body';
+      return (
+        <div
+          key={`${role}-${index}`}
+          className={`v3-message-followup-section is-${role}`}
+          data-message-part={role}
+        >
+          <TextContent
+            content={block.text}
+            isGroup={isGroup}
+            knownArtifacts={knownArtifacts}
+            onPreviewFile={onPreviewFile}
+            activePreviewFile={activePreviewFile}
+          />
+        </div>
+      );
+    });
+  }, [
+    activePreviewFile,
+    hasArtifactFirstSummary,
+    isGroup,
+    knownArtifacts,
+    onPreviewFile,
+    storedTextBlocks,
+  ]);
+  const renderedMessageText = hasText && (parsed ? (
+    <RichContent
+      content={parsed}
+      onPreviewFile={onPreviewFile}
+      activePreviewFile={activePreviewFile}
+    />
+  ) : (
+    <TextContent
+      content={renderedTextContent}
+      isGroup={isGroup}
+      knownArtifacts={knownArtifacts}
+      onPreviewFile={onPreviewFile}
+      activePreviewFile={activePreviewFile}
+    />
+  ));
 
   const handleReplyClick = (event) => {
     event.stopPropagation();
-    setActionsOpen(false);
     onReply?.();
-  };
-
-  const handleMoreClick = (event) => {
-    event.stopPropagation();
-    setActionsOpen((open) => {
-      if (!open) setCopyState('');
-      return !open;
-    });
   };
 
   const handleEditClick = (event) => {
     event.stopPropagation();
-    setActionsOpen(false);
     onEdit?.(message);
   };
 
@@ -797,47 +1051,27 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     }
   };
 
-  useEffect(() => {
-    if (!actionsOpen) return undefined;
-
-    const closeFromOutside = (event) => {
-      if (!actionsRef.current?.contains(event.target)) {
-        setActionsOpen(false);
-      }
-    };
-    const closeFromKeyboard = (event) => {
-      if (event.key === 'Escape') {
-        setActionsOpen(false);
-      }
-    };
-
-    document.addEventListener('pointerdown', closeFromOutside);
-    document.addEventListener('keydown', closeFromKeyboard);
-    return () => {
-      document.removeEventListener('pointerdown', closeFromOutside);
-      document.removeEventListener('keydown', closeFromKeyboard);
-    };
-  }, [actionsOpen]);
-
   if (!hasText && richBlocks.length === 0 && workingBlocks.length === 0) return null;
 
   return (
     <div
-      className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}`}
+      className={`v3-message ${isSelf ? 'is-self' : 'is-peer'} ${senderIsBot ? 'is-agent' : ''} ${isConsecutive ? 'grouped' : ''}${hasFileOnly ? ' has-file-only' : ''}${artifactsFirst ? ' artifacts-first' : ''}${(workingOnly || message._streaming) && !workingProcessComplete ? ' is-working' : ''}${workingProcessComplete ? ' is-complete' : ''}`}
       data-conversation-question={questionAnchorKey || undefined}
     >
-      <div className="v3-avatar-col">
-        {!isConsecutive && (
-          <Avatar
-            name={displayName}
-            src={senderAvatarUrl}
-            size={36}
-            isBot={senderIsBot}
-            className={`v3-avatar ${senderIsBot ? 'bot' : ''}`}
-            style={{ borderRadius: 6 }}
-          />
-        )}
-      </div>
+      {!isSelf && (
+        <div className="v3-avatar-col">
+          {!isConsecutive && (
+            <Avatar
+              name={displayName}
+              src={senderAvatarUrl}
+              size={36}
+              isBot={senderIsBot}
+              className={`v3-avatar ${senderIsBot ? 'bot' : ''}`}
+              style={{ borderRadius: 6 }}
+            />
+          )}
+        </div>
+      )}
 
       <div className="v3-msg-body">
         <div className="v3-message-bubble">
@@ -848,41 +1082,68 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
           )}
 
           {replyMessage && (
-            <div style={{ padding: '4px 8px', background: 'rgba(255,255,255,0.05)', borderRadius: 4, marginBottom: 4, fontSize: 13, color: '#aaa', borderLeft: '3px solid var(--v3-primary)', width: 'fit-content' }}>
-              <span style={{opacity: 0.8}}>
+            <div
+              className="v3-inline-reply"
+              title={typeof replyMessage.content === 'string' ? replyMessage.content : undefined}
+            >
+              <span>
                 {typeof replyMessage.content === 'string' ? replyMessage.content.slice(0, 80) : '[media]'}
               </span>
             </div>
           )}
 
-          {!isSelf && showThinking && <WorkingProcess blocks={workingBlocks} />}
+          {!isSelf && showThinking && (
+            <WorkingProcess blocks={workingBlocks} complete={workingProcessComplete} />
+          )}
 
           {(hasText || richBlocks.length > 0) && (
             <div className="v3-message-content">
-              {hasText && (parsed ? (
-                <RichContent
-                  content={parsed}
-                  onPreviewFile={onPreviewFile}
-                  activePreviewFile={activePreviewFile}
-                />
-              ) : <TextContent content={renderedTextContent} isGroup={isGroup} />)}
-              {richBlocks.map((block, index) => (
-                <RichContent
-                  key={`${block.type}-${index}`}
-                  content={block}
-                  onPreviewFile={onPreviewFile}
-                  activePreviewFile={activePreviewFile}
-                />
-              ))}
-              {message._streaming && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
+              {hasArtifactFirstSummary ? (
+                <>
+                  <div className="v3-message-deliverables" data-message-part="artifacts">
+                    {richBlocks.map((block, index) => (
+                      <RichContent
+                        key={`${block.type}-${index}`}
+                        content={block}
+                        onPreviewFile={onPreviewFile}
+                        activePreviewFile={activePreviewFile}
+                      />
+                    ))}
+                  </div>
+                  <div className="v3-message-followup-text" data-message-part="summary">
+                    {artifactFollowupSections || renderedMessageText}
+                    {message._streaming && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
+                  </div>
+                </>
+              ) : (
+                <>
+                  {artifactsFirst && richBlocks.map((block, index) => (
+                    <RichContent
+                      key={`${block.type}-${index}`}
+                      content={block}
+                      onPreviewFile={onPreviewFile}
+                      activePreviewFile={activePreviewFile}
+                    />
+                  ))}
+                  {renderedMessageText}
+                  {!artifactsFirst && richBlocks.map((block, index) => (
+                    <RichContent
+                      key={`${block.type}-${index}`}
+                      content={block}
+                      onPreviewFile={onPreviewFile}
+                      activePreviewFile={activePreviewFile}
+                    />
+                  ))}
+                  {message._streaming && <span className="oc-streaming-cursor" aria-hidden="true">|</span>}
+                </>
+              )}
             </div>
           )}
         </div>
 
         {!workingOnly && <div className="v3-message-footer">
           <div
-            ref={actionsRef}
-            className={`v3-message-actions${actionsOpen ? ' open' : ''}`}
+            className="v3-message-actions"
             onClick={(event) => event.stopPropagation()}
           >
             <button
@@ -907,7 +1168,18 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                 <RotateCcw size={18} />
               </button>
             )}
-            {onEdit ? (
+            {!onEdit && onReply && (
+              <button
+                className="v3-action-btn v3-reply-action"
+                onClick={handleReplyClick}
+                aria-label={t('chat_reply')}
+                title={t('chat_reply')}
+                type="button"
+              >
+                <CornerUpLeft size={14} />
+              </button>
+            )}
+            {onEdit && (
               <button
                 className="v3-action-btn"
                 onClick={handleEditClick}
@@ -917,28 +1189,6 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
               >
                 <Pencil size={14} />
               </button>
-            ) : (
-              <button
-                className="v3-action-btn"
-                onClick={handleMoreClick}
-                aria-label="更多操作"
-                aria-haspopup="menu"
-                aria-expanded={actionsOpen}
-                title="更多操作"
-                type="button"
-              >
-                <MoreHorizontal size={14} />
-              </button>
-            )}
-            {!onEdit && actionsOpen && (
-              <div className="v3-message-action-menu" role="menu">
-                {onReply && (
-                  <button type="button" role="menuitem" onClick={handleReplyClick}>
-                    <CornerUpLeft size={14} />
-                    <span>{t('chat_reply')}</span>
-                  </button>
-                )}
-              </div>
             )}
           </div>
           <time className="v3-msg-time" dateTime={message.created_at || undefined}>{timeString}</time>
@@ -952,6 +1202,8 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
   return prevProps.message === nextProps.message &&
     prevProps.workingMessages === nextProps.workingMessages &&
     prevProps.workingOnly === nextProps.workingOnly &&
+    prevProps.workingComplete === nextProps.workingComplete &&
+    prevProps.artifactsFirst === nextProps.artifactsFirst &&
     prevProps.isSelf === nextProps.isSelf &&
     prevProps.isGroup === nextProps.isGroup &&
     prevProps.senderName === nextProps.senderName &&
@@ -964,69 +1216,253 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.showThinking === nextProps.showThinking &&
     prevProps.isConsecutive === nextProps.isConsecutive &&
     prevProps.onPreviewFile === nextProps.onPreviewFile &&
-    prevProps.activePreviewFile === nextProps.activePreviewFile;
+    prevProps.activePreviewFile === nextProps.activePreviewFile &&
+    prevProps.knownArtifacts === nextProps.knownArtifacts;
 });
 
 export default ChatMessage;
 
-function TextContent({ content, isGroup }) {
+function TextContent({ content, isGroup, knownArtifacts = [], onPreviewFile, activePreviewFile }) {
   const text = useMemo(() => messageContentText(content), [content]);
+  const matchedArtifacts = useMemo(() => findKnownArtifactsInText(text, knownArtifacts), [knownArtifacts, text]);
+  const plainText = useMemo(() => removeKnownArtifactURLs(text, matchedArtifacts), [matchedArtifacts, text]);
   const renderableTable = useMemo(() => hasRenderableTable(text), [text]);
   const plainTextTableLike = useMemo(() => (
     !renderableTable && hasPlainTextTableLikeBlock(text)
   ), [renderableTable, text]);
   const plainTextParagraphs = useMemo(() => (
-    text.split(/\r?\n(?:[\t ]*\r?\n)+/)
-  ), [text]);
+    plainText.split(/\r?\n(?:[\t ]*\r?\n)+/)
+  ), [plainText]);
 
   const markdownHtml = useMemo(() => {
     if (plainTextTableLike) return null;
     if (!shouldRenderMarkdown(text, { plainTextTables: true })) return null;
     try {
-      return renderSafeMarkdown(text, { plainTextTables: true });
+      return decorateArtifactMarkdown(renderSafeMarkdown(text, { plainTextTables: true }), matchedArtifacts);
     } catch (e) {
       console.error('Markdown parse error:', e);
       return null;
     }
-  }, [plainTextTableLike, text]);
+  }, [matchedArtifacts, plainTextTableLike, text]);
   const markdownClassName = useMemo(() => (
     renderableTable ? 'oc-markdown oc-markdown-table' : 'oc-markdown'
   ), [renderableTable]);
 
   if (markdownHtml) {
-    return <div dangerouslySetInnerHTML={{ __html: markdownHtml }} className={markdownClassName} />;
+    return (
+      <>
+        <div dangerouslySetInnerHTML={{ __html: markdownHtml }} className={markdownClassName} />
+        <ArtifactMessageCards
+          artifacts={matchedArtifacts}
+          onPreviewFile={onPreviewFile}
+          activePreviewFile={activePreviewFile}
+        />
+      </>
+    );
   }
 
   if (plainTextTableLike) {
-    return <pre className="oc-plain-text-table">{text}</pre>;
+    return (
+      <>
+        <pre className="oc-plain-text-table">{plainText}</pre>
+        <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+      </>
+    );
   }
 
   if (isGroup) {
-    const parts = text.split(/(@usr\d+)/g);
+    const parts = removeKnownArtifactURLs(text, matchedArtifacts).split(/(@usr\d+)/g);
     return (
-      <span style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-        {parts.map((part, i) =>
-          part.match(/^@usr\d+$/) ? (
-            <span key={i} className="oc-mention">{part}</span>
-          ) : (
-            <span key={i}>{part}</span>
-          )
-        )}
-      </span>
+      <>
+        <span style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+          {parts.map((part, i) =>
+            part.match(/^@usr\d+$/) ? (
+              <span key={i} className="oc-mention">{part}</span>
+            ) : (
+              <span key={i}>{part}</span>
+            )
+          )}
+        </span>
+        <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+      </>
     );
   }
 
   if (plainTextParagraphs.length > 1) {
     return (
-      <div className="oc-plain-text-paragraphs">
-        {plainTextParagraphs.map((paragraph, index) => (
-          <p className="oc-plain-text-paragraph" key={index}>{paragraph}</p>
-        ))}
-      </div>
+      <>
+        <div className="oc-plain-text-paragraphs">
+          {plainTextParagraphs.map((paragraph, index) => (
+            <p className="oc-plain-text-paragraph" key={index}>{paragraph}</p>
+          ))}
+        </div>
+        <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+      </>
     );
   }
 
-  return <span style={{ whiteSpace: 'pre-wrap' }}>{text}</span>;
+  return (
+    <>
+      <span style={{ whiteSpace: 'pre-wrap' }}>{removeKnownArtifactURLs(text, matchedArtifacts)}</span>
+      <ArtifactMessageCards artifacts={matchedArtifacts} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
+    </>
+  );
+}
+
+function normalizeArtifactURL(value) {
+  try {
+    const base = typeof window !== 'undefined' ? window.location.origin : 'https://app.catsco.cc';
+    const parsed = new URL(String(value || ''), base);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    return parsed.toString();
+  } catch (e) {
+    return '';
+  }
+}
+
+function extractHTTPURLTokens(text) {
+  const value = String(text || '');
+  const tokens = [];
+  for (const match of value.matchAll(/https?:\/\/[^\s<>"'`]+/gi)) {
+    const previousCharacter = match.index > 0 ? value[match.index - 1] : '';
+    if (/[A-Za-z0-9_]/.test(previousCharacter)) continue;
+    const raw = trimURLToken(match[0]);
+    const normalizedURL = normalizeArtifactURL(raw);
+    if (!raw || !normalizedURL) continue;
+    tokens.push({
+      raw,
+      normalizedURL,
+      start: match.index,
+      end: match.index + raw.length,
+    });
+  }
+  return tokens;
+}
+
+function trimURLToken(value) {
+  let token = String(value || '');
+  while (/[.,;:!?，。；：！？]$/.test(token)) {
+    token = token.slice(0, -1);
+  }
+  const pairs = { ')': '(', ']': '[', '}': '{' };
+  while (pairs[token.at(-1)]) {
+    const closing = token.at(-1);
+    const opening = pairs[closing];
+    const openingCount = token.split(opening).length - 1;
+    const closingCount = token.split(closing).length - 1;
+    if (closingCount <= openingCount) break;
+    token = token.slice(0, -1);
+  }
+  return token;
+}
+
+function findKnownArtifactsInText(text, knownArtifacts) {
+  const presentURLs = new Set(extractHTTPURLTokens(text).map((token) => token.normalizedURL));
+  const seen = new Set();
+  return (Array.isArray(knownArtifacts) ? knownArtifacts : []).filter((artifact) => {
+    const normalizedURL = normalizeArtifactURL(artifact?.url);
+    if (!normalizedURL || seen.has(normalizedURL) || !presentURLs.has(normalizedURL)) return false;
+    seen.add(normalizedURL);
+    return true;
+  });
+}
+
+function decorateArtifactMarkdown(html, artifacts) {
+  if (!html || !Array.isArray(artifacts) || artifacts.length === 0 || typeof document === 'undefined') return html;
+  const knownURLs = new Set(artifacts.map((artifact) => normalizeArtifactURL(artifact.url)).filter(Boolean));
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  template.content.querySelectorAll('a[href]').forEach((anchor) => {
+    if (!knownURLs.has(normalizeArtifactURL(anchor.getAttribute('href')))) return;
+    anchor.classList.add('oc-artifact-source-link');
+    anchor.setAttribute('aria-hidden', 'true');
+    anchor.setAttribute('tabindex', '-1');
+  });
+  return template.innerHTML;
+}
+
+function removeKnownArtifactURLs(text, artifacts) {
+  const value = String(text || '');
+  const knownURLs = new Set(
+    (artifacts || []).map((artifact) => normalizeArtifactURL(artifact?.url)).filter(Boolean),
+  );
+  const matches = extractHTTPURLTokens(value).filter((token) => knownURLs.has(token.normalizedURL));
+  if (matches.length === 0) return value.replace(/[ \t]+(?=\r?$)/gm, '').trimEnd();
+
+  let cursor = 0;
+  let result = '';
+  for (const match of matches) {
+    result += value.slice(cursor, match.start);
+    cursor = match.end;
+  }
+  result += value.slice(cursor);
+  return result.replace(/[ \t]+(?=\r?$)/gm, '').trimEnd();
+}
+
+export function createCloudArtifactPreviewFile(artifact) {
+  const payload = {
+    name: artifact.title || artifact.id || 'Cloud artifact',
+    url: artifact.url,
+    mime_type: 'text/html',
+    artifact_id: artifact.id || artifact.artifact_id || '',
+    publish_version: artifact.publish_version || null,
+  };
+  trustedArtifactPreviewPayloads.add(payload);
+  return payload;
+}
+
+function ArtifactMessageCards({ artifacts, onPreviewFile, activePreviewFile }) {
+  if (!Array.isArray(artifacts) || artifacts.length === 0) return null;
+  return (
+    <div className="v3-message-artifact-list">
+      {artifacts.map((artifact) => (
+        <ArtifactMessageCard
+          key={`${artifact.id || artifact.artifact_id || ''}|${artifact.url}`}
+          artifact={artifact}
+          onPreviewFile={onPreviewFile}
+          activePreviewFile={activePreviewFile}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ArtifactMessageCard({ artifact, onPreviewFile, activePreviewFile }) {
+  const payload = createCloudArtifactPreviewFile(artifact);
+  const descriptor = previewFileDescriptor(payload);
+  const activeKey = activePreviewFile ? previewFileDescriptor(activePreviewFile)?.key : '';
+  const isActive = descriptor?.canPreview && descriptor.key === activeKey;
+  const version = Number(artifact.publish_version || 0);
+  const subtitle = ['HTML', '云端生成物', version > 0 ? `v${version}` : ''].filter(Boolean).join(' · ');
+  const previewArtifact = () => {
+    if (descriptor?.canPreview) onPreviewFile?.(payload);
+  };
+  const openArtifact = () => {
+    if (descriptor?.canPreview) {
+      previewArtifact();
+    } else if (payload.url) {
+      window.open(payload.url, '_blank', 'noopener,noreferrer');
+    }
+  };
+  return (
+    <div className={`v3-attachment-card v3-artifact-card cloud-static${isActive ? ' active' : ''}`}>
+      <button className="v3-artifact-main" onClick={openArtifact} title="预览生成物" type="button">
+        <div className="v3-attachment-icon"><FileCode2 size={18} strokeWidth={1.5} /></div>
+        <div className="v3-attachment-info">
+          <span className="v3-attachment-name" title={payload.name}>{payload.name}</span>
+          <span className="v3-attachment-size">{subtitle}</span>
+        </div>
+      </button>
+      <div className="v3-artifact-actions">
+        <button className="v3-artifact-action" disabled={!descriptor?.canPreview} onClick={previewArtifact} title="预览" type="button">
+          <Eye size={15} /><span>预览</span>
+        </button>
+        <a className="v3-artifact-action" href={artifact.url} onClick={(event) => event.stopPropagation()} rel="noopener noreferrer" target="_blank" title="在新标签页打开">
+          <ExternalLink size={15} /><span>打开</span>
+        </a>
+      </div>
+    </div>
+  );
 }
 
 function RichContent({ content, onPreviewFile, activePreviewFile }) {
@@ -1069,13 +1505,29 @@ function ImageContent({ payload }) {
 }
 
 function fileExtension(payload) {
-  const name = payload?.name || payload?.url || '';
+  const name = String(payload?.name || payload?.url || '').split(/[?#]/, 1)[0];
   const raw = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : '';
   return raw ? raw.toUpperCase() : 'FILE';
 }
 
 function fileMimeType(payload) {
-  return String(payload?.mime_type || payload?.mime || payload?.content_type || '').toLowerCase();
+  return String(payload?.mime_type || payload?.mime || payload?.content_type || '')
+    .split(';', 1)[0]
+    .trim()
+    .toLowerCase();
+}
+
+const INLINE_VIDEO_EXTENSIONS = new Set(['MP4', 'WEBM', 'OGV', 'M4V', 'MOV']);
+const INLINE_VIDEO_MIME_TYPES = new Set([
+  'video/mp4',
+  'video/webm',
+  'video/ogg',
+  'video/x-m4v',
+  'video/quicktime',
+]);
+
+function isInlineVideoFile(payload, ext = fileExtension(payload)) {
+  return INLINE_VIDEO_EXTENSIONS.has(ext) || INLINE_VIDEO_MIME_TYPES.has(fileMimeType(payload));
 }
 
 function isHtmlFile(payload, ext = fileExtension(payload)) {
@@ -1212,7 +1664,16 @@ function isTrustedPreviewURL(url) {
   }
 }
 
-function previewFileDescriptor(payload) {
+function isSameOriginURL(url) {
+  if (!url || typeof window === 'undefined' || !window.location?.origin) return false;
+  try {
+    return new URL(url, window.location.origin).origin === window.location.origin;
+  } catch (e) {
+    return false;
+  }
+}
+
+export function previewFileDescriptor(payload) {
   if (!payload) return null;
   const url = resolveMediaURL(payload.url);
   const ext = fileExtension(payload);
@@ -1221,8 +1682,15 @@ function previewFileDescriptor(payload) {
   const isHtml = isHtmlFile(payload, ext);
   const isMarkdown = isMarkdownFile(payload, ext);
   const isSpreadsheet = isSpreadsheetPreviewFile(payload, ext);
+  const isManagedRemoteArtifact = trustedArtifactPreviewPayloads.has(payload)
+    && isHtml
+    && Boolean(normalizeArtifactURL(url));
+  const isSameOriginRemoteArtifact = isManagedRemoteArtifact && isSameOriginURL(url);
+  const isRemoteArtifact = isManagedRemoteArtifact && !isSameOriginRemoteArtifact;
   const spreadsheetKind = isCsvFile(payload, ext) ? 'csv' : isXlsxFile(payload, ext) ? 'xlsx' : '';
-  const canPreview = isPreviewableFile(payload, ext) && isTrustedPreviewURL(url);
+  const canPreview = isManagedRemoteArtifact
+    ? isRemoteArtifact
+    : isPreviewableFile(payload, ext) && isTrustedPreviewURL(url);
   return {
     payload,
     url,
@@ -1232,8 +1700,11 @@ function previewFileDescriptor(payload) {
     isHtml,
     isMarkdown,
     isSpreadsheet,
+    isRemoteArtifact,
+    isSameOriginRemoteArtifact,
     spreadsheetKind,
     canPreview,
+    downloadURL: downloadableMediaURL(url, payload.name),
     sizeStr: payload.size ? formatFileSize(payload.size) : '',
     key: `${url}|${payload.name || ''}|${payload.size || ''}`,
   };
@@ -1243,14 +1714,159 @@ function spreadsheetPreviewTooLargeMessage() {
   return `表格文件较大，当前最多预览 ${formatFileSize(SPREADSHEET_PREVIEW_MAX_BYTES)}，请下载后查看。`;
 }
 
-function FileContent({ payload, onPreviewFile, activePreviewFile }) {
+function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
+  const [playbackFailed, setPlaybackFailed] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const previewRef = useRef(null);
+  const triggerRef = useRef(null);
+  const closeButtonRef = useRef(null);
+  const fallbackActionRef = useRef(null);
+  const shouldFocusFallbackRef = useRef(false);
+  const src = resolveMediaURL(payload?.url);
+
+  useEffect(() => {
+    setPlaybackFailed(false);
+    setPreviewOpen(false);
+  }, [src]);
+
+  useEffect(() => {
+    if (!previewOpen || playbackFailed) return undefined;
+
+    closeButtonRef.current?.focus({ preventScroll: true });
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setPreviewOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(previewRef.current?.querySelectorAll(FOCUSABLE_SELECTOR) || []);
+      const firstFocusable = focusable[0];
+      const lastFocusable = focusable[focusable.length - 1];
+      if (!firstFocusable || !lastFocusable) {
+        event.preventDefault();
+        return;
+      }
+      const focusIsOutsidePreview = !previewRef.current?.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === firstFocusable || focusIsOutsidePreview)) {
+        event.preventDefault();
+        lastFocusable.focus();
+      } else if (!event.shiftKey && (document.activeElement === lastFocusable || focusIsOutsidePreview)) {
+        event.preventDefault();
+        firstFocusable.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (triggerRef.current?.isConnected) triggerRef.current.focus({ preventScroll: true });
+    };
+  }, [playbackFailed, previewOpen]);
+
+  useEffect(() => {
+    if (!playbackFailed || !shouldFocusFallbackRef.current) return;
+    fallbackActionRef.current?.focus({ preventScroll: true });
+    shouldFocusFallbackRef.current = false;
+  }, [playbackFailed]);
+
+  const handlePlaybackError = () => {
+    const activeElement = document.activeElement;
+    shouldFocusFallbackRef.current = triggerRef.current === activeElement
+      || Boolean(previewRef.current?.contains(activeElement));
+    setPreviewOpen(false);
+    setPlaybackFailed(true);
+  };
+
+  if (!payload || !src || playbackFailed) {
+    return (
+      <div className="oc-rich-video-fallback">
+        {playbackFailed && (
+          <span className="oc-visually-hidden" role="status">
+            视频无法播放，已显示下载选项。
+          </span>
+        )}
+        <FileContent
+          actionRef={fallbackActionRef}
+          activePreviewFile={activePreviewFile}
+          inlineVideo={false}
+          onPreviewFile={onPreviewFile}
+          payload={payload}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="oc-rich-image oc-rich-video">
+      <button
+        aria-label={`预览视频 ${payload.name || ''}`.trim()}
+        className="oc-rich-video-trigger"
+        onClick={() => setPreviewOpen(true)}
+        ref={triggerRef}
+        type="button"
+      >
+        <video
+          aria-hidden="true"
+          className="oc-rich-video-thumb"
+          muted
+          onError={handlePlaybackError}
+          playsInline
+          preload="metadata"
+          src={src}
+        />
+        <span className="oc-rich-video-play" aria-hidden="true">
+          <Play fill="currentColor" size={20} />
+        </span>
+      </button>
+      {previewOpen && (
+        <div
+          aria-label={`视频预览 ${payload.name || ''}`.trim()}
+          aria-modal="true"
+          className="oc-modal-overlay oc-rich-video-preview"
+          onClick={() => setPreviewOpen(false)}
+          ref={previewRef}
+          role="dialog"
+        >
+          <button
+            aria-label="关闭视频预览"
+            className="oc-rich-video-preview-close"
+            onClick={() => setPreviewOpen(false)}
+            ref={closeButtonRef}
+            type="button"
+          >
+            <X size={20} />
+          </button>
+          <video
+            aria-label={payload.name || '视频'}
+            autoPlay
+            className="oc-rich-video-player"
+            controls
+            onClick={(event) => event.stopPropagation()}
+            onError={handlePlaybackError}
+            playsInline
+            preload="metadata"
+            src={src}
+            tabIndex={0}
+          >
+            您的浏览器暂不支持视频播放。
+          </video>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = true, actionRef = null }) {
+  if (inlineVideo && payload && isInlineVideoFile(payload)) {
+    return <VideoContent payload={payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
+  }
   if (!payload) return null;
   const descriptor = previewFileDescriptor(payload);
-  const { url, ext, canPreview, meta, sizeStr, key } = descriptor;
+  const { url, ext, canPreview, downloadURL, meta, sizeStr, key } = descriptor;
   const activeKey = activePreviewFile ? previewFileDescriptor(activePreviewFile)?.key : '';
   const isActive = canPreview && activeKey === key;
-  const subtitle = [meta.label, meta.subtitle, sizeStr, fileMimeType(payload) || ext].filter(Boolean).join(' · ');
-  const downloadURL = downloadableMediaURL(url, payload.name);
+  const subtitle = [meta.label, sizeStr].filter(Boolean).join(' · ');
   const openFile = () => {
     if (canPreview && onPreviewFile) onPreviewFile(payload);
     else if (url) window.open(url, '_blank');
@@ -1265,6 +1881,7 @@ function FileContent({ payload, onPreviewFile, activePreviewFile }) {
       <button
         className="v3-artifact-main"
         onClick={openFile}
+        ref={actionRef}
         title={canPreview ? '预览文件' : '打开或下载文件'}
         type="button"
       >
@@ -1304,12 +1921,27 @@ function FileContent({ payload, onPreviewFile, activePreviewFile }) {
   );
 }
 
-export function FilePreviewPanel({ file, onClose }) {
+export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
   const [preview, setPreview] = useState(false);
   const [textContent, setTextContent] = useState(null);
   const [binaryContent, setBinaryContent] = useState(null);
   const [loadingText, setLoadingText] = useState(false);
   const [previewError, setPreviewError] = useState('');
+  const [remoteFrameState, setRemoteFrameState] = useState('idle');
+  const [dragOffset, setDragOffset] = useState(0);
+  const [isDismissing, setIsDismissing] = useState(false);
+  const dragStateRef = useRef({ active: false, startY: 0, offset: 0 });
+  const dismissTimerRef = useRef(null);
+  const hasDismissedRef = useRef(false);
+  const panelRef = useRef(null);
+  const closeButtonRef = useRef(null);
+  const focusBeforeSheetRef = useRef(null);
+  const [isSheetMode, setIsSheetMode] = useState(
+    () => window.matchMedia?.('(max-width: 1024px)').matches ?? window.innerWidth <= 1024,
+  );
+  const shouldUseSheetMode = preview
+    ? (window.matchMedia?.('(max-width: 1024px)').matches ?? window.innerWidth <= 1024)
+    : isSheetMode;
 
   const descriptor = useMemo(() => previewFileDescriptor(file), [file]);
   const url = descriptor?.url || '';
@@ -1317,9 +1949,10 @@ export function FilePreviewPanel({ file, onClose }) {
   const isHtml = descriptor?.isHtml || false;
   const isMarkdown = descriptor?.isMarkdown || false;
   const isSpreadsheet = descriptor?.isSpreadsheet || false;
+  const isRemoteArtifact = descriptor?.isRemoteArtifact || false;
   const meta = descriptor?.meta || artifactMeta(file || {});
   const sizeStr = descriptor?.sizeStr || '';
-  const downloadURL = downloadableMediaURL(url, file?.name);
+  const downloadURL = descriptor?.downloadURL || url;
 
   useEffect(() => {
     let cancelled = false;
@@ -1327,7 +1960,16 @@ export function FilePreviewPanel({ file, onClose }) {
     setTextContent(null);
     setBinaryContent(null);
     setPreviewError('');
-    if (!file || !descriptor?.canPreview || isPdf) {
+    setRemoteFrameState(isRemoteArtifact ? 'loading' : 'idle');
+    setDragOffset(0);
+    setIsDismissing(false);
+    hasDismissedRef.current = false;
+    dragStateRef.current = { active: false, startY: 0, offset: 0 };
+    if (dismissTimerRef.current) {
+      window.clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = null;
+    }
+    if (!file || !descriptor?.canPreview || isPdf || isRemoteArtifact) {
       setLoadingText(false);
       return () => {
         cancelled = true;
@@ -1371,60 +2013,286 @@ export function FilePreviewPanel({ file, onClose }) {
     return () => {
       cancelled = true;
     };
-  }, [descriptor?.canPreview, file, isPdf, isSpreadsheet, url]);
+  }, [descriptor?.canPreview, file, isPdf, isRemoteArtifact, isSpreadsheet, url]);
+
+  useEffect(() => {
+    if (!preview) return undefined;
+
+    const media = window.matchMedia?.('(max-width: 1024px)');
+    const syncSheetMode = () => setIsSheetMode(media?.matches ?? window.innerWidth <= 1024);
+    syncSheetMode();
+    if (media?.addEventListener) media.addEventListener('change', syncSheetMode);
+    else media?.addListener?.(syncSheetMode);
+    window.addEventListener('resize', syncSheetMode);
+    return () => {
+      if (media?.removeEventListener) media.removeEventListener('change', syncSheetMode);
+      else media?.removeListener?.(syncSheetMode);
+      window.removeEventListener('resize', syncSheetMode);
+    };
+  }, [preview]);
+
+  useEffect(() => {
+    if (!preview) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onClose?.();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose, preview]);
+
+  useEffect(() => {
+    if (!preview || !shouldUseSheetMode) return undefined;
+
+    focusBeforeSheetRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const background = backgroundRef?.current || null;
+    const hadInert = background?.hasAttribute('inert');
+    const previousAriaHidden = background?.getAttribute('aria-hidden');
+    closeButtonRef.current?.focus({ preventScroll: true });
+    if (background) {
+      background.setAttribute('inert', '');
+      background.setAttribute('aria-hidden', 'true');
+    }
+
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(panelRef.current?.querySelectorAll(FOCUSABLE_SELECTOR) || []);
+      const firstFocusable = focusable[0];
+      const lastFocusable = focusable[focusable.length - 1];
+      if (!firstFocusable || !lastFocusable) {
+        event.preventDefault();
+        return;
+      }
+      const focusIsOutsidePanel = !panelRef.current?.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === firstFocusable || focusIsOutsidePanel)) {
+        event.preventDefault();
+        lastFocusable.focus();
+      } else if (!event.shiftKey && (document.activeElement === lastFocusable || focusIsOutsidePanel)) {
+        event.preventDefault();
+        firstFocusable.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (background) {
+        if (!hadInert) background.removeAttribute('inert');
+        if (previousAriaHidden == null) background.removeAttribute('aria-hidden');
+        else background.setAttribute('aria-hidden', previousAriaHidden);
+      }
+      const priorFocus = focusBeforeSheetRef.current;
+      if (priorFocus?.isConnected) priorFocus.focus({ preventScroll: true });
+      focusBeforeSheetRef.current = null;
+    };
+  }, [backgroundRef, preview, shouldUseSheetMode]);
+
+  useEffect(() => () => {
+    if (dismissTimerRef.current) window.clearTimeout(dismissTimerRef.current);
+  }, []);
+
+  const finishDismiss = () => {
+    if (hasDismissedRef.current) return;
+    hasDismissedRef.current = true;
+    if (dismissTimerRef.current) {
+      window.clearTimeout(dismissTimerRef.current);
+      dismissTimerRef.current = null;
+    }
+    onClose?.();
+  };
+
+  const startDismiss = () => {
+    if (isDismissing) return;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      finishDismiss();
+      return;
+    }
+    setIsDismissing(true);
+    setDragOffset(Math.max(window.innerHeight || 800, dragStateRef.current.offset));
+    dismissTimerRef.current = window.setTimeout(finishDismiss, 500);
+  };
+
+  const handlePanelTransitionEnd = (event) => {
+    if (event.target !== event.currentTarget || event.propertyName !== 'transform' || !isDismissing) return;
+    finishDismiss();
+  };
+
+  const handleDragStart = (event) => {
+    if (isDismissing) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    dragStateRef.current = { active: true, startY: event.clientY, offset: 0 };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  };
+
+  const handleDragMove = (event) => {
+    if (!dragStateRef.current.active) return;
+    const offset = Math.max(0, event.clientY - dragStateRef.current.startY);
+    dragStateRef.current.offset = offset;
+    setDragOffset(offset);
+  };
+
+  const handleDragEnd = (event) => {
+    if (!dragStateRef.current.active) return;
+    const shouldClose = dragStateRef.current.offset >= 72;
+    dragStateRef.current.active = false;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    if (shouldClose) {
+      startDismiss();
+      return;
+    }
+    dragStateRef.current.offset = 0;
+    setDragOffset(0);
+  };
+
+  const backdropOpacity = isDismissing ? 0 : Math.max(0.35, 1 - (dragOffset / 220));
 
   if (!preview || !file) return null;
   if (!descriptor?.canPreview) return null;
 
   return (
-    <aside className={`v3-file-preview-panel ${isHtml || isPdf || isSpreadsheet ? 'wide' : ''}`} aria-label="文件预览">
-      <div className="v3-file-preview-header">
-        <div className="v3-file-preview-title">
-          <FileText size={18} />
-          <div>
-            <h3>{file.name}</h3>
-            <span>{meta.label}{sizeStr ? ` · ${sizeStr}` : ''}</span>
+    <>
+      <button
+        className={`v3-file-preview-backdrop ${isDismissing ? 'is-dismissing' : ''}`}
+        type="button"
+        aria-label="关闭文件预览"
+        onClick={onClose}
+        style={{ '--v3-preview-backdrop-opacity': backdropOpacity }}
+      />
+      <aside
+        ref={panelRef}
+        className={`v3-file-preview-panel ${dragStateRef.current.active ? 'is-dragging' : ''} ${isDismissing ? 'is-dismissing' : ''} ${isHtml || isPdf || isSpreadsheet ? 'wide' : ''}`}
+        role={shouldUseSheetMode ? 'dialog' : undefined}
+        aria-modal={shouldUseSheetMode || undefined}
+        aria-label="文件预览"
+        style={{ '--v3-preview-drag-offset': `${dragOffset}px` }}
+        onTransitionEnd={handlePanelTransitionEnd}
+      >
+        <button
+          className="v3-file-preview-drag-handle"
+          type="button"
+          aria-label="向下拖动关闭预览"
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            startDismiss();
+          }}
+          onPointerDown={handleDragStart}
+          onPointerMove={handleDragMove}
+          onPointerUp={handleDragEnd}
+          onPointerCancel={handleDragEnd}
+        />
+        <div className="v3-file-preview-header">
+          <div className="v3-file-preview-title">
+            {onBack && (
+              <button
+                className="v3-file-preview-back"
+                type="button"
+                aria-label="返回产物列表"
+                title="返回产物列表"
+                onClick={onBack}
+              >
+                <ArrowLeft size={18} />
+              </button>
+            )}
+            <FileText size={18} />
+            <div>
+              <h3>{file.name}</h3>
+              <span>{meta.label}{sizeStr ? ` · ${sizeStr}` : ''}</span>
+            </div>
+          </div>
+          <div className="v3-file-preview-actions">
+            {!isRemoteArtifact && (
+              <a href={downloadURL} download={file.name || true} title="下载原文件" target="_blank" rel="noopener noreferrer" aria-label="下载原文件">
+                <Download size={18} />
+              </a>
+            )}
+            <a href={url} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
+              <ExternalLink size={18} />
+            </a>
+            <button ref={closeButtonRef} aria-label="关闭预览" onClick={onClose} type="button">
+              <X size={18} />
+            </button>
           </div>
         </div>
-        <div className="v3-file-preview-actions">
-          <a href={downloadURL} download={file.name || true} title="下载原文件" target="_blank" rel="noopener noreferrer">
-            <Download size={18} />
-          </a>
-          <button aria-label="关闭预览" onClick={onClose} type="button">
-            <X size={18} />
-          </button>
+        <div className="v3-file-preview-body">
+          {isRemoteArtifact ? (
+            <div className="v3-remote-artifact-preview">
+              <iframe
+                src={url}
+                className="v3-file-preview-frame"
+                title="Cloud Artifact Preview"
+                sandbox={REMOTE_ARTIFACT_PREVIEW_SANDBOX}
+                credentialless=""
+                referrerPolicy="no-referrer"
+                tabIndex={isSheetMode ? -1 : undefined}
+                onLoad={() => setRemoteFrameState('ready')}
+                onError={() => setRemoteFrameState('error')}
+              />
+              {remoteFrameState === 'loading' && (
+                <div className="v3-remote-artifact-preview-state" role="status">正在加载云端生成物...</div>
+              )}
+              {remoteFrameState === 'error' && (
+                <div className="v3-remote-artifact-preview-state error" role="alert">
+                  <span>预览加载失败</span>
+                  <a href={url} rel="noopener noreferrer" target="_blank">在新标签页打开</a>
+                </div>
+              )}
+            </div>
+          ) : isPdf ? (
+            shouldUseSheetMode ? (
+              <MobilePdfPreview url={fetchableMediaURL(url)} />
+            ) : (
+              <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />
+            )
+          ) : loadingText ? (
+            <div className="v3-file-preview-state">加载中...</div>
+          ) : previewError ? (
+            <div className="v3-file-preview-state error">{previewError}</div>
+          ) : isHtml ? (
+            <iframe
+              className="v3-file-preview-frame"
+              title="HTML Report Preview"
+              sandbox={HTML_PREVIEW_SANDBOX}
+              referrerPolicy="no-referrer"
+              srcDoc={textContent || '<!doctype html><meta charset="utf-8"><body></body>'}
+            />
+          ) : isMarkdown ? (
+            <iframe
+              className="v3-file-preview-frame"
+              title="Markdown Preview"
+              sandbox=""
+              referrerPolicy="no-referrer"
+              srcDoc={markdownPreviewDocument(textContent || '')}
+            />
+          ) : isSpreadsheet ? (
+            <SpreadsheetPreview buffer={binaryContent} kind={descriptor.spreadsheetKind} />
+          ) : (
+            <pre className="v3-file-preview-text">{textContent || '暂无可预览内容。'}</pre>
+          )}
         </div>
-      </div>
-      <div className="v3-file-preview-body">
-        {isPdf ? (
-          <iframe src={url} className="v3-file-preview-frame" title="PDF Preview" />
-        ) : loadingText ? (
-          <div className="v3-file-preview-state">加载中...</div>
-        ) : previewError ? (
-          <div className="v3-file-preview-state error">{previewError}</div>
-        ) : isHtml ? (
-          <iframe
-            className="v3-file-preview-frame"
-            title="HTML Report Preview"
-            sandbox={HTML_PREVIEW_SANDBOX}
-            referrerPolicy="no-referrer"
-            srcDoc={textContent || '<!doctype html><meta charset="utf-8"><body></body>'}
-          />
-        ) : isMarkdown ? (
-          <iframe
-            className="v3-file-preview-frame"
-            title="Markdown Preview"
-            sandbox=""
-            referrerPolicy="no-referrer"
-            srcDoc={markdownPreviewDocument(textContent || '')}
-          />
-        ) : isSpreadsheet ? (
-          <SpreadsheetPreview buffer={binaryContent} kind={descriptor.spreadsheetKind} />
-        ) : (
-          <pre className="v3-file-preview-text">{textContent || '暂无可预览内容。'}</pre>
-        )}
-      </div>
-    </aside>
+        <div className="v3-file-preview-mobile-actions">
+          <button type="button" onClick={onClose}>
+            <X size={17} />
+            <span>关闭预览</span>
+          </button>
+          {isRemoteArtifact ? (
+            <a href={url} target="_blank" rel="noopener noreferrer">
+              <ExternalLink size={17} />
+              <span>新标签页打开</span>
+            </a>
+          ) : (
+            <a href={downloadURL} download={file.name || true} target="_blank" rel="noopener noreferrer">
+              <Download size={17} />
+              <span>下载原文件</span>
+            </a>
+          )}
+        </div>
+      </aside>
+    </>
   );
 }
 

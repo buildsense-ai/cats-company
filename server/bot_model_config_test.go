@@ -209,14 +209,14 @@ func TestOldRuntimeCannotSwitchUntilItRegistersCloudModelProtocol(t *testing.T) 
 
 func TestGPT56CatalogUsesRelayReasoningEfforts(t *testing.T) {
 	model, effort, ok := normalizeBotModelSelection("gpt-5.6-terra", "xhigh")
-	if !ok || model.ID != "gpt-5.6-terra" || model.Provider != "openai" || model.Protocol != "OpenAI Responses" || effort != "xhigh" {
+	if !ok || model.ID != "gpt-5.6-terra" || model.Provider != "openai" || model.Protocol != "OpenAI Responses" || model.ContextWindowTokens != 256000 || effort != "xhigh" {
 		t.Fatalf("selection model=%+v effort=%q ok=%v", model, effort, ok)
 	}
 
 	for _, modelID := range []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"} {
-		_, defaultEffort, valid := normalizeBotModelSelection(modelID, "")
-		if !valid || defaultEffort != "medium" {
-			t.Fatalf("default selection for %s: effort=%q valid=%v", modelID, defaultEffort, valid)
+		catalogModel, defaultEffort, valid := normalizeBotModelSelection(modelID, "")
+		if !valid || catalogModel.ContextWindowTokens != 256000 || defaultEffort != "medium" {
+			t.Fatalf("default selection for %s: model=%+v effort=%q valid=%v", modelID, catalogModel, defaultEffort, valid)
 		}
 	}
 
@@ -442,9 +442,9 @@ func TestCustomModelSecretIsEncryptedAndOnlyReturnedToBotRuntime(t *testing.T) {
 		"custom":{
 			"protocol":"openai-responses",
 			"api_base":"https://models.example.com/v1/",
-			"model":"gpt-example",
+			"model":"gpt-5.6-sol",
 			"api_key":"sk-super-secret",
-			"context_window_tokens":256000,
+			"context_window_tokens":1000000,
 			"max_tokens":8192,
 			"reasoning_effort":"high"
 		}
@@ -456,7 +456,7 @@ func TestCustomModelSecretIsEncryptedAndOnlyReturnedToBotRuntime(t *testing.T) {
 		t.Fatalf("patch status=%d body=%s", patchRec.Code, patchRec.Body.String())
 	}
 	stored := db.models[43]
-	if stored == nil || stored.Kind != botModelKindCustom || stored.ModelID != "gpt-example" || stored.CustomCiphertext == "" {
+	if stored == nil || stored.Kind != botModelKindCustom || stored.ModelID != "gpt-5.6-sol" || stored.CustomCiphertext == "" {
 		t.Fatalf("saved config=%+v", stored)
 	}
 	if strings.Contains(stored.CustomCiphertext, "sk-super-secret") {
@@ -473,7 +473,7 @@ func TestCustomModelSecretIsEncryptedAndOnlyReturnedToBotRuntime(t *testing.T) {
 	runtimeReq = runtimeReq.WithContext(context.WithValue(runtimeReq.Context(), uidKey, int64(43)))
 	runtimeRec := httptest.NewRecorder()
 	handler.HandleRuntimeConfig(runtimeRec, runtimeReq)
-	if runtimeRec.Code != http.StatusOK || !strings.Contains(runtimeRec.Body.String(), "sk-super-secret") {
+	if runtimeRec.Code != http.StatusOK || !strings.Contains(runtimeRec.Body.String(), "sk-super-secret") || !strings.Contains(runtimeRec.Body.String(), `"context_window_tokens":1000000`) {
 		t.Fatalf("runtime status=%d body=%s", runtimeRec.Code, runtimeRec.Body.String())
 	}
 }

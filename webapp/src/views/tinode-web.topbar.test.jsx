@@ -1,14 +1,23 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import {
   canOpenCloudArtifacts,
   describeModelApplyError,
   describeModelConfigRequestError,
   LocalAssistantBar,
+  ProfilePopover,
+  resolveInitialUser,
   resolveDisplayedActiveAgent,
 } from './tinode-web';
 import { api } from '../api';
+
+const topbarCss = readFileSync(
+  resolve(process.cwd(), 'src/css/catsco-topbar.css'),
+  'utf8',
+);
 
 const baseConfig = {
   uid: 43,
@@ -20,15 +29,23 @@ const baseConfig = {
   custom_supported: true,
   models: [
     {
+      id: 'minimax-m2.7',
+      label: 'MiniMax M2.7',
+      description: '标准额度，适合日常任务',
+      context_window_tokens: 204800,
+    },
+    {
       id: 'minimax-m3',
       label: 'MiniMax M3',
       description: '支持多模态与长上下文',
+      context_window_tokens: 1000000,
       quota: { model: 'minimax-m3', limit_cny: 100, remaining_cny: 75, percent: 25, status: 'normal' },
     },
     {
       id: 'deepseek-v4-flash',
       label: 'DeepSeek V4 Flash',
       description: '低额度 Flash，支持推理强度',
+      context_window_tokens: 1000000,
       quota: { model: 'deepseek-v4-flash', limit_cny: 50, remaining_cny: 5, percent: 90, status: 'high' },
       reasoning_efforts: ['high', 'max', 'disabled'],
       default_reasoning_effort: 'high',
@@ -37,6 +54,7 @@ const baseConfig = {
       id: 'gpt-5.6-terra',
       label: 'GPT-5.6 Terra',
       description: 'OpenAI Responses，支持精细推理强度',
+      context_window_tokens: 256000,
       reasoning_efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
       default_reasoning_effort: 'medium',
     },
@@ -50,6 +68,60 @@ const relayState = {
     source: 'relay', model: 'minimax-m3', limit_cny: 100, percent: 25, remaining_percent: 75, status: 'normal',
   },
 };
+
+describe('preview user identity', () => {
+  it('restores the authenticated backend identity while previewing a theme', () => {
+    expect(resolveInitialUser({
+      themePreview: 'liquid',
+      previewEnabled: true,
+      token: 'existing-session',
+      savedUser: {
+        id: 38,
+        username: 'cycren',
+        display_name: 'Cycren',
+        account_type: 'human',
+      },
+    })).toMatchObject({
+      uid: 38,
+      username: 'cycren',
+      display_name: 'Cycren',
+    });
+  });
+
+  it('uses the visual-only placeholder when no authenticated preview session exists', () => {
+    expect(resolveInitialUser({
+      themePreview: 'liquid',
+      previewEnabled: true,
+    })).toMatchObject({
+      uid: 'theme-preview',
+      username: 'preview',
+    });
+  });
+});
+
+describe('model reasoning menu placement', () => {
+  it('keeps reasoning choices attached to the right side of their model at every viewport size', () => {
+    expect(topbarCss).toMatch(
+      /\.v3-model-reasoning-menu\s*\{[^}]*left:\s*calc\(100% - 2px\);/s,
+    );
+    expect(topbarCss).not.toMatch(
+      /\.v3-model-reasoning-menu\s*\{[^}]*position:\s*static;/s,
+    );
+    expect(topbarCss).not.toContain('.v3-model-menu:not(.custom-open)');
+  });
+
+  it('keeps comfortable space below the custom model entry', () => {
+    expect(topbarCss).toMatch(
+      /\.v3-model-menu,\s*\.v3-model-reasoning-menu\s*\{[^}]*padding:\s*6px;/s,
+    );
+    expect(topbarCss).toMatch(
+      /\.v3-model-menu\s*\{[^}]*overflow:\s*visible;/s,
+    );
+    expect(topbarCss).toMatch(
+      /\.v3-model-menu\.custom-open\s*\{[^}]*max-height:/s,
+    );
+  });
+});
 
 describe('resolveDisplayedActiveAgent', () => {
   it('exposes an owned draft agent to the model selector before the task is created', () => {
@@ -81,6 +153,30 @@ describe('cloud artifact action visibility', () => {
     expect(canOpenCloudArtifacts({ topicId: 'grp_8', isGroup: true }, doubao)).toBe(true);
     expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, { uid: 441 })).toBe(false);
     expect(canOpenCloudArtifacts(null, doubao)).toBe(false);
+  });
+});
+
+describe('ProfilePopover', () => {
+  it('escapes the collapsed sidebar clipping context and marks the compact flyout', async () => {
+    const sidebar = document.createElement('aside');
+    document.body.appendChild(sidebar);
+    const root = createRoot(sidebar);
+
+    await act(async () => {
+      root.render(
+        <ProfilePopover compact>
+          <button type="button">设置与资料</button>
+        </ProfilePopover>,
+      );
+    });
+
+    const popover = document.body.querySelector('.v3-profile-popover.is-compact');
+    expect(popover).toBeTruthy();
+    expect(popover?.textContent).toContain('设置与资料');
+    expect(sidebar.querySelector('.v3-profile-popover')).toBeNull();
+
+    await act(async () => root.unmount());
+    sidebar.remove();
   });
 });
 
@@ -121,13 +217,13 @@ describe('LocalAssistantBar model selector', () => {
   it('renders the generated-artifacts button only when the parent enables it', async () => {
     const onOpenCloudArtifacts = vi.fn();
     await renderBar({ onOpenCloudArtifacts });
-    const button = container.querySelector('button[aria-label="打开生成物"]');
+    const button = container.querySelector('button[aria-label="打开产物"]');
     expect(button).toBeTruthy();
     await act(async () => button.click());
     expect(onOpenCloudArtifacts).toHaveBeenCalledTimes(1);
 
     await renderBar({ onOpenCloudArtifacts: undefined });
-    expect(container.querySelector('button[aria-label="打开生成物"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="打开产物"]')).toBeNull();
   });
 
   it('keeps the current model and quota together in the header', async () => {
@@ -211,8 +307,18 @@ describe('LocalAssistantBar model selector', () => {
     expect(getConfig).toHaveBeenCalledWith(43, { includeUsage: true });
     const m3 = [...container.querySelectorAll('.v3-model-menu-item')]
       .find((item) => item.textContent.includes('MiniMax M3'));
+    const m27 = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('MiniMax M2.7'));
     const deepseek = [...container.querySelectorAll('.v3-model-menu-item')]
       .find((item) => item.textContent.includes('DeepSeek V4 Flash'));
+    const terra = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('GPT-5.6 Terra'));
+    expect(m27?.textContent).toContain('上下文 204.8K');
+    expect(m3?.textContent).toContain('上下文 1M');
+    expect(deepseek?.textContent).toContain('上下文 1M');
+    expect(terra?.textContent).toContain('上下文 256K');
+    expect(terra?.textContent).not.toContain('OpenAI Responses');
+    expect(terra?.textContent).not.toContain('精细推理强度');
     expect(m3?.textContent).toContain('剩余 75% · ¥75.00');
     expect(deepseek?.textContent).toContain('剩余 10% · ¥5.00');
     expect(deepseek?.querySelector('.v3-model-menu-quota.warning')).toBeTruthy();
@@ -244,14 +350,14 @@ describe('LocalAssistantBar model selector', () => {
   it('edits a cloud custom model without receiving or resending the stored API key', async () => {
     const customConfig = {
       ...baseConfig,
-      desired: { kind: 'custom', model_id: 'private-model', reasoning_effort: 'high', revision: 4 },
+      desired: { kind: 'custom', model_id: 'gpt-5.6-sol', reasoning_effort: 'high', revision: 4 },
       custom: {
         protocol: 'openai-responses',
         api_base: 'https://models.example.com/v1',
-        model: 'private-model',
+        model: 'gpt-5.6-sol',
         api_key_configured: true,
         api_key_hint: '****cret',
-        context_window_tokens: 256000,
+        context_window_tokens: 1000000,
         reasoning_effort: 'high',
       },
     };
@@ -267,6 +373,27 @@ describe('LocalAssistantBar model selector', () => {
     const keyInput = container.querySelector('input[type="password"]');
     expect(keyInput.value).toBe('');
     expect(keyInput.placeholder).toContain('****cret');
+    const backButton = container.querySelector('.v3-custom-model-heading button');
+    expect(backButton.getAttribute('aria-label')).toBe('返回模型列表');
+    expect(backButton.textContent).toBe('');
+    const protocolSelect = container.querySelector('.v3-custom-model-select-trigger[aria-label="API 协议"]');
+    expect(protocolSelect.closest('.v3-custom-model-select-wrap')).not.toBeNull();
+    expect(protocolSelect.querySelector('.v3-custom-model-select-chevron')).not.toBeNull();
+    const contextSelect = container.querySelector('.v3-custom-model-select-trigger[aria-label="上下文 Token"]');
+    expect(contextSelect.closest('.v3-custom-model-select-wrap').classList.contains('is-top')).toBe(true);
+    await act(async () => contextSelect.click());
+    const contextOptions = [...document.body.querySelectorAll('.v3-custom-model-select-option')];
+    expect(contextOptions.map((option) => option.textContent)).toEqual([
+      '128K', '200K', '256K', '512K', '1M',
+    ]);
+    expect(contextSelect.dataset.value).toBe('1000000');
+    const nextContext = contextOptions.find((option) => option.textContent === '512K');
+    await act(async () => {
+      nextContext.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      nextContext.click();
+    });
+    expect(contextSelect.dataset.value).toBe('512000');
+    expect(container.querySelector('.v3-model-menu')).not.toBeNull();
     await act(async () => {
       container.querySelector('.v3-custom-model-editor').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
@@ -275,8 +402,44 @@ describe('LocalAssistantBar model selector', () => {
       kind: 'custom',
       model_id: 'custom',
       custom: expect.objectContaining({
-        protocol: 'openai-responses', model: 'private-model', api_key: '', context_window_tokens: 256000,
+        protocol: 'openai-responses', model: 'gpt-5.6-sol', api_key: '', context_window_tokens: 512000,
       }),
+    }));
+  });
+
+  it('preserves a legacy custom context value while keeping the standard choices available', async () => {
+    const legacyConfig = {
+      ...baseConfig,
+      desired: { kind: 'custom', model_id: 'legacy-model', reasoning_effort: '', revision: 4 },
+      custom: {
+        protocol: 'openai-chat',
+        api_base: 'https://models.example.com/v1',
+        model: 'legacy-model',
+        api_key_configured: true,
+        context_window_tokens: 272000,
+      },
+    };
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(legacyConfig);
+    const update = vi.spyOn(api, 'updateBotModelConfig').mockResolvedValue({ ...legacyConfig, status: 'pending' });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    await act(async () => container.querySelector('.v3-model-status-button').click());
+    const customEntry = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('自定义模型'));
+    await act(async () => customEntry.click());
+
+    const contextSelect = container.querySelector('.v3-custom-model-select-trigger[aria-label="上下文 Token"]');
+    expect(contextSelect.dataset.value).toBe('272000');
+    await act(async () => contextSelect.click());
+    expect([...document.body.querySelectorAll('.v3-custom-model-select-option')].map((option) => option.textContent)).toEqual([
+      '272K', '128K', '200K', '256K', '512K', '1M',
+    ]);
+    await act(async () => contextSelect.click());
+    await act(async () => {
+      container.querySelector('.v3-custom-model-editor').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    expect(update).toHaveBeenCalledWith(43, expect.objectContaining({
+      custom: expect.objectContaining({ context_window_tokens: 272000 }),
     }));
   });
 

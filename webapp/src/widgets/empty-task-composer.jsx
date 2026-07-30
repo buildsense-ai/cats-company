@@ -239,13 +239,15 @@ export default function EmptyTaskComposer({
 
     setIsUploadingAttachment(true);
     let uploadedCount = 0;
+    let failedCount = 0;
     try {
       for (const file of fileList) {
         const type = inferAttachmentType(file, requestedType);
         const validationError = validateAttachmentBeforeUpload(file, type);
         if (validationError) {
           setAttachmentStatus({ tone: 'error', message: validationError });
-          break;
+          failedCount += 1;
+          continue;
         }
 
         setAttachmentStatus({ tone: 'info', message: `正在上传 ${file.name || '附件'}...` });
@@ -256,18 +258,27 @@ export default function EmptyTaskComposer({
           uploadedCount += 1;
         } catch (error) {
           if (mountedRef.current) setAttachmentStatus({ tone: 'error', message: formatUploadError(error) });
-          break;
+          failedCount += 1;
         }
       }
 
-      if (!mountedRef.current || uploadedCount === 0) return;
-      setAttachmentStatus({
-        tone: 'success',
-        message: uploadedCount === 1
-          ? '已添加 1 个附件，发送后会加入新任务。'
-          : `已添加 ${uploadedCount} 个附件，发送后会加入新任务。`,
-      });
-      window.setTimeout(() => textareaRef.current?.focus(), 0);
+      if (!mountedRef.current) return;
+      if (failedCount > 0 && fileList.length > 1) {
+        setAttachmentStatus({
+          tone: 'error',
+          message: uploadedCount > 0
+            ? `已添加 ${uploadedCount} 个附件，另有 ${failedCount} 个上传失败。`
+            : `${failedCount} 个附件上传失败，请检查格式、大小或网络后重试。`,
+        });
+      } else if (uploadedCount > 0) {
+        setAttachmentStatus({
+          tone: 'success',
+          message: uploadedCount === 1
+            ? '已添加 1 个附件，发送后会加入新任务。'
+            : `已添加 ${uploadedCount} 个附件，发送后会加入新任务。`,
+        });
+      }
+      if (uploadedCount > 0) window.setTimeout(() => textareaRef.current?.focus(), 0);
     } finally {
       if (mountedRef.current) setIsUploadingAttachment(false);
     }
@@ -507,35 +518,21 @@ export default function EmptyTaskComposer({
       {agentsError && agents.length === 0 && (
         <div className="v3-live-input-status v3-live-input-status-error" role="status">{agentsError}</div>
       )}
-      {attachmentStatus?.message && (
-        <div className={`v3-live-input-status v3-live-input-status-${attachmentStatus.tone || 'info'}`} role="status">
-          {attachmentStatus.message}
-        </div>
-      )}
-      {(isUploadingAttachment || pendingAttachments.length > 0) && (
-        <div className="v3-composer-attachments">
-          <div className="v3-composer-attachments-copy">
-            <strong>{isUploadingAttachment ? '正在上传附件...' : `${pendingAttachments.length} 个附件待发送`}</strong>
-            {!isUploadingAttachment && pendingAttachments.map((attachment, index) => (
-              <span key={`${attachment.content?.payload?.file_key || attachment.name}-${index}`}>
-                {attachment.type === 'image' ? '图片' : '文件'}: {attachment.name}
-                {attachment.size ? ` • ${formatFileSize(attachment.size)}` : ''}
-              </span>
-            ))}
-          </div>
-          {pendingAttachments.length > 0 && !isUploadingAttachment && !isSubmitting && (
-            <button
-              className="v3-action-btn"
-              aria-label="移除附件"
-              onClick={() => {
-                replaceAttachments([]);
-                setAttachmentStatus(null);
-              }}
-              type="button"
-            >
-              ×
-            </button>
-          )}
+      {(attachmentStatus?.message || isUploadingAttachment || pendingAttachments.length > 0) && (
+        <div
+          className={`v3-live-input-status v3-attachment-notice v3-live-input-status-${attachmentStatus?.tone || 'info'}`}
+          role="status"
+        >
+          <span>
+            {attachmentStatus?.tone === 'error'
+              ? attachmentStatus.message
+              : isUploadingAttachment
+                ? (attachmentStatus?.message || '正在上传附件...')
+                : attachmentStatus?.message
+                  || (pendingAttachments.length > 0
+                    ? `${pendingAttachments.length} 个附件待发送${pendingAttachments.length === 1 ? `：${pendingAttachments[0].name}` : ''}`
+                    : '')}
+          </span>
         </div>
       )}
     </>
@@ -614,6 +611,12 @@ export default function EmptyTaskComposer({
         onCloseMenus={() => {
           setAttachmentMenuOpen(false);
           setAgentPickerOpen(false);
+        }}
+        attachments={pendingAttachments}
+        attachmentRemovalDisabled={isUploadingAttachment || isSubmitting}
+        onRemoveAttachment={(index) => {
+          replaceAttachments(pendingAttachmentsRef.current.filter((_, attachmentIndex) => attachmentIndex !== index));
+          setAttachmentStatus(null);
         }}
         notices={notices}
         overlay={phoneUploadOverlay}
@@ -810,12 +813,4 @@ function readDirectoryEntries(reader) {
     };
     readBatch();
   });
-}
-
-function formatFileSize(size) {
-  if (!size || size <= 0) return '';
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }

@@ -1,9 +1,279 @@
-import React, { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import React, {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
+import { createPortal } from 'react-dom';
+import { Check, ChevronDown, X } from 'lucide-react';
 import { api } from '../api';
 import t from '../i18n';
 import Avatar from './avatar';
 import FriendRequest from './friend-request';
+
+const FRIEND_SEARCH_MODES = [
+  { value: 'name', label: '按名字' },
+  { value: 'uid', label: '按 UID' },
+];
+const FRIEND_SEARCH_MODE_VIEWPORT_GUTTER = 8;
+const FRIEND_SEARCH_MODE_OPTION_HEIGHT = 42;
+
+function FriendSearchModeSelect({ value, onValueChange }) {
+  const triggerRef = useRef(null);
+  const listboxRef = useRef(null);
+  const measuredOpenListRef = useRef(false);
+  const listboxID = useId();
+  const selectedIndex = Math.max(
+    0,
+    FRIEND_SEARCH_MODES.findIndex((option) => option.value === value),
+  );
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(selectedIndex);
+  const [geometry, setGeometry] = useState(null);
+
+  const updatePosition = useCallback(() => {
+    if (!triggerRef.current || typeof window === 'undefined') return;
+
+    const triggerRect = triggerRef.current.getBoundingClientRect();
+    const listboxHeight = listboxRef.current?.scrollHeight
+      || listboxRef.current?.getBoundingClientRect().height
+      || FRIEND_SEARCH_MODES.length * FRIEND_SEARCH_MODE_OPTION_HEIGHT;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const availableBelow = viewportHeight
+      - triggerRect.bottom
+      - FRIEND_SEARCH_MODE_VIEWPORT_GUTTER;
+    const availableAbove = triggerRect.top - FRIEND_SEARCH_MODE_VIEWPORT_GUTTER;
+    const placement = availableBelow < listboxHeight && availableAbove > availableBelow
+      ? 'top'
+      : 'bottom';
+    const availableHeight = placement === 'top' ? availableAbove : availableBelow;
+    const visibleHeight = Math.max(0, Math.min(listboxHeight, availableHeight));
+    const width = Math.max(0, Math.min(
+      triggerRect.width,
+      viewportWidth - FRIEND_SEARCH_MODE_VIEWPORT_GUTTER * 2,
+    ));
+    const preferredLeft = Math.min(
+      triggerRect.left,
+      viewportWidth - FRIEND_SEARCH_MODE_VIEWPORT_GUTTER - width,
+    );
+    const left = Math.max(FRIEND_SEARCH_MODE_VIEWPORT_GUTTER, preferredLeft);
+    const top = placement === 'top'
+      ? Math.max(
+        FRIEND_SEARCH_MODE_VIEWPORT_GUTTER,
+        triggerRect.top - visibleHeight,
+      )
+      : triggerRect.bottom;
+
+    setGeometry({
+      left,
+      maxHeight: visibleHeight,
+      placement,
+      top,
+      triggerBottom: triggerRect.bottom,
+      triggerLeft: triggerRect.left,
+      triggerRight: triggerRect.right,
+      triggerTop: triggerRect.top,
+      width,
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    updatePosition();
+  }, [open, updatePosition]);
+
+  useLayoutEffect(() => {
+    if (!open || !geometry || measuredOpenListRef.current || !listboxRef.current) return;
+    measuredOpenListRef.current = true;
+    listboxRef.current.focus();
+    updatePosition();
+  }, [geometry, open, updatePosition]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const closeOnOutsidePointer = (event) => {
+      if (
+        !triggerRef.current?.contains(event.target)
+        && !listboxRef.current?.contains(event.target)
+      ) {
+        setOpen(false);
+      }
+    };
+    const reposition = () => updatePosition();
+
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    window.addEventListener('resize', reposition);
+    window.addEventListener('scroll', reposition, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('scroll', reposition, true);
+    };
+  }, [open, updatePosition]);
+
+  const openList = (nextIndex = selectedIndex) => {
+    measuredOpenListRef.current = false;
+    setActiveIndex(nextIndex);
+    setOpen(true);
+  };
+
+  const closeList = ({ restoreFocus = false } = {}) => {
+    setOpen(false);
+    if (restoreFocus) triggerRef.current?.focus();
+  };
+
+  const chooseOption = (index) => {
+    const option = FRIEND_SEARCH_MODES[index];
+    if (!option) return;
+    onValueChange(option.value);
+    closeList({ restoreFocus: true });
+  };
+
+  const moveActiveOption = (direction) => {
+    setActiveIndex((currentIndex) => (
+      currentIndex + direction + FRIEND_SEARCH_MODES.length
+    ) % FRIEND_SEARCH_MODES.length);
+  };
+
+  const closeAndMoveFocus = (backward) => {
+    const trigger = triggerRef.current;
+    const scope = trigger?.closest('[role="dialog"]') || document;
+    const focusable = Array.from(scope.querySelectorAll([
+      'a[href]',
+      'button:not(:disabled)',
+      'input:not(:disabled)',
+      'select:not(:disabled)',
+      'textarea:not(:disabled)',
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(','))).filter((element) => (
+      !element.hidden && element.getAttribute('aria-hidden') !== 'true'
+    )).sort((left, right) => (
+      left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+    ));
+    const triggerIndex = focusable.indexOf(trigger);
+    const target = triggerIndex >= 0
+      ? focusable[triggerIndex + (backward ? -1 : 1)]
+      : null;
+
+    closeList();
+    (target || trigger)?.focus();
+  };
+
+  const handleTriggerKeyDown = (event) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      openList((
+        selectedIndex + direction + FRIEND_SEARCH_MODES.length
+      ) % FRIEND_SEARCH_MODES.length);
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      openList(event.key === 'Home' ? 0 : FRIEND_SEARCH_MODES.length - 1);
+    }
+  };
+
+  const handleListKeyDown = (event) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveActiveOption(event.key === 'ArrowDown' ? 1 : -1);
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      setActiveIndex(event.key === 'Home' ? 0 : FRIEND_SEARCH_MODES.length - 1);
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      chooseOption(activeIndex);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeList({ restoreFocus: true });
+    } else if (event.key === 'Tab') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeAndMoveFocus(event.shiftKey);
+    }
+  };
+
+  const selectedOption = FRIEND_SEARCH_MODES[selectedIndex];
+  const listbox = open && geometry && (
+    <div
+      ref={listboxRef}
+      id={listboxID}
+      className={`oc-friend-search-mode-menu is-${geometry.placement}`}
+      role="listbox"
+      aria-label="搜索方式"
+      aria-activedescendant={`${listboxID}-option-${activeIndex}`}
+      data-placement={geometry.placement}
+      data-trigger-bottom={geometry.triggerBottom}
+      data-trigger-left={geometry.triggerLeft}
+      data-trigger-right={geometry.triggerRight}
+      data-trigger-top={geometry.triggerTop}
+      tabIndex={-1}
+      style={{
+        left: `${geometry.left}px`,
+        maxHeight: `${geometry.maxHeight}px`,
+        overflowY: 'auto',
+        position: 'fixed',
+        top: `${geometry.top}px`,
+        width: `${geometry.width}px`,
+      }}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={handleListKeyDown}
+    >
+      {FRIEND_SEARCH_MODES.map((option, index) => (
+        <button
+          type="button"
+          id={`${listboxID}-option-${index}`}
+          key={option.value}
+          className={`oc-friend-search-mode-option ${index === activeIndex ? 'is-active' : ''}`}
+          role="option"
+          aria-selected={option.value === value}
+          tabIndex={-1}
+          onMouseEnter={() => setActiveIndex(index)}
+          onClick={() => chooseOption(index)}
+        >
+          <span>{option.label}</span>
+          {option.value === value && (
+            <Check
+              className="oc-friend-search-mode-option-check"
+              size={14}
+              aria-hidden="true"
+            />
+          )}
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <span className="oc-friend-search-mode-select">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="oc-friend-search-mode oc-friend-search-mode-trigger"
+        aria-label={`搜索方式：${selectedOption.label}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={listboxID}
+        onClick={() => (open ? closeList() : openList())}
+        onKeyDown={handleTriggerKeyDown}
+      >
+        <span>{selectedOption.label}</span>
+        <ChevronDown
+          className="oc-friend-search-mode-chevron"
+          size={14}
+          aria-hidden="true"
+        />
+      </button>
+      {typeof document !== 'undefined' && listbox
+        ? createPortal(listbox, document.body)
+        : null}
+    </span>
+  );
+}
 
 export default function AddFriend({ currentUser, onClose, onSent }) {
   const [query, setQuery] = useState('');
@@ -87,6 +357,12 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
     }
   };
 
+  const handleSearchModeChange = (nextMode) => {
+    setSearchMode(nextMode);
+    setResults([]);
+    setError('');
+  };
+
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <section
@@ -99,7 +375,7 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
         <header className="oc-collaboration-modal-header">
           <h2 id="friend-manager-title">好友</h2>
           <button type="button" className="oc-modal-close" onClick={onClose} aria-label="关闭">
-            <X size={18} strokeWidth={1.8} />
+            <X size={18} strokeWidth={1.8} aria-hidden="true" />
           </button>
         </header>
 
@@ -112,22 +388,15 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
 
             <div className="oc-friend-search-row">
               <div className="oc-friend-search-control">
-                <select
-                  className="oc-friend-search-mode"
-                  aria-label="搜索方式"
+                <FriendSearchModeSelect
                   value={searchMode}
-                  onChange={(e) => {
-                    setSearchMode(e.target.value);
-                    setResults([]);
-                    setError('');
-                  }}
-                >
-                  <option value="name">按名字</option>
-                  <option value="uid">按 UID</option>
-                </select>
+                  onValueChange={handleSearchModeChange}
+                />
                 <input
                   autoFocus
                   className="oc-friend-search-input"
+                  aria-label={searchMode === 'uid' ? '好友 UID' : '好友名称'}
+                  name="friend-search"
                   placeholder={searchMode === 'uid' ? '输入对方 UID' : '搜索联系人'}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
@@ -135,7 +404,7 @@ export default function AddFriend({ currentUser, onClose, onSent }) {
                 />
               </div>
               <button type="button" className="oc-btn oc-btn-primary oc-friend-search-submit" onClick={handleSearch}>
-                {loading ? t('loading') : '发送申请'}
+                {loading ? t('loading') : '搜索'}
               </button>
             </div>
 

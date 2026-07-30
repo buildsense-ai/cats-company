@@ -64,6 +64,39 @@ describe('WebSocket connection recovery', () => {
     expect(onMessage).toHaveBeenCalledWith({ _type: 'ws_open' });
   });
 
+  test('notifies onWSMessage subscribers when the socket opens', () => {
+    const onMessage = vi.fn();
+    const subscriber = vi.fn();
+    const unsubscribe = api.onWSMessage(subscriber);
+
+    api.connectWS(onMessage);
+    MockWebSocket.instances[0].open();
+
+    expect(subscriber).toHaveBeenCalledTimes(1);
+    expect(subscriber).toHaveBeenCalledWith({ _type: 'ws_open' });
+
+    unsubscribe();
+  });
+
+  test('includes the authoritative target agent in stream cancel metadata', async () => {
+    api.connectWS(vi.fn());
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+
+    await api.wsSendStreamCancel('grp_80', 42);
+
+    const envelope = JSON.parse(socket.send.mock.calls.at(-1)[0]);
+    expect(envelope.pub).toMatchObject({
+      topic: 'grp_80',
+      type: 'stream_cancel',
+      metadata: {
+        stream_event: 'cancel',
+        control: 'interrupt',
+        target_bot_uid: 42,
+      },
+    });
+  });
+
   test('retries quickly with capped backoff after a dropped socket', () => {
     const onMessage = vi.fn();
     api.connectWS(onMessage);
@@ -154,5 +187,68 @@ describe('WebSocket connection recovery', () => {
     expect(api.connectWS(onMessage)).toBe(false);
     expect(MockWebSocket.instances).toHaveLength(0);
     expect(onMessage).toHaveBeenCalledWith({ _type: 'ws_auth_expired' });
+  });
+});
+
+describe('message history request controls', () => {
+  let api;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    localStorage.clear();
+    api = await import('./api');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  test('aborts a history request when its timeout expires', async () => {
+    global.fetch = vi.fn((url, options) => new Promise((resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+
+    const request = api.api.getMessages(
+      'p2p_1_2',
+      50,
+      0,
+      true,
+      0,
+      { timeoutMs: 15000 },
+    );
+    const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
+
+    await vi.advanceTimersByTimeAsync(15000);
+    await rejection;
+    expect(global.fetch.mock.calls[0][1].signal.aborted).toBe(true);
+  });
+
+  test('distinguishes caller cancellation from a timeout', async () => {
+    global.fetch = vi.fn((url, options) => new Promise((resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true });
+    }));
+    const controller = new AbortController();
+    const request = api.api.getMessages(
+      'p2p_1_2',
+      50,
+      0,
+      true,
+      0,
+      { signal: controller.signal, timeoutMs: 15000 },
+    );
+    const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_ABORTED' });
+
+    controller.abort();
+    await rejection;
   });
 });

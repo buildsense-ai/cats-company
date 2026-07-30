@@ -104,6 +104,58 @@ legacy path is represented internally as a one-provider pool.
 base64 references; its 24 MiB default remains below the bundled Nginx 32 MiB
 body limit.
 
+## Distributed artifact nodes
+
+With no node registry configured, artifact management keeps using the legacy
+`CATSCO_ARTIFACT_MANAGEMENT_URL` and `CATSCO_ARTIFACT_MANAGEMENT_TOKEN`.
+
+To route each managed Agent to the artifact host on its deployment node, copy
+`deploy/prod/artifact-nodes.example.json` to the persistent secrets directory
+and set:
+
+```env
+CATSCO_ARTIFACT_NODES_FILE=/run/catsco-secrets/artifact-nodes.json
+```
+
+The JSON maps an Agent UID to one node. Every node declares its public artifact
+base URL. A fully managed node also declares a protected management URL and
+exactly one bearer-token source: `management_token_env` or
+`management_token_file`. A static-only node may omit all three management
+fields; CatsCo then reads
+`<public_base_url>/by-agent/<uid>/artifacts-index.json`, verifies that every
+artifact URL stays inside the same Agent namespace, does not offer delete or
+restore, and returns an empty recycle bin. The token itself must not be written
+into the JSON. Prefer a separate file under
+`/run/catsco-secrets` for each managed node; the directory is already mounted
+read-only in the server container.
+Every `public_base_url` must use a different origin (scheme, host, or port) from
+`CATSCO_PUBLIC_BASE_URL`. The server rejects a same-origin registry at startup
+so executable Artifact HTML cannot share the CatsCo application origin.
+For example:
+
+```bash
+printf '%s' '<node-b-token>' > /srv/catscompany-prod/secrets/artifact-node-b.token
+chmod 600 /srv/catscompany-prod/secrets/artifact-node-b.token
+```
+
+`management_token_env` remains useful for the legacy node or local testing.
+Several nodes may reference `CATSCO_ARTIFACT_MANAGEMENT_TOKEN` only when those
+nodes intentionally share one service token.
+
+Once a node registry is enabled, an unmapped Agent fails closed by default.
+During a staged migration, set `"fallback_to_legacy": true` to keep unmapped
+Agents on the legacy `CATSCO_ARTIFACT_MANAGEMENT_URL`. Explicit mappings still
+take priority. Remove the fallback after every managed Agent has a node.
+Without that flag, CatsCo does not send an unmapped Agent's list, delete, or
+restore request to the legacy host.
+The registry is loaded at server startup, so changing a node, mapping, or token
+file requires recreating the CatsCo server container.
+
+When the node registry is enabled, the old unscoped `/api/artifacts` endpoint is
+disabled. All list, delete, and restore requests must use
+`/api/agents/{uid}/artifacts`, which prevents a request from silently falling
+back to the legacy node.
+
 ## Manual start
 
 ```bash

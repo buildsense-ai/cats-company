@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +44,7 @@ type Hub struct {
 	deviceRPC     *deviceRPCRouter
 	thinToolRPC   *thinToolRPCRouter
 	channelOut    *ChannelOutboundDispatcher
+	groupTurns    *groupAgentTurnTracker
 }
 
 type presenceEvent struct {
@@ -101,6 +101,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		deviceClients: make(map[int64]map[string]*Client),
 		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
 		thinToolRPC:   newThinToolRPCRouter(defaultThinToolRPCTTL),
+		groupTurns:    newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
@@ -1230,8 +1231,22 @@ func (h *Hub) handleStreamPub(client *Client, msg *MsgClientPub, topic string) {
 			return
 		}
 
+		if streamType == "stream_cancel" {
+			targetBotUID, members, code, text := h.authorizeGroupStreamCancel(groupID, uid, msg.Metadata)
+			if code != 0 {
+				h.SendToClient(client, &ServerMessage{
+					Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topic, Code: code, Text: text},
+				})
+				return
+			}
+			h.SendToClient(client, streamDeltaAck(msg.ID, topic, streamID))
+			h.fanoutGroupStreamCancel(uid, topic, streamID, targetBotUID, msg.Metadata, members)
+			h.groupTurns.clear(groupID, targetBotUID)
+			return
+		}
+
 		h.SendToClient(client, streamDeltaAck(msg.ID, topic, streamID))
-		if delta != "" || streamType == "stream_cancel" {
+		if delta != "" {
 			h.fanoutStreamEvent(uid, topic, streamType, delta, msg.Metadata, client)
 		}
 		return
@@ -1410,6 +1425,7 @@ func messageRequestFromPub(msg *MsgClientPub) *SendMessageRequest {
 		Mode:          msg.Mode,
 		Role:          msg.Role,
 		ReplyTo:       msg.ReplyTo,
+		Mentions:      msg.Mentions,
 	}
 }
 
@@ -1689,53 +1705,22 @@ func max64(a, b int64) int64 {
 	return b
 }
 
-// parseMentions extracts @usr123 style mentions from message content.
-func parseMentions(content interface{}) []string {
-	var text string
-	switch v := content.(type) {
-	case string:
-		text = v
-	case map[string]interface{}:
-		if t, ok := v["text"].(string); ok {
-			text = t
-		}
-	}
-
-	if text == "" {
-		return nil
-	}
-
-	// Match @usr123 pattern
-	re := regexp.MustCompile(`@usr(\d+)`)
-	matches := re.FindAllStringSubmatch(text, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-
-	mentions := make([]string, 0, len(matches))
-	seen := make(map[string]bool)
-	for _, m := range matches {
-		if len(m) > 1 {
-			uid := "usr" + m[1]
-			if !seen[uid] {
-				seen[uid] = true
-				mentions = append(mentions, uid)
-			}
-		}
-	}
-	return mentions
-}
-
-// broadcastToGroupWithMentions sends a message to all online members with Bot @trigger filtering.
-// Human messages without mentions may wake every bot. Bot messages only wake explicitly mentioned bots.
-func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, excludeUID int64, mentions []string, senderUID int64) {
+// broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.
+// Agent-task groups route unmentioned human messages to their current default agent.
+// Explicit mentions target other agents, while two-member groups preserve legacy automatic activation.
+func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, excludeUID int64, mentions []string, senderUID int64, trustedChannelTrigger bool) {
 	members, err := h.db.GetGroupMembers(groupID)
 	if err != nil {
 		log.Printf("broadcastToGroupWithMentions: failed to get members for group %d: %v", groupID, err)
 		return
 	}
 
-	// Convert mentions to a set for quick lookup
+	memberCount := len(members)
+	if msg != nil && msg.Data != nil {
+		msg.Data.MemberCount = memberCount
+	}
+
+	// Convert structured mentions to a set for quick lookup.
 	mentionSet := make(map[string]bool)
 	for _, m := range mentions {
 		mentionSet[m] = true
@@ -1743,6 +1728,16 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 
 	channelManaged := h.isChannelManagedGroup(groupID)
 	senderIsBot := h.isBotUser(senderUID)
+	mentionAllBots := mentionSet[structuredMentionAllBots] && !senderIsBot
+	defaultAgentUID := int64(0)
+	if !trustedChannelTrigger && !senderIsBot && memberCount > 2 && len(mentionSet) == 0 {
+		group, groupErr := h.db.GetGroup(groupID)
+		if groupErr == nil && group != nil && group.Kind == types.GroupKindAgentTask && len(group.AgentIDs) > 0 {
+			// The first current task agent is the default. If it leaves, the
+			// next current agent takes over; other agents still require @.
+			defaultAgentUID = group.AgentIDs[0]
+		}
+	}
 	for _, m := range members {
 		if m.UserID == excludeUID {
 			continue
@@ -1760,12 +1755,12 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 
 		if isBot {
 			userIDStr := formatUID(m.UserID)
-			if len(mentions) > 0 {
-				if !mentionSet[userIDStr] {
-					continue
-				}
-			} else if senderIsBot {
+			requiresMention := !trustedChannelTrigger && (senderIsBot || memberCount > 2)
+			if requiresMention && !mentionAllBots && !mentionSet[userIDStr] && m.UserID != defaultAgentUID {
 				continue
+			}
+			if !senderIsBot && isGroupAgentTurnRequest(msg) {
+				h.groupTurns.begin(groupID, m.UserID, senderUID, msg.Data.SeqID)
 			}
 		}
 

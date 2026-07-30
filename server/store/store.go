@@ -97,7 +97,7 @@ type ConversationTaskStatusStore interface {
 	GetConversationTaskStatuses(topicIDs []string) (map[string]*types.ConversationTaskStatus, error)
 }
 
-// ProjectStore persists user-owned projects and their conversation assignments.
+// ProjectStore persists user-owned projects and assignments for conversations the user can access.
 // It remains optional so narrow server test stores do not need project methods.
 type ProjectStore interface {
 	CreateProject(ownerUID int64, name string) (*types.Project, error)
@@ -143,6 +143,15 @@ type BotModelConfigStore interface {
 	MarkBotModelRuntimeProtocol(botUID int64, protocol string) (*types.BotModelConfig, error)
 	SaveBotDesiredModelConfig(botUID int64, kind, modelID, reasoningEffort, customCiphertext string) (*types.BotModelConfig, error)
 	AckBotModelConfig(botUID, revision int64, kind, modelID, reasoningEffort, applyError string) (*types.BotModelConfig, error)
+}
+
+type BotDefinitionStore interface {
+	GetBotDefinition(botUID int64) (*types.BotDefinitionRecord, error)
+	CreateBotDefinitionIfAbsent(botUID int64, definition types.BotDefinition) (*types.BotDefinitionRecord, error)
+	UpdateBotDefinitionModel(botUID, expectedRevision int64, model types.BotDefinitionModel) (*types.BotDefinitionRecord, error)
+	UpdateBotDefinitionPrompt(botUID, expectedRevision int64, prompt types.BotPromptDefinition) (*types.BotDefinitionRecord, error)
+	UpdateBotDefinitionSkills(botUID, expectedRevision int64, skills []types.BotSkillRef) (*types.BotDefinitionRecord, error)
+	AckBotDefinition(botUID, revision int64, applyError string) (*types.BotDefinitionRecord, error)
 }
 
 // FeedbackStore contains user feedback persistence operations.

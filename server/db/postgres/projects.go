@@ -98,14 +98,20 @@ func (a *Adapter) DeleteProject(ownerUID, projectID int64) error {
 	return nil
 }
 
-// AssignTopicToProject moves an owned topic into the selected project.
+// AssignTopicToProject moves an accessible topic into the selected personal project.
 func (a *Adapter) AssignTopicToProject(ownerUID, projectID int64, topicID string) error {
 	result, err := a.db.Exec(
 		`INSERT INTO project_topics (owner_uid, topic_id, project_id)
 		 SELECT $1, t.id, p.id
 		 FROM projects p
-		 JOIN topics t ON t.id = $3 AND t.owner_id = $1
-		 WHERE p.id = $2 AND p.owner_uid = $1
+		 JOIN topics t ON t.id = $3
+		 LEFT JOIN group_members gm
+		   ON t.type = 'group'
+		  AND t.id = 'grp_' || gm.group_id::text
+		  AND gm.user_id = $1
+		 WHERE p.id = $2
+		   AND p.owner_uid = $1
+		   AND (t.owner_id = $1 OR gm.user_id IS NOT NULL)
 		 ON CONFLICT (owner_uid, topic_id)
 		 DO UPDATE SET project_id = EXCLUDED.project_id, created_at = CURRENT_TIMESTAMP`,
 		ownerUID, projectID, topicID,

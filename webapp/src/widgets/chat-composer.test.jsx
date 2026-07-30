@@ -86,6 +86,27 @@ describe('ChatComposer', () => {
     expect(textarea.getAttribute('aria-controls')).toBe('mention-picker');
     expect(textarea.getAttribute('aria-expanded')).toBe('true');
     expect(textarea.getAttribute('aria-activedescendant')).toBe('mention-option-42');
+    expect(textarea.getAttribute('aria-label')).toBe('输入指令，我帮您完成');
+    expect(textarea.getAttribute('name')).toBe('message');
+    expect(textarea.getAttribute('autocomplete')).toBe('off');
+  });
+
+  it('keeps reply context and live notices inside the shared composer surface', async () => {
+    await renderComposer({
+      context: <div className="test-context">回复：上一条消息</div>,
+      notices: <div className="v3-live-input-status">CatsCo 正在处理</div>,
+    });
+
+    const box = container.querySelector('.v3-composer-box');
+    const context = box.querySelector('.v3-composer-context');
+    const notices = box.querySelector('.v3-composer-notices');
+    const row = box.querySelector('.v3-composer-row');
+    expect(box.classList.contains('has-context')).toBe(true);
+    expect(box.classList.contains('has-notices')).toBe(true);
+    expect(context?.textContent).toContain('上一条消息');
+    expect(notices?.textContent).toContain('正在处理');
+    expect(context.nextElementSibling).toBe(notices);
+    expect(notices.nextElementSibling).toBe(row);
   });
 
   it('uses the same action slot for stop while working and send after input', async () => {
@@ -108,6 +129,81 @@ describe('ChatComposer', () => {
       sendButton.click();
     });
     expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders removable image and file attachments inside the expanding composer box', async () => {
+    const onRemoveAttachment = vi.fn();
+    await renderComposer({
+      attachments: [
+        {
+          type: 'image',
+          name: 'cat.jpg',
+          content: { payload: { file_key: 'cat', thumbnail: '/uploads/cat.jpg' } },
+        },
+        {
+          type: 'file',
+          name: 'brief.pdf',
+          content: { payload: { file_key: 'brief' } },
+        },
+      ],
+      onRemoveAttachment,
+    });
+
+    const box = container.querySelector('.v3-composer-box.has-attachments');
+    expect(box?.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(2);
+    expect(box?.querySelector('.v3-composer-attachment-chip.is-image img')).not.toBeNull();
+    expect(box?.textContent).toContain('brief.pdf');
+
+    await act(async () => {
+      const previewButton = box.querySelector('button[aria-label="预览图片：cat.jpg"]');
+      previewButton.focus();
+      previewButton.click();
+    });
+    expect(container.querySelector('[role="dialog"][aria-label="图片预览：cat.jpg"] img')?.getAttribute('src'))
+      .toBe('/uploads/cat.jpg');
+
+    const closePreviewButton = container.querySelector('button[aria-label="关闭图片预览"]');
+    expect(document.activeElement).toBe(closePreviewButton);
+
+    const tabEvent = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => {
+      closePreviewButton.dispatchEvent(tabEvent);
+    });
+    expect(tabEvent.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(closePreviewButton);
+
+    const shiftTabEvent = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => {
+      closePreviewButton.dispatchEvent(shiftTabEvent);
+    });
+    expect(shiftTabEvent.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(closePreviewButton);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    expect(container.querySelector('[role="dialog"][aria-label="图片预览：cat.jpg"]')).toBeNull();
+    expect(document.activeElement).toBe(
+      box.querySelector('button[aria-label="预览图片：cat.jpg"]'),
+    );
+
+    await act(async () => {
+      box.querySelector('button[aria-label="移除附件：cat.jpg"]').click();
+    });
+    expect(onRemoveAttachment).toHaveBeenCalledWith(0);
   });
 
   it.each([

@@ -331,6 +331,33 @@ wss://app.catsco.cc/v0/channels?api_key=<api_key>
 { "note": { "topic": "p2p_1_10", "what": "read", "seq": 42 } }
 ```
 
+#### 取消群聊 Agent 流 (pub / stream_cancel)
+
+群聊中的客户端可用 `stream_cancel` 请求停止一个正在执行的 Agent：
+
+```json
+{
+  "pub": {
+    "id": "cancel-1",
+    "topic": "grp_5",
+    "type": "stream_cancel",
+    "metadata": {
+      "stream_id": "run-42",
+      "stream_event": "cancel",
+      "target_bot_uid": 42
+    }
+  }
+}
+```
+
+- `stream_id` 必填，用于关联本次取消事件。
+- `target_bot_uid` 是目标 Agent 的数字 UID。多人群聊必须显式提供，且目标必须是该群的 Bot 成员；只有“一个人类成员 + 一个 Bot”的双人群可省略，服务端会推断唯一 Bot。
+- 发起者必须是未被禁言的群成员。在多人群聊中，还必须是当前目标 Agent 活跃轮次的发起者；普通群成员、其他轮次的发起者及 Bot 都不能中止该轮次。
+- 成功时服务端返回 `ctrl.code: 200`，并仅把取消事件投递给目标 Agent 和群内人类观察者，不会中止同群其他 Agent。
+- 权限或目标校验失败统一返回 `ctrl.code: 403`。包括：发起者不是群成员或已被禁言、缺少/伪造 `target_bot_uid`、目标不是本群 Agent、发起者不是当前轮次发起者，或 Bot 尝试中止其他 Agent。`403` 表示取消未被执行，客户端不得将其当作已停止。
+
+XiaoBa-CLI 等 Agent runtime 在多人群中接收、处理或转发取消事件时，必须保留 `target_bot_uid`；不能仅依赖 `stream_id` 推断目标 Agent。
+
 ### 3.4 消息类型 — Server → Client
 
 #### 控制消息 (ctrl)

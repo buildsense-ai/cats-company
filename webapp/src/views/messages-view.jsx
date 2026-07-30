@@ -1,9 +1,10 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, Smartphone, X } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
+import { CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
-import ChatMessage, { FilePreviewPanel } from '../widgets/chat-message';
+import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
+import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { attachmentFromContentBlock, attachmentIdentity, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
@@ -11,13 +12,19 @@ import ChatComposer from '../widgets/chat-composer';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 
 const PAGE_SIZE = 50;
+const HISTORY_CACHE_MAX_TOPICS = 12;
+const QUESTION_HISTORY_PAGE_SIZE = 500;
+const QUESTION_INDEX_MAX_SCANNED_PER_LOAD = 2000;
+const QUESTION_INDEX_MAX_ITEMS = 250;
+const STRUCTURED_MENTION_ALL = 'all';
 const TYPING_TIMEOUT_MS = 10000;
 const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const MAX_DROPPED_FILES = 200;
 const HISTORY_AUTO_LOAD_THRESHOLD = 120;
+const HISTORY_REQUEST_TIMEOUT_MS = 15000;
+const HISTORY_AUTO_FILL_MAX_PAGES = 6;
 const STICK_TO_BOTTOM_THRESHOLD = 96;
-const QUESTION_NAV_BOTTOM_EPSILON = 2;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
@@ -31,6 +38,7 @@ const PREVIEW_WIDTH_STORAGE_KEY = 'cc_file_preview_width_v1';
 const PREVIEW_WIDTH_MIN = 360;
 const PREVIEW_WIDTH_DEFAULT = 640;
 const PREVIEW_WIDTH_MAX = 980;
+const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 
 function questionNavigationKey(message, index) {
   return String(message?.id ?? message?.seq_id ?? `question-${index}`);
@@ -43,6 +51,49 @@ function questionNavigationLabel(message) {
     : (content && typeof content === 'object' && typeof content.text === 'string' ? content.text : '');
   const normalized = rawText.replace(/\s+/g, ' ').trim();
   return normalized ? normalized.slice(0, 60) : '附件指令';
+}
+
+function questionNavigationItem(message, index, userUID) {
+  const type = message?.type || message?.msg_type || '';
+  if (
+    type !== 'text'
+    || Number(message?.from_uid) !== Number(userUID)
+    || isWorkingMessage(message)
+  ) {
+    return null;
+  }
+  return {
+    key: questionNavigationKey(message, index),
+    id: historyMessageID(message),
+    label: questionNavigationLabel(message),
+  };
+}
+
+function collectQuestionNavigationItems(messages, userUID) {
+  return (messages || [])
+    .map((message, index) => questionNavigationItem(message, index, userUID))
+    .filter(Boolean);
+}
+
+function mergeQuestionNavigationItems(...collections) {
+  const byKey = new Map();
+  collections.flat().forEach((item) => {
+    if (item?.key) byKey.set(item.key, item);
+  });
+  return Array.from(byKey.values())
+    .sort((left, right) => {
+      if (left.id > 0 && right.id > 0) return left.id - right.id;
+      return left.key.localeCompare(right.key);
+    })
+    .slice(-QUESTION_INDEX_MAX_ITEMS);
+}
+
+function cacheQuestionIndex(cache, key, entry) {
+  cache.delete(key);
+  cache.set(key, entry);
+  while (cache.size > HISTORY_CACHE_MAX_TOPICS) {
+    cache.delete(cache.keys().next().value);
+  }
 }
 
 function clampPreviewWidth(width) {
@@ -73,7 +124,115 @@ function resolvePhoneUploadLink(uploadUrl) {
   return `${window.location.origin}${normalizedPath}`;
 }
 
+function isStructuredMentionSelectionIntact(text, target, start, end) {
+  const token = target === STRUCTURED_MENTION_ALL ? '@所有人' : `@${target}`;
+  if (start < 0 || end > text.length || text.slice(start, end) !== token) return false;
+  const trailingCharacter = text.slice(end, end + 1);
+  return !trailingCharacter || !/[\p{L}\p{N}_]/u.test(trailingCharacter);
+}
+
+export function reconcileStructuredMentionSelections(previousText, nextText, selections = []) {
+  const previous = typeof previousText === 'string' ? previousText : '';
+  const next = typeof nextText === 'string' ? nextText : '';
+  if (!Array.isArray(selections) || selections.length === 0) return [];
+
+  let prefixLength = 0;
+  while (prefixLength < previous.length
+    && prefixLength < next.length
+    && previous[prefixLength] === next[prefixLength]) {
+    prefixLength += 1;
+  }
+
+  let previousSuffixStart = previous.length;
+  let nextSuffixStart = next.length;
+  while (previousSuffixStart > prefixLength
+    && nextSuffixStart > prefixLength
+    && previous[previousSuffixStart - 1] === next[nextSuffixStart - 1]) {
+    previousSuffixStart -= 1;
+    nextSuffixStart -= 1;
+  }
+
+  const delta = next.length - previous.length;
+  const nextChangedText = next.slice(prefixLength, nextSuffixStart);
+  return selections.flatMap((selection) => {
+    const target = typeof selection?.target === 'string' ? selection.target : '';
+    let start = Number.isInteger(selection?.start) ? selection.start : -1;
+    let end = Number.isInteger(selection?.end) ? selection.end : -1;
+    if (target !== STRUCTURED_MENTION_ALL && !/^usr\d+$/u.test(target)) return [];
+    if (start < 0 || end <= start) return [];
+
+    const touchesRightBoundary = prefixLength === end
+      && /[\p{L}\p{N}_]/u.test(nextChangedText.slice(0, 1));
+    const touchesLeftBoundary = previousSuffixStart === start
+      && /[\p{L}\p{N}_]/u.test(nextChangedText.slice(-1));
+    if (touchesRightBoundary || touchesLeftBoundary) return [];
+
+    if (end <= prefixLength) {
+      // The selected token is before the edit and remains unchanged.
+    } else if (start >= previousSuffixStart) {
+      start += delta;
+      end += delta;
+    } else {
+      return [];
+    }
+
+    if (!isStructuredMentionSelectionIntact(next, target, start, end)) return [];
+    return [{ target, start, end }];
+  });
+}
+
+export function collectStructuredMentionTargets(text, selections = []) {
+  const value = typeof text === 'string' ? text : '';
+  if (!Array.isArray(selections)) return [];
+  return [...new Set(selections.flatMap((selection) => {
+    const target = typeof selection?.target === 'string' ? selection.target : '';
+    const start = Number.isInteger(selection?.start) ? selection.start : -1;
+    const end = Number.isInteger(selection?.end) ? selection.end : -1;
+    if (target !== STRUCTURED_MENTION_ALL && !/^usr\d+$/u.test(target)) return [];
+    if (start < 0 || end <= start) return [];
+    return isStructuredMentionSelectionIntact(value, target, start, end) ? [target] : [];
+  }))];
+}
+
+function historyMessageID(message) {
+  const id = Number(message?.seq_id || message?.id || 0);
+  return Number.isFinite(id) && id > 0 ? id : 0;
+}
+
+function oldestHistoryMessageID(messages) {
+  for (const message of messages || []) {
+    const id = historyMessageID(message);
+    if (id > 0) return id;
+  }
+  return 0;
+}
+
+function historyCacheKey(userID, topic) {
+  return `${userID || 'anonymous'}:${topic}`;
+}
+
+function artifactURLsInMessage(message) {
+  if (message?._streaming) return [];
+  const textBlocks = Array.isArray(message?.content_blocks)
+    ? message.content_blocks.filter((block) => block?.type === 'text').map((block) => block.text || '')
+    : [];
+  const text = [typeof message?.content === 'string' ? message.content : '', ...textBlocks].join('\n');
+  return (text.match(/https?:\/\/[^\s<>"'`]+/gi) || [])
+    .map((url) => url.replace(/[)\]}>.,;:!?，。；：！？]+$/g, ''))
+    .filter(Boolean)
+    .sort();
+}
+
+function cacheHistoryPage(cache, key, entry) {
+  cache.delete(key);
+  cache.set(key, entry);
+  while (cache.size > HISTORY_CACHE_MAX_TOPICS) {
+    cache.delete(cache.keys().next().value);
+  }
+}
+
 export default function MessagesView({
+  topBar = null,
   topic,
   topicName,
   user,
@@ -86,6 +245,7 @@ export default function MessagesView({
   onActivateTopic,
   onAgentModelChange,
   onActiveAgentChange,
+  cloudArtifactsRequest,
 }) {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
@@ -102,10 +262,19 @@ export default function MessagesView({
   const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
   const [replyTo, setReplyTo] = useState(null);
   const [previewFile, setPreviewFile] = useState(null);
+  const [cloudArtifactsAgentUID, setCloudArtifactsAgentUID] = useState(0);
+  const [cloudArtifactsListOpen, setCloudArtifactsListOpen] = useState(false);
+  const [cloudArtifactsTab, setCloudArtifactsTab] = useState('active');
+  const [artifactRegistryState, setArtifactRegistryState] = useState({ agentUID: 0, artifacts: [] });
+  const [artifactRegistryRefreshEpoch, setArtifactRegistryRefreshEpoch] = useState(0);
   const [previewWidth, setPreviewWidth] = useState(() => loadPreviewWidth());
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [refreshingHistory, setRefreshingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState('');
+  const [olderHistoryError, setOlderHistoryError] = useState('');
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [autoHistoryLimitReached, setAutoHistoryLimitReached] = useState(false);
   const [isStopRequested, setIsStopRequested] = useState(false);
   const [suppressedWorkingKey, setSuppressedWorkingKey] = useState('');
   const [liveWorkingKey, setLiveWorkingKey] = useState('');
@@ -121,17 +290,24 @@ export default function MessagesView({
   const [availableAgents, setAvailableAgents] = useState([]);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [activeQuestionKey, setActiveQuestionKey] = useState('');
+  const [questionIndexItems, setQuestionIndexItems] = useState([]);
+  const [questionIndexLoading, setQuestionIndexLoading] = useState(false);
+  const [questionIndexHasMore, setQuestionIndexHasMore] = useState(false);
+  const [questionIndexLimitReached, setQuestionIndexLimitReached] = useState(false);
   const [showThinking, setShowThinking] = useState(() => {
     const saved = localStorage.getItem('cc_show_thinking');
     return saved === null ? true : saved === 'true';
   });
+  const sidePanelOpen = Boolean(previewFile || (cloudArtifactsListOpen && cloudArtifactsAgentUID > 0));
   const bottomRef = useRef(null);
+  const chatColumnRef = useRef(null);
   const lastTypingSent = useRef(0);
   const peerTypingTimer = useRef(null);
   const liveWorkingTimer = useRef(null);
   const timelineRef = useRef(null);
   const pendingQuestionJumpRef = useRef('');
   const questionJumpReleaseTimerRef = useRef(null);
+  const visibleQuestionAnchorsRef = useRef(new Map());
   const previousScrollRef = useRef(null);
   const stickToBottomRef = useRef(true);
   const fileInputRef = useRef(null);
@@ -142,10 +318,27 @@ export default function MessagesView({
   const runtimePlanRef = useRef(null);
   const runtimePlanClearTimer = useRef(null);
   const historyOffsetRef = useRef(0);
+  const historyBeforeIDRef = useRef(0);
+  const historyRequestRef = useRef(0);
+  const historyLoadingRef = useRef(false);
+  const historyAbortControllerRef = useRef(null);
+  const olderHistoryAbortControllerRef = useRef(null);
+  const autoHistoryPageCountRef = useRef(0);
+  const groupMembersRequestRef = useRef(0);
+  const peerProfileRequestRef = useRef(0);
+  const artifactRegistryRequestRef = useRef(0);
+  const historyCacheRef = useRef(new Map());
+  const groupProfileCacheRef = useRef(new Map());
   const hasMoreHistoryRef = useRef(false);
   const loadingOlderRef = useRef(false);
   const activeTopicRef = useRef(topic);
+  const questionIndexCacheRef = useRef(new Map());
+  const questionIndexRequestRef = useRef(0);
+  const questionIndexLoadingRef = useRef(false);
+  const questionIndexAbortControllerRef = useRef(null);
+  const questionJumpAbortControllerRef = useRef(null);
   const composerDraftsRef = useRef(new Map());
+  const structuredMentionDraftsRef = useRef(new Map());
   const attachmentDraftsRef = useRef(new Map());
   const pendingAttachmentsRef = useRef([]);
   const previewWidthRef = useRef(previewWidth);
@@ -185,6 +378,15 @@ export default function MessagesView({
     }
   }, []);
 
+  const updateStructuredMentionDraft = useCallback((draftTopic, selections) => {
+    if (!draftTopic) return;
+    if (Array.isArray(selections) && selections.length > 0) {
+      structuredMentionDraftsRef.current.set(draftTopic, selections);
+    } else {
+      structuredMentionDraftsRef.current.delete(draftTopic);
+    }
+  }, []);
+
   const updateAttachmentDraft = useCallback((draftTopic, nextValue) => {
     if (!draftTopic) return [];
     const current = attachmentDraftsRef.current.get(draftTopic) || [];
@@ -214,7 +416,7 @@ export default function MessagesView({
   }, []);
 
   const handlePreviewResizePointerDown = useCallback((event) => {
-    if (!previewFile) return;
+    if (!sidePanelOpen) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
     const startX = event.clientX;
@@ -231,10 +433,10 @@ export default function MessagesView({
 
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
-  }, [previewFile, updatePreviewWidth]);
+  }, [sidePanelOpen, updatePreviewWidth]);
 
   const handlePreviewResizeKeyDown = useCallback((event) => {
-    if (!previewFile) return;
+    if (!sidePanelOpen) return;
     if (event.key === 'ArrowLeft') {
       event.preventDefault();
       updatePreviewWidth(previewWidthRef.current + 40);
@@ -248,7 +450,41 @@ export default function MessagesView({
       event.preventDefault();
       updatePreviewWidth(PREVIEW_WIDTH_MAX);
     }
-  }, [previewFile, updatePreviewWidth]);
+  }, [sidePanelOpen, updatePreviewWidth]);
+
+  const openFilePreview = useCallback((file) => {
+    setCloudArtifactsAgentUID(0);
+    setCloudArtifactsListOpen(false);
+    setPreviewFile(file);
+  }, []);
+
+  const closeSidePanel = useCallback(() => {
+    setPreviewFile(null);
+    setCloudArtifactsAgentUID(0);
+    setCloudArtifactsListOpen(false);
+    setCloudArtifactsTab('active');
+  }, []);
+
+  const previewCloudArtifact = useCallback((artifact) => {
+    setPreviewFile(createCloudArtifactPreviewFile(artifact));
+    setCloudArtifactsListOpen(false);
+  }, []);
+
+  const previewAgentFile = useCallback((file) => {
+    setPreviewFile({
+      name: file.name,
+      url: file.url,
+      file_key: file.file_key,
+      mime_type: file.mime_type,
+      size: file.size,
+    });
+    setCloudArtifactsListOpen(false);
+  }, []);
+
+  const returnToCloudArtifacts = useCallback(() => {
+    setPreviewFile(null);
+    setCloudArtifactsListOpen(true);
+  }, []);
 
   const resizeComposerInput = useCallback(() => {
     const textarea = textareaRef.current;
@@ -317,6 +553,9 @@ export default function MessagesView({
   }, []);
 
   useEffect(() => () => {
+    questionIndexRequestRef.current += 1;
+    questionIndexAbortControllerRef.current?.abort();
+    questionJumpAbortControllerRef.current?.abort();
     if (runtimePlanClearTimer.current) {
       clearTimeout(runtimePlanClearTimer.current);
     }
@@ -328,9 +567,23 @@ export default function MessagesView({
   // Load message history and group members when topic changes
   useEffect(() => {
     if (!topic) return;
+    historyAbortControllerRef.current?.abort();
+    olderHistoryAbortControllerRef.current?.abort();
+    questionIndexAbortControllerRef.current?.abort();
+    questionJumpAbortControllerRef.current?.abort();
+    groupMembersRequestRef.current += 1;
+    peerProfileRequestRef.current += 1;
     activeTopicRef.current = topic;
     setInput(composerDraftsRef.current.get(topic) || '');
-    setMessages([]);
+    const cacheKey = historyCacheKey(user.uid, topic);
+    const cachedHistory = historyCacheRef.current.get(cacheKey);
+    const cachedQuestionIndex = questionIndexCacheRef.current.get(cacheKey);
+    setMessages(cachedHistory?.messages || []);
+    setQuestionIndexItems(cachedQuestionIndex?.items || []);
+    setQuestionIndexHasMore(Boolean(cachedQuestionIndex?.hasMore));
+    setQuestionIndexLimitReached(Boolean(cachedQuestionIndex?.limitReached));
+    setQuestionIndexLoading(false);
+    questionIndexLoadingRef.current = false;
     const attachmentDraft = attachmentDraftsRef.current.get(topic) || [];
     pendingAttachmentsRef.current = attachmentDraft;
     setPendingAttachments(attachmentDraft);
@@ -344,15 +597,28 @@ export default function MessagesView({
     clearRuntimePlan();
     setReplyTo(null);
     setPreviewFile(null);
-    setMembers([]);
-    setGroupInfo(null);
+    setCloudArtifactsAgentUID(0);
+    setCloudArtifactsListOpen(false);
+    setCloudArtifactsTab('active');
+    const cachedGroupProfile = isGroup && groupId
+      ? groupProfileCacheRef.current.get(String(groupId))
+      : null;
+    setMembers(cachedGroupProfile?.members || []);
+    setGroupInfo(cachedGroupProfile?.group || null);
     setPeerProfile(null);
-    setHistoryLoaded(false);
-    historyOffsetRef.current = 0;
-    hasMoreHistoryRef.current = false;
+    setHistoryLoaded(Boolean(cachedHistory));
+    setHistoryError('');
+    setOlderHistoryError('');
+    setAutoHistoryLimitReached(false);
+    autoHistoryPageCountRef.current = 0;
+    historyOffsetRef.current = cachedHistory?.offset || 0;
+    historyBeforeIDRef.current = cachedHistory?.nextBeforeID || 0;
+    hasMoreHistoryRef.current = Boolean(cachedHistory?.hasMore);
+    previousScrollRef.current = null;
     loadingOlderRef.current = false;
+    questionIndexRequestRef.current += 1;
     stickToBottomRef.current = true;
-    setHasMoreHistory(false);
+    setHasMoreHistory(Boolean(cachedHistory?.hasMore));
     setLoadingOlder(false);
     setIsStopRequested(false);
     setSuppressedWorkingKey('');
@@ -376,7 +642,22 @@ export default function MessagesView({
     } else {
       loadPeerProfile();
     }
-  }, [topic]);
+    return () => {
+      historyAbortControllerRef.current?.abort();
+      olderHistoryAbortControllerRef.current?.abort();
+      questionIndexAbortControllerRef.current?.abort();
+      questionJumpAbortControllerRef.current?.abort();
+    };
+  }, [groupId, isGroup, topic, user.uid]);
+
+  useEffect(() => {
+    const agentUID = Number(cloudArtifactsRequest?.agentUid || 0);
+    if (agentUID <= 0 || !cloudArtifactsRequest?.requestId) return;
+    setPreviewFile(null);
+    setCloudArtifactsAgentUID(agentUID);
+    setCloudArtifactsTab('active');
+    setCloudArtifactsListOpen(true);
+  }, [cloudArtifactsRequest]);
 
   useEffect(() => {
     const preventBrowserFileOpen = (event) => {
@@ -402,21 +683,34 @@ export default function MessagesView({
   }, []);
 
   const loadGroupMembers = async () => {
+    const requestID = ++groupMembersRequestRef.current;
+    const requestTopic = topic;
+    const requestGroupID = groupId;
     try {
-      const res = await api.getGroupInfo(groupId);
-      if (res.members) {
-        setMembers(res.members);
-      }
-      if (res.group) {
-        setGroupInfo(res.group);
-      }
+      const res = await api.getGroupInfo(requestGroupID);
+      if (requestID !== groupMembersRequestRef.current || activeTopicRef.current !== requestTopic) return;
+      const cachedProfile = groupProfileCacheRef.current.get(String(requestGroupID));
+      const nextMembers = Array.isArray(res.members)
+        ? res.members
+        : (cachedProfile?.members || []);
+      const nextGroup = res.group || cachedProfile?.group || null;
+      groupProfileCacheRef.current.set(String(requestGroupID), {
+        members: nextMembers,
+        group: nextGroup,
+      });
+      setMembers(nextMembers);
+      setGroupInfo(nextGroup);
     } catch (e) {
+      // Cached members, the Agent roster, and message metadata keep sender identity
+      // stable while group details are temporarily unavailable.
     }
   };
 
   const loadPeerProfile = async () => {
+    const requestID = ++peerProfileRequestRef.current;
+    const requestTopic = topic;
     try {
-      const [left, right] = topic.replace('p2p_', '').split('_').map((n) => parseInt(n, 10));
+      const [left, right] = requestTopic.replace('p2p_', '').split('_').map((n) => parseInt(n, 10));
       const peerId = left === user.uid ? right : left;
       const [friendsRes, agentsRes] = await Promise.all([
         api.getFriends().catch(() => ({})),
@@ -427,6 +721,7 @@ export default function MessagesView({
       const friendPeer = friends.find((friend) => friend.id === peerId);
       const agentPeer = agents.find((agent) => agent.uid === peerId || agent.id === peerId);
       const peer = agentPeer ? { ...friendPeer, ...agentPeer } : friendPeer;
+      if (requestID !== peerProfileRequestRef.current || activeTopicRef.current !== requestTopic) return;
       if (peer) setPeerProfile(peer);
     } catch (e) {
     }
@@ -597,27 +892,196 @@ export default function MessagesView({
     }
   }, [messages, runtimePlan, peerTyping]);
 
-  const loadHistory = async (targetTopic = topic) => {
+  const loadQuestionNavigationHistory = useCallback(async ({ continueOlder = false } = {}) => {
+    const targetTopic = topic;
+    const cacheKey = historyCacheKey(user.uid, targetTopic);
+    const cached = questionIndexCacheRef.current.get(cacheKey);
+    if (
+      !targetTopic
+      || questionIndexLoadingRef.current
+      || !cached?.hasMore
+      || cached.limitReached
+      || (cached.requested && !continueOlder)
+    ) {
+      return;
+    }
+
+    const requestId = ++questionIndexRequestRef.current;
+    questionIndexAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    questionIndexAbortControllerRef.current = controller;
+    let entry = { ...cached, requested: true };
+    let scannedThisLoad = 0;
+    questionIndexLoadingRef.current = true;
+    setQuestionIndexLoading(true);
+    cacheQuestionIndex(questionIndexCacheRef.current, cacheKey, entry);
+
     try {
-      const res = await api.getMessages(targetTopic, PAGE_SIZE, 0, true);
-      if (activeTopicRef.current !== targetTopic) return;
-      if (res.messages) {
-        const { visibleMessages } = normalizeHistoryMessages(res.messages);
-        setMessages(visibleMessages);
-        historyOffsetRef.current = (res.messages || []).length;
-        setHasMoreHistory((res.messages || []).length === PAGE_SIZE);
-        hasMoreHistoryRef.current = (res.messages || []).length === PAGE_SIZE;
+      while (
+        entry.hasMore
+        && !entry.limitReached
+        && scannedThisLoad < QUESTION_INDEX_MAX_SCANNED_PER_LOAD
+      ) {
+        const res = await api.getMessages(
+          targetTopic,
+          QUESTION_HISTORY_PAGE_SIZE,
+          entry.offset,
+          true,
+          entry.beforeId,
+          { signal: controller.signal, timeoutMs: HISTORY_REQUEST_TIMEOUT_MS },
+        );
+        if (
+          activeTopicRef.current !== targetTopic
+          || questionIndexRequestRef.current !== requestId
+        ) {
+          return;
+        }
+
+        const rawBatch = Array.isArray(res.messages) ? res.messages : [];
+        const { visibleMessages } = normalizeHistoryMessages(rawBatch);
+        const batchItems = collectQuestionNavigationItems(visibleMessages, user.uid);
+        const mergedItems = mergeQuestionNavigationItems(entry.items, batchItems);
+        const hasMore = rawBatch.length > 0 && (
+          typeof res.has_more === 'boolean'
+            ? res.has_more
+            : rawBatch.length === QUESTION_HISTORY_PAGE_SIZE
+        );
+        const limitReached = mergedItems.length >= QUESTION_INDEX_MAX_ITEMS && hasMore;
+        entry = {
+          ...entry,
+          items: mergedItems,
+          offset: entry.offset + rawBatch.length,
+          beforeId: Number(res.next_before_id) || oldestHistoryMessageID(rawBatch),
+          hasMore,
+          limitReached,
+        };
+        scannedThisLoad += rawBatch.length;
+        cacheQuestionIndex(questionIndexCacheRef.current, cacheKey, entry);
+        setQuestionIndexItems(mergedItems);
+        setQuestionIndexHasMore(hasMore);
+        setQuestionIndexLimitReached(limitReached);
+        if (rawBatch.length === 0) break;
       }
     } catch (e) {
+      // Keep the lightweight anchors already collected; normal scroll history is unaffected.
     } finally {
-      if (activeTopicRef.current === targetTopic) {
+      if (questionIndexAbortControllerRef.current === controller) {
+        questionIndexAbortControllerRef.current = null;
+      }
+      if (
+        activeTopicRef.current === targetTopic
+        && questionIndexRequestRef.current === requestId
+      ) {
+        questionIndexLoadingRef.current = false;
+        setQuestionIndexLoading(false);
+      }
+    }
+  }, [topic, user.uid]);
+
+  const loadHistory = async (targetTopic = topic) => {
+    const requestID = ++historyRequestRef.current;
+    historyAbortControllerRef.current?.abort();
+    olderHistoryAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    historyAbortControllerRef.current = controller;
+    olderHistoryAbortControllerRef.current = null;
+    const cacheKey = historyCacheKey(user.uid, targetTopic);
+    const hasCachedHistory = historyCacheRef.current.has(cacheKey);
+    historyLoadingRef.current = true;
+    previousScrollRef.current = null;
+    setRefreshingHistory(true);
+    setHistoryError('');
+    setOlderHistoryError('');
+    loadingOlderRef.current = false;
+    setLoadingOlder(false);
+    autoHistoryPageCountRef.current = 0;
+    setAutoHistoryLimitReached(false);
+    if (!hasCachedHistory) {
+      setHistoryLoaded(false);
+    }
+    try {
+      const res = await api.getMessages(
+        targetTopic,
+        PAGE_SIZE,
+        0,
+        true,
+        0,
+        { signal: controller.signal, timeoutMs: HISTORY_REQUEST_TIMEOUT_MS },
+      );
+      if (activeTopicRef.current !== targetTopic || historyRequestRef.current !== requestID) return;
+      const rawMessages = res.messages || [];
+      const { visibleMessages } = normalizeHistoryMessages(rawMessages);
+      const hasMore = typeof res.has_more === 'boolean'
+        ? res.has_more
+        : rawMessages.length === PAGE_SIZE;
+      const nextBeforeID = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
+      const newestHistoryID = rawMessages.reduce(
+        (latestID, message) => Math.max(latestID, historyMessageID(message)),
+        0,
+      );
+      setMessages((current) => {
+        const newerMessages = rawMessages.length === 0
+          ? current.filter((message) => message._pending)
+          : current.filter((message) => message._pending || historyMessageID(message) > newestHistoryID);
+        return mergeMessages(visibleMessages, newerMessages);
+      });
+      historyOffsetRef.current = rawMessages.length;
+      historyBeforeIDRef.current = nextBeforeID;
+      hasMoreHistoryRef.current = hasMore;
+      setHasMoreHistory(hasMore);
+      cacheHistoryPage(historyCacheRef.current, cacheKey, {
+        messages: visibleMessages,
+        offset: rawMessages.length,
+        nextBeforeID,
+        hasMore,
+      });
+      const cachedQuestionIndex = questionIndexCacheRef.current.get(cacheKey);
+      if (!cachedQuestionIndex) {
+        const nextQuestionIndex = {
+          items: [],
+          offset: rawMessages.length,
+          beforeId: nextBeforeID,
+          hasMore,
+          requested: false,
+          limitReached: false,
+        };
+        cacheQuestionIndex(questionIndexCacheRef.current, cacheKey, nextQuestionIndex);
+        setQuestionIndexHasMore(hasMore);
+      }
+    } catch (e) {
+      if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
+        if (e?.code !== 'REQUEST_ABORTED') {
+          setHistoryError(e?.code === 'REQUEST_TIMEOUT'
+            ? '聊天记录加载超时，请重试。'
+            : '聊天记录加载失败，请检查网络后重试。');
+        }
+      }
+    } finally {
+      if (historyAbortControllerRef.current === controller) {
+        historyAbortControllerRef.current = null;
+      }
+      if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
+        historyLoadingRef.current = false;
+        setRefreshingHistory(false);
         setHistoryLoaded(true);
       }
     }
   };
 
-  const loadOlderHistory = useCallback(async () => {
-    if (loadingOlderRef.current || !hasMoreHistoryRef.current) return;
+  const loadOlderHistory = useCallback(async ({ automatic = false } = {}) => {
+    if (historyLoadingRef.current || loadingOlderRef.current || !hasMoreHistoryRef.current) return;
+    if (automatic && autoHistoryPageCountRef.current >= HISTORY_AUTO_FILL_MAX_PAGES) {
+      setAutoHistoryLimitReached(true);
+      return;
+    }
+    if (!automatic) {
+      autoHistoryPageCountRef.current = 0;
+      setAutoHistoryLimitReached(false);
+    }
+    const targetTopic = topic;
+    const requestID = historyRequestRef.current;
+    const controller = new AbortController();
+    olderHistoryAbortControllerRef.current = controller;
     
     // Capture the absolute scroll geometry BEFORE rendering the older batch
     if (timelineRef.current) {
@@ -629,32 +1093,127 @@ export default function MessagesView({
     
     loadingOlderRef.current = true;
     setLoadingOlder(true);
+    setOlderHistoryError('');
     try {
-      const res = await api.getMessages(topic, PAGE_SIZE, historyOffsetRef.current, true);
-      const { visibleMessages } = normalizeHistoryMessages(res.messages);
+      const res = await api.getMessages(
+        targetTopic,
+        PAGE_SIZE,
+        historyOffsetRef.current,
+        true,
+        historyBeforeIDRef.current,
+        { signal: controller.signal, timeoutMs: HISTORY_REQUEST_TIMEOUT_MS },
+      );
+      if (activeTopicRef.current !== targetTopic || historyRequestRef.current !== requestID) return;
+      const rawMessages = res.messages || [];
+      const { visibleMessages } = normalizeHistoryMessages(rawMessages);
       setMessages((prev) => mergeMessages(visibleMessages, prev));
-      historyOffsetRef.current += (res.messages || []).length;
-      const hasMore = (res.messages || []).length === PAGE_SIZE;
+      historyOffsetRef.current += rawMessages.length;
+      historyBeforeIDRef.current = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
+      const hasMore = typeof res.has_more === 'boolean'
+        ? res.has_more
+        : rawMessages.length === PAGE_SIZE;
       hasMoreHistoryRef.current = hasMore;
       setHasMoreHistory(hasMore);
+      const cacheKey = historyCacheKey(user.uid, targetTopic);
+      const cachedQuestionIndex = questionIndexCacheRef.current.get(cacheKey);
+      if (cachedQuestionIndex) {
+        const ordinaryReachedFurther = historyOffsetRef.current >= cachedQuestionIndex.offset
+          || (
+            historyBeforeIDRef.current > 0
+            && cachedQuestionIndex.beforeId > 0
+            && historyBeforeIDRef.current < cachedQuestionIndex.beforeId
+          );
+        const nextQuestionItems = mergeQuestionNavigationItems(
+          cachedQuestionIndex.items,
+          collectQuestionNavigationItems(visibleMessages, user.uid),
+        );
+        const nextQuestionIndex = {
+          ...cachedQuestionIndex,
+          items: nextQuestionItems,
+          offset: Math.max(cachedQuestionIndex.offset, historyOffsetRef.current),
+          beforeId: ordinaryReachedFurther
+            ? historyBeforeIDRef.current
+            : cachedQuestionIndex.beforeId,
+          hasMore: ordinaryReachedFurther ? hasMore : cachedQuestionIndex.hasMore,
+          limitReached: nextQuestionItems.length >= QUESTION_INDEX_MAX_ITEMS
+            && (ordinaryReachedFurther ? hasMore : cachedQuestionIndex.hasMore),
+        };
+        cacheQuestionIndex(questionIndexCacheRef.current, cacheKey, nextQuestionIndex);
+        setQuestionIndexItems(nextQuestionItems);
+        setQuestionIndexHasMore(nextQuestionIndex.hasMore);
+        setQuestionIndexLimitReached(nextQuestionIndex.limitReached);
+      }
+      if (automatic) {
+        autoHistoryPageCountRef.current += 1;
+        setAutoHistoryLimitReached(
+          hasMore && autoHistoryPageCountRef.current >= HISTORY_AUTO_FILL_MAX_PAGES,
+        );
+      }
     } catch (e) {
+      if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
+        previousScrollRef.current = null;
+        if (e?.code !== 'REQUEST_ABORTED') {
+          setOlderHistoryError(e?.code === 'REQUEST_TIMEOUT'
+            ? '更早的聊天记录加载超时，请重试。'
+            : '更早的聊天记录加载失败。');
+        }
+      }
     } finally {
-      loadingOlderRef.current = false;
-      setLoadingOlder(false);
+      if (olderHistoryAbortControllerRef.current === controller) {
+        olderHistoryAbortControllerRef.current = null;
+      }
+      if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
+        loadingOlderRef.current = false;
+        setLoadingOlder(false);
+      }
     }
-  }, [topic]);
+  }, [topic, user.uid]);
 
   useEffect(() => {
     const el = timelineRef.current;
-    if (!el || !hasMoreHistory || loadingOlder) return;
-    if (el.scrollHeight <= el.clientHeight + HISTORY_AUTO_LOAD_THRESHOLD) {
-      loadOlderHistory();
+    if (!el || refreshingHistory || !hasMoreHistory || loadingOlder || historyError
+      || olderHistoryError || autoHistoryLimitReached) return;
+    const needsConversationContent = !hasOrdinaryChatMessage(messages);
+    const needsViewportFill = el.scrollTop <= HISTORY_AUTO_LOAD_THRESHOLD
+      || el.scrollHeight <= el.clientHeight + HISTORY_AUTO_LOAD_THRESHOLD;
+    if (needsConversationContent || needsViewportFill) {
+      loadOlderHistory({ automatic: true });
     }
-  }, [messages.length, hasMoreHistory, loadingOlder, loadOlderHistory]);
+  }, [
+    messages,
+    refreshingHistory,
+    hasMoreHistory,
+    loadingOlder,
+    historyError,
+    olderHistoryError,
+    autoHistoryLimitReached,
+    loadOlderHistory,
+  ]);
 
   const workingState = useMemo(() => {
     let lastWorkingIndex = -1;
     let lastBotTextIndex = -1;
+    const groupBotUIDs = new Set([
+      ...members
+        .filter((member) => member?.is_bot || member?.account_type === 'bot')
+        .map((member) => Number(member.user_id)),
+      ...availableAgents
+        .map((agent) => Number(agent.uid || agent.id)),
+    ].filter((uid) => Number.isFinite(uid) && uid > 0));
+    const currentUserUID = Number(user.uid);
+    const groupMemberUIDs = new Set(
+      members
+        .map((member) => Number(member?.user_id))
+        .filter((uid) => Number.isFinite(uid) && uid > 0),
+    );
+    const exclusiveToCurrentUser = isGroup
+      && Number.isFinite(currentUserUID)
+      && currentUserUID > 0
+      && groupMemberUIDs.size === 2
+      && groupMemberUIDs.has(currentUserUID)
+      && Array.from(groupMemberUIDs).some(
+        (uid) => uid !== currentUserUID && groupBotUIDs.has(uid),
+      );
 
     messages.forEach((message, index) => {
       if (message.from_uid === user.uid) return;
@@ -672,11 +1231,22 @@ export default function MessagesView({
     return {
       active,
       key: active ? workingMessageKey(messages[lastWorkingIndex], lastWorkingIndex) : '',
+      initiatorUid: active && isGroup
+        ? resolveWorkingInitiatorUid(messages, lastWorkingIndex, groupBotUIDs)
+        : Number(user.uid),
+      responderUid: active ? Number(messages[lastWorkingIndex]?.from_uid || 0) : 0,
+      exclusiveToCurrentUser,
     };
-  }, [messages, user.uid]);
+  }, [availableAgents, isGroup, members, messages, user.uid]);
   const activeBotWorking = workingState.active
     && (peerTyping || workingState.key === liveWorkingKey)
     && workingState.key !== suppressedWorkingKey;
+  const canStopActiveBotWorking = activeBotWorking
+    && (
+      !isGroup
+      || workingState.exclusiveToCurrentUser
+      || workingState.initiatorUid === Number(user.uid)
+    );
 
   useEffect(() => {
     if (!activeBotWorking) {
@@ -783,7 +1353,8 @@ export default function MessagesView({
   }, []);
 
   const handleSend = useCallback(async () => {
-    const initialText = input.trim();
+    const originalInput = input;
+    const initialText = originalInput.trim();
     const initialAttachments = attachmentDraftsRef.current.get(topic) || pendingAttachmentsRef.current;
     if (!initialText && initialAttachments.length === 0) return;
     if (isUploadingAttachment || sendInFlightRef.current) return;
@@ -801,6 +1372,10 @@ export default function MessagesView({
     let attachmentsToSend = [...initialAttachments];
     const text = initialText;
     const originalReplyTo = replyTo;
+    const originalStructuredMentions = structuredMentionDraftsRef.current.get(topic) || [];
+    const mentions = isGroup
+      ? collectStructuredMentionTargets(input, originalStructuredMentions)
+      : [];
     const tempId = Date.now();
 
     try {
@@ -826,6 +1401,7 @@ export default function MessagesView({
         : text;
 
       updateComposerDraft(topic, '');
+      updateStructuredMentionDraft(topic, []);
       updateAttachmentDraft(topic, []);
       stateCleared = true;
       if (activeTopicRef.current === topic) {
@@ -853,7 +1429,9 @@ export default function MessagesView({
         }]));
       }
 
-      const result = await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined);
+      const result = mentions.length > 0
+        ? await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
+        : await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
       if (switchesTopic) {
         if (activeTopicRef.current === topic) {
@@ -876,12 +1454,13 @@ export default function MessagesView({
 
       if (optimisticMessageAdded && activeTopicRef.current === topic) removeOptimisticMessage(tempId);
       if (stateCleared) {
-        updateComposerDraft(topic, text);
+        updateComposerDraft(topic, originalInput);
+        updateStructuredMentionDraft(topic, originalStructuredMentions);
         updateAttachmentDraft(topic, attachmentsToSend);
       }
       if (activeTopicRef.current === topic) {
         if (stateCleared) {
-          setInput(text);
+          setInput(originalInput);
           setReplyTo(originalReplyTo);
         }
         setAttachmentStatus({
@@ -893,13 +1472,13 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, user.uid]);
+  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
-    if (!activeBotWorking || isStopRequested) return;
+    if (!canStopActiveBotWorking || isStopRequested) return;
     setIsStopRequested(true);
     try {
-      await wsSendStreamCancel(topic);
+      await wsSendStreamCancel(topic, workingState.responderUid);
       setSuppressedWorkingKey(workingState.key);
       clearRuntimePlan();
       clearLiveWorking();
@@ -909,7 +1488,7 @@ export default function MessagesView({
     } catch (err) {
       setIsStopRequested(false);
     }
-  }, [activeBotWorking, clearLiveWorking, clearRuntimePlan, isStopRequested, topic, workingState.key]);
+  }, [canStopActiveBotWorking, clearLiveWorking, clearRuntimePlan, isStopRequested, topic, workingState.key, workingState.responderUid]);
 
   const handleRegenerateMessage = useCallback(async (message) => {
     if (sendInFlightRef.current) {
@@ -999,8 +1578,19 @@ export default function MessagesView({
 
   const handleInputChange = (e) => {
     const val = e.target.value;
+    const nextStructuredMentions = reconcileStructuredMentionSelections(
+      input,
+      val,
+      structuredMentionDraftsRef.current.get(topic) || [],
+    );
     setInput(val);
     updateComposerDraft(topic, val);
+    updateStructuredMentionDraft(topic, nextStructuredMentions);
+    if (!val.trim()) {
+      setAttachmentStatus((current) => (
+        current?.source === 'edit-resend' ? null : current
+      ));
+    }
 
     // Detect @mention trigger
     if (isGroup) {
@@ -1036,8 +1626,18 @@ export default function MessagesView({
     if (!textarea) return;
     const range = mentionRangeRef.current;
     if (!range || range.start < 0 || range.end < range.start || range.end > input.length) return;
-    const mention = `@usr${member.user_id} `;
+    const target = member.mention_target || `usr${member.user_id}`;
+    const mention = target === STRUCTURED_MENTION_ALL ? '@所有人 ' : `@${target} `;
     const newText = input.slice(0, range.start) + mention + input.slice(range.end);
+    const reconciledSelections = reconcileStructuredMentionSelections(
+      input,
+      newText,
+      structuredMentionDraftsRef.current.get(topic) || [],
+    );
+    updateStructuredMentionDraft(topic, [
+      ...reconciledSelections,
+      { target, start: range.start, end: range.start + mention.length - 1 },
+    ]);
     setInput(newText);
     updateComposerDraft(topic, newText);
     setShowMentionPicker(false);
@@ -1057,8 +1657,14 @@ export default function MessagesView({
     if (!isGroup || !textarea) return;
     const cursorPos = textarea.selectionStart;
     const nextInput = input.slice(0, cursorPos) + '@' + input.slice(cursorPos);
+    const nextStructuredMentions = reconcileStructuredMentionSelections(
+      input,
+      nextInput,
+      structuredMentionDraftsRef.current.get(topic) || [],
+    );
     setInput(nextInput);
     updateComposerDraft(topic, nextInput);
+    updateStructuredMentionDraft(topic, nextStructuredMentions);
     setShowMentionPicker(true);
     setMentionFilter('');
     setMentionActiveIndex(0);
@@ -1078,7 +1684,6 @@ export default function MessagesView({
     }
 
     try {
-      setIsUploadingAttachment(true);
       setAttachmentStatus({ tone: 'info', message: `正在上传 ${file.name || '附件'}...` });
       const data = await api.uploadFile(file, type);
 
@@ -1113,8 +1718,6 @@ export default function MessagesView({
         setAttachmentStatus({ tone: 'error', message: formatUploadError(err) });
       }
       return null;
-    } finally {
-      setIsUploadingAttachment(false);
     }
   };
 
@@ -1123,12 +1726,29 @@ export default function MessagesView({
     if (fileList.length === 0 || sendInFlightRef.current) return;
     const uploadTopic = activeTopicRef.current;
     let uploadedCount = 0;
-    for (const file of fileList.slice(0, MAX_DROPPED_FILES)) {
-      const uploaded = await uploadAttachmentFile(file, requestedType, uploadTopic);
-      if (!uploaded) break;
-      uploadedCount += 1;
+    let failedCount = 0;
+    setIsUploadingAttachment(true);
+    try {
+      for (const file of fileList.slice(0, MAX_DROPPED_FILES)) {
+        const uploaded = await uploadAttachmentFile(file, requestedType, uploadTopic);
+        if (uploaded) {
+          uploadedCount += 1;
+        } else {
+          failedCount += 1;
+        }
+      }
+    } finally {
+      setIsUploadingAttachment(false);
     }
-    if (uploadedCount > 1 && activeTopicRef.current === uploadTopic) {
+
+    if (failedCount > 0 && fileList.length > 1 && activeTopicRef.current === uploadTopic) {
+      setAttachmentStatus({
+        tone: 'error',
+        message: uploadedCount > 0
+          ? `已添加 ${uploadedCount} 个附件，另有 ${failedCount} 个上传失败。`
+          : `${failedCount} 个附件上传失败，请检查格式、大小或网络后重试。`,
+      });
+    } else if (uploadedCount > 1 && activeTopicRef.current === uploadTopic) {
       setAttachmentStatus({ tone: 'success', message: `已添加 ${uploadedCount} 个附件，发送后对方可见。` });
     }
   };
@@ -1279,21 +1899,39 @@ export default function MessagesView({
   // Find the display name for a uid in group context
   const getMemberName = (fromUid) => {
     if (!isGroup || !members.length) return null;
-    const m = members.find((mem) => mem.user_id === fromUid);
+    const normalizedUID = parseUid(fromUid);
+    const m = members.find((mem) => parseUid(mem.user_id) === normalizedUID);
     return m ? (m.display_name || m.username) : `usr${fromUid}`;
   };
 
 
-  const mentionableBots = members.filter((m) => {
+  const groupBots = members.filter((m) => {
     if (m.user_id === user.uid) return false;
-    if (m.is_bot !== true && m.account_type !== 'bot') return false;
-    if (!mentionFilter) return true;
-    const searchable = [m.display_name, m.username, `usr${m.user_id}`]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase();
-    return searchable.includes(mentionFilter);
+    return m.is_bot === true || m.account_type === 'bot';
   });
+  const normalizedMentionFilter = mentionFilter.toLowerCase();
+  const mentionAllAliases = ['所有人', '所有机器人', '全部机器人', 'all'];
+  const mentionAllMatches = groupBots.length > 0 && (
+    !normalizedMentionFilter
+    || mentionAllAliases.some((alias) => alias.includes(normalizedMentionFilter))
+  );
+  const mentionableBots = [
+    ...(mentionAllMatches ? [{
+      user_id: STRUCTURED_MENTION_ALL,
+      mention_target: STRUCTURED_MENTION_ALL,
+      display_name: '所有人',
+      username: '全部机器人',
+      is_all: true,
+    }] : []),
+    ...groupBots.filter((m) => {
+      if (!mentionFilter) return true;
+      const searchable = [m.display_name, m.username, `usr${m.user_id}`]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return searchable.includes(mentionFilter);
+    }),
+  ];
 
   const peerUID = useMemo(() => {
     if (isGroup || !topic || !String(topic).startsWith('p2p_')) return 0;
@@ -1316,11 +1954,15 @@ export default function MessagesView({
   const isAgentTask = isGroup && Boolean(
     groupInfo?.is_agent_task || groupInfo?.kind === 'agent_task',
   );
-  const availableAgentUIDs = useMemo(() => new Set(
+  const availableAgentByUID = useMemo(() => new Map(
     availableAgents
-      .map((agent) => Number(agent.uid || agent.id))
-      .filter((uid) => Number.isFinite(uid) && uid > 0),
+      .map((agent) => [parseUid(agent.uid || agent.id), agent])
+      .filter(([uid]) => uid > 0),
   ), [availableAgents]);
+  const availableAgentUIDs = useMemo(
+    () => new Set(availableAgentByUID.keys()),
+    [availableAgentByUID],
+  );
   const taskBotUIDs = useMemo(() => {
     if (!isAgentTask) return [];
     return members
@@ -1338,6 +1980,16 @@ export default function MessagesView({
     );
     return memberUIDs.size === 2 && memberUIDs.has(Number(user.uid));
   }, [isGroup, members, user.uid]);
+  const isOneUserOneAgentGroup = useMemo(() => {
+    if (!isTwoPersonGroupWithCurrentUser) return false;
+    const peerMember = members.find((member) => Number(member?.user_id) !== Number(user.uid));
+    if (!peerMember) return false;
+    return Boolean(
+      peerMember.is_bot
+      || peerMember.account_type === 'bot'
+      || availableAgentUIDs.has(Number(peerMember.user_id)),
+    );
+  }, [availableAgentUIDs, isTwoPersonGroupWithCurrentUser, members, user.uid]);
   const supportsTutorialTasks = isGroup
     ? Boolean(
       isAgentTask
@@ -1345,12 +1997,93 @@ export default function MessagesView({
       || members.some((member) => member?.is_bot),
     )
     : peerIsBot;
+  const composerPlaceholder = isGroup
+    ? (
+      isOneUserOneAgentGroup
+        ? '输入指令，我帮您完成'
+        : (supportsTutorialTasks ? '输入消息，@机器人即可回复' : '输入消息')
+    )
+    : (peerIsBot ? '输入指令，我帮您完成' : '输入消息');
   const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
   const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const canRegenerateAssistantMessages = !isGroup || isAgentTask;
+  const groupAgentUID = Number(groupAgent?.uid || groupAgent?.id || 0);
+  const groupSupportsArtifacts = groupAgent?.cloud_artifacts_enabled === true
+    && ((isAgentTask && taskBotUID > 0 && groupAgentUID === taskBotUID)
+      || (isTwoPersonGroupWithCurrentUser && groupAgentUID > 0));
+  const activeArtifactAgentUID = isGroup
+    ? (groupSupportsArtifacts ? groupAgentUID : 0)
+    : (peerIsBot && peerUID > 0 && resolvedPeerProfile?.cloud_artifacts_enabled === true ? peerUID : 0);
+  const knownArtifacts = artifactRegistryState.agentUID === activeArtifactAgentUID
+    ? artifactRegistryState.artifacts
+    : [];
+  const artifactRegistryRefreshKey = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      const urls = artifactURLsInMessage(message);
+      if (urls.length > 0) {
+        return `${String(message.id || message.seq_id || message.created_at || index)}|${urls.join('|')}`;
+      }
+    }
+    return '';
+  }, [messages]);
+
+  useEffect(() => {
+    const handleArtifactsChanged = (event) => {
+      const changedAgentUID = Number(event?.detail?.agentUid || 0);
+      if (changedAgentUID > 0 && changedAgentUID !== activeArtifactAgentUID) return;
+      setArtifactRegistryRefreshEpoch((current) => current + 1);
+    };
+    window.addEventListener(CLOUD_ARTIFACTS_CHANGED_EVENT, handleArtifactsChanged);
+    return () => window.removeEventListener(CLOUD_ARTIFACTS_CHANGED_EVENT, handleArtifactsChanged);
+  }, [activeArtifactAgentUID]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let retryTimer = null;
+    let hadSuccessfulResponse = false;
+    const requestID = ++artifactRegistryRequestRef.current;
+    if (activeArtifactAgentUID <= 0) return () => {
+      cancelled = true;
+    };
+
+    const requestAgentUID = activeArtifactAgentUID;
+    const retryDelays = artifactRegistryRefreshKey ? [750, 1750] : [];
+    const isCurrentRequest = () => (
+      !cancelled && requestID === artifactRegistryRequestRef.current
+    );
+    const loadArtifacts = async (attempt = 0) => {
+      try {
+        const result = await api.getCloudArtifacts(requestAgentUID, 'active');
+        if (!isCurrentRequest()) return;
+        hadSuccessfulResponse = true;
+        setArtifactRegistryState({
+          agentUID: requestAgentUID,
+          artifacts: Array.isArray(result?.artifacts) ? result.artifacts : [],
+        });
+      } catch {
+        if (!isCurrentRequest()) return;
+        if (attempt >= retryDelays.length && !hadSuccessfulResponse) {
+          setArtifactRegistryState({ agentUID: requestAgentUID, artifacts: [] });
+        }
+      }
+
+      if (!isCurrentRequest() || attempt >= retryDelays.length) return;
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        loadArtifacts(attempt + 1);
+      }, retryDelays[attempt]);
+    };
+
+    loadArtifacts();
+    return () => {
+      cancelled = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+    };
+  }, [activeArtifactAgentUID, artifactRegistryRefreshEpoch, artifactRegistryRefreshKey]);
+
   useEffect(() => {
     if (isGroup) {
-      const groupAgentUID = Number(groupAgent?.uid || groupAgent?.id || 0);
       const isSingleAgentTask = isAgentTask && taskBotUID > 0 && groupAgentUID === taskBotUID;
       const isTwoPersonArtifactGroup = isTwoPersonGroupWithCurrentUser
         && groupAgentUID > 0
@@ -1438,10 +2171,27 @@ export default function MessagesView({
   const memberMap = useMemo(() => {
     const map = new Map();
     members.forEach((member) => {
-      map.set(member.user_id, member);
+      const uid = parseUid(member?.user_id);
+      if (uid > 0) map.set(uid, member);
     });
     return map;
   }, [members]);
+  const inferredAgentUIDs = useMemo(() => {
+    const uids = new Set(availableAgentUIDs);
+    members.forEach((member) => {
+      if (member?.is_bot || member?.account_type === 'bot') {
+        const uid = parseUid(member.user_id);
+        if (uid > 0) uids.add(uid);
+      }
+    });
+    messages.forEach((message) => {
+      if (isWorkingMessage(message) || isAssistantAuthoredMessage(message)) {
+        const uid = parseUid(message?.from_uid);
+        if (uid > 0) uids.add(uid);
+      }
+    });
+    return uids;
+  }, [availableAgentUIDs, members, messages]);
 
   const messageById = useMemo(() => {
     const map = new Map();
@@ -1460,11 +2210,22 @@ export default function MessagesView({
       };
     }
     if (isGroup) {
-      const member = memberMap.get(msg.from_uid);
+      const senderUID = parseUid(msg.from_uid);
+      const member = memberMap.get(senderUID);
+      const rosterAgent = availableAgentByUID.get(senderUID);
+      const senderProfile = member || rosterAgent;
       return {
-        name: member ? (member.display_name || member.username) : `usr${msg.from_uid}`,
-        avatarUrl: member?.avatar_url,
-        isBot: member?.is_bot,
+        name: senderProfile
+          ? (senderProfile.display_name || senderProfile.username)
+          : `usr${senderUID || msg.from_uid}`,
+        avatarUrl: senderProfile?.avatar_url,
+        isBot: Boolean(
+          member?.is_bot
+          || member?.account_type === 'bot'
+          || rosterAgent
+          || inferredAgentUIDs.has(senderUID)
+          || isAssistantAuthoredMessage(msg),
+        ),
       };
     }
     return {
@@ -1477,42 +2238,154 @@ export default function MessagesView({
   // Group messages into working areas and text messages with consecutive checking
   const groupedMessages = useMemo(() => {
     const groups = [];
+    const workingByExplicitTurn = new Map();
+    const workingByFallbackTurn = new Map();
     let currentWorking = null;
+    let latestHumanPromptKey = '';
     let prevSenderUid = null;
     let prevTime = 0;
 
-    messages.forEach(msg => {
+    const registerWorkingGroup = (group) => {
+      if (group.explicitTurnKey) {
+        workingByExplicitTurn.set(group.explicitTurnKey, group);
+      }
+      if (group.fallbackTurnKey) {
+        workingByFallbackTurn.set(group.fallbackTurnKey, group);
+      }
+    };
+
+    const flushCurrentWorking = () => {
+      if (!currentWorking) return;
+      groups.push(currentWorking);
+      registerWorkingGroup(currentWorking);
+      currentWorking = null;
+    };
+
+    const findWorkingGroup = ({ explicitTurnKey, fallbackTurnKey }) => {
+      if (explicitTurnKey) {
+        const explicitMatch = workingByExplicitTurn.get(explicitTurnKey);
+        if (explicitMatch) return explicitMatch;
+        const fallbackMatch = fallbackTurnKey
+          ? workingByFallbackTurn.get(fallbackTurnKey)
+          : null;
+        return fallbackMatch && !fallbackMatch.explicitTurnKey ? fallbackMatch : null;
+      }
+      return fallbackTurnKey ? workingByFallbackTurn.get(fallbackTurnKey) : null;
+    };
+
+    const belongsToCurrentWorking = ({ explicitTurnKey, fallbackTurnKey }) => {
+      if (!currentWorking) return false;
+      if (
+        currentWorking.explicitTurnKey
+        && explicitTurnKey
+        && currentWorking.explicitTurnKey !== explicitTurnKey
+      ) {
+        return false;
+      }
+      if (currentWorking.fallbackTurnKey && fallbackTurnKey) {
+        return currentWorking.fallbackTurnKey === fallbackTurnKey;
+      }
+      return true;
+    };
+
+    messages.forEach((msg, index) => {
       const msgTime = new Date(msg.created_at || Date.now()).getTime();
       const senderUid = msg.from_uid;
       const isConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
+      const sender = getSender(msg);
+      const assistantAuthored = isAssistantAuthoredMessage(msg, sender.isBot);
+
+      if (isFinalTextMessage(msg) && !assistantAuthored) {
+        latestHumanPromptKey = messageTurnIdentity(msg, index);
+      }
+
+      const turn = assistantWorkTurn(msg, sender.isBot, latestHumanPromptKey);
 
       if (isWorkingMessage(msg)) {
-        if (!currentWorking) {
-          currentWorking = { type: 'working', messages: [], sender: getSender(msg), isConsecutive: isConsecutive };
+        let leadingNarrativeMessages = [];
+        if (messageHasActionTool(msg)) {
+          const previousGroup = groups[groups.length - 1];
+          const previousMessage = previousGroup?.message;
+          const sameSender = messageSenderIdentity(previousMessage) === messageSenderIdentity(msg);
+          const explicitTurnConflict = Boolean(
+            previousGroup?.explicitTurnKey
+            && turn.explicitTurnKey
+            && previousGroup.explicitTurnKey !== turn.explicitTurnKey
+          );
+          const fallbackTurnConflict = Boolean(
+            previousGroup?.fallbackTurnKey
+            && turn.fallbackTurnKey
+            && previousGroup.fallbackTurnKey !== turn.fallbackTurnKey
+          );
+          if (
+            previousGroup?.type === 'text'
+            && previousGroup.assistantAuthored
+            && sameSender
+            && !explicitTurnConflict
+            && !fallbackTurnConflict
+            && !displayGroupHasDeliveryArtifact(previousGroup)
+          ) {
+            const sourceMessages = previousGroup.sourceMessages || [previousGroup.message];
+            leadingNarrativeMessages = sourceMessages.map(assistantProcessMessage);
+            groups.pop();
+          }
         }
-        currentWorking.messages.push(msg);
+
+        if (currentWorking && !belongsToCurrentWorking(turn)) {
+          flushCurrentWorking();
+        }
+
+        if (currentWorking) {
+          currentWorking.messages.push(...leadingNarrativeMessages, msg);
+          if (!currentWorking.explicitTurnKey && turn.explicitTurnKey) {
+            currentWorking.explicitTurnKey = turn.explicitTurnKey;
+          }
+          if (!currentWorking.fallbackTurnKey && turn.fallbackTurnKey) {
+            currentWorking.fallbackTurnKey = turn.fallbackTurnKey;
+          }
+        } else {
+          const existingWorking = findWorkingGroup(turn);
+          if (existingWorking) {
+            existingWorking.messages.push(...leadingNarrativeMessages, msg);
+            if (!existingWorking.explicitTurnKey && turn.explicitTurnKey) {
+              existingWorking.explicitTurnKey = turn.explicitTurnKey;
+            }
+            if (!existingWorking.fallbackTurnKey && turn.fallbackTurnKey) {
+              existingWorking.fallbackTurnKey = turn.fallbackTurnKey;
+            }
+            registerWorkingGroup(existingWorking);
+          } else {
+            currentWorking = {
+              type: 'working',
+              messages: [...leadingNarrativeMessages, msg],
+              sender,
+              isConsecutive,
+              explicitTurnKey: turn.explicitTurnKey,
+              fallbackTurnKey: turn.fallbackTurnKey,
+            };
+          }
+        }
         prevSenderUid = senderUid;
         prevTime = msgTime;
       } else {
-        if (currentWorking) {
-          groups.push(currentWorking);
-          currentWorking = null;
-        }
+        flushCurrentWorking();
+        const displayMessage = msg;
         // Recalculate isConsecutive in case a working block just processed
         const textIsConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
-        const sender = getSender(msg);
         const previousGroup = groups[groups.length - 1];
         const previousSourceMessages = previousGroup?.type === 'text'
           ? (previousGroup.sourceMessages || [previousGroup.message])
           : [];
         const previousMessage = previousSourceMessages[previousSourceMessages.length - 1];
 
-        if (shouldMergeAssistantReply(previousMessage, msg, previousGroup?.sender, sender, user.uid)) {
-          const sourceMessages = [...previousSourceMessages, msg];
+        if (shouldMergeAssistantReply(previousMessage, displayMessage, previousGroup?.sender, sender, user.uid)) {
+          const sourceMessages = [...previousSourceMessages, displayMessage];
           groups[groups.length - 1] = {
             ...previousGroup,
             message: mergeAssistantDisplayMessages(sourceMessages),
             sourceMessages,
+            explicitTurnKey: previousGroup.explicitTurnKey || turn.explicitTurnKey,
+            fallbackTurnKey: previousGroup.fallbackTurnKey || turn.fallbackTurnKey,
           };
           prevSenderUid = senderUid;
           prevTime = msgTime;
@@ -1521,23 +2394,72 @@ export default function MessagesView({
 
         groups.push({
           type: 'text',
-          message: msg,
-          sourceMessages: [msg],
+          message: displayMessage,
+          sourceMessages: [displayMessage],
           sender,
-          replyMessage: msg.reply_to ? (messageById.get(msg.reply_to) || null) : null,
+          replyMessage: displayMessage.reply_to ? (messageById.get(displayMessage.reply_to) || null) : null,
           isConsecutive: textIsConsecutive,
+          assistantAuthored,
+          explicitTurnKey: turn.explicitTurnKey,
+          fallbackTurnKey: turn.fallbackTurnKey,
         });
         prevSenderUid = senderUid;
         prevTime = msgTime;
       }
     });
 
-    if (currentWorking) {
-      groups.push(currentWorking);
-    }
+    flushCurrentWorking();
 
-    return groups;
-  }, [messages, user.uid, isGroup, memberMap, messageById, peerProfile, peerIsBot, topicName, topic, topicAvatarUrl]);
+    return reorderAssistantTurnGroups(groups);
+  }, [
+    availableAgentByUID,
+    inferredAgentUIDs,
+    isGroup,
+    memberMap,
+    messageById,
+    messages,
+    peerIsBot,
+    peerProfile,
+    topic,
+    topicAvatarUrl,
+    topicName,
+    user.uid,
+  ]);
+  const hasPersistedRuntimePlan = useMemo(() => {
+    if (!runtimePlan) return false;
+
+    let latestHumanPromptIndex = -1;
+    messages.forEach((message, index) => {
+      const senderIsBot = message.from_uid === user.uid
+        ? user.account_type === 'bot'
+        : isGroup
+          ? inferredAgentUIDs.has(parseUid(message.from_uid))
+          : peerIsBot;
+      if (isFinalTextMessage(message) && !isAssistantAuthoredMessage(message, senderIsBot)) {
+        latestHumanPromptIndex = index;
+      }
+    });
+
+    const currentTurnMessages = runtimePlan.turnKey
+      ? messages
+      : messages.slice(latestHumanPromptIndex + 1);
+    const latestPersistedPlan = [...currentTurnMessages].reverse().find((message) => (
+      messageContainsUpdatePlan(message)
+      && runtimePlanSourceMatches(message, runtimePlan)
+    ));
+    return Boolean(
+      latestPersistedPlan
+      && workingPlanMatchesRuntimePlan(latestPersistedPlan, runtimePlan)
+    );
+  }, [
+    isGroup,
+    inferredAgentUIDs,
+    messages,
+    peerIsBot,
+    runtimePlan,
+    user.account_type,
+    user.uid,
+  ]);
 
   const openTutorialTask = (task) => {
     setShowTutorialPicker(false);
@@ -1552,6 +2474,7 @@ export default function MessagesView({
   const applyTutorialPrompt = (prompt) => {
     setInput(prompt);
     updateComposerDraft(topic, prompt);
+    updateStructuredMentionDraft(topic, []);
     setAttachmentStatus({ tone: 'success', message: '已填入示例任务，你可以直接发送。' });
     setSelectedTutorialTask(null);
     window.setTimeout(() => {
@@ -1575,11 +2498,16 @@ export default function MessagesView({
     if (!originalText.trim() && restoredAttachments.length === 0) return;
     setInput(originalText);
     updateComposerDraft(topic, originalText);
+    updateStructuredMentionDraft(topic, []);
     updateAttachmentDraft(topic, restoredAttachments);
     setReplyTo(null);
-    setAttachmentStatus({ tone: 'success', message: restoredAttachments.length > 0
-      ? `已将原文字和 ${restoredAttachments.length} 个附件放回输入框，修改后可重新发送。`
-      : '已将原文字放回输入框，修改后可重新发送。' });
+    setAttachmentStatus({
+      tone: 'success',
+      source: 'edit-resend',
+      message: restoredAttachments.length > 0
+        ? `已将原文字和 ${restoredAttachments.length} 个附件放回输入框，修改后可重新发送。`
+        : '已将原指令放回输入框，修改后可重新发送。',
+    });
     window.setTimeout(() => {
       const textarea = textareaRef.current;
       if (!textarea) return;
@@ -1587,16 +2515,21 @@ export default function MessagesView({
       textarea.setSelectionRange(originalText.length, originalText.length);
       resizeComposerInput();
     }, 0);
-  }, [resizeComposerInput, topic, updateAttachmentDraft, updateComposerDraft]);
+  }, [
+    resizeComposerInput,
+    topic,
+    updateAttachmentDraft,
+    updateComposerDraft,
+    updateStructuredMentionDraft,
+  ]);
 
-  const questionNavigationItems = useMemo(() => groupedMessages.reduce((items, group, index) => {
-    if (group.type !== 'text' || group.message?.from_uid !== user.uid) return items;
-    items.push({
-      key: questionNavigationKey(group.message, index),
-      label: questionNavigationLabel(group.message),
-    });
-    return items;
-  }, []), [groupedMessages, user.uid]);
+  const questionNavigationItems = useMemo(
+    () => mergeQuestionNavigationItems(
+      questionIndexItems,
+      collectQuestionNavigationItems(messages, user.uid),
+    ),
+    [messages, questionIndexItems, user.uid],
+  );
 
   const clearPendingQuestionJump = useCallback(() => {
     pendingQuestionJumpRef.current = '';
@@ -1616,32 +2549,50 @@ export default function MessagesView({
     }, QUESTION_JUMP_RELEASE_DELAY);
   }, []);
 
-  const syncActiveQuestion = useCallback((timeline = timelineRef.current) => {
-    if (!timeline) return;
+  useEffect(() => {
+    const timeline = timelineRef.current;
+    if (!timeline) return undefined;
     const anchors = Array.from(timeline.querySelectorAll('[data-conversation-question]'));
+    visibleQuestionAnchorsRef.current = new Map();
     if (anchors.length === 0) {
       setActiveQuestionKey('');
-      return;
+      return undefined;
     }
 
-    const timelineRect = timeline.getBoundingClientRect();
-    const readingLine = timelineRect.top + Math.min(160, timelineRect.height * 0.28);
-    let nextKey = anchors[0].dataset.conversationQuestion || '';
-    for (const anchor of anchors) {
-      if (anchor.getBoundingClientRect().top > readingLine) break;
-      nextKey = anchor.dataset.conversationQuestion || nextKey;
+    if (typeof window.IntersectionObserver !== 'function') {
+      const fallbackKey = anchors[0].dataset.conversationQuestion || '';
+      setActiveQuestionKey((current) => current || fallbackKey);
+      return undefined;
     }
-    const distanceToBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight;
-    if (distanceToBottom <= QUESTION_NAV_BOTTOM_EPSILON) {
-      nextKey = anchors[anchors.length - 1].dataset.conversationQuestion || nextKey;
-    }
-    setActiveQuestionKey((current) => current === nextKey ? current : nextKey);
-  }, []);
 
-  React.useLayoutEffect(() => {
-    clearPendingQuestionJump();
-    syncActiveQuestion();
-  }, [clearPendingQuestionJump, questionNavigationItems, syncActiveQuestion]);
+    const observer = new window.IntersectionObserver((entries) => {
+      if (pendingQuestionJumpRef.current) return;
+      const visibleAnchors = visibleQuestionAnchorsRef.current;
+      entries.forEach((entry) => {
+        const key = entry.target.dataset.conversationQuestion || '';
+        if (!key) return;
+        if (entry.isIntersecting) {
+          visibleAnchors.set(key, entry.boundingClientRect.top);
+        } else {
+          visibleAnchors.delete(key);
+        }
+      });
+      const nextEntry = Array.from(visibleAnchors.entries())
+        .sort((left, right) => left[1] - right[1])[0];
+      if (!nextEntry) return;
+      setActiveQuestionKey((current) => current === nextEntry[0] ? current : nextEntry[0]);
+    }, {
+      root: timeline,
+      rootMargin: '-18% 0px -68% 0px',
+      threshold: 0,
+    });
+
+    anchors.forEach((anchor) => observer.observe(anchor));
+    return () => {
+      observer.disconnect();
+      visibleQuestionAnchorsRef.current = new Map();
+    };
+  }, [questionNavigationItems]);
 
   useEffect(() => () => {
     if (questionJumpReleaseTimerRef.current) {
@@ -1649,18 +2600,72 @@ export default function MessagesView({
     }
   }, []);
 
-  const jumpToQuestion = useCallback((questionKey) => {
+  const jumpToQuestion = useCallback(async (questionKey) => {
     const timeline = timelineRef.current;
     if (!timeline) return;
+    questionJumpAbortControllerRef.current?.abort();
+    const target = Array.from(timeline.querySelectorAll('[data-conversation-question]'))
+      .find((anchor) => anchor.dataset.conversationQuestion === questionKey);
+    clearPendingQuestionJump();
+    pendingQuestionJumpRef.current = questionKey;
+    setActiveQuestionKey(questionKey);
+    if (target) {
+      scheduleQuestionJumpRelease();
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+
+    const archivedQuestion = questionNavigationItems.find((item) => item.key === questionKey);
+    if (!archivedQuestion?.id) {
+      clearPendingQuestionJump();
+      return;
+    }
+
+    stickToBottomRef.current = false;
+    previousScrollRef.current = null;
+    const targetTopic = topic;
+    const controller = new AbortController();
+    questionJumpAbortControllerRef.current = controller;
+    try {
+      const res = await api.getMessages(
+        targetTopic,
+        PAGE_SIZE,
+        0,
+        true,
+        archivedQuestion.id + 1,
+        { signal: controller.signal, timeoutMs: HISTORY_REQUEST_TIMEOUT_MS },
+      );
+      if (activeTopicRef.current !== targetTopic) {
+        clearPendingQuestionJump();
+        return;
+      }
+      const { visibleMessages } = normalizeHistoryMessages(res.messages || []);
+      if (!visibleMessages.some(
+        (message, index) => questionNavigationKey(message, index) === questionKey,
+      )) {
+        clearPendingQuestionJump();
+        return;
+      }
+      setMessages((prev) => mergeMessages(visibleMessages, prev));
+    } catch (error) {
+      clearPendingQuestionJump();
+    } finally {
+      if (questionJumpAbortControllerRef.current === controller) {
+        questionJumpAbortControllerRef.current = null;
+      }
+    }
+  }, [clearPendingQuestionJump, questionNavigationItems, scheduleQuestionJumpRelease, topic]);
+
+  React.useLayoutEffect(() => {
+    const questionKey = pendingQuestionJumpRef.current;
+    const timeline = timelineRef.current;
+    if (!questionKey || !timeline) return;
     const target = Array.from(timeline.querySelectorAll('[data-conversation-question]'))
       .find((anchor) => anchor.dataset.conversationQuestion === questionKey);
     if (!target) return;
-    clearPendingQuestionJump();
-    pendingQuestionJumpRef.current = questionKey;
     scheduleQuestionJumpRelease();
-    setActiveQuestionKey(questionKey);
     target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, [clearPendingQuestionJump, scheduleQuestionJumpRelease]);
+  }, [messages, scheduleQuestionJumpRelease]);
 
   const handleTimelineScroll = (e) => {
     const el = e.target;
@@ -1669,21 +2674,23 @@ export default function MessagesView({
     if (pendingQuestionKey) {
       setActiveQuestionKey((current) => current === pendingQuestionKey ? current : pendingQuestionKey);
       scheduleQuestionJumpRelease();
-    } else {
-      syncActiveQuestion(el);
+    } else if (stickToBottomRef.current && questionNavigationItems.length > 0) {
+      const latestQuestionKey = questionNavigationItems[questionNavigationItems.length - 1].key;
+      setActiveQuestionKey((current) => current === latestQuestionKey ? current : latestQuestionKey);
     }
     if (el.scrollTop <= HISTORY_AUTO_LOAD_THRESHOLD) {
-      loadOlderHistory();
+      loadOlderHistory({ automatic: true });
     }
   };
 
   return (
     <>
       <div
-        className={`v3-message-workspace${previewFile ? ' has-preview' : ''}`}
-        style={previewFile ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
+        className={`v3-message-workspace${sidePanelOpen ? ' has-preview' : ''}`}
+        style={sidePanelOpen ? { '--v3-file-preview-width': `${previewWidth}px` } : undefined}
       >
-        <div className="v3-chat-column">
+        <div ref={chatColumnRef} className="v3-chat-column">
+          {topBar}
           <div
             className={`v3-timeline${isDragActive ? ' is-drag-active' : ''}`}
             ref={timelineRef}
@@ -1700,14 +2707,61 @@ export default function MessagesView({
               <div className="v3-date-divider">
                 <span>聊天记录</span>
               </div>
-        
+
+        {!historyLoaded && (
+          <div className="v3-history-state" role="status" aria-live="polite">
+            <LoaderCircle className="is-spinning" size={18} aria-hidden="true" />
+            <span>正在加载聊天记录...</span>
+          </div>
+        )}
+
+        {historyLoaded && historyError && messages.length === 0 && (
+          <div className="v3-history-state" role="alert">
+            <span>{historyError}</span>
+            <button type="button" className="v3-history-retry" onClick={() => loadHistory(topic)}>
+              <RefreshCw size={15} aria-hidden="true" />
+              重新加载
+            </button>
+          </div>
+        )}
+
+        {historyLoaded && historyError && messages.length > 0 && (
+          <div className="v3-history-state is-compact" role="status">
+            <span>已显示上次记录，本次刷新失败。</span>
+            <button type="button" className="v3-history-retry" onClick={() => loadHistory(topic)}>
+              <RefreshCw size={14} aria-hidden="true" />
+              重试
+            </button>
+          </div>
+        )}
+
+        {olderHistoryError && (
+          <div className="v3-history-state is-compact" role="status">
+            <span>{olderHistoryError}</span>
+            <button type="button" className="v3-history-retry" onClick={() => loadOlderHistory()}>
+              <RefreshCw size={14} aria-hidden="true" />
+              重试
+            </button>
+          </div>
+        )}
+
+        {autoHistoryLimitReached && !olderHistoryError && (
+          <div className="v3-history-state is-compact" role="status">
+            <span>较早记录较多，已暂停自动加载。</span>
+            <button type="button" className="v3-history-retry" onClick={() => loadOlderHistory()}>
+              继续加载
+            </button>
+          </div>
+        )}
+
         {loadingOlder && (
-          <div className="oc-history-load" style={{textAlign:'center', padding:'10px 0 24px 0'}}>
+          <div className="v3-history-state is-compact oc-history-load" role="status">
+            <LoaderCircle className="is-spinning" size={15} aria-hidden="true" />
             <span>{t('loading')}</span>
           </div>
         )}
         
-        {supportsTutorialTasks && historyLoaded && messages.length === 0 && !runtimePlan && !peerTyping && !tutorialDismissed && (
+        {supportsTutorialTasks && historyLoaded && !historyError && messages.length === 0 && !runtimePlan && !peerTyping && !tutorialDismissed && (
           <TutorialEmptyState tasks={tutorialTasks} onSelectTask={openTutorialTask} onDismiss={dismissTutorialEmptyState} />
         )}
 
@@ -1725,10 +2779,12 @@ export default function MessagesView({
                   senderAvatarUrl={group.sender.avatarUrl}
                   senderIsBot={group.sender.isBot}
                   workingOnly
+                  workingComplete={group.workingComplete}
                   showThinking={showThinking}
                   isConsecutive={group.isConsecutive}
-                  onPreviewFile={setPreviewFile}
+                  onPreviewFile={openFilePreview}
                   activePreviewFile={previewFile}
+                  knownArtifacts={knownArtifacts}
                 />
               </div>
             );
@@ -1754,13 +2810,17 @@ export default function MessagesView({
                 ? handleRegenerateMessage
                 : undefined}
               showThinking={showThinking}
-              isConsecutive={group.isConsecutive}
-              onPreviewFile={setPreviewFile}
+              isConsecutive={showThinking
+                ? group.isConsecutive
+                : (group.isConsecutiveWithoutWorking ?? group.isConsecutive)}
+              artifactsFirst={group.artifactsFirst}
+              onPreviewFile={openFilePreview}
               activePreviewFile={previewFile}
+              knownArtifacts={knownArtifacts}
             />
           );
         })}
-          {runtimePlan && <RuntimePlanCard plan={runtimePlan} />}
+          {runtimePlan && !hasPersistedRuntimePlan && <RuntimePlanCard plan={runtimePlan} />}
           {peerTyping && (
             <div className="v3-peer-typing" role="status">
               <span className="v3-peer-typing-label">{t('typing')}</span>
@@ -1770,9 +2830,23 @@ export default function MessagesView({
         </div>
       </div>
 
-      {questionNavigationItems.length >= 2 && (
-        <nav className="cc-question-navigator" aria-label="对话问题导航">
+      {(questionNavigationItems.length >= 2 || questionIndexHasMore) && (
+        <nav
+          className="cc-question-navigator"
+          aria-label="对话问题导航"
+          onMouseEnter={() => void loadQuestionNavigationHistory()}
+          onFocusCapture={() => void loadQuestionNavigationHistory()}
+        >
           <div className="cc-question-navigator-dots">
+            {questionNavigationItems.length === 0 && questionIndexHasMore && (
+              <button
+                type="button"
+                className="cc-question-navigator-item"
+                aria-label="加载问题导航"
+                title="加载问题导航"
+                onClick={() => void loadQuestionNavigationHistory()}
+              />
+            )}
             {questionNavigationItems.map((item, index) => {
               const isActive = activeQuestionKey === item.key;
               const title = `问题 ${index + 1}：${item.label}`;
@@ -1791,7 +2865,6 @@ export default function MessagesView({
           </div>
 
           <div className="cc-question-navigator-panel" aria-label="问题列表">
-            <div className="cc-question-navigator-heading">问题</div>
             <div className="cc-question-navigator-list">
               {questionNavigationItems.map((item, index) => {
                 const isActive = activeQuestionKey === item.key;
@@ -1812,28 +2885,25 @@ export default function MessagesView({
                 );
               })}
             </div>
+            {(questionIndexLoading || questionIndexLimitReached || questionIndexHasMore) && (
+              <div className="cc-question-index-status">
+                {questionIndexLoading && <span>正在索引更早问题…</span>}
+                {!questionIndexLoading && questionIndexLimitReached && (
+                  <span>仅显示最近 {QUESTION_INDEX_MAX_ITEMS} 个问题</span>
+                )}
+                {!questionIndexLoading && !questionIndexLimitReached && questionIndexHasMore && (
+                  <button
+                    type="button"
+                    className="cc-question-index-action"
+                    onClick={() => void loadQuestionNavigationHistory({ continueOlder: true })}
+                  >
+                    加载更早问题
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </nav>
-      )}
-
-      {/* Reply preview bar */}
-      {replyTo && (
-        <div className="oc-reply-bar">
-          <div className="oc-reply-bar-content">
-            <span className="oc-reply-bar-label">{t('chat_reply')}: </span>
-            <span className="oc-reply-bar-text">
-              {typeof replyTo.content === 'string' ? replyTo.content : '[media]'}
-            </span>
-          </div>
-          <button
-            type="button"
-            className="oc-reply-bar-close"
-            aria-label="取消回复"
-            onClick={() => setReplyTo(null)}
-          >
-            x
-          </button>
-        </div>
       )}
 
       <ChatComposer
@@ -1846,7 +2916,7 @@ export default function MessagesView({
         }}
         textareaRef={textareaRef}
         value={input}
-        placeholder="输入指令，我帮您完成"
+        placeholder={composerPlaceholder}
         disabled={isSendingMessage}
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
@@ -1874,11 +2944,35 @@ export default function MessagesView({
         )}
         onSend={handleSend}
         sendDisabled={isSendingMessage || isUploadingAttachment || (!input.trim() && pendingAttachments.length === 0)}
-        stop={activeBotWorking && !input.trim() && pendingAttachments.length === 0}
+        stop={canStopActiveBotWorking && !input.trim() && pendingAttachments.length === 0}
         stopDisabled={isStopRequested}
         onStop={handleStopGeneration}
         onCloseMenus={() => {
           setAttachmentMenuOpen(false);
+        }}
+        context={replyTo && (
+          <div className="oc-reply-bar">
+            <div className="oc-reply-bar-content">
+              <span className="oc-reply-bar-label">{t('chat_reply')}：</span>
+              <span className="oc-reply-bar-text">
+                {typeof replyTo.content === 'string' ? replyTo.content : '[media]'}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="oc-reply-bar-close"
+              aria-label="取消回复"
+              onClick={() => setReplyTo(null)}
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+        )}
+        attachments={pendingAttachments}
+        attachmentRemovalDisabled={isUploadingAttachment || isSendingMessage}
+        onRemoveAttachment={(index) => {
+          updateAttachmentDraft(topic, (current) => current.filter((_, attachmentIndex) => attachmentIndex !== index));
+          setAttachmentStatus(null);
         }}
         overlay={showMentionPicker && isGroup && (
           <div id="mention-picker" className="oc-mention-picker v3-composer-mention-picker" role="listbox" aria-label="可提及的机器人">
@@ -1896,10 +2990,12 @@ export default function MessagesView({
                 }}
                 onMouseEnter={() => setMentionActiveIndex(index)}
               >
-                <Avatar name={m.display_name || m.username} src={m.avatar_url} size={24} isBot />
+                {m.is_all
+                  ? <span className="oc-mention-all-icon" aria-hidden="true"><Users size={15} /></span>
+                  : <Avatar name={m.display_name || m.username} src={m.avatar_url} size={24} isBot />}
                 <span className="oc-mention-item-copy">
                   <span className="oc-mention-item-name">{m.display_name || m.username || `usr${m.user_id}`}</span>
-                  <span className="oc-mention-item-handle">@usr{m.user_id}</span>
+                  <span className="oc-mention-item-handle">{m.is_all ? '全部机器人' : `@usr${m.user_id}`}</span>
                 </span>
               </button>
             ))}
@@ -1918,28 +3014,26 @@ export default function MessagesView({
           <>
             {activeBotWorking && (
               <div className="v3-live-input-status" role="status">
-                {isStopRequested ? '已请求 CatsCo 停止当前工作。' : 'CatsCo 正在处理，可点击红色按钮停止。'}
+                {canStopActiveBotWorking
+                  ? (isStopRequested ? '已请求 CatsCo 停止当前工作。' : 'CatsCo 正在处理，可点击红色按钮停止。')
+                  : 'CatsCo 正在回复其他成员。'}
               </div>
             )}
-            {attachmentStatus?.message && (
-              <div className={`v3-live-input-status v3-live-input-status-${attachmentStatus.tone || 'info'}`} role="status">
-                {attachmentStatus.message}
-              </div>
-            )}
-            {(isUploadingAttachment || pendingAttachments.length > 0) && (
-              <div className="v3-composer-attachments">
-                <div className="v3-composer-attachments-copy">
-                  <strong>{isUploadingAttachment ? '正在上传附件...' : `${pendingAttachments.length} 个附件待发送`}</strong>
-                  {!isUploadingAttachment && pendingAttachments.map((attachment, index) => (
-                    <span key={`${attachment.name}-${index}`}>
-                      {attachment.type === 'image' ? '图片' : '文件'}: {attachment.name}
-                      {attachment.size ? ` • ${formatFileSize(attachment.size)}` : ''}
-                    </span>
-                  ))}
-                </div>
-                {pendingAttachments.length > 0 && !isUploadingAttachment && !isSendingMessage && (
-                  <button className="v3-action-btn" aria-label="移除附件" onClick={() => { updateAttachmentDraft(topic, []); setAttachmentStatus(null); }} type="button">×</button>
-                )}
+            {(attachmentStatus?.message || isUploadingAttachment || pendingAttachments.length > 0) && (
+              <div
+                className={`v3-live-input-status v3-attachment-notice v3-live-input-status-${attachmentStatus?.tone || 'info'}`}
+                role="status"
+              >
+                <span>
+                  {attachmentStatus?.tone === 'error'
+                    ? attachmentStatus.message
+                    : isUploadingAttachment
+                      ? (attachmentStatus?.message || '正在上传附件...')
+                      : attachmentStatus?.message
+                        || (pendingAttachments.length > 0
+                          ? `${pendingAttachments.length} 个附件待发送${pendingAttachments.length === 1 ? `：${pendingAttachments[0].name}` : ''}`
+                          : '')}
+                </span>
               </div>
             )}
           </>
@@ -1983,7 +3077,7 @@ export default function MessagesView({
         </div>
       )}
       </div>
-        {previewFile && (
+        {sidePanelOpen && (
           <div className="v3-file-preview-shell">
             <div
               className="v3-preview-resize-handle"
@@ -1995,7 +3089,23 @@ export default function MessagesView({
               onKeyDown={handlePreviewResizeKeyDown}
               title="拖动调整预览宽度"
             />
-            <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} />
+            {cloudArtifactsListOpen && cloudArtifactsAgentUID > 0 ? (
+              <CloudArtifactsPanel
+                agentUid={cloudArtifactsAgentUID}
+                tab={cloudArtifactsTab}
+                onTabChange={setCloudArtifactsTab}
+                onClose={closeSidePanel}
+                onPreviewArtifact={previewCloudArtifact}
+                onPreviewFile={previewAgentFile}
+              />
+            ) : (
+              <FilePreviewPanel
+                file={previewFile}
+                onBack={cloudArtifactsAgentUID > 0 ? returnToCloudArtifacts : undefined}
+                onClose={closeSidePanel}
+                backgroundRef={chatColumnRef}
+              />
+            )}
           </div>
         )}
       </div>
@@ -2231,8 +3341,15 @@ function runtimePlanFromMessage(data) {
   if (!data) return null;
   const explicitPlan = data.type === 'runtime_plan' || data.msg_type === 'runtime_plan';
   const plan = normalizeRuntimePlan(data.content);
-  if (plan) return plan;
-  return explicitPlan ? normalizeRuntimePlan(data.payload || data.metadata?.plan || data) : null;
+  const normalizedPlan = plan || (
+    explicitPlan ? normalizeRuntimePlan(data.payload || data.metadata?.plan || data) : null
+  );
+  if (!normalizedPlan) return null;
+  return {
+    ...normalizedPlan,
+    senderKey: messageSenderIdentity(data),
+    turnKey: assistantReplyTurnKey(data),
+  };
 }
 
 function normalizeRuntimePlan(content) {
@@ -2285,6 +3402,73 @@ function isRuntimePlanComplete(plan) {
   );
 }
 
+function messageContainsUpdatePlan(message) {
+  const storedBlocks = Array.isArray(message?.content_blocks) ? message.content_blocks : [];
+  return storedBlocks.some((block) => (
+    block?.type === 'tool_use'
+    && String(block?.name || block?.content || '').trim() === 'update_plan'
+  )) || (
+    message?.type === 'tool_use'
+    && String(message?.content || '').trim() === 'update_plan'
+  );
+}
+
+function runtimePlanSourceMatches(message, runtimePlan) {
+  const runtimeSenderKey = String(runtimePlan?.senderKey || '');
+  const messageSenderKey = messageSenderIdentity(message);
+  if (runtimeSenderKey && messageSenderKey && runtimeSenderKey !== messageSenderKey) {
+    return false;
+  }
+
+  const runtimeTurnKey = String(runtimePlan?.turnKey || '');
+  const messageTurnKey = assistantReplyTurnKey(message);
+  if (runtimeTurnKey && messageTurnKey && runtimeTurnKey !== messageTurnKey) {
+    return false;
+  }
+  return true;
+}
+
+function workingPlanMatchesRuntimePlan(message, runtimePlan) {
+  if (!messageContainsUpdatePlan(message) || !runtimePlanSourceMatches(message, runtimePlan)) {
+    return false;
+  }
+  const runtimeSteps = normalizedPlanSteps(runtimePlan?.steps);
+  if (runtimeSteps.length === 0) return false;
+
+  const storedBlocks = Array.isArray(message?.content_blocks) ? message.content_blocks : [];
+  const planBlock = [...storedBlocks].reverse().find((block) => (
+    block?.type === 'tool_use'
+    && String(block?.name || block?.content || '').trim() === 'update_plan'
+  ));
+  const isDirectPlanMessage = message?.type === 'tool_use'
+    && String(message?.content || '').trim() === 'update_plan';
+  if (!planBlock && !isDirectPlanMessage) return false;
+
+  const input = planBlock?.input
+    || planBlock?.metadata?.input
+    || message?.metadata?.input;
+  const persistedSteps = normalizedPlanSteps(input?.steps || input?.plan);
+  return persistedSteps.length === runtimeSteps.length
+    && persistedSteps.every((step, index) => (
+      step.text === runtimeSteps[index].text
+      && step.status === runtimeSteps[index].status
+    ));
+}
+
+function normalizedPlanSteps(steps) {
+  if (!Array.isArray(steps)) return [];
+  return steps
+    .map((step) => ({
+      text: String(
+        typeof step === 'string'
+          ? step
+          : (step?.text || step?.step || step?.title || step?.name || ''),
+      ).trim(),
+      status: normalizePlanStatus(typeof step === 'string' ? 'pending' : step?.status),
+    }))
+    .filter((step) => step.text);
+}
+
 function normalizeHistoryMessages(rawMessages) {
   const visibleMessages = [];
   for (const raw of rawMessages || []) {
@@ -2326,6 +3510,340 @@ function assistantReplyTurnKey(message) {
   return value == null ? '' : String(value).trim();
 }
 
+function messageSenderIdentity(message) {
+  const rawSender = message?.from_uid ?? message?.from ?? '';
+  const parsedSender = parseUid(rawSender);
+  return parsedSender ? String(parsedSender) : String(rawSender).trim();
+}
+
+function messageTurnIdentity(message, index) {
+  const value = message?.id
+    ?? message?.seq_id
+    ?? message?.seq
+    ?? message?.client_msg_id
+    ?? message?.created_at
+    ?? index;
+  return String(value);
+}
+
+function assistantWorkTurn(message, senderIsBot, latestHumanPromptKey) {
+  if (!isWorkingMessage(message) && !isAssistantAuthoredMessage(message, senderIsBot)) {
+    return { explicitTurnKey: '', fallbackTurnKey: '' };
+  }
+
+  const senderKey = messageSenderIdentity(message) || 'agent';
+  const explicitTurn = assistantReplyTurnKey(message);
+  return {
+    explicitTurnKey: explicitTurn ? `${senderKey}:turn:${explicitTurn}` : '',
+    fallbackTurnKey: latestHumanPromptKey ? `${senderKey}:prompt:${latestHumanPromptKey}` : '',
+  };
+}
+
+function assistantProcessMessage(message) {
+  const content = assistantOutputText(message);
+  return {
+    ...message,
+    type: 'text',
+    content,
+    content_blocks: [],
+    _display_text_role: 'process',
+  };
+}
+
+function messageHasDeliveryArtifact(message) {
+  if (Array.isArray(message?.content_blocks)) {
+    if (message.content_blocks.some((block) => block?.type === 'file' || block?.type === 'image')) {
+      return true;
+    }
+  }
+
+  let content = message?.content;
+  if (typeof content === 'string') {
+    try {
+      content = JSON.parse(content);
+    } catch (error) {
+      return false;
+    }
+  }
+  return content?.type === 'file' || content?.type === 'image';
+}
+
+function displayGroupHasDeliveryArtifact(group) {
+  const sourceMessages = group?.sourceMessages || (group?.message ? [group.message] : []);
+  return sourceMessages.some(messageHasDeliveryArtifact);
+}
+
+function deliveryArtifactBlocks(message) {
+  if (Array.isArray(message?.content_blocks)) {
+    const storedBlocks = message.content_blocks.filter(
+      (block) => block?.type === 'file' || block?.type === 'image',
+    );
+    if (storedBlocks.length > 0) return storedBlocks;
+  }
+
+  let content = message?.content;
+  if (typeof content === 'string') {
+    try {
+      content = JSON.parse(content);
+    } catch (error) {
+      return [];
+    }
+  }
+  return content?.type === 'file' || content?.type === 'image' ? [content] : [];
+}
+
+function hasAssistantBlockFormatting(value) {
+  const text = String(value || '');
+  return /(?:^|\n)[\t ]*(?:#{1,6}[\t ]+|[-*+][\t ]+|\d+[.)][\t ]+|>[\t ]+|```|~~~|\|.+\|[\t ]*$)/m.test(text);
+}
+
+function assistantTextFragmentBoundary(previous, next) {
+  if (
+    previous.includes('\n')
+    || next.includes('\n')
+    || hasAssistantBlockFormatting(previous)
+    || hasAssistantBlockFormatting(next)
+  ) {
+    return '\n\n';
+  }
+
+  const previousCharacter = previous.at(-1) || '';
+  const nextCharacter = next.charAt(0);
+  const cjkCharacterOrPunctuation = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/u;
+  if (
+    cjkCharacterOrPunctuation.test(previousCharacter)
+    || cjkCharacterOrPunctuation.test(nextCharacter)
+  ) {
+    return '';
+  }
+  if (
+    /[\s([{'"“‘]$/u.test(previous)
+    || /^[\s,.;:!?)}\]'"”’]/u.test(next)
+  ) {
+    return '';
+  }
+  return ' ';
+}
+
+function mergeAssistantTextFragments(fragments) {
+  const normalized = fragments
+    .map((fragment) => String(fragment || '').trim())
+    .filter(Boolean);
+  let merged = '';
+  let previous = '';
+  for (const next of normalized) {
+    if (!merged) {
+      merged = next;
+    } else {
+      merged += `${assistantTextFragmentBoundary(previous, next)}${next}`;
+    }
+    previous = next;
+  }
+  return merged;
+}
+
+function assistantOutputText(message) {
+  const textBlocks = Array.isArray(message?.content_blocks)
+    ? message.content_blocks
+      .filter((block) => block?.type === 'text')
+      .map((block) => String(block.text || block.content || '').trim())
+      .filter(Boolean)
+    : [];
+  if (textBlocks.length > 0) return textBlocks.join('\n\n');
+
+  const content = typeof message?.content === 'string' ? message.content.trim() : '';
+  if (content) {
+    try {
+      const parsed = JSON.parse(content);
+      if (parsed?.type === 'file' || parsed?.type === 'image') return '';
+    } catch (error) {
+      // Plain assistant text.
+    }
+  }
+  if (/^\[(?:文件|图片)\]\s*[^\n]*$/u.test(content)) return '';
+  return content;
+}
+
+function mergeAssistantOutputGroups(groups) {
+  if (groups.length === 0) return null;
+
+  const sourceMessages = groups.flatMap((group) => (
+    group.sourceMessages || (group.message ? [group.message] : [])
+  ));
+  const artifactBlocks = sourceMessages.flatMap(deliveryArtifactBlocks);
+  const hasArtifacts = artifactBlocks.length > 0;
+  const textByRole = new Map();
+
+  sourceMessages.forEach((message) => {
+    const text = assistantOutputText(message);
+    if (!text) return;
+
+    let role = message?._display_text_role || 'body';
+    if (role === 'body' && hasArtifacts) {
+      role = 'result';
+    }
+    const fragments = textByRole.get(role) || [];
+    fragments.push(text);
+    textByRole.set(role, fragments);
+  });
+
+  const textRoles = hasArtifacts
+    ? ['result', 'body', 'process']
+    : ['body', 'process', 'result'];
+  const textBlocks = textRoles
+    .map((role) => {
+      const text = mergeAssistantTextFragments(textByRole.get(role) || []);
+      return text ? { type: 'text', text, presentation_role: role } : null;
+    })
+    .filter(Boolean);
+  const content = textBlocks.map((block) => block.text).join('\n\n');
+  const contentBlocks = [
+    ...artifactBlocks,
+    ...textBlocks,
+  ];
+  const lastGroup = groups[groups.length - 1];
+
+  return {
+    ...lastGroup,
+    message: {
+      ...lastGroup.message,
+      content,
+      content_blocks: contentBlocks,
+    },
+    sourceMessages,
+    sender: groups[0].sender || lastGroup.sender,
+    replyMessage: lastGroup.replyMessage || null,
+    explicitTurnKey: lastGroup.explicitTurnKey || groups.find((group) => group.explicitTurnKey)?.explicitTurnKey || '',
+    fallbackTurnKey: lastGroup.fallbackTurnKey || groups.find((group) => group.fallbackTurnKey)?.fallbackTurnKey || '',
+    artifactsFirst: artifactBlocks.length > 0,
+  };
+}
+
+function messageHasActionTool(message) {
+  const messageTypes = [message?.type, message?.msg_type].filter(Boolean);
+  if (messageTypes.includes('tool_use')) {
+    return String(message?.content || '').trim() !== 'update_plan';
+  }
+  return Array.isArray(message?.content_blocks) && message.content_blocks.some((block) => (
+    block?.type === 'tool_use'
+    && String(block.name || block.content || '').trim() !== 'update_plan'
+  ));
+}
+
+function displayGroupHasExplicitProcessText(group) {
+  if (displayGroupHasDeliveryArtifact(group)) return false;
+  const sourceMessages = group?.sourceMessages || (group?.message ? [group.message] : []);
+  return sourceMessages.some((message) => (
+    message?._display_text_role === 'process'
+    || isWorkingTextMessage(message)
+    || message?.content_blocks?.some((block) => (
+      block?.type === 'text' && block.presentation_role === 'process'
+    ))
+  ));
+}
+
+function reorderAssistantTurnBundle(groups) {
+  if (!groups.some((group) => group.type === 'working')) {
+    return groups;
+  }
+
+  const firstIsConsecutive = Boolean(groups[0]?.isConsecutive);
+  const sourceWorkingGroups = groups.filter((group) => group.type === 'working');
+  const processGroupIndexes = new Set();
+  groups.forEach((group, index) => {
+    if (group.type !== 'text' || displayGroupHasDeliveryArtifact(group)) return;
+    if (displayGroupHasExplicitProcessText(group)) {
+      processGroupIndexes.add(index);
+    }
+  });
+  const executionMessages = groups.flatMap((group, index) => {
+    if (group.type === 'working') return group.messages || [];
+    if (!processGroupIndexes.has(index)) return [];
+    const sourceMessages = group.sourceMessages || (group.message ? [group.message] : []);
+    return sourceMessages.map(assistantProcessMessage);
+  });
+  const outputGroups = groups.filter((group, index) => (
+    group.type !== 'working' && !processGroupIndexes.has(index)
+  ));
+  const mergedOutput = mergeAssistantOutputGroups(outputGroups);
+  const workingGroups = sourceWorkingGroups.length > 0
+    ? [{
+      ...sourceWorkingGroups[0],
+      messages: executionMessages,
+      workingComplete: Boolean(mergedOutput),
+      explicitTurnKey: [...sourceWorkingGroups].reverse().find((group) => group.explicitTurnKey)?.explicitTurnKey || '',
+      fallbackTurnKey: [...sourceWorkingGroups].reverse().find((group) => group.fallbackTurnKey)?.fallbackTurnKey || '',
+    }]
+    : [];
+  const ordered = [...workingGroups, ...(mergedOutput ? [mergedOutput] : [])];
+  let firstOutputFound = false;
+
+  return ordered.map((group, index) => {
+    const next = {
+      ...group,
+      isConsecutive: index === 0 ? firstIsConsecutive : true,
+    };
+    if (group.type !== 'working') {
+      if (!firstOutputFound) {
+        next.isConsecutiveWithoutWorking = firstIsConsecutive;
+        firstOutputFound = true;
+      }
+      if (displayGroupHasDeliveryArtifact(group)) {
+        next.artifactsFirst = true;
+      }
+    }
+    return next;
+  });
+}
+
+function reorderAssistantSegment(groups) {
+  const entries = [];
+
+  for (const group of groups) {
+    const senderKey = messageSenderIdentity(
+      group?.messages?.[0] || group?.message,
+    ) || String(group?.sender?.name || '');
+    const turnKey = group?.fallbackTurnKey || group?.explicitTurnKey || '';
+    let bundle = entries[entries.length - 1];
+    const conflictsWithCurrentTurn = Boolean(
+      bundle?.turnKey
+      && turnKey
+      && bundle.turnKey !== turnKey
+    );
+    if (!bundle || bundle.senderKey !== senderKey || conflictsWithCurrentTurn) {
+      bundle = { type: 'bundle', senderKey, turnKey, groups: [] };
+      entries.push(bundle);
+    } else if (!bundle.turnKey && turnKey) {
+      bundle.turnKey = turnKey;
+    }
+    bundle.groups.push(group);
+  }
+
+  return entries.flatMap((entry) => reorderAssistantTurnBundle(entry.groups));
+}
+
+function reorderAssistantTurnGroups(groups) {
+  const ordered = [];
+  let assistantSegment = [];
+
+  const flushAssistantSegment = () => {
+    if (assistantSegment.length === 0) return;
+    ordered.push(...reorderAssistantSegment(assistantSegment));
+    assistantSegment = [];
+  };
+
+  for (const group of groups) {
+    if (group.type === 'working' || group.assistantAuthored) {
+      assistantSegment.push(group);
+      continue;
+    }
+    flushAssistantSegment();
+    ordered.push(group);
+  }
+  flushAssistantSegment();
+  return ordered;
+}
+
 function messageCreatedAtMs(message) {
   const timestamp = new Date(message?.created_at || '').getTime();
   return Number.isFinite(timestamp) ? timestamp : null;
@@ -2363,10 +3881,9 @@ function mergeAssistantDisplayMessages(sourceMessages) {
   const lastMessage = sourceMessages[sourceMessages.length - 1];
   return {
     ...lastMessage,
-    content: sourceMessages
-      .map((message) => String(message.content || '').trim())
-      .filter(Boolean)
-      .join('\n\n'),
+    content: mergeAssistantTextFragments(
+      sourceMessages.map((message) => String(message.content || '')),
+    ),
     content_blocks: [],
     _display_source_messages: sourceMessages,
   };
@@ -2374,6 +3891,7 @@ function mergeAssistantDisplayMessages(sourceMessages) {
 
 function RuntimePlanCard({ plan }) {
   const [open, setOpen] = useState(false);
+  const stepsID = `runtime-plan-steps-${useId().replace(/:/g, '')}`;
   if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) return null;
 
   const completed = plan.steps.filter((step) => step.status === 'completed').length;
@@ -2381,14 +3899,27 @@ function RuntimePlanCard({ plan }) {
 
   return (
     <div className="v3-runtime-plan-card" role="status">
-      <button className="v3-runtime-plan-toggle" type="button" onClick={() => setOpen(!open)}>
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+      <button
+        className="v3-runtime-plan-toggle"
+        type="button"
+        aria-expanded={open}
+        aria-controls={stepsID}
+        onClick={() => setOpen(!open)}
+      >
+        {open
+          ? <ChevronDown size={14} aria-hidden="true" />
+          : <ChevronRight size={14} aria-hidden="true" />}
         <span className="v3-runtime-plan-title">计划</span>
         <span className="v3-runtime-plan-count">{completed}/{plan.steps.length}</span>
         {!open && current && <span className="v3-runtime-plan-current">{current.text}</span>}
       </button>
       {open && (
-        <div className="v3-runtime-plan-steps">
+        <div
+          id={stepsID}
+          className="v3-runtime-plan-steps"
+          role="region"
+          aria-label="实时计划步骤"
+        >
           {plan.steps.map((step, index) => (
             <div className={`v3-runtime-plan-step ${step.status}`} key={`${index}-${step.text}`}>
               {step.status === 'completed'
@@ -2475,6 +4006,58 @@ function isWorkingMessage(message) {
   return Boolean(inferWorkingTypeFromBlocks(message?.content_blocks));
 }
 
+function resolveWorkingInitiatorUid(messages, workingIndex, botUIDs) {
+  const workingMessage = messages[workingIndex];
+  const replyTo = Number(workingMessage?.reply_to || 0);
+  if (replyTo > 0) {
+    const repliedMessage = messages.find((message) => Number(message?.id || message?.seq_id) === replyTo);
+    const repliedUID = Number(repliedMessage?.from_uid);
+    if (
+      repliedMessage
+      && isFinalTextMessage(repliedMessage)
+      && Number.isFinite(repliedUID)
+      && repliedUID > 0
+      && !botUIDs.has(repliedUID)
+      && !isAssistantAuthoredMessage(repliedMessage)
+    ) {
+      return repliedUID;
+    }
+  }
+
+  const metadata = workingMessage?.metadata || {};
+  const metadataUID = Number(
+    metadata.initiator_uid
+    ?? metadata.requester_uid
+    ?? metadata.trigger_uid
+    ?? 0,
+  );
+  if (Number.isFinite(metadataUID) && metadataUID > 0 && !botUIDs.has(metadataUID)) {
+    return metadataUID;
+  }
+
+  for (let index = workingIndex - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!isFinalTextMessage(message)) continue;
+    const senderUID = Number(message?.from_uid);
+    if (!Number.isFinite(senderUID) || senderUID <= 0) continue;
+    if (botUIDs.has(senderUID) || isAssistantAuthoredMessage(message)) continue;
+    return senderUID;
+  }
+  return 0;
+}
+
+function hasOrdinaryChatMessage(messages) {
+  return (messages || []).some((message) => {
+    if (!message || isWorkingMessage(message) || runtimePlanFromMessage(message)) return false;
+    if (isFinalTextMessage(message)) return true;
+    if (['file', 'image', 'attachment'].includes(message.type || message.msg_type || '')) return true;
+    return Array.isArray(message.content_blocks) && message.content_blocks.some((block) => (
+      ['text', 'file', 'image'].includes(block?.type)
+      && (block.type !== 'text' || String(block.text || '').trim())
+    ));
+  });
+}
+
 function workingMessageKey(message) {
   return [
     message?.id ?? message?.seq_id ?? message?.seq ?? message?._stream_id ?? '',
@@ -2532,12 +4115,4 @@ function getComparableContent(content) {
     return JSON.stringify(content);
   }
   return String(content ?? '');
-}
-
-function formatFileSize(size) {
-  if (!size || size <= 0) return '';
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }

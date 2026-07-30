@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api';
-import { inferAttachmentType, IMAGE_UPLOAD_ACCEPT } from '../utils/upload-rules';
+import { inferAttachmentType, IMAGE_UPLOAD_ACCEPT, VIDEO_UPLOAD_ACCEPT } from '../utils/upload-rules';
 import '../css/openchat-theme.css';
 
 export default function MobileUploadView({ sessionId }) {
@@ -63,7 +63,7 @@ export default function MobileUploadView({ sessionId }) {
           <input
             type="file"
             multiple
-            accept={`${IMAGE_UPLOAD_ACCEPT},.pdf,.doc,.docx,.xls,.xlsx,.zip`}
+            accept={`${IMAGE_UPLOAD_ACCEPT},${VIDEO_UPLOAD_ACCEPT},.pdf,.doc,.docx,.xls,.xlsx,.zip`}
             onChange={handleFiles}
             disabled={isUploading}
           />

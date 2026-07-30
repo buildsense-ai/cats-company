@@ -69,17 +69,17 @@ var botModelCatalog = []botModelCatalogItem{
 	},
 	{
 		ID: "gpt-5.6-terra", Label: "GPT-5.6 Terra", Description: "OpenAI Responses，支持精细推理强度",
-		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 1000000,
+		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000,
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
 	{
 		ID: "gpt-5.6-sol", Label: "GPT-5.6 Sol", Description: "OpenAI Responses，支持精细推理强度",
-		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 1000000,
+		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000,
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
 	{
 		ID: "gpt-5.6-luna", Label: "GPT-5.6 Luna", Description: "OpenAI Responses，支持精细推理强度",
-		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 1000000,
+		Provider: "openai", Protocol: "OpenAI Responses", ContextWindowTokens: 256000,
 		ReasoningEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"}, DefaultReasoningEffort: "medium",
 	},
 }
@@ -236,13 +236,7 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 				writeJSON(w, status, map[string]string{"error": customErr.Error()})
 				return
 			}
-			config, err = h.models.SaveBotDesiredModelConfig(
-				botUID,
-				botModelKindCustom,
-				custom.Model,
-				custom.ReasoningEffort,
-				customCiphertext,
-			)
+			config, err = h.saveDesiredCustomModel(botUID, custom, customCiphertext)
 		} else {
 			model, reasoning, ok := normalizeBotModelSelection(req.ModelID, req.ReasoningEffort)
 			if !ok {
@@ -257,7 +251,7 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 				config.AppliedReasoning == reasoning &&
 				!(config.LastAttemptRevision == config.Revision && config.LastError != "")
 			if !selectionApplied {
-				config, err = h.models.SaveBotDesiredModelConfig(botUID, botModelKindCatalog, model.ID, reasoning, "")
+				config, err = h.saveDesiredCatalogModel(botUID, model.ID, reasoning)
 			}
 		}
 		if err != nil {
@@ -280,6 +274,49 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *BotModelConfigHandler) saveDesiredCatalogModel(
+	botUID int64,
+	modelID, reasoning string,
+) (*types.BotModelConfig, error) {
+	if definitions, ok := h.models.(store.BotDefinitionStore); ok {
+		record, err := definitions.UpdateBotDefinitionModel(botUID, -1, types.BotDefinitionModel{
+			Kind: botModelKindCatalog, ModelID: modelID, ReasoningEffort: reasoning,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return legacyConfigForDefinition(record), nil
+	}
+	return h.models.SaveBotDesiredModelConfig(botUID, botModelKindCatalog, modelID, reasoning, "")
+}
+
+func (h *BotModelConfigHandler) saveDesiredCustomModel(
+	botUID int64,
+	custom *cloudCustomModelConfig,
+	ciphertext string,
+) (*types.BotModelConfig, error) {
+	if definitions, ok := h.models.(store.BotDefinitionStore); ok {
+		record, err := definitions.UpdateBotDefinitionModel(botUID, -1, types.BotDefinitionModel{
+			Kind:                botModelKindCustom,
+			Protocol:            custom.Protocol,
+			APIBase:             custom.APIBase,
+			Model:               custom.Model,
+			APIKeyCiphertext:    ciphertext,
+			ContextWindowTokens: custom.ContextWindowTokens,
+			MaxTokens:           custom.MaxTokens,
+			Temperature:         custom.Temperature,
+			ReasoningEffort:     custom.ReasoningEffort,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return legacyConfigForDefinition(record), nil
+	}
+	return h.models.SaveBotDesiredModelConfig(
+		botUID, botModelKindCustom, custom.Model, custom.ReasoningEffort, ciphertext,
+	)
 }
 
 // HandleRuntimeConfig lets an authenticated bot read only its own desired model.

@@ -13,6 +13,8 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+const structuredMentionAllBots = "all"
+
 // MessageHandler handles message-related API requests.
 type MessageHandler struct {
 	db  store.Store
@@ -36,6 +38,7 @@ type SendMessageRequest struct {
 	Mode          string                 `json:"mode,omitempty"`
 	Role          string                 `json:"role,omitempty"`
 	ReplyTo       int                    `json:"reply_to,omitempty"`
+	Mentions      []string               `json:"mentions,omitempty"`
 }
 
 type normalizedMessagePayload struct {
@@ -49,6 +52,7 @@ type normalizedMessagePayload struct {
 	Metadata            map[string]interface{}
 	Mode                string
 	Role                string
+	Mentions            []string
 }
 
 type savedMessageResult struct {
@@ -221,12 +225,13 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 		if groupID == 0 {
 			return
 		}
-		mentions := parseMentions(payload.DisplayContent)
+		mentions := payload.Mentions
+		trustedChannelTrigger := trustedChannelBindingDeliveryMetadata(payload.Metadata) && metadataBool(payload.Metadata, "channel_native_group_triggered")
 		dataMsg.Data.Mentions = mentions
 		if !h.isChannelManagedGroup(groupID) {
 			h.SendToUserExcept(uid, dataMsg, exclude)
 		}
-		h.broadcastToGroupWithMentions(groupID, dataMsg, uid, mentions, uid)
+		h.broadcastToGroupWithMentions(groupID, dataMsg, uid, mentions, uid, trustedChannelTrigger)
 		h.forwardChannelGroupBotReply(uid, topicID, payload, msgID)
 		return
 	}
@@ -771,6 +776,10 @@ type latestMessagesBeforeStore interface {
 	GetLatestMessagesBefore(topicID string, beforeID int64, limit int) ([]*types.Message, error)
 }
 
+type usersByIDsStore interface {
+	GetUsersByIDs(ids []int64) (map[int64]*types.User, error)
+}
+
 // HandleGetMessages handles GET /api/messages?topic_id=xxx&limit=50&offset=0
 func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Request) {
 	uid := UIDFromContext(r.Context())
@@ -813,7 +822,7 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load agent context history"})
 			return
 		}
-		identityUsers := h.loadAgentContextUsers(uid, rawMsgs)
+		identityUsers := h.loadHistoryUsers(uid, rawMsgs)
 		msgs := make([]map[string]interface{}, 0, len(rawMsgs))
 		for _, message := range rawMsgs {
 			if formatted := h.hub.agentContextHistoryAPIMessageForRecipient(uid, message, identityUsers); formatted != nil {
@@ -830,10 +839,23 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if limit <= 0 {
+		limit = 50
+	}
+
 	var rawMsgs []*types.Message
 	var err error
 	if latest {
-		rawMsgs, err = h.db.GetLatestMessages(topicID, limit, offset)
+		queryLimit := limit + 1
+		if beforeID > 0 {
+			if storeWithCursor, ok := h.db.(latestMessagesBeforeStore); ok {
+				rawMsgs, err = storeWithCursor.GetLatestMessagesBefore(topicID, beforeID, queryLimit)
+			} else {
+				rawMsgs, err = h.db.GetLatestMessages(topicID, queryLimit, offset)
+			}
+		} else {
+			rawMsgs, err = h.db.GetLatestMessages(topicID, queryLimit, offset)
+		}
 	} else {
 		rawMsgs, err = h.db.GetMessages(topicID, limit, offset)
 	}
@@ -841,10 +863,20 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load messages"})
 		return
 	}
+	hasMore := latest && len(rawMsgs) > limit
+	if hasMore {
+		rawMsgs = rawMsgs[len(rawMsgs)-limit:]
+	}
+	nextBeforeID := int64(0)
+	if latest && len(rawMsgs) > 0 {
+		nextBeforeID = rawMsgs[0].ID
+	}
+
 	msgs := make([]map[string]interface{}, 0, len(rawMsgs))
 	if h.hub != nil {
+		identityUsers := h.loadHistoryUsers(uid, rawMsgs)
 		for _, message := range rawMsgs {
-			if formatted := h.hub.historyAPIMessageForRecipient(uid, message); formatted != nil {
+			if formatted := h.hub.historyAPIMessageForRecipient(uid, message, identityUsers); formatted != nil {
 				msgs = append(msgs, formatted)
 			}
 		}
@@ -863,7 +895,12 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{"messages": msgs})
+	response := map[string]interface{}{"messages": msgs}
+	if latest {
+		response["has_more"] = hasMore
+		response["next_before_id"] = nextBeforeID
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (h *MessageHandler) loadAgentContextHistory(topicID string, beforeID int64, limit int) ([]*types.Message, bool, int64, error) {
@@ -896,15 +933,28 @@ func (h *MessageHandler) loadAgentContextHistory(topicID string, beforeID int64,
 	return messages, hasMore, nextBeforeID, nil
 }
 
-func (h *MessageHandler) loadAgentContextUsers(agentUID int64, messages []*types.Message) map[int64]*types.User {
-	users := make(map[int64]*types.User)
-	uids := map[int64]struct{}{agentUID: {}}
+func (h *MessageHandler) loadHistoryUsers(recipientUID int64, messages []*types.Message) map[int64]*types.User {
+	uids := map[int64]struct{}{recipientUID: {}}
 	for _, message := range messages {
 		if message != nil && message.FromUID > 0 {
 			uids[message.FromUID] = struct{}{}
 		}
 	}
+
+	ids := make([]int64, 0, len(uids))
 	for uid := range uids {
+		if uid > 0 {
+			ids = append(ids, uid)
+		}
+	}
+	if batchStore, ok := h.db.(usersByIDsStore); ok {
+		if users, err := batchStore.GetUsersByIDs(ids); err == nil {
+			return users
+		}
+	}
+
+	users := make(map[int64]*types.User, len(ids))
+	for _, uid := range ids {
 		if user, err := h.db.GetUser(uid); err == nil && user != nil {
 			users[uid] = user
 		}
@@ -934,10 +984,12 @@ func (h *Hub) agentContextHistoryAPIMessageForRecipient(agentUID int64, message 
 		reason = "other_agent_message"
 	}
 
-	mentions := parseMentions(normalizeContentText(formatted["content"]))
+	mentions := structuredMentionsFromMessage(formatted)
 	if eligible && isGroupTopic(message.TopicID) && role == "user" && len(mentions) > 0 {
 		agentID := formatUID(agentUID)
-		if !containsString(mentions, agentID) {
+		if containsString(mentions, structuredMentionAllBots) {
+			reason = "group_message_targets_all_agents"
+		} else if !containsString(mentions, agentID) {
 			eligible = false
 			reason = "group_message_targets_another_member"
 		} else {
@@ -974,6 +1026,77 @@ func isDurableAgentContextMessage(message *types.Message, displayType string) bo
 	}
 }
 
+func structuredMentionsFromMessage(message map[string]interface{}) []string {
+	if message == nil {
+		return nil
+	}
+	values := make([]string, 0)
+	switch blocks := message["content_blocks"].(type) {
+	case []types.ContentBlock:
+		for _, block := range blocks {
+			values = append(values, mentionValues(block.Payload["mentions"])...)
+		}
+	case []interface{}:
+		for _, rawBlock := range blocks {
+			block, _ := rawBlock.(map[string]interface{})
+			payload, _ := block["payload"].(map[string]interface{})
+			values = append(values, mentionValues(payload["mentions"])...)
+		}
+	}
+	if len(values) == 0 {
+		metadata, _ := message["metadata"].(map[string]interface{})
+		values = append(values, mentionValues(metadata["mentions"])...)
+	}
+	return normalizeStructuredMentions(values)
+}
+
+func mentionValues(raw interface{}) []string {
+	switch values := raw.(type) {
+	case []string:
+		return values
+	case []interface{}:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if text, ok := value.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func withStructuredMentionBlocks(blocks []types.ContentBlock, displayContent interface{}, mentions []string) []types.ContentBlock {
+	if len(mentions) == 0 {
+		return blocks
+	}
+	result := append([]types.ContentBlock(nil), blocks...)
+	for index := range result {
+		if result[index].Type != "text" {
+			continue
+		}
+		payload := make(map[string]interface{}, len(result[index].Payload)+1)
+		for key, value := range result[index].Payload {
+			payload[key] = value
+		}
+		payload["mentions"] = append([]string(nil), mentions...)
+		result[index].Payload = payload
+		return result
+	}
+	text := normalizeContentText(displayContent)
+	if text == "" {
+		return result
+	}
+	return append([]types.ContentBlock{{
+		Type: "text",
+		Text: text,
+		Payload: map[string]interface{}{
+			"mentions": append([]string(nil), mentions...),
+		},
+	}}, result...)
+}
+
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
@@ -1000,6 +1123,13 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 
 	blocks := sanitizeContentBlocks(req.ContentBlocks)
 	metadata := sanitizeMessageMap(req.Metadata)
+	mentions := normalizeStructuredMentions(req.Mentions)
+	if len(mentions) > 0 {
+		if metadata == nil {
+			metadata = make(map[string]interface{})
+		}
+		metadata["mentions"] = mentions
+	}
 	mode := stripMessageNullBytes(strings.TrimSpace(req.Mode))
 	role := stripMessageNullBytes(strings.TrimSpace(req.Role))
 	if len(blocks) == 0 && isStructuredDisplayType(displayType) {
@@ -1011,6 +1141,7 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 			role = "assistant"
 		}
 	}
+	blocks = withStructuredMentionBlocks(blocks, displayContent, mentions)
 
 	if storedContent == "" && len(blocks) == 0 {
 		return nil, errors.New("topic_id and content/content_blocks required")
@@ -1027,7 +1158,43 @@ func normalizeMessageRequest(req *SendMessageRequest) (*normalizedMessagePayload
 		Metadata:            metadata,
 		Mode:                mode,
 		Role:                role,
+		Mentions:            mentions,
 	}, nil
+}
+
+func isCanonicalMentionTarget(value string) bool {
+	if value == structuredMentionAllBots {
+		return true
+	}
+	if !strings.HasPrefix(value, "usr") || len(value) == len("usr") {
+		return false
+	}
+	for _, char := range value[len("usr"):] {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeStructuredMentions(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	mentions := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		uid := strings.TrimSpace(stripMessageNullBytes(value))
+		if !isCanonicalMentionTarget(uid) {
+			continue
+		}
+		if _, exists := seen[uid]; exists {
+			continue
+		}
+		seen[uid] = struct{}{}
+		mentions = append(mentions, uid)
+	}
+	return mentions
 }
 
 func normalizeClientMsgID(raw string, metadata map[string]interface{}) string {

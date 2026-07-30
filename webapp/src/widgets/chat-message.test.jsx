@@ -28,6 +28,9 @@ vi.mock('marked', () => ({
           '<p><a href="https://example.com/docs">外部链接</a></p>',
         ].join('');
       }
+      if (String(text).includes('artifact-link-test')) {
+        return '<p>已发布：<a href="https://artifacts.example.test/by-agent/440/lesson-game/latest/">artifact-link-test</a></p>';
+      }
       return `<p>${text}</p>`;
     },
   },
@@ -44,12 +47,18 @@ vi.mock('./avatar', () => ({
   },
 }));
 
+vi.mock('./mobile-pdf-preview', () => ({
+  default: function MockMobilePdfPreview({ url }) {
+    return <div className="v3-mobile-pdf-preview-mock" data-url={url}>PDF reader</div>;
+  },
+}));
+
 vi.mock('read-excel-file/browser', () => ({
   __esModule: true,
   default: vi.fn(),
 }));
 
-import ChatMessage, { FilePreviewPanel } from './chat-message';
+import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from './chat-message';
 import { markdownPreviewDocument } from './markdown-utils';
 import readExcelFile from 'read-excel-file/browser';
 
@@ -58,21 +67,27 @@ const catscoUiSystemCss = readFileSync(
   'utf8',
 );
 
-function PreviewHarness({ message }) {
+function PreviewHarness({ message, knownArtifacts = [], isSelf = false }) {
   const [previewFile, setPreviewFile] = React.useState(null);
+  const chatColumnRef = React.useRef(null);
   return (
     <div className={`v3-message-workspace${previewFile ? ' has-preview' : ''}`}>
-      <div className="v3-chat-column">
+      <div ref={chatColumnRef} className="v3-chat-column">
         <ChatMessage
           message={message}
-          isSelf={false}
+          isSelf={isSelf}
           isGroup={false}
           senderName="CatsCo"
           onPreviewFile={setPreviewFile}
           activePreviewFile={previewFile}
+          knownArtifacts={knownArtifacts}
         />
       </div>
-      {previewFile && <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} />}
+      {previewFile && (
+        <div className="v3-file-preview-shell">
+          <FilePreviewPanel file={previewFile} onClose={() => setPreviewFile(null)} backgroundRef={chatColumnRef} />
+        </div>
+      )}
     </div>
   );
 }
@@ -145,6 +160,8 @@ describe('ChatMessage rich file rendering', () => {
 
     expect(container.querySelector('.v3-attachment-name').textContent).toBe('report.html');
     expect(container.querySelector('.v3-attachment-size').textContent).toContain('HTML');
+    expect(container.querySelector('.v3-attachment-size').textContent).toBe('HTML · 2.0 KB');
+    expect(container.querySelector('.v3-message').classList.contains('has-file-only')).toBe(true);
 
     await act(async () => {
       Simulate.click(container.querySelector('.v3-artifact-main'));
@@ -160,6 +177,119 @@ describe('ChatMessage rich file rendering', () => {
     expect(frame.getAttribute('sandbox')).toContain('allow-forms');
     expect(frame.getAttribute('sandbox')).not.toContain('allow-same-origin');
     expect(frame.getAttribute('srcdoc')).toContain('<h1>Report</h1>');
+  });
+
+  it('renders an Agent delivery artifact before text from the same message', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 20,
+            from_uid: 2,
+            content: '交付说明',
+            content_blocks: [
+              { type: 'text', text: '交付说明' },
+              {
+                type: 'file',
+                payload: {
+                  name: 'game.zip',
+                  url: '/uploads/files/game.zip',
+                  size: 4096,
+                  mime_type: 'application/zip',
+                },
+              },
+            ],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          artifactsFirst
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const content = container.querySelector('.v3-message-content');
+    const artifactSection = content.querySelector('.v3-message-deliverables');
+    const summarySection = content.querySelector('.v3-message-followup-text');
+    const artifact = artifactSection?.querySelector('.v3-attachment-card');
+    expect(container.querySelector('.v3-message').classList.contains('artifacts-first')).toBe(true);
+    expect(artifactSection?.dataset.messagePart).toBe('artifacts');
+    expect(summarySection?.dataset.messagePart).toBe('summary');
+    expect(artifact).not.toBeNull();
+    expect(summarySection?.textContent).toBe('交付说明');
+    expect(artifactSection.compareDocumentPosition(summarySection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelectorAll('.v3-message')).toHaveLength(1);
+    expect(container.querySelectorAll('.v3-msg-time')).toHaveLength(1);
+  });
+
+  it('moves Agent process text into the completed tool trace and keeps only the result below the artifact', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 23,
+            from_uid: 2,
+            content: '已完成验收。\n\n文件已经发送。',
+            content_blocks: [
+              {
+                type: 'file',
+                payload: {
+                  name: 'game.zip',
+                  url: '/uploads/files/game.zip',
+                  size: 4096,
+                  mime_type: 'application/zip',
+                },
+              },
+              { type: 'text', text: '已完成验收。', presentation_role: 'process' },
+              {
+                type: 'tool_use',
+                id: 'verify-1',
+                name: 'execute_shell',
+                input: { command: 'npm test' },
+              },
+              {
+                type: 'tool_result',
+                tool_use_id: 'verify-1',
+                content: 'Tests passed',
+              },
+              { type: 'text', text: '文件已经发送。', presentation_role: 'result' },
+            ],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          artifactsFirst
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const sections = container.querySelectorAll('.v3-message-followup-section');
+    expect(sections).toHaveLength(1);
+    expect(sections[0].dataset.messagePart).toBe('result');
+    expect(sections[0].textContent).toBe('文件已经发送。');
+    expect(container.querySelector('.v3-working-label')?.textContent).toBe('已完成');
+    expect(container.querySelector('.v3-working-toggle')?.getAttribute('aria-expanded')).toBe('false');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-working-toggle'));
+      await Promise.resolve();
+    });
+
+    const toolStep = container.querySelector('.v3-wpi-tool-step');
+    const narrative = toolStep?.querySelector('.v3-wpi-narrative');
+    const tool = toolStep?.querySelector('.v3-wpi-tool');
+    expect(narrative?.textContent).toBe('已完成验收。');
+    expect(tool?.querySelector('.v3-wpi-tool-name')?.textContent).toBe('execute_shell');
+    expect(narrative?.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelector('.v3-message-followup-text')?.textContent).not.toContain('已完成验收。');
+    expect(container.querySelectorAll('.v3-message')).toHaveLength(1);
+    expect(container.querySelectorAll('.v3-msg-time')).toHaveLength(1);
   });
 
   it('preserves line breaks in group plain text messages', async () => {
@@ -185,6 +315,8 @@ describe('ChatMessage rich file rendering', () => {
     expect(textNode).not.toBeUndefined();
     expect(textNode.style.whiteSpace).toBe('pre-wrap');
     expect(textNode.style.overflowWrap).toBe('anywhere');
+    expect(container.querySelector('.v3-message-deliverables')).toBeNull();
+    expect(container.querySelector('.v3-message-followup-text')).toBeNull();
   });
 
   it('uses compact paragraph spacing for direct plain text messages', async () => {
@@ -716,7 +848,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(directActions.map((button) => button.getAttribute('aria-label'))).toEqual([
       '复制',
       '重新生成',
-      '更多操作',
+      '回复',
     ]);
 
     await act(async () => {
@@ -735,42 +867,11 @@ describe('ChatMessage rich file rendering', () => {
     expect(onRegenerate).toHaveBeenCalledWith(expect.objectContaining({ id: 20 }));
 
     await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="更多操作"]'));
-      await Promise.resolve();
-    });
-    const menu = container.querySelector('.v3-message-action-menu');
-    expect(menu).not.toBeNull();
-    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(1);
-    expect(menu.textContent).toContain('回复');
-
-    await act(async () => {
-      document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
-      await Promise.resolve();
-    });
-    expect(container.querySelector('.v3-message-action-menu')).toBeNull();
-
-    await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="更多操作"]'));
-      await Promise.resolve();
-    });
-    expect(container.querySelector('.v3-message-action-menu')).not.toBeNull();
-
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-      await Promise.resolve();
-    });
-    expect(container.querySelector('.v3-message-action-menu')).toBeNull();
-
-    await act(async () => {
-      Simulate.click(container.querySelector('[aria-label="更多操作"]'));
-      await Promise.resolve();
-    });
-    const replyMenuItem = container.querySelector('.v3-message-action-menu [role="menuitem"]');
-    await act(async () => {
-      Simulate.click(replyMenuItem);
+      Simulate.click(container.querySelector('[aria-label="回复"]'));
       await Promise.resolve();
     });
     expect(onReply).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[aria-label="更多操作"]')).toBeNull();
     expect(container.querySelector('.v3-message-action-menu')).toBeNull();
   });
 
@@ -901,6 +1002,45 @@ describe('ChatMessage rich file rendering', () => {
     expect(setData).not.toHaveBeenCalled();
   });
 
+  it('does not create a hidden avatar column for current-user messages', async () => {
+    await act(async () => {
+      root.render(
+        <>
+          <ChatMessage
+            message={{
+              id: 2601,
+              from_uid: 1,
+              content: 'Current-user message',
+              created_at: '2026-06-09T00:00:00Z',
+            }}
+            isSelf
+            isGroup={false}
+            senderName="Me"
+          />
+          <ChatMessage
+            message={{
+              id: 2602,
+              from_uid: 2,
+              content: 'Peer message',
+              created_at: '2026-06-09T00:01:00Z',
+            }}
+            isSelf={false}
+            isGroup={false}
+            senderName="CatsCo"
+          />
+        </>,
+      );
+      await Promise.resolve();
+    });
+
+    const selfMessage = container.querySelector('.v3-message.is-self');
+    const peerMessage = container.querySelector('.v3-message.is-peer');
+    expect(selfMessage.querySelector('.v3-avatar-col')).toBeNull();
+    expect(selfMessage.querySelector('[data-testid="avatar"]')).toBeNull();
+    expect(peerMessage.querySelector('.v3-avatar-col')).not.toBeNull();
+    expect(peerMessage.querySelector('[data-testid="avatar"]')).not.toBeNull();
+  });
+
   it('keeps the larger current-user bubble shrink-wrapped with balanced padding', () => {
     expect(catscoUiSystemCss).toContain('.v3-message.is-self .v3-message-bubble');
     const messageRule = catscoUiSystemCss.match(
@@ -993,17 +1133,246 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
 
+    expect(container.querySelector('.v3-wpi-plan')).not.toBeNull();
+    expect(container.querySelector('.v3-wpi-plan-title').textContent).toBe('计划');
+    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('创建临时工作目录');
+    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('设计 analyzeReply 函数');
+    expect(container.querySelector('.v3-working-status')).not.toBeNull();
+    expect(container.querySelector('.v3-working-toggle')).toBeNull();
+    expect(container.querySelector('.v3-working-steps')).toBeNull();
+    expect(container.querySelector('.v3-wpi-tool-name')).toBeNull();
+    expect(container.querySelector('.v3-message-footer')).toBeNull();
+  });
+
+  it('replaces earlier plan snapshots in place and marks the completed working process once', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 22,
+            from_uid: 2,
+            content: '',
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          workingMessages={[
+            {
+              type: 'tool_use',
+              content: 'update_plan',
+              metadata: {
+                id: 'plan-1',
+                input: {
+                  steps: [
+                    { status: 'in_progress', step: '实现功能' },
+                    { status: 'pending', step: '运行测试' },
+                  ],
+                },
+              },
+            },
+            {
+              type: 'tool_result',
+              content: '计划已更新：0/2 已完成',
+              metadata: { tool_use_id: 'plan-1' },
+            },
+            {
+              type: 'tool_use',
+              content: 'execute_shell',
+              metadata: {
+                id: 'shell-1',
+                input: { command: 'npm test' },
+              },
+            },
+            {
+              type: 'tool_result',
+              content: 'Tests passed',
+              metadata: { tool_use_id: 'shell-1' },
+            },
+            {
+              type: 'tool_use',
+              content: 'update_plan',
+              metadata: {
+                id: 'plan-2',
+                input: {
+                  steps: [
+                    { status: 'completed', step: '实现功能' },
+                    { status: 'completed', step: '运行测试' },
+                  ],
+                },
+              },
+            },
+            {
+              type: 'tool_result',
+              content: '计划已更新：2/2 已完成',
+              metadata: { tool_use_id: 'plan-2' },
+            },
+          ]}
+          workingOnly
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-working-label')?.textContent).toBe('已完成');
+    expect(container.querySelector('.v3-working-summary')?.textContent).toBe('2/2');
+    expect(container.querySelector('.v3-message')?.classList.contains('is-working')).toBe(false);
+    expect(container.querySelector('.v3-message')?.classList.contains('is-complete')).toBe(true);
+    expect(container.querySelectorAll('.v3-wpi-plan')).toHaveLength(1);
+    expect(container.querySelector('.v3-wpi-plan-count')?.textContent).toBe('2/2');
+    expect(container.querySelectorAll('.v3-wpi-plan-step.completed')).toHaveLength(2);
+    expect(container.querySelector('.v3-working-steps')).toBeNull();
+    expect(container.querySelector('.v3-working-plan')?.classList.contains('is-after-details')).toBe(false);
+    expect(container.querySelector('.v3-working-hint')).toBeNull();
+
     await act(async () => {
       Simulate.click(container.querySelector('.v3-working-toggle'));
       await Promise.resolve();
     });
 
-    expect(container.querySelector('.v3-wpi-plan')).not.toBeNull();
-    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('计划已更新');
-    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('创建临时工作目录');
-    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('设计 analyzeReply 函数');
-    expect(container.querySelector('.v3-wpi-tool-name')).toBeNull();
-    expect(container.querySelector('.v3-message-footer')).toBeNull();
+    expect(container.querySelectorAll('.v3-wpi-plan')).toHaveLength(1);
+    const persistentPlan = container.querySelector('.v3-working-plan');
+    const inlineDetails = container.querySelector('.v3-working-details-inline');
+    expect(inlineDetails).not.toBeNull();
+    expect(inlineDetails?.parentElement).toBe(container.querySelector('.v3-working-process'));
+    expect(inlineDetails?.compareDocumentPosition(persistentPlan) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+    expect(persistentPlan?.classList.contains('is-after-details')).toBe(true);
+    expect(inlineDetails?.querySelectorAll('.v3-wpi-tool-name')).toHaveLength(1);
+    expect(inlineDetails?.querySelector('.v3-wpi-tool-name')?.textContent).toBe('execute_shell');
+  });
+
+  it('summarizes working steps and mounts large tool results only on demand', async () => {
+    const longResult = 'result line\n'.repeat(1200);
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 29,
+            from_uid: 2,
+            content: '',
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          workingMessages={[
+            {
+              type: 'tool_use',
+              content: 'execute_shell',
+              metadata: {
+                id: 'shell-1',
+                input: { command: 'npm test' },
+              },
+            },
+            {
+              type: 'tool_result',
+              content: longResult,
+              metadata: { tool_use_id: 'shell-1' },
+            },
+          ]}
+          workingOnly
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const message = container.querySelector('.v3-message');
+    const processToggle = container.querySelector('.v3-working-toggle');
+    expect(message.classList.contains('is-working')).toBe(true);
+    expect(container.querySelector('.v3-working-label')?.textContent).toBe('正在执行');
+    expect(processToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(processToggle.getAttribute('aria-label')).toContain('展开任务步骤');
+    expect(processToggle.getAttribute('aria-controls')).toMatch(/^working-steps-/);
+    expect(container.querySelector('.v3-working-summary')?.textContent).toContain('execute_shell');
+    expect(container.querySelector('.v3-wpi-tool-result')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(processToggle);
+      await Promise.resolve();
+    });
+
+    const inlineDetails = container.querySelector('.v3-working-details-inline');
+    const resultToggle = inlineDetails?.querySelector('.v3-wpi-tool-header.is-toggle');
+    const workingSteps = inlineDetails?.querySelector('.v3-working-steps');
+    expect(resultToggle).not.toBeNull();
+    expect(workingSteps).not.toBeNull();
+    expect(inlineDetails?.parentElement).toBe(container.querySelector('.v3-working-process'));
+    expect(inlineDetails?.id).toBe(processToggle.getAttribute('aria-controls'));
+    expect(resultToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(inlineDetails?.querySelector('.v3-wpi-tool-result')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(resultToggle);
+      await Promise.resolve();
+    });
+
+    expect(resultToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(inlineDetails?.querySelector('.v3-wpi-tool-result')?.textContent)
+      .toContain('result line');
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-working-details-inline')).toBeNull();
+    expect(document.activeElement).toBe(processToggle);
+  });
+
+  it('uses an explicit completed turn signal and strips the process protocol prefix', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 30,
+            from_uid: 2,
+            content: '',
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          workingMessages={[
+            {
+              type: 'text',
+              content: 'AI文本:Checking the implementation.',
+              _display_text_role: 'process',
+            },
+            {
+              type: 'tool_use',
+              content: 'execute_shell',
+              metadata: { id: 'shell-1', input: { command: 'npm test' } },
+            },
+            {
+              type: 'tool_result',
+              content: 'Tests passed',
+              metadata: { tool_use_id: 'shell-1' },
+            },
+          ]}
+          workingOnly
+          workingComplete
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const message = container.querySelector('.v3-message');
+    expect(message.classList.contains('is-working')).toBe(false);
+    expect(message.classList.contains('is-complete')).toBe(true);
+    expect(container.querySelector('.v3-working-label')?.textContent).toBe('已完成');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-working-toggle'));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-wpi-narrative')?.textContent)
+      .toBe('Checking the implementation.');
+    expect(container.textContent).not.toContain('AI文本:');
   });
 
   it('opens external HTML files instead of fetching them into the preview panel', async () => {
@@ -1043,7 +1412,317 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
   });
 
-  it('previews PDF files in the side panel without fetching their content', async () => {
+  it('renders a registry-matched Artifact URL as a card and previews the remote page in the side panel', async () => {
+    const artifact = {
+      id: 'lesson-game',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+      publish_version: 2,
+    };
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 30,
+            from_uid: 440,
+            content: `[artifact-link-test](${artifact.url})`,
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          knownArtifacts={[artifact]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-message-artifact-list')).not.toBeNull();
+    expect(container.querySelector('.v3-attachment-name').textContent).toBe('课堂小游戏');
+    expect(container.querySelector('.v3-attachment-size').textContent).toContain('v2');
+    expect(container.querySelector('.oc-artifact-source-link')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await Promise.resolve();
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    const panel = container.querySelector('.v3-file-preview-panel');
+    expect(panel).not.toBeNull();
+    const frame = panel.querySelector('iframe.v3-file-preview-frame');
+    expect(frame.getAttribute('src')).toBe(artifact.url);
+    expect(frame.getAttribute('sandbox')).toContain('allow-same-origin');
+    expect(frame.hasAttribute('credentialless')).toBe(true);
+    expect(panel.querySelector('.v3-file-preview-actions a').getAttribute('href')).toBe(artifact.url);
+    expect(container.querySelector('.v3-artifact-action[href]').getAttribute('href')).toBe(artifact.url);
+    expect(panel.querySelector('.v3-remote-artifact-preview-state').textContent).toContain('正在加载');
+
+    await act(async () => {
+      Simulate.load(frame);
+      await Promise.resolve();
+    });
+    expect(panel.querySelector('.v3-remote-artifact-preview-state')).toBeNull();
+
+    await act(async () => {
+      Simulate.error(frame);
+      await Promise.resolve();
+    });
+    expect(panel.querySelector('.v3-remote-artifact-preview-state.error').textContent).toContain('预览加载失败');
+    expect(panel.querySelector('.v3-remote-artifact-preview-state.error a').getAttribute('href')).toBe(artifact.url);
+  });
+
+  it('reuses the side preview external-open action and returns to the managed Artifact list', async () => {
+    const artifact = {
+      id: 'managed-game',
+      title: 'Managed Game',
+      url: 'https://artifacts.example.test/by-agent/440/managed-game/latest/',
+      publish_version: 3,
+    };
+    const onBack = vi.fn();
+    const onClose = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={createCloudArtifactPreviewFile(artifact)}
+          onBack={onBack}
+          onClose={onClose}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const panel = container.querySelector('.v3-file-preview-panel');
+    const externalLink = panel.querySelector('a[aria-label="在新窗口打开"]');
+    expect(externalLink?.getAttribute('href')).toBe(artifact.url);
+    expect(panel.querySelector('a[download]')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(panel.querySelector('button[aria-label="返回产物列表"]'));
+    });
+    expect(onBack).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('opens a same-origin registry Artifact in a new tab instead of embedding it', async () => {
+    const artifactURL = new URL('/artifacts/by-agent/440/same-origin/latest/', window.location.origin).toString();
+    const artifact = {
+      id: 'same-origin',
+      title: 'Same-origin artifact',
+      kind: 'html',
+      url: artifactURL,
+      publish_version: 1,
+    };
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 37,
+            from_uid: 440,
+            content: `Published: ${artifactURL}`,
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          knownArtifacts={[artifact]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const previewButton = container.querySelector('.v3-artifact-actions button');
+    expect(previewButton.disabled).toBe(true);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await Promise.resolve();
+    });
+
+    expect(window.open).toHaveBeenCalledWith(artifactURL, '_blank', 'noopener,noreferrer');
+    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+    expect(container.querySelector('iframe.v3-file-preview-frame')).toBeNull();
+  });
+
+  it('keeps an unknown external URL as an ordinary link', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 31,
+            from_uid: 440,
+            content: '[artifact-link-test](https://artifacts.example.test/by-agent/440/lesson-game/latest/)',
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          knownArtifacts={[]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-message-artifact-list')).toBeNull();
+    expect(container.querySelector('.oc-markdown a:not(.oc-artifact-source-link)')).not.toBeNull();
+  });
+
+  it('does not trust a message payload that declares itself to be a remote Artifact', async () => {
+    const externalURL = 'https://example.com/forged-artifact.html';
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 34,
+            from_uid: 440,
+            content: {
+              type: 'file',
+              payload: {
+                name: 'forged-artifact.html',
+                url: externalURL,
+                mime_type: 'text/html',
+                preview_mode: 'remote-static-artifact',
+              },
+            },
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+    expect(window.open).toHaveBeenCalledWith(externalURL, '_blank');
+  });
+
+  it('does not match a known Artifact URL used as the prefix of a different URL', async () => {
+    const artifact = {
+      id: 'query-game',
+      title: 'Query Game',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/query-game/latest/',
+    };
+    const differentURL = `${artifact.url}?mode=test`;
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 35,
+            from_uid: 440,
+            content: `调试地址：${differentURL}`,
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          knownArtifacts={[artifact]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-message-artifact-list')).toBeNull();
+    expect(container.querySelector('.v3-message-content').textContent).toContain(differentURL);
+  });
+
+  it('requires a URL token boundary and preserves fragment-specific deep links', async () => {
+    const artifact = {
+      id: 'boundary-game',
+      title: 'Boundary Game',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/boundary-game/latest/',
+    };
+    const prefixedURL = `prefix${artifact.url}`;
+    const fragmentURL = `${artifact.url}#step-2`;
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 36,
+            from_uid: 440,
+            content: `${prefixedURL}\n${fragmentURL}`,
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          knownArtifacts={[artifact]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-message-artifact-list')).toBeNull();
+    expect(container.querySelector('.v3-message-content').textContent).toContain(prefixedURL);
+    expect(container.querySelector('.v3-message-content').textContent).toContain(fragmentURL);
+  });
+
+  it('turns an exact bare Artifact URL into a card', async () => {
+    const artifact = {
+      id: 'bare-game',
+      title: 'Bare URL Game',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/bare-game/latest/',
+      publish_version: 1,
+    };
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 32,
+            from_uid: 440,
+            content: `已发布：${artifact.url}。`,
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          knownArtifacts={[artifact]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-message-artifact-list')).not.toBeNull();
+    expect(container.querySelector('.v3-message-content').textContent).not.toContain(artifact.url);
+  });
+
+  it('turns an Artifact URL inside a plain text table into a card', async () => {
+    const artifact = {
+      id: 'table-game',
+      title: 'Table URL Game',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/table-game/latest/',
+    };
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 33,
+            from_uid: 440,
+            content: [
+              '序号 名称 地址 状态',
+              `1 游戏 ${artifact.url} 已发布`,
+              '2 说明 无 正常',
+            ].join('\n'),
+            created_at: '2026-07-27T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          knownArtifacts={[artifact]}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.oc-plain-text-table')).not.toBeNull();
+    expect(container.querySelector('.oc-plain-text-table').textContent).not.toContain(artifact.url);
+    expect(container.querySelector('.v3-message-artifact-list')).not.toBeNull();
+  });
+
+  it('previews PDF files without fetching their content', async () => {
     await act(async () => {
       root.render(
         <PreviewHarness
@@ -1075,10 +1754,295 @@ describe('ChatMessage rich file rendering', () => {
     expect(global.fetch).not.toHaveBeenCalled();
     const panel = container.querySelector('.v3-file-preview-panel');
     expect(panel).not.toBeNull();
-    expect(panel.querySelector('iframe.v3-file-preview-frame').getAttribute('src')).toBe('/uploads/files/report.pdf');
+    expect(panel.querySelector('.v3-mobile-pdf-preview-mock').dataset.url).toBe('/uploads/files/report.pdf');
     const downloadLink = panel.querySelector('.v3-file-preview-actions a');
     expect(downloadLink.getAttribute('href')).toBe('/uploads/files/report.pdf?download=1');
     expect(downloadLink.getAttribute('download')).toBe('report.pdf');
+  });
+
+  it('closes the file preview from its backdrop and the Escape key', async () => {
+    const message = {
+      id: 41,
+      from_uid: 2,
+      content: '[文件] mobile-report.pdf',
+      content_blocks: [{
+        type: 'file',
+        payload: {
+          name: 'mobile-report.pdf',
+          url: '/uploads/files/mobile-report.pdf',
+          size: 2048,
+          mime_type: 'application/pdf',
+        },
+      }],
+      created_at: '2026-06-09T00:00:00Z',
+    };
+
+    await act(async () => {
+      root.render(<PreviewHarness message={message} />);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-file-preview-panel')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-file-preview-backdrop'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-file-preview-panel')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+  });
+
+  it('makes the narrow file preview modal, traps focus, and restores the chat on close', async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn((query) => ({
+        matches: query === '(max-width: 1024px)',
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    });
+    const message = {
+      id: 42,
+      from_uid: 2,
+      content: '[文件] accessible-report.pdf',
+      content_blocks: [{
+        type: 'file',
+        payload: {
+          name: 'accessible-report.pdf',
+          url: '/uploads/files/accessible-report.pdf',
+          size: 2048,
+          mime_type: 'application/pdf',
+        },
+      }],
+      created_at: '2026-06-09T00:00:00Z',
+    };
+
+    try {
+      await act(async () => {
+        root.render(<PreviewHarness message={message} />);
+        await Promise.resolve();
+      });
+      const opener = container.querySelector('.v3-artifact-main');
+      opener.focus();
+
+      await act(async () => {
+        Simulate.click(opener);
+        await flushAsync();
+      });
+
+      const panel = container.querySelector('.v3-file-preview-panel');
+      const chatColumn = container.querySelector('.v3-chat-column');
+      const closeButton = panel.querySelector('button[aria-label="关闭预览"]');
+      expect(panel.getAttribute('role')).toBe('dialog');
+      expect(panel.getAttribute('aria-modal')).toBe('true');
+      expect(panel.querySelector('.v3-mobile-pdf-preview-mock').dataset.url).toBe('/uploads/files/accessible-report.pdf');
+      expect(panel.querySelector('iframe.v3-file-preview-frame')).toBeNull();
+      expect(chatColumn.hasAttribute('inert')).toBe(true);
+      expect(chatColumn.getAttribute('aria-hidden')).toBe('true');
+      expect(document.activeElement).toBe(closeButton);
+
+      const focusable = panel.querySelectorAll('button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])');
+      focusable[focusable.length - 1].focus();
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(document.activeElement).toBe(panel.querySelector('.v3-file-preview-drag-handle'));
+
+      const dragHandle = panel.querySelector('.v3-file-preview-drag-handle');
+      expect(document.activeElement).toBe(dragHandle);
+      await act(async () => {
+        Simulate.keyDown(dragHandle, { key: 'Enter' });
+        await Promise.resolve();
+      });
+      expect(panel.className).toContain('is-dismissing');
+
+      await act(async () => {
+        Simulate.transitionEnd(panel, { propertyName: 'transform' });
+        await Promise.resolve();
+      });
+      expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+      expect(chatColumn.hasAttribute('inert')).toBe(false);
+      expect(chatColumn.hasAttribute('aria-hidden')).toBe(false);
+      expect(document.activeElement).toBe(opener);
+
+      const committedFrames = [];
+      const observer = new MutationObserver((records) => {
+        records.forEach((record) => record.addedNodes.forEach((node) => {
+          if (node.nodeType !== Node.ELEMENT_NODE) return;
+          if (node.matches?.('iframe.v3-file-preview-frame')) committedFrames.push(node);
+          committedFrames.push(...node.querySelectorAll?.('iframe.v3-file-preview-frame') || []);
+        }));
+      });
+      observer.observe(container, { childList: true, subtree: true });
+      await act(async () => {
+        Simulate.click(opener);
+        await flushAsync();
+      });
+      observer.disconnect();
+
+      expect(committedFrames).toHaveLength(0);
+      expect(container.querySelector('.v3-mobile-pdf-preview-mock')).not.toBeNull();
+      expect(container.querySelector('iframe.v3-file-preview-frame')).toBeNull();
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+    }
+  });
+
+  it('dismisses the mobile file preview immediately when reduced motion is requested', async () => {
+    const originalMatchMedia = window.matchMedia;
+    const matchMedia = vi.fn((query) => ({
+      matches: query === '(max-width: 1024px)' || query === '(prefers-reduced-motion: reduce)',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: matchMedia,
+    });
+
+    try {
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{
+              id: 43,
+              from_uid: 2,
+              content: '[文件] reduced-motion-report.pdf',
+              content_blocks: [{
+                type: 'file',
+                payload: {
+                  name: 'reduced-motion-report.pdf',
+                  url: '/uploads/files/reduced-motion-report.pdf',
+                  size: 2048,
+                  mime_type: 'application/pdf',
+                },
+              }],
+              created_at: '2026-06-09T00:00:00Z',
+            }}
+          />,
+        );
+        await flushAsync();
+      });
+
+      await act(async () => {
+        Simulate.click(container.querySelector('.v3-artifact-main'));
+        await flushAsync();
+      });
+      const handle = container.querySelector('.v3-file-preview-drag-handle');
+      expect(handle).not.toBeNull();
+
+      await act(async () => {
+        Simulate.keyDown(handle, { key: 'Enter' });
+        await Promise.resolve();
+      });
+
+      expect(matchMedia).toHaveBeenCalledWith('(prefers-reduced-motion: reduce)');
+      expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+    }
+  });
+
+  it('keeps the desktop file preview as a non-modal side panel', async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    });
+
+    try {
+      await act(async () => {
+        root.render(
+          <FilePreviewPanel
+            file={{
+              name: 'desktop-report.pdf',
+              url: '/uploads/files/desktop-report.pdf',
+              size: 2048,
+              mime_type: 'application/pdf',
+            }}
+            onClose={vi.fn()}
+          />,
+        );
+        await flushAsync();
+      });
+      const panel = container.querySelector('.v3-file-preview-panel');
+      expect(panel.hasAttribute('role')).toBe(false);
+      expect(panel.hasAttribute('aria-modal')).toBe(false);
+      expect(panel.querySelector('iframe.v3-file-preview-frame').getAttribute('src')).toBe('/uploads/files/desktop-report.pdf');
+      expect(panel.querySelector('.v3-mobile-pdf-preview-mock')).toBeNull();
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, value: originalMatchMedia });
+    }
+  });
+
+  it('closes the mobile file preview when its handle is dragged down past the threshold', async () => {
+    const onClose = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <FilePreviewPanel
+          file={{
+            name: 'mobile-report.pdf',
+            url: '/uploads/files/mobile-report.pdf',
+            size: 2048,
+            mime_type: 'application/pdf',
+          }}
+          onClose={onClose}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const handle = container.querySelector('.v3-file-preview-drag-handle');
+    expect(handle).not.toBeNull();
+
+    await act(async () => {
+      Simulate.pointerDown(handle, { pointerId: 1, pointerType: 'touch', clientY: 100 });
+      Simulate.pointerMove(handle, { pointerId: 1, pointerType: 'touch', clientY: 160 });
+      Simulate.pointerUp(handle, { pointerId: 1, pointerType: 'touch', clientY: 160 });
+      await Promise.resolve();
+    });
+
+    const panel = container.querySelector('.v3-file-preview-panel');
+    expect(onClose).not.toHaveBeenCalled();
+    expect(panel.style.getPropertyValue('--v3-preview-drag-offset')).toBe('0px');
+
+    await act(async () => {
+      Simulate.pointerDown(handle, { pointerId: 1, pointerType: 'touch', clientY: 100 });
+      Simulate.pointerMove(handle, { pointerId: 1, pointerType: 'touch', clientY: 180 });
+      Simulate.pointerUp(handle, { pointerId: 1, pointerType: 'touch', clientY: 180 });
+      await Promise.resolve();
+    });
+
+    expect(panel.className).toContain('is-dismissing');
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      Simulate.transitionEnd(panel, { propertyName: 'transform' });
+      await Promise.resolve();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('switches the side preview when another file card is clicked', async () => {
@@ -1200,6 +2164,325 @@ describe('ChatMessage rich file rendering', () => {
     expect(actions[1].getAttribute('href')).toBe('/uploads/files/20260715_f547bf132d510e621877d89214098db5.pdf?download=1');
     expect(actions[1].hasAttribute('download')).toBe(true);
     expect(actions[1].getAttribute('download')).toBe('【电商带货主播_广州 4-6K】何荧 25年应届生.pdf');
+  });
+
+  it('renders MP4 attachments as image-sized thumbnails that open a video preview', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          isSelf
+          message={{
+            id: 8,
+            from_uid: 2,
+            content: '[文件] product-demo.mp4',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'product-demo.mp4',
+                url: '/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4',
+                size: 4096,
+                mime_type: 'video/mp4',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const thumbnail = container.querySelector('video.oc-rich-video-thumb');
+    const trigger = container.querySelector('button.oc-rich-video-trigger');
+    expect(thumbnail).not.toBeNull();
+    expect(thumbnail.getAttribute('src')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4');
+    expect(thumbnail.muted).toBe(true);
+    expect(thumbnail.playsInline).toBe(true);
+    expect(thumbnail.preload).toBe('metadata');
+    expect(trigger.getAttribute('aria-label')).toBe('预览视频 product-demo.mp4');
+    expect(container.querySelector('.v3-message').classList.contains('has-file-only')).toBe(false);
+    expect(container.querySelector('video.oc-rich-video-player')).toBeNull();
+    expect(container.querySelector('.v3-attachment-card')).toBeNull();
+    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+
+    trigger.focus();
+    await act(async () => {
+      Simulate.click(trigger);
+      await Promise.resolve();
+    });
+
+    const preview = container.querySelector('video.oc-rich-video-player');
+    const closeButton = container.querySelector('button.oc-rich-video-preview-close');
+    expect(preview).not.toBeNull();
+    expect(preview.getAttribute('src')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4');
+    expect(preview.controls).toBe(true);
+    expect(preview.autoplay).toBe(true);
+    expect(preview.getAttribute('aria-label')).toBe('product-demo.mp4');
+    expect(container.querySelector('.oc-rich-video-preview').getAttribute('role')).toBe('dialog');
+    expect(document.activeElement).toBe(closeButton);
+
+    preview.focus();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(document.activeElement).toBe(closeButton);
+
+    closeButton.focus();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(document.activeElement).toBe(preview);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.oc-rich-video-preview')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    await act(async () => {
+      Simulate.click(trigger);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button.oc-rich-video-preview-close'));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.oc-rich-video-preview')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('embeds WebM attachments by extension', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 9,
+            from_uid: 2,
+            content: '[文件] product-demo.webm',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'product-demo.webm',
+                url: '/uploads/files/20260727_abcdef1234567890abcdef1234567890.webm',
+                size: 4096,
+                mime_type: 'application/octet-stream',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const video = container.querySelector('video.oc-rich-video-thumb');
+    expect(video).not.toBeNull();
+    expect(video.getAttribute('src')).toContain('.webm');
+    expect(container.querySelector('button.oc-rich-video-trigger').getAttribute('aria-label')).toBe('预览视频 product-demo.webm');
+  });
+
+  it('recognizes signed video URLs when name and MIME metadata are absent', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 91,
+            from_uid: 2,
+            content: '[文件] signed video',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                url: 'https://media.example.com/product-demo.mp4?token=abc123#preview',
+                size: 4096,
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('video.oc-rich-video-thumb')).not.toBeNull();
+    expect(container.querySelector('.v3-attachment-card')).toBeNull();
+  });
+
+  it('recognizes Ogg video by MIME and falls back to the file card after a playback error', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 10,
+            from_uid: 2,
+            content: '[文件] product-demo.ogg',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'product-demo.ogg',
+                url: '/uploads/files/20260727_fedcba0987654321fedcba0987654321.ogg',
+                size: 4096,
+                mime_type: 'video/ogg',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const video = container.querySelector('video.oc-rich-video-thumb');
+    expect(video).not.toBeNull();
+
+    await act(async () => {
+      Simulate.error(video);
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('video.oc-rich-video-thumb')).toBeNull();
+    expect(container.querySelector('.v3-attachment-name').textContent).toBe('product-demo.ogg');
+    expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
+  });
+
+  it('moves focus to the download fallback and announces a preview playback error', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 101,
+            from_uid: 2,
+            content: '[文件] broken-preview.mp4',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'broken-preview.mp4',
+                url: '/uploads/files/broken-preview.mp4',
+                size: 4096,
+                mime_type: 'video/mp4',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.oc-rich-video-trigger'));
+      await Promise.resolve();
+    });
+    const player = container.querySelector('.oc-rich-video-player');
+    player.focus();
+
+    await act(async () => {
+      Simulate.error(player);
+      await Promise.resolve();
+    });
+
+    const fallbackAction = container.querySelector('.v3-artifact-main');
+    expect(document.activeElement).toBe(fallbackAction);
+    expect(container.querySelector('[role="status"]').textContent).toContain('视频无法播放');
+    expect(container.querySelector('.oc-rich-video-preview')).toBeNull();
+  });
+
+  it('recognizes Ogg video MIME types with codec parameters', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 102,
+            from_uid: 2,
+            content: '[文件] product-demo.ogg',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'product-demo.ogg',
+                url: '/uploads/files/20260727_fedcba0987654321fedcba0987654321.ogg',
+                size: 4096,
+                mime_type: 'video/ogg; codecs=theora',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('video.oc-rich-video-thumb')).not.toBeNull();
+    expect(container.querySelector('.v3-attachment-card')).toBeNull();
+  });
+
+  it('keeps audio/ogg attachments as file cards', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 11,
+            from_uid: 2,
+            content: '[文件] recording.ogg',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'recording.ogg',
+                url: '/uploads/files/20260727_00112233445566778899aabbccddeeff.ogg',
+                size: 4096,
+                mime_type: 'audio/ogg',
+              },
+            }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('video.oc-rich-video-player')).toBeNull();
+    expect(container.querySelector('.v3-attachment-name').textContent).toBe('recording.ogg');
+    expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
+  });
+
+  it('restores the video thumbnail when a reused attachment changes URL', async () => {
+    const renderVideo = async (url) => {
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{
+              id: 12,
+              from_uid: 2,
+              content: '[文件] product-demo.mp4',
+              content_blocks: [{
+                type: 'file',
+                payload: {
+                  name: 'product-demo.mp4',
+                  url,
+                  size: 4096,
+                  mime_type: 'video/mp4',
+                },
+              }],
+              created_at: '2026-06-09T00:00:00Z',
+            }}
+          />,
+        );
+        await Promise.resolve();
+      });
+    };
+
+    await renderVideo('/uploads/files/first.mp4');
+    await act(async () => {
+      Simulate.error(container.querySelector('video.oc-rich-video-thumb'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('video.oc-rich-video-thumb')).toBeNull();
+
+    await renderVideo('/uploads/files/second.mp4');
+    expect(container.querySelector('video.oc-rich-video-thumb').getAttribute('src')).toBe('/uploads/files/second.mp4');
   });
 
   it('marks DOCX as downloadable without claiming browser preview support', async () => {

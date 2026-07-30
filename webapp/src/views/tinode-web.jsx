@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { api, setToken, getToken, connectWS, reconnectWS, disconnectWS } from '../api';
 import t from '../i18n';
 import ChatListView from './sidepanel-view';
@@ -20,11 +21,11 @@ import FeedbackModal from '../widgets/feedback-modal';
 import CatsCoDownloadModal from '../widgets/catsco-download-modal';
 import DesktopConnectModal from '../widgets/desktop-connect-modal';
 import RelayAccessModal from '../widgets/relay-access-modal';
-import CloudArtifactsModal from '../widgets/cloud-artifacts-modal';
 import PasswordResetForm from '../widgets/password-reset-form';
 import GroupSettings from '../widgets/group-settings';
 import EditableConversationTitle from '../widgets/editable-conversation-title';
 import AuthFlowBackground from '../components/auth-flow-background';
+import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import WorkflowRichMediaDemo from './workflow-rich-media-demo';
 import Avatar from '../widgets/avatar';
 import BotModelSelector, {
@@ -50,14 +51,16 @@ import { createAgentTaskTopicRecord } from '../utils/agent-task-topic';
 import { formatEmptyTaskGreeting } from '../utils/empty-task-greeting';
 import {
   THEME_STORAGE_KEY,
+  isLiquidTheme,
   isLiquidThemeUnlocked,
   normalizeTheme,
   saveLiquidThemeUnlock,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
-import { Bug, Cloud, Download, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Cloud, Download, Frown, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
+import '../css/catsco-liquid-green.css';
 
 const TABS = {
   CHATS: 'chats'
@@ -71,7 +74,7 @@ const DEV_PREVIEW_PASSWORD = import.meta.env.VITE_DEV_PREVIEW_PASSWORD || 'demo1
 const requestedThemePreview = import.meta.env.DEV
   ? new URLSearchParams(window.location.search).get('theme_preview')
   : '';
-const DEV_THEME_PREVIEW = ['light', 'dark', 'liquid'].includes(requestedThemePreview)
+const DEV_THEME_PREVIEW = ['light', 'dark', 'liquid', 'liquid-green'].includes(requestedThemePreview)
   ? requestedThemePreview
   : '';
 const DEV_PREVIEW_USER = {
@@ -96,21 +99,35 @@ function normalizeUserProfile(raw) {
   };
 }
 
+export function resolveInitialUser({
+  themePreview = '',
+  previewEnabled = false,
+  token = '',
+  savedUser = null,
+} = {}) {
+  const authenticatedUser = token ? normalizeUserProfile(savedUser) : null;
+  if (authenticatedUser) return authenticatedUser;
+  if (themePreview) return { ...DEV_PREVIEW_USER, uid: 'theme-preview' };
+  if (previewEnabled || !token) return null;
+  return null;
+}
+
 function getInitialUser() {
-  if (DEV_THEME_PREVIEW) return { ...DEV_PREVIEW_USER, uid: 'theme-preview' };
-  if (DEV_PREVIEW_ENABLED) return null;
-
   const token = getToken();
-  if (!token) return null;
-
+  let savedUser = null;
   try {
-    const saved = localStorage.getItem('oc_user');
-    return saved ? normalizeUserProfile(JSON.parse(saved)) : null;
+    const saved = token ? localStorage.getItem('oc_user') : '';
+    savedUser = saved ? JSON.parse(saved) : null;
   } catch (error) {
     console.warn('Failed to restore saved user from localStorage:', error);
     localStorage.removeItem('oc_user');
-    return null;
   }
+  return resolveInitialUser({
+    themePreview: DEV_THEME_PREVIEW,
+    previewEnabled: DEV_PREVIEW_ENABLED,
+    token,
+    savedUser,
+  });
 }
 
 function loadAppSidebarCollapsed() {
@@ -155,6 +172,7 @@ export default function TinodeWeb() {
 }
 
 function TinodeWebApp() {
+  const feedback = useFeedback();
   const entryMatch = window.location.pathname.match(/^\/e\/([^/]+)$/);
   const entrySceneKey = entryMatch ? decodeURIComponent(entryMatch[1]) : '';
   const channelDeviceLink = window.location.pathname === '/channel-device-link';
@@ -186,7 +204,8 @@ function TinodeWebApp() {
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
-  const [showCloudArtifactsModal, setShowCloudArtifactsModal] = useState(false);
+  const [cloudArtifactsRequest, setCloudArtifactsRequest] = useState(null);
+  const cloudArtifactsRequestSequenceRef = useRef(0);
   const [managedGroup, setManagedGroup] = useState(null);
   const appShellRef = useRef(null);
   const [appSidebarCollapsed, setAppSidebarCollapsed] = useState(() => loadAppSidebarCollapsed());
@@ -197,7 +216,7 @@ function TinodeWebApp() {
   const [theme, setTheme] = useState(() => DEV_THEME_PREVIEW || normalizeTheme(localStorage.getItem(THEME_STORAGE_KEY)));
   const [liquidThemeAccess, setLiquidThemeAccess] = useState(() => ({
     loading: false,
-    unlocked: DEV_THEME_PREVIEW === 'liquid' || isLiquidThemeUnlocked(),
+    unlocked: isLiquidTheme(DEV_THEME_PREVIEW) || isLiquidThemeUnlocked(),
   }));
   const [currentModelName, setCurrentModelName] = useState(DEFAULT_MODEL_NAME);
   const [activeAgentModel, setActiveAgentModel] = useState(null);
@@ -226,6 +245,15 @@ function TinodeWebApp() {
   }, [activeTopicId]);
   const displayedActiveAgent = resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft);
   const showCloudArtifactsAction = canOpenCloudArtifacts(activeTopic, displayedActiveAgent);
+  const handleOpenCloudArtifacts = useCallback(() => {
+    const agentUid = Number(displayedActiveAgent?.uid || 0);
+    if (agentUid <= 0) return;
+    cloudArtifactsRequestSequenceRef.current += 1;
+    setCloudArtifactsRequest({
+      agentUid,
+      requestId: cloudArtifactsRequestSequenceRef.current,
+    });
+  }, [displayedActiveAgent?.uid]);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
     appSidebarPreferredWidth,
@@ -241,35 +269,44 @@ function TinodeWebApp() {
   }, []);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
+    const greenLiquid = theme === 'liquid-green';
+    document.documentElement.dataset.theme = greenLiquid ? 'liquid' : theme;
+    if (greenLiquid) {
+      document.documentElement.dataset.liquidVariant = 'green';
+    } else {
+      delete document.documentElement.dataset.liquidVariant;
+    }
     localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
   useEffect(() => {
     if (DEV_THEME_PREVIEW) {
-      setLiquidThemeAccess({ loading: false, unlocked: DEV_THEME_PREVIEW === 'liquid' });
+      setLiquidThemeAccess({ loading: false, unlocked: isLiquidTheme(DEV_THEME_PREVIEW) });
       setTheme(DEV_THEME_PREVIEW);
       return;
     }
 
     const unlocked = isLiquidThemeUnlocked();
     setLiquidThemeAccess({ loading: false, unlocked });
-    if (!unlocked) setTheme((current) => current === 'liquid' ? 'light' : current);
+    if (!unlocked) setTheme((current) => isLiquidTheme(current) ? 'light' : current);
   }, []);
 
   const selectTheme = useCallback((nextTheme) => {
     const normalized = normalizeTheme(nextTheme);
-    if (normalized === 'liquid' && !liquidThemeAccess.unlocked) return false;
+    if (isLiquidTheme(normalized) && !liquidThemeAccess.unlocked) return false;
     setTheme(normalized);
     return true;
   }, [liquidThemeAccess.unlocked]);
 
-  const unlockLiquidTheme = useCallback(async (password) => {
+  const unlockLiquidTheme = useCallback(async (password, requestedTheme = 'liquid') => {
     const unlocked = await verifyLiquidThemePassword(password);
     if (!unlocked) throw new Error('密码不正确。');
-    saveLiquidThemeUnlock();
+    if (!saveLiquidThemeUnlock()) {
+      throw new Error('浏览器未能保存解锁状态，请检查站点存储设置。');
+    }
     setLiquidThemeAccess({ loading: false, unlocked: true });
-    setTheme('liquid');
+    const normalized = normalizeTheme(requestedTheme);
+    setTheme(isLiquidTheme(normalized) ? normalized : 'liquid');
     return { ok: true };
   }, []);
 
@@ -378,8 +415,9 @@ function TinodeWebApp() {
         });
         if (cancelled) return;
         setToken(session.token);
+        const profile = normalizeUserProfile(await api.getMe().catch(() => null));
         if (cancelled) return;
-        persistUser({
+        persistUser(profile || {
           ...DEV_PREVIEW_USER,
           uid: DEV_PREVIEW_UID,
         });
@@ -559,7 +597,7 @@ function TinodeWebApp() {
 
   useEffect(() => {
     if (!user?.uid) return;
-    if (DEV_PREVIEW_ENABLED || DEV_THEME_PREVIEW) return undefined;
+    if (!getToken()) return undefined;
 
     let cancelled = false;
     api.getMe()
@@ -720,11 +758,12 @@ function TinodeWebApp() {
         current?.topicId === topic.topicId ? { ...current, name: nextName } : current
       ));
       window.dispatchEvent(new Event('cc:data-changed'));
+      feedback.notify({ tone: 'success', message: '对话标题已更新' });
     } catch (error) {
-      window.alert(error.message || '修改对话标题失败');
+      feedback.notify({ tone: 'error', title: '修改标题失败', message: error.message || '请稍后重试' });
       throw error;
     }
-  }, [activeTopic, setActiveTopic]);
+  }, [activeTopic, feedback, setActiveTopic]);
 
   const resolveAgentTopic = useCallback(async (agent) => {
     const agentUid = agent?.uid || agent?.id;
@@ -841,6 +880,18 @@ function TinodeWebApp() {
     return <AgentEntryBindView sceneKey={entrySceneKey} />;
   }
 
+  const localAssistantBar = (
+    <LocalAssistantBar
+      agentModelState={displayedAgentModel}
+      activeAgent={displayedActiveAgent}
+      currentModelName={currentModelName}
+      onDownload={() => setShowDownloadModal(true)}
+      onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
+      title={activeTopic?.name || taskDraftTitle(taskDraft)}
+      onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
+    />
+  );
+
   return (
     <div
       ref={appShellRef}
@@ -907,9 +958,9 @@ function TinodeWebApp() {
         />
 
         {showProfilePopover && (
-          <div className="v3-profile-popover" ref={profilePopoverRef}>
+          <ProfilePopover compact={appSidebarCollapsed} popoverRef={profilePopoverRef}>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowFeedbackModal(true); }}>
-              <Bug size={16} style={{marginRight: 10}} /> 意见反馈
+              <Frown size={16} strokeWidth={1.8} style={{marginRight: 10}} /> 意见反馈
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowDownloadModal(true); }}>
               <Download size={16} style={{marginRight: 10}} /> 下载 CatsCo 桌面端
@@ -926,7 +977,7 @@ function TinodeWebApp() {
             <div className="v3-popover-item danger" onClick={() => { localStorage.clear(); window.location.reload(); }}>
               <LogOut size={16} style={{marginRight: 10}} /> 退出登录
             </div>
-          </div>
+          </ProfilePopover>
         )}
 
         <SidebarResizeHandle
@@ -953,17 +1004,9 @@ function TinodeWebApp() {
         >
           <PanelLeftOpen size={18} />
         </button>
-        <LocalAssistantBar
-          agentModelState={displayedAgentModel}
-          activeAgent={displayedActiveAgent}
-          currentModelName={currentModelName}
-          onDownload={() => setShowDownloadModal(true)}
-          onOpenCloudArtifacts={showCloudArtifactsAction ? () => setShowCloudArtifactsModal(true) : undefined}
-          title={activeTopic?.name || taskDraftTitle(taskDraft)}
-          onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
-        />
         {activeTopic ? (
           <MessagesView
+            topBar={localAssistantBar}
             topic={activeTopic.topicId}
             topicName={activeTopic.name}
             user={user}
@@ -976,15 +1019,19 @@ function TinodeWebApp() {
             onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
             onResolveAgentTopic={resolveAgentTopic}
             onActivateTopic={activateResolvedTopic}
+            cloudArtifactsRequest={cloudArtifactsRequest}
           />
         ) : (
-          <NoActiveTask
-            key={taskDraft?.key || 'new-task'}
-            user={user}
-            initialAgent={taskDraft?.agent}
-            onResolveAgentTopic={createDraftAgentTaskTopic}
-            onActivateTopic={activateResolvedTopic}
-          />
+          <>
+            {localAssistantBar}
+            <NoActiveTask
+              key={taskDraft?.key || 'new-task'}
+              user={user}
+              initialAgent={taskDraft?.agent}
+              onResolveAgentTopic={createDraftAgentTaskTopic}
+              onActivateTopic={activateResolvedTopic}
+            />
+          </>
         )}
       </div>
 
@@ -1019,10 +1066,6 @@ function TinodeWebApp() {
 
       {showRelayModal && (
         <RelayAccessModal onClose={() => setShowRelayModal(false)} />
-      )}
-
-      {showCloudArtifactsModal && (
-        <CloudArtifactsModal onClose={() => setShowCloudArtifactsModal(false)} />
       )}
 
       {managedGroup?.groupId && (
@@ -1064,7 +1107,7 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
       <EditableConversationTitle title={title} editable={Boolean(onRenameTitle)} onSave={onRenameTitle} />
       <div className="v3-shell-actions">
         {onOpenCloudArtifacts && (
-          <button type="button" className="v3-action-btn" onClick={onOpenCloudArtifacts} aria-label="打开生成物" title="生成物">
+          <button type="button" className="v3-action-btn" onClick={onOpenCloudArtifacts} aria-label="打开产物" title="产物">
             <Cloud size={17} />
           </button>
         )}
@@ -1139,6 +1182,19 @@ function SidebarContent({
       compact={compact}
       onManageGroup={onManageGroup}
     />
+  );
+}
+
+export function ProfilePopover({ compact = false, popoverRef, children }) {
+  if (typeof document === 'undefined') return null;
+  return createPortal(
+    <div
+      className={`v3-profile-popover${compact ? ' is-compact' : ''}`}
+      ref={popoverRef}
+    >
+      {children}
+    </div>,
+    document.body,
   );
 }
 
@@ -1256,7 +1312,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
   return authShell(
     <form className="oc-auth-card" onSubmit={handleSubmit}>
       <div className="oc-auth-logo">CatsCo</div>
-      {error && <div style={{ color: '#FA5151', marginBottom: 12, fontSize: 13 }}>{error}</div>}
+      {error && <InlineFeedback tone="error" className="oc-auth-feedback">{error}</InlineFeedback>}
 
       {mode === 'login' ? (
         <>

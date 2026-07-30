@@ -5,20 +5,30 @@ const LIQUID_THEME_PASSWORD_SALT = 'catsco-liquid-theme-v1';
 const LIQUID_THEME_PASSWORD_ITERATIONS = 210000;
 const LIQUID_THEME_PASSWORD_VERIFIER = 'q3V748DOo0hRhrrZ8n8N5T7yVPS0uQCFU4xRuO8CW1s=';
 
+export function isLiquidTheme(value) {
+  return value === 'liquid' || value === 'liquid-green';
+}
+
 export function normalizeTheme(value) {
-  return value === 'dark' || value === 'liquid' ? value : 'light';
+  return value === 'dark' || isLiquidTheme(value) ? value : 'light';
 }
 
 export function isLiquidThemeUnlocked(storage = globalThis.localStorage) {
   try {
-    return storage?.getItem(LIQUID_THEME_UNLOCK_STORAGE_KEY) === '1';
+    if (storage?.getItem(LIQUID_THEME_UNLOCK_STORAGE_KEY) === '1') return true;
+    return isLiquidTheme(storage?.getItem(THEME_STORAGE_KEY));
   } catch {
     return false;
   }
 }
 
 export function saveLiquidThemeUnlock(storage = globalThis.localStorage) {
-  storage?.setItem(LIQUID_THEME_UNLOCK_STORAGE_KEY, '1');
+  try {
+    storage?.setItem(LIQUID_THEME_UNLOCK_STORAGE_KEY, '1');
+    return storage?.getItem(LIQUID_THEME_UNLOCK_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
 }
 
 function bytesToBase64(buffer) {
