@@ -398,28 +398,6 @@ func TestPushNotificationSubscriptionRequiresJWTContextAndStrictBody(t *testing.
 	}
 }
 
-func TestPushNotificationSubscriptionHandlerAcceptsJWT(t *testing.T) {
-	store := &memoryPushSubscriptionStore{}
-	service := enabledPushService(store)
-	p256dh, auth := validPushKeys(t)
-	token, err := GenerateToken(88, "push-user", "push@example.com")
-	if err != nil {
-		t.Fatalf("generate token: %v", err)
-	}
-	body := `{"endpoint":"https://push.example.test/jwt","keys":{"p256dh":"` + p256dh + `","auth":"` + auth + `"}}`
-	req := httptest.NewRequest(http.MethodPost, "/api/push/subscription", strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+token)
-	recorder := httptest.NewRecorder()
-
-	service.SubscriptionHandler().ServeHTTP(recorder, req)
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusCreated, recorder.Body.String())
-	}
-	if store.upserted == nil || store.upserted.UID != 88 {
-		t.Fatalf("stored subscription = %+v", store.upserted)
-	}
-}
-
 func TestPushNotificationDeleteSubscription(t *testing.T) {
 	store := &memoryPushSubscriptionStore{}
 	service := enabledPushService(store)
@@ -477,7 +455,6 @@ func TestPushNotificationSendCleansExpiredSubscriptions(t *testing.T) {
 	err := service.SendToUser(context.Background(), 15, PushNotification{
 		Title: "New message",
 		Body:  "Open Cats Company to read it",
-		Topic: "conversation",
 		URL:   "/conversations/active",
 		Tag:   "message",
 	})
@@ -498,10 +475,10 @@ func TestPushNotificationSendCleansExpiredSubscriptions(t *testing.T) {
 	if err := json.Unmarshal(payloads[0], &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
-	if len(payload) != 5 {
+	if len(payload) != 4 {
 		t.Fatalf("payload has unexpected metadata: %s", payloads[0])
 	}
-	for _, key := range []string{"title", "body", "topic", "url", "tag"} {
+	for _, key := range []string{"title", "body", "url", "tag"} {
 		if _, ok := payload[key]; !ok {
 			t.Fatalf("payload missing %q: %s", key, payloads[0])
 		}

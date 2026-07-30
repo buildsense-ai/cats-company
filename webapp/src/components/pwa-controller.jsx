@@ -78,7 +78,7 @@ export default function PwaController({
         const registrationID = getPushRegistrationID();
         const config = await api.getPushConfig(controller.signal);
         if (!isCurrent()) return;
-        const publicKey = config.public_key || config.vapid_public_key || config.vapidPublicKey;
+        const publicKey = config.public_key;
         if (!config.enabled || !publicKey) return;
         const subscription = await ensurePushSubscription(
           publicKey,
@@ -121,7 +121,7 @@ export default function PwaController({
         const registrationID = getPushRegistrationID();
         const config = await api.getPushConfig(controller.signal);
         if (!isCurrent()) return;
-        const publicKey = config.public_key || config.vapid_public_key || config.vapidPublicKey;
+        const publicKey = config.public_key;
         if (!config.enabled || !publicKey) throw new Error('推送服务尚未配置');
 
         const nextPermission = await Notification.requestPermission();

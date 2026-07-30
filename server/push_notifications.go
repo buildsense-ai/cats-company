@@ -67,7 +67,6 @@ var nonPublicPushPrefixes = []netip.Prefix{
 type PushNotification struct {
 	Title string `json:"title,omitempty"`
 	Body  string `json:"body,omitempty"`
-	Topic string `json:"topic,omitempty"`
 	URL   string `json:"url,omitempty"`
 	Tag   string `json:"tag,omitempty"`
 }
@@ -259,12 +258,6 @@ func (s *PushNotificationService) HandleSubscription(w http.ResponseWriter, r *h
 	case http.MethodDelete:
 		s.handleUnsubscribe(w, r, uid)
 	}
-}
-
-// SubscriptionHandler is a JWT-protected HTTP handler suitable for direct
-// registration on a ServeMux.
-func (s *PushNotificationService) SubscriptionHandler() http.Handler {
-	return http.HandlerFunc(AuthMiddleware(s.HandleSubscription))
 }
 
 func (s *PushNotificationService) handleSubscribe(w http.ResponseWriter, r *http.Request, uid int64) {
@@ -472,7 +465,6 @@ func (s *PushNotificationService) SendToUser(ctx context.Context, uid int64, not
 			Subscriber:      s.config.Subject,
 			VAPIDPublicKey:  s.config.PublicKey,
 			VAPIDPrivateKey: s.config.PrivateKey,
-			Topic:           notification.Topic,
 			TTL:             60,
 		})
 
