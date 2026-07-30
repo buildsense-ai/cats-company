@@ -945,6 +945,52 @@ describe('ChatMessage rich file rendering', () => {
     expect(dataTransfer.effectAllowed).toBe('copy');
   });
 
+  it('mounts the expanded image preview outside the message layout', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 2701,
+            from_uid: 1,
+            content: 'Preview image',
+            content_blocks: [
+              {
+                type: 'image',
+                payload: {
+                  file_key: 'poster.png',
+                  url: '/uploads/images/poster.png',
+                  name: 'poster.png',
+                },
+              },
+            ],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf
+          isGroup={false}
+          senderName="Me"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const thumbnail = container.querySelector('img.oc-rich-image-thumb');
+    await act(async () => {
+      Simulate.click(thumbnail);
+    });
+
+    const preview = document.body.querySelector('.oc-rich-image-preview');
+    const previewImage = preview?.querySelector('.oc-rich-image-preview-media');
+    expect(preview).not.toBeNull();
+    expect(container.contains(preview)).toBe(false);
+    expect(previewImage?.getAttribute('src')).toBe('/uploads/images/poster.png');
+    expect(previewImage?.getAttribute('alt')).toBe('poster.png preview');
+
+    await act(async () => {
+      Simulate.click(preview);
+    });
+    expect(document.body.querySelector('.oc-rich-image-preview')).toBeNull();
+  });
+
   it('writes an internal attachment token when a system file is dragged', async () => {
     const setData = vi.fn();
     const dataTransfer = { setData, effectAllowed: 'none' };

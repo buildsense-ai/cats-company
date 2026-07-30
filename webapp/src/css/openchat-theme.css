@@ -3893,7 +3893,19 @@ button.catsco-download-action:disabled {
   cursor: default;
 }
 
-.oc-modal-overlay img {
+.oc-rich-image-preview {
+  padding: 16px;
+}
+
+.oc-rich-image-preview-media {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(90vw, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  border-radius: 8px;
+  object-fit: contain;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
 }
 

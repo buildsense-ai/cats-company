@@ -134,6 +134,18 @@ describe('CatsCo shell styling', () => {
     );
   });
 
+  it('keeps expanded chat images fully visible in the viewport', () => {
+    const previewRule = ruleIn(openchatCss, '.oc-rich-image-preview');
+    const imageRule = ruleIn(openchatCss, '.oc-rich-image-preview-media');
+
+    expect(previewRule).toContain('padding: 16px;');
+    expect(imageRule).toContain('width: auto;');
+    expect(imageRule).toContain('height: auto;');
+    expect(imageRule).toContain('max-width: min(90vw, calc(100vw - 32px));');
+    expect(imageRule).toContain('max-height: calc(100dvh - 32px);');
+    expect(imageRule).toContain('object-fit: contain;');
+  });
+
   it('standardizes scrollbar tiers, states, and browser-specific rendering', () => {
     const rootRule = ruleFor(':root');
     const documentRule = ruleFor('html,\nhtml *');

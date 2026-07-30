@@ -1,4 +1,5 @@
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
@@ -1484,6 +1485,19 @@ function ImageContent({ payload }) {
   const [expanded, setExpanded] = useState(false);
   if (!payload) return null;
   const src = payload.url || payload.thumbnail;
+  const preview = expanded ? createPortal(
+    <div
+      className="oc-modal-overlay oc-rich-image-preview"
+      onClick={() => setExpanded(false)}
+    >
+      <img
+        src={resolveMediaURL(payload.url || src)}
+        alt={payload.name ? `${payload.name} preview` : 'image preview'}
+        className="oc-rich-image-preview-media"
+      />
+    </div>,
+    document.body,
+  ) : null;
   return (
     <div className="oc-rich-image">
       <img
@@ -1495,11 +1509,7 @@ function ImageContent({ payload }) {
         onClick={() => setExpanded(true)}
         style={{ maxWidth: 240, maxHeight: 240, borderRadius: 4, cursor: 'pointer' }}
       />
-      {expanded && (
-        <div className="oc-modal-overlay" onClick={() => setExpanded(false)}>
-          <img src={resolveMediaURL(payload.url || src)} alt="full" style={{ maxWidth: '90vw', maxHeight: '90vh', borderRadius: 8 }} />
-        </div>
-      )}
+      {preview}
     </div>
   );
 }
