@@ -35,6 +35,7 @@ vi.mock('marked', () => ({
 
 vi.mock('../api', () => ({
   resolveMediaURL: (url) => url,
+  getApiBaseURL: () => window.location.origin,
 }));
 
 vi.mock('./avatar', () => ({
@@ -795,7 +796,7 @@ describe('ChatMessage rich file rendering', () => {
     });
 
     expect(container.querySelector('[aria-label="更多操作"]')).toBeNull();
-    const editButton = container.querySelector('[aria-label="编辑并重新发送"]');
+    const editButton = container.querySelector('[aria-label="修改后重新发送（原消息保留）"]');
     expect(editButton).not.toBeNull();
     expect(container.querySelector('[data-conversation-question="question-26"]')).not.toBeNull();
     await act(async () => {
@@ -803,6 +804,101 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
     expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 26 }));
+  });
+
+  it('writes an internal attachment token when a chat image is dragged', async () => {
+    const setData = vi.fn();
+    const dataTransfer = { setData, effectAllowed: 'none' };
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 27,
+            from_uid: 1,
+            content: '拖动图片',
+            content_blocks: [
+              { type: 'text', text: '拖动图片' },
+              { type: 'image', payload: { file_key: 'cat.png', url: '/uploads/images/cat.png', name: 'cat.png' } },
+            ],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf
+          isGroup={false}
+          senderName="Me"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const image = container.querySelector('img.oc-rich-image-thumb');
+    expect(image).not.toBeNull();
+    expect(image.draggable).toBe(true);
+    await act(async () => {
+      Simulate.dragStart(image, { dataTransfer });
+    });
+
+    expect(setData).toHaveBeenCalledWith(
+      'application/x-catsco-chat-attachment',
+      expect.stringMatching(/^(?:[0-9a-f-]{36}|[0-9a-f]{48})$/i),
+    );
+    expect(dataTransfer.effectAllowed).toBe('copy');
+  });
+
+  it('writes an internal attachment token when a system file is dragged', async () => {
+    const setData = vi.fn();
+    const dataTransfer = { setData, effectAllowed: 'none' };
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 28,
+            from_uid: 1,
+            content: '[文件] report.pdf',
+            content_blocks: [{ type: 'file', payload: { file_key: 'report.pdf', url: '/uploads/files/report.pdf', name: 'report.pdf' } }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf
+          isGroup={false}
+          senderName="Me"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const card = container.querySelector('.v3-attachment-card');
+    expect(card.draggable).toBe(true);
+    await act(async () => {
+      Simulate.dragStart(card, { dataTransfer });
+    });
+    expect(setData).toHaveBeenCalledWith('application/x-catsco-chat-attachment', expect.any(String));
+  });
+
+  it('does not expose URL-only images as reusable chat attachments', async () => {
+    const setData = vi.fn();
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 29,
+            from_uid: 2,
+            content: '[图片] remote.png',
+            content_blocks: [{ type: 'image', payload: { file_key: 'forged-key', url: 'https://example.com/remote.png', name: 'remote.png' } }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="Other"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const image = container.querySelector('img.oc-rich-image-thumb');
+    expect(image.draggable).toBe(false);
+    await act(async () => {
+      Simulate.dragStart(image, { dataTransfer: { setData, effectAllowed: 'none' } });
+    });
+    expect(setData).not.toHaveBeenCalled();
   });
 
   it('keeps the larger current-user bubble shrink-wrapped with balanced padding', () => {

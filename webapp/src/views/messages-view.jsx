@@ -6,6 +6,7 @@ import ChatMessage, { FilePreviewPanel } from '../widgets/chat-message';
 import Avatar from '../widgets/avatar';
 import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
+import { attachmentFromContentBlock, attachmentIdentity, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 
@@ -1195,8 +1196,12 @@ export default function MessagesView({
     return () => document.removeEventListener('keydown', handleEscape);
   }, [phoneUploadDialogOpen]);
 
+  const hasSupportedAttachmentDrag = (dataTransfer) => (
+    hasFileDrag(dataTransfer) || hasChatAttachmentDrag(dataTransfer)
+  );
+
   const handleDragEnter = (e) => {
-    if (!hasFileDrag(e.dataTransfer)) return;
+    if (!hasSupportedAttachmentDrag(e.dataTransfer)) return;
     e.preventDefault();
     e.stopPropagation();
     dragDepthRef.current += 1;
@@ -1204,7 +1209,7 @@ export default function MessagesView({
   };
 
   const handleDragOver = (e) => {
-    if (!hasFileDrag(e.dataTransfer)) return;
+    if (!hasSupportedAttachmentDrag(e.dataTransfer)) return;
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = 'copy';
@@ -1212,7 +1217,7 @@ export default function MessagesView({
   };
 
   const handleDragLeave = (e) => {
-    if (!hasFileDrag(e.dataTransfer)) return;
+    if (!hasSupportedAttachmentDrag(e.dataTransfer)) return;
     e.preventDefault();
     e.stopPropagation();
     dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
@@ -1222,7 +1227,7 @@ export default function MessagesView({
   };
 
   const handleDrop = async (e) => {
-    if (!hasFileDrag(e.dataTransfer)) return;
+    if (!hasSupportedAttachmentDrag(e.dataTransfer)) return;
     e.preventDefault();
     e.stopPropagation();
     dragDepthRef.current = 0;
@@ -1232,6 +1237,22 @@ export default function MessagesView({
       setAttachmentStatus({ tone: 'info', message: '附件仍在上传中，请稍后再拖入新的文件。' });
       return;
     }
+
+    const chatAttachment = readChatAttachmentDrag(e.dataTransfer);
+    if (chatAttachment) {
+      const droppedIdentity = attachmentIdentity(chatAttachment);
+      let added = false;
+      updateAttachmentDraft(topic, (current) => {
+        const alreadyAdded = current.some((item) => attachmentIdentity(item) === droppedIdentity);
+        added = !alreadyAdded;
+        return alreadyAdded ? current : [...current, chatAttachment];
+      });
+      setAttachmentStatus(added
+        ? { tone: 'success', message: `已添加${chatAttachment.type === 'image' ? '图片' : '文件'}：${chatAttachment.name}` }
+        : { tone: 'info', message: `${chatAttachment.name} 已在待发送附件中。` });
+      return;
+    }
+
     const files = await collectDroppedFiles(e.dataTransfer);
     if (files.length === 0) {
       setAttachmentStatus({ tone: 'error', message: '这次拖入没有识别到可上传的文件。' });
@@ -1540,12 +1561,25 @@ export default function MessagesView({
   };
 
   const handleEditMessage = useCallback((message) => {
-    const originalText = typeof message?.content === 'string' ? message.content : '';
-    if (!originalText.trim()) return;
+    const contentBlocks = Array.isArray(message?.content_blocks) ? message.content_blocks : [];
+    const blockText = contentBlocks
+      .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text)
+      .join('\n\n');
+    const restoredAttachments = contentBlocks
+      .map(attachmentFromContentBlock)
+      .filter(Boolean);
+    const legacyContent = typeof message?.content === 'string' ? message.content : '';
+    const attachmentSummary = summarizeAttachments(restoredAttachments);
+    const originalText = blockText || (legacyContent === attachmentSummary ? '' : legacyContent);
+    if (!originalText.trim() && restoredAttachments.length === 0) return;
     setInput(originalText);
     updateComposerDraft(topic, originalText);
+    updateAttachmentDraft(topic, restoredAttachments);
     setReplyTo(null);
-    setAttachmentStatus({ tone: 'success', message: '已将原指令放回输入框，编辑后可直接发送。' });
+    setAttachmentStatus({ tone: 'success', message: restoredAttachments.length > 0
+      ? `已将原文字和 ${restoredAttachments.length} 个附件放回输入框，修改后可重新发送。`
+      : '已将原文字放回输入框，修改后可重新发送。' });
     window.setTimeout(() => {
       const textarea = textareaRef.current;
       if (!textarea) return;
@@ -1553,7 +1587,7 @@ export default function MessagesView({
       textarea.setSelectionRange(originalText.length, originalText.length);
       resizeComposerInput();
     }, 0);
-  }, [resizeComposerInput, topic, updateComposerDraft]);
+  }, [resizeComposerInput, topic, updateAttachmentDraft, updateComposerDraft]);
 
   const questionNavigationItems = useMemo(() => groupedMessages.reduce((items, group, index) => {
     if (group.type !== 'text' || group.message?.from_uid !== user.uid) return items;
@@ -1876,8 +1910,8 @@ export default function MessagesView({
         )}
         boxOverlay={isDragActive && (
           <div className="v3-drop-overlay" aria-hidden="true">
-            <div className="v3-drop-title">拖放文件以上传</div>
-            <div className="v3-drop-subtitle">支持图片、文件和文件夹，附件会先放在这里等待发送。</div>
+            <div className="v3-drop-title">拖放图片或文件到这里</div>
+            <div className="v3-drop-subtitle">支持聊天中的图片、本地图片、文件和文件夹，附件会先放在这里等待发送。</div>
           </div>
         )}
         notices={(
