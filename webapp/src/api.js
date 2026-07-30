@@ -220,11 +220,18 @@ export const api = {
   getMessages: (topicId, limit, offset, latest = false, beforeId = 0, options = {}) =>
     request(
       'GET',
-      `/api/messages?topic_id=${encodeURIComponent(topicId)}&limit=${limit || 50}&offset=${offset || 0}${latest ? '&latest=1' : ''}${beforeId > 0 ? `&before_id=${encodeURIComponent(beforeId)}` : ''}`,
+      `/api/messages?topic_id=${encodeURIComponent(topicId)}&limit=${limit || 50}&offset=${offset || 0}${latest ? '&latest=1' : ''}${beforeId > 0 ? `&before_id=${encodeURIComponent(beforeId)}` : ''}${Number(options.aroundId) > 0 ? `&around_id=${encodeURIComponent(options.aroundId)}` : ''}`,
       undefined,
       options,
     ),
-  getConversations: () => request('GET', '/api/conversations'),
+  getMessageSearch: (query, category = 'all', options = {}) =>
+    request(
+      'GET',
+      `/api/messages/search?q=${encodeURIComponent(query)}&category=${encodeURIComponent(category)}`,
+      undefined,
+      options,
+    ),
+  getConversations: (options = {}) => request('GET', '/api/conversations', undefined, options),
   getProjects: () => request('GET', '/api/projects'),
   createProject: (name) => request('POST', '/api/projects', { name }),
   renameProject: (projectId, name) => request('PATCH', '/api/projects', { project_id: projectId, name }),

@@ -265,6 +265,7 @@ function SidebarRowTrailing({
 export default function ChatListView({
   activeTopic,
   onSelectTopic,
+  onOpenSearch,
   user,
   onlineUsers,
   compact = false,
@@ -2566,15 +2567,15 @@ export default function ChatListView({
           <Plus size={17} />
           <span>新建任务</span>
         </button>
-        <label className="cc-sidebar-search">
+        <button
+          type="button"
+          className="cc-sidebar-search cc-sidebar-search-trigger"
+          onClick={onOpenSearch}
+          aria-label="打开全局搜索"
+        >
           <Search size={15} />
-        <input
-          placeholder="搜索"
-          aria-label="搜索任务、联系人或助手"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-        </label>
+          <span>搜索消息与产物</span>
+        </button>
       </div>}
 
       {!compact && <div ref={sidebarListRef} className="v3-chat-list">

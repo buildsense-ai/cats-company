@@ -1,0 +1,160 @@
+.cc-sidebar-search-trigger {
+  width: 100%;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--cc-text-muted, #667085);
+}
+
+.cc-global-search-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: min(12vh, 96px) 24px 32px;
+  background: rgba(15, 23, 42, 0.38);
+  backdrop-filter: blur(8px);
+}
+
+.cc-global-search {
+  width: min(720px, 100%);
+  max-height: min(720px, 80vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 22px;
+  background: var(--cc-surface, #fff);
+  color: var(--cc-text, #182230);
+  box-shadow: 0 32px 80px rgba(15, 23, 42, 0.24);
+}
+
+.cc-global-search-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 68px;
+  padding: 0 18px 0 22px;
+  border-bottom: 1px solid var(--cc-border, #e5e7eb);
+}
+
+.cc-global-search-header input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 18px;
+}
+
+.cc-global-search-header button,
+.cc-global-search-tabs button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.cc-global-search-header button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+}
+
+.cc-global-search-header button:hover { background: rgba(148, 163, 184, 0.14); }
+.cc-global-search-close { margin-left: 2px; }
+
+.cc-global-search-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--cc-border, #e5e7eb);
+}
+
+.cc-global-search-tabs button {
+  padding: 7px 15px;
+  border-radius: 999px;
+  color: var(--cc-text-muted, #667085);
+}
+
+.cc-global-search-tabs button.active {
+  background: rgba(46, 164, 79, 0.12);
+  color: var(--cc-accent, #238636);
+  font-weight: 600;
+}
+
+.cc-global-search-results { overflow: auto; min-height: 240px; }
+.cc-global-search-state {
+  min-height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--cc-text-muted, #667085);
+}
+.cc-global-search-state.error { color: #b42318; }
+.cc-spin { animation: cc-search-spin 0.9s linear infinite; }
+@keyframes cc-search-spin { to { transform: rotate(360deg); } }
+
+.cc-global-search-result {
+  width: 100%;
+  display: flex;
+  gap: 13px;
+  padding: 16px 20px;
+  border: 0;
+  border-bottom: 1px solid var(--cc-border, #eef0f2);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cc-global-search-result:hover { background: rgba(46, 164, 79, 0.06); }
+.cc-global-search-result:disabled { cursor: not-allowed; opacity: 0.55; }
+.cc-global-search-result-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  background: rgba(46, 164, 79, 0.1);
+  color: var(--cc-accent, #238636);
+}
+.cc-global-search-result-body { min-width: 0; flex: 1; display: grid; gap: 6px; }
+.cc-global-search-result-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.cc-global-search-result-meta strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-global-search-result-meta time { flex: 0 0 auto; color: var(--cc-text-muted, #667085); font-size: 12px; }
+.cc-global-search-result-snippet { color: var(--cc-text-muted, #475467); line-height: 1.5; overflow-wrap: anywhere; }
+.cc-global-search-result-file { display: flex; align-items: center; gap: 5px; color: var(--cc-accent, #238636); font-size: 13px; }
+
+.cc-search-return {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 18px 0;
+  padding: 7px 10px;
+  border: 1px solid var(--cc-border, #d0d5dd);
+  border-radius: 10px;
+  background: var(--cc-surface, #fff);
+  color: var(--cc-text-muted, #475467);
+  cursor: pointer;
+}
+
+.cc-message-anchor { border-radius: 14px; transition: background-color 0.35s ease, box-shadow 0.35s ease; }
+.cc-message-search-hit {
+  background: rgba(250, 204, 21, 0.16);
+  box-shadow: 0 0 0 2px rgba(234, 179, 8, 0.45);
+}
+
+@media (max-width: 640px) {
+  .cc-global-search-backdrop { padding: 0; }
+  .cc-global-search { width: 100%; height: 100%; max-height: none; border: 0; border-radius: 0; }
+  .cc-global-search-results { flex: 1; }
+}

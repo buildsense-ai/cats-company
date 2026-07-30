@@ -124,6 +124,7 @@ describe('ChatListView sidebar sections', () => {
   let root;
   let onSelectTopic;
   let onStartAgentTask;
+  let onOpenSearch;
   let wsHandler;
 
   beforeEach(() => {
@@ -184,6 +185,7 @@ describe('ChatListView sidebar sections', () => {
     });
     onSelectTopic = vi.fn();
     onStartAgentTask = vi.fn();
+    onOpenSearch = vi.fn();
 
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -205,6 +207,7 @@ describe('ChatListView sidebar sections', () => {
           activeTopic={null}
           onSelectTopic={onSelectTopic}
           onStartAgentTask={onStartAgentTask}
+          onOpenSearch={onOpenSearch}
           user={user}
           onlineUsers={{}}
           {...props}
@@ -1899,29 +1902,18 @@ describe('ChatListView sidebar sections', () => {
     expect(task.textContent).not.toContain('不应继续显示');
   });
 
-  it('finds an assigned task through search and expands its project', async () => {
-    api.getConversations.mockResolvedValue({
-      conversations: [{
-        id: 'p2p_7_42',
-        friend_id: 42,
-        name: 'Quarterly Launch Review',
-        is_group: false,
-        is_bot: true,
-        project_id: 12,
-        project_name: 'Website',
-      }],
-    });
-    api.getProjects.mockResolvedValue({
-      projects: [{ id: 12, name: 'Website', task_count: 1 }],
-    });
-
+  it('opens global search from the sidebar search trigger', async () => {
     await mount();
+
+    const trigger = container.querySelector('[aria-label="打开全局搜索"]');
+    expect(trigger).toBeTruthy();
+    expect(trigger.textContent).toContain('搜索消息与产物');
+
     await act(async () => {
-      Simulate.change(container.querySelector('[aria-label="搜索任务、联系人或助手"]'), { target: { value: 'Launch Review' } });
+      Simulate.click(trigger);
     });
 
-    expect(container.querySelector('[aria-label="打开项目任务 Quarterly Launch Review"]')).toBeTruthy();
-    expect(container.textContent).not.toContain('没有匹配结果');
+    expect(onOpenSearch).toHaveBeenCalledTimes(1);
   });
 
   it('creates a project and immediately assigns the selected history task', async () => {
@@ -2406,17 +2398,15 @@ describe('ChatListView sidebar sections', () => {
     expect(document.body.querySelector('.cc-new-task-dialog')).toBeFalsy();
   });
 
-  it('shows matches from collapsed sections while searching', async () => {
+  it('keeps collapsed sections collapsed when opening global search', async () => {
     api.getConversations.mockResolvedValue({
-      conversations: [
-        {
-          id: 'p2p_7_8',
-          friend_id: 8,
-          name: 'Alice',
-          is_group: false,
-          is_bot: false,
-        },
-      ],
+      conversations: [{
+        id: 'p2p_7_8',
+        friend_id: 8,
+        name: 'Alice',
+        is_group: false,
+        is_bot: false,
+      }],
     });
     api.getFriends.mockResolvedValue({
       friends: [{ id: 8, username: 'alice', display_name: 'Alice' }],
@@ -2424,28 +2414,12 @@ describe('ChatListView sidebar sections', () => {
     api.getAgents.mockResolvedValue({ agents: [] });
 
     await mount();
-
-    expect(container.textContent).toContain('Alice');
     await act(async () => {
       clickSection('联系人');
-    });
-    expect(container.textContent).not.toContain('Alice');
-
-    const input = container.querySelector('input');
-    await act(async () => {
-      input.value = 'Alice';
-      Simulate.change(input, { target: { value: 'Alice' } });
+      Simulate.click(container.querySelector('[aria-label="打开全局搜索"]'));
     });
 
-    expect(container.textContent).toContain('Alice');
-    expect(container.textContent).not.toContain('没有匹配结果');
-    expect(container.querySelector('.cc-contacts-section .cc-section-toggle').getAttribute('aria-expanded')).toBe('true');
-
-    await act(async () => {
-      input.value = '';
-      Simulate.change(input, { target: { value: '' } });
-    });
-    expect(container.textContent).not.toContain('Alice');
+    expect(onOpenSearch).toHaveBeenCalledTimes(1);
     expect(container.querySelector('.cc-contacts-section .cc-section-toggle').getAttribute('aria-expanded')).toBe('false');
   });
 
