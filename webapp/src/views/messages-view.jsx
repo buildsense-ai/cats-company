@@ -21,6 +21,8 @@ const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const MAX_DROPPED_FILES = 200;
 const HISTORY_AUTO_LOAD_THRESHOLD = 120;
+const HISTORY_REQUEST_TIMEOUT_MS = 15000;
+const HISTORY_AUTO_FILL_MAX_PAGES = 6;
 const STICK_TO_BOTTOM_THRESHOLD = 96;
 const QUESTION_NAV_BOTTOM_EPSILON = 2;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
@@ -271,6 +273,7 @@ export default function MessagesView({
   const [historyError, setHistoryError] = useState('');
   const [olderHistoryError, setOlderHistoryError] = useState('');
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [autoHistoryLimitReached, setAutoHistoryLimitReached] = useState(false);
   const [isStopRequested, setIsStopRequested] = useState(false);
   const [suppressedWorkingKey, setSuppressedWorkingKey] = useState('');
   const [liveWorkingKey, setLiveWorkingKey] = useState('');
@@ -316,6 +319,9 @@ export default function MessagesView({
   const historyBeforeIDRef = useRef(0);
   const historyRequestRef = useRef(0);
   const historyLoadingRef = useRef(false);
+  const historyAbortControllerRef = useRef(null);
+  const olderHistoryAbortControllerRef = useRef(null);
+  const autoHistoryPageCountRef = useRef(0);
   const groupMembersRequestRef = useRef(0);
   const peerProfileRequestRef = useRef(0);
   const artifactRegistryRequestRef = useRef(0);
@@ -326,6 +332,8 @@ export default function MessagesView({
   const questionIndexCacheRef = useRef(new Map());
   const questionIndexRequestRef = useRef(0);
   const questionIndexLoadingRef = useRef(false);
+  const questionIndexAbortControllerRef = useRef(null);
+  const questionJumpAbortControllerRef = useRef(null);
   const composerDraftsRef = useRef(new Map());
   const structuredMentionDraftsRef = useRef(new Map());
   const attachmentDraftsRef = useRef(new Map());
@@ -543,6 +551,8 @@ export default function MessagesView({
 
   useEffect(() => () => {
     questionIndexRequestRef.current += 1;
+    questionIndexAbortControllerRef.current?.abort();
+    questionJumpAbortControllerRef.current?.abort();
     if (runtimePlanClearTimer.current) {
       clearTimeout(runtimePlanClearTimer.current);
     }
@@ -554,6 +564,10 @@ export default function MessagesView({
   // Load message history and group members when topic changes
   useEffect(() => {
     if (!topic) return;
+    historyAbortControllerRef.current?.abort();
+    olderHistoryAbortControllerRef.current?.abort();
+    questionIndexAbortControllerRef.current?.abort();
+    questionJumpAbortControllerRef.current?.abort();
     groupMembersRequestRef.current += 1;
     peerProfileRequestRef.current += 1;
     activeTopicRef.current = topic;
@@ -589,6 +603,8 @@ export default function MessagesView({
     setHistoryLoaded(Boolean(cachedHistory));
     setHistoryError('');
     setOlderHistoryError('');
+    setAutoHistoryLimitReached(false);
+    autoHistoryPageCountRef.current = 0;
     historyOffsetRef.current = cachedHistory?.offset || 0;
     historyBeforeIDRef.current = cachedHistory?.nextBeforeID || 0;
     hasMoreHistoryRef.current = Boolean(cachedHistory?.hasMore);
@@ -620,6 +636,12 @@ export default function MessagesView({
     } else {
       loadPeerProfile();
     }
+    return () => {
+      historyAbortControllerRef.current?.abort();
+      olderHistoryAbortControllerRef.current?.abort();
+      questionIndexAbortControllerRef.current?.abort();
+      questionJumpAbortControllerRef.current?.abort();
+    };
   }, [groupId, isGroup, topic, user.uid]);
 
   useEffect(() => {
@@ -872,6 +894,9 @@ export default function MessagesView({
     }
 
     const requestId = ++questionIndexRequestRef.current;
+    questionIndexAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    questionIndexAbortControllerRef.current = controller;
     let entry = { ...cached, requested: true };
     let scannedThisLoad = 0;
     questionIndexLoadingRef.current = true;
@@ -890,6 +915,7 @@ export default function MessagesView({
           entry.offset,
           true,
           entry.beforeId,
+          { signal: controller.signal, timeoutMs: HISTORY_REQUEST_TIMEOUT_MS },
         );
         if (
           activeTopicRef.current !== targetTopic
@@ -926,6 +952,9 @@ export default function MessagesView({
     } catch (e) {
       // Keep the lightweight anchors already collected; normal scroll history is unaffected.
     } finally {
+      if (questionIndexAbortControllerRef.current === controller) {
+        questionIndexAbortControllerRef.current = null;
+      }
       if (
         activeTopicRef.current === targetTopic
         && questionIndexRequestRef.current === requestId
@@ -938,6 +967,11 @@ export default function MessagesView({
 
   const loadHistory = async (targetTopic = topic) => {
     const requestID = ++historyRequestRef.current;
+    historyAbortControllerRef.current?.abort();
+    olderHistoryAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    historyAbortControllerRef.current = controller;
+    olderHistoryAbortControllerRef.current = null;
     const cacheKey = historyCacheKey(user.uid, targetTopic);
     const hasCachedHistory = historyCacheRef.current.has(cacheKey);
     historyLoadingRef.current = true;
@@ -947,11 +981,20 @@ export default function MessagesView({
     setOlderHistoryError('');
     loadingOlderRef.current = false;
     setLoadingOlder(false);
+    autoHistoryPageCountRef.current = 0;
+    setAutoHistoryLimitReached(false);
     if (!hasCachedHistory) {
       setHistoryLoaded(false);
     }
     try {
-      const res = await api.getMessages(targetTopic, PAGE_SIZE, 0, true);
+      const res = await api.getMessages(
+        targetTopic,
+        PAGE_SIZE,
+        0,
+        true,
+        0,
+        { signal: controller.signal, timeoutMs: HISTORY_REQUEST_TIMEOUT_MS },
+      );
       if (activeTopicRef.current !== targetTopic || historyRequestRef.current !== requestID) return;
       const rawMessages = res.messages || [];
       const { visibleMessages } = normalizeHistoryMessages(rawMessages);
@@ -994,9 +1037,16 @@ export default function MessagesView({
       }
     } catch (e) {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
-        setHistoryError('聊天记录加载失败，请检查网络后重试。');
+        if (e?.code !== 'REQUEST_ABORTED') {
+          setHistoryError(e?.code === 'REQUEST_TIMEOUT'
+            ? '聊天记录加载超时，请重试。'
+            : '聊天记录加载失败，请检查网络后重试。');
+        }
       }
     } finally {
+      if (historyAbortControllerRef.current === controller) {
+        historyAbortControllerRef.current = null;
+      }
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
         historyLoadingRef.current = false;
         setRefreshingHistory(false);
@@ -1005,10 +1055,20 @@ export default function MessagesView({
     }
   };
 
-  const loadOlderHistory = useCallback(async () => {
+  const loadOlderHistory = useCallback(async ({ automatic = false } = {}) => {
     if (historyLoadingRef.current || loadingOlderRef.current || !hasMoreHistoryRef.current) return;
+    if (automatic && autoHistoryPageCountRef.current >= HISTORY_AUTO_FILL_MAX_PAGES) {
+      setAutoHistoryLimitReached(true);
+      return;
+    }
+    if (!automatic) {
+      autoHistoryPageCountRef.current = 0;
+      setAutoHistoryLimitReached(false);
+    }
     const targetTopic = topic;
     const requestID = historyRequestRef.current;
+    const controller = new AbortController();
+    olderHistoryAbortControllerRef.current = controller;
     
     // Capture the absolute scroll geometry BEFORE rendering the older batch
     if (timelineRef.current) {
@@ -1028,6 +1088,7 @@ export default function MessagesView({
         historyOffsetRef.current,
         true,
         historyBeforeIDRef.current,
+        { signal: controller.signal, timeoutMs: HISTORY_REQUEST_TIMEOUT_MS },
       );
       if (activeTopicRef.current !== targetTopic || historyRequestRef.current !== requestID) return;
       const rawMessages = res.messages || [];
@@ -1069,12 +1130,25 @@ export default function MessagesView({
         setQuestionIndexHasMore(nextQuestionIndex.hasMore);
         setQuestionIndexLimitReached(nextQuestionIndex.limitReached);
       }
+      if (automatic) {
+        autoHistoryPageCountRef.current += 1;
+        setAutoHistoryLimitReached(
+          hasMore && autoHistoryPageCountRef.current >= HISTORY_AUTO_FILL_MAX_PAGES,
+        );
+      }
     } catch (e) {
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
         previousScrollRef.current = null;
-        setOlderHistoryError('更早的聊天记录加载失败。');
+        if (e?.code !== 'REQUEST_ABORTED') {
+          setOlderHistoryError(e?.code === 'REQUEST_TIMEOUT'
+            ? '更早的聊天记录加载超时，请重试。'
+            : '更早的聊天记录加载失败。');
+        }
       }
     } finally {
+      if (olderHistoryAbortControllerRef.current === controller) {
+        olderHistoryAbortControllerRef.current = null;
+      }
       if (activeTopicRef.current === targetTopic && historyRequestRef.current === requestID) {
         loadingOlderRef.current = false;
         setLoadingOlder(false);
@@ -1084,12 +1158,24 @@ export default function MessagesView({
 
   useEffect(() => {
     const el = timelineRef.current;
-    if (!el || refreshingHistory || !hasMoreHistory || loadingOlder || historyError || olderHistoryError) return;
-    if (el.scrollTop <= HISTORY_AUTO_LOAD_THRESHOLD
-      || el.scrollHeight <= el.clientHeight + HISTORY_AUTO_LOAD_THRESHOLD) {
-      loadOlderHistory();
+    if (!el || refreshingHistory || !hasMoreHistory || loadingOlder || historyError
+      || olderHistoryError || autoHistoryLimitReached) return;
+    const needsConversationContent = !hasOrdinaryChatMessage(messages);
+    const needsViewportFill = el.scrollTop <= HISTORY_AUTO_LOAD_THRESHOLD
+      || el.scrollHeight <= el.clientHeight + HISTORY_AUTO_LOAD_THRESHOLD;
+    if (needsConversationContent || needsViewportFill) {
+      loadOlderHistory({ automatic: true });
     }
-  }, [messages.length, refreshingHistory, hasMoreHistory, loadingOlder, historyError, olderHistoryError, loadOlderHistory]);
+  }, [
+    messages,
+    refreshingHistory,
+    hasMoreHistory,
+    loadingOlder,
+    historyError,
+    olderHistoryError,
+    autoHistoryLimitReached,
+    loadOlderHistory,
+  ]);
 
   const workingState = useMemo(() => {
     let lastWorkingIndex = -1;
@@ -2244,6 +2330,7 @@ export default function MessagesView({
   const jumpToQuestion = useCallback(async (questionKey) => {
     const timeline = timelineRef.current;
     if (!timeline) return;
+    questionJumpAbortControllerRef.current?.abort();
     const target = Array.from(timeline.querySelectorAll('[data-conversation-question]'))
       .find((anchor) => anchor.dataset.conversationQuestion === questionKey);
     clearPendingQuestionJump();
@@ -2263,15 +2350,19 @@ export default function MessagesView({
 
     stickToBottomRef.current = false;
     previousScrollRef.current = null;
+    const targetTopic = topic;
+    const controller = new AbortController();
+    questionJumpAbortControllerRef.current = controller;
     try {
       const res = await api.getMessages(
-        topic,
+        targetTopic,
         PAGE_SIZE,
         0,
         true,
         archivedQuestion.id + 1,
+        { signal: controller.signal, timeoutMs: HISTORY_REQUEST_TIMEOUT_MS },
       );
-      if (activeTopicRef.current !== topic) {
+      if (activeTopicRef.current !== targetTopic) {
         clearPendingQuestionJump();
         return;
       }
@@ -2285,6 +2376,10 @@ export default function MessagesView({
       setMessages((prev) => mergeMessages(visibleMessages, prev));
     } catch (error) {
       clearPendingQuestionJump();
+    } finally {
+      if (questionJumpAbortControllerRef.current === controller) {
+        questionJumpAbortControllerRef.current = null;
+      }
     }
   }, [clearPendingQuestionJump, questionNavigationItems, scheduleQuestionJumpRelease, topic]);
 
@@ -2310,7 +2405,7 @@ export default function MessagesView({
       syncActiveQuestion(el);
     }
     if (el.scrollTop <= HISTORY_AUTO_LOAD_THRESHOLD) {
-      loadOlderHistory();
+      loadOlderHistory({ automatic: true });
     }
   };
 
@@ -2368,9 +2463,18 @@ export default function MessagesView({
         {olderHistoryError && (
           <div className="v3-history-state is-compact" role="status">
             <span>{olderHistoryError}</span>
-            <button type="button" className="v3-history-retry" onClick={loadOlderHistory}>
+            <button type="button" className="v3-history-retry" onClick={() => loadOlderHistory()}>
               <RefreshCw size={14} aria-hidden="true" />
               重试
+            </button>
+          </div>
+        )}
+
+        {autoHistoryLimitReached && !olderHistoryError && (
+          <div className="v3-history-state is-compact" role="status">
+            <span>较早记录较多，已暂停自动加载。</span>
+            <button type="button" className="v3-history-retry" onClick={() => loadOlderHistory()}>
+              继续加载
             </button>
           </div>
         )}
@@ -3243,6 +3347,18 @@ function resolveWorkingInitiatorUid(messages, workingIndex, botUIDs) {
     return senderUID;
   }
   return 0;
+}
+
+function hasOrdinaryChatMessage(messages) {
+  return (messages || []).some((message) => {
+    if (!message || isWorkingMessage(message) || runtimePlanFromMessage(message)) return false;
+    if (isFinalTextMessage(message)) return true;
+    if (['file', 'image', 'attachment'].includes(message.type || message.msg_type || '')) return true;
+    return Array.isArray(message.content_blocks) && message.content_blocks.some((block) => (
+      ['text', 'file', 'image'].includes(block?.type)
+      && (block.type !== 'text' || String(block.text || '').trim())
+    ));
+  });
 }
 
 function workingMessageKey(message) {
