@@ -29,6 +29,7 @@ export default function ChatComposer({
   onStop,
   stopDisabled = false,
   onCloseMenus,
+  context,
   notices,
   attachments = [],
   onRemoveAttachment,
@@ -117,9 +118,17 @@ export default function ChatComposer({
       className={`v3-composer${className ? ` ${className}` : ''}`}
     >
       {overlay}
-      {notices && <div className="v3-composer-notices">{notices}</div>}
-      <div className={`v3-composer-box${attachments.length > 0 ? ' has-attachments' : ''}`}>
+      <div
+        className={[
+          'v3-composer-box',
+          context ? 'has-context' : '',
+          notices ? 'has-notices' : '',
+          attachments.length > 0 ? 'has-attachments' : '',
+        ].filter(Boolean).join(' ')}
+      >
         {boxOverlay}
+        {context && <div className="v3-composer-context">{context}</div>}
+        {notices && <div className="v3-composer-notices">{notices}</div>}
         {attachments.length > 0 && (
           <div className="v3-composer-attachment-tray" aria-label="待发送附件">
             {attachments.map((attachment, index) => {
@@ -143,7 +152,7 @@ export default function ChatComposer({
                         setPreviewImage({ src: payload.url || previewUrl, name });
                       }}
                     >
-                      <img src={previewUrl} alt="" />
+                      <img src={previewUrl} alt="" width="56" height="56" />
                     </button>
                   ) : (
                     <>
@@ -190,6 +199,10 @@ export default function ChatComposer({
             {...textareaProps}
             ref={textareaRef}
             className="v3-composer-input"
+            aria-label={textareaProps['aria-label'] || placeholder || '消息'}
+            name={textareaProps.name || 'message'}
+            autoComplete={textareaProps.autoComplete || 'off'}
+            spellCheck={textareaProps.spellCheck ?? true}
             rows={1}
             placeholder={placeholder}
             value={value}

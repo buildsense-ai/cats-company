@@ -3703,13 +3703,23 @@ button.catsco-download-action:disabled {
   padding: 16px;
   display: flex;
   flex-direction: column;
-  transition: all 0.2s;
+  transition: background-color 0.2s, border-color 0.2s, transform 0.2s;
 }
 
 .v3-agent-card:hover {
   background: rgba(255,255,255,0.05);
   border-color: rgba(255,255,255,0.1);
   transform: translateY(-2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-agent-card {
+    transition: none;
+  }
+
+  .v3-agent-card:hover {
+    transform: none;
+  }
 }
 
 .v3-agent-header {
@@ -3758,13 +3768,13 @@ button.catsco-download-action:disabled {
 }
 
 .v3-agent-visibility-badge.public {
-  color: #22c55e;
+  color: var(--cc-success-text, #13765e);
   background: rgba(34, 197, 94, 0.12);
   border-color: rgba(34, 197, 94, 0.22);
 }
 
 .v3-agent-visibility-badge.private {
-  color: #fbbf24;
+  color: var(--cc-warning-text, #7a5200);
   background: rgba(251, 191, 36, 0.12);
   border-color: rgba(251, 191, 36, 0.24);
 }
@@ -5130,7 +5140,8 @@ button.catsco-download-action:disabled {
   min-width: 0;
 }
 
-.v3-working-toggle {
+.v3-working-toggle,
+.v3-working-status {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -5146,6 +5157,10 @@ button.catsco-download-action:disabled {
   margin-bottom: 4px;
 }
 
+.v3-working-status {
+  cursor: default;
+}
+
 .v3-working-toggle:hover {
   color: var(--v3-text-main);
 }
@@ -5154,11 +5169,15 @@ button.catsco-download-action:disabled {
   font-weight: 600;
 }
 
-.v3-working-hint {
-  font-size: 10px;
-  background: rgba(255,255,255,0.05);
-  padding: 2px 6px;
-  border-radius: 4px;
+.v3-working-plan {
+  max-width: 100%;
+  min-width: 0;
+  margin: 4px 0 10px;
+}
+
+.v3-working-plan.is-after-details {
+  max-width: calc(100% - 20px);
+  margin: 8px 0 10px 20px;
 }
 
 .v3-working-steps {
@@ -5170,6 +5189,22 @@ button.catsco-download-action:disabled {
   gap: 12px;
   margin-bottom: 12px;
   min-width: 0;
+}
+
+.v3-working-details-inline {
+  max-width: 100%;
+  min-width: 0;
+  margin: 6px 0 10px 20px;
+}
+
+.v3-working-details-inline .v3-working-steps {
+  max-height: min(320px, 42dvh);
+  margin: 0;
+  padding: 4px 8px 4px 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .v3-runtime-plan-card {
@@ -6111,20 +6146,13 @@ button.catsco-download-action:disabled {
 
 /* --- V3 Composer Popovers (Reply & Mention) --- */
 .oc-reply-bar {
-  width: min(760px, calc(100% - 40px)) !important;
-  background: var(--v3-bg-sidebar) !important;
-  border: 1px solid var(--v3-border) !important;
-  border-radius: 8px 8px 0 0 !important;
-  border-bottom: none !important;
-  margin: 0 auto !important;
-  padding: 10px 16px !important;
+  width: 100% !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  padding: 8px 10px !important;
   color: var(--v3-text-main) !important;
-}
-
-@media (max-width: 760px) {
-  .oc-reply-bar {
-    width: calc(100% - 20px) !important;
-  }
 }
 
 .oc-reply-bar-label {
