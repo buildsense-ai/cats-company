@@ -1314,6 +1314,16 @@ describe('ChatMessage rich file rendering', () => {
       .toContain('result line');
 
     await act(async () => {
+      inlineDetails
+        .querySelector('.v3-wpi-code-block.result pre')
+        .dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 120 }));
+      await Promise.resolve();
+    });
+
+    expect(resultToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(inlineDetails?.querySelector('.v3-wpi-tool-result')).not.toBeNull();
+
+    await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       await Promise.resolve();
     });

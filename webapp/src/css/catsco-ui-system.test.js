@@ -3,11 +3,14 @@ import { resolve } from 'node:path';
 
 const css = readFileSync(resolve(process.cwd(), 'src/css/catsco-ui-system.css'), 'utf8')
   .replace(/\r\n?/g, '\n');
+const openchatCss = readFileSync(resolve(process.cwd(), 'src/css/openchat-theme.css'), 'utf8')
+  .replace(/\r\n?/g, '\n');
 const brandAssetPath = resolve(process.cwd(), 'public/catsco-brand-mark.webp');
 
-const ruleFor = (selector) => css.match(
+const ruleIn = (source, selector) => source.match(
   new RegExp(`(?:^|\\r?\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{[^}]*\\}`),
 )?.[0] || '';
+const ruleFor = (selector) => ruleIn(css, selector);
 
 const readLosslessWebpDimensions = (buffer) => {
   if (
@@ -103,6 +106,21 @@ describe('CatsCo shell styling', () => {
     expect(listRule).toContain('overflow-y: auto;');
     expect(footerRule).toContain('flex: 0 0 auto;');
     expect(ruleFor('.v3-chat-item')).toContain('font-weight: 400;');
+  });
+
+  it('hands vertical wheel scrolling from expanded tool output back to the chat timeline', () => {
+    const scrollChainRules = [
+      ruleFor('.v3-working-steps'),
+      ruleFor('.v3-wpi-code-block.result pre'),
+      ruleIn(openchatCss, '.v3-working-details-inline .v3-working-steps'),
+      ruleIn(openchatCss, '.v3-wpi-code-block pre'),
+    ];
+
+    scrollChainRules.forEach((rule) => {
+      expect(rule).toContain('overscroll-behavior-x: contain;');
+      expect(rule).toContain('overscroll-behavior-y: auto;');
+      expect(rule).not.toContain('overscroll-behavior: contain;');
+    });
   });
 
   it('uses tokenized reduced-motion-safe feedback for inline video controls', () => {

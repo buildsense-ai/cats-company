@@ -2997,7 +2997,8 @@ html[data-theme="liquid"] .catsco-brand-mark {
   max-height: min(360px, 48dvh);
   padding-right: 8px;
   overflow: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
   scrollbar-width: thin;
 }
 
@@ -3071,7 +3072,8 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .v3-wpi-code-block.result pre {
   max-height: 260px;
   overflow: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
 }
 
 .v3-message .v3-msg-name {

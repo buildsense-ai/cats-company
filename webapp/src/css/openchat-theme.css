@@ -5203,7 +5203,8 @@ button.catsco-download-action:disabled {
   padding: 4px 8px 4px 12px;
   overflow-x: hidden;
   overflow-y: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
   scrollbar-width: thin;
 }
 
@@ -5477,6 +5478,8 @@ button.catsco-download-action:disabled {
   margin: 0;
   padding: 10px 14px;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
   font-size: 12px;
   line-height: 1.4;
   color: #D4D4D4;
