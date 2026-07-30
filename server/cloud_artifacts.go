@@ -219,10 +219,13 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
 		return
 	}
-	collectionURL, err := agentManagementCollectionURL(node.managementURL, route.agentUID)
-	if err != nil {
-		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
-		return
+	collectionURL := ""
+	if node.managementURL != "" {
+		collectionURL, err = agentManagementCollectionURL(node.managementURL, route.agentUID)
+		if err != nil {
+			writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+			return
+		}
 	}
 
 	switch route.action {
@@ -240,6 +243,10 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 			writeArtifactError(w, http.StatusBadRequest, "artifact_status_invalid")
 			return
 		}
+		if collectionURL == "" {
+			h.handleNodePublicIndexList(w, r, status, node, route.agentUID)
+			return
+		}
 		h.handleManagedList(w, r, status, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID)
 	case "delete":
 		if r.Method != http.MethodDelete {
@@ -247,11 +254,19 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
+		if collectionURL == "" {
+			writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+			return
+		}
 		h.handleMutation(w, r, route.artifactID, "", viewerUID, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID)
 	case "restore":
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if collectionURL == "" {
+			writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
 			return
 		}
 		h.handleMutation(w, r, route.artifactID, "/restore", viewerUID, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID)
@@ -340,10 +355,65 @@ func (h *CloudArtifactHandler) handleManagedList(
 }
 
 func (h *CloudArtifactHandler) handlePublicIndexList(w http.ResponseWriter, r *http.Request) {
-	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, h.indexURL, nil)
+	index, ok := h.readPublicArtifactIndex(w, r, h.indexURL)
+	if !ok {
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, index)
+}
+
+func (h *CloudArtifactHandler) handleNodePublicIndexList(
+	w http.ResponseWriter,
+	r *http.Request,
+	status string,
+	node artifactNode,
+	agentUID int64,
+) {
+	list := cloudArtifactManagementList{
+		ContractVersion: artifactManagementContract,
+		Status:          status,
+		Artifacts:       []cloudArtifact{},
+	}
+	if status == "deleted" {
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, list)
+		return
+	}
+
+	agentID := strconv.FormatInt(agentUID, 10)
+	indexURL := strings.TrimRight(node.publicBaseURL, "/") +
+		"/by-agent/" + agentID + "/artifacts-index.json"
+	index, ok := h.readPublicArtifactIndex(w, r, indexURL)
+	if !ok {
+		return
+	}
+	if validateManagedArtifactNodeURLs(index.Artifacts, node.publicBaseURL, agentUID) != nil {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return
+	}
+
+	list.Artifacts = append(list.Artifacts, index.Artifacts...)
+	for i := range list.Artifacts {
+		list.Artifacts[i].Status = "active"
+		list.Artifacts[i].AgentUID = agentID
+		list.Artifacts[i].CanDelete = false
+		list.Artifacts[i].CanRestore = false
+	}
+	list.Count = len(list.Artifacts)
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *CloudArtifactHandler) readPublicArtifactIndex(
+	w http.ResponseWriter,
+	r *http.Request,
+	indexURL string,
+) (cloudArtifactIndex, bool) {
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, indexURL, nil)
 	if err != nil {
 		writeArtifactError(w, http.StatusInternalServerError, "artifact_request_failed")
-		return
+		return cloudArtifactIndex{}, false
 	}
 	upstreamReq.Header.Set("Accept", "application/json")
 	upstreamReq.Header.Set("User-Agent", "catsco-cloud-artifacts/1.0")
@@ -351,29 +421,28 @@ func (h *CloudArtifactHandler) handlePublicIndexList(w http.ResponseWriter, r *h
 	resp, err := h.httpClient.Do(upstreamReq)
 	if err != nil {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_index_unavailable")
-		return
+		return cloudArtifactIndex{}, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_index_unavailable")
-		return
+		return cloudArtifactIndex{}, false
 	}
 	body, err := readArtifactResponse(resp.Body)
 	if err != nil {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
-		return
+		return cloudArtifactIndex{}, false
 	}
 
 	var index cloudArtifactIndex
 	if err := json.Unmarshal(body, &index); err != nil || validateCloudArtifactIndex(index) != nil {
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
-		return
+		return cloudArtifactIndex{}, false
 	}
 	if index.Artifacts == nil {
 		index.Artifacts = []cloudArtifact{}
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, index)
+	return index, true
 }
 
 func (h *CloudArtifactHandler) handleMutation(
@@ -438,7 +507,12 @@ func (h *CloudArtifactHandler) resolveArtifactNode(agentUID int64) (artifactNode
 		return artifactNode{}, errors.New("artifact node is unavailable")
 	}
 	if h.nodeRegistry != nil {
-		return h.nodeRegistry.resolve(agentUID)
+		if _, mapped := h.nodeRegistry.agents[agentUID]; mapped {
+			return h.nodeRegistry.resolve(agentUID)
+		}
+		if !h.nodeRegistry.fallbackToLegacy {
+			return artifactNode{}, fmt.Errorf("artifact agent %d has no configured node", agentUID)
+		}
 	}
 	if h.managementErr != nil || h.managementURL == "" || h.managementToken == "" {
 		return artifactNode{}, errors.New("artifact management is unavailable")

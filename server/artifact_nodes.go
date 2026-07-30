@@ -30,13 +30,15 @@ type artifactNode struct {
 }
 
 type artifactNodeRegistry struct {
-	nodes  map[string]artifactNode
-	agents map[int64]string
+	nodes            map[string]artifactNode
+	agents           map[int64]string
+	fallbackToLegacy bool
 }
 
 type artifactNodeConfigDocument struct {
-	Nodes  map[string]artifactNodeConfigEntry `json:"nodes"`
-	Agents map[string]string                  `json:"agents"`
+	Nodes            map[string]artifactNodeConfigEntry `json:"nodes"`
+	Agents           map[string]string                  `json:"agents"`
+	FallbackToLegacy bool                               `json:"fallback_to_legacy,omitempty"`
 }
 
 type artifactNodeConfigEntry struct {
@@ -110,8 +112,9 @@ func parseArtifactNodeRegistry(
 	}
 
 	registry := &artifactNodeRegistry{
-		nodes:  make(map[string]artifactNode, len(document.Nodes)),
-		agents: make(map[int64]string, len(document.Agents)),
+		nodes:            make(map[string]artifactNode, len(document.Nodes)),
+		agents:           make(map[int64]string, len(document.Agents)),
+		fallbackToLegacy: document.FallbackToLegacy,
 	}
 	for rawID, entry := range document.Nodes {
 		nodeID := strings.TrimSpace(rawID)
@@ -132,13 +135,25 @@ func parseArtifactNodeRegistry(
 				nodeID,
 			)
 		}
-		managementURL, err := parseArtifactNodeManagementURL(entry.ManagementURL)
-		if err != nil {
-			return nil, fmt.Errorf("artifact node %s management URL: %w", nodeID, err)
+		managementURL := strings.TrimSpace(entry.ManagementURL)
+		if managementURL != entry.ManagementURL {
+			return nil, fmt.Errorf("artifact node %s management URL is invalid", nodeID)
 		}
-		token, err := resolveArtifactNodeToken(entry, lookupEnv)
-		if err != nil {
-			return nil, fmt.Errorf("artifact node %s management token is unavailable", nodeID)
+		hasTokenSource := entry.ManagementTokenEnv != "" || entry.ManagementTokenFile != ""
+		var token string
+		if managementURL == "" {
+			if hasTokenSource {
+				return nil, fmt.Errorf("artifact node %s management configuration is incomplete", nodeID)
+			}
+		} else {
+			managementURL, err = parseArtifactNodeManagementURL(managementURL)
+			if err != nil {
+				return nil, fmt.Errorf("artifact node %s management URL: %w", nodeID, err)
+			}
+			token, err = resolveArtifactNodeToken(entry, lookupEnv)
+			if err != nil {
+				return nil, fmt.Errorf("artifact node %s management token is unavailable", nodeID)
+			}
 		}
 		registry.nodes[nodeID] = artifactNode{
 			id:              nodeID,

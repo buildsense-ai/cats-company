@@ -108,6 +108,8 @@ for key, value in updates.items():
 p.write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 
+python3 "$compose_dir/sync-artifact-node-env.py" "$env_file"
+
 allow_shared_db_user="$(sed -n 's/^ALLOW_SHARED_DB_USER=//p' "$env_file" | tail -n 1)"
 db_driver="$(sed -n 's/^OC_DB_DRIVER=//p' "$env_file" | tail -n 1)"
 db_dsn="$(sed -n 's/^OC_DB_DSN=//p' "$env_file" | tail -n 1)"
