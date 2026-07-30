@@ -19,8 +19,6 @@ const EMPTY_CUSTOM_MODEL = {
   api_base: '',
   model: '',
   api_key: '',
-  context_window_tokens: '128000',
-  max_tokens: '',
   temperature: '',
   reasoning_effort: '',
 };
@@ -41,8 +39,6 @@ function customDraftFromConfig(config) {
     api_base: custom.api_base || '',
     model: custom.model || '',
     api_key: '',
-    context_window_tokens: String(custom.context_window_tokens || 128000),
-    max_tokens: custom.max_tokens ? String(custom.max_tokens) : '',
     temperature: custom.temperature == null ? '' : String(custom.temperature),
     reasoning_effort: custom.reasoning_effort === 'default' ? '' : custom.reasoning_effort || '',
   };
@@ -51,15 +47,12 @@ function customDraftFromConfig(config) {
 function modelQuotaLabel(quota, state) {
   if (state === 'error') return '额度暂不可用';
   if (state !== 'loaded') return '额度同步中';
-  if (!quota) return '额度未配置';
+  if (!quota || quota.quota_configured !== true) return '额度未配置';
   if (quota.status === 'over_limit') return '额度已用尽';
-  const limit = Number(quota.limit_cny);
-  const percent = Number(quota.percent);
-  if (!Number.isFinite(limit) || limit <= 0) return '额度未配置';
-  const remainingPercent = Number.isFinite(percent)
-    ? Math.max(0, Math.min(100, 100 - percent))
-    : 0;
-  return `剩余 ${Math.round(remainingPercent)}%`;
+  const remainingPercent = Number(quota.remaining_percent);
+  if (!Number.isFinite(remainingPercent)) return '额度暂不可用';
+  const clamped = Math.max(0, Math.min(100, remainingPercent));
+  return `剩余 ${Math.round(clamped)}%`;
 }
 
 function modelQuotaTone(quota) {
@@ -330,11 +323,9 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
 
   const saveCustomModel = (event) => {
     event.preventDefault();
-    const contextWindow = Number(customDraft.context_window_tokens);
-    const maxTokens = customDraft.max_tokens === '' ? 0 : Number(customDraft.max_tokens);
     const temperature = customDraft.temperature === '' ? undefined : Number(customDraft.temperature);
-    if (!customDraft.api_base.trim() || !customDraft.model.trim() || !Number.isFinite(contextWindow)) {
-      setError('请完整填写 API Base、模型名称和上下文长度。');
+    if (!customDraft.api_base.trim() || !customDraft.model.trim()) {
+      setError('请完整填写 API Base 和模型名称。');
       return;
     }
     if (!modelConfig?.custom?.api_key_configured && !customDraft.api_key.trim()) {
@@ -346,8 +337,6 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
       api_base: customDraft.api_base.trim(),
       model: customDraft.model.trim(),
       api_key: customDraft.api_key.trim(),
-      context_window_tokens: contextWindow,
-      max_tokens: Number.isFinite(maxTokens) ? maxTokens : 0,
       reasoning_effort: customDraft.reasoning_effort,
     };
     if (Number.isFinite(temperature)) custom.temperature = temperature;

@@ -473,12 +473,12 @@ func TestCustomModelSecretIsEncryptedAndOnlyReturnedToBotRuntime(t *testing.T) {
 	runtimeReq = runtimeReq.WithContext(context.WithValue(runtimeReq.Context(), uidKey, int64(43)))
 	runtimeRec := httptest.NewRecorder()
 	handler.HandleRuntimeConfig(runtimeRec, runtimeReq)
-	if runtimeRec.Code != http.StatusOK || !strings.Contains(runtimeRec.Body.String(), "sk-super-secret") || !strings.Contains(runtimeRec.Body.String(), `"context_window_tokens":1000000`) {
+	if runtimeRec.Code != http.StatusOK || !strings.Contains(runtimeRec.Body.String(), "sk-super-secret") || !strings.Contains(runtimeRec.Body.String(), `"context_window_tokens":128000`) {
 		t.Fatalf("runtime status=%d body=%s", runtimeRec.Code, runtimeRec.Body.String())
 	}
 }
 
-func TestCustomModelUpdateCanKeepExistingAPIKey(t *testing.T) {
+func TestCustomModelKeyRotationPreservesServerManagedTokenLimits(t *testing.T) {
 	enableBotModelEncryption(t)
 	db := &botModelConfigTestStore{
 		owners: map[int64]int64{43: 7},
@@ -499,7 +499,20 @@ func TestCustomModelUpdateCanKeepExistingAPIKey(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first patch status=%d body=%s", first.Code, first.Body.String())
 	}
-	second := patch(`{"kind":"custom","custom":{"protocol":"anthropic","api_base":"https://models.example.com","model":"model-b","context_window_tokens":128000}}`)
+	preserved := cloudCustomModelConfig{
+		Protocol: "anthropic", APIBase: "https://models.example.com", Model: "model-a", APIKey: "secret-a",
+		ContextWindowTokens: 256000, MaxTokens: 4096,
+	}
+	plaintext, err := json.Marshal(preserved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := handler.secretCodec.encrypt(43, plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.models[43].CustomCiphertext = ciphertext
+	second := patch(`{"kind":"custom","custom":{"protocol":"anthropic","api_base":"https://models.example.com","model":"model-b","api_key":"secret-b"}}`)
 	if second.Code != http.StatusOK {
 		t.Fatalf("second patch status=%d body=%s", second.Code, second.Body.String())
 	}
@@ -508,8 +521,111 @@ func TestCustomModelUpdateCanKeepExistingAPIKey(t *testing.T) {
 	runtimeReq = runtimeReq.WithContext(context.WithValue(runtimeReq.Context(), uidKey, int64(43)))
 	runtimeRec := httptest.NewRecorder()
 	handler.HandleRuntimeConfig(runtimeRec, runtimeReq)
-	if runtimeRec.Code != http.StatusOK || !strings.Contains(runtimeRec.Body.String(), `"model":"model-b"`) || !strings.Contains(runtimeRec.Body.String(), `"api_key":"secret-a"`) {
+	if runtimeRec.Code != http.StatusOK ||
+		!strings.Contains(runtimeRec.Body.String(), `"model":"model-b"`) ||
+		!strings.Contains(runtimeRec.Body.String(), `"api_key":"secret-b"`) ||
+		!strings.Contains(runtimeRec.Body.String(), `"context_window_tokens":256000`) ||
+		!strings.Contains(runtimeRec.Body.String(), `"max_tokens":4096`) {
 		t.Fatalf("runtime status=%d body=%s", runtimeRec.Code, runtimeRec.Body.String())
+	}
+}
+
+func TestCustomModelUpdateWithoutAPIKeyKeepsExistingAPIKeyAndTokenLimits(t *testing.T) {
+	enableBotModelEncryption(t)
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{},
+	}
+	markTestBotModelRuntime(t, db, 43)
+	handler := NewBotModelConfigHandler(db, db)
+
+	patch := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+		rec := httptest.NewRecorder()
+		handler.HandleOwnerConfig(rec, req)
+		return rec
+	}
+	first := patch(`{"kind":"custom","custom":{"protocol":"anthropic","api_base":"https://models.example.com","model":"model-a","api_key":"secret-a"}}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first patch status=%d body=%s", first.Code, first.Body.String())
+	}
+	preserved := cloudCustomModelConfig{
+		Protocol: "anthropic", APIBase: "https://models.example.com", Model: "model-a", APIKey: "secret-a",
+		ContextWindowTokens: 256000, MaxTokens: 4096,
+	}
+	plaintext, err := json.Marshal(preserved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := handler.secretCodec.encrypt(43, plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.models[43].CustomCiphertext = ciphertext
+	second := patch(`{"kind":"custom","custom":{"protocol":"anthropic","api_base":"https://models.example.com","model":"model-b"}}`)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second patch status=%d body=%s", second.Code, second.Body.String())
+	}
+
+	runtimeReq := httptest.NewRequest(http.MethodGet, "/api/bot/model-config", nil)
+	runtimeReq = runtimeReq.WithContext(context.WithValue(runtimeReq.Context(), uidKey, int64(43)))
+	runtimeRec := httptest.NewRecorder()
+	handler.HandleRuntimeConfig(runtimeRec, runtimeReq)
+	if runtimeRec.Code != http.StatusOK ||
+		!strings.Contains(runtimeRec.Body.String(), `"model":"model-b"`) ||
+		!strings.Contains(runtimeRec.Body.String(), `"api_key":"secret-a"`) ||
+		!strings.Contains(runtimeRec.Body.String(), `"context_window_tokens":256000`) ||
+		!strings.Contains(runtimeRec.Body.String(), `"max_tokens":4096`) {
+		t.Fatalf("runtime status=%d body=%s", runtimeRec.Code, runtimeRec.Body.String())
+	}
+}
+
+func TestCustomModelUpdateDoesNotExposeStoredConfigurationErrors(t *testing.T) {
+	enableBotModelEncryption(t)
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{},
+	}
+	markTestBotModelRuntime(t, db, 43)
+	handler := NewBotModelConfigHandler(db, db)
+	invalidStored := cloudCustomModelConfig{
+		Protocol: "anthropic", APIBase: "https://models.example.com", Model: "model-a", APIKey: "secret-a",
+		ContextWindowTokens: 5000000, MaxTokens: 1000001,
+	}
+	plaintext, err := json.Marshal(invalidStored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := handler.secretCodec.encrypt(43, plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.models[43].CustomCiphertext = ciphertext
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "new key", body: `{"kind":"custom","custom":{"protocol":"anthropic","api_base":"https://models.example.com","model":"model-b","api_key":"secret-b"}}`},
+		{name: "empty key", body: `{"kind":"custom","custom":{"protocol":"anthropic","api_base":"https://models.example.com","model":"model-b"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(tc.body))
+			req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+			rec := httptest.NewRecorder()
+			handler.HandleOwnerConfig(rec, req)
+
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"error":"custom model configuration could not be updated"`) {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			for _, sensitive := range []string{"context window", "max tokens", "5000000", "1000001", "secret-a"} {
+				if strings.Contains(strings.ToLower(rec.Body.String()), sensitive) {
+					t.Fatalf("owner response leaked %s: %s", sensitive, rec.Body.String())
+				}
+			}
+		})
 	}
 }
 
@@ -589,13 +705,25 @@ func TestCustomModelAcknowledgementTracksKind(t *testing.T) {
 	}
 
 	failureReq := httptest.NewRequest(http.MethodPost, "/api/bot/model-config/ack", strings.NewReader(
-		`{"revision":1,"kind":"custom","model_id":"model-a","reasoning_effort":"medium","error":"provider rejected secret-a"}`,
+		`{"revision":1,"kind":"custom","model_id":"model-a","reasoning_effort":"medium","error":"provider rejected secret-a; total_cny=500; context_window_tokens=128000"}`,
 	))
 	failureReq = failureReq.WithContext(context.WithValue(failureReq.Context(), uidKey, int64(43)))
 	failureRec := httptest.NewRecorder()
 	handler.HandleRuntimeAck(failureRec, failureReq)
-	if failureRec.Code != http.StatusOK || db.models[43].LastError != "provider rejected [REDACTED]" {
+	if failureRec.Code != http.StatusOK || db.models[43].LastError != "provider rejected [REDACTED]; total_cny=500; context_window_tokens=128000" {
 		t.Fatalf("failure status=%d config=%+v", failureRec.Code, db.models[43])
+	}
+	ownerGetReq := httptest.NewRequest(http.MethodGet, "/api/bots/model-config?uid=43", nil)
+	ownerGetReq = ownerGetReq.WithContext(context.WithValue(ownerGetReq.Context(), uidKey, int64(7)))
+	ownerGetRec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(ownerGetRec, ownerGetReq)
+	if ownerGetRec.Code != http.StatusOK || !strings.Contains(ownerGetRec.Body.String(), `"last_error":"模型配置应用失败"`) {
+		t.Fatalf("owner failure status=%d body=%s", ownerGetRec.Code, ownerGetRec.Body.String())
+	}
+	for _, sensitive := range []string{"total_cny", "context_window_tokens", "provider rejected"} {
+		if strings.Contains(ownerGetRec.Body.String(), sensitive) {
+			t.Fatalf("owner failure response leaked %s: %s", sensitive, ownerGetRec.Body.String())
+		}
 	}
 
 	ackReq := httptest.NewRequest(http.MethodPost, "/api/bot/model-config/ack", strings.NewReader(
@@ -609,6 +737,47 @@ func TestCustomModelAcknowledgementTracksKind(t *testing.T) {
 	}
 	if db.models[43].AppliedKind != botModelKindCustom || db.models[43].AppliedModelID != "model-a" {
 		t.Fatalf("ack config=%+v", db.models[43])
+	}
+}
+
+func TestOwnerPendingModelConfigRedactsStaleLastError(t *testing.T) {
+	rawError := "provider still reconciling; total_cny=500; context_window_tokens=128000; max_tokens=8192"
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{
+			43: {
+				Kind:                botModelKindCatalog,
+				ModelID:             "minimax-m3",
+				RuntimeProtocol:     botModelRuntimeProtocol,
+				Revision:            2,
+				AppliedKind:         botModelKindCatalog,
+				AppliedModelID:      "deepseek-v4-flash",
+				AppliedRevision:     1,
+				LastAttemptRevision: 1,
+				LastError:           rawError,
+			},
+		},
+	}
+	handler := NewBotModelConfigHandler(db, db)
+	req := httptest.NewRequest(http.MethodGet, "/api/bots/model-config?uid=43", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleOwnerConfig(rec, req)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"pending"`) {
+		t.Fatalf("owner pending status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"last_error":"模型配置应用失败"`) {
+		t.Fatalf("owner pending error was not normalized: %s", rec.Body.String())
+	}
+	for _, sensitive := range []string{"total_cny", "context_window_tokens", "max_tokens", "provider still reconciling"} {
+		if strings.Contains(rec.Body.String(), sensitive) {
+			t.Fatalf("owner pending response leaked %s: %s", sensitive, rec.Body.String())
+		}
+	}
+	if db.models[43].LastError != rawError {
+		t.Fatalf("internal diagnostic changed: %q", db.models[43].LastError)
 	}
 }
 
@@ -655,10 +824,15 @@ func TestOwnerModelCatalogIncludesPerModelQuotaFromSingleRelayRequest(t *testing
 	if requestCount != 1 {
 		t.Fatalf("relay request count=%d, want 1", requestCount)
 	}
-	if !strings.Contains(rec.Body.String(), `"model":"gpt-5.6-terra"`) || !strings.Contains(rec.Body.String(), `"remaining_cny":75`) {
+	if !strings.Contains(rec.Body.String(), `"model":"gpt-5.6-terra"`) || !strings.Contains(rec.Body.String(), `"remaining_percent":75`) {
 		t.Fatalf("Terra quota missing from response: %s", rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), `"model":"deepseek-v4-flash"`) || !strings.Contains(rec.Body.String(), `"status":"high"`) {
 		t.Fatalf("DeepSeek quota missing from response: %s", rec.Body.String())
+	}
+	for _, sensitive := range []string{"context_window_tokens", "max_tokens", "used_cny", "limit_cny", "remaining_cny"} {
+		if strings.Contains(rec.Body.String(), sensitive) {
+			t.Fatalf("owner response leaked %s: %s", sensitive, rec.Body.String())
+		}
 	}
 }

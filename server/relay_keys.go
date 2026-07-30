@@ -67,16 +67,18 @@ type relayUsageResponse struct {
 }
 
 type relayUsageSummary struct {
-	Source        string  `json:"source,omitempty"`
-	Model         string  `json:"model"`
-	Provider      string  `json:"provider,omitempty"`
-	UsedCNY       float64 `json:"used_cny"`
-	LimitCNY      float64 `json:"limit_cny"`
-	RemainingCNY  float64 `json:"remaining_cny"`
-	Percent       float64 `json:"percent"`
-	Status        string  `json:"status"`
-	ResetDuration string  `json:"reset_duration,omitempty"`
-	LastReset     string  `json:"last_reset,omitempty"`
+	Source           string  `json:"source,omitempty"`
+	Model            string  `json:"model"`
+	Provider         string  `json:"provider,omitempty"`
+	QuotaConfigured  bool    `json:"quota_configured"`
+	Percent          float64 `json:"percent"`
+	RemainingPercent float64 `json:"remaining_percent"`
+	Status           string  `json:"status"`
+	ResetDuration    string  `json:"reset_duration,omitempty"`
+	LastReset        string  `json:"last_reset,omitempty"`
+	UsedCNY          float64 `json:"-"`
+	LimitCNY         float64 `json:"-"`
+	RemainingCNY     float64 `json:"-"`
 }
 
 func NewRelayKeyHandlerFromEnv() *RelayKeyHandler {
@@ -218,14 +220,12 @@ func (h *RelayKeyHandler) HandleUsage(w http.ResponseWriter, r *http.Request) {
 	user, err := fetchRelayUsageForUID(r.Context(), h.admin, uid)
 	if err != nil {
 		status := http.StatusBadGateway
-		message := "relay admin request failed"
 		if relayErr, ok := err.(relayAdminError); ok {
-			message = relayErr.message
 			if relayErr.status >= 400 && relayErr.status < 500 {
 				status = relayErr.status
 			}
 		}
-		writeJSON(w, status, map[string]string{"error": message})
+		writeJSON(w, status, map[string]string{"error": "relay admin request failed"})
 		return
 	}
 	if model == "" {
@@ -239,16 +239,14 @@ func (h *RelayKeyHandler) forward(w http.ResponseWriter, r *http.Request, method
 	err := h.admin.Do(r.Context(), method, fmt.Sprintf("/internal/users/%d/key%s", uid, suffix), body, &out)
 	if err != nil {
 		status := http.StatusBadGateway
-		message := "relay admin request failed"
 		if relayErr, ok := err.(relayAdminError); ok {
-			message = relayErr.message
 			if relayErr.status >= 400 && relayErr.status < 500 {
 				status = relayErr.status
 			} else if relayErr.status == http.StatusServiceUnavailable {
 				status = http.StatusServiceUnavailable
 			}
 		}
-		writeJSON(w, status, map[string]string{"error": message})
+		writeJSON(w, status, map[string]string{"error": "relay admin request failed"})
 		return
 	}
 	if method == http.MethodGet || method == http.MethodDelete {
@@ -296,12 +294,12 @@ func buildRelayUsageResponse(user *commercialRelayUsageUser, preferredModel stri
 	}
 	used := limit.Budget.CurrentUsage
 	maxLimit := limit.Budget.MaxLimit
-	remaining := 0.0
 	percent := 0.0
+	remainingPercent := 0.0
 	status := "normal"
 	if maxLimit > 0 {
-		remaining = math.Max(0, maxLimit-used)
 		percent = used / maxLimit * 100
+		remainingPercent = math.Max(0, 100-percent)
 		if used > maxLimit+0.000001 {
 			status = "over_limit"
 		} else if percent >= 90 {
@@ -311,16 +309,18 @@ func buildRelayUsageResponse(user *commercialRelayUsageUser, preferredModel stri
 	return relayUsageResponse{
 		Configured: true,
 		Summary: &relayUsageSummary{
-			Source:        "relay",
-			Model:         limit.Model,
-			Provider:      limit.Provider,
-			UsedCNY:       used,
-			LimitCNY:      maxLimit,
-			RemainingCNY:  remaining,
-			Percent:       percent,
-			Status:        status,
-			ResetDuration: limit.Budget.ResetDuration,
-			LastReset:     limit.Budget.LastReset,
+			Source:           "relay",
+			Model:            limit.Model,
+			Provider:         limit.Provider,
+			QuotaConfigured:  maxLimit > 0,
+			Percent:          percent,
+			RemainingPercent: remainingPercent,
+			UsedCNY:          used,
+			LimitCNY:         maxLimit,
+			RemainingCNY:     math.Max(0, maxLimit-used),
+			Status:           status,
+			ResetDuration:    limit.Budget.ResetDuration,
+			LastReset:        limit.Budget.LastReset,
 		},
 	}
 }

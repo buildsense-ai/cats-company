@@ -97,22 +97,17 @@ function modelBudgetLabel(model) {
 }
 
 function summarizeCommercial(summary) {
-  const totals = summary?.totals_by_model || {};
-  const entries = Object.entries(totals)
-    .filter(([, amount]) => Number(amount) > 0)
-    .sort(([a], [b]) => a.localeCompare(b));
-  if (!entries.length) return '暂无已发放额度';
-  return `已发放 ${entries.length} 项模型额度`;
+  const models = summary?.models || [];
+  if (!models.length) return '暂无已发放额度';
+  return `已发放 ${models.length} 项模型额度`;
 }
 
 function activeEntitlements(summary) {
   return (summary?.entitlements || []).filter((item) => item.state === 'active');
 }
 
-function commercialTotals(summary) {
-  return Object.entries(summary?.totals_by_model || {})
-    .filter(([, amount]) => Number(amount) > 0)
-    .sort(([a], [b]) => a.localeCompare(b));
+function commercialModels(summary) {
+  return [...(summary?.models || [])].filter(Boolean).sort((a, b) => a.localeCompare(b));
 }
 
 function modelUsageKey(model) {
@@ -252,10 +247,7 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
     };
   }
 
-  const limit = Number(summary.limit_cny || 0);
-  const used = Number(summary.used_cny || 0);
-  const remaining = Number(summary.remaining_cny || 0);
-  if (limit <= 0) {
+  if (summary.quota_configured !== true) {
     return {
       className: 'inactive',
       model: summary.model || fallbackModel,
@@ -267,9 +259,9 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
     };
   }
   const rawPercent = Number(summary.percent || 0);
-  const percent = limit > 0 ? Math.min(100, Math.max(0, rawPercent)) : 0;
-  const remainingPercent = Math.max(0, 100 - percent);
-  const overLimit = summary.status === 'over_limit' || (limit > 0 && used > limit);
+  const percent = Math.min(100, Math.max(0, rawPercent));
+  const remainingPercent = Math.max(0, Number(summary.remaining_percent ?? (100 - percent)));
+  const overLimit = summary.status === 'over_limit';
   const high = !overLimit && (summary.status === 'high' || percent >= 90);
   return {
     className: overLimit ? 'danger' : high ? 'warning' : 'active',
@@ -289,12 +281,10 @@ function budgetUsageMeta(model, usageByModel) {
   if (loading) return '额度读取中';
   if (!usage) return '额度未同步';
   if (usage.source === 'custom' || usage.status === 'custom') return '自定义模型不计入模型服务套餐';
-  const relayLimit = Number(usage.limit_cny || 0);
-  if (!usage.model || relayLimit <= 0) return '额度未同步';
-  const used = Math.max(0, Number(usage.used_cny || 0));
+  if (!usage.model || usage.quota_configured !== true) return '额度未同步';
   const rawPercent = Number(usage.percent || 0);
   const percent = Math.min(100, Math.max(0, rawPercent));
-  const overLimit = usage.status === 'over_limit' || used > relayLimit;
+  const overLimit = usage.status === 'over_limit';
   const resetLabel = usage.reset_duration ? ` · ${resetDurationLabel(usage.reset_duration)}` : '';
   const usedLabel = overLimit ? '100%+' : formatPercent(percent);
   const remainingLabel = overLimit ? '0%' : formatPercent(100 - percent);
@@ -526,7 +516,7 @@ export default function RelayAccessModal({ onClose }) {
   const commercialEnabled = commercial?.enabled === true && commercialSummary;
   const commercialEnforced = commercial?.enforce_enabled === true;
   const activePackages = activeEntitlements(commercialSummary);
-  const modelTotals = commercialTotals(commercialSummary);
+  const modelTotals = commercialModels(commercialSummary);
   const packageExpiry = nearestPackageExpiry(activePackages);
   const packageExpiryText = activePackages.length > 0 ? formatShortDate(packageExpiry) : '无套餐';
   const currentResetInfo = usageResetInfo(currentUsage);
@@ -544,11 +534,11 @@ export default function RelayAccessModal({ onClose }) {
     return () => {
       cancelled = true;
     };
-  }, [relayKey?.prefix, commercial?.summary?.total_cny]);
+  }, [relayKey?.prefix, JSON.stringify(commercial?.summary?.models || [])]);
 
   useEffect(() => {
     let cancelled = false;
-    const models = modelTotals.map(([model]) => modelUsageKey(model)).filter(Boolean);
+    const models = modelTotals.map((model) => modelUsageKey(model)).filter(Boolean);
     if (!commercialEnabled || models.length === 0) {
       setUsageByModel({});
       return () => {
@@ -744,7 +734,7 @@ export default function RelayAccessModal({ onClose }) {
 
             {commercialEnabled && modelTotals.length > 0 && (
               <div className="relay-access-budget-list">
-                {modelTotals.map(([model]) => (
+                {modelTotals.map((model) => (
                   <div key={model}>
                     <span>
                       <strong>{modelBudgetLabel(model)}</strong>
