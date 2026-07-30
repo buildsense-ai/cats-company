@@ -146,8 +146,7 @@ describe('push notification helpers', () => {
 
     const cleanup = cleanupPushSubscription(serverCleanup);
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.waitFor(() => expect(finishServerCleanup).toBeTypeOf('function'));
     expect(unsubscribe).not.toHaveBeenCalled();
     finishServerCleanup();
     await expect(cleanup).resolves.toBe(true);
@@ -176,7 +175,7 @@ describe('push notification helpers', () => {
     expect(unsubscribe).not.toHaveBeenCalled();
   });
 
-  test('removes the server mapping but preserves the browser subscription when tab ownership is unknown', async () => {
+  test('preserves the subscription when another tab may still be active', async () => {
     const unsubscribe = vi.fn().mockResolvedValue(true);
     const serverCleanup = vi.fn().mockResolvedValue(undefined);
     const retireGeneration = vi.fn();
@@ -192,11 +191,11 @@ describe('push notification helpers', () => {
     await expect(cleanupPushSubscription(
       serverCleanup,
       () => true,
-      () => 'unknown',
+      () => true,
       retireGeneration,
-    )).resolves.toBe(true);
-    expect(retireGeneration).toHaveBeenCalled();
-    expect(serverCleanup).toHaveBeenCalledWith('https://push.example/sub');
+    )).resolves.toBe(false);
+    expect(retireGeneration).not.toHaveBeenCalled();
+    expect(serverCleanup).not.toHaveBeenCalled();
     expect(unsubscribe).not.toHaveBeenCalled();
   });
 

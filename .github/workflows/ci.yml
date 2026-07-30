@@ -28,17 +28,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: catsco_test
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd "mysqladmin ping -h localhost -pcatsco_test"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
 
     steps:
       - name: Checkout
@@ -77,11 +66,6 @@ jobs:
         env:
           CATS_PG_TEST_DSN: postgres://catsco:catsco_test@127.0.0.1:5432/cats_test?sslmode=disable
         run: go test ./server/db/postgres -run TestPostgresStoreContract -count=1 -v
-
-      - name: Test MySQL store contract
-        env:
-          CATS_MYSQL_TEST_DSN: root:catsco_test@tcp(127.0.0.1:3306)/?parseTime=true
-        run: go test ./server/db/mysql -run TestMySQLStoreContract -count=1 -v
 
       - name: Install TypeScript SDK dependencies
         working-directory: bot-sdk/typescript

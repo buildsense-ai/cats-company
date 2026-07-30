@@ -47,16 +47,16 @@ describe('push tab coordination', () => {
     const second = createPushTabCoordinator(LinkedBroadcastChannel);
     second.setActive(true);
 
-    await expect(first.getOtherTabState(50)).resolves.toBe('active');
+    await expect(first.hasOtherActiveTab(50)).resolves.toBe(true);
 
     first.close();
     second.close();
   });
 
-  test('treats a broadcast timeout as unknown instead of assuming no other tab', async () => {
+  test('preserves the subscription when a broadcast probe times out', async () => {
     const coordinator = createPushTabCoordinator(LinkedBroadcastChannel);
 
-    await expect(coordinator.getOtherTabState(5)).resolves.toBe('unknown');
+    await expect(coordinator.hasOtherActiveTab(5)).resolves.toBe(true);
 
     coordinator.close();
   });
@@ -67,7 +67,7 @@ describe('push tab coordination', () => {
     const second = createPushTabCoordinator(undefined, locks);
     second.setActive(true);
 
-    await expect(first.getOtherTabState()).resolves.toBe('active');
+    await expect(first.hasOtherActiveTab()).resolves.toBe(true);
 
     first.close();
     second.close();
@@ -79,7 +79,7 @@ describe('push tab coordination', () => {
     coordinator.setActive(true);
     coordinator.setActive(false);
 
-    await expect(coordinator.getOtherTabState()).resolves.toBe('none');
+    await expect(coordinator.hasOtherActiveTab()).resolves.toBe(false);
 
     coordinator.close();
   });

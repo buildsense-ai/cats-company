@@ -24,7 +24,7 @@ export function createPushTabCoordinator(
         channel.postMessage({ type: 'active', requestID: data.requestID });
         return;
       }
-      if (data?.type === 'active') pending.get(data.requestID)?.('active');
+      if (data?.type === 'active') pending.get(data.requestID)?.(true);
     };
   }
 
@@ -47,25 +47,25 @@ export function createPushTabCoordinator(
         await holdLock;
       }).catch(() => {});
     },
-    async getOtherTabState(timeoutMs = 200) {
+    async hasOtherActiveTab(timeoutMs = 200) {
       if (locks?.request) {
         if (!active) await activeLockDone;
         return locks.request(
           ACTIVE_LOCK_NAME,
           { mode: 'exclusive', ifAvailable: true },
-          (lock) => (lock ? 'none' : 'active'),
+          (lock) => !lock,
         );
       }
-      if (!channel) return 'unknown';
+      if (!channel) return true;
       const id = requestID();
       return new Promise((resolve) => {
-        const finish = (state) => {
+        const finish = (hasOtherTab) => {
           if (!pending.has(id)) return;
           pending.delete(id);
           clearTimeout(timer);
-          resolve(state);
+          resolve(hasOtherTab);
         };
-        const timer = setTimeout(() => finish('unknown'), timeoutMs);
+        const timer = setTimeout(() => finish(true), timeoutMs);
         pending.set(id, finish);
         channel.postMessage({ type: 'probe', requestID: id });
       });
@@ -73,7 +73,7 @@ export function createPushTabCoordinator(
     close() {
       active = false;
       releaseActiveLock?.();
-      for (const finish of pending.values()) finish('unknown');
+      for (const finish of pending.values()) finish(true);
       pending.clear();
       channel?.close();
     },

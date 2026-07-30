@@ -57,7 +57,7 @@ func TestNormalizeConversationTaskStatusLeavesTerminalExpiryOptional(t *testing.
 func TestValidateTaskStatusTransitionRejectsLateProgressForTerminalRun(t *testing.T) {
 	current := taskStatusForTransition("run-1", "completed", 42)
 	next := taskStatusForTransition("run-1", "running", 42)
-	if err := types.ValidateConversationTaskStatusTransition(current, next, time.Now()); err == nil {
+	if err := validateTaskStatusTransition(current, next); err == nil {
 		t.Fatal("expected terminal run to reject late progress")
 	}
 }
@@ -65,42 +65,8 @@ func TestValidateTaskStatusTransitionRejectsLateProgressForTerminalRun(t *testin
 func TestValidateTaskStatusTransitionAllowsAnotherActiveSource(t *testing.T) {
 	current := taskStatusForTransition("run-1", "running", 42)
 	next := taskStatusForTransition("run-2", "running", 43)
-	if err := types.ValidateConversationTaskStatusTransition(current, next, time.Now()); err != nil {
+	if err := validateTaskStatusTransition(current, next); err != nil {
 		t.Fatalf("different source should not be rejected: %v", err)
-	}
-}
-
-func TestValidateTaskStatusTransitionRejectsOverlappingRunForSameSource(t *testing.T) {
-	current := taskStatusForTransition("run-1", "running", 42)
-	next := taskStatusForTransition("run-2", "running", 42)
-	if err := types.ValidateConversationTaskStatusTransition(current, next, time.Now()); err == nil {
-		t.Fatal("expected an active run to reject a second run for the same source")
-	}
-}
-
-func TestValidateTaskStatusTransitionAllowsNewRunAfterTerminalState(t *testing.T) {
-	current := taskStatusForTransition("run-1", "completed", 42)
-	next := taskStatusForTransition("run-2", "running", 42)
-	if err := types.ValidateConversationTaskStatusTransition(current, next, time.Now()); err != nil {
-		t.Fatalf("terminal run should allow a new run: %v", err)
-	}
-}
-
-func TestValidateTaskStatusTransitionAllowsNewRunAfterActiveStatusExpires(t *testing.T) {
-	current := taskStatusForTransition("run-1", "running", 42)
-	expired := time.Now().Add(-time.Second)
-	current.ExpiresAt = &expired
-	next := taskStatusForTransition("run-2", "running", 42)
-	if err := types.ValidateConversationTaskStatusTransition(current, next, time.Now()); err != nil {
-		t.Fatalf("expired active run should allow a new run: %v", err)
-	}
-}
-
-func TestValidateTaskStatusTransitionAllowsNewRunAfterIdleState(t *testing.T) {
-	current := taskStatusForTransition("run-1", "idle", 42)
-	next := taskStatusForTransition("run-2", "running", 42)
-	if err := types.ValidateConversationTaskStatusTransition(current, next, time.Now()); err != nil {
-		t.Fatalf("idle state should allow a new run: %v", err)
 	}
 }
 

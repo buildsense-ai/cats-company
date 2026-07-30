@@ -10,24 +10,15 @@ import (
 )
 
 const (
-	agentPushTurnDedupTTL      = 10 * time.Minute
-	maxPendingAgentPushTurns   = 1024
-	maxDeliveredAgentPushTurns = 4096
-	maxActiveAgentPushTurns    = 1024
+	agentPushTurnDedupTTL    = 10 * time.Minute
+	maxTrackedAgentPushTurns = 4096
+	maxActiveAgentPushTurns  = 1024
 )
-
-type pendingAgentPush struct {
-	timer   *time.Timer
-	deliver func() bool
-	ttl     time.Duration
-}
 
 type agentPushTurnCoordinator struct {
 	mu        sync.Mutex
-	pending   map[string]*pendingAgentPush
 	delivered map[string]time.Time
 	active    map[string]*activeAgentPushTurn
-	delay     time.Duration
 }
 
 type activeAgentPushTurn struct {
@@ -38,7 +29,6 @@ type activeAgentPushTurn struct {
 
 func newAgentPushTurnCoordinator() *agentPushTurnCoordinator {
 	return &agentPushTurnCoordinator{
-		pending:   make(map[string]*pendingAgentPush),
 		delivered: make(map[string]time.Time),
 		active:    make(map[string]*activeAgentPushTurn),
 	}
@@ -101,7 +91,7 @@ func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskS
 
 	for recipientUID, deliver := range candidates {
 		key := fmt.Sprintf("turn:%d:%d:%s:%s", recipientUID, status.SourceUID, status.TopicID, runID)
-		c.schedule(key, agentPushTurnDedupTTL, deliver)
+		c.deliverOnce(key, agentPushTurnDedupTTL, deliver)
 	}
 }
 
@@ -129,68 +119,39 @@ func (c *agentPushTurnCoordinator) observeVisibleMessage(recipientUID, senderUID
 	return true
 }
 
-func (c *agentPushTurnCoordinator) schedule(key string, ttl time.Duration, deliver func() bool) bool {
+func (c *agentPushTurnCoordinator) deliverOnce(key string, ttl time.Duration, deliver func() bool) bool {
 	if c == nil || strings.TrimSpace(key) == "" || ttl < 0 || deliver == nil {
 		return false
 	}
 
 	now := time.Now()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.removeExpiredLocked(now)
-
 	if expiresAt, ok := c.delivered[key]; ok && now.Before(expiresAt) {
-		return false
-	}
-	previous := c.pending[key]
-	if previous != nil {
-		previous.timer.Stop()
-	}
-	if previous == nil && len(c.pending) >= maxPendingAgentPushTurns {
-		return false
-	}
-	if previous == nil && ttl > 0 && len(c.delivered)+len(c.pending) >= maxDeliveredAgentPushTurns {
-		return false
-	}
-
-	pending := &pendingAgentPush{deliver: deliver, ttl: ttl}
-	pending.timer = time.AfterFunc(c.delay, func() {
-		c.fire(key, pending)
-	})
-	c.pending[key] = pending
-	return true
-}
-
-func (c *agentPushTurnCoordinator) fire(key string, pending *pendingAgentPush) {
-	c.mu.Lock()
-	if c.pending[key] != pending {
 		c.mu.Unlock()
-		return
+		return false
 	}
-	delete(c.pending, key)
-	c.removeExpiredLocked(time.Now())
-	expiresAt := time.Time{}
-	if pending.ttl > 0 {
-		if len(c.delivered) >= maxDeliveredAgentPushTurns {
-			c.mu.Unlock()
-			return
-		}
-		expiresAt = time.Now().Add(pending.ttl)
-		c.delivered[key] = expiresAt
+	if len(c.delivered) >= maxTrackedAgentPushTurns {
+		c.mu.Unlock()
+		return false
 	}
+	expiresAt := now.Add(ttl)
+	if ttl == 0 {
+		expiresAt = now
+	}
+	c.delivered[key] = expiresAt
 	c.mu.Unlock()
 
-	if pending.deliver() {
-		return
+	if deliver() {
+		return true
 	}
 
-	if !expiresAt.IsZero() {
-		c.mu.Lock()
-		if c.delivered[key] == expiresAt {
-			delete(c.delivered, key)
-		}
-		c.mu.Unlock()
+	c.mu.Lock()
+	if c.delivered[key] == expiresAt {
+		delete(c.delivered, key)
 	}
+	c.mu.Unlock()
+	return false
 }
 
 func (c *agentPushTurnCoordinator) removeExpiredLocked(now time.Time) {

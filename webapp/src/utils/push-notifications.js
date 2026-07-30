@@ -77,13 +77,10 @@ export async function ensurePushSubscription(
 export async function cleanupPushSubscription(
   unsubscribeOnServer,
   isCurrent = () => true,
-  getOtherTabState = () => 'none',
+  hasOtherActiveTab = () => false,
   onLastTab = () => {},
 ) {
-  const otherTab = getOtherTabState();
-  const resolvedOtherTab = otherTab instanceof Promise ? await otherTab : otherTab;
-  const otherTabState = resolvedOtherTab === true ? 'active' : resolvedOtherTab === false ? 'none' : resolvedOtherTab;
-  if (otherTabState === 'active') return false;
+  if (await hasOtherActiveTab()) return false;
   if (!isCurrent() && !unsubscribeOnServer) return false;
   onLastTab();
   if (!('serviceWorker' in navigator)) return false;
@@ -100,7 +97,6 @@ export async function cleanupPushSubscription(
   }
 
   if (!isCurrent()) return true;
-  if (otherTabState === 'unknown') return true;
   try {
     await subscription.unsubscribe();
   } catch (error) {

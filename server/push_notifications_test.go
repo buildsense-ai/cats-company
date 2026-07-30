@@ -803,54 +803,20 @@ func TestAgentPushCompletionRequiresExplicitFinalSignal(t *testing.T) {
 	}
 }
 
-func TestAgentPushCoordinatorReschedulesExistingTurnAtCapacity(t *testing.T) {
+func TestAgentPushCoordinatorBoundsDedupKeys(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
-	coordinator.delay = time.Hour
-	for index := 0; index < maxPendingAgentPushTurns; index++ {
-		key := fmt.Sprintf("turn-%d", index)
-		if !coordinator.schedule(key, agentPushTurnDedupTTL, func() bool { return true }) {
-			t.Fatalf("failed to fill pending slot %d", index)
-		}
-	}
-	if !coordinator.schedule("turn-0", agentPushTurnDedupTTL, func() bool { return true }) {
-		t.Fatal("rescheduling an existing turn was rejected at capacity")
-	}
-
-	coordinator.mu.Lock()
-	for _, pending := range coordinator.pending {
-		pending.timer.Stop()
-	}
-	coordinator.mu.Unlock()
-}
-
-func TestAgentPushCoordinatorPreservesDeliveredDedupKeysAtCapacity(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
-	coordinator.delay = time.Hour
 	expiresAt := time.Now().Add(agentPushTurnDedupTTL)
-	for index := 0; index < maxDeliveredAgentPushTurns-1; index++ {
+	for index := 0; index < maxTrackedAgentPushTurns; index++ {
 		coordinator.delivered[fmt.Sprintf("delivered-%d", index)] = expiresAt
 	}
 
-	if !coordinator.schedule("last-capacity-slot", agentPushTurnDedupTTL, func() bool { return true }) {
-		t.Fatal("last available dedup capacity slot was rejected")
+	if coordinator.deliverOnce("over-capacity", agentPushTurnDedupTTL, func() bool { return true }) {
+		t.Fatal("new turn was accepted after dedup capacity was exhausted")
 	}
-	if coordinator.schedule("over-capacity", agentPushTurnDedupTTL, func() bool { return true }) {
-		t.Fatal("new turn was accepted after delivered and pending dedup capacity was exhausted")
-	}
-	if len(coordinator.delivered) != maxDeliveredAgentPushTurns-1 {
-		t.Fatal("an unexpired delivered key was evicted to accept a new turn")
-	}
-
-	coordinator.mu.Lock()
-	for _, pending := range coordinator.pending {
-		pending.timer.Stop()
-	}
-	coordinator.mu.Unlock()
 }
 
 func TestAgentPushRunningHeartbeatExtendsActiveTurn(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
-	coordinator.delay = 0
 	firstExpiry := time.Now().Add(20 * time.Millisecond)
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7, ExpiresAt: &firstExpiry,
@@ -947,7 +913,6 @@ func TestAgentPushWaitsForMatchingTerminalTaskStatus(t *testing.T) {
 	}
 	hub := NewHub(db, nil)
 	hub.SetPushNotificationService(service)
-	hub.agentPush.delay = 0
 	handler := NewMessageHandler(db, hub)
 
 	if _, err := handler.handleTaskStatus(senderUID, "p2p_7_8", &normalizedMessagePayload{

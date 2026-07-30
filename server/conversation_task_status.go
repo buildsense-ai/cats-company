@@ -88,6 +88,13 @@ func persistConversationTaskStatus(db store.Store, uid int64, topicID string, pa
 			return nil, nil, fmt.Errorf("ensure task status topic: %w", err)
 		}
 	}
+	if current, err := statusStore.GetConversationTaskStatusForSource(topicID, uid); err != nil {
+		return nil, nil, fmt.Errorf("load current task status: %w", err)
+	} else if current != nil {
+		if err := validateTaskStatusTransition(current, status); err != nil {
+			return nil, nil, err
+		}
+	}
 	aggregate, err := statusStore.UpsertConversationTaskStatus(status)
 	if err != nil {
 		return nil, nil, err
@@ -95,8 +102,18 @@ func persistConversationTaskStatus(db store.Store, uid int64, topicID string, pa
 	return aggregate, status, nil
 }
 
+func validateTaskStatusTransition(current, next *types.ConversationTaskStatus) error {
+	if current == nil || next == nil {
+		return nil
+	}
+	if current.RunID != "" && current.RunID == next.RunID && isTerminalTaskStatus(current.State) && !isTerminalTaskStatus(next.State) {
+		return errors.New("cannot resume a terminal task run; publish a new run_id")
+	}
+	return nil
+}
+
 func isTerminalTaskStatus(state string) bool {
-	return types.IsTerminalConversationTaskState(state)
+	return state == "completed" || state == "failed" || state == "cancelled" || state == "stale"
 }
 
 func normalizeConversationTaskStatus(uid int64, topicID string, payload *normalizedMessagePayload) (*types.ConversationTaskStatus, error) {

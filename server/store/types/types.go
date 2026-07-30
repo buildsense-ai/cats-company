@@ -2,7 +2,6 @@
 package types
 
 import (
-	"errors"
 	"strings"
 	"time"
 )
@@ -243,35 +242,6 @@ type ConversationTaskStatus struct {
 	SourceUID int64      `json:"source_uid,omitempty"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-}
-
-// IsTerminalConversationTaskState reports whether a task run has finished.
-func IsTerminalConversationTaskState(state string) bool {
-	return state == "completed" || state == "failed" || state == "cancelled" || state == "stale"
-}
-
-// ValidateConversationTaskStatusTransition keeps one source from overlapping
-// runs in a topic while allowing an expired or terminal run to be replaced.
-func ValidateConversationTaskStatusTransition(current, next *ConversationTaskStatus, now time.Time) error {
-	if current == nil || next == nil {
-		return nil
-	}
-	currentActive := (current.State == "running" || current.State == "waiting") &&
-		(current.ExpiresAt == nil || current.ExpiresAt.After(now))
-	if current.SourceUID == next.SourceUID &&
-		current.RunID != "" &&
-		next.RunID != "" &&
-		current.RunID != next.RunID &&
-		currentActive {
-		return errors.New("cannot start or finish another task run while the current run is active")
-	}
-	if current.RunID != "" &&
-		current.RunID == next.RunID &&
-		IsTerminalConversationTaskState(current.State) &&
-		!IsTerminalConversationTaskState(next.State) {
-		return errors.New("cannot resume a terminal task run; publish a new run_id")
-	}
-	return nil
 }
 
 // Project groups existing conversation topics without copying their messages.

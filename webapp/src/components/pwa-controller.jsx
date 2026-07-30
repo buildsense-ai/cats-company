@@ -80,7 +80,7 @@ export default function PwaController({
         () => cleanupPushSubscription(
           undefined,
           isCurrent,
-          () => pushTabCoordinator.getOtherTabState(),
+          () => pushTabCoordinator.hasOtherActiveTab(),
           () => registrationID && retirePushRegistrationID(registrationID),
         ),
       ).catch((error) => {

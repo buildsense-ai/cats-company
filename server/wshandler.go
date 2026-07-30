@@ -1768,7 +1768,7 @@ func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessa
 		return
 	}
 	key, ttl := agentPushTurnKey(uid, senderUID, msg)
-	h.agentPush.schedule(key, ttl, deliver)
+	h.agentPush.deliverOnce(key, ttl, deliver)
 }
 
 // broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.

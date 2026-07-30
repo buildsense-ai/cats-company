@@ -554,8 +554,7 @@ bot.run();
 说明：
 
 - 外部 Bot 建议统一连接 nginx 暴露的入口：`wss://app.catsco.cc/v0/channels`
-- 需要 Web Push 的 agent 应在开始生成前发布同一 `run_id` 的 `running`，发送完最终用户可见消息后再发布 `completed`、`failed`、`cancelled` 或 `stale`。服务端只在匹配的终态到达后为该 turn 通知一次，不会根据消息片段之间的时间间隔猜测是否完成。
-- 同一 agent 在同一 topic 中一次只能有一个未终止的 `run_id`。如需处理连续请求，应按 topic 排队；当前 run 未进入终态时开始另一 run 会被服务端拒绝，以避免消息和离线通知归属错误。
+- 需要 Web Push 的 agent 应在开始生成前发布同一 `run_id` 的 `running`，发送完最终用户可见消息后再发布终态；服务端会在匹配终态到达后为该 turn 通知一次。
 - `connectTimeout` 控制 TCP/WebSocket 建连阶段超时
 - `handshakeTimeout` 控制 `hi -> ctrl` 握手阶段超时
 - 如果升级请求在握手前被 HTTP 拒绝，SDK 会直接抛出带 `statusCode` 的 `HandshakeError`

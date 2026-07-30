@@ -479,7 +479,7 @@ function TinodeWebApp() {
         const currentToken = getToken();
         return !currentToken || currentToken === authToken;
       },
-      () => pushTabCoordinator.getOtherTabState(),
+      () => pushTabCoordinator.hasOtherActiveTab(),
       () => retirePushRegistrationID(registrationID),
     )).catch((error) => {
       console.warn('Push subscription cleanup failed while clearing session:', error);
