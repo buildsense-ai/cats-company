@@ -3,6 +3,7 @@ import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareTex
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
+import { canDragChatAttachment, writeChatAttachmentDrag } from '../chat-attachment-drag';
 import {
   hasPlainTextTableLikeBlock,
   hasRenderableTable,
@@ -1182,8 +1183,8 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
               <button
                 className="v3-action-btn"
                 onClick={handleEditClick}
-                aria-label="编辑并重新发送"
-                title="编辑并重新发送"
+                aria-label="修改后重新发送（原消息保留）"
+                title="修改后重新发送（原消息保留）"
                 type="button"
               >
                 <Pencil size={14} />
@@ -1487,8 +1488,10 @@ function ImageContent({ payload }) {
     <div className="oc-rich-image">
       <img
         src={resolveMediaURL(src)}
-        alt="image"
+        alt={payload.name || 'image'}
         className="oc-rich-image-thumb"
+        draggable={canDragChatAttachment({ type: 'image', payload })}
+        onDragStart={(event) => writeChatAttachmentDrag(event.dataTransfer, { type: 'image', payload })}
         onClick={() => setExpanded(true)}
         style={{ maxWidth: 240, maxHeight: 240, borderRadius: 4, cursor: 'pointer' }}
       />
@@ -1872,6 +1875,8 @@ function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = 
   return (
     <div
       className={`v3-attachment-card v3-artifact-card ${meta.className}${isActive ? ' active' : ''}`}
+      draggable={canDragChatAttachment({ type: 'file', payload })}
+      onDragStart={(event) => writeChatAttachmentDrag(event.dataTransfer, { type: 'file', payload })}
     >
       <button
         className="v3-artifact-main"

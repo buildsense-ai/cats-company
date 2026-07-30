@@ -133,6 +133,7 @@ vi.mock('../api', () => ({
   wsSendRead: vi.fn(),
   onWSMessage: vi.fn(() => vi.fn()),
   updateTopicSeq: vi.fn(),
+  getApiBaseURL: () => window.location.origin,
 }));
 
 import MessagesView, {
@@ -141,6 +142,7 @@ import MessagesView, {
 } from './messages-view';
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { api, onWSMessage, wsSendStreamCancel } from '../api';
+import { CHAT_ATTACHMENT_DRAG_TYPE, writeChatAttachmentDrag } from '../chat-attachment-drag';
 
 const openchatThemeCss = readFileSync(
   resolve(process.cwd(), 'src/css/openchat-theme.css'),
@@ -541,6 +543,164 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(textarea.value).toBe('');
     expect(container.querySelector('.v3-attachment-notice')).toBeNull();
+  });
+
+  it('restores text and attachments when preparing a previous message to resend', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 69,
+        seq_id: 69,
+        topic_id: 'p2p_1_2',
+        from_uid: 1,
+        type: 'text',
+        content: '描述这张图',
+        content_blocks: [
+          { type: 'text', text: '描述这张图' },
+          { type: 'image', payload: { file_key: 'cat.png', url: '/uploads/images/cat.png', name: 'cat.png', size: 12, mime_type: 'image/png' } },
+        ],
+        created_at: '2026-06-09T00:00:00Z',
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+      Simulate.click(container.querySelector('.mock-edit-message[data-message-id="69"]'));
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('textarea.v3-composer-input').value).toBe('描述这张图');
+    expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(1);
+    expect(container.querySelector('[aria-label="预览图片：cat.png"]')).not.toBeNull();
+    expect(container.textContent).toContain('原文字和 1 个附件');
+  });
+
+  it('keeps legacy message content when attachment blocks have no text block', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 70,
+        seq_id: 70,
+        topic_id: 'p2p_1_2',
+        from_uid: 1,
+        type: 'text',
+        content: '旧格式正文仍要保留',
+        content_blocks: [
+          { type: 'image', payload: { file_key: 'legacy.png', url: '/uploads/images/legacy.png', name: 'legacy.png', size: 12 } },
+        ],
+        created_at: '2026-06-09T00:00:00Z',
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+      Simulate.click(container.querySelector('.mock-edit-message[data-message-id="70"]'));
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('textarea.v3-composer-input').value).toBe('旧格式正文仍要保留');
+    expect(container.querySelector('[aria-label="预览图片：legacy.png"]')).not.toBeNull();
+  });
+
+  it('accepts a chat image drag without uploading the file again', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    const attachment = {
+      type: 'image',
+      name: 'cat.png',
+      size: 12,
+      content: {
+        type: 'image',
+        payload: { file_key: 'cat.png', url: '/uploads/images/cat.png', name: 'cat.png', size: 12, mime_type: 'image/png' },
+      },
+    };
+    const values = new Map();
+    const dataTransfer = {
+      types: [],
+      setData: (type, value) => {
+        values.set(type, value);
+        if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type);
+      },
+      getData: (type) => values.get(type) || '',
+      dropEffect: 'none',
+      effectAllowed: 'none',
+    };
+    writeChatAttachmentDrag(dataTransfer, { type: attachment.type, payload: attachment.content.payload });
+    const timeline = container.querySelector('.v3-timeline');
+
+    await act(async () => {
+      Simulate.dragEnter(timeline, { dataTransfer });
+      Simulate.drop(timeline, { dataTransfer });
+      await Promise.resolve();
+    });
+
+    expect(api.uploadFile).not.toHaveBeenCalled();
+    expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(1);
+    expect(container.querySelector('[aria-label="预览图片：cat.png"]')).not.toBeNull();
+    expect(container.textContent).toContain('已添加图片：cat.png');
+
+    writeChatAttachmentDrag(dataTransfer, { type: attachment.type, payload: attachment.content.payload });
+    await act(async () => {
+      Simulate.drop(timeline, { dataTransfer });
+      await Promise.resolve();
+    });
+
+    expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(1);
+    expect(container.textContent).toContain('cat.png 已在待发送附件中');
+  });
+
+  it('accepts a chat file drag without uploading the file again', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    const values = new Map();
+    const dataTransfer = {
+      types: [],
+      setData: (type, value) => {
+        values.set(type, value);
+        if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type);
+      },
+      getData: (type) => values.get(type) || '',
+      dropEffect: 'none',
+      effectAllowed: 'none',
+    };
+    writeChatAttachmentDrag(dataTransfer, {
+      type: 'file',
+      payload: {
+        file_key: 'report.pdf',
+        url: '/uploads/files/report.pdf',
+        name: 'report.pdf',
+        size: 24,
+        mime_type: 'application/pdf',
+      },
+    });
+
+    await act(async () => {
+      Simulate.drop(container.querySelector('.v3-timeline'), { dataTransfer });
+      await Promise.resolve();
+    });
+
+    expect(api.uploadFile).not.toHaveBeenCalled();
+    expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(1);
+    expect(container.querySelector('.v3-composer-attachment-chip.is-file[title="report.pdf"]')).not.toBeNull();
+    expect(container.textContent).toContain('已添加文件：report.pdf');
+  });
+
+  it('rejects a forged chat attachment token without adding a draft', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    const dataTransfer = {
+      types: [CHAT_ATTACHMENT_DRAG_TYPE],
+      getData: () => '00000000-0000-4000-8000-000000000000',
+      files: [],
+      items: [],
+      dropEffect: 'none',
+    };
+
+    await act(async () => {
+      Simulate.drop(container.querySelector('.v3-timeline'), { dataTransfer });
+      await Promise.resolve();
+    });
+
+    expect(api.uploadFile).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain('个附件待发送');
+    expect(container.textContent).toContain('这次拖入没有识别到可上传的文件');
   });
 
   it('keeps the full reply preview available for single-line CSS truncation and clears it explicitly', async () => {
