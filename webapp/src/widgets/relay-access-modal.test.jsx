@@ -151,7 +151,7 @@ describe('RelayAccessModal commercial rollout', () => {
     await renderModal();
 
     expect(container.textContent).toContain('账本灰度');
-    expect(container.textContent).toContain('套餐账本额度');
+    expect(container.textContent).toContain('模型额度');
     expect(container.textContent).toContain('需要管理员后台对账/同步后');
     expect(container.textContent).toContain('当前有效套餐');
     expect(container.textContent).toContain('套餐最近到期');
@@ -162,8 +162,11 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).toContain('教师试用包');
     expect(container.textContent).toContain('MiniMax-M3');
     expect(container.textContent).toContain('deepseek-v4-flash');
-    expect(container.textContent).toContain('剩余 375.00 CNY');
-    expect(container.textContent).toContain('剩余 87.50 CNY');
+    expect(container.textContent).toContain('剩余 75%');
+    expect(container.textContent).toContain('剩余 87.5%');
+    expect(container.textContent).not.toContain('CNY');
+    expect(container.textContent).not.toContain('¥');
+    expect(container.textContent).not.toContain('￥');
     expect(container.textContent).not.toContain('禁用套餐');
     expect(container.querySelector('.relay-access-invite-form')).not.toBeNull();
   });
@@ -221,7 +224,8 @@ describe('RelayAccessModal commercial rollout', () => {
     await renderModal();
 
     expect(container.textContent).toContain('当前模型已超额');
-    expect(container.textContent).toContain('剩余额度 0 CNY');
+    expect(container.textContent).toContain('剩余额度 0%');
+    expect(container.textContent).not.toContain('CNY');
     expect(container.textContent).toContain('请联系管理员补额或重置');
   });
 

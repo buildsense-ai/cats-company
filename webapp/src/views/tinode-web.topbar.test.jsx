@@ -313,14 +313,17 @@ describe('LocalAssistantBar model selector', () => {
       .find((item) => item.textContent.includes('DeepSeek V4 Flash'));
     const terra = [...container.querySelectorAll('.v3-model-menu-item')]
       .find((item) => item.textContent.includes('GPT-5.6 Terra'));
-    expect(m27?.textContent).toContain('上下文 204.8K');
-    expect(m3?.textContent).toContain('上下文 1M');
-    expect(deepseek?.textContent).toContain('上下文 1M');
-    expect(terra?.textContent).toContain('上下文 256K');
-    expect(terra?.textContent).not.toContain('OpenAI Responses');
-    expect(terra?.textContent).not.toContain('精细推理强度');
-    expect(m3?.textContent).toContain('剩余 75% · ¥75.00');
-    expect(deepseek?.textContent).toContain('剩余 10% · ¥5.00');
+    expect(m27?.textContent).toContain('标准额度，适合日常任务');
+    expect(m3?.textContent).toContain('支持多模态与长上下文');
+    expect(deepseek?.textContent).toContain('低额度 Flash，支持推理强度');
+    expect(terra?.textContent).toContain('OpenAI Responses，支持精细推理强度');
+    expect(container.textContent).not.toContain('上下文 204.8K');
+    expect(container.textContent).not.toContain('上下文 1M');
+    expect(container.textContent).not.toContain('上下文 256K');
+    expect(m3?.textContent).toContain('剩余 75%');
+    expect(deepseek?.textContent).toContain('剩余 10%');
+    expect(container.textContent).not.toContain('¥');
+    expect(container.textContent).not.toContain('CNY');
     expect(deepseek?.querySelector('.v3-model-menu-quota.warning')).toBeTruthy();
   });
 
@@ -379,21 +382,8 @@ describe('LocalAssistantBar model selector', () => {
     const protocolSelect = container.querySelector('.v3-custom-model-select-trigger[aria-label="API 协议"]');
     expect(protocolSelect.closest('.v3-custom-model-select-wrap')).not.toBeNull();
     expect(protocolSelect.querySelector('.v3-custom-model-select-chevron')).not.toBeNull();
-    const contextSelect = container.querySelector('.v3-custom-model-select-trigger[aria-label="上下文 Token"]');
-    expect(contextSelect.closest('.v3-custom-model-select-wrap').classList.contains('is-top')).toBe(true);
-    await act(async () => contextSelect.click());
-    const contextOptions = [...document.body.querySelectorAll('.v3-custom-model-select-option')];
-    expect(contextOptions.map((option) => option.textContent)).toEqual([
-      '128K', '200K', '256K', '512K', '1M',
-    ]);
-    expect(contextSelect.dataset.value).toBe('1000000');
-    const nextContext = contextOptions.find((option) => option.textContent === '512K');
-    await act(async () => {
-      nextContext.dispatchEvent(new Event('pointerdown', { bubbles: true }));
-      nextContext.click();
-    });
-    expect(contextSelect.dataset.value).toBe('512000');
-    expect(container.querySelector('.v3-model-menu')).not.toBeNull();
+    expect(container.textContent).not.toContain('上下文 Token');
+    expect(container.textContent).not.toContain('最大输出 Token');
     await act(async () => {
       container.querySelector('.v3-custom-model-editor').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
@@ -407,7 +397,7 @@ describe('LocalAssistantBar model selector', () => {
     }));
   });
 
-  it('preserves a legacy custom context value while keeping the standard choices available', async () => {
+  it('preserves a legacy custom context value while keeping token fields hidden', async () => {
     const legacyConfig = {
       ...baseConfig,
       desired: { kind: 'custom', model_id: 'legacy-model', reasoning_effort: '', revision: 4 },
@@ -427,13 +417,8 @@ describe('LocalAssistantBar model selector', () => {
       .find((item) => item.textContent.includes('自定义模型'));
     await act(async () => customEntry.click());
 
-    const contextSelect = container.querySelector('.v3-custom-model-select-trigger[aria-label="上下文 Token"]');
-    expect(contextSelect.dataset.value).toBe('272000');
-    await act(async () => contextSelect.click());
-    expect([...document.body.querySelectorAll('.v3-custom-model-select-option')].map((option) => option.textContent)).toEqual([
-      '272K', '128K', '200K', '256K', '512K', '1M',
-    ]);
-    await act(async () => contextSelect.click());
+    expect(container.textContent).not.toContain('上下文 Token');
+    expect(container.textContent).not.toContain('最大输出 Token');
     await act(async () => {
       container.querySelector('.v3-custom-model-editor').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
