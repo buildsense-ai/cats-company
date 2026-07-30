@@ -98,6 +98,7 @@ type weixinClawBotMessageItem struct {
 	Type           int                    `json:"type,omitempty"`
 	TextItem       weixinClawBotTextItem  `json:"text_item,omitempty"`
 	ImageItem      map[string]interface{} `json:"image_item,omitempty"`
+	VoiceItem      map[string]interface{} `json:"voice_item,omitempty"`
 	FileItem       map[string]interface{} `json:"file_item,omitempty"`
 	MediaItem      map[string]interface{} `json:"media_item,omitempty"`
 	AttachmentItem map[string]interface{} `json:"attachment_item,omitempty"`
@@ -126,16 +127,17 @@ func (i *weixinClawBotMessageItem) UnmarshalJSON(data []byte) error {
 }
 
 type weixinClawBotMediaRef struct {
-	Kind        string
-	Name        string
-	URL         string
-	AESKey      string
-	MediaID     string
-	ContentType string
-	Size        int64
-	ItemType    int
-	Source      string
-	Raw         json.RawMessage
+	Kind                string
+	Name                string
+	URL                 string
+	AESKey              string
+	EncryptedQueryParam string
+	MediaID             string
+	ContentType         string
+	Size                int64
+	ItemType            int
+	Source              string
+	Raw                 json.RawMessage
 }
 
 type weixinClawBotUnsupportedItem struct {
@@ -949,7 +951,7 @@ func (h *WeixinClawBotHandler) downloadClawBotMedia(ctx context.Context, token *
 	files := make([]uploadPayload, 0, len(refs))
 	failures := make([]weixinClawBotUnsupportedItem, 0)
 	for _, ref := range refs {
-		if strings.TrimSpace(ref.URL) == "" && strings.TrimSpace(ref.MediaID) == "" {
+		if strings.TrimSpace(ref.URL) == "" && strings.TrimSpace(ref.EncryptedQueryParam) == "" && strings.TrimSpace(ref.MediaID) == "" {
 			failures = append(failures, weixinClawBotUnsupportedItem{Type: ref.ItemType, Reason: "missing_media_resource", Name: ref.Name, Raw: ref.Raw})
 			continue
 		}
@@ -985,6 +987,9 @@ func weixinClawBotMessageMediaRefs(msg weixinClawBotMessage) ([]weixinClawBotMed
 		}
 		itemRefs := weixinClawBotItemMediaRefs(item)
 		if len(itemRefs) == 0 {
+			if weixinClawBotVoiceText(item) != "" {
+				continue
+			}
 			unsupported = append(unsupported, weixinClawBotUnsupportedItem{Type: item.Type, Reason: "unrecognized_item", Raw: weixinClawBotItemRaw(item)})
 			continue
 		}
@@ -1002,7 +1007,7 @@ func weixinClawBotItemMediaRefs(item weixinClawBotMessageItem) []weixinClawBotMe
 		if !ok {
 			continue
 		}
-		key := strings.Join([]string{ref.Kind, ref.URL, ref.MediaID, ref.Name}, "\x00")
+		key := strings.Join([]string{ref.Kind, ref.URL, ref.EncryptedQueryParam, ref.MediaID, ref.Name}, "\x00")
 		if seen[key] {
 			continue
 		}
@@ -1026,6 +1031,7 @@ func weixinClawBotItemMediaContainers(item weixinClawBotMessageItem) []weixinCla
 		containers = append(containers, weixinClawBotMediaContainer{name: name, payload: payload})
 	}
 	add("image_item", item.ImageItem)
+	add("voice_item", item.VoiceItem)
 	add("file_item", item.FileItem)
 	add("media_item", item.MediaItem)
 	add("attachment_item", item.AttachmentItem)
@@ -1037,11 +1043,11 @@ func weixinClawBotItemMediaContainers(item weixinClawBotMessageItem) []weixinCla
 		}
 		switch typed := value.(type) {
 		case map[string]interface{}:
-			if strings.Contains(normalized, "image") || strings.Contains(normalized, "file") || strings.Contains(normalized, "media") || strings.Contains(normalized, "attach") || strings.Contains(normalized, "doc") {
+			if strings.Contains(normalized, "image") || strings.Contains(normalized, "voice") || strings.Contains(normalized, "file") || strings.Contains(normalized, "media") || strings.Contains(normalized, "attach") || strings.Contains(normalized, "doc") {
 				add(key, typed)
 			}
 		case []interface{}:
-			if !strings.Contains(normalized, "image") && !strings.Contains(normalized, "file") && !strings.Contains(normalized, "media") && !strings.Contains(normalized, "attach") && !strings.Contains(normalized, "doc") {
+			if !strings.Contains(normalized, "image") && !strings.Contains(normalized, "voice") && !strings.Contains(normalized, "file") && !strings.Contains(normalized, "media") && !strings.Contains(normalized, "attach") && !strings.Contains(normalized, "doc") {
 				continue
 			}
 			for _, entry := range typed {
@@ -1062,22 +1068,26 @@ func weixinClawBotMediaRefFromMap(item weixinClawBotMessageItem, source string, 
 		return weixinClawBotMediaRef{}, false
 	}
 	ref := weixinClawBotMediaRef{
-		Kind:        weixinClawBotMediaKind(item.Type, source, weixinClawBotMapStringDeep(payload, 3, "mime_type", "mimeType", "content_type", "contentType", "file_type", "fileType"), weixinClawBotMapStringDeep(payload, 3, "file_name", "fileName", "filename", "name", "title", "display_name", "displayName")),
-		Name:        weixinClawBotMapStringDeep(payload, 3, "file_name", "fileName", "filename", "name", "title", "display_name", "displayName"),
-		URL:         weixinClawBotMapStringDeep(payload, 3, "download_url", "downloadUrl", "full_url", "fullUrl", "file_url", "fileUrl", "image_url", "imageUrl", "media_url", "mediaUrl", "resource_url", "resourceUrl", "url"),
-		AESKey:      weixinClawBotMapStringDeep(payload, 3, "aes_key", "aesKey"),
-		MediaID:     weixinClawBotMapStringDeep(payload, 3, "media_id", "mediaId", "file_id", "fileId", "resource_id", "resourceId", "resource_key", "resourceKey"),
-		ContentType: weixinClawBotMapStringDeep(payload, 3, "mime_type", "mimeType", "content_type", "contentType", "file_type", "fileType"),
-		Size:        weixinClawBotMapInt64Deep(payload, 3, "size", "len", "length", "file_size", "fileSize", "content_length", "contentLength"),
-		ItemType:    item.Type,
-		Source:      source,
-		Raw:         weixinClawBotItemRaw(item),
+		Kind:                weixinClawBotMediaKind(item.Type, source, weixinClawBotMapStringDeep(payload, 3, "mime_type", "mimeType", "content_type", "contentType", "file_type", "fileType"), weixinClawBotMapStringDeep(payload, 3, "file_name", "fileName", "filename", "name", "title", "display_name", "displayName")),
+		Name:                weixinClawBotMapStringDeep(payload, 3, "file_name", "fileName", "filename", "name", "title", "display_name", "displayName"),
+		URL:                 weixinClawBotMapStringDeep(payload, 3, "download_url", "downloadUrl", "full_url", "fullUrl", "file_url", "fileUrl", "image_url", "imageUrl", "media_url", "mediaUrl", "resource_url", "resourceUrl", "url"),
+		AESKey:              weixinClawBotMapStringDeep(payload, 3, "aes_key", "aesKey"),
+		EncryptedQueryParam: weixinClawBotMapStringDeep(payload, 3, "encrypt_query_param", "encryptQueryParam", "encrypted_query_param", "encryptedQueryParam"),
+		MediaID:             weixinClawBotMapStringDeep(payload, 3, "media_id", "mediaId", "file_id", "fileId", "resource_id", "resourceId", "resource_key", "resourceKey"),
+		ContentType:         weixinClawBotMapStringDeep(payload, 3, "mime_type", "mimeType", "content_type", "contentType", "file_type", "fileType"),
+		Size:                weixinClawBotMapInt64Deep(payload, 3, "size", "len", "length", "file_size", "fileSize", "content_length", "contentLength"),
+		ItemType:            item.Type,
+		Source:              source,
+		Raw:                 weixinClawBotItemRaw(item),
 	}
 	if ref.Name == "" {
 		ref.Name = channelOutboundFileNameFromURL(ref.URL)
 	}
-	if ref.URL == "" && ref.MediaID == "" && ref.Name == "" && ref.ContentType == "" {
+	if ref.URL == "" && ref.EncryptedQueryParam == "" && ref.MediaID == "" && ref.Name == "" && ref.ContentType == "" {
 		return weixinClawBotMediaRef{}, false
+	}
+	if (len(item.VoiceItem) > 0 || strings.Contains(weixinClawBotNormalizedKey(source), "voice")) && (ref.Name == "" || strings.EqualFold(ref.Name, "download")) {
+		ref.Name = "微信语音"
 	}
 	return ref, true
 }
@@ -1093,7 +1103,7 @@ func weixinClawBotMediaKind(itemType int, source, contentType, name string) stri
 }
 
 func weixinClawBotHasNonTextPayload(item weixinClawBotMessageItem) bool {
-	if len(item.ImageItem) > 0 || len(item.FileItem) > 0 || len(item.MediaItem) > 0 || len(item.AttachmentItem) > 0 || len(item.DocItem) > 0 {
+	if len(item.ImageItem) > 0 || len(item.VoiceItem) > 0 || len(item.FileItem) > 0 || len(item.MediaItem) > 0 || len(item.AttachmentItem) > 0 || len(item.DocItem) > 0 {
 		return true
 	}
 	for key, value := range item.Fields {
@@ -1128,6 +1138,9 @@ func weixinClawBotUnsupportedAttachmentText(items []weixinClawBotUnsupportedItem
 		return ""
 	}
 	if len(items) == 1 {
+		if weixinClawBotRawItemHasVoice(items[0].Raw) {
+			return "收到微信语音，但微信未提供可用的转写文本，当前暂时无法识别这段语音。请稍后重试，或改用文字发送。"
+		}
 		name := strings.TrimSpace(items[0].Name)
 		if name == "" {
 			name = "附件"
@@ -1135,6 +1148,19 @@ func weixinClawBotUnsupportedAttachmentText(items []weixinClawBotUnsupportedItem
 		return "收到微信 ClawBot 附件：" + name + "。当前无法下载这个附件，已记录原始消息字段用于适配。"
 	}
 	return fmt.Sprintf("收到 %d 个微信 ClawBot 附件。当前无法下载这些附件，已记录原始消息字段用于适配。", len(items))
+}
+
+func weixinClawBotRawItemHasVoice(raw json.RawMessage) bool {
+	var fields map[string]interface{}
+	if len(raw) == 0 || json.Unmarshal(raw, &fields) != nil {
+		return false
+	}
+	for key, value := range fields {
+		if weixinClawBotNormalizedKey(key) == "voiceitem" && !weixinClawBotEmptyValue(value) {
+			return true
+		}
+	}
+	return false
 }
 
 func weixinClawBotItemRaw(item weixinClawBotMessageItem) json.RawMessage {
@@ -1145,6 +1171,7 @@ func weixinClawBotItemRaw(item weixinClawBotMessageItem) json.RawMessage {
 		Type           int                    `json:"type,omitempty"`
 		TextItem       weixinClawBotTextItem  `json:"text_item,omitempty"`
 		ImageItem      map[string]interface{} `json:"image_item,omitempty"`
+		VoiceItem      map[string]interface{} `json:"voice_item,omitempty"`
 		FileItem       map[string]interface{} `json:"file_item,omitempty"`
 		MediaItem      map[string]interface{} `json:"media_item,omitempty"`
 		AttachmentItem map[string]interface{} `json:"attachment_item,omitempty"`
@@ -1153,6 +1180,7 @@ func weixinClawBotItemRaw(item weixinClawBotMessageItem) json.RawMessage {
 		Type:           item.Type,
 		TextItem:       item.TextItem,
 		ImageItem:      item.ImageItem,
+		VoiceItem:      item.VoiceItem,
 		FileItem:       item.FileItem,
 		MediaItem:      item.MediaItem,
 		AttachmentItem: item.AttachmentItem,
@@ -1311,10 +1339,12 @@ func weixinClawBotEmptyValue(value interface{}) bool {
 	}
 }
 
-func weixinClawBotAllowedMediaHosts(baseURL string, extra []string) map[string]bool {
+func weixinClawBotAllowedMediaHosts(baseURL, cdnBaseURL string, extra []string) map[string]bool {
 	hosts := map[string]bool{}
-	if parsed, err := url.Parse(strings.TrimSpace(baseURL)); err == nil && parsed.Host != "" {
-		hosts[weixinClawBotNormalizeMediaHost(parsed.Host)] = true
+	for _, value := range []string{baseURL, cdnBaseURL} {
+		if parsed, err := url.Parse(strings.TrimSpace(value)); err == nil && parsed.Host != "" {
+			hosts[weixinClawBotNormalizeMediaHost(parsed.Host)] = true
+		}
 	}
 	for _, value := range extra {
 		if host := weixinClawBotNormalizeMediaHost(value); host != "" {
@@ -1368,7 +1398,7 @@ func newHTTPWeixinClawBotAPI(cfg WeixinClawBotConfig) *httpWeixinClawBotAPI {
 	if cdnBaseURL == "" {
 		cdnBaseURL = defaultWeixinClawBotCDNBaseURL
 	}
-	allowedMediaHosts := weixinClawBotAllowedMediaHosts(baseURL, cfg.MediaHostAllowlist)
+	allowedMediaHosts := weixinClawBotAllowedMediaHosts(baseURL, cdnBaseURL, cfg.MediaHostAllowlist)
 	longPoll := cfg.LongPollTimeout
 	if longPoll <= 0 {
 		longPoll = 30 * time.Second
@@ -1602,6 +1632,9 @@ func unpadWeixinClawBotPKCS7(data []byte) ([]byte, error) {
 }
 
 func (c *httpWeixinClawBotAPI) mediaDownloadURLFromRef(ref weixinClawBotMediaRef) string {
+	if encryptedQueryParam := strings.TrimSpace(ref.EncryptedQueryParam); encryptedQueryParam != "" {
+		return strings.TrimRight(c.cdnBaseURL, "/") + "/download?encrypted_query_param=" + url.QueryEscape(encryptedQueryParam)
+	}
 	template := strings.TrimSpace(c.mediaDownloadURLTemplate)
 	mediaID := strings.TrimSpace(ref.MediaID)
 	if template == "" || mediaID == "" {
@@ -1995,13 +2028,29 @@ func setWeixinClawBotAuthOnlyHeaders(req *http.Request, botToken string) {
 }
 
 func weixinClawBotMessageText(msg weixinClawBotMessage) string {
-	var parts []string
+	var textParts []string
+	var voiceParts []string
 	for _, item := range msg.ItemList {
 		if strings.TrimSpace(item.TextItem.Text) != "" {
-			parts = append(parts, item.TextItem.Text)
+			textParts = append(textParts, item.TextItem.Text)
+		}
+		if voiceText := weixinClawBotVoiceText(item); voiceText != "" {
+			voiceParts = append(voiceParts, voiceText)
 		}
 	}
-	return strings.Join(parts, "")
+	text := strings.Join(textParts, "")
+	voiceText := strings.Join(voiceParts, "\n")
+	if text == "" {
+		return voiceText
+	}
+	if voiceText == "" {
+		return text
+	}
+	return text + "\n" + voiceText
+}
+
+func weixinClawBotVoiceText(item weixinClawBotMessageItem) string {
+	return strings.TrimSpace(weixinClawBotMapStringDeep(item.VoiceItem, 2, "text"))
 }
 
 func clawBotMessageID(msg weixinClawBotMessage) string {
