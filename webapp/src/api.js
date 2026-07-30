@@ -38,13 +38,6 @@ const registrationIDForToken = (candidate) => {
   localStorage.setItem(PUSH_REGISTRATION_OWNER_KEY, owner);
   return registrationID;
 };
-let pushRegistrationID = token ? registrationIDForToken(token) : '';
-window.addEventListener('storage', (event) => {
-  if (!token || (event.key !== PUSH_REGISTRATION_ID_KEY && event.key !== PUSH_REGISTRATION_OWNER_KEY)) return;
-  const storedOwner = localStorage.getItem(PUSH_REGISTRATION_OWNER_KEY);
-  const storedID = localStorage.getItem(PUSH_REGISTRATION_ID_KEY);
-  if (storedID && storedOwner === pushRegistrationOwner(token)) pushRegistrationID = storedID;
-});
 let authRevision = 0;
 let wsConn = null;
 let wsReconnectTimer = null;
@@ -72,9 +65,8 @@ export function requestMissedMessages(topicId) {
   }
 }
 
-export function setToken(t, { pushCleanupHandled = false } = {}) {
+export function setToken(t) {
   token = t;
-  pushRegistrationID = t ? registrationIDForToken(t) : '';
   authRevision += 1;
   if (t) localStorage.setItem('oc_token', t);
   else localStorage.removeItem('oc_token');
@@ -82,7 +74,6 @@ export function setToken(t, { pushCleanupHandled = false } = {}) {
     detail: {
       loggedIn: Boolean(t),
       revision: authRevision,
-      pushCleanupHandled,
     },
   }));
 }
@@ -95,14 +86,15 @@ export function getAuthRevision() {
   return authRevision;
 }
 
-export function getPushRegistrationID() { return pushRegistrationID; }
+export function getPushRegistrationID() {
+  return token ? registrationIDForToken(token) : '';
+}
 
 export function retirePushRegistrationID(expectedRegistrationID = '') {
   const storedRegistrationID = localStorage.getItem(PUSH_REGISTRATION_ID_KEY);
   if (expectedRegistrationID && storedRegistrationID !== expectedRegistrationID) return false;
   localStorage.removeItem(PUSH_REGISTRATION_ID_KEY);
   localStorage.removeItem(PUSH_REGISTRATION_OWNER_KEY);
-  if (!expectedRegistrationID || pushRegistrationID === expectedRegistrationID) pushRegistrationID = '';
   return true;
 }
 
@@ -232,7 +224,7 @@ export const api = {
   subscribePush: (subscription, registrationID, signal) => (
     request('POST', '/api/push/subscriptions', { ...subscription, registration_id: registrationID }, { signal })
   ),
-  unsubscribePush: (endpoint, authToken = token, registrationID = pushRegistrationID) => {
+  unsubscribePush: (endpoint, authToken = token, registrationID = getPushRegistrationID()) => {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), PUSH_UNSUBSCRIBE_TIMEOUT_MS);
     return request('DELETE', '/api/push/subscriptions', { endpoint, registration_id: registrationID }, {

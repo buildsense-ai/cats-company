@@ -77,12 +77,7 @@ export async function ensurePushSubscription(
 export async function cleanupPushSubscription(
   unsubscribeOnServer,
   isCurrent = () => true,
-  hasOtherActiveTab = () => false,
-  onLastTab = () => {},
 ) {
-  if (await hasOtherActiveTab()) return false;
-  if (!isCurrent() && !unsubscribeOnServer) return false;
-  onLastTab();
   if (!('serviceWorker' in navigator)) return false;
   const registration = await navigator.serviceWorker.getRegistration();
   const subscription = await registration?.pushManager?.getSubscription();

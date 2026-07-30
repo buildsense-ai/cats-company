@@ -2,10 +2,9 @@ import React, {
   useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
 import { registerSW } from 'virtual:pwa-register';
-import { api, getPushRegistrationID, retirePushRegistrationID } from '../api';
+import { api, getPushRegistrationID } from '../api';
 import {
   canUsePush,
-  cleanupPushSubscription,
   ensurePushSubscription,
   PUSH_DISMISSED_KEY,
   serializePushSubscription,
@@ -22,7 +21,6 @@ function readDismissed() {
 export default function PwaController({
   loggedIn,
   sessionRevision,
-  pushCleanupHandled = false,
 }) {
   const sessionRevisionRef = useRef(sessionRevision);
   sessionRevisionRef.current = sessionRevision;
@@ -68,34 +66,16 @@ export default function PwaController({
   }, [loggedIn, permission]);
 
   useEffect(() => {
-    if (!canUsePush()) return undefined;
+    if (!canUsePush() || !loggedIn || Notification.permission !== 'granted') return undefined;
     let cancelled = false;
     const isCurrent = () => (
       !cancelled && sessionRevisionRef.current === sessionRevision
     );
-    if (!loggedIn) {
-      if (pushCleanupHandled) return undefined;
-      const registrationID = getPushRegistrationID();
-      enqueuePushOperation(
-        () => cleanupPushSubscription(
-          undefined,
-          isCurrent,
-          () => pushTabCoordinator.hasOtherActiveTab(),
-          () => registrationID && retirePushRegistrationID(registrationID),
-        ),
-      ).catch((error) => {
-        console.warn('Push cleanup after logout failed:', error);
-      });
-      return () => {
-        cancelled = true;
-      };
-    }
-    if (Notification.permission !== 'granted') return undefined;
 
     const controller = new AbortController();
-    const registrationID = getPushRegistrationID();
     const reconcilePush = async () => {
       try {
+        const registrationID = getPushRegistrationID();
         const config = await api.getPushConfig(controller.signal);
         if (!isCurrent()) return;
         const publicKey = config.public_key || config.vapid_public_key || config.vapidPublicKey;
@@ -116,7 +96,7 @@ export default function PwaController({
       cancelled = true;
       controller.abort();
     };
-  }, [loggedIn, pushCleanupHandled, sessionRevision]);
+  }, [loggedIn, sessionRevision]);
 
   const offerPush = shouldOfferPush({ loggedIn, permission, dismissed });
 
@@ -132,13 +112,13 @@ export default function PwaController({
       sessionRevisionRef.current === requestedRevision
     );
     const controller = new AbortController();
-    const registrationID = getPushRegistrationID();
     const abortOnSessionChange = () => controller.abort();
     window.addEventListener('cc:auth-changed', abortOnSessionChange, { once: true });
     setBusy(true);
     setPushError('');
     try {
       await enqueuePushOperation(async () => {
+        const registrationID = getPushRegistrationID();
         const config = await api.getPushConfig(controller.signal);
         if (!isCurrent()) return;
         const publicKey = config.public_key || config.vapid_public_key || config.vapidPublicKey;

@@ -667,7 +667,7 @@ func TestPushNotificationDeadlineCoversSubscriptionLookup(t *testing.T) {
 	}
 }
 
-func TestNotifyOfflineUserQueuesOnlyOfflineHumans(t *testing.T) {
+func TestEnqueueOfflineUserPushQueuesOnlyOfflineHumans(t *testing.T) {
 	tests := []struct {
 		name        string
 		accountType types.AccountType
@@ -703,7 +703,7 @@ func TestNotifyOfflineUserQueuesOnlyOfflineHumans(t *testing.T) {
 				hub.addClient(&Client{uid: uid, send: make(chan []byte, 1)})
 			}
 
-			hub.notifyOfflineUser(uid)
+			hub.enqueueOfflineUserPush(uid)
 
 			select {
 			case <-delivered:
@@ -810,7 +810,7 @@ func TestAgentPushCoordinatorBoundsDedupKeys(t *testing.T) {
 		coordinator.delivered[fmt.Sprintf("delivered-%d", index)] = expiresAt
 	}
 
-	if coordinator.deliverOnce("over-capacity", agentPushTurnDedupTTL, func() bool { return true }) {
+	if coordinator.deliverOnce("over-capacity", func() bool { return true }) {
 		t.Fatal("new turn was accepted after dedup capacity was exhausted")
 	}
 }

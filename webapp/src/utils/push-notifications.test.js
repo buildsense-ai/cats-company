@@ -153,65 +153,6 @@ describe('push notification helpers', () => {
     expect(unsubscribe).toHaveBeenCalled();
   });
 
-  test('preserves a shared browser subscription while another tab is active', async () => {
-    const unsubscribe = vi.fn().mockResolvedValue(true);
-    const serverCleanup = vi.fn().mockResolvedValue(undefined);
-    const hasOtherActiveTab = vi.fn().mockResolvedValue(true);
-    Object.defineProperty(navigator, 'serviceWorker', {
-      configurable: true,
-      value: {
-        getRegistration: vi.fn().mockResolvedValue({
-          pushManager: { getSubscription: vi.fn().mockResolvedValue({ endpoint: 'https://push.example/sub', unsubscribe }) },
-        }),
-      },
-    });
-
-    await expect(cleanupPushSubscription(
-      serverCleanup,
-      () => true,
-      hasOtherActiveTab,
-    )).resolves.toBe(false);
-    expect(serverCleanup).not.toHaveBeenCalled();
-    expect(unsubscribe).not.toHaveBeenCalled();
-  });
-
-  test('preserves the subscription when another tab may still be active', async () => {
-    const unsubscribe = vi.fn().mockResolvedValue(true);
-    const serverCleanup = vi.fn().mockResolvedValue(undefined);
-    const retireGeneration = vi.fn();
-    Object.defineProperty(navigator, 'serviceWorker', {
-      configurable: true,
-      value: {
-        getRegistration: vi.fn().mockResolvedValue({
-          pushManager: { getSubscription: vi.fn().mockResolvedValue({ endpoint: 'https://push.example/sub', unsubscribe }) },
-        }),
-      },
-    });
-
-    await expect(cleanupPushSubscription(
-      serverCleanup,
-      () => true,
-      () => true,
-      retireGeneration,
-    )).resolves.toBe(false);
-    expect(retireGeneration).not.toHaveBeenCalled();
-    expect(serverCleanup).not.toHaveBeenCalled();
-    expect(unsubscribe).not.toHaveBeenCalled();
-  });
-
-  test('does not retire a newer generation when a browser-only cleanup becomes stale', async () => {
-    const retireGeneration = vi.fn();
-
-    await expect(cleanupPushSubscription(
-      undefined,
-      () => false,
-      () => 'none',
-      retireGeneration,
-    )).resolves.toBe(false);
-
-    expect(retireGeneration).not.toHaveBeenCalled();
-  });
-
   test('does not create a subscription after the authenticated session changes', async () => {
     let resolveExisting;
     let current = true;

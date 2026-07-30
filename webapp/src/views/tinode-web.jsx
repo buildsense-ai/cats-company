@@ -473,19 +473,21 @@ function TinodeWebApp() {
     if (!authToken || getToken() !== authToken) return;
     const registrationID = getPushRegistrationID();
     pushTabCoordinator.setActive(false);
-    enqueuePushOperation(() => cleanupPushSubscription(
-      (endpoint) => api.unsubscribePush(endpoint, authToken, registrationID),
-      () => {
-        const currentToken = getToken();
-        return !currentToken || currentToken === authToken;
-      },
-      () => pushTabCoordinator.hasOtherActiveTab(),
-      () => retirePushRegistrationID(registrationID),
-    )).catch((error) => {
+    enqueuePushOperation(async () => {
+      if (await pushTabCoordinator.hasOtherActiveTab()) return false;
+      retirePushRegistrationID(registrationID);
+      return cleanupPushSubscription(
+        (endpoint) => api.unsubscribePush(endpoint, authToken, registrationID),
+        () => {
+          const currentToken = getToken();
+          return !currentToken || currentToken === authToken;
+        },
+      );
+    }).catch((error) => {
       console.warn('Push subscription cleanup failed while clearing session:', error);
     });
     disconnectWS();
-    setToken(null, { pushCleanupHandled: true });
+    setToken(null);
     localStorage.removeItem('oc_user');
     setUser(null);
     setOnlineUsers({});

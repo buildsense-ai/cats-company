@@ -207,16 +207,15 @@ describe('WebSocket connection recovery', () => {
     }));
   });
 
-  test('publishes session revisions and whether push cleanup is already owned', () => {
+  test('publishes session revisions', () => {
     const onAuthChanged = vi.fn();
     window.addEventListener('cc:auth-changed', onAuthChanged);
 
-    api.setToken(null, { pushCleanupHandled: true });
+    api.setToken(null);
 
     expect(onAuthChanged).toHaveBeenLastCalledWith(expect.objectContaining({
       detail: expect.objectContaining({
         loggedIn: false,
-        pushCleanupHandled: true,
         revision: api.getAuthRevision(),
       }),
     }));
@@ -246,10 +245,6 @@ describe('WebSocket connection recovery', () => {
 
     localStorage.setItem('oc_push_registration_id', 'generation-from-other-tab');
     localStorage.setItem('oc_push_registration_owner', 'user:42');
-    window.dispatchEvent(new StorageEvent('storage', {
-      key: 'oc_push_registration_owner',
-      newValue: 'user:42',
-    }));
 
     expect(api.getPushRegistrationID()).toBe('generation-from-other-tab');
   });

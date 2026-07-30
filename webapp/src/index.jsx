@@ -15,14 +15,12 @@ function App() {
   const [auth, setAuth] = useState(() => ({
     loggedIn: Boolean(getToken()),
     revision: getAuthRevision(),
-    pushCleanupHandled: false,
   }));
 
   useEffect(() => {
     const handleAuthChanged = (event) => setAuth({
       loggedIn: Boolean(event.detail?.loggedIn),
       revision: event.detail?.revision ?? getAuthRevision(),
-      pushCleanupHandled: Boolean(event.detail?.pushCleanupHandled),
     });
     window.addEventListener('cc:auth-changed', handleAuthChanged);
     return () => window.removeEventListener('cc:auth-changed', handleAuthChanged);
@@ -34,7 +32,6 @@ function App() {
       <PwaController
         loggedIn={auth.loggedIn}
         sessionRevision={auth.revision}
-        pushCleanupHandled={auth.pushCleanupHandled}
       />
     </FeedbackProvider>
   );

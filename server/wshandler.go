@@ -1728,10 +1728,6 @@ func shouldNotifyOfflineForMessage(msg *ServerMessage) bool {
 	return !isInternalAgentWorkingMessage(displayType, data.Content, data.ContentBlocks)
 }
 
-func (h *Hub) notifyOfflineUser(uid int64) {
-	h.enqueueOfflineUserPush(uid)
-}
-
 func (h *Hub) enqueueOfflineUserPush(uid int64) bool {
 	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 || h.IsOnline(uid) {
 		return false
@@ -1751,7 +1747,7 @@ func (h *Hub) enqueueOfflineUserPush(uid int64) bool {
 
 func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessage, senderIsBot bool) {
 	if !senderIsBot {
-		h.notifyOfflineUser(uid)
+		h.enqueueOfflineUserPush(uid)
 		return
 	}
 	if h == nil || h.agentPush == nil || h.IsOnline(uid) {
@@ -1762,13 +1758,12 @@ func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessa
 		if h.agentPush.observeVisibleMessage(uid, senderUID, msg, deliver) {
 			return
 		}
-		if key, _ := agentPushTurnKey(uid, senderUID, msg); key == "" {
+		if agentPushTurnKey(uid, senderUID, msg) == "" {
 			deliver()
 		}
 		return
 	}
-	key, ttl := agentPushTurnKey(uid, senderUID, msg)
-	h.agentPush.deliverOnce(key, ttl, deliver)
+	h.agentPush.deliverOnce(agentPushTurnKey(uid, senderUID, msg), deliver)
 }
 
 // broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.

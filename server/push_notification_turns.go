@@ -91,7 +91,7 @@ func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskS
 
 	for recipientUID, deliver := range candidates {
 		key := fmt.Sprintf("turn:%d:%d:%s:%s", recipientUID, status.SourceUID, status.TopicID, runID)
-		c.deliverOnce(key, agentPushTurnDedupTTL, deliver)
+		c.deliverOnce(key, deliver)
 	}
 }
 
@@ -119,8 +119,8 @@ func (c *agentPushTurnCoordinator) observeVisibleMessage(recipientUID, senderUID
 	return true
 }
 
-func (c *agentPushTurnCoordinator) deliverOnce(key string, ttl time.Duration, deliver func() bool) bool {
-	if c == nil || strings.TrimSpace(key) == "" || ttl < 0 || deliver == nil {
+func (c *agentPushTurnCoordinator) deliverOnce(key string, deliver func() bool) bool {
+	if c == nil || strings.TrimSpace(key) == "" || deliver == nil {
 		return false
 	}
 
@@ -135,10 +135,7 @@ func (c *agentPushTurnCoordinator) deliverOnce(key string, ttl time.Duration, de
 		c.mu.Unlock()
 		return false
 	}
-	expiresAt := now.Add(ttl)
-	if ttl == 0 {
-		expiresAt = now
-	}
+	expiresAt := now.Add(agentPushTurnDedupTTL)
 	c.delivered[key] = expiresAt
 	c.mu.Unlock()
 
@@ -162,9 +159,9 @@ func (c *agentPushTurnCoordinator) removeExpiredLocked(now time.Time) {
 	}
 }
 
-func agentPushTurnKey(recipientUID, senderUID int64, msg *ServerMessage) (string, time.Duration) {
+func agentPushTurnKey(recipientUID, senderUID int64, msg *ServerMessage) string {
 	if recipientUID <= 0 || senderUID <= 0 || msg == nil || msg.Data == nil {
-		return "", 0
+		return ""
 	}
 	data := msg.Data
 	turnID := firstMetadataString(
@@ -176,9 +173,9 @@ func agentPushTurnKey(recipientUID, senderUID int64, msg *ServerMessage) (string
 	)
 	if turnID != "" {
 		turnID = truncateUTF8(turnID, 128)
-		return fmt.Sprintf("turn:%d:%d:%s:%s", recipientUID, senderUID, data.Topic, turnID), agentPushTurnDedupTTL
+		return fmt.Sprintf("turn:%d:%d:%s:%s", recipientUID, senderUID, data.Topic, turnID)
 	}
-	return "", 0
+	return ""
 }
 
 func isCompletedAgentMessage(msg *ServerMessage) bool {

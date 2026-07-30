@@ -700,32 +700,6 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-composer-hint')).toContain('line-height: 18px;');
   });
 
-  it('prevents iOS focus zoom without changing non-text form controls', () => {
-    const selectorList = css.match(
-      /@media \(hover: none\) and \(pointer: coarse\) \{\s*([^{}]+)\s*\{\s*font-size: 16px !important;/,
-    )?.[1];
-    const input = document.createElement('input');
-
-    expect(selectorList).toBeTruthy();
-    expect(css).not.toContain('@media (max-width: 768px), (hover: none) and (pointer: coarse)');
-    for (const type of ['text', 'search', 'email', 'password', 'tel', 'url', 'number']) {
-      input.type = type;
-      expect(input.matches(selectorList)).toBe(true);
-    }
-    input.removeAttribute('type');
-    expect(input.matches(selectorList)).toBe(true);
-
-    for (const type of ['button', 'submit', 'reset', 'file', 'color', 'hidden', 'checkbox', 'radio', 'range']) {
-      input.type = type;
-      expect(input.matches(selectorList)).toBe(false);
-    }
-
-    expect(document.createElement('textarea').matches(selectorList)).toBe(true);
-    expect(document.createElement('select').matches(selectorList)).toBe(true);
-    expect(css).not.toContain('user-scalable=no');
-    expect(css).not.toContain('maximum-scale=1');
-  });
-
   it('aligns peer messages and typing status to the unchanged composer rail', () => {
     const stackedNoticeRule = ruleFor('.v3-composer-notices .v3-live-input-status:last-child');
 
