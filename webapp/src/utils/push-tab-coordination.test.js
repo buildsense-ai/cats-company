@@ -47,16 +47,24 @@ describe('push tab coordination', () => {
     const second = createPushTabCoordinator(LinkedBroadcastChannel);
     second.setActive(true);
 
-    await expect(first.hasOtherActiveTab(50)).resolves.toBe(true);
+    await expect(first.getOtherTabState(50)).resolves.toBe('active');
 
     first.close();
     second.close();
   });
 
-  test('preserves the subscription when a broadcast probe times out', async () => {
+  test('reports an unknown state when a broadcast probe times out', async () => {
     const coordinator = createPushTabCoordinator(LinkedBroadcastChannel);
 
-    await expect(coordinator.hasOtherActiveTab(5)).resolves.toBe(true);
+    await expect(coordinator.getOtherTabState(5)).resolves.toBe('unknown');
+
+    coordinator.close();
+  });
+
+  test('reports an unknown state without a coordination primitive', async () => {
+    const coordinator = createPushTabCoordinator(null, null);
+
+    await expect(coordinator.getOtherTabState()).resolves.toBe('unknown');
 
     coordinator.close();
   });
@@ -67,7 +75,7 @@ describe('push tab coordination', () => {
     const second = createPushTabCoordinator(undefined, locks);
     second.setActive(true);
 
-    await expect(first.hasOtherActiveTab()).resolves.toBe(true);
+    await expect(first.getOtherTabState()).resolves.toBe('active');
 
     first.close();
     second.close();
@@ -79,7 +87,7 @@ describe('push tab coordination', () => {
     coordinator.setActive(true);
     coordinator.setActive(false);
 
-    await expect(coordinator.hasOtherActiveTab()).resolves.toBe(false);
+    await expect(coordinator.getOtherTabState()).resolves.toBe('none');
 
     coordinator.close();
   });

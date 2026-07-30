@@ -21,3 +21,10 @@ func TestPushSubscriptionRegistrationIDUsesCaseSensitiveCollation(t *testing.T) 
 		t.Fatalf("existing registration ids must be migrated to a case-sensitive collation; migration=%s", migratePushSubscriptionsRegistrationIDBinary)
 	}
 }
+
+func TestPushSubscriptionsAreDeletedWithTheirUser(t *testing.T) {
+	const foreignKey = "FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE"
+	if !strings.Contains(createPushSubscriptionsTable, foreignKey) {
+		t.Fatalf("push subscriptions must be deleted with their user; schema=%s", createPushSubscriptionsTable)
+	}
+}

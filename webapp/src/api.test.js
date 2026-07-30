@@ -238,6 +238,14 @@ describe('WebSocket connection recovery', () => {
     expect(api.getPushRegistrationID()).not.toBe(firstRegistrationID);
   });
 
+  test('does not persist a token without a user id as push ownership data', () => {
+    api.setToken('opaque-token');
+
+    api.getPushRegistrationID();
+
+    expect(localStorage.getItem('oc_push_registration_owner')).toBeNull();
+  });
+
   test('adopts a same-account push generation written by another tab', () => {
     const payload = btoa(JSON.stringify({ userId: 42 }))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');

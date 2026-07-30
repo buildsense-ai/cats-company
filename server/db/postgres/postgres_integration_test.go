@@ -410,6 +410,97 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 	if aggregate = aggregates[topicID]; aggregate == nil || aggregate.State != "completed" {
 		t.Fatalf("concurrent completions left stale aggregate: %+v", aggregate)
 	}
+
+	upsert(firstBotID, "run-terminal", "completed")
+	if _, err := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+		TopicID: topicID, RunID: "run-terminal", State: "running", SourceUID: firstBotID, ExpiresAt: &expiry,
+	}); err == nil {
+		t.Fatal("terminal run resumed through the store")
+	}
+
+	upsert(firstBotID, "run-transition-race", "running")
+	startTransitionRace := make(chan struct{})
+	transitionResults := make(chan struct {
+		state string
+		err   error
+	}, 2)
+	for _, state := range []string{"running", "completed"} {
+		go func(state string) {
+			<-startTransitionRace
+			_, updateErr := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+				TopicID: topicID, RunID: "run-transition-race", State: state, SourceUID: firstBotID,
+				ExpiresAt: func() *time.Time {
+					if state == "running" {
+						return &expiry
+					}
+					return nil
+				}(),
+			})
+			transitionResults <- struct {
+				state string
+				err   error
+			}{state: state, err: updateErr}
+		}(state)
+	}
+	close(startTransitionRace)
+	for range 2 {
+		result := <-transitionResults
+		if result.state == "completed" && result.err != nil {
+			t.Fatalf("complete concurrent task run: %v", result.err)
+		}
+	}
+	source, err := db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || source == nil || source.State != "completed" {
+		t.Fatalf("concurrent progress resumed terminal run: status=%+v err=%v", source, err)
+	}
+
+	upsert(firstBotID, "run-legacy-1", "completed")
+	if _, err := db.db.Exec(
+		`UPDATE conversation_task_statuses
+		 SET run_id = $2, state = 'running', summary = 'legacy running',
+		     source_uid = $3, expires_at = $4
+		 WHERE topic_id = $1`,
+		topicID, "run-legacy-2", firstBotID, expiry,
+	); err != nil {
+		t.Fatalf("simulate legacy task status writer: %v", err)
+	}
+	aggregates, err = db.GetConversationTaskStatuses([]string{topicID})
+	if err != nil || aggregates[topicID] == nil ||
+		aggregates[topicID].RunID != "run-legacy-2" || aggregates[topicID].State != "running" {
+		t.Fatalf("legacy aggregate was not synchronized: status=%+v err=%v", aggregates[topicID], err)
+	}
+	source, err = db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || source == nil || source.RunID != "run-legacy-2" || source.State != "running" {
+		t.Fatalf("legacy active status was not synchronized: status=%+v err=%v", source, err)
+	}
+
+	if _, err := db.db.Exec(
+		`UPDATE conversation_task_statuses
+		 SET run_id = $2, state = 'completed', summary = 'late legacy completion',
+		     source_uid = $3, expires_at = NULL
+		 WHERE topic_id = $1`,
+		topicID, "run-legacy-1", firstBotID,
+	); err != nil {
+		t.Fatalf("simulate late legacy completion: %v", err)
+	}
+	source, err = db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || source == nil || source.RunID != "run-legacy-2" || source.State != "running" {
+		t.Fatalf("late legacy completion replaced active run: status=%+v err=%v", source, err)
+	}
+
+	if _, err := db.db.Exec(
+		`UPDATE conversation_task_statuses
+		 SET run_id = $2, state = 'completed', summary = 'legacy completed',
+		     source_uid = $3, expires_at = NULL
+		 WHERE topic_id = $1`,
+		topicID, "run-legacy-2", firstBotID,
+	); err != nil {
+		t.Fatalf("simulate matching legacy completion: %v", err)
+	}
+	source, err = db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || source == nil || source.RunID != "run-legacy-2" || source.State != "completed" {
+		t.Fatalf("legacy completion was not synchronized: status=%+v err=%v", source, err)
+	}
 }
 
 func dsnWithSearchPath(t *testing.T, rawDSN, schemaName string) string {

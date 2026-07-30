@@ -69,8 +69,7 @@ func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskS
 			}
 			c.active[scope] = &activeAgentPushTurn{runID: runID, candidates: make(map[int64]func() bool), expiresAt: expiresAt}
 		} else if active.runID != runID {
-			c.mu.Unlock()
-			return
+			c.active[scope] = &activeAgentPushTurn{runID: runID, candidates: make(map[int64]func() bool), expiresAt: expiresAt}
 		} else {
 			active.expiresAt = expiresAt
 		}

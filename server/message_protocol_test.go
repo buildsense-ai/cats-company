@@ -89,6 +89,12 @@ func TestRuntimePlanMessageIsTransient(t *testing.T) {
 	}
 }
 
+func TestVideoMessageDoesNotExpandDurableAgentContext(t *testing.T) {
+	if isDurableAgentContextMessage(&types.Message{}, "video") {
+		t.Fatal("video unexpectedly entered durable agent context")
+	}
+}
+
 func TestRuntimePlanMessageIsTransientWithoutMetadata(t *testing.T) {
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
 		TopicID: "p2p_1_2",

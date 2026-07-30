@@ -244,6 +244,11 @@ type ConversationTaskStatus struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
+// IsTerminalConversationTaskState reports whether a task run has finished.
+func IsTerminalConversationTaskState(state string) bool {
+	return state == "completed" || state == "failed" || state == "cancelled" || state == "stale"
+}
+
 // Project groups existing conversation topics without copying their messages.
 type Project struct {
 	ID        int64     `json:"id"`

@@ -474,13 +474,14 @@ function TinodeWebApp() {
     const registrationID = getPushRegistrationID();
     pushTabCoordinator.setActive(false);
     enqueuePushOperation(async () => {
-      if (await pushTabCoordinator.hasOtherActiveTab()) return false;
+      const otherTabState = await pushTabCoordinator.getOtherTabState();
+      if (otherTabState === 'active') return false;
       retirePushRegistrationID(registrationID);
       return cleanupPushSubscription(
         (endpoint) => api.unsubscribePush(endpoint, authToken, registrationID),
         () => {
           const currentToken = getToken();
-          return !currentToken || currentToken === authToken;
+          return otherTabState === 'none' && (!currentToken || currentToken === authToken);
         },
       );
     }).catch((error) => {

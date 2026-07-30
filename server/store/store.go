@@ -15,6 +15,7 @@ var ErrProjectNameConflict = errors.New("project name already exists")
 var ErrProjectNotFound = errors.New("project not found")
 var ErrProjectTopicNotFound = errors.New("project or topic not found")
 var ErrGroupInviteRequestNotPending = errors.New("group invite request is not pending")
+var ErrConversationTaskRunTerminal = errors.New("cannot resume a terminal task run; publish a new run_id")
 
 // UserStore contains user and profile persistence operations.
 type UserStore interface {

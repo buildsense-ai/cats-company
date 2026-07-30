@@ -23,10 +23,11 @@ const decodeTokenPayload = (candidate) => {
 };
 const pushRegistrationOwner = (candidate) => {
   const userID = decodeTokenPayload(candidate)?.userId;
-  return userID === undefined || userID === null ? `token:${candidate}` : `user:${userID}`;
+  return userID === undefined || userID === null ? null : `user:${userID}`;
 };
 const registrationIDForToken = (candidate) => {
   const owner = pushRegistrationOwner(candidate);
+  if (!owner) return newPushRegistrationID();
   const storedID = localStorage.getItem(PUSH_REGISTRATION_ID_KEY);
   const storedOwner = localStorage.getItem(PUSH_REGISTRATION_OWNER_KEY);
   if (storedID && (!storedOwner || storedOwner === owner)) {

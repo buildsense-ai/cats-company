@@ -1016,7 +1016,9 @@ func isDurableAgentContextMessage(message *types.Message, displayType string) bo
 	if message == nil {
 		return false
 	}
-	if !isUserVisibleMessageType(displayType) {
+	switch displayType {
+	case "text", "image", "voice", "file":
+	default:
 		return false
 	}
 	if isInternalAgentWorkingMessage(displayType, decodeStoredContent(message.Content), message.ContentBlocks) {

@@ -180,7 +180,8 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_push_subscriptions_endpoint (endpoint),
-    INDEX idx_push_subscriptions_uid (uid)
+    INDEX idx_push_subscriptions_uid (uid),
+    FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 

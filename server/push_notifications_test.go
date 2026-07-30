@@ -822,6 +822,39 @@ func TestAgentPushRunningHeartbeatExtendsActiveTurn(t *testing.T) {
 	}
 }
 
+func TestAgentPushNewRunReplacesAbandonedTurn(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-abandoned", State: "running", SourceUID: 7,
+	})
+	coordinator.observeVisibleMessage(8, 7, &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "old",
+	}}, func() bool {
+		t.Error("abandoned run delivered")
+		return true
+	})
+
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-restarted", State: "running", SourceUID: 7,
+	})
+	delivered := make(chan struct{}, 1)
+	coordinator.observeVisibleMessage(8, 7, &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 2, Type: "text", Content: "new",
+	}}, func() bool {
+		delivered <- struct{}{}
+		return true
+	})
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-restarted", State: "completed", SourceUID: 7,
+	})
+
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("restarted run did not deliver after completion")
+	}
+}
+
 func TestAgentPushIgnoresExpiredRunningStatus(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
 	expired := time.Now().Add(-time.Second)
