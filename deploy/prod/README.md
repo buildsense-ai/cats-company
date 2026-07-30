@@ -107,7 +107,31 @@ body limit.
 ## Distributed artifact nodes
 
 With no node registry configured, artifact management keeps using the legacy
-`CATSCO_ARTIFACT_MANAGEMENT_URL` and `CATSCO_ARTIFACT_MANAGEMENT_TOKEN`.
+`CATSCO_ARTIFACT_MANAGEMENT_URL` and `CATSCO_ARTIFACT_MANAGEMENT_TOKEN` only
+when direct Artifact discovery is disabled.
+
+Production enables one-server-per-Agent static discovery by default:
+
+```env
+CATSCO_DIRECT_ARTIFACT_URL_TEMPLATE=https://agent-{uid}.artifacts.catsco.fun:19991/artifacts
+```
+
+For Agent `535`, CatsCo reads:
+
+```text
+https://agent-535.artifacts.catsco.fun:19991/artifacts/artifacts-index.json
+```
+
+The template must use HTTPS, contain exactly one `{uid}` in the hostname, end
+with `/artifacts`, and use a different origin from `CATSCO_PUBLIC_BASE_URL`.
+Set `CATSCO_DIRECT_ARTIFACT_URL_TEMPLATE=` explicitly to disable this route.
+An unresolved hostname or index HTTP 404 means the Agent has not published an
+Artifact yet and returns an empty list. Connection failures, HTTP 5xx, invalid
+JSON, invalid Artifact URLs, and wrong-host URLs remain errors.
+
+Direct template nodes are list-only: CatsCo projects the selected Agent UID,
+sets `can_delete=false` and `can_restore=false`, and does not send a management
+token to the employee host.
 
 To route each managed Agent to the artifact host on its deployment node, copy
 `deploy/prod/artifact-nodes.example.json` to the persistent secrets directory
@@ -142,17 +166,18 @@ chmod 600 /srv/catscompany-prod/secrets/artifact-node-b.token
 Several nodes may reference `CATSCO_ARTIFACT_MANAGEMENT_TOKEN` only when those
 nodes intentionally share one service token.
 
-Once a node registry is enabled, an unmapped Agent fails closed by default.
-During a staged migration, set `"fallback_to_legacy": true` to keep unmapped
-Agents on the legacy `CATSCO_ARTIFACT_MANAGEMENT_URL`. Explicit mappings still
-take priority. Remove the fallback after every managed Agent has a node.
-Without that flag, CatsCo does not send an unmapped Agent's list, delete, or
-restore request to the legacy host.
+Resolution order is: explicit Agent mapping, direct URL template, then legacy.
+An explicit mapping can therefore override one exceptional Agent while all
+other Agents use deterministic direct discovery. If the direct template is
+disabled, an unmapped Agent fails closed by default. During a staged legacy
+migration, set `"fallback_to_legacy": true` to keep those unmapped Agents on
+`CATSCO_ARTIFACT_MANAGEMENT_URL`.
 The registry is loaded at server startup, so changing a node, mapping, or token
-file requires recreating the CatsCo server container.
+file requires recreating the CatsCo server container. Changing the direct
+template also requires recreating the container.
 
-When the node registry is enabled, the old unscoped `/api/artifacts` endpoint is
-disabled. All list, delete, and restore requests must use
+When a node registry or direct template is enabled, the old unscoped
+`/api/artifacts` endpoint is disabled. All list, delete, and restore requests use
 `/api/agents/{uid}/artifacts`, which prevents a request from silently falling
 back to the legacy node.
 
