@@ -27,4 +27,7 @@ func TestPushSubscriptionsAreDeletedWithTheirUser(t *testing.T) {
 	if !strings.Contains(createPushSubscriptionsTable, foreignKey) {
 		t.Fatalf("push subscriptions must be deleted with their user; schema=%s", createPushSubscriptionsTable)
 	}
+	if !strings.Contains(migratePushSubscriptionsAddUserForeignKey, foreignKey) {
+		t.Fatalf("existing push subscriptions must gain the user foreign key; migration=%s", migratePushSubscriptionsAddUserForeignKey)
+	}
 }

@@ -454,6 +454,21 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 		t.Fatalf("concurrent progress resumed terminal run: status=%+v err=%v", source, err)
 	}
 
+	upsert(firstBotID, "run-late-progress", "completed")
+	if _, err := db.db.Exec(
+		`UPDATE conversation_task_statuses
+		 SET state = 'running', summary = 'late legacy progress',
+		     source_uid = $2, expires_at = $3
+		 WHERE topic_id = $1`,
+		topicID, firstBotID, expiry,
+	); err != nil {
+		t.Fatalf("simulate late legacy progress: %v", err)
+	}
+	source, err = db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || source == nil || source.RunID != "run-late-progress" || source.State != "completed" {
+		t.Fatalf("legacy progress resumed terminal run: status=%+v err=%v", source, err)
+	}
+
 	upsert(firstBotID, "run-legacy-1", "completed")
 	if _, err := db.db.Exec(
 		`UPDATE conversation_task_statuses

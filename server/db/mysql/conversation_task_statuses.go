@@ -149,7 +149,7 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 }
 
 // GetConversationTaskStatusForSource returns the latest state owned by one
-// bot/service. The legacy fallback keeps rolling deployments compatible.
+// bot/service. It reconciles legacy writes during rolling deployments.
 func (a *Adapter) GetConversationTaskStatusForSource(topicID string, sourceUID int64) (*types.ConversationTaskStatus, error) {
 	if err := reconcileLegacyConversationTaskStatuses(a.db, "?", topicID); err != nil {
 		return nil, fmt.Errorf("reconcile legacy conversation task status: %w", err)
@@ -186,7 +186,7 @@ func (a *Adapter) GetConversationTaskStatusForSource(topicID string, sourceUID i
 }
 
 // GetConversationTaskStatuses returns an aggregate status keyed by topic id.
-// Active sources take precedence; otherwise the newest terminal status wins.
+// It reconciles legacy writes; active sources otherwise take precedence.
 func (a *Adapter) GetConversationTaskStatuses(topicIDs []string) (map[string]*types.ConversationTaskStatus, error) {
 	if len(topicIDs) == 0 {
 		return map[string]*types.ConversationTaskStatus{}, nil
@@ -289,6 +289,11 @@ func reconcileLegacyConversationTaskStatuses(execer conversationTaskStatusExecer
 			           AND (source.expires_at IS NULL OR source.expires_at > CURRENT_TIMESTAMP)
 			           AND source.run_id <> aggregate.run_id
 			           AND aggregate.state NOT IN ('running', 'waiting')
+			         )
+			         OR (
+			           source.run_id = aggregate.run_id
+			           AND source.state IN ('completed', 'failed', 'cancelled', 'stale')
+			           AND aggregate.state NOT IN ('completed', 'failed', 'cancelled', 'stale')
 			         )
 			         OR (
 			           source.run_id <=> aggregate.run_id

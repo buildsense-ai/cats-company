@@ -1,8 +1,11 @@
 package mysql
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +25,38 @@ func TestMySQLConversationTaskStatusContract(t *testing.T) {
 	defer db.Close()
 	if err := db.CreateSchema(); err != nil {
 		t.Fatalf("create schema: %v", err)
+	}
+
+	var foreignKey string
+	err := db.db.QueryRow(
+		`SELECT CONSTRAINT_NAME
+		 FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+		 WHERE CONSTRAINT_SCHEMA = DATABASE()
+		   AND TABLE_NAME = 'push_subscriptions'
+		   AND REFERENCED_TABLE_NAME = 'users'
+		 LIMIT 1`,
+	).Scan(&foreignKey)
+	if err == nil {
+		foreignKey = strings.ReplaceAll(foreignKey, "`", "``")
+		if _, err := db.db.Exec(fmt.Sprintf("ALTER TABLE push_subscriptions DROP FOREIGN KEY `%s`", foreignKey)); err != nil {
+			t.Fatalf("drop legacy push subscription foreign key: %v", err)
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("inspect push subscription foreign key: %v", err)
+	}
+	if err := db.CreateSchema(); err != nil {
+		t.Fatalf("upgrade schema: %v", err)
+	}
+	var deleteRule string
+	if err := db.db.QueryRow(
+		`SELECT DELETE_RULE
+		 FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+		 WHERE CONSTRAINT_SCHEMA = DATABASE()
+		   AND TABLE_NAME = 'push_subscriptions'
+		   AND REFERENCED_TABLE_NAME = 'users'
+		 LIMIT 1`,
+	).Scan(&deleteRule); err != nil || deleteRule != "CASCADE" {
+		t.Fatalf("push subscription user foreign key was not restored: rule=%q err=%v", deleteRule, err)
 	}
 
 	suffix := time.Now().UnixNano()
@@ -97,6 +132,20 @@ func TestMySQLConversationTaskStatusContract(t *testing.T) {
 	source, err := db.GetConversationTaskStatusForSource(topicID, sourceUID)
 	if err != nil || source == nil || source.State != "completed" {
 		t.Fatalf("concurrent progress resumed terminal run: status=%+v err=%v", source, err)
+	}
+
+	upsert("run-late-progress", "completed")
+	if _, err := db.db.Exec(
+		`UPDATE conversation_task_statuses
+		 SET state = 'running', source_uid = ?, expires_at = ?
+		 WHERE topic_id = ?`,
+		sourceUID, expiry, topicID,
+	); err != nil {
+		t.Fatalf("simulate late legacy progress: %v", err)
+	}
+	source, err = db.GetConversationTaskStatusForSource(topicID, sourceUID)
+	if err != nil || source == nil || source.RunID != "run-late-progress" || source.State != "completed" {
+		t.Fatalf("legacy progress resumed terminal run: status=%+v err=%v", source, err)
 	}
 
 	upsert("run-legacy-1", "completed")

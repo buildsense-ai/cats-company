@@ -143,7 +143,7 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 }
 
 // GetConversationTaskStatusForSource returns the latest state owned by one
-// bot/service. The legacy fallback keeps rolling deployments compatible.
+// bot/service. It reconciles legacy writes during rolling deployments.
 func (a *Adapter) GetConversationTaskStatusForSource(topicID string, sourceUID int64) (*types.ConversationTaskStatus, error) {
 	if err := reconcileLegacyConversationTaskStatuses(a.db, "$1", topicID); err != nil {
 		return nil, fmt.Errorf("reconcile legacy conversation task status: %w", err)
@@ -180,7 +180,7 @@ func (a *Adapter) GetConversationTaskStatusForSource(topicID string, sourceUID i
 }
 
 // GetConversationTaskStatuses returns an aggregate status keyed by topic id.
-// Active sources take precedence; otherwise the newest terminal status wins.
+// It reconciles legacy writes; active sources otherwise take precedence.
 func (a *Adapter) GetConversationTaskStatuses(topicIDs []string) (map[string]*types.ConversationTaskStatus, error) {
 	if len(topicIDs) == 0 {
 		return map[string]*types.ConversationTaskStatus{}, nil
@@ -278,10 +278,17 @@ func reconcileLegacyConversationTaskStatuses(execer conversationTaskStatusExecer
 			   expires_at = EXCLUDED.expires_at,
 			   updated_at = EXCLUDED.updated_at
 			 WHERE NOT (
-			   conversation_task_status_sources.state IN ('running', 'waiting')
-			   AND (conversation_task_status_sources.expires_at IS NULL OR conversation_task_status_sources.expires_at > clock_timestamp())
-			   AND conversation_task_status_sources.run_id <> EXCLUDED.run_id
-			   AND EXCLUDED.state NOT IN ('running', 'waiting')
+			   (
+			     conversation_task_status_sources.state IN ('running', 'waiting')
+			     AND (conversation_task_status_sources.expires_at IS NULL OR conversation_task_status_sources.expires_at > clock_timestamp())
+			     AND conversation_task_status_sources.run_id <> EXCLUDED.run_id
+			     AND EXCLUDED.state NOT IN ('running', 'waiting')
+			   )
+			   OR (
+			     conversation_task_status_sources.run_id = EXCLUDED.run_id
+			     AND conversation_task_status_sources.state IN ('completed', 'failed', 'cancelled', 'stale')
+			     AND EXCLUDED.state NOT IN ('completed', 'failed', 'cancelled', 'stale')
+			   )
 			 )
 			 AND (
 			   conversation_task_status_sources.run_id,

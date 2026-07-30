@@ -47,6 +47,8 @@ func (a *Adapter) CreateSchema() error {
 	migrations := []string{
 		migratePushSubscriptionsAddRegistrationID,
 		migratePushSubscriptionsRegistrationIDBinary,
+		migratePushSubscriptionsDeleteOrphans,
+		migratePushSubscriptionsAddUserForeignKey,
 		migrateBotConfigAddAPIKey,
 		migrateUsersAddBotDisclose,
 		migrateMessagesAddReplyTo,
@@ -146,6 +148,8 @@ func isIgnorableMigrationError(err error) bool {
 		strings.Contains(msg, "Duplicate column") ||
 		strings.Contains(msg, "1061") ||
 		strings.Contains(msg, "Duplicate key name") ||
+		strings.Contains(msg, "1826") ||
+		strings.Contains(msg, "Duplicate foreign key constraint name") ||
 		strings.Contains(msg, "1091") ||
 		strings.Contains(msg, "check that column/key exists")
 }
@@ -181,8 +185,21 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_push_subscriptions_endpoint (endpoint),
     INDEX idx_push_subscriptions_uid (uid),
-    FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE
+    CONSTRAINT fk_push_subscriptions_uid FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const migratePushSubscriptionsAddUserForeignKey = `
+ALTER TABLE push_subscriptions
+ADD CONSTRAINT fk_push_subscriptions_uid
+FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE;
+`
+
+const migratePushSubscriptionsDeleteOrphans = `
+DELETE subscriptions
+FROM push_subscriptions AS subscriptions
+LEFT JOIN users ON users.id = subscriptions.uid
+WHERE users.id IS NULL;
 `
 
 const migratePushSubscriptionsAddRegistrationID = `
