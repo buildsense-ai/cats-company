@@ -38,4 +38,7 @@ func TestMySQLMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 			t.Errorf("query missing access/search fragment %q", fragment)
 		}
 	}
+	if strings.Contains(mysqlMessageSearchQuery, "LEFT JOIN JSON_TABLE(") {
+		t.Error("legacy JSON expansion must stay inside the file-search branch")
+	}
 }

@@ -37,13 +37,6 @@ LEFT JOIN users peer ON t.type = 'p2p' AND peer.id <> viewer.id
   AND t.id = 'p2p_' || LEAST(viewer.id, peer.id)::text || '_' || GREATEST(viewer.id, peer.id)::text
 LEFT JOIN bot_config peer_bot ON peer_bot.user_id = peer.id
 LEFT JOIN conversation_titles ct ON ct.user_id = viewer.id AND ct.topic_id = t.id
-LEFT JOIN LATERAL (
-  SELECT CASE
-    WHEN jsonb_typeof(m.search_legacy_content->'payload') = 'object'
-      THEN m.search_legacy_content->'payload'
-    ELSE m.search_legacy_content
-  END AS content
-) AS legacy_file ON TRUE
 WHERE sender.account_type IN ('human', 'bot')
 AND (
   (t.type = 'group' AND gm.user_id IS NOT NULL
@@ -79,12 +72,22 @@ AND (
           artifact->'payload'->>'title'
         )), LOWER($3)) > 0
     ))
-    OR (m.msg_type = 'file' AND STRPOS(LOWER(CONCAT_WS(' ',
-      legacy_file.content->>'name',
-      legacy_file.content->>'file_name',
-      legacy_file.content->>'filename',
-      legacy_file.content->>'title'
-    )), LOWER($3)) > 0)
+    OR (m.msg_type = 'file' AND EXISTS (
+      SELECT 1
+      FROM LATERAL (
+        SELECT CASE
+          WHEN jsonb_typeof(m.search_legacy_content->'payload') = 'object'
+            THEN m.search_legacy_content->'payload'
+          ELSE m.search_legacy_content
+        END AS content
+      ) AS legacy_file
+      WHERE STRPOS(LOWER(CONCAT_WS(' ',
+        legacy_file.content->>'name',
+        legacy_file.content->>'file_name',
+        legacy_file.content->>'filename',
+        legacy_file.content->>'title'
+      )), LOWER($3)) > 0
+    ))
   ))
 )
 ORDER BY m.created_at DESC, m.id DESC
@@ -124,24 +127,15 @@ func scanPostgresMessageSearch(rows *sql.Rows, query, searchType string, limit i
 			return nil, scanned, fmt.Errorf("scan message search result: %w", err)
 		}
 		blocks := jsonBytes(blocksJSON)
-		hasInternalBlocks := store.MessageSearchHasInternalBlocks(blocks)
-		artifactName := store.MatchingArtifactName(blocks, query)
-		if artifactName == "" && msgType == "file" {
-			artifactName = store.LegacyMatchingArtifactName(result.Content, query)
-		}
-		contentMatches := !hasInternalBlocks && store.MessageSearchContentMatches(msgType, result.Content, query)
-		if !store.ShouldIncludeMessageSearchCandidate(searchType, contentMatches, artifactName) {
+		match, ok := store.MatchMessageSearchCandidate(store.MessageSearchCandidate{
+			Result:        result,
+			MessageType:   msgType,
+			ContentBlocks: blocks,
+		}, query, searchType)
+		if !ok {
 			continue
 		}
-		if artifactName != "" && (searchType == store.MessageSearchArtifact || !contentMatches) {
-			result.ContentType = store.MessageSearchArtifact
-			result.ArtifactName = artifactName
-			result.Snippet = artifactName
-		} else {
-			result.ContentType = store.MessageSearchMessage
-			result.Snippet = store.MessageSearchSnippet(result.Content, query)
-		}
-		results = append(results, &result)
+		results = append(results, match)
 		if len(results) == limit {
 			break
 		}

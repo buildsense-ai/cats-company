@@ -112,6 +112,84 @@ func TestMixedInternalBlocksOnlyExposeArtifactName(t *testing.T) {
 	}
 }
 
+func TestMatchMessageSearchCandidate(t *testing.T) {
+	tests := []struct {
+		name       string
+		candidate  MessageSearchCandidate
+		query      string
+		searchType string
+		wantOK     bool
+		wantType   string
+		wantName   string
+	}{
+		{
+			name: "visible message",
+			candidate: MessageSearchCandidate{
+				Result:      MessageSearchResult{Content: "visible reply"},
+				MessageType: "text",
+			},
+			query:      "reply",
+			searchType: MessageSearchAll,
+			wantOK:     true,
+			wantType:   MessageSearchMessage,
+		},
+		{
+			name: "internal body suppressed",
+			candidate: MessageSearchCandidate{
+				Result:        MessageSearchResult{Content: "secret reply"},
+				MessageType:   "text",
+				ContentBlocks: []byte(`[{"type":"tool_result","content":"secret reply"}]`),
+			},
+			query:      "secret",
+			searchType: MessageSearchAll,
+		},
+		{
+			name: "mixed message returns verified artifact",
+			candidate: MessageSearchCandidate{
+				Result:      MessageSearchResult{Content: "secret tool output"},
+				MessageType: "text",
+				ContentBlocks: []byte(`[
+					{"type":"tool_result","content":"secret tool output"},
+					{"type":"file","name":"Visible Report.PDF"}
+				]`),
+			},
+			query:      "report",
+			searchType: MessageSearchAll,
+			wantOK:     true,
+			wantType:   MessageSearchArtifact,
+			wantName:   "Visible Report.PDF",
+		},
+		{
+			name: "legacy file",
+			candidate: MessageSearchCandidate{
+				Result:      MessageSearchResult{Content: `"{\"filename\":\"Old Report.PDF\"}"`},
+				MessageType: "file",
+			},
+			query:      "report",
+			searchType: MessageSearchArtifact,
+			wantOK:     true,
+			wantType:   MessageSearchArtifact,
+			wantName:   "Old Report.PDF",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := MatchMessageSearchCandidate(tc.candidate, tc.query, tc.searchType)
+			if ok != tc.wantOK {
+				t.Fatalf("ok=%v, want %v", ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if got.ContentType != tc.wantType || got.ArtifactName != tc.wantName {
+				t.Fatalf("result type=%q artifact=%q, want type=%q artifact=%q",
+					got.ContentType, got.ArtifactName, tc.wantType, tc.wantName)
+			}
+		})
+	}
+}
+
 func TestMatchingArtifactName(t *testing.T) {
 	tests := []struct {
 		name  string

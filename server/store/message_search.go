@@ -25,6 +25,12 @@ type messageSearchPager struct {
 
 type MessageSearchPageLoader func(pageSize, offset, remaining int) ([]*MessageSearchResult, int, error)
 
+type MessageSearchCandidate struct {
+	Result        MessageSearchResult
+	MessageType   string
+	ContentBlocks []byte
+}
+
 func CollectMessageSearchResults(limit int, loadPage MessageSearchPageLoader) ([]*MessageSearchResult, error) {
 	pager := newMessageSearchPager(limit)
 	results := make([]*MessageSearchResult, 0, limit)
@@ -101,6 +107,29 @@ func ShouldIncludeMessageSearchCandidate(searchType string, contentMatches bool,
 	default:
 		return contentMatches || artifactName != ""
 	}
+}
+
+func MatchMessageSearchCandidate(candidate MessageSearchCandidate, query, searchType string) (*MessageSearchResult, bool) {
+	artifactName := MatchingArtifactName(candidate.ContentBlocks, query)
+	if artifactName == "" && candidate.MessageType == "file" {
+		artifactName = LegacyMatchingArtifactName(candidate.Result.Content, query)
+	}
+	contentMatches := !MessageSearchHasInternalBlocks(candidate.ContentBlocks) &&
+		MessageSearchContentMatches(candidate.MessageType, candidate.Result.Content, query)
+	if !ShouldIncludeMessageSearchCandidate(searchType, contentMatches, artifactName) {
+		return nil, false
+	}
+
+	result := candidate.Result
+	if artifactName != "" && (searchType == MessageSearchArtifact || !contentMatches) {
+		result.ContentType = MessageSearchArtifact
+		result.ArtifactName = artifactName
+		result.Snippet = artifactName
+	} else {
+		result.ContentType = MessageSearchMessage
+		result.Snippet = MessageSearchSnippet(result.Content, query)
+	}
+	return &result, true
 }
 
 func MatchingArtifactName(raw []byte, query string) string {

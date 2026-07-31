@@ -48,4 +48,7 @@ func TestPostgresMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 			t.Errorf("query missing access/search fragment %q", fragment)
 		}
 	}
+	if strings.Contains(postgresMessageSearchQuery, "LEFT JOIN LATERAL (") {
+		t.Error("legacy JSON expansion must stay inside the file-search branch")
+	}
 }

@@ -36,19 +36,6 @@ LEFT JOIN users peer ON t.type = 'p2p' AND peer.id <> viewer.id
   AND t.id = CONCAT('p2p_', LEAST(viewer.id, peer.id), '_', GREATEST(viewer.id, peer.id))
 LEFT JOIN bot_config peer_bot ON peer_bot.user_id = peer.id
 LEFT JOIN conversation_titles ct ON ct.user_id = viewer.id AND ct.topic_id = t.id
-LEFT JOIN JSON_TABLE(
-  CASE
-    WHEN JSON_TYPE(JSON_EXTRACT(m.search_legacy_content, '$.payload')) = 'OBJECT'
-      THEN JSON_EXTRACT(m.search_legacy_content, '$.payload')
-    ELSE m.search_legacy_content
-  END,
-  '$' COLUMNS (
-    name VARCHAR(2048) PATH '$.name',
-    file_name VARCHAR(2048) PATH '$.file_name',
-    filename VARCHAR(2048) PATH '$.filename',
-    title VARCHAR(2048) PATH '$.title'
-  )
-) AS legacy_file ON TRUE
 WHERE sender.account_type IN ('human', 'bot')
 AND (
   (t.type = 'group' AND gm.user_id IS NOT NULL
@@ -94,13 +81,28 @@ AND (
           artifact.payload_title
         ))) > 0
     ))
-    OR (m.msg_type = 'file'
-      AND LOCATE(LOWER(?), LOWER(CONCAT_WS(' ',
+    OR (m.msg_type = 'file' AND EXISTS (
+      SELECT 1
+      FROM JSON_TABLE(
+        CASE
+          WHEN JSON_TYPE(JSON_EXTRACT(m.search_legacy_content, '$.payload')) = 'OBJECT'
+            THEN JSON_EXTRACT(m.search_legacy_content, '$.payload')
+          ELSE m.search_legacy_content
+        END,
+        '$' COLUMNS (
+          name VARCHAR(2048) PATH '$.name',
+          file_name VARCHAR(2048) PATH '$.file_name',
+          filename VARCHAR(2048) PATH '$.filename',
+          title VARCHAR(2048) PATH '$.title'
+        )
+      ) AS legacy_file
+      WHERE LOCATE(LOWER(?), LOWER(CONCAT_WS(' ',
         legacy_file.name,
         legacy_file.file_name,
         legacy_file.filename,
         legacy_file.title
-      ))) > 0)
+      ))) > 0
+    ))
   ))
 )
 ORDER BY m.created_at DESC, m.id DESC
@@ -139,24 +141,15 @@ func scanMySQLMessageSearch(rows *sql.Rows, query, searchType string, limit int)
 			&result.SenderName, &result.Content, &msgType, &result.CreatedAt, &blocksJSON); err != nil {
 			return nil, scanned, fmt.Errorf("scan message search result: %w", err)
 		}
-		hasInternalBlocks := store.MessageSearchHasInternalBlocks(blocksJSON)
-		artifactName := store.MatchingArtifactName(blocksJSON, query)
-		if artifactName == "" && msgType == "file" {
-			artifactName = store.LegacyMatchingArtifactName(result.Content, query)
-		}
-		contentMatches := !hasInternalBlocks && store.MessageSearchContentMatches(msgType, result.Content, query)
-		if !store.ShouldIncludeMessageSearchCandidate(searchType, contentMatches, artifactName) {
+		match, ok := store.MatchMessageSearchCandidate(store.MessageSearchCandidate{
+			Result:        result,
+			MessageType:   msgType,
+			ContentBlocks: blocksJSON,
+		}, query, searchType)
+		if !ok {
 			continue
 		}
-		if artifactName != "" && (searchType == store.MessageSearchArtifact || !contentMatches) {
-			result.ContentType = store.MessageSearchArtifact
-			result.ArtifactName = artifactName
-			result.Snippet = artifactName
-		} else {
-			result.ContentType = store.MessageSearchMessage
-			result.Snippet = store.MessageSearchSnippet(result.Content, query)
-		}
-		results = append(results, &result)
+		results = append(results, match)
 		if len(results) == limit {
 			break
 		}
