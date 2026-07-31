@@ -99,11 +99,6 @@ func messageSearchHasInternalBlocks(blocks []types.ContentBlock) bool {
 	return false
 }
 
-func MessageSearchBlocksAreValid(raw []byte) bool {
-	_, valid := parseMessageSearchBlocks(raw)
-	return valid
-}
-
 func parseMessageSearchBlocks(raw []byte) ([]types.ContentBlock, bool) {
 	if len(raw) == 0 {
 		return nil, true

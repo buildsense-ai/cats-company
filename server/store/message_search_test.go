@@ -99,7 +99,7 @@ func TestMessageSearchHasInternalBlocks(t *testing.T) {
 	}
 }
 
-func TestMessageSearchBlocksAreValid(t *testing.T) {
+func TestParseMessageSearchBlocksValidity(t *testing.T) {
 	tests := []struct {
 		name string
 		raw  string
@@ -115,8 +115,9 @@ func TestMessageSearchBlocksAreValid(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := MessageSearchBlocksAreValid([]byte(tc.raw)); got != tc.want {
-				t.Fatalf("MessageSearchBlocksAreValid()=%v, want %v", got, tc.want)
+			_, got := parseMessageSearchBlocks([]byte(tc.raw))
+			if got != tc.want {
+				t.Fatalf("parseMessageSearchBlocks() valid=%v, want %v", got, tc.want)
 			}
 		})
 	}
