@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"testing"
 	"time"
 
@@ -16,28 +15,24 @@ type agentFileTestStore struct {
 	messages         []*types.Message
 	titles           map[string]string
 	queriedAgentUID  int64
-	queriedTopicIDs  []string
+	queriedTopicID   string
 	queriedBeforeID  int64
 	queriedLimit     int
 	fileMessageCalls int
 }
 
-func (s *agentFileTestStore) ListAgentFileMessages(agentUID int64, topicIDs []string, beforeID int64, limit int) ([]*types.Message, error) {
+func (s *agentFileTestStore) ListAgentFileMessages(agentUID int64, topicID string, beforeID int64, limit int) ([]*types.Message, error) {
 	s.fileMessageCalls++
 	s.queriedAgentUID = agentUID
-	s.queriedTopicIDs = append([]string(nil), topicIDs...)
+	s.queriedTopicID = topicID
 	s.queriedBeforeID = beforeID
 	s.queriedLimit = limit
-	allowed := make(map[string]struct{}, len(topicIDs))
-	for _, topicID := range topicIDs {
-		allowed[topicID] = struct{}{}
-	}
 	result := make([]*types.Message, 0, limit)
 	for _, message := range s.messages {
 		if message == nil || message.FromUID != agentUID {
 			continue
 		}
-		if _, ok := allowed[message.TopicID]; !ok {
+		if message.TopicID != topicID {
 			continue
 		}
 		if beforeID > 0 && message.ID >= beforeID {
@@ -65,7 +60,7 @@ func (s *agentFileTestStore) UpdateConversationTitle(_ int64, _, _ string) (bool
 	return false, nil
 }
 
-func TestAgentFilesListsStructuredAndLegacyHistoryFromAccessibleTopics(t *testing.T) {
+func TestAgentFilesListsOnlyCurrentPrivateConversation(t *testing.T) {
 	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
 	fileStore := newAgentFileTestStore(7, 440)
 	fileStore.groupsByUser[7] = []*types.Group{{ID: 80, Name: "教研组", Kind: types.GroupKindStandard}}
@@ -99,7 +94,7 @@ func TestAgentFilesListsStructuredAndLegacyHistoryFromAccessibleTopics(t *testin
 	rec := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
 		rec,
-		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/files?limit=20"),
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/files?topic_id=p2p_7_440&limit=20"),
 	)
 
 	if rec.Code != http.StatusOK {
@@ -113,24 +108,73 @@ func TestAgentFilesListsStructuredAndLegacyHistoryFromAccessibleTopics(t *testin
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.AgentUID != 440 || response.HasMore || len(response.Files) != 2 {
+	if response.AgentUID != 440 || response.HasMore || len(response.Files) != 1 {
 		t.Fatalf("unexpected response: %+v", response)
 	}
 	if response.Files[0].Name != "学情报告.pdf" || response.Files[0].TopicName != "期末材料" {
 		t.Fatalf("structured file = %+v", response.Files[0])
 	}
-	if response.Files[1].Name != "练习题.xlsx" ||
-		response.Files[1].URL != "/uploads/files/exercise.xlsx" ||
-		response.Files[1].TopicName != "教研组" {
-		t.Fatalf("legacy file = %+v", response.Files[1])
-	}
 	if fileStore.queriedAgentUID != 440 ||
-		!reflect.DeepEqual(fileStore.queriedTopicIDs, []string{"p2p_7_440", "grp_80"}) ||
+		fileStore.queriedTopicID != "p2p_7_440" ||
 		fileStore.queriedLimit != 21 {
-		t.Fatalf("query = agent %d topics %v limit %d", fileStore.queriedAgentUID, fileStore.queriedTopicIDs, fileStore.queriedLimit)
+		t.Fatalf("query = agent %d topic %q limit %d", fileStore.queriedAgentUID, fileStore.queriedTopicID, fileStore.queriedLimit)
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q", got)
+	}
+}
+
+func TestAgentFilesListsOnlyCurrentGroupConversation(t *testing.T) {
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	fileStore := newAgentFileTestStore(7, 440)
+	fileStore.groupMembers = map[string]bool{groupMemberKey(80, 7): true}
+	fileStore.groupsByUser[7] = []*types.Group{{ID: 80, Name: "教研组", Kind: types.GroupKindStandard}}
+	fileStore.messages = []*types.Message{
+		{
+			ID: 12, TopicID: "p2p_7_440", FromUID: 440, CreatedAt: now,
+			ContentBlocks: []types.ContentBlock{{
+				Type: "file", Payload: map[string]interface{}{"name": "私聊报告.pdf", "url": "/uploads/files/private.pdf"},
+			}},
+		},
+		{
+			ID: 11, TopicID: "grp_80", FromUID: 440, CreatedAt: now.Add(-time.Hour),
+			MsgType: "file",
+			Content: `{"type":"file","payload":{"file_name":"练习题.xlsx","file_key":"files/exercise.xlsx","content_type":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet","file_size":2048}}`,
+		},
+		{
+			ID: 10, TopicID: "grp_81", FromUID: 440, CreatedAt: now.Add(-2 * time.Hour),
+			ContentBlocks: []types.ContentBlock{{
+				Type: "file", Payload: map[string]interface{}{"name": "其他群.pdf", "url": "/uploads/files/other-group.pdf"},
+			}},
+		},
+	}
+
+	handler := NewCloudArtifactHandler("https://example.test/artifacts-index.json", nil)
+	handler.SetStore(fileStore)
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(
+		rec,
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/files?topic_id=grp_80"),
+	)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		TopicID string            `json:"topic_id"`
+		Files   []agentFileRecord `json:"files"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.TopicID != "grp_80" || len(response.Files) != 1 {
+		t.Fatalf("unexpected response: %+v", response)
+	}
+	if response.Files[0].Name != "练习题.xlsx" || response.Files[0].TopicName != "教研组" {
+		t.Fatalf("group file = %+v", response.Files[0])
+	}
+	if fileStore.queriedTopicID != "grp_80" {
+		t.Fatalf("queried topic = %q", fileStore.queriedTopicID)
 	}
 }
 
@@ -151,7 +195,7 @@ func TestAgentFilesUsesStableMessageCursor(t *testing.T) {
 	first := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
 		first,
-		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/files?limit=2"),
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/files?topic_id=p2p_7_440&limit=2"),
 	)
 	var firstPage struct {
 		Files        []agentFileRecord `json:"files"`
@@ -168,7 +212,7 @@ func TestAgentFilesUsesStableMessageCursor(t *testing.T) {
 	second := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
 		second,
-		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/files?limit=2&before_id=11"),
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/files?topic_id=p2p_7_440&limit=2&before_id=11"),
 	)
 	var secondPage struct {
 		Files   []agentFileRecord `json:"files"`
@@ -192,7 +236,58 @@ func TestAgentFilesRejectsInaccessibleAgentBeforeQuery(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(
 		rec,
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/files?topic_id=p2p_8_440"),
+	)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if fileStore.fileMessageCalls != 0 {
+		t.Fatalf("file query calls = %d", fileStore.fileMessageCalls)
+	}
+}
+
+func TestAgentFilesRequiresCurrentTopic(t *testing.T) {
+	fileStore := newAgentFileTestStore(7, 440)
+	handler := NewCloudArtifactHandler("https://example.test/artifacts-index.json", nil)
+	handler.SetStore(fileStore)
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(
+		rec,
 		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/files"),
+	)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if fileStore.fileMessageCalls != 0 {
+		t.Fatalf("file query calls = %d", fileStore.fileMessageCalls)
+	}
+}
+
+func TestAgentFilesRejectsAnotherPrivateConversation(t *testing.T) {
+	fileStore := newAgentFileTestStore(7, 440)
+	handler := NewCloudArtifactHandler("https://example.test/artifacts-index.json", nil)
+	handler.SetStore(fileStore)
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(
+		rec,
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/files?topic_id=p2p_8_440"),
+	)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if fileStore.fileMessageCalls != 0 {
+		t.Fatalf("file query calls = %d", fileStore.fileMessageCalls)
+	}
+}
+
+func TestAgentFilesRejectsGroupOutsideViewerMembership(t *testing.T) {
+	fileStore := newAgentFileTestStore(7, 440)
+	handler := NewCloudArtifactHandler("https://example.test/artifacts-index.json", nil)
+	handler.SetStore(fileStore)
+	rec := httptest.NewRecorder()
+	handler.HandleAgentArtifacts(
+		rec,
+		authenticatedArtifactRequestPath(http.MethodGet, "/api/agents/440/files?topic_id=grp_80"),
 	)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())

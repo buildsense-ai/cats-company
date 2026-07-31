@@ -487,6 +487,7 @@ func main() {
 
 	// Messages (require auth — JWT or API Key for bot access)
 	mux.HandleFunc("/api/messages/send", authWithDB(msgHandler.HandleSendMessage))
+	mux.HandleFunc("/api/messages/search", authWithDB(msgHandler.HandleSearchMessages))
 	mux.HandleFunc("/api/messages", authWithDB(msgHandler.HandleGetMessages))
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))

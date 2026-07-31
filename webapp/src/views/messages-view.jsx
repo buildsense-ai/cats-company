@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from '../widgets/chat-message';
@@ -7,7 +7,7 @@ import Avatar from '../widgets/avatar';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
-import { attachmentFromContentBlock, attachmentIdentity, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
+import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 
@@ -246,6 +246,8 @@ export default function MessagesView({
   onAgentModelChange,
   onActiveAgentChange,
   cloudArtifactsRequest,
+  messageLocationRequest,
+  onBackToSearch,
 }) {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
@@ -264,12 +266,13 @@ export default function MessagesView({
   const [previewFile, setPreviewFile] = useState(null);
   const [cloudArtifactsAgentUID, setCloudArtifactsAgentUID] = useState(0);
   const [cloudArtifactsListOpen, setCloudArtifactsListOpen] = useState(false);
-  const [cloudArtifactsTab, setCloudArtifactsTab] = useState('active');
+  const [cloudArtifactsTab, setCloudArtifactsTab] = useState('files');
   const [artifactRegistryState, setArtifactRegistryState] = useState({ agentUID: 0, artifacts: [] });
   const [artifactRegistryRefreshEpoch, setArtifactRegistryRefreshEpoch] = useState(0);
   const [previewWidth, setPreviewWidth] = useState(() => loadPreviewWidth());
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [highlightedMessageId, setHighlightedMessageId] = useState(0);
   const [refreshingHistory, setRefreshingHistory] = useState(false);
   const [historyError, setHistoryError] = useState('');
   const [olderHistoryError, setOlderHistoryError] = useState('');
@@ -308,6 +311,7 @@ export default function MessagesView({
   const pendingQuestionJumpRef = useRef('');
   const questionJumpReleaseTimerRef = useRef(null);
   const visibleQuestionAnchorsRef = useRef(new Map());
+  const messageHighlightTimerRef = useRef(null);
   const previousScrollRef = useRef(null);
   const stickToBottomRef = useRef(true);
   const fileInputRef = useRef(null);
@@ -462,7 +466,7 @@ export default function MessagesView({
     setPreviewFile(null);
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
-    setCloudArtifactsTab('active');
+    setCloudArtifactsTab('files');
   }, []);
 
   const previewCloudArtifact = useCallback((artifact) => {
@@ -567,6 +571,7 @@ export default function MessagesView({
   // Load message history and group members when topic changes
   useEffect(() => {
     if (!topic) return;
+    clearChatAttachmentDrag();
     historyAbortControllerRef.current?.abort();
     olderHistoryAbortControllerRef.current?.abort();
     questionIndexAbortControllerRef.current?.abort();
@@ -599,7 +604,7 @@ export default function MessagesView({
     setPreviewFile(null);
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
-    setCloudArtifactsTab('active');
+    setCloudArtifactsTab('files');
     const cachedGroupProfile = isGroup && groupId
       ? groupProfileCacheRef.current.get(String(groupId))
       : null;
@@ -636,7 +641,11 @@ export default function MessagesView({
     phoneUploadTopicRef.current = '';
     phoneUploadSyncRef.current = null;
     phoneUploadFileKeysRef.current = new Set();
-    loadHistory(topic);
+    const targetMessageId = messageLocationRequest?.topicId === topic
+      ? Number(messageLocationRequest.messageId) || 0
+      : 0;
+    setHighlightedMessageId(targetMessageId);
+    loadHistory(topic, targetMessageId);
     if (isGroup && groupId) {
       loadGroupMembers();
     } else {
@@ -648,14 +657,14 @@ export default function MessagesView({
       questionIndexAbortControllerRef.current?.abort();
       questionJumpAbortControllerRef.current?.abort();
     };
-  }, [groupId, isGroup, topic, user.uid]);
+  }, [groupId, isGroup, topic, user.uid, messageLocationRequest?.requestId]);
 
   useEffect(() => {
     const agentUID = Number(cloudArtifactsRequest?.agentUid || 0);
     if (agentUID <= 0 || !cloudArtifactsRequest?.requestId) return;
     setPreviewFile(null);
     setCloudArtifactsAgentUID(agentUID);
-    setCloudArtifactsTab('active');
+    setCloudArtifactsTab('files');
     setCloudArtifactsListOpen(true);
   }, [cloudArtifactsRequest]);
 
@@ -664,8 +673,10 @@ export default function MessagesView({
       if (hasFileDrag(event.dataTransfer)) {
         event.preventDefault();
       }
+      if (event.type === 'drop') clearChatAttachmentDrag();
     };
     const resetDragState = () => {
+      clearChatAttachmentDrag();
       dragDepthRef.current = 0;
       setIsDragActive(false);
     };
@@ -978,7 +989,7 @@ export default function MessagesView({
     }
   }, [topic, user.uid]);
 
-  const loadHistory = async (targetTopic = topic) => {
+  const loadHistory = async (targetTopic = topic, aroundId = 0) => {
     const requestID = ++historyRequestRef.current;
     historyAbortControllerRef.current?.abort();
     olderHistoryAbortControllerRef.current?.abort();
@@ -986,7 +997,7 @@ export default function MessagesView({
     historyAbortControllerRef.current = controller;
     olderHistoryAbortControllerRef.current = null;
     const cacheKey = historyCacheKey(user.uid, targetTopic);
-    const hasCachedHistory = historyCacheRef.current.has(cacheKey);
+    const hasCachedHistory = !aroundId && historyCacheRef.current.has(cacheKey);
     historyLoadingRef.current = true;
     previousScrollRef.current = null;
     setRefreshingHistory(true);
@@ -1004,9 +1015,9 @@ export default function MessagesView({
         targetTopic,
         PAGE_SIZE,
         0,
-        true,
+        !aroundId,
         0,
-        { signal: controller.signal, timeoutMs: HISTORY_REQUEST_TIMEOUT_MS },
+        { signal: controller.signal, timeoutMs: HISTORY_REQUEST_TIMEOUT_MS, aroundId },
       );
       if (activeTopicRef.current !== targetTopic || historyRequestRef.current !== requestID) return;
       const rawMessages = res.messages || [];
@@ -2667,6 +2678,22 @@ export default function MessagesView({
     target.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [messages, scheduleQuestionJumpRelease]);
 
+  useEffect(() => {
+    const targetMessageId = messageLocationRequest?.topicId === topic
+      ? Number(messageLocationRequest.messageId) || 0
+      : 0;
+    if (!targetMessageId || !historyLoaded || refreshingHistory) return undefined;
+    const target = timelineRef.current?.querySelector(`[data-search-message-id="${targetMessageId}"]`);
+    if (!target) return undefined;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlightedMessageId(targetMessageId);
+    if (messageHighlightTimerRef.current) window.clearTimeout(messageHighlightTimerRef.current);
+    messageHighlightTimerRef.current = window.setTimeout(() => setHighlightedMessageId(0), 3000);
+    return () => {
+      if (messageHighlightTimerRef.current) window.clearTimeout(messageHighlightTimerRef.current);
+    };
+  }, [historyLoaded, messageLocationRequest?.requestId, refreshingHistory, topic]);
+
   const handleTimelineScroll = (e) => {
     const el = e.target;
     stickToBottomRef.current = isTimelineNearBottom(el);
@@ -2691,6 +2718,12 @@ export default function MessagesView({
       >
         <div ref={chatColumnRef} className="v3-chat-column">
           {topBar}
+          {messageLocationRequest?.topicId === topic && onBackToSearch && (
+            <button type="button" className="cc-search-return" onClick={onBackToSearch}>
+              <ArrowLeft size={16} />
+              返回搜索结果
+            </button>
+          )}
           <div
             className={`v3-timeline${isDragActive ? ' is-drag-active' : ''}`}
             ref={timelineRef}
@@ -2769,7 +2802,18 @@ export default function MessagesView({
           if (group.type === 'working') {
             if (!showThinking) return null;
             return (
-              <div key={group.messages[0].id || i} className="oc-working-group">
+              <div
+                key={group.messages[0].id || i}
+                className={`oc-working-group cc-message-anchor${group.messages.some((message) => historyMessageID(message) === highlightedMessageId) ? ' cc-message-search-hit' : ''}`}
+              >
+                {group.messages.map((message) => (
+                  <span
+                    key={`search-anchor-${historyMessageID(message)}`}
+                    className="cc-message-search-anchor"
+                    data-search-message-id={historyMessageID(message) || undefined}
+                    aria-hidden="true"
+                  />
+                ))}
                 <ChatMessage
                   message={group.messages[0]}
                   workingMessages={group.messages}
@@ -2790,8 +2834,12 @@ export default function MessagesView({
             );
           }
           return (
-            <ChatMessage
+            <div
               key={group.message.id || i}
+              className={`cc-message-anchor${historyMessageID(group.message) === highlightedMessageId ? ' cc-message-search-hit' : ''}`}
+              data-search-message-id={historyMessageID(group.message) || undefined}
+            >
+            <ChatMessage
               message={group.message}
               isSelf={group.message.from_uid === user.uid}
               isGroup={isGroup}
@@ -2818,6 +2866,7 @@ export default function MessagesView({
               activePreviewFile={previewFile}
               knownArtifacts={knownArtifacts}
             />
+            </div>
           );
         })}
           {runtimePlan && !hasPersistedRuntimePlan && <RuntimePlanCard plan={runtimePlan} />}
@@ -3092,6 +3141,7 @@ export default function MessagesView({
             {cloudArtifactsListOpen && cloudArtifactsAgentUID > 0 ? (
               <CloudArtifactsPanel
                 agentUid={cloudArtifactsAgentUID}
+                topicId={topic}
                 tab={cloudArtifactsTab}
                 onTabChange={setCloudArtifactsTab}
                 onClose={closeSidePanel}
@@ -3297,9 +3347,40 @@ function readDirectoryEntries(reader) {
   });
 }
 
+function contentBlocksFromMessage(message) {
+  const direct = parseContentBlocks(message?.content_blocks);
+  if (direct.length > 0) return direct;
+
+  const content = parseStructuredMessageContent(message?.content);
+  return parseContentBlocks(content?.content_blocks || content?.contentBlocks);
+}
+
+function parseContentBlocks(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseStructuredMessageContent(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeIncomingMessage(message) {
   const normalized = { ...message };
-  normalized.content_blocks = Array.isArray(message?.content_blocks) ? message.content_blocks : [];
+  normalized.content_blocks = contentBlocksFromMessage(message);
   normalized.metadata = message?.metadata || null;
   normalized.msg_type = message?.msg_type || 'text';
 

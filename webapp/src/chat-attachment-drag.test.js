@@ -1,7 +1,10 @@
 import {
+  CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE,
   CHAT_ATTACHMENT_DRAG_TYPE,
   attachmentFromContentBlock,
   attachmentIdentity,
+  clearChatAttachmentDrag,
+  hasChatAttachmentDrag,
   readChatAttachmentDrag,
   writeChatAttachmentDrag,
 } from './chat-attachment-drag';
@@ -39,6 +42,85 @@ describe('chat attachment drag protocol', () => {
       name: 'cat.png',
       content: { payload: { file_key: 'cat.png' } },
     });
+    expect(readChatAttachmentDrag(dataTransfer)).toBeNull();
+  });
+
+  it('falls back when Safari rejects the custom MIME type', () => {
+    const dataTransfer = dataTransferStub();
+    const originalSetData = dataTransfer.setData.bind(dataTransfer);
+    dataTransfer.setData = (type, value) => {
+      if (type === CHAT_ATTACHMENT_DRAG_TYPE) throw new DOMException('Not supported');
+      originalSetData(type, value);
+    };
+
+    expect(writeChatAttachmentDrag(dataTransfer, {
+      type: 'image',
+      payload: { file_key: 'cat.png', url: '/uploads/images/cat.png', name: 'cat.png' },
+    })).toBe(true);
+    expect(dataTransfer.types).toEqual([CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE]);
+    expect(hasChatAttachmentDrag(dataTransfer)).toBe(true);
+    expect(readChatAttachmentDrag(dataTransfer)?.name).toBe('cat.png');
+  });
+
+  it('does not treat ordinary plain text as a chat attachment drag', () => {
+    const dataTransfer = dataTransferStub();
+    dataTransfer.setData(CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE, 'ordinary dragged text');
+    expect(hasChatAttachmentDrag(dataTransfer)).toBe(false);
+    expect(readChatAttachmentDrag(dataTransfer)).toBeNull();
+  });
+
+  it('uses the active page drag when Safari hides data values until drop', () => {
+    const dataTransfer = dataTransferStub();
+    expect(writeChatAttachmentDrag(dataTransfer, {
+      type: 'image',
+      payload: { file_key: 'cat.png', url: '/uploads/images/cat.png', name: 'cat.png' },
+    })).toBe(true);
+    dataTransfer.getData = () => '';
+    dataTransfer.types = [CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE];
+
+    expect(hasChatAttachmentDrag(dataTransfer)).toBe(true);
+    expect(readChatAttachmentDrag(dataTransfer)?.name).toBe('cat.png');
+    expect(readChatAttachmentDrag(dataTransfer)).toBeNull();
+  });
+
+  it('clears an unfinished active drag on dragend', () => {
+    const dataTransfer = dataTransferStub();
+    expect(writeChatAttachmentDrag(dataTransfer, {
+      type: 'file',
+      payload: { file_key: 'report.pdf', url: '/uploads/files/report.pdf', name: 'report.pdf' },
+    })).toBe(true);
+    dataTransfer.getData = () => '';
+    dataTransfer.types = [CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE];
+
+    clearChatAttachmentDrag();
+    expect(hasChatAttachmentDrag(dataTransfer)).toBe(false);
+    expect(readChatAttachmentDrag(dataTransfer)).toBeNull();
+  });
+
+  it('uses the text fallback when Safari removes the custom drag type', () => {
+    const dataTransfer = dataTransferStub();
+    const payload = {
+      file_key: 'cat.png',
+      url: '/uploads/images/cat.png',
+      name: 'cat.png',
+      size: 12,
+    };
+
+    expect(writeChatAttachmentDrag(dataTransfer, { type: 'image', payload })).toBe(true);
+    dataTransfer.types = [CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE];
+
+    expect(readChatAttachmentDrag(dataTransfer)).toMatchObject({
+      type: 'image',
+      content: { payload: { file_key: 'cat.png' } },
+    });
+  });
+
+  it('rejects a forged text fallback token', () => {
+    const dataTransfer = dataTransferStub();
+    dataTransfer.setData(
+      CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE,
+      'catsco-chat-attachment:00000000-0000-4000-8000-000000000000',
+    );
     expect(readChatAttachmentDrag(dataTransfer)).toBeNull();
   });
 

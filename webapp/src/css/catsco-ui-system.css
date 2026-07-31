@@ -2808,7 +2808,6 @@ html[data-theme="liquid"] .catsco-brand-mark {
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-lg);
   background: var(--cc-panel);
-  content-visibility: auto;
   contain-intrinsic-size: auto 150px;
 }
 

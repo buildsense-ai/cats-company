@@ -40,10 +40,9 @@ describe('RelayAccessModal commercial rollout', () => {
       summary: {
         source: 'relay',
         model: 'MiniMax-M3',
-        used_cny: 125,
-        limit_cny: 500,
-        remaining_cny: 375,
+        quota_configured: true,
         percent: 25,
+        remaining_percent: 75,
         status: 'normal',
         reset_duration: '1M',
         last_reset: '2026-06-08T03:29:30Z',
@@ -54,12 +53,16 @@ describe('RelayAccessModal commercial rollout', () => {
       note: '套餐和邀请码仍在内部测试。',
       summary: {
         uid: 38,
-        total_cny: 0,
-        totals_by_model: {},
+        models: ['MiniMax-M3', 'deepseek-v4-flash'],
         entitlements: [],
         plans: [],
       },
     });
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
+    window.confirm = vi.fn(() => true);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -82,6 +85,79 @@ describe('RelayAccessModal commercial rollout', () => {
     });
   }
 
+  function findButton(label) {
+    return [...container.querySelectorAll('button')].find(button => button.textContent.includes(label));
+  }
+
+  async function clickButton(label) {
+    const button = findButton(label);
+    expect(button).not.toBeUndefined();
+    await act(async () => {
+      button.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  it('creates, displays, and copies a relay key', async () => {
+    api.getRelayConfig.mockResolvedValue({
+      base_url: 'https://relay.catsco.cc',
+      default_model: 'MiniMax-M3',
+      self_service_enabled: true,
+      endpoints: [],
+    });
+    api.createRelayKey.mockResolvedValue({
+      key: { id: 'key-1', name: 'CatsCo relay key', state: 'active', hint: '...1111' },
+      plain_key: 'sk-bf-created-secret',
+    });
+
+    await renderModal();
+    await clickButton('生成我的 Key');
+
+    expect(api.createRelayKey).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('sk-bf-created-secret');
+    await clickButton('复制 Key');
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('sk-bf-created-secret');
+  });
+
+  it('reveals, rotates, and revokes an existing relay key', async () => {
+    api.getRelayConfig.mockResolvedValue({
+      base_url: 'https://relay.catsco.cc',
+      default_model: 'MiniMax-M3',
+      self_service_enabled: true,
+      endpoints: [],
+    });
+    api.getRelayKey.mockResolvedValue({
+      key: { id: 'key-1', name: 'CatsCo relay key', state: 'active', hint: '...1111' },
+    });
+    api.revealRelayKey.mockResolvedValue({
+      key: { id: 'key-1', name: 'CatsCo relay key', state: 'active', hint: '...1111' },
+      plain_key: 'sk-bf-revealed-secret',
+    });
+    api.rotateRelayKey.mockResolvedValue({
+      key: { id: 'key-2', name: 'CatsCo relay key', state: 'active', hint: '...2222' },
+      plain_key: 'sk-bf-rotated-secret',
+    });
+    api.revokeRelayKey.mockResolvedValue({});
+
+    await renderModal();
+    await clickButton('显示并复制');
+    expect(api.revealRelayKey).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('sk-bf-revealed-secret');
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('sk-bf-revealed-secret');
+
+    await clickButton('重新生成');
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+    expect(api.rotateRelayKey).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('sk-bf-rotated-secret');
+
+    await clickButton('撤销');
+    expect(window.confirm).toHaveBeenCalledTimes(2);
+    expect(api.revokeRelayKey).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('还没有模型服务 Key');
+    expect(container.textContent).not.toContain('sk-bf-rotated-secret');
+  });
+
   it('keeps invite redemption hidden while commercial rollout is disabled', async () => {
     await renderModal();
 
@@ -98,10 +174,9 @@ describe('RelayAccessModal commercial rollout', () => {
       summary: {
         source: 'relay',
         model: model || 'MiniMax-M3',
-        used_cny: model === 'deepseek-v4-flash' ? 12.5 : 125,
-        limit_cny: model === 'deepseek-v4-flash' ? 100 : 500,
-        remaining_cny: model === 'deepseek-v4-flash' ? 87.5 : 375,
+        quota_configured: true,
         percent: model === 'deepseek-v4-flash' ? 12.5 : 25,
+        remaining_percent: model === 'deepseek-v4-flash' ? 87.5 : 75,
         status: 'normal',
         reset_duration: '1M',
         last_reset: '2026-06-08T03:29:30Z',
@@ -111,39 +186,10 @@ describe('RelayAccessModal commercial rollout', () => {
       enabled: true,
       summary: {
         uid: 38,
-        total_cny: 600,
-        totals_by_model: {
-          'MiniMax-M3': 500,
-          'deepseek-v4-flash': 100,
-        },
+        models: ['MiniMax-M3', 'deepseek-v4-flash'],
         entitlements: [
-          { id: 1, state: 'active', plan_name: '教师试用包', expires_at: '2026-07-29T00:00:00Z' },
+          { state: 'active', plan_name: '教师试用包', expires_at: '2026-07-29T00:00:00Z' },
           { state: 'expired', plan_name: '旧套餐' },
-        ],
-        plans: [
-          {
-            id: 1,
-            slug: 'teacher-trial',
-            name: '教师试用包',
-            state: 0,
-            duration_days: 30,
-            sort_order: 10,
-            model_budgets: {
-              'MiniMax-M3': 500,
-              'deepseek-v4-flash': 100,
-            },
-          },
-          {
-            id: 2,
-            slug: 'disabled',
-            name: '禁用套餐',
-            state: 1,
-            duration_days: 30,
-            sort_order: 20,
-            model_budgets: {
-              'MiniMax-M2.7': 500,
-            },
-          },
         ],
       },
     });
@@ -151,7 +197,7 @@ describe('RelayAccessModal commercial rollout', () => {
     await renderModal();
 
     expect(container.textContent).toContain('账本灰度');
-    expect(container.textContent).toContain('套餐账本额度');
+    expect(container.textContent).toContain('模型额度');
     expect(container.textContent).toContain('需要管理员后台对账/同步后');
     expect(container.textContent).toContain('当前有效套餐');
     expect(container.textContent).toContain('套餐最近到期');
@@ -162,8 +208,11 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).toContain('教师试用包');
     expect(container.textContent).toContain('MiniMax-M3');
     expect(container.textContent).toContain('deepseek-v4-flash');
-    expect(container.textContent).toContain('剩余 375.00 CNY');
-    expect(container.textContent).toContain('剩余 87.50 CNY');
+    expect(container.textContent).toContain('剩余 75%');
+    expect(container.textContent).toContain('剩余 87.5%');
+    expect(container.textContent).not.toContain('CNY');
+    expect(container.textContent).not.toContain('¥');
+    expect(container.textContent).not.toContain('￥');
     expect(container.textContent).not.toContain('禁用套餐');
     expect(container.querySelector('.relay-access-invite-form')).not.toBeNull();
   });
@@ -173,8 +222,7 @@ describe('RelayAccessModal commercial rollout', () => {
       enabled: true,
       summary: {
         uid: 38,
-        total_cny: 0,
-        totals_by_model: {},
+        models: [],
         entitlements: [],
         plans: [],
       },
@@ -208,10 +256,9 @@ describe('RelayAccessModal commercial rollout', () => {
       summary: {
         source: 'relay',
         model: 'MiniMax-M3',
-        used_cny: 745.63,
-        limit_cny: 500,
-        remaining_cny: 0,
+        quota_configured: true,
         percent: 149.1,
+        remaining_percent: 0,
         status: 'over_limit',
         reset_duration: '1M',
         last_reset: '2026-06-08T03:29:30Z',
@@ -221,7 +268,8 @@ describe('RelayAccessModal commercial rollout', () => {
     await renderModal();
 
     expect(container.textContent).toContain('当前模型已超额');
-    expect(container.textContent).toContain('剩余额度 0 CNY');
+    expect(container.textContent).toContain('剩余额度 0%');
+    expect(container.textContent).not.toContain('CNY');
     expect(container.textContent).toContain('请联系管理员补额或重置');
   });
 
@@ -231,10 +279,9 @@ describe('RelayAccessModal commercial rollout', () => {
       summary: {
         source: 'relay',
         model: 'MiniMax-M3',
-        used_cny: 0,
-        limit_cny: 0,
-        remaining_cny: 0,
+        quota_configured: false,
         percent: 0,
+        remaining_percent: 0,
         status: 'normal',
       },
     });

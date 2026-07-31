@@ -142,7 +142,7 @@ import MessagesView, {
 } from './messages-view';
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { api, onWSMessage, wsSendStreamCancel } from '../api';
-import { CHAT_ATTACHMENT_DRAG_TYPE, writeChatAttachmentDrag } from '../chat-attachment-drag';
+import { CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE, CHAT_ATTACHMENT_DRAG_TYPE, writeChatAttachmentDrag } from '../chat-attachment-drag';
 
 const openchatThemeCss = readFileSync(
   resolve(process.cwd(), 'src/css/openchat-theme.css'),
@@ -344,6 +344,44 @@ describe('MessagesView composer draft isolation', () => {
     window.IntersectionObserver = originalIntersectionObserver;
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it('loads around a search result, highlights its anchor, and returns to search', async () => {
+    const onBackToSearch = vi.fn();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 42,
+        seq_id: 42,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: 'target search result',
+        created_at: '2026-07-30T12:00:00Z',
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2', {
+      messageLocationRequest: { topicId: 'p2p_1_2', messageId: 42, requestId: 1 },
+      onBackToSearch,
+    });
+
+    expect(api.getMessages).toHaveBeenCalledWith(
+      'p2p_1_2',
+      expect.any(Number),
+      0,
+      false,
+      0,
+      expect.objectContaining({ aroundId: 42, signal: expect.any(AbortSignal) }),
+    );
+    const anchor = container.querySelector('[data-search-message-id="42"]');
+    expect(anchor).not.toBeNull();
+    expect(anchor.classList.contains('cc-message-search-hit')).toBe(true);
+    expect(anchor.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' });
+
+    const backButton = [...container.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('返回搜索结果'));
+    await act(async () => backButton.click());
+    expect(onBackToSearch).toHaveBeenCalledTimes(1);
   });
 
   it('preserves unsent drafts per topic when switching topics', async () => {
@@ -575,6 +613,35 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.textContent).toContain('原文字和 1 个附件');
   });
 
+  it('restores attachments from serialized content blocks', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 691,
+        seq_id: 691,
+        topic_id: 'p2p_1_2',
+        from_uid: 1,
+        type: 'text',
+        content: '描述这张 Safari 图片',
+        content_blocks: JSON.stringify([
+          { type: 'text', text: '描述这张 Safari 图片' },
+          { type: 'image', payload: { file_key: 'safari.png', url: '/uploads/images/safari.png', name: 'safari.png', size: 16, mime_type: 'image/png' } },
+        ]),
+        created_at: '2026-06-09T00:00:00Z',
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+      Simulate.click(container.querySelector('.mock-edit-message[data-message-id="691"]'));
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('textarea.v3-composer-input').value).toBe('描述这张 Safari 图片');
+    expect(container.querySelector('[aria-label="预览图片：safari.png"]')).not.toBeNull();
+    expect(container.textContent).toContain('原文字和 1 个附件');
+  });
+
   it('keeps legacy message content when attachment blocks have no text block', async () => {
     api.getMessages.mockResolvedValueOnce({
       messages: [{
@@ -600,6 +667,35 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(container.querySelector('textarea.v3-composer-input').value).toBe('旧格式正文仍要保留');
     expect(container.querySelector('[aria-label="预览图片：legacy.png"]')).not.toBeNull();
+  });
+
+  it('clears a Safari attachment drag on window blur before another drop', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    const values = new Map();
+    const dataTransfer = {
+      types: [],
+      setData(type, value) {
+        values.set(type, value);
+        if (!this.types.includes(type)) this.types.push(type);
+      },
+      getData: () => '',
+      dropEffect: 'none',
+      effectAllowed: 'none',
+    };
+    writeChatAttachmentDrag(dataTransfer, {
+      type: 'image',
+      payload: { file_key: 'stale.png', url: '/uploads/images/stale.png', name: 'stale.png' },
+    });
+    dataTransfer.types = [CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE];
+
+    await act(async () => {
+      window.dispatchEvent(new Event('blur'));
+      Simulate.drop(container.querySelector('.v3-timeline'), { dataTransfer });
+      await Promise.resolve();
+    });
+
+    expect(api.uploadFile).not.toHaveBeenCalled();
+    expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(0);
   });
 
   it('accepts a chat image drag without uploading the file again', async () => {
@@ -2504,6 +2600,18 @@ describe('MessagesView composer draft isolation', () => {
     const workspace = container.querySelector('.v3-message-workspace');
     expect(workspace.className).toContain('has-preview');
     expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
+      topicId: 'p2p_1_440',
+      beforeId: 0,
+      limit: 40,
+    });
+
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '产物'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     expect(api.getCloudArtifacts).toHaveBeenCalledWith(440, 'active');
 
     await act(async () => {
@@ -2536,13 +2644,15 @@ describe('MessagesView composer draft isolation', () => {
       cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '文件'));
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    expect(api.getAgentFiles).toHaveBeenCalledWith(440, { beforeId: 0, limit: 40 });
+    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
+      topicId: 'p2p_1_440',
+      beforeId: 0,
+      limit: 40,
+    });
     await act(async () => {
       Simulate.click(container.querySelector('button[aria-label="预览文件 期末学情报告.pdf"]'));
       await Promise.resolve();
@@ -2564,6 +2674,24 @@ describe('MessagesView composer draft isolation', () => {
       .find((button) => button.textContent === '文件')
       ?.getAttribute('aria-selected')).toBe('true');
     expect(api.getAgentFiles).toHaveBeenCalledTimes(2);
+  });
+
+  it('scopes the file panel request to the current group conversation', async () => {
+    await mountTopic(root, 'grp_80', {
+      isGroup: true,
+      groupId: 80,
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
+      topicId: 'grp_80',
+      beforeId: 0,
+      limit: 40,
+    });
   });
 
   it('shows an inline error when an unsupported image is selected', async () => {

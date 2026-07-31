@@ -280,14 +280,22 @@ func TestRelayCommercialRedeemInviteUsesRequestUID(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var body struct {
-		OK      bool                    `json:"ok"`
-		Summary types.CommercialSummary `json:"summary"`
+		OK      bool                         `json:"ok"`
+		Summary relayCommercialPublicSummary `json:"summary"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !body.OK || body.Summary.UID != 116 || body.Summary.TotalsByModel["MiniMax-M3"] != 500 {
+	if !body.OK || len(body.Summary.Models) != 1 || body.Summary.Models[0] != "MiniMax-M3" {
 		t.Fatalf("unexpected redemption summary: %+v", body)
+	}
+	if _, err := store.GetCommercialSummary(116); err != nil {
+		t.Fatalf("request uid was not redeemed: %v", err)
+	}
+	for _, sensitive := range []string{"uid", "plans", "grants", "ledger", "totals_by_model", "total_cny", "amount_cny", "budget_cny"} {
+		if strings.Contains(rec.Body.String(), `"`+sensitive+`"`) {
+			t.Fatalf("commercial response leaked %s: %s", sensitive, rec.Body.String())
+		}
 	}
 }
 
@@ -320,8 +328,11 @@ func TestRelayCommercialRejectsDuplicateInviteRedemption(t *testing.T) {
 	secondReq.Header.Set("Content-Type", "application/json")
 	secondRec := httptest.NewRecorder()
 	handler.HandleRedeemInvite(secondRec, secondReq)
-	if secondRec.Code != http.StatusBadRequest {
+	if secondRec.Code != http.StatusBadRequest || !strings.Contains(secondRec.Body.String(), `"error":"invite code could not be redeemed"`) {
 		t.Fatalf("second status=%d body=%s", secondRec.Code, secondRec.Body.String())
+	}
+	if strings.Contains(secondRec.Body.String(), "already redeemed") {
+		t.Fatalf("duplicate redemption exposed internal error: %s", secondRec.Body.String())
 	}
 
 	otherReq := httptest.NewRequest(http.MethodPost, "/api/relay/invite/redeem", strings.NewReader(`{"code":"M3TEST"}`))

@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -112,7 +113,7 @@ func (h *RelayCommercialHandler) HandleSummary(w http.ResponseWriter, r *http.Re
 		"enabled":         true,
 		"rollout":         h.rolloutFor(uid),
 		"enforce_enabled": h.enforceFor(uid),
-		"summary":         summary,
+		"summary":         publicCommercialSummary(summary),
 		"note":            "套餐额度内测中；未开启真实接管前，当前 relay 默认额度和重置周期继续保留。",
 	})
 }
@@ -136,22 +137,57 @@ func (h *RelayCommercialHandler) HandleRedeemInvite(w http.ResponseWriter, r *ht
 	}
 	summary, err := h.store.RedeemCommercialInvite(uid, req.Code)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invite code could not be redeemed"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "summary": summary})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "summary": publicCommercialSummary(summary)})
+}
+
+type relayCommercialPublicSummary struct {
+	Models       []string                           `json:"models"`
+	Entitlements []relayCommercialPublicEntitlement `json:"entitlements"`
+}
+
+type relayCommercialPublicEntitlement struct {
+	PlanName  string     `json:"plan_name,omitempty"`
+	State     string     `json:"state"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+func publicCommercialSummary(summary *types.CommercialSummary) relayCommercialPublicSummary {
+	out := relayCommercialPublicSummary{
+		Models:       []string{},
+		Entitlements: []relayCommercialPublicEntitlement{},
+	}
+	if summary == nil {
+		return out
+	}
+	for _, entitlement := range summary.Entitlements {
+		if entitlement == nil {
+			continue
+		}
+		out.Entitlements = append(out.Entitlements, relayCommercialPublicEntitlement{
+			PlanName:  entitlement.PlanName,
+			State:     entitlement.State,
+			ExpiresAt: entitlement.ExpiresAt,
+		})
+	}
+	for model, amount := range summary.TotalsByModel {
+		model = strings.TrimSpace(model)
+		if model != "" && amount > 0 {
+			out.Models = append(out.Models, model)
+		}
+	}
+	sort.Strings(out.Models)
+	return out
 }
 
 func commercialUnavailablePayload() map[string]interface{} {
 	return map[string]interface{}{
 		"enabled": false,
-		"summary": map[string]interface{}{
-			"plans":           []interface{}{},
-			"entitlements":    []interface{}{},
-			"grants":          []interface{}{},
-			"ledger":          []interface{}{},
-			"totals_by_model": map[string]float64{},
-			"total_cny":       0,
+		"summary": relayCommercialPublicSummary{
+			Models:       []string{},
+			Entitlements: []relayCommercialPublicEntitlement{},
 		},
 		"note": "套餐额度功能尚未启用；当前 relay 默认额度和重置周期继续保留。",
 	}

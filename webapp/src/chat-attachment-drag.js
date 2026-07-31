@@ -1,8 +1,11 @@
 import { getApiBaseURL } from './api';
 
 export const CHAT_ATTACHMENT_DRAG_TYPE = 'application/x-catsco-chat-attachment';
+export const CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE = 'text/plain';
 
+const CHAT_ATTACHMENT_DRAG_PREFIX = 'catsco-chat-attachment:';
 const activeDrags = new Map();
+let activeDragToken = '';
 const MAX_ACTIVE_DRAGS = 128;
 const DRAG_TOKEN_TTL_MS = 60_000;
 
@@ -21,23 +24,50 @@ export function writeChatAttachmentDrag(dataTransfer, block) {
     attachment,
     expiresAt: Date.now() + DRAG_TOKEN_TTL_MS,
   });
-  window.setTimeout(() => activeDrags.delete(token), DRAG_TOKEN_TTL_MS);
-  dataTransfer.setData(CHAT_ATTACHMENT_DRAG_TYPE, token);
+  activeDragToken = token;
+  window.setTimeout(() => {
+    activeDrags.delete(token);
+    if (activeDragToken === token) activeDragToken = '';
+  }, DRAG_TOKEN_TTL_MS);
+  const wroteCustomType = setDragData(dataTransfer, CHAT_ATTACHMENT_DRAG_TYPE, token);
+  // Safari may suppress or reject custom MIME values for same-page image
+  // drags. The fallback still contains only an opaque, short-lived token;
+  // attachment metadata remains in activeDrags and receives the same checks.
+  const wroteFallbackType = setDragData(
+    dataTransfer,
+    CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE,
+    `${CHAT_ATTACHMENT_DRAG_PREFIX}${token}`,
+  );
+  if (!wroteCustomType && !wroteFallbackType) {
+    activeDrags.delete(token);
+    if (activeDragToken === token) activeDragToken = '';
+    return false;
+  }
   dataTransfer.effectAllowed = 'copy';
   return true;
 }
 
 export function readChatAttachmentDrag(dataTransfer) {
-  if (!dataTransferHasType(dataTransfer, CHAT_ATTACHMENT_DRAG_TYPE)) return null;
-  const token = dataTransfer.getData(CHAT_ATTACHMENT_DRAG_TYPE);
+  const token = readDragToken(dataTransfer) || activeDragToken;
+  if (!token) return null;
   const entry = activeDrags.get(token) || null;
   activeDrags.delete(token);
+  if (activeDragToken === token) activeDragToken = '';
   if (!entry || Date.now() >= entry.expiresAt) return null;
   return entry.attachment;
 }
 
 export function hasChatAttachmentDrag(dataTransfer) {
-  return dataTransferHasType(dataTransfer, CHAT_ATTACHMENT_DRAG_TYPE);
+  if (dataTransferHasType(dataTransfer, CHAT_ATTACHMENT_DRAG_TYPE)) return true;
+  const token = readDragToken(dataTransfer) || activeDragToken;
+  const entry = token ? activeDrags.get(token) : null;
+  return Boolean(entry && Date.now() < entry.expiresAt);
+}
+
+export function clearChatAttachmentDrag() {
+  if (!activeDragToken) return;
+  activeDrags.delete(activeDragToken);
+  activeDragToken = '';
 }
 
 export function attachmentFromContentBlock(block) {
@@ -143,6 +173,28 @@ function createDragToken() {
     return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
   }
   return '';
+}
+
+function setDragData(dataTransfer, type, value) {
+  try {
+    dataTransfer.setData(type, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readDragToken(dataTransfer) {
+  if (!dataTransfer || typeof dataTransfer.getData !== 'function') return '';
+  if (dataTransferHasType(dataTransfer, CHAT_ATTACHMENT_DRAG_TYPE)) {
+    const token = dataTransfer.getData(CHAT_ATTACHMENT_DRAG_TYPE);
+    if (token) return token;
+  }
+  if (!dataTransferHasType(dataTransfer, CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE)) return '';
+  const fallback = dataTransfer.getData(CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE);
+  return fallback.startsWith(CHAT_ATTACHMENT_DRAG_PREFIX)
+    ? fallback.slice(CHAT_ATTACHMENT_DRAG_PREFIX.length)
+    : '';
 }
 
 function dataTransferHasType(dataTransfer, type) {

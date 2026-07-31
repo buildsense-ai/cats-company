@@ -10,17 +10,8 @@ export function formatRelayUsagePill(summary, { customLabel = '自定义模型',
     return showModel ? `${shortRelayModelName(summary.model)} 已用 100%+` : '已用 100%+';
   }
 
-  const explicitRemaining = Number(summary.remaining_percent);
-  const limit = Number(summary.limit_cny);
-  const usedPercent = Number(summary.percent);
-  let remainingPercent;
-  if (Number.isFinite(explicitRemaining)) {
-    remainingPercent = explicitRemaining;
-  } else if (Number.isFinite(limit) && limit > 0 && Number.isFinite(usedPercent)) {
-    remainingPercent = 100 - usedPercent;
-  } else {
-    return '';
-  }
+  const remainingPercent = Number(summary.remaining_percent);
+  if (!Number.isFinite(remainingPercent)) return '';
 
   const clamped = Math.max(0, Math.min(100, remainingPercent));
   const remainingLabel = `剩余 ${Math.round(clamped)}%`;

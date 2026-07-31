@@ -4,7 +4,7 @@ import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareTex
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
-import { canDragChatAttachment, writeChatAttachmentDrag } from '../chat-attachment-drag';
+import { canDragChatAttachment, clearChatAttachmentDrag, writeChatAttachmentDrag } from '../chat-attachment-drag';
 import {
   hasPlainTextTableLikeBlock,
   hasRenderableTable,
@@ -949,7 +949,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     && !message._streaming
   );
   const hasFileOnly = !hasText && richBlocks.length > 0 && richBlocks.every(
-    (block) => block.type === 'file' && !isInlineVideoFile(block.payload),
+    (block) => block.type === 'file',
   );
 
   const parsed = useMemo(() => {
@@ -1572,6 +1572,7 @@ function ImageContent({ payload }) {
           className="oc-rich-image-thumb"
           draggable={canDragChatAttachment({ type: 'image', payload })}
           onDragStart={(event) => writeChatAttachmentDrag(event.dataTransfer, { type: 'image', payload })}
+          onDragEnd={clearChatAttachmentDrag}
         />
       </button>
       {preview}
@@ -1952,6 +1953,7 @@ function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = 
       className={`v3-attachment-card v3-artifact-card ${meta.className}${isActive ? ' active' : ''}`}
       draggable={canDragChatAttachment({ type: 'file', payload })}
       onDragStart={(event) => writeChatAttachmentDrag(event.dataTransfer, { type: 'file', payload })}
+      onDragEnd={clearChatAttachmentDrag}
     >
       <button
         className="v3-artifact-main"

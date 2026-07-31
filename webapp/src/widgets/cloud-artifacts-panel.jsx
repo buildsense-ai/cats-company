@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ArrowLeft,
   Cloud,
   Copy,
   Download,
@@ -70,13 +71,14 @@ function fileMeta(file) {
 
 export default function CloudArtifactsPanel({
   agentUid,
+  topicId,
   tab: controlledTab,
   onTabChange,
   onClose,
   onPreviewArtifact,
   onPreviewFile,
 }) {
-  const [localTab, setLocalTab] = useState('active');
+  const [localTab, setLocalTab] = useState('files');
   const tab = controlledTab ?? localTab;
   const [artifacts, setArtifacts] = useState([]);
   const [files, setFiles] = useState([]);
@@ -102,7 +104,7 @@ export default function CloudArtifactsPanel({
     setError('');
     try {
       if (tab === 'files') {
-        const result = await api.getAgentFiles(agentUid, { beforeId, limit: 40 });
+        const result = await api.getAgentFiles(agentUid, { topicId, beforeId, limit: 40 });
         if (!isCurrentRequest()) return;
         const nextFiles = Array.isArray(result?.files) ? result.files : [];
         setFiles((current) => append ? [...current, ...nextFiles] : nextFiles);
@@ -119,7 +121,7 @@ export default function CloudArtifactsPanel({
     } finally {
       if (isCurrentRequest()) setLoading(false);
     }
-  }, [agentUid, tab]);
+  }, [agentUid, tab, topicId]);
 
   useEffect(() => {
     setArtifacts([]);
@@ -187,76 +189,72 @@ export default function CloudArtifactsPanel({
   const emptyText = tab === 'active'
     ? '还没有已部署的网页'
     : tab === 'files'
-      ? '还没有找到这个 Bot 生成的文件'
+      ? '当前会话还没有这个 Bot 生成的文件'
       : '回收站是空的';
   const visibleCount = tab === 'files' ? files.length : artifacts.length;
+  const artifactTabSelected = tab !== 'files';
 
   return (
     <>
       <button
         className="v3-file-preview-backdrop"
         type="button"
-        aria-label="关闭产物"
+        aria-label="关闭文件与产物"
         onClick={onClose}
       />
-      <section className="v3-file-preview-panel cloud-artifacts-panel" aria-label="产物">
+      <section className="v3-file-preview-panel cloud-artifacts-panel" aria-label="文件与产物">
         <button
           className="v3-file-preview-drag-handle"
           type="button"
-          aria-label="关闭产物"
+          aria-label="关闭文件与产物"
           onClick={onClose}
         />
         <header className="cloud-artifacts-header">
-          <div className="cloud-artifacts-heading">
-            <span className="cloud-artifacts-heading-icon" aria-hidden="true"><Cloud size={20} /></span>
-            <div>
-              <h3>产物</h3>
-              <p>{loading ? '正在读取' : '共 ' + visibleCount + ' 个'}</p>
-            </div>
+          <div className="cloud-artifacts-tabs" role="tablist" aria-label="文件与产物">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'files'}
+              className={tab === 'files' ? 'active' : ''}
+              onClick={() => selectTab('files')}
+            >
+              文件
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={artifactTabSelected}
+              className={artifactTabSelected ? 'active' : ''}
+              onClick={() => selectTab('active')}
+            >
+              产物
+            </button>
           </div>
           <div className="cloud-artifacts-header-actions">
-            <button type="button" onClick={() => loadContent()} disabled={loading} aria-label="刷新产物" title="刷新">
+            {tab === 'active' && (
+              <button type="button" onClick={() => selectTab('deleted')} aria-label="打开回收站" title="回收站">
+                <Trash2 size={18} />
+              </button>
+            )}
+            {tab === 'deleted' && (
+              <button type="button" onClick={() => selectTab('active')} aria-label="返回产物列表" title="返回产物">
+                <ArrowLeft size={18} />
+              </button>
+            )}
+            <button type="button" onClick={() => loadContent()} disabled={loading} aria-label="刷新当前栏目" title="刷新">
               <RefreshCw size={18} className={loading ? 'is-spinning' : ''} />
             </button>
-            <button type="button" onClick={onClose} aria-label="关闭产物" title="关闭">
+            <button type="button" onClick={onClose} aria-label="关闭文件与产物" title="关闭">
               <X size={18} />
             </button>
           </div>
         </header>
 
-        <div className="cloud-artifacts-tabs" role="tablist" aria-label="产物状态">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'active'}
-            className={tab === 'active' ? 'active' : ''}
-            onClick={() => selectTab('active')}
-          >
-            网页
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'files'}
-            className={tab === 'files' ? 'active' : ''}
-            onClick={() => selectTab('files')}
-          >
-            文件
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'deleted'}
-            className={tab === 'deleted' ? 'active' : ''}
-            onClick={() => selectTab('deleted')}
-          >
-            回收站
-          </button>
-        </div>
-
         <div className="cloud-artifacts-body">
           {loading && visibleCount === 0 && (
-            <div className="cloud-artifacts-status">正在读取产物...</div>
+            <div className="cloud-artifacts-status">
+              {tab === 'files' ? '正在读取文件...' : '正在读取产物...'}
+            </div>
           )}
           {!loading && error && (
             <div className="cloud-artifacts-status error">

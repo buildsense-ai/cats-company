@@ -254,8 +254,13 @@ func TestRelayUsageSummaryUsesCurrentUserRelayData(t *testing.T) {
 	if !out.Configured || out.Summary == nil {
 		t.Fatalf("expected configured usage summary, got %+v", out)
 	}
-	if out.Summary.Source != "relay" || out.Summary.Model != "MiniMax-M3" || out.Summary.Percent != 50 || out.Summary.RemainingCNY != 250 {
+	if out.Summary.Source != "relay" || out.Summary.Model != "MiniMax-M3" || out.Summary.Percent != 50 || out.Summary.RemainingPercent != 50 {
 		t.Fatalf("unexpected usage summary: %+v", out.Summary)
+	}
+	for _, sensitive := range []string{"used_cny", "limit_cny", "remaining_cny"} {
+		if strings.Contains(rec.Body.String(), sensitive) {
+			t.Fatalf("usage response leaked %s: %s", sensitive, rec.Body.String())
+		}
 	}
 	if out.Summary.ResetDuration != "1M" || out.Summary.LastReset == "" {
 		t.Fatalf("expected reset metadata in usage summary, got %+v", out.Summary)
@@ -287,7 +292,7 @@ func TestRelayUsageSummaryUsesRequestedModel(t *testing.T) {
 	if !out.Configured || out.Summary == nil {
 		t.Fatalf("expected configured usage summary, got %+v", out)
 	}
-	if out.Summary.Source != "relay" || out.Summary.Model != "MiniMax-M3" || out.Summary.Percent != 20 || out.Summary.RemainingCNY != 400 {
+	if out.Summary.Source != "relay" || out.Summary.Model != "MiniMax-M3" || out.Summary.Percent != 20 || out.Summary.RemainingPercent != 80 {
 		t.Fatalf("expected requested model summary, got %+v", out.Summary)
 	}
 }
@@ -354,7 +359,7 @@ func TestRelayUsageSummaryUsesCurrentDeviceModel(t *testing.T) {
 	if !out.Configured || out.Summary == nil {
 		t.Fatalf("expected configured usage summary, got %+v", out)
 	}
-	if out.Summary.Model != "MiniMax-M3" || out.Summary.Percent != 25 || out.Summary.RemainingCNY != 375 {
+	if out.Summary.Model != "MiniMax-M3" || out.Summary.Percent != 25 || out.Summary.RemainingPercent != 75 {
 		t.Fatalf("expected current device model summary, got %+v", out.Summary)
 	}
 }
@@ -396,7 +401,7 @@ func TestRelayUsageSummaryUsesCurrentCustomModel(t *testing.T) {
 	if !out.Configured || out.Summary == nil {
 		t.Fatalf("expected custom usage summary, got %+v", out)
 	}
-	if out.Summary.Source != "custom" || out.Summary.Model != "gpt-5.5" || out.Summary.LimitCNY != 0 {
+	if out.Summary.Source != "custom" || out.Summary.Model != "gpt-5.5" || out.Summary.QuotaConfigured {
 		t.Fatalf("expected current custom summary without quota, got %+v", out.Summary)
 	}
 }
@@ -431,7 +436,7 @@ func TestRelayUsageSummarySkipsQuotaForCustomModel(t *testing.T) {
 	if !out.Configured || out.Summary == nil {
 		t.Fatalf("expected custom usage summary, got %+v", out)
 	}
-	if out.Summary.Source != "custom" || out.Summary.Model != "gpt-5.5" || out.Summary.LimitCNY != 0 {
+	if out.Summary.Source != "custom" || out.Summary.Model != "gpt-5.5" || out.Summary.QuotaConfigured {
 		t.Fatalf("expected custom summary without quota, got %+v", out.Summary)
 	}
 }
@@ -454,7 +459,7 @@ func TestRelayUsageSummaryMarksOverLimit(t *testing.T) {
 	if !out.Configured || out.Summary == nil {
 		t.Fatalf("expected configured usage summary, got %+v", out)
 	}
-	if out.Summary.Status != "over_limit" || out.Summary.RemainingCNY != 0 {
+	if out.Summary.Status != "over_limit" || out.Summary.RemainingPercent != 0 {
 		t.Fatalf("expected over-limit summary, got %+v", out.Summary)
 	}
 	if out.Summary.Percent <= 100 {
@@ -585,5 +590,95 @@ func TestRelayKeyRouteReturnsServiceUnavailableWhenDisabled(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRelayKeyForwardErrorsDoNotExposeUpstreamCommercialDetails(t *testing.T) {
+	oldSecret := append([]byte(nil), jwtSecret...)
+	defer func() { jwtSecret = oldSecret }()
+	SetJWTSecret("relay-key-error-secret")
+
+	userToken, err := GenerateToken(7, "charlie", "charlie@example.com")
+	if err != nil {
+		t.Fatalf("GenerateToken human: %v", err)
+	}
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{
+			"error": "limit_cny=500 remaining_cny=0 context_window_tokens=128000 max_tokens=8192",
+		})
+	}))
+	defer admin.Close()
+	t.Setenv("CATS_RELAY_ADMIN_URL", admin.URL)
+	t.Setenv("CATS_RELAY_ADMIN_TOKEN", "relay-admin-secret")
+
+	store := relayConfigOwnerStore{users: map[int64]*types.User{
+		7: {ID: 7, Username: "charlie", AccountType: types.AccountHuman, State: 0},
+	}}
+	keyHandler := NewRelayKeyHandlerFromEnv()
+	for _, tc := range []struct {
+		name    string
+		method  string
+		path    string
+		body    string
+		handler http.HandlerFunc
+	}{
+		{name: "get", method: http.MethodGet, path: "/api/relay/key", handler: keyHandler.HandleKey},
+		{name: "create", method: http.MethodPost, path: "/api/relay/key", body: `{"name":"my key"}`, handler: keyHandler.HandleKey},
+		{name: "rotate", method: http.MethodPost, path: "/api/relay/key/rotate", handler: keyHandler.HandleRotate},
+		{name: "reveal", method: http.MethodPost, path: "/api/relay/key/reveal", handler: keyHandler.HandleReveal},
+		{name: "delete", method: http.MethodDelete, path: "/api/relay/key", handler: keyHandler.HandleKey},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := OwnerMiddlewareWithDB(store)(tc.handler)
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer "+userToken)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler(rec, req)
+
+			if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), `"error":"relay admin request failed"`) {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			for _, sensitive := range []string{"limit_cny", "remaining_cny", "context_window_tokens", "max_tokens", "500", "128000", "8192"} {
+				if strings.Contains(rec.Body.String(), sensitive) {
+					t.Fatalf("relay key error leaked %s: %s", sensitive, rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestRelayUsageErrorDoesNotExposeUpstreamCommercialDetails(t *testing.T) {
+	oldSecret := append([]byte(nil), jwtSecret...)
+	defer func() { jwtSecret = oldSecret }()
+	SetJWTSecret("relay-usage-error-secret")
+
+	userToken, err := GenerateToken(7, "charlie", "charlie@example.com")
+	if err != nil {
+		t.Fatalf("GenerateToken human: %v", err)
+	}
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "limit_cny=500 remaining_cny=0"})
+	}))
+	defer admin.Close()
+	t.Setenv("CATS_RELAY_ADMIN_URL", admin.URL)
+	t.Setenv("CATS_RELAY_ADMIN_TOKEN", "relay-admin-secret")
+
+	store := relayConfigOwnerStore{users: map[int64]*types.User{
+		7: {ID: 7, Username: "charlie", AccountType: types.AccountHuman, State: 0},
+	}}
+	handler := OwnerMiddlewareWithDB(store)(NewRelayKeyHandlerFromEnv().HandleUsage)
+	req := httptest.NewRequest(http.MethodGet, "/api/relay/usage", nil)
+	req.Header.Set("Authorization", "Bearer "+userToken)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), `"error":"relay admin request failed"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	for _, sensitive := range []string{"limit_cny", "remaining_cny", "500"} {
+		if strings.Contains(rec.Body.String(), sensitive) {
+			t.Fatalf("relay error leaked %s: %s", sensitive, rec.Body.String())
+		}
 	}
 }

@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -75,7 +76,8 @@ func (h *BotDefinitionHandler) HandleOwnerDefinition(w http.ResponseWriter, r *h
 	}
 	response, err := h.definitionResponse(ownerUID, botUID, record, false)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		log.Printf("prepare owner bot definition failed bot_uid=%d: %v", botUID, err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot definition could not be prepared"})
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -108,7 +110,8 @@ func (h *BotDefinitionHandler) HandleOwnerModel(w http.ResponseWriter, r *http.R
 		if errors.Is(err, errBotModelEncryptionUnavailable) {
 			status = http.StatusServiceUnavailable
 		}
-		writeJSON(w, status, map[string]string{"error": err.Error()})
+		log.Printf("prepare owner bot model definition failed bot_uid=%d: %v", botUID, err)
+		writeJSON(w, status, map[string]string{"error": "bot model definition could not be updated"})
 		return
 	}
 	expected := int64(-1)
@@ -126,7 +129,8 @@ func (h *BotDefinitionHandler) HandleOwnerModel(w http.ResponseWriter, r *http.R
 	}
 	response, err := h.definitionResponse(ownerUID, botUID, record, false)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		log.Printf("prepare owner bot definition failed bot_uid=%d: %v", botUID, err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot definition could not be prepared"})
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -168,7 +172,8 @@ func (h *BotDefinitionHandler) HandleOwnerPrompt(w http.ResponseWriter, r *http.
 	}
 	response, err := h.definitionResponse(ownerUID, botUID, record, false)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		log.Printf("prepare owner bot definition failed bot_uid=%d: %v", botUID, err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot definition could not be prepared"})
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
@@ -392,9 +397,11 @@ func (h *BotDefinitionHandler) definitionResponse(
 		modelResponse["protocol"] = model.Protocol
 		modelResponse["apiBase"] = model.APIBase
 		modelResponse["model"] = model.Model
-		modelResponse["contextWindowTokens"] = model.ContextWindowTokens
-		if model.MaxTokens > 0 {
-			modelResponse["maxTokens"] = model.MaxTokens
+		if includeSecret {
+			modelResponse["contextWindowTokens"] = model.ContextWindowTokens
+			if model.MaxTokens > 0 {
+				modelResponse["maxTokens"] = model.MaxTokens
+			}
 		}
 		if model.Temperature != nil {
 			modelResponse["temperature"] = model.Temperature
@@ -429,12 +436,16 @@ func (h *BotDefinitionHandler) definitionResponse(
 	if record.Definition.Prompt != nil {
 		definition["prompt"] = record.Definition.Prompt
 	}
+	runtime := record.Runtime
+	if ownerUID > 0 && runtime.LastError != "" {
+		runtime.LastError = "模型配置应用失败"
+	}
 	response := map[string]interface{}{
 		"uid":        botUID,
 		"configured": true,
 		"definition": definition,
 		"revision":   record.Runtime.DesiredRevision,
-		"runtime":    record.Runtime,
+		"runtime":    runtime,
 	}
 	if ownerUID > 0 {
 		response["management_enabled"] = h.modelConfig.managementEnabled(ownerUID)
