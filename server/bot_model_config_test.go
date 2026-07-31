@@ -582,6 +582,61 @@ func TestCustomModelUpdateWithoutAPIKeyKeepsExistingAPIKeyAndTokenLimits(t *test
 	}
 }
 
+func TestOwnerConfigResponseRetainsCanonicalSavedCustomModelWhileCatalogIsActive(t *testing.T) {
+	enableBotModelEncryption(t)
+	handler := NewBotModelConfigHandler(nil, nil)
+	custom := cloudCustomModelConfig{
+		Protocol:            "openai-responses",
+		APIBase:             "https://models.example.com/v1",
+		Model:               "private-model",
+		APIKey:              "secret-a",
+		ContextWindowTokens: 128000,
+		ReasoningEffort:     "high",
+	}
+	plaintext, err := json.Marshal(custom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := handler.secretCodec.encrypt(43, plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{
+			Schema: types.BotDefinitionSchema,
+			BotID:  "43",
+			Model:  types.BotDefinitionModel{Kind: "catalog", ModelID: "minimax-m3"},
+		},
+		SavedCustomModel: &types.BotDefinitionSavedCustomModel{APIKeyCiphertext: ciphertext},
+		Exists:           true,
+	}
+
+	config := legacyConfigForDefinition(record)
+	response := handler.ownerConfigResponse(context.Background(), 7, 43, config, false)
+	saved, ok := response["custom"].(ownerCustomModelConfig)
+	if !ok {
+		t.Fatalf("owner response custom=%#v", response["custom"])
+	}
+	if saved.Model != "private-model" ||
+		saved.APIBase != "https://models.example.com/v1" ||
+		!saved.APIKeyConfigured ||
+		saved.APIKeyHint != "****et-a" {
+		t.Fatalf("saved custom=%+v", saved)
+	}
+
+	prepared, _, err := handler.prepareCustomModelUpdate(43, &cloudCustomModelConfig{
+		Protocol: "openai-responses",
+		APIBase:  saved.APIBase,
+		Model:    saved.Model,
+	}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.APIKey != "secret-a" {
+		t.Fatal("saved custom API key was not reused")
+	}
+}
+
 func TestCustomModelUpdateDoesNotExposeStoredConfigurationErrors(t *testing.T) {
 	enableBotModelEncryption(t)
 	db := &botModelConfigTestStore{

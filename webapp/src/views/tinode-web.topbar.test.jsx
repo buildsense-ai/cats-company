@@ -392,6 +392,60 @@ describe('LocalAssistantBar model selector', () => {
     }));
   });
 
+  it('keeps the saved custom editor populated while a relay catalog model is active', async () => {
+    const catalogWithSavedCustom = {
+      ...baseConfig,
+      status: 'applied',
+      desired: { kind: 'catalog', model_id: 'gpt-5.6-terra', reasoning_effort: 'high', revision: 5 },
+      applied: { kind: 'catalog', model_id: 'gpt-5.6-terra', reasoning_effort: 'high', revision: 5 },
+      custom: {
+        protocol: 'openai-responses',
+        api_base: 'https://models.example.com/v1',
+        model: 'private-model',
+        api_key_configured: true,
+        api_key_hint: '****cret',
+        reasoning_effort: 'xhigh',
+      },
+    };
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(catalogWithSavedCustom);
+    const update = vi.spyOn(api, 'updateBotModelConfig').mockResolvedValue({
+      ...catalogWithSavedCustom,
+      status: 'pending',
+      desired: { kind: 'custom', model_id: 'private-model', reasoning_effort: 'xhigh', revision: 6 },
+    });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    await act(async () => container.querySelector('.v3-model-status-button').click());
+    const customEntry = [...container.querySelectorAll('.v3-model-menu-item')]
+      .find((item) => item.textContent.includes('自定义模型'));
+    expect(customEntry.textContent).toContain('private-model');
+    expect(customEntry.textContent).toContain('****cret');
+    await act(async () => customEntry.click());
+
+    const textInputs = [...container.querySelectorAll('.v3-custom-model-editor input')]
+      .filter((input) => input.type !== 'password' && input.type !== 'number');
+    expect(textInputs.map((input) => input.value)).toEqual([
+      'https://models.example.com/v1',
+      'private-model',
+    ]);
+    expect(container.querySelector('input[type="password"]').value).toBe('');
+    expect(container.querySelector('input[type="password"]').placeholder).toContain('****cret');
+    await act(async () => {
+      container.querySelector('.v3-custom-model-editor')
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    expect(update).toHaveBeenCalledWith(43, expect.objectContaining({
+      kind: 'custom',
+      custom: expect.objectContaining({
+        protocol: 'openai-responses',
+        api_base: 'https://models.example.com/v1',
+        model: 'private-model',
+        api_key: '',
+        reasoning_effort: 'xhigh',
+      }),
+    }));
+  });
+
   it('does not resend legacy custom token values', async () => {
     const legacyConfig = {
       ...baseConfig,

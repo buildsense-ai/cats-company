@@ -471,11 +471,15 @@ func legacyConfigForDefinition(record *types.BotDefinitionRecord) *types.BotMode
 	if record == nil {
 		return &types.BotModelConfig{}
 	}
+	customCiphertext := record.Definition.Model.APIKeyCiphertext
+	if customCiphertext == "" && record.SavedCustomModel != nil {
+		customCiphertext = record.SavedCustomModel.APIKeyCiphertext
+	}
 	return &types.BotModelConfig{
 		Kind:                record.Definition.Model.Kind,
 		ModelID:             firstDefinitionModelID(record.Definition.Model),
 		ReasoningEffort:     record.Definition.Model.ReasoningEffort,
-		CustomCiphertext:    record.Definition.Model.APIKeyCiphertext,
+		CustomCiphertext:    customCiphertext,
 		RuntimeProtocol:     record.Runtime.RuntimeProtocol,
 		RuntimeProtocolSeen: record.Runtime.RuntimeProtocolSeen,
 		Revision:            record.Runtime.DesiredRevision,

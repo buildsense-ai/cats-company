@@ -54,6 +54,41 @@ func TestEncodeBotDefinitionJSONPreservesUnrelatedConfiguration(t *testing.T) {
 	}
 }
 
+func TestBotDefinitionJSONPreservesSavedCustomModelAcrossCatalogSwitch(t *testing.T) {
+	record := &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{
+			Schema: types.BotDefinitionSchema,
+			BotID:  "43",
+			Model: types.BotDefinitionModel{
+				Kind:             "custom",
+				Model:            "private-model",
+				APIKeyCiphertext: "encrypted-custom-profile",
+			},
+		},
+		Exists: true,
+	}
+	RememberBotDefinitionCustomModel(record, record.Definition.Model)
+	record.Definition.Model = types.BotDefinitionModel{Kind: "catalog", ModelID: "gpt-5.6-sol"}
+
+	raw, err := EncodeBotDefinitionJSON(nil, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeBotDefinitionJSON(raw, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Definition.Model.Kind != "catalog" ||
+		decoded.SavedCustomModel == nil ||
+		decoded.SavedCustomModel.APIKeyCiphertext != "encrypted-custom-profile" {
+		t.Fatalf("decoded=%+v", decoded)
+	}
+	legacy := legacyModelConfigFromRecord(decoded)
+	if legacy.CustomCiphertext != "encrypted-custom-profile" {
+		t.Fatalf("legacy custom ciphertext=%q", legacy.CustomCiphertext)
+	}
+}
+
 func TestEncodeBotDefinitionJSONRemovesLegacyIndependentSkills(t *testing.T) {
 	raw := []byte(`{"bot_skills":{"revision":9},"channel":"feishu"}`)
 	record := defaultBotDefinitionRecord(43)
@@ -101,6 +136,28 @@ func TestDecodeBotDefinitionJSONUsesLegacyCloudModelOnlyAsMigrationSource(t *tes
 		record.Runtime.DesiredRevision != 7 ||
 		record.Runtime.LastError != "old error" {
 		t.Fatalf("record=%+v", record)
+	}
+}
+
+func TestDecodeLegacyCatalogModelRetainsAlternateCustomCiphertext(t *testing.T) {
+	raw := []byte(`{
+		"cloud_model": {
+			"kind": "catalog",
+			"model_id": "minimax-m3",
+			"custom_ciphertext": "encrypted-custom-profile",
+			"revision": 7
+		}
+	}`)
+	record, err := DecodeBotDefinitionJSON(raw, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.SavedCustomModel == nil ||
+		record.SavedCustomModel.APIKeyCiphertext != "encrypted-custom-profile" {
+		t.Fatalf("record=%+v", record)
+	}
+	if record.Definition.Model.APIKeyCiphertext != "" {
+		t.Fatalf("catalog definition retained custom ciphertext: %+v", record.Definition.Model)
 	}
 }
 
