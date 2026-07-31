@@ -10,7 +10,10 @@ import (
 )
 
 const mysqlMessageSearchQuery = `
-WITH normalized_messages AS (
+WITH search_params AS (
+  SELECT ? AS search_type, LOWER(?) AS needle
+),
+normalized_messages AS (
   SELECT messages.*,
          CASE
            WHEN msg_type <> 'file' OR NOT JSON_VALID(content) THEN JSON_OBJECT()
@@ -26,6 +29,7 @@ SELECT m.id, m.topic_id,
        m.from_uid, COALESCE(NULLIF(sender.display_name, ''), sender.username, ''),
        m.content, m.msg_type, m.created_at, m.content_blocks
 FROM normalized_messages m
+CROSS JOIN search_params search
 JOIN topics t ON t.id = m.topic_id
 JOIN users viewer ON viewer.id = ?
 JOIN users sender ON sender.id = m.from_uid
@@ -49,16 +53,16 @@ AND (
   ))
 )
 AND (
-  (? <> 'artifact' AND m.msg_type = 'text'
+  (search.search_type <> 'artifact' AND m.msg_type = 'text'
     AND (m.content_blocks IS NULL OR (
       JSON_SEARCH(m.content_blocks, 'one', 'thinking', NULL, '$[*].type') IS NULL
       AND JSON_SEARCH(m.content_blocks, 'one', 'tool_use', NULL, '$[*].type') IS NULL
       AND JSON_SEARCH(m.content_blocks, 'one', 'tool_result', NULL, '$[*].type') IS NULL
       AND JSON_SEARCH(m.content_blocks, 'one', 'runtime_plan', NULL, '$[*].type') IS NULL
     ))
-    AND LOCATE(LOWER(?), LOWER(m.content)) > 0)
+    AND LOCATE(search.needle, LOWER(m.content)) > 0)
   OR
-  (? <> 'message' AND (
+  (search.search_type <> 'message' AND (
     (m.content_blocks IS NOT NULL AND EXISTS (
       SELECT 1
       FROM JSON_TABLE(
@@ -73,13 +77,13 @@ AND (
         )
       ) AS artifact
       WHERE artifact.block_type IN ('file', 'image', 'audio', 'video')
-        AND LOCATE(LOWER(?), LOWER(CONCAT_WS(' ',
-          artifact.name,
-          artifact.payload_name,
-          artifact.payload_file_name,
-          artifact.payload_filename,
-          artifact.payload_title
-        ))) > 0
+        AND (
+          LOCATE(search.needle, LOWER(COALESCE(artifact.name, ''))) > 0
+          OR LOCATE(search.needle, LOWER(COALESCE(artifact.payload_name, ''))) > 0
+          OR LOCATE(search.needle, LOWER(COALESCE(artifact.payload_file_name, ''))) > 0
+          OR LOCATE(search.needle, LOWER(COALESCE(artifact.payload_filename, ''))) > 0
+          OR LOCATE(search.needle, LOWER(COALESCE(artifact.payload_title, ''))) > 0
+        )
     ))
     OR (m.msg_type = 'file' AND EXISTS (
       SELECT 1
@@ -96,12 +100,10 @@ AND (
           title VARCHAR(2048) PATH '$.title'
         )
       ) AS legacy_file
-      WHERE LOCATE(LOWER(?), LOWER(CONCAT_WS(' ',
-        legacy_file.name,
-        legacy_file.file_name,
-        legacy_file.filename,
-        legacy_file.title
-      ))) > 0
+      WHERE LOCATE(search.needle, LOWER(COALESCE(legacy_file.name, ''))) > 0
+        OR LOCATE(search.needle, LOWER(COALESCE(legacy_file.file_name, ''))) > 0
+        OR LOCATE(search.needle, LOWER(COALESCE(legacy_file.filename, ''))) > 0
+        OR LOCATE(search.needle, LOWER(COALESCE(legacy_file.title, ''))) > 0
     ))
   ))
 )
@@ -111,7 +113,7 @@ LIMIT ? OFFSET ?`
 // SearchMessages searches only topics readable by viewerUID. Access filtering is atomic with selection.
 func (a *Adapter) SearchMessages(viewerUID int64, query, searchType string, limit int) ([]*store.MessageSearchResult, error) {
 	return store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
-		rows, err := a.db.Query(mysqlMessageSearchQuery, viewerUID, searchType, query, searchType, query, query, pageSize, offset)
+		rows, err := a.db.Query(mysqlMessageSearchQuery, searchType, query, viewerUID, pageSize, offset)
 		if err != nil {
 			return nil, 0, fmt.Errorf("search messages: %w", err)
 		}

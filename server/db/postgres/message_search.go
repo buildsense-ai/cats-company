@@ -64,13 +64,13 @@ AND (
     (m.content_blocks IS NOT NULL AND jsonb_typeof(m.content_blocks) = 'array' AND EXISTS (
       SELECT 1 FROM jsonb_array_elements(m.content_blocks) AS artifact
       WHERE artifact->>'type' IN ('file', 'image', 'audio', 'video')
-        AND STRPOS(LOWER(CONCAT_WS(' ',
-          artifact->>'name',
-          artifact->'payload'->>'name',
-          artifact->'payload'->>'file_name',
-          artifact->'payload'->>'filename',
-          artifact->'payload'->>'title'
-        )), LOWER($3)) > 0
+        AND (
+          STRPOS(LOWER(COALESCE(artifact->>'name', '')), LOWER($3)) > 0
+          OR STRPOS(LOWER(COALESCE(artifact->'payload'->>'name', '')), LOWER($3)) > 0
+          OR STRPOS(LOWER(COALESCE(artifact->'payload'->>'file_name', '')), LOWER($3)) > 0
+          OR STRPOS(LOWER(COALESCE(artifact->'payload'->>'filename', '')), LOWER($3)) > 0
+          OR STRPOS(LOWER(COALESCE(artifact->'payload'->>'title', '')), LOWER($3)) > 0
+        )
     ))
     OR (m.msg_type = 'file' AND EXISTS (
       SELECT 1
@@ -81,12 +81,10 @@ AND (
           ELSE m.search_legacy_content
         END AS content
       ) AS legacy_file
-      WHERE STRPOS(LOWER(CONCAT_WS(' ',
-        legacy_file.content->>'name',
-        legacy_file.content->>'file_name',
-        legacy_file.content->>'filename',
-        legacy_file.content->>'title'
-      )), LOWER($3)) > 0
+      WHERE STRPOS(LOWER(COALESCE(legacy_file.content->>'name', '')), LOWER($3)) > 0
+        OR STRPOS(LOWER(COALESCE(legacy_file.content->>'file_name', '')), LOWER($3)) > 0
+        OR STRPOS(LOWER(COALESCE(legacy_file.content->>'filename', '')), LOWER($3)) > 0
+        OR STRPOS(LOWER(COALESCE(legacy_file.content->>'title', '')), LOWER($3)) > 0
     ))
   ))
 )

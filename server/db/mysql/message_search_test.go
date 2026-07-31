@@ -16,6 +16,7 @@ func TestMySQLMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 		"f.to_user_id = peer.id",
 		"f.status = 'accepted'",
 		"sender.account_type IN ('human', 'bot')",
+		"SELECT ? AS search_type, LOWER(?) AS needle",
 		"m.msg_type = 'text'",
 		"JSON_SEARCH(m.content_blocks, 'one', 'tool_use', NULL, '$[*].type')",
 		"FROM JSON_TABLE(",
@@ -30,7 +31,9 @@ func TestMySQLMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 		"JSON_VALID(JSON_UNQUOTE(content))",
 		"JSON_TYPE(JSON_EXTRACT(m.search_legacy_content, '$.payload')) = 'OBJECT'",
 		"legacy_file.file_name",
-		"LOCATE(LOWER(?), LOWER(m.content))",
+		"LOCATE(search.needle, LOWER(m.content))",
+		"LOCATE(search.needle, LOWER(COALESCE(artifact.payload_title, '')))",
+		"LOCATE(search.needle, LOWER(COALESCE(legacy_file.title, '')))",
 		"ORDER BY m.created_at DESC, m.id DESC",
 	}
 	for _, fragment := range required {
@@ -40,5 +43,8 @@ func TestMySQLMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 	}
 	if strings.Contains(mysqlMessageSearchQuery, "LEFT JOIN JSON_TABLE(") {
 		t.Error("legacy JSON expansion must stay inside the file-search branch")
+	}
+	if strings.Contains(mysqlMessageSearchQuery, "CONCAT_WS(' ',") {
+		t.Error("filename fields must be matched independently")
 	}
 }

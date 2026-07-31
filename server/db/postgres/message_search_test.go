@@ -41,6 +41,8 @@ func TestPostgresMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 		"jsonb_typeof(m.search_legacy_content->'payload') = 'object'",
 		"legacy_file.content->>'file_name'",
 		"STRPOS(LOWER(m.content), LOWER($3))",
+		"STRPOS(LOWER(COALESCE(artifact->'payload'->>'title', '')), LOWER($3))",
+		"STRPOS(LOWER(COALESCE(legacy_file.content->>'title', '')), LOWER($3))",
 		"ORDER BY m.created_at DESC, m.id DESC",
 	}
 	for _, fragment := range required {
@@ -50,5 +52,8 @@ func TestPostgresMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 	}
 	if strings.Contains(postgresMessageSearchQuery, "LEFT JOIN LATERAL (") {
 		t.Error("legacy JSON expansion must stay inside the file-search branch")
+	}
+	if strings.Contains(postgresMessageSearchQuery, "CONCAT_WS(' ',") {
+		t.Error("filename fields must be matched independently")
 	}
 }

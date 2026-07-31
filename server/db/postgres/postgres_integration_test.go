@@ -161,6 +161,44 @@ func TestPostgresStoreContract(t *testing.T) {
 			t.Fatalf("legacy file search omitted message IDs: %v", wantIDs)
 		}
 	})
+	t.Run("message search matches attachment fields independently", func(t *testing.T) {
+		topicID := fmt.Sprintf("grp_%d", groupID)
+		if _, saveErr := db.SaveMessageWithBlocks(topicID, ownerID, "split metadata", []types.ContentBlock{{
+			Type: "file",
+			Name: "Quarterly",
+			Payload: map[string]interface{}{
+				"title": "Report.pdf",
+			},
+		}}, "", "", "text"); saveErr != nil {
+			t.Fatalf("save split attachment metadata: %v", saveErr)
+		}
+		wantID, saveErr := db.SaveMessageWithBlocks(topicID, ownerID, "real filename", []types.ContentBlock{{
+			Type: "file",
+			Name: "Quarterly Report.pdf",
+		}}, "", "", "text")
+		if saveErr != nil {
+			t.Fatalf("save matching attachment: %v", saveErr)
+		}
+
+		rows, queryErr := db.db.Query(postgresMessageSearchQuery,
+			ownerID, store.MessageSearchArtifact, "quarterly report", 10, 0)
+		if queryErr != nil {
+			t.Fatalf("query attachment candidates: %v", queryErr)
+		}
+		results, scanned, scanErr := scanPostgresMessageSearch(rows,
+			"quarterly report", store.MessageSearchArtifact, 10)
+		closeErr := rows.Close()
+		if scanErr != nil {
+			t.Fatalf("scan attachment candidates: %v", scanErr)
+		}
+		if closeErr != nil {
+			t.Fatalf("close attachment candidates: %v", closeErr)
+		}
+		if scanned != 1 || len(results) != 1 || results[0].MessageID != wantID {
+			t.Fatalf("attachment candidates scanned=%d results=%#v, want only message %d",
+				scanned, results, wantID)
+		}
+	})
 	members, err := db.GetGroupMembers(groupID)
 	if err != nil || len(members) != 1 || members[0].UserID != ownerID {
 		t.Fatalf("group members mismatch: %#v err=%v", members, err)
