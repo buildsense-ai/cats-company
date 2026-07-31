@@ -91,6 +91,17 @@ func (h *MessageHandler) getMessagesAround(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load messages"})
 		return true
 	}
+	targetFound := false
+	for _, message := range rawMsgs {
+		if message != nil && message.ID == aroundID && message.TopicID == topicID {
+			targetFound = true
+			break
+		}
+	}
+	if !targetFound {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "message not found in topic"})
+		return true
+	}
 	messages := make([]map[string]interface{}, 0, len(rawMsgs))
 	identityUsers := h.loadHistoryUsers(uid, rawMsgs)
 	for _, message := range rawMsgs {

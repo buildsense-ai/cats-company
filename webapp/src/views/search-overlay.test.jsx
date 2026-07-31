@@ -43,16 +43,36 @@ describe('SearchOverlay', () => {
     await act(async () => root.render(<SearchOverlay open onClose={onClose} onSelectResult={onSelectResult} {...props} />));
   };
 
-  it('normalizes message and artifact result shapes without rendering unsafe HTML', () => {
+  it('normalizes the server artifact response contract', () => {
     const result = normalizeSearchResult({
       message_id: 12,
       topic_id: 'grp_8',
       topic_name: '项目群',
       content: '<img src=x onerror=alert(1)> Supabase',
-      attachment_name: 'report.pdf',
-      type: 'artifact',
+      artifact_name: 'report.pdf',
+      content_type: 'artifact',
     });
     expect(result).toMatchObject({ topicId: 'grp_8', messageId: 12, source: '项目群', category: 'artifact', attachmentName: 'report.pdf' });
+  });
+
+  it('highlights matching text with React fragments without rendering unsafe HTML', async () => {
+    api.getMessageSearch.mockResolvedValue({
+      results: [{
+        message_id: 12,
+        topic_id: 'grp_8',
+        topic_name: '项目群',
+        content: '<img src=x onerror=alert(1)> Supabase result',
+      }],
+    });
+    await render();
+    const input = container.querySelector('input');
+    await act(async () => { Simulate.change(input, { target: { value: 'supabase' } }); });
+    await act(async () => vi.advanceTimersByTime(300));
+    await flush();
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('mark')?.textContent).toBe('Supabase');
+    expect(container.querySelector('.cc-global-search-result-snippet')?.textContent).toContain('<img src=x onerror=alert(1)>');
   });
 
   it('does not search before two characters and debounces the request', async () => {
@@ -123,6 +143,43 @@ describe('SearchOverlay', () => {
     expect(onSelectResult).toHaveBeenCalledWith(expect.objectContaining({
       topicId: 'grp_9', messageId: 0, category: 'conversation', isGroup: true,
     }));
+  });
+
+  it('navigates results with arrow keys and selects the focused result with Enter', async () => {
+    api.getMessageSearch.mockResolvedValue({
+      results: [
+        { message_id: 7, topic_id: 'p2p_1_2', topic_name: '小明', content: 'first hello' },
+        { message_id: 8, topic_id: 'p2p_1_3', topic_name: '小红', content: 'second hello' },
+        { message_id: 9, topic_id: 'p2p_1_4', topic_name: '小蓝', content: 'third hello' },
+      ],
+    });
+    await render();
+    const input = container.querySelector('input');
+    await act(async () => { Simulate.change(input, { target: { value: 'hello' } }); });
+    await act(async () => vi.advanceTimersByTime(300));
+    await flush();
+    const resultButtons = [...container.querySelectorAll('.cc-global-search-result')];
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(resultButtons[2]);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(resultButtons[0]);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(resultButtons[1]);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+    expect(onSelectResult).toHaveBeenCalledWith(expect.objectContaining({ messageId: 7 }));
   });
 
   it('closes on Escape and returns null when closed', async () => {

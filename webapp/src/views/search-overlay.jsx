@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, FileText, LoaderCircle, MessageSquareText, Search, X } from 'lucide-react';
 import { api } from '../api';
 
@@ -23,8 +23,8 @@ export function normalizeSearchResult(item, index = 0) {
   const attachment = item?.attachment && typeof item.attachment === 'object' ? item.attachment : {};
   const messageId = Number(firstValue(message, ['message_id', 'id', 'seq_id'], firstValue(item, ['message_id', 'id'], 0))) || 0;
   const topicId = String(firstValue(item, ['topic_id', 'topicId'], firstValue(topic, ['topic_id', 'id'], firstValue(message, ['topic_id'], ''))));
-  const attachmentName = String(firstValue(item, ['attachment_name', 'file_name', 'filename'], firstValue(attachment, ['name', 'file_name', 'filename'], '')));
-  const rawType = String(firstValue(item, ['category', 'kind', 'result_type', 'type'], attachmentName ? 'artifact' : 'message')).toLowerCase();
+  const attachmentName = String(firstValue(item, ['artifact_name', 'attachment_name', 'file_name', 'filename'], firstValue(attachment, ['name', 'file_name', 'filename'], '')));
+  const rawType = String(firstValue(item, ['content_type', 'category', 'kind', 'result_type', 'type'], attachmentName ? 'artifact' : 'message')).toLowerCase();
   const category = rawType.includes('conversation') || rawType.includes('topic')
     ? 'conversation'
     : (rawType.includes('artifact') || rawType.includes('attachment') || rawType.includes('file') ? 'artifact' : 'message');
@@ -42,6 +42,38 @@ export function normalizeSearchResult(item, index = 0) {
     groupId: Number(firstValue(item, ['group_id'], firstValue(topic, ['group_id'], topicId.startsWith('grp_') ? topicId.slice(4) : 0))) || undefined,
     avatarUrl: String(firstValue(item, ['avatar_url'], firstValue(topic, ['avatar_url'], ''))),
   };
+}
+
+export function splitSearchHighlight(text, query) {
+  const source = String(text || '');
+  const needle = String(query || '').trim();
+  if (!source || !needle) return [{ text: source, match: false }];
+  const sourceLower = source.toLocaleLowerCase();
+  const needleLower = needle.toLocaleLowerCase();
+  const parts = [];
+  let cursor = 0;
+  while (cursor < source.length) {
+    const matchIndex = sourceLower.indexOf(needleLower, cursor);
+    if (matchIndex < 0) {
+      parts.push({ text: source.slice(cursor), match: false });
+      break;
+    }
+    if (matchIndex > cursor) {
+      parts.push({ text: source.slice(cursor, matchIndex), match: false });
+    }
+    const matchEnd = matchIndex + needle.length;
+    parts.push({ text: source.slice(matchIndex, matchEnd), match: true });
+    cursor = matchEnd;
+  }
+  return parts.length ? parts : [{ text: source, match: false }];
+}
+
+function HighlightedSearchText({ text, query }) {
+  return splitSearchHighlight(text, query).map((part, index) => (
+    part.match
+      ? <mark key={`${index}-${part.text}`}>{part.text}</mark>
+      : <React.Fragment key={`${index}-${part.text}`}>{part.text}</React.Fragment>
+  ));
 }
 
 function normalizeConversationResult(item, index = 0) {
@@ -87,12 +119,23 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('all');
   const [results, setResults] = useState([]);
+  const [activeResultIndex, setActiveResultIndex] = useState(-1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const inputRef = useRef(null);
   const listRef = useRef(null);
   const savedScrollRef = useRef(0);
   const requestRef = useRef(0);
+  const resultRefs = useRef([]);
+  const activeResultIndexRef = useRef(-1);
+
+  const updateActiveResult = useCallback((index, shouldFocus = false) => {
+    activeResultIndexRef.current = index;
+    setActiveResultIndex(index);
+    if (shouldFocus && index >= 0) {
+      resultRefs.current[index]?.focus();
+    }
+  }, []);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -101,14 +144,41 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
       if (listRef.current) listRef.current.scrollTop = savedScrollRef.current;
     });
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const direction = event.key === 'ArrowDown' ? 1 : -1;
+        let nextIndex = activeResultIndexRef.current < 0 && direction < 0
+          ? 0
+          : activeResultIndexRef.current;
+        for (let checked = 0; checked < results.length; checked += 1) {
+          nextIndex = (nextIndex + direction + results.length) % results.length;
+          if (!resultRefs.current[nextIndex]?.disabled) {
+            event.preventDefault();
+            updateActiveResult(nextIndex, true);
+            return;
+          }
+        }
+      }
+      if (event.key === 'Enter' && activeResultIndexRef.current >= 0) {
+        const result = results[activeResultIndexRef.current];
+        const resultButton = resultRefs.current[activeResultIndexRef.current];
+        if (result && resultButton && !resultButton.disabled && document.activeElement === resultButton) {
+          event.preventDefault();
+          onSelectResult(result);
+        }
+      }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, open]);
+  }, [onClose, onSelectResult, open, results, updateActiveResult]);
 
   useEffect(() => {
     const keyword = query.trim();
+    updateActiveResult(-1);
+    resultRefs.current = [];
     if (keyword.length < 2) {
       requestRef.current += 1;
       setResults([]);
@@ -149,7 +219,7 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [category, query]);
+  }, [category, query, updateActiveResult]);
 
   if (!open) return null;
   const keyword = query.trim();
@@ -158,7 +228,7 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
       <section className="cc-global-search" role="dialog" aria-modal="true" aria-label="全局搜索">
         <header className="cc-global-search-header">
           <Search size={20} aria-hidden="true" />
-          <input ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索消息与产物" aria-label="搜索消息与产物" />
+          <input ref={inputRef} value={query} onFocus={() => updateActiveResult(-1)} onChange={(event) => setQuery(event.target.value)} placeholder="搜索消息与产物" aria-label="搜索消息与产物" />
           {query && <button type="button" onClick={() => setQuery('')} aria-label="清空搜索"><X size={18} /></button>}
           <button type="button" className="cc-global-search-close" onClick={onClose} aria-label="关闭搜索"><ArrowLeft size={19} /></button>
         </header>
@@ -170,13 +240,22 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
           {keyword.length >= 2 && loading && <div className="cc-global-search-state"><LoaderCircle className="cc-spin" size={18} />正在搜索</div>}
           {keyword.length >= 2 && !loading && error && <div className="cc-global-search-state error">{error}</div>}
           {keyword.length >= 2 && !loading && !error && results.length === 0 && <div className="cc-global-search-state">没有找到相关结果</div>}
-          {!loading && results.map((result) => (
-            <button key={result.key} type="button" className="cc-global-search-result" disabled={!result.topicId || (result.category !== 'conversation' && !result.messageId)} onClick={() => onSelectResult(result)}>
+          {!loading && results.map((result, index) => (
+            <button
+              key={result.key}
+              ref={(node) => { resultRefs.current[index] = node; }}
+              type="button"
+              className={`cc-global-search-result${activeResultIndex === index ? ' is-active' : ''}`}
+              disabled={!result.topicId || (result.category !== 'conversation' && !result.messageId)}
+              aria-current={activeResultIndex === index ? 'true' : undefined}
+              onFocus={() => updateActiveResult(index)}
+              onClick={() => onSelectResult(result)}
+            >
               <span className="cc-global-search-result-icon">{result.category === 'artifact' ? <FileText size={18} /> : <MessageSquareText size={18} />}</span>
               <span className="cc-global-search-result-body">
                 <span className="cc-global-search-result-meta"><strong>{result.source}</strong><time>{formatSearchTime(result.time)}</time></span>
-                <span className="cc-global-search-result-snippet">{result.snippet || '查看命中消息'}</span>
-                {result.attachmentName && <span className="cc-global-search-result-file"><FileText size={13} />{result.attachmentName}</span>}
+                <span className="cc-global-search-result-snippet"><HighlightedSearchText text={result.snippet || '查看命中消息'} query={keyword} /></span>
+                {result.attachmentName && <span className="cc-global-search-result-file"><FileText size={13} /><HighlightedSearchText text={result.attachmentName} query={keyword} /></span>}
               </span>
             </button>
           ))}

@@ -224,6 +224,49 @@ func TestHandleGetMessagesAroundAllowsReadableTopic(t *testing.T) {
 	}
 }
 
+func TestHandleGetMessagesAroundRejectsTargetOutsideRequestedTopic(t *testing.T) {
+	tests := []struct {
+		name           string
+		aroundMessages []*types.Message
+	}{
+		{
+			name: "target id does not exist",
+			aroundMessages: []*types.Message{
+				{ID: 30, TopicID: "grp_80", FromUID: 7, Content: "before", MsgType: "text"},
+				{ID: 32, TopicID: "grp_80", FromUID: 7, Content: "after", MsgType: "text"},
+			},
+		},
+		{
+			name: "target id belongs to another topic",
+			aroundMessages: []*types.Message{
+				{ID: 31, TopicID: "grp_81", FromUID: 7, Content: "other topic", MsgType: "text"},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := &messageAroundTestStore{
+				identityMessageStore: &identityMessageStore{
+					users:        map[int64]*types.User{7: {ID: 7, Username: "alice", AccountType: types.AccountHuman}},
+					groupMembers: []*types.GroupMember{{GroupID: 80, UserID: 7}},
+				},
+				aroundMessages: tc.aroundMessages,
+			}
+			handler := NewMessageHandler(db, NewHub(db, nil))
+			req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=grp_80&around_id=31", nil)
+			req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+			rec := httptest.NewRecorder()
+
+			handler.HandleGetMessages(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status=%d body=%s, want 404", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestHandleGetMessagesAroundValidatesParameters(t *testing.T) {
 	for _, target := range []string{
 		"/api/messages?topic_id=grp_80&around_id=0",
