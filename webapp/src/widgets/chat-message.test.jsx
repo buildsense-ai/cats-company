@@ -38,6 +38,7 @@ vi.mock('marked', () => ({
 
 vi.mock('../api', () => ({
   resolveMediaURL: (url) => url,
+  getApiBaseURL: () => window.location.origin,
 }));
 
 vi.mock('./avatar', () => ({
@@ -66,7 +67,7 @@ const catscoUiSystemCss = readFileSync(
   'utf8',
 );
 
-function PreviewHarness({ message, knownArtifacts = [], isSelf = false }) {
+function PreviewHarness({ message, knownArtifacts = [] }) {
   const [previewFile, setPreviewFile] = React.useState(null);
   const chatColumnRef = React.useRef(null);
   return (
@@ -74,7 +75,7 @@ function PreviewHarness({ message, knownArtifacts = [], isSelf = false }) {
       <div ref={chatColumnRef} className="v3-chat-column">
         <ChatMessage
           message={message}
-          isSelf={isSelf}
+          isSelf={false}
           isGroup={false}
           senderName="CatsCo"
           onPreviewFile={setPreviewFile}
@@ -178,6 +179,119 @@ describe('ChatMessage rich file rendering', () => {
     expect(frame.getAttribute('srcdoc')).toContain('<h1>Report</h1>');
   });
 
+  it('renders an Agent delivery artifact before text from the same message', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 20,
+            from_uid: 2,
+            content: '交付说明',
+            content_blocks: [
+              { type: 'text', text: '交付说明' },
+              {
+                type: 'file',
+                payload: {
+                  name: 'game.zip',
+                  url: '/uploads/files/game.zip',
+                  size: 4096,
+                  mime_type: 'application/zip',
+                },
+              },
+            ],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          artifactsFirst
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const content = container.querySelector('.v3-message-content');
+    const artifactSection = content.querySelector('.v3-message-deliverables');
+    const summarySection = content.querySelector('.v3-message-followup-text');
+    const artifact = artifactSection?.querySelector('.v3-attachment-card');
+    expect(container.querySelector('.v3-message').classList.contains('artifacts-first')).toBe(true);
+    expect(artifactSection?.dataset.messagePart).toBe('artifacts');
+    expect(summarySection?.dataset.messagePart).toBe('summary');
+    expect(artifact).not.toBeNull();
+    expect(summarySection?.textContent).toBe('交付说明');
+    expect(artifactSection.compareDocumentPosition(summarySection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelectorAll('.v3-message')).toHaveLength(1);
+    expect(container.querySelectorAll('.v3-msg-time')).toHaveLength(1);
+  });
+
+  it('moves Agent process text into the completed tool trace and keeps only the result below the artifact', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 23,
+            from_uid: 2,
+            content: '已完成验收。\n\n文件已经发送。',
+            content_blocks: [
+              {
+                type: 'file',
+                payload: {
+                  name: 'game.zip',
+                  url: '/uploads/files/game.zip',
+                  size: 4096,
+                  mime_type: 'application/zip',
+                },
+              },
+              { type: 'text', text: '已完成验收。', presentation_role: 'process' },
+              {
+                type: 'tool_use',
+                id: 'verify-1',
+                name: 'execute_shell',
+                input: { command: 'npm test' },
+              },
+              {
+                type: 'tool_result',
+                tool_use_id: 'verify-1',
+                content: 'Tests passed',
+              },
+              { type: 'text', text: '文件已经发送。', presentation_role: 'result' },
+            ],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          artifactsFirst
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const sections = container.querySelectorAll('.v3-message-followup-section');
+    expect(sections).toHaveLength(1);
+    expect(sections[0].dataset.messagePart).toBe('result');
+    expect(sections[0].textContent).toBe('文件已经发送。');
+    expect(container.querySelector('.v3-working-label')?.textContent).toBe('已完成');
+    expect(container.querySelector('.v3-working-toggle')?.getAttribute('aria-expanded')).toBe('false');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-working-toggle'));
+      await Promise.resolve();
+    });
+
+    const toolStep = container.querySelector('.v3-wpi-tool-step');
+    const narrative = toolStep?.querySelector('.v3-wpi-narrative');
+    const tool = toolStep?.querySelector('.v3-wpi-tool');
+    expect(narrative?.textContent).toBe('已完成验收。');
+    expect(tool?.querySelector('.v3-wpi-tool-name')?.textContent).toBe('execute_shell');
+    expect(narrative?.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.querySelector('.v3-message-followup-text')?.textContent).not.toContain('已完成验收。');
+    expect(container.querySelectorAll('.v3-message')).toHaveLength(1);
+    expect(container.querySelectorAll('.v3-msg-time')).toHaveLength(1);
+  });
+
   it('preserves line breaks in group plain text messages', async () => {
     await act(async () => {
       root.render(
@@ -201,6 +315,8 @@ describe('ChatMessage rich file rendering', () => {
     expect(textNode).not.toBeUndefined();
     expect(textNode.style.whiteSpace).toBe('pre-wrap');
     expect(textNode.style.overflowWrap).toBe('anywhere');
+    expect(container.querySelector('.v3-message-deliverables')).toBeNull();
+    expect(container.querySelector('.v3-message-followup-text')).toBeNull();
   });
 
   it('uses compact paragraph spacing for direct plain text messages', async () => {
@@ -781,7 +897,7 @@ describe('ChatMessage rich file rendering', () => {
     });
 
     expect(container.querySelector('[aria-label="更多操作"]')).toBeNull();
-    const editButton = container.querySelector('[aria-label="编辑并重新发送"]');
+    const editButton = container.querySelector('[aria-label="修改后重新发送（原消息保留）"]');
     expect(editButton).not.toBeNull();
     expect(container.querySelector('[data-conversation-question="question-26"]')).not.toBeNull();
     await act(async () => {
@@ -789,6 +905,140 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
     expect(onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 26 }));
+  });
+
+  it('writes an internal attachment token when a chat image is dragged', async () => {
+    const setData = vi.fn();
+    const dataTransfer = { setData, effectAllowed: 'none' };
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 27,
+            from_uid: 1,
+            content: '拖动图片',
+            content_blocks: [
+              { type: 'text', text: '拖动图片' },
+              { type: 'image', payload: { file_key: 'cat.png', url: '/uploads/images/cat.png', name: 'cat.png' } },
+            ],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf
+          isGroup={false}
+          senderName="Me"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const image = container.querySelector('img.oc-rich-image-thumb');
+    expect(image).not.toBeNull();
+    expect(image.draggable).toBe(true);
+    await act(async () => {
+      Simulate.dragStart(image, { dataTransfer });
+    });
+
+    expect(setData).toHaveBeenCalledWith(
+      'application/x-catsco-chat-attachment',
+      expect.stringMatching(/^(?:[0-9a-f-]{36}|[0-9a-f]{48})$/i),
+    );
+    expect(dataTransfer.effectAllowed).toBe('copy');
+  });
+
+  it('writes an internal attachment token when a system file is dragged', async () => {
+    const setData = vi.fn();
+    const dataTransfer = { setData, effectAllowed: 'none' };
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 28,
+            from_uid: 1,
+            content: '[文件] report.pdf',
+            content_blocks: [{ type: 'file', payload: { file_key: 'report.pdf', url: '/uploads/files/report.pdf', name: 'report.pdf' } }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf
+          isGroup={false}
+          senderName="Me"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const card = container.querySelector('.v3-attachment-card');
+    expect(card.draggable).toBe(true);
+    await act(async () => {
+      Simulate.dragStart(card, { dataTransfer });
+    });
+    expect(setData).toHaveBeenCalledWith('application/x-catsco-chat-attachment', expect.any(String));
+  });
+
+  it('does not expose URL-only images as reusable chat attachments', async () => {
+    const setData = vi.fn();
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 29,
+            from_uid: 2,
+            content: '[图片] remote.png',
+            content_blocks: [{ type: 'image', payload: { file_key: 'forged-key', url: 'https://example.com/remote.png', name: 'remote.png' } }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf={false}
+          isGroup={false}
+          senderName="Other"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const image = container.querySelector('img.oc-rich-image-thumb');
+    expect(image.draggable).toBe(false);
+    await act(async () => {
+      Simulate.dragStart(image, { dataTransfer: { setData, effectAllowed: 'none' } });
+    });
+    expect(setData).not.toHaveBeenCalled();
+  });
+
+  it('does not create a hidden avatar column for current-user messages', async () => {
+    await act(async () => {
+      root.render(
+        <>
+          <ChatMessage
+            message={{
+              id: 2601,
+              from_uid: 1,
+              content: 'Current-user message',
+              created_at: '2026-06-09T00:00:00Z',
+            }}
+            isSelf
+            isGroup={false}
+            senderName="Me"
+          />
+          <ChatMessage
+            message={{
+              id: 2602,
+              from_uid: 2,
+              content: 'Peer message',
+              created_at: '2026-06-09T00:01:00Z',
+            }}
+            isSelf={false}
+            isGroup={false}
+            senderName="CatsCo"
+          />
+        </>,
+      );
+      await Promise.resolve();
+    });
+
+    const selfMessage = container.querySelector('.v3-message.is-self');
+    const peerMessage = container.querySelector('.v3-message.is-peer');
+    expect(selfMessage.querySelector('.v3-avatar-col')).toBeNull();
+    expect(selfMessage.querySelector('[data-testid="avatar"]')).toBeNull();
+    expect(peerMessage.querySelector('.v3-avatar-col')).not.toBeNull();
+    expect(peerMessage.querySelector('[data-testid="avatar"]')).not.toBeNull();
   });
 
   it('keeps the larger current-user bubble shrink-wrapped with balanced padding', () => {
@@ -883,17 +1133,246 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
 
+    expect(container.querySelector('.v3-wpi-plan')).not.toBeNull();
+    expect(container.querySelector('.v3-wpi-plan-title').textContent).toBe('计划');
+    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('创建临时工作目录');
+    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('设计 analyzeReply 函数');
+    expect(container.querySelector('.v3-working-status')).not.toBeNull();
+    expect(container.querySelector('.v3-working-toggle')).toBeNull();
+    expect(container.querySelector('.v3-working-steps')).toBeNull();
+    expect(container.querySelector('.v3-wpi-tool-name')).toBeNull();
+    expect(container.querySelector('.v3-message-footer')).toBeNull();
+  });
+
+  it('replaces earlier plan snapshots in place and marks the completed working process once', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 22,
+            from_uid: 2,
+            content: '',
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          workingMessages={[
+            {
+              type: 'tool_use',
+              content: 'update_plan',
+              metadata: {
+                id: 'plan-1',
+                input: {
+                  steps: [
+                    { status: 'in_progress', step: '实现功能' },
+                    { status: 'pending', step: '运行测试' },
+                  ],
+                },
+              },
+            },
+            {
+              type: 'tool_result',
+              content: '计划已更新：0/2 已完成',
+              metadata: { tool_use_id: 'plan-1' },
+            },
+            {
+              type: 'tool_use',
+              content: 'execute_shell',
+              metadata: {
+                id: 'shell-1',
+                input: { command: 'npm test' },
+              },
+            },
+            {
+              type: 'tool_result',
+              content: 'Tests passed',
+              metadata: { tool_use_id: 'shell-1' },
+            },
+            {
+              type: 'tool_use',
+              content: 'update_plan',
+              metadata: {
+                id: 'plan-2',
+                input: {
+                  steps: [
+                    { status: 'completed', step: '实现功能' },
+                    { status: 'completed', step: '运行测试' },
+                  ],
+                },
+              },
+            },
+            {
+              type: 'tool_result',
+              content: '计划已更新：2/2 已完成',
+              metadata: { tool_use_id: 'plan-2' },
+            },
+          ]}
+          workingOnly
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-working-label')?.textContent).toBe('已完成');
+    expect(container.querySelector('.v3-working-summary')?.textContent).toBe('2/2');
+    expect(container.querySelector('.v3-message')?.classList.contains('is-working')).toBe(false);
+    expect(container.querySelector('.v3-message')?.classList.contains('is-complete')).toBe(true);
+    expect(container.querySelectorAll('.v3-wpi-plan')).toHaveLength(1);
+    expect(container.querySelector('.v3-wpi-plan-count')?.textContent).toBe('2/2');
+    expect(container.querySelectorAll('.v3-wpi-plan-step.completed')).toHaveLength(2);
+    expect(container.querySelector('.v3-working-steps')).toBeNull();
+    expect(container.querySelector('.v3-working-plan')?.classList.contains('is-after-details')).toBe(false);
+    expect(container.querySelector('.v3-working-hint')).toBeNull();
+
     await act(async () => {
       Simulate.click(container.querySelector('.v3-working-toggle'));
       await Promise.resolve();
     });
 
-    expect(container.querySelector('.v3-wpi-plan')).not.toBeNull();
-    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('计划已更新');
-    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('创建临时工作目录');
-    expect(container.querySelector('.v3-wpi-plan').textContent).toContain('设计 analyzeReply 函数');
-    expect(container.querySelector('.v3-wpi-tool-name')).toBeNull();
-    expect(container.querySelector('.v3-message-footer')).toBeNull();
+    expect(container.querySelectorAll('.v3-wpi-plan')).toHaveLength(1);
+    const persistentPlan = container.querySelector('.v3-working-plan');
+    const inlineDetails = container.querySelector('.v3-working-details-inline');
+    expect(inlineDetails).not.toBeNull();
+    expect(inlineDetails?.parentElement).toBe(container.querySelector('.v3-working-process'));
+    expect(inlineDetails?.compareDocumentPosition(persistentPlan) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+    expect(persistentPlan?.classList.contains('is-after-details')).toBe(true);
+    expect(inlineDetails?.querySelectorAll('.v3-wpi-tool-name')).toHaveLength(1);
+    expect(inlineDetails?.querySelector('.v3-wpi-tool-name')?.textContent).toBe('execute_shell');
+  });
+
+  it('summarizes working steps and mounts large tool results only on demand', async () => {
+    const longResult = 'result line\n'.repeat(1200);
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 29,
+            from_uid: 2,
+            content: '',
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          workingMessages={[
+            {
+              type: 'tool_use',
+              content: 'execute_shell',
+              metadata: {
+                id: 'shell-1',
+                input: { command: 'npm test' },
+              },
+            },
+            {
+              type: 'tool_result',
+              content: longResult,
+              metadata: { tool_use_id: 'shell-1' },
+            },
+          ]}
+          workingOnly
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const message = container.querySelector('.v3-message');
+    const processToggle = container.querySelector('.v3-working-toggle');
+    expect(message.classList.contains('is-working')).toBe(true);
+    expect(container.querySelector('.v3-working-label')?.textContent).toBe('正在执行');
+    expect(processToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(processToggle.getAttribute('aria-label')).toContain('展开任务步骤');
+    expect(processToggle.getAttribute('aria-controls')).toMatch(/^working-steps-/);
+    expect(container.querySelector('.v3-working-summary')?.textContent).toContain('execute_shell');
+    expect(container.querySelector('.v3-wpi-tool-result')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(processToggle);
+      await Promise.resolve();
+    });
+
+    const inlineDetails = container.querySelector('.v3-working-details-inline');
+    const resultToggle = inlineDetails?.querySelector('.v3-wpi-tool-header.is-toggle');
+    const workingSteps = inlineDetails?.querySelector('.v3-working-steps');
+    expect(resultToggle).not.toBeNull();
+    expect(workingSteps).not.toBeNull();
+    expect(inlineDetails?.parentElement).toBe(container.querySelector('.v3-working-process'));
+    expect(inlineDetails?.id).toBe(processToggle.getAttribute('aria-controls'));
+    expect(resultToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(inlineDetails?.querySelector('.v3-wpi-tool-result')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(resultToggle);
+      await Promise.resolve();
+    });
+
+    expect(resultToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(inlineDetails?.querySelector('.v3-wpi-tool-result')?.textContent)
+      .toContain('result line');
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-working-details-inline')).toBeNull();
+    expect(document.activeElement).toBe(processToggle);
+  });
+
+  it('uses an explicit completed turn signal and strips the process protocol prefix', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 30,
+            from_uid: 2,
+            content: '',
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          workingMessages={[
+            {
+              type: 'text',
+              content: 'AI文本:Checking the implementation.',
+              _display_text_role: 'process',
+            },
+            {
+              type: 'tool_use',
+              content: 'execute_shell',
+              metadata: { id: 'shell-1', input: { command: 'npm test' } },
+            },
+            {
+              type: 'tool_result',
+              content: 'Tests passed',
+              metadata: { tool_use_id: 'shell-1' },
+            },
+          ]}
+          workingOnly
+          workingComplete
+          isSelf={false}
+          isGroup={false}
+          senderName="CatsCo"
+          senderIsBot
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const message = container.querySelector('.v3-message');
+    expect(message.classList.contains('is-working')).toBe(false);
+    expect(message.classList.contains('is-complete')).toBe(true);
+    expect(container.querySelector('.v3-working-label')?.textContent).toBe('已完成');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-working-toggle'));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-wpi-narrative')?.textContent)
+      .toBe('Checking the implementation.');
+    expect(container.textContent).not.toContain('AI文本:');
   });
 
   it('opens external HTML files instead of fetching them into the preview panel', async () => {
@@ -1685,325 +2164,6 @@ describe('ChatMessage rich file rendering', () => {
     expect(actions[1].getAttribute('href')).toBe('/uploads/files/20260715_f547bf132d510e621877d89214098db5.pdf?download=1');
     expect(actions[1].hasAttribute('download')).toBe(true);
     expect(actions[1].getAttribute('download')).toBe('【电商带货主播_广州 4-6K】何荧 25年应届生.pdf');
-  });
-
-  it('renders MP4 attachments as image-sized thumbnails that open a video preview', async () => {
-    await act(async () => {
-      root.render(
-        <PreviewHarness
-          isSelf
-          message={{
-            id: 8,
-            from_uid: 2,
-            content: '[文件] product-demo.mp4',
-            content_blocks: [{
-              type: 'file',
-              payload: {
-                name: 'product-demo.mp4',
-                url: '/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4',
-                size: 4096,
-                mime_type: 'video/mp4',
-              },
-            }],
-            created_at: '2026-06-09T00:00:00Z',
-          }}
-        />,
-      );
-      await Promise.resolve();
-    });
-
-    const thumbnail = container.querySelector('video.oc-rich-video-thumb');
-    const trigger = container.querySelector('button.oc-rich-video-trigger');
-    expect(thumbnail).not.toBeNull();
-    expect(thumbnail.getAttribute('src')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4');
-    expect(thumbnail.muted).toBe(true);
-    expect(thumbnail.playsInline).toBe(true);
-    expect(thumbnail.preload).toBe('metadata');
-    expect(trigger.getAttribute('aria-label')).toBe('预览视频 product-demo.mp4');
-    expect(container.querySelector('.v3-message').classList.contains('has-file-only')).toBe(false);
-    expect(container.querySelector('video.oc-rich-video-player')).toBeNull();
-    expect(container.querySelector('.v3-attachment-card')).toBeNull();
-    expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
-
-    trigger.focus();
-    await act(async () => {
-      Simulate.click(trigger);
-      await Promise.resolve();
-    });
-
-    const preview = container.querySelector('video.oc-rich-video-player');
-    const closeButton = container.querySelector('button.oc-rich-video-preview-close');
-    expect(preview).not.toBeNull();
-    expect(preview.getAttribute('src')).toBe('/uploads/files/20260727_1234567890abcdef1234567890abcdef.mp4');
-    expect(preview.controls).toBe(true);
-    expect(preview.autoplay).toBe(true);
-    expect(preview.getAttribute('aria-label')).toBe('product-demo.mp4');
-    expect(container.querySelector('.oc-rich-video-preview').getAttribute('role')).toBe('dialog');
-    expect(document.activeElement).toBe(closeButton);
-
-    preview.focus();
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
-      await Promise.resolve();
-    });
-    expect(document.activeElement).toBe(closeButton);
-
-    closeButton.focus();
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
-      await Promise.resolve();
-    });
-    expect(document.activeElement).toBe(preview);
-
-    await act(async () => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-      await Promise.resolve();
-    });
-
-    expect(container.querySelector('.oc-rich-video-preview')).toBeNull();
-    expect(document.activeElement).toBe(trigger);
-
-    await act(async () => {
-      Simulate.click(trigger);
-      await Promise.resolve();
-    });
-
-    await act(async () => {
-      Simulate.click(container.querySelector('button.oc-rich-video-preview-close'));
-      await Promise.resolve();
-    });
-
-    expect(container.querySelector('.oc-rich-video-preview')).toBeNull();
-    expect(document.activeElement).toBe(trigger);
-  });
-
-  it('embeds WebM attachments by extension', async () => {
-    await act(async () => {
-      root.render(
-        <PreviewHarness
-          message={{
-            id: 9,
-            from_uid: 2,
-            content: '[文件] product-demo.webm',
-            content_blocks: [{
-              type: 'file',
-              payload: {
-                name: 'product-demo.webm',
-                url: '/uploads/files/20260727_abcdef1234567890abcdef1234567890.webm',
-                size: 4096,
-                mime_type: 'application/octet-stream',
-              },
-            }],
-            created_at: '2026-06-09T00:00:00Z',
-          }}
-        />,
-      );
-      await Promise.resolve();
-    });
-
-    const video = container.querySelector('video.oc-rich-video-thumb');
-    expect(video).not.toBeNull();
-    expect(video.getAttribute('src')).toContain('.webm');
-    expect(container.querySelector('button.oc-rich-video-trigger').getAttribute('aria-label')).toBe('预览视频 product-demo.webm');
-  });
-
-  it('recognizes signed video URLs when name and MIME metadata are absent', async () => {
-    await act(async () => {
-      root.render(
-        <PreviewHarness
-          message={{
-            id: 91,
-            from_uid: 2,
-            content: '[文件] signed video',
-            content_blocks: [{
-              type: 'file',
-              payload: {
-                url: 'https://media.example.com/product-demo.mp4?token=abc123#preview',
-                size: 4096,
-              },
-            }],
-            created_at: '2026-06-09T00:00:00Z',
-          }}
-        />,
-      );
-      await Promise.resolve();
-    });
-
-    expect(container.querySelector('video.oc-rich-video-thumb')).not.toBeNull();
-    expect(container.querySelector('.v3-attachment-card')).toBeNull();
-  });
-
-  it('recognizes Ogg video by MIME and falls back to the file card after a playback error', async () => {
-    await act(async () => {
-      root.render(
-        <PreviewHarness
-          message={{
-            id: 10,
-            from_uid: 2,
-            content: '[文件] product-demo.ogg',
-            content_blocks: [{
-              type: 'file',
-              payload: {
-                name: 'product-demo.ogg',
-                url: '/uploads/files/20260727_fedcba0987654321fedcba0987654321.ogg',
-                size: 4096,
-                mime_type: 'video/ogg',
-              },
-            }],
-            created_at: '2026-06-09T00:00:00Z',
-          }}
-        />,
-      );
-      await Promise.resolve();
-    });
-
-    const video = container.querySelector('video.oc-rich-video-thumb');
-    expect(video).not.toBeNull();
-
-    await act(async () => {
-      Simulate.error(video);
-      await Promise.resolve();
-    });
-
-    expect(container.querySelector('video.oc-rich-video-thumb')).toBeNull();
-    expect(container.querySelector('.v3-attachment-name').textContent).toBe('product-demo.ogg');
-    expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
-  });
-
-  it('moves focus to the download fallback and announces a preview playback error', async () => {
-    await act(async () => {
-      root.render(
-        <PreviewHarness
-          message={{
-            id: 101,
-            from_uid: 2,
-            content: '[文件] broken-preview.mp4',
-            content_blocks: [{
-              type: 'file',
-              payload: {
-                name: 'broken-preview.mp4',
-                url: '/uploads/files/broken-preview.mp4',
-                size: 4096,
-                mime_type: 'video/mp4',
-              },
-            }],
-            created_at: '2026-06-09T00:00:00Z',
-          }}
-        />,
-      );
-      await Promise.resolve();
-    });
-
-    await act(async () => {
-      Simulate.click(container.querySelector('.oc-rich-video-trigger'));
-      await Promise.resolve();
-    });
-    const player = container.querySelector('.oc-rich-video-player');
-    player.focus();
-
-    await act(async () => {
-      Simulate.error(player);
-      await Promise.resolve();
-    });
-
-    const fallbackAction = container.querySelector('.v3-artifact-main');
-    expect(document.activeElement).toBe(fallbackAction);
-    expect(container.querySelector('[role="status"]').textContent).toContain('视频无法播放');
-    expect(container.querySelector('.oc-rich-video-preview')).toBeNull();
-  });
-
-  it('recognizes Ogg video MIME types with codec parameters', async () => {
-    await act(async () => {
-      root.render(
-        <PreviewHarness
-          message={{
-            id: 102,
-            from_uid: 2,
-            content: '[文件] product-demo.ogg',
-            content_blocks: [{
-              type: 'file',
-              payload: {
-                name: 'product-demo.ogg',
-                url: '/uploads/files/20260727_fedcba0987654321fedcba0987654321.ogg',
-                size: 4096,
-                mime_type: 'video/ogg; codecs=theora',
-              },
-            }],
-            created_at: '2026-06-09T00:00:00Z',
-          }}
-        />,
-      );
-      await Promise.resolve();
-    });
-
-    expect(container.querySelector('video.oc-rich-video-thumb')).not.toBeNull();
-    expect(container.querySelector('.v3-attachment-card')).toBeNull();
-  });
-
-  it('keeps audio/ogg attachments as file cards', async () => {
-    await act(async () => {
-      root.render(
-        <PreviewHarness
-          message={{
-            id: 11,
-            from_uid: 2,
-            content: '[文件] recording.ogg',
-            content_blocks: [{
-              type: 'file',
-              payload: {
-                name: 'recording.ogg',
-                url: '/uploads/files/20260727_00112233445566778899aabbccddeeff.ogg',
-                size: 4096,
-                mime_type: 'audio/ogg',
-              },
-            }],
-            created_at: '2026-06-09T00:00:00Z',
-          }}
-        />,
-      );
-      await Promise.resolve();
-    });
-
-    expect(container.querySelector('video.oc-rich-video-player')).toBeNull();
-    expect(container.querySelector('.v3-attachment-name').textContent).toBe('recording.ogg');
-    expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
-  });
-
-  it('restores the video thumbnail when a reused attachment changes URL', async () => {
-    const renderVideo = async (url) => {
-      await act(async () => {
-        root.render(
-          <PreviewHarness
-            message={{
-              id: 12,
-              from_uid: 2,
-              content: '[文件] product-demo.mp4',
-              content_blocks: [{
-                type: 'file',
-                payload: {
-                  name: 'product-demo.mp4',
-                  url,
-                  size: 4096,
-                  mime_type: 'video/mp4',
-                },
-              }],
-              created_at: '2026-06-09T00:00:00Z',
-            }}
-          />,
-        );
-        await Promise.resolve();
-      });
-    };
-
-    await renderVideo('/uploads/files/first.mp4');
-    await act(async () => {
-      Simulate.error(container.querySelector('video.oc-rich-video-thumb'));
-      await Promise.resolve();
-    });
-    expect(container.querySelector('video.oc-rich-video-thumb')).toBeNull();
-
-    await renderVideo('/uploads/files/second.mp4');
-    expect(container.querySelector('video.oc-rich-video-thumb').getAttribute('src')).toBe('/uploads/files/second.mp4');
   });
 
   it('marks DOCX as downloadable without claiming browser preview support', async () => {

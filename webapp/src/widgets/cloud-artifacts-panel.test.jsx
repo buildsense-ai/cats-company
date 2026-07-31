@@ -45,7 +45,7 @@ const historicalFile = {
   mime_type: 'application/pdf',
   size: 728341,
   message_id: 820,
-  topic_id: 'grp_term_review',
+  topic_id: 'p2p_7_440',
   topic_name: '期末材料',
   created_at: '2026-07-29T02:20:00.000Z',
 };
@@ -58,6 +58,26 @@ function deferred() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function TestPanel({
+  initialTab = 'active',
+  topicId = 'p2p_7_440',
+  onPreviewArtifact,
+  onPreviewFile,
+}) {
+  const [tab, setTab] = React.useState(initialTab);
+  return (
+    <CloudArtifactsPanel
+      agentUid={440}
+      topicId={topicId}
+      tab={tab}
+      onTabChange={setTab}
+      onClose={vi.fn()}
+      onPreviewArtifact={onPreviewArtifact}
+      onPreviewFile={onPreviewFile}
+    />
+  );
 }
 
 describe('CloudArtifactsPanel', () => {
@@ -191,9 +211,7 @@ describe('CloudArtifactsPanel', () => {
     await renderPanel();
 
     await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '回收站')
-        .click();
+      container.querySelector('button[aria-label="打开回收站"]').click();
       await Promise.resolve();
     });
 
@@ -228,9 +246,7 @@ describe('CloudArtifactsPanel', () => {
     await renderPanel();
 
     await act(async () => {
-      [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '回收站')
-        .click();
+      container.querySelector('button[aria-label="打开回收站"]').click();
       await Promise.resolve();
     });
     await act(async () => {
@@ -248,9 +264,12 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).not.toContain('较早的网页结果');
     expect(
       [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '回收站')
+        .find((button) => button.textContent === '产物')
         .getAttribute('aria-selected'),
     ).toBe('true');
+    expect(container.querySelector('button[aria-label="返回产物列表"]')).not.toBeNull();
+    expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
+      .toEqual(['文件', '产物']);
   });
 
   test('indexes historical agent files and opens one in the parent preview', async () => {
@@ -263,7 +282,11 @@ describe('CloudArtifactsPanel', () => {
       await Promise.resolve();
     });
 
-    expect(api.getAgentFiles).toHaveBeenCalledWith(440, { beforeId: 0, limit: 40 });
+    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
+      topicId: 'p2p_7_440',
+      beforeId: 0,
+      limit: 40,
+    });
     expect(container.textContent).toContain('期末学情报告.pdf');
     expect(container.textContent).toContain('PDF');
     expect(container.textContent).toContain('711.3 KB');
@@ -356,7 +379,11 @@ describe('CloudArtifactsPanel', () => {
       await Promise.resolve();
     });
 
-    expect(api.getAgentFiles).toHaveBeenLastCalledWith(440, { beforeId: 820, limit: 40 });
+    expect(api.getAgentFiles).toHaveBeenLastCalledWith(440, {
+      topicId: 'p2p_7_440',
+      beforeId: 820,
+      limit: 40,
+    });
     expect(container.textContent).toContain('期末学情报告.pdf');
     expect(container.textContent).toContain('复习清单.docx');
   });
@@ -367,18 +394,44 @@ describe('CloudArtifactsPanel', () => {
     expect(container.textContent).toContain('还没有已部署的网页');
 
     await act(async () => {
-      container.querySelector('button[aria-label="刷新产物"]').click();
+      container.querySelector('button[aria-label="刷新当前栏目"]').click();
       await Promise.resolve();
     });
     expect(api.getCloudArtifacts).toHaveBeenCalledTimes(2);
   });
 
-  async function renderPanel() {
+  test('shows only 文件 and 产物 at the top and defaults an uncontrolled panel to current-conversation files', async () => {
     await act(async () => {
       root.render(
         <CloudArtifactsPanel
           agentUid={440}
+          topicId="p2p_7_440"
           onClose={vi.fn()}
+          onPreviewArtifact={onPreviewArtifact}
+          onPreviewFile={onPreviewFile}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
+      topicId: 'p2p_7_440',
+      beforeId: 0,
+      limit: 40,
+    });
+    expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
+      .toEqual(['文件', '产物']);
+    expect(container.querySelector('.cloud-artifacts-heading')).toBeNull();
+    expect(container.textContent).not.toContain('共 1 个');
+    expect(container.querySelector('button[aria-label="打开回收站"]')).toBeNull();
+  });
+
+  async function renderPanel({ initialTab = 'active', topicId = 'p2p_7_440' } = {}) {
+    await act(async () => {
+      root.render(
+        <TestPanel
+          initialTab={initialTab}
+          topicId={topicId}
           onPreviewArtifact={onPreviewArtifact}
           onPreviewFile={onPreviewFile}
         />,

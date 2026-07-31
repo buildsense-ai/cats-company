@@ -10,7 +10,7 @@ import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
 import Avatar from '../widgets/avatar';
 import { useFeedback } from '../components/feedback-system';
 import { formatSidebarTime } from '../utils/sidebar-time';
-import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Check, X, Pin, Pencil, ChevronRight, Plus, Search, MoreHorizontal, UserX, Ban, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
+import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, MoreHorizontal, UserX, Ban, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
 const DEFAULT_COLLAPSED_SECTIONS = { conversations: false, contacts: false, projects: false };
@@ -265,6 +265,7 @@ function SidebarRowTrailing({
 export default function ChatListView({
   activeTopic,
   onSelectTopic,
+  onOpenSearch,
   user,
   onlineUsers,
   compact = false,
@@ -285,6 +286,7 @@ export default function ChatListView({
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [showAddFriend, setShowAddFriend] = useState(false);
   const [showAgentStore, setShowAgentStore] = useState(false);
+  const [agentStoreInitialAgentId, setAgentStoreInitialAgentId] = useState(null);
   const [showNewChat, setShowNewChat] = useState(false);
   const [collapsed, setCollapsed] = useState(() => loadCollapsedSections(user?.uid));
   const [scrollCollapsed, setScrollCollapsed] = useState({ contacts: false, projects: false });
@@ -292,6 +294,7 @@ export default function ChatListView({
   const [mobileLinkGroup, setMobileLinkGroup] = useState(null);
   const [collaborationUpgradeTask, setCollaborationUpgradeTask] = useState(null);
   const [agentActionId, setAgentActionId] = useState('');
+  const [agentMenuPosition, setAgentMenuPosition] = useState(null);
   const [agentPendingRequests, setAgentPendingRequests] = useState([]);
   const [agentReviewingKey, setAgentReviewingKey] = useState('');
   const [pinnedGroupIds, setPinnedGroupIds] = useState(() => loadPinnedGroupIds(user?.uid));
@@ -324,6 +327,8 @@ export default function ChatListView({
   const justHiddenHistoryRef = useRef('');
   const activeTopicRef = useRef(activeTopic);
   const userUidRef = useRef(user?.uid);
+  const agentMenuTriggerRef = useRef(null);
+  const agentMenuRef = useRef(null);
   const chatMenuTriggerRef = useRef(null);
   const chatMenuRef = useRef(null);
   const chatsRef = useRef(chats);
@@ -445,7 +450,10 @@ export default function ChatListView({
       closeMenus();
     };
     const closeMenusOnEscape = (event) => {
-      if (event.key === 'Escape') closeMenus();
+      if (event.key !== 'Escape') return;
+      const shouldRestoreAgentFocus = openFriendMenuId.startsWith('agent:');
+      closeMenus();
+      if (shouldRestoreAgentFocus) agentMenuTriggerRef.current?.focus();
     };
     document.addEventListener('pointerdown', closeMenusFromOutside);
     document.addEventListener('keydown', closeMenusOnEscape);
@@ -454,6 +462,62 @@ export default function ChatListView({
       document.removeEventListener('keydown', closeMenusOnEscape);
     };
   }, [openFriendMenuId, openChatMenuKey, openProjectMenuId, showContactActions]);
+
+  useLayoutEffect(() => {
+    if (
+      !openFriendMenuId.startsWith('agent:')
+      || !agentMenuTriggerRef.current
+      || !agentMenuRef.current
+    ) {
+      setAgentMenuPosition(null);
+      return undefined;
+    }
+
+    const trigger = agentMenuTriggerRef.current;
+    const menu = agentMenuRef.current;
+    const viewportGutter = 8;
+    const floatingGap = 4;
+    const updatePosition = () => {
+      const triggerRect = trigger.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const menuWidth = Math.max(172, menuRect.width || 0);
+      const menuHeight = Math.max(44, menu.scrollHeight || menuRect.height || 0);
+      const availableBelow = window.innerHeight - triggerRect.bottom - viewportGutter - floatingGap;
+      const availableAbove = triggerRect.top - viewportGutter - floatingGap;
+      const opensAbove = menuHeight > availableBelow && availableAbove > availableBelow;
+      const maxHeight = Math.max(44, Math.floor(opensAbove ? availableAbove : availableBelow));
+      const renderedHeight = Math.min(menuHeight, maxHeight);
+      const left = Math.min(
+        Math.max(viewportGutter, triggerRect.right - menuWidth),
+        Math.max(viewportGutter, window.innerWidth - viewportGutter - menuWidth),
+      );
+      const top = opensAbove
+        ? Math.max(viewportGutter, triggerRect.top - floatingGap - renderedHeight)
+        : Math.min(
+          window.innerHeight - viewportGutter - renderedHeight,
+          triggerRect.bottom + floatingGap,
+        );
+
+      setAgentMenuPosition({
+        left,
+        maxHeight,
+        position: 'fixed',
+        top,
+        visibility: 'visible',
+        width: menuWidth,
+      });
+      menu.dataset.placement = opensAbove ? 'top' : 'bottom';
+    };
+
+    updatePosition();
+    menu.querySelector('[role="menuitem"]:not(:disabled)')?.focus();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [openFriendMenuId]);
 
   useLayoutEffect(() => {
     if (!openChatMenuKey || !chatMenuTriggerRef.current || !chatMenuRef.current) return undefined;
@@ -1188,6 +1252,7 @@ export default function ChatListView({
   const filteredFriends = friends.filter(f => userSearchText(f).includes(lowerSearch));
   const filteredGroups = mergedGroups.filter(g => g.name.toLowerCase().includes(lowerSearch));
   const filteredAgents = agents.filter(a => userSearchText(a).includes(lowerSearch));
+  const pinnedTaskIds = new Set([...pinnedHistoryIds, ...pinnedGroupIds]);
   const projectTasksById = visibleRecentChats.reduce((result, chat) => {
     const projectId = projectIdFor(chat);
     if (!isHistoryTask(chat) || !projectId) return result;
@@ -2244,8 +2309,35 @@ export default function ChatListView({
 
     const agent = item;
     const agentId = agent.uid || agent.id;
+    const agentMenuKey = `agent:${agentId}`;
+    const agentMenuId = `cc-agent-action-menu-${String(agentId).replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+    const agentName = agent.display_name || agent.username;
     const isOnline = onlineStatusFor(onlineUsers, agentId, agent.is_online);
     const owned = isOwnedAgent(agent);
+    const handleAgentMenuKeyDown = (event) => {
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'Escape', 'Tab'].includes(event.key)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        setOpenFriendMenuId('');
+        agentMenuTriggerRef.current?.focus();
+        return;
+      }
+      const items = Array.from(
+        agentMenuRef.current?.querySelectorAll('[role="menuitem"]:not(:disabled)') || [],
+      );
+      if (items.length === 0) return;
+      const currentIndex = items.indexOf(document.activeElement);
+      let nextIndex;
+      if (event.key === 'Home') nextIndex = 0;
+      else if (event.key === 'End') nextIndex = items.length - 1;
+      else if (event.key === 'ArrowUp') {
+        nextIndex = currentIndex <= 0 ? items.length - 1 : currentIndex - 1;
+      } else {
+        nextIndex = currentIndex < 0 || currentIndex === items.length - 1 ? 0 : currentIndex + 1;
+      }
+      items[nextIndex]?.focus();
+    };
     return (
       <SidebarItemRow
         key={`agent:${agentId}`}
@@ -2254,52 +2346,111 @@ export default function ChatListView({
         title={agentIdentity(agent)}
         onClick={() => handleSelectAgent(agent)}
       >
-        <Bot
-          size={16}
-          className={`prefix cc-chat-row-icon cc-agent-contact-icon ${isOnline ? 'online' : 'offline'}`}
-          title={isOnline ? '在线' : '离线'}
-          aria-label={`Agent 助手，${isOnline ? '在线' : '离线'}`}
-        />
-        <div className="cc-chat-row-copy">
-          <span className="cc-chat-row-title">
-            <span className="v3-chat-item-label">{agent.display_name || agent.username}</span>
-          </span>
-        </div>
+        <button
+          type="button"
+          className="cc-agent-row-main"
+          aria-label={`打开 ${agentName} 助手任务`}
+          onClick={(event) => {
+            event.stopPropagation();
+            handleSelectAgent(agent);
+          }}
+        >
+          <Bot
+            size={16}
+            className={`prefix cc-chat-row-icon cc-agent-contact-icon ${isOnline ? 'online' : 'offline'}`}
+            title={isOnline ? '在线' : '离线'}
+            aria-label={`Agent 助手，${isOnline ? '在线' : '离线'}`}
+          />
+          <div className="cc-chat-row-copy">
+            <span className="cc-chat-row-title">
+              <span className="v3-chat-item-label">{agentName}</span>
+            </span>
+          </div>
+        </button>
         <SidebarRowTrailing
           className="cc-agent-row-trailing"
           actionsClassName="v3-agent-row-actions"
           actions={(
-            <>
-              {!owned && (
-                <button
-                  type="button"
-                  className="v3-chat-item-action danger"
-                  title="移除助手"
-                  aria-label={`移除 ${agent.display_name || agent.username}`}
-                  disabled={agentActionId === String(agentId)}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    handleRemoveAgent(agent);
-                  }}
-                >
-                  <Trash2 size={14} />
-                </button>
-              )}
-              <button
-                type="button"
-                className="v3-chat-item-action cc-agent-mobile-action"
-                title="移动端使用"
-                aria-label={`${agent.display_name || agent.username} 移动端使用`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setMobileLinkAgent(agent);
-                }}
-              >
-                <Smartphone size={14} />
-              </button>
-            </>
+            <button
+              type="button"
+              className="v3-chat-item-action v3-friend-menu-trigger cc-agent-menu-trigger"
+              title="任务操作"
+              aria-label={`${agentName} 任务操作`}
+              aria-haspopup="menu"
+              aria-expanded={openFriendMenuId === agentMenuKey}
+              aria-controls={openFriendMenuId === agentMenuKey ? agentMenuId : undefined}
+              disabled={agentActionId === String(agentId)}
+              onClick={(event) => {
+                event.stopPropagation();
+                agentMenuTriggerRef.current = event.currentTarget;
+                setOpenChatMenuKey('');
+                setOpenFriendMenuId((current) => current === agentMenuKey ? '' : agentMenuKey);
+              }}
+            >
+              <MoreHorizontal size={15} />
+            </button>
           )}
         />
+        {openFriendMenuId === agentMenuKey && typeof document !== 'undefined' && createPortal(
+          <div
+            ref={agentMenuRef}
+            id={agentMenuId}
+            className="v3-friend-action-menu cc-agent-action-menu"
+            role="menu"
+            aria-label={`${agentName} 任务操作`}
+            style={agentMenuPosition || {
+              left: 0,
+              maxHeight: 240,
+              position: 'fixed',
+              top: 0,
+              visibility: 'hidden',
+              width: 172,
+            }}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={handleAgentMenuKeyDown}
+          >
+            {owned && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpenFriendMenuId('');
+                  setAgentStoreInitialAgentId(agentId);
+                  setShowAgentStore(true);
+                }}
+              >
+                <Settings2 size={14} />
+                <span>管理 Agent</span>
+              </button>
+            )}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpenFriendMenuId('');
+                setMobileLinkAgent(agent);
+              }}
+            >
+              <Smartphone size={14} />
+              <span>移动端使用</span>
+            </button>
+            {!owned && (
+              <button
+                type="button"
+                role="menuitem"
+                className="danger"
+                onClick={() => {
+                  setOpenFriendMenuId('');
+                  handleRemoveAgent(agent);
+                }}
+              >
+                <Trash2 size={14} />
+                <span>移除助手</span>
+              </button>
+            )}
+          </div>,
+          document.body,
+        )}
       </SidebarItemRow>
     );
   };
@@ -2416,15 +2567,15 @@ export default function ChatListView({
           <Plus size={17} />
           <span>新建任务</span>
         </button>
-        <label className="cc-sidebar-search">
+        <button
+          type="button"
+          className="cc-sidebar-search cc-sidebar-search-trigger"
+          onClick={onOpenSearch}
+          aria-label="打开全局搜索"
+        >
           <Search size={15} />
-        <input
-          placeholder="搜索"
-          aria-label="搜索任务、联系人或助手"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-        </label>
+          <span>搜索消息与产物</span>
+        </button>
       </div>}
 
       {!compact && <div ref={sidebarListRef} className="v3-chat-list">
@@ -2521,11 +2672,12 @@ export default function ChatListView({
                 role="menuitem"
                 onClick={() => {
                   setShowContactActions(false);
+                  setAgentStoreInitialAgentId(null);
                   setShowAgentStore(true);
                 }}
               >
                 <Bot size={14} />
-                <span>管理 Agent 助手</span>
+                <span>创建Agent助手</span>
               </button>
             </div>
           )}
@@ -2578,9 +2730,12 @@ export default function ChatListView({
           filteredProjects.map((project) => {
             const projectId = Number(project.id);
             const projectNameMatches = String(project.name || '').toLowerCase().includes(lowerSearch);
-            const projectTasks = (projectTasksById.get(projectId) || []).filter((chat) => (
-              !isSearching || projectNameMatches || chat.name.toLowerCase().includes(lowerSearch)
-            ));
+            const projectTasks = sortConversationsWithPins(
+              (projectTasksById.get(projectId) || []).filter((chat) => (
+                !isSearching || projectNameMatches || chat.name.toLowerCase().includes(lowerSearch)
+              )),
+              pinnedTaskIds,
+            );
             const expanded = isSearching ? projectTasks.length > 0 : expandedProjectIds.has(projectId);
             return (
               <React.Fragment key={project.id}>
@@ -2929,7 +3084,15 @@ export default function ChatListView({
         document.body,
       )}
       {showAgentStore && createPortal(
-        <AgentStoreModal onClose={() => setShowAgentStore(false)} user={user} onBotsChanged={() => loadAll()} />,
+        <AgentStoreModal
+          initialAgentId={agentStoreInitialAgentId}
+          onClose={() => {
+            setShowAgentStore(false);
+            setAgentStoreInitialAgentId(null);
+          }}
+          user={user}
+          onBotsChanged={() => loadAll()}
+        />,
         document.body,
       )}
       {mobileLinkAgent && createPortal(

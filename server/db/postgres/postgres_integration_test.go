@@ -136,6 +136,162 @@ func TestPostgresStoreContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create group: %v", err)
 	}
+	t.Run("message search decodes legacy attachment filenames", func(t *testing.T) {
+		topicID := fmt.Sprintf("grp_%d", groupID)
+		wantIDs := make(map[int64]bool)
+		for _, content := range []string{
+			`{"filename":"R\u0065port.pdf"}`,
+			`{"filename":"Q1 \"Final\" Report.pdf"}`,
+			`"{\"filename\":\"Escaped Report.pdf\"}"`,
+		} {
+			messageID, saveErr := db.SaveMessage(topicID, ownerID, content, "file")
+			if saveErr != nil {
+				t.Fatalf("save legacy file message: %v", saveErr)
+			}
+			wantIDs[messageID] = true
+		}
+		results, searchErr := db.SearchMessages(ownerID, "report", store.MessageSearchArtifact, 10)
+		if searchErr != nil {
+			t.Fatalf("search legacy file messages: %v", searchErr)
+		}
+		for _, result := range results {
+			delete(wantIDs, result.MessageID)
+		}
+		if len(wantIDs) != 0 {
+			t.Fatalf("legacy file search omitted message IDs: %v", wantIDs)
+		}
+	})
+	t.Run("message search matches attachment fields independently", func(t *testing.T) {
+		topicID := fmt.Sprintf("grp_%d", groupID)
+		if _, saveErr := db.SaveMessageWithBlocks(topicID, ownerID, "split metadata", []types.ContentBlock{{
+			Type: "file",
+			Name: "Quarterly",
+			Payload: map[string]interface{}{
+				"title": "Report.pdf",
+			},
+		}}, "", "", "text"); saveErr != nil {
+			t.Fatalf("save split attachment metadata: %v", saveErr)
+		}
+		wantID, saveErr := db.SaveMessageWithBlocks(topicID, ownerID, "real filename", []types.ContentBlock{{
+			Type: "file",
+			Name: "Quarterly Report.pdf",
+		}}, "", "", "text")
+		if saveErr != nil {
+			t.Fatalf("save matching attachment: %v", saveErr)
+		}
+
+		rows, queryErr := db.db.Query(postgresMessageSearchQuery,
+			ownerID, store.MessageSearchArtifact, "quarterly report", 10, 0)
+		if queryErr != nil {
+			t.Fatalf("query attachment candidates: %v", queryErr)
+		}
+		results, scanned, scanErr := scanPostgresMessageSearch(rows,
+			"quarterly report", store.MessageSearchArtifact, 10)
+		closeErr := rows.Close()
+		if scanErr != nil {
+			t.Fatalf("scan attachment candidates: %v", scanErr)
+		}
+		if closeErr != nil {
+			t.Fatalf("close attachment candidates: %v", closeErr)
+		}
+		if scanned != 1 || len(results) != 1 || results[0].MessageID != wantID {
+			t.Fatalf("attachment candidates scanned=%d results=%#v, want only message %d",
+				scanned, results, wantID)
+		}
+	})
+	t.Run("message search rejects malformed block candidates", func(t *testing.T) {
+		topicID := fmt.Sprintf("grp_%d", groupID)
+		wantID, saveErr := db.SaveMessageWithBlocks(topicID, ownerID, "verified attachment", []types.ContentBlock{{
+			Type: "file",
+			Name: "Verified 981274.pdf",
+		}}, "", "", "text")
+		if saveErr != nil {
+			t.Fatalf("save verified attachment: %v", saveErr)
+		}
+		for _, rawBlocks := range []string{
+			`[{"type":"file","name":981274}]`,
+			`[{"type":"file","payload":{"filename":981274}}]`,
+			`[{"type":"file","name":"Verified 981274.pdf","text":123}]`,
+			`[{"Type":"file","Name":"Verified 981274.pdf"}]`,
+		} {
+			if _, insertErr := db.db.Exec(
+				`INSERT INTO messages (topic_id, from_uid, content, content_blocks, msg_type)
+				 VALUES ($1, $2, 'malformed attachment', $3::jsonb, 'text')`,
+				topicID, ownerID, rawBlocks,
+			); insertErr != nil {
+				t.Fatalf("insert malformed attachment blocks: %v", insertErr)
+			}
+		}
+		if _, insertErr := db.db.Exec(
+			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, msg_type)
+			 VALUES ($1, $2, 'malformed-body-981274', '{"type":"text"}'::jsonb, 'text')`,
+			topicID, ownerID,
+		); insertErr != nil {
+			t.Fatalf("insert non-array blocks: %v", insertErr)
+		}
+		if _, insertErr := db.SaveMessage(topicID, ownerID, `{"filename":981274}`, "file"); insertErr != nil {
+			t.Fatalf("save malformed legacy filename: %v", insertErr)
+		}
+		var futureFieldID int64
+		if insertErr := db.db.QueryRow(
+			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, msg_type)
+			 VALUES ($1, $2, 'future-field-981274', '[{"type":"text","display_type":"text"}]'::jsonb, 'text')
+			 RETURNING id`,
+			topicID, ownerID,
+		).Scan(&futureFieldID); insertErr != nil {
+			t.Fatalf("insert future content-block field: %v", insertErr)
+		}
+		var nullBlocksID int64
+		if insertErr := db.db.QueryRow(
+			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, msg_type)
+			 VALUES ($1, $2, 'json-null-981274', 'null'::jsonb, 'text')
+			 RETURNING id`,
+			topicID, ownerID,
+		).Scan(&nullBlocksID); insertErr != nil {
+			t.Fatalf("insert JSON-null blocks: %v", insertErr)
+		}
+
+		rows, queryErr := db.db.Query(postgresMessageSearchQuery,
+			ownerID, store.MessageSearchArtifact, "981274", 10, 0)
+		if queryErr != nil {
+			t.Fatalf("query malformed attachment candidates: %v", queryErr)
+		}
+		results, scanned, scanErr := scanPostgresMessageSearch(rows,
+			"981274", store.MessageSearchArtifact, 10)
+		closeErr := rows.Close()
+		if scanErr != nil {
+			t.Fatalf("scan malformed attachment candidates: %v", scanErr)
+		}
+		if closeErr != nil {
+			t.Fatalf("close malformed attachment candidates: %v", closeErr)
+		}
+		if scanned != 1 || len(results) != 1 || results[0].MessageID != wantID {
+			t.Fatalf("malformed attachment candidates scanned=%d results=%#v, want only message %d",
+				scanned, results, wantID)
+		}
+
+		bodyResults, searchErr := db.SearchMessages(ownerID, "malformed-body-981274", store.MessageSearchMessage, 10)
+		if searchErr != nil {
+			t.Fatalf("search non-array body candidate: %v", searchErr)
+		}
+		if len(bodyResults) != 0 {
+			t.Fatalf("non-array body blocks must fail closed: %#v", bodyResults)
+		}
+		nullResults, searchErr := db.SearchMessages(ownerID, "json-null-981274", store.MessageSearchMessage, 10)
+		if searchErr != nil {
+			t.Fatalf("search JSON-null body candidate: %v", searchErr)
+		}
+		if len(nullResults) != 1 || nullResults[0].MessageID != nullBlocksID {
+			t.Fatalf("JSON-null blocks must behave as no blocks: %#v", nullResults)
+		}
+		futureFieldResults, searchErr := db.SearchMessages(ownerID, "future-field-981274", store.MessageSearchMessage, 10)
+		if searchErr != nil {
+			t.Fatalf("search future content-block field: %v", searchErr)
+		}
+		if len(futureFieldResults) != 1 || futureFieldResults[0].MessageID != futureFieldID {
+			t.Fatalf("unrelated future block fields must remain searchable: %#v", futureFieldResults)
+		}
+	})
 	members, err := db.GetGroupMembers(groupID)
 	if err != nil || len(members) != 1 || members[0].UserID != ownerID {
 		t.Fatalf("group members mismatch: %#v err=%v", members, err)
@@ -153,6 +309,9 @@ func TestPostgresStoreContract(t *testing.T) {
 	if err := db.AddGroupMember(groupID, botID, "member"); err != nil {
 		t.Fatalf("add bot group member: %v", err)
 	}
+	t.Run("project group assignment respects membership", func(t *testing.T) {
+		assertProjectGroupAssignmentAccess(t, db, groupID, friendID)
+	})
 	members, err = db.GetGroupMembers(groupID)
 	if err != nil {
 		t.Fatalf("get group members with bot: %v", err)
@@ -318,6 +477,56 @@ func TestPostgresStoreContract(t *testing.T) {
 		Attachments: []types.FeedbackAttachment{{FileKey: "file-key", URL: "/uploads/a.png", Name: "a.png"}},
 	}); err != nil {
 		t.Fatalf("create feedback report: %v", err)
+	}
+}
+
+func assertProjectGroupAssignmentAccess(t *testing.T, db *Adapter, groupID, memberID int64) {
+	t.Helper()
+
+	if err := db.AddGroupMember(groupID, memberID, "member"); err != nil {
+		t.Fatalf("add project-assignment group member: %v", err)
+	}
+	memberProject, err := db.CreateProject(memberID, "Member group project")
+	if err != nil {
+		t.Fatalf("create group member project: %v", err)
+	}
+	groupTopicID := fmt.Sprintf("grp_%d", groupID)
+	if err := db.AssignTopicToProject(memberID, memberProject.ID, groupTopicID); err != nil {
+		t.Fatalf("group member must be allowed to assign group topic: %v", err)
+	}
+	memberAssignments, err := db.ListProjectTopics(memberID)
+	if err != nil {
+		t.Fatalf("list group member project assignments: %v", err)
+	}
+	if len(memberAssignments) != 1 ||
+		memberAssignments[0].ProjectID != memberProject.ID ||
+		memberAssignments[0].TopicID != groupTopicID {
+		t.Fatalf("group member assignment mismatch: %#v", memberAssignments)
+	}
+
+	nonMemberID, err := db.CreateUser(&types.User{
+		Username:    "project-nonmember",
+		Email:       "project-nonmember@example.com",
+		DisplayName: "Project Nonmember",
+		AccountType: types.AccountHuman,
+		PassHash:    []byte("project-nonmember-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create project-assignment nonmember: %v", err)
+	}
+	nonMemberProject, err := db.CreateProject(nonMemberID, "Nonmember group project")
+	if err != nil {
+		t.Fatalf("create group nonmember project: %v", err)
+	}
+	if err := db.AssignTopicToProject(nonMemberID, nonMemberProject.ID, groupTopicID); !errors.Is(err, store.ErrProjectTopicNotFound) {
+		t.Fatalf("group nonmember assignment error = %v, want %v", err, store.ErrProjectTopicNotFound)
+	}
+	nonMemberAssignments, err := db.ListProjectTopics(nonMemberID)
+	if err != nil {
+		t.Fatalf("list group nonmember project assignments: %v", err)
+	}
+	if len(nonMemberAssignments) != 0 {
+		t.Fatalf("group nonmember must not retain assignments: %#v", nonMemberAssignments)
 	}
 }
 

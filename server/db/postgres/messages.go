@@ -227,21 +227,17 @@ func (a *Adapter) GetLatestMessagesBefore(topicID string, beforeID int64, limit 
 	return scanMessages(rows, "scan latest message before")
 }
 
-// ListAgentFileMessages returns newest file-bearing messages authored by one agent in accessible topics.
-func (a *Adapter) ListAgentFileMessages(agentUID int64, topicIDs []string, beforeID int64, limit int) ([]*types.Message, error) {
-	if len(topicIDs) == 0 {
+// ListAgentFileMessages returns newest file-bearing messages authored by one agent in one conversation.
+func (a *Adapter) ListAgentFileMessages(agentUID int64, topicID string, beforeID int64, limit int) ([]*types.Message, error) {
+	if topicID == "" {
 		return []*types.Message{}, nil
 	}
 	if limit <= 0 {
 		limit = 50
 	}
-	args := make([]interface{}, 0, len(topicIDs)+3)
-	args = append(args, agentUID)
-	for _, topicID := range topicIDs {
-		args = append(args, topicID)
-	}
+	args := []interface{}{agentUID, topicID}
 	beforeClause := ""
-	nextPlaceholder := len(args) + 1
+	nextPlaceholder := 3
 	if beforeID > 0 {
 		beforeClause = fmt.Sprintf(" AND id < $%d", nextPlaceholder)
 		args = append(args, beforeID)
@@ -253,11 +249,10 @@ func (a *Adapter) ListAgentFileMessages(agentUID int64, topicIDs []string, befor
 			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
 			 FROM messages
 			 WHERE from_uid = $1
-			   AND topic_id IN (%s)
+			   AND topic_id = $2
 			   AND (msg_type = 'file' OR content_blocks @> '[{"type":"file"}]'::jsonb)%s
 			 ORDER BY id DESC
 			 LIMIT $%d`,
-			inPlaceholders(2, len(topicIDs)),
 			beforeClause,
 			nextPlaceholder,
 		),

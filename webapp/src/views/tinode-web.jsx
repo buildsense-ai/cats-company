@@ -8,6 +8,7 @@ import t from '../i18n';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
 import MessagesView from './messages-view';
+import SearchOverlay from './search-overlay';
 import AgentEntryBindView from './agent-entry-bind-view';
 import ChannelDeviceLinkView from './channel-device-link-view';
 import MobileUploadView from './mobile-upload-view';
@@ -186,6 +187,9 @@ function TinodeWebApp() {
     user?.uid ? readStoredTopic(user.uid) : null
   ));
   const [taskDraft, setTaskDraft] = useState(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [messageLocationRequest, setMessageLocationRequest] = useState(null);
+  const messageLocationSequenceRef = useRef(0);
   const taskDraftSequenceRef = useRef(0);
 
   const setActiveTopic = useCallback((nextValue) => {
@@ -304,7 +308,9 @@ function TinodeWebApp() {
   const unlockLiquidTheme = useCallback(async (password, requestedTheme = 'liquid') => {
     const unlocked = await verifyLiquidThemePassword(password);
     if (!unlocked) throw new Error('密码不正确。');
-    saveLiquidThemeUnlock();
+    if (!saveLiquidThemeUnlock()) {
+      throw new Error('浏览器未能保存解锁状态，请检查站点存储设置。');
+    }
     setLiquidThemeAccess({ loading: false, unlocked: true });
     const normalized = normalizeTheme(requestedTheme);
     setTheme(isLiquidTheme(normalized) ? normalized : 'liquid');
@@ -875,6 +881,27 @@ function TinodeWebApp() {
     }
   };
 
+  const handleSearchResultSelect = useCallback((result) => {
+    if (!result?.topicId) return;
+    const targetMessageId = Number(result.messageId) || 0;
+    messageLocationSequenceRef.current += 1;
+    setTaskDraft(null);
+    setActiveTopic({
+      topicId: result.topicId,
+      name: result.source || result.topicId,
+      isGroup: result.isGroup || result.topicId.startsWith('grp_'),
+      groupId: result.groupId,
+      avatar_url: result.avatarUrl,
+    });
+    setMessageLocationRequest(targetMessageId ? {
+      topicId: result.topicId,
+      messageId: targetMessageId,
+      requestId: messageLocationSequenceRef.current,
+    } : null);
+    setSearchOpen(false);
+    setMobileSidebarOpen(false);
+  }, [setActiveTopic]);
+
   if ((channelDeviceLink || channelAccountLink) && user) {
     const params = new URLSearchParams(window.location.search);
     return (
@@ -893,6 +920,18 @@ function TinodeWebApp() {
   if (entrySceneKey) {
     return <AgentEntryBindView sceneKey={entrySceneKey} />;
   }
+
+  const localAssistantBar = (
+    <LocalAssistantBar
+      agentModelState={displayedAgentModel}
+      activeAgent={displayedActiveAgent}
+      currentModelName={currentModelName}
+      onDownload={() => setShowDownloadModal(true)}
+      onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
+      title={activeTopic?.name || taskDraftTitle(taskDraft)}
+      onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
+    />
+  );
 
   return (
     <div
@@ -938,9 +977,11 @@ function TinodeWebApp() {
             activeTopic={activeTopic ? activeTopic.topicId : null}
             onSelectTopic={(topic) => {
               setTaskDraft(null);
+              setMessageLocationRequest(null);
               setActiveTopic(topic);
               setMobileSidebarOpen(false);
             }}
+            onOpenSearch={() => setSearchOpen(true)}
             onStartAgentTask={handleStartAgentTask}
             user={user}
             onlineUsers={onlineUsers}
@@ -1006,17 +1047,9 @@ function TinodeWebApp() {
         >
           <PanelLeftOpen size={18} />
         </button>
-        <LocalAssistantBar
-          agentModelState={displayedAgentModel}
-          activeAgent={displayedActiveAgent}
-          currentModelName={currentModelName}
-          onDownload={() => setShowDownloadModal(true)}
-          onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
-          title={activeTopic?.name || taskDraftTitle(taskDraft)}
-          onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
-        />
         {activeTopic ? (
           <MessagesView
+            topBar={localAssistantBar}
             topic={activeTopic.topicId}
             topicName={activeTopic.name}
             user={user}
@@ -1030,17 +1063,28 @@ function TinodeWebApp() {
             onResolveAgentTopic={resolveAgentTopic}
             onActivateTopic={activateResolvedTopic}
             cloudArtifactsRequest={cloudArtifactsRequest}
+            messageLocationRequest={messageLocationRequest}
+            onBackToSearch={() => setSearchOpen(true)}
           />
         ) : (
-          <NoActiveTask
-            key={taskDraft?.key || 'new-task'}
-            user={user}
-            initialAgent={taskDraft?.agent}
-            onResolveAgentTopic={createDraftAgentTaskTopic}
-            onActivateTopic={activateResolvedTopic}
-          />
+          <>
+            {localAssistantBar}
+            <NoActiveTask
+              key={taskDraft?.key || 'new-task'}
+              user={user}
+              initialAgent={taskDraft?.agent}
+              onResolveAgentTopic={createDraftAgentTaskTopic}
+              onActivateTopic={activateResolvedTopic}
+            />
+          </>
         )}
       </div>
+
+      <SearchOverlay
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onSelectResult={handleSearchResultSelect}
+      />
 
       {showProfileEditor && (
         <ProfileEditor
@@ -1173,6 +1217,7 @@ function NoActiveTask({ user, initialAgent, onResolveAgentTopic, onActivateTopic
 function SidebarContent({
   activeTopic,
   onSelectTopic,
+  onOpenSearch,
   onStartAgentTask,
   user,
   onlineUsers,
@@ -1183,6 +1228,7 @@ function SidebarContent({
     <ChatListView
       activeTopic={activeTopic}
       onSelectTopic={onSelectTopic}
+      onOpenSearch={onOpenSearch}
       onStartAgentTask={onStartAgentTask}
       user={user}
       onlineUsers={onlineUsers}

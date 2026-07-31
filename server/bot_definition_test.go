@@ -317,7 +317,7 @@ func TestRuntimeDefinitionAcknowledgementRedactsCustomModelSecret(t *testing.T) 
 	handler := NewBotDefinitionHandler(db, db, models, NewBotModelConfigHandler(db, models))
 
 	ackReq := httptest.NewRequest(http.MethodPost, "/api/bot/definition/ack", strings.NewReader(
-		`{"revision":6,"error":"request failed with sk-runtime-secret"}`,
+		`{"revision":6,"error":"request failed with sk-runtime-secret; total_cny=500; max_tokens=8192"}`,
 	))
 	ackReq = ackReq.WithContext(context.WithValue(ackReq.Context(), uidKey, int64(43)))
 	ackRec := httptest.NewRecorder()
@@ -325,8 +325,100 @@ func TestRuntimeDefinitionAcknowledgementRedactsCustomModelSecret(t *testing.T) 
 	if ackRec.Code != http.StatusOK {
 		t.Fatalf("ack status=%d body=%s", ackRec.Code, ackRec.Body.String())
 	}
-	if got := db.records[43].Runtime.LastError; got != "request failed with [REDACTED]" {
+	if got := db.records[43].Runtime.LastError; got != "request failed with [REDACTED]; total_cny=500; max_tokens=8192" {
 		t.Fatalf("last error=%q", got)
+	}
+	ownerReq := httptest.NewRequest(http.MethodGet, "/api/bots/definition?uid=43", nil)
+	ownerReq = ownerReq.WithContext(context.WithValue(ownerReq.Context(), uidKey, int64(7)))
+	ownerRec := httptest.NewRecorder()
+	handler.HandleOwnerDefinition(ownerRec, ownerReq)
+	if ownerRec.Code != http.StatusOK || !strings.Contains(ownerRec.Body.String(), `"lastError":"模型配置应用失败"`) {
+		t.Fatalf("owner status=%d body=%s", ownerRec.Code, ownerRec.Body.String())
+	}
+	for _, sensitive := range []string{"total_cny", "max_tokens", "request failed"} {
+		if strings.Contains(ownerRec.Body.String(), sensitive) {
+			t.Fatalf("owner response leaked %s: %s", sensitive, ownerRec.Body.String())
+		}
+	}
+	if got := db.records[43].Runtime.LastError; got != "request failed with [REDACTED]; total_cny=500; max_tokens=8192" {
+		t.Fatalf("owner read changed internal last error=%q", got)
+	}
+}
+
+func TestOwnerDefinitionErrorsDoNotExposeStoredCustomModelDetails(t *testing.T) {
+	enableBotModelEncryption(t)
+	db := &botDefinitionTestStore{
+		owners:  map[int64]int64{43: 7},
+		records: map[int64]*types.BotDefinitionRecord{},
+	}
+	models := &botModelConfigTestStore{owners: db.owners, models: map[int64]*types.BotModelConfig{}}
+	modelConfig := NewBotModelConfigHandler(db, models)
+	invalidStored := cloudCustomModelConfig{
+		Protocol: "anthropic", APIBase: "https://models.example.com", Model: "model-a", APIKey: "secret-a",
+		ContextWindowTokens: 5000000, MaxTokens: 1000001,
+	}
+	plaintext, err := json.Marshal(invalidStored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := modelConfig.secretCodec.encrypt(43, plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.records[43] = &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{
+			Schema: types.BotDefinitionSchema,
+			BotID:  "43",
+			Model: types.BotDefinitionModel{
+				Kind: botModelKindCustom, Protocol: "anthropic", APIBase: "https://models.example.com",
+				Model: "model-a", APIKeyCiphertext: ciphertext,
+			},
+			Prompt: &types.BotPromptDefinition{Selected: "default"},
+		},
+		Runtime: types.BotDefinitionRuntime{DesiredRevision: 1},
+		Exists:  true,
+	}
+	handler := NewBotDefinitionHandler(db, db, models, modelConfig)
+
+	for _, tc := range []struct {
+		name       string
+		method     string
+		path       string
+		body       string
+		wantStatus int
+		wantError  string
+		handle     func(http.ResponseWriter, *http.Request)
+	}{
+		{
+			name: "get", method: http.MethodGet, path: "/api/bots/definition?uid=43",
+			wantStatus: http.StatusServiceUnavailable, wantError: "bot definition could not be prepared",
+			handle: handler.HandleOwnerDefinition,
+		},
+		{
+			name: "patch", method: http.MethodPatch, path: "/api/bots/definition/model?uid=43",
+			body:       `{"revision":1,"model":{"kind":"custom","protocol":"anthropic","apiBase":"https://models.example.com","model":"model-b","apiKey":"secret-b"}}`,
+			wantStatus: http.StatusBadRequest, wantError: "bot model definition could not be updated",
+			handle: handler.HandleOwnerModel,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+			rec := httptest.NewRecorder()
+			tc.handle(rec, req)
+
+			if rec.Code != tc.wantStatus || !strings.Contains(rec.Body.String(), `"error":"`+tc.wantError+`"`) {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			for _, sensitive := range []string{"context window", "max tokens", "5000000", "1000001", "secret-a"} {
+				if strings.Contains(strings.ToLower(rec.Body.String()), sensitive) {
+					t.Fatalf("owner response leaked %s: %s", sensitive, rec.Body.String())
+				}
+			}
+		})
+	}
+	if got := db.records[43].Definition.Model.APIKeyCiphertext; got != ciphertext {
+		t.Fatal("owner error handling changed the stored custom model")
 	}
 }
 
@@ -367,6 +459,9 @@ func TestBotDefinitionCustomSecretIsEncryptedAndOnlyReturnedToRuntime(t *testing
 		!strings.Contains(patchRec.Body.String(), `"apiKeyHint":"****cret"`) {
 		t.Fatalf("owner response exposed or omitted key metadata: %s", patchRec.Body.String())
 	}
+	if strings.Contains(patchRec.Body.String(), "contextWindowTokens") || strings.Contains(patchRec.Body.String(), "maxTokens") {
+		t.Fatalf("owner response leaked token limits: %s", patchRec.Body.String())
+	}
 
 	runtimeReq := httptest.NewRequest(http.MethodGet, "/api/bot/definition", nil)
 	runtimeReq = runtimeReq.WithContext(context.WithValue(runtimeReq.Context(), uidKey, int64(43)))
@@ -374,7 +469,8 @@ func TestBotDefinitionCustomSecretIsEncryptedAndOnlyReturnedToRuntime(t *testing
 	handler.HandleRuntimeDefinition(runtimeRec, runtimeReq)
 	if runtimeRec.Code != http.StatusOK ||
 		!strings.Contains(runtimeRec.Body.String(), `"apiKey":"sk-definition-secret"`) ||
-		!strings.Contains(runtimeRec.Body.String(), `"apiBase":"https://models.example.com/v1"`) {
+		!strings.Contains(runtimeRec.Body.String(), `"apiBase":"https://models.example.com/v1"`) ||
+		!strings.Contains(runtimeRec.Body.String(), `"contextWindowTokens":128000`) {
 		t.Fatalf("runtime status=%d body=%s", runtimeRec.Code, runtimeRec.Body.String())
 	}
 }

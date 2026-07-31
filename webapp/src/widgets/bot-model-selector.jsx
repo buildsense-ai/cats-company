@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Check, ChevronDown, ChevronRight, Loader2, Settings2 } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Check, ChevronDown, ChevronRight, Loader2, Settings2 } from 'lucide-react';
 
 import { api } from '../api';
 import {
@@ -7,6 +7,7 @@ import {
   relayUsageTone,
   resolveConversationModelDisplay,
 } from '../utils/relay-usage';
+import CustomSelect from './custom-select';
 
 const APPLY_POLL_MS = 2000;
 const APPLY_SLOW_POLL_MS = 15000;
@@ -18,8 +19,6 @@ const EMPTY_CUSTOM_MODEL = {
   api_base: '',
   model: '',
   api_key: '',
-  context_window_tokens: '128000',
-  max_tokens: '',
   temperature: '',
   reasoning_effort: '',
 };
@@ -31,7 +30,6 @@ const CUSTOM_PROTOCOLS = [
 ];
 
 const CUSTOM_REASONING_EFFORTS = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'disabled'];
-const CUSTOM_CONTEXT_WINDOW_OPTIONS = [128000, 200000, 256000, 512000, 1000000];
 
 function customDraftFromConfig(config) {
   const custom = config?.custom;
@@ -41,8 +39,6 @@ function customDraftFromConfig(config) {
     api_base: custom.api_base || '',
     model: custom.model || '',
     api_key: '',
-    context_window_tokens: String(custom.context_window_tokens || 128000),
-    max_tokens: custom.max_tokens ? String(custom.max_tokens) : '',
     temperature: custom.temperature == null ? '' : String(custom.temperature),
     reasoning_effort: custom.reasoning_effort === 'default' ? '' : custom.reasoning_effort || '',
   };
@@ -51,17 +47,12 @@ function customDraftFromConfig(config) {
 function modelQuotaLabel(quota, state) {
   if (state === 'error') return '额度暂不可用';
   if (state !== 'loaded') return '额度同步中';
-  if (!quota) return '额度未配置';
+  if (!quota || quota.quota_configured !== true) return '额度未配置';
   if (quota.status === 'over_limit') return '额度已用尽';
-  const limit = Number(quota.limit_cny);
-  const remaining = Number(quota.remaining_cny);
-  const percent = Number(quota.percent);
-  if (!Number.isFinite(limit) || limit <= 0) return '额度未配置';
-  const remainingPercent = Number.isFinite(percent)
-    ? Math.max(0, Math.min(100, 100 - percent))
-    : 0;
-  const remainingAmount = Number.isFinite(remaining) ? Math.max(0, remaining) : 0;
-  return `剩余 ${Math.round(remainingPercent)}% · ¥${remainingAmount.toFixed(2)}`;
+  const remainingPercent = Number(quota.remaining_percent);
+  if (!Number.isFinite(remainingPercent)) return '额度暂不可用';
+  const clamped = Math.max(0, Math.min(100, remainingPercent));
+  return `剩余 ${Math.round(clamped)}%`;
 }
 
 function modelQuotaTone(quota) {
@@ -112,27 +103,6 @@ function reasoningEffortLabel(effort) {
   return labels[effort] || effort;
 }
 
-function customContextWindowOptions(currentValue) {
-  const current = Number(currentValue);
-  if (!Number.isInteger(current) || current <= 0 || CUSTOM_CONTEXT_WINDOW_OPTIONS.includes(current)) {
-    return CUSTOM_CONTEXT_WINDOW_OPTIONS;
-  }
-  return [current, ...CUSTOM_CONTEXT_WINDOW_OPTIONS];
-}
-
-export function formatModelContextWindowTokens(tokens) {
-  const value = Number(tokens);
-  if (!Number.isFinite(value) || value <= 0) return '';
-  if (value >= 1_000_000) {
-    const millions = value / 1_000_000;
-    return `${Number.isInteger(millions) ? millions : Number(millions.toFixed(1))}M`;
-  }
-  if (value >= 1_000) {
-    const thousands = value / 1_000;
-    return `${Number.isInteger(thousands) ? thousands : Number(thousands.toFixed(1))}K`;
-  }
-  return String(Math.round(value));
-}
 
 export function describeModelConfigRequestError(error, action = '切换') {
   if (error?.code === 'NETWORK_ERROR') {
@@ -241,7 +211,14 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
   useEffect(() => {
     if (!menuOpen) return undefined;
     const closeOnOutsidePointer = (event) => {
-      if (!menuRef.current?.contains(event.target)) setMenuOpen(false);
+      const target = event.target;
+      if (
+        !menuRef.current?.contains(target)
+        && !(target instanceof Element
+          && target.closest('.v3-custom-model-select-options.is-portal'))
+      ) {
+        setMenuOpen(false);
+      }
     };
     const closeOnEscape = (event) => {
       if (event.key === 'Escape') setMenuOpen(false);
@@ -346,11 +323,9 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
 
   const saveCustomModel = (event) => {
     event.preventDefault();
-    const contextWindow = Number(customDraft.context_window_tokens);
-    const maxTokens = customDraft.max_tokens === '' ? 0 : Number(customDraft.max_tokens);
     const temperature = customDraft.temperature === '' ? undefined : Number(customDraft.temperature);
-    if (!customDraft.api_base.trim() || !customDraft.model.trim() || !Number.isFinite(contextWindow)) {
-      setError('请完整填写 API Base、模型名称和上下文长度。');
+    if (!customDraft.api_base.trim() || !customDraft.model.trim()) {
+      setError('请完整填写 API Base 和模型名称。');
       return;
     }
     if (!modelConfig?.custom?.api_key_configured && !customDraft.api_key.trim()) {
@@ -362,8 +337,6 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
       api_base: customDraft.api_base.trim(),
       model: customDraft.model.trim(),
       api_key: customDraft.api_key.trim(),
-      context_window_tokens: contextWindow,
-      max_tokens: Number.isFinite(maxTokens) ? maxTokens : 0,
       reasoning_effort: customDraft.reasoning_effort,
     };
     if (Number.isFinite(temperature)) custom.temperature = temperature;
@@ -449,14 +422,25 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
             <form className="v3-custom-model-editor" onSubmit={saveCustomModel}>
               <div className="v3-custom-model-heading">
                 <span><Settings2 size={15} /> 自定义模型</span>
-                <button type="button" onClick={() => setCustomEditorOpen(false)}>返回列表</button>
+                <button
+                  type="button"
+                  aria-label="返回模型列表"
+                  title="返回模型列表"
+                  onClick={() => setCustomEditorOpen(false)}
+                >
+                  <ArrowLeft size={16} aria-hidden="true" />
+                </button>
               </div>
-              <label>
+              <div className="v3-custom-model-field">
                 <span>API 协议</span>
-                <select value={customDraft.protocol} onChange={(event) => setCustomDraft({ ...customDraft, protocol: event.target.value })}>
+                <CustomSelect
+                  ariaLabel="API 协议"
+                  value={customDraft.protocol}
+                  onValueChange={(protocol) => setCustomDraft({ ...customDraft, protocol })}
+                >
                   {CUSTOM_PROTOCOLS.map((protocol) => <option key={protocol.value} value={protocol.value}>{protocol.label}</option>)}
-                </select>
-              </label>
+                </CustomSelect>
+              </div>
               <label>
                 <span>API Base</span>
                 <input type="url" required placeholder="https://api.example.com/v1" value={customDraft.api_base} onChange={(event) => setCustomDraft({ ...customDraft, api_base: event.target.value })} />
@@ -477,27 +461,20 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
               </label>
               <div className="v3-custom-model-grid">
                 <label>
-                  <span>上下文 Token</span>
-                  <select required value={customDraft.context_window_tokens} onChange={(event) => setCustomDraft({ ...customDraft, context_window_tokens: event.target.value })}>
-                    {customContextWindowOptions(customDraft.context_window_tokens).map((tokens) => (
-                      <option key={tokens} value={tokens}>{formatModelContextWindowTokens(tokens)}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>最大输出 Token</span>
-                  <input type="number" min="0" max="1000000" placeholder="使用服务默认" value={customDraft.max_tokens} onChange={(event) => setCustomDraft({ ...customDraft, max_tokens: event.target.value })} />
-                </label>
-                <label>
                   <span>温度</span>
                   <input type="number" min="0" max="2" step="0.1" placeholder="使用服务默认" value={customDraft.temperature} onChange={(event) => setCustomDraft({ ...customDraft, temperature: event.target.value })} />
                 </label>
-                <label>
+                <div className="v3-custom-model-field">
                   <span>推理强度</span>
-                  <select value={customDraft.reasoning_effort} onChange={(event) => setCustomDraft({ ...customDraft, reasoning_effort: event.target.value })}>
+                  <CustomSelect
+                    ariaLabel="推理强度"
+                    placement="top"
+                    value={customDraft.reasoning_effort}
+                    onValueChange={(reasoningEffort) => setCustomDraft({ ...customDraft, reasoning_effort: reasoningEffort })}
+                  >
                     {CUSTOM_REASONING_EFFORTS.map((effort) => <option key={effort || 'default'} value={effort}>{effort ? reasoningEffortLabel(effort) : '使用接口默认'}</option>)}
-                  </select>
-                </label>
+                  </CustomSelect>
+                </div>
               </div>
               <button type="submit" className="v3-custom-model-save" disabled={transitioning}>
                 {savingKey ? <Loader2 className="v3-model-switch-spinner" size={14} /> : <Check size={14} />}
@@ -520,7 +497,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                 const efforts = model.reasoning_efforts || [];
                 const hasReasoning = efforts.length > 0;
                 const selected = desiredKind === 'catalog' && desiredModelID === model.id;
-                const contextWindow = formatModelContextWindowTokens(model.context_window_tokens);
+
                 return (
                   <div
                     key={model.id}
@@ -540,7 +517,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                     >
                       <span>
                         <strong>{model.label}</strong>
-                        <small>{contextWindow ? `上下文 ${contextWindow}` : model.description}</small>
+                        <small>{model.description}</small>
                         <small className={`v3-model-menu-quota ${modelQuotaTone(model.quota)}`.trim()}>{modelQuotaLabel(model.quota, modelConfig?.quota_error ? 'error' : usageState)}</small>
                       </span>
                       {hasReasoning ? <ChevronRight size={15} /> : selected && <Check size={15} />}

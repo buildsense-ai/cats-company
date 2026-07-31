@@ -17,6 +17,7 @@ import (
 const (
 	artifactNodeConfigMaxBytes = 256 << 10
 	artifactNodeTokenMaxBytes  = 4 << 10
+	artifactDirectUIDToken     = "{uid}"
 )
 
 var artifactNodeIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$`)
@@ -27,16 +28,23 @@ type artifactNode struct {
 	publicBaseURL   string
 	managementURL   string
 	managementToken string
+	rootPublicIndex bool
+}
+
+type artifactDirectURLTemplate struct {
+	value string
 }
 
 type artifactNodeRegistry struct {
-	nodes  map[string]artifactNode
-	agents map[int64]string
+	nodes            map[string]artifactNode
+	agents           map[int64]string
+	fallbackToLegacy bool
 }
 
 type artifactNodeConfigDocument struct {
-	Nodes  map[string]artifactNodeConfigEntry `json:"nodes"`
-	Agents map[string]string                  `json:"agents"`
+	Nodes            map[string]artifactNodeConfigEntry `json:"nodes"`
+	Agents           map[string]string                  `json:"agents"`
+	FallbackToLegacy bool                               `json:"fallback_to_legacy,omitempty"`
 }
 
 type artifactNodeConfigEntry struct {
@@ -78,6 +86,86 @@ func loadArtifactNodeRegistryFromEnv() (*artifactNodeRegistry, error) {
 	return parseArtifactNodeRegistry(data, os.LookupEnv, applicationBaseURL)
 }
 
+func loadArtifactDirectURLTemplateFromEnv() (*artifactDirectURLTemplate, error) {
+	value := os.Getenv("CATSCO_DIRECT_ARTIFACT_URL_TEMPLATE")
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	applicationBaseURL := strings.TrimSpace(os.Getenv("CATSCO_PUBLIC_BASE_URL"))
+	if applicationBaseURL == "" {
+		return nil, errors.New(
+			"CATSCO_PUBLIC_BASE_URL is required when the direct artifact URL template is configured",
+		)
+	}
+	return parseArtifactDirectURLTemplate(value, applicationBaseURL)
+}
+
+func parseArtifactDirectURLTemplate(
+	value, applicationBaseURL string,
+) (*artifactDirectURLTemplate, error) {
+	if value == "" || strings.TrimSpace(value) != value {
+		return nil, errors.New("invalid direct artifact URL template")
+	}
+	if strings.Count(value, artifactDirectUIDToken) != 1 {
+		return nil, errors.New(
+			"direct artifact URL template must contain exactly one {uid}",
+		)
+	}
+	const sampleUID = "123456789"
+	sample := strings.Replace(value, artifactDirectUIDToken, sampleUID, 1)
+	publicBaseURL, err := parseArtifactNodeBaseURL(sample)
+	if err != nil {
+		return nil, fmt.Errorf("direct artifact URL template: %w", err)
+	}
+	parsed, _ := url.Parse(publicBaseURL)
+	if parsed.Scheme != "https" {
+		return nil, errors.New("direct artifact URL template must use HTTPS")
+	}
+	if !strings.Contains(parsed.Hostname(), sampleUID) ||
+		strings.Contains(parsed.Path, sampleUID) {
+		return nil, errors.New(
+			"direct artifact URL template must place {uid} in the hostname",
+		)
+	}
+	if !strings.HasSuffix(parsed.Path, "/artifacts") {
+		return nil, errors.New(
+			"direct artifact URL template must end with /artifacts",
+		)
+	}
+	publicOrigin, err := parseArtifactURLOrigin(publicBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("direct artifact URL template: %w", err)
+	}
+	applicationOrigin, err := parseArtifactURLOrigin(applicationBaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("CATSCO_PUBLIC_BASE_URL: %w", err)
+	}
+	if publicOrigin == applicationOrigin {
+		return nil, errors.New(
+			"direct artifact URL template must use a different origin from CATSCO_PUBLIC_BASE_URL",
+		)
+	}
+	return &artifactDirectURLTemplate{value: value}, nil
+}
+
+func (t *artifactDirectURLTemplate) resolve(agentUID int64) (artifactNode, error) {
+	if t == nil || agentUID <= 0 {
+		return artifactNode{}, errors.New("direct artifact URL template is unavailable")
+	}
+	agentID := strconv.FormatInt(agentUID, 10)
+	publicBaseURL, err := parseArtifactNodeBaseURL(
+		strings.Replace(t.value, artifactDirectUIDToken, agentID, 1),
+	)
+	if err != nil {
+		return artifactNode{}, errors.New("direct artifact URL template is invalid")
+	}
+	return artifactNode{
+		id:              "direct-" + agentID,
+		publicBaseURL:   publicBaseURL,
+		rootPublicIndex: true,
+	}, nil
+}
+
 func parseArtifactNodeRegistry(
 	data []byte,
 	lookupEnv func(string) (string, bool),
@@ -110,8 +198,9 @@ func parseArtifactNodeRegistry(
 	}
 
 	registry := &artifactNodeRegistry{
-		nodes:  make(map[string]artifactNode, len(document.Nodes)),
-		agents: make(map[int64]string, len(document.Agents)),
+		nodes:            make(map[string]artifactNode, len(document.Nodes)),
+		agents:           make(map[int64]string, len(document.Agents)),
+		fallbackToLegacy: document.FallbackToLegacy,
 	}
 	for rawID, entry := range document.Nodes {
 		nodeID := strings.TrimSpace(rawID)
@@ -132,13 +221,25 @@ func parseArtifactNodeRegistry(
 				nodeID,
 			)
 		}
-		managementURL, err := parseArtifactNodeManagementURL(entry.ManagementURL)
-		if err != nil {
-			return nil, fmt.Errorf("artifact node %s management URL: %w", nodeID, err)
+		managementURL := strings.TrimSpace(entry.ManagementURL)
+		if managementURL != entry.ManagementURL {
+			return nil, fmt.Errorf("artifact node %s management URL is invalid", nodeID)
 		}
-		token, err := resolveArtifactNodeToken(entry, lookupEnv)
-		if err != nil {
-			return nil, fmt.Errorf("artifact node %s management token is unavailable", nodeID)
+		hasTokenSource := entry.ManagementTokenEnv != "" || entry.ManagementTokenFile != ""
+		var token string
+		if managementURL == "" {
+			if hasTokenSource {
+				return nil, fmt.Errorf("artifact node %s management configuration is incomplete", nodeID)
+			}
+		} else {
+			managementURL, err = parseArtifactNodeManagementURL(managementURL)
+			if err != nil {
+				return nil, fmt.Errorf("artifact node %s management URL: %w", nodeID, err)
+			}
+			token, err = resolveArtifactNodeToken(entry, lookupEnv)
+			if err != nil {
+				return nil, fmt.Errorf("artifact node %s management token is unavailable", nodeID)
+			}
 		}
 		registry.nodes[nodeID] = artifactNode{
 			id:              nodeID,

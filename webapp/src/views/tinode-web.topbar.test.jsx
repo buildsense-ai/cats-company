@@ -32,21 +32,18 @@ const baseConfig = {
       id: 'minimax-m2.7',
       label: 'MiniMax M2.7',
       description: '标准额度，适合日常任务',
-      context_window_tokens: 204800,
     },
     {
       id: 'minimax-m3',
       label: 'MiniMax M3',
       description: '支持多模态与长上下文',
-      context_window_tokens: 1000000,
-      quota: { model: 'minimax-m3', limit_cny: 100, remaining_cny: 75, percent: 25, status: 'normal' },
+      quota: { model: 'minimax-m3', quota_configured: true, percent: 25, remaining_percent: 75, status: 'normal' },
     },
     {
       id: 'deepseek-v4-flash',
       label: 'DeepSeek V4 Flash',
       description: '低额度 Flash，支持推理强度',
-      context_window_tokens: 1000000,
-      quota: { model: 'deepseek-v4-flash', limit_cny: 50, remaining_cny: 5, percent: 90, status: 'high' },
+      quota: { model: 'deepseek-v4-flash', quota_configured: true, percent: 90, remaining_percent: 10, status: 'high' },
       reasoning_efforts: ['high', 'max', 'disabled'],
       default_reasoning_effort: 'high',
     },
@@ -54,7 +51,6 @@ const baseConfig = {
       id: 'gpt-5.6-terra',
       label: 'GPT-5.6 Terra',
       description: 'OpenAI Responses，支持精细推理强度',
-      context_window_tokens: 256000,
       reasoning_efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
       default_reasoning_effort: 'medium',
     },
@@ -65,7 +61,7 @@ const relayState = {
   isBot: true,
   state: 'ready',
   summary: {
-    source: 'relay', model: 'minimax-m3', limit_cny: 100, percent: 25, remaining_percent: 75, status: 'normal',
+    source: 'relay', model: 'minimax-m3', quota_configured: true, percent: 25, remaining_percent: 75, status: 'normal',
   },
 };
 
@@ -313,14 +309,17 @@ describe('LocalAssistantBar model selector', () => {
       .find((item) => item.textContent.includes('DeepSeek V4 Flash'));
     const terra = [...container.querySelectorAll('.v3-model-menu-item')]
       .find((item) => item.textContent.includes('GPT-5.6 Terra'));
-    expect(m27?.textContent).toContain('上下文 204.8K');
-    expect(m3?.textContent).toContain('上下文 1M');
-    expect(deepseek?.textContent).toContain('上下文 1M');
-    expect(terra?.textContent).toContain('上下文 256K');
-    expect(terra?.textContent).not.toContain('OpenAI Responses');
-    expect(terra?.textContent).not.toContain('精细推理强度');
-    expect(m3?.textContent).toContain('剩余 75% · ¥75.00');
-    expect(deepseek?.textContent).toContain('剩余 10% · ¥5.00');
+    expect(m27?.textContent).toContain('标准额度，适合日常任务');
+    expect(m3?.textContent).toContain('支持多模态与长上下文');
+    expect(deepseek?.textContent).toContain('低额度 Flash，支持推理强度');
+    expect(terra?.textContent).toContain('OpenAI Responses，支持精细推理强度');
+    expect(container.textContent).not.toContain('上下文 204.8K');
+    expect(container.textContent).not.toContain('上下文 1M');
+    expect(container.textContent).not.toContain('上下文 256K');
+    expect(m3?.textContent).toContain('剩余 75%');
+    expect(deepseek?.textContent).toContain('剩余 10%');
+    expect(container.textContent).not.toContain('¥');
+    expect(container.textContent).not.toContain('CNY');
     expect(deepseek?.querySelector('.v3-model-menu-quota.warning')).toBeTruthy();
   });
 
@@ -357,7 +356,6 @@ describe('LocalAssistantBar model selector', () => {
         model: 'gpt-5.6-sol',
         api_key_configured: true,
         api_key_hint: '****cret',
-        context_window_tokens: 1000000,
         reasoning_effort: 'high',
       },
     };
@@ -373,12 +371,14 @@ describe('LocalAssistantBar model selector', () => {
     const keyInput = container.querySelector('input[type="password"]');
     expect(keyInput.value).toBe('');
     expect(keyInput.placeholder).toContain('****cret');
-    const contextSelect = [...container.querySelectorAll('.v3-custom-model-editor select')]
-      .find((select) => [...select.options].some((option) => option.textContent === '1M'));
-    expect([...contextSelect.options].map((option) => option.textContent)).toEqual([
-      '128K', '200K', '256K', '512K', '1M',
-    ]);
-    expect(contextSelect.value).toBe('1000000');
+    const backButton = container.querySelector('.v3-custom-model-heading button');
+    expect(backButton.getAttribute('aria-label')).toBe('返回模型列表');
+    expect(backButton.textContent).toBe('');
+    const protocolSelect = container.querySelector('.v3-custom-model-select-trigger[aria-label="API 协议"]');
+    expect(protocolSelect.closest('.v3-custom-model-select-wrap')).not.toBeNull();
+    expect(protocolSelect.querySelector('.v3-custom-model-select-chevron')).not.toBeNull();
+    expect(container.textContent).not.toContain('上下文 Token');
+    expect(container.textContent).not.toContain('最大输出 Token');
     await act(async () => {
       container.querySelector('.v3-custom-model-editor').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
@@ -387,12 +387,12 @@ describe('LocalAssistantBar model selector', () => {
       kind: 'custom',
       model_id: 'custom',
       custom: expect.objectContaining({
-        protocol: 'openai-responses', model: 'gpt-5.6-sol', api_key: '', context_window_tokens: 1000000,
+        protocol: 'openai-responses', model: 'gpt-5.6-sol', api_key: '',
       }),
     }));
   });
 
-  it('preserves a legacy custom context value while keeping the standard choices available', async () => {
+  it('does not resend legacy custom token values', async () => {
     const legacyConfig = {
       ...baseConfig,
       desired: { kind: 'custom', model_id: 'legacy-model', reasoning_effort: '', revision: 4 },
@@ -402,6 +402,7 @@ describe('LocalAssistantBar model selector', () => {
         model: 'legacy-model',
         api_key_configured: true,
         context_window_tokens: 272000,
+        max_tokens: 8192,
       },
     };
     vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(legacyConfig);
@@ -412,18 +413,15 @@ describe('LocalAssistantBar model selector', () => {
       .find((item) => item.textContent.includes('自定义模型'));
     await act(async () => customEntry.click());
 
-    const contextSelect = [...container.querySelectorAll('.v3-custom-model-editor select')]
-      .find((select) => select.value === '272000');
-    expect([...contextSelect.options].map((option) => option.textContent)).toEqual([
-      '272K', '128K', '200K', '256K', '512K', '1M',
-    ]);
+    expect(container.textContent).not.toContain('上下文 Token');
+    expect(container.textContent).not.toContain('最大输出 Token');
     await act(async () => {
       container.querySelector('.v3-custom-model-editor').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
-    expect(update).toHaveBeenCalledWith(43, expect.objectContaining({
-      custom: expect.objectContaining({ context_window_tokens: 272000 }),
-    }));
+    const payload = update.mock.calls[0][1];
+    expect(payload.custom).not.toHaveProperty('context_window_tokens');
+    expect(payload.custom).not.toHaveProperty('max_tokens');
   });
 
   it('locks repeated model changes while a saved revision is waiting for the bot', async () => {

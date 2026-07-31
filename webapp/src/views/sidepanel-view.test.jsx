@@ -57,9 +57,9 @@ vi.mock('../widgets/friend-request', () => ({
 }));
 
 vi.mock('../widgets/agent-store-modal', () => ({
-  default: function MockAgentStoreModal({ onClose }) {
+  default: function MockAgentStoreModal({ initialAgentId, onClose }) {
     return (
-      <div data-testid="agent-store-modal">
+      <div data-testid="agent-store-modal" data-initial-agent-id={initialAgentId ?? ''}>
         <button type="button" onClick={onClose}>关闭助手管理</button>
       </div>
     );
@@ -124,6 +124,7 @@ describe('ChatListView sidebar sections', () => {
   let root;
   let onSelectTopic;
   let onStartAgentTask;
+  let onOpenSearch;
   let wsHandler;
 
   beforeEach(() => {
@@ -184,6 +185,7 @@ describe('ChatListView sidebar sections', () => {
     });
     onSelectTopic = vi.fn();
     onStartAgentTask = vi.fn();
+    onOpenSearch = vi.fn();
 
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -205,6 +207,7 @@ describe('ChatListView sidebar sections', () => {
           activeTopic={null}
           onSelectTopic={onSelectTopic}
           onStartAgentTask={onStartAgentTask}
+          onOpenSearch={onOpenSearch}
           user={user}
           onlineUsers={{}}
           {...props}
@@ -897,9 +900,19 @@ describe('ChatListView sidebar sections', () => {
   it('opens mobile binding from an assistant row without opening the conversation', async () => {
     await mount();
 
-    const mobileButton = container.querySelector('[aria-label="Dev Agent 移动端使用"]');
+    const actionButton = container.querySelector('[aria-label="Dev Agent 任务操作"]');
+    expect(actionButton).toBeTruthy();
+    expect(container.querySelector('[aria-label="Dev Agent 移动端使用"]')).toBeFalsy();
+
+    await act(async () => {
+      Simulate.click(actionButton);
+    });
+
+    const actionMenu = document.body.querySelector('[role="menu"][aria-label="Dev Agent 任务操作"]');
+    const mobileButton = Array.from(actionMenu.querySelectorAll('[role="menuitem"]'))
+      .find((item) => item.textContent.includes('移动端使用'));
     expect(mobileButton).toBeTruthy();
-    expect(container.querySelector('[aria-label="移除 Dev Agent"]')).toBeFalsy();
+    expect(actionMenu.textContent).not.toContain('移除助手');
 
     await act(async () => {
       Simulate.click(mobileButton);
@@ -910,6 +923,80 @@ describe('ChatListView sidebar sections', () => {
     expect(container.querySelector('[data-testid="mobile-channel-modal"]')).toBeFalsy();
     expect(document.body.querySelector('[data-testid="mobile-channel-modal"]')?.textContent).toContain('移动端使用');
     expect(document.body.querySelector('[data-testid="mobile-channel-modal"]')?.textContent).toContain('Dev Agent');
+  });
+
+  it('opens the selected owned assistant directly in its management panel', async () => {
+    await mount();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Dev Agent 任务操作"]'));
+    });
+
+    const actionMenu = document.body.querySelector('[role="menu"][aria-label="Dev Agent 任务操作"]');
+    const manageButton = Array.from(actionMenu.querySelectorAll('[role="menuitem"]'))
+      .find((item) => item.textContent.includes('管理 Agent'));
+    expect(manageButton).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(manageButton);
+    });
+
+    const modal = document.body.querySelector('[data-testid="agent-store-modal"]');
+    expect(modal).toBeTruthy();
+    expect(modal.dataset.initialAgentId).toBe('42');
+    expect(onStartAgentTask).not.toHaveBeenCalled();
+  });
+
+  it('portals the assistant task menu, supports arrow keys, and restores focus on Escape', async () => {
+    await mount();
+
+    const trigger = container.querySelector('[aria-label="Dev Agent 任务操作"]');
+    trigger.getBoundingClientRect = () => ({
+      bottom: 784,
+      height: 32,
+      left: 280,
+      right: 312,
+      top: 752,
+      width: 32,
+      x: 280,
+      y: 752,
+      toJSON: () => ({}),
+    });
+    trigger.focus();
+
+    await act(async () => Simulate.click(trigger));
+
+    const menu = document.body.querySelector('[role="menu"][aria-label="Dev Agent 任务操作"]');
+    expect(menu).not.toBeNull();
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu.style.position).toBe('fixed');
+    expect(menu.dataset.placement).toBe('top');
+    const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+    expect(document.activeElement).toBe(items[0]);
+
+    await act(async () => Simulate.keyDown(items[0], { key: 'ArrowDown' }));
+    expect(document.activeElement).toBe(items[1]);
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 20)));
+    expect(document.activeElement).toBe(items[1]);
+
+    await act(async () => Simulate.keyDown(items[1], { key: 'Escape' }));
+    expect(document.body.querySelector('[role="menu"][aria-label="Dev Agent 任务操作"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    await act(async () => Simulate.click(trigger));
+    let reopenedMenu = document.body.querySelector('[role="menu"][aria-label="Dev Agent 任务操作"]');
+    await act(async () => Simulate.keyDown(reopenedMenu.querySelector('[role="menuitem"]'), { key: 'Tab' }));
+    expect(document.body.querySelector('[role="menu"][aria-label="Dev Agent 任务操作"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    await act(async () => Simulate.click(trigger));
+    reopenedMenu = document.body.querySelector('[role="menu"][aria-label="Dev Agent 任务操作"]');
+    await act(async () => Simulate.keyDown(
+      reopenedMenu.querySelector('[role="menuitem"]'),
+      { key: 'Tab', shiftKey: true },
+    ));
+    expect(document.body.querySelector('[role="menu"][aria-label="Dev Agent 任务操作"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 
   it('opens mobile binding from a group row without opening the group conversation', async () => {
@@ -1680,6 +1767,64 @@ describe('ChatListView sidebar sections', () => {
     expect(container.querySelector('.cc-history-item')).toBeTruthy();
   });
 
+  it('keeps pinned project tasks above newer tasks and restores the project order', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'Old Project Task',
+          is_group: false,
+          is_bot: true,
+          last_time: '2026-06-02T08:00:00Z',
+          project_id: 12,
+          project_name: 'Website Launch',
+        },
+        {
+          id: 'p2p_7_43',
+          friend_id: 43,
+          name: 'New Project Task',
+          is_group: false,
+          is_bot: true,
+          last_time: '2026-06-08T08:00:00Z',
+          project_id: 12,
+          project_name: 'Website Launch',
+        },
+      ],
+    });
+    api.getProjects.mockResolvedValue({
+      projects: [{ id: 12, name: 'Website Launch', task_count: 2 }],
+    });
+
+    const projectTaskNames = () => Array.from(container.querySelectorAll('.cc-project-task-item'))
+      .map((row) => row.querySelector('.v3-chat-item-label')?.textContent);
+    const openProject = async () => {
+      await act(async () => {
+        Simulate.click(container.querySelector('.cc-project-item'));
+      });
+    };
+
+    await mount();
+    await openProject();
+
+    expect(projectTaskNames()).toEqual(['New Project Task', 'Old Project Task']);
+    const oldTaskRow = Array.from(container.querySelectorAll('.cc-project-task-item'))
+      .find((row) => row.textContent.includes('Old Project Task'));
+
+    await act(async () => {
+      Simulate.click(oldTaskRow.querySelector('.v3-history-pin-trigger'));
+      await Promise.resolve();
+    });
+
+    expect(projectTaskNames()).toEqual(['Old Project Task', 'New Project Task']);
+    expect(JSON.parse(localStorage.getItem('cc_pinned_history_v1:7'))).toEqual(['p2p_7_42']);
+
+    await remount();
+    await openProject();
+
+    expect(projectTaskNames()).toEqual(['Old Project Task', 'New Project Task']);
+  });
+
   it('renames an assigned agent task group through updateGroup', async () => {
     let taskName = 'Agent Project Task';
     api.getConversations.mockImplementation(() => Promise.resolve({
@@ -1757,29 +1902,18 @@ describe('ChatListView sidebar sections', () => {
     expect(task.textContent).not.toContain('不应继续显示');
   });
 
-  it('finds an assigned task through search and expands its project', async () => {
-    api.getConversations.mockResolvedValue({
-      conversations: [{
-        id: 'p2p_7_42',
-        friend_id: 42,
-        name: 'Quarterly Launch Review',
-        is_group: false,
-        is_bot: true,
-        project_id: 12,
-        project_name: 'Website',
-      }],
-    });
-    api.getProjects.mockResolvedValue({
-      projects: [{ id: 12, name: 'Website', task_count: 1 }],
-    });
-
+  it('opens global search from the sidebar search trigger', async () => {
     await mount();
+
+    const trigger = container.querySelector('[aria-label="打开全局搜索"]');
+    expect(trigger).toBeTruthy();
+    expect(trigger.textContent).toContain('搜索消息与产物');
+
     await act(async () => {
-      Simulate.change(container.querySelector('[aria-label="搜索任务、联系人或助手"]'), { target: { value: 'Launch Review' } });
+      Simulate.click(trigger);
     });
 
-    expect(container.querySelector('[aria-label="打开项目任务 Quarterly Launch Review"]')).toBeTruthy();
-    expect(container.textContent).not.toContain('没有匹配结果');
+    expect(onOpenSearch).toHaveBeenCalledTimes(1);
   });
 
   it('creates a project and immediately assigns the selected history task', async () => {
@@ -2066,7 +2200,7 @@ describe('ChatListView sidebar sections', () => {
     }
   });
 
-  it('removes friend agents directly from the assistant row', async () => {
+  it('removes friend agents from the unified assistant task menu', async () => {
     api.getAgents.mockResolvedValue({
       agents: [
         {
@@ -2084,11 +2218,21 @@ describe('ChatListView sidebar sections', () => {
 
     await mount();
 
-    const removeButton = container.querySelector('[aria-label="移除 共享助手"]');
-    const mobileButton = container.querySelector('[aria-label="共享助手 移动端使用"]');
-    expect(removeButton).toBeTruthy();
+    const actionButton = container.querySelector('[aria-label="共享助手 任务操作"]');
+    expect(actionButton).toBeTruthy();
+    expect(container.querySelector('[aria-label="移除 共享助手"]')).toBeFalsy();
+
+    await act(async () => {
+      Simulate.click(actionButton);
+    });
+
+    const actionMenu = document.body.querySelector('[role="menu"][aria-label="共享助手 任务操作"]');
+    const menuItems = Array.from(actionMenu.querySelectorAll('[role="menuitem"]'));
+    const mobileButton = menuItems.find((item) => item.textContent.includes('移动端使用'));
+    const removeButton = menuItems.find((item) => item.textContent.includes('移除助手'));
     expect(mobileButton).toBeTruthy();
-    expect(removeButton.nextElementSibling).toBe(mobileButton);
+    expect(removeButton).toBeTruthy();
+    expect(actionMenu.textContent).not.toContain('管理 Agent');
 
     await act(async () => {
       Simulate.click(removeButton);
@@ -2254,17 +2398,15 @@ describe('ChatListView sidebar sections', () => {
     expect(document.body.querySelector('.cc-new-task-dialog')).toBeFalsy();
   });
 
-  it('shows matches from collapsed sections while searching', async () => {
+  it('keeps collapsed sections collapsed when opening global search', async () => {
     api.getConversations.mockResolvedValue({
-      conversations: [
-        {
-          id: 'p2p_7_8',
-          friend_id: 8,
-          name: 'Alice',
-          is_group: false,
-          is_bot: false,
-        },
-      ],
+      conversations: [{
+        id: 'p2p_7_8',
+        friend_id: 8,
+        name: 'Alice',
+        is_group: false,
+        is_bot: false,
+      }],
     });
     api.getFriends.mockResolvedValue({
       friends: [{ id: 8, username: 'alice', display_name: 'Alice' }],
@@ -2272,28 +2414,12 @@ describe('ChatListView sidebar sections', () => {
     api.getAgents.mockResolvedValue({ agents: [] });
 
     await mount();
-
-    expect(container.textContent).toContain('Alice');
     await act(async () => {
       clickSection('联系人');
-    });
-    expect(container.textContent).not.toContain('Alice');
-
-    const input = container.querySelector('input');
-    await act(async () => {
-      input.value = 'Alice';
-      Simulate.change(input, { target: { value: 'Alice' } });
+      Simulate.click(container.querySelector('[aria-label="打开全局搜索"]'));
     });
 
-    expect(container.textContent).toContain('Alice');
-    expect(container.textContent).not.toContain('没有匹配结果');
-    expect(container.querySelector('.cc-contacts-section .cc-section-toggle').getAttribute('aria-expanded')).toBe('true');
-
-    await act(async () => {
-      input.value = '';
-      Simulate.change(input, { target: { value: '' } });
-    });
-    expect(container.textContent).not.toContain('Alice');
+    expect(onOpenSearch).toHaveBeenCalledTimes(1);
     expect(container.querySelector('.cc-contacts-section .cc-section-toggle').getAttribute('aria-expanded')).toBe('false');
   });
 
@@ -2320,7 +2446,7 @@ describe('ChatListView sidebar sections', () => {
       configurable: true,
       get: () => list.scrollTop,
     });
-    const contactAction = container.querySelector('.cc-agent-mobile-action');
+    const contactAction = container.querySelector('.cc-agent-menu-trigger');
     contactAction.focus();
     expect(document.activeElement).toBe(contactAction);
 
@@ -2940,7 +3066,7 @@ describe('ChatListView sidebar sections', () => {
     expect(menu).toBeTruthy();
     expect(container.querySelector('[aria-label="联系人更多操作"]').getAttribute('aria-expanded')).toBe('true');
     const menuItems = Array.from(menu.querySelectorAll('[role="menuitem"]'));
-    expect(menuItems.map((item) => item.textContent.trim())).toEqual(['添加好友', '创建群组', '管理 Agent 助手']);
+    expect(menuItems.map((item) => item.textContent.trim())).toEqual(['添加好友', '创建群组', '创建Agent助手']);
     expect(menuItems[0].querySelector('.lucide-user-plus')).toBeTruthy();
     expect(menuItems[1].querySelector('.lucide-users')).toBeTruthy();
     expect(menuItems[2].querySelector('.lucide-bot')).toBeTruthy();
@@ -2968,7 +3094,7 @@ describe('ChatListView sidebar sections', () => {
     });
     menu = container.querySelector('[role="menu"][aria-label="联系人操作"]');
     await act(async () => {
-      Simulate.click(Array.from(menu.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent.includes('管理 Agent 助手')));
+      Simulate.click(Array.from(menu.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent.includes('创建Agent助手')));
     });
     expect(container.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="agent-store-modal"]')).toBeTruthy();

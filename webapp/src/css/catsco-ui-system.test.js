@@ -68,6 +68,13 @@ describe('CatsCo shell styling', () => {
     );
     expect(ruleFor('.v3-sidebar.collapsed .v3-sidebar-collapse-btn .catsco-brand-mark'))
       .toContain('width: 34px;');
+    const collapsedButtonRule = ruleFor(
+      '.v3-sidebar.collapsed .v3-sidebar-collapse-btn,\n'
+      + '.v3-sidebar.collapsed .v3-sidebar-collapse-btn:hover,\n'
+      + '.v3-sidebar.collapsed .v3-sidebar-collapse-btn:active',
+    );
+    expect(collapsedButtonRule).toContain('background: transparent;');
+    expect(collapsedButtonRule).toContain('box-shadow: none;');
     expect(ruleFor('html[data-theme="liquid"] .catsco-brand-mark'))
       .toContain('filter: hue-rotate(68deg) saturate(1.05) brightness(0.78);');
   });
@@ -98,17 +105,6 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-chat-item')).toContain('font-weight: 400;');
   });
 
-  it('uses tokenized reduced-motion-safe feedback for inline video controls', () => {
-    expect(ruleFor(':root')).toContain('--cc-media-black: oklch(0.19 0.01 165);');
-    expect(ruleFor('.v3-message .oc-rich-video-play'))
-      .toContain('cubic-bezier(0.16, 1, 0.3, 1)');
-    expect(ruleFor('.oc-rich-video-preview-close'))
-      .toContain('cubic-bezier(0.16, 1, 0.3, 1)');
-    expect(css).toMatch(
-      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.v3-message \.oc-rich-video-play,[\s\S]*?transition: none;/,
-    );
-  });
-
   it('keeps sidebar metadata quiet and reveals its slim scrollbar on interaction', () => {
     const listRule = ruleFor('.v3-chat-list');
     const interactiveListRule = ruleFor('.v3-chat-list:hover,\n.v3-chat-list:focus-within');
@@ -119,7 +115,8 @@ describe('CatsCo shell styling', () => {
     );
     const collaborationRule = ruleFor('.cc-item-kind-agent');
 
-    expect(ruleFor('.cc-chat-row-time')).toContain('var(--cc-muted) 76%');
+    expect(ruleFor('.cc-chat-row-time')).toContain('color: var(--cc-muted);');
+    expect(ruleFor('.cc-chat-row-time')).toContain('font-size: 11px;');
     expect(collaborationRule).toContain('var(--cc-muted) 76%');
     expect(collaborationRule).toContain('var(--cc-muted) 7%');
     expect(listRule).toContain('var(--cc-muted) 18%');
@@ -152,13 +149,19 @@ describe('CatsCo shell styling', () => {
     const liquidButtonRule = ruleFor('html[data-theme="liquid"] :is(\n  .v3-sidebar-collapse-btn,\n  .v3-action-btn,\n  .v3-tool,\n  .cc-section-add,\n  .v3-profile-settings,\n  .oc-btn-default,\n  .oc-modal-close,\n  .oc-profile-editor-close\n)');
     const liquidButtonHoverRule = ruleFor('html[data-theme="liquid"] :is(\n  .v3-sidebar-collapse-btn,\n  .v3-action-btn,\n  .v3-tool,\n  .cc-section-add,\n  .v3-profile-settings,\n  .oc-btn-default,\n  .oc-modal-close,\n  .oc-profile-editor-close\n):hover:not(:disabled)');
     const liquidButtonActiveRule = ruleFor('html[data-theme="liquid"] :is(\n  .v3-sidebar-collapse-btn,\n  .v3-action-btn,\n  .v3-tool,\n  .cc-section-add,\n  .v3-profile-settings,\n  .oc-btn-default,\n  .oc-modal-close,\n  .oc-profile-editor-close\n):active:not(:disabled)');
+    const liquidSidebarControlRule = ruleFor(
+      'html[data-theme="liquid"] :is(.cc-sidebar-primary, .cc-sidebar-search)',
+    );
+    const liquidSidebarControlActiveRule = ruleFor(
+      'html[data-theme="liquid"] :is(.cc-sidebar-primary:hover, .cc-sidebar-search:focus-within)',
+    );
 
     expect(liquidRule).toContain('--cc-accent: #5662d9;');
     expect(liquidRule).toContain('--cc-main-bg: transparent;');
     expect(liquidRule).toContain('color-scheme: light;');
-    expect(liquidRule).toContain('--cc-text: #182033;');
-    expect(liquidRule).toContain('--cc-text-secondary: #4f5b73;');
-    expect(liquidRule).toContain('--cc-muted: #667085;');
+    expect(liquidRule).toContain('--cc-text: #111827;');
+    expect(liquidRule).toContain('--cc-text-secondary: #36425b;');
+    expect(liquidRule).toContain('--cc-muted: #4f5d75;');
     expect(liquidRule).toContain('--cc-liquid-violet: #7548cf;');
     expect(liquidRule).toContain('--cc-liquid-blue: #5662d9;');
     expect(liquidRule).toContain('--oc-green-light: #95aef4;');
@@ -180,11 +183,22 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('html[data-theme="liquid"] .v3-timeline')).toContain('background: transparent;');
     expect(ruleFor('html[data-theme="liquid"] .cc-empty-task')).toContain('background: transparent;');
     expect(ruleFor('html[data-theme="liquid"] .v3-message.is-self .v3-message-bubble'))
-      .toContain('background: rgba(255, 255, 255, 0.88);');
+      .toContain('background: rgba(255, 255, 255, 0.76);');
+    expect(ruleFor('html[data-theme="liquid"] .v3-message.is-self .v3-message-bubble'))
+      .toContain('box-shadow: none;');
     expect(ruleFor('html[data-theme="liquid"] .v3-wpi-code-block.result pre'))
       .toContain('color: var(--cc-text-secondary);');
     expect(ruleFor('html[data-theme="liquid"] .v3-wpi-tool-header .oc-wpi-tool-input'))
       .toContain('opacity: 1 !important;');
+    expect(ruleFor(
+      'html[data-theme="liquid"]:not([data-liquid-variant="green"]) .v3-wpi-plan-step.completed',
+    )).toContain('color: var(--cc-muted);');
+    expect(ruleFor(
+      'html[data-theme="liquid"]:not([data-liquid-variant="green"]) :is(\n'
+      + '  .cc-item-kind-agent,\n'
+      + '  .cc-chat-row-time\n'
+      + ')',
+    )).toContain('color: var(--cc-muted);');
     expect(ruleFor('html[data-theme="liquid"] .v3-sidebar'))
       .toContain('linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(249, 251, 255, 0.88) 58%, rgba(246, 248, 255, 0.9) 100%)');
     expect(ruleFor('html[data-theme="liquid"] .v3-sidebar'))
@@ -195,13 +209,19 @@ describe('CatsCo shell styling', () => {
       .toContain('backdrop-filter: none;');
     expect(liquidRule).toContain('--cc-liquid-edge: rgba(73, 86, 168, 0.18);');
     expect(liquidButtonRule).toContain('border: 1px solid var(--cc-liquid-edge);');
-    expect(liquidButtonRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.94)');
-    expect(liquidButtonRule).toContain('inset 0 6px 8px -7px rgba(255, 255, 255, 0.92)');
-    expect(liquidButtonRule).toContain('inset 1px 0 0 rgba(86, 98, 217, 0.07)');
-    expect(liquidButtonRule).toContain('inset -1px 0 0 rgba(117, 72, 207, 0.06)');
-    expect(liquidButtonHoverRule).toContain('inset 0 7px 9px -7px rgba(255, 255, 255, 0.96)');
-    expect(liquidButtonHoverRule).toContain('transform: translateY(-1px);');
+    expect(liquidButtonRule).toContain('box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86)');
+    expect(liquidButtonRule).not.toContain('0 4px 12px rgba(79, 91, 148, 0.11)');
+    expect(liquidButtonHoverRule).toContain('transform: none;');
     expect(liquidButtonActiveRule).toContain('transform: translateY(0) scale(0.98);');
+    expect(liquidSidebarControlRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.92)');
+    expect(liquidSidebarControlRule).not.toContain('0 4px 12px');
+    expect(liquidSidebarControlActiveRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.96)');
+    expect(liquidSidebarControlActiveRule).not.toContain('0 5px 13px');
+    expect(ruleFor(
+      'html[data-theme="liquid"] .v3-sidebar.collapsed .v3-sidebar-collapse-btn,\n'
+      + 'html[data-theme="liquid"] .v3-sidebar.collapsed .v3-sidebar-collapse-btn:hover,\n'
+      + 'html[data-theme="liquid"] .v3-sidebar.collapsed .v3-sidebar-collapse-btn:active',
+    )).toContain('background: transparent;');
     expect(ruleFor('html[data-theme="liquid"] .v3-local-assistant-bar')).toContain('background: transparent;');
     expect(ruleFor('html[data-theme="liquid"] .v3-local-assistant-bar')).toContain('border-bottom: 0;');
     expect(ruleFor('html[data-theme="liquid"] .v3-local-assistant-bar')).toContain('backdrop-filter: none;');
@@ -254,12 +274,22 @@ describe('CatsCo shell styling', () => {
     expect(attachmentRule).toContain('border: 1px solid var(--cc-liquid-edge);');
     expect(attachmentRule).toContain('background: rgba(255, 255, 255, 0.68);');
     expect(attachmentRule).toContain('color: #46506a;');
-    expect(attachmentRule).toContain('0 2px 5px rgba(79, 91, 148, 0.11)');
-    expect(attachmentRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.96)');
+    expect(attachmentRule).toContain('box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9)');
+    expect(attachmentRule).not.toContain('0 2px 5px rgba(79, 91, 148, 0.11)');
     expect(attachmentRule).not.toContain('gradient');
     expect(attachmentDecorationRule).toContain('display: none;');
     expect(attachmentHoverRule).toContain('inset 0 1px 0 rgba(255, 255, 255, 0.98)');
     expect(attachmentActiveRule).toContain('transform: translateY(0) scale(0.96);');
+  });
+
+  it('keeps question navigator hover backgrounds neutral across themes', () => {
+    const hoverRule = ruleFor('.cc-question-list-item:hover');
+    const activeHoverRule = ruleFor('.cc-question-list-item.is-active:hover');
+
+    expect(hoverRule).toContain('background: color-mix(in srgb, var(--cc-text) 8%, transparent);');
+    expect(activeHoverRule).toContain('background: color-mix(in srgb, var(--cc-text) 8%, transparent);');
+    expect(hoverRule).not.toContain('var(--v3-primary)');
+    expect(activeHoverRule).not.toContain('var(--v3-primary)');
   });
 
   it('keeps the light liquid composer legible with restrained focus depth', () => {
@@ -308,7 +338,7 @@ describe('CatsCo shell styling', () => {
     expect(neutralRule).toContain('background: rgba(255, 255, 255, 0.72) !important;');
     expect(settingsRule).toContain('background: rgba(255, 255, 255, 0.72) !important;');
     expect(dangerRule).toContain('background: rgba(218, 69, 79, 0.09) !important;');
-    expect(focusRule).toContain('outline: 2px solid rgba(86, 98, 217, 0.62);');
+    expect(focusRule).toContain('outline: 2px solid var(--cc-focus-ring);');
     expect(primaryRule).toContain('html[data-theme="liquid"] :is(');
     expect(neutralRule).toContain('html[data-theme="liquid"] :is(');
     expect(ruleFor('html[data-theme="liquid"] :is(\n  .catsco-download-icon,\n  .relay-access-summary-icon\n)'))
@@ -393,9 +423,9 @@ describe('CatsCo shell styling', () => {
     expect(badgeRule).toContain('margin-right: 0;');
     expect(badgeRule).toContain('font-size: 10px;');
     expect(menuRule).toContain('position: absolute;');
-    expect(menuRule).toContain('right: 4px;');
+    expect(menuRule).toContain('right: 2px;');
     expect(css).toContain('.cc-contacts-section:hover > .cc-section-request-badge');
-    expect(css).toContain('transform: translateX(-30px);');
+    expect(css).toContain('transform: translateX(-34px);');
   });
 
   it('right-aligns every top-level action and keeps its chevron close to the title', () => {
@@ -415,13 +445,15 @@ describe('CatsCo shell styling', () => {
     expect(unreadRule).toContain('transition: opacity 120ms ease, transform 120ms ease;');
     expect(activeUnreadRule).toContain('opacity: 0;');
     expect(actionRule).toContain('position: absolute;');
-    expect(actionRule).toContain('right: 4px;');
+    expect(actionRule).toContain('right: 2px;');
   });
 
   it('aligns contact and project conversation actions with regular task actions', () => {
     const actionRule = ruleFor('.v3-chat-item .cc-chat-row-actions');
     const agentActionRule = ruleFor('.cc-agent-row-trailing .v3-agent-row-actions');
     const projectActionRule = ruleFor('.cc-project-menu-trigger');
+    const projectTrailingRule = ruleFor('.cc-project-row .cc-sidebar-row-trailing');
+    const projectCountRule = ruleFor('.cc-project-count');
     const friendUnreadRule = ruleFor('.cc-chat-row-trailing > .cc-friend-unread-dot');
     const rowHoverMetadataRule = ruleFor(
       `.v3-chat-item:hover .cc-chat-row-time,
@@ -438,6 +470,11 @@ describe('CatsCo shell styling', () => {
     expect(agentActionRule).toContain('gap: 2px;');
     expect(agentActionRule).toContain('right: -5px;');
     expect(projectActionRule).toContain('flex: 0 0 var(--cc-sidebar-action-size);');
+    expect(projectTrailingRule).toContain('width: var(--cc-sidebar-action-size);');
+    expect(projectCountRule).toContain('position: absolute;');
+    expect(projectCountRule).toContain('right: -5px;');
+    expect(projectCountRule).toContain('width: var(--cc-sidebar-action-size);');
+    expect(projectCountRule).toContain('justify-content: center;');
     expect(friendUnreadRule).toContain('right: -1px;');
     expect(friendUnreadRule).toContain('transition: opacity 120ms ease, transform 120ms ease;');
     expect(rowHoverMetadataRule).toContain('opacity: 0;');
@@ -535,7 +572,8 @@ describe('CatsCo shell styling', () => {
     expect(listRule).toContain('--cc-sidebar-row-height: 36px;');
     expect(listRule).toContain('--cc-sidebar-row-gap: 1px;');
     expect(listRule).toContain('--cc-sidebar-row-padding-y: 6px;');
-    expect(listRule).toContain('--cc-sidebar-action-size: 28px;');
+    expect(listRule).toContain('--cc-sidebar-action-size: 32px;');
+    expect(listRule).toContain('--cc-sidebar-trailing-width: 68px;');
     expect(sectionRule).toContain('min-height: var(--cc-sidebar-row-height);');
     expect(sectionRule).toContain('line-height: 20px;');
     expect(itemRule).toContain('min-height: var(--cc-sidebar-row-height);');
@@ -727,7 +765,7 @@ describe('CatsCo shell styling', () => {
   });
 
   it('aligns peer messages and typing status to the unchanged composer rail', () => {
-    const stackedNoticeRule = ruleFor('.v3-composer-notices .v3-live-input-status:last-child');
+    const noticeRule = ruleFor('.v3-composer-notices .v3-live-input-status');
 
     expect(ruleFor('.v3-timeline')).toContain('padding: 18px 20px 140px;');
     expect(ruleFor('.v3-timeline-inner')).toContain('max-width: 760px;');
@@ -743,20 +781,19 @@ describe('CatsCo shell styling', () => {
     expect(css).toContain('@keyframes cc-peer-typing-pulse');
     expect(css).toContain('opacity: 0.52;');
     expect(css).toContain('opacity: 0.88;');
-    expect(css).toContain('animation-duration: 2400ms;');
+    expect(css).toContain('animation: none;');
     expect(ruleFor('.v3-composer-box')).toContain('width: min(760px, 100%);');
-    expect(stackedNoticeRule).toContain('width: 85%;');
-    expect(stackedNoticeRule).toContain('margin: 0 auto -11px;');
-    expect(stackedNoticeRule).toContain('border-radius: 22px 22px 0 0;');
-    expect(stackedNoticeRule).toContain('padding: 8px 14px 11px;');
-    expect(stackedNoticeRule).toContain('text-align: center;');
-    expect(ruleFor('.v3-composer-notices + .v3-composer-box')).toContain('z-index: 1;');
-    expect(ruleFor('.oc-reply-bar')).toContain('width: min(646px, calc(85% - 34px)) !important;');
-    expect(ruleFor('.oc-reply-bar')).toContain('border-radius: 22px 22px 0 0 !important;');
-    expect(ruleFor('.oc-reply-bar')).toContain('background: color-mix(in srgb, var(--cc-accent) 5%, var(--cc-panel)) !important;');
+    expect(ruleFor('.v3-composer-notices')).toContain('width: 100%;');
+    expect(noticeRule).toContain('min-height: 36px;');
+    expect(noticeRule).toContain('padding: 8px 14px 8px 28px;');
+    expect(noticeRule).toContain('border-bottom: 1px solid');
+    expect(ruleFor('.v3-composer-context')).toContain('border-radius: 27px 27px 0 0;');
+    expect(ruleFor('.oc-reply-bar')).toContain('width: 100% !important;');
+    expect(ruleFor('.oc-reply-bar')).toContain('border-radius: 0 !important;');
+    expect(ruleFor('.oc-reply-bar')).toContain('background: transparent !important;');
     expect(ruleFor('.oc-reply-bar')).toContain('font-size: 12px !important;');
-    expect(css).toContain('.oc-reply-bar .oc-reply-bar-close {\n  width: 24px;\n  height: 18px;');
-    expect(ruleFor('.oc-reply-bar + .v3-composer')).toContain('z-index: 1;');
+    expect(css).toContain('width: 32px;');
+    expect(css).not.toContain('margin: 0 auto -11px');
     expect(ruleFor('.v3-attachment-notice')).toContain('justify-content: center;');
     expect(ruleFor('.v3-attachment-notice > span')).toContain('text-overflow: ellipsis;');
     expect(ruleFor('.v3-composer-attachment-tray')).toContain('overflow-x: auto;');
@@ -766,6 +803,35 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-composer-attachment-preview')).toContain('cursor: zoom-in;');
     expect(ruleFor('.v3-composer-image-preview-backdrop')).toContain('position: fixed;');
     expect(css).not.toContain('.v3-composer-attachments {');
+  });
+
+  it('keeps hidden self-message actions reachable by keyboard focus', () => {
+    const selfFooterRule = ruleFor('.v3-message.is-self .v3-message-footer');
+    const revealedFooterRule = ruleFor(
+      '.v3-message.is-self:hover .v3-message-footer,\n.v3-message.is-self:focus-within .v3-message-footer',
+    );
+
+    expect(selfFooterRule).toContain('opacity: 0;');
+    expect(selfFooterRule).not.toContain('visibility: hidden;');
+    expect(revealedFooterRule).toContain('opacity: 1;');
+    expect(revealedFooterRule).toContain('pointer-events: auto;');
+  });
+
+  it('gently pulses a working agent avatar without a clipped glow', () => {
+    const workingAvatarRule = ruleFor('.v3-message.is-working .v3-avatar');
+
+    expect(workingAvatarRule).toContain('filter: brightness(0.86) saturate(0.9);');
+    expect(workingAvatarRule).toContain('box-shadow: none;');
+    expect(workingAvatarRule).toContain('animation: cc-agent-avatar-breathe 1800ms ease-in-out infinite;');
+    expect(workingAvatarRule).toContain('will-change: opacity;');
+    expect(css).not.toContain('@keyframes cc-agent-activity-halo');
+    expect(css).toContain('@keyframes cc-agent-avatar-breathe');
+    expect(css).toMatch(
+      /@keyframes cc-agent-avatar-breathe[\s\S]*?opacity: 0\.82;[\s\S]*?opacity: 1;/,
+    );
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.v3-message\.is-working \.v3-avatar\s*\{[^}]*animation: none;/,
+    );
   });
 
   it('uses a lighter self-message bubble in light mode and a deeper one in dark mode', () => {
@@ -788,6 +854,23 @@ describe('CatsCo shell styling', () => {
     expect(actionRule).toContain('height: 28px;');
     expect(actionRule).toContain('background: transparent;');
     expect(css).toContain('.v3-message.is-self.has-file-only .v3-message-bubble');
+  });
+
+  it('separates delivered files from the completion summary without splitting the reply', () => {
+    const contentRule = ruleFor('.v3-message.artifacts-first .v3-message-content');
+    const deliverablesRule = ruleFor('.v3-message.artifacts-first .v3-message-deliverables');
+    const summaryRule = ruleFor('.v3-message.artifacts-first .v3-message-followup-text');
+    const adjacentCardRule = ruleFor(
+      '.oc-working-group + .v3-message.artifacts-first .v3-attachment-card.v3-artifact-card',
+    );
+
+    expect(contentRule).toContain('display: flex;');
+    expect(contentRule).toContain('flex-direction: column;');
+    expect(deliverablesRule).toContain('width: 100%;');
+    expect(deliverablesRule).toContain('gap: 8px;');
+    expect(summaryRule).toContain('width: 100%;');
+    expect(summaryRule).toContain('margin-top: 14px;');
+    expect(adjacentCardRule).toContain('margin-bottom: 0;');
   });
 
   it('presents confirmations as a compact neutral dialog with a clear primary action', () => {
@@ -852,11 +935,62 @@ describe('CatsCo shell styling', () => {
     expect(groupNameFocusRule).toContain('box-shadow: none;');
   });
 
-  it('centers the assistant role chevron against the select control itself', () => {
+  it('uses a fixed, aligned friend search-mode listbox with neutral option feedback', () => {
+    const triggerRule = ruleFor('.oc-friend-search-mode-trigger');
+    const menuRule = ruleFor('.oc-friend-search-mode-menu');
+    const optionRule = ruleFor('.oc-friend-search-mode-option');
+    const optionHoverRule = ruleFor('.oc-friend-search-mode-option:is(:hover, .is-active)');
+
+    expect(triggerRule).toContain('width: 100%;');
+    expect(triggerRule).toContain('padding: 0 14px 0 10px;');
+    expect(menuRule).toContain('position: fixed;');
+    expect(menuRule).toContain('z-index: 2600;');
+    expect(menuRule).toContain('overflow: hidden;');
+    expect(menuRule).toContain('background: var(--cc-panel-raised);');
+    expect(optionRule).toContain('min-height: 34px;');
+    expect(optionHoverRule).toContain('background: var(--cc-hover);');
+  });
+
+  it('reserves the friend-request empty-state height while pending requests load', () => {
+    expect(ruleFor('.oc-friend-requests-section .oc-collaboration-list'))
+      .toContain('min-height: 66px;');
+    expect(ruleFor('.oc-friend-requests-section .oc-collaboration-empty'))
+      .toContain('align-content: center;');
+  });
+
+  it('sizes the assistant role menu like the surrounding form controls', () => {
     expect(ruleFor('.cc-agent-role-field')).toContain('position: relative;');
-    expect(ruleFor('.cc-agent-basic-card .cc-agent-role-select')).toContain('margin-bottom: 0;');
-    expect(ruleFor('.cc-agent-role-chevron')).toContain('top: 50%;');
-    expect(ruleFor('.cc-agent-role-chevron')).toContain('transform: translateY(-50%);');
+    expect(ruleFor('.cc-agent-basic-card .cc-agent-role-select .v3-custom-model-select-trigger'))
+      .toContain('min-height: 40px;');
+    expect(ruleFor('.cc-agent-basic-card .cc-agent-role-select .v3-custom-model-select-options'))
+      .toContain('padding: 5px;');
+    expect(ruleFor('.cc-agent-basic-card .cc-agent-role-select .v3-custom-model-select-option'))
+      .toContain('min-height: 36px;');
+  });
+
+  it('keeps every assistant-manager tab stable and shows four assistants before the hub grid scrolls', () => {
+    const managerRule = ruleFor('.oc-modal.cc-agent-manager');
+    const bodyRule = ruleFor('.cc-agent-manager-body');
+    const hubRule = ruleFor('.cc-agent-hub');
+    const hubGridRule = ruleFor('.cc-agent-hub-grid');
+
+    expect(managerRule).toContain('display: flex;');
+    expect(managerRule).toContain('height: min(760px, calc(100vh - 32px));');
+    expect(bodyRule).toContain('flex: 1 1 auto;');
+    expect(bodyRule).toContain('min-height: 0;');
+    expect(hubRule).toContain('grid-template-rows: auto auto auto;');
+    expect(hubRule).toContain('align-content: start;');
+    expect(hubRule).toContain('min-height: 0;');
+    expect(hubRule).not.toContain('height: 100%;');
+    expect(hubGridRule).toContain('overflow-y: auto;');
+    expect(hubGridRule).toContain('max-height: min(460px, 56vh);');
+    expect(ruleFor('.cc-agent-overview-stats strong'))
+      .toContain('font-variant-numeric: tabular-nums;');
+    expect(css).toMatch(/\.cc-agent-usage-guide\s*\{[^}]*margin-top: 8px;/);
+    expect(css).toMatch(
+      /\.cc-agent-usage-heading\s*\{[^}]*justify-items: center;[^}]*text-align: center;/,
+    );
+    expect(ruleFor('.cc-agent-usage-items small')).toContain('font-size: 12px;');
   });
 
   it('uses the existing narrow preview breakpoint and keeps the file preview sheet inside short viewports', () => {

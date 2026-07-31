@@ -284,20 +284,15 @@ func (a *Adapter) GetLatestMessagesBefore(topicID string, beforeID int64, limit 
 	return msgs, rows.Err()
 }
 
-// ListAgentFileMessages returns newest file-bearing messages authored by one agent in accessible topics.
-func (a *Adapter) ListAgentFileMessages(agentUID int64, topicIDs []string, beforeID int64, limit int) ([]*types.Message, error) {
-	if len(topicIDs) == 0 {
+// ListAgentFileMessages returns newest file-bearing messages authored by one agent in one conversation.
+func (a *Adapter) ListAgentFileMessages(agentUID int64, topicID string, beforeID int64, limit int) ([]*types.Message, error) {
+	if topicID == "" {
 		return []*types.Message{}, nil
 	}
 	if limit <= 0 {
 		limit = 50
 	}
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(topicIDs)), ",")
-	args := make([]interface{}, 0, len(topicIDs)+3)
-	args = append(args, agentUID)
-	for _, topicID := range topicIDs {
-		args = append(args, topicID)
-	}
+	args := []interface{}{agentUID, topicID}
 	beforeClause := ""
 	if beforeID > 0 {
 		beforeClause = " AND id < ?"
@@ -309,14 +304,13 @@ func (a *Adapter) ListAgentFileMessages(agentUID int64, topicIDs []string, befor
 			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
 			 FROM messages
 			 WHERE from_uid = ?
-			   AND topic_id IN (%s)
+			   AND topic_id = ?
 			   AND (
 			     msg_type = 'file'
 			     OR JSON_SEARCH(content_blocks, 'one', 'file', NULL, '$[*].type') IS NOT NULL
 			   )%s
 			 ORDER BY id DESC
 			 LIMIT ?`,
-			placeholders,
 			beforeClause,
 		),
 		args...,

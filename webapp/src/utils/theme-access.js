@@ -15,14 +15,20 @@ export function normalizeTheme(value) {
 
 export function isLiquidThemeUnlocked(storage = globalThis.localStorage) {
   try {
-    return storage?.getItem(LIQUID_THEME_UNLOCK_STORAGE_KEY) === '1';
+    if (storage?.getItem(LIQUID_THEME_UNLOCK_STORAGE_KEY) === '1') return true;
+    return isLiquidTheme(storage?.getItem(THEME_STORAGE_KEY));
   } catch {
     return false;
   }
 }
 
 export function saveLiquidThemeUnlock(storage = globalThis.localStorage) {
-  storage?.setItem(LIQUID_THEME_UNLOCK_STORAGE_KEY, '1');
+  try {
+    storage?.setItem(LIQUID_THEME_UNLOCK_STORAGE_KEY, '1');
+    return storage?.getItem(LIQUID_THEME_UNLOCK_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
 }
 
 function bytesToBase64(buffer) {

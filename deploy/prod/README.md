@@ -107,7 +107,31 @@ body limit.
 ## Distributed artifact nodes
 
 With no node registry configured, artifact management keeps using the legacy
-`CATSCO_ARTIFACT_MANAGEMENT_URL` and `CATSCO_ARTIFACT_MANAGEMENT_TOKEN`.
+`CATSCO_ARTIFACT_MANAGEMENT_URL` and `CATSCO_ARTIFACT_MANAGEMENT_TOKEN` only
+when direct Artifact discovery is disabled.
+
+Production enables one-server-per-Agent static discovery by default:
+
+```env
+CATSCO_DIRECT_ARTIFACT_URL_TEMPLATE=https://agent-{uid}.artifacts.catsco.fun:19991/artifacts
+```
+
+For Agent `535`, CatsCo reads:
+
+```text
+https://agent-535.artifacts.catsco.fun:19991/artifacts/artifacts-index.json
+```
+
+The template must use HTTPS, contain exactly one `{uid}` in the hostname, end
+with `/artifacts`, and use a different origin from `CATSCO_PUBLIC_BASE_URL`.
+Set `CATSCO_DIRECT_ARTIFACT_URL_TEMPLATE=` explicitly to disable this route.
+An unresolved hostname or index HTTP 404 means the Agent has not published an
+Artifact yet and returns an empty list. Connection failures, HTTP 5xx, invalid
+JSON, invalid Artifact URLs, and wrong-host URLs remain errors.
+
+Direct template nodes are list-only: CatsCo projects the selected Agent UID,
+sets `can_delete=false` and `can_restore=false`, and does not send a management
+token to the employee host.
 
 To route each managed Agent to the artifact host on its deployment node, copy
 `deploy/prod/artifact-nodes.example.json` to the persistent secrets directory
@@ -117,11 +141,17 @@ and set:
 CATSCO_ARTIFACT_NODES_FILE=/run/catsco-secrets/artifact-nodes.json
 ```
 
-The JSON maps an Agent UID to one node. Each node declares its public artifact
-base URL, protected management URL, and exactly one bearer-token source:
-`management_token_env` or `management_token_file`. The token itself must not be
-written into the JSON. Prefer a separate file under `/run/catsco-secrets` for
-each node; the directory is already mounted read-only in the server container.
+The JSON maps an Agent UID to one node. Every node declares its public artifact
+base URL. A fully managed node also declares a protected management URL and
+exactly one bearer-token source: `management_token_env` or
+`management_token_file`. A static-only node may omit all three management
+fields; CatsCo then reads
+`<public_base_url>/by-agent/<uid>/artifacts-index.json`, verifies that every
+artifact URL stays inside the same Agent namespace, does not offer delete or
+restore, and returns an empty recycle bin. The token itself must not be written
+into the JSON. Prefer a separate file under
+`/run/catsco-secrets` for each managed node; the directory is already mounted
+read-only in the server container.
 Every `public_base_url` must use a different origin (scheme, host, or port) from
 `CATSCO_PUBLIC_BASE_URL`. The server rejects a same-origin registry at startup
 so executable Artifact HTML cannot share the CatsCo application origin.
@@ -136,14 +166,18 @@ chmod 600 /srv/catscompany-prod/secrets/artifact-node-b.token
 Several nodes may reference `CATSCO_ARTIFACT_MANAGEMENT_TOKEN` only when those
 nodes intentionally share one service token.
 
-Once a node registry is enabled, an unmapped Agent fails closed. CatsCo does
-not send that Agent's list, delete, or restore request to the legacy host.
-Update the mapping as part of provisioning or moving a managed Agent.
+Resolution order is: explicit Agent mapping, direct URL template, then legacy.
+An explicit mapping can therefore override one exceptional Agent while all
+other Agents use deterministic direct discovery. If the direct template is
+disabled, an unmapped Agent fails closed by default. During a staged legacy
+migration, set `"fallback_to_legacy": true` to keep those unmapped Agents on
+`CATSCO_ARTIFACT_MANAGEMENT_URL`.
 The registry is loaded at server startup, so changing a node, mapping, or token
-file requires recreating the CatsCo server container.
+file requires recreating the CatsCo server container. Changing the direct
+template also requires recreating the container.
 
-When the node registry is enabled, the old unscoped `/api/artifacts` endpoint is
-disabled. All list, delete, and restore requests must use
+When a node registry or direct template is enabled, the old unscoped
+`/api/artifacts` endpoint is disabled. All list, delete, and restore requests use
 `/api/agents/{uid}/artifacts`, which prevents a request from silently falling
 back to the legacy node.
 

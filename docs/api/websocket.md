@@ -43,6 +43,33 @@
 - 纯文本: `"Hello"`
 - 富文本: `{"type": "image", "payload": {...}}`
 
+##### 取消群聊 Agent 流 (stream_cancel)
+
+`stream_cancel` 是 `pub` 的控制型变体，用于停止群聊中一个正在执行的 Agent：
+
+```json
+{
+  "pub": {
+    "id": "cancel-1",
+    "topic": "grp_5",
+    "type": "stream_cancel",
+    "metadata": {
+      "stream_id": "run-42",
+      "stream_event": "cancel",
+      "target_bot_uid": 42
+    }
+  }
+}
+```
+
+- `metadata.stream_id` 必填。
+- `metadata.target_bot_uid` 是目标 Agent 的数字 UID。多人群聊必须提供，且目标必须是本群 Bot；仅在群里恰好只有一个人类成员和一个 Bot 时可省略，由服务端推断唯一 Bot。
+- 发起者必须是未被禁言的群成员。多人群聊还要求发起者是目标 Agent 当前活跃轮次的发起者；其他成员、其他轮次发起者和 Bot 无权中止该轮次。
+- 成功返回 `ctrl.code: 200`，取消事件只会发给目标 Agent 和群内人类观察者，不会中止同群其他 Agent。
+- 以下情况返回 `ctrl.code: 403`，且不会执行取消：非群成员或已被禁言；缺少、伪造或指向非本群 Agent 的 `target_bot_uid`；非当前轮次发起者；Bot 尝试中止其他 Agent。客户端收到 `403` 后不得显示为“已停止”。
+
+XiaoBa-CLI 等 Agent runtime 在多人群中接收、处理或转发取消事件时，必须保留 `target_bot_uid`，不能只根据 `stream_id` 推断目标 Agent。
+
 #### 3. 订阅 (sub)
 ```json
 {

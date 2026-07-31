@@ -793,6 +793,14 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "topic_id required"})
 		return
 	}
+	if aroundID, aroundLimit, present := parseAroundRequest(r); present {
+		if aroundID <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "around_id must be positive and limit must be between 1 and 100"})
+			return
+		}
+		h.getMessagesAround(w, r, uid, topicID, aroundID, aroundLimit)
+		return
+	}
 	if h.hub != nil {
 		if code, text := h.hub.validateTopicReadAccess(uid, h.accountTypeForUID(uid), topicID); code != 0 {
 			writeJSON(w, code, map[string]string{"error": text})

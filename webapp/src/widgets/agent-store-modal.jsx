@@ -5,14 +5,16 @@ import {
   Bot,
   Bug,
   CheckCircle,
-  ChevronDown,
   Code2,
   Copy,
   FileCheck2,
   Lightbulb,
   QrCode,
   RefreshCw,
+  Settings2,
+  Smartphone,
   Sparkles,
+  Trash2,
   Upload,
   X,
   XCircle,
@@ -22,6 +24,7 @@ import Avatar from './avatar';
 import QRCode from './qr-code';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
+import CustomSelect from './custom-select';
 
 const CREATE_MODES = {
   SELF_HOSTED: 'self_hosted',
@@ -96,6 +99,12 @@ const ASSISTANT_CAPABILITIES = [
 
 const isOwnedBot = (bot) => bot?.is_owner === true || bot?.relation === 'owner';
 
+const editableBot = (bot) => ({
+  ...bot,
+  newDisplayName: bot.display_name,
+  newAvatarUrl: bot.avatar_url || '',
+});
+
 const normalizeBotVisibility = (visibility) => (
   visibility === BOT_VISIBILITY.PRIVATE ? BOT_VISIBILITY.PRIVATE : BOT_VISIBILITY.PUBLIC
 );
@@ -110,7 +119,12 @@ const botVisibilityDescription = (visibility) => (
     : '别人可以通过名字或 UID 搜索并申请添加。'
 );
 
-export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
+export default function AgentStoreModal({
+  initialAgentId = null,
+  onClose,
+  user,
+  onBotsChanged,
+}) {
   const feedback = useFeedback();
   const [bots, setBots] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -126,9 +140,80 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
   const [editingBot, setEditingBot] = useState(null);
   const [entryBot, setEntryBot] = useState(null);
   const avatarFileRef = useRef(null);
+  const dialogRef = useRef(null);
+  const dialogOpenerRef = useRef(null);
+  const editingBotRef = useRef(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const initialAgentAppliedRef = useRef(false);
+  const botOverview = useMemo(() => {
+    const online = bots.filter((bot) => bot.is_online === true || bot.online === true).length;
+    const publiclySearchable = bots.filter(
+      (bot) => normalizeBotVisibility(bot.visibility) === BOT_VISIBILITY.PUBLIC,
+    ).length;
+    const managed = bots.filter((bot) => Boolean(bot.tenant_name)).length;
+    return {
+      total: bots.length,
+      online,
+      publiclySearchable,
+      selfHosted: bots.length - managed,
+    };
+  }, [bots]);
 
-  useEffect(() => { loadBots(); }, []);
+  useEffect(() => {
+    initialAgentAppliedRef.current = false;
+    loadBots();
+  }, [initialAgentId]);
+
+  useEffect(() => {
+    editingBotRef.current = editingBot;
+  }, [editingBot]);
+
+  useEffect(() => {
+    dialogOpenerRef.current = document.activeElement;
+    const frame = window.requestAnimationFrame(() => {
+      dialogRef.current?.querySelector('button:not(:disabled)')?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (dialogOpenerRef.current instanceof HTMLElement) dialogOpenerRef.current.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (entryBot) return undefined;
+    const handleDialogKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      if (
+        event.target instanceof Element
+        && event.target.closest('.v3-custom-model-select-options.is-portal')
+      ) {
+        return;
+      }
+      const focusable = Array.from(dialogRef.current.querySelectorAll(
+        'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      )).filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true');
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (!dialogRef.current.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleDialogKeyDown);
+    return () => document.removeEventListener('keydown', handleDialogKeyDown);
+  }, [entryBot, onClose]);
 
   const loadBots = async ({ silent = false } = {}) => {
     try {
@@ -140,7 +225,28 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
         api.getAgents ? api.getAgents().catch(() => ({})) : Promise.resolve({}),
         api.getFriends ? api.getFriends().catch(() => ({})) : Promise.resolve({}),
       ]);
-      setBots(mergeManageableBots(botsRes.bots || [], agentsRes.agents || [], friendsRes.friends || []).filter(isOwnedBot));
+      const manageableBots = mergeManageableBots(
+        botsRes.bots || [],
+        agentsRes.agents || [],
+        friendsRes.friends || [],
+      ).filter(isOwnedBot);
+      setBots(manageableBots);
+
+      if (
+        !initialAgentAppliedRef.current
+        && initialAgentId !== null
+        && initialAgentId !== undefined
+      ) {
+        initialAgentAppliedRef.current = true;
+        const requestedAgentId = String(initialAgentId);
+        const requestedBot = manageableBots.find(
+          (bot) => String(bot.id || bot.uid) === requestedAgentId,
+        );
+        if (requestedBot) {
+          setEditingBot(editableBot(requestedBot));
+          setTab('manage');
+        }
+      }
     } catch (e) {
       console.error('Load bots error:', e);
     } finally {
@@ -306,11 +412,18 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
   return (
     <div className="oc-modal-overlay" onClick={onClose} style={{ zIndex: 1000 }}>
       {/* Removed arbitrary background hardcoding to allow inheritance from the global .oc-modal V3 matrix */}
-      <div className="oc-modal cc-agent-manager" onClick={e => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="oc-modal cc-agent-manager"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cc-agent-manager-title"
+        onClick={e => e.stopPropagation()}
+      >
 
         <div className="oc-modal-header cc-agent-manager-header">
           <div className="cc-agent-manager-nav">
-            <h3 className="cc-agent-manager-title">
+            <h3 id="cc-agent-manager-title" className="cc-agent-manager-title">
               <Zap size={17} /> AI 助手管理
             </h3>
             <div className="cc-agent-manager-tabs">
@@ -335,25 +448,39 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
 
           {/* HUB TAB */}
           {tab === 'hub' && (
-            <>
+            <div className="cc-agent-hub">
               {loading ? (
-                <div style={{ padding: 40, textAlign: 'center', color: 'var(--v3-text-muted)' }}>加载中...</div>
+                <div className="cc-agent-hub-state">加载中...</div>
               ) : bots.length === 0 ? (
-                <div style={{ padding: 60, textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
-                  <div style={{ color: 'var(--v3-text-muted)' }}><Bot size={48} strokeWidth={1.5} /></div>
-                  <div style={{ color: 'var(--v3-text-main)' }}>还没有你创建的 AI 助手</div>
-                  <div style={{ color: 'var(--v3-text-muted)', fontSize: 13, maxWidth: 280 }}>
+                <div className="cc-agent-hub-empty">
+                  <Bot size={48} strokeWidth={1.5} />
+                  <strong>还没有你创建的 AI 助手</strong>
+                  <p>
                     已添加的助手会保留在左侧 AI 助手列表，可直接移动端使用或移除。
-                  </div>
+                  </p>
                   <button className="oc-btn cc-agent-empty-action" onClick={() => setTab('create')}>创建第一个助手</button>
                 </div>
               ) : (
-                <div className="v3-agent-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
-                  {bots.map(bot => {
-                    const botId = bot.id || bot.uid;
-                    const owned = isOwnedBot(bot);
-                    return (
-                    <div key={botId} className="v3-agent-card" style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', padding: 16, borderRadius: 12 }}>
+                <>
+                  <section className="cc-agent-overview" aria-label="助手概览">
+                    <div className="cc-agent-overview-heading">
+                      <strong>助手概览</strong>
+                      <span>当前账号创建的助手状态</span>
+                    </div>
+                    <div className="cc-agent-overview-stats">
+                      <div><strong>{botOverview.total}</strong><span>全部助手</span></div>
+                      <div><strong>{botOverview.online}</strong><span>当前在线</span></div>
+                      <div><strong>{botOverview.publiclySearchable}</strong><span>公开可搜索</span></div>
+                      <div><strong>{botOverview.selfHosted}</strong><span>自托管</span></div>
+                    </div>
+                  </section>
+
+                  <div className="v3-agent-grid cc-agent-hub-grid">
+                    {bots.map(bot => {
+                      const botId = bot.id || bot.uid;
+                      const owned = isOwnedBot(bot);
+                      return (
+                      <div key={botId} className="v3-agent-card" style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', padding: 16, borderRadius: 12 }}>
                       <div className="v3-agent-header" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                         <div className="v3-agent-avatar" style={{ width: 48, height: 48, borderRadius: 8, background: 'var(--v3-bg-sidebar)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, color: 'var(--v3-primary)' }}>
                           {(bot.display_name || bot.username || '?').charAt(0).toUpperCase()}
@@ -371,46 +498,77 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                           {botVisibilityLabel(bot.visibility)}
                         </div>
                       )}
-                      <div className="v3-agent-actions" style={{ display: 'flex', gap: 8 }}>
+                      <div className="v3-agent-actions">
                         {owned && (
-                        <button className="oc-btn oc-btn-default" style={{ flex: 1, padding: '8px 0', borderRadius: 8 }} onClick={() => {
-                          setEditingBot({ ...bot, newDisplayName: bot.display_name, newAvatarUrl: bot.avatar_url || '' });
-                          setTab('manage');
-                        }}>
-                          管理
-                        </button>
+                          <button
+                            type="button"
+                            className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-manage"
+                            onClick={() => {
+                              setEditingBot(editableBot(bot));
+                              setTab('manage');
+                            }}
+                          >
+                            管理
+                          </button>
                         )}
                         {owned && (
-                        <button
-                          className="oc-btn oc-btn-default"
-                          style={{ padding: '8px 12px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 6 }}
-                          onClick={() => setEntryBot(bot)}
-                          title="入口码"
-                        >
-                          <QrCode size={14} />
-                          入口码
-                        </button>
+                          <button
+                            type="button"
+                            className="oc-btn oc-btn-default cc-agent-card-action"
+                            onClick={() => setEntryBot(bot)}
+                            title="入口码"
+                          >
+                            <QrCode size={14} aria-hidden="true" />
+                            入口码
+                          </button>
                         )}
                         {owned && !bot.tenant_name && (
                           <button
-                            className="oc-btn oc-btn-default"
-                            style={{ padding: '8px 12px', borderRadius: 8 }}
+                            type="button"
+                            className="oc-btn oc-btn-default cc-agent-card-action"
                             onClick={() => handleCopyBotAPIKey(bot, `api_${botId}`)}
                             disabled={copyingBotKey === botId}
                           >
                             {copiedField === `api_${botId}` ? '已复制' : copyingBotKey === botId ? '加载中...' : '复制 Key'}
                           </button>
                         )}
-                        <button className="oc-btn oc-btn-default" style={{ padding: '8px 16px', borderRadius: 8, borderColor: 'rgba(250,81,81,0.3)' }} onClick={() => handleDelete(bot)}>
-                          <span style={{ color: '#FA5151' }}>删除</span>
+                        <button
+                          type="button"
+                          className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-delete"
+                          aria-label={`删除助手 ${bot.display_name || bot.username}`}
+                          title="删除助手"
+                          onClick={() => handleDelete(bot)}
+                        >
+                          <Trash2 size={14} aria-hidden="true" />
                         </button>
                       </div>
                     </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+
+                  <section className="cc-agent-usage-guide" aria-label="助手使用提示">
+                    <div className="cc-agent-usage-heading">
+                      <strong>从管理到使用</strong>
+                    </div>
+                    <div className="cc-agent-usage-items">
+                      <div>
+                        <Settings2 size={16} />
+                        <span><strong>管理</strong><small>修改名称、头像和可见范围</small></span>
+                      </div>
+                      <div>
+                        <QrCode size={16} />
+                        <span><strong>入口码</strong><small>邀请其他人访问你的助手</small></span>
+                      </div>
+                      <div>
+                        <Smartphone size={16} />
+                        <span><strong>移动端使用</strong><small>从左侧助手的任务操作进入</small></span>
+                      </div>
+                    </div>
+                  </section>
+                </>
               )}
-            </>
+            </div>
           )}
 
           {/* CREATE TAB */}
@@ -439,14 +597,15 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                   <label>
                     <span>助手定位 <b>*</b></span>
                     <div className="cc-agent-role-field">
-                      <select
+                      <CustomSelect
+                        ariaLabel="助手定位"
+                        className="cc-agent-role-select"
                         value={createForm.role}
-                        onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })}
-                        className="oc-auth-input cc-agent-role-select"
+                        disabled={isSubmitting}
+                        onValueChange={(role) => setCreateForm({ ...createForm, role })}
                       >
                         {ASSISTANT_ROLES.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
-                      </select>
-                      <ChevronDown className="cc-agent-role-chevron" size={15} aria-hidden="true" />
+                      </CustomSelect>
                     </div>
                   </label>
                   <label>
@@ -530,20 +689,8 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
 
           {/* MANAGE / EDIT TAB */}
           {tab === 'manage' && editingBot && (
-            <form onSubmit={handleSaveEdit} style={{ maxWidth: 460, margin: '0 auto' }}>
+            <form className="cc-agent-manage-form" onSubmit={handleSaveEdit} style={{ maxWidth: 460, margin: '0 auto' }}>
               <h2 style={{ margin: '0 0 24px 0', fontSize: 20, color: 'var(--v3-text-name)' }}>管理助手</h2>
-
-              <div className="oc-form-group" style={{ marginBottom: 16 }}>
-                <label style={{ display: 'block', marginBottom: 8, fontSize: 13, color: 'var(--v3-text-muted)' }}>名称</label>
-                <input
-                  type="text"
-                  value={editingBot.newDisplayName}
-                  onChange={(e) => setEditingBot({ ...editingBot, newDisplayName: e.target.value })}
-                  className="oc-auth-input"
-                  style={{ width: '100%', padding: '12px 16px', fontSize: 15 }}
-                  required
-                />
-              </div>
 
               <div className="oc-form-group" style={{ marginBottom: 24 }}>
                 <label style={{ display: 'block', marginBottom: 8, fontSize: 13, color: 'var(--v3-text-muted)' }}>头像</label>
@@ -583,6 +730,7 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                     onChange={async (event) => {
                       const file = event.target.files?.[0];
                       if (!file) return;
+                      const uploadBotId = String(editingBot.id || editingBot.uid);
                       const validationError = validateImageUpload(file);
                       if (validationError) {
                         setError(validationError);
@@ -593,9 +741,18 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                       setError('');
                       try {
                         const uploaded = await api.uploadFile(file, 'image');
-                        setEditingBot(prev => ({ ...prev, newAvatarUrl: uploaded.url || '' }));
+                        setEditingBot(prev => (
+                          prev && String(prev.id || prev.uid) === uploadBotId
+                            ? { ...prev, newAvatarUrl: uploaded.url || '' }
+                            : prev
+                        ));
                       } catch (err) {
-                        setError(err.message || 'Avatar upload failed');
+                        if (
+                          editingBotRef.current
+                          && String(editingBotRef.current.id || editingBotRef.current.uid) === uploadBotId
+                        ) {
+                          setError(err.message || 'Avatar upload failed');
+                        }
                       } finally {
                         setAvatarUploading(false);
                         event.target.value = '';
@@ -605,11 +762,29 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                 </div>
               </div>
 
+              <div className="oc-form-group" style={{ marginBottom: 16 }}>
+                <label
+                  htmlFor={`cc-agent-name-${editingBot.id || editingBot.uid}`}
+                  style={{ display: 'block', marginBottom: 8, fontSize: 13, color: 'var(--v3-text-muted)' }}
+                >
+                  名称
+                </label>
+                <input
+                  id={`cc-agent-name-${editingBot.id || editingBot.uid}`}
+                  type="text"
+                  value={editingBot.newDisplayName}
+                  onChange={(e) => setEditingBot({ ...editingBot, newDisplayName: e.target.value })}
+                  className="oc-auth-input"
+                  style={{ width: '100%', padding: '12px 16px', fontSize: 15 }}
+                  required
+                />
+              </div>
+
               {!editingBot.tenant_name && (
-                <div style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
+                <div className="cc-agent-credentials" style={{ background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
                   <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>API Key</div>
-                  <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-                    <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: editingBot.api_key ? 'var(--v3-primary)' : 'var(--v3-text-muted)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
+                  <div className="cc-agent-credential-row" style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+                    <code className="cc-agent-credential-value" style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: editingBot.api_key ? 'var(--v3-primary)' : 'var(--v3-text-muted)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
                       {editingBot.api_key || '点击复制加载 API Key'}
                     </code>
                     <button
@@ -623,8 +798,8 @@ export default function AgentStoreModal({ onClose, user, onBotsChanged }) {
                   </div>
 
                   <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>WebSocket 连接地址</div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-text-main)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
+                  <div className="cc-agent-credential-row" style={{ display: 'flex', gap: 8 }}>
+                    <code className="cc-agent-credential-value" style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-text-main)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
                       {wsUrl}
                     </code>
                     <button type="button" className="oc-btn oc-btn-default" onClick={() => handleCopy('ws_edit', wsUrl)}>
@@ -710,7 +885,21 @@ function mergeManageableBots(rawBots, rawAgents, rawFriends = []) {
     .filter((agent) => agent && (agent.is_bot === true || agent.relation === 'friend' || agent.relation === 'owner'))
     .forEach((agent) => {
       const id = agent.uid || agent.id;
-      if (!id || byID.has(String(id))) return;
+      if (!id) return;
+      const existing = byID.get(String(id));
+      if (existing) {
+        const owned = isOwnedBot(existing);
+        byID.set(String(id), {
+          ...existing,
+          avatar_url: agent.avatar_url || existing.avatar_url,
+          display_name: agent.display_name || existing.display_name,
+          is_online: agent.is_online ?? existing.is_online,
+          online: agent.online ?? existing.online,
+          relation: owned ? existing.relation : (agent.relation || existing.relation),
+          is_owner: owned ? true : (existing.is_owner || agent.relation === 'owner'),
+        });
+        return;
+      }
       add(agent, {
         relation: agent.relation || 'friend',
         is_owner: agent.relation === 'owner',
