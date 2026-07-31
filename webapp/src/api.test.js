@@ -252,3 +252,34 @@ describe('message history request controls', () => {
     await rejection;
   });
 });
+
+describe('agent file requests', () => {
+  let apiModule;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    localStorage.clear();
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ files: [] }),
+    });
+    apiModule = await import('./api');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test('includes the current conversation and stable cursor in the query', async () => {
+    await apiModule.api.getAgentFiles(440, {
+      topicId: 'grp_80',
+      beforeId: 820,
+      limit: 40,
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/agents/440/files?topic_id=grp_80&limit=40&before_id=820',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+});

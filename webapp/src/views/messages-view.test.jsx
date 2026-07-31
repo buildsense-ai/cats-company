@@ -2504,6 +2504,18 @@ describe('MessagesView composer draft isolation', () => {
     const workspace = container.querySelector('.v3-message-workspace');
     expect(workspace.className).toContain('has-preview');
     expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
+      topicId: 'p2p_1_440',
+      beforeId: 0,
+      limit: 40,
+    });
+
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '产物'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     expect(api.getCloudArtifacts).toHaveBeenCalledWith(440, 'active');
 
     await act(async () => {
@@ -2536,13 +2548,15 @@ describe('MessagesView composer draft isolation', () => {
       cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '文件'));
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    expect(api.getAgentFiles).toHaveBeenCalledWith(440, { beforeId: 0, limit: 40 });
+    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
+      topicId: 'p2p_1_440',
+      beforeId: 0,
+      limit: 40,
+    });
     await act(async () => {
       Simulate.click(container.querySelector('button[aria-label="预览文件 期末学情报告.pdf"]'));
       await Promise.resolve();
@@ -2564,6 +2578,24 @@ describe('MessagesView composer draft isolation', () => {
       .find((button) => button.textContent === '文件')
       ?.getAttribute('aria-selected')).toBe('true');
     expect(api.getAgentFiles).toHaveBeenCalledTimes(2);
+  });
+
+  it('scopes the file panel request to the current group conversation', async () => {
+    await mountTopic(root, 'grp_80', {
+      isGroup: true,
+      groupId: 80,
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
+      topicId: 'grp_80',
+      beforeId: 0,
+      limit: 40,
+    });
   });
 
   it('shows an inline error when an unsupported image is selected', async () => {

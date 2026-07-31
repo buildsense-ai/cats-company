@@ -264,7 +264,7 @@ export default function MessagesView({
   const [previewFile, setPreviewFile] = useState(null);
   const [cloudArtifactsAgentUID, setCloudArtifactsAgentUID] = useState(0);
   const [cloudArtifactsListOpen, setCloudArtifactsListOpen] = useState(false);
-  const [cloudArtifactsTab, setCloudArtifactsTab] = useState('active');
+  const [cloudArtifactsTab, setCloudArtifactsTab] = useState('files');
   const [artifactRegistryState, setArtifactRegistryState] = useState({ agentUID: 0, artifacts: [] });
   const [artifactRegistryRefreshEpoch, setArtifactRegistryRefreshEpoch] = useState(0);
   const [previewWidth, setPreviewWidth] = useState(() => loadPreviewWidth());
@@ -462,7 +462,7 @@ export default function MessagesView({
     setPreviewFile(null);
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
-    setCloudArtifactsTab('active');
+    setCloudArtifactsTab('files');
   }, []);
 
   const previewCloudArtifact = useCallback((artifact) => {
@@ -599,7 +599,7 @@ export default function MessagesView({
     setPreviewFile(null);
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
-    setCloudArtifactsTab('active');
+    setCloudArtifactsTab('files');
     const cachedGroupProfile = isGroup && groupId
       ? groupProfileCacheRef.current.get(String(groupId))
       : null;
@@ -655,7 +655,7 @@ export default function MessagesView({
     if (agentUID <= 0 || !cloudArtifactsRequest?.requestId) return;
     setPreviewFile(null);
     setCloudArtifactsAgentUID(agentUID);
-    setCloudArtifactsTab('active');
+    setCloudArtifactsTab('files');
     setCloudArtifactsListOpen(true);
   }, [cloudArtifactsRequest]);
 
@@ -3092,6 +3092,7 @@ export default function MessagesView({
             {cloudArtifactsListOpen && cloudArtifactsAgentUID > 0 ? (
               <CloudArtifactsPanel
                 agentUid={cloudArtifactsAgentUID}
+                topicId={topic}
                 tab={cloudArtifactsTab}
                 onTabChange={setCloudArtifactsTab}
                 onClose={closeSidePanel}
