@@ -19,8 +19,6 @@ const EMPTY_CUSTOM_MODEL = {
   api_base: '',
   model: '',
   api_key: '',
-  context_window_tokens: '128000',
-  max_tokens: '',
   temperature: '',
   reasoning_effort: '',
 };
@@ -32,7 +30,6 @@ const CUSTOM_PROTOCOLS = [
 ];
 
 const CUSTOM_REASONING_EFFORTS = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'disabled'];
-const CUSTOM_CONTEXT_WINDOW_OPTIONS = [128000, 200000, 256000, 512000, 1000000];
 
 function customDraftFromConfig(config) {
   const custom = config?.custom;
@@ -42,8 +39,6 @@ function customDraftFromConfig(config) {
     api_base: custom.api_base || '',
     model: custom.model || '',
     api_key: '',
-    context_window_tokens: String(custom.context_window_tokens || 128000),
-    max_tokens: custom.max_tokens ? String(custom.max_tokens) : '',
     temperature: custom.temperature == null ? '' : String(custom.temperature),
     reasoning_effort: custom.reasoning_effort === 'default' ? '' : custom.reasoning_effort || '',
   };
@@ -52,17 +47,12 @@ function customDraftFromConfig(config) {
 function modelQuotaLabel(quota, state) {
   if (state === 'error') return '额度暂不可用';
   if (state !== 'loaded') return '额度同步中';
-  if (!quota) return '额度未配置';
+  if (!quota || quota.quota_configured !== true) return '额度未配置';
   if (quota.status === 'over_limit') return '额度已用尽';
-  const limit = Number(quota.limit_cny);
-  const remaining = Number(quota.remaining_cny);
-  const percent = Number(quota.percent);
-  if (!Number.isFinite(limit) || limit <= 0) return '额度未配置';
-  const remainingPercent = Number.isFinite(percent)
-    ? Math.max(0, Math.min(100, 100 - percent))
-    : 0;
-  const remainingAmount = Number.isFinite(remaining) ? Math.max(0, remaining) : 0;
-  return `剩余 ${Math.round(remainingPercent)}% · ¥${remainingAmount.toFixed(2)}`;
+  const remainingPercent = Number(quota.remaining_percent);
+  if (!Number.isFinite(remainingPercent)) return '额度暂不可用';
+  const clamped = Math.max(0, Math.min(100, remainingPercent));
+  return `剩余 ${Math.round(clamped)}%`;
 }
 
 function modelQuotaTone(quota) {
@@ -113,27 +103,6 @@ function reasoningEffortLabel(effort) {
   return labels[effort] || effort;
 }
 
-function customContextWindowOptions(currentValue) {
-  const current = Number(currentValue);
-  if (!Number.isInteger(current) || current <= 0 || CUSTOM_CONTEXT_WINDOW_OPTIONS.includes(current)) {
-    return CUSTOM_CONTEXT_WINDOW_OPTIONS;
-  }
-  return [current, ...CUSTOM_CONTEXT_WINDOW_OPTIONS];
-}
-
-export function formatModelContextWindowTokens(tokens) {
-  const value = Number(tokens);
-  if (!Number.isFinite(value) || value <= 0) return '';
-  if (value >= 1_000_000) {
-    const millions = value / 1_000_000;
-    return `${Number.isInteger(millions) ? millions : Number(millions.toFixed(1))}M`;
-  }
-  if (value >= 1_000) {
-    const thousands = value / 1_000;
-    return `${Number.isInteger(thousands) ? thousands : Number(thousands.toFixed(1))}K`;
-  }
-  return String(Math.round(value));
-}
 
 export function describeModelConfigRequestError(error, action = '切换') {
   if (error?.code === 'NETWORK_ERROR') {
@@ -354,11 +323,9 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
 
   const saveCustomModel = (event) => {
     event.preventDefault();
-    const contextWindow = Number(customDraft.context_window_tokens);
-    const maxTokens = customDraft.max_tokens === '' ? 0 : Number(customDraft.max_tokens);
     const temperature = customDraft.temperature === '' ? undefined : Number(customDraft.temperature);
-    if (!customDraft.api_base.trim() || !customDraft.model.trim() || !Number.isFinite(contextWindow)) {
-      setError('请完整填写 API Base、模型名称和上下文长度。');
+    if (!customDraft.api_base.trim() || !customDraft.model.trim()) {
+      setError('请完整填写 API Base 和模型名称。');
       return;
     }
     if (!modelConfig?.custom?.api_key_configured && !customDraft.api_key.trim()) {
@@ -370,8 +337,6 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
       api_base: customDraft.api_base.trim(),
       model: customDraft.model.trim(),
       api_key: customDraft.api_key.trim(),
-      context_window_tokens: contextWindow,
-      max_tokens: Number.isFinite(maxTokens) ? maxTokens : 0,
       reasoning_effort: customDraft.reasoning_effort,
     };
     if (Number.isFinite(temperature)) custom.temperature = temperature;
@@ -495,23 +460,6 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                 />
               </label>
               <div className="v3-custom-model-grid">
-                <div className="v3-custom-model-field">
-                  <span>上下文 Token</span>
-                  <CustomSelect
-                    ariaLabel="上下文 Token"
-                    placement="top"
-                    value={customDraft.context_window_tokens}
-                    onValueChange={(contextWindowTokens) => setCustomDraft({ ...customDraft, context_window_tokens: contextWindowTokens })}
-                  >
-                    {customContextWindowOptions(customDraft.context_window_tokens).map((tokens) => (
-                      <option key={tokens} value={tokens}>{formatModelContextWindowTokens(tokens)}</option>
-                    ))}
-                  </CustomSelect>
-                </div>
-                <label>
-                  <span>最大输出 Token</span>
-                  <input type="number" min="0" max="1000000" placeholder="使用服务默认" value={customDraft.max_tokens} onChange={(event) => setCustomDraft({ ...customDraft, max_tokens: event.target.value })} />
-                </label>
                 <label>
                   <span>温度</span>
                   <input type="number" min="0" max="2" step="0.1" placeholder="使用服务默认" value={customDraft.temperature} onChange={(event) => setCustomDraft({ ...customDraft, temperature: event.target.value })} />
@@ -549,7 +497,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                 const efforts = model.reasoning_efforts || [];
                 const hasReasoning = efforts.length > 0;
                 const selected = desiredKind === 'catalog' && desiredModelID === model.id;
-                const contextWindow = formatModelContextWindowTokens(model.context_window_tokens);
+
                 return (
                   <div
                     key={model.id}
@@ -569,7 +517,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                     >
                       <span>
                         <strong>{model.label}</strong>
-                        <small>{contextWindow ? `上下文 ${contextWindow}` : model.description}</small>
+                        <small>{model.description}</small>
                         <small className={`v3-model-menu-quota ${modelQuotaTone(model.quota)}`.trim()}>{modelQuotaLabel(model.quota, modelConfig?.quota_error ? 'error' : usageState)}</small>
                       </span>
                       {hasReasoning ? <ChevronRight size={15} /> : selected && <Check size={15} />}

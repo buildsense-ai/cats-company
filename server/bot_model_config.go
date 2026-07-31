@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -47,7 +48,7 @@ type botModelCatalogItem struct {
 	Description            string             `json:"description"`
 	Provider               string             `json:"provider"`
 	Protocol               string             `json:"protocol"`
-	ContextWindowTokens    int64              `json:"context_window_tokens"`
+	ContextWindowTokens    int64              `json:"-"`
 	ReasoningEfforts       []string           `json:"reasoning_efforts,omitempty"`
 	DefaultReasoningEffort string             `json:"default_reasoning_effort,omitempty"`
 	Quota                  *relayUsageSummary `json:"quota,omitempty"`
@@ -111,15 +112,13 @@ type cloudCustomModelConfig struct {
 }
 
 type ownerCustomModelConfig struct {
-	Protocol            string   `json:"protocol"`
-	APIBase             string   `json:"api_base"`
-	Model               string   `json:"model"`
-	APIKeyConfigured    bool     `json:"api_key_configured"`
-	APIKeyHint          string   `json:"api_key_hint,omitempty"`
-	ContextWindowTokens int64    `json:"context_window_tokens"`
-	MaxTokens           int64    `json:"max_tokens,omitempty"`
-	Temperature         *float64 `json:"temperature,omitempty"`
-	ReasoningEffort     string   `json:"reasoning_effort,omitempty"`
+	Protocol         string   `json:"protocol"`
+	APIBase          string   `json:"api_base"`
+	Model            string   `json:"model"`
+	APIKeyConfigured bool     `json:"api_key_configured"`
+	APIKeyHint       string   `json:"api_key_hint,omitempty"`
+	Temperature      *float64 `json:"temperature,omitempty"`
+	ReasoningEffort  string   `json:"reasoning_effort,omitempty"`
 }
 
 func NewBotModelConfigHandler(owners botModelOwnershipStore, models store.BotModelConfigStore) *BotModelConfigHandler {
@@ -233,7 +232,8 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 				if errors.Is(customErr, errBotModelEncryptionUnavailable) {
 					status = http.StatusServiceUnavailable
 				}
-				writeJSON(w, status, map[string]string{"error": customErr.Error()})
+				log.Printf("prepare custom model update failed bot_uid=%d: %v", botUID, customErr)
+				writeJSON(w, status, map[string]string{"error": "custom model configuration could not be updated"})
 				return
 			}
 			config, err = h.saveDesiredCustomModel(botUID, custom, customCiphertext)
@@ -260,20 +260,11 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 		}
 	}
 	if r.Method == http.MethodGet {
-		response, responseErr := h.ownerConfigResponse(r.Context(), ownerUID, botUID, storedConfig, r.URL.Query().Get("include_usage") == "1")
-		if responseErr != nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": responseErr.Error()})
-			return
-		}
+		response := h.ownerConfigResponse(r.Context(), ownerUID, botUID, storedConfig, r.URL.Query().Get("include_usage") == "1")
 		writeJSON(w, http.StatusOK, response)
 		return
 	}
-	response, responseErr := h.ownerConfigResponse(r.Context(), ownerUID, botUID, config, false)
-	if responseErr != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": responseErr.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, h.ownerConfigResponse(r.Context(), ownerUID, botUID, config, false))
 }
 
 func (h *BotModelConfigHandler) saveDesiredCatalogModel(
@@ -578,8 +569,11 @@ func (h *BotModelConfigHandler) ownerConfigResponse(
 	ownerUID, botUID int64,
 	config *types.BotModelConfig,
 	includeUsage bool,
-) (map[string]interface{}, error) {
+) map[string]interface{} {
 	response := botModelConfigResponse(botUID, config)
+	if lastError, _ := response["last_error"].(string); strings.TrimSpace(lastError) != "" {
+		response["last_error"] = "模型配置应用失败"
+	}
 	response["management_enabled"] = h.managementEnabled(ownerUID)
 	response["runtime_supported"] = botModelRuntimeSupported(config)
 	if !botModelRuntimeSupported(config) {
@@ -598,22 +592,20 @@ func (h *BotModelConfigHandler) ownerConfigResponse(
 			response["custom_unavailable_reason"] = "已保存的自定义模型凭证暂时无法读取，请重新填写后保存"
 		} else {
 			response["custom"] = ownerCustomModelConfig{
-				Protocol:            custom.Protocol,
-				APIBase:             custom.APIBase,
-				Model:               custom.Model,
-				APIKeyConfigured:    custom.APIKey != "",
-				APIKeyHint:          secretHint(custom.APIKey),
-				ContextWindowTokens: custom.ContextWindowTokens,
-				MaxTokens:           custom.MaxTokens,
-				Temperature:         custom.Temperature,
-				ReasoningEffort:     custom.ReasoningEffort,
+				Protocol:         custom.Protocol,
+				APIBase:          custom.APIBase,
+				Model:            custom.Model,
+				APIKeyConfigured: custom.APIKey != "",
+				APIKeyHint:       secretHint(custom.APIKey),
+				Temperature:      custom.Temperature,
+				ReasoningEffort:  custom.ReasoningEffort,
 			}
 		}
 	}
 	if h.secretCodecError != nil {
 		response["custom_unavailable_reason"] = "服务端尚未配置自定义模型密钥加密"
 	}
-	return response, nil
+	return response
 }
 
 func (h *BotModelConfigHandler) runtimeConfigResponse(botUID int64, config *types.BotModelConfig) (map[string]interface{}, error) {
@@ -668,15 +660,19 @@ func (h *BotModelConfigHandler) prepareCustomModelUpdate(
 	custom.Model = strings.TrimSpace(custom.Model)
 	custom.APIKey = strings.TrimSpace(custom.APIKey)
 	custom.ReasoningEffort = strings.ToLower(strings.TrimSpace(custom.ReasoningEffort))
-	if custom.ContextWindowTokens == 0 {
-		custom.ContextWindowTokens = 128000
-	}
-	if custom.APIKey == "" && stored != nil && stored.CustomCiphertext != "" {
+	// Token limits are server-managed and never accepted from the owner-facing API.
+	custom.ContextWindowTokens = 128000
+	custom.MaxTokens = 0
+	if stored != nil && stored.CustomCiphertext != "" {
 		previous, err := h.decryptCustomModel(botUID, stored.CustomCiphertext)
 		if err != nil {
 			return nil, "", err
 		}
-		custom.APIKey = previous.APIKey
+		if custom.APIKey == "" {
+			custom.APIKey = previous.APIKey
+		}
+		custom.ContextWindowTokens = previous.ContextWindowTokens
+		custom.MaxTokens = previous.MaxTokens
 	}
 	if err := validateCloudCustomModel(&custom); err != nil {
 		return nil, "", err

@@ -84,13 +84,6 @@ function formatShortDateTime(value) {
   });
 }
 
-function formatCNY(value) {
-  const number = Number(value || 0);
-  return number.toLocaleString('zh-CN', {
-    minimumFractionDigits: number > 0 && number < 1 ? 4 : 2,
-    maximumFractionDigits: 4,
-  });
-}
 
 function formatPercent(value) {
   const number = Number(value || 0);
@@ -104,22 +97,17 @@ function modelBudgetLabel(model) {
 }
 
 function summarizeCommercial(summary) {
-  const totals = summary?.totals_by_model || {};
-  const entries = Object.entries(totals)
-    .filter(([, amount]) => Number(amount) > 0)
-    .sort(([a], [b]) => a.localeCompare(b));
-  if (!entries.length) return '暂无已发放额度';
-  return entries.map(([model, amount]) => `${modelBudgetLabel(model)} ${formatCNY(amount)} CNY`).join(' · ');
+  const models = summary?.models || [];
+  if (!models.length) return '暂无已发放额度';
+  return `已发放 ${models.length} 项模型额度`;
 }
 
 function activeEntitlements(summary) {
   return (summary?.entitlements || []).filter((item) => item.state === 'active');
 }
 
-function commercialTotals(summary) {
-  return Object.entries(summary?.totals_by_model || {})
-    .filter(([, amount]) => Number(amount) > 0)
-    .sort(([a], [b]) => a.localeCompare(b));
+function commercialModels(summary) {
+  return [...(summary?.models || [])].filter(Boolean).sort((a, b) => a.localeCompare(b));
 }
 
 function modelUsageKey(model) {
@@ -259,29 +247,28 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
     };
   }
 
-  const limit = Number(summary.limit_cny || 0);
-  const used = Number(summary.used_cny || 0);
-  const remaining = Number(summary.remaining_cny || 0);
-  if (limit <= 0) {
+  if (summary.quota_configured !== true) {
     return {
       className: 'inactive',
       model: summary.model || fallbackModel,
       title: '当前模型未设置额度',
-      meta: `${summary.provider ? `${summary.provider} · ` : ''}已用 ${formatCNY(used)} CNY`,
+      meta: `${summary.provider ? `${summary.provider} · ` : ''}额度未配置`,
       detail: '等待模型限额同步',
       percent: 0,
       note: '管理员同步模型额度后，这里会显示剩余额度和用量百分比。',
     };
   }
-  const percent = limit > 0 ? Math.min(100, Math.max(0, Number(summary.percent || 0))) : 0;
-  const overLimit = summary.status === 'over_limit' || (limit > 0 && used > limit);
+  const rawPercent = Number(summary.percent || 0);
+  const percent = Math.min(100, Math.max(0, rawPercent));
+  const remainingPercent = Math.max(0, Number(summary.remaining_percent ?? (100 - percent)));
+  const overLimit = summary.status === 'over_limit';
   const high = !overLimit && (summary.status === 'high' || percent >= 90);
   return {
     className: overLimit ? 'danger' : high ? 'warning' : 'active',
     model: summary.model || fallbackModel,
     title: overLimit ? '当前模型已超额' : high ? '当前模型接近上限' : '当前模型额度',
-    meta: `${summary.provider ? `${summary.provider} · ` : ''}已用 ${formatCNY(used)} / ${formatCNY(limit)} CNY`,
-    detail: overLimit ? '剩余额度 0 CNY' : `剩余 ${formatCNY(remaining)} CNY`,
+    meta: `${summary.provider ? `${summary.provider} · ` : ''}已用 ${overLimit ? '100%+' : formatPercent(percent)}`,
+    detail: overLimit ? '剩余额度 0%' : `剩余 ${formatPercent(remainingPercent)}`,
     percent,
     note: overLimit
       ? '这组模型额度已超出，后续调用应被 relay 拦截；请联系管理员补额或重置。'
@@ -289,21 +276,19 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
   };
 }
 
-function budgetUsageMeta(model, amount, usageByModel) {
+function budgetUsageMeta(model, usageByModel) {
   const { loading, summary: usage } = usageStateForModel(usageByModel, model);
-  if (loading) return '用量读取中';
-  if (!usage) return '未同步到 relay';
+  if (loading) return '额度读取中';
+  if (!usage) return '额度未同步';
   if (usage.source === 'custom' || usage.status === 'custom') return '自定义模型不计入模型服务套餐';
-  const relayLimit = Number(usage.limit_cny || 0);
-  if (!usage.model || relayLimit <= 0) return '未同步到 relay';
-  const used = Math.max(0, Number(usage.used_cny || 0));
-  const remaining = Math.max(0, Number(usage.remaining_cny || 0));
-  const overLimit = usage.status === 'over_limit' || used > relayLimit;
+  if (!usage.model || usage.quota_configured !== true) return '额度未同步';
+  const rawPercent = Number(usage.percent || 0);
+  const percent = Math.min(100, Math.max(0, rawPercent));
+  const overLimit = usage.status === 'over_limit';
   const resetLabel = usage.reset_duration ? ` · ${resetDurationLabel(usage.reset_duration)}` : '';
-  const syncHint = Math.abs(Number(amount || 0) - relayLimit) > 0.000001
-    ? ` · relay 限额 ${formatCNY(relayLimit)}`
-    : '';
-  return `${overLimit ? '已超额 · ' : ''}已用 ${formatCNY(used)} CNY · 剩余 ${formatCNY(remaining)} CNY${syncHint}${resetLabel}`;
+  const usedLabel = overLimit ? '100%+' : formatPercent(percent);
+  const remainingLabel = overLimit ? '0%' : formatPercent(100 - percent);
+  return `${overLimit ? '已超额 · ' : ''}已用 ${usedLabel} · 剩余 ${remainingLabel}${resetLabel}`;
 }
 
 function nearestPackageExpiry(packages) {
@@ -531,7 +516,7 @@ export default function RelayAccessModal({ onClose }) {
   const commercialEnabled = commercial?.enabled === true && commercialSummary;
   const commercialEnforced = commercial?.enforce_enabled === true;
   const activePackages = activeEntitlements(commercialSummary);
-  const modelTotals = commercialTotals(commercialSummary);
+  const modelTotals = commercialModels(commercialSummary);
   const packageExpiry = nearestPackageExpiry(activePackages);
   const packageExpiryText = activePackages.length > 0 ? formatShortDate(packageExpiry) : '无套餐';
   const currentResetInfo = usageResetInfo(currentUsage);
@@ -549,11 +534,11 @@ export default function RelayAccessModal({ onClose }) {
     return () => {
       cancelled = true;
     };
-  }, [relayKey?.prefix, commercial?.summary?.total_cny]);
+  }, [relayKey?.prefix, JSON.stringify(commercial?.summary?.models || [])]);
 
   useEffect(() => {
     let cancelled = false;
-    const models = modelTotals.map(([model]) => modelUsageKey(model)).filter(Boolean);
+    const models = modelTotals.map((model) => modelUsageKey(model)).filter(Boolean);
     if (!commercialEnabled || models.length === 0) {
       setUsageByModel({});
       return () => {
@@ -700,8 +685,8 @@ export default function RelayAccessModal({ onClose }) {
               <div className="relay-access-commerce-card">
                 <Sparkles size={17} />
                 <div>
-                  <strong>{commercialEnabled ? `${formatCNY(commercialSummary?.total_cny)} CNY` : '无套餐'}</strong>
-                  <span>套餐账本额度</span>
+                  <strong>{commercialEnabled ? `${modelTotals.length} 项` : '无套餐'}</strong>
+                  <span>模型额度</span>
                 </div>
               </div>
               <div className="relay-access-commerce-card">
@@ -749,13 +734,13 @@ export default function RelayAccessModal({ onClose }) {
 
             {commercialEnabled && modelTotals.length > 0 && (
               <div className="relay-access-budget-list">
-                {modelTotals.map(([model, amount]) => (
+                {modelTotals.map((model) => (
                   <div key={model}>
                     <span>
                       <strong>{modelBudgetLabel(model)}</strong>
-                      <em>{budgetUsageMeta(model, amount, usageByModel)}</em>
+                      <em>{budgetUsageMeta(model, usageByModel)}</em>
                     </span>
-                    <strong>套餐 {formatCNY(amount)} CNY</strong>
+                    <strong>额度</strong>
                   </div>
                 ))}
               </div>
