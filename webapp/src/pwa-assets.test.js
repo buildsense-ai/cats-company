@@ -64,6 +64,11 @@ function decodeRGBA8PNG(file) {
 }
 
 describe('PWA notification badge', () => {
+  it('allows installed layouts to consume device safe-area insets', () => {
+    const indexHtml = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8');
+    expect(indexHtml).toContain('viewport-fit=cover');
+  });
+
   it('uses a transparent monochrome asset distinct from the launcher icon', () => {
     const badgePath = resolve(process.cwd(), 'public/pwa-notification-badge-96x96.png');
     const { width, height, pixels } = decodeRGBA8PNG(badgePath);
