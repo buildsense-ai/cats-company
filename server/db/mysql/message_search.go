@@ -24,8 +24,30 @@ normalized_messages AS (
          CASE
            WHEN content_blocks IS NULL THEN TRUE
            ELSE JSON_SCHEMA_VALID(
-             '{"type":["array","null"],"items":{"type":["object","null"],"additionalProperties":false,"properties":{"type":{"type":["string","null"]},"text":{"type":["string","null"]},"thinking":{"type":["string","null"]},"payload":{"type":["object","null"],"properties":{"name":{"type":["string","null"]},"file_name":{"type":["string","null"]},"filename":{"type":["string","null"]},"title":{"type":["string","null"]}}},"id":{"type":["string","null"]},"name":{"type":["string","null"]},"input":{"type":["object","null"]},"tool_use_id":{"type":["string","null"]},"content":{"type":["string","null"]},"is_error":{"type":["boolean","null"]}}}}',
+             '{"type":["array","null"],"items":{"type":["object","null"],"properties":{"type":{"type":["string","null"]},"text":{"type":["string","null"]},"thinking":{"type":["string","null"]},"payload":{"type":["object","null"],"properties":{"name":{"type":["string","null"]},"file_name":{"type":["string","null"]},"filename":{"type":["string","null"]},"title":{"type":["string","null"]}}},"id":{"type":["string","null"]},"name":{"type":["string","null"]},"input":{"type":["object","null"]},"tool_use_id":{"type":["string","null"]},"content":{"type":["string","null"]},"is_error":{"type":["boolean","null"]}}}}',
              content_blocks
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM JSON_TABLE(
+               content_blocks,
+               '$[*]' COLUMNS (block_index FOR ORDINALITY)
+             ) AS typed_block
+             JOIN JSON_TABLE(
+               JSON_KEYS(JSON_EXTRACT(
+                 content_blocks,
+                 CONCAT('$[', typed_block.block_index - 1, ']')
+               )),
+               '$[*]' COLUMNS (block_key VARCHAR(64) PATH '$')
+             ) AS typed_key
+             WHERE BINARY LOWER(typed_key.block_key) IN (
+               'type', 'text', 'thinking', 'payload', 'id',
+               'name', 'input', 'tool_use_id', 'content', 'is_error'
+             )
+             AND BINARY typed_key.block_key NOT IN (
+               'type', 'text', 'thinking', 'payload', 'id',
+               'name', 'input', 'tool_use_id', 'content', 'is_error'
+             )
            )
          END AS search_blocks_valid
   FROM messages

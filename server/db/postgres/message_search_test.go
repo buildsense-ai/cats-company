@@ -31,6 +31,7 @@ func TestPostgresMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 		"END AS search_blocks_valid",
 		"jsonb_typeof(typed_block) NOT IN ('object', 'null')",
 		"jsonb_object_keys(typed_block)",
+		"lower(block_key) IN (",
 		"typed_block->'payload' ? 'filename'",
 		"m.search_blocks_valid",
 		"m.msg_type = 'text'",

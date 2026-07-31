@@ -232,6 +232,15 @@ func TestPostgresStoreContract(t *testing.T) {
 		if _, insertErr := db.SaveMessage(topicID, ownerID, `{"filename":981274}`, "file"); insertErr != nil {
 			t.Fatalf("save malformed legacy filename: %v", insertErr)
 		}
+		var futureFieldID int64
+		if insertErr := db.db.QueryRow(
+			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, msg_type)
+			 VALUES ($1, $2, 'future-field-981274', '[{"type":"text","display_type":"text"}]'::jsonb, 'text')
+			 RETURNING id`,
+			topicID, ownerID,
+		).Scan(&futureFieldID); insertErr != nil {
+			t.Fatalf("insert future content-block field: %v", insertErr)
+		}
 		var nullBlocksID int64
 		if insertErr := db.db.QueryRow(
 			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, msg_type)
@@ -274,6 +283,13 @@ func TestPostgresStoreContract(t *testing.T) {
 		}
 		if len(nullResults) != 1 || nullResults[0].MessageID != nullBlocksID {
 			t.Fatalf("JSON-null blocks must behave as no blocks: %#v", nullResults)
+		}
+		futureFieldResults, searchErr := db.SearchMessages(ownerID, "future-field-981274", store.MessageSearchMessage, 10)
+		if searchErr != nil {
+			t.Fatalf("search future content-block field: %v", searchErr)
+		}
+		if len(futureFieldResults) != 1 || futureFieldResults[0].MessageID != futureFieldID {
+			t.Fatalf("unrelated future block fields must remain searchable: %#v", futureFieldResults)
 		}
 	})
 	members, err := db.GetGroupMembers(groupID)

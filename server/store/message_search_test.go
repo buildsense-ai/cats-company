@@ -116,7 +116,7 @@ func TestParseMessageSearchBlocksValidity(t *testing.T) {
 		{name: "numeric payload filename", raw: `[{"type":"file","payload":{"filename":123}}]`, want: false},
 		{name: "malformed typed field", raw: `[{"type":"text","text":123}]`, want: false},
 		{name: "unknown casing", raw: `[{"Type":"file","Name":"report.pdf"}]`, want: false},
-		{name: "unknown top-level field", raw: `[{"type":"text","display_type":"text"}]`, want: false},
+		{name: "unrelated unknown field", raw: `[{"type":"text","display_type":"text"}]`, want: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -137,7 +137,7 @@ func TestMixedInternalBlocksOnlyExposeArtifactName(t *testing.T) {
 	if !valid || !messageSearchHasInternalBlocks(blocks) {
 		t.Fatal("mixed message must suppress its body from search")
 	}
-	if got := MatchingArtifactName(raw, "report"); got != "Visible Report.PDF" {
+	if got := matchingArtifactName(blocks, "report"); got != "Visible Report.PDF" {
 		t.Fatalf("artifact name=%q, want Visible Report.PDF", got)
 	}
 }
@@ -234,8 +234,13 @@ func TestMatchingArtifactName(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := MatchingArtifactName([]byte(tc.raw), tc.query); got != tc.want {
-				t.Fatalf("MatchingArtifactName()=%q, want %q", got, tc.want)
+			blocks, valid := parseMessageSearchBlocks([]byte(tc.raw))
+			got := ""
+			if valid {
+				got = matchingArtifactName(blocks, tc.query)
+			}
+			if got != tc.want {
+				t.Fatalf("matchingArtifactName()=%q, want %q", got, tc.want)
 			}
 		})
 	}

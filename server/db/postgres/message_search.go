@@ -33,7 +33,11 @@ WITH normalized_messages AS (
                    EXISTS (
                      SELECT 1
                      FROM jsonb_object_keys(typed_block) AS block_key
-                     WHERE block_key NOT IN (
+                     WHERE lower(block_key) IN (
+                       'type', 'text', 'thinking', 'payload', 'id',
+                       'name', 'input', 'tool_use_id', 'content', 'is_error'
+                     )
+                     AND block_key NOT IN (
                        'type', 'text', 'thinking', 'payload', 'id',
                        'name', 'input', 'tool_use_id', 'content', 'is_error'
                      )

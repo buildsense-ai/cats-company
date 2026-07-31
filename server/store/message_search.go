@@ -105,7 +105,10 @@ func parseMessageSearchBlocks(raw []byte) ([]types.ContentBlock, bool) {
 	}
 	for _, block := range rawBlocks {
 		for key := range block {
-			if _, ok := knownFields[key]; !ok {
+			if _, exact := knownFields[key]; exact {
+				continue
+			}
+			if _, caseFoldAlias := knownFields[strings.ToLower(key)]; caseFoldAlias {
 				return nil, false
 			}
 		}
@@ -163,14 +166,6 @@ func MatchMessageSearchCandidate(candidate MessageSearchCandidate, query, search
 		result.Snippet = MessageSearchSnippet(result.Content, query)
 	}
 	return &result, true
-}
-
-func MatchingArtifactName(raw []byte, query string) string {
-	blocks, valid := parseMessageSearchBlocks(raw)
-	if !valid {
-		return ""
-	}
-	return matchingArtifactName(blocks, query)
 }
 
 func matchingArtifactName(blocks []types.ContentBlock, query string) string {
