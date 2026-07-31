@@ -67,6 +67,157 @@ func TestMessageSearchCandidateSemantics(t *testing.T) {
 	if MessageSearchContentMatches("file", `{"type":"file"}`, "file") {
 		t.Fatal("file metadata must not become a message-body match")
 	}
+	if MessageSearchContentMatches("image", "visible caption", "visible") {
+		t.Fatal("non-text messages must not become message-body matches")
+	}
+	if !MessageSearchContentMatches("text", "visible reply", "reply") {
+		t.Fatal("text messages must remain searchable")
+	}
+}
+
+func TestMessageSearchInternalBlockPolicy(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "no blocks", raw: "", want: false},
+		{name: "visible text", raw: `[{"type":"text","text":"hello"}]`, want: false},
+		{name: "visible attachment", raw: `[{"type":"text","text":"see file"},{"type":"file","name":"report.pdf"}]`, want: false},
+		{name: "thinking", raw: `[{"type":"thinking","thinking":"secret"}]`, want: true},
+		{name: "tool use", raw: `[{"type":"tool_use","name":"grep"}]`, want: true},
+		{name: "tool result", raw: `[{"type":"tool_result","content":"secret"}]`, want: true},
+		{name: "runtime plan", raw: `[{"type":"runtime_plan","content":"secret"}]`, want: true},
+		{name: "invalid json fails closed", raw: `{`, want: true},
+		{name: "case variant fails closed", raw: `[{"Type":"tool_result","Content":"secret"}]`, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks, valid := parseMessageSearchBlocks([]byte(tc.raw))
+			got := !valid || messageSearchHasInternalBlocks(blocks)
+			if got != tc.want {
+				t.Fatalf("internal block policy=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseMessageSearchBlocksValidity(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "no blocks", raw: "", want: true},
+		{name: "json null", raw: "null", want: true},
+		{name: "valid attachment", raw: `[{"type":"file","payload":{"filename":"report.pdf"}}]`, want: true},
+		{name: "non array", raw: `{"type":"file"}`, want: false},
+		{name: "numeric block name", raw: `[{"type":"file","name":123}]`, want: false},
+		{name: "numeric payload filename", raw: `[{"type":"file","payload":{"filename":123}}]`, want: false},
+		{name: "malformed typed field", raw: `[{"type":"text","text":123}]`, want: false},
+		{name: "unknown casing", raw: `[{"Type":"file","Name":"report.pdf"}]`, want: false},
+		{name: "unrelated unknown field", raw: `[{"type":"text","display_type":"text"}]`, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got := parseMessageSearchBlocks([]byte(tc.raw))
+			if got != tc.want {
+				t.Fatalf("parseMessageSearchBlocks() valid=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMixedInternalBlocksOnlyExposeArtifactName(t *testing.T) {
+	raw := []byte(`[
+		{"type":"tool_result","content":"secret tool output"},
+		{"type":"file","name":"Visible Report.PDF"}
+	]`)
+	blocks, valid := parseMessageSearchBlocks(raw)
+	if !valid || !messageSearchHasInternalBlocks(blocks) {
+		t.Fatal("mixed message must suppress its body from search")
+	}
+	if got := matchingArtifactName(blocks, "report"); got != "Visible Report.PDF" {
+		t.Fatalf("artifact name=%q, want Visible Report.PDF", got)
+	}
+}
+
+func TestMatchMessageSearchCandidate(t *testing.T) {
+	tests := []struct {
+		name       string
+		candidate  MessageSearchCandidate
+		query      string
+		searchType string
+		wantOK     bool
+		wantType   string
+		wantName   string
+	}{
+		{
+			name: "visible message",
+			candidate: MessageSearchCandidate{
+				Result:      MessageSearchResult{Content: "visible reply"},
+				MessageType: "text",
+			},
+			query:      "reply",
+			searchType: MessageSearchAll,
+			wantOK:     true,
+			wantType:   MessageSearchMessage,
+		},
+		{
+			name: "internal body suppressed",
+			candidate: MessageSearchCandidate{
+				Result:        MessageSearchResult{Content: "secret reply"},
+				MessageType:   "text",
+				ContentBlocks: []byte(`[{"type":"tool_result","content":"secret reply"}]`),
+			},
+			query:      "secret",
+			searchType: MessageSearchAll,
+		},
+		{
+			name: "mixed message returns verified artifact",
+			candidate: MessageSearchCandidate{
+				Result:      MessageSearchResult{Content: "secret tool output"},
+				MessageType: "text",
+				ContentBlocks: []byte(`[
+					{"type":"tool_result","content":"secret tool output"},
+					{"type":"file","name":"Visible Report.PDF"}
+				]`),
+			},
+			query:      "report",
+			searchType: MessageSearchAll,
+			wantOK:     true,
+			wantType:   MessageSearchArtifact,
+			wantName:   "Visible Report.PDF",
+		},
+		{
+			name: "legacy file",
+			candidate: MessageSearchCandidate{
+				Result:      MessageSearchResult{Content: `"{\"filename\":\"Old Report.PDF\"}"`},
+				MessageType: "file",
+			},
+			query:      "report",
+			searchType: MessageSearchArtifact,
+			wantOK:     true,
+			wantType:   MessageSearchArtifact,
+			wantName:   "Old Report.PDF",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := MatchMessageSearchCandidate(tc.candidate, tc.query, tc.searchType)
+			if ok != tc.wantOK {
+				t.Fatalf("ok=%v, want %v", ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if got.ContentType != tc.wantType || got.ArtifactName != tc.wantName {
+				t.Fatalf("result type=%q artifact=%q, want type=%q artifact=%q",
+					got.ContentType, got.ArtifactName, tc.wantType, tc.wantName)
+			}
+		})
+	}
 }
 
 func TestMatchingArtifactName(t *testing.T) {
@@ -83,8 +234,13 @@ func TestMatchingArtifactName(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := MatchingArtifactName([]byte(tc.raw), tc.query); got != tc.want {
-				t.Fatalf("MatchingArtifactName()=%q, want %q", got, tc.want)
+			blocks, valid := parseMessageSearchBlocks([]byte(tc.raw))
+			got := ""
+			if valid {
+				got = matchingArtifactName(blocks, tc.query)
+			}
+			if got != tc.want {
+				t.Fatalf("matchingArtifactName()=%q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -92,8 +248,12 @@ func TestMatchingArtifactName(t *testing.T) {
 
 func TestLegacyMatchingArtifactName(t *testing.T) {
 	tests := []struct{ content, query, want string }{
-		{`{"type":"file","payload":{"name":"Old Report.PDF"}}`, "report", "Old Report.PDF"},
+		{`{"type":"file","payload":{"name":"Old Report.PDF","url":"/uploads/unrelated-secret.pdf"}}`, "report", "Old Report.PDF"},
+		{`{"type":"file","payload":{"name":"Old Report.PDF","url":"/uploads/unrelated-secret.pdf"}}`, "secret", ""},
 		{`{"filename":"Archive.ZIP"}`, "archive", "Archive.ZIP"},
+		{`"{\"filename\":\"Escaped Report.PDF\"}"`, "report", "Escaped Report.PDF"},
+		{`{"filename":"R\u0065port.pdf"}`, "report", "Report.pdf"},
+		{`{"filename":"Q1 \"Final\" Report.pdf"}`, "report", `Q1 "Final" Report.pdf`},
 		{`{"url":"/uploads/secret-report.pdf"}`, "report", ""},
 	}
 	for _, tc := range tests {

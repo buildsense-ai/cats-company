@@ -10,12 +10,64 @@ import (
 )
 
 const mysqlMessageSearchQuery = `
+WITH search_params AS (
+  SELECT ? AS search_type, LOWER(?) AS needle
+),
+normalized_messages AS (
+  SELECT messages.*,
+         CASE
+           WHEN msg_type <> 'file' OR NOT JSON_VALID(content) THEN JSON_OBJECT()
+           WHEN JSON_TYPE(content) = 'STRING' AND JSON_VALID(JSON_UNQUOTE(content))
+             THEN JSON_UNQUOTE(content)
+           ELSE content
+         END AS search_legacy_content,
+         CASE
+           WHEN content_blocks IS NULL THEN TRUE
+           ELSE JSON_SCHEMA_VALID(
+             '{"type":["array","null"],"items":{"type":["object","null"],"properties":{"type":{"type":["string","null"]},"text":{"type":["string","null"]},"thinking":{"type":["string","null"]},"payload":{"type":["object","null"],"properties":{"name":{"type":["string","null"]},"file_name":{"type":["string","null"]},"filename":{"type":["string","null"]},"title":{"type":["string","null"]}}},"id":{"type":["string","null"]},"name":{"type":["string","null"]},"input":{"type":["object","null"]},"tool_use_id":{"type":["string","null"]},"content":{"type":["string","null"]},"is_error":{"type":["boolean","null"]}}}}',
+             content_blocks
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM JSON_TABLE(
+               content_blocks,
+               '$[*]' COLUMNS (block_index FOR ORDINALITY)
+             ) AS typed_block
+             JOIN JSON_TABLE(
+               JSON_KEYS(JSON_EXTRACT(
+                 content_blocks,
+                 CONCAT('$[', typed_block.block_index - 1, ']')
+               )),
+               '$[*]' COLUMNS (block_key VARCHAR(64) PATH '$')
+             ) AS typed_key
+             WHERE BINARY LOWER(typed_key.block_key) IN (
+               'type', 'text', 'thinking', 'payload', 'id',
+               'name', 'input', 'tool_use_id', 'content', 'is_error'
+             )
+             AND BINARY typed_key.block_key NOT IN (
+               'type', 'text', 'thinking', 'payload', 'id',
+               'name', 'input', 'tool_use_id', 'content', 'is_error'
+             )
+           )
+         END AS search_blocks_valid
+  FROM messages
+),
+searchable_messages AS (
+  SELECT normalized_messages.*,
+         CASE
+           WHEN JSON_TYPE(JSON_EXTRACT(search_legacy_content, '$.payload')) = 'OBJECT'
+             THEN JSON_EXTRACT(search_legacy_content, '$.payload')
+           ELSE search_legacy_content
+         END AS search_legacy_fields
+  FROM normalized_messages
+)
 SELECT m.id, m.topic_id,
        CASE WHEN t.type = 'group' THEN COALESCE(g.name, t.name, '')
             ELSE COALESCE(NULLIF(ct.title, ''), NULLIF(peer.display_name, ''), peer.username, t.name, '') END AS topic_name,
        m.from_uid, COALESCE(NULLIF(sender.display_name, ''), sender.username, ''),
        m.content, m.msg_type, m.created_at, m.content_blocks
-FROM messages m
+FROM searchable_messages m
+CROSS JOIN search_params search
 JOIN topics t ON t.id = m.topic_id
 JOIN users viewer ON viewer.id = ?
 JOIN users sender ON sender.id = m.from_uid
@@ -26,7 +78,8 @@ LEFT JOIN users peer ON t.type = 'p2p' AND peer.id <> viewer.id
   AND t.id = CONCAT('p2p_', LEAST(viewer.id, peer.id), '_', GREATEST(viewer.id, peer.id))
 LEFT JOIN bot_config peer_bot ON peer_bot.user_id = peer.id
 LEFT JOIN conversation_titles ct ON ct.user_id = viewer.id AND ct.topic_id = t.id
-WHERE (
+WHERE sender.account_type IN ('human', 'bot')
+AND (
   (t.type = 'group' AND gm.user_id IS NOT NULL
     AND (viewer.account_type <> 'human' OR COALESCE(g.group_kind, 'standard') <> 'channel_managed'))
   OR
@@ -38,11 +91,59 @@ WHERE (
   ))
 )
 AND (
-  (? <> 'artifact' AND m.msg_type <> 'file' AND LOCATE(LOWER(?), LOWER(m.content)) > 0)
+  (search.search_type <> 'artifact' AND m.msg_type = 'text'
+    AND (m.content_blocks IS NULL OR (m.search_blocks_valid AND
+      JSON_SEARCH(m.content_blocks, 'one', 'thinking', NULL, '$[*].type') IS NULL
+      AND JSON_SEARCH(m.content_blocks, 'one', 'tool_use', NULL, '$[*].type') IS NULL
+      AND JSON_SEARCH(m.content_blocks, 'one', 'tool_result', NULL, '$[*].type') IS NULL
+      AND JSON_SEARCH(m.content_blocks, 'one', 'runtime_plan', NULL, '$[*].type') IS NULL
+    ))
+    AND LOCATE(search.needle, LOWER(m.content)) > 0)
   OR
-  (? <> 'message' AND (
-    (m.content_blocks IS NOT NULL AND LOCATE(LOWER(?), LOWER(CAST(m.content_blocks AS CHAR))) > 0)
-    OR (m.msg_type = 'file' AND LOCATE(LOWER(?), LOWER(m.content)) > 0)
+  (search.search_type <> 'message' AND (
+    (m.content_blocks IS NOT NULL AND JSON_TYPE(m.content_blocks) = 'ARRAY'
+      AND m.search_blocks_valid AND EXISTS (
+      SELECT 1
+      FROM JSON_TABLE(
+        COALESCE(m.content_blocks, JSON_ARRAY()),
+        '$[*]' COLUMNS (
+          block_type VARCHAR(32) PATH '$.type',
+          name VARCHAR(2048) PATH '$.name',
+          payload_name VARCHAR(2048) PATH '$.payload.name',
+          payload_file_name VARCHAR(2048) PATH '$.payload.file_name',
+          payload_filename VARCHAR(2048) PATH '$.payload.filename',
+          payload_title VARCHAR(2048) PATH '$.payload.title'
+        )
+      ) AS artifact
+      WHERE artifact.block_type IN ('file', 'image', 'audio', 'video')
+        AND (
+          LOCATE(search.needle, LOWER(COALESCE(artifact.name, ''))) > 0
+          OR LOCATE(search.needle, LOWER(COALESCE(artifact.payload_name, ''))) > 0
+          OR LOCATE(search.needle, LOWER(COALESCE(artifact.payload_file_name, ''))) > 0
+          OR LOCATE(search.needle, LOWER(COALESCE(artifact.payload_filename, ''))) > 0
+          OR LOCATE(search.needle, LOWER(COALESCE(artifact.payload_title, ''))) > 0
+        )
+    ))
+    OR (m.msg_type = 'file' AND EXISTS (
+      SELECT 1
+      FROM JSON_TABLE(
+        JSON_EXTRACT(m.search_legacy_fields, '$'),
+        '$' COLUMNS (
+          name VARCHAR(2048) PATH '$.name',
+          file_name VARCHAR(2048) PATH '$.file_name',
+          filename VARCHAR(2048) PATH '$.filename',
+          title VARCHAR(2048) PATH '$.title'
+        )
+      ) AS legacy_file
+      WHERE (JSON_TYPE(JSON_EXTRACT(m.search_legacy_fields, '$.name')) = 'STRING'
+          AND LOCATE(search.needle, LOWER(COALESCE(legacy_file.name, ''))) > 0)
+        OR (JSON_TYPE(JSON_EXTRACT(m.search_legacy_fields, '$.file_name')) = 'STRING'
+          AND LOCATE(search.needle, LOWER(COALESCE(legacy_file.file_name, ''))) > 0)
+        OR (JSON_TYPE(JSON_EXTRACT(m.search_legacy_fields, '$.filename')) = 'STRING'
+          AND LOCATE(search.needle, LOWER(COALESCE(legacy_file.filename, ''))) > 0)
+        OR (JSON_TYPE(JSON_EXTRACT(m.search_legacy_fields, '$.title')) = 'STRING'
+          AND LOCATE(search.needle, LOWER(COALESCE(legacy_file.title, ''))) > 0)
+    ))
   ))
 )
 ORDER BY m.created_at DESC, m.id DESC
@@ -51,7 +152,7 @@ LIMIT ? OFFSET ?`
 // SearchMessages searches only topics readable by viewerUID. Access filtering is atomic with selection.
 func (a *Adapter) SearchMessages(viewerUID int64, query, searchType string, limit int) ([]*store.MessageSearchResult, error) {
 	return store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
-		rows, err := a.db.Query(mysqlMessageSearchQuery, viewerUID, searchType, query, searchType, query, query, pageSize, offset)
+		rows, err := a.db.Query(mysqlMessageSearchQuery, searchType, query, viewerUID, pageSize, offset)
 		if err != nil {
 			return nil, 0, fmt.Errorf("search messages: %w", err)
 		}
@@ -81,23 +182,15 @@ func scanMySQLMessageSearch(rows *sql.Rows, query, searchType string, limit int)
 			&result.SenderName, &result.Content, &msgType, &result.CreatedAt, &blocksJSON); err != nil {
 			return nil, scanned, fmt.Errorf("scan message search result: %w", err)
 		}
-		artifactName := store.MatchingArtifactName(blocksJSON, query)
-		if artifactName == "" && msgType == "file" {
-			artifactName = store.LegacyMatchingArtifactName(result.Content, query)
-		}
-		contentMatches := store.MessageSearchContentMatches(msgType, result.Content, query)
-		if !store.ShouldIncludeMessageSearchCandidate(searchType, contentMatches, artifactName) {
+		match, ok := store.MatchMessageSearchCandidate(store.MessageSearchCandidate{
+			Result:        result,
+			MessageType:   msgType,
+			ContentBlocks: blocksJSON,
+		}, query, searchType)
+		if !ok {
 			continue
 		}
-		if artifactName != "" && (searchType == store.MessageSearchArtifact || !contentMatches) {
-			result.ContentType = store.MessageSearchArtifact
-			result.ArtifactName = artifactName
-			result.Snippet = artifactName
-		} else {
-			result.ContentType = store.MessageSearchMessage
-			result.Snippet = store.MessageSearchSnippet(result.Content, query)
-		}
-		results = append(results, &result)
+		results = append(results, match)
 		if len(results) == limit {
 			break
 		}
