@@ -18,7 +18,41 @@ WITH normalized_messages AS (
              AND pg_input_is_valid(content::jsonb #>> '{}', 'jsonb')
              THEN (content::jsonb #>> '{}')::jsonb
            ELSE content::jsonb
-         END AS search_legacy_content
+         END AS search_legacy_content,
+         CASE
+           WHEN content_blocks IS NULL THEN TRUE
+           WHEN jsonb_typeof(content_blocks) = 'null' THEN TRUE
+           WHEN jsonb_typeof(content_blocks) <> 'array' THEN FALSE
+           ELSE NOT EXISTS (
+             SELECT 1
+             FROM jsonb_array_elements(content_blocks) AS typed_block
+             WHERE jsonb_typeof(typed_block) NOT IN ('object', 'null')
+               OR (
+                 jsonb_typeof(typed_block) = 'object'
+                 AND (
+                   (typed_block ? 'type' AND jsonb_typeof(typed_block->'type') NOT IN ('string', 'null'))
+                   OR (typed_block ? 'text' AND jsonb_typeof(typed_block->'text') NOT IN ('string', 'null'))
+                   OR (typed_block ? 'thinking' AND jsonb_typeof(typed_block->'thinking') NOT IN ('string', 'null'))
+                   OR (typed_block ? 'payload' AND jsonb_typeof(typed_block->'payload') NOT IN ('object', 'null'))
+                   OR (typed_block ? 'id' AND jsonb_typeof(typed_block->'id') NOT IN ('string', 'null'))
+                   OR (typed_block ? 'name' AND jsonb_typeof(typed_block->'name') NOT IN ('string', 'null'))
+                   OR (typed_block ? 'input' AND jsonb_typeof(typed_block->'input') NOT IN ('object', 'null'))
+                   OR (typed_block ? 'tool_use_id' AND jsonb_typeof(typed_block->'tool_use_id') NOT IN ('string', 'null'))
+                   OR (typed_block ? 'content' AND jsonb_typeof(typed_block->'content') NOT IN ('string', 'null'))
+                   OR (typed_block ? 'is_error' AND jsonb_typeof(typed_block->'is_error') NOT IN ('boolean', 'null'))
+                   OR (
+                     jsonb_typeof(typed_block->'payload') = 'object'
+                     AND (
+                       (typed_block->'payload' ? 'name' AND jsonb_typeof(typed_block->'payload'->'name') NOT IN ('string', 'null'))
+                       OR (typed_block->'payload' ? 'file_name' AND jsonb_typeof(typed_block->'payload'->'file_name') NOT IN ('string', 'null'))
+                       OR (typed_block->'payload' ? 'filename' AND jsonb_typeof(typed_block->'payload'->'filename') NOT IN ('string', 'null'))
+                       OR (typed_block->'payload' ? 'title' AND jsonb_typeof(typed_block->'payload'->'title') NOT IN ('string', 'null'))
+                     )
+                   )
+                 )
+               )
+           )
+         END AS search_blocks_valid
   FROM messages
 )
 SELECT m.id, m.topic_id,
@@ -51,8 +85,8 @@ AND (
 )
 AND (
   ($2 <> 'artifact' AND m.msg_type = 'text'
-    AND (m.content_blocks IS NULL OR (
-      jsonb_typeof(m.content_blocks) = 'array'
+    AND (m.content_blocks IS NULL OR jsonb_typeof(m.content_blocks) = 'null'
+      OR (m.search_blocks_valid
       AND NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements(m.content_blocks) AS block
         WHERE block->>'type' IN ('thinking', 'tool_use', 'tool_result', 'runtime_plan')
@@ -61,7 +95,8 @@ AND (
     AND STRPOS(LOWER(m.content), LOWER($3)) > 0)
   OR
   ($2 <> 'message' AND (
-    (m.content_blocks IS NOT NULL AND jsonb_typeof(m.content_blocks) = 'array' AND EXISTS (
+    (m.content_blocks IS NOT NULL AND jsonb_typeof(m.content_blocks) = 'array'
+      AND m.search_blocks_valid AND EXISTS (
       SELECT 1 FROM jsonb_array_elements(m.content_blocks) AS artifact
       WHERE artifact->>'type' IN ('file', 'image', 'audio', 'video')
         AND (

@@ -20,7 +20,14 @@ normalized_messages AS (
            WHEN JSON_TYPE(content) = 'STRING' AND JSON_VALID(JSON_UNQUOTE(content))
              THEN JSON_UNQUOTE(content)
            ELSE content
-         END AS search_legacy_content
+         END AS search_legacy_content,
+         CASE
+           WHEN content_blocks IS NULL THEN TRUE
+           ELSE JSON_SCHEMA_VALID(
+             '{"type":["array","null"],"items":{"type":["object","null"],"properties":{"type":{"type":["string","null"]},"text":{"type":["string","null"]},"thinking":{"type":["string","null"]},"payload":{"type":["object","null"],"properties":{"name":{"type":["string","null"]},"file_name":{"type":["string","null"]},"filename":{"type":["string","null"]},"title":{"type":["string","null"]}}},"id":{"type":["string","null"]},"name":{"type":["string","null"]},"input":{"type":["object","null"]},"tool_use_id":{"type":["string","null"]},"content":{"type":["string","null"]},"is_error":{"type":["boolean","null"]}}}}',
+             content_blocks
+           )
+         END AS search_blocks_valid
   FROM messages
 )
 SELECT m.id, m.topic_id,
@@ -54,7 +61,7 @@ AND (
 )
 AND (
   (search.search_type <> 'artifact' AND m.msg_type = 'text'
-    AND (m.content_blocks IS NULL OR (
+    AND (m.content_blocks IS NULL OR (m.search_blocks_valid AND
       JSON_SEARCH(m.content_blocks, 'one', 'thinking', NULL, '$[*].type') IS NULL
       AND JSON_SEARCH(m.content_blocks, 'one', 'tool_use', NULL, '$[*].type') IS NULL
       AND JSON_SEARCH(m.content_blocks, 'one', 'tool_result', NULL, '$[*].type') IS NULL
@@ -63,7 +70,8 @@ AND (
     AND LOCATE(search.needle, LOWER(m.content)) > 0)
   OR
   (search.search_type <> 'message' AND (
-    (m.content_blocks IS NOT NULL AND EXISTS (
+    (m.content_blocks IS NOT NULL AND JSON_TYPE(m.content_blocks) = 'ARRAY'
+      AND m.search_blocks_valid AND EXISTS (
       SELECT 1
       FROM JSON_TABLE(
         COALESCE(m.content_blocks, JSON_ARRAY()),

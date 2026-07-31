@@ -99,6 +99,29 @@ func TestMessageSearchHasInternalBlocks(t *testing.T) {
 	}
 }
 
+func TestMessageSearchBlocksAreValid(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "no blocks", raw: "", want: true},
+		{name: "json null", raw: "null", want: true},
+		{name: "valid attachment", raw: `[{"type":"file","payload":{"filename":"report.pdf"}}]`, want: true},
+		{name: "non array", raw: `{"type":"file"}`, want: false},
+		{name: "numeric block name", raw: `[{"type":"file","name":123}]`, want: false},
+		{name: "numeric payload filename", raw: `[{"type":"file","payload":{"filename":123}}]`, want: false},
+		{name: "malformed typed field", raw: `[{"type":"text","text":123}]`, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MessageSearchBlocksAreValid([]byte(tc.raw)); got != tc.want {
+				t.Fatalf("MessageSearchBlocksAreValid()=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMixedInternalBlocksOnlyExposeArtifactName(t *testing.T) {
 	raw := []byte(`[
 		{"type":"tool_result","content":"secret tool output"},

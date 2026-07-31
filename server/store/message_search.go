@@ -82,13 +82,14 @@ func MessageSearchContentMatches(msgType, content, query string) bool {
 }
 
 func MessageSearchHasInternalBlocks(raw []byte) bool {
-	if len(raw) == 0 {
-		return false
-	}
-	var blocks []types.ContentBlock
-	if err := json.Unmarshal(raw, &blocks); err != nil {
+	blocks, valid := parseMessageSearchBlocks(raw)
+	if !valid {
 		return true
 	}
+	return messageSearchHasInternalBlocks(blocks)
+}
+
+func messageSearchHasInternalBlocks(blocks []types.ContentBlock) bool {
 	for _, block := range blocks {
 		switch block.Type {
 		case "thinking", "tool_use", "tool_result", "runtime_plan":
@@ -96,6 +97,32 @@ func MessageSearchHasInternalBlocks(raw []byte) bool {
 		}
 	}
 	return false
+}
+
+func MessageSearchBlocksAreValid(raw []byte) bool {
+	_, valid := parseMessageSearchBlocks(raw)
+	return valid
+}
+
+func parseMessageSearchBlocks(raw []byte) ([]types.ContentBlock, bool) {
+	if len(raw) == 0 {
+		return nil, true
+	}
+	var blocks []types.ContentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return nil, false
+	}
+	for _, block := range blocks {
+		for _, key := range []string{"name", "file_name", "filename", "title"} {
+			value, exists := block.Payload[key]
+			if exists && value != nil {
+				if _, ok := value.(string); !ok {
+					return nil, false
+				}
+			}
+		}
+	}
+	return blocks, true
 }
 
 func ShouldIncludeMessageSearchCandidate(searchType string, contentMatches bool, artifactName string) bool {
@@ -110,11 +137,15 @@ func ShouldIncludeMessageSearchCandidate(searchType string, contentMatches bool,
 }
 
 func MatchMessageSearchCandidate(candidate MessageSearchCandidate, query, searchType string) (*MessageSearchResult, bool) {
-	artifactName := MatchingArtifactName(candidate.ContentBlocks, query)
+	blocks, valid := parseMessageSearchBlocks(candidate.ContentBlocks)
+	if !valid {
+		return nil, false
+	}
+	artifactName := matchingArtifactName(blocks, query)
 	if artifactName == "" && candidate.MessageType == "file" {
 		artifactName = LegacyMatchingArtifactName(candidate.Result.Content, query)
 	}
-	contentMatches := !MessageSearchHasInternalBlocks(candidate.ContentBlocks) &&
+	contentMatches := !messageSearchHasInternalBlocks(blocks) &&
 		MessageSearchContentMatches(candidate.MessageType, candidate.Result.Content, query)
 	if !ShouldIncludeMessageSearchCandidate(searchType, contentMatches, artifactName) {
 		return nil, false
@@ -133,13 +164,14 @@ func MatchMessageSearchCandidate(candidate MessageSearchCandidate, query, search
 }
 
 func MatchingArtifactName(raw []byte, query string) string {
-	if len(raw) == 0 {
+	blocks, valid := parseMessageSearchBlocks(raw)
+	if !valid {
 		return ""
 	}
-	var blocks []types.ContentBlock
-	if err := json.Unmarshal(raw, &blocks); err != nil {
-		return ""
-	}
+	return matchingArtifactName(blocks, query)
+}
+
+func matchingArtifactName(blocks []types.ContentBlock, query string) string {
 	needle := strings.ToLower(query)
 	for _, block := range blocks {
 		if block.Type != "file" && block.Type != "image" && block.Type != "audio" && block.Type != "video" {

@@ -199,6 +199,79 @@ func TestPostgresStoreContract(t *testing.T) {
 				scanned, results, wantID)
 		}
 	})
+	t.Run("message search rejects malformed block candidates", func(t *testing.T) {
+		topicID := fmt.Sprintf("grp_%d", groupID)
+		wantID, saveErr := db.SaveMessageWithBlocks(topicID, ownerID, "verified attachment", []types.ContentBlock{{
+			Type: "file",
+			Name: "Verified 981274.pdf",
+		}}, "", "", "text")
+		if saveErr != nil {
+			t.Fatalf("save verified attachment: %v", saveErr)
+		}
+		for _, rawBlocks := range []string{
+			`[{"type":"file","name":981274}]`,
+			`[{"type":"file","payload":{"filename":981274}}]`,
+			`[{"type":"file","name":"Verified 981274.pdf","text":123}]`,
+		} {
+			if _, insertErr := db.db.Exec(
+				`INSERT INTO messages (topic_id, from_uid, content, content_blocks, msg_type)
+				 VALUES ($1, $2, 'malformed attachment', $3::jsonb, 'text')`,
+				topicID, ownerID, rawBlocks,
+			); insertErr != nil {
+				t.Fatalf("insert malformed attachment blocks: %v", insertErr)
+			}
+		}
+		if _, insertErr := db.db.Exec(
+			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, msg_type)
+			 VALUES ($1, $2, 'malformed-body-981274', '{"type":"text"}'::jsonb, 'text')`,
+			topicID, ownerID,
+		); insertErr != nil {
+			t.Fatalf("insert non-array blocks: %v", insertErr)
+		}
+		var nullBlocksID int64
+		if insertErr := db.db.QueryRow(
+			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, msg_type)
+			 VALUES ($1, $2, 'json-null-981274', 'null'::jsonb, 'text')
+			 RETURNING id`,
+			topicID, ownerID,
+		).Scan(&nullBlocksID); insertErr != nil {
+			t.Fatalf("insert JSON-null blocks: %v", insertErr)
+		}
+
+		rows, queryErr := db.db.Query(postgresMessageSearchQuery,
+			ownerID, store.MessageSearchArtifact, "981274", 10, 0)
+		if queryErr != nil {
+			t.Fatalf("query malformed attachment candidates: %v", queryErr)
+		}
+		results, scanned, scanErr := scanPostgresMessageSearch(rows,
+			"981274", store.MessageSearchArtifact, 10)
+		closeErr := rows.Close()
+		if scanErr != nil {
+			t.Fatalf("scan malformed attachment candidates: %v", scanErr)
+		}
+		if closeErr != nil {
+			t.Fatalf("close malformed attachment candidates: %v", closeErr)
+		}
+		if scanned != 1 || len(results) != 1 || results[0].MessageID != wantID {
+			t.Fatalf("malformed attachment candidates scanned=%d results=%#v, want only message %d",
+				scanned, results, wantID)
+		}
+
+		bodyResults, searchErr := db.SearchMessages(ownerID, "malformed-body-981274", store.MessageSearchMessage, 10)
+		if searchErr != nil {
+			t.Fatalf("search non-array body candidate: %v", searchErr)
+		}
+		if len(bodyResults) != 0 {
+			t.Fatalf("non-array body blocks must fail closed: %#v", bodyResults)
+		}
+		nullResults, searchErr := db.SearchMessages(ownerID, "json-null-981274", store.MessageSearchMessage, 10)
+		if searchErr != nil {
+			t.Fatalf("search JSON-null body candidate: %v", searchErr)
+		}
+		if len(nullResults) != 1 || nullResults[0].MessageID != nullBlocksID {
+			t.Fatalf("JSON-null blocks must behave as no blocks: %#v", nullResults)
+		}
+	})
 	members, err := db.GetGroupMembers(groupID)
 	if err != nil || len(members) != 1 || members[0].UserID != ownerID {
 		t.Fatalf("group members mismatch: %#v err=%v", members, err)
