@@ -67,6 +67,49 @@ func TestMessageSearchCandidateSemantics(t *testing.T) {
 	if MessageSearchContentMatches("file", `{"type":"file"}`, "file") {
 		t.Fatal("file metadata must not become a message-body match")
 	}
+	if MessageSearchContentMatches("image", "visible caption", "visible") {
+		t.Fatal("non-text messages must not become message-body matches")
+	}
+	if !MessageSearchContentMatches("text", "visible reply", "reply") {
+		t.Fatal("text messages must remain searchable")
+	}
+}
+
+func TestMessageSearchHasInternalBlocks(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "no blocks", raw: "", want: false},
+		{name: "visible text", raw: `[{"type":"text","text":"hello"}]`, want: false},
+		{name: "visible attachment", raw: `[{"type":"text","text":"see file"},{"type":"file","name":"report.pdf"}]`, want: false},
+		{name: "thinking", raw: `[{"type":"thinking","thinking":"secret"}]`, want: true},
+		{name: "tool use", raw: `[{"type":"tool_use","name":"grep"}]`, want: true},
+		{name: "tool result", raw: `[{"type":"tool_result","content":"secret"}]`, want: true},
+		{name: "runtime plan", raw: `[{"type":"runtime_plan","content":"secret"}]`, want: true},
+		{name: "invalid json fails closed", raw: `{`, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MessageSearchHasInternalBlocks([]byte(tc.raw)); got != tc.want {
+				t.Fatalf("MessageSearchHasInternalBlocks()=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMixedInternalBlocksOnlyExposeArtifactName(t *testing.T) {
+	raw := []byte(`[
+		{"type":"tool_result","content":"secret tool output"},
+		{"type":"file","name":"Visible Report.PDF"}
+	]`)
+	if !MessageSearchHasInternalBlocks(raw) {
+		t.Fatal("mixed message must suppress its body from search")
+	}
+	if got := MatchingArtifactName(raw, "report"); got != "Visible Report.PDF" {
+		t.Fatalf("artifact name=%q, want Visible Report.PDF", got)
+	}
 }
 
 func TestMatchingArtifactName(t *testing.T) {
@@ -92,7 +135,8 @@ func TestMatchingArtifactName(t *testing.T) {
 
 func TestLegacyMatchingArtifactName(t *testing.T) {
 	tests := []struct{ content, query, want string }{
-		{`{"type":"file","payload":{"name":"Old Report.PDF"}}`, "report", "Old Report.PDF"},
+		{`{"type":"file","payload":{"name":"Old Report.PDF","url":"/uploads/unrelated-secret.pdf"}}`, "report", "Old Report.PDF"},
+		{`{"type":"file","payload":{"name":"Old Report.PDF","url":"/uploads/unrelated-secret.pdf"}}`, "secret", ""},
 		{`{"filename":"Archive.ZIP"}`, "archive", "Archive.ZIP"},
 		{`{"url":"/uploads/secret-report.pdf"}`, "report", ""},
 	}

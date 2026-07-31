@@ -26,7 +26,8 @@ LEFT JOIN users peer ON t.type = 'p2p' AND peer.id <> viewer.id
   AND t.id = 'p2p_' || LEAST(viewer.id, peer.id)::text || '_' || GREATEST(viewer.id, peer.id)::text
 LEFT JOIN bot_config peer_bot ON peer_bot.user_id = peer.id
 LEFT JOIN conversation_titles ct ON ct.user_id = viewer.id AND ct.topic_id = t.id
-WHERE (
+WHERE sender.account_type IN ('human', 'bot')
+AND (
   (t.type = 'group' AND gm.user_id IS NOT NULL
     AND (viewer.account_type <> 'human' OR COALESCE(g.group_kind, 'standard') <> 'channel_managed'))
   OR
@@ -38,11 +39,34 @@ WHERE (
   ))
 )
 AND (
-  ($2 <> 'artifact' AND m.msg_type <> 'file' AND STRPOS(LOWER(m.content), LOWER($3)) > 0)
+  ($2 <> 'artifact' AND m.msg_type = 'text'
+    AND (m.content_blocks IS NULL OR (
+      jsonb_typeof(m.content_blocks) = 'array'
+      AND NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements(m.content_blocks) AS block
+        WHERE block->>'type' IN ('thinking', 'tool_use', 'tool_result', 'runtime_plan')
+      )
+    ))
+    AND STRPOS(LOWER(m.content), LOWER($3)) > 0)
   OR
   ($2 <> 'message' AND (
-    (m.content_blocks IS NOT NULL AND STRPOS(LOWER(m.content_blocks::text), LOWER($3)) > 0)
-    OR (m.msg_type = 'file' AND STRPOS(LOWER(m.content), LOWER($3)) > 0)
+    (m.content_blocks IS NOT NULL AND jsonb_typeof(m.content_blocks) = 'array' AND EXISTS (
+      SELECT 1 FROM jsonb_array_elements(m.content_blocks) AS artifact
+      WHERE artifact->>'type' IN ('file', 'image', 'audio', 'video')
+        AND STRPOS(LOWER(CONCAT_WS(' ',
+          artifact->>'name',
+          artifact->'payload'->>'name',
+          artifact->'payload'->>'file_name',
+          artifact->'payload'->>'filename',
+          artifact->'payload'->>'title'
+        )), LOWER($3)) > 0
+    ))
+    OR (m.msg_type = 'file' AND STRPOS(LOWER(CONCAT_WS(' ',
+      substring(m.content FROM '"name"[[:space:]]*:[[:space:]]*"([^"]+)"'),
+      substring(m.content FROM '"file_name"[[:space:]]*:[[:space:]]*"([^"]+)"'),
+      substring(m.content FROM '"filename"[[:space:]]*:[[:space:]]*"([^"]+)"'),
+      substring(m.content FROM '"title"[[:space:]]*:[[:space:]]*"([^"]+)"')
+    )), LOWER($3)) > 0)
   ))
 )
 ORDER BY m.created_at DESC, m.id DESC
@@ -81,11 +105,13 @@ func scanPostgresMessageSearch(rows *sql.Rows, query, searchType string, limit i
 			&result.SenderName, &result.Content, &msgType, &result.CreatedAt, &blocksJSON); err != nil {
 			return nil, scanned, fmt.Errorf("scan message search result: %w", err)
 		}
-		artifactName := store.MatchingArtifactName(jsonBytes(blocksJSON), query)
+		blocks := jsonBytes(blocksJSON)
+		hasInternalBlocks := store.MessageSearchHasInternalBlocks(blocks)
+		artifactName := store.MatchingArtifactName(blocks, query)
 		if artifactName == "" && msgType == "file" {
 			artifactName = store.LegacyMatchingArtifactName(result.Content, query)
 		}
-		contentMatches := store.MessageSearchContentMatches(msgType, result.Content, query)
+		contentMatches := !hasInternalBlocks && store.MessageSearchContentMatches(msgType, result.Content, query)
 		if !store.ShouldIncludeMessageSearchCandidate(searchType, contentMatches, artifactName) {
 			continue
 		}

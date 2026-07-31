@@ -72,7 +72,24 @@ func (p *messageSearchPager) recordPage(resultCount, scanned int) bool {
 }
 
 func MessageSearchContentMatches(msgType, content, query string) bool {
-	return msgType != "file" && strings.Contains(strings.ToLower(content), strings.ToLower(query))
+	return msgType == "text" && strings.Contains(strings.ToLower(content), strings.ToLower(query))
+}
+
+func MessageSearchHasInternalBlocks(raw []byte) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var blocks []types.ContentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return true
+	}
+	for _, block := range blocks {
+		switch block.Type {
+		case "thinking", "tool_use", "tool_result", "runtime_plan":
+			return true
+		}
+	}
+	return false
 }
 
 func ShouldIncludeMessageSearchCandidate(searchType string, contentMatches bool, artifactName string) bool {

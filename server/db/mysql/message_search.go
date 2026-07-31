@@ -26,7 +26,8 @@ LEFT JOIN users peer ON t.type = 'p2p' AND peer.id <> viewer.id
   AND t.id = CONCAT('p2p_', LEAST(viewer.id, peer.id), '_', GREATEST(viewer.id, peer.id))
 LEFT JOIN bot_config peer_bot ON peer_bot.user_id = peer.id
 LEFT JOIN conversation_titles ct ON ct.user_id = viewer.id AND ct.topic_id = t.id
-WHERE (
+WHERE sender.account_type IN ('human', 'bot')
+AND (
   (t.type = 'group' AND gm.user_id IS NOT NULL
     AND (viewer.account_type <> 'human' OR COALESCE(g.group_kind, 'standard') <> 'channel_managed'))
   OR
@@ -38,11 +39,33 @@ WHERE (
   ))
 )
 AND (
-  (? <> 'artifact' AND m.msg_type <> 'file' AND LOCATE(LOWER(?), LOWER(m.content)) > 0)
+  (? <> 'artifact' AND m.msg_type = 'text'
+    AND (m.content_blocks IS NULL OR (
+      JSON_SEARCH(m.content_blocks, 'one', 'thinking', NULL, '$[*].type') IS NULL
+      AND JSON_SEARCH(m.content_blocks, 'one', 'tool_use', NULL, '$[*].type') IS NULL
+      AND JSON_SEARCH(m.content_blocks, 'one', 'tool_result', NULL, '$[*].type') IS NULL
+      AND JSON_SEARCH(m.content_blocks, 'one', 'runtime_plan', NULL, '$[*].type') IS NULL
+    ))
+    AND LOCATE(LOWER(?), LOWER(m.content)) > 0)
   OR
   (? <> 'message' AND (
-    (m.content_blocks IS NOT NULL AND LOCATE(LOWER(?), LOWER(CAST(m.content_blocks AS CHAR))) > 0)
-    OR (m.msg_type = 'file' AND LOCATE(LOWER(?), LOWER(m.content)) > 0)
+    (m.content_blocks IS NOT NULL
+      AND (
+        JSON_SEARCH(m.content_blocks, 'one', 'file', NULL, '$[*].type') IS NOT NULL
+        OR JSON_SEARCH(m.content_blocks, 'one', 'image', NULL, '$[*].type') IS NOT NULL
+        OR JSON_SEARCH(m.content_blocks, 'one', 'audio', NULL, '$[*].type') IS NOT NULL
+        OR JSON_SEARCH(m.content_blocks, 'one', 'video', NULL, '$[*].type') IS NOT NULL
+      )
+      AND LOCATE(LOWER(?), LOWER(CAST(JSON_EXTRACT(
+      m.content_blocks,
+      '$[*].name', '$[*].payload.name', '$[*].payload.file_name', '$[*].payload.filename', '$[*].payload.title'
+    ) AS CHAR))) > 0)
+    OR (m.msg_type = 'file' AND JSON_VALID(m.content)
+      AND LOCATE(LOWER(?), LOWER(CAST(JSON_EXTRACT(
+        m.content,
+        '$.name', '$.file_name', '$.filename', '$.title',
+        '$.payload.name', '$.payload.file_name', '$.payload.filename', '$.payload.title'
+      ) AS CHAR))) > 0)
   ))
 )
 ORDER BY m.created_at DESC, m.id DESC
@@ -81,11 +104,12 @@ func scanMySQLMessageSearch(rows *sql.Rows, query, searchType string, limit int)
 			&result.SenderName, &result.Content, &msgType, &result.CreatedAt, &blocksJSON); err != nil {
 			return nil, scanned, fmt.Errorf("scan message search result: %w", err)
 		}
+		hasInternalBlocks := store.MessageSearchHasInternalBlocks(blocksJSON)
 		artifactName := store.MatchingArtifactName(blocksJSON, query)
 		if artifactName == "" && msgType == "file" {
 			artifactName = store.LegacyMatchingArtifactName(result.Content, query)
 		}
-		contentMatches := store.MessageSearchContentMatches(msgType, result.Content, query)
+		contentMatches := !hasInternalBlocks && store.MessageSearchContentMatches(msgType, result.Content, query)
 		if !store.ShouldIncludeMessageSearchCandidate(searchType, contentMatches, artifactName) {
 			continue
 		}
