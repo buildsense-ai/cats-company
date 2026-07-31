@@ -220,7 +220,14 @@ export const api = {
   getMessages: (topicId, limit, offset, latest = false, beforeId = 0, options = {}) =>
     request(
       'GET',
-      `/api/messages?topic_id=${encodeURIComponent(topicId)}&limit=${limit || 50}&offset=${offset || 0}${latest ? '&latest=1' : ''}${beforeId > 0 ? `&before_id=${encodeURIComponent(beforeId)}` : ''}`,
+      `/api/messages?topic_id=${encodeURIComponent(topicId)}&limit=${limit || 50}&offset=${offset || 0}${latest ? '&latest=1' : ''}${beforeId > 0 ? `&before_id=${encodeURIComponent(beforeId)}` : ''}${Number(options.aroundId) > 0 ? `&around_id=${encodeURIComponent(options.aroundId)}` : ''}`,
+      undefined,
+      options,
+    ),
+  getMessageSearch: (query, searchType = 'all', options = {}) =>
+    request(
+      'GET',
+      `/api/messages/search?q=${encodeURIComponent(query)}&type=${encodeURIComponent(searchType)}`,
       undefined,
       options,
     ),

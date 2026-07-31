@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, Circle, CircleDot, FileText, Image, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from '../widgets/chat-message';
@@ -246,6 +246,8 @@ export default function MessagesView({
   onAgentModelChange,
   onActiveAgentChange,
   cloudArtifactsRequest,
+  messageLocationRequest,
+  onBackToSearch,
 }) {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
@@ -270,6 +272,7 @@ export default function MessagesView({
   const [previewWidth, setPreviewWidth] = useState(() => loadPreviewWidth());
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [highlightedMessageId, setHighlightedMessageId] = useState(0);
   const [refreshingHistory, setRefreshingHistory] = useState(false);
   const [historyError, setHistoryError] = useState('');
   const [olderHistoryError, setOlderHistoryError] = useState('');
@@ -308,6 +311,7 @@ export default function MessagesView({
   const pendingQuestionJumpRef = useRef('');
   const questionJumpReleaseTimerRef = useRef(null);
   const visibleQuestionAnchorsRef = useRef(new Map());
+  const messageHighlightTimerRef = useRef(null);
   const previousScrollRef = useRef(null);
   const stickToBottomRef = useRef(true);
   const fileInputRef = useRef(null);
@@ -636,7 +640,11 @@ export default function MessagesView({
     phoneUploadTopicRef.current = '';
     phoneUploadSyncRef.current = null;
     phoneUploadFileKeysRef.current = new Set();
-    loadHistory(topic);
+    const targetMessageId = messageLocationRequest?.topicId === topic
+      ? Number(messageLocationRequest.messageId) || 0
+      : 0;
+    setHighlightedMessageId(targetMessageId);
+    loadHistory(topic, targetMessageId);
     if (isGroup && groupId) {
       loadGroupMembers();
     } else {
@@ -648,7 +656,7 @@ export default function MessagesView({
       questionIndexAbortControllerRef.current?.abort();
       questionJumpAbortControllerRef.current?.abort();
     };
-  }, [groupId, isGroup, topic, user.uid]);
+  }, [groupId, isGroup, topic, user.uid, messageLocationRequest?.requestId]);
 
   useEffect(() => {
     const agentUID = Number(cloudArtifactsRequest?.agentUid || 0);
@@ -978,7 +986,7 @@ export default function MessagesView({
     }
   }, [topic, user.uid]);
 
-  const loadHistory = async (targetTopic = topic) => {
+  const loadHistory = async (targetTopic = topic, aroundId = 0) => {
     const requestID = ++historyRequestRef.current;
     historyAbortControllerRef.current?.abort();
     olderHistoryAbortControllerRef.current?.abort();
@@ -986,7 +994,7 @@ export default function MessagesView({
     historyAbortControllerRef.current = controller;
     olderHistoryAbortControllerRef.current = null;
     const cacheKey = historyCacheKey(user.uid, targetTopic);
-    const hasCachedHistory = historyCacheRef.current.has(cacheKey);
+    const hasCachedHistory = !aroundId && historyCacheRef.current.has(cacheKey);
     historyLoadingRef.current = true;
     previousScrollRef.current = null;
     setRefreshingHistory(true);
@@ -1004,9 +1012,9 @@ export default function MessagesView({
         targetTopic,
         PAGE_SIZE,
         0,
-        true,
+        !aroundId,
         0,
-        { signal: controller.signal, timeoutMs: HISTORY_REQUEST_TIMEOUT_MS },
+        { signal: controller.signal, timeoutMs: HISTORY_REQUEST_TIMEOUT_MS, aroundId },
       );
       if (activeTopicRef.current !== targetTopic || historyRequestRef.current !== requestID) return;
       const rawMessages = res.messages || [];
@@ -2667,6 +2675,22 @@ export default function MessagesView({
     target.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [messages, scheduleQuestionJumpRelease]);
 
+  useEffect(() => {
+    const targetMessageId = messageLocationRequest?.topicId === topic
+      ? Number(messageLocationRequest.messageId) || 0
+      : 0;
+    if (!targetMessageId || !historyLoaded || refreshingHistory) return undefined;
+    const target = timelineRef.current?.querySelector(`[data-search-message-id="${targetMessageId}"]`);
+    if (!target) return undefined;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlightedMessageId(targetMessageId);
+    if (messageHighlightTimerRef.current) window.clearTimeout(messageHighlightTimerRef.current);
+    messageHighlightTimerRef.current = window.setTimeout(() => setHighlightedMessageId(0), 3000);
+    return () => {
+      if (messageHighlightTimerRef.current) window.clearTimeout(messageHighlightTimerRef.current);
+    };
+  }, [historyLoaded, messageLocationRequest?.requestId, refreshingHistory, topic]);
+
   const handleTimelineScroll = (e) => {
     const el = e.target;
     stickToBottomRef.current = isTimelineNearBottom(el);
@@ -2691,6 +2715,12 @@ export default function MessagesView({
       >
         <div ref={chatColumnRef} className="v3-chat-column">
           {topBar}
+          {messageLocationRequest?.topicId === topic && onBackToSearch && (
+            <button type="button" className="cc-search-return" onClick={onBackToSearch}>
+              <ArrowLeft size={16} />
+              返回搜索结果
+            </button>
+          )}
           <div
             className={`v3-timeline${isDragActive ? ' is-drag-active' : ''}`}
             ref={timelineRef}
@@ -2769,7 +2799,18 @@ export default function MessagesView({
           if (group.type === 'working') {
             if (!showThinking) return null;
             return (
-              <div key={group.messages[0].id || i} className="oc-working-group">
+              <div
+                key={group.messages[0].id || i}
+                className={`oc-working-group cc-message-anchor${group.messages.some((message) => historyMessageID(message) === highlightedMessageId) ? ' cc-message-search-hit' : ''}`}
+              >
+                {group.messages.map((message) => (
+                  <span
+                    key={`search-anchor-${historyMessageID(message)}`}
+                    className="cc-message-search-anchor"
+                    data-search-message-id={historyMessageID(message) || undefined}
+                    aria-hidden="true"
+                  />
+                ))}
                 <ChatMessage
                   message={group.messages[0]}
                   workingMessages={group.messages}
@@ -2790,8 +2831,12 @@ export default function MessagesView({
             );
           }
           return (
-            <ChatMessage
+            <div
               key={group.message.id || i}
+              className={`cc-message-anchor${historyMessageID(group.message) === highlightedMessageId ? ' cc-message-search-hit' : ''}`}
+              data-search-message-id={historyMessageID(group.message) || undefined}
+            >
+            <ChatMessage
               message={group.message}
               isSelf={group.message.from_uid === user.uid}
               isGroup={isGroup}
@@ -2818,6 +2863,7 @@ export default function MessagesView({
               activePreviewFile={previewFile}
               knownArtifacts={knownArtifacts}
             />
+            </div>
           );
         })}
           {runtimePlan && !hasPersistedRuntimePlan && <RuntimePlanCard plan={runtimePlan} />}

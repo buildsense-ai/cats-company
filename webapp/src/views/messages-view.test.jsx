@@ -346,6 +346,44 @@ describe('MessagesView composer draft isolation', () => {
     vi.clearAllMocks();
   });
 
+  it('loads around a search result, highlights its anchor, and returns to search', async () => {
+    const onBackToSearch = vi.fn();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 42,
+        seq_id: 42,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: 'target search result',
+        created_at: '2026-07-30T12:00:00Z',
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2', {
+      messageLocationRequest: { topicId: 'p2p_1_2', messageId: 42, requestId: 1 },
+      onBackToSearch,
+    });
+
+    expect(api.getMessages).toHaveBeenCalledWith(
+      'p2p_1_2',
+      expect.any(Number),
+      0,
+      false,
+      0,
+      expect.objectContaining({ aroundId: 42, signal: expect.any(AbortSignal) }),
+    );
+    const anchor = container.querySelector('[data-search-message-id="42"]');
+    expect(anchor).not.toBeNull();
+    expect(anchor.classList.contains('cc-message-search-hit')).toBe(true);
+    expect(anchor.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' });
+
+    const backButton = [...container.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('返回搜索结果'));
+    await act(async () => backButton.click());
+    expect(onBackToSearch).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves unsent drafts per topic when switching topics', async () => {
     await mountTopic(root, 'p2p_1_2');
 
