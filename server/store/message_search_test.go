@@ -138,6 +138,9 @@ func TestLegacyMatchingArtifactName(t *testing.T) {
 		{`{"type":"file","payload":{"name":"Old Report.PDF","url":"/uploads/unrelated-secret.pdf"}}`, "report", "Old Report.PDF"},
 		{`{"type":"file","payload":{"name":"Old Report.PDF","url":"/uploads/unrelated-secret.pdf"}}`, "secret", ""},
 		{`{"filename":"Archive.ZIP"}`, "archive", "Archive.ZIP"},
+		{`"{\"filename\":\"Escaped Report.PDF\"}"`, "report", "Escaped Report.PDF"},
+		{`{"filename":"R\u0065port.pdf"}`, "report", "Report.pdf"},
+		{`{"filename":"Q1 \"Final\" Report.pdf"}`, "report", `Q1 "Final" Report.pdf`},
 		{`{"url":"/uploads/secret-report.pdf"}`, "report", ""},
 	}
 	for _, tc := range tests {

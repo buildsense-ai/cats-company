@@ -136,6 +136,31 @@ func TestPostgresStoreContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create group: %v", err)
 	}
+	t.Run("message search decodes legacy attachment filenames", func(t *testing.T) {
+		topicID := fmt.Sprintf("grp_%d", groupID)
+		wantIDs := make(map[int64]bool)
+		for _, content := range []string{
+			`{"filename":"R\u0065port.pdf"}`,
+			`{"filename":"Q1 \"Final\" Report.pdf"}`,
+			`"{\"filename\":\"Escaped Report.pdf\"}"`,
+		} {
+			messageID, saveErr := db.SaveMessage(topicID, ownerID, content, "file")
+			if saveErr != nil {
+				t.Fatalf("save legacy file message: %v", saveErr)
+			}
+			wantIDs[messageID] = true
+		}
+		results, searchErr := db.SearchMessages(ownerID, "report", store.MessageSearchArtifact, 10)
+		if searchErr != nil {
+			t.Fatalf("search legacy file messages: %v", searchErr)
+		}
+		for _, result := range results {
+			delete(wantIDs, result.MessageID)
+		}
+		if len(wantIDs) != 0 {
+			t.Fatalf("legacy file search omitted message IDs: %v", wantIDs)
+		}
+	})
 	members, err := db.GetGroupMembers(groupID)
 	if err != nil || len(members) != 1 || members[0].UserID != ownerID {
 		t.Fatalf("group members mismatch: %#v err=%v", members, err)

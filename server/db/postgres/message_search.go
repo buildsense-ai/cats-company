@@ -10,12 +10,23 @@ import (
 )
 
 const postgresMessageSearchQuery = `
+WITH normalized_messages AS (
+  SELECT messages.*,
+         CASE
+           WHEN msg_type <> 'file' OR NOT pg_input_is_valid(content, 'jsonb') THEN '{}'::jsonb
+           WHEN jsonb_typeof(content::jsonb) = 'string'
+             AND pg_input_is_valid(content::jsonb #>> '{}', 'jsonb')
+             THEN (content::jsonb #>> '{}')::jsonb
+           ELSE content::jsonb
+         END AS search_legacy_content
+  FROM messages
+)
 SELECT m.id, m.topic_id,
        CASE WHEN t.type = 'group' THEN COALESCE(g.name, t.name, '')
             ELSE COALESCE(NULLIF(ct.title, ''), NULLIF(peer.display_name, ''), peer.username, t.name, '') END AS topic_name,
        m.from_uid, COALESCE(NULLIF(sender.display_name, ''), sender.username, ''),
        m.content, m.msg_type, m.created_at, m.content_blocks
-FROM messages m
+FROM normalized_messages m
 JOIN topics t ON t.id = m.topic_id
 JOIN users viewer ON viewer.id = $1
 JOIN users sender ON sender.id = m.from_uid
@@ -26,6 +37,13 @@ LEFT JOIN users peer ON t.type = 'p2p' AND peer.id <> viewer.id
   AND t.id = 'p2p_' || LEAST(viewer.id, peer.id)::text || '_' || GREATEST(viewer.id, peer.id)::text
 LEFT JOIN bot_config peer_bot ON peer_bot.user_id = peer.id
 LEFT JOIN conversation_titles ct ON ct.user_id = viewer.id AND ct.topic_id = t.id
+LEFT JOIN LATERAL (
+  SELECT CASE
+    WHEN jsonb_typeof(m.search_legacy_content->'payload') = 'object'
+      THEN m.search_legacy_content->'payload'
+    ELSE m.search_legacy_content
+  END AS content
+) AS legacy_file ON TRUE
 WHERE sender.account_type IN ('human', 'bot')
 AND (
   (t.type = 'group' AND gm.user_id IS NOT NULL
@@ -62,10 +80,10 @@ AND (
         )), LOWER($3)) > 0
     ))
     OR (m.msg_type = 'file' AND STRPOS(LOWER(CONCAT_WS(' ',
-      substring(m.content FROM '"name"[[:space:]]*:[[:space:]]*"([^"]+)"'),
-      substring(m.content FROM '"file_name"[[:space:]]*:[[:space:]]*"([^"]+)"'),
-      substring(m.content FROM '"filename"[[:space:]]*:[[:space:]]*"([^"]+)"'),
-      substring(m.content FROM '"title"[[:space:]]*:[[:space:]]*"([^"]+)"')
+      legacy_file.content->>'name',
+      legacy_file.content->>'file_name',
+      legacy_file.content->>'filename',
+      legacy_file.content->>'title'
     )), LOWER($3)) > 0)
   ))
 )

@@ -10,12 +10,22 @@ import (
 )
 
 const mysqlMessageSearchQuery = `
+WITH normalized_messages AS (
+  SELECT messages.*,
+         CASE
+           WHEN msg_type <> 'file' OR NOT JSON_VALID(content) THEN JSON_OBJECT()
+           WHEN JSON_TYPE(content) = 'STRING' AND JSON_VALID(JSON_UNQUOTE(content))
+             THEN JSON_UNQUOTE(content)
+           ELSE content
+         END AS search_legacy_content
+  FROM messages
+)
 SELECT m.id, m.topic_id,
        CASE WHEN t.type = 'group' THEN COALESCE(g.name, t.name, '')
             ELSE COALESCE(NULLIF(ct.title, ''), NULLIF(peer.display_name, ''), peer.username, t.name, '') END AS topic_name,
        m.from_uid, COALESCE(NULLIF(sender.display_name, ''), sender.username, ''),
        m.content, m.msg_type, m.created_at, m.content_blocks
-FROM messages m
+FROM normalized_messages m
 JOIN topics t ON t.id = m.topic_id
 JOIN users viewer ON viewer.id = ?
 JOIN users sender ON sender.id = m.from_uid
@@ -26,6 +36,19 @@ LEFT JOIN users peer ON t.type = 'p2p' AND peer.id <> viewer.id
   AND t.id = CONCAT('p2p_', LEAST(viewer.id, peer.id), '_', GREATEST(viewer.id, peer.id))
 LEFT JOIN bot_config peer_bot ON peer_bot.user_id = peer.id
 LEFT JOIN conversation_titles ct ON ct.user_id = viewer.id AND ct.topic_id = t.id
+LEFT JOIN JSON_TABLE(
+  CASE
+    WHEN JSON_TYPE(JSON_EXTRACT(m.search_legacy_content, '$.payload')) = 'OBJECT'
+      THEN JSON_EXTRACT(m.search_legacy_content, '$.payload')
+    ELSE m.search_legacy_content
+  END,
+  '$' COLUMNS (
+    name VARCHAR(2048) PATH '$.name',
+    file_name VARCHAR(2048) PATH '$.file_name',
+    filename VARCHAR(2048) PATH '$.filename',
+    title VARCHAR(2048) PATH '$.title'
+  )
+) AS legacy_file ON TRUE
 WHERE sender.account_type IN ('human', 'bot')
 AND (
   (t.type = 'group' AND gm.user_id IS NOT NULL
@@ -49,23 +72,35 @@ AND (
     AND LOCATE(LOWER(?), LOWER(m.content)) > 0)
   OR
   (? <> 'message' AND (
-    (m.content_blocks IS NOT NULL
-      AND (
-        JSON_SEARCH(m.content_blocks, 'one', 'file', NULL, '$[*].type') IS NOT NULL
-        OR JSON_SEARCH(m.content_blocks, 'one', 'image', NULL, '$[*].type') IS NOT NULL
-        OR JSON_SEARCH(m.content_blocks, 'one', 'audio', NULL, '$[*].type') IS NOT NULL
-        OR JSON_SEARCH(m.content_blocks, 'one', 'video', NULL, '$[*].type') IS NOT NULL
-      )
-      AND LOCATE(LOWER(?), LOWER(CAST(JSON_EXTRACT(
-      m.content_blocks,
-      '$[*].name', '$[*].payload.name', '$[*].payload.file_name', '$[*].payload.filename', '$[*].payload.title'
-    ) AS CHAR))) > 0)
-    OR (m.msg_type = 'file' AND JSON_VALID(m.content)
-      AND LOCATE(LOWER(?), LOWER(CAST(JSON_EXTRACT(
-        m.content,
-        '$.name', '$.file_name', '$.filename', '$.title',
-        '$.payload.name', '$.payload.file_name', '$.payload.filename', '$.payload.title'
-      ) AS CHAR))) > 0)
+    (m.content_blocks IS NOT NULL AND EXISTS (
+      SELECT 1
+      FROM JSON_TABLE(
+        COALESCE(m.content_blocks, JSON_ARRAY()),
+        '$[*]' COLUMNS (
+          block_type VARCHAR(32) PATH '$.type',
+          name VARCHAR(2048) PATH '$.name',
+          payload_name VARCHAR(2048) PATH '$.payload.name',
+          payload_file_name VARCHAR(2048) PATH '$.payload.file_name',
+          payload_filename VARCHAR(2048) PATH '$.payload.filename',
+          payload_title VARCHAR(2048) PATH '$.payload.title'
+        )
+      ) AS artifact
+      WHERE artifact.block_type IN ('file', 'image', 'audio', 'video')
+        AND LOCATE(LOWER(?), LOWER(CONCAT_WS(' ',
+          artifact.name,
+          artifact.payload_name,
+          artifact.payload_file_name,
+          artifact.payload_filename,
+          artifact.payload_title
+        ))) > 0
+    ))
+    OR (m.msg_type = 'file'
+      AND LOCATE(LOWER(?), LOWER(CONCAT_WS(' ',
+        legacy_file.name,
+        legacy_file.file_name,
+        legacy_file.filename,
+        legacy_file.title
+      ))) > 0)
   ))
 )
 ORDER BY m.created_at DESC, m.id DESC

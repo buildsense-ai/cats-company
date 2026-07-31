@@ -36,7 +36,10 @@ func TestPostgresMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 		"'tool_result'",
 		"'thinking'",
 		"'runtime_plan'",
-		"substring(m.content FROM '\"file_name\"[[:space:]]*:[[:space:]]*\"([^\"]+)\"')",
+		"pg_input_is_valid(content, 'jsonb')",
+		"pg_input_is_valid(content::jsonb #>> '{}', 'jsonb')",
+		"jsonb_typeof(m.search_legacy_content->'payload') = 'object'",
+		"legacy_file.content->>'file_name'",
 		"STRPOS(LOWER(m.content), LOWER($3))",
 		"ORDER BY m.created_at DESC, m.id DESC",
 	}
