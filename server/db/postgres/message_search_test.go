@@ -30,6 +30,7 @@ func TestPostgresMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 		"sender.account_type IN ('human', 'bot')",
 		"END AS search_blocks_valid",
 		"jsonb_typeof(typed_block) NOT IN ('object', 'null')",
+		"jsonb_object_keys(typed_block)",
 		"typed_block->'payload' ? 'filename'",
 		"m.search_blocks_valid",
 		"m.msg_type = 'text'",
@@ -43,10 +44,11 @@ func TestPostgresMessageSearchQueryFiltersAccessInSelection(t *testing.T) {
 		"pg_input_is_valid(content, 'jsonb')",
 		"pg_input_is_valid(content::jsonb #>> '{}', 'jsonb')",
 		"jsonb_typeof(m.search_legacy_content->'payload') = 'object'",
+		"jsonb_typeof(legacy_file.content->'filename') = 'string'",
 		"legacy_file.content->>'file_name'",
 		"STRPOS(LOWER(m.content), LOWER($3))",
 		"STRPOS(LOWER(COALESCE(artifact->'payload'->>'title', '')), LOWER($3))",
-		"STRPOS(LOWER(COALESCE(legacy_file.content->>'title', '')), LOWER($3))",
+		"STRPOS(LOWER(legacy_file.content->>'title'), LOWER($3))",
 		"ORDER BY m.created_at DESC, m.id DESC",
 	}
 	for _, fragment := range required {

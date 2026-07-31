@@ -75,7 +75,7 @@ func TestMessageSearchCandidateSemantics(t *testing.T) {
 	}
 }
 
-func TestMessageSearchHasInternalBlocks(t *testing.T) {
+func TestMessageSearchInternalBlockPolicy(t *testing.T) {
 	tests := []struct {
 		name string
 		raw  string
@@ -89,11 +89,14 @@ func TestMessageSearchHasInternalBlocks(t *testing.T) {
 		{name: "tool result", raw: `[{"type":"tool_result","content":"secret"}]`, want: true},
 		{name: "runtime plan", raw: `[{"type":"runtime_plan","content":"secret"}]`, want: true},
 		{name: "invalid json fails closed", raw: `{`, want: true},
+		{name: "case variant fails closed", raw: `[{"Type":"tool_result","Content":"secret"}]`, want: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := MessageSearchHasInternalBlocks([]byte(tc.raw)); got != tc.want {
-				t.Fatalf("MessageSearchHasInternalBlocks()=%v, want %v", got, tc.want)
+			blocks, valid := parseMessageSearchBlocks([]byte(tc.raw))
+			got := !valid || messageSearchHasInternalBlocks(blocks)
+			if got != tc.want {
+				t.Fatalf("internal block policy=%v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -112,6 +115,8 @@ func TestParseMessageSearchBlocksValidity(t *testing.T) {
 		{name: "numeric block name", raw: `[{"type":"file","name":123}]`, want: false},
 		{name: "numeric payload filename", raw: `[{"type":"file","payload":{"filename":123}}]`, want: false},
 		{name: "malformed typed field", raw: `[{"type":"text","text":123}]`, want: false},
+		{name: "unknown casing", raw: `[{"Type":"file","Name":"report.pdf"}]`, want: false},
+		{name: "unknown top-level field", raw: `[{"type":"text","display_type":"text"}]`, want: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -128,7 +133,8 @@ func TestMixedInternalBlocksOnlyExposeArtifactName(t *testing.T) {
 		{"type":"tool_result","content":"secret tool output"},
 		{"type":"file","name":"Visible Report.PDF"}
 	]`)
-	if !MessageSearchHasInternalBlocks(raw) {
+	blocks, valid := parseMessageSearchBlocks(raw)
+	if !valid || !messageSearchHasInternalBlocks(blocks) {
 		t.Fatal("mixed message must suppress its body from search")
 	}
 	if got := MatchingArtifactName(raw, "report"); got != "Visible Report.PDF" {

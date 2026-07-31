@@ -81,14 +81,6 @@ func MessageSearchContentMatches(msgType, content, query string) bool {
 	return msgType == "text" && strings.Contains(strings.ToLower(content), strings.ToLower(query))
 }
 
-func MessageSearchHasInternalBlocks(raw []byte) bool {
-	blocks, valid := parseMessageSearchBlocks(raw)
-	if !valid {
-		return true
-	}
-	return messageSearchHasInternalBlocks(blocks)
-}
-
 func messageSearchHasInternalBlocks(blocks []types.ContentBlock) bool {
 	for _, block := range blocks {
 		switch block.Type {
@@ -102,6 +94,21 @@ func messageSearchHasInternalBlocks(blocks []types.ContentBlock) bool {
 func parseMessageSearchBlocks(raw []byte) ([]types.ContentBlock, bool) {
 	if len(raw) == 0 {
 		return nil, true
+	}
+	var rawBlocks []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawBlocks); err != nil {
+		return nil, false
+	}
+	knownFields := map[string]struct{}{
+		"type": {}, "text": {}, "thinking": {}, "payload": {}, "id": {},
+		"name": {}, "input": {}, "tool_use_id": {}, "content": {}, "is_error": {},
+	}
+	for _, block := range rawBlocks {
+		for key := range block {
+			if _, ok := knownFields[key]; !ok {
+				return nil, false
+			}
+		}
 	}
 	var blocks []types.ContentBlock
 	if err := json.Unmarshal(raw, &blocks); err != nil {

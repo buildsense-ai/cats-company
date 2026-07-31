@@ -30,6 +30,15 @@ WITH normalized_messages AS (
                OR (
                  jsonb_typeof(typed_block) = 'object'
                  AND (
+                   EXISTS (
+                     SELECT 1
+                     FROM jsonb_object_keys(typed_block) AS block_key
+                     WHERE block_key NOT IN (
+                       'type', 'text', 'thinking', 'payload', 'id',
+                       'name', 'input', 'tool_use_id', 'content', 'is_error'
+                     )
+                   )
+                   OR
                    (typed_block ? 'type' AND jsonb_typeof(typed_block->'type') NOT IN ('string', 'null'))
                    OR (typed_block ? 'text' AND jsonb_typeof(typed_block->'text') NOT IN ('string', 'null'))
                    OR (typed_block ? 'thinking' AND jsonb_typeof(typed_block->'thinking') NOT IN ('string', 'null'))
@@ -116,10 +125,14 @@ AND (
           ELSE m.search_legacy_content
         END AS content
       ) AS legacy_file
-      WHERE STRPOS(LOWER(COALESCE(legacy_file.content->>'name', '')), LOWER($3)) > 0
-        OR STRPOS(LOWER(COALESCE(legacy_file.content->>'file_name', '')), LOWER($3)) > 0
-        OR STRPOS(LOWER(COALESCE(legacy_file.content->>'filename', '')), LOWER($3)) > 0
-        OR STRPOS(LOWER(COALESCE(legacy_file.content->>'title', '')), LOWER($3)) > 0
+      WHERE (jsonb_typeof(legacy_file.content->'name') = 'string'
+          AND STRPOS(LOWER(legacy_file.content->>'name'), LOWER($3)) > 0)
+        OR (jsonb_typeof(legacy_file.content->'file_name') = 'string'
+          AND STRPOS(LOWER(legacy_file.content->>'file_name'), LOWER($3)) > 0)
+        OR (jsonb_typeof(legacy_file.content->'filename') = 'string'
+          AND STRPOS(LOWER(legacy_file.content->>'filename'), LOWER($3)) > 0)
+        OR (jsonb_typeof(legacy_file.content->'title') = 'string'
+          AND STRPOS(LOWER(legacy_file.content->>'title'), LOWER($3)) > 0)
     ))
   ))
 )

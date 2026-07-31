@@ -24,18 +24,27 @@ normalized_messages AS (
          CASE
            WHEN content_blocks IS NULL THEN TRUE
            ELSE JSON_SCHEMA_VALID(
-             '{"type":["array","null"],"items":{"type":["object","null"],"properties":{"type":{"type":["string","null"]},"text":{"type":["string","null"]},"thinking":{"type":["string","null"]},"payload":{"type":["object","null"],"properties":{"name":{"type":["string","null"]},"file_name":{"type":["string","null"]},"filename":{"type":["string","null"]},"title":{"type":["string","null"]}}},"id":{"type":["string","null"]},"name":{"type":["string","null"]},"input":{"type":["object","null"]},"tool_use_id":{"type":["string","null"]},"content":{"type":["string","null"]},"is_error":{"type":["boolean","null"]}}}}',
+             '{"type":["array","null"],"items":{"type":["object","null"],"additionalProperties":false,"properties":{"type":{"type":["string","null"]},"text":{"type":["string","null"]},"thinking":{"type":["string","null"]},"payload":{"type":["object","null"],"properties":{"name":{"type":["string","null"]},"file_name":{"type":["string","null"]},"filename":{"type":["string","null"]},"title":{"type":["string","null"]}}},"id":{"type":["string","null"]},"name":{"type":["string","null"]},"input":{"type":["object","null"]},"tool_use_id":{"type":["string","null"]},"content":{"type":["string","null"]},"is_error":{"type":["boolean","null"]}}}}',
              content_blocks
            )
          END AS search_blocks_valid
   FROM messages
+),
+searchable_messages AS (
+  SELECT normalized_messages.*,
+         CASE
+           WHEN JSON_TYPE(JSON_EXTRACT(search_legacy_content, '$.payload')) = 'OBJECT'
+             THEN JSON_EXTRACT(search_legacy_content, '$.payload')
+           ELSE search_legacy_content
+         END AS search_legacy_fields
+  FROM normalized_messages
 )
 SELECT m.id, m.topic_id,
        CASE WHEN t.type = 'group' THEN COALESCE(g.name, t.name, '')
             ELSE COALESCE(NULLIF(ct.title, ''), NULLIF(peer.display_name, ''), peer.username, t.name, '') END AS topic_name,
        m.from_uid, COALESCE(NULLIF(sender.display_name, ''), sender.username, ''),
        m.content, m.msg_type, m.created_at, m.content_blocks
-FROM normalized_messages m
+FROM searchable_messages m
 CROSS JOIN search_params search
 JOIN topics t ON t.id = m.topic_id
 JOIN users viewer ON viewer.id = ?
@@ -96,11 +105,7 @@ AND (
     OR (m.msg_type = 'file' AND EXISTS (
       SELECT 1
       FROM JSON_TABLE(
-        CASE
-          WHEN JSON_TYPE(JSON_EXTRACT(m.search_legacy_content, '$.payload')) = 'OBJECT'
-            THEN JSON_EXTRACT(m.search_legacy_content, '$.payload')
-          ELSE m.search_legacy_content
-        END,
+        JSON_EXTRACT(m.search_legacy_fields, '$'),
         '$' COLUMNS (
           name VARCHAR(2048) PATH '$.name',
           file_name VARCHAR(2048) PATH '$.file_name',
@@ -108,10 +113,14 @@ AND (
           title VARCHAR(2048) PATH '$.title'
         )
       ) AS legacy_file
-      WHERE LOCATE(search.needle, LOWER(COALESCE(legacy_file.name, ''))) > 0
-        OR LOCATE(search.needle, LOWER(COALESCE(legacy_file.file_name, ''))) > 0
-        OR LOCATE(search.needle, LOWER(COALESCE(legacy_file.filename, ''))) > 0
-        OR LOCATE(search.needle, LOWER(COALESCE(legacy_file.title, ''))) > 0
+      WHERE (JSON_TYPE(JSON_EXTRACT(m.search_legacy_fields, '$.name')) = 'STRING'
+          AND LOCATE(search.needle, LOWER(COALESCE(legacy_file.name, ''))) > 0)
+        OR (JSON_TYPE(JSON_EXTRACT(m.search_legacy_fields, '$.file_name')) = 'STRING'
+          AND LOCATE(search.needle, LOWER(COALESCE(legacy_file.file_name, ''))) > 0)
+        OR (JSON_TYPE(JSON_EXTRACT(m.search_legacy_fields, '$.filename')) = 'STRING'
+          AND LOCATE(search.needle, LOWER(COALESCE(legacy_file.filename, ''))) > 0)
+        OR (JSON_TYPE(JSON_EXTRACT(m.search_legacy_fields, '$.title')) = 'STRING'
+          AND LOCATE(search.needle, LOWER(COALESCE(legacy_file.title, ''))) > 0)
     ))
   ))
 )

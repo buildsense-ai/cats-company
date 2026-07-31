@@ -212,6 +212,7 @@ func TestPostgresStoreContract(t *testing.T) {
 			`[{"type":"file","name":981274}]`,
 			`[{"type":"file","payload":{"filename":981274}}]`,
 			`[{"type":"file","name":"Verified 981274.pdf","text":123}]`,
+			`[{"Type":"file","Name":"Verified 981274.pdf"}]`,
 		} {
 			if _, insertErr := db.db.Exec(
 				`INSERT INTO messages (topic_id, from_uid, content, content_blocks, msg_type)
@@ -227,6 +228,9 @@ func TestPostgresStoreContract(t *testing.T) {
 			topicID, ownerID,
 		); insertErr != nil {
 			t.Fatalf("insert non-array blocks: %v", insertErr)
+		}
+		if _, insertErr := db.SaveMessage(topicID, ownerID, `{"filename":981274}`, "file"); insertErr != nil {
+			t.Fatalf("save malformed legacy filename: %v", insertErr)
 		}
 		var nullBlocksID int64
 		if insertErr := db.db.QueryRow(
