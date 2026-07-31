@@ -142,7 +142,7 @@ import MessagesView, {
 } from './messages-view';
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { api, onWSMessage, wsSendStreamCancel } from '../api';
-import { CHAT_ATTACHMENT_DRAG_TYPE, writeChatAttachmentDrag } from '../chat-attachment-drag';
+import { CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE, CHAT_ATTACHMENT_DRAG_TYPE, writeChatAttachmentDrag } from '../chat-attachment-drag';
 
 const openchatThemeCss = readFileSync(
   resolve(process.cwd(), 'src/css/openchat-theme.css'),
@@ -575,6 +575,35 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.textContent).toContain('原文字和 1 个附件');
   });
 
+  it('restores attachments from serialized content blocks', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 691,
+        seq_id: 691,
+        topic_id: 'p2p_1_2',
+        from_uid: 1,
+        type: 'text',
+        content: '描述这张 Safari 图片',
+        content_blocks: JSON.stringify([
+          { type: 'text', text: '描述这张 Safari 图片' },
+          { type: 'image', payload: { file_key: 'safari.png', url: '/uploads/images/safari.png', name: 'safari.png', size: 16, mime_type: 'image/png' } },
+        ]),
+        created_at: '2026-06-09T00:00:00Z',
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+      Simulate.click(container.querySelector('.mock-edit-message[data-message-id="691"]'));
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('textarea.v3-composer-input').value).toBe('描述这张 Safari 图片');
+    expect(container.querySelector('[aria-label="预览图片：safari.png"]')).not.toBeNull();
+    expect(container.textContent).toContain('原文字和 1 个附件');
+  });
+
   it('keeps legacy message content when attachment blocks have no text block', async () => {
     api.getMessages.mockResolvedValueOnce({
       messages: [{
@@ -600,6 +629,35 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(container.querySelector('textarea.v3-composer-input').value).toBe('旧格式正文仍要保留');
     expect(container.querySelector('[aria-label="预览图片：legacy.png"]')).not.toBeNull();
+  });
+
+  it('clears a Safari attachment drag on window blur before another drop', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    const values = new Map();
+    const dataTransfer = {
+      types: [],
+      setData(type, value) {
+        values.set(type, value);
+        if (!this.types.includes(type)) this.types.push(type);
+      },
+      getData: () => '',
+      dropEffect: 'none',
+      effectAllowed: 'none',
+    };
+    writeChatAttachmentDrag(dataTransfer, {
+      type: 'image',
+      payload: { file_key: 'stale.png', url: '/uploads/images/stale.png', name: 'stale.png' },
+    });
+    dataTransfer.types = [CHAT_ATTACHMENT_DRAG_FALLBACK_TYPE];
+
+    await act(async () => {
+      window.dispatchEvent(new Event('blur'));
+      Simulate.drop(container.querySelector('.v3-timeline'), { dataTransfer });
+      await Promise.resolve();
+    });
+
+    expect(api.uploadFile).not.toHaveBeenCalled();
+    expect(container.querySelectorAll('.v3-composer-attachment-chip')).toHaveLength(0);
   });
 
   it('accepts a chat image drag without uploading the file again', async () => {

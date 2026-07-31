@@ -7,7 +7,7 @@ import Avatar from '../widgets/avatar';
 import CloudArtifactsPanel from '../widgets/cloud-artifacts-panel';
 import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
-import { attachmentFromContentBlock, attachmentIdentity, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
+import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 
@@ -567,6 +567,7 @@ export default function MessagesView({
   // Load message history and group members when topic changes
   useEffect(() => {
     if (!topic) return;
+    clearChatAttachmentDrag();
     historyAbortControllerRef.current?.abort();
     olderHistoryAbortControllerRef.current?.abort();
     questionIndexAbortControllerRef.current?.abort();
@@ -664,8 +665,10 @@ export default function MessagesView({
       if (hasFileDrag(event.dataTransfer)) {
         event.preventDefault();
       }
+      if (event.type === 'drop') clearChatAttachmentDrag();
     };
     const resetDragState = () => {
+      clearChatAttachmentDrag();
       dragDepthRef.current = 0;
       setIsDragActive(false);
     };
@@ -3298,9 +3301,40 @@ function readDirectoryEntries(reader) {
   });
 }
 
+function contentBlocksFromMessage(message) {
+  const direct = parseContentBlocks(message?.content_blocks);
+  if (direct.length > 0) return direct;
+
+  const content = parseStructuredMessageContent(message?.content);
+  return parseContentBlocks(content?.content_blocks || content?.contentBlocks);
+}
+
+function parseContentBlocks(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseStructuredMessageContent(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeIncomingMessage(message) {
   const normalized = { ...message };
-  normalized.content_blocks = Array.isArray(message?.content_blocks) ? message.content_blocks : [];
+  normalized.content_blocks = contentBlocksFromMessage(message);
   normalized.metadata = message?.metadata || null;
   normalized.msg_type = message?.msg_type || 'text';
 
