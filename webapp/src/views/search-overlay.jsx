@@ -54,6 +54,32 @@ export function splitSearchHighlight(text, query) {
   return parts.length ? parts : [{ text: source, match: false }];
 }
 
+export function compactSearchSnippet(text, query, maxRunes = 64) {
+  const source = String(text || '').trim();
+  const needle = String(query || '').trim();
+  const sourceRunes = Array.from(source);
+  if (!source || sourceRunes.length <= maxRunes) return source;
+
+  const matchOffset = needle
+    ? source.toLocaleLowerCase().indexOf(needle.toLocaleLowerCase())
+    : -1;
+  if (matchOffset < 0) {
+    return `${sourceRunes.slice(0, maxRunes).join('')}…`;
+  }
+
+  const matchStart = Array.from(source.slice(0, matchOffset)).length;
+  const matchLength = Math.max(1, Array.from(source.slice(matchOffset, matchOffset + needle.length)).length);
+  const contextBefore = Math.max(8, Math.floor((maxRunes - matchLength) * 0.34));
+  let start = Math.max(0, matchStart - contextBefore);
+  let end = Math.min(sourceRunes.length, start + maxRunes);
+  if (end - start < maxRunes) {
+    start = Math.max(0, end - maxRunes);
+  }
+
+  const excerpt = sourceRunes.slice(start, end).join('');
+  return `${start > 0 ? '…' : ''}${excerpt}${end < sourceRunes.length ? '…' : ''}`;
+}
+
 function HighlightedSearchText({ text, query }) {
   return splitSearchHighlight(text, query).map((part, index) => (
     part.match
@@ -97,6 +123,7 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
 
   useEffect(() => {
     if (!open) return undefined;
+    document.documentElement.classList.add('cc-global-search-open');
     window.requestAnimationFrame(() => {
       inputRef.current?.focus();
       if (listRef.current) listRef.current.scrollTop = savedScrollRef.current;
@@ -130,7 +157,10 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
       }
     };
     document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.documentElement.classList.remove('cc-global-search-open');
+    };
   }, [onClose, onSelectResult, open, results, updateActiveResult]);
 
   useEffect(() => {
@@ -200,7 +230,12 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
               <span className="cc-global-search-result-icon">{result.category === 'artifact' ? <FileText size={18} /> : <MessageSquareText size={18} />}</span>
               <span className="cc-global-search-result-body">
                 <span className="cc-global-search-result-meta"><strong>{result.source}</strong><time>{formatSearchTime(result.time)}</time></span>
-                <span className="cc-global-search-result-snippet"><HighlightedSearchText text={result.snippet || '查看命中消息'} query={keyword} /></span>
+                <span className="cc-global-search-result-snippet">
+                  <HighlightedSearchText
+                    text={compactSearchSnippet(result.snippet || '查看命中消息', keyword)}
+                    query={keyword}
+                  />
+                </span>
                 {result.attachmentName && <span className="cc-global-search-result-file"><FileText size={13} /><HighlightedSearchText text={result.attachmentName} query={keyword} /></span>}
               </span>
             </button>

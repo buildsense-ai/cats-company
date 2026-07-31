@@ -2,7 +2,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
-import SearchOverlay, { normalizeSearchResult } from './search-overlay';
+import SearchOverlay, { compactSearchSnippet, normalizeSearchResult } from './search-overlay';
 import { api } from '../api';
 
 vi.mock('../api', () => ({
@@ -73,6 +73,16 @@ describe('SearchOverlay', () => {
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('mark')?.textContent).toBe('Supabase');
     expect(container.querySelector('.cc-global-search-result-snippet')?.textContent).toContain('<img src=x onerror=alert(1)>');
+  });
+
+  it('centers a long mobile snippet around the highlighted match', () => {
+    const text = `${'前置内容'.repeat(30)}skills${'后续内容'.repeat(30)}`;
+    const excerpt = compactSearchSnippet(text, 'skills', 48);
+
+    expect(excerpt).toContain('skills');
+    expect(excerpt.startsWith('…')).toBe(true);
+    expect(excerpt.endsWith('…')).toBe(true);
+    expect(Array.from(excerpt).length).toBeLessThanOrEqual(50);
   });
 
   it('does not search before two characters and debounces the request', async () => {
@@ -179,11 +189,13 @@ describe('SearchOverlay', () => {
 
   it('closes on Escape and returns null when closed', async () => {
     await render();
+    expect(document.documentElement.classList.contains('cc-global-search-open')).toBe(true);
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     });
     expect(onClose).toHaveBeenCalledTimes(1);
     await render({ open: false });
     expect(container.innerHTML).toBe('');
+    expect(document.documentElement.classList.contains('cc-global-search-open')).toBe(false);
   });
 });
