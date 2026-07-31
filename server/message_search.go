@@ -29,10 +29,6 @@ func (h *MessageHandler) HandleSearchMessages(w http.ResponseWriter, r *http.Req
 	}
 	searchType := strings.TrimSpace(r.URL.Query().Get("type"))
 	if searchType == "" {
-		// Compatibility for the search-overlay draft; the documented parameter is type.
-		searchType = strings.TrimSpace(r.URL.Query().Get("category"))
-	}
-	if searchType == "" {
 		searchType = store.MessageSearchAll
 	}
 	if searchType != store.MessageSearchAll && searchType != store.MessageSearchMessage && searchType != store.MessageSearchArtifact {

@@ -224,14 +224,14 @@ export const api = {
       undefined,
       options,
     ),
-  getMessageSearch: (query, category = 'all', options = {}) =>
+  getMessageSearch: (query, searchType = 'all', options = {}) =>
     request(
       'GET',
-      `/api/messages/search?q=${encodeURIComponent(query)}&category=${encodeURIComponent(category)}`,
+      `/api/messages/search?q=${encodeURIComponent(query)}&type=${encodeURIComponent(searchType)}`,
       undefined,
       options,
     ),
-  getConversations: (options = {}) => request('GET', '/api/conversations', undefined, options),
+  getConversations: () => request('GET', '/api/conversations'),
   getProjects: () => request('GET', '/api/projects'),
   createProject: (name) => request('POST', '/api/projects', { name }),
   renameProject: (projectId, name) => request('PATCH', '/api/projects', { project_id: projectId, name }),

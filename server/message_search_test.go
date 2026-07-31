@@ -104,10 +104,10 @@ func TestHandleSearchMessagesUsesAuthenticatedViewerAndDefaults(t *testing.T) {
 	}
 }
 
-func TestHandleSearchMessagesTypePrecedesCompatibilityCategory(t *testing.T) {
+func TestHandleSearchMessagesIgnoresUndocumentedCategoryParameter(t *testing.T) {
 	db := &messageSearchTestStore{results: []*store.MessageSearchResult{}}
 	handler := NewMessageHandler(db, nil)
-	req := httptest.NewRequest(http.MethodGet, "/api/messages/search?q=report&type=message&category=artifact&limit=7", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/messages/search?q=report&category=artifact&limit=7", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
 	rec := httptest.NewRecorder()
 
@@ -116,8 +116,8 @@ func TestHandleSearchMessagesTypePrecedesCompatibilityCategory(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if db.searchType != store.MessageSearchMessage || db.limit != 7 {
-		t.Fatalf("type=%q limit=%d, want message and 7", db.searchType, db.limit)
+	if db.searchType != store.MessageSearchAll || db.limit != 7 {
+		t.Fatalf("type=%q limit=%d, want all and 7", db.searchType, db.limit)
 	}
 }
 

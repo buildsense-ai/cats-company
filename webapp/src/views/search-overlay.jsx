@@ -9,38 +9,24 @@ const CATEGORIES = [
   { id: 'artifact', label: '产物' },
 ];
 
-function firstValue(item, keys, fallback = '') {
-  for (const key of keys) {
-    const value = item?.[key];
-    if (value !== undefined && value !== null && String(value).trim()) return value;
-  }
-  return fallback;
-}
-
 export function normalizeSearchResult(item, index = 0) {
-  const message = item?.message && typeof item.message === 'object' ? item.message : item;
-  const topic = item?.topic && typeof item.topic === 'object' ? item.topic : {};
-  const attachment = item?.attachment && typeof item.attachment === 'object' ? item.attachment : {};
-  const messageId = Number(firstValue(message, ['message_id', 'id', 'seq_id'], firstValue(item, ['message_id', 'id'], 0))) || 0;
-  const topicId = String(firstValue(item, ['topic_id', 'topicId'], firstValue(topic, ['topic_id', 'id'], firstValue(message, ['topic_id'], ''))));
-  const attachmentName = String(firstValue(item, ['artifact_name', 'attachment_name', 'file_name', 'filename'], firstValue(attachment, ['name', 'file_name', 'filename'], '')));
-  const rawType = String(firstValue(item, ['content_type', 'category', 'kind', 'result_type', 'type'], attachmentName ? 'artifact' : 'message')).toLowerCase();
-  const category = rawType.includes('conversation') || rawType.includes('topic')
-    ? 'conversation'
-    : (rawType.includes('artifact') || rawType.includes('attachment') || rawType.includes('file') ? 'artifact' : 'message');
+  const messageId = Number(item?.message_id) || 0;
+  const topicId = String(item?.topic_id || '');
+  const attachmentName = String(item?.artifact_name || '');
+  const category = item?.content_type === 'artifact' ? 'artifact' : 'message';
   return {
-    key: String(firstValue(item, ['search_id'], `${topicId}:${messageId}:${index}`)),
+    key: `${topicId}:${messageId}:${index}`,
     raw: item,
     topicId,
     messageId,
     category,
-    source: String(firstValue(item, ['source_name', 'conversation_name', 'topic_name', 'title'], firstValue(topic, ['name', 'title'], topicId || '未知会话'))),
-    time: firstValue(item, ['created_at', 'timestamp', 'sent_at', 'updated_at'], firstValue(message, ['created_at', 'timestamp', 'sent_at'], '')),
-    snippet: String(firstValue(item, ['snippet', 'highlight', 'content', 'text'], firstValue(message, ['snippet', 'content', 'text'], ''))),
+    source: String(item?.topic_name || topicId || '未知会话'),
+    time: item?.created_at || '',
+    snippet: String(item?.snippet || item?.content || ''),
     attachmentName,
-    isGroup: Boolean(firstValue(item, ['is_group'], firstValue(topic, ['is_group'], topicId.startsWith('grp_')))),
-    groupId: Number(firstValue(item, ['group_id'], firstValue(topic, ['group_id'], topicId.startsWith('grp_') ? topicId.slice(4) : 0))) || undefined,
-    avatarUrl: String(firstValue(item, ['avatar_url'], firstValue(topic, ['avatar_url'], ''))),
+    isGroup: topicId.startsWith('grp_'),
+    groupId: topicId.startsWith('grp_') ? Number(topicId.slice(4)) || undefined : undefined,
+    avatarUrl: '',
   };
 }
 
@@ -76,36 +62,8 @@ function HighlightedSearchText({ text, query }) {
   ));
 }
 
-function normalizeConversationResult(item, index = 0) {
-  const topicId = String(item?.topic_id || item?.topicId || item?.id || '');
-  const source = String(item?.name || item?.topic_name || item?.title || topicId);
-  return {
-    key: `conversation-${topicId || index}`,
-    topicId,
-    messageId: 0,
-    source,
-    sender: '',
-    snippet: '打开会话',
-    attachmentName: '',
-    category: 'conversation',
-    time: item?.updated_at || item?.last_message_at || item?.created_at || '',
-    isGroup: Boolean(item?.is_group || item?.isGroup || topicId.startsWith('grp_')),
-    groupId: item?.group_id || item?.groupId,
-    avatarUrl: item?.avatar_url || item?.avatarUrl,
-  };
-}
-
-function conversationArray(response) {
-  if (Array.isArray(response)) return response;
-  return Array.isArray(response?.conversations) ? response.conversations : [];
-}
-
 function resultArray(response) {
-  if (Array.isArray(response)) return response;
-  for (const key of ['results', 'messages', 'items', 'data']) {
-    if (Array.isArray(response?.[key])) return response[key];
-  }
-  return [];
+  return Array.isArray(response?.results) ? response.results : [];
 }
 
 function formatSearchTime(value) {
@@ -192,21 +150,9 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
       setLoading(true);
       setError('');
       try {
-        const [response, conversationResponse] = await Promise.all([
-          api.getMessageSearch(keyword, category, { signal: controller.signal }),
-          category === 'all'
-            ? api.getConversations({ signal: controller.signal }).catch((conversationError) => {
-              if (conversationError?.code === 'REQUEST_ABORTED') throw conversationError;
-              return null;
-            })
-            : Promise.resolve(null),
-        ]);
+        const response = await api.getMessageSearch(keyword, category, { signal: controller.signal });
         if (requestRef.current !== requestId) return;
-        const loweredKeyword = keyword.toLocaleLowerCase();
-        const conversations = conversationArray(conversationResponse)
-          .filter((item) => String(item?.name || item?.topic_name || item?.title || '').toLocaleLowerCase().includes(loweredKeyword))
-          .map(normalizeConversationResult);
-        setResults([...conversations, ...resultArray(response).map(normalizeSearchResult)]);
+        setResults(resultArray(response).map(normalizeSearchResult));
       } catch (searchError) {
         if (requestRef.current !== requestId || searchError?.code === 'REQUEST_ABORTED') return;
         setResults([]);
@@ -246,7 +192,7 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
               ref={(node) => { resultRefs.current[index] = node; }}
               type="button"
               className={`cc-global-search-result${activeResultIndex === index ? ' is-active' : ''}`}
-              disabled={!result.topicId || (result.category !== 'conversation' && !result.messageId)}
+              disabled={!result.topicId || !result.messageId}
               aria-current={activeResultIndex === index ? 'true' : undefined}
               onFocus={() => updateActiveResult(index)}
               onClick={() => onSelectResult(result)}

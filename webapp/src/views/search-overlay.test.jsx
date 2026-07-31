@@ -125,7 +125,7 @@ describe('SearchOverlay', () => {
     expect(container.textContent).toContain('new result');
   });
 
-  it('keeps conversation title search in the all category', async () => {
+  it('keeps global search within message and artifact scope', async () => {
     api.getMessageSearch.mockResolvedValue({ results: [] });
     api.getConversations.mockResolvedValue({
       conversations: [{ topic_id: 'grp_9', name: 'Supabase 项目群', is_group: true, group_id: 9 }],
@@ -136,13 +136,8 @@ describe('SearchOverlay', () => {
     await act(async () => vi.advanceTimersByTime(300));
     await flush();
 
-    expect(container.textContent).toContain('Supabase 项目群');
-    const resultButton = container.querySelector('.cc-global-search-result');
-    expect(resultButton.disabled).toBe(false);
-    await act(async () => resultButton.click());
-    expect(onSelectResult).toHaveBeenCalledWith(expect.objectContaining({
-      topicId: 'grp_9', messageId: 0, category: 'conversation', isGroup: true,
-    }));
+    expect(api.getConversations).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain('Supabase 项目群');
   });
 
   it('navigates results with arrow keys and selects the focused result with Enter', async () => {

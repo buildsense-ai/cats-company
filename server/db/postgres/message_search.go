@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
@@ -51,54 +50,21 @@ LIMIT $4 OFFSET $5`
 
 // SearchMessages searches only topics readable by viewerUID. Access filtering is atomic with selection.
 func (a *Adapter) SearchMessages(viewerUID int64, query, searchType string, limit int) ([]*store.MessageSearchResult, error) {
-	pageSize := limit * 10
-	if pageSize < 200 {
-		pageSize = 200
-	}
-	results := make([]*store.MessageSearchResult, 0, limit)
-	offset := 0
-	for len(results) < limit {
+	return store.CollectMessageSearchResults(limit, func(pageSize, offset, remaining int) ([]*store.MessageSearchResult, int, error) {
 		rows, err := a.db.Query(postgresMessageSearchQuery, viewerUID, searchType, query, pageSize, offset)
 		if err != nil {
-			return nil, fmt.Errorf("search messages: %w", err)
+			return nil, 0, fmt.Errorf("search messages: %w", err)
 		}
-		page, scanned, scanErr := scanPostgresMessageSearch(rows, query, searchType, limit-len(results))
+		page, scanned, scanErr := scanPostgresMessageSearch(rows, query, searchType, remaining)
 		closeErr := rows.Close()
 		if scanErr != nil {
-			return nil, scanErr
+			return nil, scanned, scanErr
 		}
 		if closeErr != nil {
-			return nil, fmt.Errorf("close message search rows: %w", closeErr)
+			return nil, scanned, fmt.Errorf("close message search rows: %w", closeErr)
 		}
-		results = append(results, page...)
-		if !postgresShouldContinueSearch(len(results), limit, scanned, pageSize) {
-			break
-		}
-		offset += scanned
-	}
-	return results, nil
-}
-
-func postgresMessageContentMatches(msgType, content, query string) bool {
-	if msgType == "file" {
-		return false
-	}
-	return strings.Contains(strings.ToLower(content), strings.ToLower(query))
-}
-
-func postgresShouldContinueSearch(resultCount, limit, scanned, pageSize int) bool {
-	return resultCount < limit && scanned == pageSize
-}
-
-func postgresShouldIncludeSearchCandidate(searchType string, contentMatches bool, artifactName string) bool {
-	switch searchType {
-	case store.MessageSearchMessage:
-		return contentMatches
-	case store.MessageSearchArtifact:
-		return artifactName != ""
-	default:
-		return contentMatches || artifactName != ""
-	}
+		return page, scanned, nil
+	})
 }
 
 func scanPostgresMessageSearch(rows *sql.Rows, query, searchType string, limit int) ([]*store.MessageSearchResult, int, error) {
@@ -115,12 +81,12 @@ func scanPostgresMessageSearch(rows *sql.Rows, query, searchType string, limit i
 			&result.SenderName, &result.Content, &msgType, &result.CreatedAt, &blocksJSON); err != nil {
 			return nil, scanned, fmt.Errorf("scan message search result: %w", err)
 		}
-		artifactName := postgresMatchingArtifactName(jsonBytes(blocksJSON), query)
+		artifactName := store.MatchingArtifactName(jsonBytes(blocksJSON), query)
 		if artifactName == "" && msgType == "file" {
-			artifactName = postgresLegacyMatchingArtifactName(result.Content, query)
+			artifactName = store.LegacyMatchingArtifactName(result.Content, query)
 		}
-		contentMatches := postgresMessageContentMatches(msgType, result.Content, query)
-		if !postgresShouldIncludeSearchCandidate(searchType, contentMatches, artifactName) {
+		contentMatches := store.MessageSearchContentMatches(msgType, result.Content, query)
+		if !store.ShouldIncludeMessageSearchCandidate(searchType, contentMatches, artifactName) {
 			continue
 		}
 		if artifactName != "" && (searchType == store.MessageSearchArtifact || !contentMatches) {
@@ -129,7 +95,7 @@ func scanPostgresMessageSearch(rows *sql.Rows, query, searchType string, limit i
 			result.Snippet = artifactName
 		} else {
 			result.ContentType = store.MessageSearchMessage
-			result.Snippet = postgresMessageSearchSnippet(result.Content, query)
+			result.Snippet = store.MessageSearchSnippet(result.Content, query)
 		}
 		results = append(results, &result)
 		if len(results) == limit {
@@ -151,104 +117,6 @@ func jsonBytes(value interface{}) []byte {
 		raw, _ := json.Marshal(typed)
 		return raw
 	}
-}
-
-func postgresMatchingArtifactName(raw []byte, query string) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var blocks []types.ContentBlock
-	if err := json.Unmarshal(raw, &blocks); err != nil {
-		return ""
-	}
-	needle := strings.ToLower(query)
-	for _, block := range blocks {
-		if block.Type != "file" && block.Type != "image" && block.Type != "audio" && block.Type != "video" {
-			continue
-		}
-		names := []string{block.Name}
-		for _, key := range []string{"name", "file_name", "filename", "title"} {
-			if value, ok := block.Payload[key].(string); ok {
-				names = append(names, value)
-			}
-		}
-		for _, name := range names {
-			name = strings.TrimSpace(name)
-			if name != "" && strings.Contains(strings.ToLower(name), needle) {
-				return name
-			}
-		}
-	}
-	return ""
-}
-
-func postgresLegacyMatchingArtifactName(content, query string) string {
-	var value interface{}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &value); err != nil {
-		return ""
-	}
-	if encoded, ok := value.(string); ok {
-		if err := json.Unmarshal([]byte(strings.TrimSpace(encoded)), &value); err != nil {
-			return ""
-		}
-	}
-	rich, _ := value.(map[string]interface{})
-	if rich == nil {
-		return ""
-	}
-	payload := rich
-	if nested, ok := rich["payload"].(map[string]interface{}); ok {
-		payload = nested
-	}
-	needle := strings.ToLower(query)
-	for _, key := range []string{"name", "file_name", "filename", "title"} {
-		name, _ := payload[key].(string)
-		name = strings.TrimSpace(name)
-		if name != "" && strings.Contains(strings.ToLower(name), needle) {
-			return name
-		}
-	}
-	return ""
-}
-
-func postgresMessageSearchSnippet(content, query string) string {
-	const maxRunes = 160
-	text := strings.TrimSpace(content)
-	if text == "" {
-		return ""
-	}
-	runes := []rune(text)
-	if len(runes) <= maxRunes {
-		return text
-	}
-	lowerRunes := []rune(strings.ToLower(text))
-	needle := []rune(strings.ToLower(query))
-	index := 0
-	if len(needle) > 0 {
-		for i := 0; i+len(needle) <= len(lowerRunes); i++ {
-			if string(lowerRunes[i:i+len(needle)]) == string(needle) {
-				index = i
-				break
-			}
-		}
-	}
-	start := index - maxRunes/3
-	if start < 0 {
-		start = 0
-	}
-	end := start + maxRunes
-	if end > len(runes) {
-		end = len(runes)
-		start = end - maxRunes
-	}
-	prefix, suffix := "", ""
-	if start > 0 {
-		prefix = "…"
-	}
-	if end < len(runes) {
-		suffix = "…"
-	}
-	return prefix + string(runes[start:end]) + suffix
 }
 
 // GetMessagesAround returns a bounded chronological window around a message in one topic.
