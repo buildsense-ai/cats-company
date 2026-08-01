@@ -54,6 +54,18 @@ server/db/migrations/postgres/000002_xxx.down.sql
 
 如果某次变更需要兼容 MySQL，也在应用代码里单独说明；生产 schema 迁移以 PostgreSQL migration 为准。
 
+## 历史 version 2 冲突处理
+
+`000006_weixin_clawbot_tokens` 与 `000007_reconcile_commercial_relay_foundation`
+是一次性修复两个独立分支曾共用 version 2 的例外。不要据此重编号或编辑任何后续已发布 migration。
+
+生产执行这两个版本前：
+
+1. 按本文末尾要求完成数据库备份。
+2. 执行 `scripts/db-migrate.sh version`，在变更记录中保存输出的 version/dirty 状态（不要记录 DSN）。
+3. 执行 `scripts/db-migrate.sh up`，并确认 version 6、7、8 均已成功应用。
+4. 检查 `weixin_clawbot_tokens` 与 commercial schema 均存在，再恢复应用流量。
+
 ## 服务器执行
 
 `scripts/db-migrate.sh` 会优先使用本机 `migrate` CLI；如果没有，会回退到 Docker 镜像 `migrate/migrate`。如果希望直接安装 CLI：

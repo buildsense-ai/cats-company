@@ -468,7 +468,7 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("Cache-Control", cacheControlForUpload(subDir))
+	w.Header().Set("Cache-Control", "no-store")
 	if subDir == "files" {
 		forceDownload := r.URL.Query().Get("download") == "1"
 		w.Header().Set("Content-Disposition", contentDispositionForUploadFile(fileName, ext, forceDownload))
@@ -482,13 +482,6 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	http.ServeFile(w, r, fullPath)
-}
-
-func cacheControlForUpload(subDir string) string {
-	if subDir == "images" || subDir == "feedback" {
-		return "public, max-age=31536000, immutable"
-	}
-	return "private, max-age=86400"
 }
 
 func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) string {

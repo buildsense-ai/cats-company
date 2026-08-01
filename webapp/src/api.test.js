@@ -238,6 +238,17 @@ describe('WebSocket connection recovery', () => {
     expect(api.getPushRegistrationID()).not.toBe(firstRegistrationID);
   });
 
+  test('uses the authenticated account as the push prompt owner', () => {
+    const payload = btoa(JSON.stringify({ userId: 42 }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+    api.setToken(`header.${payload}.signature`);
+
+    expect(api.getPushPromptOwner()).toBe('user:42');
+    api.setToken('opaque-token');
+    expect(api.getPushPromptOwner()).toBe('');
+  });
+
   test('does not persist a token without a user id as push ownership data', () => {
     api.setToken('opaque-token');
 

@@ -91,6 +91,10 @@ export function getPushRegistrationID() {
   return token ? registrationIDForToken(token) : '';
 }
 
+export function getPushPromptOwner() {
+  return pushRegistrationOwner(token) || '';
+}
+
 export function retirePushRegistrationID(expectedRegistrationID = '') {
   const storedRegistrationID = localStorage.getItem(PUSH_REGISTRATION_ID_KEY);
   if (expectedRegistrationID && storedRegistrationID !== expectedRegistrationID) return false;

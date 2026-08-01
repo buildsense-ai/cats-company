@@ -6,7 +6,7 @@ import { api, getPushRegistrationID } from '../api';
 import {
   canUsePush,
   ensurePushSubscription,
-  PUSH_DISMISSED_KEY,
+  pushDismissedStorageKey,
   serializePushSubscription,
   shouldOfferPush,
 } from '../utils/push-notifications';
@@ -14,18 +14,25 @@ import { enqueuePushOperation } from '../utils/push-operation';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import './pwa-controller.css';
 
-function readDismissed() {
-  return localStorage.getItem(PUSH_DISMISSED_KEY) === 'true';
+function readDismissed(owner) {
+  const storageKey = pushDismissedStorageKey(owner);
+  return Boolean(storageKey) && localStorage.getItem(storageKey) === 'true';
+}
+
+function persistDismissed(owner) {
+  const storageKey = pushDismissedStorageKey(owner);
+  if (storageKey) localStorage.setItem(storageKey, 'true');
 }
 
 export default function PwaController({
   loggedIn,
+  pushPromptOwner,
   sessionRevision,
 }) {
   const sessionRevisionRef = useRef(sessionRevision);
   sessionRevisionRef.current = sessionRevision;
   const [online, setOnline] = useState(() => navigator.onLine);
-  const [dismissed, setDismissed] = useState(readDismissed);
+  const [dismissed, setDismissed] = useState(() => readDismissed(pushPromptOwner));
   const [permission, setPermission] = useState(() => (
     'Notification' in window ? Notification.permission : 'unsupported'
   ));
@@ -57,6 +64,11 @@ export default function PwaController({
     const timer = window.setTimeout(() => setOfflineReady(false), 5000);
     return () => window.clearTimeout(timer);
   }, [offlineReady]);
+
+  useEffect(() => {
+    setDismissed(readDismissed(pushPromptOwner));
+    setPushError('');
+  }, [pushPromptOwner]);
 
   useEffect(() => {
     pushTabCoordinator.setActive(
@@ -101,9 +113,9 @@ export default function PwaController({
   const offerPush = shouldOfferPush({ loggedIn, permission, dismissed });
 
   const dismissPush = useCallback(() => {
-    localStorage.setItem(PUSH_DISMISSED_KEY, 'true');
+    persistDismissed(pushPromptOwner);
     setDismissed(true);
-  }, []);
+  }, [pushPromptOwner]);
 
   const enablePush = useCallback(async () => {
     if (!canUsePush() || busy) return;
@@ -128,7 +140,7 @@ export default function PwaController({
         if (!isCurrent()) return;
         setPermission(nextPermission);
         if (nextPermission !== 'granted') {
-          localStorage.setItem(PUSH_DISMISSED_KEY, 'true');
+          persistDismissed(pushPromptOwner);
           setDismissed(true);
           return;
         }
@@ -140,7 +152,10 @@ export default function PwaController({
         );
         if (!subscription || !isCurrent()) return;
         await api.subscribePush(serializePushSubscription(subscription), registrationID, controller.signal);
-        if (isCurrent()) setDismissed(true);
+        if (isCurrent()) {
+          persistDismissed(pushPromptOwner);
+          setDismissed(true);
+        }
       });
     } catch (error) {
       if (isCurrent()) setPushError(error?.message || '通知开启失败，请稍后重试');
@@ -148,7 +163,7 @@ export default function PwaController({
       window.removeEventListener('cc:auth-changed', abortOnSessionChange);
       setBusy(false);
     }
-  }, [busy, sessionRevision]);
+  }, [busy, pushPromptOwner, sessionRevision]);
 
   return (
     <div className="cc-pwa-status" aria-live="polite">

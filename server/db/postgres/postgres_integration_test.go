@@ -627,6 +627,18 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 		t.Fatal("terminal run resumed through the store")
 	}
 
+	upsert(firstBotID, "run-superseded", "running")
+	upsert(firstBotID, "run-current", "running")
+	if _, err := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+		TopicID: topicID, RunID: "run-superseded", State: "completed", SourceUID: firstBotID,
+	}); !errors.Is(err, store.ErrConversationTaskRunSuperseded) {
+		t.Fatalf("late terminal error = %v, want %v", err, store.ErrConversationTaskRunSuperseded)
+	}
+	source, err := db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || source == nil || source.RunID != "run-current" || source.State != "running" {
+		t.Fatalf("late terminal replaced active run: status=%+v err=%v", source, err)
+	}
+
 	upsert(firstBotID, "run-transition-race", "running")
 	startTransitionRace := make(chan struct{})
 	transitionResults := make(chan struct {
@@ -658,7 +670,7 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 			t.Fatalf("complete concurrent task run: %v", result.err)
 		}
 	}
-	source, err := db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	source, err = db.GetConversationTaskStatusForSource(topicID, firstBotID)
 	if err != nil || source == nil || source.State != "completed" {
 		t.Fatalf("concurrent progress resumed terminal run: status=%+v err=%v", source, err)
 	}

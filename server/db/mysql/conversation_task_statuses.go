@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
@@ -47,19 +48,25 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 	}
 
 	var currentRunID, currentState string
+	var currentExpiresAt sql.NullTime
 	err = tx.QueryRow(
-		`SELECT run_id, state FROM conversation_task_status_sources
+		`SELECT run_id, state, expires_at FROM conversation_task_status_sources
 		 WHERE topic_id = ? AND source_uid = ?`,
 		status.TopicID,
 		status.SourceUID,
-	).Scan(&currentRunID, &currentState)
+	).Scan(&currentRunID, &currentState, &currentExpiresAt)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("load current conversation task status: %w", err)
 	}
-	if err == nil && currentRunID == status.RunID &&
-		types.IsTerminalConversationTaskState(currentState) &&
-		!types.IsTerminalConversationTaskState(status.State) {
-		return nil, store.ErrConversationTaskRunTerminal
+	if err == nil {
+		current := &types.ConversationTaskStatus{RunID: currentRunID, State: currentState}
+		if currentExpiresAt.Valid {
+			expiresAt := currentExpiresAt.Time
+			current.ExpiresAt = &expiresAt
+		}
+		if err := store.ValidateConversationTaskStatusTransition(current, status, time.Now().UTC()); err != nil {
+			return nil, err
+		}
 	}
 
 	if _, err := tx.Exec(

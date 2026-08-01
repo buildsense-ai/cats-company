@@ -1,5 +1,10 @@
 export const PUSH_DISMISSED_KEY = 'cc_push_prompt_dismissed_v1';
 
+export function pushDismissedStorageKey(owner) {
+  const normalizedOwner = String(owner || '').trim();
+  return normalizedOwner ? `${PUSH_DISMISSED_KEY}:${normalizedOwner}` : '';
+}
+
 export function urlBase64ToUint8Array(value) {
   const padding = '='.repeat((4 - (value.length % 4)) % 4);
   const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
