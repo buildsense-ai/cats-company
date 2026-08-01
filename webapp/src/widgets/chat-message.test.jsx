@@ -2256,19 +2256,24 @@ describe('ChatMessage rich file rendering', () => {
     expect(document.activeElement).toBe(trigger);
   });
 
-  it('embeds WebM attachments by extension', async () => {
+  it.each([
+    'product-demo.webm',
+    'product-demo.ogv',
+    'product-demo.m4v',
+    'product-demo.mov',
+  ])('embeds %s attachments by extension', async (fileName) => {
     await act(async () => {
       root.render(
         <PreviewHarness
           message={{
             id: 9,
             from_uid: 2,
-            content: '[文件] product-demo.webm',
+            content: `[文件] ${fileName}`,
             content_blocks: [{
               type: 'file',
               payload: {
-                name: 'product-demo.webm',
-                url: '/uploads/files/20260727_abcdef1234567890abcdef1234567890.webm',
+                name: fileName,
+                url: `/uploads/files/20260727_abcdef1234567890abcdef1234567890-${fileName}`,
                 size: 4096,
                 mime_type: 'application/octet-stream',
               },
@@ -2282,8 +2287,8 @@ describe('ChatMessage rich file rendering', () => {
 
     const video = container.querySelector('video.oc-rich-video-thumb');
     expect(video).not.toBeNull();
-    expect(video.getAttribute('src')).toContain('.webm');
-    expect(container.querySelector('button.oc-rich-video-trigger').getAttribute('aria-label')).toBe('预览视频 product-demo.webm');
+    expect(video.getAttribute('src')).toContain(fileName);
+    expect(container.querySelector('button.oc-rich-video-trigger').getAttribute('aria-label')).toBe(`预览视频 ${fileName}`);
   });
 
   it('recognizes signed video URLs when name and MIME metadata are absent', async () => {

@@ -106,11 +106,17 @@ describe('CatsCo shell styling', () => {
   });
 
   it('uses tokenized reduced-motion-safe feedback for inline video controls', () => {
+    const closeButtonRule = ruleFor('.oc-rich-video-preview-close');
+
     expect(ruleFor(':root')).toContain('--cc-media-black: oklch(0.19 0.01 165);');
     expect(ruleFor('.v3-message .oc-rich-video-play'))
       .toContain('cubic-bezier(0.16, 1, 0.3, 1)');
-    expect(ruleFor('.oc-rich-video-preview-close'))
+    expect(closeButtonRule)
       .toContain('cubic-bezier(0.16, 1, 0.3, 1)');
+    expect(closeButtonRule).toContain('width: 44px;');
+    expect(closeButtonRule).toContain('height: 44px;');
+    expect(ruleFor('.oc-rich-video-preview-close:focus-visible'))
+      .toContain('outline: 2px solid var(--cc-focus-ring);');
     expect(css).toMatch(
       /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.v3-message \.oc-rich-video-play,[\s\S]*?transition: none;/,
     );
