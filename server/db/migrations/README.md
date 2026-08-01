@@ -5,16 +5,11 @@ This directory is the public, versioned home for database schema migrations.
 Current state:
 
 - `postgres/000001_baseline` marks the production PostgreSQL schema that is still created by `server/db/postgres/schema.go`.
-- New production schema changes should be added as new numbered SQL migrations.
+- `CreateSchema()` is the schema module: it creates and safely extends ordinary tables, indexes, constraints, and triggers when the service starts.
+- Keep ordinary additive schema changes in that one module. Do not duplicate the same table or column in both `schema.go` and an SQL migration.
+- Add a numbered SQL migration only when a release needs a separately controlled data transformation or an operation that cannot be safely expressed as idempotent schema initialization.
 - Do not edit an already-applied migration. Add a new one.
 - MySQL is not part of the migration system. Keep MySQL compatibility fixes in code only unless the product explicitly reintroduces MySQL migrations.
-
-Historical note:
-
-- Two independent branches introduced different `000002` migrations. The earlier commercial migration keeps version 2, the later Weixin migration is version 6, and version 7 idempotently reconciles the commercial schema for databases whose recorded version 2 came from the Weixin branch.
-- The version-6 and version-7 down migrations are intentionally no-ops because reconciliation must never delete schema that may have existed before migration tracking was corrected.
-- This is an approved, one-time exception to “Do not edit an already-applied migration.” It only repairs the historical duplicate version and must not become a precedent for renumbering future migrations.
-- Before running versions 6 and 7 in production, take a backup, record the current migration version, and follow the reconciliation checklist in [docs/DB_MIGRATIONS.md](../../../docs/DB_MIGRATIONS.md).
 
 Sensitive values never belong here:
 

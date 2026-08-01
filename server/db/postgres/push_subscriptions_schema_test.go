@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -9,6 +8,9 @@ import (
 func TestPushSubscriptionsSchemaKeepsUserRelationshipAndUpdatedAtTrigger(t *testing.T) {
 	const foreignKey = "CONSTRAINT fk_push_subscriptions_uid FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE"
 	const trigger = "CREATE OR REPLACE TRIGGER trg_push_subscriptions_updated_at"
+	const registrationID = "ADD COLUMN IF NOT EXISTS registration_id VARCHAR(64) NOT NULL DEFAULT ''"
+	const foreignKeyName = "ADD CONSTRAINT fk_push_subscriptions_uid"
+	const foreignKeyReference = "FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE"
 
 	if !strings.Contains(createPushSubscriptionsTable, foreignKey) {
 		t.Fatalf("push subscriptions must be deleted with their user; schema=%s", createPushSubscriptionsTable)
@@ -16,15 +18,11 @@ func TestPushSubscriptionsSchemaKeepsUserRelationshipAndUpdatedAtTrigger(t *test
 	if !strings.Contains(createUpdatedAtTriggers, trigger) {
 		t.Fatalf("push subscriptions must maintain updated_at; triggers=%s", createUpdatedAtTriggers)
 	}
-
-	migration, err := os.ReadFile("../migrations/postgres/000005_push_subscriptions.up.sql")
-	if err != nil {
-		t.Fatalf("read push subscriptions migration: %v", err)
+	if !strings.Contains(migratePushSubscriptionsAddRegistrationID, registrationID) {
+		t.Fatalf("push subscriptions must add registration_id during schema upgrades; migration=%s", migratePushSubscriptionsAddRegistrationID)
 	}
-	if !strings.Contains(string(migration), foreignKey) {
-		t.Fatalf("push subscription migration must match the schema foreign key; migration=%s", migration)
-	}
-	if !strings.Contains(string(migration), trigger) {
-		t.Fatalf("push subscription migration must install the updated_at trigger; migration=%s", migration)
+	if !strings.Contains(migratePushSubscriptionsAddUserForeignKey, foreignKeyName) ||
+		!strings.Contains(migratePushSubscriptionsAddUserForeignKey, foreignKeyReference) {
+		t.Fatalf("push subscriptions must add a missing user foreign key during schema upgrades; migration=%s", migratePushSubscriptionsAddUserForeignKey)
 	}
 }

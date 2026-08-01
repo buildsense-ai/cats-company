@@ -42,6 +42,42 @@ func TestPostgresStoreContract(t *testing.T) {
 	if err := db.CreateSchema(); err != nil {
 		t.Fatalf("create schema should be idempotent: %v", err)
 	}
+	if _, err := db.db.Exec(`ALTER TABLE push_subscriptions DROP COLUMN registration_id`); err != nil {
+		t.Fatalf("remove push registration_id to verify schema upgrade: %v", err)
+	}
+	if _, err := db.db.Exec(`ALTER TABLE push_subscriptions DROP CONSTRAINT fk_push_subscriptions_uid`); err != nil {
+		t.Fatalf("remove push subscription foreign key to verify schema upgrade: %v", err)
+	}
+	if err := db.CreateSchema(); err != nil {
+		t.Fatalf("restore push subscription schema during upgrade: %v", err)
+	}
+	var registrationIDNullable string
+	if err := db.db.QueryRow(`
+		SELECT is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'push_subscriptions'
+		  AND column_name = 'registration_id'
+	`).Scan(&registrationIDNullable); err != nil {
+		t.Fatalf("inspect restored push registration_id: %v", err)
+	}
+	if registrationIDNullable != "NO" {
+		t.Fatalf("push registration_id must be restored as NOT NULL, got %q", registrationIDNullable)
+	}
+	var pushSubscriptionForeignKey bool
+	if err := db.db.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_constraint
+			WHERE conrelid = 'push_subscriptions'::regclass
+			  AND conname = 'fk_push_subscriptions_uid'
+		)
+	`).Scan(&pushSubscriptionForeignKey); err != nil {
+		t.Fatalf("inspect restored push subscription foreign key: %v", err)
+	}
+	if !pushSubscriptionForeignKey {
+		t.Fatal("push subscription foreign key was not restored during schema upgrade")
+	}
 	var migrationVersion int64
 	var migrationDirty bool
 	if err := db.db.QueryRow(`SELECT version, dirty FROM schema_migrations`).Scan(&migrationVersion, &migrationDirty); err != nil {
