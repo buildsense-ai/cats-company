@@ -1745,8 +1745,8 @@ func (h *Hub) enqueueOfflineUserPush(uid int64) bool {
 	return h.push.EnqueueToUser(uid, notification)
 }
 
-func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessage, senderIsBot bool) {
-	if !senderIsBot {
+func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessage, senderPublishesTaskStatus bool) {
+	if !senderPublishesTaskStatus {
 		h.enqueueOfflineUserPush(uid)
 		return
 	}
@@ -1790,6 +1790,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 
 	channelManaged := h.isChannelManagedGroup(groupID)
 	senderIsBot := h.isBotUser(senderUID)
+	senderPublishesTaskStatus := h.isTaskStatusPublisher(senderUID)
 	mentionAllBots := mentionSet[structuredMentionAllBots] && !senderIsBot
 	defaultAgentUID := int64(0)
 	if !trustedChannelTrigger && !senderIsBot && memberCount > 2 && len(mentionSet) == 0 {
@@ -1840,7 +1841,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 		}
 		h.SendToUser(m.UserID, out)
 		if !isBot && shouldNotifyOffline {
-			h.notifyOfflineUserForMessage(m.UserID, senderUID, out, senderIsBot)
+			h.notifyOfflineUserForMessage(m.UserID, senderUID, out, senderPublishesTaskStatus)
 		}
 	}
 }

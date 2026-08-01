@@ -18,6 +18,7 @@ sys.dont_write_bytecode = True
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SYNC_PATH = SCRIPT_DIR / "sync-vapid-env.py"
+WORKFLOWS_DIR = SCRIPT_DIR.parent / ".github" / "workflows"
 spec = importlib.util.spec_from_file_location("sync_vapid_env", SYNC_PATH)
 if spec is None or spec.loader is None:
     raise RuntimeError(f"failed to load {SYNC_PATH}")
@@ -32,6 +33,26 @@ def payload(public_key: str, private_key: str, subject: str) -> bytes:
 
 
 class SyncVapidEnvTest(unittest.TestCase):
+    def test_deploy_workflows_bootstrap_env_before_syncing_vapid_secrets(self) -> None:
+        for workflow_name, stack_root, environment in (
+            ("deploy-prod.yml", "PROD_STACK_ROOT", "prod"),
+            ("deploy-test.yml", "TEST_STACK_ROOT", "test"),
+        ):
+            with self.subTest(workflow=workflow_name):
+                workflow = (WORKFLOWS_DIR / workflow_name).read_text(encoding="utf-8")
+                bootstrap = (
+                    f'"bash ${{{stack_root}}}/compose/bootstrap-server.sh '
+                    f'${{{stack_root}}}"'
+                )
+                sync = (
+                    f'"python3 ${{{stack_root}}}/compose/sync-vapid-env.py '
+                    f'${{{stack_root}}}/env/{environment}.env"'
+                )
+
+                self.assertIn(bootstrap, workflow)
+                self.assertIn(sync, workflow)
+                self.assertLess(workflow.index(bootstrap), workflow.index(sync))
+
     def test_reads_exactly_three_nul_delimited_values(self) -> None:
         self.assertEqual(
             sync.read_values(io.BytesIO(payload("public", "private", "mailto:ops@catsco.cc"))),

@@ -83,6 +83,7 @@ jobs:
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
+          ssh ${SSH_OPTS} "${REMOTE}" "bash ${PROD_STACK_ROOT}/compose/bootstrap-server.sh ${PROD_STACK_ROOT}"
           CATSCO_ARTIFACT_NODES_JSON_B64="$(printf '%s' "${CATSCO_ARTIFACT_NODES_JSON}" | base64 -w 0)"
           CATSCO_ARTIFACT_DNS_ACCESS_KEY_B64="$(printf '%s' "${CATSCO_ARTIFACT_DNS_ACCESS_KEY}" | base64 -w 0)"
           CATSCO_ARTIFACT_DNS_SECRET_KEY_B64="$(printf '%s' "${CATSCO_ARTIFACT_DNS_SECRET_KEY}" | base64 -w 0)"
@@ -112,8 +113,7 @@ jobs:
             mv "$artifact_nodes_temp" "$root/secrets/artifact-nodes.json"
             export CATSCO_ARTIFACT_NODES_FILE=/run/catsco-secrets/artifact-nodes.json
           fi
-          chmod +x "$root/compose/bootstrap-server.sh" "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh" "$root/compose/ensure-image-timeout-nginx.sh"
-          "$root/compose/bootstrap-server.sh" "$root"
+          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh" "$root/compose/ensure-image-timeout-nginx.sh"
           "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
           export SKIP_IMAGE_PULL=1
           "$root/compose/remote-deploy.sh" "$root" "$revision"

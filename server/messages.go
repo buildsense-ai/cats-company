@@ -248,7 +248,7 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 	peerMessage := h.messageForRecipient(uid, peerUID, topicID, replyTo, payload, msgID)
 	h.SendToUser(peerUID, peerMessage)
 	if shouldNotifyOfflineForMessage(peerMessage) {
-		h.notifyOfflineUserForMessage(peerUID, uid, peerMessage, h.isBotUser(uid))
+		h.notifyOfflineUserForMessage(peerUID, uid, peerMessage, h.isTaskStatusPublisher(uid))
 	}
 	h.forwardChannelBotReply(uid, peerUID, topicID, payload, msgID)
 
@@ -516,6 +516,24 @@ func (h *Hub) isBotUser(uid int64) bool {
 	if h.db != nil {
 		user, err := h.db.GetUser(uid)
 		return err == nil && user != nil && user.AccountType == types.AccountBot
+	}
+	return false
+}
+
+// isTaskStatusPublisher identifies automated accounts whose visible messages
+// are coordinated with task status before sending an offline push. Keep this
+// narrower than isBotUser: group routing still treats only bot accounts as
+// agents, while service accounts are explicitly allowed to publish task state.
+func (h *Hub) isTaskStatusPublisher(uid int64) bool {
+	if h == nil || uid <= 0 {
+		return false
+	}
+	if client := h.getClient(uid); client != nil && canPublishTaskStatus(client.accountType) {
+		return true
+	}
+	if h.db != nil {
+		user, err := h.db.GetUser(uid)
+		return err == nil && user != nil && canPublishTaskStatus(user.AccountType)
 	}
 	return false
 }

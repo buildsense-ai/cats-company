@@ -95,6 +95,7 @@ jobs:
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
+          ssh ${SSH_OPTS} "${REMOTE}" "bash ${TEST_STACK_ROOT}/compose/bootstrap-server.sh ${TEST_STACK_ROOT}"
           printf '%s\0%s\0%s\0' \
             "$VAPID_PUBLIC_KEY" "$VAPID_PRIVATE_KEY" "$VAPID_SUBJECT" |
             ssh ${SSH_OPTS} "${REMOTE}" \
@@ -105,8 +106,7 @@ jobs:
           root="${TEST_STACK_ROOT}"
           revision="${GITHUB_SHA}"
           owner="${GHCR_OWNER}"
-          chmod +x "$root/compose/bootstrap-server.sh" "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-status.sh"
-          "$root/compose/bootstrap-server.sh" "$root"
+          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-status.sh"
           "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
           export SKIP_IMAGE_PULL=1
           "$root/compose/remote-deploy.sh" "$root" "$revision"

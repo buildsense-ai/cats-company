@@ -966,6 +966,138 @@ func TestAgentPushWaitsForMatchingTerminalTaskStatus(t *testing.T) {
 	}
 }
 
+func TestServiceAccountPushWaitsForMatchingTerminalTaskStatus(t *testing.T) {
+	const (
+		senderUID  int64 = 17
+		offlineUID int64 = 18
+	)
+	db := &aggregateTaskStatusPushStore{
+		identityMessageStore: &identityMessageStore{users: map[int64]*types.User{
+			senderUID:  {ID: senderUID, AccountType: types.AccountService},
+			offlineUID: {ID: offlineUID, AccountType: types.AccountHuman},
+		}},
+		aggregate: &types.ConversationTaskStatus{
+			TopicID: "p2p_17_18", RunID: "other-service-run", State: "running", SourceUID: 99,
+		},
+	}
+	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/subscription/service-task-status",
+		P256DH:   "p256dh",
+		Auth:     "auth",
+	}}}
+	service := enabledPushService(pushStore)
+	delivered := make(chan struct{}, 1)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		delivered <- struct{}{}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	hub := NewHub(db, nil)
+	hub.SetPushNotificationService(service)
+	handler := NewMessageHandler(db, hub)
+
+	if _, err := handler.handleTaskStatus(senderUID, "p2p_17_18", &normalizedMessagePayload{
+		DisplayType:         taskStatusType,
+		ExplicitDisplayType: true,
+		DisplayContent:      map[string]interface{}{"run_id": "run-1", "state": "running"},
+	}); err != nil {
+		t.Fatalf("publish running service task status: %v", err)
+	}
+	hub.fanoutNormalizedMessage(senderUID, "p2p_17_18", 0, &normalizedMessagePayload{
+		DisplayContent: "final answer",
+		DisplayType:    "text",
+		StoredType:     "text",
+	}, 1, nil)
+	select {
+	case <-delivered:
+		t.Fatal("service account message notified before the task reached a terminal state")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if _, err := handler.handleTaskStatus(senderUID, "p2p_17_18", &normalizedMessagePayload{
+		DisplayType:         taskStatusType,
+		ExplicitDisplayType: true,
+		DisplayContent:      map[string]interface{}{"run_id": "run-1", "state": "completed"},
+	}); err != nil {
+		t.Fatalf("publish completed service task status: %v", err)
+	}
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("matching terminal service task status did not notify the offline recipient")
+	}
+}
+
+func TestServiceAccountGroupPushWaitsForMatchingTerminalTaskStatus(t *testing.T) {
+	const (
+		groupID    int64 = 82
+		senderUID  int64 = 17
+		offlineUID int64 = 18
+	)
+	db := &aggregateTaskStatusPushStore{
+		identityMessageStore: &identityMessageStore{
+			users: map[int64]*types.User{
+				senderUID:  {ID: senderUID, AccountType: types.AccountService},
+				offlineUID: {ID: offlineUID, AccountType: types.AccountHuman},
+			},
+			groupMembers: []*types.GroupMember{
+				{GroupID: groupID, UserID: senderUID},
+				{GroupID: groupID, UserID: offlineUID},
+			},
+		},
+		aggregate: &types.ConversationTaskStatus{
+			TopicID: "grp_82", RunID: "other-service-run", State: "running", SourceUID: 99,
+		},
+	}
+	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/subscription/service-group-task-status",
+		P256DH:   "p256dh",
+		Auth:     "auth",
+	}}}
+	service := enabledPushService(pushStore)
+	delivered := make(chan struct{}, 1)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		delivered <- struct{}{}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	hub := NewHub(db, nil)
+	hub.SetPushNotificationService(service)
+	handler := NewMessageHandler(db, hub)
+
+	if _, err := handler.handleTaskStatus(senderUID, "grp_82", &normalizedMessagePayload{
+		DisplayType:         taskStatusType,
+		ExplicitDisplayType: true,
+		DisplayContent:      map[string]interface{}{"run_id": "run-1", "state": "running"},
+	}); err != nil {
+		t.Fatalf("publish running service task status: %v", err)
+	}
+	hub.broadcastToGroupWithMentions(groupID, &ServerMessage{Data: &MsgServerData{
+		Topic:   "grp_82",
+		From:    formatUID(senderUID),
+		SeqID:   1,
+		Content: "final answer",
+		Type:    "text",
+		MsgType: "text",
+	}}, senderUID, nil, senderUID, false)
+	select {
+	case <-delivered:
+		t.Fatal("service account group message notified before the task reached a terminal state")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if _, err := handler.handleTaskStatus(senderUID, "grp_82", &normalizedMessagePayload{
+		DisplayType:         taskStatusType,
+		ExplicitDisplayType: true,
+		DisplayContent:      map[string]interface{}{"run_id": "run-1", "state": "completed"},
+	}); err != nil {
+		t.Fatalf("publish completed service task status: %v", err)
+	}
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("matching terminal service task status did not notify the offline group recipient")
+	}
+}
+
 func TestLegacyP2PAgentReplyNotifiesWithoutTurnMetadata(t *testing.T) {
 	const (
 		senderUID  int64 = 7

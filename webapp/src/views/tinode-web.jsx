@@ -1001,7 +1001,14 @@ function TinodeWebApp() {
         />
 
         {showProfilePopover && (
-          <ProfilePopover compact={appSidebarCollapsed} popoverRef={profilePopoverRef}>
+          <ProfilePopover
+            compact={appSidebarCollapsed}
+            popoverRef={profilePopoverRef}
+            onLogout={() => {
+              setShowProfilePopover(false);
+              handleLogout();
+            }}
+          >
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowFeedbackModal(true); }}>
               <Frown size={16} strokeWidth={1.8} style={{marginRight: 10}} /> 意见反馈
             </div>
@@ -1016,9 +1023,6 @@ function TinodeWebApp() {
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowProfileEditor(true); }}>
               <Settings size={16} style={{marginRight: 10}} /> 设置与资料
-            </div>
-            <div className="v3-popover-item danger" onClick={() => { localStorage.clear(); window.location.reload(); }}>
-              <LogOut size={16} style={{marginRight: 10}} /> 退出登录
             </div>
           </ProfilePopover>
         )}
@@ -1238,7 +1242,7 @@ function SidebarContent({
   );
 }
 
-export function ProfilePopover({ compact = false, popoverRef, children }) {
+export function ProfilePopover({ compact = false, popoverRef, children, onLogout }) {
   if (typeof document === 'undefined') return null;
   return createPortal(
     <div
@@ -1246,6 +1250,22 @@ export function ProfilePopover({ compact = false, popoverRef, children }) {
       ref={popoverRef}
     >
       {children}
+      {onLogout && (
+        <div
+          className="v3-popover-item danger"
+          role="button"
+          tabIndex={0}
+          aria-label="退出登录"
+          onClick={onLogout}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            onLogout();
+          }}
+        >
+          <LogOut size={16} strokeWidth={1.8} style={{ marginRight: 10 }} /> 退出登录
+        </div>
+      )}
     </div>,
     document.body,
   );

@@ -21,6 +21,7 @@ vi.mock('../utils/push-tab-coordination', () => ({
 }));
 
 import PwaController from './pwa-controller';
+import { registerSW } from 'virtual:pwa-register';
 
 let container;
 let root;
@@ -73,4 +74,22 @@ test('shows the push prompt again when a different account signs in', () => {
   expect(container.textContent).toContain('开启通知，及时收到新消息');
   expect(localStorage.getItem('cc_push_prompt_dismissed_v1:user:1')).toBe('true');
   expect(localStorage.getItem('cc_push_prompt_dismissed_v1:user:2')).toBeNull();
+});
+
+test('updates through the service worker updater registered after mount', () => {
+  renderController('user:1');
+  expect(registerSW).toHaveBeenCalledTimes(1);
+
+  const registrationOptions = registerSW.mock.calls[0][0];
+  const updateServiceWorker = registerSW.mock.results[0].value;
+  act(() => registrationOptions.onNeedRefresh());
+
+  const update = Array.from(container.querySelectorAll('button'))
+    .find((button) => button.textContent === '立即更新');
+  expect(update).toBeTruthy();
+
+  act(() => {
+    update.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  expect(updateServiceWorker).toHaveBeenCalledWith(true);
 });

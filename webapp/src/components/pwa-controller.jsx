@@ -1,5 +1,5 @@
 import React, {
-  useCallback, useEffect, useMemo, useRef, useState,
+  useCallback, useEffect, useRef, useState,
 } from 'react';
 import { registerSW } from 'virtual:pwa-register';
 import { api, getPushRegistrationID } from '../api';
@@ -40,13 +40,17 @@ export default function PwaController({
   const [pushError, setPushError] = useState('');
   const [needRefresh, setNeedRefresh] = useState(false);
   const [offlineReady, setOfflineReady] = useState(false);
+  const updateServiceWorkerRef = useRef(null);
 
-  const updateServiceWorker = useMemo(() => registerSW({
-    immediate: true,
-    onNeedRefresh: () => setNeedRefresh(true),
-    onOfflineReady: () => setOfflineReady(true),
-    onRegisterError: (error) => console.warn('PWA registration failed:', error),
-  }), []);
+  useEffect(() => {
+    if (updateServiceWorkerRef.current) return;
+    updateServiceWorkerRef.current = registerSW({
+      immediate: true,
+      onNeedRefresh: () => setNeedRefresh(true),
+      onOfflineReady: () => setOfflineReady(true),
+      onRegisterError: (error) => console.warn('PWA registration failed:', error),
+    });
+  }, []);
 
   useEffect(() => {
     const handleOnline = () => setOnline(true);
@@ -172,7 +176,7 @@ export default function PwaController({
       {needRefresh && (
         <div className="cc-pwa-prompt">
           <span>发现新版本</span>
-          <button type="button" onClick={() => updateServiceWorker(true)}>立即更新</button>
+          <button type="button" onClick={() => updateServiceWorkerRef.current?.(true)}>立即更新</button>
           <button type="button" className="secondary" onClick={() => setNeedRefresh(false)}>稍后</button>
         </div>
       )}
