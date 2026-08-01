@@ -47,6 +47,21 @@ Before enabling automatic production deploys:
 5. Fill real secrets in `prod.env`
 6. Point `OC_DB_DSN` at the active database and set `OC_DB_DRIVER`
 
+## Web Push deployment secrets
+
+Configure these GitHub Environment secrets in `prod` before enabling Web Push:
+
+- `VAPID_PUBLIC_KEY`
+- `VAPID_PRIVATE_KEY`
+- `VAPID_SUBJECT` (for example, `mailto:ops@catsco.cc`)
+
+The deploy workflow sends the values over SSH standard input and atomically
+updates the persistent `prod.env`; it does not put the private key in the
+repository or a remote command line. It also hardens `prod.env` to owner-only
+mode (`0600`). It retains the existing first-deploy check, so `prod.env` must
+already contain the rest of its real configuration. Keep the production key
+pair separate from test.
+
 ## Image generation gateway
 
 Keep image-provider credentials only under the persistent server root. For the

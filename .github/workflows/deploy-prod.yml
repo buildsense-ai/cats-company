@@ -58,6 +58,7 @@ jobs:
           cp deploy/prod/ensure-image-timeout-nginx.sh "${tmpdir}/compose/"
           cp deploy/prod/update-nginx-v1-timeout.py "${tmpdir}/compose/"
           cp deploy/prod/sync-artifact-node-env.py "${tmpdir}/compose/"
+          cp deploy/sync-vapid-env.py "${tmpdir}/compose/"
           cp deploy/prod/docker-compose.yml "${tmpdir}/compose/"
           cp deploy/prod/tinode.prod.conf "${tmpdir}/compose/"
           cp deploy/prod/env.prod.example "${tmpdir}/env/"
@@ -74,10 +75,17 @@ jobs:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           CATSCO_ARTIFACT_MANAGEMENT_TOKEN: ${{ secrets.CATSCO_ARTIFACT_MANAGEMENT_TOKEN }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
           CATSCO_ARTIFACT_NODES_JSON_B64="$(printf '%s' "${CATSCO_ARTIFACT_NODES_JSON}" | base64 -w 0)"
+          printf '%s\0%s\0%s\0' \
+            "$VAPID_PUBLIC_KEY" "$VAPID_PRIVATE_KEY" "$VAPID_SUBJECT" |
+            ssh ${SSH_OPTS} "${REMOTE}" \
+              "python3 ${PROD_STACK_ROOT}/compose/sync-vapid-env.py ${PROD_STACK_ROOT}/env/prod.env"
           ssh ${SSH_OPTS} "${REMOTE}" "IMAGE_TAG=${IMAGE_TAG} PROD_STACK_ROOT=${PROD_STACK_ROOT} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} CATSCO_ARTIFACT_INDEX_URL=${CATSCO_ARTIFACT_INDEX_URL} CATSCO_ARTIFACT_MANAGEMENT_URL=${CATSCO_ARTIFACT_MANAGEMENT_URL} CATSCO_ARTIFACT_MANAGEMENT_TOKEN=${CATSCO_ARTIFACT_MANAGEMENT_TOKEN} CATSCO_ARTIFACT_NODES_JSON_B64=${CATSCO_ARTIFACT_NODES_JSON_B64} bash -s" <<'EOF'
           set -euo pipefail
 

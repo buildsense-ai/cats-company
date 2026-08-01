@@ -121,10 +121,12 @@ jobs:
           bash -n deploy/prod/ensure-image-timeout-nginx.sh
           python3 deploy/prod/update-nginx-v1-timeout_test.py
 
-      - name: Validate production env updates
+      - name: Validate deploy env updates
         run: |
           bash -n deploy/prod/remote-deploy.sh
+          bash -n deploy/test/remote-deploy.sh
           python3 deploy/prod/sync-artifact-node-env_test.py
+          python3 deploy/sync-vapid-env_test.py
 
       - name: Build server image
         run: docker build -f deploy/Dockerfile.server -t cats-company-server-ci .
