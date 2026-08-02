@@ -16,7 +16,8 @@ export function canUsePush() {
   return window.isSecureContext
     && 'Notification' in window
     && 'serviceWorker' in navigator
-    && 'PushManager' in window;
+    && 'PushManager' in window
+    && typeof navigator.locks?.request === 'function';
 }
 
 export function shouldOfferPush({ loggedIn, permission, dismissed }) {
@@ -79,28 +80,8 @@ export async function ensurePushSubscription(
   });
 }
 
-export async function cleanupPushSubscription(
-  unsubscribeOnServer,
-  isCurrent = () => true,
-) {
-  if (!('serviceWorker' in navigator)) return false;
+export async function getPushSubscription() {
+  if (!('serviceWorker' in navigator)) return null;
   const registration = await navigator.serviceWorker.getRegistration();
-  const subscription = await registration?.pushManager?.getSubscription();
-  if (!subscription) return false;
-
-  if (unsubscribeOnServer) {
-    try {
-      await unsubscribeOnServer(subscription.endpoint);
-    } catch (error) {
-      console.warn('Failed to remove push subscription from server:', error);
-    }
-  }
-
-  if (!isCurrent()) return true;
-  try {
-    await subscription.unsubscribe();
-  } catch (error) {
-    console.warn('Failed to remove browser push subscription:', error);
-  }
-  return true;
+  return registration?.pushManager?.getSubscription() || null;
 }

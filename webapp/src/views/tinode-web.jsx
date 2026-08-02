@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { api, setToken, getToken, getPushRegistrationID, retirePushRegistrationID, connectWS, reconnectWS, disconnectWS } from '../api';
-import { cleanupPushSubscription } from '../utils/push-notifications';
+import { api, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS } from '../api';
 import { enqueuePushOperation } from '../utils/push-operation';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
+import { cleanupPushForSession } from '../utils/push-session-cleanup';
 import t from '../i18n';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
@@ -422,8 +422,9 @@ function TinodeWebApp() {
         });
         if (cancelled) return;
         setToken(session.token);
+        const previewSessionRevision = getAuthRevision();
         const profile = normalizeUserProfile(await api.getMe().catch(() => null));
-        if (cancelled) return;
+        if (cancelled || !isCurrentAuthSession(session.token, previewSessionRevision)) return;
         persistUser(profile || {
           ...DEV_PREVIEW_USER,
           uid: DEV_PREVIEW_UID,
@@ -475,22 +476,23 @@ function TinodeWebApp() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [mobileSidebarOpen]);
 
-  const clearAuthenticatedSession = useCallback((authToken = getToken()) => {
-    if (!authToken || getToken() !== authToken) return;
-    const registrationID = getPushRegistrationID();
-    pushTabCoordinator.setActive(false);
-    enqueuePushOperation(async () => {
-      const otherTabState = await pushTabCoordinator.getOtherTabState();
-      if (otherTabState === 'active') return false;
-      retirePushRegistrationID(registrationID);
-      return cleanupPushSubscription(
-        (endpoint) => api.unsubscribePush(endpoint, authToken, registrationID),
-        () => {
-          const currentToken = getToken();
-          return otherTabState === 'none' && (!currentToken || currentToken === authToken);
-        },
-      );
-    }).catch((error) => {
+  const clearAuthenticatedSession = useCallback((
+    authToken = getToken(),
+    expectedSessionRevision = getAuthRevision(),
+  ) => {
+    if (!isCurrentAuthSession(authToken, expectedSessionRevision)) return;
+    const registrationIDs = getPushCleanupRegistrationIDs();
+    const registrationID = registrationIDs[0] || '';
+    const sessionRevision = expectedSessionRevision;
+    enqueuePushOperation(() => cleanupPushForSession({
+      coordinator: pushTabCoordinator,
+      registrationID,
+      registrationIDs,
+      getCurrentToken: getToken,
+      sessionRevision,
+      getCurrentSessionRevision: getAuthRevision,
+      unsubscribeOnServer: (endpoint, id) => api.unsubscribePush(endpoint, authToken, id),
+    })).catch((error) => {
       console.warn('Push subscription cleanup failed while clearing session:', error);
     });
     disconnectWS();
@@ -627,20 +629,22 @@ function TinodeWebApp() {
   useEffect(() => {
     if (!user?.uid) return;
     const requestToken = getToken();
+    const requestSessionRevision = getAuthRevision();
     if (!requestToken) return undefined;
 
     let cancelled = false;
     api.getMe()
       .then((profile) => {
-        if (!cancelled) {
+        if (!cancelled && isCurrentAuthSession(requestToken, requestSessionRevision)) {
           const normalized = normalizeUserProfile(profile);
           if (normalized) persistUser(normalized);
         }
       })
       .catch((error) => {
         console.warn('Failed to refresh current user profile:', error);
-        if (!cancelled && error?.status === 401 && getToken() === requestToken) {
-          clearAuthenticatedSession(requestToken);
+        if (!cancelled && error?.status === 401
+          && isCurrentAuthSession(requestToken, requestSessionRevision)) {
+          clearAuthenticatedSession(requestToken, requestSessionRevision);
         }
       });
 

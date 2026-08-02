@@ -40,6 +40,7 @@ export default function PwaController({
   const [pushError, setPushError] = useState('');
   const [needRefresh, setNeedRefresh] = useState(false);
   const [offlineReady, setOfflineReady] = useState(false);
+  const [reconcileVersion, setReconcileVersion] = useState(0);
   const updateServiceWorkerRef = useRef(null);
 
   useEffect(() => {
@@ -75,11 +76,21 @@ export default function PwaController({
   }, [pushPromptOwner]);
 
   useEffect(() => {
+    const active = loggedIn && canUsePush() && Notification.permission === 'granted';
+    const registrationID = active ? getPushRegistrationID() : '';
     pushTabCoordinator.setActive(
-      loggedIn && canUsePush() && Notification.permission === 'granted',
+      active,
+      registrationID,
     );
-    return () => pushTabCoordinator.setActive(false);
-  }, [loggedIn, permission]);
+    return () => pushTabCoordinator.setActive(false, registrationID);
+  }, [loggedIn, permission, sessionRevision]);
+
+  useEffect(() => {
+    if (!loggedIn || typeof pushTabCoordinator.onReconcile !== 'function') return undefined;
+    return pushTabCoordinator.onReconcile(() => {
+      setReconcileVersion((current) => current + 1);
+    });
+  }, [loggedIn]);
 
   useEffect(() => {
     if (!canUsePush() || !loggedIn || Notification.permission !== 'granted') return undefined;
@@ -92,6 +103,8 @@ export default function PwaController({
     const reconcilePush = async () => {
       try {
         const registrationID = getPushRegistrationID();
+        const activeLockReady = await pushTabCoordinator.waitUntilActive?.(registrationID);
+        if (activeLockReady === false || !isCurrent()) return;
         const config = await api.getPushConfig(controller.signal);
         if (!isCurrent()) return;
         const publicKey = config.public_key;
@@ -112,7 +125,7 @@ export default function PwaController({
       cancelled = true;
       controller.abort();
     };
-  }, [loggedIn, sessionRevision]);
+  }, [loggedIn, reconcileVersion, sessionRevision]);
 
   const offerPush = shouldOfferPush({ loggedIn, permission, dismissed });
 
@@ -148,6 +161,10 @@ export default function PwaController({
           setDismissed(true);
           return;
         }
+
+        pushTabCoordinator.setActive(true, registrationID);
+        const activeLockReady = await pushTabCoordinator.waitUntilActive?.(registrationID);
+        if (activeLockReady === false || !isCurrent()) return;
 
         const subscription = await ensurePushSubscription(
           publicKey,

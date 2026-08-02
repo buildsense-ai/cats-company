@@ -49,7 +49,8 @@ Before enabling automatic production deploys:
 
 ## Web Push deployment secrets
 
-Configure these GitHub Environment secrets in `prod` before enabling Web Push:
+Web Push is disabled by default, so these GitHub Environment secrets are not
+required for a production deploy. To enable it, configure all three in `prod`:
 
 - `VAPID_PUBLIC_KEY`
 - `VAPID_PRIVATE_KEY`
@@ -58,9 +59,10 @@ Configure these GitHub Environment secrets in `prod` before enabling Web Push:
 The deploy workflow sends the values over SSH standard input and atomically
 updates the persistent `prod.env`; it does not put the private key in the
 repository or a remote command line. It also hardens `prod.env` to owner-only
-mode (`0600`). It retains the existing first-deploy check, so `prod.env` must
-already contain the rest of its real configuration. Keep the production key
-pair separate from test.
+mode (`0600`). Supplying none of the three removes any earlier VAPID values and
+keeps Web Push disabled; supplying only some is rejected. It retains the
+existing first-deploy check, so `prod.env` must already contain the rest of its
+real configuration. Keep the production key pair separate from test.
 
 ## Image generation gateway
 

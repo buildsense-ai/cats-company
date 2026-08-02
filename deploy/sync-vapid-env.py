@@ -18,16 +18,25 @@ MANAGED_KEYS = (
 )
 
 
-def normalize_value(value: str, name: str) -> str:
-    if "\n" in value or "\r" in value or "\0" in value:
-        raise ValueError(f"{name} must be a single-line value")
-    normalized = value.strip()
-    if not normalized:
-        raise ValueError(f"{name} must not be empty")
+def normalize_values(
+    public_key: str,
+    private_key: str,
+    subject: str,
+) -> tuple[str, str, str] | None:
+    raw_values = (public_key, private_key, subject)
+    for value, name in zip(raw_values, MANAGED_KEYS, strict=True):
+        if "\n" in value or "\r" in value or "\0" in value:
+            raise ValueError(f"{name} must be a single-line value")
+
+    normalized = tuple(value.strip() for value in raw_values)
+    if not any(normalized):
+        return None
+    if not all(normalized):
+        raise ValueError("VAPID values must be configured together or all left empty")
     return normalized
 
 
-def read_values(stream: BinaryIO) -> tuple[str, str, str]:
+def read_values(stream: BinaryIO) -> tuple[str, str, str] | None:
     parts = stream.read().split(b"\0")
     if len(parts) != len(MANAGED_KEYS) + 1 or parts[-1] != b"":
         raise ValueError("expected exactly three NUL-delimited VAPID values")
@@ -37,35 +46,29 @@ def read_values(stream: BinaryIO) -> tuple[str, str, str]:
     except UnicodeDecodeError as error:
         raise ValueError("VAPID values must be valid UTF-8") from error
 
-    return (
-        normalize_value(decoded[0], "VAPID_PUBLIC_KEY"),
-        normalize_value(decoded[1], "VAPID_PRIVATE_KEY"),
-        normalize_value(decoded[2], "VAPID_SUBJECT"),
-    )
+    return normalize_values(*decoded)
 
 
 def render(source: str, public_key: str, private_key: str, subject: str) -> str:
-    updates = {
-        "VAPID_PUBLIC_KEY": normalize_value(public_key, "VAPID_PUBLIC_KEY"),
-        "VAPID_PRIVATE_KEY": normalize_value(private_key, "VAPID_PRIVATE_KEY"),
-        "VAPID_SUBJECT": normalize_value(subject, "VAPID_SUBJECT"),
-    }
+    values = normalize_values(public_key, private_key, subject)
+    updates = dict(zip(MANAGED_KEYS, values, strict=True)) if values else {}
     lines: list[str] = []
     seen: set[str] = set()
     for raw_line in source.replace("\ufeff", "").replace("\r\n", "\n").splitlines():
         key = ""
         if "=" in raw_line and not raw_line.lstrip().startswith("#"):
             key = raw_line.partition("=")[0]
-        if key in updates:
-            if key not in seen:
+        if key in MANAGED_KEYS:
+            if key in updates and key not in seen:
                 lines.append(f"{key}={updates[key]}")
                 seen.add(key)
             continue
         lines.append(raw_line)
 
-    for key in MANAGED_KEYS:
-        if key not in seen:
-            lines.append(f"{key}={updates[key]}")
+    if values:
+        for key in MANAGED_KEYS:
+            if key not in seen:
+                lines.append(f"{key}={updates[key]}")
     return "\n".join(lines) + "\n"
 
 
@@ -82,11 +85,9 @@ def update_file(
     subject: str,
 ) -> None:
     # Validate all values before touching the destination file.
-    public_key = normalize_value(public_key, "VAPID_PUBLIC_KEY")
-    private_key = normalize_value(private_key, "VAPID_PRIVATE_KEY")
-    subject = normalize_value(subject, "VAPID_SUBJECT")
+    values = normalize_values(public_key, private_key, subject)
     source = read_source(env_file)
-    rendered = render(source, public_key, private_key, subject)
+    rendered = render(source, *(values or ("", "", "")))
 
     env_file.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
@@ -120,12 +121,10 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        public_key, private_key, subject = read_values(sys.stdin.buffer)
+        values = read_values(sys.stdin.buffer)
         update_file(
             args.env_file,
-            public_key,
-            private_key,
-            subject,
+            *(values or ("", "", "")),
         )
     except (OSError, ValueError) as error:
         raise SystemExit(f"failed to synchronize VAPID environment: {error}") from error

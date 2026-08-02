@@ -83,13 +83,29 @@ class SyncVapidEnvTest(unittest.TestCase):
         self.assertIn("VAPID_PRIVATE_KEY=private\n", rendered)
         self.assertIn("VAPID_SUBJECT=mailto:ops@catsco.cc\n", rendered)
 
-    def test_rejects_empty_or_multiline_values_before_writing(self) -> None:
+    def test_all_empty_values_disable_push_and_remove_existing_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / "prod.env"
+            env_file.write_text(
+                "KEEP=value\n"
+                "VAPID_PUBLIC_KEY=old-public\n"
+                "VAPID_PRIVATE_KEY=old-private\n"
+                "VAPID_SUBJECT=mailto:old@example.com\n",
+                encoding="utf-8",
+            )
+
+            sync.update_file(env_file, "", "", "")
+
+            rendered = env_file.read_text(encoding="utf-8")
+            self.assertEqual(rendered, "KEEP=value\n")
+
+    def test_rejects_partial_or_multiline_values_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             env_file = Path(directory) / "prod.env"
             original = "KEEP=value\n"
             env_file.write_text(original, encoding="utf-8")
 
-            with self.assertRaisesRegex(ValueError, "must not be empty"):
+            with self.assertRaisesRegex(ValueError, "configured together"):
                 sync.update_file(env_file, "", "private", "mailto:ops@catsco.cc")
             self.assertEqual(env_file.read_text(encoding="utf-8"), original)
 

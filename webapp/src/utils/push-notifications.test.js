@@ -1,5 +1,5 @@
 import {
-  cleanupPushSubscription,
+  canUsePush,
   ensurePushSubscription,
   serializePushSubscription,
   shouldOfferPush,
@@ -15,6 +15,10 @@ describe('push notification helpers', () => {
     });
     Object.defineProperty(window, 'PushManager', { configurable: true, value: function PushManager() {} });
     Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: {} });
+    Object.defineProperty(navigator, 'locks', {
+      configurable: true,
+      value: { request: vi.fn() },
+    });
   });
 
   test('converts a URL-safe VAPID key to bytes', () => {
@@ -27,6 +31,12 @@ describe('push notification helpers', () => {
     expect(shouldOfferPush({ loggedIn: false, permission: 'default', dismissed: false })).toBe(false);
     expect(shouldOfferPush({ loggedIn: true, permission: 'denied', dismissed: false })).toBe(false);
     expect(shouldOfferPush({ loggedIn: true, permission: 'default', dismissed: true })).toBe(false);
+  });
+
+  test('requires Web Locks because multi-tab cleanup must be atomic', () => {
+    Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined });
+
+    expect(canUsePush()).toBe(false);
   });
 
   test('serializes only the fields accepted by the push subscription API', () => {
@@ -112,47 +122,6 @@ describe('push notification helpers', () => {
     expect(subscribe).toHaveBeenCalled();
   });
 
-  test('unsubscribes in the browser even when server cleanup fails', async () => {
-    const unsubscribe = vi.fn().mockResolvedValue(true);
-    const serverCleanup = vi.fn().mockRejectedValue(new Error('offline'));
-    Object.defineProperty(navigator, 'serviceWorker', {
-      configurable: true,
-      value: {
-        getRegistration: vi.fn().mockResolvedValue({
-          pushManager: { getSubscription: vi.fn().mockResolvedValue({ endpoint: 'https://push.example/sub', unsubscribe }) },
-        }),
-      },
-    });
-
-    await expect(cleanupPushSubscription(serverCleanup)).resolves.toBe(true);
-    expect(serverCleanup).toHaveBeenCalledWith('https://push.example/sub');
-    expect(unsubscribe).toHaveBeenCalled();
-  });
-
-  test('waits for server cleanup before unsubscribing in the browser', async () => {
-    let finishServerCleanup;
-    const unsubscribe = vi.fn().mockResolvedValue(true);
-    const serverCleanup = vi.fn().mockImplementation(() => new Promise((resolve) => {
-      finishServerCleanup = resolve;
-    }));
-    Object.defineProperty(navigator, 'serviceWorker', {
-      configurable: true,
-      value: {
-        getRegistration: vi.fn().mockResolvedValue({
-          pushManager: { getSubscription: vi.fn().mockResolvedValue({ endpoint: 'https://push.example/sub', unsubscribe }) },
-        }),
-      },
-    });
-
-    const cleanup = cleanupPushSubscription(serverCleanup);
-
-    await vi.waitFor(() => expect(finishServerCleanup).toBeTypeOf('function'));
-    expect(unsubscribe).not.toHaveBeenCalled();
-    finishServerCleanup();
-    await expect(cleanup).resolves.toBe(true);
-    expect(unsubscribe).toHaveBeenCalled();
-  });
-
   test('does not create a subscription after the authenticated session changes', async () => {
     let resolveExisting;
     let current = true;
@@ -180,33 +149,4 @@ describe('push notification helpers', () => {
     expect(subscribe).not.toHaveBeenCalled();
   });
 
-  test('removes the old server record without deleting a new session browser subscription', async () => {
-    let resolveSubscription;
-    let current = true;
-    const unsubscribe = vi.fn();
-    const serverCleanup = vi.fn();
-    Object.defineProperty(navigator, 'serviceWorker', {
-      configurable: true,
-      value: {
-        getRegistration: vi.fn().mockResolvedValue({
-          pushManager: {
-            getSubscription: vi.fn().mockImplementation(() => new Promise((resolve) => {
-              resolveSubscription = resolve;
-            })),
-          },
-        }),
-      },
-    });
-
-    const cleanup = cleanupPushSubscription(serverCleanup, () => current);
-    await vi.waitFor(() => expect(resolveSubscription).toBeTypeOf('function'));
-    current = false;
-    resolveSubscription({ endpoint: 'https://push.example/new-session', unsubscribe });
-
-    await expect(cleanup).resolves.toBe(true);
-    await vi.waitFor(() => expect(serverCleanup).toHaveBeenCalledWith(
-      'https://push.example/new-session',
-    ));
-    expect(unsubscribe).not.toHaveBeenCalled();
-  });
 });

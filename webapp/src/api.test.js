@@ -39,6 +39,8 @@ describe('WebSocket connection recovery', () => {
     vi.useFakeTimers();
     vi.resetModules();
     localStorage.clear();
+    sessionStorage.clear();
+    window.name = '';
     MockWebSocket.instances = [];
     global.WebSocket = MockWebSocket;
     api = await import('./api');
@@ -222,6 +224,18 @@ describe('WebSocket connection recovery', () => {
     window.removeEventListener('cc:auth-changed', onAuthChanged);
   });
 
+  test('distinguishes a reissued identical token from the previous session', () => {
+    const token = 'same-token';
+    api.setToken(token);
+    const previousRevision = api.getAuthRevision();
+
+    api.setToken(null);
+    api.setToken(token);
+
+    expect(api.isCurrentAuthSession(token, previousRevision)).toBe(false);
+    expect(api.isCurrentAuthSession(token, api.getAuthRevision())).toBe(true);
+  });
+
   test('reuses one push generation for renewed tokens of the same account', () => {
     const tokenFor = (userId, nonce) => {
       const payload = btoa(JSON.stringify({ userId, nonce }))
@@ -252,12 +266,12 @@ describe('WebSocket connection recovery', () => {
   test('does not persist a token without a user id as push ownership data', () => {
     api.setToken('opaque-token');
 
-    api.getPushRegistrationID();
+    const firstRegistrationID = api.getPushRegistrationID();
 
-    expect(localStorage.getItem('oc_push_registration_owner')).toBeNull();
+    expect(api.getPushRegistrationID()).not.toBe(firstRegistrationID);
   });
 
-  test('adopts a same-account push generation written by another tab', () => {
+  test('keeps push registration ids scoped to the current tab', () => {
     const payload = btoa(JSON.stringify({ userId: 42 }))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     api.setToken(`header.${payload}.signature`);
@@ -265,20 +279,92 @@ describe('WebSocket connection recovery', () => {
     localStorage.setItem('oc_push_registration_id', 'generation-from-other-tab');
     localStorage.setItem('oc_push_registration_owner', 'user:42');
 
-    expect(api.getPushRegistrationID()).toBe('generation-from-other-tab');
+    expect(api.getPushRegistrationID()).not.toBe('generation-from-other-tab');
   });
 
-  test('rotates the push generation after the last tab retires it', () => {
+  test('keeps a legacy registration id only as a cleanup alias', () => {
     const payload = btoa(JSON.stringify({ userId: 42 }))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    const token = `header.${payload}.signature`;
-    api.setToken(token);
-    const retiredRegistrationID = api.getPushRegistrationID();
+    localStorage.setItem('oc_push_registration_id', 'legacy-registration');
+    localStorage.setItem('oc_push_registration_owner', 'user:42');
+    api.setToken(`header.${payload}.signature`);
 
-    expect(api.retirePushRegistrationID(retiredRegistrationID)).toBe(true);
-    api.setToken(token);
+    const tabRegistrationID = api.getPushRegistrationID();
 
-    expect(api.getPushRegistrationID()).not.toBe(retiredRegistrationID);
+    expect(tabRegistrationID).not.toBe('legacy-registration');
+    expect(api.getPushCleanupRegistrationIDs()).toEqual([
+      tabRegistrationID,
+      'legacy-registration',
+    ]);
+  });
+
+  test('rotates a tab registration before a new session for the same account', () => {
+    const tokenFor = (nonce) => {
+      const payload = btoa(JSON.stringify({ userId: 42, nonce }))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      return `header.${payload}.signature`;
+    };
+    api.setToken(tokenFor('first'));
+    const firstRegistrationID = api.getPushRegistrationID();
+
+    api.setToken(null);
+    api.setToken(tokenFor('second'));
+
+    expect(api.getPushRegistrationID()).not.toBe(firstRegistrationID);
+  });
+
+  test('keeps the tab registration id after a page reload', async () => {
+    const payload = btoa(JSON.stringify({ userId: 42 }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    api.setToken(`header.${payload}.signature`);
+    const firstRegistrationID = api.getPushRegistrationID();
+
+    vi.resetModules();
+    const peer = await import('./api');
+
+    expect(peer.getPushRegistrationID()).toBe(firstRegistrationID);
+    peer.disconnectWS();
+  });
+
+  test('keeps a session registration through an OAuth return that resets window.name', async () => {
+    const payload = btoa(JSON.stringify({ userId: 42 }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    api.setToken(`header.${payload}.signature`);
+    const firstRegistrationID = api.getPushRegistrationID();
+
+    window.name = 'feishu-oauth-return';
+    vi.resetModules();
+    const peer = await import('./api');
+
+    expect(peer.getPushRegistrationID()).toBe(firstRegistrationID);
+    peer.disconnectWS();
+  });
+
+  test('uses the pre-reload registration id for an immediate logout request', async () => {
+    const payload = btoa(JSON.stringify({ userId: 42 }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const authenticatedToken = `header.${payload}.signature`;
+    api.setToken(authenticatedToken);
+    const firstRegistrationID = api.getPushRegistrationID();
+
+    vi.resetModules();
+    const peer = await import('./api');
+    const logoutRegistrationID = peer.getPushRegistrationID();
+    peer.setToken(null);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue({}) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await peer.api.unsubscribePush(
+      'https://push.example/subscription',
+      authenticatedToken,
+      logoutRegistrationID,
+    );
+
+    expect(logoutRegistrationID).toBe(firstRegistrationID);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      registration_id: firstRegistrationID,
+    });
+    peer.disconnectWS();
   });
 
   test('allows a session change to abort push reconciliation requests', async () => {

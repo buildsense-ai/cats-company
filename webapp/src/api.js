@@ -5,6 +5,11 @@ const WS_URL = import.meta.env.VITE_WS_URL || `${DEFAULT_WS_SCHEME}://${window.l
 let token = localStorage.getItem('oc_token');
 const PUSH_REGISTRATION_ID_KEY = 'oc_push_registration_id';
 const PUSH_REGISTRATION_OWNER_KEY = 'oc_push_registration_owner';
+// A registration ID guards server deletes. sessionStorage preserves it across
+// reloads and cross-origin returns in this browsing context. A copied storage
+// area is safe because cleanup first coordinates with active peer tabs.
+let pushRegistrationID = '';
+let pushRegistrationOwner = '';
 const newPushRegistrationID = () => {
   if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -21,23 +26,72 @@ const decodeTokenPayload = (candidate) => {
     return null;
   }
 };
-const pushRegistrationOwner = (candidate) => {
+const pushRegistrationOwnerForToken = (candidate) => {
   const userID = decodeTokenPayload(candidate)?.userId;
   return userID === undefined || userID === null ? null : `user:${userID}`;
 };
+
+const readPushRegistration = () => {
+  try {
+    return {
+      id: String(globalThis.sessionStorage?.getItem(PUSH_REGISTRATION_ID_KEY) || '').trim(),
+      owner: String(globalThis.sessionStorage?.getItem(PUSH_REGISTRATION_OWNER_KEY) || '').trim(),
+    };
+  } catch {
+    return { id: '', owner: '' };
+  }
+};
+
+const writePushRegistration = (id, owner) => {
+  try {
+    globalThis.sessionStorage?.setItem(PUSH_REGISTRATION_ID_KEY, id);
+    globalThis.sessionStorage?.setItem(PUSH_REGISTRATION_OWNER_KEY, owner);
+  } catch {
+    // Memory-only registration IDs still prevent stale operations in this page.
+  }
+};
+
 const registrationIDForToken = (candidate) => {
-  const owner = pushRegistrationOwner(candidate);
+  const owner = pushRegistrationOwnerForToken(candidate);
   if (!owner) return newPushRegistrationID();
-  const storedID = localStorage.getItem(PUSH_REGISTRATION_ID_KEY);
-  const storedOwner = localStorage.getItem(PUSH_REGISTRATION_OWNER_KEY);
-  if (storedID && (!storedOwner || storedOwner === owner)) {
-    localStorage.setItem(PUSH_REGISTRATION_OWNER_KEY, owner);
-    return storedID;
+  if (pushRegistrationID && pushRegistrationOwner === owner) {
+    return pushRegistrationID;
+  }
+  const saved = readPushRegistration();
+  if (saved.owner === owner && saved.id && saved.id.length <= 64) {
+    pushRegistrationID = saved.id;
+    pushRegistrationOwner = owner;
+    return pushRegistrationID;
   }
   const registrationID = newPushRegistrationID();
-  localStorage.setItem(PUSH_REGISTRATION_ID_KEY, registrationID);
-  localStorage.setItem(PUSH_REGISTRATION_OWNER_KEY, owner);
+  pushRegistrationID = registrationID;
+  pushRegistrationOwner = owner;
+  writePushRegistration(registrationID, owner);
   return registrationID;
+};
+
+const legacyRegistrationIDForToken = (candidate) => {
+  const owner = pushRegistrationOwnerForToken(candidate);
+  if (!owner) return '';
+  try {
+    const id = String(globalThis.localStorage?.getItem(PUSH_REGISTRATION_ID_KEY) || '').trim();
+    const legacyOwner = String(globalThis.localStorage?.getItem(PUSH_REGISTRATION_OWNER_KEY) || '').trim();
+    if (!id || id.length > 64 || (legacyOwner && legacyOwner !== owner)) return '';
+    return id;
+  } catch {
+    return '';
+  }
+};
+
+const clearPushRegistration = () => {
+  pushRegistrationID = '';
+  pushRegistrationOwner = '';
+  try {
+    globalThis.sessionStorage?.removeItem(PUSH_REGISTRATION_ID_KEY);
+    globalThis.sessionStorage?.removeItem(PUSH_REGISTRATION_OWNER_KEY);
+  } catch {
+    // The in-memory values are still cleared when storage is unavailable.
+  }
 };
 let authRevision = 0;
 let wsConn = null;
@@ -70,7 +124,10 @@ export function setToken(t) {
   token = t;
   authRevision += 1;
   if (t) localStorage.setItem('oc_token', t);
-  else localStorage.removeItem('oc_token');
+  else {
+    localStorage.removeItem('oc_token');
+    clearPushRegistration();
+  }
   window.dispatchEvent(new CustomEvent('cc:auth-changed', {
     detail: {
       loggedIn: Boolean(t),
@@ -87,20 +144,25 @@ export function getAuthRevision() {
   return authRevision;
 }
 
+export function isCurrentAuthSession(candidate, revision) {
+  return Boolean(candidate)
+    && Number.isInteger(revision)
+    && token === candidate
+    && authRevision === revision;
+}
+
 export function getPushRegistrationID() {
   return token ? registrationIDForToken(token) : '';
 }
 
-export function getPushPromptOwner() {
-  return pushRegistrationOwner(token) || '';
+export function getPushCleanupRegistrationIDs() {
+  const current = getPushRegistrationID();
+  const legacy = legacyRegistrationIDForToken(token);
+  return [...new Set([current, legacy].filter(Boolean))];
 }
 
-export function retirePushRegistrationID(expectedRegistrationID = '') {
-  const storedRegistrationID = localStorage.getItem(PUSH_REGISTRATION_ID_KEY);
-  if (expectedRegistrationID && storedRegistrationID !== expectedRegistrationID) return false;
-  localStorage.removeItem(PUSH_REGISTRATION_ID_KEY);
-  localStorage.removeItem(PUSH_REGISTRATION_OWNER_KEY);
-  return true;
+export function getPushPromptOwner() {
+  return pushRegistrationOwnerForToken(token) || '';
 }
 
 export function getWebSocketURL() {
