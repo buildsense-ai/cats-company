@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { api, setToken, getToken, connectWS, reconnectWS, disconnectWS } from '../api';
+import { api, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS } from '../api';
+import { enqueuePushOperation } from '../utils/push-operation';
+import { pushTabCoordinator } from '../utils/push-tab-coordination';
+import { cleanupPushForSession } from '../utils/push-session-cleanup';
 import t from '../i18n';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
@@ -419,8 +422,9 @@ function TinodeWebApp() {
         });
         if (cancelled) return;
         setToken(session.token);
+        const previewSessionRevision = getAuthRevision();
         const profile = normalizeUserProfile(await api.getMe().catch(() => null));
-        if (cancelled) return;
+        if (cancelled || !isCurrentAuthSession(session.token, previewSessionRevision)) return;
         persistUser(profile || {
           ...DEV_PREVIEW_USER,
           uid: DEV_PREVIEW_UID,
@@ -472,15 +476,38 @@ function TinodeWebApp() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [mobileSidebarOpen]);
 
+  const clearAuthenticatedSession = useCallback((
+    authToken = getToken(),
+    expectedSessionRevision = getAuthRevision(),
+  ) => {
+    if (!isCurrentAuthSession(authToken, expectedSessionRevision)) return;
+    const registrationIDs = getPushCleanupRegistrationIDs();
+    const registrationID = registrationIDs[0] || '';
+    const sessionRevision = expectedSessionRevision;
+    enqueuePushOperation(() => cleanupPushForSession({
+      coordinator: pushTabCoordinator,
+      registrationID,
+      registrationIDs,
+      getCurrentToken: getToken,
+      sessionRevision,
+      getCurrentSessionRevision: getAuthRevision,
+      unsubscribeOnServer: (endpoint, id) => api.unsubscribePush(endpoint, authToken, id),
+    })).catch((error) => {
+      console.warn('Push subscription cleanup failed while clearing session:', error);
+    });
+    disconnectWS();
+    setToken(null);
+    localStorage.removeItem('oc_user');
+    setUser(null);
+    setOnlineUsers({});
+    setTaskDraft(null);
+    setActiveTopic(null);
+  }, [setActiveTopic]);
+
   // WebSocket message handler
   const handleWSMessage = useCallback((msg) => {
     if (msg._type === 'ws_auth_expired') {
-      disconnectWS();
-      setToken(null);
-      localStorage.removeItem('oc_user');
-      setUser(null);
-      setTaskDraft(null);
-      setActiveTopic(null);
+      clearAuthenticatedSession();
       return;
     }
     if (msg._type === 'ws_open') {
@@ -521,7 +548,7 @@ function TinodeWebApp() {
         });
       }
     }
-  }, [setActiveTopic]);
+  }, [clearAuthenticatedSession, setActiveTopic]);
 
   useEffect(() => {
     if (user?.uid) {
@@ -601,31 +628,30 @@ function TinodeWebApp() {
 
   useEffect(() => {
     if (!user?.uid) return;
-    if (!getToken()) return undefined;
+    const requestToken = getToken();
+    const requestSessionRevision = getAuthRevision();
+    if (!requestToken) return undefined;
 
     let cancelled = false;
     api.getMe()
       .then((profile) => {
-        if (!cancelled) {
+        if (!cancelled && isCurrentAuthSession(requestToken, requestSessionRevision)) {
           const normalized = normalizeUserProfile(profile);
           if (normalized) persistUser(normalized);
         }
       })
       .catch((error) => {
         console.warn('Failed to refresh current user profile:', error);
-        if (!cancelled && error?.status === 401) {
-          disconnectWS();
-          setToken(null);
-          localStorage.removeItem('oc_user');
-          setUser(null);
-          setActiveTopic(null);
+        if (!cancelled && error?.status === 401
+          && isCurrentAuthSession(requestToken, requestSessionRevision)) {
+          clearAuthenticatedSession(requestToken, requestSessionRevision);
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [user?.uid, persistUser]);
+  }, [user?.uid, persistUser, clearAuthenticatedSession]);
 
   const refreshLocalAgentStatus = useCallback(async ({ allowDailyPrompt = false } = {}) => {
     if (!user?.uid) return;
@@ -724,13 +750,7 @@ function TinodeWebApp() {
   };
 
   const handleLogout = () => {
-    disconnectWS();
-    setToken(null);
-    localStorage.removeItem('oc_user');
-    setUser(null);
-    setOnlineUsers({});
-    setTaskDraft(null);
-    setActiveTopic(null);
+    clearAuthenticatedSession();
   };
 
   const handleUserUpdated = (nextUser) => {
@@ -985,7 +1005,14 @@ function TinodeWebApp() {
         />
 
         {showProfilePopover && (
-          <ProfilePopover compact={appSidebarCollapsed} popoverRef={profilePopoverRef}>
+          <ProfilePopover
+            compact={appSidebarCollapsed}
+            popoverRef={profilePopoverRef}
+            onLogout={() => {
+              setShowProfilePopover(false);
+              handleLogout();
+            }}
+          >
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowFeedbackModal(true); }}>
               <Frown size={16} strokeWidth={1.8} style={{marginRight: 10}} /> 意见反馈
             </div>
@@ -1000,9 +1027,6 @@ function TinodeWebApp() {
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowProfileEditor(true); }}>
               <Settings size={16} style={{marginRight: 10}} /> 设置与资料
-            </div>
-            <div className="v3-popover-item danger" onClick={() => { localStorage.clear(); window.location.reload(); }}>
-              <LogOut size={16} style={{marginRight: 10}} /> 退出登录
             </div>
           </ProfilePopover>
         )}
@@ -1222,7 +1246,7 @@ function SidebarContent({
   );
 }
 
-export function ProfilePopover({ compact = false, popoverRef, children }) {
+export function ProfilePopover({ compact = false, popoverRef, children, onLogout }) {
   if (typeof document === 'undefined') return null;
   return createPortal(
     <div
@@ -1230,6 +1254,22 @@ export function ProfilePopover({ compact = false, popoverRef, children }) {
       ref={popoverRef}
     >
       {children}
+      {onLogout && (
+        <div
+          className="v3-popover-item danger"
+          role="button"
+          tabIndex={0}
+          aria-label="退出登录"
+          onClick={onLogout}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            onLogout();
+          }}
+        >
+          <LogOut size={16} strokeWidth={1.8} style={{ marginRight: 10 }} /> 退出登录
+        </div>
+      )}
     </div>,
     document.body,
   );

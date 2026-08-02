@@ -1,0 +1,76 @@
+.cc-pwa-status {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 10000;
+  display: grid;
+  justify-items: center;
+  pointer-events: none;
+  font-family: inherit;
+}
+
+.cc-pwa-offline,
+.cc-pwa-toast,
+.cc-pwa-prompt {
+  pointer-events: auto;
+  box-sizing: border-box;
+  width: min(100%, 36rem);
+  padding: .65rem .9rem;
+  border: 1px solid rgba(17, 24, 39, .12);
+  border-radius: 0 0 .75rem .75rem;
+  background: rgba(255, 255, 255, .96);
+  color: #111827;
+  box-shadow: 0 8px 28px rgba(17, 24, 39, .14);
+  text-align: center;
+  font-size: .875rem;
+}
+
+.cc-pwa-offline {
+  width: 100%;
+  max-width: none;
+  border: 0;
+  border-radius: 0;
+  background: #374151;
+  color: #f9fafb;
+  box-shadow: none;
+}
+
+.cc-pwa-prompt {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: .65rem;
+}
+
+.cc-pwa-prompt.error {
+  color: #991b1b;
+}
+
+.cc-pwa-prompt button {
+  border: 0;
+  border-radius: .5rem;
+  padding: .38rem .7rem;
+  background: #D4A853;
+  color: #111827;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cc-pwa-prompt button.secondary {
+  background: transparent;
+  color: inherit;
+}
+
+.cc-pwa-prompt button:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+@media (prefers-color-scheme: dark) {
+  .cc-pwa-toast,
+  .cc-pwa-prompt {
+    border-color: rgba(255, 255, 255, .12);
+    background: rgba(31, 41, 55, .97);
+    color: #f9fafb;
+  }
+}

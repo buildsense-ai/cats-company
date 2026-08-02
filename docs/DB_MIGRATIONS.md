@@ -43,16 +43,15 @@ export CATS_MIGRATION_DATABASE_URL='postgres://USER:PASSWORD@HOST:5432/DB?sslmod
 
 `server/db/mysql/schema.go` 仍可保留历史兼容代码，但不维护 migration 文件，也不会写入 migration 版本表。
 
-## 之后怎么加迁移
+## 之后怎么处理 schema 变更
 
-新增 schema 变更时，不要继续只往 `schema.go` 里加 `ALTER TABLE`。新增一组 migration：
+普通的新表、新列、索引、约束和 trigger 由 `server/db/postgres/schema.go` 的 `CreateSchema()` 统一管理，必须保持幂等。这让新环境和既有环境都从同一个 schema 模块获得相同结果，不再为同一项 DDL 维护两套真相。
 
-```text
-server/db/migrations/postgres/000002_xxx.up.sql
-server/db/migrations/postgres/000002_xxx.down.sql
-```
+只有在需要单独编排、审核或回滚的数据转换中，才添加新的 PostgreSQL SQL migration。此时：
 
-如果某次变更需要兼容 MySQL，也在应用代码里单独说明；生产 schema 迁移以 PostgreSQL migration 为准。
+1. 添加一对唯一编号的 `up` / `down` 文件。
+2. 不要在 `CreateSchema()` 重复同一个数据转换。
+3. 生产执行前仍需备份，先记录 `version` / `dirty`，再执行 `up`。
 
 ## 服务器执行
 

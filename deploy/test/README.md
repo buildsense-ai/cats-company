@@ -54,9 +54,9 @@ OC_DB_DSN=postgres://catsco:***@postgres.internal:5432/catsco?sslmode=prefer
 Leaving `COMPOSE_PROFILES` empty prevents the local MySQL profile from starting.
 The default `env.test.example` keeps the MySQL profile for local isolated tests.
 
-## GitHub secrets
+## GitHub Environment secrets
 
-The current workflow expects:
+The `test` environment used by the workflow expects:
 
 - `SSH_HOST`
 - `SSH_USER`
@@ -64,10 +64,21 @@ The current workflow expects:
 - `GHCR_USERNAME`
 - `GHCR_TOKEN`
 
+Web Push is disabled by default. To enable it, additionally configure all
+three of these secrets:
+
+- `VAPID_PUBLIC_KEY`
+- `VAPID_PRIVATE_KEY`
+- `VAPID_SUBJECT` (for example, `mailto:ops@catsco.cc`)
+
 `GHCR_USERNAME` / `GHCR_TOKEN` should be able to pull packages from
 `ghcr.io/<owner>/cats-company-*`. A PAT with `read:packages` is enough for the
 server side pull. The workflow itself pushes images with the repository
-`GITHUB_TOKEN`.
+`GITHUB_TOKEN`. The VAPID values are synchronized over SSH standard input into
+the persistent `test.env`, which is hardened to owner-only mode (`0600`); when
+all three are absent, the workflow removes any earlier VAPID values. Keep the
+test key pair separate from production. The existing first-deploy check still
+requires `test.env` to contain the rest of its real configuration.
 
 ## Manual start
 

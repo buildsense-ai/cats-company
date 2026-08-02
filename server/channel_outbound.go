@@ -27,33 +27,15 @@ func isInternalChannelOutboundPayload(payload *normalizedMessagePayload) bool {
 	if payload == nil {
 		return false
 	}
-	switch payload.DisplayType {
-	case "runtime_plan", "thinking", "tool_use", "tool_result":
+	if isInternalAgentWorkingMessage(payload.DisplayType, payload.DisplayContent, payload.ContentBlocks) {
 		return true
+	}
+	switch payload.DisplayType {
 	case "text", "image", "file":
+		return false
 	default:
 		return true
 	}
-	if strings.HasPrefix(strings.TrimSpace(normalizeContentText(payload.DisplayContent)), "AI文本:") ||
-		strings.HasPrefix(strings.TrimSpace(normalizeContentText(payload.DisplayContent)), "AI文本：") {
-		return true
-	}
-	if payload.DisplayType == "text" && len(payload.ContentBlocks) > 0 {
-		hasInternalBlock := false
-		hasDeliverableBlock := false
-		for _, block := range payload.ContentBlocks {
-			switch strings.ToLower(strings.TrimSpace(block.Type)) {
-			case "thinking", "tool_use", "tool_result":
-				hasInternalBlock = true
-			case "text", "image", "file":
-				hasDeliverableBlock = true
-			}
-		}
-		if hasInternalBlock && !hasDeliverableBlock {
-			return true
-		}
-	}
-	return false
 }
 
 func channelOutboundTextMessage(text string) channelOutboundMessage {

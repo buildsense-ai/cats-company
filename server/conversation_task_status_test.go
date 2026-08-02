@@ -3,8 +3,6 @@ package server
 import (
 	"testing"
 	"time"
-
-	"github.com/openchat/openchat/server/store/types"
 )
 
 func TestNormalizeConversationTaskStatusDefaultsActiveExpiry(t *testing.T) {
@@ -52,24 +50,4 @@ func TestNormalizeConversationTaskStatusLeavesTerminalExpiryOptional(t *testing.
 	if status.ExpiresAt != nil {
 		t.Fatalf("terminal expiry=%v, want nil", status.ExpiresAt)
 	}
-}
-
-func TestValidateTaskStatusTransitionRejectsLateProgressForTerminalRun(t *testing.T) {
-	current := taskStatusForTransition("run-1", "completed", 42)
-	next := taskStatusForTransition("run-1", "running", 42)
-	if err := validateTaskStatusTransition(current, next); err == nil {
-		t.Fatal("expected terminal run to reject late progress")
-	}
-}
-
-func TestValidateTaskStatusTransitionAllowsAnotherActiveSource(t *testing.T) {
-	current := taskStatusForTransition("run-1", "running", 42)
-	next := taskStatusForTransition("run-2", "running", 43)
-	if err := validateTaskStatusTransition(current, next); err != nil {
-		t.Fatalf("different source should not be rejected: %v", err)
-	}
-}
-
-func taskStatusForTransition(runID, state string, sourceUID int64) *types.ConversationTaskStatus {
-	return &types.ConversationTaskStatus{RunID: runID, State: state, SourceUID: sourceUID}
 }

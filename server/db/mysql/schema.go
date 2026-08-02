@@ -10,6 +10,7 @@ import (
 func (a *Adapter) CreateSchema() error {
 	tables := []string{
 		createUsersTable,
+		createPushSubscriptionsTable,
 		createFriendsTable,
 		createTopicsTable,
 		createProjectsTable,
@@ -163,6 +164,22 @@ CREATE TABLE IF NOT EXISTS users (
     INDEX idx_users_account_type (account_type),
     INDEX idx_users_phone (phone),
     INDEX idx_users_email (email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createPushSubscriptionsTable = `
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    uid BIGINT NOT NULL,
+    endpoint VARCHAR(512) COLLATE utf8mb4_bin NOT NULL,
+    p256dh VARCHAR(256) NOT NULL,
+    auth VARCHAR(128) NOT NULL,
+    registration_id VARCHAR(64) COLLATE utf8mb4_bin NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_push_subscriptions_endpoint (endpoint),
+    INDEX idx_push_subscriptions_uid (uid),
+    CONSTRAINT fk_push_subscriptions_uid FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 

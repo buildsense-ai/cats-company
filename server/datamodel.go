@@ -34,6 +34,10 @@ type ServerMessage struct {
 	Friend      *MsgServerFriend              `json:"friend,omitempty"`
 	DeviceRPC   *MsgDeviceRPC                 `json:"device_rpc,omitempty"`
 	ThinToolRPC *MsgThinToolRPC               `json:"thin_tool_rpc,omitempty"`
+
+	// suppressPushNotification is server-only provenance. It must never be
+	// serialized to a web client or be set from client-provided metadata.
+	suppressPushNotification bool
 }
 
 // --- Client messages ---

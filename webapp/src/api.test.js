@@ -39,6 +39,8 @@ describe('WebSocket connection recovery', () => {
     vi.useFakeTimers();
     vi.resetModules();
     localStorage.clear();
+    sessionStorage.clear();
+    window.name = '';
     MockWebSocket.instances = [];
     global.WebSocket = MockWebSocket;
     api = await import('./api');
@@ -47,6 +49,7 @@ describe('WebSocket connection recovery', () => {
 
   afterEach(() => {
     api.disconnectWS();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -187,6 +190,211 @@ describe('WebSocket connection recovery', () => {
     expect(api.connectWS(onMessage)).toBe(false);
     expect(MockWebSocket.instances).toHaveLength(0);
     expect(onMessage).toHaveBeenCalledWith({ _type: 'ws_auth_expired' });
+  });
+
+  test('uses the captured logout token for push unsubscription', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ subscribed: false }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    api.setToken(null);
+
+    const request = api.api.unsubscribePush('https://push.example/sub', 'captured-token');
+    await request;
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/push/subscriptions', expect.objectContaining({
+      method: 'DELETE',
+      headers: expect.objectContaining({ Authorization: 'Bearer captured-token' }),
+    }));
+  });
+
+  test('publishes session revisions', () => {
+    const onAuthChanged = vi.fn();
+    window.addEventListener('cc:auth-changed', onAuthChanged);
+
+    api.setToken(null);
+
+    expect(onAuthChanged).toHaveBeenLastCalledWith(expect.objectContaining({
+      detail: expect.objectContaining({
+        loggedIn: false,
+        revision: api.getAuthRevision(),
+      }),
+    }));
+    window.removeEventListener('cc:auth-changed', onAuthChanged);
+  });
+
+  test('distinguishes a reissued identical token from the previous session', () => {
+    const token = 'same-token';
+    api.setToken(token);
+    const previousRevision = api.getAuthRevision();
+
+    api.setToken(null);
+    api.setToken(token);
+
+    expect(api.isCurrentAuthSession(token, previousRevision)).toBe(false);
+    expect(api.isCurrentAuthSession(token, api.getAuthRevision())).toBe(true);
+  });
+
+  test('reuses one push generation for renewed tokens of the same account', () => {
+    const tokenFor = (userId, nonce) => {
+      const payload = btoa(JSON.stringify({ userId, nonce }))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      return `header.${payload}.signature`;
+    };
+
+    api.setToken(tokenFor(42, 'first'));
+    const firstRegistrationID = api.getPushRegistrationID();
+    api.setToken(tokenFor(42, 'renewed'));
+
+    expect(api.getPushRegistrationID()).toBe(firstRegistrationID);
+    api.setToken(tokenFor(43, 'different-account'));
+    expect(api.getPushRegistrationID()).not.toBe(firstRegistrationID);
+  });
+
+  test('uses the authenticated account as the push prompt owner', () => {
+    const payload = btoa(JSON.stringify({ userId: 42 }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+    api.setToken(`header.${payload}.signature`);
+
+    expect(api.getPushPromptOwner()).toBe('user:42');
+    api.setToken('opaque-token');
+    expect(api.getPushPromptOwner()).toBe('');
+  });
+
+  test('does not persist a token without a user id as push ownership data', () => {
+    api.setToken('opaque-token');
+
+    const firstRegistrationID = api.getPushRegistrationID();
+
+    expect(api.getPushRegistrationID()).not.toBe(firstRegistrationID);
+  });
+
+  test('keeps push registration ids scoped to the current tab', () => {
+    const payload = btoa(JSON.stringify({ userId: 42 }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    api.setToken(`header.${payload}.signature`);
+
+    localStorage.setItem('oc_push_registration_id', 'generation-from-other-tab');
+    localStorage.setItem('oc_push_registration_owner', 'user:42');
+
+    expect(api.getPushRegistrationID()).not.toBe('generation-from-other-tab');
+  });
+
+  test('keeps a legacy registration id only as a cleanup alias', () => {
+    const payload = btoa(JSON.stringify({ userId: 42 }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    localStorage.setItem('oc_push_registration_id', 'legacy-registration');
+    localStorage.setItem('oc_push_registration_owner', 'user:42');
+    api.setToken(`header.${payload}.signature`);
+
+    const tabRegistrationID = api.getPushRegistrationID();
+
+    expect(tabRegistrationID).not.toBe('legacy-registration');
+    expect(api.getPushCleanupRegistrationIDs()).toEqual([
+      tabRegistrationID,
+      'legacy-registration',
+    ]);
+  });
+
+  test('rotates a tab registration before a new session for the same account', () => {
+    const tokenFor = (nonce) => {
+      const payload = btoa(JSON.stringify({ userId: 42, nonce }))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      return `header.${payload}.signature`;
+    };
+    api.setToken(tokenFor('first'));
+    const firstRegistrationID = api.getPushRegistrationID();
+
+    api.setToken(null);
+    api.setToken(tokenFor('second'));
+
+    expect(api.getPushRegistrationID()).not.toBe(firstRegistrationID);
+  });
+
+  test('keeps the tab registration id after a page reload', async () => {
+    const payload = btoa(JSON.stringify({ userId: 42 }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    api.setToken(`header.${payload}.signature`);
+    const firstRegistrationID = api.getPushRegistrationID();
+
+    vi.resetModules();
+    const peer = await import('./api');
+
+    expect(peer.getPushRegistrationID()).toBe(firstRegistrationID);
+    peer.disconnectWS();
+  });
+
+  test('keeps a session registration through an OAuth return that resets window.name', async () => {
+    const payload = btoa(JSON.stringify({ userId: 42 }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    api.setToken(`header.${payload}.signature`);
+    const firstRegistrationID = api.getPushRegistrationID();
+
+    window.name = 'feishu-oauth-return';
+    vi.resetModules();
+    const peer = await import('./api');
+
+    expect(peer.getPushRegistrationID()).toBe(firstRegistrationID);
+    peer.disconnectWS();
+  });
+
+  test('uses the pre-reload registration id for an immediate logout request', async () => {
+    const payload = btoa(JSON.stringify({ userId: 42 }))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const authenticatedToken = `header.${payload}.signature`;
+    api.setToken(authenticatedToken);
+    const firstRegistrationID = api.getPushRegistrationID();
+
+    vi.resetModules();
+    const peer = await import('./api');
+    const logoutRegistrationID = peer.getPushRegistrationID();
+    peer.setToken(null);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue({}) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await peer.api.unsubscribePush(
+      'https://push.example/subscription',
+      authenticatedToken,
+      logoutRegistrationID,
+    );
+
+    expect(logoutRegistrationID).toBe(firstRegistrationID);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      registration_id: firstRegistrationID,
+    });
+    peer.disconnectWS();
+  });
+
+  test('allows a session change to abort push reconciliation requests', async () => {
+    const fetchMock = vi.fn().mockImplementation((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+
+    const request = api.api.getPushConfig(controller.signal);
+    const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_ABORTED' });
+    controller.abort();
+
+    await rejection;
+    const requestSignal = fetchMock.mock.calls[0][1].signal;
+    expect(requestSignal).not.toBe(controller.signal);
+    expect(requestSignal.aborted).toBe(true);
+  });
+
+  test('aborts push unsubscription after the cleanup timeout', async () => {
+    const fetchMock = vi.fn().mockImplementation((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const request = api.api.unsubscribePush('https://push.example/sub', 'captured-token');
+    const rejection = expect(request).rejects.toMatchObject({ code: 'REQUEST_ABORTED' });
+    await vi.advanceTimersByTimeAsync(3000);
+
+    await rejection;
   });
 });
 

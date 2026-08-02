@@ -2,7 +2,9 @@
 package store
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	"github.com/openchat/openchat/server/store/types"
 )
@@ -14,6 +16,8 @@ var ErrProjectNameConflict = errors.New("project name already exists")
 var ErrProjectNotFound = errors.New("project not found")
 var ErrProjectTopicNotFound = errors.New("project or topic not found")
 var ErrGroupInviteRequestNotPending = errors.New("group invite request is not pending")
+var ErrConversationTaskRunTerminal = errors.New("cannot resume a terminal task run; publish a new run_id")
+var ErrConversationTaskRunSuperseded = errors.New("cannot complete a superseded task run while a newer run is active")
 
 // UserStore contains user and profile persistence operations.
 type UserStore interface {
@@ -29,6 +33,14 @@ type UserStore interface {
 	SearchUsers(query string, limit int) ([]*types.User, error)
 	UpdateUser(id int64, displayName, avatarURL string) error
 	UpdateUserAvatar(id int64, avatarURL string) error
+}
+
+// PushSubscriptionStore persists optional Web Push subscriptions without
+// expanding the core Store boundary used by focused adapters and test stores.
+type PushSubscriptionStore interface {
+	UpsertPushSubscription(ctx context.Context, subscription *types.PushSubscription, maxSubscriptions int) (bool, error)
+	ListPushSubscriptions(ctx context.Context, uid int64) ([]*types.PushSubscription, error)
+	DeletePushSubscription(ctx context.Context, uid int64, endpoint, registrationID string) error
 }
 
 // FriendStore contains friend relationship persistence operations.
@@ -95,6 +107,26 @@ type ConversationTaskStatusStore interface {
 	UpsertConversationTaskStatus(status *types.ConversationTaskStatus) (*types.ConversationTaskStatus, error)
 	GetConversationTaskStatusForSource(topicID string, sourceUID int64) (*types.ConversationTaskStatus, error)
 	GetConversationTaskStatuses(topicIDs []string) (map[string]*types.ConversationTaskStatus, error)
+}
+
+// ValidateConversationTaskStatusTransition enforces the per-source run
+// lifecycle shared by every task-status store implementation.
+func ValidateConversationTaskStatusTransition(current, next *types.ConversationTaskStatus, now time.Time) error {
+	if current == nil || next == nil {
+		return nil
+	}
+	if current.RunID == next.RunID &&
+		types.IsTerminalConversationTaskState(current.State) &&
+		!types.IsTerminalConversationTaskState(next.State) {
+		return ErrConversationTaskRunTerminal
+	}
+	if current.RunID != "" && current.RunID != next.RunID &&
+		types.IsTerminalConversationTaskState(next.State) &&
+		(current.State == "running" || current.State == "waiting") &&
+		(current.ExpiresAt == nil || current.ExpiresAt.After(now)) {
+		return ErrConversationTaskRunSuperseded
+	}
+	return nil
 }
 
 // ProjectStore persists user-owned projects and assignments for conversations the user can access.

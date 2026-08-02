@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/openchat/openchat/server/store"
 	"github.com/openchat/openchat/server/store/types"
 )
 
@@ -40,6 +42,32 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 		status.TopicID,
 	).Scan(&lockedTopicID); err != nil {
 		return nil, fmt.Errorf("lock conversation task aggregate: %w", err)
+	}
+
+	if err := reconcileLegacyConversationTaskStatuses(tx, "$1", status.TopicID); err != nil {
+		return nil, fmt.Errorf("reconcile legacy conversation task status: %w", err)
+	}
+
+	var currentRunID, currentState string
+	var currentExpiresAt sql.NullTime
+	err = tx.QueryRow(
+		`SELECT run_id, state, expires_at FROM conversation_task_status_sources
+		 WHERE topic_id = $1 AND source_uid = $2`,
+		status.TopicID,
+		status.SourceUID,
+	).Scan(&currentRunID, &currentState, &currentExpiresAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("load current conversation task status: %w", err)
+	}
+	if err == nil {
+		current := &types.ConversationTaskStatus{RunID: currentRunID, State: currentState}
+		if currentExpiresAt.Valid {
+			expiresAt := currentExpiresAt.Time
+			current.ExpiresAt = &expiresAt
+		}
+		if err := store.ValidateConversationTaskStatusTransition(current, status, time.Now().UTC()); err != nil {
+			return nil, err
+		}
 	}
 
 	if _, err := tx.Exec(
@@ -122,8 +150,11 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 }
 
 // GetConversationTaskStatusForSource returns the latest state owned by one
-// bot/service. The legacy fallback keeps rolling deployments compatible.
+// bot/service. It reconciles legacy writes during rolling deployments.
 func (a *Adapter) GetConversationTaskStatusForSource(topicID string, sourceUID int64) (*types.ConversationTaskStatus, error) {
+	if err := reconcileLegacyConversationTaskStatuses(a.db, "$1", topicID); err != nil {
+		return nil, fmt.Errorf("reconcile legacy conversation task status: %w", err)
+	}
 	out := &types.ConversationTaskStatus{}
 	err := a.db.QueryRow(
 		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, expires_at
@@ -156,7 +187,7 @@ func (a *Adapter) GetConversationTaskStatusForSource(topicID string, sourceUID i
 }
 
 // GetConversationTaskStatuses returns an aggregate status keyed by topic id.
-// Active sources take precedence; otherwise the newest terminal status wins.
+// It reconciles legacy writes; active sources otherwise take precedence.
 func (a *Adapter) GetConversationTaskStatuses(topicIDs []string) (map[string]*types.ConversationTaskStatus, error) {
 	if len(topicIDs) == 0 {
 		return map[string]*types.ConversationTaskStatus{}, nil
@@ -166,6 +197,9 @@ func (a *Adapter) GetConversationTaskStatuses(topicIDs []string) (map[string]*ty
 	args := make([]interface{}, 0, len(topicIDs))
 	for _, topicID := range topicIDs {
 		args = append(args, topicID)
+	}
+	if err := reconcileLegacyConversationTaskStatuses(a.db, placeholders, args...); err != nil {
+		return nil, fmt.Errorf("reconcile legacy conversation task statuses: %w", err)
 	}
 
 	rows, err := a.db.Query(
@@ -228,4 +262,57 @@ func (a *Adapter) GetConversationTaskStatuses(topicIDs []string) (map[string]*ty
 		}
 	}
 	return out, legacyRows.Err()
+}
+
+type conversationTaskStatusExecer interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
+func reconcileLegacyConversationTaskStatuses(execer conversationTaskStatusExecer, placeholders string, args ...interface{}) error {
+	_, err := execer.Exec(
+		fmt.Sprintf(
+			`INSERT INTO conversation_task_status_sources
+			   (topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at)
+			 SELECT topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at
+			 FROM conversation_task_statuses
+			 WHERE topic_id IN (%s) AND source_uid IS NOT NULL
+			 FOR UPDATE
+			 ON CONFLICT (topic_id, source_uid) DO UPDATE SET
+			   run_id = EXCLUDED.run_id,
+			   state = EXCLUDED.state,
+			   summary = EXCLUDED.summary,
+			   error = EXCLUDED.error,
+			   expires_at = EXCLUDED.expires_at,
+			   updated_at = EXCLUDED.updated_at
+			 WHERE NOT (
+			   (
+			     conversation_task_status_sources.state IN ('running', 'waiting')
+			     AND (conversation_task_status_sources.expires_at IS NULL OR conversation_task_status_sources.expires_at > clock_timestamp())
+			     AND conversation_task_status_sources.run_id <> EXCLUDED.run_id
+			     AND EXCLUDED.state NOT IN ('running', 'waiting')
+			   )
+			   OR (
+			     conversation_task_status_sources.run_id = EXCLUDED.run_id
+			     AND conversation_task_status_sources.state IN ('completed', 'failed', 'cancelled', 'stale')
+			     AND EXCLUDED.state NOT IN ('completed', 'failed', 'cancelled', 'stale')
+			   )
+			 )
+			 AND (
+			   conversation_task_status_sources.run_id,
+			   conversation_task_status_sources.state,
+			   conversation_task_status_sources.summary,
+			   conversation_task_status_sources.error,
+			   conversation_task_status_sources.expires_at
+			 ) IS DISTINCT FROM (
+			   EXCLUDED.run_id,
+			   EXCLUDED.state,
+			   EXCLUDED.summary,
+			   EXCLUDED.error,
+			   EXCLUDED.expires_at
+			 )`,
+			placeholders,
+		),
+		args...,
+	)
+	return err
 }

@@ -45,6 +45,8 @@ type Hub struct {
 	thinToolRPC   *thinToolRPCRouter
 	channelOut    *ChannelOutboundDispatcher
 	groupTurns    *groupAgentTurnTracker
+	push          *PushNotificationService
+	agentPush     *agentPushTurnCoordinator
 }
 
 type presenceEvent struct {
@@ -102,6 +104,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
 		thinToolRPC:   newThinToolRPCRouter(defaultThinToolRPCTTL),
 		groupTurns:    newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
+		agentPush:     newAgentPushTurnCoordinator(),
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
@@ -109,6 +112,13 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	go hub.runPresence()
 	go hub.runDeviceRPCTimeouts()
 	return hub
+}
+
+// SetPushNotificationService enables optional Web Push delivery for offline users.
+func (h *Hub) SetPushNotificationService(service *PushNotificationService) {
+	if h != nil {
+		h.push = service
+	}
 }
 
 // BotStats returns the hub's bot stats tracker.
@@ -1458,12 +1468,13 @@ func cloneDataMessageWithMetadata(msg *ServerMessage, metadata map[string]interf
 	data := *msg.Data
 	data.Metadata = metadata
 	return &ServerMessage{
-		Ctrl:   msg.Ctrl,
-		Data:   &data,
-		Pres:   msg.Pres,
-		Meta:   msg.Meta,
-		Info:   msg.Info,
-		Friend: msg.Friend,
+		Ctrl:                     msg.Ctrl,
+		Data:                     &data,
+		Pres:                     msg.Pres,
+		Meta:                     msg.Meta,
+		Info:                     msg.Info,
+		Friend:                   msg.Friend,
+		suppressPushNotification: msg.suppressPushNotification,
 	}
 }
 
@@ -1705,6 +1716,60 @@ func max64(a, b int64) int64 {
 	return b
 }
 
+func shouldNotifyOfflineForMessage(msg *ServerMessage) bool {
+	if msg == nil || msg.Data == nil || msg.Data.SeqID <= 0 {
+		return false
+	}
+	if msg.suppressPushNotification {
+		return false
+	}
+
+	data := msg.Data
+	displayType := strings.ToLower(strings.TrimSpace(firstNonEmpty(data.Type, data.MsgType)))
+	if !isUserVisibleMessageType(displayType) {
+		return false
+	}
+	return !isInternalAgentWorkingMessage(displayType, data.Content, data.ContentBlocks)
+}
+
+func (h *Hub) enqueueOfflineUserPush(uid int64) bool {
+	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 || h.IsOnline(uid) {
+		return false
+	}
+	user, err := h.db.GetUser(uid)
+	if err != nil || user == nil || user.AccountType != types.AccountHuman || user.State != 0 {
+		return false
+	}
+	notification := PushNotification{
+		Title: "CatsCo",
+		Body:  "你有一条新消息",
+		URL:   "/",
+		Tag:   "catsco-new-message",
+	}
+	return h.push.EnqueueToUser(uid, notification)
+}
+
+func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessage, senderPublishesTaskStatus bool) {
+	if !senderPublishesTaskStatus {
+		h.enqueueOfflineUserPush(uid)
+		return
+	}
+	if h == nil || h.agentPush == nil || h.IsOnline(uid) {
+		return
+	}
+	deliver := func() bool { return h.enqueueOfflineUserPush(uid) }
+	if !isCompletedAgentMessage(msg) {
+		if h.agentPush.observeVisibleMessage(uid, senderUID, msg, deliver) {
+			return
+		}
+		if agentPushTurnKey(uid, senderUID, msg) == "" {
+			deliver()
+		}
+		return
+	}
+	h.agentPush.deliverOnce(agentPushTurnKey(uid, senderUID, msg), deliver)
+}
+
 // broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.
 // Agent-task groups route unmentioned human messages to their current default agent.
 // Explicit mentions target other agents, while two-member groups preserve legacy automatic activation.
@@ -1714,6 +1779,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 		log.Printf("broadcastToGroupWithMentions: failed to get members for group %d: %v", groupID, err)
 		return
 	}
+	shouldNotifyOffline := shouldNotifyOfflineForMessage(msg)
 
 	memberCount := len(members)
 	if msg != nil && msg.Data != nil {
@@ -1728,6 +1794,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 
 	channelManaged := h.isChannelManagedGroup(groupID)
 	senderIsBot := h.isBotUser(senderUID)
+	senderPublishesTaskStatus := h.isTaskStatusPublisher(senderUID)
 	mentionAllBots := mentionSet[structuredMentionAllBots] && !senderIsBot
 	defaultAgentUID := int64(0)
 	if !trustedChannelTrigger && !senderIsBot && memberCount > 2 && len(mentionSet) == 0 {
@@ -1777,5 +1844,8 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			)
 		}
 		h.SendToUser(m.UserID, out)
+		if !isBot && shouldNotifyOffline {
+			h.notifyOfflineUserForMessage(m.UserID, senderUID, out, senderPublishesTaskStatus)
+		}
 	}
 }

@@ -174,6 +174,30 @@ describe('ProfilePopover', () => {
     await act(async () => root.unmount());
     sidebar.remove();
   });
+
+  it('delegates the visible logout action to authenticated-session cleanup', async () => {
+    const sidebar = document.createElement('aside');
+    document.body.appendChild(sidebar);
+    const root = createRoot(sidebar);
+    const onLogout = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <ProfilePopover onLogout={onLogout}>
+          <button type="button">设置与资料</button>
+        </ProfilePopover>,
+      );
+    });
+
+    const logout = document.body.querySelector('[role="button"][aria-label="退出登录"]');
+    expect(logout).toBeTruthy();
+
+    await act(async () => logout.click());
+    expect(onLogout).toHaveBeenCalledTimes(1);
+
+    await act(async () => root.unmount());
+    sidebar.remove();
+  });
 });
 
 describe('LocalAssistantBar model selector', () => {
