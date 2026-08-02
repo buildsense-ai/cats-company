@@ -105,6 +105,23 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.v3-chat-item')).toContain('font-weight: 400;');
   });
 
+  it('uses tokenized reduced-motion-safe feedback for inline video controls', () => {
+    const closeButtonRule = ruleFor('.oc-rich-video-preview-close');
+
+    expect(ruleFor(':root')).toContain('--cc-media-black: oklch(0.19 0.01 165);');
+    expect(ruleFor('.v3-message .oc-rich-video-play'))
+      .toContain('cubic-bezier(0.16, 1, 0.3, 1)');
+    expect(closeButtonRule)
+      .toContain('cubic-bezier(0.16, 1, 0.3, 1)');
+    expect(closeButtonRule).toContain('width: 44px;');
+    expect(closeButtonRule).toContain('height: 44px;');
+    expect(ruleFor('.oc-rich-video-preview-close:focus-visible'))
+      .toContain('outline: 2px solid var(--cc-focus-ring);');
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.v3-message \.oc-rich-video-play,[\s\S]*?transition: none;/,
+    );
+  });
+
   it('keeps sidebar metadata quiet and reveals its slim scrollbar on interaction', () => {
     const listRule = ruleFor('.v3-chat-list');
     const interactiveListRule = ruleFor('.v3-chat-list:hover,\n.v3-chat-list:focus-within');
