@@ -167,6 +167,37 @@ describe('push session cleanup', () => {
     expect(coordinator.runWhenNoOtherActiveTabs).not.toHaveBeenCalled();
   });
 
+  test('requests reconciliation when guarded server cleanup fails', async () => {
+    installSubscription();
+    const coordinator = {
+      setActive: vi.fn(),
+      // Match the real coordinator contract: only an explicit false means the
+      // guarded callback did not complete its cleanup.
+      runWhenRegistrationInactive: vi.fn().mockImplementation(async (_registrationID, callback) => (
+        (await callback()) !== false
+      )),
+      runWhenNoOtherActiveTabs: vi.fn(),
+      requestReconcile: vi.fn(),
+    };
+    const unsubscribeOnServer = vi.fn().mockRejectedValue(new Error('network unavailable'));
+
+    await expect(cleanupPushForSession({
+      coordinator,
+      registrationID: 'registration-old',
+      registrationIDs: ['registration-old'],
+      getCurrentToken: () => 'token-new',
+      sessionRevision: 1,
+      getCurrentSessionRevision: () => 2,
+      unsubscribeOnServer,
+    })).resolves.toBe(true);
+
+    expect(unsubscribeOnServer).toHaveBeenCalledWith(
+      'https://push.example/subscription',
+      'registration-old',
+    );
+    expect(coordinator.requestReconcile).toHaveBeenCalledTimes(1);
+  });
+
   test('keeps the browser subscription when a new tab wins the cleanup lock', async () => {
     const browserUnsubscribe = installSubscription();
     const coordinator = {

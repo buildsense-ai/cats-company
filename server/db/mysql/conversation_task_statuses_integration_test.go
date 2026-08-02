@@ -45,6 +45,27 @@ func TestMySQLConversationTaskStatusContract(t *testing.T) {
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("inspect push subscription foreign key: %v", err)
 	}
+	orphanEndpoint := fmt.Sprintf("https://push.example.test/orphan-%d", time.Now().UnixNano())
+	if _, err := db.db.Exec(
+		`INSERT INTO push_subscriptions (uid, endpoint, p256dh, auth, registration_id)
+		 VALUES (?, ?, ?, ?, ?)`,
+		int64(9_999_999_999), orphanEndpoint, "p256dh", "auth", "orphan-registration",
+	); err != nil {
+		t.Fatalf("insert orphan push subscription: %v", err)
+	}
+	defer db.db.Exec(`DELETE FROM push_subscriptions WHERE endpoint = ?`, orphanEndpoint)
+	if err := db.CreateSchema(); err == nil || !strings.Contains(err.Error(), "manual repair") {
+		t.Fatalf("schema upgrade must require an explicit repair for orphan push subscriptions: %v", err)
+	}
+	var orphanCount int
+	if err := db.db.QueryRow(
+		`SELECT COUNT(*) FROM push_subscriptions WHERE endpoint = ?`, orphanEndpoint,
+	).Scan(&orphanCount); err != nil || orphanCount != 1 {
+		t.Fatalf("schema upgrade must preserve orphan push subscriptions: count=%d err=%v", orphanCount, err)
+	}
+	if _, err := db.db.Exec(`DELETE FROM push_subscriptions WHERE endpoint = ?`, orphanEndpoint); err != nil {
+		t.Fatalf("remove orphan push subscription after explicit repair: %v", err)
+	}
 	if err := db.CreateSchema(); err != nil {
 		t.Fatalf("upgrade schema: %v", err)
 	}

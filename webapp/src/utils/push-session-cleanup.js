@@ -29,14 +29,17 @@ export async function cleanupPushForSession({
     )
   );
   const removeFromServer = async (endpoint, registrationIDsToRemove) => {
-    if (!unsubscribeOnServer || registrationIDsToRemove.length === 0) return;
-    await Promise.all(registrationIDsToRemove.map(async (id) => {
+    if (!unsubscribeOnServer || registrationIDsToRemove.length === 0) return true;
+    const results = await Promise.all(registrationIDsToRemove.map(async (id) => {
       try {
         await unsubscribeOnServer(endpoint, id);
+        return true;
       } catch (error) {
         console.warn('Failed to remove push subscription from server:', error);
+        return false;
       }
     }));
+    return results.every(Boolean);
   };
 
   const subscription = await getPushSubscription();
@@ -53,9 +56,10 @@ export async function cleanupPushForSession({
   const needsGlobalCleanup = legacyRegistrationIDs.length > 0 || canRemoveBrowserSubscription();
   if (needsGlobalCleanup) {
     const cleanedSharedSubscription = await coordinator.runWhenNoOtherActiveTabs?.(async () => {
-      await removeFromServer(subscription.endpoint, legacyRegistrationIDs);
-      if (!canRemoveBrowserSubscription()) return true;
-      return subscription.unsubscribe();
+      const removedLegacyRecords = await removeFromServer(subscription.endpoint, legacyRegistrationIDs);
+      if (!canRemoveBrowserSubscription()) return removedLegacyRecords;
+      const removedBrowserSubscription = await subscription.unsubscribe();
+      return removedLegacyRecords && removedBrowserSubscription;
     });
     if (!cleanedSharedSubscription) requestReconciliation();
   }

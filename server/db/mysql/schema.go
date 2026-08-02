@@ -47,8 +47,6 @@ func (a *Adapter) CreateSchema() error {
 	migrations := []string{
 		migratePushSubscriptionsAddRegistrationID,
 		migratePushSubscriptionsRegistrationIDBinary,
-		migratePushSubscriptionsDeleteOrphans,
-		migratePushSubscriptionsAddUserForeignKey,
 		migrateBotConfigAddAPIKey,
 		migrateUsersAddBotDisclose,
 		migrateMessagesAddReplyTo,
@@ -99,8 +97,33 @@ func (a *Adapter) CreateSchema() error {
 			}
 		}
 	}
+	if err := a.ensurePushSubscriptionUserForeignKey(); err != nil {
+		return err
+	}
 	if err := a.ensureChannelAgentBindingUniqueIncludesAgent(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (a *Adapter) ensurePushSubscriptionUserForeignKey() error {
+	var orphanCount int
+	if err := a.db.QueryRow(
+		`SELECT COUNT(*)
+		 FROM push_subscriptions AS subscriptions
+		 LEFT JOIN users ON users.id = subscriptions.uid
+		 WHERE users.id IS NULL`,
+	).Scan(&orphanCount); err != nil {
+		return fmt.Errorf("inspect orphan push subscriptions: %w", err)
+	}
+	if orphanCount > 0 {
+		return fmt.Errorf(
+			"push subscription schema upgrade requires manual repair: %d orphan subscription(s) must be audited after backup before adding the user foreign key",
+			orphanCount,
+		)
+	}
+	if _, err := a.db.Exec(migratePushSubscriptionsAddUserForeignKey); err != nil && !isIgnorableMigrationError(err) {
+		return fmt.Errorf("add push subscription user foreign key: %w", err)
 	}
 	return nil
 }
@@ -193,13 +216,6 @@ const migratePushSubscriptionsAddUserForeignKey = `
 ALTER TABLE push_subscriptions
 ADD CONSTRAINT fk_push_subscriptions_uid
 FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE;
-`
-
-const migratePushSubscriptionsDeleteOrphans = `
-DELETE subscriptions
-FROM push_subscriptions AS subscriptions
-LEFT JOIN users ON users.id = subscriptions.uid
-WHERE users.id IS NULL;
 `
 
 const migratePushSubscriptionsAddRegistrationID = `
