@@ -1,64 +1,140 @@
 .cc-pwa-status {
   position: fixed;
-  inset: 0 0 auto;
-  z-index: 10000;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(12px, env(safe-area-inset-bottom));
+  z-index: 1200;
   display: grid;
-  justify-items: center;
+  gap: 8px;
+  width: min(360px, calc(100vw - 24px));
   pointer-events: none;
   font-family: inherit;
 }
 
 .cc-pwa-offline,
-.cc-pwa-toast,
 .cc-pwa-prompt {
   pointer-events: auto;
   box-sizing: border-box;
-  width: min(100%, 36rem);
-  padding: .65rem .9rem;
-  border: 1px solid rgba(17, 24, 39, .12);
-  border-radius: 0 0 .75rem .75rem;
-  background: rgba(255, 255, 255, .96);
-  color: #111827;
-  box-shadow: 0 8px 28px rgba(17, 24, 39, .14);
-  text-align: center;
-  font-size: .875rem;
+  width: 100%;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-lg);
+  background: var(--cc-panel);
+  color: var(--cc-text);
+  box-shadow: 0 12px 30px color-mix(in srgb, var(--cc-text) 14%, transparent);
+  font-size: 13px;
 }
 
 .cc-pwa-offline {
-  width: 100%;
-  max-width: none;
-  border: 0;
-  border-radius: 0;
-  background: #374151;
-  color: #f9fafb;
-  box-shadow: none;
+  padding: 11px 13px;
+  color: var(--cc-muted);
+  line-height: 1.45;
 }
 
 .cc-pwa-prompt {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: .65rem;
+  gap: 10px;
+  padding: 12px;
+  text-align: left;
 }
 
-.cc-pwa-prompt.error {
-  color: #991b1b;
+.cc-pwa-prompt--push {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "icon copy"
+    "icon actions";
+  align-items: start;
+  column-gap: 10px;
+  row-gap: 10px;
+}
+
+.cc-pwa-prompt--compact,
+.cc-pwa-prompt--error {
+  justify-content: space-between;
+}
+
+.cc-pwa-prompt--error {
+  color: var(--cc-danger);
+}
+
+.cc-pwa-prompt--error .cc-pwa-prompt-copy span {
+  color: var(--cc-danger);
+}
+
+.cc-pwa-prompt-icon {
+  display: grid;
+  grid-area: icon;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-accent-soft);
+  color: var(--cc-accent-text);
+}
+
+.cc-pwa-prompt-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  grid-area: copy;
+}
+
+.cc-pwa-prompt-copy strong {
+  color: var(--cc-text);
+  font-size: 13px;
+  font-weight: var(--cc-font-weight-semibold);
+  line-height: 1.35;
+}
+
+.cc-pwa-prompt-copy span {
+  color: var(--cc-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.cc-pwa-prompt-actions {
+  display: flex;
+  grid-area: actions;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .cc-pwa-prompt button {
+  min-height: 36px;
   border: 0;
-  border-radius: .5rem;
-  padding: .38rem .7rem;
-  background: #D4A853;
-  color: #111827;
+  border-radius: var(--cc-radius-md);
+  padding: 0 12px;
+  background: var(--cc-accent);
+  color: var(--cc-panel);
   font: inherit;
+  font-size: 12px;
+  font-weight: var(--cc-font-weight-semibold);
   white-space: nowrap;
   cursor: pointer;
+  transition: background-color 160ms ease-out, box-shadow 160ms ease-out, transform 160ms ease-out;
+}
+
+.cc-pwa-prompt button:hover:not(:disabled) {
+  background: var(--cc-accent-hover);
+  box-shadow: 0 3px 8px color-mix(in srgb, var(--cc-accent) 24%, transparent);
+  transform: translateY(-1px);
+}
+
+.cc-pwa-prompt button:focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 2px;
 }
 
 .cc-pwa-prompt button.secondary {
   background: transparent;
-  color: inherit;
+  color: var(--cc-muted);
+}
+
+.cc-pwa-prompt button.secondary:hover:not(:disabled) {
+  background: var(--cc-hover);
+  box-shadow: none;
+  color: var(--cc-text);
 }
 
 .cc-pwa-prompt button:disabled {
@@ -67,10 +143,29 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  .cc-pwa-toast,
   .cc-pwa-prompt {
-    border-color: rgba(255, 255, 255, .12);
-    background: rgba(31, 41, 55, .97);
-    color: #f9fafb;
+    border-color: var(--cc-border);
+    background: var(--cc-panel);
+    color: var(--cc-text);
+  }
+}
+
+@media (max-width: 480px) {
+  .cc-pwa-status {
+    right: max(12px, env(safe-area-inset-right));
+    left: max(12px, env(safe-area-inset-left));
+    width: auto;
+  }
+
+  .cc-pwa-prompt button {
+    min-height: 44px;
+  }
+
+  .cc-pwa-prompt--push .cc-pwa-prompt-actions {
+    justify-content: stretch;
+  }
+
+  .cc-pwa-prompt--push .cc-pwa-prompt-actions button:first-child {
+    flex: 1 1 auto;
   }
 }

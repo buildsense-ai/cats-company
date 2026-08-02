@@ -644,16 +644,19 @@ func TestPushNotificationDeadlineCoversSubscriptionLookup(t *testing.T) {
 	}
 }
 
-func TestEnqueueOfflineUserPushQueuesOnlyOfflineHumans(t *testing.T) {
+func TestEnqueueUserPushQueuesOnlyWhenNoVisibleHumanClient(t *testing.T) {
 	tests := []struct {
-		name        string
-		accountType types.AccountType
-		state       int
-		online      bool
-		wantPush    bool
+		name         string
+		accountType  types.AccountType
+		state        int
+		clientStates []string
+		wantPush     bool
 	}{
 		{name: "offline human", accountType: types.AccountHuman, wantPush: true},
-		{name: "online human", accountType: types.AccountHuman, online: true},
+		{name: "visible human", accountType: types.AccountHuman, clientStates: []string{"visible"}},
+		{name: "legacy connected human", accountType: types.AccountHuman, clientStates: []string{""}},
+		{name: "hidden human", accountType: types.AccountHuman, clientStates: []string{"hidden"}, wantPush: true},
+		{name: "visible and hidden human", accountType: types.AccountHuman, clientStates: []string{"visible", "hidden"}},
 		{name: "offline bot", accountType: types.AccountBot},
 		{name: "disabled human", accountType: types.AccountHuman, state: 1},
 	}
@@ -676,8 +679,12 @@ func TestEnqueueOfflineUserPushQueuesOnlyOfflineHumans(t *testing.T) {
 				uid: {ID: uid, AccountType: test.accountType, State: test.state},
 			}}, nil)
 			hub.SetPushNotificationService(service)
-			if test.online {
-				hub.addClient(&Client{uid: uid, send: make(chan []byte, 1)})
+			for _, pageVisibility := range test.clientStates {
+				hub.addClient(&Client{
+					uid:            uid,
+					pageVisibility: pageVisibility,
+					send:           make(chan []byte, 1),
+				})
 			}
 
 			hub.enqueueOfflineUserPush(uid)

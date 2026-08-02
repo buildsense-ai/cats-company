@@ -1,6 +1,7 @@
 import React, {
   useCallback, useEffect, useRef, useState,
 } from 'react';
+import { Bell } from 'lucide-react';
 import { registerSW } from 'virtual:pwa-register';
 import { api, getPushRegistrationID, getToken } from '../api';
 import {
@@ -42,7 +43,6 @@ export default function PwaController({
   const [busy, setBusy] = useState(false);
   const [pushError, setPushError] = useState('');
   const [needRefresh, setNeedRefresh] = useState(false);
-  const [offlineReady, setOfflineReady] = useState(false);
   const [reconcileVersion, setReconcileVersion] = useState(0);
   const [cleanupRetryVersion, setCleanupRetryVersion] = useState(0);
   const updateServiceWorkerRef = useRef(null);
@@ -52,7 +52,6 @@ export default function PwaController({
     updateServiceWorkerRef.current = registerSW({
       immediate: true,
       onNeedRefresh: () => setNeedRefresh(true),
-      onOfflineReady: () => setOfflineReady(true),
       onRegisterError: (error) => console.warn('PWA registration failed:', error),
     });
   }, []);
@@ -67,12 +66,6 @@ export default function PwaController({
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
-
-  useEffect(() => {
-    if (!offlineReady) return undefined;
-    const timer = window.setTimeout(() => setOfflineReady(false), 5000);
-    return () => window.clearTimeout(timer);
-  }, [offlineReady]);
 
   useEffect(() => {
     setDismissed(readDismissed(pushPromptOwner));
@@ -217,25 +210,41 @@ export default function PwaController({
   return (
     <div className="cc-pwa-status" aria-live="polite">
       {!online && <div className="cc-pwa-offline">当前离线，消息将在网络恢复后重新加载</div>}
-      {offlineReady && online && <div className="cc-pwa-toast">离线页面已准备好</div>}
       {needRefresh && (
-        <div className="cc-pwa-prompt">
-          <span>发现新版本</span>
-          <button type="button" onClick={() => updateServiceWorkerRef.current?.(true)}>立即更新</button>
-          <button type="button" className="secondary" onClick={() => setNeedRefresh(false)}>稍后</button>
+        <div className="cc-pwa-prompt cc-pwa-prompt--compact">
+          <div className="cc-pwa-prompt-copy">
+            <strong>发现新版本</strong>
+          </div>
+          <div className="cc-pwa-prompt-actions">
+            <button type="button" onClick={() => updateServiceWorkerRef.current?.(true)}>立即更新</button>
+            <button type="button" className="secondary" onClick={() => setNeedRefresh(false)}>稍后</button>
+          </div>
         </div>
       )}
       {offerPush && (
-        <div className="cc-pwa-prompt">
-          <span>开启通知，及时收到新消息</span>
-          <button type="button" disabled={busy} onClick={enablePush}>{busy ? '开启中' : '开启'}</button>
-          <button type="button" className="secondary" disabled={busy} onClick={dismissPush}>暂不</button>
-        </div>
+        <aside className="cc-pwa-prompt cc-pwa-prompt--push" aria-label="消息通知设置">
+          <span className="cc-pwa-prompt-icon" aria-hidden="true">
+            <Bell size={18} strokeWidth={2.2} />
+          </span>
+          <div className="cc-pwa-prompt-copy">
+            <strong>开启通知，及时收到新消息</strong>
+            <span>离开页面后，也能收到新消息提醒</span>
+          </div>
+          <div className="cc-pwa-prompt-actions">
+            <button type="button" disabled={busy} onClick={enablePush}>{busy ? '开启中' : '开启'}</button>
+            <button type="button" className="secondary" disabled={busy} onClick={dismissPush}>暂不</button>
+          </div>
+        </aside>
       )}
       {pushError && (
-        <div className="cc-pwa-prompt error">
-          <span>{pushError}</span>
-          <button type="button" className="secondary" onClick={() => setPushError('')}>关闭</button>
+        <div className="cc-pwa-prompt cc-pwa-prompt--error" role="alert">
+          <div className="cc-pwa-prompt-copy">
+            <strong>通知未开启</strong>
+            <span>{pushError}</span>
+          </div>
+          <div className="cc-pwa-prompt-actions">
+            <button type="button" className="secondary" onClick={() => setPushError('')}>关闭</button>
+          </div>
         </div>
       )}
     </div>

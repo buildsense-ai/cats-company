@@ -40,6 +40,7 @@ describe('WebSocket connection recovery', () => {
     vi.resetModules();
     localStorage.clear();
     sessionStorage.clear();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     window.name = '';
     MockWebSocket.instances = [];
     global.WebSocket = MockWebSocket;
@@ -79,6 +80,21 @@ describe('WebSocket connection recovery', () => {
     expect(subscriber).toHaveBeenCalledWith({ _type: 'ws_open' });
 
     unsubscribe();
+  });
+
+  test('sends page visibility in the handshake and on visibility changes', () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    api.connectWS(vi.fn());
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+
+    const handshake = JSON.parse(socket.send.mock.calls[0][0]);
+    expect(handshake.hi.visibility).toBe('hidden');
+
+    api.sendWSPageVisibility('visible');
+    expect(JSON.parse(socket.send.mock.calls.at(-1)[0])).toEqual({
+      note: { what: 'visibility', visibility: 'visible' },
+    });
   });
 
   test('includes the authoritative target agent in stream cancel metadata', async () => {

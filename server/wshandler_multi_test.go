@@ -45,6 +45,29 @@ func TestHubTracksMultipleConnectionsPerUser(t *testing.T) {
 	}
 }
 
+func TestHubTracksPageVisibilityWithoutBroadcastingInternalNotes(t *testing.T) {
+	hub := NewHub(nil, nil)
+	client := &Client{uid: 42, send: make(chan []byte, 1)}
+	hub.addClient(client)
+
+	hub.handleMessage(client, &ClientMessage{
+		Note: &MsgClientNote{What: "visibility", Visibility: "hidden"},
+	})
+	if hub.hasVisibleMessagingClient(42) {
+		t.Fatal("hidden page should not count as visible for push suppression")
+	}
+	if drainOne(client.send) {
+		t.Fatal("page visibility note must not be broadcast as an info message")
+	}
+
+	hub.handleMessage(client, &ClientMessage{
+		Note: &MsgClientNote{What: "visibility", Visibility: "visible"},
+	})
+	if !hub.hasVisibleMessagingClient(42) {
+		t.Fatal("visible page should suppress a duplicate web push")
+	}
+}
+
 func TestSendToUserExceptAndSendToClient(t *testing.T) {
 	hub := NewHub(nil, nil)
 	clientA := &Client{uid: 7, send: make(chan []byte, 1)}

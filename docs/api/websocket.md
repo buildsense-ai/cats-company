@@ -106,6 +106,7 @@ XiaoBa-CLI 等 Agent runtime 在多人群中接收、处理或转发取消事件
 **what 类型：**
 - `kp`: 正在输入
 - `read`: 已读回执
+- `visibility`: 浏览器页面可见性同步；此时省略 `topic`，并携带 `visibility: "visible"` 或 `"hidden"`。服务端据此决定是否需要额外发送 Web Push，不会把该状态转发给其他用户。
 
 #### 6. 设备 RPC (device_rpc)
 
