@@ -3,10 +3,14 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
+	mysqlDriver "github.com/go-sql-driver/mysql"
 	"github.com/openchat/openchat/server/store/types"
 )
+
+const maxPushSubscriptionUpsertAttempts = 3
 
 // UpsertPushSubscription atomically creates or refreshes a subscription while
 // enforcing the per-user limit across all server replicas. A current browser
@@ -14,6 +18,18 @@ import (
 // the oldest receiving-account record is retired so the browser cannot retain
 // delivery for the account that was just signed out.
 func (a *Adapter) UpsertPushSubscription(ctx context.Context, subscription *types.PushSubscription, maxSubscriptions int) (bool, error) {
+	var err error
+	for attempt := 0; attempt < maxPushSubscriptionUpsertAttempts; attempt++ {
+		var stored bool
+		stored, err = a.upsertPushSubscriptionOnce(ctx, subscription, maxSubscriptions)
+		if err == nil || !isRetryablePushSubscriptionTransactionError(err) {
+			return stored, err
+		}
+	}
+	return false, err
+}
+
+func (a *Adapter) upsertPushSubscriptionOnce(ctx context.Context, subscription *types.PushSubscription, maxSubscriptions int) (bool, error) {
 	if subscription == nil {
 		return false, fmt.Errorf("push subscription is nil")
 	}
@@ -96,6 +112,11 @@ func (a *Adapter) UpsertPushSubscription(ctx context.Context, subscription *type
 		return false, fmt.Errorf("commit push subscription upsert: %w", err)
 	}
 	return true, nil
+}
+
+func isRetryablePushSubscriptionTransactionError(err error) bool {
+	var mysqlErr *mysqlDriver.MySQLError
+	return errors.As(err, &mysqlErr) && (mysqlErr.Number == 1213 || mysqlErr.Number == 1205)
 }
 
 // ListPushSubscriptions returns all subscriptions owned by uid.
