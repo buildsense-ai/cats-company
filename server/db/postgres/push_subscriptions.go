@@ -9,7 +9,10 @@ import (
 )
 
 // UpsertPushSubscription atomically creates or refreshes a subscription while
-// enforcing the per-user limit across all server replicas.
+// enforcing the per-user limit across all server replicas. A current browser
+// endpoint can move between accounts, even when the receiving account is full:
+// the oldest receiving-account record is retired so the browser cannot retain
+// delivery for the account that was just signed out.
 func (a *Adapter) UpsertPushSubscription(ctx context.Context, subscription *types.PushSubscription, maxSubscriptions int) (bool, error) {
 	if subscription == nil {
 		return false, fmt.Errorf("push subscription is nil")
@@ -30,13 +33,14 @@ func (a *Adapter) UpsertPushSubscription(ctx context.Context, subscription *type
 
 	var existingUID int64
 	existingErr := tx.QueryRowContext(ctx,
-		`SELECT uid FROM push_subscriptions WHERE endpoint = $1`,
+		`SELECT uid FROM push_subscriptions WHERE endpoint = $1 FOR UPDATE`,
 		subscription.Endpoint,
 	).Scan(&existingUID)
 	if existingErr != nil && existingErr != sql.ErrNoRows {
 		return false, fmt.Errorf("find push subscription endpoint: %w", existingErr)
 	}
-	if existingErr == sql.ErrNoRows || existingUID != subscription.UID {
+	endpointBelongsToAnotherUser := existingErr == nil && existingUID != subscription.UID
+	if existingErr == sql.ErrNoRows || endpointBelongsToAnotherUser {
 		var count int
 		if err := tx.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM push_subscriptions WHERE uid = $1`,
@@ -45,7 +49,30 @@ func (a *Adapter) UpsertPushSubscription(ctx context.Context, subscription *type
 			return false, fmt.Errorf("count push subscriptions: %w", err)
 		}
 		if count >= maxSubscriptions {
-			return false, nil
+			if !endpointBelongsToAnotherUser {
+				return false, nil
+			}
+			var retiredID int64
+			err := tx.QueryRowContext(ctx,
+				`SELECT id
+				 FROM push_subscriptions
+				 WHERE uid = $1
+				 ORDER BY updated_at ASC, id ASC
+				 LIMIT 1
+				 FOR UPDATE`,
+				subscription.UID,
+			).Scan(&retiredID)
+			if err != nil && err != sql.ErrNoRows {
+				return false, fmt.Errorf("select push subscription to retire: %w", err)
+			}
+			if err == nil {
+				if _, err := tx.ExecContext(ctx,
+					`DELETE FROM push_subscriptions WHERE id = $1`,
+					retiredID,
+				); err != nil {
+					return false, fmt.Errorf("retire push subscription: %w", err)
+				}
+			}
 		}
 	}
 

@@ -13,6 +13,7 @@ vi.mock('../api', () => ({
     subscribePush: vi.fn(),
     unsubscribePush: vi.fn(),
   },
+  getToken: vi.fn(() => ''),
   getPushRegistrationID: vi.fn(() => 'registration-1'),
 }));
 
@@ -25,6 +26,7 @@ vi.mock('../utils/push-tab-coordination', () => ({
     setActive: vi.fn(),
     waitUntilActive: vi.fn(() => Promise.resolve(true)),
     onReconcile: vi.fn(() => () => {}),
+    runWhenNoOtherActiveTabs: vi.fn((callback) => callback()),
   },
 }));
 
@@ -60,11 +62,11 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function renderController(pushPromptOwner, sessionRevision = 1) {
+function renderController(pushPromptOwner, sessionRevision = 1, loggedIn = true) {
   act(() => {
     root.render(
       <PwaController
-        loggedIn
+        loggedIn={loggedIn}
         pushPromptOwner={pushPromptOwner}
         sessionRevision={sessionRevision}
       />,
@@ -144,6 +146,29 @@ test('re-registers an active account when another tab hands off the browser subs
   act(() => listener());
 
   await vi.waitFor(() => expect(api.subscribePush).toHaveBeenCalledTimes(1));
+});
+
+test('retries a pending browser cleanup while signed out', async () => {
+  const browserUnsubscribe = vi.fn().mockResolvedValue(true);
+  localStorage.setItem('oc_push_pending_unsubscribe_v1', 'https://push.example/subscription');
+  Object.defineProperty(navigator, 'serviceWorker', {
+    configurable: true,
+    value: {
+      getRegistration: vi.fn().mockResolvedValue({
+        pushManager: {
+          getSubscription: vi.fn().mockResolvedValue({
+            endpoint: 'https://push.example/subscription',
+            unsubscribe: browserUnsubscribe,
+          }),
+        },
+      }),
+    },
+  });
+
+  renderController('', 1, false);
+
+  await vi.waitFor(() => expect(browserUnsubscribe).toHaveBeenCalledTimes(1));
+  expect(localStorage.getItem('oc_push_pending_unsubscribe_v1')).toBeNull();
 });
 
 test('updates through the service worker updater registered after mount', () => {

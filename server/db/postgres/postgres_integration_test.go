@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -145,6 +146,63 @@ func TestPostgresStoreContract(t *testing.T) {
 	if len(uidSearchResults) == 0 || uidSearchResults[0].ID != friendID {
 		t.Fatalf("uid search mismatch: got=%#v want=%d", uidSearchResults, friendID)
 	}
+
+	t.Run("push subscription handoff keeps the current browser at the limit", func(t *testing.T) {
+		const (
+			currentEndpoint = "https://push.example.test/current-browser"
+			retiredEndpoint = "https://push.example.test/retired-browser"
+		)
+		if _, insertErr := db.db.Exec(
+			`INSERT INTO push_subscriptions (uid, endpoint, p256dh, auth, registration_id)
+			 VALUES ($1, $2, 'p256dh-old', 'auth-old', 'registration-old')`,
+			ownerID, currentEndpoint,
+		); insertErr != nil {
+			t.Fatalf("store old-account browser endpoint: %v", insertErr)
+		}
+		for index := 0; index < 10; index++ {
+			endpoint := fmt.Sprintf("https://push.example.test/full-account-%d", index)
+			if index == 0 {
+				endpoint = retiredEndpoint
+			}
+			if _, insertErr := db.db.Exec(
+				`INSERT INTO push_subscriptions (uid, endpoint, p256dh, auth, registration_id)
+				 VALUES ($1, $2, 'p256dh-full', 'auth-full', 'registration-full')`,
+				friendID, endpoint,
+			); insertErr != nil {
+				t.Fatalf("store full-account endpoint %d: %v", index, insertErr)
+			}
+		}
+
+		stored, upsertErr := db.UpsertPushSubscription(context.Background(), &types.PushSubscription{
+			UID:            friendID,
+			Endpoint:       currentEndpoint,
+			P256DH:         "p256dh-current",
+			Auth:           "auth-current",
+			RegistrationID: "registration-current",
+		}, 10)
+		if upsertErr != nil || !stored {
+			t.Fatalf("claim current browser endpoint: stored=%v err=%v", stored, upsertErr)
+		}
+
+		var endpointOwner int64
+		if queryErr := db.db.QueryRow(
+			`SELECT uid FROM push_subscriptions WHERE endpoint = $1`, currentEndpoint,
+		).Scan(&endpointOwner); queryErr != nil || endpointOwner != friendID {
+			t.Fatalf("current endpoint owner=%d err=%v, want %d", endpointOwner, queryErr, friendID)
+		}
+		var recipientCount int
+		if queryErr := db.db.QueryRow(
+			`SELECT COUNT(*) FROM push_subscriptions WHERE uid = $1`, friendID,
+		).Scan(&recipientCount); queryErr != nil || recipientCount != 10 {
+			t.Fatalf("recipient subscription count=%d err=%v, want 10", recipientCount, queryErr)
+		}
+		var retiredExists bool
+		if queryErr := db.db.QueryRow(
+			`SELECT EXISTS (SELECT 1 FROM push_subscriptions WHERE endpoint = $1)`, retiredEndpoint,
+		).Scan(&retiredExists); queryErr != nil || retiredExists {
+			t.Fatalf("oldest recipient endpoint exists=%v err=%v, want false", retiredExists, queryErr)
+		}
+	})
 
 	topicID := "p2p_test"
 	if err := db.CreateTopic(topicID, "p2p", ownerID); err != nil {

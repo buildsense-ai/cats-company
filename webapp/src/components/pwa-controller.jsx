@@ -2,7 +2,7 @@ import React, {
   useCallback, useEffect, useRef, useState,
 } from 'react';
 import { registerSW } from 'virtual:pwa-register';
-import { api, getPushRegistrationID } from '../api';
+import { api, getPushRegistrationID, getToken } from '../api';
 import {
   canUsePush,
   ensurePushSubscription,
@@ -11,8 +11,11 @@ import {
   shouldOfferPush,
 } from '../utils/push-notifications';
 import { enqueuePushOperation } from '../utils/push-operation';
+import { retryPendingPushUnsubscribe } from '../utils/push-session-cleanup';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import './pwa-controller.css';
+
+const PUSH_CLEANUP_RETRY_DELAY_MS = 30_000;
 
 function readDismissed(owner) {
   const storageKey = pushDismissedStorageKey(owner);
@@ -41,6 +44,7 @@ export default function PwaController({
   const [needRefresh, setNeedRefresh] = useState(false);
   const [offlineReady, setOfflineReady] = useState(false);
   const [reconcileVersion, setReconcileVersion] = useState(0);
+  const [cleanupRetryVersion, setCleanupRetryVersion] = useState(0);
   const updateServiceWorkerRef = useRef(null);
 
   useEffect(() => {
@@ -91,6 +95,30 @@ export default function PwaController({
       setReconcileVersion((current) => current + 1);
     });
   }, [loggedIn]);
+
+  useEffect(() => {
+    if (loggedIn || !online || !canUsePush()) return undefined;
+    let cancelled = false;
+    let retryTimer;
+    const retryPendingCleanup = async () => {
+      const cleaned = await retryPendingPushUnsubscribe({
+        coordinator: pushTabCoordinator,
+        isLoggedOut: () => !getToken(),
+      });
+      if (!cleaned && !cancelled && !getToken()) {
+        retryTimer = window.setTimeout(() => {
+          setCleanupRetryVersion((current) => current + 1);
+        }, PUSH_CLEANUP_RETRY_DELAY_MS);
+      }
+    };
+    enqueuePushOperation(retryPendingCleanup).catch((error) => {
+      console.warn('Pending push cleanup retry failed:', error);
+    });
+    return () => {
+      cancelled = true;
+      window.clearTimeout(retryTimer);
+    };
+  }, [cleanupRetryVersion, loggedIn, online]);
 
   useEffect(() => {
     if (!canUsePush() || !loggedIn || Notification.permission !== 'granted') return undefined;

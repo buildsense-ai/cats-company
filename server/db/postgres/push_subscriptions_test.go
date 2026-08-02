@@ -1,4 +1,4 @@
-package mysql
+package postgres
 
 import (
 	"context"
@@ -24,33 +24,33 @@ func TestUpsertPushSubscriptionTransfersCurrentEndpointAtLimit(t *testing.T) {
 		registration = "registration-current"
 	)
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM users WHERE id = ? FOR UPDATE")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM users WHERE id = $1 FOR UPDATE")).
 		WithArgs(newUID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(newUID))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT uid FROM push_subscriptions WHERE endpoint = ? FOR UPDATE")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT uid FROM push_subscriptions WHERE endpoint = $1 FOR UPDATE")).
 		WithArgs(endpoint).
 		WillReturnRows(sqlmock.NewRows([]string{"uid"}).AddRow(oldUID))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM push_subscriptions WHERE uid = ?")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM push_subscriptions WHERE uid = $1")).
 		WithArgs(newUID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(10))
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id
 			 FROM push_subscriptions
-			 WHERE uid = ?
+			 WHERE uid = $1
 			 ORDER BY updated_at ASC, id ASC
 			 LIMIT 1
 			 FOR UPDATE`)).
 		WithArgs(newUID).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(obsoleteID))
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM push_subscriptions WHERE id = ?")).
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM push_subscriptions WHERE id = $1")).
 		WithArgs(obsoleteID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO push_subscriptions (uid, endpoint, p256dh, auth, registration_id)
-			 VALUES (?, ?, ?, ?, ?)
-			 ON DUPLICATE KEY UPDATE
-			   uid = VALUES(uid),
-			   p256dh = VALUES(p256dh),
-			   auth = VALUES(auth),
-			   registration_id = VALUES(registration_id)`)).
+			 VALUES ($1, $2, $3, $4, $5)
+			 ON CONFLICT (endpoint) DO UPDATE SET
+			   uid = EXCLUDED.uid,
+			   p256dh = EXCLUDED.p256dh,
+			   auth = EXCLUDED.auth,
+			   registration_id = EXCLUDED.registration_id`)).
 		WithArgs(newUID, endpoint, "p256dh", "auth", registration).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -68,33 +68,6 @@ func TestUpsertPushSubscriptionTransfersCurrentEndpointAtLimit(t *testing.T) {
 	}
 	if !stored {
 		t.Fatal("current browser endpoint was not transferred to the full account")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet database expectations: %v", err)
-	}
-}
-
-func TestDeletePushSubscriptionMatchesExactRegistrationID(t *testing.T) {
-	sqlDB, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
-	if err != nil {
-		t.Fatalf("create mock database: %v", err)
-	}
-	defer sqlDB.Close()
-
-	const (
-		uid            = int64(42)
-		endpoint       = "https://push.example.test/exact-generation"
-		registrationID = "Session-ABC"
-	)
-	mock.ExpectExec(regexp.QuoteMeta(
-		"DELETE FROM push_subscriptions WHERE uid = ? AND endpoint = ? AND registration_id = ?",
-	)).
-		WithArgs(uid, endpoint, registrationID).
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	adapter := &Adapter{db: sqlDB}
-	if err := adapter.DeletePushSubscription(context.Background(), uid, endpoint, registrationID); err != nil {
-		t.Fatalf("delete push subscription: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet database expectations: %v", err)

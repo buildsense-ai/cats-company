@@ -1,4 +1,7 @@
-import { cleanupPushForSession } from './push-session-cleanup';
+import {
+  cleanupPushForSession,
+  retryPendingPushUnsubscribe,
+} from './push-session-cleanup';
 
 describe('push session cleanup', () => {
   afterEach(() => {
@@ -255,5 +258,39 @@ describe('push session cleanup', () => {
       'registration-legacy',
     );
     expect(browserUnsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  test('persists and retries a browser unsubscribe that fails during logout', async () => {
+    const browserUnsubscribe = installSubscription();
+    browserUnsubscribe.mockRejectedValueOnce(new Error('temporary browser failure'));
+    const coordinator = {
+      setActive: vi.fn(),
+      runWhenRegistrationInactive: vi.fn().mockImplementation((_registrationID, callback) => callback()),
+      runWhenNoOtherActiveTabs: vi.fn().mockImplementation((callback) => callback()),
+      requestReconcile: vi.fn(),
+    };
+    const unsubscribeOnServer = vi.fn().mockRejectedValue(new Error('network unavailable'));
+
+    await expect(cleanupPushForSession({
+      coordinator,
+      registrationID: 'registration-old',
+      registrationIDs: ['registration-old'],
+      getCurrentToken: () => '',
+      sessionRevision: 1,
+      getCurrentSessionRevision: () => 2,
+      unsubscribeOnServer,
+    })).resolves.toBe(true);
+
+    expect(localStorage.getItem('oc_push_pending_unsubscribe_v1'))
+      .toBe('https://push.example/subscription');
+
+    browserUnsubscribe.mockResolvedValueOnce(true);
+    await expect(retryPendingPushUnsubscribe({
+      coordinator,
+      isLoggedOut: () => true,
+    })).resolves.toBe(true);
+
+    expect(browserUnsubscribe).toHaveBeenCalledTimes(2);
+    expect(localStorage.getItem('oc_push_pending_unsubscribe_v1')).toBeNull();
   });
 });
