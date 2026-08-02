@@ -1468,12 +1468,13 @@ func cloneDataMessageWithMetadata(msg *ServerMessage, metadata map[string]interf
 	data := *msg.Data
 	data.Metadata = metadata
 	return &ServerMessage{
-		Ctrl:   msg.Ctrl,
-		Data:   &data,
-		Pres:   msg.Pres,
-		Meta:   msg.Meta,
-		Info:   msg.Info,
-		Friend: msg.Friend,
+		Ctrl:                     msg.Ctrl,
+		Data:                     &data,
+		Pres:                     msg.Pres,
+		Meta:                     msg.Meta,
+		Info:                     msg.Info,
+		Friend:                   msg.Friend,
+		suppressPushNotification: msg.suppressPushNotification,
 	}
 }
 
@@ -1717,6 +1718,9 @@ func max64(a, b int64) int64 {
 
 func shouldNotifyOfflineForMessage(msg *ServerMessage) bool {
 	if msg == nil || msg.Data == nil || msg.Data.SeqID <= 0 {
+		return false
+	}
+	if msg.suppressPushNotification {
 		return false
 	}
 

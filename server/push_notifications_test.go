@@ -698,9 +698,10 @@ func TestEnqueueOfflineUserPushQueuesOnlyOfflineHumans(t *testing.T) {
 
 func TestShouldNotifyOfflineForFinalUserVisibleMessagesOnly(t *testing.T) {
 	tests := []struct {
-		name string
-		data *MsgServerData
-		want bool
+		name                     string
+		data                     *MsgServerData
+		suppressPushNotification bool
+		want                     bool
 	}{
 		{name: "missing message"},
 		{name: "transient text", data: &MsgServerData{SeqID: 0, Type: "text"}},
@@ -709,6 +710,7 @@ func TestShouldNotifyOfflineForFinalUserVisibleMessagesOnly(t *testing.T) {
 		{name: "final voice", data: &MsgServerData{SeqID: 1, Type: "voice"}, want: true},
 		{name: "final file", data: &MsgServerData{SeqID: 1, Type: "file"}, want: true},
 		{name: "future user-visible type", data: &MsgServerData{SeqID: 1, Type: "video"}, want: true},
+		{name: "suppressed provider message", data: &MsgServerData{SeqID: 1, Type: "text"}, suppressPushNotification: true},
 		{name: "runtime plan", data: &MsgServerData{SeqID: 1, Type: "runtime_plan"}},
 		{name: "thinking", data: &MsgServerData{SeqID: 1, Type: "thinking"}},
 		{name: "tool use", data: &MsgServerData{SeqID: 1, Type: "tool_use"}},
@@ -745,12 +747,60 @@ func TestShouldNotifyOfflineForFinalUserVisibleMessagesOnly(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var msg *ServerMessage
 			if test.data != nil {
-				msg = &ServerMessage{Data: test.data}
+				msg = &ServerMessage{Data: test.data, suppressPushNotification: test.suppressPushNotification}
 			}
 			if got := shouldNotifyOfflineForMessage(msg); got != test.want {
 				t.Fatalf("shouldNotifyOfflineForMessage() = %t, want %t", got, test.want)
 			}
 		})
+	}
+}
+
+func TestThirdPartyProviderGroupMessageDoesNotNotifyWebPush(t *testing.T) {
+	const (
+		groupID    int64 = 83
+		senderUID  int64 = 7
+		offlineUID int64 = 8
+	)
+	db := &identityMessageStore{
+		users: map[int64]*types.User{
+			senderUID:  {ID: senderUID, AccountType: types.AccountHuman},
+			offlineUID: {ID: offlineUID, AccountType: types.AccountHuman},
+		},
+		groupMembers: []*types.GroupMember{
+			{GroupID: groupID, UserID: senderUID},
+			{GroupID: groupID, UserID: offlineUID},
+		},
+	}
+	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/subscription/provider-group",
+		P256DH:   "p256dh",
+		Auth:     "auth",
+	}}}
+	service := enabledPushService(pushStore)
+	delivered := make(chan struct{}, 1)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		delivered <- struct{}{}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	hub := NewHub(db, nil)
+	hub.SetPushNotificationService(service)
+	providerMetadata := withChannelBindingDeliveryMetadata(nil, &types.ChannelAgentBinding{
+		Channel:       "feishu",
+		ChannelUserID: "ou_provider_sender",
+	})
+
+	hub.fanoutNormalizedMessage(senderUID, "grp_83", 0, &normalizedMessagePayload{
+		DisplayContent: "来自第三方平台的消息",
+		DisplayType:    "text",
+		StoredType:     "text",
+		Metadata:       providerMetadata,
+	}, 1, nil)
+
+	select {
+	case <-delivered:
+		t.Fatal("third-party provider message unexpectedly delivered a web push")
+	case <-time.After(150 * time.Millisecond):
 	}
 }
 

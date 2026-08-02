@@ -301,6 +301,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 		return nil
 	}
 	sourceMetadata := payload.Metadata
+	suppressPushNotification := channelMetadataHasSource(sourceMetadata)
 	nativeChannelGroup := firstMetadataInt64(sourceMetadata, "channel_native_group_binding_id") > 0
 	publicMetadata := withoutInternalChannelBindingDeliveryMetadata(payload.Metadata)
 	metadata := withCatscoIdentityMetadata(publicMetadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID, normalizeContentText(payload.DisplayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: nativeChannelGroup, SourceMetadata: sourceMetadata}))
@@ -321,6 +322,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 			Role:          payload.Role,
 			ReplyTo:       replyTo,
 		},
+		suppressPushNotification: suppressPushNotification,
 	}
 }
 
