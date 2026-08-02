@@ -756,51 +756,92 @@ func TestShouldNotifyOfflineForFinalUserVisibleMessagesOnly(t *testing.T) {
 	}
 }
 
-func TestThirdPartyProviderGroupMessageDoesNotNotifyWebPush(t *testing.T) {
-	const (
-		groupID    int64 = 83
-		senderUID  int64 = 7
-		offlineUID int64 = 8
-	)
-	db := &identityMessageStore{
-		users: map[int64]*types.User{
-			senderUID:  {ID: senderUID, AccountType: types.AccountHuman},
-			offlineUID: {ID: offlineUID, AccountType: types.AccountHuman},
-		},
-		groupMembers: []*types.GroupMember{
-			{GroupID: groupID, UserID: senderUID},
-			{GroupID: groupID, UserID: offlineUID},
-		},
-	}
-	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
-		Endpoint: "https://push.example.test/subscription/provider-group",
-		P256DH:   "p256dh",
-		Auth:     "auth",
-	}}}
-	service := enabledPushService(pushStore)
-	delivered := make(chan struct{}, 1)
-	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
-		delivered <- struct{}{}
-		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
-	}
-	hub := NewHub(db, nil)
-	hub.SetPushNotificationService(service)
+func TestThirdPartyProviderGroupMessagePushEligibility(t *testing.T) {
 	providerMetadata := withChannelBindingDeliveryMetadata(nil, &types.ChannelAgentBinding{
 		Channel:       "feishu",
 		ChannelUserID: "ou_provider_sender",
 	})
+	tests := []struct {
+		name     string
+		metadata map[string]interface{}
+		wantPush bool
+	}{
+		{
+			name:     "trusted provider source is suppressed",
+			metadata: providerMetadata,
+		},
+		{
+			name: "untrusted provider-looking metadata does not suppress",
+			metadata: map[string]interface{}{
+				"source_channel":  "feishu",
+				"channel_user_id": "ou_provider_sender",
+			},
+			wantPush: true,
+		},
+	}
 
-	hub.fanoutNormalizedMessage(senderUID, "grp_83", 0, &normalizedMessagePayload{
-		DisplayContent: "来自第三方平台的消息",
-		DisplayType:    "text",
-		StoredType:     "text",
-		Metadata:       providerMetadata,
-	}, 1, nil)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			const (
+				groupID    int64 = 83
+				senderUID  int64 = 7
+				offlineUID int64 = 8
+			)
+			db := &identityMessageStore{
+				users: map[int64]*types.User{
+					senderUID:  {ID: senderUID, AccountType: types.AccountHuman},
+					offlineUID: {ID: offlineUID, AccountType: types.AccountHuman},
+				},
+				groupMembers: []*types.GroupMember{
+					{GroupID: groupID, UserID: senderUID},
+					{GroupID: groupID, UserID: offlineUID},
+				},
+			}
+			pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+				Endpoint: "https://push.example.test/subscription/provider-group",
+				P256DH:   "p256dh",
+				Auth:     "auth",
+			}}}
+			service := enabledPushService(pushStore)
+			delivered := make(chan struct{}, 1)
+			service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+				delivered <- struct{}{}
+				return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+			}
+			hub := NewHub(db, nil)
+			hub.SetPushNotificationService(service)
 
-	select {
-	case <-delivered:
-		t.Fatal("third-party provider message unexpectedly delivered a web push")
-	case <-time.After(150 * time.Millisecond):
+			hub.fanoutNormalizedMessage(senderUID, "grp_83", 0, &normalizedMessagePayload{
+				DisplayContent: "来自第三方平台的消息",
+				DisplayType:    "text",
+				StoredType:     "text",
+				Metadata:       test.metadata,
+			}, 1, nil)
+
+			select {
+			case <-delivered:
+				if !test.wantPush {
+					t.Fatal("trusted third-party provider message unexpectedly delivered a web push")
+				}
+			case <-time.After(time.Second):
+				if test.wantPush {
+					t.Fatal("untrusted provider-looking metadata did not deliver a web push")
+				}
+			}
+		})
+	}
+}
+
+func TestPushSuppressionProvenanceIsNotSerialized(t *testing.T) {
+	encoded, err := json.Marshal(&ServerMessage{
+		Data:                     &MsgServerData{Topic: "grp_83", SeqID: 1, Type: "text", Content: "hello"},
+		suppressPushNotification: true,
+	})
+	if err != nil {
+		t.Fatalf("marshal server message: %v", err)
+	}
+	if strings.Contains(string(encoded), "suppress") {
+		t.Fatalf("serialized server message leaked internal push suppression provenance: %s", encoded)
 	}
 }
 
