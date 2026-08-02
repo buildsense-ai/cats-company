@@ -11,8 +11,6 @@ func (a *Adapter) CreateSchema() error {
 		createUpdatedAtFunction,
 		createUsersTable,
 		createPushSubscriptionsTable,
-		migratePushSubscriptionsAddRegistrationID,
-		migratePushSubscriptionsAddUserForeignKey,
 		createFriendsTable,
 		createTopicsTable,
 		createProjectsTable,
@@ -672,23 +670,6 @@ WHERE NOT EXISTS (SELECT 1 FROM schema_migrations);
 `
 
 const migrateUsersAddBotDisclose = `ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_disclose BOOLEAN NOT NULL DEFAULT FALSE;`
-const migratePushSubscriptionsAddRegistrationID = `ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS registration_id VARCHAR(64) NOT NULL DEFAULT '';`
-const migratePushSubscriptionsAddUserForeignKey = `
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM pg_constraint
-    WHERE conrelid = 'push_subscriptions'::regclass
-      AND conname = 'fk_push_subscriptions_uid'
-  ) THEN
-    ALTER TABLE push_subscriptions
-      ADD CONSTRAINT fk_push_subscriptions_uid
-      FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE;
-  END IF;
-END;
-$$;
-`
 const migrateMessagesAddReplyTo = `ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to BIGINT DEFAULT NULL;`
 const migrateBotConfigAddAPIKey = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS api_key VARCHAR(128) DEFAULT NULL;`
 const migrateBotConfigAddOwnerID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS owner_id BIGINT DEFAULT NULL;`

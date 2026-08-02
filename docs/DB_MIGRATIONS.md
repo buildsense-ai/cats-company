@@ -47,8 +47,6 @@ export CATS_MIGRATION_DATABASE_URL='postgres://USER:PASSWORD@HOST:5432/DB?sslmod
 
 普通的新表、新列、索引、约束和 trigger 由 `server/db/postgres/schema.go` 的 `CreateSchema()` 统一管理，必须保持幂等。这让新环境和既有环境都从同一个 schema 模块获得相同结果，不再为同一项 DDL 维护两套真相。
 
-`push_subscriptions` 的用户外键升级也绝不在启动时删除历史行。若旧库存在没有对应用户的订阅，MySQL 启动会报告数量并停止升级；先备份、审计并通过受控运维操作修复这些行，再重新启动。
-
 只有在需要单独编排、审核或回滚的数据转换中，才添加新的 PostgreSQL SQL migration。此时：
 
 1. 添加一对唯一编号的 `up` / `down` 文件。

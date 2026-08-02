@@ -45,8 +45,6 @@ func (a *Adapter) CreateSchema() error {
 
 	// Run migrations (safe to re-run; uses IF NOT EXISTS / column checks)
 	migrations := []string{
-		migratePushSubscriptionsAddRegistrationID,
-		migratePushSubscriptionsRegistrationIDBinary,
 		migrateBotConfigAddAPIKey,
 		migrateUsersAddBotDisclose,
 		migrateMessagesAddReplyTo,
@@ -97,33 +95,8 @@ func (a *Adapter) CreateSchema() error {
 			}
 		}
 	}
-	if err := a.ensurePushSubscriptionUserForeignKey(); err != nil {
-		return err
-	}
 	if err := a.ensureChannelAgentBindingUniqueIncludesAgent(); err != nil {
 		return err
-	}
-	return nil
-}
-
-func (a *Adapter) ensurePushSubscriptionUserForeignKey() error {
-	var orphanCount int
-	if err := a.db.QueryRow(
-		`SELECT COUNT(*)
-		 FROM push_subscriptions AS subscriptions
-		 LEFT JOIN users ON users.id = subscriptions.uid
-		 WHERE users.id IS NULL`,
-	).Scan(&orphanCount); err != nil {
-		return fmt.Errorf("inspect orphan push subscriptions: %w", err)
-	}
-	if orphanCount > 0 {
-		return fmt.Errorf(
-			"push subscription schema upgrade requires manual repair: %d orphan subscription(s) must be audited after backup before adding the user foreign key",
-			orphanCount,
-		)
-	}
-	if _, err := a.db.Exec(migratePushSubscriptionsAddUserForeignKey); err != nil && !isIgnorableMigrationError(err) {
-		return fmt.Errorf("add push subscription user foreign key: %w", err)
 	}
 	return nil
 }
@@ -171,8 +144,6 @@ func isIgnorableMigrationError(err error) bool {
 		strings.Contains(msg, "Duplicate column") ||
 		strings.Contains(msg, "1061") ||
 		strings.Contains(msg, "Duplicate key name") ||
-		strings.Contains(msg, "1826") ||
-		strings.Contains(msg, "Duplicate foreign key constraint name") ||
 		strings.Contains(msg, "1091") ||
 		strings.Contains(msg, "check that column/key exists")
 }
@@ -210,21 +181,6 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     INDEX idx_push_subscriptions_uid (uid),
     CONSTRAINT fk_push_subscriptions_uid FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-`
-
-const migratePushSubscriptionsAddUserForeignKey = `
-ALTER TABLE push_subscriptions
-ADD CONSTRAINT fk_push_subscriptions_uid
-FOREIGN KEY (uid) REFERENCES users(id) ON DELETE CASCADE;
-`
-
-const migratePushSubscriptionsAddRegistrationID = `
-ALTER TABLE push_subscriptions ADD COLUMN registration_id VARCHAR(64) NOT NULL DEFAULT '';
-`
-
-const migratePushSubscriptionsRegistrationIDBinary = `
-ALTER TABLE push_subscriptions
-MODIFY COLUMN registration_id VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '';
 `
 
 const createFriendsTable = `
