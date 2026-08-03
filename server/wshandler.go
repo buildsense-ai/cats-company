@@ -78,8 +78,9 @@ type Client struct {
 	deviceBodyID         string
 	deviceInstallationID string
 	deviceConnector      *DeviceConnectorClaims
-	pageVisibility       string
-	pageVisibilityMu     sync.Mutex
+	messagingAttention   messagingClientAttention
+	messagingAttentionMu sync.RWMutex
+	attentionSyncMu      sync.Mutex
 	send                 chan []byte
 	sendMu               sync.RWMutex
 	sendClosed           bool
@@ -450,17 +451,21 @@ func (h *Hub) bindClientRuntimeRoute(client *Client) {
 	now := nowForRoute(h)
 	route.ExpiresAt = now.Add(defaultUserDeviceTTL)
 	h.sharedRuntime.bindRuntimeRoute(route, now)
-	h.syncClientPageVisibility(client)
+	if err := h.syncClientMessagingAttention(client); err != nil {
+		log.Printf("messaging attention: bind uid=%d connection=%s: %v", client.uid, client.connectionID, err)
+	}
 }
 
 func (h *Hub) clearClientRuntimeRoute(client *Client) {
 	if h == nil || client == nil || h.sharedRuntime == nil {
 		return
 	}
-	client.pageVisibilityMu.Lock()
-	defer client.pageVisibilityMu.Unlock()
+	client.attentionSyncMu.Lock()
+	defer client.attentionSyncMu.Unlock()
 	route := h.clientRoute(client)
-	h.sharedRuntime.clearMessagingClientVisibility(client.uid, route)
+	if err := h.sharedRuntime.clearMessagingClientAttention(client.uid, route); err != nil {
+		log.Printf("messaging attention: clear uid=%d connection=%s: %v", client.uid, client.connectionID, err)
+	}
 	h.sharedRuntime.clearRuntimeRoute(route)
 }
 
@@ -593,78 +598,116 @@ func hasMessagingClient(clients map[*Client]struct{}) bool {
 }
 
 func normalizePageVisibility(value string) string {
-	if strings.EqualFold(strings.TrimSpace(value), pageVisibilityHidden) {
-		return pageVisibilityHidden
+	if value == pageVisibilityVisible {
+		return pageVisibilityVisible
 	}
-	return pageVisibilityVisible
+	return pageVisibilityHidden
 }
 
 func (h *Hub) setClientPageVisibility(client *Client, visibility string) {
 	if h == nil || client == nil {
 		return
 	}
-	client.pageVisibilityMu.Lock()
-	defer client.pageVisibilityMu.Unlock()
-	h.mu.Lock()
-	client.pageVisibility = normalizePageVisibility(visibility)
-	h.mu.Unlock()
-	h.syncClientPageVisibilityLocked(client)
+	client.messagingAttentionMu.Lock()
+	client.messagingAttention.Visible = normalizePageVisibility(visibility) == pageVisibilityVisible
+	client.messagingAttentionMu.Unlock()
+	if err := h.syncClientMessagingAttention(client); err != nil {
+		log.Printf("messaging attention: visibility uid=%d connection=%s: %v", client.uid, client.connectionID, err)
+	}
 }
 
-func (h *Hub) syncClientPageVisibility(client *Client) {
-	if h == nil || client == nil || client.deviceConnector != nil || h.sharedRuntime == nil {
+func (h *Hub) setClientMessagingAttention(client *Client, attention messagingClientAttention) {
+	if h == nil || client == nil {
 		return
 	}
-	client.pageVisibilityMu.Lock()
-	defer client.pageVisibilityMu.Unlock()
-	h.syncClientPageVisibilityLocked(client)
+	client.messagingAttentionMu.Lock()
+	client.messagingAttention = attention.normalized()
+	client.messagingAttentionMu.Unlock()
+	if err := h.syncClientMessagingAttention(client); err != nil {
+		log.Printf("messaging attention: update uid=%d connection=%s: %v", client.uid, client.connectionID, err)
+	}
 }
 
-func (h *Hub) syncClientPageVisibilityLocked(client *Client) {
-	if h == nil || client == nil || client.deviceConnector != nil || h.sharedRuntime == nil {
-		return
+func (h *Hub) clientMessagingAttention(client *Client) messagingClientAttention {
+	if client == nil {
+		return messagingClientAttention{}
 	}
+	client.messagingAttentionMu.RLock()
+	defer client.messagingAttentionMu.RUnlock()
+	return client.messagingAttention
+}
 
+func (h *Hub) syncClientMessagingAttention(client *Client) error {
+	if h == nil || client == nil || client.deviceConnector != nil || h.sharedRuntime == nil {
+		return nil
+	}
+	client.attentionSyncMu.Lock()
+	defer client.attentionSyncMu.Unlock()
+	attention := h.clientMessagingAttention(client)
 	h.mu.RLock()
-	visibility := normalizePageVisibility(client.pageVisibility)
 	uid := client.uid
 	_, connected := h.clients[uid][client]
 	h.mu.RUnlock()
 	if !connected {
-		return
+		return nil
 	}
 
 	route := h.clientRoute(client)
 	now := nowForRoute(h)
-	h.sharedRuntime.setMessagingClientVisibility(
+	return h.sharedRuntime.setMessagingClientAttention(
 		uid,
 		route,
-		visibility == pageVisibilityVisible,
+		attention,
 		now,
 		pageVisibilityLeaseTTL,
 	)
 }
 
-func hasVisibleMessagingClient(clients map[*Client]struct{}) bool {
+func hasMessagingClientAttention(clients map[*Client]struct{}, subscriptionID, topic string) bool {
 	for client := range clients {
-		if client != nil && client.deviceConnector == nil && normalizePageVisibility(client.pageVisibility) == pageVisibilityVisible {
+		if client == nil || client.deviceConnector != nil {
+			continue
+		}
+		client.messagingAttentionMu.RLock()
+		suppresses := client.messagingAttention.suppresses(subscriptionID, topic)
+		client.messagingAttentionMu.RUnlock()
+		if suppresses {
 			return true
 		}
 	}
 	return false
 }
 
-func (h *Hub) hasVisibleMessagingClient(uid int64) bool {
+func (h *Hub) hasMessagingClientAttention(uid int64, subscriptionID, topic string) bool {
 	if h == nil || uid <= 0 {
 		return false
 	}
 	h.mu.RLock()
-	localVisible := hasVisibleMessagingClient(h.clients[uid])
+	localVisible := hasMessagingClientAttention(h.clients[uid], subscriptionID, topic)
 	h.mu.RUnlock()
 	if localVisible {
 		return true
 	}
-	return h.sharedRuntime != nil && h.sharedRuntime.hasVisibleMessagingClient(uid, nowForRoute(h))
+	return h.sharedRuntime != nil && h.sharedRuntime.hasMessagingClientAttention(h.nodeID, uid, subscriptionID, topic, nowForRoute(h))
+}
+
+// hasLocalMessagingClientAttentionForRoute confirms the exact connection that
+// advertised attention. Redis records only locate a candidate; remote nodes
+// must ask this owner before they suppress a Push.
+func (h *Hub) hasLocalMessagingClientAttentionForRoute(uid int64, route runtimeRoute, subscriptionID, topic string) bool {
+	if h == nil || route.NodeID != h.nodeID || route.ConnectionID == "" || uid <= 0 {
+		return false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	client := h.clientsByConn[route.ConnectionID]
+	if client == nil || client.uid != uid || client.deviceConnector != nil {
+		return false
+	}
+	client.messagingAttentionMu.RLock()
+	defer client.messagingAttentionMu.RUnlock()
+	suppresses := client.messagingAttention.suppresses(subscriptionID, topic)
+	return suppresses
 }
 
 func (h *Hub) releaseBotBodyLease(client *Client) {
@@ -1052,7 +1095,12 @@ func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
 
 // handleHi responds to the handshake message.
 func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
-	h.setClientPageVisibility(client, msg.Visibility)
+	h.setClientMessagingAttention(client, messagingClientAttention{
+		SubscriptionID: msg.PushSubscriptionID,
+		ActiveTopic:    msg.ActiveTopic,
+		Visible:        normalizePageVisibility(msg.Visibility) == pageVisibilityVisible,
+		Focused:        msg.Focused,
+	})
 	deviceParams, ok := h.bindClientDeviceFromHi(client, msg)
 	if !ok {
 		h.SendToClient(client, &ServerMessage{
@@ -1671,6 +1719,15 @@ func (h *Hub) handleNote(client *Client, msg *MsgClientNote) {
 	if client == nil || msg == nil {
 		return
 	}
+	if strings.EqualFold(strings.TrimSpace(msg.What), "attention") {
+		h.setClientMessagingAttention(client, messagingClientAttention{
+			SubscriptionID: msg.PushSubscriptionID,
+			ActiveTopic:    msg.ActiveTopic,
+			Visible:        normalizePageVisibility(msg.Visibility) == pageVisibilityVisible,
+			Focused:        msg.Focused,
+		})
+		return
+	}
 	if strings.EqualFold(strings.TrimSpace(msg.What), "visibility") {
 		h.setClientPageVisibility(client, msg.Visibility)
 		return
@@ -1831,8 +1888,8 @@ func shouldNotifyOfflineForMessage(msg *ServerMessage) bool {
 	return !isInternalAgentWorkingMessage(displayType, data.Content, data.ContentBlocks)
 }
 
-func (h *Hub) enqueueOfflineUserPush(uid int64) bool {
-	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 || h.hasVisibleMessagingClient(uid) {
+func (h *Hub) enqueueOfflineUserPush(uid int64, topic string) bool {
+	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 {
 		return false
 	}
 	user, err := h.db.GetUser(uid)
@@ -1845,18 +1902,24 @@ func (h *Hub) enqueueOfflineUserPush(uid int64) bool {
 		URL:   "/",
 		Tag:   "catsco-new-message",
 	}
-	return h.push.EnqueueToUser(uid, notification)
+	return h.push.EnqueueToUserFiltered(uid, notification, func(subscription *types.PushSubscription) bool {
+		return !h.hasMessagingClientAttention(uid, pushSubscriptionID(subscription.Endpoint), topic)
+	})
 }
 
 func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessage, senderPublishesTaskStatus bool) {
+	topic := ""
+	if msg != nil && msg.Data != nil {
+		topic = msg.Data.Topic
+	}
 	if !senderPublishesTaskStatus {
-		h.enqueueOfflineUserPush(uid)
+		h.enqueueOfflineUserPush(uid, topic)
 		return
 	}
-	if h == nil || h.agentPush == nil || h.hasVisibleMessagingClient(uid) {
+	if h == nil || h.agentPush == nil {
 		return
 	}
-	deliver := func() bool { return h.enqueueOfflineUserPush(uid) }
+	deliver := func() bool { return h.enqueueOfflineUserPush(uid, topic) }
 	if !isCompletedAgentMessage(msg) {
 		if h.agentPush.observeVisibleMessage(uid, senderUID, msg, deliver) {
 			return

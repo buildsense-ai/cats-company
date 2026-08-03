@@ -15,6 +15,7 @@ vi.mock('../api', () => ({
   },
   getToken: vi.fn(() => ''),
   getPushRegistrationID: vi.fn(() => 'registration-1'),
+  setWSPushSubscriptionEndpoint: vi.fn(() => Promise.resolve('subscription-1')),
 }));
 
 vi.mock('../utils/push-operation', () => ({
@@ -32,7 +33,7 @@ vi.mock('../utils/push-tab-coordination', () => ({
 
 import PwaController from './pwa-controller';
 import { registerSW } from 'virtual:pwa-register';
-import { api } from '../api';
+import { api, setWSPushSubscriptionEndpoint } from '../api';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 
 let container;
@@ -140,6 +141,7 @@ test('re-registers an active account when another tab hands off the browser subs
 
   renderController('user:42');
   await vi.waitFor(() => expect(api.subscribePush).toHaveBeenCalledTimes(1));
+  expect(setWSPushSubscriptionEndpoint).toHaveBeenCalledWith(subscription.endpoint);
   api.subscribePush.mockClear();
 
   const listener = pushTabCoordinator.onReconcile.mock.calls.at(-1)[0];

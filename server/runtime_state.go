@@ -15,11 +15,19 @@ type runtimeRoute struct {
 	ExpiresAt    time.Time
 }
 
-func messagingClientVisibilityIdentity(route runtimeRoute) string {
+func messagingClientAttentionIdentity(route runtimeRoute) string {
 	if route.NodeID == "" || route.ConnectionID == "" {
 		return ""
 	}
 	return route.NodeID + "\x00" + route.ConnectionID
+}
+
+func messagingClientAttentionRoute(identity string) runtimeRoute {
+	nodeID, connectionID, found := strings.Cut(identity, "\x00")
+	if !found || nodeID == "" || connectionID == "" {
+		return runtimeRoute{}
+	}
+	return runtimeRoute{NodeID: nodeID, ConnectionID: connectionID}
 }
 
 func (r runtimeRoute) validAt(now time.Time) bool {
@@ -67,9 +75,9 @@ type sharedRuntimeState interface {
 	deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC, now time.Time) bool
 	deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time) bool
 	routeConnected(route runtimeRoute, now time.Time) bool
-	setMessagingClientVisibility(uid int64, route runtimeRoute, visible bool, now time.Time, ttl time.Duration)
-	clearMessagingClientVisibility(uid int64, route runtimeRoute)
-	hasVisibleMessagingClient(uid int64, now time.Time) bool
+	setMessagingClientAttention(uid int64, route runtimeRoute, attention messagingClientAttention, now time.Time, ttl time.Duration) error
+	clearMessagingClientAttention(uid int64, route runtimeRoute) error
+	hasMessagingClientAttention(requestingNodeID string, uid int64, subscriptionID, topic string, now time.Time) bool
 
 	acquireBotBodyLease(botUID int64, bodyID string, connectionID string, nodeID string, now time.Time, ttl time.Duration) (botBodyLeaseResult, error)
 	botBodyLeaseConflict(botUID int64, bodyID string, now time.Time) (botBodyLease, bool)
@@ -110,12 +118,50 @@ type deviceConnectorRuntimeState interface {
 	isDeviceConnectorRevoked(claims *DeviceConnectorClaims, now time.Time) bool
 }
 
+type messagingClientAttention struct {
+	SubscriptionID string
+	ActiveTopic    string
+	Visible        bool
+	Focused        bool
+}
+
+func (a messagingClientAttention) normalized() messagingClientAttention {
+	a.SubscriptionID = strings.TrimSpace(a.SubscriptionID)
+	a.ActiveTopic = strings.TrimSpace(a.ActiveTopic)
+	if len(a.SubscriptionID) > 128 {
+		a.SubscriptionID = ""
+	}
+	if len(a.ActiveTopic) > 512 {
+		a.ActiveTopic = ""
+	}
+	return a
+}
+
+func (a messagingClientAttention) suppresses(subscriptionID, topic string) bool {
+	a = a.normalized()
+	subscriptionID = strings.TrimSpace(subscriptionID)
+	topic = strings.TrimSpace(topic)
+	return a.Visible && a.Focused &&
+		a.SubscriptionID != "" && subscriptionID != "" && a.SubscriptionID == subscriptionID &&
+		a.ActiveTopic != "" && topic != "" && a.ActiveTopic == topic
+}
+
+func (a messagingClientAttention) suppressible() bool {
+	a = a.normalized()
+	return a.Visible && a.Focused && a.SubscriptionID != "" && a.ActiveTopic != ""
+}
+
+type messagingClientAttentionLease struct {
+	route     runtimeRoute
+	attention messagingClientAttention
+}
+
 type sharedMemoryRuntimeState struct {
 	mu sync.Mutex
 
 	nodes map[string]*Hub
 
-	visibleMessagingClients map[int64]map[string]runtimeRoute
+	messagingClientAttention map[int64]map[string]messagingClientAttentionLease
 
 	botLeases map[int64]botBodyLease
 
@@ -135,18 +181,18 @@ type sharedMemoryRuntimeState struct {
 
 func newSharedMemoryRuntimeState() *sharedMemoryRuntimeState {
 	return &sharedMemoryRuntimeState{
-		nodes:                   make(map[string]*Hub),
-		visibleMessagingClients: make(map[int64]map[string]runtimeRoute),
-		botLeases:               make(map[int64]botBodyLease),
-		devices:                 make(map[int64]map[string]UserDevice),
-		deviceRoutes:            make(map[int64]map[string]runtimeRoute),
-		grants:                  make(map[string]ScopedDeviceGrant),
-		preferences:             make(map[int64]map[string]deviceSelectionPreference),
-		deviceRPC:               make(map[string]deviceRPCPendingRecord),
-		connectorPairingsByID:   make(map[string]deviceConnectorPairing),
-		connectorPairingCodeIDs: make(map[string]string),
-		revokedConnectorDevices: make(map[int64]map[string]time.Time),
-		revokedConnectorTokens:  make(map[string]time.Time),
+		nodes:                    make(map[string]*Hub),
+		messagingClientAttention: make(map[int64]map[string]messagingClientAttentionLease),
+		botLeases:                make(map[int64]botBodyLease),
+		devices:                  make(map[int64]map[string]UserDevice),
+		deviceRoutes:             make(map[int64]map[string]runtimeRoute),
+		grants:                   make(map[string]ScopedDeviceGrant),
+		preferences:              make(map[int64]map[string]deviceSelectionPreference),
+		deviceRPC:                make(map[string]deviceRPCPendingRecord),
+		connectorPairingsByID:    make(map[string]deviceConnectorPairing),
+		connectorPairingCodeIDs:  make(map[string]string),
+		revokedConnectorDevices:  make(map[int64]map[string]time.Time),
+		revokedConnectorTokens:   make(map[string]time.Time),
 	}
 }
 
@@ -212,78 +258,84 @@ func (s *sharedMemoryRuntimeState) routeConnected(route runtimeRoute, now time.T
 	return hub != nil && hub.getClientByConnectionID(route.ConnectionID) != nil
 }
 
-func (s *sharedMemoryRuntimeState) setMessagingClientVisibility(uid int64, route runtimeRoute, visible bool, now time.Time, ttl time.Duration) {
+func (s *sharedMemoryRuntimeState) setMessagingClientAttention(uid int64, route runtimeRoute, attention messagingClientAttention, now time.Time, ttl time.Duration) error {
 	if s == nil || uid <= 0 {
-		return
+		return nil
 	}
-	identity := messagingClientVisibilityIdentity(route)
+	identity := messagingClientAttentionIdentity(route)
 	if identity == "" {
-		return
+		return nil
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !visible || ttl <= 0 {
-		if clients := s.visibleMessagingClients[uid]; clients != nil {
+	attention = attention.normalized()
+	if !attention.suppressible() || ttl <= 0 {
+		if clients := s.messagingClientAttention[uid]; clients != nil {
 			delete(clients, identity)
 			if len(clients) == 0 {
-				delete(s.visibleMessagingClients, uid)
+				delete(s.messagingClientAttention, uid)
 			}
 		}
-		return
+		return nil
 	}
 	if !route.validAt(now) {
-		return
+		return nil
 	}
 
-	if s.visibleMessagingClients[uid] == nil {
-		s.visibleMessagingClients[uid] = make(map[string]runtimeRoute)
+	if s.messagingClientAttention[uid] == nil {
+		s.messagingClientAttention[uid] = make(map[string]messagingClientAttentionLease)
 	}
 	route.ExpiresAt = now.Add(ttl)
-	s.visibleMessagingClients[uid][identity] = route
+	s.messagingClientAttention[uid][identity] = messagingClientAttentionLease{route: route, attention: attention}
+	return nil
 }
 
-func (s *sharedMemoryRuntimeState) clearMessagingClientVisibility(uid int64, route runtimeRoute) {
+func (s *sharedMemoryRuntimeState) clearMessagingClientAttention(uid int64, route runtimeRoute) error {
 	if s == nil || uid <= 0 {
-		return
+		return nil
 	}
-	identity := messagingClientVisibilityIdentity(route)
+	identity := messagingClientAttentionIdentity(route)
 	if identity == "" {
-		return
+		return nil
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	clients := s.visibleMessagingClients[uid]
+	clients := s.messagingClientAttention[uid]
 	if clients == nil {
-		return
+		return nil
 	}
-	if current, ok := clients[identity]; !ok || !current.matches(route) {
-		return
+	if current, ok := clients[identity]; !ok || !current.route.matches(route) {
+		return nil
 	}
 	delete(clients, identity)
 	if len(clients) == 0 {
-		delete(s.visibleMessagingClients, uid)
+		delete(s.messagingClientAttention, uid)
 	}
+	return nil
 }
 
-func (s *sharedMemoryRuntimeState) hasVisibleMessagingClient(uid int64, now time.Time) bool {
+func (s *sharedMemoryRuntimeState) hasMessagingClientAttention(_ string, uid int64, subscriptionID, topic string, now time.Time) bool {
 	if s == nil || uid <= 0 {
 		return false
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	clients := s.visibleMessagingClients[uid]
-	for identity, route := range clients {
-		if route.validAt(now) {
-			return true
+	clients := s.messagingClientAttention[uid]
+	for identity, lease := range clients {
+		if lease.route.validAt(now) {
+			if lease.attention.suppresses(subscriptionID, topic) {
+				return true
+			}
+			continue
 		}
 		delete(clients, identity)
 	}
 	if len(clients) == 0 {
-		delete(s.visibleMessagingClients, uid)
+		delete(s.messagingClientAttention, uid)
 	}
 	return false
 }

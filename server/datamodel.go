@@ -43,12 +43,15 @@ type ServerMessage struct {
 // --- Client messages ---
 
 type MsgClientHi struct {
-	ID         string             `json:"id,omitempty"`
-	UserAgent  string             `json:"ua,omitempty"`
-	Version    string             `json:"ver,omitempty"`
-	Lang       string             `json:"lang,omitempty"`
-	Visibility string             `json:"visibility,omitempty"`
-	Device     *MsgClientHiDevice `json:"device,omitempty"`
+	ID                 string             `json:"id,omitempty"`
+	UserAgent          string             `json:"ua,omitempty"`
+	Version            string             `json:"ver,omitempty"`
+	Lang               string             `json:"lang,omitempty"`
+	Visibility         string             `json:"visibility,omitempty"`
+	PushSubscriptionID string             `json:"push_subscription_id,omitempty"`
+	ActiveTopic        string             `json:"active_topic,omitempty"`
+	Focused            bool               `json:"focused,omitempty"`
+	Device             *MsgClientHiDevice `json:"device,omitempty"`
 }
 
 type MsgClientHiDevice struct {
@@ -116,10 +119,13 @@ type MsgClientDel struct {
 }
 
 type MsgClientNote struct {
-	Topic      string `json:"topic"`
-	What       string `json:"what"` // "read", "recv", "kp" (key press / typing), "visibility"
-	SeqID      int    `json:"seq,omitempty"`
-	Visibility string `json:"visibility,omitempty"`
+	Topic              string `json:"topic"`
+	What               string `json:"what"` // "read", "recv", "kp" (key press / typing), "attention"
+	SeqID              int    `json:"seq,omitempty"`
+	Visibility         string `json:"visibility,omitempty"`
+	PushSubscriptionID string `json:"push_subscription_id,omitempty"`
+	ActiveTopic        string `json:"active_topic,omitempty"`
+	Focused            bool   `json:"focused,omitempty"`
 }
 
 // MsgClientFriend is the new friend protocol message.
