@@ -945,6 +945,82 @@ describe('ChatMessage rich file rendering', () => {
     expect(dataTransfer.effectAllowed).toBe('copy');
   });
 
+  it('opens a keyboard-accessible image dialog outside the message layout', async () => {
+    await act(async () => {
+      root.render(
+        <ChatMessage
+          message={{
+            id: 2701,
+            from_uid: 1,
+            content: 'Preview image',
+            content_blocks: [
+              {
+                type: 'image',
+                payload: {
+                  file_key: 'poster.png',
+                  url: '/uploads/images/poster.png',
+                  name: 'poster.png',
+                },
+              },
+            ],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+          isSelf
+          isGroup={false}
+          senderName="Me"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const trigger = container.querySelector('button.oc-rich-image-trigger');
+    expect(trigger.getAttribute('aria-label')).toBe('预览图片 poster.png');
+    trigger.focus();
+    await act(async () => {
+      Simulate.keyDown(trigger, { key: 'Enter' });
+      await Promise.resolve();
+    });
+
+    const preview = document.body.querySelector('.oc-rich-image-preview');
+    const previewImage = preview?.querySelector('.oc-rich-image-preview-media');
+    const closeButton = preview?.querySelector('button.oc-rich-image-preview-close');
+    expect(preview).not.toBeNull();
+    expect(container.contains(preview)).toBe(false);
+    expect(preview.getAttribute('role')).toBe('dialog');
+    expect(preview.getAttribute('aria-modal')).toBe('true');
+    expect(preview.getAttribute('aria-label')).toBe('图片预览 poster.png');
+    expect(previewImage?.getAttribute('src')).toBe('/uploads/images/poster.png');
+    expect(previewImage?.getAttribute('alt')).toBe('poster.png preview');
+    expect(closeButton?.getAttribute('aria-label')).toBe('关闭图片预览');
+    expect(document.activeElement).toBe(closeButton);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(document.activeElement).toBe(closeButton);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(document.body.querySelector('.oc-rich-image-preview')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    await act(async () => {
+      Simulate.click(trigger);
+      await Promise.resolve();
+    });
+    const reopenedPreview = document.body.querySelector('.oc-rich-image-preview');
+    const reopenedCloseButton = reopenedPreview.querySelector('button.oc-rich-image-preview-close');
+    await act(async () => {
+      Simulate.click(reopenedCloseButton);
+      await Promise.resolve();
+    });
+    expect(document.body.querySelector('.oc-rich-image-preview')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it('writes an internal attachment token when a system file is dragged', async () => {
     const setData = vi.fn();
     const dataTransfer = { setData, effectAllowed: 'none' };
@@ -1312,6 +1388,16 @@ describe('ChatMessage rich file rendering', () => {
     expect(resultToggle.getAttribute('aria-expanded')).toBe('true');
     expect(inlineDetails?.querySelector('.v3-wpi-tool-result')?.textContent)
       .toContain('result line');
+
+    await act(async () => {
+      inlineDetails
+        .querySelector('.v3-wpi-code-block.result pre')
+        .dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 120 }));
+      await Promise.resolve();
+    });
+
+    expect(resultToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(inlineDetails?.querySelector('.v3-wpi-tool-result')).not.toBeNull();
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));

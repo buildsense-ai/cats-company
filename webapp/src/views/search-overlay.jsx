@@ -1,13 +1,20 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, FileText, LoaderCircle, MessageSquareText, Search, X } from 'lucide-react';
+import { FileText, LoaderCircle, MessageSquareText, Search, X } from 'lucide-react';
 import { api } from '../api';
 
 const SEARCH_DEBOUNCE_MS = 300;
 const CATEGORIES = [
   { id: 'all', label: '全部' },
   { id: 'message', label: '消息' },
-  { id: 'artifact', label: '产物' },
+  { id: 'artifact', label: '文件与产物' },
 ];
+
+const FOCUSABLE_SELECTOR = [
+  'button:not([disabled])',
+  'input:not([disabled])',
+  '[href]',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
 
 export function normalizeSearchResult(item, index = 0) {
   const messageId = Number(item?.message_id) || 0;
@@ -106,8 +113,10 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
   const [activeResultIndex, setActiveResultIndex] = useState(-1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const dialogRef = useRef(null);
   const inputRef = useRef(null);
   const listRef = useRef(null);
+  const openerRef = useRef(null);
   const savedScrollRef = useRef(0);
   const requestRef = useRef(0);
   const resultRefs = useRef([]);
@@ -124,13 +133,43 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
   useEffect(() => {
     if (!open) return undefined;
     document.documentElement.classList.add('cc-global-search-open');
-    window.requestAnimationFrame(() => {
+    openerRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const focusFrame = window.requestAnimationFrame(() => {
       inputRef.current?.focus();
       if (listRef.current) listRef.current.scrollTop = savedScrollRef.current;
     });
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.documentElement.classList.remove('cc-global-search-open');
+      const opener = openerRef.current;
+      window.requestAnimationFrame(() => {
+        if (opener?.isConnected) opener.focus();
+      });
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return undefined;
     const handleKeyDown = (event) => {
       if (event.key === 'Escape') {
+        event.preventDefault();
         onClose();
+        return;
+      }
+      if (event.key === 'Tab') {
+        const focusable = [...(dialogRef.current?.querySelectorAll(FOCUSABLE_SELECTOR) || [])];
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && (document.activeElement === first || !dialogRef.current?.contains(document.activeElement))) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && (document.activeElement === last || !dialogRef.current?.contains(document.activeElement))) {
+          event.preventDefault();
+          first.focus();
+        }
         return;
       }
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -159,7 +198,6 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
     document.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
-      document.documentElement.classList.remove('cc-global-search-open');
     };
   }, [onClose, onSelectResult, open, results, updateActiveResult]);
 
@@ -199,23 +237,77 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
 
   if (!open) return null;
   const keyword = query.trim();
+  const liveMessage = keyword.length < 2
+    ? '输入至少 2 个字开始搜索'
+    : loading
+      ? '正在搜索'
+      : error || (results.length ? `找到 ${results.length} 条结果` : '没有找到相关结果');
   return (
     <div className="cc-global-search-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="cc-global-search" role="dialog" aria-modal="true" aria-label="全局搜索">
+      <section ref={dialogRef} className="cc-global-search" role="dialog" aria-modal="true" aria-label="全局搜索">
         <header className="cc-global-search-header">
-          <Search size={20} aria-hidden="true" />
-          <input ref={inputRef} value={query} onFocus={() => updateActiveResult(-1)} onChange={(event) => setQuery(event.target.value)} placeholder="搜索消息与产物" aria-label="搜索消息与产物" />
-          {query && <button type="button" onClick={() => setQuery('')} aria-label="清空搜索"><X size={18} /></button>}
-          <button type="button" className="cc-global-search-close" onClick={onClose} aria-label="关闭搜索"><ArrowLeft size={19} /></button>
+          <div className="cc-global-search-field">
+            <Search className="cc-global-search-leading-icon" size={19} aria-hidden="true" />
+            <input
+              ref={inputRef}
+              name="global-search"
+              autoComplete="off"
+              spellCheck={false}
+              value={query}
+              onFocus={() => updateActiveResult(-1)}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索消息、文件与产物…"
+              aria-label="搜索消息、文件与产物"
+            />
+          </div>
+          <button type="button" className="cc-global-search-close" onClick={onClose} aria-label="关闭搜索">
+            <X size={19} aria-hidden="true" />
+          </button>
         </header>
-        <div className="cc-global-search-tabs" role="tablist" aria-label="搜索分类">
-          {CATEGORIES.map((item) => <button key={item.id} type="button" role="tab" aria-selected={category === item.id} className={category === item.id ? 'active' : ''} onClick={() => setCategory(item.id)}>{item.label}</button>)}
+        <div className="cc-global-search-tabs" role="group" aria-label="搜索范围">
+          {CATEGORIES.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              aria-pressed={category === item.id}
+              className={category === item.id ? 'active' : ''}
+              onClick={() => setCategory(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
         </div>
-        <div ref={listRef} className="cc-global-search-results" onScroll={(event) => { savedScrollRef.current = event.currentTarget.scrollTop; }}>
-          {keyword.length < 2 && <div className="cc-global-search-state">输入至少 2 个字开始搜索</div>}
-          {keyword.length >= 2 && loading && <div className="cc-global-search-state"><LoaderCircle className="cc-spin" size={18} />正在搜索</div>}
-          {keyword.length >= 2 && !loading && error && <div className="cc-global-search-state error">{error}</div>}
-          {keyword.length >= 2 && !loading && !error && results.length === 0 && <div className="cc-global-search-state">没有找到相关结果</div>}
+        <span className="oc-visually-hidden" role="status" aria-live="polite">{liveMessage}</span>
+        <div
+          ref={listRef}
+          className="cc-global-search-results"
+          aria-label="搜索结果"
+          aria-busy={loading}
+          onScroll={(event) => { savedScrollRef.current = event.currentTarget.scrollTop; }}
+        >
+          {keyword.length < 2 && (
+            <div className="cc-global-search-state is-idle">
+              <span>输入至少 2 个字开始搜索</span>
+            </div>
+          )}
+          {keyword.length >= 2 && loading && (
+            <div className="cc-global-search-state">
+              <LoaderCircle className="cc-spin" size={18} aria-hidden="true" />
+              <span>正在搜索…</span>
+            </div>
+          )}
+          {keyword.length >= 2 && !loading && error && (
+            <div className="cc-global-search-state error">
+              <strong>搜索暂时不可用</strong>
+              <span>{error}</span>
+            </div>
+          )}
+          {keyword.length >= 2 && !loading && !error && results.length === 0 && (
+            <div className="cc-global-search-state">
+              <strong>没有找到相关结果</strong>
+              <span>试试更短的关键词，或切换搜索范围</span>
+            </div>
+          )}
           {!loading && results.map((result, index) => (
             <button
               key={result.key}
@@ -227,7 +319,7 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
               onFocus={() => updateActiveResult(index)}
               onClick={() => onSelectResult(result)}
             >
-              <span className="cc-global-search-result-icon">{result.category === 'artifact' ? <FileText size={18} /> : <MessageSquareText size={18} />}</span>
+              <span className="cc-global-search-result-icon" aria-hidden="true">{result.category === 'artifact' ? <FileText size={18} /> : <MessageSquareText size={18} />}</span>
               <span className="cc-global-search-result-body">
                 <span className="cc-global-search-result-meta"><strong>{result.source}</strong><time>{formatSearchTime(result.time)}</time></span>
                 <span className="cc-global-search-result-snippet">
@@ -236,7 +328,7 @@ export default function SearchOverlay({ open, onClose, onSelectResult }) {
                     query={keyword}
                   />
                 </span>
-                {result.attachmentName && <span className="cc-global-search-result-file"><FileText size={13} /><HighlightedSearchText text={result.attachmentName} query={keyword} /></span>}
+                {result.attachmentName && <span className="cc-global-search-result-file"><FileText size={13} aria-hidden="true" /><HighlightedSearchText text={result.attachmentName} query={keyword} /></span>}
               </span>
             </button>
           ))}

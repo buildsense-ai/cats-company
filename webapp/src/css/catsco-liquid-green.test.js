@@ -15,6 +15,12 @@ describe('restored green liquid theme', () => {
     expect(css).toContain('--cc-offline-icon: #7f8b88;');
     expect(css).toContain('--cc-liquid-blue: #29bc95;');
     expect(css).toContain('--cc-liquid-violet: #29bc95;');
+    expect(css).toContain('--cc-border: rgba(184, 229, 216, 0.12);');
+    expect(css).toContain('--cc-border-strong: rgba(198, 240, 228, 0.22);');
+    expect(css).toContain('--cc-control-surface: #252829;');
+    expect(css).toContain('--cc-input-surface: rgba(255, 255, 255, 0.07);');
+    expect(css).toContain('--cc-liquid-edge: rgba(184, 229, 216, 0.12);');
+    expect(css).toContain('--cc-focus-ring: #69d7b7;');
     expect(css).toMatch(
       /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.catsco-brand-mark\s*\{[^}]*background: #29bc95;[^}]*mask: url\('\/catsco-brand-mark\.webp'\)[^}]*filter: none;/,
     );
@@ -32,10 +38,22 @@ describe('restored green liquid theme', () => {
       /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.v3-send\s*\{[^}]*color: #29bc95;/,
     );
     expect(css).toMatch(
-      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.v3-composer-input::placeholder\s*\{[^}]*color: rgba\(255, 255, 255, 0\.52\);/,
+      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.v3-composer-input::placeholder\s*\{[^}]*color: var\(--cc-placeholder\);/,
     );
     expect(css).toMatch(
       /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.v3-custom-model-select-options\s*\{[^}]*background-color: #222425;[^}]*color: #ffffff;/,
+    );
+    expect(css).toMatch(
+      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.cc-global-search-field input\s*\{[^}]*border: 0;[^}]*background: transparent;[^}]*box-shadow: none;/,
+    );
+    expect(css).toMatch(
+      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.cc-global-search-field:focus-within\s*\{[^}]*border-color: rgba\(255, 255, 255, 0\.34\);/,
+    );
+    expect(css).toMatch(
+      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.oc-feedback-message-field\s*\{[^}]*background: var\(--cc-input-surface\);/,
+    );
+    expect(css).toMatch(
+      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.oc-feedback-message-field textarea\s*\{[^}]*background: transparent;[^}]*box-shadow: none;/,
     );
     expect(css).toMatch(
       /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] :is\(\.cc-sidebar-primary, \.cc-sidebar-search\)\s*\{[^}]*inset 0 1px 0 rgba\(255, 255, 255, 0\.14\);?[^}]*\}/,
@@ -44,7 +62,7 @@ describe('restored green liquid theme', () => {
       /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] :is\(\.cc-sidebar-primary, \.cc-sidebar-search\)\s*\{[^}]*0 4px 12px/,
     );
     expect(css).not.toMatch(
-      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] :is\(\.cc-sidebar-primary:hover, \.cc-sidebar-search:focus-within\)\s*\{[^}]*0 5px 13px/,
+      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] :is\(\.cc-sidebar-primary:hover, \.cc-sidebar-search:hover, \.cc-sidebar-search:focus-within\)\s*\{[^}]*0 5px 13px/,
     );
     expect(css).toContain(':is(input, textarea, select, .v3-custom-model-select-trigger)');
     expect(css).toContain("url('/liquid-dark-background.png')");

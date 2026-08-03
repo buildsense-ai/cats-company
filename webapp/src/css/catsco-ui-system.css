@@ -21,11 +21,15 @@
   --cc-empty-task-bg: #f8f8f8;
   --cc-panel: #ffffff;
   --cc-panel-raised: #f7f7f8;
-  --cc-border: #e5e5e8;
-  --cc-border-strong: #d6d6da;
+  --cc-control-surface: #f2f2f4;
+  --cc-input-surface: var(--cc-code);
+  --cc-border: #ececef;
+  --cc-border-strong: #dedee2;
   --cc-text: #1f1f1f;
   --cc-text-secondary: #454549;
   --cc-muted: #747479;
+  --cc-helper-text: color-mix(in srgb, var(--cc-text) 58%, transparent);
+  --cc-placeholder: color-mix(in srgb, var(--cc-text) 46%, transparent);
   --cc-accent: #29bc95;
   --cc-accent-hover: #219f7e;
   --cc-accent-soft: rgba(41, 188, 149, 0.16);
@@ -48,6 +52,16 @@
   --cc-radius-lg: 12px;
   --cc-sidebar-width: 260px;
   --cc-sidebar-collapsed: 64px;
+  --cc-scrollbar-page-size: 8px;
+  --cc-scrollbar-panel-size: 6px;
+  --cc-scrollbar-inline-size: 6px;
+  --cc-scrollbar-sidebar-size: 4px;
+  --cc-scrollbar-size: var(--cc-scrollbar-panel-size);
+  --cc-scrollbar-inset: 1px;
+  --cc-scrollbar-track: color-mix(in srgb, var(--cc-muted) 5%, transparent);
+  --cc-scrollbar-thumb: color-mix(in srgb, var(--cc-muted) 30%, transparent);
+  --cc-scrollbar-thumb-hover: color-mix(in srgb, var(--cc-muted) 52%, transparent);
+  --cc-scrollbar-thumb-active: color-mix(in srgb, var(--cc-muted) 70%, transparent);
 
   --v3-bg-app: var(--cc-bg);
   --v3-bg-sidebar: var(--cc-bg);
@@ -85,8 +99,9 @@ html[data-theme="dark"] {
   --cc-empty-task-bg: #0f0f0f;
   --cc-panel: #232325;
   --cc-panel-raised: #272729;
-  --cc-border: #343436;
-  --cc-border-strong: #454548;
+  --cc-control-surface: #2c2c2f;
+  --cc-border: #2d2d2f;
+  --cc-border-strong: #3a3a3d;
   --cc-text: #ececec;
   --cc-text-secondary: #b8b8bc;
   --cc-muted: #9a9aa0;
@@ -111,8 +126,10 @@ html[data-theme="liquid"] {
   --cc-empty-task-bg: transparent;
   --cc-panel: rgba(255, 255, 255, 0.86);
   --cc-panel-raised: rgba(255, 255, 255, 0.96);
-  --cc-border: rgba(73, 86, 168, 0.16);
-  --cc-border-strong: rgba(86, 98, 217, 0.32);
+  --cc-control-surface: rgba(224, 230, 255, 0.68);
+  --cc-input-surface: rgba(255, 255, 255, 0.78);
+  --cc-border: rgba(73, 86, 168, 0.1);
+  --cc-border-strong: rgba(86, 98, 217, 0.22);
   --cc-text: #111827;
   --cc-text-secondary: #36425b;
   --cc-muted: #4f5d75;
@@ -132,7 +149,7 @@ html[data-theme="liquid"] {
   --cc-pressed: rgba(86, 98, 217, 0.16);
   --cc-liquid-violet: #7548cf;
   --cc-liquid-blue: #5662d9;
-  --cc-liquid-edge: rgba(73, 86, 168, 0.18);
+  --cc-liquid-edge: rgba(73, 86, 168, 0.12);
   --oc-green-light: #95aef4;
   --oc-tab-active: #5662d9;
   --cc-liquid-shadow:
@@ -157,6 +174,26 @@ body,
   margin: 0;
 }
 
+html,
+html * {
+  scrollbar-color: var(--cc-scrollbar-thumb) var(--cc-scrollbar-track);
+  scrollbar-width: thin;
+}
+
+@supports selector(::-webkit-scrollbar) {
+  html,
+  html * {
+    scrollbar-color: auto;
+    scrollbar-width: auto;
+  }
+}
+
+.v3-working-steps,
+.v3-wpi-code-block pre {
+  --cc-scrollbar-size: var(--cc-scrollbar-inline-size);
+  --cc-scrollbar-inset: 1.5px;
+}
+
 body {
   background: var(--cc-bg);
   color: var(--cc-text);
@@ -178,6 +215,12 @@ input,
 textarea,
 select {
   font-family: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--cc-placeholder);
+  opacity: 1;
 }
 
 strong,
@@ -1184,6 +1227,8 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .v3-timeline {
+  --cc-scrollbar-size: var(--cc-scrollbar-page-size);
+  --cc-scrollbar-inset: 1.5px;
   padding: 18px 20px 140px;
   background: var(--cc-main-bg);
 }
@@ -1258,7 +1303,8 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .cc-sidebar-primary,
 .cc-sidebar-search {
   width: 100%;
-  min-height: 36px;
+  height: 40px;
+  min-height: 40px;
   display: flex;
   align-items: center;
   gap: 9px;
@@ -1269,12 +1315,21 @@ html[data-theme="liquid"] .catsco-brand-mark {
   color: var(--cc-text-secondary);
 }
 
+@media (max-width: 640px) {
+  .cc-sidebar-primary,
+  .cc-sidebar-search {
+    height: 44px;
+    min-height: 44px;
+  }
+}
+
 .cc-sidebar-primary {
   cursor: pointer;
   text-align: left;
 }
 
 .cc-sidebar-primary:hover,
+.cc-sidebar-search:hover,
 .cc-sidebar-search:focus-within {
   border-color: var(--cc-border-strong);
   background: var(--cc-hover);
@@ -1294,7 +1349,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .cc-sidebar-search input::placeholder {
-  color: var(--cc-muted);
+  color: var(--cc-placeholder);
 }
 
 .v3-chat-list {
@@ -1306,6 +1361,9 @@ html[data-theme="liquid"] .catsco-brand-mark {
   --cc-sidebar-action-size: 32px;
   --cc-sidebar-trailing-width: 68px;
   --cc-sidebar-group-gap: 12px;
+  --cc-scrollbar-size: var(--cc-scrollbar-sidebar-size);
+  --cc-scrollbar-inset: 0.5px;
+  --cc-scrollbar-track: transparent;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1314,12 +1372,12 @@ html[data-theme="liquid"] .catsco-brand-mark {
   padding: var(--cc-sidebar-list-padding-top) 7px 76px;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--cc-muted) 18%, transparent) transparent;
+  scrollbar-color: var(--cc-scrollbar-thumb) transparent;
 }
 
 .v3-chat-list:hover,
 .v3-chat-list:focus-within {
-  scrollbar-color: color-mix(in srgb, var(--cc-muted) 42%, transparent) transparent;
+  scrollbar-color: var(--cc-scrollbar-thumb-hover) transparent;
 }
 
 @supports selector(::-webkit-scrollbar) {
@@ -1332,24 +1390,36 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .v3-chat-list::-webkit-scrollbar {
-  width: 3px;
-  height: 3px;
+  width: var(--cc-scrollbar-size);
+  height: var(--cc-scrollbar-size);
 }
 
 .v3-chat-list::-webkit-scrollbar-track {
-  background: transparent;
+  border: var(--cc-scrollbar-inset) solid transparent;
+  border-radius: 999px;
+  background: var(--cc-scrollbar-track);
+  background-clip: padding-box;
 }
 
 .v3-chat-list::-webkit-scrollbar-thumb {
+  min-width: 28px;
+  min-height: 28px;
+  border: var(--cc-scrollbar-inset) solid transparent;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--cc-muted) 18%, transparent);
+  background: var(--cc-scrollbar-thumb);
+  background-clip: padding-box;
 }
 
 .v3-chat-list:hover::-webkit-scrollbar-thumb,
 .v3-chat-list:focus-within::-webkit-scrollbar-thumb,
-.v3-chat-list::-webkit-scrollbar-thumb:hover,
+.v3-chat-list::-webkit-scrollbar-thumb:hover {
+  background: var(--cc-scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+
 .v3-chat-list::-webkit-scrollbar-thumb:active {
-  background: color-mix(in srgb, var(--cc-muted) 42%, transparent);
+  background: var(--cc-scrollbar-thumb-active);
+  background-clip: padding-box;
 }
 
 .v3-chat-list > .cc-conversation-section,
@@ -2996,7 +3066,8 @@ html[data-theme="liquid"] .catsco-brand-mark {
   max-height: min(360px, 48dvh);
   padding-right: 8px;
   overflow: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
   scrollbar-width: thin;
 }
 
@@ -3070,7 +3141,8 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .v3-wpi-code-block.result pre {
   max-height: 260px;
   overflow: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
 }
 
 .v3-message .v3-msg-name {
@@ -3414,7 +3486,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .v3-composer-input::placeholder {
-  color: var(--cc-muted);
+  color: var(--cc-placeholder);
 }
 
 .v3-composer-input:focus,
@@ -3999,7 +4071,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 
 .oc-feedback-intro p {
   margin-top: 2px;
-  color: var(--cc-muted);
+  color: var(--cc-helper-text);
   font-size: 12px;
   line-height: 1.45;
 }
@@ -4010,7 +4082,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   min-width: 0;
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-md);
-  background: var(--cc-code);
+  background: var(--cc-input-surface, var(--cc-code));
   overflow: hidden;
 }
 
@@ -4035,7 +4107,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 
 .oc-feedback-message-field textarea::placeholder,
 .oc-feedback-contact-field input::placeholder {
-  color: var(--cc-muted);
+  color: var(--cc-placeholder);
 }
 
 .oc-feedback-media-tools {
@@ -4087,7 +4159,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   position: absolute;
   right: 12px;
   bottom: 16px;
-  color: var(--cc-muted);
+  color: var(--cc-helper-text);
   font-size: 11px;
 }
 
@@ -4133,7 +4205,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 }
 
 .oc-feedback-contact-field small {
-  color: var(--cc-muted);
+  color: var(--cc-helper-text);
   font-size: 11px;
   font-weight: 400;
 }
@@ -4145,7 +4217,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   border: 1px solid var(--cc-border);
   border-radius: var(--cc-radius-md);
   outline: 0;
-  background: var(--cc-code);
+  background: var(--cc-input-surface);
   color: var(--cc-text-secondary);
   font-weight: 400;
 }
@@ -5216,7 +5288,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 }
 
 .oc-member-search input::placeholder {
-  color: var(--cc-muted);
+  color: var(--cc-placeholder);
   opacity: 1;
 }
 
@@ -5498,8 +5570,8 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 
 /* Group management keeps controls aligned while preserving the existing API flow. */
 .oc-modal.oc-group-settings-modal {
-  width: min(720px, calc(100vw - 32px)) !important;
-  max-width: 720px !important;
+  width: min(640px, calc(100vw - 32px)) !important;
+  max-width: 640px !important;
   max-height: min(760px, calc(100vh - 32px)) !important;
   padding: 0 !important;
   border: 1px solid var(--cc-border) !important;
@@ -5550,25 +5622,70 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 }
 
 .oc-group-name-input {
+  box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  padding: 0;
-  border: 0;
+  min-height: 34px;
+  padding: 0 8px 0 4px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-sm);
   outline: 0;
+  background: var(--cc-panel);
+  color: var(--cc-text);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+  transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.oc-group-name-display {
+  appearance: none;
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 24px;
+  padding: 1px 4px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 5px;
   background: transparent;
   color: var(--cc-text);
   font: inherit;
   font-size: 15px;
   font-weight: 600;
+  line-height: 22px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
-.oc-group-name-input:disabled {
-  opacity: 1;
+.oc-group-name-display:not(.is-readonly):hover {
+  background: var(--cc-hover);
 }
 
-.oc-group-summary-copy > span {
-  color: var(--cc-muted);
+.oc-group-name-display.is-readonly {
+  cursor: default;
+}
+
+.oc-group-summary .oc-group-name-input:focus,
+.oc-group-summary .oc-group-name-input:focus-visible {
+  border-color: color-mix(in srgb, var(--cc-accent) 34%, var(--cc-border-strong));
+  outline: 0;
+  background: var(--cc-hover);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cc-accent) 10%, transparent);
+}
+
+.oc-group-member-count {
+  padding-left: 4px;
+  color: var(--cc-helper-text);
   font-size: 11px;
+}
+
+.oc-group-name-input + .oc-group-member-count {
+  padding-left: 4px;
 }
 
 .oc-group-settings-modal .oc-btn {
@@ -6418,7 +6535,8 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   max-height: 280px;
   overflow-x: hidden;
   overflow-y: auto;
-  padding-right: 2px;
+  margin-right: -12px;
+  padding-right: 12px;
   scrollbar-gutter: stable;
 }
 
@@ -6859,7 +6977,7 @@ html[data-theme="liquid"] :is(.cc-sidebar-primary, .cc-sidebar-search) {
   transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
 }
 
-html[data-theme="liquid"] :is(.cc-sidebar-primary:hover, .cc-sidebar-search:focus-within) {
+html[data-theme="liquid"] :is(.cc-sidebar-primary:hover, .cc-sidebar-search:hover, .cc-sidebar-search:focus-within) {
   border-color: rgba(86, 98, 217, 0.3);
   background: rgba(248, 250, 255, 0.94);
   box-shadow:
@@ -6935,7 +7053,7 @@ html[data-theme="liquid"] .oc-modal.oc-profile-editor-modal {
 
 html[data-theme="liquid"] :is(input, textarea, select, .v3-custom-model-select-trigger) {
   border-color: var(--cc-liquid-edge);
-  background: rgba(255, 255, 255, 0.78);
+  background: var(--cc-input-surface);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.94),
     inset 1px 0 0 rgba(86, 98, 217, 0.06),
@@ -6951,6 +7069,17 @@ html[data-theme="liquid"] .v3-composer-input {
 
 html[data-theme="liquid"] .cc-sidebar-search input {
   border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-theme="liquid"] .cc-global-search-field input {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-theme="liquid"] .oc-feedback-message-field textarea {
   background: transparent;
   box-shadow: none;
 }
@@ -7573,7 +7702,7 @@ html[data-theme="liquid"] :is(
   object-fit: contain;
 }
 
-.oc-rich-video-preview-close {
+.oc-rich-media-preview-close {
   position: fixed;
   top: 20px;
   right: 20px;
@@ -7588,6 +7717,28 @@ html[data-theme="liquid"] :is(
   background: oklch(0.19 0.01 165 / 0.72);
   color: oklch(0.96 0.008 165);
   cursor: pointer;
+  transition:
+    background 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.oc-rich-media-preview-close:focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 3px;
+}
+
+.oc-rich-media-preview-close:hover {
+  background: oklch(0.27 0.018 165 / 0.86);
+  transform: translateY(-1px);
+}
+
+.oc-rich-media-preview-close:active {
+  transform: scale(0.96);
+}
+
+.oc-rich-video-preview-close {
+  width: 44px;
+  height: 44px;
   transition:
     background 180ms cubic-bezier(0.16, 1, 0.3, 1),
     transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
@@ -7609,6 +7760,7 @@ html[data-theme="liquid"] :is(
 
 @media (prefers-reduced-motion: reduce) {
   .v3-message .oc-rich-video-play,
+  .oc-rich-media-preview-close,
   .oc-rich-video-preview-close {
     transition: none;
   }
@@ -7618,6 +7770,8 @@ html[data-theme="liquid"] :is(
     transform: translate(-50%, -50%);
   }
 
+  .oc-rich-media-preview-close:hover,
+  .oc-rich-media-preview-close:active,
   .oc-rich-video-preview-close:hover,
   .oc-rich-video-preview-close:active {
     transform: none;

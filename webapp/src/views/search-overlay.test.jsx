@@ -88,6 +88,10 @@ describe('SearchOverlay', () => {
   it('does not search before two characters and debounces the request', async () => {
     api.getMessageSearch.mockResolvedValue({ results: [] });
     await render();
+    expect(container.querySelector('.cc-global-search-field')).toBeTruthy();
+    expect(container.textContent).not.toContain('Ctrl K');
+    expect(container.textContent).not.toContain('范围');
+    expect(container.textContent).toContain('输入至少 2 个字开始搜索');
     const input = container.querySelector('input');
     await act(async () => { Simulate.change(input, { target: { value: 'a' } }); });
     await act(async () => { vi.advanceTimersByTime(500); });
@@ -107,7 +111,7 @@ describe('SearchOverlay', () => {
     await act(async () => { Simulate.change(input, { target: { value: 'hello' } }); });
     await act(async () => vi.advanceTimersByTime(300));
     await flush();
-    const artifactTab = [...container.querySelectorAll('[role="tab"]')].find((node) => node.textContent === '产物');
+    const artifactTab = [...container.querySelectorAll('.cc-global-search-tabs button')].find((node) => node.textContent === '文件与产物');
     await act(async () => artifactTab.click());
     await act(async () => vi.advanceTimersByTime(300));
     await flush();
@@ -197,5 +201,29 @@ describe('SearchOverlay', () => {
     await render({ open: false });
     expect(container.innerHTML).toBe('');
     expect(document.documentElement.classList.contains('cc-global-search-open')).toBe(false);
+  });
+
+  it('traps focus inside the dialog and restores focus after closing', async () => {
+    const opener = document.createElement('button');
+    opener.textContent = '打开搜索';
+    document.body.appendChild(opener);
+    opener.focus();
+
+    await render();
+    await act(async () => vi.advanceTimersByTime(20));
+    const input = container.querySelector('input');
+    const lastScopeButton = [...container.querySelectorAll('.cc-global-search-tabs button')].at(-1);
+    expect(document.activeElement).toBe(input);
+
+    lastScopeButton.focus();
+    await act(async () => {
+      lastScopeButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(input);
+
+    await render({ open: false });
+    await act(async () => vi.advanceTimersByTime(20));
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
   });
 });

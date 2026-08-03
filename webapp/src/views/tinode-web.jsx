@@ -192,6 +192,17 @@ function TinodeWebApp() {
   const messageLocationSequenceRef = useRef(0);
   const taskDraftSequenceRef = useRef(0);
 
+  useEffect(() => {
+    if (!user) return undefined;
+    const handleGlobalSearchShortcut = (event) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== 'k') return;
+      event.preventDefault();
+      setSearchOpen(true);
+    };
+    document.addEventListener('keydown', handleGlobalSearchShortcut);
+    return () => document.removeEventListener('keydown', handleGlobalSearchShortcut);
+  }, [user]);
+
   const setActiveTopic = useCallback((nextValue) => {
     _setActiveTopic((prev) => {
       const next = typeof nextValue === 'function' ? nextValue(prev) : nextValue;
