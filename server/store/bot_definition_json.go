@@ -9,9 +9,10 @@ import (
 )
 
 const (
-	botDefinitionJSONKey        = "bot_definition"
-	botDefinitionRuntimeJSONKey = "bot_definition_runtime"
-	legacyBotSkillsJSONKey      = "bot_skills"
+	botDefinitionJSONKey            = "bot_definition"
+	botDefinitionRuntimeJSONKey     = "bot_definition_runtime"
+	botDefinitionSavedCustomJSONKey = "bot_definition_saved_custom_model"
+	legacyBotSkillsJSONKey          = "bot_skills"
 )
 
 // DecodeBotDefinitionJSON reads the canonical definition nodes while
@@ -35,15 +36,39 @@ func DecodeBotDefinitionJSON(raw []byte, botUID int64) (*types.BotDefinitionReco
 			return nil, err
 		}
 	}
-	if !record.Exists {
-		if value := root[botModelConfigJSONKey]; len(value) > 0 {
-			var legacy types.BotModelConfig
-			if err := json.Unmarshal(value, &legacy); err != nil {
-				return nil, err
-			}
+	if value := root[botDefinitionSavedCustomJSONKey]; len(value) > 0 {
+		var saved types.BotDefinitionSavedCustomModel
+		if err := json.Unmarshal(value, &saved); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(saved.APIKeyCiphertext) != "" {
+			record.SavedCustomModel = &saved
+		}
+	}
+	if value := root[botModelConfigJSONKey]; len(value) > 0 {
+		var legacy types.BotModelConfig
+		if err := json.Unmarshal(value, &legacy); err != nil {
+			return nil, err
+		}
+		normalizeLegacyModelSelection(&legacy)
+		if !record.Exists {
 			if strings.TrimSpace(legacy.ModelID) != "" {
 				record.Definition = definitionFromLegacyModelConfig(botUID, &legacy)
 				record.Runtime = runtimeFromLegacyModelConfig(&legacy)
+				if strings.TrimSpace(legacy.CustomCiphertext) != "" {
+					record.SavedCustomModel = &types.BotDefinitionSavedCustomModel{
+						APIKeyCiphertext: legacy.CustomCiphertext,
+					}
+				}
+			}
+		} else if strings.TrimSpace(legacy.CustomCiphertext) != "" &&
+			record.SavedCustomModel == nil &&
+			strings.TrimSpace(record.Definition.Model.APIKeyCiphertext) == "" {
+			// 防御性合并：canonical 节点已存在时不再整体迁移，但若 canonical
+			// 未携带自定义密文而 legacy cloud_model 仍有 custom_ciphertext，
+			// 保留到 SavedCustomModel，避免后续 encode 时被直接删除而丢失。
+			record.SavedCustomModel = &types.BotDefinitionSavedCustomModel{
+				APIKeyCiphertext: legacy.CustomCiphertext,
 			}
 		}
 	}
@@ -67,6 +92,16 @@ func EncodeBotDefinitionJSON(raw []byte, record *types.BotDefinitionRecord) ([]b
 	}
 	root[botDefinitionJSONKey] = definition
 	root[botDefinitionRuntimeJSONKey] = runtime
+	if record.SavedCustomModel != nil &&
+		strings.TrimSpace(record.SavedCustomModel.APIKeyCiphertext) != "" {
+		saved, err := json.Marshal(record.SavedCustomModel)
+		if err != nil {
+			return nil, err
+		}
+		root[botDefinitionSavedCustomJSONKey] = saved
+	} else {
+		delete(root, botDefinitionSavedCustomJSONKey)
+	}
 	delete(root, botModelConfigJSONKey)
 	delete(root, legacyBotSkillsJSONKey)
 	return json.Marshal(root)
@@ -116,6 +151,37 @@ func normalizeDefinitionRecord(record *types.BotDefinitionRecord, botUID int64) 
 	if record.Definition.Skills == nil {
 		record.Definition.Skills = []types.BotSkillRef{}
 	}
+	RememberBotDefinitionCustomModel(record, record.Definition.Model)
+	if record.Definition.Model.Kind != "custom" {
+		record.Definition.Model.APIKeyCiphertext = ""
+	}
+}
+
+// RememberBotDefinitionCustomModel preserves the encrypted custom profile when
+// the active model later changes to a catalog entry.
+func RememberBotDefinitionCustomModel(
+	record *types.BotDefinitionRecord,
+	model types.BotDefinitionModel,
+) {
+	if record == nil || strings.TrimSpace(model.APIKeyCiphertext) == "" {
+		return
+	}
+	record.SavedCustomModel = &types.BotDefinitionSavedCustomModel{
+		APIKeyCiphertext: model.APIKeyCiphertext,
+	}
+}
+
+func normalizeLegacyModelSelection(config *types.BotModelConfig) {
+	if config == nil || strings.TrimSpace(config.ModelID) != "" {
+		return
+	}
+	kind := strings.ToLower(strings.TrimSpace(config.Kind))
+	appliedKind := strings.ToLower(strings.TrimSpace(config.AppliedKind))
+	appliedModelID := strings.ToLower(strings.TrimSpace(config.AppliedModelID))
+	if kind == "local" || appliedKind == "local" || appliedModelID == "local" || config.Revision > 0 {
+		config.Kind = "local"
+		config.ModelID = "local"
+	}
 }
 
 func definitionFromLegacyModelConfig(botUID int64, config *types.BotModelConfig) types.BotDefinition {
@@ -157,11 +223,15 @@ func runtimeFromLegacyModelConfig(config *types.BotModelConfig) types.BotDefinit
 func legacyModelConfigFromRecord(record *types.BotDefinitionRecord) *types.BotModelConfig {
 	model := record.Definition.Model
 	runtime := record.Runtime
+	customCiphertext := model.APIKeyCiphertext
+	if customCiphertext == "" && record.SavedCustomModel != nil {
+		customCiphertext = record.SavedCustomModel.APIKeyCiphertext
+	}
 	return &types.BotModelConfig{
 		Kind:                model.Kind,
 		ModelID:             firstNonEmpty(model.ModelID, model.Model),
 		ReasoningEffort:     model.ReasoningEffort,
-		CustomCiphertext:    model.APIKeyCiphertext,
+		CustomCiphertext:    customCiphertext,
 		RuntimeProtocol:     runtime.RuntimeProtocol,
 		RuntimeProtocolSeen: runtime.RuntimeProtocolSeen,
 		Revision:            runtime.DesiredRevision,
@@ -198,6 +268,7 @@ func applyLegacyModelConfig(record *types.BotDefinitionRecord, config *types.Bot
 			model.APIKeyCiphertext = config.CustomCiphertext
 		}
 		record.Definition.Model = model
+		RememberBotDefinitionCustomModel(record, model)
 	default:
 		record.Definition.Model = types.BotDefinitionModel{
 			Kind:    config.Kind,

@@ -54,6 +54,41 @@ func TestEncodeBotDefinitionJSONPreservesUnrelatedConfiguration(t *testing.T) {
 	}
 }
 
+func TestBotDefinitionJSONPreservesSavedCustomModelAcrossCatalogSwitch(t *testing.T) {
+	record := &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{
+			Schema: types.BotDefinitionSchema,
+			BotID:  "43",
+			Model: types.BotDefinitionModel{
+				Kind:             "custom",
+				Model:            "private-model",
+				APIKeyCiphertext: "encrypted-custom-profile",
+			},
+		},
+		Exists: true,
+	}
+	RememberBotDefinitionCustomModel(record, record.Definition.Model)
+	record.Definition.Model = types.BotDefinitionModel{Kind: "catalog", ModelID: "gpt-5.6-sol"}
+
+	raw, err := EncodeBotDefinitionJSON(nil, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeBotDefinitionJSON(raw, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Definition.Model.Kind != "catalog" ||
+		decoded.SavedCustomModel == nil ||
+		decoded.SavedCustomModel.APIKeyCiphertext != "encrypted-custom-profile" {
+		t.Fatalf("decoded=%+v", decoded)
+	}
+	legacy := legacyModelConfigFromRecord(decoded)
+	if legacy.CustomCiphertext != "encrypted-custom-profile" {
+		t.Fatalf("legacy custom ciphertext=%q", legacy.CustomCiphertext)
+	}
+}
+
 func TestEncodeBotDefinitionJSONRemovesLegacyIndependentSkills(t *testing.T) {
 	raw := []byte(`{"bot_skills":{"revision":9},"channel":"feishu"}`)
 	record := defaultBotDefinitionRecord(43)
@@ -104,6 +139,28 @@ func TestDecodeBotDefinitionJSONUsesLegacyCloudModelOnlyAsMigrationSource(t *tes
 	}
 }
 
+func TestDecodeLegacyCatalogModelRetainsAlternateCustomCiphertext(t *testing.T) {
+	raw := []byte(`{
+		"cloud_model": {
+			"kind": "catalog",
+			"model_id": "minimax-m3",
+			"custom_ciphertext": "encrypted-custom-profile",
+			"revision": 7
+		}
+	}`)
+	record, err := DecodeBotDefinitionJSON(raw, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.SavedCustomModel == nil ||
+		record.SavedCustomModel.APIKeyCiphertext != "encrypted-custom-profile" {
+		t.Fatalf("record=%+v", record)
+	}
+	if record.Definition.Model.APIKeyCiphertext != "" {
+		t.Fatalf("catalog definition retained custom ciphertext: %+v", record.Definition.Model)
+	}
+}
+
 func TestLegacyModelAdapterWritesCanonicalDefinitionWithoutDroppingPrompt(t *testing.T) {
 	raw, err := EncodeBotDefinitionJSON(nil, &types.BotDefinitionRecord{
 		Definition: types.BotDefinition{
@@ -145,5 +202,135 @@ func TestLegacyModelAdapterWritesCanonicalDefinitionWithoutDroppingPrompt(t *tes
 	}
 	if _, exists := root[botModelConfigJSONKey]; exists {
 		t.Fatalf("legacy cloud_model remained writable: %s", next)
+	}
+}
+func TestLegacyEmptySelectionWithRevisionMigratesToExplicitLocal(t *testing.T) {
+	legacyJSON, err := json.Marshal(map[string]any{
+		botModelConfigJSONKey: types.BotModelConfig{
+			Revision:            4,
+			RuntimeProtocol:     "bot-definition.v1",
+			RuntimeProtocolSeen: "2026-08-03T08:00:00Z",
+			AppliedKind:         "local",
+			AppliedModelID:      "local",
+			AppliedRevision:     4,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := DecodeBotDefinitionJSON(legacyJSON, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Definition.Model.Kind != "local" || record.Definition.Model.ModelID != "local" ||
+		record.Runtime.DesiredRevision != 4 || record.Runtime.RuntimeProtocol != "bot-definition.v1" ||
+		record.Runtime.AppliedKind != "local" || record.Runtime.AppliedModelID != "local" {
+		t.Fatalf("migrated=%+v", record)
+	}
+
+	canonical, err := EncodeBotDefinitionJSON(legacyJSON, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := DecodeBotDefinitionJSON(canonical, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Definition.Model.Kind != "local" || reloaded.Definition.Model.ModelID != "local" ||
+		reloaded.Runtime.DesiredRevision != 4 || reloaded.Runtime.RuntimeProtocol != "bot-definition.v1" ||
+		reloaded.Runtime.AppliedRevision != 4 {
+		t.Fatalf("reloaded=%+v", reloaded)
+	}
+}
+
+func TestLegacyEmptySelectionWithoutHistoryDoesNotBecomeLocal(t *testing.T) {
+	legacyJSON, err := json.Marshal(map[string]any{botModelConfigJSONKey: types.BotModelConfig{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := DecodeBotDefinitionJSON(legacyJSON, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Definition.Model.Kind == "local" || record.Definition.Model.ModelID == "local" {
+		t.Fatalf("empty legacy record became local: %+v", record)
+	}
+}
+
+func TestLegacyModelAdapterPreservesExplicitLocalAcrossJSONRoundTrip(t *testing.T) {
+	initial, err := EncodeBotDefinitionJSON(nil, &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{
+			Schema: types.BotDefinitionSchema,
+			BotID:  "43",
+			Model:  types.BotDefinitionModel{Kind: "catalog", ModelID: "minimax-m3"},
+		},
+		Runtime: types.BotDefinitionRuntime{DesiredRevision: 2},
+		Exists:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next, err := EncodeBotModelConfigJSON(initial, &types.BotModelConfig{
+		Kind:     "local",
+		ModelID:  "local",
+		Revision: 3,
+	}, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := DecodeBotDefinitionJSON(next, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Definition.Model.Kind != "local" ||
+		reloaded.Definition.Model.ModelID != "local" ||
+		reloaded.Runtime.DesiredRevision != 3 {
+		t.Fatalf("reloaded=%+v", reloaded)
+	}
+	legacy := legacyModelConfigFromRecord(reloaded)
+	if legacy.Kind != "local" || legacy.ModelID != "local" || legacy.Revision != 3 {
+		t.Fatalf("legacy=%+v", legacy)
+	}
+}
+
+func TestDecodeBotDefinitionPreservesLegacyCiphertextWhenCanonicalExists(t *testing.T) {
+	// canonical bot_definition 已存在（catalog，未携带密文），同时遗留
+	// cloud_model 节点仍带 custom_ciphertext。防御性迁移应把 legacy 密文
+	// 保留到 SavedCustomModel，避免后续 encode 时被直接删除而丢失。
+	raw := []byte(`{
+		"bot_definition": {
+			"schema": "` + types.BotDefinitionSchema + `",
+			"bot_id": "43",
+			"model": {"kind": "catalog", "model_id": "minimax-m3"}
+		},
+		"cloud_model": {
+			"kind": "custom",
+			"model_id": "private-model",
+			"custom_ciphertext": "legacy-ciphertext"
+		}
+	}`)
+	record, err := DecodeBotDefinitionJSON(raw, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Exists {
+		t.Fatal("canonical definition should be present")
+	}
+	if record.SavedCustomModel == nil || record.SavedCustomModel.APIKeyCiphertext != "legacy-ciphertext" {
+		t.Fatalf("legacy ciphertext should be preserved, got %#v", record.SavedCustomModel)
+	}
+
+	encoded, err := EncodeBotDefinitionJSON(raw, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeBotDefinitionJSON(encoded, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.SavedCustomModel == nil || decoded.SavedCustomModel.APIKeyCiphertext != "legacy-ciphertext" {
+		t.Fatalf("legacy ciphertext lost after round-trip, got %#v", decoded.SavedCustomModel)
 	}
 }

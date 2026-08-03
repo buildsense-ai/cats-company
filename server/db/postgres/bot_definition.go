@@ -46,11 +46,13 @@ func initializeBotDefinitionIfAbsent(record *types.BotDefinitionRecord, definiti
 		}
 		record.Definition.Schema = definition.Schema
 		record.Definition.BotID = definition.BotID
+		store.RememberBotDefinitionCustomModel(record, record.Definition.Model)
 		record.Exists = true
 		return
 	}
 	if record.Definition.Model.Kind == "" {
 		record.Definition.Model = definition.Model
+		store.RememberBotDefinitionCustomModel(record, record.Definition.Model)
 	}
 	if record.Definition.Prompt == nil && definition.Prompt != nil {
 		prompt := *definition.Prompt
@@ -66,6 +68,7 @@ func (a *Adapter) UpdateBotDefinitionModel(
 		if expectedRevision >= 0 && record.Runtime.DesiredRevision != expectedRevision {
 			return store.ErrStaleBotModelRevision
 		}
+		store.RememberBotDefinitionCustomModel(record, model)
 		record.Definition.Model = model
 		if record.Definition.Prompt == nil {
 			record.Definition.Prompt = &types.BotPromptDefinition{Selected: "default"}

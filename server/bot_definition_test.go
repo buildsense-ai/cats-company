@@ -39,6 +39,7 @@ func (s *botDefinitionTestStore) CreateBotDefinitionIfAbsent(
 	record := s.records[botUID]
 	if record == nil || !record.Exists {
 		record = &types.BotDefinitionRecord{Definition: definition, Exists: true}
+		store.RememberBotDefinitionCustomModel(record, definition.Model)
 		if record.Definition.Prompt == nil {
 			record.Definition.Prompt = &types.BotPromptDefinition{Selected: "default"}
 		}
@@ -55,6 +56,7 @@ func (s *botDefinitionTestStore) UpdateBotDefinitionModel(
 	if expectedRevision >= 0 && expectedRevision != record.Runtime.DesiredRevision {
 		return nil, store.ErrStaleBotModelRevision
 	}
+	store.RememberBotDefinitionCustomModel(record, model)
 	record.Definition.Model = model
 	if record.Definition.Prompt == nil {
 		record.Definition.Prompt = &types.BotPromptDefinition{Selected: "default"}

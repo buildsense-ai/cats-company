@@ -442,10 +442,17 @@ type BotDefinitionRuntime struct {
 	LastError           string `json:"lastError,omitempty"`
 }
 
+// BotDefinitionSavedCustomModel keeps the encrypted alternate custom profile
+// separate from the currently selected portable model.
+type BotDefinitionSavedCustomModel struct {
+	APIKeyCiphertext string `json:"apiKeyCiphertext,omitempty"`
+}
+
 type BotDefinitionRecord struct {
-	Definition BotDefinition
-	Runtime    BotDefinitionRuntime
-	Exists     bool
+	Definition       BotDefinition
+	Runtime          BotDefinitionRuntime
+	SavedCustomModel *BotDefinitionSavedCustomModel
+	Exists           bool
 }
 
 const (

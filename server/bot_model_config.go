@@ -23,9 +23,16 @@ const botModelRuntimeUnavailableReason = "当前 CatsCo 版本暂不支持云端
 const (
 	botModelKindCatalog = "catalog"
 	botModelKindCustom  = "custom"
+	botModelKindLocal   = "local"
 )
 
 var errBotModelEncryptionUnavailable = errors.New("custom model encryption is unavailable")
+
+// errBotModelCiphertextUnreadable marks stored ciphertext that cannot be read at
+// all (corrupt payload, wrong key, invalid JSON). Unlike a stored configuration
+// that decrypts but fails validation, this is recoverable when the owner submits
+// a fresh api key, so the update must not be blocked.
+var errBotModelCiphertextUnreadable = errors.New("stored custom model ciphertext cannot be read")
 
 type botModelOwnershipStore interface {
 	GetBotOwner(botUID int64) (int64, error)
@@ -221,7 +228,7 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 				storedConfig.AppliedKind == "local" && storedConfig.AppliedModelID == "local" &&
 				!(storedConfig.LastAttemptRevision == storedConfig.Revision && storedConfig.LastError != "")
 			if !localApplied && (configured || storedConfig.Revision > 0) {
-				config, err = h.models.SaveBotDesiredModelConfig(botUID, "", "", "", "")
+				config, err = h.models.SaveBotDesiredModelConfig(botUID, botModelKindLocal, botModelKindLocal, "", "")
 			} else {
 				config = storedConfig
 			}
@@ -472,7 +479,7 @@ func botModelConfigWithDefaults(config *types.BotModelConfig) *types.BotModelCon
 	if copy.AppliedKind == "" && copy.AppliedModelID != "" {
 		copy.AppliedKind = botModelKindCatalog
 	}
-	if copy.Kind == botModelKindCustom {
+	if copy.Kind == botModelKindCustom || copy.Kind == botModelKindLocal {
 		return &copy
 	}
 	if copy.ModelID == "" {
@@ -518,7 +525,10 @@ func normalizeBotModelSelection(modelID, reasoning string) (botModelCatalogItem,
 }
 
 func botModelConfigIsConfigured(config *types.BotModelConfig) bool {
-	return config != nil && strings.TrimSpace(config.ModelID) != ""
+	return config != nil &&
+		strings.TrimSpace(config.Kind) != botModelKindLocal &&
+		strings.TrimSpace(config.ModelID) != "" &&
+		strings.TrimSpace(config.ModelID) != botModelKindLocal
 }
 
 func botModelRuntimeSupported(config *types.BotModelConfig) bool {
@@ -666,13 +676,20 @@ func (h *BotModelConfigHandler) prepareCustomModelUpdate(
 	if stored != nil && stored.CustomCiphertext != "" {
 		previous, err := h.decryptCustomModel(botUID, stored.CustomCiphertext)
 		if err != nil {
-			return nil, "", err
+			// 只有“密文完全无法读取”（损坏/密钥不匹配）时才允许用全新的
+			// api key 覆盖恢复；stored 配置能解密但校验失败属于数据完整性问题，
+			// 仍然拒绝更新。
+			if custom.APIKey == "" || !errors.Is(err, errBotModelCiphertextUnreadable) {
+				return nil, "", err
+			}
+			log.Printf("bot model: stored custom ciphertext could not be read; using the provided fresh key: %v", err)
+		} else {
+			if custom.APIKey == "" {
+				custom.APIKey = previous.APIKey
+			}
+			custom.ContextWindowTokens = previous.ContextWindowTokens
+			custom.MaxTokens = previous.MaxTokens
 		}
-		if custom.APIKey == "" {
-			custom.APIKey = previous.APIKey
-		}
-		custom.ContextWindowTokens = previous.ContextWindowTokens
-		custom.MaxTokens = previous.MaxTokens
 	}
 	if err := validateCloudCustomModel(&custom); err != nil {
 		return nil, "", err
@@ -694,11 +711,11 @@ func (h *BotModelConfigHandler) decryptCustomModel(botUID int64, ciphertext stri
 	}
 	plaintext, err := h.secretCodec.decrypt(botUID, ciphertext)
 	if err != nil {
-		return nil, fmt.Errorf("decrypt custom model configuration: %w", err)
+		return nil, fmt.Errorf("%w: %v", errBotModelCiphertextUnreadable, err)
 	}
 	var custom cloudCustomModelConfig
 	if err := json.Unmarshal(plaintext, &custom); err != nil {
-		return nil, errors.New("invalid encrypted custom model configuration")
+		return nil, fmt.Errorf("%w: invalid encrypted custom model configuration", errBotModelCiphertextUnreadable)
 	}
 	if err := validateCloudCustomModel(&custom); err != nil {
 		return nil, fmt.Errorf("stored custom model configuration is invalid: %w", err)
