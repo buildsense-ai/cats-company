@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { api, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS } from '../api';
+import { api, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS, sendWSPageVisibility } from '../api';
 import { enqueuePushOperation } from '../utils/push-operation';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import { cleanupPushForSession } from '../utils/push-session-cleanup';
@@ -562,6 +562,7 @@ function TinodeWebApp() {
   useEffect(() => {
     if (!user?.uid) return undefined;
 
+    const syncPageVisibility = () => sendWSPageVisibility(document.visibilityState);
     let hiddenAt = 0;
     const recoverConnection = (force = false) => {
       if (document.visibilityState !== 'visible' || navigator.onLine === false) return;
@@ -569,6 +570,7 @@ function TinodeWebApp() {
       else connectWS(handleWSMessage);
     };
     const handleVisibilityChange = () => {
+      syncPageVisibility();
       if (document.visibilityState === 'hidden') {
         hiddenAt = Date.now();
         return;
@@ -581,6 +583,7 @@ function TinodeWebApp() {
     const handleOnline = () => recoverConnection(true);
     const handleFocus = () => recoverConnection(false);
 
+    syncPageVisibility();
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('pageshow', handlePageShow);
     window.addEventListener('online', handleOnline);

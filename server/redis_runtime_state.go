@@ -28,8 +28,9 @@ type RedisRuntimeOptions struct {
 	KeyPrefix string
 }
 
-// RedisRuntimeState stores runtime-only state in Redis and uses Redis pub/sub
-// to deliver device RPC messages to the node that owns the target connection.
+// RedisRuntimeState stores runtime-only state in Redis, including visibility
+// leases, and uses Redis pub/sub to deliver device RPC messages to the node
+// that owns the target connection.
 type RedisRuntimeState struct {
 	client *redis.Client
 	prefix string
@@ -214,6 +215,54 @@ func (s *RedisRuntimeState) routeConnected(route runtimeRoute, now time.Time) bo
 	}
 	_, ok := s.getRoute(s.routeKey(route))
 	return ok
+}
+
+func (s *RedisRuntimeState) setMessagingClientVisibility(uid int64, route runtimeRoute, visible bool, now time.Time, ttl time.Duration) {
+	if s == nil || s.client == nil || uid <= 0 || messagingClientVisibilityIdentity(route) == "" {
+		return
+	}
+	if !visible || ttl <= 0 {
+		s.clearMessagingClientVisibility(uid, route)
+		return
+	}
+	if !route.validAt(now) {
+		return
+	}
+
+	member := messagingClientVisibilityIdentity(route)
+	expiresAt := now.Add(ttl)
+	_, _ = s.client.Pipelined(s.ctx, func(pipe redis.Pipeliner) error {
+		pipe.ZAdd(s.ctx, s.messagingClientVisibilityKey(uid), redis.Z{
+			Score:  float64(expiresAt.UnixMilli()),
+			Member: member,
+		})
+		pipe.Expire(s.ctx, s.messagingClientVisibilityKey(uid), ttl)
+		return nil
+	})
+}
+
+func (s *RedisRuntimeState) clearMessagingClientVisibility(uid int64, route runtimeRoute) {
+	if s == nil || s.client == nil || uid <= 0 || messagingClientVisibilityIdentity(route) == "" {
+		return
+	}
+	_, _ = s.client.ZRem(s.ctx, s.messagingClientVisibilityKey(uid), messagingClientVisibilityIdentity(route)).Result()
+}
+
+func (s *RedisRuntimeState) hasVisibleMessagingClient(uid int64, now time.Time) bool {
+	if s == nil || s.client == nil || uid <= 0 {
+		return false
+	}
+	key := s.messagingClientVisibilityKey(uid)
+	pipe := s.client.Pipeline()
+	pipe.ZRemRangeByScore(s.ctx, key, "-inf", fmt.Sprintf("%d", now.UnixMilli()))
+	count := pipe.ZCard(s.ctx, key)
+	if _, err := pipe.Exec(s.ctx); err != nil {
+		// The runtime state is required for multi-node operation. If it is
+		// temporarily unavailable, fail closed so a visible page cannot cause
+		// an avoidable duplicate push.
+		return true
+	}
+	return count.Val() > 0
 }
 
 func (s *RedisRuntimeState) acquireBotBodyLease(botUID int64, bodyID string, connectionID string, nodeID string, now time.Time, ttl time.Duration) (botBodyLeaseResult, error) {
@@ -1112,6 +1161,10 @@ func (s *RedisRuntimeState) nodeInboxChannel(nodeID string) string {
 
 func (s *RedisRuntimeState) routeKey(route runtimeRoute) string {
 	return s.key("route", keyPart(route.NodeID), keyPart(route.ConnectionID))
+}
+
+func (s *RedisRuntimeState) messagingClientVisibilityKey(uid int64) string {
+	return s.key("visible_messaging", fmt.Sprintf("%d", uid))
 }
 
 func (s *RedisRuntimeState) botLeaseKey(botUID int64) string {

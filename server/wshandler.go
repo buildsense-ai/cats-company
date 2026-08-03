@@ -22,6 +22,14 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
+const (
+	pageVisibilityVisible = "visible"
+	pageVisibilityHidden  = "hidden"
+	// Visibility leases cover a missed heartbeat but expire promptly after a
+	// crashed node, so stale pages do not suppress pushes indefinitely.
+	pageVisibilityLeaseTTL = 2 * pongWait
+)
+
 // Hub maintains the set of active clients and broadcasts messages.
 type Hub struct {
 	mu            sync.RWMutex
@@ -70,6 +78,8 @@ type Client struct {
 	deviceBodyID         string
 	deviceInstallationID string
 	deviceConnector      *DeviceConnectorClaims
+	pageVisibility       string
+	pageVisibilityMu     sync.Mutex
 	send                 chan []byte
 	sendMu               sync.RWMutex
 	sendClosed           bool
@@ -114,7 +124,8 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	return hub
 }
 
-// SetPushNotificationService enables optional Web Push delivery for offline users.
+// SetPushNotificationService enables optional Web Push delivery for users who
+// do not currently have a visible messaging page.
 func (h *Hub) SetPushNotificationService(service *PushNotificationService) {
 	if h != nil {
 		h.push = service
@@ -439,13 +450,18 @@ func (h *Hub) bindClientRuntimeRoute(client *Client) {
 	now := nowForRoute(h)
 	route.ExpiresAt = now.Add(defaultUserDeviceTTL)
 	h.sharedRuntime.bindRuntimeRoute(route, now)
+	h.syncClientPageVisibility(client)
 }
 
 func (h *Hub) clearClientRuntimeRoute(client *Client) {
 	if h == nil || client == nil || h.sharedRuntime == nil {
 		return
 	}
-	h.sharedRuntime.clearRuntimeRoute(h.clientRoute(client))
+	client.pageVisibilityMu.Lock()
+	defer client.pageVisibilityMu.Unlock()
+	route := h.clientRoute(client)
+	h.sharedRuntime.clearMessagingClientVisibility(client.uid, route)
+	h.sharedRuntime.clearRuntimeRoute(route)
 }
 
 func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client) {
@@ -574,6 +590,81 @@ func hasMessagingClient(clients map[*Client]struct{}) bool {
 		}
 	}
 	return false
+}
+
+func normalizePageVisibility(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), pageVisibilityHidden) {
+		return pageVisibilityHidden
+	}
+	return pageVisibilityVisible
+}
+
+func (h *Hub) setClientPageVisibility(client *Client, visibility string) {
+	if h == nil || client == nil {
+		return
+	}
+	client.pageVisibilityMu.Lock()
+	defer client.pageVisibilityMu.Unlock()
+	h.mu.Lock()
+	client.pageVisibility = normalizePageVisibility(visibility)
+	h.mu.Unlock()
+	h.syncClientPageVisibilityLocked(client)
+}
+
+func (h *Hub) syncClientPageVisibility(client *Client) {
+	if h == nil || client == nil || client.deviceConnector != nil || h.sharedRuntime == nil {
+		return
+	}
+	client.pageVisibilityMu.Lock()
+	defer client.pageVisibilityMu.Unlock()
+	h.syncClientPageVisibilityLocked(client)
+}
+
+func (h *Hub) syncClientPageVisibilityLocked(client *Client) {
+	if h == nil || client == nil || client.deviceConnector != nil || h.sharedRuntime == nil {
+		return
+	}
+
+	h.mu.RLock()
+	visibility := normalizePageVisibility(client.pageVisibility)
+	uid := client.uid
+	_, connected := h.clients[uid][client]
+	h.mu.RUnlock()
+	if !connected {
+		return
+	}
+
+	route := h.clientRoute(client)
+	now := nowForRoute(h)
+	h.sharedRuntime.setMessagingClientVisibility(
+		uid,
+		route,
+		visibility == pageVisibilityVisible,
+		now,
+		pageVisibilityLeaseTTL,
+	)
+}
+
+func hasVisibleMessagingClient(clients map[*Client]struct{}) bool {
+	for client := range clients {
+		if client != nil && client.deviceConnector == nil && normalizePageVisibility(client.pageVisibility) == pageVisibilityVisible {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Hub) hasVisibleMessagingClient(uid int64) bool {
+	if h == nil || uid <= 0 {
+		return false
+	}
+	h.mu.RLock()
+	localVisible := hasVisibleMessagingClient(h.clients[uid])
+	h.mu.RUnlock()
+	if localVisible {
+		return true
+	}
+	return h.sharedRuntime != nil && h.sharedRuntime.hasVisibleMessagingClient(uid, nowForRoute(h))
 }
 
 func (h *Hub) releaseBotBodyLease(client *Client) {
@@ -961,6 +1052,7 @@ func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
 
 // handleHi responds to the handshake message.
 func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
+	h.setClientPageVisibility(client, msg.Visibility)
 	deviceParams, ok := h.bindClientDeviceFromHi(client, msg)
 	if !ok {
 		h.SendToClient(client, &ServerMessage{
@@ -1576,6 +1668,13 @@ func (h *Hub) handleGet(client *Client, msg *MsgClientGet) {
 
 // handleNote handles typing indicators and read receipts.
 func (h *Hub) handleNote(client *Client, msg *MsgClientNote) {
+	if client == nil || msg == nil {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(msg.What), "visibility") {
+		h.setClientPageVisibility(client, msg.Visibility)
+		return
+	}
 	uid := client.uid
 	if code, _ := h.validateTopicReadAccess(uid, client.accountType, msg.Topic); code != 0 {
 		return
@@ -1733,7 +1832,7 @@ func shouldNotifyOfflineForMessage(msg *ServerMessage) bool {
 }
 
 func (h *Hub) enqueueOfflineUserPush(uid int64) bool {
-	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 || h.IsOnline(uid) {
+	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 || h.hasVisibleMessagingClient(uid) {
 		return false
 	}
 	user, err := h.db.GetUser(uid)
@@ -1754,7 +1853,7 @@ func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessa
 		h.enqueueOfflineUserPush(uid)
 		return
 	}
-	if h == nil || h.agentPush == nil || h.IsOnline(uid) {
+	if h == nil || h.agentPush == nil || h.hasVisibleMessagingClient(uid) {
 		return
 	}
 	deliver := func() bool { return h.enqueueOfflineUserPush(uid) }

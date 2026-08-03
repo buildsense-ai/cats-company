@@ -107,6 +107,18 @@ const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 const WS_CONNECT_TIMEOUT_MS = 10000;
 const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
 
+function currentPageVisibility() {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden'
+    ? 'hidden'
+    : 'visible';
+}
+
+function normalizePageVisibility(value) {
+  return value === 'hidden' ? 'hidden' : 'visible';
+}
+
+let wsPageVisibility = currentPageVisibility();
+
 export function updateTopicSeq(topicId, seq) {
   if (!topicLastSeq[topicId] || seq > topicLastSeq[topicId]) {
     topicLastSeq[topicId] = seq;
@@ -650,8 +662,9 @@ export function connectWS(onMessage, { force = false } = {}) {
     console.log('WebSocket connected');
     wsConnected = true;
     wsReconnectAttempt = 0;
+    wsPageVisibility = currentPageVisibility();
     // Send handshake
-    sendWS({ hi: { id: nextMsgId(), ver: '0.1.0' } });
+    sendWS({ hi: { id: nextMsgId(), ver: '0.1.0', visibility: wsPageVisibility } });
     // Request online status of friends
     sendWS({ get: { id: nextMsgId(), topic: 'me', what: 'online' } });
     // Request missed messages for all tracked topics
@@ -738,6 +751,11 @@ export function sendWS(msg) {
   if (wsConn && wsConn.readyState === WebSocket.OPEN) {
     wsConn.send(JSON.stringify(msg));
   }
+}
+
+export function sendWSPageVisibility(visibility = currentPageVisibility()) {
+  wsPageVisibility = normalizePageVisibility(visibility);
+  sendWS({ note: { what: 'visibility', visibility: wsPageVisibility } });
 }
 
 // Send a chat message via WebSocket, with REST fallback

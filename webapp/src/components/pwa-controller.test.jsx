@@ -176,6 +176,7 @@ test('updates through the service worker updater registered after mount', () => 
   expect(registerSW).toHaveBeenCalledTimes(1);
 
   const registrationOptions = registerSW.mock.calls[0][0];
+  expect(registrationOptions.onOfflineReady).toBeUndefined();
   const updateServiceWorker = registerSW.mock.results[0].value;
   act(() => registrationOptions.onNeedRefresh());
 

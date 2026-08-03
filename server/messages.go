@@ -523,7 +523,7 @@ func (h *Hub) isBotUser(uid int64) bool {
 }
 
 // isTaskStatusPublisher identifies automated accounts whose visible messages
-// are coordinated with task status before sending an offline push. Keep this
+// are coordinated with task status before sending a background push. Keep this
 // narrower than isBotUser: group routing still treats only bot accounts as
 // agents, while service accounts are explicitly allowed to publish task state.
 func (h *Hub) isTaskStatusPublisher(uid int64) bool {
