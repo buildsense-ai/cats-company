@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 )
@@ -104,6 +105,26 @@ func TestSharedRuntimeAggregatesPageVisibilityAcrossHubs(t *testing.T) {
 	if shared.hasVisibleMessagingClient(42, now.Add(2*time.Second)) {
 		t.Fatal("expired shared visibility lease should not suppress a push")
 	}
+}
+
+func TestHubPageVisibilityReadsAndWritesAreRaceSafe(t *testing.T) {
+	hub := NewHub(nil, nil)
+	client := &Client{uid: 42, send: make(chan []byte, 1)}
+	hub.addClient(client)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			hub.setClientPageVisibility(client, pageVisibilityVisible)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = hub.hasVisibleMessagingClient(42)
+		}()
+	}
+	wg.Wait()
 }
 
 func TestSendToUserExceptAndSendToClient(t *testing.T) {

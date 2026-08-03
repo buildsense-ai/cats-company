@@ -182,6 +182,40 @@ func TestRedisRuntimeAggregatesPageVisibilityAcrossStates(t *testing.T) {
 	}
 }
 
+func TestRedisRuntimeRefreshesPageVisibilityLeaseOnHeartbeat(t *testing.T) {
+	url, closeRedis := newRedisRuntimeTestServer(t)
+	defer closeRedis()
+
+	stateA := newRedisRuntimeStateForTest(t, url, "visibility-heartbeat")
+	defer stateA.Close()
+	stateB := newRedisRuntimeStateForTest(t, url, "visibility-heartbeat")
+	defer stateB.Close()
+
+	now := time.Now().UTC()
+	hubA := NewHubWithRuntime(nil, nil, stateA, "node-a")
+	hubB := NewHubWithRuntime(nil, nil, stateB, "node-b")
+	hubA.deviceRPC.now = func() time.Time { return now }
+	hubB.deviceRPC.now = func() time.Time { return now }
+
+	page := &Client{uid: 42, send: make(chan []byte, 1)}
+	hubB.addClient(page)
+	hubB.bindClientRuntimeRoute(page)
+	hubB.setClientPageVisibility(page, pageVisibilityVisible)
+	if !hubA.hasVisibleMessagingClient(42) {
+		t.Fatal("fresh visible page should suppress a push")
+	}
+
+	now = now.Add(pageVisibilityLeaseTTL + time.Second)
+	if hubA.hasVisibleMessagingClient(42) {
+		t.Fatal("visibility lease should expire without a heartbeat")
+	}
+
+	hubB.bindClientRuntimeRoute(page)
+	if !hubA.hasVisibleMessagingClient(42) {
+		t.Fatal("pong heartbeat should refresh the visible page lease")
+	}
+}
+
 func TestRedisRuntimeClearStaleDeviceRouteDoesNotRemoveReplacement(t *testing.T) {
 	url, closeRedis := newRedisRuntimeTestServer(t)
 	defer closeRedis()
