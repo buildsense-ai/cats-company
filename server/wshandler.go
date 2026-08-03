@@ -79,6 +79,7 @@ type Client struct {
 	deviceInstallationID string
 	deviceConnector      *DeviceConnectorClaims
 	pageVisibility       string
+	pageVisibilityMu     sync.Mutex
 	send                 chan []byte
 	sendMu               sync.RWMutex
 	sendClosed           bool
@@ -456,6 +457,8 @@ func (h *Hub) clearClientRuntimeRoute(client *Client) {
 	if h == nil || client == nil || h.sharedRuntime == nil {
 		return
 	}
+	client.pageVisibilityMu.Lock()
+	defer client.pageVisibilityMu.Unlock()
 	route := h.clientRoute(client)
 	h.sharedRuntime.clearMessagingClientVisibility(client.uid, route)
 	h.sharedRuntime.clearRuntimeRoute(route)
@@ -600,13 +603,24 @@ func (h *Hub) setClientPageVisibility(client *Client, visibility string) {
 	if h == nil || client == nil {
 		return
 	}
+	client.pageVisibilityMu.Lock()
+	defer client.pageVisibilityMu.Unlock()
 	h.mu.Lock()
 	client.pageVisibility = normalizePageVisibility(visibility)
 	h.mu.Unlock()
-	h.syncClientPageVisibility(client)
+	h.syncClientPageVisibilityLocked(client)
 }
 
 func (h *Hub) syncClientPageVisibility(client *Client) {
+	if h == nil || client == nil || client.deviceConnector != nil || h.sharedRuntime == nil {
+		return
+	}
+	client.pageVisibilityMu.Lock()
+	defer client.pageVisibilityMu.Unlock()
+	h.syncClientPageVisibilityLocked(client)
+}
+
+func (h *Hub) syncClientPageVisibilityLocked(client *Client) {
 	if h == nil || client == nil || client.deviceConnector != nil || h.sharedRuntime == nil {
 		return
 	}
@@ -614,7 +628,11 @@ func (h *Hub) syncClientPageVisibility(client *Client) {
 	h.mu.RLock()
 	visibility := normalizePageVisibility(client.pageVisibility)
 	uid := client.uid
+	_, connected := h.clients[uid][client]
 	h.mu.RUnlock()
+	if !connected {
+		return
+	}
 
 	route := h.clientRoute(client)
 	now := nowForRoute(h)
