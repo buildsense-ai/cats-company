@@ -279,49 +279,88 @@ func reconcileLegacyConversationTaskStatuses(execer conversationTaskStatusExecer
 	_, err := execer.Exec(
 		fmt.Sprintf(
 			`INSERT INTO conversation_task_status_sources
-			   (topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at)
-			 SELECT aggregate.topic_id, aggregate.source_uid, aggregate.run_id, aggregate.state,
-			        aggregate.summary, aggregate.error, aggregate.expires_at, aggregate.updated_at
-			 FROM conversation_task_statuses AS aggregate
-			 WHERE aggregate.topic_id IN (%s)
-			   AND aggregate.source_uid IS NOT NULL
-			   AND NOT EXISTS (
-			     SELECT 1
-			     FROM conversation_task_status_sources AS source
-			     WHERE source.topic_id = aggregate.topic_id
-			       AND source.source_uid = aggregate.source_uid
-			       AND (
-			         (
-			           source.state IN ('running', 'waiting')
-			           AND (source.expires_at IS NULL OR source.expires_at > CURRENT_TIMESTAMP)
-			           AND source.run_id <> aggregate.run_id
-			           AND aggregate.state NOT IN ('running', 'waiting')
-			         )
-			         OR (
-			           source.run_id = aggregate.run_id
-			           AND source.state IN ('completed', 'failed', 'cancelled', 'stale')
-			           AND aggregate.state NOT IN ('completed', 'failed', 'cancelled', 'stale')
-			         )
-			         OR (
-			           source.run_id <=> aggregate.run_id
-			           AND source.state = aggregate.state
-			           AND source.summary = aggregate.summary
-			           AND source.error = aggregate.error
-			           AND source.expires_at <=> aggregate.expires_at
-			         )
-			       )
-			   )
-			 FOR UPDATE
-			 ON DUPLICATE KEY UPDATE
-			   run_id = VALUES(run_id),
-			   state = VALUES(state),
-			   summary = VALUES(summary),
-			   error = VALUES(error),
-			   expires_at = VALUES(expires_at),
-			   updated_at = VALUES(updated_at)`,
+               (topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at)
+             SELECT aggregate.topic_id, aggregate.source_uid, aggregate.run_id, aggregate.state,
+                    aggregate.summary, aggregate.error, aggregate.expires_at, aggregate.updated_at
+             FROM conversation_task_statuses AS aggregate
+             WHERE aggregate.topic_id IN (%s)
+               AND aggregate.source_uid IS NOT NULL
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM conversation_task_status_sources AS source
+                 WHERE source.topic_id = aggregate.topic_id
+                   AND source.source_uid = aggregate.source_uid
+                   AND (
+                     (
+                       source.state IN ('running', 'waiting')
+                       AND (source.expires_at IS NULL OR source.expires_at > CURRENT_TIMESTAMP)
+                       AND source.run_id <> aggregate.run_id
+                       AND aggregate.state NOT IN ('running', 'waiting')
+                     )
+                     OR (
+                       source.run_id = aggregate.run_id
+                       AND source.state IN ('completed', 'failed', 'cancelled', 'stale')
+                       AND aggregate.state NOT IN ('completed', 'failed', 'cancelled', 'stale')
+                     )
+                     OR (
+                       source.run_id <=> aggregate.run_id
+                       AND source.state = aggregate.state
+                       AND source.summary = aggregate.summary
+                       AND source.error = aggregate.error
+                       AND source.expires_at <=> aggregate.expires_at
+                     )
+                   )
+               )
+             FOR UPDATE
+             ON DUPLICATE KEY UPDATE
+               run_id = VALUES(run_id),
+               state = VALUES(state),
+               summary = VALUES(summary),
+               error = VALUES(error),
+               expires_at = VALUES(expires_at),
+               updated_at = VALUES(updated_at)`,
 			placeholders,
 		),
 		args...,
 	)
 	return err
+}
+
+// ListActiveConversationTaskStatusesForSource returns active runs that were
+// last updated before a bot connection disappeared.
+func (a *Adapter) ListActiveConversationTaskStatusesForSource(sourceUID int64, updatedBefore time.Time) ([]*types.ConversationTaskStatus, error) {
+	rows, err := a.db.Query(
+		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, expires_at
+         FROM conversation_task_status_sources
+         WHERE source_uid = ?
+           AND state IN ('running', 'waiting')
+           AND updated_at <= ?
+           AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+         ORDER BY updated_at`,
+		sourceUID,
+		updatedBefore,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list active conversation task statuses for source: %w", err)
+	}
+	defer rows.Close()
+
+	var statuses []*types.ConversationTaskStatus
+	for rows.Next() {
+		status := &types.ConversationTaskStatus{}
+		if err := rows.Scan(
+			&status.TopicID,
+			&status.RunID,
+			&status.State,
+			&status.Summary,
+			&status.Error,
+			&status.SourceUID,
+			&status.UpdatedAt,
+			&status.ExpiresAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan active conversation task status for source: %w", err)
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, rows.Err()
 }

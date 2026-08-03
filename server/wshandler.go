@@ -55,6 +55,7 @@ type Hub struct {
 	groupTurns    *groupAgentTurnTracker
 	push          *PushNotificationService
 	agentPush     *agentPushTurnCoordinator
+	taskGrace     time.Duration
 }
 
 type presenceEvent struct {
@@ -116,6 +117,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		thinToolRPC:   newThinToolRPCRouter(defaultThinToolRPCTTL),
 		groupTurns:    newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
 		agentPush:     newAgentPushTurnCoordinator(),
+		taskGrace:     90 * time.Second,
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
@@ -236,6 +238,9 @@ func (h *Hub) Run() {
 			}
 			if lastConn {
 				h.enqueuePresence(client.uid, "off")
+				if client.accountType == types.AccountBot {
+					h.scheduleDisconnectedBotTaskRecovery(client.uid, time.Now())
+				}
 			}
 		}
 	}

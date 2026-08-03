@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -284,4 +285,65 @@ func (h *Hub) observeAgentPushTaskStatus(status *types.ConversationTaskStatus) {
 		return
 	}
 	h.agentPush.observeStatus(status)
+}
+
+func (h *Hub) scheduleDisconnectedBotTaskRecovery(sourceUID int64, disconnectedAt time.Time) {
+	if h == nil || sourceUID <= 0 {
+		return
+	}
+	grace := h.taskGrace
+	if grace < 0 {
+		grace = 0
+	}
+	time.AfterFunc(grace, func() {
+		h.recoverDisconnectedBotTasks(sourceUID, disconnectedAt)
+	})
+}
+
+func (h *Hub) recoverDisconnectedBotTasks(sourceUID int64, disconnectedAt time.Time) {
+	if h == nil || h.IsOnline(sourceUID) || h.BotBodyStatus(sourceUID).Active {
+		return
+	}
+	recoveryStore, ok := h.db.(store.ConversationTaskStatusRecoveryStore)
+	if !ok {
+		return
+	}
+	statusStore, ok := h.db.(store.ConversationTaskStatusStore)
+	if !ok {
+		return
+	}
+
+	statuses, err := recoveryStore.ListActiveConversationTaskStatusesForSource(sourceUID, disconnectedAt)
+	if err != nil {
+		log.Printf("task status recovery: list failed for uid=%d: %v", sourceUID, err)
+		return
+	}
+	for _, candidate := range statuses {
+		current, err := statusStore.GetConversationTaskStatusForSource(candidate.TopicID, sourceUID)
+		if err != nil {
+			log.Printf("task status recovery: reload failed for uid=%d topic=%s: %v", sourceUID, candidate.TopicID, err)
+			continue
+		}
+		if current == nil ||
+			current.RunID != candidate.RunID ||
+			(current.State != "running" && current.State != "waiting") ||
+			current.UpdatedAt.After(disconnectedAt) {
+			continue
+		}
+		recovered, err := statusStore.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+			TopicID:   current.TopicID,
+			RunID:     current.RunID,
+			State:     "stale",
+			Summary:   "机器人连接中断，任务已自动中止，可重新发送",
+			Error:     "bot disconnected before terminal task status",
+			SourceUID: sourceUID,
+		})
+		if err != nil {
+			log.Printf("task status recovery: persist failed for uid=%d topic=%s: %v", sourceUID, candidate.TopicID, err)
+			continue
+		}
+		h.observeGroupAgentTaskStatus(recovered)
+		h.fanoutConversationTaskStatus(sourceUID, recovered, nil)
+		log.Printf("task status recovery: marked stale uid=%d topic=%s run=%s", sourceUID, candidate.TopicID, candidate.RunID)
+	}
 }

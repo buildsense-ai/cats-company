@@ -129,6 +129,12 @@ func ValidateConversationTaskStatusTransition(current, next *types.ConversationT
 	return nil
 }
 
+// ConversationTaskStatusRecoveryStore is optional. It lets the WebSocket hub
+// recover active task states left behind when a bot process disconnects.
+type ConversationTaskStatusRecoveryStore interface {
+	ListActiveConversationTaskStatusesForSource(sourceUID int64, updatedBefore time.Time) ([]*types.ConversationTaskStatus, error)
+}
+
 // ProjectStore persists user-owned projects and assignments for conversations the user can access.
 // It remains optional so narrow server test stores do not need project methods.
 type ProjectStore interface {
