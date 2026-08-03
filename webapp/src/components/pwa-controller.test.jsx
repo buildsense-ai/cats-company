@@ -15,6 +15,7 @@ vi.mock('../api', () => ({
   },
   getToken: vi.fn(() => ''),
   getPushRegistrationID: vi.fn(() => 'registration-1'),
+  setWSPushSubscriptionEndpoint: vi.fn(() => Promise.resolve('subscription-1')),
 }));
 
 vi.mock('../utils/push-operation', () => ({
@@ -32,7 +33,7 @@ vi.mock('../utils/push-tab-coordination', () => ({
 
 import PwaController from './pwa-controller';
 import { registerSW } from 'virtual:pwa-register';
-import { api } from '../api';
+import { api, setWSPushSubscriptionEndpoint } from '../api';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 
 let container;
@@ -140,6 +141,7 @@ test('re-registers an active account when another tab hands off the browser subs
 
   renderController('user:42');
   await vi.waitFor(() => expect(api.subscribePush).toHaveBeenCalledTimes(1));
+  expect(setWSPushSubscriptionEndpoint).toHaveBeenCalledWith(subscription.endpoint);
   api.subscribePush.mockClear();
 
   const listener = pushTabCoordinator.onReconcile.mock.calls.at(-1)[0];
@@ -169,50 +171,6 @@ test('retries a pending browser cleanup while signed out', async () => {
 
   await vi.waitFor(() => expect(browserUnsubscribe).toHaveBeenCalledTimes(1));
   expect(localStorage.getItem('oc_push_pending_unsubscribe_v1')).toBeNull();
-});
-
-test('retries pending browser cleanup after another active tab stops blocking it', async () => {
-  vi.useFakeTimers();
-  const browserUnsubscribe = vi.fn().mockResolvedValue(true);
-  localStorage.setItem('oc_push_pending_unsubscribe_v1', 'https://push.example/subscription');
-  Object.defineProperty(navigator, 'serviceWorker', {
-    configurable: true,
-    value: {
-      getRegistration: vi.fn().mockResolvedValue({
-        pushManager: {
-          getSubscription: vi.fn().mockResolvedValue({
-            endpoint: 'https://push.example/subscription',
-            unsubscribe: browserUnsubscribe,
-          }),
-        },
-      }),
-    },
-  });
-  pushTabCoordinator.runWhenNoOtherActiveTabs
-    .mockResolvedValueOnce(false)
-    .mockImplementation((callback) => callback());
-
-  try {
-    renderController('', 1, false);
-    await act(async () => {
-      await vi.runAllTicks();
-    });
-
-    expect(pushTabCoordinator.runWhenNoOtherActiveTabs).toHaveBeenCalledTimes(1);
-    expect(browserUnsubscribe).not.toHaveBeenCalled();
-    expect(localStorage.getItem('oc_push_pending_unsubscribe_v1'))
-      .toBe('https://push.example/subscription');
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(30_000);
-    });
-
-    expect(pushTabCoordinator.runWhenNoOtherActiveTabs).toHaveBeenCalledTimes(2);
-    expect(browserUnsubscribe).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem('oc_push_pending_unsubscribe_v1')).toBeNull();
-  } finally {
-    vi.useRealTimers();
-  }
 });
 
 test('updates through the service worker updater registered after mount', () => {

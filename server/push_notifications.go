@@ -85,7 +85,7 @@ type pushDialContextFunc func(context.Context, string, string) (net.Conn, error)
 type pushDeliveryJob struct {
 	uid                int64
 	notification       PushNotification
-	shouldSendToDevice func(string) bool
+	shouldSendToDevice func(*types.PushSubscription) bool
 	queuedAt           time.Time
 }
 
@@ -406,6 +406,17 @@ func pushEndpointLogID(endpoint string) string {
 	return fmt.Sprintf("%s#%x", host, digest[:6])
 }
 
+// pushSubscriptionID is a stable, non-reversible identity for the browser
+// Push subscription shared by tabs in the same browser profile.
+func pushSubscriptionID(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(endpoint))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
 func redactPushEndpointError(err error, endpoint string) error {
 	if err == nil {
 		return nil
@@ -420,7 +431,7 @@ func (s *PushNotificationService) SendToUser(ctx context.Context, uid int64, not
 	return s.sendToUserFiltered(ctx, uid, notification, nil)
 }
 
-func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid int64, notification PushNotification, shouldSendToDevice func(string) bool) error {
+func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid int64, notification PushNotification, shouldSendToDevice func(*types.PushSubscription) bool) error {
 	if !s.Enabled() {
 		return nil
 	}
@@ -450,7 +461,7 @@ func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid in
 		if subscription == nil {
 			continue
 		}
-		if shouldSendToDevice != nil && !shouldSendToDevice(subscription.RegistrationID) {
+		if shouldSendToDevice != nil && !shouldSendToDevice(subscription) {
 			continue
 		}
 		if deliveries >= maxPushSubscriptionsPerUser {
@@ -532,7 +543,7 @@ func (s *PushNotificationService) EnqueueToUser(uid int64, notification PushNoti
 
 // EnqueueToUserFiltered queues delivery to subscriptions accepted by shouldSendToDevice.
 // The filter runs in the delivery worker so it observes current device visibility.
-func (s *PushNotificationService) EnqueueToUserFiltered(uid int64, notification PushNotification, shouldSendToDevice func(string) bool) bool {
+func (s *PushNotificationService) EnqueueToUserFiltered(uid int64, notification PushNotification, shouldSendToDevice func(*types.PushSubscription) bool) bool {
 	if !s.Enabled() || uid <= 0 {
 		return false
 	}

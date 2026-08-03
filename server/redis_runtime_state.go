@@ -217,64 +217,73 @@ func (s *RedisRuntimeState) routeConnected(route runtimeRoute, now time.Time) bo
 	return ok
 }
 
-func redisMessagingClientVisibilityMember(route runtimeRoute, registrationID string) string {
-	identity := messagingClientVisibilityIdentity(route)
-	registrationID = strings.TrimSpace(registrationID)
-	if registrationID == "" {
+func redisMessagingClientAttentionMember(route runtimeRoute, attention messagingClientAttention) string {
+	identity := messagingClientAttentionIdentity(route)
+	payload, err := json.Marshal(attention.normalized())
+	if err != nil {
 		return identity
 	}
-	return identity + "\n" + base64.RawURLEncoding.EncodeToString([]byte(registrationID))
+	return identity + "\n" + base64.RawURLEncoding.EncodeToString(payload)
 }
 
-func parseRedisMessagingClientVisibilityMember(member string) (string, string) {
+func parseRedisMessagingClientAttentionMember(member string) (string, messagingClientAttention) {
 	identity, encoded, found := strings.Cut(member, "\n")
 	if !found {
-		return member, ""
+		return member, messagingClientAttention{}
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
-		return identity, ""
+		return identity, messagingClientAttention{}
 	}
-	return identity, string(decoded)
+	var attention messagingClientAttention
+	if err := json.Unmarshal(decoded, &attention); err != nil {
+		return identity, messagingClientAttention{}
+	}
+	return identity, attention.normalized()
 }
 
-func (s *RedisRuntimeState) setMessagingClientVisibility(uid int64, route runtimeRoute, registrationID string, visible bool, now time.Time, ttl time.Duration) {
-	if s == nil || s.client == nil || uid <= 0 || messagingClientVisibilityIdentity(route) == "" {
+func (s *RedisRuntimeState) setMessagingClientAttention(uid int64, route runtimeRoute, attention messagingClientAttention, now time.Time, ttl time.Duration) {
+	if s == nil || s.client == nil || uid <= 0 || messagingClientAttentionIdentity(route) == "" {
 		return
 	}
-	if !visible || ttl <= 0 {
-		s.clearMessagingClientVisibility(uid, route)
+	attention = attention.normalized()
+	if !attention.suppressible() || ttl <= 0 {
+		s.clearMessagingClientAttention(uid, route)
 		return
 	}
 	if !route.validAt(now) {
 		return
 	}
 
-	member := redisMessagingClientVisibilityMember(route, registrationID)
+	// The attention payload is part of the sorted-set member. Remove any prior
+	// payload for this connection before publishing its replacement, otherwise
+	// a topic change would leave the old topic suppressing pushes until TTL.
+	s.clearMessagingClientAttention(uid, route)
+	member := redisMessagingClientAttentionMember(route, attention)
 	expiresAt := now.Add(ttl)
 	_, _ = s.client.Pipelined(s.ctx, func(pipe redis.Pipeliner) error {
-		pipe.ZAdd(s.ctx, s.messagingClientVisibilityKey(uid), redis.Z{
+		pipe.ZAdd(s.ctx, s.messagingClientAttentionKey(uid), redis.Z{
 			Score:  float64(expiresAt.UnixMilli()),
 			Member: member,
 		})
-		pipe.Expire(s.ctx, s.messagingClientVisibilityKey(uid), ttl)
+		pipe.Expire(s.ctx, s.messagingClientAttentionKey(uid), ttl)
 		return nil
 	})
 }
 
-func (s *RedisRuntimeState) clearMessagingClientVisibility(uid int64, route runtimeRoute) {
-	if s == nil || s.client == nil || uid <= 0 || messagingClientVisibilityIdentity(route) == "" {
+func (s *RedisRuntimeState) clearMessagingClientAttention(uid int64, route runtimeRoute) {
+	if s == nil || s.client == nil || uid <= 0 || messagingClientAttentionIdentity(route) == "" {
 		return
 	}
-	key := s.messagingClientVisibilityKey(uid)
+	key := s.messagingClientAttentionKey(uid)
 	members, err := s.client.ZRange(s.ctx, key, 0, -1).Result()
 	if err != nil {
 		return
 	}
-	identity := messagingClientVisibilityIdentity(route)
+	identity := messagingClientAttentionIdentity(route)
 	remove := make([]interface{}, 0, 1)
 	for _, member := range members {
-		memberIdentity, _ := parseRedisMessagingClientVisibilityMember(member)
+		memberIdentity, _ := parseRedisMessagingClientAttentionMember(member)
 		if memberIdentity == identity {
 			remove = append(remove, member)
 		}
@@ -284,24 +293,23 @@ func (s *RedisRuntimeState) clearMessagingClientVisibility(uid int64, route runt
 	}
 }
 
-func (s *RedisRuntimeState) hasVisibleMessagingClient(uid int64, registrationID string, now time.Time) bool {
+func (s *RedisRuntimeState) hasMessagingClientAttention(uid int64, subscriptionID, topic string, now time.Time) bool {
 	if s == nil || s.client == nil || uid <= 0 {
 		return false
 	}
-	key := s.messagingClientVisibilityKey(uid)
+	key := s.messagingClientAttentionKey(uid)
 	pipe := s.client.Pipeline()
 	pipe.ZRemRangeByScore(s.ctx, key, "-inf", fmt.Sprintf("%d", now.UnixMilli()))
 	members := pipe.ZRange(s.ctx, key, 0, -1)
 	if _, err := pipe.Exec(s.ctx); err != nil {
-		// The runtime state is required for multi-node operation. If it is
-		// temporarily unavailable, fail closed so a visible page cannot cause
-		// an avoidable duplicate push.
-		return true
+		// Suppression requires positive proof that this exact subscription is
+		// focused on this exact topic. On a runtime outage, prefer a possible
+		// duplicate over silently missing a cross-device notification.
+		return false
 	}
-	registrationID = strings.TrimSpace(registrationID)
 	for _, member := range members.Val() {
-		_, visibleRegistrationID := parseRedisMessagingClientVisibilityMember(member)
-		if registrationID == "" || visibleRegistrationID == "" || visibleRegistrationID == registrationID {
+		_, attention := parseRedisMessagingClientAttentionMember(member)
+		if attention.suppresses(subscriptionID, topic) {
 			return true
 		}
 	}
@@ -1206,7 +1214,9 @@ func (s *RedisRuntimeState) routeKey(route runtimeRoute) string {
 	return s.key("route", keyPart(route.NodeID), keyPart(route.ConnectionID))
 }
 
-func (s *RedisRuntimeState) messagingClientVisibilityKey(uid int64) string {
+func (s *RedisRuntimeState) messagingClientAttentionKey(uid int64) string {
+	// Keep the deployed Redis key stable while the internal model expands from
+	// visibility to exact subscription/topic attention.
 	return s.key("visible_messaging", fmt.Sprintf("%d", uid))
 }
 

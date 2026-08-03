@@ -3,7 +3,12 @@ import React, {
 } from 'react';
 import { Bell } from 'lucide-react';
 import { registerSW } from 'virtual:pwa-register';
-import { api, getPushRegistrationID, getToken } from '../api';
+import {
+  api,
+  getPushRegistrationID,
+  getToken,
+  setWSPushSubscriptionEndpoint,
+} from '../api';
 import {
   canUsePush,
   ensurePushSubscription,
@@ -136,6 +141,8 @@ export default function PwaController({
           isCurrent,
         );
         if (!subscription || !isCurrent()) return;
+        await setWSPushSubscriptionEndpoint(subscription.endpoint);
+        if (!isCurrent()) return;
         await api.subscribePush(serializePushSubscription(subscription), registrationID, controller.signal);
       } catch (error) {
         if (!cancelled) console.warn('Push subscription reconciliation failed:', error);
@@ -193,6 +200,8 @@ export default function PwaController({
           isCurrent,
         );
         if (!subscription || !isCurrent()) return;
+        await setWSPushSubscriptionEndpoint(subscription.endpoint);
+        if (!isCurrent()) return;
         await api.subscribePush(serializePushSubscription(subscription), registrationID, controller.signal);
         if (isCurrent()) {
           persistDismissed(pushPromptOwner);

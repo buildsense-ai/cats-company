@@ -82,7 +82,7 @@ describe('WebSocket connection recovery', () => {
     unsubscribe();
   });
 
-  test('sends page visibility in the handshake and on visibility changes', () => {
+  test('sends messaging attention in the handshake and on state changes', () => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     api.connectWS(vi.fn());
     const socket = MockWebSocket.instances[0];
@@ -90,12 +90,39 @@ describe('WebSocket connection recovery', () => {
 
     const handshake = JSON.parse(socket.send.mock.calls[0][0]);
     expect(handshake.hi.visibility).toBe('hidden');
-    expect(handshake.hi.push_registration_id).toMatch(/^[0-9a-f-]{32,36}$/);
+    expect(handshake.hi.focused).toBe(false);
+    expect(handshake.hi.active_topic).toBe('');
+    expect(handshake.hi.push_subscription_id).toBe('');
 
     api.sendWSPageVisibility('visible');
     expect(JSON.parse(socket.send.mock.calls.at(-1)[0])).toEqual({
-      note: { what: 'visibility', visibility: 'visible' },
+      note: {
+        what: 'attention',
+        visibility: 'visible',
+        focused: false,
+        active_topic: '',
+        push_subscription_id: '',
+      },
     });
+
+    api.sendWSActiveTopic('grp_7');
+    api.sendWSPageFocus(true);
+    expect(JSON.parse(socket.send.mock.calls.at(-1)[0]).note).toMatchObject({
+      what: 'attention',
+      active_topic: 'grp_7',
+      focused: true,
+    });
+  });
+
+  test('derives a stable subscription identity from the push endpoint', async () => {
+    const endpoint = 'https://push.example.test/subscription/browser-profile';
+    const first = await api.pushSubscriptionIDForEndpoint(endpoint);
+    const second = await api.pushSubscriptionIDForEndpoint(endpoint);
+
+    expect(first).toBe(second);
+    expect(first).toBe('WUIrC4yppUY8v9TxFnhjVvwOgkISFt0ZOdGvyL0nals');
+    expect(first).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(await api.pushSubscriptionIDForEndpoint(`${endpoint}-other`)).not.toBe(first);
   });
 
   test('includes the authoritative target agent in stream cancel metadata', async () => {

@@ -4,12 +4,46 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/openchat/openchat/server/store/types"
+	"github.com/redis/go-redis/v9"
 )
+
+type blockingAttentionZAddHook struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (h *blockingAttentionZAddHook) DialHook(next redis.DialHook) redis.DialHook {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return next(ctx, network, addr)
+	}
+}
+
+func (h *blockingAttentionZAddHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return next
+}
+
+func (h *blockingAttentionZAddHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		for _, cmd := range cmds {
+			if cmd.Name() == "zadd" {
+				h.once.Do(func() {
+					close(h.entered)
+					<-h.release
+				})
+				break
+			}
+		}
+		return next(ctx, cmds)
+	}
+}
 
 func TestRedisRuntimeBotBodyLeaseRejectsDifferentBodyAcrossStates(t *testing.T) {
 	url, closeRedis := newRedisRuntimeTestServer(t)
@@ -142,7 +176,7 @@ func TestRedisRuntimeRoutesDeviceRPCAcrossStates(t *testing.T) {
 	}
 }
 
-func TestRedisRuntimeAggregatesPageVisibilityAcrossStates(t *testing.T) {
+func TestRedisRuntimeAggregatesMessagingAttentionAcrossStates(t *testing.T) {
 	url, closeRedis := newRedisRuntimeTestServer(t)
 	defer closeRedis()
 
@@ -156,15 +190,29 @@ func TestRedisRuntimeAggregatesPageVisibilityAcrossStates(t *testing.T) {
 	page := &Client{uid: 42, send: make(chan []byte, 1)}
 	hubB.addClient(page)
 	hubB.bindClientRuntimeRoute(page)
-	hubB.setClientPageVisibility(page, pageVisibilityVisible)
+	attention := messagingClientAttention{SubscriptionID: "sub", ActiveTopic: "grp_7", Visible: true, Focused: true}
+	hubB.setClientMessagingAttention(page, attention)
 
-	if !hubA.hasVisibleMessagingClient(42, "") {
-		t.Fatal("node-a should observe a visible page registered by node-b")
+	if !hubA.hasMessagingClientAttention(42, "sub", "grp_7") {
+		t.Fatal("node-a should observe matching attention registered by node-b")
+	}
+	if hubA.hasMessagingClientAttention(42, "sub", "grp_8") || hubA.hasMessagingClientAttention(42, "other", "grp_7") {
+		t.Fatal("different topic or subscription must not be suppressed")
+	}
+
+	hubB.setClientMessagingAttention(page, messagingClientAttention{
+		SubscriptionID: "sub", ActiveTopic: "grp_8", Visible: true, Focused: true,
+	})
+	if hubA.hasMessagingClientAttention(42, "sub", "grp_7") {
+		t.Fatal("changing topics must replace the prior attention lease immediately")
+	}
+	if !hubA.hasMessagingClientAttention(42, "sub", "grp_8") {
+		t.Fatal("changing topics should publish the replacement attention lease")
 	}
 
 	hubB.setClientPageVisibility(page, pageVisibilityHidden)
-	if hubA.hasVisibleMessagingClient(42, "") {
-		t.Fatal("hidden page should be removed from the shared visibility state")
+	if hubA.hasMessagingClientAttention(42, "sub", "grp_7") {
+		t.Fatal("hidden page should be removed from shared attention state")
 	}
 
 	now := time.Now().UTC()
@@ -173,16 +221,16 @@ func TestRedisRuntimeAggregatesPageVisibilityAcrossStates(t *testing.T) {
 		ConnectionID: "page-b",
 		ExpiresAt:    now.Add(time.Minute),
 	}
-	stateB.setMessagingClientVisibility(42, route, "", true, now, time.Second)
-	if !stateA.hasVisibleMessagingClient(42, "", now.Add(500*time.Millisecond)) {
-		t.Fatal("fresh shared visibility lease should be active")
+	stateB.setMessagingClientAttention(42, route, attention, now, time.Second)
+	if !stateA.hasMessagingClientAttention(42, "sub", "grp_7", now.Add(500*time.Millisecond)) {
+		t.Fatal("fresh shared attention lease should be active")
 	}
-	if stateA.hasVisibleMessagingClient(42, "", now.Add(2*time.Second)) {
-		t.Fatal("expired shared visibility lease should not suppress a push")
+	if stateA.hasMessagingClientAttention(42, "sub", "grp_7", now.Add(2*time.Second)) {
+		t.Fatal("expired shared attention lease should not suppress a push")
 	}
 }
 
-func TestRedisRuntimeRefreshesPageVisibilityLeaseOnHeartbeat(t *testing.T) {
+func TestRedisRuntimeRefreshesMessagingAttentionLeaseOnHeartbeat(t *testing.T) {
 	url, closeRedis := newRedisRuntimeTestServer(t)
 	defer closeRedis()
 
@@ -200,19 +248,76 @@ func TestRedisRuntimeRefreshesPageVisibilityLeaseOnHeartbeat(t *testing.T) {
 	page := &Client{uid: 42, send: make(chan []byte, 1)}
 	hubB.addClient(page)
 	hubB.bindClientRuntimeRoute(page)
-	hubB.setClientPageVisibility(page, pageVisibilityVisible)
-	if !hubA.hasVisibleMessagingClient(42, "") {
-		t.Fatal("fresh visible page should suppress a push")
+	hubB.setClientMessagingAttention(page, messagingClientAttention{SubscriptionID: "sub", ActiveTopic: "grp_7", Visible: true, Focused: true})
+	if !hubA.hasMessagingClientAttention(42, "sub", "grp_7") {
+		t.Fatal("fresh matching attention should suppress a push")
 	}
 
 	now = now.Add(pageVisibilityLeaseTTL + time.Second)
-	if hubA.hasVisibleMessagingClient(42, "") {
-		t.Fatal("visibility lease should expire without a heartbeat")
+	if hubA.hasMessagingClientAttention(42, "sub", "grp_7") {
+		t.Fatal("attention lease should expire without a heartbeat")
 	}
 
 	hubB.bindClientRuntimeRoute(page)
-	if !hubA.hasVisibleMessagingClient(42, "") {
-		t.Fatal("pong heartbeat should refresh the visible page lease")
+	if !hubA.hasMessagingClientAttention(42, "sub", "grp_7") {
+		t.Fatal("pong heartbeat should refresh the attention lease")
+	}
+}
+
+func TestRedisRuntimeAttentionQueryFailsOpenForPushDelivery(t *testing.T) {
+	url, closeRedis := newRedisRuntimeTestServer(t)
+	state := newRedisRuntimeStateForTest(t, url, "attention-unavailable")
+	closeRedis()
+
+	if state.hasMessagingClientAttention(42, "sub", "grp_7", time.Now()) {
+		t.Fatal("an unavailable runtime must not suppress a notification without a positive match")
+	}
+	_ = state.Close()
+}
+
+func TestRedisRuntimeDisconnectWaitsForInFlightAttentionPublication(t *testing.T) {
+	url, closeRedis := newRedisRuntimeTestServer(t)
+	defer closeRedis()
+
+	state := newRedisRuntimeStateForTest(t, url, "attention-disconnect")
+	defer state.Close()
+	hub := NewHubWithRuntime(nil, nil, state, "node-a")
+	page := &Client{uid: 42, send: make(chan []byte, 1)}
+	hub.addClient(page)
+	hub.bindClientRuntimeRoute(page)
+
+	hook := &blockingAttentionZAddHook{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	state.client.AddHook(hook)
+
+	updateDone := make(chan struct{})
+	go func() {
+		hub.setClientMessagingAttention(page, messagingClientAttention{
+			SubscriptionID: "sub", ActiveTopic: "grp_7", Visible: true, Focused: true,
+		})
+		close(updateDone)
+	}()
+	<-hook.entered
+
+	hub.removeClient(page)
+	clearDone := make(chan struct{})
+	go func() {
+		hub.clearClientRuntimeRoute(page)
+		close(clearDone)
+	}()
+	select {
+	case <-clearDone:
+		t.Fatal("disconnect cleanup must wait for an in-flight attention publication")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(hook.release)
+	<-updateDone
+	<-clearDone
+	if state.hasMessagingClientAttention(42, "sub", "grp_7", time.Now()) {
+		t.Fatal("a disconnected page must not leave a suppressing attention lease")
 	}
 }
 

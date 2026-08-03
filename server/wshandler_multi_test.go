@@ -47,30 +47,81 @@ func TestHubTracksMultipleConnectionsPerUser(t *testing.T) {
 	}
 }
 
-func TestHubTracksPageVisibilityWithoutBroadcastingInternalNotes(t *testing.T) {
+func TestHubTracksMessagingAttentionWithoutBroadcastingInternalNotes(t *testing.T) {
 	hub := NewHub(nil, nil)
 	client := &Client{uid: 42, send: make(chan []byte, 1)}
 	hub.addClient(client)
 
 	hub.handleMessage(client, &ClientMessage{
-		Note: &MsgClientNote{What: "visibility", Visibility: "hidden"},
+		Note: &MsgClientNote{
+			What:               "attention",
+			Visibility:         "visible",
+			Focused:            true,
+			ActiveTopic:        "grp_7",
+			PushSubscriptionID: "subscription-a",
+		},
 	})
-	if hub.hasVisibleMessagingClient(42, "") {
-		t.Fatal("hidden page should not count as visible for push suppression")
+	if !hub.hasMessagingClientAttention(42, "subscription-a", "grp_7") {
+		t.Fatal("focused visible page on the target topic should suppress its subscription")
 	}
 	if drainOne(client.send) {
-		t.Fatal("page visibility note must not be broadcast as an info message")
+		t.Fatal("messaging attention note must not be broadcast as an info message")
 	}
-
-	hub.handleMessage(client, &ClientMessage{
-		Note: &MsgClientNote{What: "visibility", Visibility: "visible"},
-	})
-	if !hub.hasVisibleMessagingClient(42, "") {
-		t.Fatal("visible page should suppress a duplicate web push")
+	if hub.hasMessagingClientAttention(42, "subscription-a", "grp_8") {
+		t.Fatal("a different active topic must not suppress the target conversation")
+	}
+	if hub.hasMessagingClientAttention(42, "subscription-b", "grp_7") {
+		t.Fatal("another device subscription must not be suppressed")
 	}
 }
 
-func TestSharedRuntimeAggregatesPageVisibilityAcrossHubs(t *testing.T) {
+func TestMessagingAttentionRequiresCompleteFocusedVisibleIdentity(t *testing.T) {
+	tests := []struct {
+		name      string
+		attention messagingClientAttention
+		want      bool
+	}{
+		{name: "focused visible target", attention: messagingClientAttention{SubscriptionID: "sub", ActiveTopic: "grp_7", Visible: true, Focused: true}, want: true},
+		{name: "hidden", attention: messagingClientAttention{SubscriptionID: "sub", ActiveTopic: "grp_7", Focused: true}},
+		{name: "blurred", attention: messagingClientAttention{SubscriptionID: "sub", ActiveTopic: "grp_7", Visible: true}},
+		{name: "legacy missing subscription", attention: messagingClientAttention{ActiveTopic: "grp_7", Visible: true, Focused: true}},
+		{name: "missing topic", attention: messagingClientAttention{SubscriptionID: "sub", Visible: true, Focused: true}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.attention.suppresses("sub", "grp_7"); got != test.want {
+				t.Fatalf("suppresses = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAnyFocusedTabOnSharedSubscriptionSuppressesOnlyItsActiveTopic(t *testing.T) {
+	hub := NewHub(nil, nil)
+	otherTopic := &Client{uid: 42, send: make(chan []byte, 1)}
+	targetTopic := &Client{uid: 42, send: make(chan []byte, 1)}
+	hub.addClient(otherTopic)
+	hub.addClient(targetTopic)
+
+	hub.setClientMessagingAttention(otherTopic, messagingClientAttention{
+		SubscriptionID: "shared-sub", ActiveTopic: "grp_8", Visible: true, Focused: true,
+	})
+	hub.setClientMessagingAttention(targetTopic, messagingClientAttention{
+		SubscriptionID: "shared-sub", ActiveTopic: "grp_7", Visible: true, Focused: true,
+	})
+
+	if !hub.hasMessagingClientAttention(42, "shared-sub", "grp_7") {
+		t.Fatal("any focused tab on the target topic should suppress the shared subscription")
+	}
+	hub.setClientMessagingAttention(targetTopic, messagingClientAttention{
+		SubscriptionID: "shared-sub", ActiveTopic: "grp_7", Visible: true, Focused: false,
+	})
+	if hub.hasMessagingClientAttention(42, "shared-sub", "grp_7") {
+		t.Fatal("tabs focused only on other topics must not suppress the target topic")
+	}
+}
+
+func TestSharedRuntimeAggregatesMessagingAttentionAcrossHubs(t *testing.T) {
 	shared := newSharedMemoryRuntimeState()
 	hubA := NewHubWithRuntime(nil, nil, shared, "node-a")
 	hubB := NewHubWithRuntime(nil, nil, shared, "node-b")
@@ -80,34 +131,35 @@ func TestSharedRuntimeAggregatesPageVisibilityAcrossHubs(t *testing.T) {
 	hubA.addClient(localHidden)
 	hubB.addClient(remoteVisible)
 
-	hubA.setClientPageVisibility(localHidden, "hidden")
-	hubB.setClientPageVisibility(remoteVisible, "visible")
-	if !hubA.hasVisibleMessagingClient(42, "") {
-		t.Fatal("node-a should observe a visible messaging page on node-b")
+	attention := messagingClientAttention{SubscriptionID: "sub", ActiveTopic: "grp_7", Visible: true, Focused: true}
+	hubA.setClientMessagingAttention(localHidden, messagingClientAttention{SubscriptionID: "sub", ActiveTopic: "grp_7"})
+	hubB.setClientMessagingAttention(remoteVisible, attention)
+	if !hubA.hasMessagingClientAttention(42, "sub", "grp_7") {
+		t.Fatal("node-a should observe matching attention on node-b")
 	}
 	hubB.clearClientRuntimeRoute(remoteVisible)
-	if hubA.hasVisibleMessagingClient(42, "") {
-		t.Fatal("disconnecting the remote page should clear its shared visibility lease")
+	if hubA.hasMessagingClientAttention(42, "sub", "grp_7") {
+		t.Fatal("disconnecting the remote page should clear its shared attention lease")
 	}
-	hubB.setClientPageVisibility(remoteVisible, "visible")
+	hubB.setClientMessagingAttention(remoteVisible, attention)
 
-	hubB.setClientPageVisibility(remoteVisible, "hidden")
-	if hubA.hasVisibleMessagingClient(42, "") {
-		t.Fatal("hidden pages on all nodes should not suppress a push")
+	hubB.setClientMessagingAttention(remoteVisible, messagingClientAttention{SubscriptionID: "sub", ActiveTopic: "grp_8", Visible: true, Focused: true})
+	if hubA.hasMessagingClientAttention(42, "sub", "grp_7") {
+		t.Fatal("a different topic should not suppress a push")
 	}
 
 	now := time.Now()
 	route := runtimeRoute{NodeID: "node-b", ConnectionID: "expired", ExpiresAt: now.Add(time.Second)}
-	shared.setMessagingClientVisibility(42, route, "", true, now, time.Second)
-	if !shared.hasVisibleMessagingClient(42, "", now.Add(500*time.Millisecond)) {
-		t.Fatal("fresh shared visibility lease should be active")
+	shared.setMessagingClientAttention(42, route, attention, now, time.Second)
+	if !shared.hasMessagingClientAttention(42, "sub", "grp_7", now.Add(500*time.Millisecond)) {
+		t.Fatal("fresh shared attention lease should be active")
 	}
-	if shared.hasVisibleMessagingClient(42, "", now.Add(2*time.Second)) {
-		t.Fatal("expired shared visibility lease should not suppress a push")
+	if shared.hasMessagingClientAttention(42, "sub", "grp_7", now.Add(2*time.Second)) {
+		t.Fatal("expired shared attention lease should not suppress a push")
 	}
 }
 
-func TestHubPageVisibilityReadsAndWritesAreRaceSafe(t *testing.T) {
+func TestHubMessagingAttentionReadsAndWritesAreRaceSafe(t *testing.T) {
 	hub := NewHub(nil, nil)
 	client := &Client{uid: 42, send: make(chan []byte, 1)}
 	hub.addClient(client)
@@ -117,11 +169,11 @@ func TestHubPageVisibilityReadsAndWritesAreRaceSafe(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			hub.setClientPageVisibility(client, pageVisibilityVisible)
+			hub.setClientMessagingAttention(client, messagingClientAttention{SubscriptionID: "sub", ActiveTopic: "grp_7", Visible: true, Focused: true})
 		}()
 		go func() {
 			defer wg.Done()
-			_ = hub.hasVisibleMessagingClient(42, "")
+			_ = hub.hasMessagingClientAttention(42, "sub", "grp_7")
 		}()
 	}
 	wg.Wait()

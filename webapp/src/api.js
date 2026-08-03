@@ -102,6 +102,8 @@ let wsReconnectAttempt = 0;
 let msgHandlers = [];
 let wsConnected = false;
 let topicLastSeq = {};
+let wsActiveTopic = '';
+let wsPushSubscriptionID = '';
 
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 const WS_CONNECT_TIMEOUT_MS = 10000;
@@ -118,6 +120,34 @@ function normalizePageVisibility(value) {
 }
 
 let wsPageVisibility = currentPageVisibility();
+let wsPageFocused = currentPageVisibility() === 'visible'
+  && (typeof document?.hasFocus !== 'function' || document.hasFocus());
+
+function currentPageFocused() {
+  return currentPageVisibility() === 'visible'
+    && (typeof document?.hasFocus !== 'function' || document.hasFocus());
+}
+
+function wsAttentionPayload() {
+  return {
+    visibility: wsPageVisibility,
+    focused: wsPageFocused,
+    active_topic: wsActiveTopic,
+    push_subscription_id: wsPushSubscriptionID,
+  };
+}
+
+export async function pushSubscriptionIDForEndpoint(endpoint) {
+  const normalized = String(endpoint || '').trim();
+  if (!normalized || !globalThis.crypto?.subtle) return '';
+  const digest = await globalThis.crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(normalized),
+  );
+  let binary = '';
+  for (const value of new Uint8Array(digest)) binary += String.fromCharCode(value);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
 
 export function updateTopicSeq(topicId, seq) {
   if (!topicLastSeq[topicId] || seq > topicLastSeq[topicId]) {
@@ -139,6 +169,8 @@ export function setToken(t) {
   else {
     localStorage.removeItem('oc_token');
     clearPushRegistration();
+    wsPushSubscriptionID = '';
+    wsActiveTopic = '';
   }
   window.dispatchEvent(new CustomEvent('cc:auth-changed', {
     detail: {
@@ -663,8 +695,13 @@ export function connectWS(onMessage, { force = false } = {}) {
     wsConnected = true;
     wsReconnectAttempt = 0;
     wsPageVisibility = currentPageVisibility();
+    wsPageFocused = currentPageFocused();
     // Send handshake
-    sendWS({ hi: { id: nextMsgId(), ver: '0.1.0', visibility: wsPageVisibility, push_registration_id: getPushRegistrationID() } });
+    sendWS({ hi: {
+      id: nextMsgId(),
+      ver: '0.1.0',
+      ...wsAttentionPayload(),
+    } });
     // Request online status of friends
     sendWS({ get: { id: nextMsgId(), topic: 'me', what: 'online' } });
     // Request missed messages for all tracked topics
@@ -755,7 +792,25 @@ export function sendWS(msg) {
 
 export function sendWSPageVisibility(visibility = currentPageVisibility()) {
   wsPageVisibility = normalizePageVisibility(visibility);
-  sendWS({ note: { what: 'visibility', visibility: wsPageVisibility } });
+  if (wsPageVisibility === 'hidden') wsPageFocused = false;
+  sendWS({ note: { what: 'attention', ...wsAttentionPayload() } });
+}
+
+export function sendWSPageFocus(focused = currentPageFocused()) {
+  wsPageFocused = Boolean(focused) && wsPageVisibility === 'visible';
+  sendWS({ note: { what: 'attention', ...wsAttentionPayload() } });
+}
+
+export function sendWSActiveTopic(topic = '') {
+  wsActiveTopic = String(topic || '').trim();
+  sendWS({ note: { what: 'attention', ...wsAttentionPayload() } });
+}
+
+export async function setWSPushSubscriptionEndpoint(endpoint = '') {
+  const subscriptionID = await pushSubscriptionIDForEndpoint(endpoint);
+  wsPushSubscriptionID = subscriptionID;
+  sendWS({ note: { what: 'attention', ...wsAttentionPayload() } });
+  return subscriptionID;
 }
 
 // Send a chat message via WebSocket, with REST fallback

@@ -644,6 +644,14 @@ func TestPushNotificationDeadlineCoversSubscriptionLookup(t *testing.T) {
 	}
 }
 
+func TestPushSubscriptionIDMatchesBrowserGoldenVector(t *testing.T) {
+	const endpoint = "https://push.example.test/subscription/browser-profile"
+	const want = "WUIrC4yppUY8v9TxFnhjVvwOgkISFt0ZOdGvyL0nals"
+	if got := pushSubscriptionID(endpoint); got != want {
+		t.Fatalf("pushSubscriptionID() = %q, want %q", got, want)
+	}
+}
+
 func TestEnqueueUserPushQueuesOnlyWhenNoVisibleHumanClient(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -653,10 +661,10 @@ func TestEnqueueUserPushQueuesOnlyWhenNoVisibleHumanClient(t *testing.T) {
 		wantPush     bool
 	}{
 		{name: "offline human", accountType: types.AccountHuman, wantPush: true},
-		{name: "visible human", accountType: types.AccountHuman, clientStates: []string{"visible"}},
-		{name: "legacy connected human", accountType: types.AccountHuman, clientStates: []string{""}},
+		{name: "visible human without subscription identity", accountType: types.AccountHuman, clientStates: []string{"visible"}, wantPush: true},
+		{name: "legacy connected human", accountType: types.AccountHuman, clientStates: []string{""}, wantPush: true},
 		{name: "hidden human", accountType: types.AccountHuman, clientStates: []string{"hidden"}, wantPush: true},
-		{name: "visible and hidden human", accountType: types.AccountHuman, clientStates: []string{"visible", "hidden"}},
+		{name: "visible and hidden human without identity", accountType: types.AccountHuman, clientStates: []string{"visible", "hidden"}, wantPush: true},
 		{name: "offline bot", accountType: types.AccountBot},
 		{name: "disabled human", accountType: types.AccountHuman, state: 1},
 	}
@@ -680,14 +688,12 @@ func TestEnqueueUserPushQueuesOnlyWhenNoVisibleHumanClient(t *testing.T) {
 			}}, nil)
 			hub.SetPushNotificationService(service)
 			for _, pageVisibility := range test.clientStates {
-				hub.addClient(&Client{
-					uid:            uid,
-					pageVisibility: pageVisibility,
-					send:           make(chan []byte, 1),
-				})
+				client := &Client{uid: uid, send: make(chan []byte, 1)}
+				hub.addClient(client)
+				hub.setClientPageVisibility(client, pageVisibility)
 			}
 
-			hub.enqueueOfflineUserPush(uid)
+			hub.enqueueOfflineUserPush(uid, "grp_7")
 
 			select {
 			case <-delivered:
@@ -703,7 +709,7 @@ func TestEnqueueUserPushQueuesOnlyWhenNoVisibleHumanClient(t *testing.T) {
 	}
 }
 
-func TestEnqueueUserPushSuppressesOnlyVisibleRegistration(t *testing.T) {
+func TestEnqueueUserPushSuppressesOnlyFocusedSubscriptionOnTargetTopic(t *testing.T) {
 	const uid int64 = 42
 	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
 		{
@@ -731,14 +737,15 @@ func TestEnqueueUserPushSuppressesOnlyVisibleRegistration(t *testing.T) {
 		uid: {ID: uid, AccountType: types.AccountHuman},
 	}}, nil)
 	hub.SetPushNotificationService(service)
-	hub.addClient(&Client{
-		uid:                uid,
-		pageVisibility:     pageVisibilityVisible,
-		pushRegistrationID: "registration-visible",
-		send:               make(chan []byte, 1),
-	})
+	visibleEndpoint := "https://push.example.test/subscription/visible-device"
+	hub.addClient(&Client{uid: uid, messagingAttention: messagingClientAttention{
+		SubscriptionID: pushSubscriptionID(visibleEndpoint),
+		ActiveTopic:    "grp_7",
+		Visible:        true,
+		Focused:        true,
+	}, send: make(chan []byte, 1)})
 
-	hub.enqueueOfflineUserPush(uid)
+	hub.enqueueOfflineUserPush(uid, "grp_7")
 
 	select {
 	case endpoint := <-delivered:
@@ -755,7 +762,7 @@ func TestEnqueueUserPushSuppressesOnlyVisibleRegistration(t *testing.T) {
 	}
 }
 
-func TestEnqueueUserPushSuppressesAllRegistrationsForVisibleLegacyClient(t *testing.T) {
+func TestEnqueueUserPushDoesNotSuppressLegacyClientWithoutSubscriptionIdentity(t *testing.T) {
 	const uid int64 = 42
 	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
 		{
@@ -783,18 +790,25 @@ func TestEnqueueUserPushSuppressesAllRegistrationsForVisibleLegacyClient(t *test
 		uid: {ID: uid, AccountType: types.AccountHuman},
 	}}, nil)
 	hub.SetPushNotificationService(service)
-	hub.addClient(&Client{
-		uid:            uid,
-		pageVisibility: pageVisibilityVisible,
-		send:           make(chan []byte, 1),
-	})
+	hub.addClient(&Client{uid: uid, messagingAttention: messagingClientAttention{
+		ActiveTopic: "grp_7",
+		Visible:     true,
+		Focused:     true,
+	}, send: make(chan []byte, 1)})
 
-	hub.enqueueOfflineUserPush(uid)
+	hub.enqueueOfflineUserPush(uid, "grp_7")
 
-	select {
-	case endpoint := <-delivered:
-		t.Fatalf("unexpected push delivery to %q", endpoint)
-	case <-time.After(100 * time.Millisecond):
+	seen := map[string]bool{}
+	for range 2 {
+		select {
+		case endpoint := <-delivered:
+			seen[endpoint] = true
+		case <-time.After(100 * time.Millisecond):
+			t.Fatal("expected push delivery to every subscription")
+		}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("delivered endpoints = %#v, want both subscriptions", seen)
 	}
 }
 
@@ -1454,7 +1468,17 @@ func TestGroupBroadcastQueuesPushOnlyForOfflineHumans(t *testing.T) {
 	}
 	hub := NewHub(db, nil)
 	hub.SetPushNotificationService(service)
-	hub.addClient(&Client{uid: onlineUID, accountType: types.AccountHuman, send: make(chan []byte, 2)})
+	hub.addClient(&Client{
+		uid:         onlineUID,
+		accountType: types.AccountHuman,
+		messagingAttention: messagingClientAttention{
+			SubscriptionID: pushSubscriptionID("https://push.example.test/subscription/group"),
+			ActiveTopic:    "grp_80",
+			Visible:        true,
+			Focused:        true,
+		},
+		send: make(chan []byte, 2),
+	})
 	hub.agentPush.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "grp_80", RunID: "group-turn-1", State: "running", SourceUID: senderUID,
 	})

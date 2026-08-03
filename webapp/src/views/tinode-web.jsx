@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { api, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS, sendWSPageVisibility } from '../api';
+import { api, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPushCleanupRegistrationIDs, connectWS, reconnectWS, disconnectWS, sendWSActiveTopic, sendWSPageFocus, sendWSPageVisibility } from '../api';
 import { enqueuePushOperation } from '../utils/push-operation';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import { cleanupPushForSession } from '../utils/push-session-cleanup';
@@ -571,6 +571,10 @@ function TinodeWebApp() {
   }, [user?.uid, handleWSMessage]);
 
   useEffect(() => {
+    sendWSActiveTopic(user?.uid ? activeTopicId : '');
+  }, [activeTopicId, user?.uid]);
+
+  useEffect(() => {
     if (!user?.uid) return undefined;
 
     const syncPageVisibility = () => sendWSPageVisibility(document.visibilityState);
@@ -586,24 +590,31 @@ function TinodeWebApp() {
         hiddenAt = Date.now();
         return;
       }
+      sendWSPageFocus(document.hasFocus());
       const suspendedLongEnoughToStale = hiddenAt > 0 && Date.now() - hiddenAt >= 30000;
       recoverConnection(suspendedLongEnoughToStale);
       hiddenAt = 0;
     };
     const handlePageShow = (event) => recoverConnection(Boolean(event.persisted));
     const handleOnline = () => recoverConnection(true);
-    const handleFocus = () => recoverConnection(false);
+    const handleFocus = () => {
+      sendWSPageFocus(true);
+      recoverConnection(false);
+    };
+    const handleBlur = () => sendWSPageFocus(false);
 
     syncPageVisibility();
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('pageshow', handlePageShow);
     window.addEventListener('online', handleOnline);
     window.addEventListener('focus', handleFocus);
+    window.addEventListener('blur', handleBlur);
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('pageshow', handlePageShow);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('blur', handleBlur);
     };
   }, [user?.uid, handleWSMessage]);
 
