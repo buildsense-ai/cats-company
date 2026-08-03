@@ -168,7 +168,7 @@ body {
 }
 
 .oc-search input::placeholder {
-  color: var(--oc-gray);
+  color: var(--cc-placeholder);
 }
 
 /* Chat List */
@@ -846,7 +846,7 @@ body {
 }
 
 .oc-auth-input::placeholder {
-  color: var(--oc-gray-light);
+  color: var(--cc-placeholder);
 }
 
 .oc-auth-btn {
@@ -2635,7 +2635,7 @@ body {
 }
 
 .v3-composer-input::placeholder {
-  color: #6B6C6F;
+  color: var(--cc-placeholder);
 }
 
 .v3-live-input-status {
@@ -2757,6 +2757,30 @@ body {
   border: 0;
   background: transparent;
   background-image: none;
+}
+
+::-webkit-scrollbar-button:vertical:decrement,
+::-webkit-scrollbar-button:vertical:increment,
+::-webkit-scrollbar-button:horizontal:decrement,
+::-webkit-scrollbar-button:horizontal:increment,
+::-webkit-scrollbar-button:vertical:start:decrement,
+::-webkit-scrollbar-button:vertical:end:increment,
+::-webkit-scrollbar-button:horizontal:start:decrement,
+::-webkit-scrollbar-button:horizontal:end:increment {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: 0 !important;
+  max-height: 0 !important;
+  inline-size: 0 !important;
+  block-size: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  background-image: none !important;
 }
 
 ::-webkit-scrollbar-corner {
@@ -3622,8 +3646,10 @@ button.catsco-download-action:disabled {
 .oc-profile-editor-scroll {
   min-height: 0;
   overflow-y: auto;
-  padding-right: 2px;
+  margin-right: -12px;
+  padding-right: 12px;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .oc-profile-editor-actions {

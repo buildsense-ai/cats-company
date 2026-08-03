@@ -1907,7 +1907,8 @@ describe('ChatListView sidebar sections', () => {
 
     const trigger = container.querySelector('[aria-label="打开全局搜索"]');
     expect(trigger).toBeTruthy();
-    expect(trigger.textContent).toContain('搜索消息与产物');
+    expect(trigger.textContent).toContain('搜索');
+    expect(trigger.querySelector('kbd')).toBeNull();
 
     await act(async () => {
       Simulate.click(trigger);

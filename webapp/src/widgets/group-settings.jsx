@@ -9,11 +9,14 @@ import { UserPlus, X } from 'lucide-react';
 export default function GroupSettings({ groupId, currentUser, onClose, onSaved }) {
   const feedback = useFeedback();
   const fileInputRef = useRef(null);
+  const nameInputRef = useRef(null);
+  const nameBeforeEditRef = useRef('');
   const [group, setGroup] = useState(null);
   const [members, setMembers] = useState([]);
   const [inviteRequests, setInviteRequests] = useState([]);
   const [friends, setFriends] = useState([]);
   const [name, setName] = useState('');
+  const [editingName, setEditingName] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState('');
   const [announcement, setAnnouncement] = useState('');
   const [selected, setSelected] = useState(new Set());
@@ -35,12 +38,19 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
     loadData();
   }, [groupId]);
 
+  useEffect(() => {
+    if (!editingName) return;
+    nameInputRef.current?.focus();
+    nameInputRef.current?.select();
+  }, [editingName]);
+
   const applyGroupInfo = (groupRes) => {
     const nextGroup = groupRes.group || null;
     setGroup(nextGroup);
     setMembers(groupRes.members || []);
     setInviteRequests(groupRes.invite_requests || []);
     setName(nextGroup?.name || '');
+    setEditingName(false);
     setAvatarUrl(nextGroup?.avatar_url || '');
     setAnnouncement(nextGroup?.announcement || '');
     return nextGroup;
@@ -102,6 +112,25 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
       setError(err.message || t('error_server'));
     } finally {
       event.target.value = '';
+    }
+  };
+
+  const beginNameEdit = () => {
+    if (!canEditGroup) return;
+    nameBeforeEditRef.current = name;
+    setEditingName(true);
+  };
+
+  const handleNameKeyDown = (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      setEditingName(false);
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setName(nameBeforeEditRef.current);
+      setEditingName(false);
     }
   };
 
@@ -270,15 +299,32 @@ export default function GroupSettings({ groupId, currentUser, onClose, onSaved }
           <section className="oc-group-summary">
             <Avatar name={name || group?.name || t('contacts_groups')} src={avatarUrl} size={48} isGroup />
             <div className="oc-group-summary-copy">
-              <input
-                className="oc-group-name-input"
-                aria-label="群聊名称"
-                placeholder={t('group_name_placeholder')}
-                value={name}
-                disabled={!canEditGroup}
-                onChange={(e) => setName(e.target.value)}
-              />
-              <span>{members.length} 位成员</span>
+              {canEditGroup && editingName ? (
+                <input
+                  ref={nameInputRef}
+                  className="oc-group-name-input"
+                  aria-label="群聊名称"
+                  placeholder={t('group_name_placeholder')}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  onBlur={() => setEditingName(false)}
+                  onKeyDown={handleNameKeyDown}
+                />
+              ) : canEditGroup ? (
+                <button
+                  type="button"
+                  className="oc-group-name-display"
+                  aria-label="编辑群聊名称"
+                  onClick={beginNameEdit}
+                >
+                  {name.trim() || t('group_name_placeholder')}
+                </button>
+              ) : (
+                <div className="oc-group-name-display is-readonly">
+                  {name.trim() || t('group_name_placeholder')}
+                </div>
+              )}
+              <span className="oc-group-member-count">{members.length} 位成员</span>
             </div>
             {canEditGroup && (
               <button type="button" className="oc-btn oc-btn-default oc-group-avatar-button" onClick={() => fileInputRef.current?.click()}>

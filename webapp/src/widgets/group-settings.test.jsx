@@ -142,4 +142,51 @@ describe('GroupSettings invitations', () => {
     expect(api.resolveGroupInviteRequest).toHaveBeenCalledWith(1, 12, 'approve');
     expect(container.querySelector('.oc-invite-requests-section')).toBeNull();
   });
+
+  test('shows the group name as text until an admin chooses to edit it', async () => {
+    api.getGroupInfo.mockResolvedValue({
+      group,
+      members: [
+        { user_id: 7, username: 'admin', display_name: 'Admin', role: 'admin' },
+      ],
+      invite_requests: [],
+    });
+
+    await act(async () => {
+      root.render(<GroupSettings groupId={1} currentUser={{ uid: 7 }} onClose={vi.fn()} />);
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.oc-group-name-input')).toBeNull();
+    const display = container.querySelector('.oc-group-name-display');
+    expect(display?.textContent).toBe('Project Cats');
+
+    await act(async () => {
+      Simulate.click(display);
+    });
+
+    const input = container.querySelector('.oc-group-name-input');
+    expect(input).not.toBeNull();
+    expect(document.activeElement).toBe(input);
+
+    await act(async () => {
+      Simulate.change(input, { target: { value: 'Renamed Cats' } });
+      Simulate.keyDown(input, { key: 'Enter' });
+    });
+
+    expect(container.querySelector('.oc-group-name-input')).toBeNull();
+    expect(container.querySelector('.oc-group-name-display')?.textContent).toBe('Renamed Cats');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.oc-group-name-display'));
+    });
+    const reopenedInput = container.querySelector('.oc-group-name-input');
+    await act(async () => {
+      Simulate.change(reopenedInput, { target: { value: 'Discard This' } });
+      Simulate.keyDown(reopenedInput, { key: 'Escape' });
+    });
+
+    expect(container.querySelector('.oc-group-name-input')).toBeNull();
+    expect(container.querySelector('.oc-group-name-display')?.textContent).toBe('Renamed Cats');
+  });
 });

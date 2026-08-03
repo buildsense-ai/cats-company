@@ -2572,9 +2572,10 @@ export default function ChatListView({
           className="cc-sidebar-search cc-sidebar-search-trigger"
           onClick={onOpenSearch}
           aria-label="打开全局搜索"
+          aria-keyshortcuts="Control+K Meta+K"
         >
-          <Search size={15} />
-          <span>搜索消息与产物</span>
+          <Search size={15} aria-hidden="true" />
+          <span className="cc-sidebar-search-label">搜索</span>
         </button>
       </div>}
 
