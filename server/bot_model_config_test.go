@@ -279,7 +279,7 @@ func TestOwnerCanReturnBotToDeviceLocalModelConfiguration(t *testing.T) {
 		!strings.Contains(rec.Body.String(), `"model_id":"local"`) || !strings.Contains(rec.Body.String(), `"status":"pending"`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if db.models[43].ModelID != "" || db.models[43].Revision != 3 {
+	if db.models[43].Kind != botModelKindLocal || db.models[43].ModelID != botModelKindLocal || db.models[43].Revision != 3 {
 		t.Fatalf("saved config=%+v", db.models[43])
 	}
 

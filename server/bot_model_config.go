@@ -23,6 +23,7 @@ const botModelRuntimeUnavailableReason = "当前 CatsCo 版本暂不支持云端
 const (
 	botModelKindCatalog = "catalog"
 	botModelKindCustom  = "custom"
+	botModelKindLocal   = "local"
 )
 
 var errBotModelEncryptionUnavailable = errors.New("custom model encryption is unavailable")
@@ -221,7 +222,7 @@ func (h *BotModelConfigHandler) HandleOwnerConfig(w http.ResponseWriter, r *http
 				storedConfig.AppliedKind == "local" && storedConfig.AppliedModelID == "local" &&
 				!(storedConfig.LastAttemptRevision == storedConfig.Revision && storedConfig.LastError != "")
 			if !localApplied && (configured || storedConfig.Revision > 0) {
-				config, err = h.models.SaveBotDesiredModelConfig(botUID, "", "", "", "")
+				config, err = h.models.SaveBotDesiredModelConfig(botUID, botModelKindLocal, botModelKindLocal, "", "")
 			} else {
 				config = storedConfig
 			}
@@ -472,7 +473,7 @@ func botModelConfigWithDefaults(config *types.BotModelConfig) *types.BotModelCon
 	if copy.AppliedKind == "" && copy.AppliedModelID != "" {
 		copy.AppliedKind = botModelKindCatalog
 	}
-	if copy.Kind == botModelKindCustom {
+	if copy.Kind == botModelKindCustom || copy.Kind == botModelKindLocal {
 		return &copy
 	}
 	if copy.ModelID == "" {
@@ -518,7 +519,10 @@ func normalizeBotModelSelection(modelID, reasoning string) (botModelCatalogItem,
 }
 
 func botModelConfigIsConfigured(config *types.BotModelConfig) bool {
-	return config != nil && strings.TrimSpace(config.ModelID) != ""
+	return config != nil &&
+		strings.TrimSpace(config.Kind) != botModelKindLocal &&
+		strings.TrimSpace(config.ModelID) != "" &&
+		strings.TrimSpace(config.ModelID) != botModelKindLocal
 }
 
 func botModelRuntimeSupported(config *types.BotModelConfig) bool {

@@ -51,6 +51,7 @@ func DecodeBotDefinitionJSON(raw []byte, botUID int64) (*types.BotDefinitionReco
 			if err := json.Unmarshal(value, &legacy); err != nil {
 				return nil, err
 			}
+			normalizeLegacyModelSelection(&legacy)
 			if strings.TrimSpace(legacy.ModelID) != "" {
 				record.Definition = definitionFromLegacyModelConfig(botUID, &legacy)
 				record.Runtime = runtimeFromLegacyModelConfig(&legacy)
@@ -158,6 +159,19 @@ func RememberBotDefinitionCustomModel(
 	}
 	record.SavedCustomModel = &types.BotDefinitionSavedCustomModel{
 		APIKeyCiphertext: model.APIKeyCiphertext,
+	}
+}
+
+func normalizeLegacyModelSelection(config *types.BotModelConfig) {
+	if config == nil || strings.TrimSpace(config.ModelID) != "" {
+		return
+	}
+	kind := strings.ToLower(strings.TrimSpace(config.Kind))
+	appliedKind := strings.ToLower(strings.TrimSpace(config.AppliedKind))
+	appliedModelID := strings.ToLower(strings.TrimSpace(config.AppliedModelID))
+	if kind == "local" || appliedKind == "local" || appliedModelID == "local" || config.Revision > 0 {
+		config.Kind = "local"
+		config.ModelID = "local"
 	}
 }
 

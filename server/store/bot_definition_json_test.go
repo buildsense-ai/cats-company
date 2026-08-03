@@ -204,3 +204,93 @@ func TestLegacyModelAdapterWritesCanonicalDefinitionWithoutDroppingPrompt(t *tes
 		t.Fatalf("legacy cloud_model remained writable: %s", next)
 	}
 }
+func TestLegacyEmptySelectionWithRevisionMigratesToExplicitLocal(t *testing.T) {
+	legacyJSON, err := json.Marshal(map[string]any{
+		botModelConfigJSONKey: types.BotModelConfig{
+			Revision:            4,
+			RuntimeProtocol:     "bot-definition.v1",
+			RuntimeProtocolSeen: "2026-08-03T08:00:00Z",
+			AppliedKind:         "local",
+			AppliedModelID:      "local",
+			AppliedRevision:     4,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := DecodeBotDefinitionJSON(legacyJSON, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Definition.Model.Kind != "local" || record.Definition.Model.ModelID != "local" ||
+		record.Runtime.DesiredRevision != 4 || record.Runtime.RuntimeProtocol != "bot-definition.v1" ||
+		record.Runtime.AppliedKind != "local" || record.Runtime.AppliedModelID != "local" {
+		t.Fatalf("migrated=%+v", record)
+	}
+
+	canonical, err := EncodeBotDefinitionJSON(legacyJSON, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := DecodeBotDefinitionJSON(canonical, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Definition.Model.Kind != "local" || reloaded.Definition.Model.ModelID != "local" ||
+		reloaded.Runtime.DesiredRevision != 4 || reloaded.Runtime.RuntimeProtocol != "bot-definition.v1" ||
+		reloaded.Runtime.AppliedRevision != 4 {
+		t.Fatalf("reloaded=%+v", reloaded)
+	}
+}
+
+func TestLegacyEmptySelectionWithoutHistoryDoesNotBecomeLocal(t *testing.T) {
+	legacyJSON, err := json.Marshal(map[string]any{botModelConfigJSONKey: types.BotModelConfig{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := DecodeBotDefinitionJSON(legacyJSON, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Definition.Model.Kind == "local" || record.Definition.Model.ModelID == "local" {
+		t.Fatalf("empty legacy record became local: %+v", record)
+	}
+}
+
+func TestLegacyModelAdapterPreservesExplicitLocalAcrossJSONRoundTrip(t *testing.T) {
+	initial, err := EncodeBotDefinitionJSON(nil, &types.BotDefinitionRecord{
+		Definition: types.BotDefinition{
+			Schema: types.BotDefinitionSchema,
+			BotID:  "43",
+			Model:  types.BotDefinitionModel{Kind: "catalog", ModelID: "minimax-m3"},
+		},
+		Runtime: types.BotDefinitionRuntime{DesiredRevision: 2},
+		Exists:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next, err := EncodeBotModelConfigJSON(initial, &types.BotModelConfig{
+		Kind:     "local",
+		ModelID:  "local",
+		Revision: 3,
+	}, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := DecodeBotDefinitionJSON(next, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Definition.Model.Kind != "local" ||
+		reloaded.Definition.Model.ModelID != "local" ||
+		reloaded.Runtime.DesiredRevision != 3 {
+		t.Fatalf("reloaded=%+v", reloaded)
+	}
+	legacy := legacyModelConfigFromRecord(reloaded)
+	if legacy.Kind != "local" || legacy.ModelID != "local" || legacy.Revision != 3 {
+		t.Fatalf("legacy=%+v", legacy)
+	}
+}
