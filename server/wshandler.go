@@ -451,7 +451,9 @@ func (h *Hub) bindClientRuntimeRoute(client *Client) {
 	now := nowForRoute(h)
 	route.ExpiresAt = now.Add(defaultUserDeviceTTL)
 	h.sharedRuntime.bindRuntimeRoute(route, now)
-	h.syncClientMessagingAttention(client)
+	if err := h.syncClientMessagingAttention(client); err != nil {
+		log.Printf("messaging attention: bind uid=%d connection=%s: %v", client.uid, client.connectionID, err)
+	}
 }
 
 func (h *Hub) clearClientRuntimeRoute(client *Client) {
@@ -461,7 +463,9 @@ func (h *Hub) clearClientRuntimeRoute(client *Client) {
 	client.attentionSyncMu.Lock()
 	defer client.attentionSyncMu.Unlock()
 	route := h.clientRoute(client)
-	h.sharedRuntime.clearMessagingClientAttention(client.uid, route)
+	if err := h.sharedRuntime.clearMessagingClientAttention(client.uid, route); err != nil {
+		log.Printf("messaging attention: clear uid=%d connection=%s: %v", client.uid, client.connectionID, err)
+	}
 	h.sharedRuntime.clearRuntimeRoute(route)
 }
 
@@ -594,10 +598,10 @@ func hasMessagingClient(clients map[*Client]struct{}) bool {
 }
 
 func normalizePageVisibility(value string) string {
-	if strings.EqualFold(strings.TrimSpace(value), pageVisibilityHidden) {
-		return pageVisibilityHidden
+	if value == pageVisibilityVisible {
+		return pageVisibilityVisible
 	}
-	return pageVisibilityVisible
+	return pageVisibilityHidden
 }
 
 func (h *Hub) setClientPageVisibility(client *Client, visibility string) {
@@ -607,7 +611,9 @@ func (h *Hub) setClientPageVisibility(client *Client, visibility string) {
 	client.messagingAttentionMu.Lock()
 	client.messagingAttention.Visible = normalizePageVisibility(visibility) == pageVisibilityVisible
 	client.messagingAttentionMu.Unlock()
-	h.syncClientMessagingAttention(client)
+	if err := h.syncClientMessagingAttention(client); err != nil {
+		log.Printf("messaging attention: visibility uid=%d connection=%s: %v", client.uid, client.connectionID, err)
+	}
 }
 
 func (h *Hub) setClientMessagingAttention(client *Client, attention messagingClientAttention) {
@@ -617,7 +623,9 @@ func (h *Hub) setClientMessagingAttention(client *Client, attention messagingCli
 	client.messagingAttentionMu.Lock()
 	client.messagingAttention = attention.normalized()
 	client.messagingAttentionMu.Unlock()
-	h.syncClientMessagingAttention(client)
+	if err := h.syncClientMessagingAttention(client); err != nil {
+		log.Printf("messaging attention: update uid=%d connection=%s: %v", client.uid, client.connectionID, err)
+	}
 }
 
 func (h *Hub) clientMessagingAttention(client *Client) messagingClientAttention {
@@ -629,9 +637,9 @@ func (h *Hub) clientMessagingAttention(client *Client) messagingClientAttention 
 	return client.messagingAttention
 }
 
-func (h *Hub) syncClientMessagingAttention(client *Client) {
+func (h *Hub) syncClientMessagingAttention(client *Client) error {
 	if h == nil || client == nil || client.deviceConnector != nil || h.sharedRuntime == nil {
-		return
+		return nil
 	}
 	client.attentionSyncMu.Lock()
 	defer client.attentionSyncMu.Unlock()
@@ -641,12 +649,12 @@ func (h *Hub) syncClientMessagingAttention(client *Client) {
 	_, connected := h.clients[uid][client]
 	h.mu.RUnlock()
 	if !connected {
-		return
+		return nil
 	}
 
 	route := h.clientRoute(client)
 	now := nowForRoute(h)
-	h.sharedRuntime.setMessagingClientAttention(
+	return h.sharedRuntime.setMessagingClientAttention(
 		uid,
 		route,
 		attention,
@@ -680,7 +688,26 @@ func (h *Hub) hasMessagingClientAttention(uid int64, subscriptionID, topic strin
 	if localVisible {
 		return true
 	}
-	return h.sharedRuntime != nil && h.sharedRuntime.hasMessagingClientAttention(uid, subscriptionID, topic, nowForRoute(h))
+	return h.sharedRuntime != nil && h.sharedRuntime.hasMessagingClientAttention(h.nodeID, uid, subscriptionID, topic, nowForRoute(h))
+}
+
+// hasLocalMessagingClientAttentionForRoute confirms the exact connection that
+// advertised attention. Redis records only locate a candidate; remote nodes
+// must ask this owner before they suppress a Push.
+func (h *Hub) hasLocalMessagingClientAttentionForRoute(uid int64, route runtimeRoute, subscriptionID, topic string) bool {
+	if h == nil || route.NodeID != h.nodeID || route.ConnectionID == "" || uid <= 0 {
+		return false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	client := h.clientsByConn[route.ConnectionID]
+	if client == nil || client.uid != uid || client.deviceConnector != nil {
+		return false
+	}
+	client.messagingAttentionMu.RLock()
+	defer client.messagingAttentionMu.RUnlock()
+	suppresses := client.messagingAttention.suppresses(subscriptionID, topic)
+	return suppresses
 }
 
 func (h *Hub) releaseBotBodyLease(client *Client) {

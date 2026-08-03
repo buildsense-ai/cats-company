@@ -22,6 +22,14 @@ func messagingClientAttentionIdentity(route runtimeRoute) string {
 	return route.NodeID + "\x00" + route.ConnectionID
 }
 
+func messagingClientAttentionRoute(identity string) runtimeRoute {
+	nodeID, connectionID, found := strings.Cut(identity, "\x00")
+	if !found || nodeID == "" || connectionID == "" {
+		return runtimeRoute{}
+	}
+	return runtimeRoute{NodeID: nodeID, ConnectionID: connectionID}
+}
+
 func (r runtimeRoute) validAt(now time.Time) bool {
 	return r.NodeID != "" && r.ConnectionID != "" && (r.ExpiresAt.IsZero() || now.Before(r.ExpiresAt))
 }
@@ -67,9 +75,9 @@ type sharedRuntimeState interface {
 	deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC, now time.Time) bool
 	deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time) bool
 	routeConnected(route runtimeRoute, now time.Time) bool
-	setMessagingClientAttention(uid int64, route runtimeRoute, attention messagingClientAttention, now time.Time, ttl time.Duration)
-	clearMessagingClientAttention(uid int64, route runtimeRoute)
-	hasMessagingClientAttention(uid int64, subscriptionID, topic string, now time.Time) bool
+	setMessagingClientAttention(uid int64, route runtimeRoute, attention messagingClientAttention, now time.Time, ttl time.Duration) error
+	clearMessagingClientAttention(uid int64, route runtimeRoute) error
+	hasMessagingClientAttention(requestingNodeID string, uid int64, subscriptionID, topic string, now time.Time) bool
 
 	acquireBotBodyLease(botUID int64, bodyID string, connectionID string, nodeID string, now time.Time, ttl time.Duration) (botBodyLeaseResult, error)
 	botBodyLeaseConflict(botUID int64, bodyID string, now time.Time) (botBodyLease, bool)
@@ -250,13 +258,13 @@ func (s *sharedMemoryRuntimeState) routeConnected(route runtimeRoute, now time.T
 	return hub != nil && hub.getClientByConnectionID(route.ConnectionID) != nil
 }
 
-func (s *sharedMemoryRuntimeState) setMessagingClientAttention(uid int64, route runtimeRoute, attention messagingClientAttention, now time.Time, ttl time.Duration) {
+func (s *sharedMemoryRuntimeState) setMessagingClientAttention(uid int64, route runtimeRoute, attention messagingClientAttention, now time.Time, ttl time.Duration) error {
 	if s == nil || uid <= 0 {
-		return
+		return nil
 	}
 	identity := messagingClientAttentionIdentity(route)
 	if identity == "" {
-		return
+		return nil
 	}
 
 	s.mu.Lock()
@@ -270,10 +278,10 @@ func (s *sharedMemoryRuntimeState) setMessagingClientAttention(uid int64, route 
 				delete(s.messagingClientAttention, uid)
 			}
 		}
-		return
+		return nil
 	}
 	if !route.validAt(now) {
-		return
+		return nil
 	}
 
 	if s.messagingClientAttention[uid] == nil {
@@ -281,33 +289,35 @@ func (s *sharedMemoryRuntimeState) setMessagingClientAttention(uid int64, route 
 	}
 	route.ExpiresAt = now.Add(ttl)
 	s.messagingClientAttention[uid][identity] = messagingClientAttentionLease{route: route, attention: attention}
+	return nil
 }
 
-func (s *sharedMemoryRuntimeState) clearMessagingClientAttention(uid int64, route runtimeRoute) {
+func (s *sharedMemoryRuntimeState) clearMessagingClientAttention(uid int64, route runtimeRoute) error {
 	if s == nil || uid <= 0 {
-		return
+		return nil
 	}
 	identity := messagingClientAttentionIdentity(route)
 	if identity == "" {
-		return
+		return nil
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	clients := s.messagingClientAttention[uid]
 	if clients == nil {
-		return
+		return nil
 	}
 	if current, ok := clients[identity]; !ok || !current.route.matches(route) {
-		return
+		return nil
 	}
 	delete(clients, identity)
 	if len(clients) == 0 {
 		delete(s.messagingClientAttention, uid)
 	}
+	return nil
 }
 
-func (s *sharedMemoryRuntimeState) hasMessagingClientAttention(uid int64, subscriptionID, topic string, now time.Time) bool {
+func (s *sharedMemoryRuntimeState) hasMessagingClientAttention(_ string, uid int64, subscriptionID, topic string, now time.Time) bool {
 	if s == nil || uid <= 0 {
 		return false
 	}

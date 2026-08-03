@@ -96,6 +96,64 @@ func TestMessagingAttentionRequiresCompleteFocusedVisibleIdentity(t *testing.T) 
 	}
 }
 
+func TestMessagingAttentionTreatsUnknownVisibilityAsHidden(t *testing.T) {
+	hub := NewHub(nil, nil)
+	client := &Client{uid: 42, send: make(chan []byte, 1)}
+	hub.addClient(client)
+
+	for _, visibility := range []string{"", "unknown", "VISIBLE "} {
+		hub.handleNote(client, &MsgClientNote{
+			What:               "attention",
+			Visibility:         visibility,
+			Focused:            true,
+			ActiveTopic:        "grp_7",
+			PushSubscriptionID: "subscription-a",
+		})
+		if hub.hasMessagingClientAttention(42, "subscription-a", "grp_7") {
+			t.Fatalf("visibility %q must fail open", visibility)
+		}
+	}
+
+	hub.handleNote(client, &MsgClientNote{
+		What:               "attention",
+		Visibility:         pageVisibilityVisible,
+		Focused:            true,
+		ActiveTopic:        "grp_7",
+		PushSubscriptionID: "subscription-a",
+	})
+	if !hub.hasMessagingClientAttention(42, "subscription-a", "grp_7") {
+		t.Fatal("exact visible state should suppress the matching subscription")
+	}
+}
+
+func TestHandshakeMessagingAttentionTreatsUnknownVisibilityAsHidden(t *testing.T) {
+	hub := NewHub(nil, nil)
+	client := &Client{uid: 42, send: make(chan []byte, 4)}
+	hub.addClient(client)
+
+	for _, visibility := range []string{"", "unknown", "VISIBLE "} {
+		hub.handleHi(client, "", &MsgClientHi{
+			Visibility:         visibility,
+			Focused:            true,
+			ActiveTopic:        "grp_7",
+			PushSubscriptionID: "subscription-a",
+		})
+		if hub.hasMessagingClientAttention(42, "subscription-a", "grp_7") {
+			t.Fatalf("handshake visibility %q must fail open", visibility)
+		}
+	}
+
+	hub.handleHi(client, "", &MsgClientHi{
+		Visibility:         pageVisibilityVisible,
+		Focused:            true,
+		ActiveTopic:        "grp_7",
+		PushSubscriptionID: "subscription-a",
+	})
+	if !hub.hasMessagingClientAttention(42, "subscription-a", "grp_7") {
+		t.Fatal("exact visible handshake should suppress the matching subscription")
+	}
+}
+
 func TestAnyFocusedTabOnSharedSubscriptionSuppressesOnlyItsActiveTopic(t *testing.T) {
 	hub := NewHub(nil, nil)
 	otherTopic := &Client{uid: 42, send: make(chan []byte, 1)}
@@ -151,10 +209,10 @@ func TestSharedRuntimeAggregatesMessagingAttentionAcrossHubs(t *testing.T) {
 	now := time.Now()
 	route := runtimeRoute{NodeID: "node-b", ConnectionID: "expired", ExpiresAt: now.Add(time.Second)}
 	shared.setMessagingClientAttention(42, route, attention, now, time.Second)
-	if !shared.hasMessagingClientAttention(42, "sub", "grp_7", now.Add(500*time.Millisecond)) {
+	if !shared.hasMessagingClientAttention("", 42, "sub", "grp_7", now.Add(500*time.Millisecond)) {
 		t.Fatal("fresh shared attention lease should be active")
 	}
-	if shared.hasMessagingClientAttention(42, "sub", "grp_7", now.Add(2*time.Second)) {
+	if shared.hasMessagingClientAttention("", 42, "sub", "grp_7", now.Add(2*time.Second)) {
 		t.Fatal("expired shared attention lease should not suppress a push")
 	}
 }

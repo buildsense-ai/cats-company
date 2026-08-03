@@ -116,7 +116,7 @@ function currentPageVisibility() {
 }
 
 function normalizePageVisibility(value) {
-  return value === 'hidden' ? 'hidden' : 'visible';
+  return value === 'visible' ? 'visible' : 'hidden';
 }
 
 let wsPageVisibility = currentPageVisibility();

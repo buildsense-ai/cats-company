@@ -112,6 +112,9 @@ describe('WebSocket connection recovery', () => {
       active_topic: 'grp_7',
       focused: true,
     });
+
+    api.sendWSPageVisibility('unknown');
+    expect(JSON.parse(socket.send.mock.calls.at(-1)[0]).note.visibility).toBe('hidden');
   });
 
   test('derives a stable subscription identity from the push endpoint', async () => {

@@ -18,7 +18,11 @@ const (
 	defaultRedisRuntimeKeyPrefix = "catsco:runtime"
 	redisRuntimeNodeTTL          = 30 * time.Second
 	redisRuntimeHeartbeatEvery   = 10 * time.Second
-	redisUserDeviceRetentionTTL  = 24 * time.Hour
+	// Runtime writes run on WebSocket paths. Bound them so a Redis outage cannot
+	// indefinitely delay a newer attention update or a disconnect.
+	redisRuntimeWriteTimeout            = 150 * time.Millisecond
+	redisMessagingAttentionProbeTimeout = 150 * time.Millisecond
+	redisUserDeviceRetentionTTL         = 24 * time.Hour
 )
 
 // RedisRuntimeOptions configures the optional shared runtime state used by
@@ -38,9 +42,14 @@ type RedisRuntimeState struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu         sync.Mutex
-	nodes      map[string]*Hub
-	subscribed map[string]struct{}
+	mu                    sync.Mutex
+	closed                bool
+	workers               sync.WaitGroup
+	closeOnce             sync.Once
+	closeErr              error
+	nodes                 map[string]*Hub
+	subscribed            map[string]struct{}
+	attentionProbeWaiters map[string]chan bool
 }
 
 // NewRedisRuntimeState connects to Redis and verifies it is reachable. If this
@@ -69,12 +78,13 @@ func NewRedisRuntimeState(ctx context.Context, opts RedisRuntimeOptions) (*Redis
 		prefix = defaultRedisRuntimeKeyPrefix
 	}
 	return &RedisRuntimeState{
-		client:     client,
-		prefix:     prefix,
-		ctx:        child,
-		cancel:     cancel,
-		nodes:      make(map[string]*Hub),
-		subscribed: make(map[string]struct{}),
+		client:                client,
+		prefix:                prefix,
+		ctx:                   child,
+		cancel:                cancel,
+		nodes:                 make(map[string]*Hub),
+		subscribed:            make(map[string]struct{}),
+		attentionProbeWaiters: make(map[string]chan bool),
 	}, nil
 }
 
@@ -82,13 +92,19 @@ func (s *RedisRuntimeState) Close() error {
 	if s == nil {
 		return nil
 	}
-	if s.cancel != nil {
-		s.cancel()
-	}
-	if s.client != nil {
-		return s.client.Close()
-	}
-	return nil
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
+		if s.cancel != nil {
+			s.cancel()
+		}
+		s.workers.Wait()
+		if s.client != nil {
+			s.closeErr = s.client.Close()
+		}
+	})
+	return s.closeErr
 }
 
 func (s *RedisRuntimeState) runtimeMode() string {
@@ -112,17 +128,28 @@ func (s *RedisRuntimeState) registerRuntimeNode(nodeID string, hub *Hub) {
 		return
 	}
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
 	s.nodes[nodeID] = hub
 	_, alreadySubscribed := s.subscribed[nodeID]
 	if !alreadySubscribed {
 		s.subscribed[nodeID] = struct{}{}
+		s.workers.Add(2)
 	}
 	s.mu.Unlock()
 
 	_ = s.touchRuntimeNode(nodeID)
 	if !alreadySubscribed {
-		go s.runRuntimeNodeHeartbeat(nodeID)
-		go s.runDeviceRPCInbox(nodeID)
+		go func() {
+			defer s.workers.Done()
+			s.runRuntimeNodeHeartbeat(nodeID)
+		}()
+		go func() {
+			defer s.workers.Done()
+			s.runDeviceRPCInbox(nodeID)
+		}()
 	}
 }
 
@@ -133,7 +160,9 @@ func (s *RedisRuntimeState) bindRuntimeRoute(route runtimeRoute, now time.Time) 
 	if !route.validAt(now) {
 		return
 	}
-	_ = s.touchRuntimeNode(route.NodeID)
+	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+	defer cancel()
+	_ = s.touchRuntimeNodeWithContext(ctx, route.NodeID)
 	payload, err := json.Marshal(redisRouteFromRuntime(route))
 	if err != nil {
 		return
@@ -142,21 +171,32 @@ func (s *RedisRuntimeState) bindRuntimeRoute(route runtimeRoute, now time.Time) 
 	if ttl <= 0 {
 		return
 	}
-	_ = s.client.Set(s.ctx, s.routeKey(route), payload, ttl).Err()
+	_ = s.client.Set(ctx, s.routeKey(route), payload, ttl).Err()
 }
 
 func (s *RedisRuntimeState) clearRuntimeRoute(route runtimeRoute) {
-	if s == nil || s.client == nil || route.NodeID == "" || route.ConnectionID == "" {
+	if s == nil {
 		return
 	}
-	key := s.routeKey(route)
-	_ = s.client.Watch(s.ctx, func(tx *redis.Tx) error {
-		current, ok := s.getRouteWithClient(tx, key)
+	s.clearMatchingRuntimeRoute(s.routeKey(route), route)
+}
+
+func (s *RedisRuntimeState) clearMatchingRuntimeRoute(key string, route runtimeRoute) {
+	if s == nil || s.client == nil || key == "" || route.NodeID == "" || route.ConnectionID == "" {
+		return
+	}
+	// This runs in the Hub's serialized disconnect path. Keep the complete
+	// transaction bounded so one unavailable Redis connection cannot delay a
+	// later client's local removal and make stale attention suppress a Push.
+	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+	defer cancel()
+	_ = s.client.Watch(ctx, func(tx *redis.Tx) error {
+		current, ok := s.getRouteWithClient(ctx, tx, key)
 		if !ok || !current.matches(route) {
 			return nil
 		}
-		_, err := tx.TxPipelined(s.ctx, func(pipe redis.Pipeliner) error {
-			pipe.Del(s.ctx, key)
+		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Del(ctx, key)
 			return nil
 		})
 		return err
@@ -242,43 +282,53 @@ func parseRedisMessagingClientAttentionMember(member string) (string, messagingC
 	return identity, attention.normalized()
 }
 
-func (s *RedisRuntimeState) setMessagingClientAttention(uid int64, route runtimeRoute, attention messagingClientAttention, now time.Time, ttl time.Duration) {
+func (s *RedisRuntimeState) setMessagingClientAttention(uid int64, route runtimeRoute, attention messagingClientAttention, now time.Time, ttl time.Duration) error {
 	if s == nil || s.client == nil || uid <= 0 || messagingClientAttentionIdentity(route) == "" {
-		return
+		return nil
 	}
+	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+	defer cancel()
 	attention = attention.normalized()
 	if !attention.suppressible() || ttl <= 0 {
-		s.clearMessagingClientAttention(uid, route)
-		return
+		return s.applyMessagingClientAttentionClear(ctx, uid, route)
 	}
 	if !route.validAt(now) {
-		return
+		return nil
 	}
 
-	// The attention payload is part of the sorted-set member. Remove any prior
-	// payload for this connection before publishing its replacement, otherwise
-	// a topic change would leave the old topic suppressing pushes until TTL.
-	s.clearMessagingClientAttention(uid, route)
+	if err := s.applyMessagingClientAttentionClear(ctx, uid, route); err != nil {
+		return err
+	}
 	member := redisMessagingClientAttentionMember(route, attention)
 	expiresAt := now.Add(ttl)
-	_, _ = s.client.Pipelined(s.ctx, func(pipe redis.Pipeliner) error {
-		pipe.ZAdd(s.ctx, s.messagingClientAttentionKey(uid), redis.Z{
+	_, err := s.client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.ZAdd(ctx, s.messagingClientAttentionKey(uid), redis.Z{
 			Score:  float64(expiresAt.UnixMilli()),
 			Member: member,
 		})
-		pipe.Expire(s.ctx, s.messagingClientAttentionKey(uid), ttl)
+		pipe.Expire(ctx, s.messagingClientAttentionKey(uid), ttl)
 		return nil
 	})
+	if err != nil {
+		return fmt.Errorf("publish messaging attention: %w", err)
+	}
+	return nil
 }
 
-func (s *RedisRuntimeState) clearMessagingClientAttention(uid int64, route runtimeRoute) {
+func (s *RedisRuntimeState) clearMessagingClientAttention(uid int64, route runtimeRoute) error {
 	if s == nil || s.client == nil || uid <= 0 || messagingClientAttentionIdentity(route) == "" {
-		return
+		return nil
 	}
+	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+	defer cancel()
+	return s.applyMessagingClientAttentionClear(ctx, uid, route)
+}
+
+func (s *RedisRuntimeState) applyMessagingClientAttentionClear(ctx context.Context, uid int64, route runtimeRoute) error {
 	key := s.messagingClientAttentionKey(uid)
-	members, err := s.client.ZRange(s.ctx, key, 0, -1).Result()
+	members, err := s.client.ZRange(ctx, key, 0, -1).Result()
 	if err != nil {
-		return
+		return fmt.Errorf("list messaging attention: %w", err)
 	}
 	identity := messagingClientAttentionIdentity(route)
 	remove := make([]interface{}, 0, 1)
@@ -289,27 +339,37 @@ func (s *RedisRuntimeState) clearMessagingClientAttention(uid int64, route runti
 		}
 	}
 	if len(remove) > 0 {
-		_, _ = s.client.ZRem(s.ctx, key, remove...).Result()
+		if _, err := s.client.ZRem(ctx, key, remove...).Result(); err != nil {
+			return fmt.Errorf("clear messaging attention: %w", err)
+		}
 	}
+	return nil
 }
 
-func (s *RedisRuntimeState) hasMessagingClientAttention(uid int64, subscriptionID, topic string, now time.Time) bool {
+func (s *RedisRuntimeState) hasMessagingClientAttention(requestingNodeID string, uid int64, subscriptionID, topic string, now time.Time) bool {
 	if s == nil || s.client == nil || uid <= 0 {
 		return false
 	}
+	// Suppression is an optimization, never a delivery prerequisite. Bound the
+	// entire lookup and owner confirmation so a partition or a stuck Redis
+	// operation turns into an extra Push instead of delaying one indefinitely.
+	ctx, cancel := context.WithTimeout(s.ctx, redisMessagingAttentionProbeTimeout)
+	defer cancel()
 	key := s.messagingClientAttentionKey(uid)
 	pipe := s.client.Pipeline()
-	pipe.ZRemRangeByScore(s.ctx, key, "-inf", fmt.Sprintf("%d", now.UnixMilli()))
-	members := pipe.ZRange(s.ctx, key, 0, -1)
-	if _, err := pipe.Exec(s.ctx); err != nil {
+	pipe.ZRemRangeByScore(ctx, key, "-inf", fmt.Sprintf("%d", now.UnixMilli()))
+	members := pipe.ZRange(ctx, key, 0, -1)
+	if _, err := pipe.Exec(ctx); err != nil {
 		// Suppression requires positive proof that this exact subscription is
 		// focused on this exact topic. On a runtime outage, prefer a possible
 		// duplicate over silently missing a cross-device notification.
 		return false
 	}
 	for _, member := range members.Val() {
-		_, attention := parseRedisMessagingClientAttentionMember(member)
-		if attention.suppresses(subscriptionID, topic) {
+		identity, attention := parseRedisMessagingClientAttentionMember(member)
+		route := messagingClientAttentionRoute(identity)
+		if attention.suppresses(subscriptionID, topic) &&
+			s.confirmMessagingClientAttention(ctx, requestingNodeID, uid, route, subscriptionID, topic) {
 			return true
 		}
 	}
@@ -329,7 +389,7 @@ func (s *RedisRuntimeState) acquireBotBodyLease(botUID int64, bodyID string, con
 		var result botBodyLeaseResult
 		var leaseErr error
 		err := s.client.Watch(s.ctx, func(tx *redis.Tx) error {
-			existing, ok := s.getBotLeaseWithClient(tx, key)
+			existing, ok := s.getBotLeaseWithClient(s.ctx, tx, key)
 			if ok && isSharedLeaseActive(existing, now) {
 				if existing.bodyID != bodyID {
 					if isLegacyBotBodyID(existing.bodyID) && !isLegacyBotBodyID(bodyID) {
@@ -404,18 +464,20 @@ func (s *RedisRuntimeState) botBodyLeaseIsCurrent(botUID int64, bodyID string, c
 }
 
 func (s *RedisRuntimeState) releaseBotBodyLease(botUID int64, bodyID string, connectionID string, nodeID string) bool {
-	if s == nil || botUID <= 0 || bodyID == "" || connectionID == "" || nodeID == "" {
+	if s == nil || s.client == nil || botUID <= 0 || bodyID == "" || connectionID == "" || nodeID == "" {
 		return false
 	}
+	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+	defer cancel()
 	key := s.botLeaseKey(botUID)
 	released := false
-	_ = s.client.Watch(s.ctx, func(tx *redis.Tx) error {
-		lease, ok := s.getBotLeaseWithClient(tx, key)
+	_ = s.client.Watch(ctx, func(tx *redis.Tx) error {
+		lease, ok := s.getBotLeaseWithClient(ctx, tx, key)
 		if !ok || lease.bodyID != bodyID || lease.connectionID != connectionID || lease.nodeID != nodeID {
 			return nil
 		}
-		_, err := tx.TxPipelined(s.ctx, func(pipe redis.Pipeliner) error {
-			pipe.Del(s.ctx, key)
+		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Del(ctx, key)
 			return nil
 		})
 		if err == nil {
@@ -433,7 +495,7 @@ func (s *RedisRuntimeState) renewBotBodyLease(botUID int64, bodyID string, conne
 	key := s.botLeaseKey(botUID)
 	renewed := false
 	_ = s.client.Watch(s.ctx, func(tx *redis.Tx) error {
-		lease, ok := s.getBotLeaseWithClient(tx, key)
+		lease, ok := s.getBotLeaseWithClient(s.ctx, tx, key)
 		if !ok || lease.bodyID != bodyID || lease.connectionID != connectionID || lease.nodeID != nodeID {
 			return nil
 		}
@@ -581,18 +643,7 @@ func (s *RedisRuntimeState) clearUserDeviceRoute(ownerUID int64, deviceID string
 	if s == nil || ownerUID <= 0 || deviceID == "" {
 		return
 	}
-	key := s.userDeviceRouteKey(ownerUID, deviceID)
-	_ = s.client.Watch(s.ctx, func(tx *redis.Tx) error {
-		current, ok := s.getRouteWithClient(tx, key)
-		if !ok || !current.matches(route) {
-			return nil
-		}
-		_, err := tx.TxPipelined(s.ctx, func(pipe redis.Pipeliner) error {
-			pipe.Del(s.ctx, key)
-			return nil
-		})
-		return err
-	}, key)
+	s.clearMatchingRuntimeRoute(s.userDeviceRouteKey(ownerUID, deviceID), route)
 }
 
 func (s *RedisRuntimeState) userDeviceRoute(ownerUID int64, deviceID string, now time.Time) (runtimeRoute, bool) {
@@ -993,6 +1044,97 @@ func (s *RedisRuntimeState) localHub(nodeID string) *Hub {
 	return s.nodes[nodeID]
 }
 
+// confirmMessagingClientAttention treats Redis as a locator only. A stale
+// member can never suppress delivery by itself: its owning runtime node must
+// confirm the live WebSocket connection and its current local attention.
+func (s *RedisRuntimeState) confirmMessagingClientAttention(ctx context.Context, requestingNodeID string, uid int64, route runtimeRoute, subscriptionID, topic string) bool {
+	if s == nil || s.client == nil || !route.validAt(time.Now()) || uid <= 0 || requestingNodeID == "" {
+		return false
+	}
+	if hub := s.localHub(route.NodeID); hub != nil {
+		return hub.hasLocalMessagingClientAttentionForRoute(uid, route, subscriptionID, topic)
+	}
+	probeID, err := randomHex(16)
+	if err != nil || probeID == "" {
+		return false
+	}
+	result := make(chan bool, 1)
+	s.mu.Lock()
+	s.attentionProbeWaiters[probeID] = result
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.attentionProbeWaiters, probeID)
+		s.mu.Unlock()
+	}()
+
+	payload, err := json.Marshal(redisRuntimeEnvelope{
+		MessagingAttentionProbe: &redisMessagingAttentionProbe{
+			ID:             probeID,
+			ReplyNodeID:    requestingNodeID,
+			UID:            uid,
+			Route:          redisRouteFromRuntime(route),
+			SubscriptionID: subscriptionID,
+			Topic:          topic,
+		},
+	})
+	receivers, err := s.client.Publish(ctx, s.nodeInboxChannel(route.NodeID), payload).Result()
+	if err != nil || receivers == 0 {
+		return false
+	}
+
+	select {
+	case active := <-result:
+		return active
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s *RedisRuntimeState) handleMessagingAttentionProbe(nodeID string, probe *redisMessagingAttentionProbe) {
+	if s == nil || s.client == nil || probe == nil || probe.ID == "" || probe.ReplyNodeID == "" || probe.Route.NodeID != nodeID {
+		return
+	}
+	active := false
+	if hub := s.localHub(nodeID); hub != nil {
+		active = hub.hasLocalMessagingClientAttentionForRoute(
+			probe.UID,
+			probe.Route.toRuntimeRoute(),
+			probe.SubscriptionID,
+			probe.Topic,
+		)
+	}
+	payload, err := json.Marshal(redisRuntimeEnvelope{
+		MessagingAttentionProbeReply: &redisMessagingAttentionProbeReply{
+			ID:     probe.ID,
+			Active: active,
+		},
+	})
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, redisMessagingAttentionProbeTimeout)
+	defer cancel()
+	_ = s.client.Publish(ctx, s.nodeInboxChannel(probe.ReplyNodeID), payload).Err()
+}
+
+func (s *RedisRuntimeState) resolveMessagingAttentionProbe(reply *redisMessagingAttentionProbeReply) {
+	if s == nil || reply == nil || reply.ID == "" {
+		return
+	}
+	s.mu.Lock()
+	result := s.attentionProbeWaiters[reply.ID]
+	delete(s.attentionProbeWaiters, reply.ID)
+	s.mu.Unlock()
+	if result == nil {
+		return
+	}
+	select {
+	case result <- reply.Active:
+	default:
+	}
+}
+
 func (s *RedisRuntimeState) runRuntimeNodeHeartbeat(nodeID string) {
 	ticker := time.NewTicker(redisRuntimeHeartbeatEvery)
 	defer ticker.Stop()
@@ -1022,6 +1164,14 @@ func (s *RedisRuntimeState) runDeviceRPCInbox(nodeID string) {
 			if err := json.Unmarshal([]byte(item.Payload), &envelope); err != nil {
 				continue
 			}
+			if envelope.MessagingAttentionProbeReply != nil {
+				s.resolveMessagingAttentionProbe(envelope.MessagingAttentionProbeReply)
+				continue
+			}
+			if envelope.MessagingAttentionProbe != nil {
+				s.handleMessagingAttentionProbe(nodeID, envelope.MessagingAttentionProbe)
+				continue
+			}
 			route := envelope.Route.toRuntimeRoute()
 			if route.NodeID != nodeID || !route.validAt(time.Now()) {
 				continue
@@ -1041,7 +1191,16 @@ func (s *RedisRuntimeState) touchRuntimeNode(nodeID string) error {
 	if s == nil || s.client == nil || nodeID == "" {
 		return nil
 	}
-	return s.client.Set(s.ctx, s.nodeKey(nodeID), "1", redisRuntimeNodeTTL).Err()
+	ctx, cancel := context.WithTimeout(s.ctx, redisRuntimeWriteTimeout)
+	defer cancel()
+	return s.touchRuntimeNodeWithContext(ctx, nodeID)
+}
+
+func (s *RedisRuntimeState) touchRuntimeNodeWithContext(ctx context.Context, nodeID string) error {
+	if s == nil || s.client == nil || nodeID == "" {
+		return nil
+	}
+	return s.client.Set(ctx, s.nodeKey(nodeID), "1", redisRuntimeNodeTTL).Err()
 }
 
 func (s *RedisRuntimeState) runtimeNodeAlive(nodeID string) bool {
@@ -1081,15 +1240,15 @@ func (s *RedisRuntimeState) getUserDevice(ownerUID int64, deviceID string) (User
 }
 
 func (s *RedisRuntimeState) getRoute(key string) (runtimeRoute, bool) {
-	return s.getRouteWithClient(s.client, key)
+	return s.getRouteWithClient(s.ctx, s.client, key)
 }
 
 type redisGetter interface {
 	Get(ctx context.Context, key string) *redis.StringCmd
 }
 
-func (s *RedisRuntimeState) getRouteWithClient(client redisGetter, key string) (runtimeRoute, bool) {
-	raw, err := client.Get(s.ctx, key).Result()
+func (s *RedisRuntimeState) getRouteWithClient(ctx context.Context, client redisGetter, key string) (runtimeRoute, bool) {
+	raw, err := client.Get(ctx, key).Result()
 	if err != nil {
 		return runtimeRoute{}, false
 	}
@@ -1101,11 +1260,11 @@ func (s *RedisRuntimeState) getRouteWithClient(client redisGetter, key string) (
 }
 
 func (s *RedisRuntimeState) getBotLease(key string) (botBodyLease, bool) {
-	return s.getBotLeaseWithClient(s.client, key)
+	return s.getBotLeaseWithClient(s.ctx, s.client, key)
 }
 
-func (s *RedisRuntimeState) getBotLeaseWithClient(client redisGetter, key string) (botBodyLease, bool) {
-	raw, err := client.Get(s.ctx, key).Result()
+func (s *RedisRuntimeState) getBotLeaseWithClient(ctx context.Context, client redisGetter, key string) (botBodyLease, bool) {
+	raw, err := client.Get(ctx, key).Result()
 	if err != nil {
 		return botBodyLease{}, false
 	}
@@ -1215,9 +1374,10 @@ func (s *RedisRuntimeState) routeKey(route runtimeRoute) string {
 }
 
 func (s *RedisRuntimeState) messagingClientAttentionKey(uid int64) string {
-	// Keep the deployed Redis key stable while the internal model expands from
-	// visibility to exact subscription/topic attention.
-	return s.key("visible_messaging", fmt.Sprintf("%d", uid))
+	// Do not reuse visible_messaging: binaries before this change use ZCard on
+	// that key and would treat any v2 member as broad user visibility. A
+	// dedicated key makes mixed-version deployments fail open instead.
+	return s.key("messaging_attention", fmt.Sprintf("%d", uid))
 }
 
 func (s *RedisRuntimeState) botLeaseKey(botUID int64) string {
@@ -1359,11 +1519,27 @@ type redisThinToolRPCEnvelope struct {
 	Msg   *MsgThinToolRPC   `json:"thin_tool_rpc"`
 }
 
+type redisMessagingAttentionProbe struct {
+	ID             string            `json:"id"`
+	ReplyNodeID    string            `json:"reply_node_id"`
+	UID            int64             `json:"uid"`
+	Route          redisRuntimeRoute `json:"route"`
+	SubscriptionID string            `json:"subscription_id"`
+	Topic          string            `json:"topic"`
+}
+
+type redisMessagingAttentionProbeReply struct {
+	ID     string `json:"id"`
+	Active bool   `json:"active"`
+}
+
 type redisRuntimeEnvelope struct {
-	Route       redisRuntimeRoute `json:"route"`
-	Msg         *MsgDeviceRPC     `json:"msg,omitempty"`
-	DeviceRPC   *MsgDeviceRPC     `json:"device_rpc,omitempty"`
-	ThinToolRPC *MsgThinToolRPC   `json:"thin_tool_rpc,omitempty"`
+	Route                        redisRuntimeRoute                  `json:"route"`
+	Msg                          *MsgDeviceRPC                      `json:"msg,omitempty"`
+	DeviceRPC                    *MsgDeviceRPC                      `json:"device_rpc,omitempty"`
+	ThinToolRPC                  *MsgThinToolRPC                    `json:"thin_tool_rpc,omitempty"`
+	MessagingAttentionProbe      *redisMessagingAttentionProbe      `json:"messaging_attention_probe,omitempty"`
+	MessagingAttentionProbeReply *redisMessagingAttentionProbeReply `json:"messaging_attention_probe_reply,omitempty"`
 }
 
 func firstDeviceRPCMessage(values ...*MsgDeviceRPC) *MsgDeviceRPC {
