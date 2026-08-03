@@ -326,6 +326,7 @@ func main() {
 		return server.LatestDeviceModelStatus(hub, uid)
 	})
 	relayAdminClient := server.NewRelayAdminClientFromEnv()
+	userHandler.SetRelayRegistrationProvisioning(relayAdminClient)
 	botModelConfigHandler.SetRelayUsageClient(relayAdminClient)
 	agentHandler.SetRelayUsageDependencies(relayAdminClient, func(uid int64, bodyID string) (server.DeviceModelStatus, bool) {
 		if strings.TrimSpace(bodyID) == "" {

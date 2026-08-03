@@ -2,7 +2,9 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -134,6 +136,82 @@ func TestHandleRegisterAcceptsVerifiedEmail(t *testing.T) {
 	}
 	if err := bcrypt.CompareHashAndPassword(created.PassHash, []byte("secret123")); err != nil {
 		t.Fatalf("stored password hash does not match: %v", err)
+	}
+}
+
+func TestHandleRegisterAsynchronouslyProvisionsRelayKey(t *testing.T) {
+	db := newUserRegistrationTestStore()
+	email := "relay-registration@example.com"
+	code := "794215"
+	deleteVerificationCode(email, verificationPurposeRegister)
+	t.Cleanup(func() { deleteVerificationCode(email, verificationPurposeRegister) })
+	storeVerificationCode(email, code, time.Now().Add(time.Minute).Unix(), verificationPurposeRegister)
+
+	type provisionCall struct {
+		uid      int64
+		username string
+	}
+	calls := make(chan provisionCall, 1)
+	handler := NewUserHandler(db)
+	handler.relayRegistrationDelays = []time.Duration{0}
+	handler.relayRegistrationCreate = func(_ context.Context, uid int64, username string) error {
+		calls <- provisionCall{uid: uid, username: username}
+		return nil
+	}
+
+	rec := performUserRequest(t, handler.HandleRegister, map[string]string{
+		"email":    email,
+		"username": "relay-user",
+		"password": "secret123",
+		"code":     code,
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	select {
+	case call := <-calls:
+		if call.uid != 1 || call.username != "relay-user" {
+			t.Fatalf("relay provision call = %+v", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("relay key provisioning was not scheduled")
+	}
+}
+
+func TestHandleRegisterIgnoresRelayProvisioningFailure(t *testing.T) {
+	db := newUserRegistrationTestStore()
+	email := "relay-registration-failure@example.com"
+	code := "137864"
+	deleteVerificationCode(email, verificationPurposeRegister)
+	t.Cleanup(func() { deleteVerificationCode(email, verificationPurposeRegister) })
+	storeVerificationCode(email, code, time.Now().Add(time.Minute).Unix(), verificationPurposeRegister)
+
+	called := make(chan struct{}, 1)
+	handler := NewUserHandler(db)
+	handler.relayRegistrationDelays = []time.Duration{0}
+	handler.relayRegistrationCreate = func(_ context.Context, _ int64, _ string) error {
+		called <- struct{}{}
+		return errors.New("relay unavailable")
+	}
+
+	rec := performUserRequest(t, handler.HandleRegister, map[string]string{
+		"email":    email,
+		"username": "relay-failure-user",
+		"password": "secret123",
+		"code":     code,
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(db.createdUsers) != 1 {
+		t.Fatalf("created users = %d, want 1", len(db.createdUsers))
+	}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("relay provisioning failure path was not exercised")
 	}
 }
 

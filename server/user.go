@@ -2,10 +2,13 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -15,12 +18,38 @@ import (
 
 // UserHandler handles user-related API requests.
 type UserHandler struct {
-	db store.Store
+	db                       store.Store
+	relayRegistrationCreate  func(context.Context, int64, string) error
+	relayRegistrationDelays  []time.Duration
+	relayRegistrationTimeout time.Duration
 }
 
 // NewUserHandler creates a new UserHandler.
 func NewUserHandler(db store.Store) *UserHandler {
-	return &UserHandler{db: db}
+	return &UserHandler{
+		db:                       db,
+		relayRegistrationDelays:  []time.Duration{0, 2 * time.Second, 10 * time.Second},
+		relayRegistrationTimeout: defaultRelayAdminTimeout,
+	}
+}
+
+// SetRelayRegistrationProvisioning asynchronously provisions a relay key for
+// newly registered users. Relay availability must never gate account creation.
+func (h *UserHandler) SetRelayRegistrationProvisioning(admin *RelayAdminClient) {
+	if h == nil {
+		return
+	}
+	if admin == nil {
+		h.relayRegistrationCreate = nil
+		return
+	}
+	h.relayRegistrationCreate = func(ctx context.Context, uid int64, username string) error {
+		var out relayKeyResponse
+		return admin.Do(ctx, http.MethodPost, fmt.Sprintf("/internal/users/%d/key", uid), relayKeyProxyRequest{
+			Name:     "CatsCo relay key",
+			Username: username,
+		}, &out)
+	}
 }
 
 // RegisterRequest is the JSON body for user registration.
@@ -244,13 +273,53 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		PassHash:    hash,
 	}
 
-	_, err = h.db.CreateUser(user)
+	uid, err := h.db.CreateUser(user)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email already exists"})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+	h.provisionRegisteredUserRelayKey(uid, username)
+}
+
+func (h *UserHandler) provisionRegisteredUserRelayKey(uid int64, username string) {
+	if h == nil || h.relayRegistrationCreate == nil || uid <= 0 {
+		return
+	}
+	create := h.relayRegistrationCreate
+	delays := append([]time.Duration(nil), h.relayRegistrationDelays...)
+	if len(delays) == 0 {
+		delays = []time.Duration{0}
+	}
+	timeout := h.relayRegistrationTimeout
+	if timeout <= 0 {
+		timeout = defaultRelayAdminTimeout
+	}
+
+	go func() {
+		var lastErr error
+		for attempt, delay := range delays {
+			if delay > 0 {
+				timer := time.NewTimer(delay)
+				<-timer.C
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			lastErr = create(ctx, uid, username)
+			cancel()
+			if lastErr == nil {
+				log.Printf("relay registration key provisioned: uid=%d username=%s", uid, username)
+				return
+			}
+			log.Printf(
+				"relay registration key provisioning failed: uid=%d attempt=%d/%d error=%v",
+				uid,
+				attempt+1,
+				len(delays),
+				lastErr,
+			)
+		}
+	}()
 }
 
 // HandleLogin handles POST /api/auth/login
