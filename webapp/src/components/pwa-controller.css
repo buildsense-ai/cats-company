@@ -1,8 +1,8 @@
 .cc-pwa-status {
   position: fixed;
+  top: max(12px, env(safe-area-inset-top));
   right: max(12px, env(safe-area-inset-right));
-  bottom: max(12px, env(safe-area-inset-bottom));
-  z-index: 1200;
+  z-index: 1100;
   display: grid;
   gap: 8px;
   width: min(360px, calc(100vw - 24px));
@@ -21,6 +21,19 @@
   color: var(--cc-text);
   box-shadow: 0 12px 30px color-mix(in srgb, var(--cc-text) 14%, transparent);
   font-size: 13px;
+  animation: cc-pwa-popup-in 180ms ease-out both;
+}
+
+@keyframes cc-pwa-popup-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .cc-pwa-offline {
@@ -167,5 +180,12 @@
 
   .cc-pwa-prompt--push .cc-pwa-prompt-actions button:first-child {
     flex: 1 1 auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-pwa-offline,
+  .cc-pwa-prompt {
+    animation: none;
   }
 }
