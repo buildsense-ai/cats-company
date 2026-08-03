@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#D4A853" />
+  <title>CatsCo 离线</title>
+  <style>
+    :root { color-scheme: light dark; font-family: Inter, "Noto Sans SC", system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #111827; color: #f9fafb; }
+    main { width: min(28rem, calc(100% - 3rem)); text-align: center; }
+    img { width: 5rem; height: 5rem; border-radius: 1.25rem; }
+    h1 { margin: 1.25rem 0 .5rem; font-size: 1.5rem; }
+    p { margin: 0; color: #d1d5db; line-height: 1.7; }
+    button { margin-top: 1.5rem; border: 0; border-radius: .75rem; padding: .7rem 1.1rem; color: #111827; background: #D4A853; font: inherit; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <main>
+    <img src="/pwa-192x192.png" alt="CatsCo" />
+    <h1>当前处于离线状态</h1>
+    <p>连接网络后重试。消息、接口响应和附件不会保存在离线缓存中。</p>
+    <button type="button" onclick="location.reload()">重新连接</button>
+  </main>
+</body>
+</html>

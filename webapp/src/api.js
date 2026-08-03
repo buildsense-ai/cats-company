@@ -3,6 +3,97 @@ const DEFAULT_WS_SCHEME = window.location.protocol === 'https:' ? 'wss' : 'ws';
 const WS_URL = import.meta.env.VITE_WS_URL || `${DEFAULT_WS_SCHEME}://${window.location.host}/v0/channels`;
 
 let token = localStorage.getItem('oc_token');
+const PUSH_REGISTRATION_ID_KEY = 'oc_push_registration_id';
+const PUSH_REGISTRATION_OWNER_KEY = 'oc_push_registration_owner';
+// A registration ID guards server deletes. sessionStorage preserves it across
+// reloads and cross-origin returns in this browsing context. A copied storage
+// area is safe because cleanup first coordinates with active peer tabs.
+let pushRegistrationID = '';
+let pushRegistrationOwner = '';
+const newPushRegistrationID = () => {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+};
+const decodeTokenPayload = (candidate) => {
+  try {
+    const encodedPayload = candidate?.split('.')[1];
+    if (!encodedPayload) return null;
+    const normalized = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    return JSON.parse(atob(padded));
+  } catch {
+    return null;
+  }
+};
+const pushRegistrationOwnerForToken = (candidate) => {
+  const userID = decodeTokenPayload(candidate)?.userId;
+  return userID === undefined || userID === null ? null : `user:${userID}`;
+};
+
+const readPushRegistration = () => {
+  try {
+    return {
+      id: String(globalThis.sessionStorage?.getItem(PUSH_REGISTRATION_ID_KEY) || '').trim(),
+      owner: String(globalThis.sessionStorage?.getItem(PUSH_REGISTRATION_OWNER_KEY) || '').trim(),
+    };
+  } catch {
+    return { id: '', owner: '' };
+  }
+};
+
+const writePushRegistration = (id, owner) => {
+  try {
+    globalThis.sessionStorage?.setItem(PUSH_REGISTRATION_ID_KEY, id);
+    globalThis.sessionStorage?.setItem(PUSH_REGISTRATION_OWNER_KEY, owner);
+  } catch {
+    // Memory-only registration IDs still prevent stale operations in this page.
+  }
+};
+
+const registrationIDForToken = (candidate) => {
+  const owner = pushRegistrationOwnerForToken(candidate);
+  if (!owner) return newPushRegistrationID();
+  if (pushRegistrationID && pushRegistrationOwner === owner) {
+    return pushRegistrationID;
+  }
+  const saved = readPushRegistration();
+  if (saved.owner === owner && saved.id && saved.id.length <= 64) {
+    pushRegistrationID = saved.id;
+    pushRegistrationOwner = owner;
+    return pushRegistrationID;
+  }
+  const registrationID = newPushRegistrationID();
+  pushRegistrationID = registrationID;
+  pushRegistrationOwner = owner;
+  writePushRegistration(registrationID, owner);
+  return registrationID;
+};
+
+const legacyRegistrationIDForToken = (candidate) => {
+  const owner = pushRegistrationOwnerForToken(candidate);
+  if (!owner) return '';
+  try {
+    const id = String(globalThis.localStorage?.getItem(PUSH_REGISTRATION_ID_KEY) || '').trim();
+    const legacyOwner = String(globalThis.localStorage?.getItem(PUSH_REGISTRATION_OWNER_KEY) || '').trim();
+    if (!id || id.length > 64 || (legacyOwner && legacyOwner !== owner)) return '';
+    return id;
+  } catch {
+    return '';
+  }
+};
+
+const clearPushRegistration = () => {
+  pushRegistrationID = '';
+  pushRegistrationOwner = '';
+  try {
+    globalThis.sessionStorage?.removeItem(PUSH_REGISTRATION_ID_KEY);
+    globalThis.sessionStorage?.removeItem(PUSH_REGISTRATION_OWNER_KEY);
+  } catch {
+    // The in-memory values are still cleared when storage is unavailable.
+  }
+};
+let authRevision = 0;
 let wsConn = null;
 let wsReconnectTimer = null;
 let wsConnectTimer = null;
@@ -14,6 +105,19 @@ let topicLastSeq = {};
 
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 const WS_CONNECT_TIMEOUT_MS = 10000;
+const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3000;
+
+function currentPageVisibility() {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden'
+    ? 'hidden'
+    : 'visible';
+}
+
+function normalizePageVisibility(value) {
+  return value === 'hidden' ? 'hidden' : 'visible';
+}
+
+let wsPageVisibility = currentPageVisibility();
 
 export function updateTopicSeq(topicId, seq) {
   if (!topicLastSeq[topicId] || seq > topicLastSeq[topicId]) {
@@ -30,12 +134,47 @@ export function requestMissedMessages(topicId) {
 
 export function setToken(t) {
   token = t;
+  authRevision += 1;
   if (t) localStorage.setItem('oc_token', t);
-  else localStorage.removeItem('oc_token');
+  else {
+    localStorage.removeItem('oc_token');
+    clearPushRegistration();
+  }
+  window.dispatchEvent(new CustomEvent('cc:auth-changed', {
+    detail: {
+      loggedIn: Boolean(t),
+      revision: authRevision,
+    },
+  }));
 }
 
 export function getToken() {
   return token;
+}
+
+export function getAuthRevision() {
+  return authRevision;
+}
+
+export function isCurrentAuthSession(candidate, revision) {
+  return Boolean(candidate)
+    && Number.isInteger(revision)
+    && token === candidate
+    && authRevision === revision;
+}
+
+export function getPushRegistrationID() {
+  return token ? registrationIDForToken(token) : '';
+}
+
+export function getPushCleanupRegistrationIDs() {
+  const current = getPushRegistrationID();
+  const legacy = legacyRegistrationIDForToken(token);
+  return [...new Set([current, legacy].filter(Boolean))];
+}
+
+export function getPushPromptOwner() {
+  return pushRegistrationOwnerForToken(token) || '';
 }
 
 export function getWebSocketURL() {
@@ -63,12 +202,9 @@ export function isWSConnected() {
 
 export function isTokenExpired(candidate = token) {
   if (!candidate) return false;
+  const payload = decodeTokenPayload(candidate);
+  if (!payload) return false;
   try {
-    const encodedPayload = candidate.split('.')[1];
-    if (!encodedPayload) return false;
-    const normalized = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
-    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
-    const payload = JSON.parse(atob(padded));
     const expiresAt = Number(payload.exp);
     return Number.isFinite(expiresAt) && Date.now() >= expiresAt * 1000;
   } catch {
@@ -76,9 +212,11 @@ export function isTokenExpired(candidate = token) {
   }
 }
 
-async function request(method, path, body, { signal, timeoutMs = 0 } = {}) {
+async function request(method, path, body, options = {}) {
+  const { signal, timeoutMs = 0 } = options;
   const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const authToken = options.authToken === undefined ? token : options.authToken;
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
 
   const controller = new AbortController();
   let timedOut = false;
@@ -161,6 +299,18 @@ export const api = {
   register: (data) => request('POST', '/api/auth/register', data),
   login: (data) => request('POST', '/api/auth/login', data),
   getMe: () => request('GET', '/api/me'),
+  getPushConfig: (signal) => request('GET', '/api/push/config', undefined, { signal }),
+  subscribePush: (subscription, registrationID, signal) => (
+    request('POST', '/api/push/subscriptions', { ...subscription, registration_id: registrationID }, { signal })
+  ),
+  unsubscribePush: (endpoint, authToken = token, registrationID = getPushRegistrationID()) => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), PUSH_UNSUBSCRIBE_TIMEOUT_MS);
+    return request('DELETE', '/api/push/subscriptions', { endpoint, registration_id: registrationID }, {
+      authToken,
+      signal: controller.signal,
+    }).finally(() => window.clearTimeout(timer));
+  },
   updateMe: (displayName, avatarUrl) =>
     request('POST', '/api/me/update', { display_name: displayName, avatar_url: avatarUrl }),
 
@@ -512,8 +662,9 @@ export function connectWS(onMessage, { force = false } = {}) {
     console.log('WebSocket connected');
     wsConnected = true;
     wsReconnectAttempt = 0;
+    wsPageVisibility = currentPageVisibility();
     // Send handshake
-    sendWS({ hi: { id: nextMsgId(), ver: '0.1.0' } });
+    sendWS({ hi: { id: nextMsgId(), ver: '0.1.0', visibility: wsPageVisibility } });
     // Request online status of friends
     sendWS({ get: { id: nextMsgId(), topic: 'me', what: 'online' } });
     // Request missed messages for all tracked topics
@@ -600,6 +751,11 @@ export function sendWS(msg) {
   if (wsConn && wsConn.readyState === WebSocket.OPEN) {
     wsConn.send(JSON.stringify(msg));
   }
+}
+
+export function sendWSPageVisibility(visibility = currentPageVisibility()) {
+  wsPageVisibility = normalizePageVisibility(visibility);
+  sendWS({ note: { what: 'visibility', visibility: wsPageVisibility } });
 }
 
 // Send a chat message via WebSocket, with REST fallback

@@ -7708,8 +7708,8 @@ html[data-theme="liquid"] :is(
   right: 20px;
   z-index: 1;
   display: grid;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   padding: 0;
   place-items: center;
   border: 1px solid oklch(0.96 0.008 165 / 0.24);
@@ -7723,7 +7723,7 @@ html[data-theme="liquid"] :is(
 }
 
 .oc-rich-media-preview-close:focus-visible {
-  outline: 2px solid oklch(0.8 0.1 165);
+  outline: 2px solid var(--cc-focus-ring);
   outline-offset: 3px;
 }
 
@@ -7736,9 +7736,32 @@ html[data-theme="liquid"] :is(
   transform: scale(0.96);
 }
 
+.oc-rich-video-preview-close {
+  width: 44px;
+  height: 44px;
+  transition:
+    background 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.oc-rich-video-preview-close:focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 3px;
+}
+
+.oc-rich-video-preview-close:hover {
+  background: oklch(0.27 0.018 165 / 0.86);
+  transform: translateY(-1px);
+}
+
+.oc-rich-video-preview-close:active {
+  transform: scale(0.96);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .v3-message .oc-rich-video-play,
-  .oc-rich-media-preview-close {
+  .oc-rich-media-preview-close,
+  .oc-rich-video-preview-close {
     transition: none;
   }
 
@@ -7748,7 +7771,9 @@ html[data-theme="liquid"] :is(
   }
 
   .oc-rich-media-preview-close:hover,
-  .oc-rich-media-preview-close:active {
+  .oc-rich-media-preview-close:active,
+  .oc-rich-video-preview-close:hover,
+  .oc-rich-video-preview-close:active {
     transform: none;
   }
 }
@@ -7914,5 +7939,21 @@ html[data-theme="liquid"] .v3-message .v3-attachment-icon {
 
   .v3-message .v3-artifact-action span {
     display: none;
+  }
+}
+
+/* iOS Safari zooms the viewport when a focused form control renders below 16px. */
+@media (hover: none) and (pointer: coarse) {
+  input:not([type]),
+  input[type="text"],
+  input[type="search"],
+  input[type="email"],
+  input[type="password"],
+  input[type="tel"],
+  input[type="url"],
+  input[type="number"],
+  textarea,
+  select {
+    font-size: 16px !important;
   }
 }

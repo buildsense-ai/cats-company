@@ -289,6 +289,7 @@ func main() {
 	botHandler.SetHub(hub)
 	botModelStore, _ := db.(store.BotModelConfigStore)
 	botModelConfigHandler := server.NewBotModelConfigHandler(db, botModelStore)
+	artifactRuntimeConfigHandler := server.NewArtifactRuntimeConfigHandlerFromEnv()
 	botDefinitionStore, _ := db.(store.BotDefinitionStore)
 	botDefinitionHandler := server.NewBotDefinitionHandler(db, botDefinitionStore, botModelStore, botModelConfigHandler)
 	botModelCloudPublicEnabled := envBool("CATSCO_BOT_MODEL_CLOUD_ENABLED")
@@ -301,6 +302,14 @@ func main() {
 	}
 	desktopConnectHandler := server.NewDesktopConnectHandler(db)
 	msgHandler := server.NewMessageHandler(db, hub)
+	pushSubscriptionStore, _ := db.(store.PushSubscriptionStore)
+	pushNotificationService := server.NewPushNotificationService(pushSubscriptionStore)
+	hub.SetPushNotificationService(pushNotificationService)
+	if pushNotificationService.Enabled() {
+		log.Printf("web push notifications are enabled")
+	} else {
+		log.Printf("web push notifications are disabled; configure VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT")
+	}
 	deviceHandler := server.NewDeviceHandler(db, hub)
 	deviceConnectorHandler := server.NewDeviceConnectorHandler(db, hub)
 	uploadHandler := server.NewUploadHandler("./uploads", "/uploads")
@@ -386,6 +395,9 @@ func main() {
 	})
 	uploadUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "upload_user", Limit: 30, Window: time.Minute, Burst: 10,
+	})
+	pushSubscriptionUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "push_subscription_user", Limit: 30, Window: time.Minute, Burst: 10,
 	})
 	readerIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "reader_ip", Limit: 20, Window: time.Minute, Burst: 5,
@@ -489,6 +501,12 @@ func main() {
 	mux.HandleFunc("/api/messages/send", authWithDB(msgHandler.HandleSendMessage))
 	mux.HandleFunc("/api/messages/search", authWithDB(msgHandler.HandleSearchMessages))
 	mux.HandleFunc("/api/messages", authWithDB(msgHandler.HandleGetMessages))
+	mux.HandleFunc("/api/push/config", pushNotificationService.HandleStatus)
+	mux.HandleFunc("/api/push/subscriptions", chainHTTP(
+		pushNotificationService.HandleSubscription,
+		jwtAuthWithDB,
+		pushSubscriptionUserLimit,
+	))
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))
 	mux.HandleFunc("/api/projects/topic", authWithDB(projectHandler.HandleProjectTopic))
@@ -572,6 +590,7 @@ func main() {
 	mux.HandleFunc("/api/bot/model-config", botAPIKeyAuthWithDB(botModelConfigHandler.HandleRuntimeConfig))
 	mux.HandleFunc("/api/bot/model-config/ack", botAPIKeyAuthWithDB(botModelConfigHandler.HandleRuntimeAck))
 	mux.HandleFunc("/api/bot/identity", botAPIKeyAuthWithDB(server.HandleBotIdentity))
+	mux.HandleFunc("/api/bot/artifact-runtime-config", botAPIKeyAuthWithDB(artifactRuntimeConfigHandler.Handle))
 	mux.HandleFunc("/api/bots/definition", ownerAuthWithDB(botDefinitionHandler.HandleOwnerDefinition))
 	mux.HandleFunc("/api/bots/definition/model", ownerAuthWithDB(botDefinitionHandler.HandleOwnerModel))
 	mux.HandleFunc("/api/bots/definition/prompt", ownerAuthWithDB(botDefinitionHandler.HandleOwnerPrompt))

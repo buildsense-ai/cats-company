@@ -243,6 +243,43 @@ func TestHandleServeFileAllowsGeneratedFeedbackImage(t *testing.T) {
 	}
 }
 
+func TestHandleServeFileDisablesHTTPCaching(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		subDir   string
+		fileName string
+	}{
+		{name: "image", subDir: "images", fileName: "20260428_0123456789abcdef0123456789abcdef.png"},
+		{name: "feedback", subDir: "feedback", fileName: "20260428_0123456789abcdef0123456789abcdef.png"},
+		{name: "file", subDir: "files", fileName: "20260428_0123456789abcdef0123456789abcdef.pdf"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fullPath := filepath.Join(dir, testCase.subDir, testCase.fileName)
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(fullPath, []byte("private upload"), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			handler := NewUploadHandler(dir, "/uploads")
+			recorder := httptest.NewRecorder()
+			handler.HandleServeFile(
+				recorder,
+				httptest.NewRequest(http.MethodGet, "/uploads/"+testCase.subDir+"/"+testCase.fileName, nil),
+			)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+			}
+			if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+		})
+	}
+}
+
 func TestHandleServeFileServesHTMLFilesInlineWithSandbox(t *testing.T) {
 	for _, ext := range []string{".html", ".htm"} {
 		t.Run(ext, func(t *testing.T) {

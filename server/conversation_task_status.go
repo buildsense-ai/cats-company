@@ -39,12 +39,13 @@ func canPublishTaskStatus(accountType types.AccountType) bool {
 }
 
 func (h *MessageHandler) handleTaskStatus(uid int64, topicID string, payload *normalizedMessagePayload) (*types.ConversationTaskStatus, error) {
-	status, err := persistConversationTaskStatus(h.db, uid, topicID, payload)
+	status, sourceStatus, err := persistConversationTaskStatus(h.db, uid, topicID, payload)
 	if err != nil {
 		return nil, err
 	}
 	if h != nil && h.hub != nil {
-		h.hub.observeGroupAgentTaskStatus(status)
+		h.hub.observeGroupAgentTaskStatus(sourceStatus)
+		h.hub.observeAgentPushTaskStatus(sourceStatus)
 		h.hub.fanoutConversationTaskStatus(uid, status, nil)
 	}
 	return status, nil
@@ -60,7 +61,7 @@ func (h *Hub) handleTaskStatusPub(client *Client, msg *MsgClientPub, topicID str
 		})
 		return
 	}
-	status, err := persistConversationTaskStatus(h.db, client.uid, topicID, payload)
+	status, sourceStatus, err := persistConversationTaskStatus(h.db, client.uid, topicID, payload)
 	if err != nil {
 		h.SendToClient(client, &ServerMessage{
 			Ctrl: &MsgServerCtrl{ID: msg.ID, Topic: topicID, Code: 400, Text: err.Error()},
@@ -68,48 +69,34 @@ func (h *Hub) handleTaskStatusPub(client *Client, msg *MsgClientPub, topicID str
 		return
 	}
 	h.SendToClient(client, taskStatusAck(msg.ID, topicID, status))
-	h.observeGroupAgentTaskStatus(status)
+	h.observeGroupAgentTaskStatus(sourceStatus)
+	h.observeAgentPushTaskStatus(sourceStatus)
 	h.fanoutConversationTaskStatus(client.uid, status, client)
 }
 
-func persistConversationTaskStatus(db store.Store, uid int64, topicID string, payload *normalizedMessagePayload) (*types.ConversationTaskStatus, error) {
+func persistConversationTaskStatus(db store.Store, uid int64, topicID string, payload *normalizedMessagePayload) (*types.ConversationTaskStatus, *types.ConversationTaskStatus, error) {
 	statusStore, ok := db.(store.ConversationTaskStatusStore)
 	if !ok {
-		return nil, errors.New("conversation task status store unavailable")
+		return nil, nil, errors.New("conversation task status store unavailable")
 	}
 	status, err := normalizeConversationTaskStatus(uid, topicID, payload)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !isGroupTopic(topicID) && db != nil {
 		if err := db.CreateTopic(topicID, "p2p", uid); err != nil {
-			return nil, fmt.Errorf("ensure task status topic: %w", err)
+			return nil, nil, fmt.Errorf("ensure task status topic: %w", err)
 		}
 	}
-	if current, err := statusStore.GetConversationTaskStatusForSource(topicID, uid); err != nil {
-		return nil, fmt.Errorf("load current task status: %w", err)
-	} else if current != nil {
-		if err := validateTaskStatusTransition(current, status); err != nil {
-			return nil, err
-		}
+	aggregate, err := statusStore.UpsertConversationTaskStatus(status)
+	if err != nil {
+		return nil, nil, err
 	}
-	return statusStore.UpsertConversationTaskStatus(status)
-}
-
-func validateTaskStatusTransition(current, next *types.ConversationTaskStatus) error {
-	if current == nil || next == nil {
-		return nil
-	}
-	// A run identifier lets us reject late progress events after that run has
-	// reached a terminal state, while still allowing a new run to supersede it.
-	if current.RunID != "" && current.RunID == next.RunID && isTerminalTaskStatus(current.State) && !isTerminalTaskStatus(next.State) {
-		return errors.New("cannot resume a terminal task run; publish a new run_id")
-	}
-	return nil
+	return aggregate, status, nil
 }
 
 func isTerminalTaskStatus(state string) bool {
-	return state == "completed" || state == "failed" || state == "cancelled" || state == "stale"
+	return types.IsTerminalConversationTaskState(state)
 }
 
 func normalizeConversationTaskStatus(uid int64, topicID string, payload *normalizedMessagePayload) (*types.ConversationTaskStatus, error) {
@@ -290,4 +277,11 @@ func (h *Hub) fanoutConversationTaskStatus(sourceUID int64, status *types.Conver
 	}
 	h.SendToUserExcept(sourceUID, msg, exclude)
 	h.SendToUser(peerUID, msg)
+}
+
+func (h *Hub) observeAgentPushTaskStatus(status *types.ConversationTaskStatus) {
+	if h == nil || h.agentPush == nil || status == nil {
+		return
+	}
+	h.agentPush.observeStatus(status)
 }

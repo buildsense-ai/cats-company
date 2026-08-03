@@ -161,11 +161,17 @@ describe('CatsCo shell styling', () => {
   });
 
   it('uses tokenized reduced-motion-safe feedback for inline video controls', () => {
+    const closeButtonRule = ruleFor('.oc-rich-media-preview-close');
+
     expect(ruleFor(':root')).toContain('--cc-media-black: oklch(0.19 0.01 165);');
     expect(ruleFor('.v3-message .oc-rich-video-play'))
       .toContain('cubic-bezier(0.16, 1, 0.3, 1)');
-    expect(ruleFor('.oc-rich-media-preview-close'))
+    expect(closeButtonRule)
       .toContain('cubic-bezier(0.16, 1, 0.3, 1)');
+    expect(closeButtonRule).toContain('width: 44px;');
+    expect(closeButtonRule).toContain('height: 44px;');
+    expect(ruleFor('.oc-rich-video-preview-close:focus-visible'))
+      .toContain('outline: 2px solid var(--cc-focus-ring);');
     expect(css).toMatch(
       /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.v3-message \.oc-rich-video-play,[\s\S]*?transition: none;/,
     );
@@ -947,6 +953,32 @@ describe('CatsCo shell styling', () => {
     expect(controlsRule).toContain('padding: 0 11px;');
     expect(hoverRule).toContain('background: var(--cc-hover);');
     expect(hoverRule).toContain('color: var(--cc-text);');
+  });
+
+  it('prevents iOS focus zoom without changing non-text form controls', () => {
+    const selectorList = css.match(
+      /@media \(hover: none\) and \(pointer: coarse\) \{\s*([^{}]+)\s*\{\s*font-size: 16px !important;/,
+    )?.[1];
+    const input = document.createElement('input');
+
+    expect(selectorList).toBeTruthy();
+    expect(css).not.toContain('@media (max-width: 768px), (hover: none) and (pointer: coarse)');
+    for (const type of ['text', 'search', 'email', 'password', 'tel', 'url', 'number']) {
+      input.type = type;
+      expect(input.matches(selectorList)).toBe(true);
+    }
+    input.removeAttribute('type');
+    expect(input.matches(selectorList)).toBe(true);
+
+    for (const type of ['button', 'submit', 'reset', 'file', 'color', 'hidden', 'checkbox', 'radio', 'range']) {
+      input.type = type;
+      expect(input.matches(selectorList)).toBe(false);
+    }
+
+    expect(document.createElement('textarea').matches(selectorList)).toBe(true);
+    expect(document.createElement('select').matches(selectorList)).toBe(true);
+    expect(css).not.toContain('user-scalable=no');
+    expect(css).not.toContain('maximum-scale=1');
   });
 
   it('aligns peer messages and typing status to the unchanged composer rail', () => {

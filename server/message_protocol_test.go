@@ -89,6 +89,12 @@ func TestRuntimePlanMessageIsTransient(t *testing.T) {
 	}
 }
 
+func TestVideoMessageDoesNotExpandDurableAgentContext(t *testing.T) {
+	if isDurableAgentContextMessage(&types.Message{}, "video") {
+		t.Fatal("video unexpectedly entered durable agent context")
+	}
+}
+
 func TestRuntimePlanMessageIsTransientWithoutMetadata(t *testing.T) {
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
 		TopicID: "p2p_1_2",
@@ -523,10 +529,17 @@ func TestHandleGetMessagesBuildsAgentContextForGroupHistory(t *testing.T) {
 				ID: 7, TopicID: "grp_80", FromUID: 42, Content: "处理中", MsgType: "text",
 				ContentBlocks: []types.ContentBlock{{Type: "thinking", Thinking: "处理中"}},
 			},
+			{
+				ID: 8, TopicID: "grp_80", FromUID: 42, Content: "最终回答", MsgType: "text",
+				ContentBlocks: []types.ContentBlock{
+					{Type: "thinking", Thinking: "内部推理"},
+					{Type: "assistant_text", Text: "最终回答"},
+				},
+			},
 		},
 	}
 	handler := NewMessageHandler(store, NewHub(store, nil))
-	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=grp_80&agent_context=1&before_id=8&limit=20", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=grp_80&agent_context=1&before_id=9&limit=20", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
 	rec := httptest.NewRecorder()
 	handler.HandleGetMessages(rec, req)
@@ -542,12 +555,12 @@ func TestHandleGetMessagesBuildsAgentContextForGroupHistory(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode agent context response: %v", err)
 	}
-	if body.AgentUID != 42 || body.HasMore || len(body.Messages) != 7 {
+	if body.AgentUID != 42 || body.HasMore || len(body.Messages) != 8 {
 		t.Fatalf("unexpected agent context envelope: %#v", body)
 	}
 
-	wantEligible := []bool{true, false, true, true, true, false, false}
-	wantRoles := []string{"user", "user", "user", "user", "assistant", "other_agent", "assistant"}
+	wantEligible := []bool{true, false, true, true, true, false, false, false}
+	wantRoles := []string{"user", "user", "user", "user", "assistant", "other_agent", "assistant", "assistant"}
 	for i, message := range body.Messages {
 		if message["context_eligible"] != wantEligible[i] || message["context_role"] != wantRoles[i] {
 			t.Fatalf("message %d context=%#v, want eligible=%v role=%s", i, message, wantEligible[i], wantRoles[i])

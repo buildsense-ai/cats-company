@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -41,6 +42,33 @@ func TestPostgresStoreContract(t *testing.T) {
 	}
 	if err := db.CreateSchema(); err != nil {
 		t.Fatalf("create schema should be idempotent: %v", err)
+	}
+	var registrationIDNullable string
+	if err := db.db.QueryRow(`
+		SELECT is_nullable
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'push_subscriptions'
+		  AND column_name = 'registration_id'
+	`).Scan(&registrationIDNullable); err != nil {
+		t.Fatalf("inspect push registration_id: %v", err)
+	}
+	if registrationIDNullable != "NO" {
+		t.Fatalf("push registration_id must be NOT NULL, got %q", registrationIDNullable)
+	}
+	var pushSubscriptionForeignKey bool
+	if err := db.db.QueryRow(`
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_constraint
+			WHERE conrelid = 'push_subscriptions'::regclass
+			  AND conname = 'fk_push_subscriptions_uid'
+		)
+	`).Scan(&pushSubscriptionForeignKey); err != nil {
+		t.Fatalf("inspect push subscription foreign key: %v", err)
+	}
+	if !pushSubscriptionForeignKey {
+		t.Fatal("push subscription foreign key missing from new schema")
 	}
 	var migrationVersion int64
 	var migrationDirty bool
@@ -110,6 +138,63 @@ func TestPostgresStoreContract(t *testing.T) {
 		t.Fatalf("uid search mismatch: got=%#v want=%d", uidSearchResults, friendID)
 	}
 
+	t.Run("push subscription handoff keeps the current browser at the limit", func(t *testing.T) {
+		const (
+			currentEndpoint = "https://push.example.test/current-browser"
+			retiredEndpoint = "https://push.example.test/retired-browser"
+		)
+		if _, insertErr := db.db.Exec(
+			`INSERT INTO push_subscriptions (uid, endpoint, p256dh, auth, registration_id)
+			 VALUES ($1, $2, 'p256dh-old', 'auth-old', 'registration-old')`,
+			ownerID, currentEndpoint,
+		); insertErr != nil {
+			t.Fatalf("store old-account browser endpoint: %v", insertErr)
+		}
+		for index := 0; index < 10; index++ {
+			endpoint := fmt.Sprintf("https://push.example.test/full-account-%d", index)
+			if index == 0 {
+				endpoint = retiredEndpoint
+			}
+			if _, insertErr := db.db.Exec(
+				`INSERT INTO push_subscriptions (uid, endpoint, p256dh, auth, registration_id)
+				 VALUES ($1, $2, 'p256dh-full', 'auth-full', 'registration-full')`,
+				friendID, endpoint,
+			); insertErr != nil {
+				t.Fatalf("store full-account endpoint %d: %v", index, insertErr)
+			}
+		}
+
+		stored, upsertErr := db.UpsertPushSubscription(context.Background(), &types.PushSubscription{
+			UID:            friendID,
+			Endpoint:       currentEndpoint,
+			P256DH:         "p256dh-current",
+			Auth:           "auth-current",
+			RegistrationID: "registration-current",
+		}, 10)
+		if upsertErr != nil || !stored {
+			t.Fatalf("claim current browser endpoint: stored=%v err=%v", stored, upsertErr)
+		}
+
+		var endpointOwner int64
+		if queryErr := db.db.QueryRow(
+			`SELECT uid FROM push_subscriptions WHERE endpoint = $1`, currentEndpoint,
+		).Scan(&endpointOwner); queryErr != nil || endpointOwner != friendID {
+			t.Fatalf("current endpoint owner=%d err=%v, want %d", endpointOwner, queryErr, friendID)
+		}
+		var recipientCount int
+		if queryErr := db.db.QueryRow(
+			`SELECT COUNT(*) FROM push_subscriptions WHERE uid = $1`, friendID,
+		).Scan(&recipientCount); queryErr != nil || recipientCount != 10 {
+			t.Fatalf("recipient subscription count=%d err=%v, want 10", recipientCount, queryErr)
+		}
+		var retiredExists bool
+		if queryErr := db.db.QueryRow(
+			`SELECT EXISTS (SELECT 1 FROM push_subscriptions WHERE endpoint = $1)`, retiredEndpoint,
+		).Scan(&retiredExists); queryErr != nil || retiredExists {
+			t.Fatalf("oldest recipient endpoint exists=%v err=%v, want false", retiredExists, queryErr)
+		}
+	})
+
 	topicID := "p2p_test"
 	if err := db.CreateTopic(topicID, "p2p", ownerID); err != nil {
 		t.Fatalf("create topic: %v", err)
@@ -136,6 +221,162 @@ func TestPostgresStoreContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create group: %v", err)
 	}
+	t.Run("message search decodes legacy attachment filenames", func(t *testing.T) {
+		topicID := fmt.Sprintf("grp_%d", groupID)
+		wantIDs := make(map[int64]bool)
+		for _, content := range []string{
+			`{"filename":"R\u0065port.pdf"}`,
+			`{"filename":"Q1 \"Final\" Report.pdf"}`,
+			`"{\"filename\":\"Escaped Report.pdf\"}"`,
+		} {
+			messageID, saveErr := db.SaveMessage(topicID, ownerID, content, "file")
+			if saveErr != nil {
+				t.Fatalf("save legacy file message: %v", saveErr)
+			}
+			wantIDs[messageID] = true
+		}
+		results, searchErr := db.SearchMessages(ownerID, "report", store.MessageSearchArtifact, 10)
+		if searchErr != nil {
+			t.Fatalf("search legacy file messages: %v", searchErr)
+		}
+		for _, result := range results {
+			delete(wantIDs, result.MessageID)
+		}
+		if len(wantIDs) != 0 {
+			t.Fatalf("legacy file search omitted message IDs: %v", wantIDs)
+		}
+	})
+	t.Run("message search matches attachment fields independently", func(t *testing.T) {
+		topicID := fmt.Sprintf("grp_%d", groupID)
+		if _, saveErr := db.SaveMessageWithBlocks(topicID, ownerID, "split metadata", []types.ContentBlock{{
+			Type: "file",
+			Name: "Quarterly",
+			Payload: map[string]interface{}{
+				"title": "Report.pdf",
+			},
+		}}, "", "", "text"); saveErr != nil {
+			t.Fatalf("save split attachment metadata: %v", saveErr)
+		}
+		wantID, saveErr := db.SaveMessageWithBlocks(topicID, ownerID, "real filename", []types.ContentBlock{{
+			Type: "file",
+			Name: "Quarterly Report.pdf",
+		}}, "", "", "text")
+		if saveErr != nil {
+			t.Fatalf("save matching attachment: %v", saveErr)
+		}
+
+		rows, queryErr := db.db.Query(postgresMessageSearchQuery,
+			ownerID, store.MessageSearchArtifact, "quarterly report", 10, 0)
+		if queryErr != nil {
+			t.Fatalf("query attachment candidates: %v", queryErr)
+		}
+		results, scanned, scanErr := scanPostgresMessageSearch(rows,
+			"quarterly report", store.MessageSearchArtifact, 10)
+		closeErr := rows.Close()
+		if scanErr != nil {
+			t.Fatalf("scan attachment candidates: %v", scanErr)
+		}
+		if closeErr != nil {
+			t.Fatalf("close attachment candidates: %v", closeErr)
+		}
+		if scanned != 1 || len(results) != 1 || results[0].MessageID != wantID {
+			t.Fatalf("attachment candidates scanned=%d results=%#v, want only message %d",
+				scanned, results, wantID)
+		}
+	})
+	t.Run("message search rejects malformed block candidates", func(t *testing.T) {
+		topicID := fmt.Sprintf("grp_%d", groupID)
+		wantID, saveErr := db.SaveMessageWithBlocks(topicID, ownerID, "verified attachment", []types.ContentBlock{{
+			Type: "file",
+			Name: "Verified 981274.pdf",
+		}}, "", "", "text")
+		if saveErr != nil {
+			t.Fatalf("save verified attachment: %v", saveErr)
+		}
+		for _, rawBlocks := range []string{
+			`[{"type":"file","name":981274}]`,
+			`[{"type":"file","payload":{"filename":981274}}]`,
+			`[{"type":"file","name":"Verified 981274.pdf","text":123}]`,
+			`[{"Type":"file","Name":"Verified 981274.pdf"}]`,
+		} {
+			if _, insertErr := db.db.Exec(
+				`INSERT INTO messages (topic_id, from_uid, content, content_blocks, msg_type)
+				 VALUES ($1, $2, 'malformed attachment', $3::jsonb, 'text')`,
+				topicID, ownerID, rawBlocks,
+			); insertErr != nil {
+				t.Fatalf("insert malformed attachment blocks: %v", insertErr)
+			}
+		}
+		if _, insertErr := db.db.Exec(
+			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, msg_type)
+			 VALUES ($1, $2, 'malformed-body-981274', '{"type":"text"}'::jsonb, 'text')`,
+			topicID, ownerID,
+		); insertErr != nil {
+			t.Fatalf("insert non-array blocks: %v", insertErr)
+		}
+		if _, insertErr := db.SaveMessage(topicID, ownerID, `{"filename":981274}`, "file"); insertErr != nil {
+			t.Fatalf("save malformed legacy filename: %v", insertErr)
+		}
+		var futureFieldID int64
+		if insertErr := db.db.QueryRow(
+			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, msg_type)
+			 VALUES ($1, $2, 'future-field-981274', '[{"type":"text","display_type":"text"}]'::jsonb, 'text')
+			 RETURNING id`,
+			topicID, ownerID,
+		).Scan(&futureFieldID); insertErr != nil {
+			t.Fatalf("insert future content-block field: %v", insertErr)
+		}
+		var nullBlocksID int64
+		if insertErr := db.db.QueryRow(
+			`INSERT INTO messages (topic_id, from_uid, content, content_blocks, msg_type)
+			 VALUES ($1, $2, 'json-null-981274', 'null'::jsonb, 'text')
+			 RETURNING id`,
+			topicID, ownerID,
+		).Scan(&nullBlocksID); insertErr != nil {
+			t.Fatalf("insert JSON-null blocks: %v", insertErr)
+		}
+
+		rows, queryErr := db.db.Query(postgresMessageSearchQuery,
+			ownerID, store.MessageSearchArtifact, "981274", 10, 0)
+		if queryErr != nil {
+			t.Fatalf("query malformed attachment candidates: %v", queryErr)
+		}
+		results, scanned, scanErr := scanPostgresMessageSearch(rows,
+			"981274", store.MessageSearchArtifact, 10)
+		closeErr := rows.Close()
+		if scanErr != nil {
+			t.Fatalf("scan malformed attachment candidates: %v", scanErr)
+		}
+		if closeErr != nil {
+			t.Fatalf("close malformed attachment candidates: %v", closeErr)
+		}
+		if scanned != 1 || len(results) != 1 || results[0].MessageID != wantID {
+			t.Fatalf("malformed attachment candidates scanned=%d results=%#v, want only message %d",
+				scanned, results, wantID)
+		}
+
+		bodyResults, searchErr := db.SearchMessages(ownerID, "malformed-body-981274", store.MessageSearchMessage, 10)
+		if searchErr != nil {
+			t.Fatalf("search non-array body candidate: %v", searchErr)
+		}
+		if len(bodyResults) != 0 {
+			t.Fatalf("non-array body blocks must fail closed: %#v", bodyResults)
+		}
+		nullResults, searchErr := db.SearchMessages(ownerID, "json-null-981274", store.MessageSearchMessage, 10)
+		if searchErr != nil {
+			t.Fatalf("search JSON-null body candidate: %v", searchErr)
+		}
+		if len(nullResults) != 1 || nullResults[0].MessageID != nullBlocksID {
+			t.Fatalf("JSON-null blocks must behave as no blocks: %#v", nullResults)
+		}
+		futureFieldResults, searchErr := db.SearchMessages(ownerID, "future-field-981274", store.MessageSearchMessage, 10)
+		if searchErr != nil {
+			t.Fatalf("search future content-block field: %v", searchErr)
+		}
+		if len(futureFieldResults) != 1 || futureFieldResults[0].MessageID != futureFieldID {
+			t.Fatalf("unrelated future block fields must remain searchable: %#v", futureFieldResults)
+		}
+	})
 	members, err := db.GetGroupMembers(groupID)
 	if err != nil || len(members) != 1 || members[0].UserID != ownerID {
 		t.Fatalf("group members mismatch: %#v err=%v", members, err)
@@ -462,6 +703,124 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 	}
 	if aggregate = aggregates[topicID]; aggregate == nil || aggregate.State != "completed" {
 		t.Fatalf("concurrent completions left stale aggregate: %+v", aggregate)
+	}
+
+	upsert(firstBotID, "run-terminal", "completed")
+	if _, err := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+		TopicID: topicID, RunID: "run-terminal", State: "running", SourceUID: firstBotID, ExpiresAt: &expiry,
+	}); err == nil {
+		t.Fatal("terminal run resumed through the store")
+	}
+
+	upsert(firstBotID, "run-superseded", "running")
+	upsert(firstBotID, "run-current", "running")
+	if _, err := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+		TopicID: topicID, RunID: "run-superseded", State: "completed", SourceUID: firstBotID,
+	}); !errors.Is(err, store.ErrConversationTaskRunSuperseded) {
+		t.Fatalf("late terminal error = %v, want %v", err, store.ErrConversationTaskRunSuperseded)
+	}
+	source, err := db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || source == nil || source.RunID != "run-current" || source.State != "running" {
+		t.Fatalf("late terminal replaced active run: status=%+v err=%v", source, err)
+	}
+
+	upsert(firstBotID, "run-transition-race", "running")
+	startTransitionRace := make(chan struct{})
+	transitionResults := make(chan struct {
+		state string
+		err   error
+	}, 2)
+	for _, state := range []string{"running", "completed"} {
+		go func(state string) {
+			<-startTransitionRace
+			_, updateErr := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+				TopicID: topicID, RunID: "run-transition-race", State: state, SourceUID: firstBotID,
+				ExpiresAt: func() *time.Time {
+					if state == "running" {
+						return &expiry
+					}
+					return nil
+				}(),
+			})
+			transitionResults <- struct {
+				state string
+				err   error
+			}{state: state, err: updateErr}
+		}(state)
+	}
+	close(startTransitionRace)
+	for range 2 {
+		result := <-transitionResults
+		if result.state == "completed" && result.err != nil {
+			t.Fatalf("complete concurrent task run: %v", result.err)
+		}
+	}
+	source, err = db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || source == nil || source.State != "completed" {
+		t.Fatalf("concurrent progress resumed terminal run: status=%+v err=%v", source, err)
+	}
+
+	upsert(firstBotID, "run-late-progress", "completed")
+	if _, err := db.db.Exec(
+		`UPDATE conversation_task_statuses
+		 SET state = 'running', summary = 'late legacy progress',
+		     source_uid = $2, expires_at = $3
+		 WHERE topic_id = $1`,
+		topicID, firstBotID, expiry,
+	); err != nil {
+		t.Fatalf("simulate late legacy progress: %v", err)
+	}
+	source, err = db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || source == nil || source.RunID != "run-late-progress" || source.State != "completed" {
+		t.Fatalf("legacy progress resumed terminal run: status=%+v err=%v", source, err)
+	}
+
+	upsert(firstBotID, "run-legacy-1", "completed")
+	if _, err := db.db.Exec(
+		`UPDATE conversation_task_statuses
+		 SET run_id = $2, state = 'running', summary = 'legacy running',
+		     source_uid = $3, expires_at = $4
+		 WHERE topic_id = $1`,
+		topicID, "run-legacy-2", firstBotID, expiry,
+	); err != nil {
+		t.Fatalf("simulate legacy task status writer: %v", err)
+	}
+	aggregates, err = db.GetConversationTaskStatuses([]string{topicID})
+	if err != nil || aggregates[topicID] == nil ||
+		aggregates[topicID].RunID != "run-legacy-2" || aggregates[topicID].State != "running" {
+		t.Fatalf("legacy aggregate was not synchronized: status=%+v err=%v", aggregates[topicID], err)
+	}
+	source, err = db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || source == nil || source.RunID != "run-legacy-2" || source.State != "running" {
+		t.Fatalf("legacy active status was not synchronized: status=%+v err=%v", source, err)
+	}
+
+	if _, err := db.db.Exec(
+		`UPDATE conversation_task_statuses
+		 SET run_id = $2, state = 'completed', summary = 'late legacy completion',
+		     source_uid = $3, expires_at = NULL
+		 WHERE topic_id = $1`,
+		topicID, "run-legacy-1", firstBotID,
+	); err != nil {
+		t.Fatalf("simulate late legacy completion: %v", err)
+	}
+	source, err = db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || source == nil || source.RunID != "run-legacy-2" || source.State != "running" {
+		t.Fatalf("late legacy completion replaced active run: status=%+v err=%v", source, err)
+	}
+
+	if _, err := db.db.Exec(
+		`UPDATE conversation_task_statuses
+		 SET run_id = $2, state = 'completed', summary = 'legacy completed',
+		     source_uid = $3, expires_at = NULL
+		 WHERE topic_id = $1`,
+		topicID, "run-legacy-2", firstBotID,
+	); err != nil {
+		t.Fatalf("simulate matching legacy completion: %v", err)
+	}
+	source, err = db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || source == nil || source.RunID != "run-legacy-2" || source.State != "completed" {
+		t.Fatalf("legacy completion was not synchronized: status=%+v err=%v", source, err)
 	}
 }
 

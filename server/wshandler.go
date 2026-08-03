@@ -22,6 +22,14 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
+const (
+	pageVisibilityVisible = "visible"
+	pageVisibilityHidden  = "hidden"
+	// Visibility leases cover a missed heartbeat but expire promptly after a
+	// crashed node, so stale pages do not suppress pushes indefinitely.
+	pageVisibilityLeaseTTL = 2 * pongWait
+)
+
 // Hub maintains the set of active clients and broadcasts messages.
 type Hub struct {
 	mu            sync.RWMutex
@@ -45,6 +53,8 @@ type Hub struct {
 	thinToolRPC   *thinToolRPCRouter
 	channelOut    *ChannelOutboundDispatcher
 	groupTurns    *groupAgentTurnTracker
+	push          *PushNotificationService
+	agentPush     *agentPushTurnCoordinator
 }
 
 type presenceEvent struct {
@@ -68,6 +78,8 @@ type Client struct {
 	deviceBodyID         string
 	deviceInstallationID string
 	deviceConnector      *DeviceConnectorClaims
+	pageVisibility       string
+	pageVisibilityMu     sync.Mutex
 	send                 chan []byte
 	sendMu               sync.RWMutex
 	sendClosed           bool
@@ -102,6 +114,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
 		thinToolRPC:   newThinToolRPCRouter(defaultThinToolRPCTTL),
 		groupTurns:    newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
+		agentPush:     newAgentPushTurnCoordinator(),
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
@@ -109,6 +122,14 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	go hub.runPresence()
 	go hub.runDeviceRPCTimeouts()
 	return hub
+}
+
+// SetPushNotificationService enables optional Web Push delivery for users who
+// do not currently have a visible messaging page.
+func (h *Hub) SetPushNotificationService(service *PushNotificationService) {
+	if h != nil {
+		h.push = service
+	}
 }
 
 // BotStats returns the hub's bot stats tracker.
@@ -429,13 +450,18 @@ func (h *Hub) bindClientRuntimeRoute(client *Client) {
 	now := nowForRoute(h)
 	route.ExpiresAt = now.Add(defaultUserDeviceTTL)
 	h.sharedRuntime.bindRuntimeRoute(route, now)
+	h.syncClientPageVisibility(client)
 }
 
 func (h *Hub) clearClientRuntimeRoute(client *Client) {
 	if h == nil || client == nil || h.sharedRuntime == nil {
 		return
 	}
-	h.sharedRuntime.clearRuntimeRoute(h.clientRoute(client))
+	client.pageVisibilityMu.Lock()
+	defer client.pageVisibilityMu.Unlock()
+	route := h.clientRoute(client)
+	h.sharedRuntime.clearMessagingClientVisibility(client.uid, route)
+	h.sharedRuntime.clearRuntimeRoute(route)
 }
 
 func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client) {
@@ -564,6 +590,81 @@ func hasMessagingClient(clients map[*Client]struct{}) bool {
 		}
 	}
 	return false
+}
+
+func normalizePageVisibility(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), pageVisibilityHidden) {
+		return pageVisibilityHidden
+	}
+	return pageVisibilityVisible
+}
+
+func (h *Hub) setClientPageVisibility(client *Client, visibility string) {
+	if h == nil || client == nil {
+		return
+	}
+	client.pageVisibilityMu.Lock()
+	defer client.pageVisibilityMu.Unlock()
+	h.mu.Lock()
+	client.pageVisibility = normalizePageVisibility(visibility)
+	h.mu.Unlock()
+	h.syncClientPageVisibilityLocked(client)
+}
+
+func (h *Hub) syncClientPageVisibility(client *Client) {
+	if h == nil || client == nil || client.deviceConnector != nil || h.sharedRuntime == nil {
+		return
+	}
+	client.pageVisibilityMu.Lock()
+	defer client.pageVisibilityMu.Unlock()
+	h.syncClientPageVisibilityLocked(client)
+}
+
+func (h *Hub) syncClientPageVisibilityLocked(client *Client) {
+	if h == nil || client == nil || client.deviceConnector != nil || h.sharedRuntime == nil {
+		return
+	}
+
+	h.mu.RLock()
+	visibility := normalizePageVisibility(client.pageVisibility)
+	uid := client.uid
+	_, connected := h.clients[uid][client]
+	h.mu.RUnlock()
+	if !connected {
+		return
+	}
+
+	route := h.clientRoute(client)
+	now := nowForRoute(h)
+	h.sharedRuntime.setMessagingClientVisibility(
+		uid,
+		route,
+		visibility == pageVisibilityVisible,
+		now,
+		pageVisibilityLeaseTTL,
+	)
+}
+
+func hasVisibleMessagingClient(clients map[*Client]struct{}) bool {
+	for client := range clients {
+		if client != nil && client.deviceConnector == nil && normalizePageVisibility(client.pageVisibility) == pageVisibilityVisible {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Hub) hasVisibleMessagingClient(uid int64) bool {
+	if h == nil || uid <= 0 {
+		return false
+	}
+	h.mu.RLock()
+	localVisible := hasVisibleMessagingClient(h.clients[uid])
+	h.mu.RUnlock()
+	if localVisible {
+		return true
+	}
+	return h.sharedRuntime != nil && h.sharedRuntime.hasVisibleMessagingClient(uid, nowForRoute(h))
 }
 
 func (h *Hub) releaseBotBodyLease(client *Client) {
@@ -951,6 +1052,7 @@ func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
 
 // handleHi responds to the handshake message.
 func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
+	h.setClientPageVisibility(client, msg.Visibility)
 	deviceParams, ok := h.bindClientDeviceFromHi(client, msg)
 	if !ok {
 		h.SendToClient(client, &ServerMessage{
@@ -1458,12 +1560,13 @@ func cloneDataMessageWithMetadata(msg *ServerMessage, metadata map[string]interf
 	data := *msg.Data
 	data.Metadata = metadata
 	return &ServerMessage{
-		Ctrl:   msg.Ctrl,
-		Data:   &data,
-		Pres:   msg.Pres,
-		Meta:   msg.Meta,
-		Info:   msg.Info,
-		Friend: msg.Friend,
+		Ctrl:                     msg.Ctrl,
+		Data:                     &data,
+		Pres:                     msg.Pres,
+		Meta:                     msg.Meta,
+		Info:                     msg.Info,
+		Friend:                   msg.Friend,
+		suppressPushNotification: msg.suppressPushNotification,
 	}
 }
 
@@ -1565,6 +1668,13 @@ func (h *Hub) handleGet(client *Client, msg *MsgClientGet) {
 
 // handleNote handles typing indicators and read receipts.
 func (h *Hub) handleNote(client *Client, msg *MsgClientNote) {
+	if client == nil || msg == nil {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(msg.What), "visibility") {
+		h.setClientPageVisibility(client, msg.Visibility)
+		return
+	}
 	uid := client.uid
 	if code, _ := h.validateTopicReadAccess(uid, client.accountType, msg.Topic); code != 0 {
 		return
@@ -1705,6 +1815,60 @@ func max64(a, b int64) int64 {
 	return b
 }
 
+func shouldNotifyOfflineForMessage(msg *ServerMessage) bool {
+	if msg == nil || msg.Data == nil || msg.Data.SeqID <= 0 {
+		return false
+	}
+	if msg.suppressPushNotification {
+		return false
+	}
+
+	data := msg.Data
+	displayType := strings.ToLower(strings.TrimSpace(firstNonEmpty(data.Type, data.MsgType)))
+	if !isUserVisibleMessageType(displayType) {
+		return false
+	}
+	return !isInternalAgentWorkingMessage(displayType, data.Content, data.ContentBlocks)
+}
+
+func (h *Hub) enqueueOfflineUserPush(uid int64) bool {
+	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 || h.hasVisibleMessagingClient(uid) {
+		return false
+	}
+	user, err := h.db.GetUser(uid)
+	if err != nil || user == nil || user.AccountType != types.AccountHuman || user.State != 0 {
+		return false
+	}
+	notification := PushNotification{
+		Title: "CatsCo",
+		Body:  "你有一条新消息",
+		URL:   "/",
+		Tag:   "catsco-new-message",
+	}
+	return h.push.EnqueueToUser(uid, notification)
+}
+
+func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessage, senderPublishesTaskStatus bool) {
+	if !senderPublishesTaskStatus {
+		h.enqueueOfflineUserPush(uid)
+		return
+	}
+	if h == nil || h.agentPush == nil || h.hasVisibleMessagingClient(uid) {
+		return
+	}
+	deliver := func() bool { return h.enqueueOfflineUserPush(uid) }
+	if !isCompletedAgentMessage(msg) {
+		if h.agentPush.observeVisibleMessage(uid, senderUID, msg, deliver) {
+			return
+		}
+		if agentPushTurnKey(uid, senderUID, msg) == "" {
+			deliver()
+		}
+		return
+	}
+	h.agentPush.deliverOnce(agentPushTurnKey(uid, senderUID, msg), deliver)
+}
+
 // broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.
 // Agent-task groups route unmentioned human messages to their current default agent.
 // Explicit mentions target other agents, while two-member groups preserve legacy automatic activation.
@@ -1714,6 +1878,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 		log.Printf("broadcastToGroupWithMentions: failed to get members for group %d: %v", groupID, err)
 		return
 	}
+	shouldNotifyOffline := shouldNotifyOfflineForMessage(msg)
 
 	memberCount := len(members)
 	if msg != nil && msg.Data != nil {
@@ -1728,6 +1893,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 
 	channelManaged := h.isChannelManagedGroup(groupID)
 	senderIsBot := h.isBotUser(senderUID)
+	senderPublishesTaskStatus := h.isTaskStatusPublisher(senderUID)
 	mentionAllBots := mentionSet[structuredMentionAllBots] && !senderIsBot
 	defaultAgentUID := int64(0)
 	if !trustedChannelTrigger && !senderIsBot && memberCount > 2 && len(mentionSet) == 0 {
@@ -1777,5 +1943,8 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 			)
 		}
 		h.SendToUser(m.UserID, out)
+		if !isBot && shouldNotifyOffline {
+			h.notifyOfflineUserForMessage(m.UserID, senderUID, out, senderPublishesTaskStatus)
+		}
 	}
 }

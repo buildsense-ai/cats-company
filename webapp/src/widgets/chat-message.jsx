@@ -949,7 +949,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     && !message._streaming
   );
   const hasFileOnly = !hasText && richBlocks.length > 0 && richBlocks.every(
-    (block) => block.type === 'file',
+    (block) => block.type === 'file' && !isInlineVideoFile(block.payload),
   );
 
   const parsed = useMemo(() => {

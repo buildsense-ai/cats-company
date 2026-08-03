@@ -31,6 +31,18 @@ type User struct {
 	UpdatedAt   time.Time   `json:"updated_at"`
 }
 
+// PushSubscription stores the Web Push credentials for one browser endpoint.
+type PushSubscription struct {
+	ID             int64     `json:"id"`
+	UID            int64     `json:"uid"`
+	Endpoint       string    `json:"endpoint"`
+	P256DH         string    `json:"p256dh"`
+	Auth           string    `json:"auth"`
+	RegistrationID string    `json:"registration_id"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 // AuthService represents a trusted internal service which can verify CatsCo
 // user tokens through the account center.
 type AuthService struct {
@@ -230,6 +242,11 @@ type ConversationTaskStatus struct {
 	SourceUID int64      `json:"source_uid,omitempty"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+// IsTerminalConversationTaskState reports whether a task run has finished.
+func IsTerminalConversationTaskState(state string) bool {
+	return state == "completed" || state == "failed" || state == "cancelled" || state == "stale"
 }
 
 // Project groups existing conversation topics without copying their messages.

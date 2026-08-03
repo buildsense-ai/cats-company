@@ -418,6 +418,7 @@ func p2pTopicID(uid1, uid2 int64) string {
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)

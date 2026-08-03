@@ -25,6 +25,12 @@ type messageSearchPager struct {
 
 type MessageSearchPageLoader func(pageSize, offset, remaining int) ([]*MessageSearchResult, int, error)
 
+type MessageSearchCandidate struct {
+	Result        MessageSearchResult
+	MessageType   string
+	ContentBlocks []byte
+}
+
 func CollectMessageSearchResults(limit int, loadPage MessageSearchPageLoader) ([]*MessageSearchResult, error) {
 	pager := newMessageSearchPager(limit)
 	results := make([]*MessageSearchResult, 0, limit)
@@ -72,7 +78,56 @@ func (p *messageSearchPager) recordPage(resultCount, scanned int) bool {
 }
 
 func MessageSearchContentMatches(msgType, content, query string) bool {
-	return msgType != "file" && strings.Contains(strings.ToLower(content), strings.ToLower(query))
+	return msgType == "text" && strings.Contains(strings.ToLower(content), strings.ToLower(query))
+}
+
+func messageSearchHasInternalBlocks(blocks []types.ContentBlock) bool {
+	for _, block := range blocks {
+		switch block.Type {
+		case "thinking", "tool_use", "tool_result", "runtime_plan":
+			return true
+		}
+	}
+	return false
+}
+
+func parseMessageSearchBlocks(raw []byte) ([]types.ContentBlock, bool) {
+	if len(raw) == 0 {
+		return nil, true
+	}
+	var rawBlocks []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawBlocks); err != nil {
+		return nil, false
+	}
+	knownFields := map[string]struct{}{
+		"type": {}, "text": {}, "thinking": {}, "payload": {}, "id": {},
+		"name": {}, "input": {}, "tool_use_id": {}, "content": {}, "is_error": {},
+	}
+	for _, block := range rawBlocks {
+		for key := range block {
+			if _, exact := knownFields[key]; exact {
+				continue
+			}
+			if _, caseFoldAlias := knownFields[strings.ToLower(key)]; caseFoldAlias {
+				return nil, false
+			}
+		}
+	}
+	var blocks []types.ContentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return nil, false
+	}
+	for _, block := range blocks {
+		for _, key := range []string{"name", "file_name", "filename", "title"} {
+			value, exists := block.Payload[key]
+			if exists && value != nil {
+				if _, ok := value.(string); !ok {
+					return nil, false
+				}
+			}
+		}
+	}
+	return blocks, true
 }
 
 func ShouldIncludeMessageSearchCandidate(searchType string, contentMatches bool, artifactName string) bool {
@@ -86,14 +141,34 @@ func ShouldIncludeMessageSearchCandidate(searchType string, contentMatches bool,
 	}
 }
 
-func MatchingArtifactName(raw []byte, query string) string {
-	if len(raw) == 0 {
-		return ""
+func MatchMessageSearchCandidate(candidate MessageSearchCandidate, query, searchType string) (*MessageSearchResult, bool) {
+	blocks, valid := parseMessageSearchBlocks(candidate.ContentBlocks)
+	if !valid {
+		return nil, false
 	}
-	var blocks []types.ContentBlock
-	if err := json.Unmarshal(raw, &blocks); err != nil {
-		return ""
+	artifactName := matchingArtifactName(blocks, query)
+	if artifactName == "" && candidate.MessageType == "file" {
+		artifactName = LegacyMatchingArtifactName(candidate.Result.Content, query)
 	}
+	contentMatches := !messageSearchHasInternalBlocks(blocks) &&
+		MessageSearchContentMatches(candidate.MessageType, candidate.Result.Content, query)
+	if !ShouldIncludeMessageSearchCandidate(searchType, contentMatches, artifactName) {
+		return nil, false
+	}
+
+	result := candidate.Result
+	if artifactName != "" && (searchType == MessageSearchArtifact || !contentMatches) {
+		result.ContentType = MessageSearchArtifact
+		result.ArtifactName = artifactName
+		result.Snippet = artifactName
+	} else {
+		result.ContentType = MessageSearchMessage
+		result.Snippet = MessageSearchSnippet(result.Content, query)
+	}
+	return &result, true
+}
+
+func matchingArtifactName(blocks []types.ContentBlock, query string) string {
 	needle := strings.ToLower(query)
 	for _, block := range blocks {
 		if block.Type != "file" && block.Type != "image" && block.Type != "audio" && block.Type != "video" {

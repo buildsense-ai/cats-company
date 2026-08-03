@@ -245,7 +245,11 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 	}
 
 	h.SendToUserExcept(uid, dataMsg, exclude)
-	h.SendToUser(peerUID, h.messageForRecipient(uid, peerUID, topicID, replyTo, payload, msgID))
+	peerMessage := h.messageForRecipient(uid, peerUID, topicID, replyTo, payload, msgID)
+	h.SendToUser(peerUID, peerMessage)
+	if shouldNotifyOfflineForMessage(peerMessage) {
+		h.notifyOfflineUserForMessage(peerUID, uid, peerMessage, h.isTaskStatusPublisher(uid))
+	}
 	h.forwardChannelBotReply(uid, peerUID, topicID, payload, msgID)
 
 	if senderClient := h.getClient(uid); senderClient != nil && senderClient.accountType == types.AccountBot {
@@ -297,6 +301,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 		return nil
 	}
 	sourceMetadata := payload.Metadata
+	suppressPushNotification := channelMetadataHasSource(sourceMetadata)
 	nativeChannelGroup := firstMetadataInt64(sourceMetadata, "channel_native_group_binding_id") > 0
 	publicMetadata := withoutInternalChannelBindingDeliveryMetadata(payload.Metadata)
 	metadata := withCatscoIdentityMetadata(publicMetadata, h.buildCatscoIdentityMetadata(uid, recipientUID, topicID, msgID, normalizeContentText(payload.DisplayContent), catscoIdentityMetadataOptions{OmitDeviceAccess: nativeChannelGroup, SourceMetadata: sourceMetadata}))
@@ -317,6 +322,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 			Role:          payload.Role,
 			ReplyTo:       replyTo,
 		},
+		suppressPushNotification: suppressPushNotification,
 	}
 }
 
@@ -512,6 +518,24 @@ func (h *Hub) isBotUser(uid int64) bool {
 	if h.db != nil {
 		user, err := h.db.GetUser(uid)
 		return err == nil && user != nil && user.AccountType == types.AccountBot
+	}
+	return false
+}
+
+// isTaskStatusPublisher identifies automated accounts whose visible messages
+// are coordinated with task status before sending a background push. Keep this
+// narrower than isBotUser: group routing still treats only bot accounts as
+// agents, while service accounts are explicitly allowed to publish task state.
+func (h *Hub) isTaskStatusPublisher(uid int64) bool {
+	if h == nil || uid <= 0 {
+		return false
+	}
+	if client := h.getClient(uid); client != nil && canPublishTaskStatus(client.accountType) {
+		return true
+	}
+	if h.db != nil {
+		user, err := h.db.GetUser(uid)
+		return err == nil && user != nil && canPublishTaskStatus(user.AccountType)
 	}
 	return false
 }
@@ -1020,18 +1044,20 @@ func isDurableAgentContextMessage(message *types.Message, displayType string) bo
 	if message == nil {
 		return false
 	}
-	for _, block := range message.ContentBlocks {
-		switch block.Type {
-		case "thinking", "tool_use", "tool_result", "runtime_plan":
-			return false
-		}
-	}
 	switch displayType {
 	case "text", "image", "voice", "file":
-		return true
 	default:
 		return false
 	}
+	if isInternalAgentWorkingMessage(displayType, decodeStoredContent(message.Content), message.ContentBlocks) {
+		return false
+	}
+	for _, block := range message.ContentBlocks {
+		if isInternalAgentContentBlock(block.Type) {
+			return false
+		}
+	}
+	return true
 }
 
 func structuredMentionsFromMessage(message map[string]interface{}) []string {
