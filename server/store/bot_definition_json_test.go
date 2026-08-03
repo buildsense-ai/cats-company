@@ -294,3 +294,43 @@ func TestLegacyModelAdapterPreservesExplicitLocalAcrossJSONRoundTrip(t *testing.
 		t.Fatalf("legacy=%+v", legacy)
 	}
 }
+
+func TestDecodeBotDefinitionPreservesLegacyCiphertextWhenCanonicalExists(t *testing.T) {
+	// canonical bot_definition 已存在（catalog，未携带密文），同时遗留
+	// cloud_model 节点仍带 custom_ciphertext。防御性迁移应把 legacy 密文
+	// 保留到 SavedCustomModel，避免后续 encode 时被直接删除而丢失。
+	raw := []byte(`{
+		"bot_definition": {
+			"schema": "` + types.BotDefinitionSchema + `",
+			"bot_id": "43",
+			"model": {"kind": "catalog", "model_id": "minimax-m3"}
+		},
+		"cloud_model": {
+			"kind": "custom",
+			"model_id": "private-model",
+			"custom_ciphertext": "legacy-ciphertext"
+		}
+	}`)
+	record, err := DecodeBotDefinitionJSON(raw, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Exists {
+		t.Fatal("canonical definition should be present")
+	}
+	if record.SavedCustomModel == nil || record.SavedCustomModel.APIKeyCiphertext != "legacy-ciphertext" {
+		t.Fatalf("legacy ciphertext should be preserved, got %#v", record.SavedCustomModel)
+	}
+
+	encoded, err := EncodeBotDefinitionJSON(raw, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeBotDefinitionJSON(encoded, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.SavedCustomModel == nil || decoded.SavedCustomModel.APIKeyCiphertext != "legacy-ciphertext" {
+		t.Fatalf("legacy ciphertext lost after round-trip, got %#v", decoded.SavedCustomModel)
+	}
+}

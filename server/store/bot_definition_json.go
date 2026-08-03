@@ -45,13 +45,13 @@ func DecodeBotDefinitionJSON(raw []byte, botUID int64) (*types.BotDefinitionReco
 			record.SavedCustomModel = &saved
 		}
 	}
-	if !record.Exists {
-		if value := root[botModelConfigJSONKey]; len(value) > 0 {
-			var legacy types.BotModelConfig
-			if err := json.Unmarshal(value, &legacy); err != nil {
-				return nil, err
-			}
-			normalizeLegacyModelSelection(&legacy)
+	if value := root[botModelConfigJSONKey]; len(value) > 0 {
+		var legacy types.BotModelConfig
+		if err := json.Unmarshal(value, &legacy); err != nil {
+			return nil, err
+		}
+		normalizeLegacyModelSelection(&legacy)
+		if !record.Exists {
 			if strings.TrimSpace(legacy.ModelID) != "" {
 				record.Definition = definitionFromLegacyModelConfig(botUID, &legacy)
 				record.Runtime = runtimeFromLegacyModelConfig(&legacy)
@@ -60,6 +60,15 @@ func DecodeBotDefinitionJSON(raw []byte, botUID int64) (*types.BotDefinitionReco
 						APIKeyCiphertext: legacy.CustomCiphertext,
 					}
 				}
+			}
+		} else if strings.TrimSpace(legacy.CustomCiphertext) != "" &&
+			record.SavedCustomModel == nil &&
+			strings.TrimSpace(record.Definition.Model.APIKeyCiphertext) == "" {
+			// 防御性合并：canonical 节点已存在时不再整体迁移，但若 canonical
+			// 未携带自定义密文而 legacy cloud_model 仍有 custom_ciphertext，
+			// 保留到 SavedCustomModel，避免后续 encode 时被直接删除而丢失。
+			record.SavedCustomModel = &types.BotDefinitionSavedCustomModel{
+				APIKeyCiphertext: legacy.CustomCiphertext,
 			}
 		}
 	}
