@@ -79,6 +79,7 @@ type Client struct {
 	deviceInstallationID string
 	deviceConnector      *DeviceConnectorClaims
 	pageVisibility       string
+	pushRegistrationID   string
 	pageVisibilityMu     sync.Mutex
 	send                 chan []byte
 	sendMu               sync.RWMutex
@@ -636,35 +637,42 @@ func (h *Hub) syncClientPageVisibilityLocked(client *Client) {
 
 	route := h.clientRoute(client)
 	now := nowForRoute(h)
+	registrationID := client.pushRegistrationID
 	h.sharedRuntime.setMessagingClientVisibility(
 		uid,
 		route,
+		registrationID,
 		visibility == pageVisibilityVisible,
 		now,
 		pageVisibilityLeaseTTL,
 	)
 }
 
-func hasVisibleMessagingClient(clients map[*Client]struct{}) bool {
+func hasVisibleMessagingClient(clients map[*Client]struct{}, registrationID string) bool {
+	registrationID = strings.TrimSpace(registrationID)
 	for client := range clients {
-		if client != nil && client.deviceConnector == nil && normalizePageVisibility(client.pageVisibility) == pageVisibilityVisible {
+		if client == nil || client.deviceConnector != nil || normalizePageVisibility(client.pageVisibility) != pageVisibilityVisible {
+			continue
+		}
+		clientRegistrationID := strings.TrimSpace(client.pushRegistrationID)
+		if registrationID == "" || clientRegistrationID == "" || clientRegistrationID == registrationID {
 			return true
 		}
 	}
 	return false
 }
 
-func (h *Hub) hasVisibleMessagingClient(uid int64) bool {
+func (h *Hub) hasVisibleMessagingClient(uid int64, registrationID string) bool {
 	if h == nil || uid <= 0 {
 		return false
 	}
 	h.mu.RLock()
-	localVisible := hasVisibleMessagingClient(h.clients[uid])
+	localVisible := hasVisibleMessagingClient(h.clients[uid], registrationID)
 	h.mu.RUnlock()
 	if localVisible {
 		return true
 	}
-	return h.sharedRuntime != nil && h.sharedRuntime.hasVisibleMessagingClient(uid, nowForRoute(h))
+	return h.sharedRuntime != nil && h.sharedRuntime.hasVisibleMessagingClient(uid, registrationID, nowForRoute(h))
 }
 
 func (h *Hub) releaseBotBodyLease(client *Client) {
@@ -1052,6 +1060,9 @@ func deviceConnectorMessageAllowed(msg *ClientMessage) bool {
 
 // handleHi responds to the handshake message.
 func (h *Hub) handleHi(client *Client, displayName string, msg *MsgClientHi) {
+	client.pageVisibilityMu.Lock()
+	client.pushRegistrationID = strings.TrimSpace(msg.PushRegistrationID)
+	client.pageVisibilityMu.Unlock()
 	h.setClientPageVisibility(client, msg.Visibility)
 	deviceParams, ok := h.bindClientDeviceFromHi(client, msg)
 	if !ok {
@@ -1832,7 +1843,7 @@ func shouldNotifyOfflineForMessage(msg *ServerMessage) bool {
 }
 
 func (h *Hub) enqueueOfflineUserPush(uid int64) bool {
-	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 || h.hasVisibleMessagingClient(uid) {
+	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 {
 		return false
 	}
 	user, err := h.db.GetUser(uid)
@@ -1845,7 +1856,9 @@ func (h *Hub) enqueueOfflineUserPush(uid int64) bool {
 		URL:   "/",
 		Tag:   "catsco-new-message",
 	}
-	return h.push.EnqueueToUser(uid, notification)
+	return h.push.EnqueueToUserFiltered(uid, notification, func(registrationID string) bool {
+		return !h.hasVisibleMessagingClient(uid, registrationID)
+	})
 }
 
 func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessage, senderPublishesTaskStatus bool) {
@@ -1853,7 +1866,7 @@ func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessa
 		h.enqueueOfflineUserPush(uid)
 		return
 	}
-	if h == nil || h.agentPush == nil || h.hasVisibleMessagingClient(uid) {
+	if h == nil || h.agentPush == nil {
 		return
 	}
 	deliver := func() bool { return h.enqueueOfflineUserPush(uid) }

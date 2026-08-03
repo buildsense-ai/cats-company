@@ -217,7 +217,28 @@ func (s *RedisRuntimeState) routeConnected(route runtimeRoute, now time.Time) bo
 	return ok
 }
 
-func (s *RedisRuntimeState) setMessagingClientVisibility(uid int64, route runtimeRoute, visible bool, now time.Time, ttl time.Duration) {
+func redisMessagingClientVisibilityMember(route runtimeRoute, registrationID string) string {
+	identity := messagingClientVisibilityIdentity(route)
+	registrationID = strings.TrimSpace(registrationID)
+	if registrationID == "" {
+		return identity
+	}
+	return identity + "\n" + base64.RawURLEncoding.EncodeToString([]byte(registrationID))
+}
+
+func parseRedisMessagingClientVisibilityMember(member string) (string, string) {
+	identity, encoded, found := strings.Cut(member, "\n")
+	if !found {
+		return member, ""
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return identity, ""
+	}
+	return identity, string(decoded)
+}
+
+func (s *RedisRuntimeState) setMessagingClientVisibility(uid int64, route runtimeRoute, registrationID string, visible bool, now time.Time, ttl time.Duration) {
 	if s == nil || s.client == nil || uid <= 0 || messagingClientVisibilityIdentity(route) == "" {
 		return
 	}
@@ -229,7 +250,7 @@ func (s *RedisRuntimeState) setMessagingClientVisibility(uid int64, route runtim
 		return
 	}
 
-	member := messagingClientVisibilityIdentity(route)
+	member := redisMessagingClientVisibilityMember(route, registrationID)
 	expiresAt := now.Add(ttl)
 	_, _ = s.client.Pipelined(s.ctx, func(pipe redis.Pipeliner) error {
 		pipe.ZAdd(s.ctx, s.messagingClientVisibilityKey(uid), redis.Z{
@@ -245,24 +266,46 @@ func (s *RedisRuntimeState) clearMessagingClientVisibility(uid int64, route runt
 	if s == nil || s.client == nil || uid <= 0 || messagingClientVisibilityIdentity(route) == "" {
 		return
 	}
-	_, _ = s.client.ZRem(s.ctx, s.messagingClientVisibilityKey(uid), messagingClientVisibilityIdentity(route)).Result()
+	key := s.messagingClientVisibilityKey(uid)
+	members, err := s.client.ZRange(s.ctx, key, 0, -1).Result()
+	if err != nil {
+		return
+	}
+	identity := messagingClientVisibilityIdentity(route)
+	remove := make([]interface{}, 0, 1)
+	for _, member := range members {
+		memberIdentity, _ := parseRedisMessagingClientVisibilityMember(member)
+		if memberIdentity == identity {
+			remove = append(remove, member)
+		}
+	}
+	if len(remove) > 0 {
+		_, _ = s.client.ZRem(s.ctx, key, remove...).Result()
+	}
 }
 
-func (s *RedisRuntimeState) hasVisibleMessagingClient(uid int64, now time.Time) bool {
+func (s *RedisRuntimeState) hasVisibleMessagingClient(uid int64, registrationID string, now time.Time) bool {
 	if s == nil || s.client == nil || uid <= 0 {
 		return false
 	}
 	key := s.messagingClientVisibilityKey(uid)
 	pipe := s.client.Pipeline()
 	pipe.ZRemRangeByScore(s.ctx, key, "-inf", fmt.Sprintf("%d", now.UnixMilli()))
-	count := pipe.ZCard(s.ctx, key)
+	members := pipe.ZRange(s.ctx, key, 0, -1)
 	if _, err := pipe.Exec(s.ctx); err != nil {
 		// The runtime state is required for multi-node operation. If it is
 		// temporarily unavailable, fail closed so a visible page cannot cause
 		// an avoidable duplicate push.
 		return true
 	}
-	return count.Val() > 0
+	registrationID = strings.TrimSpace(registrationID)
+	for _, member := range members.Val() {
+		_, visibleRegistrationID := parseRedisMessagingClientVisibilityMember(member)
+		if registrationID == "" || visibleRegistrationID == "" || visibleRegistrationID == registrationID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *RedisRuntimeState) acquireBotBodyLease(botUID int64, bodyID string, connectionID string, nodeID string, now time.Time, ttl time.Duration) (botBodyLeaseResult, error) {

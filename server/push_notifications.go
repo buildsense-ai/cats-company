@@ -83,9 +83,10 @@ type pushLookupIPFunc func(context.Context, string) ([]net.IPAddr, error)
 type pushDialContextFunc func(context.Context, string, string) (net.Conn, error)
 
 type pushDeliveryJob struct {
-	uid          int64
-	notification PushNotification
-	queuedAt     time.Time
+	uid                int64
+	notification       PushNotification
+	shouldSendToDevice func(string) bool
+	queuedAt           time.Time
 }
 
 // PushNotificationService owns the Web Push API and delivery behavior. The
@@ -416,6 +417,10 @@ func redactPushEndpointError(err error, endpoint string) error {
 // belonging to uid. Disabled service is a no-op, so Hub callers do not need
 // configuration checks.
 func (s *PushNotificationService) SendToUser(ctx context.Context, uid int64, notification PushNotification) error {
+	return s.sendToUserFiltered(ctx, uid, notification, nil)
+}
+
+func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid int64, notification PushNotification, shouldSendToDevice func(string) bool) error {
 	if !s.Enabled() {
 		return nil
 	}
@@ -443,6 +448,9 @@ func (s *PushNotificationService) SendToUser(ctx context.Context, uid int64, not
 	deliveries := 0
 	for _, subscription := range subscriptions {
 		if subscription == nil {
+			continue
+		}
+		if shouldSendToDevice != nil && !shouldSendToDevice(subscription.RegistrationID) {
 			continue
 		}
 		if deliveries >= maxPushSubscriptionsPerUser {
@@ -506,7 +514,7 @@ func (s *PushNotificationService) runDeliveryWorkers() {
 		go func() {
 			for job := range s.deliveryQueue {
 				ctx, cancel := context.WithDeadline(context.Background(), job.queuedAt.Add(pushDeliveryTimeout))
-				if err := s.SendToUser(ctx, job.uid, job.notification); err != nil {
+				if err := s.sendToUserFiltered(ctx, job.uid, job.notification, job.shouldSendToDevice); err != nil {
 					s.logf("send offline push: uid=%d err=%v", job.uid, err)
 				}
 				cancel()
@@ -519,15 +527,22 @@ func (s *PushNotificationService) runDeliveryWorkers() {
 // chat fanout. A fixed worker pool bounds concurrency while the bounded queue
 // absorbs ordinary message bursts.
 func (s *PushNotificationService) EnqueueToUser(uid int64, notification PushNotification) bool {
+	return s.EnqueueToUserFiltered(uid, notification, nil)
+}
+
+// EnqueueToUserFiltered queues delivery to subscriptions accepted by shouldSendToDevice.
+// The filter runs in the delivery worker so it observes current device visibility.
+func (s *PushNotificationService) EnqueueToUserFiltered(uid int64, notification PushNotification, shouldSendToDevice func(string) bool) bool {
 	if !s.Enabled() || uid <= 0 {
 		return false
 	}
 	s.startWorkers.Do(s.runDeliveryWorkers)
 	select {
 	case s.deliveryQueue <- pushDeliveryJob{
-		uid:          uid,
-		notification: notification,
-		queuedAt:     time.Now(),
+		uid:                uid,
+		notification:       notification,
+		shouldSendToDevice: shouldSendToDevice,
+		queuedAt:           time.Now(),
 	}:
 		return true
 	default:

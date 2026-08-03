@@ -43,12 +43,13 @@ type ServerMessage struct {
 // --- Client messages ---
 
 type MsgClientHi struct {
-	ID         string             `json:"id,omitempty"`
-	UserAgent  string             `json:"ua,omitempty"`
-	Version    string             `json:"ver,omitempty"`
-	Lang       string             `json:"lang,omitempty"`
-	Visibility string             `json:"visibility,omitempty"`
-	Device     *MsgClientHiDevice `json:"device,omitempty"`
+	ID                 string             `json:"id,omitempty"`
+	UserAgent          string             `json:"ua,omitempty"`
+	Version            string             `json:"ver,omitempty"`
+	Lang               string             `json:"lang,omitempty"`
+	Visibility         string             `json:"visibility,omitempty"`
+	PushRegistrationID string             `json:"push_registration_id,omitempty"`
+	Device             *MsgClientHiDevice `json:"device,omitempty"`
 }
 
 type MsgClientHiDevice struct {

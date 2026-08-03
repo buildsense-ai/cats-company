@@ -90,6 +90,7 @@ describe('WebSocket connection recovery', () => {
 
     const handshake = JSON.parse(socket.send.mock.calls[0][0]);
     expect(handshake.hi.visibility).toBe('hidden');
+    expect(handshake.hi.push_registration_id).toMatch(/^[0-9a-f-]{32,36}$/);
 
     api.sendWSPageVisibility('visible');
     expect(JSON.parse(socket.send.mock.calls.at(-1)[0])).toEqual({

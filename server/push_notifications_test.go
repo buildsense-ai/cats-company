@@ -703,6 +703,101 @@ func TestEnqueueUserPushQueuesOnlyWhenNoVisibleHumanClient(t *testing.T) {
 	}
 }
 
+func TestEnqueueUserPushSuppressesOnlyVisibleRegistration(t *testing.T) {
+	const uid int64 = 42
+	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{
+			UID:            uid,
+			Endpoint:       "https://push.example.test/subscription/visible-device",
+			P256DH:         "p256dh",
+			Auth:           "auth",
+			RegistrationID: "registration-visible",
+		},
+		{
+			UID:            uid,
+			Endpoint:       "https://push.example.test/subscription/other-device",
+			P256DH:         "p256dh",
+			Auth:           "auth",
+			RegistrationID: "registration-other",
+		},
+	}}
+	service := enabledPushService(pushStore)
+	delivered := make(chan string, 2)
+	service.send = func(_ context.Context, _ []byte, subscription *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		delivered <- subscription.Endpoint
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	hub := NewHub(pushHubUserStore{users: map[int64]*types.User{
+		uid: {ID: uid, AccountType: types.AccountHuman},
+	}}, nil)
+	hub.SetPushNotificationService(service)
+	hub.addClient(&Client{
+		uid:                uid,
+		pageVisibility:     pageVisibilityVisible,
+		pushRegistrationID: "registration-visible",
+		send:               make(chan []byte, 1),
+	})
+
+	hub.enqueueOfflineUserPush(uid)
+
+	select {
+	case endpoint := <-delivered:
+		if endpoint != "https://push.example.test/subscription/other-device" {
+			t.Fatalf("delivered endpoint = %q, want other device", endpoint)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected push delivery to other device")
+	}
+	select {
+	case endpoint := <-delivered:
+		t.Fatalf("unexpected additional push delivery to %q", endpoint)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestEnqueueUserPushSuppressesAllRegistrationsForVisibleLegacyClient(t *testing.T) {
+	const uid int64 = 42
+	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{
+			UID:            uid,
+			Endpoint:       "https://push.example.test/subscription/device-a",
+			P256DH:         "p256dh",
+			Auth:           "auth",
+			RegistrationID: "registration-a",
+		},
+		{
+			UID:            uid,
+			Endpoint:       "https://push.example.test/subscription/device-b",
+			P256DH:         "p256dh",
+			Auth:           "auth",
+			RegistrationID: "registration-b",
+		},
+	}}
+	service := enabledPushService(pushStore)
+	delivered := make(chan string, 2)
+	service.send = func(_ context.Context, _ []byte, subscription *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		delivered <- subscription.Endpoint
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	hub := NewHub(pushHubUserStore{users: map[int64]*types.User{
+		uid: {ID: uid, AccountType: types.AccountHuman},
+	}}, nil)
+	hub.SetPushNotificationService(service)
+	hub.addClient(&Client{
+		uid:            uid,
+		pageVisibility: pageVisibilityVisible,
+		send:           make(chan []byte, 1),
+	})
+
+	hub.enqueueOfflineUserPush(uid)
+
+	select {
+	case endpoint := <-delivered:
+		t.Fatalf("unexpected push delivery to %q", endpoint)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestShouldNotifyOfflineForFinalUserVisibleMessagesOnly(t *testing.T) {
 	tests := []struct {
 		name                     string

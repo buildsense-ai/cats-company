@@ -67,9 +67,9 @@ type sharedRuntimeState interface {
 	deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC, now time.Time) bool
 	deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time) bool
 	routeConnected(route runtimeRoute, now time.Time) bool
-	setMessagingClientVisibility(uid int64, route runtimeRoute, visible bool, now time.Time, ttl time.Duration)
+	setMessagingClientVisibility(uid int64, route runtimeRoute, registrationID string, visible bool, now time.Time, ttl time.Duration)
 	clearMessagingClientVisibility(uid int64, route runtimeRoute)
-	hasVisibleMessagingClient(uid int64, now time.Time) bool
+	hasVisibleMessagingClient(uid int64, registrationID string, now time.Time) bool
 
 	acquireBotBodyLease(botUID int64, bodyID string, connectionID string, nodeID string, now time.Time, ttl time.Duration) (botBodyLeaseResult, error)
 	botBodyLeaseConflict(botUID int64, bodyID string, now time.Time) (botBodyLease, bool)
@@ -110,12 +110,17 @@ type deviceConnectorRuntimeState interface {
 	isDeviceConnectorRevoked(claims *DeviceConnectorClaims, now time.Time) bool
 }
 
+type messagingClientVisibilityLease struct {
+	route          runtimeRoute
+	registrationID string
+}
+
 type sharedMemoryRuntimeState struct {
 	mu sync.Mutex
 
 	nodes map[string]*Hub
 
-	visibleMessagingClients map[int64]map[string]runtimeRoute
+	visibleMessagingClients map[int64]map[string]messagingClientVisibilityLease
 
 	botLeases map[int64]botBodyLease
 
@@ -136,7 +141,7 @@ type sharedMemoryRuntimeState struct {
 func newSharedMemoryRuntimeState() *sharedMemoryRuntimeState {
 	return &sharedMemoryRuntimeState{
 		nodes:                   make(map[string]*Hub),
-		visibleMessagingClients: make(map[int64]map[string]runtimeRoute),
+		visibleMessagingClients: make(map[int64]map[string]messagingClientVisibilityLease),
 		botLeases:               make(map[int64]botBodyLease),
 		devices:                 make(map[int64]map[string]UserDevice),
 		deviceRoutes:            make(map[int64]map[string]runtimeRoute),
@@ -212,7 +217,7 @@ func (s *sharedMemoryRuntimeState) routeConnected(route runtimeRoute, now time.T
 	return hub != nil && hub.getClientByConnectionID(route.ConnectionID) != nil
 }
 
-func (s *sharedMemoryRuntimeState) setMessagingClientVisibility(uid int64, route runtimeRoute, visible bool, now time.Time, ttl time.Duration) {
+func (s *sharedMemoryRuntimeState) setMessagingClientVisibility(uid int64, route runtimeRoute, registrationID string, visible bool, now time.Time, ttl time.Duration) {
 	if s == nil || uid <= 0 {
 		return
 	}
@@ -238,10 +243,10 @@ func (s *sharedMemoryRuntimeState) setMessagingClientVisibility(uid int64, route
 	}
 
 	if s.visibleMessagingClients[uid] == nil {
-		s.visibleMessagingClients[uid] = make(map[string]runtimeRoute)
+		s.visibleMessagingClients[uid] = make(map[string]messagingClientVisibilityLease)
 	}
 	route.ExpiresAt = now.Add(ttl)
-	s.visibleMessagingClients[uid][identity] = route
+	s.visibleMessagingClients[uid][identity] = messagingClientVisibilityLease{route: route, registrationID: strings.TrimSpace(registrationID)}
 }
 
 func (s *sharedMemoryRuntimeState) clearMessagingClientVisibility(uid int64, route runtimeRoute) {
@@ -259,7 +264,7 @@ func (s *sharedMemoryRuntimeState) clearMessagingClientVisibility(uid int64, rou
 	if clients == nil {
 		return
 	}
-	if current, ok := clients[identity]; !ok || !current.matches(route) {
+	if current, ok := clients[identity]; !ok || !current.route.matches(route) {
 		return
 	}
 	delete(clients, identity)
@@ -268,7 +273,7 @@ func (s *sharedMemoryRuntimeState) clearMessagingClientVisibility(uid int64, rou
 	}
 }
 
-func (s *sharedMemoryRuntimeState) hasVisibleMessagingClient(uid int64, now time.Time) bool {
+func (s *sharedMemoryRuntimeState) hasVisibleMessagingClient(uid int64, registrationID string, now time.Time) bool {
 	if s == nil || uid <= 0 {
 		return false
 	}
@@ -276,9 +281,13 @@ func (s *sharedMemoryRuntimeState) hasVisibleMessagingClient(uid int64, now time
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	clients := s.visibleMessagingClients[uid]
-	for identity, route := range clients {
-		if route.validAt(now) {
-			return true
+	registrationID = strings.TrimSpace(registrationID)
+	for identity, lease := range clients {
+		if lease.route.validAt(now) {
+			if lease.registrationID == "" || registrationID == "" || lease.registrationID == registrationID {
+				return true
+			}
+			continue
 		}
 		delete(clients, identity)
 	}

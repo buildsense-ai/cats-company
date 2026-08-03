@@ -664,7 +664,7 @@ export function connectWS(onMessage, { force = false } = {}) {
     wsReconnectAttempt = 0;
     wsPageVisibility = currentPageVisibility();
     // Send handshake
-    sendWS({ hi: { id: nextMsgId(), ver: '0.1.0', visibility: wsPageVisibility } });
+    sendWS({ hi: { id: nextMsgId(), ver: '0.1.0', visibility: wsPageVisibility, push_registration_id: getPushRegistrationID() } });
     // Request online status of friends
     sendWS({ get: { id: nextMsgId(), topic: 'me', what: 'online' } });
     // Request missed messages for all tracked topics

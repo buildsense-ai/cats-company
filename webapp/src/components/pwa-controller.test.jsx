@@ -171,6 +171,50 @@ test('retries a pending browser cleanup while signed out', async () => {
   expect(localStorage.getItem('oc_push_pending_unsubscribe_v1')).toBeNull();
 });
 
+test('retries pending browser cleanup after another active tab stops blocking it', async () => {
+  vi.useFakeTimers();
+  const browserUnsubscribe = vi.fn().mockResolvedValue(true);
+  localStorage.setItem('oc_push_pending_unsubscribe_v1', 'https://push.example/subscription');
+  Object.defineProperty(navigator, 'serviceWorker', {
+    configurable: true,
+    value: {
+      getRegistration: vi.fn().mockResolvedValue({
+        pushManager: {
+          getSubscription: vi.fn().mockResolvedValue({
+            endpoint: 'https://push.example/subscription',
+            unsubscribe: browserUnsubscribe,
+          }),
+        },
+      }),
+    },
+  });
+  pushTabCoordinator.runWhenNoOtherActiveTabs
+    .mockResolvedValueOnce(false)
+    .mockImplementation((callback) => callback());
+
+  try {
+    renderController('', 1, false);
+    await act(async () => {
+      await vi.runAllTicks();
+    });
+
+    expect(pushTabCoordinator.runWhenNoOtherActiveTabs).toHaveBeenCalledTimes(1);
+    expect(browserUnsubscribe).not.toHaveBeenCalled();
+    expect(localStorage.getItem('oc_push_pending_unsubscribe_v1'))
+      .toBe('https://push.example/subscription');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(pushTabCoordinator.runWhenNoOtherActiveTabs).toHaveBeenCalledTimes(2);
+    expect(browserUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('oc_push_pending_unsubscribe_v1')).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test('updates through the service worker updater registered after mount', () => {
   renderController('user:1');
   expect(registerSW).toHaveBeenCalledTimes(1);
