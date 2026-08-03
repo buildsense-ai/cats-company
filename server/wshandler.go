@@ -25,6 +25,9 @@ var upgrader = websocket.Upgrader{
 const (
 	pageVisibilityVisible = "visible"
 	pageVisibilityHidden  = "hidden"
+	// Visibility leases cover a missed heartbeat but expire promptly after a
+	// crashed node, so stale pages do not suppress pushes indefinitely.
+	pageVisibilityLeaseTTL = 2 * pongWait
 )
 
 // Hub maintains the set of active clients and broadcasts messages.
@@ -446,13 +449,16 @@ func (h *Hub) bindClientRuntimeRoute(client *Client) {
 	now := nowForRoute(h)
 	route.ExpiresAt = now.Add(defaultUserDeviceTTL)
 	h.sharedRuntime.bindRuntimeRoute(route, now)
+	h.syncClientPageVisibility(client)
 }
 
 func (h *Hub) clearClientRuntimeRoute(client *Client) {
 	if h == nil || client == nil || h.sharedRuntime == nil {
 		return
 	}
-	h.sharedRuntime.clearRuntimeRoute(h.clientRoute(client))
+	route := h.clientRoute(client)
+	h.sharedRuntime.clearMessagingClientVisibility(client.uid, route)
+	h.sharedRuntime.clearRuntimeRoute(route)
 }
 
 func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client) {
@@ -597,6 +603,28 @@ func (h *Hub) setClientPageVisibility(client *Client, visibility string) {
 	h.mu.Lock()
 	client.pageVisibility = normalizePageVisibility(visibility)
 	h.mu.Unlock()
+	h.syncClientPageVisibility(client)
+}
+
+func (h *Hub) syncClientPageVisibility(client *Client) {
+	if h == nil || client == nil || client.deviceConnector != nil || h.sharedRuntime == nil {
+		return
+	}
+
+	h.mu.RLock()
+	visibility := normalizePageVisibility(client.pageVisibility)
+	uid := client.uid
+	h.mu.RUnlock()
+
+	route := h.clientRoute(client)
+	now := nowForRoute(h)
+	h.sharedRuntime.setMessagingClientVisibility(
+		uid,
+		route,
+		visibility == pageVisibilityVisible,
+		now,
+		pageVisibilityLeaseTTL,
+	)
 }
 
 func hasVisibleMessagingClient(clients map[*Client]struct{}) bool {
@@ -613,8 +641,12 @@ func (h *Hub) hasVisibleMessagingClient(uid int64) bool {
 		return false
 	}
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return hasVisibleMessagingClient(h.clients[uid])
+	localVisible := hasVisibleMessagingClient(h.clients[uid])
+	h.mu.RUnlock()
+	if localVisible {
+		return true
+	}
+	return h.sharedRuntime != nil && h.sharedRuntime.hasVisibleMessagingClient(uid, nowForRoute(h))
 }
 
 func (h *Hub) releaseBotBodyLease(client *Client) {

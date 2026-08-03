@@ -142,6 +142,46 @@ func TestRedisRuntimeRoutesDeviceRPCAcrossStates(t *testing.T) {
 	}
 }
 
+func TestRedisRuntimeAggregatesPageVisibilityAcrossStates(t *testing.T) {
+	url, closeRedis := newRedisRuntimeTestServer(t)
+	defer closeRedis()
+
+	stateA := newRedisRuntimeStateForTest(t, url, "visibility")
+	defer stateA.Close()
+	stateB := newRedisRuntimeStateForTest(t, url, "visibility")
+	defer stateB.Close()
+
+	hubA := NewHubWithRuntime(nil, nil, stateA, "node-a")
+	hubB := NewHubWithRuntime(nil, nil, stateB, "node-b")
+	page := &Client{uid: 42, send: make(chan []byte, 1)}
+	hubB.addClient(page)
+	hubB.bindClientRuntimeRoute(page)
+	hubB.setClientPageVisibility(page, pageVisibilityVisible)
+
+	if !hubA.hasVisibleMessagingClient(42) {
+		t.Fatal("node-a should observe a visible page registered by node-b")
+	}
+
+	hubB.setClientPageVisibility(page, pageVisibilityHidden)
+	if hubA.hasVisibleMessagingClient(42) {
+		t.Fatal("hidden page should be removed from the shared visibility state")
+	}
+
+	now := time.Now().UTC()
+	route := runtimeRoute{
+		NodeID:       "node-b",
+		ConnectionID: "page-b",
+		ExpiresAt:    now.Add(time.Minute),
+	}
+	stateB.setMessagingClientVisibility(42, route, true, now, time.Second)
+	if !stateA.hasVisibleMessagingClient(42, now.Add(500*time.Millisecond)) {
+		t.Fatal("fresh shared visibility lease should be active")
+	}
+	if stateA.hasVisibleMessagingClient(42, now.Add(2*time.Second)) {
+		t.Fatal("expired shared visibility lease should not suppress a push")
+	}
+}
+
 func TestRedisRuntimeClearStaleDeviceRouteDoesNotRemoveReplacement(t *testing.T) {
 	url, closeRedis := newRedisRuntimeTestServer(t)
 	defer closeRedis()

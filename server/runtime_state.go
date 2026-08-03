@@ -15,6 +15,13 @@ type runtimeRoute struct {
 	ExpiresAt    time.Time
 }
 
+func messagingClientVisibilityIdentity(route runtimeRoute) string {
+	if route.NodeID == "" || route.ConnectionID == "" {
+		return ""
+	}
+	return route.NodeID + "\x00" + route.ConnectionID
+}
+
 func (r runtimeRoute) validAt(now time.Time) bool {
 	return r.NodeID != "" && r.ConnectionID != "" && (r.ExpiresAt.IsZero() || now.Before(r.ExpiresAt))
 }
@@ -60,6 +67,9 @@ type sharedRuntimeState interface {
 	deliverDeviceRPC(route runtimeRoute, msg *MsgDeviceRPC, now time.Time) bool
 	deliverThinToolRPC(route runtimeRoute, msg *MsgThinToolRPC, now time.Time) bool
 	routeConnected(route runtimeRoute, now time.Time) bool
+	setMessagingClientVisibility(uid int64, route runtimeRoute, visible bool, now time.Time, ttl time.Duration)
+	clearMessagingClientVisibility(uid int64, route runtimeRoute)
+	hasVisibleMessagingClient(uid int64, now time.Time) bool
 
 	acquireBotBodyLease(botUID int64, bodyID string, connectionID string, nodeID string, now time.Time, ttl time.Duration) (botBodyLeaseResult, error)
 	botBodyLeaseConflict(botUID int64, bodyID string, now time.Time) (botBodyLease, bool)
@@ -105,6 +115,8 @@ type sharedMemoryRuntimeState struct {
 
 	nodes map[string]*Hub
 
+	visibleMessagingClients map[int64]map[string]runtimeRoute
+
 	botLeases map[int64]botBodyLease
 
 	devices      map[int64]map[string]UserDevice
@@ -124,6 +136,7 @@ type sharedMemoryRuntimeState struct {
 func newSharedMemoryRuntimeState() *sharedMemoryRuntimeState {
 	return &sharedMemoryRuntimeState{
 		nodes:                   make(map[string]*Hub),
+		visibleMessagingClients: make(map[int64]map[string]runtimeRoute),
 		botLeases:               make(map[int64]botBodyLease),
 		devices:                 make(map[int64]map[string]UserDevice),
 		deviceRoutes:            make(map[int64]map[string]runtimeRoute),
@@ -197,6 +210,82 @@ func (s *sharedMemoryRuntimeState) routeConnected(route runtimeRoute, now time.T
 	hub := s.nodes[route.NodeID]
 	s.mu.Unlock()
 	return hub != nil && hub.getClientByConnectionID(route.ConnectionID) != nil
+}
+
+func (s *sharedMemoryRuntimeState) setMessagingClientVisibility(uid int64, route runtimeRoute, visible bool, now time.Time, ttl time.Duration) {
+	if s == nil || uid <= 0 {
+		return
+	}
+	identity := messagingClientVisibilityIdentity(route)
+	if identity == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !visible || ttl <= 0 {
+		if clients := s.visibleMessagingClients[uid]; clients != nil {
+			delete(clients, identity)
+			if len(clients) == 0 {
+				delete(s.visibleMessagingClients, uid)
+			}
+		}
+		return
+	}
+	if !route.validAt(now) {
+		return
+	}
+
+	if s.visibleMessagingClients[uid] == nil {
+		s.visibleMessagingClients[uid] = make(map[string]runtimeRoute)
+	}
+	route.ExpiresAt = now.Add(ttl)
+	s.visibleMessagingClients[uid][identity] = route
+}
+
+func (s *sharedMemoryRuntimeState) clearMessagingClientVisibility(uid int64, route runtimeRoute) {
+	if s == nil || uid <= 0 {
+		return
+	}
+	identity := messagingClientVisibilityIdentity(route)
+	if identity == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clients := s.visibleMessagingClients[uid]
+	if clients == nil {
+		return
+	}
+	if current, ok := clients[identity]; !ok || !current.matches(route) {
+		return
+	}
+	delete(clients, identity)
+	if len(clients) == 0 {
+		delete(s.visibleMessagingClients, uid)
+	}
+}
+
+func (s *sharedMemoryRuntimeState) hasVisibleMessagingClient(uid int64, now time.Time) bool {
+	if s == nil || uid <= 0 {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clients := s.visibleMessagingClients[uid]
+	for identity, route := range clients {
+		if route.validAt(now) {
+			return true
+		}
+		delete(clients, identity)
+	}
+	if len(clients) == 0 {
+		delete(s.visibleMessagingClients, uid)
+	}
+	return false
 }
 
 func (s *sharedMemoryRuntimeState) acquireBotBodyLease(botUID int64, bodyID string, connectionID string, nodeID string, now time.Time, ttl time.Duration) (botBodyLeaseResult, error) {

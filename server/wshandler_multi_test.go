@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestHubTracksMultipleConnectionsPerUser(t *testing.T) {
@@ -65,6 +66,43 @@ func TestHubTracksPageVisibilityWithoutBroadcastingInternalNotes(t *testing.T) {
 	})
 	if !hub.hasVisibleMessagingClient(42) {
 		t.Fatal("visible page should suppress a duplicate web push")
+	}
+}
+
+func TestSharedRuntimeAggregatesPageVisibilityAcrossHubs(t *testing.T) {
+	shared := newSharedMemoryRuntimeState()
+	hubA := NewHubWithRuntime(nil, nil, shared, "node-a")
+	hubB := NewHubWithRuntime(nil, nil, shared, "node-b")
+
+	localHidden := &Client{uid: 42, send: make(chan []byte, 1)}
+	remoteVisible := &Client{uid: 42, send: make(chan []byte, 1)}
+	hubA.addClient(localHidden)
+	hubB.addClient(remoteVisible)
+
+	hubA.setClientPageVisibility(localHidden, "hidden")
+	hubB.setClientPageVisibility(remoteVisible, "visible")
+	if !hubA.hasVisibleMessagingClient(42) {
+		t.Fatal("node-a should observe a visible messaging page on node-b")
+	}
+	hubB.clearClientRuntimeRoute(remoteVisible)
+	if hubA.hasVisibleMessagingClient(42) {
+		t.Fatal("disconnecting the remote page should clear its shared visibility lease")
+	}
+	hubB.setClientPageVisibility(remoteVisible, "visible")
+
+	hubB.setClientPageVisibility(remoteVisible, "hidden")
+	if hubA.hasVisibleMessagingClient(42) {
+		t.Fatal("hidden pages on all nodes should not suppress a push")
+	}
+
+	now := time.Now()
+	route := runtimeRoute{NodeID: "node-b", ConnectionID: "expired", ExpiresAt: now.Add(time.Second)}
+	shared.setMessagingClientVisibility(42, route, true, now, time.Second)
+	if !shared.hasVisibleMessagingClient(42, now.Add(500*time.Millisecond)) {
+		t.Fatal("fresh shared visibility lease should be active")
+	}
+	if shared.hasVisibleMessagingClient(42, now.Add(2*time.Second)) {
+		t.Fatal("expired shared visibility lease should not suppress a push")
 	}
 }
 
