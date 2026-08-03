@@ -891,3 +891,43 @@ func TestOwnerModelCatalogIncludesPerModelQuotaFromSingleRelayRequest(t *testing
 		}
 	}
 }
+
+func TestCustomModelUpdateWithNewKeySucceedsWhenStoredCiphertextCannotDecrypt(t *testing.T) {
+	enableBotModelEncryption(t)
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{},
+	}
+	handler := NewBotModelConfigHandler(db, db)
+	stored := &types.BotModelConfig{CustomCiphertext: "not-a-valid-ciphertext"}
+
+	prepared, ciphertext, err := handler.prepareCustomModelUpdate(43, &cloudCustomModelConfig{
+		Protocol: "openai-responses",
+		APIBase:  "https://models.example.com/v1",
+		Model:    "private-model",
+		APIKey:   "secret-new",
+	}, stored)
+	if err != nil {
+		t.Fatalf("a fresh api key must not be blocked by an undecryptable stored ciphertext: %v", err)
+	}
+	if prepared.APIKey != "secret-new" {
+		t.Fatalf("expected the fresh key, got %q", prepared.APIKey)
+	}
+	if prepared.ContextWindowTokens == 0 {
+		t.Fatal("expected server-managed context window tokens to be set")
+	}
+	if ciphertext == "" {
+		t.Fatal("expected a fresh ciphertext for the new configuration")
+	}
+	plaintext, err := handler.secretCodec.decrypt(43, ciphertext)
+	if err != nil {
+		t.Fatalf("fresh ciphertext must be decryptable: %v", err)
+	}
+	var decoded cloudCustomModelConfig
+	if err := json.Unmarshal(plaintext, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.APIKey != "secret-new" {
+		t.Fatalf("decrypted key mismatch: %q", decoded.APIKey)
+	}
+}
