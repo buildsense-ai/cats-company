@@ -32,17 +32,20 @@ const baseConfig = {
       id: 'minimax-m2.7',
       label: 'MiniMax M2.7',
       description: '标准额度，适合日常任务',
+      context_window_tokens: 204800,
     },
     {
       id: 'minimax-m3',
       label: 'MiniMax M3',
       description: '支持多模态与长上下文',
+      context_window_tokens: 1000000,
       quota: { model: 'minimax-m3', quota_configured: true, percent: 25, remaining_percent: 75, status: 'normal' },
     },
     {
       id: 'deepseek-v4-flash',
       label: 'DeepSeek V4 Flash',
       description: '低额度 Flash，支持推理强度',
+      context_window_tokens: 1000000,
       quota: { model: 'deepseek-v4-flash', quota_configured: true, percent: 90, remaining_percent: 10, status: 'high' },
       reasoning_efforts: ['high', 'max', 'disabled'],
       default_reasoning_effort: 'high',
@@ -51,6 +54,7 @@ const baseConfig = {
       id: 'gpt-5.6-terra',
       label: 'GPT-5.6 Terra',
       description: 'OpenAI Responses，支持精细推理强度',
+      context_window_tokens: 256000,
       reasoning_efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
       default_reasoning_effort: 'medium',
     },
@@ -337,9 +341,10 @@ describe('LocalAssistantBar model selector', () => {
     expect(m3?.textContent).toContain('支持多模态与长上下文');
     expect(deepseek?.textContent).toContain('低额度 Flash，支持推理强度');
     expect(terra?.textContent).toContain('OpenAI Responses，支持精细推理强度');
-    expect(container.textContent).not.toContain('上下文 204.8K');
-    expect(container.textContent).not.toContain('上下文 1M');
-    expect(container.textContent).not.toContain('上下文 256K');
+    expect(m27?.textContent).toContain('上下文 204.8K');
+    expect(m3?.textContent).toContain('上下文 1M');
+    expect(deepseek?.textContent).toContain('上下文 1M');
+    expect(terra?.textContent).toContain('上下文 256K');
     expect(m3?.textContent).toContain('剩余 75%');
     expect(deepseek?.textContent).toContain('剩余 10%');
     expect(container.textContent).not.toContain('¥');
@@ -380,6 +385,7 @@ describe('LocalAssistantBar model selector', () => {
         model: 'gpt-5.6-sol',
         api_key_configured: true,
         api_key_hint: '****cret',
+        context_window_tokens: 1000000,
         reasoning_effort: 'high',
       },
     };
@@ -401,7 +407,7 @@ describe('LocalAssistantBar model selector', () => {
     const protocolSelect = container.querySelector('.v3-custom-model-select-trigger[aria-label="API 协议"]');
     expect(protocolSelect.closest('.v3-custom-model-select-wrap')).not.toBeNull();
     expect(protocolSelect.querySelector('.v3-custom-model-select-chevron')).not.toBeNull();
-    expect(container.textContent).not.toContain('上下文 Token');
+    expect(container.querySelector('output[aria-label="上下文大小"]')?.textContent).toBe('1M Token');
     expect(container.textContent).not.toContain('最大输出 Token');
     await act(async () => {
       container.querySelector('.v3-custom-model-editor').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -491,7 +497,7 @@ describe('LocalAssistantBar model selector', () => {
       .find((item) => item.textContent.includes('自定义模型'));
     await act(async () => customEntry.click());
 
-    expect(container.textContent).not.toContain('上下文 Token');
+    expect(container.querySelector('output[aria-label="上下文大小"]')?.textContent).toBe('272K Token');
     expect(container.textContent).not.toContain('最大输出 Token');
     await act(async () => {
       container.querySelector('.v3-custom-model-editor').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));

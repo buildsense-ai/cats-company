@@ -103,6 +103,19 @@ function reasoningEffortLabel(effort) {
   return labels[effort] || effort;
 }
 
+export function formatModelContextWindowTokens(tokens) {
+  const value = Number(tokens);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000;
+    return `${Number.isInteger(millions) ? millions : Number(millions.toFixed(1))}M`;
+  }
+  if (value >= 1_000) {
+    const thousands = value / 1_000;
+    return `${Number.isInteger(thousands) ? thousands : Number(thousands.toFixed(1))}K`;
+  }
+  return String(Math.round(value));
+}
 
 export function describeModelConfigRequestError(error, action = '切换') {
   if (error?.code === 'NETWORK_ERROR') {
@@ -264,6 +277,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
 
   const modelApplyPending = modelConfig?.status === 'pending';
   const transitioning = Boolean(savingKey) || (modelApplyPending && !applyWaitExpired);
+  const customContextWindow = formatModelContextWindowTokens(modelConfig?.custom?.context_window_tokens || 128000);
   const desiredKind = modelConfig?.desired?.kind || (modelConfig?.configured ? 'catalog' : 'local');
   const desiredModelID = modelConfig?.desired?.model_id || 'local';
   const desiredModel = modelConfig?.models?.find((model) => model.id === desiredModelID);
@@ -459,6 +473,12 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                   onChange={(event) => setCustomDraft({ ...customDraft, api_key: event.target.value })}
                 />
               </label>
+              <div className="v3-custom-model-field">
+                <span>上下文大小</span>
+                <output className="v3-custom-model-readonly" aria-label="上下文大小">
+                  {customContextWindow ? `${customContextWindow} Token` : '未知'}
+                </output>
+              </div>
               <div className="v3-custom-model-grid">
                 <label>
                   <span>温度</span>
@@ -497,6 +517,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                 const efforts = model.reasoning_efforts || [];
                 const hasReasoning = efforts.length > 0;
                 const selected = desiredKind === 'catalog' && desiredModelID === model.id;
+                const contextWindow = formatModelContextWindowTokens(model.context_window_tokens);
 
                 return (
                   <div
@@ -517,7 +538,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                     >
                       <span>
                         <strong>{model.label}</strong>
-                        <small>{model.description}</small>
+                        <small>{[contextWindow ? `上下文 ${contextWindow}` : '', model.description].filter(Boolean).join(' · ')}</small>
                         <small className={`v3-model-menu-quota ${modelQuotaTone(model.quota)}`.trim()}>{modelQuotaLabel(model.quota, modelConfig?.quota_error ? 'error' : usageState)}</small>
                       </span>
                       {hasReasoning ? <ChevronRight size={15} /> : selected && <Check size={15} />}

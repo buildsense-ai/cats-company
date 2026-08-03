@@ -468,6 +468,9 @@ func TestCustomModelSecretIsEncryptedAndOnlyReturnedToBotRuntime(t *testing.T) {
 	if !strings.Contains(patchRec.Body.String(), `"api_key_configured":true`) || !strings.Contains(patchRec.Body.String(), `"api_key_hint":"****cret"`) {
 		t.Fatalf("owner response does not contain a safe key hint: %s", patchRec.Body.String())
 	}
+	if !strings.Contains(patchRec.Body.String(), `"context_window_tokens":128000`) || strings.Contains(patchRec.Body.String(), `"max_tokens"`) {
+		t.Fatalf("owner response must expose only the server-managed context window: %s", patchRec.Body.String())
+	}
 
 	runtimeReq := httptest.NewRequest(http.MethodGet, "/api/bot/model-config", nil)
 	runtimeReq = runtimeReq.WithContext(context.WithValue(runtimeReq.Context(), uidKey, int64(43)))
@@ -620,7 +623,8 @@ func TestOwnerConfigResponseRetainsCanonicalSavedCustomModelWhileCatalogIsActive
 	if saved.Model != "private-model" ||
 		saved.APIBase != "https://models.example.com/v1" ||
 		!saved.APIKeyConfigured ||
-		saved.APIKeyHint != "****et-a" {
+		saved.APIKeyHint != "****et-a" ||
+		saved.ContextWindowTokens != 128000 {
 		t.Fatalf("saved custom=%+v", saved)
 	}
 
@@ -775,7 +779,7 @@ func TestCustomModelAcknowledgementTracksKind(t *testing.T) {
 	if ownerGetRec.Code != http.StatusOK || !strings.Contains(ownerGetRec.Body.String(), `"last_error":"模型配置应用失败"`) {
 		t.Fatalf("owner failure status=%d body=%s", ownerGetRec.Code, ownerGetRec.Body.String())
 	}
-	for _, sensitive := range []string{"total_cny", "context_window_tokens", "provider rejected"} {
+	for _, sensitive := range []string{"total_cny", "context_window_tokens=128000", "provider rejected"} {
 		if strings.Contains(ownerGetRec.Body.String(), sensitive) {
 			t.Fatalf("owner failure response leaked %s: %s", sensitive, ownerGetRec.Body.String())
 		}
@@ -826,7 +830,7 @@ func TestOwnerPendingModelConfigRedactsStaleLastError(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"last_error":"模型配置应用失败"`) {
 		t.Fatalf("owner pending error was not normalized: %s", rec.Body.String())
 	}
-	for _, sensitive := range []string{"total_cny", "context_window_tokens", "max_tokens", "provider still reconciling"} {
+	for _, sensitive := range []string{"total_cny", "context_window_tokens=128000", "max_tokens=8192", "provider still reconciling"} {
 		if strings.Contains(rec.Body.String(), sensitive) {
 			t.Fatalf("owner pending response leaked %s: %s", sensitive, rec.Body.String())
 		}
@@ -885,7 +889,11 @@ func TestOwnerModelCatalogIncludesPerModelQuotaFromSingleRelayRequest(t *testing
 	if !strings.Contains(rec.Body.String(), `"model":"deepseek-v4-flash"`) || !strings.Contains(rec.Body.String(), `"status":"high"`) {
 		t.Fatalf("DeepSeek quota missing from response: %s", rec.Body.String())
 	}
-	for _, sensitive := range []string{"context_window_tokens", "max_tokens", "used_cny", "limit_cny", "remaining_cny"} {
+	if !strings.Contains(rec.Body.String(), `"context_window_tokens":256000`) ||
+		!strings.Contains(rec.Body.String(), `"context_window_tokens":1000000`) {
+		t.Fatalf("model context windows missing from owner response: %s", rec.Body.String())
+	}
+	for _, sensitive := range []string{"max_tokens", "used_cny", "limit_cny", "remaining_cny"} {
 		if strings.Contains(rec.Body.String(), sensitive) {
 			t.Fatalf("owner response leaked %s: %s", sensitive, rec.Body.String())
 		}
