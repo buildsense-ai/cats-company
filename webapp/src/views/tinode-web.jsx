@@ -5,7 +5,7 @@ import { enqueuePushOperation } from '../utils/push-operation';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import { cleanupPushForSession } from '../utils/push-session-cleanup';
 import t from '../i18n';
-import RelayAdminModal from './relay-admin-modal';
+import RelayAdminPanel from './relay-admin-panel';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
 import MessagesView from './messages-view';
@@ -223,6 +223,15 @@ function TinodeWebApp() {
   const [showDesktopConnectModal, setShowDesktopConnectModal] = useState(false);
   const [localAgentStatus, setLocalAgentStatus] = useState('checking');
   const [showRelayModal, setShowRelayModal] = useState(false);
+  const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
+  const [relayAdminOpen, setRelayAdminOpen] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    api.getRelayAdminAccess()
+      .then((res) => { if (!cancelled) setRelayAdminAllowed(Boolean(res?.allowed)); })
+      .catch(() => { /* non-whitelisted users just see no button */ });
+    return () => { cancelled = true; };
+  }, []);
   const [cloudArtifactsRequest, setCloudArtifactsRequest] = useState(null);
   const cloudArtifactsRequestSequenceRef = useRef(0);
   const [managedGroup, setManagedGroup] = useState(null);
@@ -960,6 +969,8 @@ function TinodeWebApp() {
       onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
       title={activeTopic?.name || taskDraftTitle(taskDraft)}
       onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
+      relayAdminAllowed={relayAdminAllowed}
+      onOpenRelayAdmin={() => setRelayAdminOpen(true)}
     />
   );
 
@@ -1081,37 +1092,42 @@ function TinodeWebApp() {
         >
           <PanelLeftOpen size={18} />
         </button>
-        {activeTopic ? (
-          <MessagesView
-            topBar={localAssistantBar}
-            topic={activeTopic.topicId}
-            topicName={activeTopic.name}
-            user={user}
-            isGroup={activeTopic.isGroup || (activeTopic.topicId && activeTopic.topicId.startsWith('grp_'))}
-            groupId={activeTopic.groupId}
-            topicAvatarUrl={activeTopic.avatar_url}
-            localAssistantStatus={localAgentStatus}
-            onAgentModelChange={handleActiveAgentModelChange}
-            onActiveAgentChange={handleActiveAgentChange}
-            onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
-            onResolveAgentTopic={resolveAgentTopic}
-            onActivateTopic={activateResolvedTopic}
-            cloudArtifactsRequest={cloudArtifactsRequest}
-            messageLocationRequest={messageLocationRequest}
-            onBackToSearch={() => setSearchOpen(true)}
-          />
-        ) : (
-          <>
-            {localAssistantBar}
-            <NoActiveTask
-              key={taskDraft?.key || 'new-task'}
+        <div className="v3-main-body">
+          {activeTopic ? (
+            <MessagesView
+              topBar={localAssistantBar}
+              topic={activeTopic.topicId}
+              topicName={activeTopic.name}
               user={user}
-              initialAgent={taskDraft?.agent}
-              onResolveAgentTopic={createDraftAgentTaskTopic}
+              isGroup={activeTopic.isGroup || (activeTopic.topicId && activeTopic.topicId.startsWith('grp_'))}
+              groupId={activeTopic.groupId}
+              topicAvatarUrl={activeTopic.avatar_url}
+              localAssistantStatus={localAgentStatus}
+              onAgentModelChange={handleActiveAgentModelChange}
+              onActiveAgentChange={handleActiveAgentChange}
+              onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
+              onResolveAgentTopic={resolveAgentTopic}
               onActivateTopic={activateResolvedTopic}
+              cloudArtifactsRequest={cloudArtifactsRequest}
+              messageLocationRequest={messageLocationRequest}
+              onBackToSearch={() => setSearchOpen(true)}
             />
-          </>
-        )}
+          ) : (
+            <>
+              {localAssistantBar}
+              <NoActiveTask
+                key={taskDraft?.key || 'new-task'}
+                user={user}
+                initialAgent={taskDraft?.agent}
+                onResolveAgentTopic={createDraftAgentTaskTopic}
+                onActivateTopic={activateResolvedTopic}
+              />
+            </>
+          )}
+          {relayAdminAllowed && relayAdminOpen && (
+            <RelayAdminPanel onClose={() => setRelayAdminOpen(false)} />
+          )}
+        </div>
       </div>
 
       <SearchOverlay
@@ -1179,16 +1195,7 @@ function TinodeWebApp() {
   );
 }
 
-export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, title, onRenameTitle }) {
-  const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
-  const [relayAdminOpen, setRelayAdminOpen] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    api.getRelayAdminAccess()
-      .then((res) => { if (!cancelled) setRelayAdminAllowed(Boolean(res?.allowed)); })
-      .catch(() => { /* non-whitelisted users just see no button */ });
-    return () => { cancelled = true; };
-  }, []);
+export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin }) {
   return (
     <header className="v3-local-assistant-bar">
       <div className="v3-model-select">
@@ -1201,7 +1208,7 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
       <EditableConversationTitle title={title} editable={Boolean(onRenameTitle)} onSave={onRenameTitle} />
       <div className="v3-shell-actions">
         {relayAdminAllowed && (
-          <button type="button" className="v3-action-btn" onClick={() => setRelayAdminOpen(true)} aria-label="中转用量" title="中转用量管理">
+          <button type="button" className="v3-action-btn" onClick={onOpenRelayAdmin} aria-label="中转用量" title="中转用量管理">
             <Settings2 size={17} />
           </button>
         )}
@@ -1214,9 +1221,6 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
           <Download size={17} />
         </button>
       </div>
-      {relayAdminAllowed && relayAdminOpen && (
-        <RelayAdminModal onClose={() => setRelayAdminOpen(false)} />
-      )}
     </header>
   );
 }
