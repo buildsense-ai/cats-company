@@ -238,6 +238,20 @@ describe('LocalAssistantBar model selector', () => {
     });
   };
 
+  it('shows the relay admin button when access is allowed', async () => {
+    const getAccess = vi.spyOn(api, 'getRelayAdminAccess').mockResolvedValue({ allowed: true });
+    await renderBar();
+    const button = container.querySelector('button[aria-label="中转用量"]');
+    expect(button).toBeTruthy();
+    expect(getAccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides the relay admin button when access is denied', async () => {
+    vi.spyOn(api, 'getRelayAdminAccess').mockResolvedValue({ allowed: false });
+    await renderBar();
+    expect(container.querySelector('button[aria-label="中转用量"]')).toBeNull();
+  });
+
   it('renders the generated-artifacts button only when the parent enables it', async () => {
     const onOpenCloudArtifacts = vi.fn();
     await renderBar({ onOpenCloudArtifacts });
