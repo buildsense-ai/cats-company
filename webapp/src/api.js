@@ -543,6 +543,27 @@ export const api = {
   getBotModelConfig: (uid, { includeUsage = false } = {}) =>
     request('GET', `/api/bots/model-config?uid=${uid}${includeUsage ? '&include_usage=1' : ''}`),
   updateBotModelConfig: (uid, modelConfig) => request('PATCH', `/api/bots/model-config?uid=${uid}`, modelConfig),
+  getBotDefinitionSkills: (uid) => request('GET', `/api/bots/definition/skills?uid=${encodeURIComponent(uid)}`),
+  updateBotDefinitionSkills: (uid, revision, skills) => request(
+    'PATCH',
+    `/api/bots/definition/skills?uid=${encodeURIComponent(uid)}`,
+    { revision, skills },
+  ),
+  searchSkillHubSkills: (query = '', options = {}) => {
+    const params = new URLSearchParams();
+    if (query) params.set('q', query);
+    if (options.category) params.set('category', options.category);
+    const suffix = params.toString() ? `?${params}` : '';
+    return request('GET', `/api/skillhub/skills${suffix}`);
+  },
+  getSkillHubSkill: (skillId) => request(
+    'GET',
+    `/api/skillhub/skills/${encodeSkillHubID(skillId)}`,
+  ),
+  getSkillHubVersion: (skillId, version) => request(
+    'GET',
+    `/api/skillhub/skills/${encodeSkillHubID(skillId)}/versions/${encodeURIComponent(version)}`,
+  ),
   getBotFriends: (uid) => request('GET', `/api/bots/friends?uid=${uid}`),
   removeBotFriend: (uid, userId) => request('DELETE', `/api/bots/friends?uid=${uid}&user_id=${userId}`),
   acceptFriendAsBot: async (apiKey, userId) => {
@@ -615,6 +636,14 @@ export const api = {
   restoreCloudArtifact: (agentUid, artifactId) =>
     request('POST', `/api/agents/${encodeURIComponent(agentUid)}/artifacts/${encodeURIComponent(artifactId)}/restore`, {}),
 };
+
+function encodeSkillHubID(skillId) {
+  return String(skillId || '')
+    .split('/')
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join('/');
+}
 
 // --- WebSocket ---
 

@@ -13,6 +13,7 @@ import SearchOverlay from './search-overlay';
 import AgentEntryBindView from './agent-entry-bind-view';
 import ChannelDeviceLinkView from './channel-device-link-view';
 import MobileUploadView from './mobile-upload-view';
+import SkillHubView from './skillhub-view';
 import EmptyTaskComposer from '../widgets/empty-task-composer';
 import SidebarResizeHandle, {
   MIN_APP_SIDEBAR_WIDTH,
@@ -62,7 +63,7 @@ import {
   saveLiquidThemeUnlock,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
-import { Cloud, Download, Frown, KeyRound, Laptop, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Cloud, Download, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 import '../css/catsco-liquid-green.css';
@@ -184,6 +185,7 @@ function TinodeWebApp() {
   const channelAccountLink = window.location.pathname === '/channel-account-link';
   const [user, setUser] = useState(() => getInitialUser());
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
+  const [activeView, setActiveView] = useState('chats');
   const [activeTopic, _setActiveTopic] = useState(() => (
     user?.uid ? readStoredTopic(user.uid) : null
   ));
@@ -522,6 +524,7 @@ function TinodeWebApp() {
     setUser(null);
     setOnlineUsers({});
     setTaskDraft(null);
+    setActiveView('chats');
     setActiveTopic(null);
   }, [setActiveTopic]);
 
@@ -879,6 +882,7 @@ function TinodeWebApp() {
     const projectId = Number(options?.projectId || 0);
     taskDraftSequenceRef.current += 1;
     setActiveTopic(null);
+    setActiveView('chats');
     setTaskDraft({
       agent,
       key: `${agentUid}:${taskDraftSequenceRef.current}`,
@@ -925,6 +929,7 @@ function TinodeWebApp() {
     const targetMessageId = Number(result.messageId) || 0;
     messageLocationSequenceRef.current += 1;
     setTaskDraft(null);
+    setActiveView('chats');
     setActiveTopic({
       topicId: result.topicId,
       name: result.source || result.topicId,
@@ -1014,11 +1019,26 @@ function TinodeWebApp() {
         </div>
         
         <div className="cc-sidebar-content-shell">
+          <button
+            type="button"
+            className={`cc-sidebar-skillhub-entry${activeView === 'skillhub' ? ' active' : ''}`}
+            onClick={() => {
+              setActiveView('skillhub');
+              setMobileSidebarOpen(false);
+            }}
+            aria-label="打开 SkillHub"
+            aria-current={activeView === 'skillhub' ? 'page' : undefined}
+            title="SkillHub"
+          >
+            <Package size={17} />
+            <span>SkillHub</span>
+          </button>
           <SidebarContent
             activeTopic={activeTopic ? activeTopic.topicId : null}
             onSelectTopic={(topic) => {
               setTaskDraft(null);
               setMessageLocationRequest(null);
+              setActiveView('chats');
               setActiveTopic(topic);
               setMobileSidebarOpen(false);
             }}
@@ -1094,7 +1114,9 @@ function TinodeWebApp() {
         </button>
         <div className="v3-main-body">
           <div className="v3-main-content">
-            {activeTopic ? (
+            {activeView === 'skillhub' ? (
+              <SkillHubView user={user} />
+            ) : activeTopic ? (
               <MessagesView
                 topBar={localAssistantBar}
                 topic={activeTopic.topicId}
