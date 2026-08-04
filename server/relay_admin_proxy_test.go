@@ -297,8 +297,82 @@ func TestRelayAdminSecurityHeaders(t *testing.T) {
 	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
 		t.Fatalf("missing Cache-Control no-store: %q", cc)
 	}
-	if xfo := rec.Header().Get("X-Frame-Options"); xfo != "DENY" {
-		t.Fatalf("missing X-Frame-Options DENY: %q", xfo)
+	if xfo := rec.Header().Get("X-Frame-Options"); xfo != "SAMEORIGIN" {
+		t.Fatalf("missing X-Frame-Options SAMEORIGIN: %q", xfo)
+	}
+}
+
+func TestRelayAdminAuthMiddleware(t *testing.T) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	}))
+	defer relay.Close()
+	h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}})
+	h.setRateLimit(1000, 60)
+
+	jwtCalls := 0
+	fakeJWT := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			jwtCalls++
+			uid := UIDFromContext(r.Context())
+			if uid <= 0 {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				return
+			}
+			next(w, r)
+		}
+	}
+	auth := h.AuthMiddleware(fakeJWT)
+
+	// 1. Cookie path: obtain the scoped cookie via HandleAccess, then pass through
+	// the middleware with the cookie and NO JWT context — must NOT hit the JWT layer.
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/relay/access", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+	h.HandleAccess(rec, req)
+	var sessionCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == relayAdminCookieName {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("no session cookie issued")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/relay/local/usage-summary", nil)
+	req.AddCookie(sessionCookie)
+	rec = httptest.NewRecorder()
+	auth(h.HandleProxy)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cookie path status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if jwtCalls != 0 {
+		t.Fatalf("cookie path must not hit JWT layer, jwtCalls=%d", jwtCalls)
+	}
+
+	// 2. JWT fallback: no cookie, JWT layer injects uid into context.
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/relay/local/usage-summary", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec = httptest.NewRecorder()
+	auth(h.HandleProxy)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("jwt path status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if jwtCalls != 1 {
+		t.Fatalf("jwt fallback must be used once, jwtCalls=%d", jwtCalls)
+	}
+
+	// 3. JWT rejection: no cookie, no uid -> 401 from the JWT layer.
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/relay/local/usage-summary", nil)
+	rec = httptest.NewRecorder()
+	auth(h.HandleProxy)(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d", rec.Code)
+	}
+	if jwtCalls != 2 {
+		t.Fatalf("jwt fallback must be called for unauthenticated, jwtCalls=%d", jwtCalls)
 	}
 }
 

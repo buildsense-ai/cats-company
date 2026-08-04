@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -98,13 +99,30 @@ func (h *RelayAdminProxyHandler) HandleAccess(w http.ResponseWriter, r *http.Req
 	uid := UIDFromContext(r.Context())
 	allowed := h.config.allows(uid)
 	if allowed {
-		h.issueSessionCookie(w, uid)
+		h.issueSessionCookie(w, uid, r.TLS != nil)
 	}
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 	writeJSON(w, http.StatusOK, map[string]bool{"allowed": allowed})
 }
 
+// AuthMiddleware authenticates session-cookie-first and falls back to the
+// supplied JWT middleware. The iframe carries the scoped cookie but no
+// Authorization header, so cookie validation must happen before the JWT layer;
+// direct API calls without a cookie still require a valid JWT.
+func (h *RelayAdminProxyHandler) AuthMiddleware(jwt func(http.HandlerFunc) http.HandlerFunc) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if uid := h.verifySessionCookie(r); uid > 0 {
+				next(w, r.WithContext(context.WithValue(r.Context(), uidKey, uid)))
+				return
+			}
+			jwt(next)(w, r)
+		}
+	}
+}
+
 // issueSessionCookie signs a short-lived, relay-admin-scoped session cookie.
-func (h *RelayAdminProxyHandler) issueSessionCookie(w http.ResponseWriter, uid int64) {
+func (h *RelayAdminProxyHandler) issueSessionCookie(w http.ResponseWriter, uid int64, secure bool) {
 	exp := time.Now().Add(relayAdminSessionTTL).Unix()
 	payload := fmt.Sprintf("%d:%d", uid, exp)
 	http.SetCookie(w, &http.Cookie{
@@ -112,6 +130,7 @@ func (h *RelayAdminProxyHandler) issueSessionCookie(w http.ResponseWriter, uid i
 		Value:    payload + "." + relayAdminSign(payload),
 		Path:     "/api/admin/relay/",
 		HttpOnly: true,
+		Secure:   secure,
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(relayAdminSessionTTL.Seconds()),
 	})
@@ -186,7 +205,8 @@ func (h *RelayAdminProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Requ
 	if q := relayAdminSanitizedQuery(r.URL.RawQuery); q != "" {
 		upstream += "?" + q
 	}
-	upReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstream, r.Body)
+	limitedBody := http.MaxBytesReader(w, r.Body, 16<<20)
+	upReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstream, limitedBody)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
 		return
@@ -206,20 +226,28 @@ func (h *RelayAdminProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer resp.Body.Close()
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
 	if readErr != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream read failed"})
 		return
 	}
+	if len(body) > 8<<20 {
+		h.audit(r, uid, http.StatusBadGateway, "upstream-response-too-large")
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream response too large"})
+		return
+	}
 	ct := resp.Header.Get("Content-Type")
-	if strings.HasPrefix(ct, "text/") || strings.Contains(ct, "javascript") || strings.Contains(ct, "json") {
+	// Rewrite only HTML/JS (the embedded page's own references). JSON data must
+	// not be rewritten as values could legitimately contain "/local/" substrings.
+	if strings.HasPrefix(ct, "text/html") || strings.Contains(ct, "javascript") {
 		body = relayAdminRewriteBody(body)
 	}
 	h.audit(r, uid, resp.StatusCode, r.Method+" "+relayPath)
-	// Admin data is sensitive: never cache, never allow off-origin framing.
+	// Admin data is sensitive: never cache. SAMEORIGIN (not DENY) so the embedded
+	// same-origin iframe can render, while off-origin framing is still blocked.
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
-	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
 }
@@ -232,7 +260,8 @@ func relayAdminSanitizedQuery(rawQuery string) string {
 	}
 	values, err := url.ParseQuery(rawQuery)
 	if err != nil {
-		return rawQuery
+		// Unparseable query: drop it entirely rather than risk leaking credentials.
+		return ""
 	}
 	for _, key := range []string{"token", "api_key", "apiKey"} {
 		values.Del(key)

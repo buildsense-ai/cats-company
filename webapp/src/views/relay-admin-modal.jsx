@@ -12,6 +12,11 @@ export default function RelayAdminModal({ onClose }) {
             <X size={16} />
           </button>
         </div>
+        {/* The relay page needs scripts and same-origin fetches (path-rewritten
+            through the guarded proxy). allow-same-origin + allow-scripts means the
+            sandbox is a thin layer only; the real boundary is the server-side
+            proxy (uid whitelist + path whitelist + scoped cookie + rate limit),
+            and only whitelisted uid can open this modal at all. */}
         <iframe
           title="中转用量管理"
           src={api.relayAdminProxyURL('/local/usage-admin')}
