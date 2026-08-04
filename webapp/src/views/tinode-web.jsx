@@ -1093,37 +1093,39 @@ function TinodeWebApp() {
           <PanelLeftOpen size={18} />
         </button>
         <div className="v3-main-body">
-          {activeTopic ? (
-            <MessagesView
-              topBar={localAssistantBar}
-              topic={activeTopic.topicId}
-              topicName={activeTopic.name}
-              user={user}
-              isGroup={activeTopic.isGroup || (activeTopic.topicId && activeTopic.topicId.startsWith('grp_'))}
-              groupId={activeTopic.groupId}
-              topicAvatarUrl={activeTopic.avatar_url}
-              localAssistantStatus={localAgentStatus}
-              onAgentModelChange={handleActiveAgentModelChange}
-              onActiveAgentChange={handleActiveAgentChange}
-              onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
-              onResolveAgentTopic={resolveAgentTopic}
-              onActivateTopic={activateResolvedTopic}
-              cloudArtifactsRequest={cloudArtifactsRequest}
-              messageLocationRequest={messageLocationRequest}
-              onBackToSearch={() => setSearchOpen(true)}
-            />
-          ) : (
-            <>
-              {localAssistantBar}
-              <NoActiveTask
-                key={taskDraft?.key || 'new-task'}
+          <div className="v3-main-content">
+            {activeTopic ? (
+              <MessagesView
+                topBar={localAssistantBar}
+                topic={activeTopic.topicId}
+                topicName={activeTopic.name}
                 user={user}
-                initialAgent={taskDraft?.agent}
-                onResolveAgentTopic={createDraftAgentTaskTopic}
+                isGroup={activeTopic.isGroup || (activeTopic.topicId && activeTopic.topicId.startsWith('grp_'))}
+                groupId={activeTopic.groupId}
+                topicAvatarUrl={activeTopic.avatar_url}
+                localAssistantStatus={localAgentStatus}
+                onAgentModelChange={handleActiveAgentModelChange}
+                onActiveAgentChange={handleActiveAgentChange}
+                onOpenDesktopConnect={() => setShowDesktopConnectModal(true)}
+                onResolveAgentTopic={resolveAgentTopic}
                 onActivateTopic={activateResolvedTopic}
+                cloudArtifactsRequest={cloudArtifactsRequest}
+                messageLocationRequest={messageLocationRequest}
+                onBackToSearch={() => setSearchOpen(true)}
               />
-            </>
-          )}
+            ) : (
+              <>
+                {localAssistantBar}
+                <NoActiveTask
+                  key={taskDraft?.key || 'new-task'}
+                  user={user}
+                  initialAgent={taskDraft?.agent}
+                  onResolveAgentTopic={createDraftAgentTaskTopic}
+                  onActivateTopic={activateResolvedTopic}
+                />
+              </>
+            )}
+          </div>
           {relayAdminAllowed && relayAdminOpen && (
             <RelayAdminPanel onClose={() => setRelayAdminOpen(false)} />
           )}
