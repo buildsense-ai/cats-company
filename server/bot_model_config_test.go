@@ -468,15 +468,15 @@ func TestCustomModelSecretIsEncryptedAndOnlyReturnedToBotRuntime(t *testing.T) {
 	if !strings.Contains(patchRec.Body.String(), `"api_key_configured":true`) || !strings.Contains(patchRec.Body.String(), `"api_key_hint":"****cret"`) {
 		t.Fatalf("owner response does not contain a safe key hint: %s", patchRec.Body.String())
 	}
-	if !strings.Contains(patchRec.Body.String(), `"context_window_tokens":128000`) || strings.Contains(patchRec.Body.String(), `"max_tokens"`) {
-		t.Fatalf("owner response must expose only the server-managed context window: %s", patchRec.Body.String())
+	if !strings.Contains(patchRec.Body.String(), `"context_window_tokens":1000000`) || strings.Contains(patchRec.Body.String(), `"max_tokens"`) {
+		t.Fatalf("owner response must expose the owner-set context window while hiding max_tokens: %s", patchRec.Body.String())
 	}
 
 	runtimeReq := httptest.NewRequest(http.MethodGet, "/api/bot/model-config", nil)
 	runtimeReq = runtimeReq.WithContext(context.WithValue(runtimeReq.Context(), uidKey, int64(43)))
 	runtimeRec := httptest.NewRecorder()
 	handler.HandleRuntimeConfig(runtimeRec, runtimeReq)
-	if runtimeRec.Code != http.StatusOK || !strings.Contains(runtimeRec.Body.String(), "sk-super-secret") || !strings.Contains(runtimeRec.Body.String(), `"context_window_tokens":128000`) {
+	if runtimeRec.Code != http.StatusOK || !strings.Contains(runtimeRec.Body.String(), "sk-super-secret") || !strings.Contains(runtimeRec.Body.String(), `"context_window_tokens":1000000`) {
 		t.Fatalf("runtime status=%d body=%s", runtimeRec.Code, runtimeRec.Body.String())
 	}
 }
