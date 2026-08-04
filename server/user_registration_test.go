@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -212,6 +214,123 @@ func TestHandleRegisterIgnoresRelayProvisioningFailure(t *testing.T) {
 	case <-called:
 	case <-time.After(time.Second):
 		t.Fatal("relay provisioning failure path was not exercised")
+	}
+}
+
+func TestProvisionRelayKeyStopsOnPermanentError(t *testing.T) {
+	handler := NewUserHandler(nil)
+	handler.relayRegistrationDelays = []time.Duration{0, 0, 0}
+	calls := make(chan struct{}, 10)
+	handler.relayRegistrationCreate = func(_ context.Context, _ int64, _ string) error {
+		calls <- struct{}{}
+		return relayAdminError{status: http.StatusBadRequest, message: "bad request"}
+	}
+	handler.provisionRegisteredUserRelayKey(7, "u")
+
+	count := 0
+	for {
+		select {
+		case <-calls:
+			count++
+			if count > 1 {
+				t.Fatalf("permanent error was retried: calls=%d", count)
+			}
+		case <-time.After(300 * time.Millisecond):
+			if count != 1 {
+				t.Fatalf("permanent error calls = %d, want 1", count)
+			}
+			return
+		}
+	}
+}
+
+func TestProvisionRelayKeyRetriesTransientHTTPAndNetworkErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "http 500", err: relayAdminError{status: http.StatusInternalServerError, message: "boom"}},
+		{name: "http 429", err: relayAdminError{status: http.StatusTooManyRequests, message: "slow down"}},
+		{name: "network error", err: errors.New("connection reset")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := NewUserHandler(nil)
+			handler.relayRegistrationDelays = []time.Duration{0, 0}
+			calls := make(chan struct{}, 10)
+			handler.relayRegistrationCreate = func(_ context.Context, _ int64, _ string) error {
+				calls <- struct{}{}
+				return tc.err
+			}
+			handler.provisionRegisteredUserRelayKey(7, "u")
+
+			time.Sleep(200 * time.Millisecond)
+			if got := len(calls); got != 2 {
+				t.Fatalf("transient error calls = %d, want 2", got)
+			}
+		})
+	}
+}
+
+func relayAdminTestClient(handler func(*http.Request) (*http.Response, error)) *RelayAdminClient {
+	admin := &RelayAdminClient{baseURL: "http://relay.test", token: "t"}
+	admin.client = &http.Client{Transport: roundTripFunc(handler)}
+	return admin
+}
+
+func TestRelayRegistrationCreateSkipsWhenKeyAlreadyProvisioned(t *testing.T) {
+	var posts int
+	admin := relayAdminTestClient(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"configured":true}`)),
+			}, nil
+		}
+		posts++
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
+	})
+	handler := NewUserHandler(nil)
+	handler.SetRelayRegistrationProvisioning(admin)
+	if handler.relayRegistrationCreate == nil {
+		t.Fatal("relayRegistrationCreate not wired")
+	}
+	if err := handler.relayRegistrationCreate(context.Background(), 7, "u"); err != nil {
+		t.Fatalf("create returned error for provisioned key: %v", err)
+	}
+	if posts != 0 {
+		t.Fatalf("POST issued for already-provisioned key: %d", posts)
+	}
+}
+
+func TestRelayRegistrationCreateCreatesWhenKeyNotFound(t *testing.T) {
+	var posts int
+	admin := relayAdminTestClient(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":"not found"}`)),
+			}, nil
+		}
+		posts++
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
+	})
+	handler := NewUserHandler(nil)
+	handler.SetRelayRegistrationProvisioning(admin)
+	if err := handler.relayRegistrationCreate(context.Background(), 7, "u"); err != nil {
+		t.Fatalf("create returned error for missing key: %v", err)
+	}
+	if posts != 1 {
+		t.Fatalf("POST issued = %d, want 1", posts)
 	}
 }
 
