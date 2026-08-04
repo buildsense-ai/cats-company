@@ -482,6 +482,12 @@ func main() {
 	ownerAuthWithDB := server.OwnerMiddlewareWithDB(db)
 	botAPIKeyAuthWithDB := server.BotAPIKeyMiddlewareWithDB(db)
 	adminAuthWithDB := server.AdminMiddlewareWithDB(db)
+
+	// Relay usage admin portal (internal; whitelist-only, guarded proxy)
+	relayAdminHandler := server.NewRelayAdminProxyHandler(server.RelayAdminConfigFromEnv())
+	mux.HandleFunc("/api/admin/relay/access", authWithDB(relayAdminHandler.HandleAccess))
+	mux.HandleFunc("/api/admin/relay/", authWithDB(relayAdminHandler.HandleProxy))
+
 	mux.HandleFunc("/api/friends", authWithDB(friendHandler.HandleGetFriends))
 	mux.HandleFunc("/api/friends/pending", authWithDB(friendHandler.HandleGetPendingRequests))
 	mux.HandleFunc("/api/friends/request", authWithDB(friendHandler.HandleSendRequest))

@@ -51,6 +51,9 @@ func (c relayAdminConfig) allows(uid int64) bool {
 	return false
 }
 
+// RelayAdminConfigFromEnv exposes the portal config for main-package wiring.
+func RelayAdminConfigFromEnv() relayAdminConfig { return relayAdminConfigFromEnv() }
+
 // relayAdminConfigFromEnv reads the admin portal config from the environment.
 // An empty whitelist disables the portal entirely.
 func relayAdminConfigFromEnv() relayAdminConfig {
