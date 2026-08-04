@@ -5,6 +5,7 @@ import { enqueuePushOperation } from '../utils/push-operation';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import { cleanupPushForSession } from '../utils/push-session-cleanup';
 import t from '../i18n';
+import RelayAdminModal from './relay-admin-modal';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
 import MessagesView from './messages-view';
@@ -61,7 +62,7 @@ import {
   saveLiquidThemeUnlock,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
-import { Cloud, Download, Frown, KeyRound, Laptop, Settings, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Cloud, Download, Frown, KeyRound, Laptop, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 import '../css/catsco-liquid-green.css';
@@ -1179,6 +1180,15 @@ function TinodeWebApp() {
 }
 
 export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, title, onRenameTitle }) {
+  const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
+  const [relayAdminOpen, setRelayAdminOpen] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    api.getRelayAdminAccess()
+      .then((res) => { if (!cancelled) setRelayAdminAllowed(Boolean(res?.allowed)); })
+      .catch(() => { /* non-whitelisted users just see no button */ });
+    return () => { cancelled = true; };
+  }, []);
   return (
     <header className="v3-local-assistant-bar">
       <div className="v3-model-select">
@@ -1190,6 +1200,11 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
       </div>
       <EditableConversationTitle title={title} editable={Boolean(onRenameTitle)} onSave={onRenameTitle} />
       <div className="v3-shell-actions">
+        {relayAdminAllowed && (
+          <button type="button" className="v3-action-btn" onClick={() => setRelayAdminOpen(true)} aria-label="中转用量" title="中转用量管理">
+            <Settings2 size={17} />
+          </button>
+        )}
         {onOpenCloudArtifacts && (
           <button type="button" className="v3-action-btn" onClick={onOpenCloudArtifacts} aria-label="打开产物" title="产物">
             <Cloud size={17} />
@@ -1199,6 +1214,9 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
           <Download size={17} />
         </button>
       </div>
+      {relayAdminAllowed && relayAdminOpen && (
+        <RelayAdminModal onClose={() => setRelayAdminOpen(false)} />
+      )}
     </header>
   );
 }
