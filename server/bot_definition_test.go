@@ -472,7 +472,7 @@ func TestBotDefinitionCustomSecretIsEncryptedAndOnlyReturnedToRuntime(t *testing
 	if runtimeRec.Code != http.StatusOK ||
 		!strings.Contains(runtimeRec.Body.String(), `"apiKey":"sk-definition-secret"`) ||
 		!strings.Contains(runtimeRec.Body.String(), `"apiBase":"https://models.example.com/v1"`) ||
-		!strings.Contains(runtimeRec.Body.String(), `"contextWindowTokens":128000`) {
+		!strings.Contains(runtimeRec.Body.String(), `"contextWindowTokens":256000`) {
 		t.Fatalf("runtime status=%d body=%s", runtimeRec.Code, runtimeRec.Body.String())
 	}
 }

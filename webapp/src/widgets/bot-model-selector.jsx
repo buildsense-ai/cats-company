@@ -19,7 +19,7 @@ const EMPTY_CUSTOM_MODEL = {
   api_base: '',
   model: '',
   api_key: '',
-  temperature: '',
+  context_window_tokens: '',
   reasoning_effort: '',
 };
 
@@ -31,6 +31,16 @@ const CUSTOM_PROTOCOLS = [
 
 const CUSTOM_REASONING_EFFORTS = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'disabled'];
 
+const CUSTOM_CONTEXT_WINDOW_OPTIONS = [128000, 200000, 256000, 512000, 1000000];
+
+function customContextWindowOptions(currentValue) {
+  const current = Number(currentValue);
+  if (!Number.isInteger(current) || current <= 0 || CUSTOM_CONTEXT_WINDOW_OPTIONS.includes(current)) {
+    return CUSTOM_CONTEXT_WINDOW_OPTIONS;
+  }
+  return [current, ...CUSTOM_CONTEXT_WINDOW_OPTIONS];
+}
+
 function customDraftFromConfig(config) {
   const custom = config?.custom;
   if (!custom) return { ...EMPTY_CUSTOM_MODEL };
@@ -39,7 +49,7 @@ function customDraftFromConfig(config) {
     api_base: custom.api_base || '',
     model: custom.model || '',
     api_key: '',
-    temperature: custom.temperature == null ? '' : String(custom.temperature),
+    context_window_tokens: custom.context_window_tokens ? String(custom.context_window_tokens) : '',
     reasoning_effort: custom.reasoning_effort === 'default' ? '' : custom.reasoning_effort || '',
   };
 }
@@ -337,7 +347,6 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
 
   const saveCustomModel = (event) => {
     event.preventDefault();
-    const temperature = customDraft.temperature === '' ? undefined : Number(customDraft.temperature);
     if (!customDraft.api_base.trim() || !customDraft.model.trim()) {
       setError('请完整填写 API Base 和模型名称。');
       return;
@@ -353,7 +362,10 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
       api_key: customDraft.api_key.trim(),
       reasoning_effort: customDraft.reasoning_effort,
     };
-    if (Number.isFinite(temperature)) custom.temperature = temperature;
+    const contextWindow = Number(customDraft.context_window_tokens);
+    if (Number.isFinite(contextWindow) && contextWindow > 0) {
+      custom.context_window_tokens = contextWindow;
+    }
     saveSelection({ kind: 'custom', model_id: 'custom', custom }, `custom:${custom.model}`);
   };
 
@@ -483,27 +495,27 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                 />
               </label>
               <div className="v3-custom-model-field">
-                <span>上下文大小</span>
-                <output className="v3-custom-model-readonly" aria-label="上下文大小">
-                  {customContextWindow ? `${customContextWindow} Token` : '未知'}
-                </output>
+                <span>上下文大小（Token）</span>
+                <CustomSelect
+                  ariaLabel="上下文大小"
+                  value={customDraft.context_window_tokens}
+                  onValueChange={(contextWindowTokens) => setCustomDraft({ ...customDraft, context_window_tokens: contextWindowTokens })}
+                >
+                  {customContextWindowOptions(customDraft.context_window_tokens).map((tokens) => (
+                    <option key={tokens} value={tokens}>{formatModelContextWindowTokens(tokens)}</option>
+                  ))}
+                </CustomSelect>
               </div>
-              <div className="v3-custom-model-grid">
-                <label>
-                  <span>温度</span>
-                  <input type="number" min="0" max="2" step="0.1" placeholder="使用服务默认" value={customDraft.temperature} onChange={(event) => setCustomDraft({ ...customDraft, temperature: event.target.value })} />
-                </label>
-                <div className="v3-custom-model-field">
-                  <span>推理强度</span>
-                  <CustomSelect
-                    ariaLabel="推理强度"
-                    placement="top"
-                    value={customDraft.reasoning_effort}
-                    onValueChange={(reasoningEffort) => setCustomDraft({ ...customDraft, reasoning_effort: reasoningEffort })}
-                  >
-                    {CUSTOM_REASONING_EFFORTS.map((effort) => <option key={effort || 'default'} value={effort}>{effort ? reasoningEffortLabel(effort) : '使用接口默认'}</option>)}
-                  </CustomSelect>
-                </div>
+              <div className="v3-custom-model-field">
+                <span>推理强度</span>
+                <CustomSelect
+                  ariaLabel="推理强度"
+                  placement="top"
+                  value={customDraft.reasoning_effort}
+                  onValueChange={(reasoningEffort) => setCustomDraft({ ...customDraft, reasoning_effort: reasoningEffort })}
+                >
+                  {CUSTOM_REASONING_EFFORTS.map((effort) => <option key={effort || 'default'} value={effort}>{effort ? reasoningEffortLabel(effort) : '使用接口默认'}</option>)}
+                </CustomSelect>
               </div>
               <button type="submit" className="v3-custom-model-save" disabled={transitioning}>
                 {savingKey ? <Loader2 className="v3-model-switch-spinner" size={14} /> : <Check size={14} />}

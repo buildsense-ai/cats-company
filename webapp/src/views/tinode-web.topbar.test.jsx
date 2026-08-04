@@ -440,8 +440,9 @@ describe('LocalAssistantBar model selector', () => {
     const protocolSelect = container.querySelector('.v3-custom-model-select-trigger[aria-label="API 协议"]');
     expect(protocolSelect.closest('.v3-custom-model-select-wrap')).not.toBeNull();
     expect(protocolSelect.querySelector('.v3-custom-model-select-chevron')).not.toBeNull();
-    expect(container.querySelector('output[aria-label="上下文大小"]')?.textContent).toBe('1M Token');
+    expect(container.querySelector('.v3-custom-model-select-trigger[aria-label="上下文大小"]')?.textContent).toBe('1M');
     expect(container.textContent).not.toContain('最大输出 Token');
+    expect(container.textContent).not.toContain('温度');
     await act(async () => {
       container.querySelector('.v3-custom-model-editor').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
@@ -509,7 +510,7 @@ describe('LocalAssistantBar model selector', () => {
     }));
   });
 
-  it('does not resend legacy custom token values', async () => {
+  it('keeps the legacy context window editable while never resending max_tokens', async () => {
     const legacyConfig = {
       ...baseConfig,
       desired: { kind: 'custom', model_id: 'legacy-model', reasoning_effort: '', revision: 4 },
@@ -530,14 +531,14 @@ describe('LocalAssistantBar model selector', () => {
       .find((item) => item.textContent.includes('自定义模型'));
     await act(async () => customEntry.click());
 
-    expect(container.querySelector('output[aria-label="上下文大小"]')?.textContent).toBe('272K Token');
+    expect(container.querySelector('.v3-custom-model-select-trigger[aria-label="上下文大小"]')?.textContent).toBe('272K');
     expect(container.textContent).not.toContain('最大输出 Token');
     await act(async () => {
       container.querySelector('.v3-custom-model-editor').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
     const payload = update.mock.calls[0][1];
-    expect(payload.custom).not.toHaveProperty('context_window_tokens');
+    expect(payload.custom).toHaveProperty('context_window_tokens', 272000);
     expect(payload.custom).not.toHaveProperty('max_tokens');
   });
 

@@ -288,7 +288,6 @@
 }
 
 .v3-custom-model-editor input,
-.v3-custom-model-readonly,
 .v3-custom-model-select-trigger {
   box-sizing: border-box;
   width: 100%;
@@ -302,13 +301,6 @@
   color: var(--cc-text);
   font: inherit;
   font-size: 12px;
-}
-
-.v3-custom-model-readonly {
-  display: flex;
-  align-items: center;
-  background: var(--cc-hover);
-  color: var(--cc-text);
 }
 
 .v3-custom-model-select-wrap {

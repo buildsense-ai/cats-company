@@ -672,8 +672,9 @@ func (h *BotModelConfigHandler) prepareCustomModelUpdate(
 	custom.Model = strings.TrimSpace(custom.Model)
 	custom.APIKey = strings.TrimSpace(custom.APIKey)
 	custom.ReasoningEffort = strings.ToLower(strings.TrimSpace(custom.ReasoningEffort))
-	// Token limits are server-managed and never accepted from the owner-facing API.
-	custom.ContextWindowTokens = 128000
+	// Token limits are server-managed: max_tokens is never accepted from the
+	// owner-facing API. The owner may set the context window explicitly
+	// (validated below); otherwise default to 128K or preserve the stored value.
 	custom.MaxTokens = 0
 	if stored != nil && stored.CustomCiphertext != "" {
 		previous, err := h.decryptCustomModel(botUID, stored.CustomCiphertext)
@@ -689,9 +690,17 @@ func (h *BotModelConfigHandler) prepareCustomModelUpdate(
 			if custom.APIKey == "" {
 				custom.APIKey = previous.APIKey
 			}
-			custom.ContextWindowTokens = previous.ContextWindowTokens
+			if custom.ContextWindowTokens <= 0 {
+				custom.ContextWindowTokens = previous.ContextWindowTokens
+			}
+			if custom.Temperature == nil {
+				custom.Temperature = previous.Temperature
+			}
 			custom.MaxTokens = previous.MaxTokens
 		}
+	}
+	if custom.ContextWindowTokens <= 0 {
+		custom.ContextWindowTokens = 128000
 	}
 	if err := validateCloudCustomModel(&custom); err != nil {
 		return nil, "", err
