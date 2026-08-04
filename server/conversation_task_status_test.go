@@ -85,6 +85,26 @@ func (s *taskRecoveryTestStore) ListActiveConversationTaskStatusesForSource(_ in
 	return s.active, nil
 }
 
+// MarkConversationTaskStatusStaleIfUnchanged models the database CAS: it only
+// marks stale when the current row still matches the disconnected run and was
+// not touched after the disconnection.
+func (s *taskRecoveryTestStore) MarkConversationTaskStatusStaleIfUnchanged(topicID string, sourceUID int64, runID string, disconnectedAt time.Time) (*types.ConversationTaskStatus, bool, error) {
+	if s.current == nil ||
+		s.current.RunID != runID ||
+		(s.current.State != "running" && s.current.State != "waiting") ||
+		s.current.UpdatedAt.After(disconnectedAt) {
+		return nil, false, nil
+	}
+	copyStatus := *s.current
+	copyStatus.State = "stale"
+	copyStatus.Summary = "机器人连接中断，任务已自动中止，可重新发送"
+	copyStatus.Error = "bot disconnected before terminal task status"
+	copyStatus.UpdatedAt = time.Now()
+	s.current = &copyStatus
+	s.upserts = append(s.upserts, &copyStatus)
+	return &copyStatus, true, nil
+}
+
 func (s *taskRecoveryTestStore) GetConversationTaskStatusForSource(_ string, _ int64) (*types.ConversationTaskStatus, error) {
 	return s.current, nil
 }
@@ -171,5 +191,50 @@ func TestRecoverDisconnectedBotTasksDoesNotOverwriteNewerRun(t *testing.T) {
 
 	if len(db.upserts) != 0 {
 		t.Fatalf("newer run recovery upserts = %d, want 0", len(db.upserts))
+	}
+}
+
+func TestRecoverDisconnectedBotTasksSkipsBotOnlineElsewhere(t *testing.T) {
+	disconnectedAt := time.Now()
+	active := &types.ConversationTaskStatus{
+		TopicID:   "p2p_7_42",
+		RunID:     "run-old",
+		State:     "running",
+		SourceUID: 42,
+		UpdatedAt: disconnectedAt.Add(-time.Minute),
+	}
+	shared := newSharedMemoryRuntimeState()
+	dbA := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{active}, current: active}
+	hubA := NewHubWithRuntime(dbA, nil, shared, "node-a")
+	hubB := NewHubWithRuntime(nil, nil, shared, "node-b")
+
+	// The bot disconnects from node A and reconnects to node B.
+	if _, err := hubB.bodyLeases.acquire(42, "body-b", "conn-b"); err != nil {
+		t.Fatalf("acquire body lease on node b: %v", err)
+	}
+	hubA.recoverDisconnectedBotTasks(42, disconnectedAt)
+
+	if len(dbA.upserts) != 0 {
+		t.Fatalf("recovery upserts while bot online elsewhere = %d, want 0", len(dbA.upserts))
+	}
+}
+
+func TestRecoverDisconnectedBotTasksRunsWhenOfflineEverywhere(t *testing.T) {
+	disconnectedAt := time.Now()
+	active := &types.ConversationTaskStatus{
+		TopicID:   "p2p_7_42",
+		RunID:     "run-old",
+		State:     "running",
+		SourceUID: 42,
+		UpdatedAt: disconnectedAt.Add(-time.Minute),
+	}
+	shared := newSharedMemoryRuntimeState()
+	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{active}, current: active}
+	hub := NewHubWithRuntime(db, nil, shared, "node-a")
+
+	hub.recoverDisconnectedBotTasks(42, disconnectedAt)
+
+	if len(db.upserts) != 1 {
+		t.Fatalf("recovery upserts while offline everywhere = %d, want 1", len(db.upserts))
 	}
 }

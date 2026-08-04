@@ -364,3 +364,137 @@ func (a *Adapter) ListActiveConversationTaskStatusesForSource(sourceUID int64, u
 	}
 	return statuses, rows.Err()
 }
+
+// MarkConversationTaskStatusStaleIfUnchanged atomically marks a source run
+// stale, but only when the row still matches the disconnected run and was not
+// updated after the disconnection (compare-and-set). This closes the
+// check-then-write race in task recovery: a bot that reconnects and updates the
+// same run before this write wins, and this call reports updated=false.
+func (a *Adapter) MarkConversationTaskStatusStaleIfUnchanged(topicID string, sourceUID int64, runID string, disconnectedAt time.Time) (*types.ConversationTaskStatus, bool, error) {
+	if topicID == "" || sourceUID <= 0 || runID == "" {
+		return nil, false, fmt.Errorf("conversation task stale requires topic, source uid and run id")
+	}
+
+	tx, err := a.db.Begin()
+	if err != nil {
+		return nil, false, fmt.Errorf("begin conversation task stale transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(
+		`INSERT IGNORE INTO conversation_task_statuses
+		   (topic_id, run_id, state, summary, error, source_uid, expires_at, updated_at)
+		 VALUES (?, '', 'idle', '', '', NULL, NULL, CURRENT_TIMESTAMP)`,
+		topicID,
+	); err != nil {
+		return nil, false, fmt.Errorf("ensure conversation task aggregate: %w", err)
+	}
+	var lockedTopicID string
+	if err := tx.QueryRow(
+		`SELECT topic_id FROM conversation_task_statuses WHERE topic_id = ? FOR UPDATE`,
+		topicID,
+	).Scan(&lockedTopicID); err != nil {
+		return nil, false, fmt.Errorf("lock conversation task aggregate: %w", err)
+	}
+
+	if err := reconcileLegacyConversationTaskStatuses(tx, "?", topicID); err != nil {
+		return nil, false, fmt.Errorf("reconcile legacy conversation task status: %w", err)
+	}
+
+	res, err := tx.Exec(
+		`UPDATE conversation_task_status_sources
+		   SET state = 'stale',
+		       summary = '机器人连接中断，任务已自动中止，可重新发送',
+		       error = 'bot disconnected before terminal task status',
+		       expires_at = NULL,
+		       updated_at = CURRENT_TIMESTAMP
+		 WHERE topic_id = ? AND source_uid = ?
+		   AND run_id = ?
+		   AND state IN ('running', 'waiting')
+		   AND updated_at <= ?`,
+		topicID,
+		sourceUID,
+		runID,
+		disconnectedAt,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("mark conversation task stale: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, false, fmt.Errorf("mark conversation task stale rows affected: %w", err)
+	}
+	if affected == 0 {
+		return nil, false, nil
+	}
+
+	aggregate := &types.ConversationTaskStatus{}
+	err = tx.QueryRow(
+		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, expires_at
+		 FROM conversation_task_status_sources
+		 WHERE topic_id = ?
+		   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+		 ORDER BY
+		   CASE WHEN state IN ('running', 'waiting') THEN 0 ELSE 1 END,
+		   updated_at DESC,
+		   source_uid DESC
+		 LIMIT 1`,
+		topicID,
+	).Scan(
+		&aggregate.TopicID,
+		&aggregate.RunID,
+		&aggregate.State,
+		&aggregate.Summary,
+		&aggregate.Error,
+		&aggregate.SourceUID,
+		&aggregate.UpdatedAt,
+		&aggregate.ExpiresAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		aggregate = &types.ConversationTaskStatus{
+			TopicID:   topicID,
+			RunID:     runID,
+			State:     "stale",
+			Summary:   "机器人连接中断，任务已自动中止，可重新发送",
+			Error:     "bot disconnected before terminal task status",
+			SourceUID: sourceUID,
+		}
+	} else if err != nil {
+		return nil, false, fmt.Errorf("load conversation task aggregate after stale: %w", err)
+	}
+
+	if _, err := tx.Exec(
+		`UPDATE conversation_task_statuses SET
+		   run_id = ?,
+		   state = ?,
+		   summary = ?,
+		   error = ?,
+		   source_uid = NULLIF(?, 0),
+		   expires_at = ?,
+		   updated_at = CURRENT_TIMESTAMP
+		 WHERE topic_id = ?`,
+		aggregate.RunID,
+		aggregate.State,
+		aggregate.Summary,
+		aggregate.Error,
+		aggregate.SourceUID,
+		aggregate.ExpiresAt,
+		aggregate.TopicID,
+	); err != nil {
+		return nil, false, fmt.Errorf("refresh conversation task aggregate after stale: %w", err)
+	}
+
+	out := &types.ConversationTaskStatus{}
+	err = tx.QueryRow(
+		`SELECT topic_id, run_id, state, summary, error, COALESCE(source_uid, 0), updated_at, expires_at
+		 FROM conversation_task_statuses WHERE topic_id = ?`,
+		topicID,
+	).Scan(&out.TopicID, &out.RunID, &out.State, &out.Summary, &out.Error, &out.SourceUID, &out.UpdatedAt, &out.ExpiresAt)
+	if err != nil {
+		return nil, false, fmt.Errorf("reload conversation task aggregate after stale: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("commit conversation task stale: %w", err)
+	}
+	return out, true, nil
+}

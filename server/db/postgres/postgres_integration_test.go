@@ -822,6 +822,52 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 	if err != nil || source == nil || source.RunID != "run-legacy-2" || source.State != "completed" {
 		t.Fatalf("legacy completion was not synchronized: status=%+v err=%v", source, err)
 	}
+
+	// CAS recovery semantics: stale only when the row still matches the
+	// disconnected run and was not updated after the disconnection.
+	pastDisconnectedAt := time.Now().UTC().Add(-2 * time.Second)
+	upsert(firstBotID, "run-cas-mismatch", "running")
+	if _, updated, err := db.MarkConversationTaskStatusStaleIfUnchanged(topicID, firstBotID, "run-cas-other", pastDisconnectedAt); err != nil || updated {
+		t.Fatalf("run id mismatch CAS updated=%v err=%v", updated, err)
+	}
+	upsert(firstBotID, "run-cas-terminal", "completed")
+	if _, updated, err := db.MarkConversationTaskStatusStaleIfUnchanged(topicID, firstBotID, "run-cas-terminal", pastDisconnectedAt); err != nil || updated {
+		t.Fatalf("terminal run CAS updated=%v err=%v", updated, err)
+	}
+	// Newer progress after the disconnection must win: updated_at > disconnectedAt.
+	upsert(firstBotID, "run-cas-newer", "running")
+	if _, updated, err := db.MarkConversationTaskStatusStaleIfUnchanged(topicID, firstBotID, "run-cas-newer", pastDisconnectedAt); err != nil || updated {
+		t.Fatalf("newer progress CAS updated=%v err=%v", updated, err)
+	}
+	futureDisconnectedAt := time.Now().UTC().Add(time.Minute)
+	recovered, updated, err := db.MarkConversationTaskStatusStaleIfUnchanged(topicID, firstBotID, "run-cas-newer", futureDisconnectedAt)
+	if err != nil || !updated {
+		t.Fatalf("active run CAS did not update: updated=%v err=%v", updated, err)
+	}
+	if recovered == nil || recovered.State != "stale" || recovered.RunID != "run-cas-newer" {
+		t.Fatalf("recovered status = %+v", recovered)
+	}
+	// Two concurrent recoveries of the same run: exactly one wins.
+	upsert(firstBotID, "run-cas-race", "running")
+	startCASRace := make(chan struct{})
+	casResults := make(chan bool, 2)
+	for range 2 {
+		go func() {
+			<-startCASRace
+			_, updated, err := db.MarkConversationTaskStatusStaleIfUnchanged(topicID, firstBotID, "run-cas-race", futureDisconnectedAt)
+			casResults <- err == nil && updated
+		}()
+	}
+	close(startCASRace)
+	casWins := 0
+	for range 2 {
+		if <-casResults {
+			casWins++
+		}
+	}
+	if casWins != 1 {
+		t.Fatalf("concurrent CAS wins = %d, want 1", casWins)
+	}
 }
 
 func dsnWithSearchPath(t *testing.T, rawDSN, schemaName string) string {

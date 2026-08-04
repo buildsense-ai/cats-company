@@ -301,14 +301,12 @@ func (h *Hub) scheduleDisconnectedBotTaskRecovery(sourceUID int64, disconnectedA
 }
 
 func (h *Hub) recoverDisconnectedBotTasks(sourceUID int64, disconnectedAt time.Time) {
-	if h == nil || h.IsOnline(sourceUID) || h.BotBodyStatus(sourceUID).Active {
+	// Local clients and a cluster-wide lease held by another node both mean the
+	// bot is still reachable; only recover when it is offline everywhere.
+	if h == nil || h.IsOnline(sourceUID) || h.botOnlineElsewhere(sourceUID) {
 		return
 	}
 	recoveryStore, ok := h.db.(store.ConversationTaskStatusRecoveryStore)
-	if !ok {
-		return
-	}
-	statusStore, ok := h.db.(store.ConversationTaskStatusStore)
 	if !ok {
 		return
 	}
@@ -319,27 +317,14 @@ func (h *Hub) recoverDisconnectedBotTasks(sourceUID int64, disconnectedAt time.T
 		return
 	}
 	for _, candidate := range statuses {
-		current, err := statusStore.GetConversationTaskStatusForSource(candidate.TopicID, sourceUID)
-		if err != nil {
-			log.Printf("task status recovery: reload failed for uid=%d topic=%s: %v", sourceUID, candidate.TopicID, err)
-			continue
-		}
-		if current == nil ||
-			current.RunID != candidate.RunID ||
-			(current.State != "running" && current.State != "waiting") ||
-			current.UpdatedAt.After(disconnectedAt) {
-			continue
-		}
-		recovered, err := statusStore.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
-			TopicID:   current.TopicID,
-			RunID:     current.RunID,
-			State:     "stale",
-			Summary:   "机器人连接中断，任务已自动中止，可重新发送",
-			Error:     "bot disconnected before terminal task status",
-			SourceUID: sourceUID,
-		})
+		recovered, updated, err := recoveryStore.MarkConversationTaskStatusStaleIfUnchanged(
+			candidate.TopicID, sourceUID, candidate.RunID, disconnectedAt)
 		if err != nil {
 			log.Printf("task status recovery: persist failed for uid=%d topic=%s: %v", sourceUID, candidate.TopicID, err)
+			continue
+		}
+		if !updated {
+			// A concurrent reconnect or a newer run already won the race; do not fanout.
 			continue
 		}
 		h.observeGroupAgentTaskStatus(recovered)

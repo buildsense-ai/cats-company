@@ -198,6 +198,23 @@ func (h *Hub) hasRegisteredBotBodyClient(lease botBodyLease) bool {
 	return false
 }
 
+// botOnlineElsewhere reports whether the bot holds an active body lease owned
+// by another node. With a shared runtime (Redis / shared memory) the lease is
+// cluster-wide, so a bot that reconnected on node B must not be recovered as
+// stale by node A. Process-local clients are covered by Hub.IsOnline; a lease
+// owned by this node is intentionally ignored so a crash-leaked local lease is
+// still reconciled by the database compare-and-set.
+func (h *Hub) botOnlineElsewhere(botUID int64) bool {
+	if h == nil || h.bodyLeases == nil || botUID <= 0 {
+		return false
+	}
+	lease, ok := h.bodyLeases.status(botUID)
+	if !ok || lease.nodeID == "" {
+		return false
+	}
+	return lease.nodeID != h.nodeID
+}
+
 func (h *Hub) RuntimeMode() string {
 	if h != nil && h.bodyLeases != nil {
 		return h.bodyLeases.runtimeMode()

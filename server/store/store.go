@@ -133,6 +133,11 @@ func ValidateConversationTaskStatusTransition(current, next *types.ConversationT
 // recover active task states left behind when a bot process disconnects.
 type ConversationTaskStatusRecoveryStore interface {
 	ListActiveConversationTaskStatusesForSource(sourceUID int64, updatedBefore time.Time) ([]*types.ConversationTaskStatus, error)
+	// MarkConversationTaskStatusStaleIfUnchanged atomically marks a source run
+	// stale only when it still matches the disconnected run and was not updated
+	// after the disconnection. The bool reports whether a row actually changed;
+	// fanout must be skipped when it is false (a concurrent writer won).
+	MarkConversationTaskStatusStaleIfUnchanged(topicID string, sourceUID int64, runID string, disconnectedAt time.Time) (*types.ConversationTaskStatus, bool, error)
 }
 
 // ProjectStore persists user-owned projects and assignments for conversations the user can access.
