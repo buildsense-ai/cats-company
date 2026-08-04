@@ -551,8 +551,9 @@
 }
 
 .v3-relay-admin-panel {
+  position: relative;
   flex: 0 0 auto;
-  width: min(760px, 78vw);
+  width: var(--v3-relay-admin-width, min(760px, 78vw));
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -562,6 +563,37 @@
   background: var(--v3-bg-sidebar, var(--cc-bg, #fff));
   box-shadow: -10px 0 24px rgba(0, 0, 0, 0.16);
   color: var(--v3-text-name, var(--cc-text, #333));
+}
+
+.v3-relay-admin-resize-handle {
+  position: absolute;
+  top: 0;
+  left: -5px;
+  bottom: 0;
+  width: 10px;
+  z-index: 9;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.v3-relay-admin-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 2px;
+  background: rgba(148, 163, 184, 0.22);
+  transition: background 0.12s ease;
+}
+
+.v3-relay-admin-resize-handle:hover::after,
+.v3-relay-admin-resize-handle:focus-visible::after {
+  background: var(--v3-primary, #d4a853);
+}
+
+.v3-relay-admin-resize-handle:focus-visible {
+  outline: none;
 }
 
 .v3-relay-admin-header {
@@ -608,6 +640,10 @@
     width: min(760px, 100vw);
     border-left: 0;
     z-index: 90;
+  }
+
+  .v3-relay-admin-resize-handle {
+    display: none;
   }
 }
 
