@@ -167,3 +167,162 @@ func TestRelayAdminRateLimitAndAudit(t *testing.T) {
 		t.Fatalf("audit content: %s", joined)
 	}
 }
+
+func TestRelayAdminSessionCookie(t *testing.T) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	}))
+	defer relay.Close()
+	h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}})
+	h.setRateLimit(1000, 60)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/relay/access", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+	h.HandleAccess(rec, req)
+	var sessionCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == relayAdminCookieName {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil || !sessionCookie.HttpOnly || sessionCookie.Path != "/api/admin/relay/" {
+		t.Fatalf("expected scoped HttpOnly cookie, got %+v", rec.Header())
+	}
+
+	// Proxy with the cookie, no context uid -> allowed.
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/relay/local/usage-summary", nil)
+	req.AddCookie(sessionCookie)
+	rec = httptest.NewRecorder()
+	h.HandleProxy(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cookie proxy status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Tampered cookie -> rejected.
+	tampered := &http.Cookie{Name: relayAdminCookieName, Value: sessionCookie.Value + "x"}
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/relay/local/usage-summary", nil)
+	req.AddCookie(tampered)
+	rec = httptest.NewRecorder()
+	h.HandleProxy(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("tampered cookie status=%d", rec.Code)
+	}
+}
+
+func TestRelayAdminUnauthorized(t *testing.T) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	}))
+	defer relay.Close()
+	h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}})
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/relay/local/usage-summary", nil)
+	rec := httptest.NewRecorder()
+	h.HandleProxy(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without any credential, got %d", rec.Code)
+	}
+}
+
+func TestRelayAdminEncodedPathRejected(t *testing.T) {
+	for _, p := range []string{
+		"/local/usage-admin%2e%2e%2fetc",
+		"/local/usage-admin/%2e%2e/x",
+		"/local/usage-users%2f..%2f",
+		"/local%5c..%5cusers",
+		"/local/usage-admin%00x",
+	} {
+		if relayAdminPathAllowed(p) {
+			t.Fatalf("encoded path must be rejected: %s", p)
+		}
+	}
+	// Proxy-level 403 for encoded traversal.
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	}))
+	defer relay.Close()
+	h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}})
+	h.setRateLimit(1000, 60)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/relay/local/usage-admin%2e%2e%2fetc", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+	h.HandleProxy(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("encoded traversal proxy status=%d", rec.Code)
+	}
+}
+
+func TestRelayAdminPricingWriteMarker(t *testing.T) {
+	var sawMarker bool
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/local/pricing-rules" && r.Method == http.MethodPost {
+			sawMarker = r.Header.Get("X-Cats-Relay-Local-Write") == "pricing-rules"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	}))
+	defer relay.Close()
+	h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}})
+	h.setRateLimit(1000, 60)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/relay/local/pricing-rules", strings.NewReader(`{}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+	h.HandleProxy(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pricing write status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !sawMarker {
+		t.Fatal("relay did not receive the local pricing write marker")
+	}
+}
+
+func TestRelayAdminSecurityHeaders(t *testing.T) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	}))
+	defer relay.Close()
+	h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}})
+	h.setRateLimit(1000, 60)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/relay/local/usage-summary", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+	h.HandleProxy(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Fatalf("missing Cache-Control no-store: %q", cc)
+	}
+	if xfo := rec.Header().Get("X-Frame-Options"); xfo != "DENY" {
+		t.Fatalf("missing X-Frame-Options DENY: %q", xfo)
+	}
+}
+
+func TestRelayAdminQueryTokenStripped(t *testing.T) {
+	var relayQuery string
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		relayQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	}))
+	defer relay.Close()
+	h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}})
+	h.setRateLimit(1000, 60)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/relay/local/usage-users?limit=10&token=SECRET&api_key=SECRET2", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+	h.HandleProxy(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	if strings.Contains(relayQuery, "token") || strings.Contains(relayQuery, "api_key") {
+		t.Fatalf("credential query leaked to relay: %q", relayQuery)
+	}
+	if !strings.Contains(relayQuery, "limit=10") {
+		t.Fatalf("legitimate query params lost: %q", relayQuery)
+	}
+}

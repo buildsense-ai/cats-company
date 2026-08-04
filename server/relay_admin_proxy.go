@@ -2,10 +2,15 @@ package server
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -25,14 +30,14 @@ import (
 //     /health, /api/ are never forwarded).
 //  4. rate limiting (per uid + per IP) and audit logging (writes highlighted).
 type RelayAdminProxyHandler struct {
-	config           relayAdminConfig
-	client           *http.Client
-	rateLimit        int
+	config            relayAdminConfig
+	client            *http.Client
+	rateLimit         int
 	rateWindowSeconds int
-	rateByUID        map[int64]*fixedWindowRateLimiter
-	rateByIP         map[string]*fixedWindowRateLimiter
-	rateMu           sync.Mutex
-	auditLogger      *log.Logger
+	rateByUID         map[int64]*fixedWindowRateLimiter
+	rateByIP          map[string]*fixedWindowRateLimiter
+	rateMu            sync.Mutex
+	auditLogger       *log.Logger
 }
 
 const relayAdminRewritePrefix = "/api/admin/relay"
@@ -72,26 +77,90 @@ func relayAdminConfigFromEnv() relayAdminConfig {
 // NewRelayAdminProxyHandler builds the handler with bounded client timeouts.
 func NewRelayAdminProxyHandler(cfg relayAdminConfig) *RelayAdminProxyHandler {
 	h := &RelayAdminProxyHandler{
-		config:            cfg,
-		client:            &http.Client{Timeout: 15 * time.Second},
-		rateByUID:         map[int64]*fixedWindowRateLimiter{},
-		rateByIP:          map[string]*fixedWindowRateLimiter{},
-		auditLogger:       nil,
+		config:      cfg,
+		client:      &http.Client{Timeout: 15 * time.Second},
+		rateByUID:   map[int64]*fixedWindowRateLimiter{},
+		rateByIP:    map[string]*fixedWindowRateLimiter{},
+		auditLogger: nil,
 	}
 	h.setRateLimit(30, 60)
 	return h
 }
 
+const relayAdminCookieName = "catsco_relay_admin"
+const relayAdminSessionTTL = 30 * time.Minute
+
 // HandleAccess reports whether the authenticated uid may use the portal.
-// It never reveals why; non-whitelisted users just see allowed=false.
+// It never reveals why; non-whitelisted users just see allowed=false. On
+// success it issues a short-lived, path-scoped HttpOnly session cookie so the
+// iframe and its same-origin fetches can authenticate without leaking the JWT.
 func (h *RelayAdminProxyHandler) HandleAccess(w http.ResponseWriter, r *http.Request) {
 	uid := UIDFromContext(r.Context())
-	writeJSON(w, http.StatusOK, map[string]bool{"allowed": h.config.allows(uid)})
+	allowed := h.config.allows(uid)
+	if allowed {
+		h.issueSessionCookie(w, uid)
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"allowed": allowed})
+}
+
+// issueSessionCookie signs a short-lived, relay-admin-scoped session cookie.
+func (h *RelayAdminProxyHandler) issueSessionCookie(w http.ResponseWriter, uid int64) {
+	exp := time.Now().Add(relayAdminSessionTTL).Unix()
+	payload := fmt.Sprintf("%d:%d", uid, exp)
+	http.SetCookie(w, &http.Cookie{
+		Name:     relayAdminCookieName,
+		Value:    payload + "." + relayAdminSign(payload),
+		Path:     "/api/admin/relay/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int(relayAdminSessionTTL.Seconds()),
+	})
+}
+
+// verifySessionCookie validates the signed session cookie and returns its uid.
+// Returns 0 when missing, expired, or tampered with.
+func (h *RelayAdminProxyHandler) verifySessionCookie(r *http.Request) int64 {
+	c, err := r.Cookie(relayAdminCookieName)
+	if err != nil {
+		return 0
+	}
+	parts := strings.SplitN(c.Value, ".", 2)
+	if len(parts) != 2 {
+		return 0
+	}
+	sig := relayAdminSign(parts[0])
+	if !hmac.Equal([]byte(sig), []byte(parts[1])) {
+		return 0
+	}
+	fields := strings.SplitN(parts[0], ":", 2)
+	if len(fields) != 2 {
+		return 0
+	}
+	uid, err := strconv.ParseInt(fields[0], 10, 64)
+	if err != nil || uid <= 0 {
+		return 0
+	}
+	exp, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || exp < time.Now().Unix() {
+		return 0
+	}
+	return uid
+}
+
+func relayAdminSign(payload string) string {
+	mac := hmac.New(sha256.New, jwtSecret)
+	mac.Write([]byte(payload))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // HandleProxy forwards whitelisted usage-admin requests to the relay.
 func (h *RelayAdminProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Request) {
-	uid := UIDFromContext(r.Context())
+	// Authenticate: prefer the short-lived scoped session cookie (iframe/same-origin
+	// fetches), fall back to the JWT in the request context (direct API calls).
+	uid := h.verifySessionCookie(r)
+	if uid <= 0 {
+		uid = UIDFromContext(r.Context())
+	}
 	if uid <= 0 {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
@@ -114,8 +183,8 @@ func (h *RelayAdminProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Requ
 	}
 
 	upstream := h.config.relayURL + relayPath
-	if r.URL.RawQuery != "" {
-		upstream += "?" + r.URL.RawQuery
+	if q := relayAdminSanitizedQuery(r.URL.RawQuery); q != "" {
+		upstream += "?" + q
 	}
 	upReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstream, r.Body)
 	if err != nil {
@@ -123,7 +192,12 @@ func (h *RelayAdminProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	upReq.Header.Set("Content-Type", r.Header.Get("Content-Type"))
-	// Deliberately do NOT forward Authorization/Cookie/other sensitive headers.
+	// Local pricing write protection requires an explicit marker; we only add it
+	// for the whitelisted write route after auth/whitelist checks have passed.
+	if r.Method == http.MethodPost && relayAdminPathAllowed(relayPath) && relayPath == "/local/pricing-rules" {
+		upReq.Header.Set("X-Cats-Relay-Local-Write", "pricing-rules")
+	}
+	// Deliberately do NOT forward Authorization/Cookie/Origin/other sensitive headers.
 
 	resp, err := h.client.Do(upReq)
 	if err != nil {
@@ -132,7 +206,7 @@ func (h *RelayAdminProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer resp.Body.Close()
-	body, readErr := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if readErr != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream read failed"})
 		return
@@ -142,9 +216,28 @@ func (h *RelayAdminProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Requ
 		body = relayAdminRewriteBody(body)
 	}
 	h.audit(r, uid, resp.StatusCode, r.Method+" "+relayPath)
+	// Admin data is sensitive: never cache, never allow off-origin framing.
 	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+	w.Header().Set("X-Frame-Options", "DENY")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
+}
+
+// relayAdminSanitizedQuery drops credential-bearing parameters before the query
+// is forwarded to the relay (they must never reach relay logs).
+func relayAdminSanitizedQuery(rawQuery string) string {
+	if rawQuery == "" {
+		return ""
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return rawQuery
+	}
+	for _, key := range []string{"token", "api_key", "apiKey"} {
+		values.Del(key)
+	}
+	return values.Encode()
 }
 
 // relayAdminRewriteBody rewrites absolute /local/ references to the proxy
@@ -166,6 +259,11 @@ var relayAdminUserKeyPath = regexp.MustCompile(`^/local/users/[0-9]+/key/(state|
 // relayAdminPathAllowed reports whether a relay path may be proxied.
 func relayAdminPathAllowed(rawPath string) bool {
 	path := strings.SplitN(rawPath, "?", 2)[0]
+	// Defense in depth: reject encoded traversal / control characters outright.
+	lower := strings.ToLower(path)
+	if strings.Contains(lower, "%2e") || strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c") || strings.Contains(lower, "%00") {
+		return false
+	}
 	if relayAdminUserKeyPath.MatchString(path) {
 		return true
 	}
@@ -236,11 +334,12 @@ func (h *RelayAdminProxyHandler) allow(uid int64, remoteAddr string) bool {
 }
 
 func (h *RelayAdminProxyHandler) audit(r *http.Request, uid int64, status int, detail string) {
+	ip := remoteHost(r.RemoteAddr)
 	if h.auditLogger != nil {
-		h.auditLogger.Printf("relay-admin uid=%d method=%s path=%s status=%d %s", uid, r.Method, r.URL.Path, status, detail)
+		h.auditLogger.Printf("relay-admin uid=%d ip=%s method=%s path=%s status=%d %s", uid, ip, r.Method, r.URL.Path, status, detail)
 		return
 	}
-	log.Printf("relay-admin uid=%d method=%s path=%s status=%d %s", uid, r.Method, r.URL.Path, status, detail)
+	log.Printf("relay-admin uid=%d ip=%s method=%s path=%s status=%d %s", uid, ip, r.Method, r.URL.Path, status, detail)
 }
 
 func remoteHost(remoteAddr string) string {

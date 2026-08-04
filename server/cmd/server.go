@@ -483,10 +483,10 @@ func main() {
 	botAPIKeyAuthWithDB := server.BotAPIKeyMiddlewareWithDB(db)
 	adminAuthWithDB := server.AdminMiddlewareWithDB(db)
 
-	// Relay usage admin portal (internal; whitelist-only, guarded proxy)
+	// Relay usage admin portal (internal; JWT-only, whitelist-only, guarded proxy)
 	relayAdminHandler := server.NewRelayAdminProxyHandler(server.RelayAdminConfigFromEnv())
-	mux.HandleFunc("/api/admin/relay/access", authWithDB(relayAdminHandler.HandleAccess))
-	mux.HandleFunc("/api/admin/relay/", authWithDB(relayAdminHandler.HandleProxy))
+	mux.HandleFunc("/api/admin/relay/access", jwtAuthWithDB(relayAdminHandler.HandleAccess))
+	mux.HandleFunc("/api/admin/relay/", jwtAuthWithDB(relayAdminHandler.HandleProxy))
 
 	mux.HandleFunc("/api/friends", authWithDB(friendHandler.HandleGetFriends))
 	mux.HandleFunc("/api/friends/pending", authWithDB(friendHandler.HandleGetPendingRequests))
