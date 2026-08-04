@@ -382,6 +382,14 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
     : agentModelState?.summary
       ? relayUsageTone(agentModelState.summary)
       : agentModelState?.isBot && agentModelState.state === 'unavailable' ? 'muted' : '';
+  const headerContext = cloudSelectionActive
+    ? displayedSelection.kind === 'custom'
+      ? customContextWindow
+      : displayedCatalogModel
+        ? formatModelContextWindowTokens(displayedCatalogModel.context_window_tokens)
+        : ''
+    : '';
+  const displayTitle = `${display.title}${headerContext ? `；上下文 ${headerContext}` : ''}`;
   const applyState = runtimeUnavailable
     ? '暂时无法切换'
     : savingKey
@@ -394,6 +402,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
   const statusContents = (
     <>
       <span className="v3-current-model-name">{display.model}</span>
+      {headerContext && <span className="v3-model-context">上下文 {headerContext}</span>}
       {headerQuota && <span className={`v3-model-quota ${headerTone}`.trim()}>{headerQuota}</span>}
       {applyState && <span className={`v3-model-apply-state ${modelApplyError ? 'error' : ''} ${runtimeUnavailable ? 'muted' : ''}`.trim()}>{applyState}</span>}
       {canManageModel && (transitioning
@@ -408,11 +417,11 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
         <button
           type="button"
           className="v3-local-assistant-status v3-model-status-button"
-          aria-label={`${display.title}，切换模型`}
+          aria-label={`${displayTitle}，切换模型`}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           aria-busy={transitioning}
-          title={feedback || display.title}
+          title={feedback || displayTitle}
           onClick={openMenu}
           disabled={transitioning}
         >
@@ -421,8 +430,8 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
       ) : (
         <div
           className="v3-local-assistant-status"
-          aria-label={runtimeUnavailable ? `${display.title}，暂时无法切换` : display.title}
-          title={runtimeUnavailable ? modelConfig.runtime_unavailable_reason || RUNTIME_UNAVAILABLE_REASON : display.title}
+          aria-label={runtimeUnavailable ? `${displayTitle}，暂时无法切换` : displayTitle}
+          title={runtimeUnavailable ? modelConfig.runtime_unavailable_reason || RUNTIME_UNAVAILABLE_REASON : displayTitle}
         >
           {statusContents}
         </div>
@@ -581,7 +590,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                     : modelConfig?.custom_supported === false
                       ? '云端自定义模型暂不可用'
                     : modelConfig?.custom?.api_key_configured
-                      ? `${modelConfig.custom.model} · 凭证 ${modelConfig.custom.api_key_hint}`
+                      ? `${modelConfig.custom.model} · 凭证 ${modelConfig.custom.api_key_hint}${customContextWindow ? ` · 上下文 ${customContextWindow}` : ''}`
                       : '配置自己的 API 地址、模型和密钥'}</small>
                 </span>
                 <Settings2 size={15} />

@@ -257,6 +257,39 @@ describe('LocalAssistantBar model selector', () => {
     expect(status?.getAttribute('aria-label')).toContain('minimax-m3');
   });
 
+  it('shows the catalog context size in the header for the applied cloud model', async () => {
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue(baseConfig);
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    const status = container.querySelector('.v3-local-assistant-status');
+    expect(status?.textContent).toContain('minimax-m3');
+    expect(status?.textContent).toContain('上下文 1M');
+    expect(status?.textContent).toContain('剩余 75%');
+    expect(status?.getAttribute('aria-label')).toContain('上下文 1M');
+  });
+
+  it('shows the server-managed context size in the header for a custom model', async () => {
+    vi.spyOn(api, 'getBotModelConfig').mockResolvedValue({
+      ...baseConfig,
+      desired: { kind: 'custom', model_id: 'custom', revision: 7 },
+      applied: { kind: 'custom', model_id: 'custom', revision: 7 },
+      custom: {
+        protocol: 'anthropic',
+        api_base: 'https://models.example.com',
+        model: 'private-model',
+        api_key_configured: true,
+        api_key_hint: '****cret',
+        context_window_tokens: 128000,
+        reasoning_effort: 'high',
+      },
+    });
+    await renderBar({ activeAgent: { uid: 43, isOwner: true, relation: 'owner' } });
+    const status = container.querySelector('.v3-local-assistant-status');
+    expect(status?.textContent).toContain('private-model');
+    expect(status?.textContent).toContain('上下文 128K');
+    expect(status?.textContent).toContain('自备模型');
+    expect(status?.getAttribute('aria-label')).toContain('上下文 128K');
+  });
+
   it('shows the applied cloud model instead of a stale local quota snapshot', async () => {
     vi.spyOn(api, 'getBotModelConfig').mockResolvedValue({
       ...baseConfig,
