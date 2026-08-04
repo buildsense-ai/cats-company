@@ -55,7 +55,7 @@ type botModelCatalogItem struct {
 	Description            string             `json:"description"`
 	Provider               string             `json:"provider"`
 	Protocol               string             `json:"protocol"`
-	ContextWindowTokens    int64              `json:"-"`
+	ContextWindowTokens    int64              `json:"context_window_tokens"`
 	ReasoningEfforts       []string           `json:"reasoning_efforts,omitempty"`
 	DefaultReasoningEffort string             `json:"default_reasoning_effort,omitempty"`
 	Quota                  *relayUsageSummary `json:"quota,omitempty"`
@@ -119,13 +119,14 @@ type cloudCustomModelConfig struct {
 }
 
 type ownerCustomModelConfig struct {
-	Protocol         string   `json:"protocol"`
-	APIBase          string   `json:"api_base"`
-	Model            string   `json:"model"`
-	APIKeyConfigured bool     `json:"api_key_configured"`
-	APIKeyHint       string   `json:"api_key_hint,omitempty"`
-	Temperature      *float64 `json:"temperature,omitempty"`
-	ReasoningEffort  string   `json:"reasoning_effort,omitempty"`
+	Protocol            string   `json:"protocol"`
+	APIBase             string   `json:"api_base"`
+	Model               string   `json:"model"`
+	APIKeyConfigured    bool     `json:"api_key_configured"`
+	APIKeyHint          string   `json:"api_key_hint,omitempty"`
+	ContextWindowTokens int64    `json:"context_window_tokens"`
+	Temperature         *float64 `json:"temperature,omitempty"`
+	ReasoningEffort     string   `json:"reasoning_effort,omitempty"`
 }
 
 func NewBotModelConfigHandler(owners botModelOwnershipStore, models store.BotModelConfigStore) *BotModelConfigHandler {
@@ -602,13 +603,14 @@ func (h *BotModelConfigHandler) ownerConfigResponse(
 			response["custom_unavailable_reason"] = "已保存的自定义模型凭证暂时无法读取，请重新填写后保存"
 		} else {
 			response["custom"] = ownerCustomModelConfig{
-				Protocol:         custom.Protocol,
-				APIBase:          custom.APIBase,
-				Model:            custom.Model,
-				APIKeyConfigured: custom.APIKey != "",
-				APIKeyHint:       secretHint(custom.APIKey),
-				Temperature:      custom.Temperature,
-				ReasoningEffort:  custom.ReasoningEffort,
+				Protocol:            custom.Protocol,
+				APIBase:             custom.APIBase,
+				Model:               custom.Model,
+				APIKeyConfigured:    custom.APIKey != "",
+				APIKeyHint:          secretHint(custom.APIKey),
+				ContextWindowTokens: custom.ContextWindowTokens,
+				Temperature:         custom.Temperature,
+				ReasoningEffort:     custom.ReasoningEffort,
 			}
 		}
 	}

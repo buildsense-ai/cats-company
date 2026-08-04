@@ -103,6 +103,19 @@ function reasoningEffortLabel(effort) {
   return labels[effort] || effort;
 }
 
+export function formatModelContextWindowTokens(tokens) {
+  const value = Number(tokens);
+  if (!Number.isFinite(value) || value <= 0) return '';
+  if (value >= 1_000_000) {
+    const millions = value / 1_000_000;
+    return `${Number.isInteger(millions) ? millions : Number(millions.toFixed(1))}M`;
+  }
+  if (value >= 1_000) {
+    const thousands = value / 1_000;
+    return `${Number.isInteger(thousands) ? thousands : Number(thousands.toFixed(1))}K`;
+  }
+  return String(Math.round(value));
+}
 
 export function describeModelConfigRequestError(error, action = '切换') {
   if (error?.code === 'NETWORK_ERROR') {
@@ -264,6 +277,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
 
   const modelApplyPending = modelConfig?.status === 'pending';
   const transitioning = Boolean(savingKey) || (modelApplyPending && !applyWaitExpired);
+  const customContextWindow = formatModelContextWindowTokens(modelConfig?.custom?.context_window_tokens || 128000);
   const desiredKind = modelConfig?.desired?.kind || (modelConfig?.configured ? 'catalog' : 'local');
   const desiredModelID = modelConfig?.desired?.model_id || 'local';
   const desiredModel = modelConfig?.models?.find((model) => model.id === desiredModelID);
@@ -368,6 +382,14 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
     : agentModelState?.summary
       ? relayUsageTone(agentModelState.summary)
       : agentModelState?.isBot && agentModelState.state === 'unavailable' ? 'muted' : '';
+  const headerContext = cloudSelectionActive
+    ? displayedSelection.kind === 'custom'
+      ? customContextWindow
+      : displayedCatalogModel
+        ? formatModelContextWindowTokens(displayedCatalogModel.context_window_tokens)
+        : ''
+    : '';
+  const displayTitle = `${display.title}${headerContext ? `；上下文 ${headerContext}` : ''}`;
   const applyState = runtimeUnavailable
     ? '暂时无法切换'
     : savingKey
@@ -380,6 +402,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
   const statusContents = (
     <>
       <span className="v3-current-model-name">{display.model}</span>
+      {headerContext && <span className="v3-model-context">上下文 {headerContext}</span>}
       {headerQuota && <span className={`v3-model-quota ${headerTone}`.trim()}>{headerQuota}</span>}
       {applyState && <span className={`v3-model-apply-state ${modelApplyError ? 'error' : ''} ${runtimeUnavailable ? 'muted' : ''}`.trim()}>{applyState}</span>}
       {canManageModel && (transitioning
@@ -394,11 +417,11 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
         <button
           type="button"
           className="v3-local-assistant-status v3-model-status-button"
-          aria-label={`${display.title}，切换模型`}
+          aria-label={`${displayTitle}，切换模型`}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           aria-busy={transitioning}
-          title={feedback || display.title}
+          title={feedback || displayTitle}
           onClick={openMenu}
           disabled={transitioning}
         >
@@ -407,8 +430,8 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
       ) : (
         <div
           className="v3-local-assistant-status"
-          aria-label={runtimeUnavailable ? `${display.title}，暂时无法切换` : display.title}
-          title={runtimeUnavailable ? modelConfig.runtime_unavailable_reason || RUNTIME_UNAVAILABLE_REASON : display.title}
+          aria-label={runtimeUnavailable ? `${displayTitle}，暂时无法切换` : displayTitle}
+          title={runtimeUnavailable ? modelConfig.runtime_unavailable_reason || RUNTIME_UNAVAILABLE_REASON : displayTitle}
         >
           {statusContents}
         </div>
@@ -459,6 +482,12 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                   onChange={(event) => setCustomDraft({ ...customDraft, api_key: event.target.value })}
                 />
               </label>
+              <div className="v3-custom-model-field">
+                <span>上下文大小</span>
+                <output className="v3-custom-model-readonly" aria-label="上下文大小">
+                  {customContextWindow ? `${customContextWindow} Token` : '未知'}
+                </output>
+              </div>
               <div className="v3-custom-model-grid">
                 <label>
                   <span>温度</span>
@@ -497,6 +526,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                 const efforts = model.reasoning_efforts || [];
                 const hasReasoning = efforts.length > 0;
                 const selected = desiredKind === 'catalog' && desiredModelID === model.id;
+                const contextWindow = formatModelContextWindowTokens(model.context_window_tokens);
 
                 return (
                   <div
@@ -517,7 +547,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                     >
                       <span>
                         <strong>{model.label}</strong>
-                        <small>{model.description}</small>
+                        <small>{[contextWindow ? `上下文 ${contextWindow}` : '', model.description].filter(Boolean).join(' · ')}</small>
                         <small className={`v3-model-menu-quota ${modelQuotaTone(model.quota)}`.trim()}>{modelQuotaLabel(model.quota, modelConfig?.quota_error ? 'error' : usageState)}</small>
                       </span>
                       {hasReasoning ? <ChevronRight size={15} /> : selected && <Check size={15} />}
@@ -560,7 +590,7 @@ export default function BotModelSelector({ currentModelName, agentModelState, ac
                     : modelConfig?.custom_supported === false
                       ? '云端自定义模型暂不可用'
                     : modelConfig?.custom?.api_key_configured
-                      ? `${modelConfig.custom.model} · 凭证 ${modelConfig.custom.api_key_hint}`
+                      ? `${modelConfig.custom.model} · 凭证 ${modelConfig.custom.api_key_hint}${customContextWindow ? ` · 上下文 ${customContextWindow}` : ''}`
                       : '配置自己的 API 地址、模型和密钥'}</small>
                 </span>
                 <Settings2 size={15} />
