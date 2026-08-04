@@ -5,6 +5,7 @@ import { enqueuePushOperation } from '../utils/push-operation';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import { cleanupPushForSession } from '../utils/push-session-cleanup';
 import t from '../i18n';
+import RelayAdminModal from './relay-admin-modal';
 import ChatListView from './sidepanel-view';
 import FriendsView from './friends-view';
 import MessagesView from './messages-view';
@@ -1213,6 +1214,9 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
           <Download size={17} />
         </button>
       </div>
+      {relayAdminAllowed && relayAdminOpen && (
+        <RelayAdminModal onClose={() => setRelayAdminOpen(false)} />
+      )}
     </header>
   );
 }
