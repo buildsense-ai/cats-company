@@ -3,6 +3,21 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
 const backendTarget = 'http://localhost:6061';
+const localXiaobaTarget = 'http://127.0.0.1:3800';
+
+const proxy = {
+  '/local-xiaoba': {
+    target: localXiaobaTarget,
+    rewrite: (path) => path.replace(/^\/local-xiaoba/, ''),
+  },
+  '/api': backendTarget,
+  '/local': backendTarget,
+  '/uploads': backendTarget,
+  '/v0': {
+    target: backendTarget,
+    ws: true,
+  },
+};
 
 export default defineConfig({
   plugins: [
@@ -62,15 +77,7 @@ export default defineConfig({
     outDir: 'build',
   },
   server: {
-    proxy: {
-      '/api': backendTarget,
-      '/local': backendTarget,
-      '/uploads': backendTarget,
-      '/v0': {
-        target: backendTarget,
-        ws: true,
-      },
-    },
+    proxy,
   },
   test: {
     environment: 'jsdom',

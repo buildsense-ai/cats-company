@@ -39,15 +39,6 @@ func NewSkillHubProxyHandler(baseURL string, options SkillHubProxyOptions) *Skil
 	if h.maxResponseSize <= 0 {
 		h.maxResponseSize = defaultSkillHubMaxResponse
 	}
-	timeout := options.Timeout
-	if timeout <= 0 {
-		timeout = defaultSkillHubTimeout
-	}
-	if options.Client != nil {
-		h.client = options.Client
-	} else {
-		h.client = &http.Client{Timeout: timeout}
-	}
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		h.configError = fmt.Errorf("invalid SkillHub base URL")
@@ -57,6 +48,26 @@ func NewSkillHubProxyHandler(baseURL string, options SkillHubProxyOptions) *Skil
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	h.baseURL = parsed
+
+	timeout := options.Timeout
+	if timeout <= 0 {
+		timeout = defaultSkillHubTimeout
+	}
+	if options.Client != nil {
+		clientCopy := *options.Client
+		h.client = &clientCopy
+	} else {
+		h.client = &http.Client{Timeout: timeout}
+	}
+	// Keep every redirect on the configured SkillHub origin. A fixed initial
+	// URL alone is not enough because net/http follows cross-origin redirects
+	// by default, which could otherwise turn this catalogue proxy into SSRF.
+	h.client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme != h.baseURL.Scheme || req.URL.Host != h.baseURL.Host {
+			return errors.New("SkillHub redirect changed origin")
+		}
+		return nil
+	}
 	return h
 }
 

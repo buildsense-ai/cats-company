@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Check, Link2, Package, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { Bot, Check, Clipboard, FolderOpen, Link2, Package, RefreshCw, Search, Share2, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import '../css/skillhub-view.css';
+
+const LOCAL_XIAOBA_BRIDGE_ENABLED = import.meta.env.DEV;
 
 export function normalizeOwnedBots(response, userUid) {
   const bots = Array.isArray(response) ? response : (response?.bots || []);
@@ -26,6 +28,19 @@ export function normalizeSkillHubSkills(response) {
     latestVersion: String(skill?.latestVersion || skill?.latest_version || skill?.version || '').trim(),
     contentHash: String(skill?.contentHash || skill?.content_hash || skill?.sha256 || '').trim().toLowerCase(),
   })).filter((skill) => skill.skillId);
+}
+
+export function normalizeLocalSkills(response) {
+  const values = Array.isArray(response) ? response : (response?.skills || []);
+  return values.map((skill) => ({
+    ...skill,
+    name: String(skill?.name || skill?.folder || '').trim(),
+    description: String(skill?.description || '').trim(),
+    path: String(skill?.path || '').trim(),
+    relativePath: String(skill?.relativePath || skill?.relative_path || '').trim(),
+    source: String(skill?.source || 'user').trim(),
+    skillHub: skill?.skillHub || skill?.skill_hub || null,
+  })).filter((skill) => skill.name);
 }
 
 export function upsertSkillRef(skills, nextRef) {
@@ -68,11 +83,19 @@ export default function SkillHubView({ user }) {
   const [loadingCatalogue, setLoadingCatalogue] = useState(true);
   const [catalogueError, setCatalogueError] = useState('');
   const [definitionError, setDefinitionError] = useState('');
+  const [localSkills, setLocalSkills] = useState([]);
+  const [localSkillsPath, setLocalSkillsPath] = useState('');
+  const [localSkillsError, setLocalSkillsError] = useState('');
+  const [localNotice, setLocalNotice] = useState('');
+  const [loadingLocalSkills, setLoadingLocalSkills] = useState(false);
+  const [sharingSkill, setSharingSkill] = useState('');
   const [saving, setSaving] = useState(false);
   const selectedBotUIDRef = useRef('');
   const definitionBotUIDRef = useRef('');
   const definitionRequestRef = useRef(0);
   const catalogueRequestRef = useRef(0);
+  const localRequestRef = useRef(0);
+  const localSwitchQueueRef = useRef(Promise.resolve());
   const saveRequestRef = useRef(0);
 
   useEffect(() => {
@@ -174,6 +197,67 @@ export default function SkillHubView({ user }) {
     }
   }, []);
 
+  const loadLocalWorkspace = useCallback(async (botUID = selectedBotUIDRef.current) => {
+    const requestedBotUID = String(botUID || '');
+    const requestID = localRequestRef.current + 1;
+    localRequestRef.current = requestID;
+    if (!requestedBotUID) {
+      setLocalSkills([]);
+      setLocalSkillsPath('');
+      return;
+    }
+    setLoadingLocalSkills(true);
+    // Do not leave the previous Bot's cards actionable while XiaoBa switches
+    // its active workspace. The local bridge reads the currently active
+    // workspace, so stale cards could otherwise upload the wrong Skill.
+    setLocalSkills([]);
+    setLocalSkillsPath('');
+    setLocalSkillsError('');
+    setLocalNotice('');
+    try {
+      let switchError;
+      const switchTask = localSwitchQueueRef.current.then(async () => {
+        if (requestID !== localRequestRef.current) return;
+        try {
+          await api.switchLocalBot(requestedBotUID);
+        } catch (error) {
+          switchError = error;
+        }
+      });
+      localSwitchQueueRef.current = switchTask.catch(() => {});
+      await switchTask;
+      if (switchError) throw switchError;
+      if (
+        requestID !== localRequestRef.current
+        || requestedBotUID !== selectedBotUIDRef.current
+      ) return;
+      const [status, store, details] = await Promise.all([
+        api.getLocalCatsStatus(),
+        api.getLocalSkills(),
+        api.getLocalStatusDetails(),
+      ]);
+      if (String(status?.botUid || '') !== requestedBotUID) {
+        throw new Error('本地 XiaoBa 当前 Bot 与页面选择不一致，请重新选择 Bot 后再试。');
+      }
+      if (
+        requestID !== localRequestRef.current
+        || requestedBotUID !== selectedBotUIDRef.current
+      ) return;
+      setLocalSkills(normalizeLocalSkills(store));
+      setLocalSkillsPath(String(details?.skillsPath || '').trim());
+    } catch (error) {
+      if (
+        requestID !== localRequestRef.current
+        || requestedBotUID !== selectedBotUIDRef.current
+      ) return;
+      setLocalSkills([]);
+      setLocalSkillsPath('');
+      setLocalSkillsError(error?.message || '无法连接本地 XiaoBa，请确认 XiaoBa Dashboard 已启动并完成 CatsCo 登录。');
+    } finally {
+      if (requestID === localRequestRef.current) setLoadingLocalSkills(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadBots().catch((error) => setDefinitionError(error?.message || '无法读取 Bot 列表'));
     searchCatalogue('').catch(() => {});
@@ -181,7 +265,8 @@ export default function SkillHubView({ user }) {
 
   useEffect(() => {
     loadDefinition(selectedBotUID).catch(() => {});
-  }, [loadDefinition, selectedBotUID]);
+    if (LOCAL_XIAOBA_BRIDGE_ENABLED) loadLocalWorkspace(selectedBotUID).catch(() => {});
+  }, [loadDefinition, loadLocalWorkspace, selectedBotUID]);
 
   const saveSkills = async (skills, expected = {}) => {
     const requestedBotUID = expected.botUID || selectedBotUIDRef.current;
@@ -191,8 +276,8 @@ export default function SkillHubView({ user }) {
       || requestedBotUID !== selectedBotUIDRef.current
       || definitionBotUID !== requestedBotUID
       || loadingDefinition
-    ) return;
-    if (saving) return;
+    ) return { ok: false, stale: true };
+    if (saving) return { ok: false, busy: true };
     const requestID = saveRequestRef.current + 1;
     saveRequestRef.current = requestID;
     definitionRequestRef.current += 1;
@@ -207,7 +292,7 @@ export default function SkillHubView({ user }) {
       if (
         requestID !== saveRequestRef.current
         || requestedBotUID !== selectedBotUIDRef.current
-      ) return;
+      ) return { ok: false, stale: true };
       setDefinition({
         ...next,
         skills: Array.isArray(next?.skills) ? next.skills : [],
@@ -215,11 +300,12 @@ export default function SkillHubView({ user }) {
       });
       definitionBotUIDRef.current = requestedBotUID;
       setDefinitionBotUID(requestedBotUID);
+      return { ok: true, definition: next };
     } catch (error) {
       if (
         requestID !== saveRequestRef.current
         || requestedBotUID !== selectedBotUIDRef.current
-      ) return;
+      ) return { ok: false, stale: true };
       if (error?.status === 409) {
         await loadDefinition(requestedBotUID);
         if (
@@ -229,6 +315,7 @@ export default function SkillHubView({ user }) {
       } else {
         setDefinitionError(error?.message || '保存 Skills 配置失败');
       }
+      return { ok: false, error };
     } finally {
       if (
         requestID === saveRequestRef.current
@@ -287,6 +374,91 @@ export default function SkillHubView({ user }) {
     await saveSkills(definition.skills.filter((skill) => skill.skillId !== skillID));
   };
 
+  const shareLocalSkill = async (localSkill) => {
+    const requestedBotUID = selectedBotUIDRef.current;
+    if (!requestedBotUID || !definitionReady || saving || sharingSkill) return;
+    const requestedRevision = definition.revision;
+    const requestedSkills = definition.skills;
+    setSharingSkill(localSkill.name);
+    setLocalSkillsError('');
+    setLocalNotice('');
+    let uploaded = false;
+    try {
+      const localStatus = await api.getLocalCatsStatus();
+      if (localStatus?.authStatus !== 'valid') {
+        throw new Error(localStatus?.authError || '本地 XiaoBa 的 CatsCo 登录状态无效，请重新登录。');
+      }
+      if (String(localStatus?.user?.uid || '') !== String(user?.uid || '')) {
+        throw new Error('本地 XiaoBa 登录的 CatsCo 账号与当前 WebApp 账号不一致，已停止分享。');
+      }
+      if (String(localStatus?.botUid || '') !== requestedBotUID) {
+        throw new Error('本地 XiaoBa 当前 Bot 与页面选择不一致，已停止分享，请重新选择 Bot。');
+      }
+      const shared = await api.shareLocalSkill(localSkill.name, requestedBotUID, user?.uid);
+      if (String(shared?.botUid || '') !== requestedBotUID) {
+        throw new Error('Skill 分享完成时本地 Bot 已发生变化，已停止自动绑定。');
+      }
+      if (shared?.requiresConfirmation) {
+        throw new Error('SkillHub 已存在同名 Skill，本期暂不支持升级或覆盖，请先更换 Skill 名称。');
+      }
+      uploaded = true;
+      const sharedSkillID = String(shared?.skill?.id || '').trim();
+      if (!sharedSkillID) throw new Error('SkillHub 没有返回已分享 Skill 的标识。');
+      let resolved = resolveSkillHubEntry({
+        skillId: sharedSkillID,
+        latestVersion: shared?.latestVersion,
+        contentHash: shared?.contentHash,
+      }, shared);
+      if (!resolved.latestVersion || !isExactHash(resolved.contentHash)) {
+        const detail = await api.getSkillHubSkill(sharedSkillID);
+        resolved = resolveSkillHubEntry({ skillId: sharedSkillID }, detail);
+      }
+      if (!resolved.latestVersion || !isExactHash(resolved.contentHash)) {
+        throw new Error('SkillHub 没有返回可绑定版本的完整哈希。');
+      }
+      if (requestedBotUID !== selectedBotUIDRef.current) return;
+      const saved = await saveSkills(upsertSkillRef(requestedSkills, {
+        source: 'skillhub',
+        skillId: sharedSkillID,
+        version: resolved.latestVersion,
+        contentHash: resolved.contentHash,
+      }), {
+        botUID: requestedBotUID,
+        revision: requestedRevision,
+      });
+      if (!saved?.ok) {
+        throw new Error('Skill 已分享到全局 SkillHub，但绑定当前 Bot 失败，请刷新 Bot 配置后重试。');
+      }
+      if (requestedBotUID !== selectedBotUIDRef.current) return;
+      await Promise.all([
+        searchCatalogue(query),
+        loadLocalWorkspace(requestedBotUID),
+      ]);
+      if (requestedBotUID !== selectedBotUIDRef.current) return;
+      setLocalNotice(`“${localSkill.name}”已分享到全局 SkillHub，并绑定到当前 Bot。`);
+    } catch (error) {
+      if (requestedBotUID === selectedBotUIDRef.current) {
+        if (uploaded) {
+          setLocalSkillsError('Skill 已进入全局 SkillHub，但暂未绑定到当前 Bot，请刷新后重试绑定。');
+          return;
+        }
+        setLocalSkillsError(error?.message || '分享本地 Skill 失败');
+      }
+    } finally {
+      if (requestedBotUID === selectedBotUIDRef.current) setSharingSkill('');
+    }
+  };
+
+  const copyLocalSkillsPath = async () => {
+    if (!localSkillsPath) return;
+    try {
+      await navigator.clipboard.writeText(localSkillsPath);
+      setLocalNotice('当前生效的本地 Skills 路径已复制。');
+    } catch {
+      setLocalSkillsError(`无法自动复制，请手动复制：${localSkillsPath}`);
+    }
+  };
+
   return (
     <main className="cc-skillhub-page">
       <header className="cc-skillhub-header">
@@ -299,7 +471,7 @@ export default function SkillHubView({ user }) {
           <span><Bot size={14} /> 当前 Bot</span>
           <select
             value={selectedBotUID}
-            disabled={loadingBots || bots.length === 0}
+            disabled={loadingBots || bots.length === 0 || Boolean(sharingSkill)}
             onChange={(event) => setSelectedBotUID(event.target.value)}
           >
             {bots.length === 0 && <option value="">暂无自己拥有的 Bot</option>}
@@ -316,7 +488,7 @@ export default function SkillHubView({ user }) {
             <h2>当前 Bot 已配置</h2>
             <span>{definition.skills.length} 个 Skill</span>
           </div>
-          <button type="button" onClick={() => loadDefinition()} disabled={!selectedBotUID || loadingDefinition || saving}>
+          <button type="button" onClick={() => loadDefinition()} disabled={!selectedBotUID || loadingDefinition || saving || Boolean(sharingSkill)}>
             <RefreshCw size={14} /> 刷新
           </button>
         </div>
@@ -337,7 +509,7 @@ export default function SkillHubView({ user }) {
                 <button
                   type="button"
                   className="danger"
-                  disabled={saving || !definitionReady}
+                  disabled={saving || Boolean(sharingSkill) || !definitionReady}
                   onClick={() => removeSkill(skill.skillId)}
                 >
                   <Trash2 size={14} /> 移除
@@ -347,6 +519,61 @@ export default function SkillHubView({ user }) {
           </div>
         )}
       </section>
+
+      {LOCAL_XIAOBA_BRIDGE_ENABLED && <section className="cc-skillhub-local">
+        <div className="cc-skillhub-section-heading">
+          <div>
+            <h2>本地 Skills</h2>
+            <span>当前 Bot 在 XiaoBa 中实际加载的工作区</span>
+          </div>
+          <div className="cc-skillhub-local-actions">
+            <button type="button" onClick={copyLocalSkillsPath} disabled={!localSkillsPath}>
+              <Clipboard size={14} /> 复制 Skills 路径
+            </button>
+            <button type="button" onClick={() => loadLocalWorkspace()} disabled={!selectedBotUID || loadingLocalSkills || Boolean(sharingSkill)}>
+              <RefreshCw size={14} /> 刷新本地
+            </button>
+          </div>
+        </div>
+        {localSkillsPath && (
+          <div className="cc-skillhub-local-path"><FolderOpen size={14} /><code>{localSkillsPath}</code></div>
+        )}
+        {localNotice && <div className="cc-skillhub-alert success">{localNotice}</div>}
+        {localSkillsError ? (
+          <div className="cc-skillhub-alert error">{localSkillsError}</div>
+        ) : loadingLocalSkills ? (
+          <div className="cc-skillhub-empty">正在切换本地 Bot 并同步 Skills…</div>
+        ) : localSkills.length === 0 ? (
+          <div className="cc-skillhub-empty">当前本地工作区还没有可用 Skill。</div>
+        ) : (
+          <div className="cc-skillhub-local-grid">
+            {localSkills.map((skill) => {
+              const shared = Boolean(skill.skillHub?.author && skill.skillHub?.version);
+              const canShare = skill.source !== 'system' && !shared;
+              return (
+                <article key={`${skill.relativePath}:${skill.name}`} className="cc-skillhub-local-card">
+                  <div>
+                    <strong>{skill.name}</strong>
+                    <span className={`cc-skillhub-status ${shared ? 'synced' : 'local'}`}>
+                      {shared ? `已分享 v${skill.skillHub.version}` : '仅本地'}
+                    </span>
+                  </div>
+                  <p>{skill.description || '暂无描述'}</p>
+                  <code>{skill.relativePath || skill.path}</code>
+                  <button
+                    type="button"
+                    disabled={!canShare || !definitionReady || loadingLocalSkills || saving || Boolean(sharingSkill)}
+                    onClick={() => shareLocalSkill(skill)}
+                  >
+                    {shared ? <Check size={14} /> : <Share2 size={14} />}
+                    {shared ? '已分享到 SkillHub' : sharingSkill === skill.name ? '正在分享…' : '分享到 SkillHub'}
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>}
 
       <section className="cc-skillhub-catalogue">
         <form
@@ -393,7 +620,7 @@ export default function SkillHubView({ user }) {
                   </div>
                   <button
                     type="button"
-                    disabled={!definitionReady || sameVersion || saving}
+                    disabled={!definitionReady || sameVersion || saving || Boolean(sharingSkill)}
                     onClick={() => installSkill(skill)}
                   >
                     {sameVersion ? <Check size={14} /> : <Link2 size={14} />}

@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 import SkillHubView, {
   normalizeOwnedBots,
+  normalizeLocalSkills,
   normalizeSkillHubSkills,
   resolveSkillHubEntry,
   upsertSkillRef,
@@ -16,6 +17,11 @@ vi.mock('../api', () => ({
     updateBotDefinitionSkills: vi.fn(),
     searchSkillHubSkills: vi.fn(),
     getSkillHubSkill: vi.fn(),
+    switchLocalBot: vi.fn(),
+    getLocalCatsStatus: vi.fn(),
+    getLocalSkills: vi.fn(),
+    getLocalStatusDetails: vi.fn(),
+    shareLocalSkill: vi.fn(),
   },
 }));
 
@@ -79,6 +85,15 @@ describe('SkillHubView', () => {
       skillId: 'a',
       displayName: 'A',
       latestVersion: '1.2.0',
+    });
+    expect(normalizeLocalSkills({ skills: [{
+      name: 'local-demo',
+      relative_path: 'local-demo',
+      skill_hub: { version: '1.0.0' },
+    }] })[0]).toMatchObject({
+      name: 'local-demo',
+      relativePath: 'local-demo',
+      skillHub: { version: '1.0.0' },
     });
     expect(upsertSkillRef([{ skillId: 'a', version: '1' }], { skillId: 'b', version: '2' }))
       .toEqual([{ skillId: 'a', version: '1' }, { skillId: 'b', version: '2' }]);

@@ -1,4 +1,5 @@
 const API_BASE = import.meta.env.VITE_API_BASE || '';
+const LOCAL_XIAOBA_BASE = import.meta.env.VITE_XIAOBA_LOCAL_API || '/local-xiaoba';
 const DEFAULT_WS_SCHEME = window.location.protocol === 'https:' ? 'wss' : 'ws';
 const WS_URL = import.meta.env.VITE_WS_URL || `${DEFAULT_WS_SCHEME}://${window.location.host}/v0/channels`;
 
@@ -313,6 +314,56 @@ async function request(method, path, body, options = {}) {
   }
 }
 
+async function localRequest(method, path, body, options = {}) {
+  const { timeoutMs = 45_000 } = options;
+  const controller = new AbortController();
+  const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    let response;
+    try {
+      response = await fetch(`${LOCAL_XIAOBA_BASE}${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+    } catch (cause) {
+      const error = new Error(
+        cause?.name === 'AbortError'
+          ? '本地 XiaoBa 请求超时，请确认 Dashboard 和 Connector 正常运行。'
+          : '无法连接本地 XiaoBa，请确认 Dashboard 已启动。',
+      );
+      error.code = cause?.name === 'AbortError' ? 'LOCAL_REQUEST_TIMEOUT' : 'LOCAL_REQUEST_FAILED';
+      error.cause = cause;
+      throw error;
+    }
+    let data = {};
+    try {
+      data = await response.json();
+    } catch {
+      data = {};
+    }
+    if (!response.ok) {
+      const error = new Error(data.error || statusMessage(response.status));
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function shareLocalSkillWithCatsCo(skillName, expectedBotUid, expectedUserUid) {
+  const body = { skillName, expectedBotUid, expectedUserUid };
+  // A valid local SkillHub cookie may belong to a previously signed-in
+  // CatsCo user. Always exchange the current XiaoBa CatsCo identity before
+  // publishing so a stale session cannot attribute the Skill to that user.
+  await localRequest('POST', '/api/skillhub/auth/catsco', {});
+  return localRequest('POST', '/api/skillhub/share-local-skill', body);
+}
+
 function statusMessage(status) {
   if (status === 400) return '请求内容有误，请检查后重试';
   if (status === 401) return '登录状态已失效，请重新登录';
@@ -549,6 +600,11 @@ export const api = {
     `/api/bots/definition/skills?uid=${encodeURIComponent(uid)}`,
     { revision, skills },
   ),
+  switchLocalBot: (botUid) => localRequest('POST', '/api/cats/switch-bot', { botUid }),
+  getLocalCatsStatus: () => localRequest('GET', '/api/cats/status'),
+  getLocalSkills: () => localRequest('GET', '/api/store'),
+  getLocalStatusDetails: () => localRequest('GET', '/api/status/details'),
+  shareLocalSkill: shareLocalSkillWithCatsCo,
   searchSkillHubSkills: (query = '', options = {}) => {
     const params = new URLSearchParams();
     if (query) params.set('q', query);

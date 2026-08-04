@@ -107,6 +107,35 @@ func TestSkillHubProxyMapsUpstreamFailuresWithoutLeakingBody(t *testing.T) {
 	}
 }
 
+func TestSkillHubProxyRejectsCrossOriginRedirects(t *testing.T) {
+	redirectTargetReached := false
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectTargetReached = true
+		_, _ = w.Write([]byte(`{"skills":[{"secret":"internal"}]}`))
+	}))
+	defer redirectTarget.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL+"/internal", http.StatusTemporaryRedirect)
+	}))
+	defer upstream.Close()
+
+	h := NewSkillHubProxyHandler(upstream.URL, SkillHubProxyOptions{Timeout: time.Second})
+	req := httptest.NewRequest(http.MethodGet, "/api/skillhub/skills", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSkills(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if redirectTargetReached {
+		t.Fatal("cross-origin redirect target must not be requested")
+	}
+	if strings.Contains(rec.Body.String(), "internal") {
+		t.Fatalf("redirect target response leaked: %s", rec.Body.String())
+	}
+}
+
 func TestSkillHubProxyRejectsInvalidJSON(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("not-json"))
