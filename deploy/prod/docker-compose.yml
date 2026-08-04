@@ -95,7 +95,7 @@ services:
       CATSCO_ARTIFACT_HOST_SUFFIX: "${CATSCO_ARTIFACT_HOST_SUFFIX:-artifacts.catsco.fun}"
       CATSCO_DIRECT_ARTIFACT_URL_TEMPLATE: "${CATSCO_DIRECT_ARTIFACT_URL_TEMPLATE-https://agent-{uid}.artifacts.catsco.fun:19991/artifacts}"
       CATSCO_ADMIN_UID_WHITELIST: "${CATSCO_ADMIN_UID_WHITELIST:-}"
-      CATSCO_RELAY_ADMIN_URL: "${CATSCO_RELAY_ADMIN_URL:-http://127.0.0.1:18090}"
+      CATSCO_RELAY_ADMIN_URL: "${CATSCO_RELAY_ADMIN_URL:-http://host.docker.internal:18090}"
       CATS_RELAY_PUBLIC_BASE_URL: "${CATS_RELAY_PUBLIC_BASE_URL:-https://relay.catsco.cc}"
       CATS_RELAY_OPENAI_BASE_URL: "${CATS_RELAY_OPENAI_BASE_URL:-https://relay.catsco.cc/v1}"
       CATS_RELAY_ANTHROPIC_BASE_URL: "${CATS_RELAY_ANTHROPIC_BASE_URL:-https://relay.catsco.cc/anthropic}"
