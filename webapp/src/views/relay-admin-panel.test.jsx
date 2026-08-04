@@ -1,8 +1,8 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import RelayAdminModal from './relay-admin-modal';
+import RelayAdminPanel from './relay-admin-panel';
 
-describe('RelayAdminModal', () => {
+describe('RelayAdminPanel', () => {
   let container;
   let root;
 
@@ -18,16 +18,18 @@ describe('RelayAdminModal', () => {
     container.remove();
   });
 
-  const renderModal = async (props = {}) => {
+  const renderPanel = async (props = {}) => {
     await act(async () => {
-      root.render(<RelayAdminModal onClose={() => {}} {...props} />);
+      root.render(<RelayAdminPanel onClose={() => {}} {...props} />);
       await Promise.resolve();
       await Promise.resolve();
     });
   };
 
   it('embeds the usage-admin page through the proxy', async () => {
-    await renderModal();
+    await renderPanel();
+    const panel = container.querySelector('.v3-relay-admin-panel');
+    expect(panel).toBeTruthy();
     const iframe = container.querySelector('iframe');
     expect(iframe?.getAttribute('src')).toBe('/api/admin/relay/local/usage-admin');
     expect(iframe?.getAttribute('sandbox')).toContain('allow-scripts');
@@ -35,7 +37,7 @@ describe('RelayAdminModal', () => {
 
   it('renders a close button that invokes onClose', async () => {
     const onClose = vi.fn();
-    await renderModal({ onClose });
+    await renderPanel({ onClose });
     const close = container.querySelector('button[aria-label="关闭中转用量管理"]');
     expect(close).toBeTruthy();
     await act(async () => close.click());
