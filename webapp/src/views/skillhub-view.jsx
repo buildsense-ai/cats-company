@@ -280,6 +280,7 @@ export default function SkillHubView({ user }) {
   const [selectedDeviceID, setSelectedDeviceID] = useState('');
   const [loadingDevices, setLoadingDevices] = useState(true);
   const selectedBotUIDRef = useRef('');
+  const selectedDeviceIDRef = useRef('');
   const definitionBotUIDRef = useRef('');
   const definitionRequestRef = useRef(0);
   const catalogueRequestRef = useRef(0);
@@ -309,12 +310,17 @@ export default function SkillHubView({ user }) {
       const capable = normalizeSkillHubDevices(await api.getDevices());
       setDevices(capable);
       setSelectedDeviceID((current) => {
-        if (current && capable.some((device) => String(device.deviceId || '') === current)) return current;
-        return capable.length === 1 ? String(capable[0].deviceId || '') : '';
+        const next = current && capable.some((device) => String(device.deviceId || '') === current)
+          ? current
+          : (capable.length === 1 ? String(capable[0].deviceId || '') : '');
+        selectedDeviceIDRef.current = next;
+        return next;
       });
       return capable;
     } catch (error) {
       setDevices([]);
+      selectedDeviceIDRef.current = '';
+      localRequestRef.current += 1;
       setSelectedDeviceID('');
       setLocalSkillsError(error?.message || '无法读取本地 XiaoBa 设备。');
       return [];
@@ -413,6 +419,8 @@ export default function SkillHubView({ user }) {
     if (!requestedBotUID || !requestedDeviceID) {
       setLocalSkills([]);
       setLocalSkillsPath('');
+      setLocalNotice('');
+      setLoadingLocalSkills(false);
       return;
     }
     setLoadingLocalSkills(true);
@@ -423,6 +431,11 @@ export default function SkillHubView({ user }) {
     setLocalSkillsPath('');
     setLocalSkillsError('');
     setLocalNotice('');
+    const isCurrentRequest = () => (
+      requestID === localRequestRef.current
+      && requestedBotUID === selectedBotUIDRef.current
+      && requestedDeviceID === selectedDeviceIDRef.current
+    );
     try {
       const invoke = async (toolName, payload, timeoutMs) => assertSkillHubDeviceResult(
         await requestSkillHubDeviceTool({
@@ -439,19 +452,14 @@ export default function SkillHubView({ user }) {
         workspace = await invoke(SKILLHUB_DEVICE_TOOLS.workspace, {}, 20_000);
       } catch (error) {
         if (error?.code !== 'BOT_NOT_ACTIVE') throw error;
+        if (!isCurrentRequest()) return;
         await invoke(SKILLHUB_DEVICE_TOOLS.switchBot, {}, 10_000);
-        if (
-          requestID !== localRequestRef.current
-          || requestedBotUID !== selectedBotUIDRef.current
-        ) return;
+        if (!isCurrentRequest()) return;
         setLocalNotice('正在切换本地 Bot，等待 XiaoBa 重新连接…');
         let lastError = error;
         for (let attempt = 0; attempt < 12; attempt += 1) {
           await wait(attempt === 0 ? 2_000 : 1_500);
-          if (
-            requestID !== localRequestRef.current
-            || requestedBotUID !== selectedBotUIDRef.current
-          ) return;
+          if (!isCurrentRequest()) return;
           try {
             workspace = await invoke(SKILLHUB_DEVICE_TOOLS.workspace, {}, 8_000);
             break;
@@ -461,10 +469,7 @@ export default function SkillHubView({ user }) {
         }
         if (!workspace) throw lastError;
       }
-      if (
-        requestID !== localRequestRef.current
-        || requestedBotUID !== selectedBotUIDRef.current
-      ) return;
+      if (!isCurrentRequest()) return;
       if (String(workspace?.bot_uid || '') !== requestedBotUID) {
         throw new Error('本地 XiaoBa 返回了其他 Bot 的工作区，已停止展示。');
       }
@@ -472,15 +477,12 @@ export default function SkillHubView({ user }) {
       setLocalSkillsPath(String(workspace?.skills_path || '').trim());
       setLocalNotice('');
     } catch (error) {
-      if (
-        requestID !== localRequestRef.current
-        || requestedBotUID !== selectedBotUIDRef.current
-      ) return;
+      if (!isCurrentRequest()) return;
       setLocalSkills([]);
       setLocalSkillsPath('');
       setLocalSkillsError(error?.message || '无法连接本地 XiaoBa，请确认 XiaoBa Dashboard 已启动并完成 CatsCo 登录。');
     } finally {
-      if (requestID === localRequestRef.current) setLoadingLocalSkills(false);
+      if (isCurrentRequest()) setLoadingLocalSkills(false);
     }
   }, [selectedDeviceID, user?.uid]);
 
@@ -492,7 +494,7 @@ export default function SkillHubView({ user }) {
 
   useEffect(() => {
     loadDefinition(selectedBotUID).catch(() => {});
-    if (selectedDeviceID) loadLocalWorkspace(selectedBotUID, selectedDeviceID).catch(() => {});
+    loadLocalWorkspace(selectedBotUID, selectedDeviceID).catch(() => {});
   }, [loadDefinition, loadLocalWorkspace, selectedBotUID, selectedDeviceID]);
 
   const saveSkills = async (skills, expected = {}) => {
@@ -748,7 +750,11 @@ export default function SkillHubView({ user }) {
             <select
               value={selectedBotUID}
               disabled={loadingBots || bots.length === 0 || Boolean(sharingSkill)}
-              onChange={(event) => setSelectedBotUID(event.target.value)}
+              onChange={(event) => {
+                selectedBotUIDRef.current = event.target.value;
+                localRequestRef.current += 1;
+                setSelectedBotUID(event.target.value);
+              }}
             >
               {bots.length === 0 && <option value="">暂无自己拥有的 Bot</option>}
               {bots.map((bot) => <option key={botUID(bot)} value={botUID(bot)}>{botLabel(bot)}</option>)}
@@ -759,7 +765,12 @@ export default function SkillHubView({ user }) {
             <select
               value={selectedDeviceID}
               disabled={loadingDevices || devices.length === 0 || Boolean(sharingSkill)}
-              onChange={(event) => setSelectedDeviceID(event.target.value)}
+              onChange={(event) => {
+                selectedDeviceIDRef.current = event.target.value;
+                localRequestRef.current += 1;
+                if (!event.target.value) setLocalSkillsError('');
+                setSelectedDeviceID(event.target.value);
+              }}
             >
               {devices.length === 0 && <option value="">暂无支持 SkillHub 的在线设备</option>}
               {devices.length > 1 && <option value="">请选择要操作的设备</option>}

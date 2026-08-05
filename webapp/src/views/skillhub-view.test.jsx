@@ -36,8 +36,12 @@ vi.mock('../api', () => ({
 
 function deferred() {
   let resolve;
-  const promise = new Promise((next) => { resolve = next; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((next, fail) => {
+    resolve = next;
+    reject = fail;
+  });
+  return { promise, reject, resolve };
 }
 
 describe('SkillHubView', () => {
@@ -543,6 +547,167 @@ describe('SkillHubView', () => {
 
     expect(container.textContent).toContain('bot-b/skill');
     expect(container.textContent).not.toContain('bot-a/skill');
+  });
+
+  it('does not switch back to a stale Bot after a late BOT_NOT_ACTIVE response', async () => {
+    const botAWorkspace = deferred();
+    api.getMyBots.mockResolvedValueOnce({
+      bots: [
+        { id: 42, display_name: 'Bot A', relation: 'owner' },
+        { id: 44, display_name: 'Bot B', relation: 'owner' },
+      ],
+    });
+    api.getBotDefinitionSkills.mockImplementation((uid) => Promise.resolve({
+      botId: String(uid),
+      revision: 1,
+      skills: [],
+    }));
+    api.getDevices.mockResolvedValueOnce({
+      devices: [{
+        deviceId: 'alice-device',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockImplementation(({ toolName, payload }) => {
+      if (toolName === 'skillhub.localWorkspace.get' && payload.bot_uid === '42') {
+        return botAWorkspace.promise;
+      }
+      if (toolName === 'skillhub.localWorkspace.get' && payload.bot_uid === '44') {
+        return Promise.resolve({
+          schema: 'xiaoba.skillhub.local_workspace.v1',
+          bot_uid: '44',
+          active_bot_uid: '44',
+          skills_path: 'C:\\xiaoba\\bot-b\\skills',
+          skills: [],
+        });
+      }
+      if (toolName === 'skillhub.localBot.switch') {
+        return Promise.resolve({
+          schema: 'xiaoba.skillhub.bot_switch.v1',
+          bot_uid: payload.bot_uid,
+        });
+      }
+      throw new Error(`unexpected tool ${toolName}`);
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'skillhub.localWorkspace.get',
+      payload: expect.objectContaining({ bot_uid: '42' }),
+    }));
+
+    const picker = container.querySelector('.cc-skillhub-bot-picker select');
+    await act(async () => {
+      picker.value = '44';
+      Simulate.change(picker);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      botAWorkspace.reject(Object.assign(new Error('Bot is not active'), { code: 'BOT_NOT_ACTIVE' }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const staleSwitches = requestSkillHubDeviceTool.mock.calls
+      .map(([request]) => request)
+      .filter((request) => (
+        request.toolName === 'skillhub.localBot.switch'
+        && request.payload.bot_uid === '42'
+      ));
+    expect(staleSwitches).toHaveLength(0);
+    expect(container.textContent).toContain('C:\\xiaoba\\bot-b\\skills');
+  });
+
+  it('clears loading and does not switch a stale device after its selection is cleared', async () => {
+    const deviceAWorkspace = deferred();
+    const capabilities = [
+      'skillhub.localWorkspace.get',
+      'skillhub.localSkill.share',
+      'skillhub.localSkill.finalize',
+      'skillhub.localBot.switch',
+    ];
+    api.getDevices.mockResolvedValueOnce({
+      devices: [
+        {
+          deviceId: 'device-a',
+          displayName: 'Device A',
+          active: true,
+          routeConnected: true,
+          routable: true,
+          capabilities,
+        },
+        {
+          deviceId: 'device-b',
+          displayName: 'Device B',
+          active: true,
+          routeConnected: true,
+          routable: true,
+          capabilities,
+        },
+      ],
+    });
+    requestSkillHubDeviceTool.mockImplementation(({ toolName, deviceId, payload }) => {
+      if (toolName === 'skillhub.localWorkspace.get' && deviceId === 'device-a') {
+        return deviceAWorkspace.promise;
+      }
+      if (toolName === 'skillhub.localBot.switch') {
+        return Promise.resolve({
+          schema: 'xiaoba.skillhub.bot_switch.v1',
+          bot_uid: payload.bot_uid,
+        });
+      }
+      throw new Error(`unexpected tool ${toolName}`);
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const devicePicker = container.querySelectorAll('.cc-skillhub-bot-picker select')[1];
+    await act(async () => {
+      devicePicker.value = 'device-a';
+      Simulate.change(devicePicker);
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('正在切换本地 Bot 并同步 Skills');
+
+    await act(async () => {
+      devicePicker.value = '';
+      Simulate.change(devicePicker);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      deviceAWorkspace.reject(Object.assign(new Error('Bot is not active'), { code: 'BOT_NOT_ACTIVE' }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const staleSwitches = requestSkillHubDeviceTool.mock.calls
+      .map(([request]) => request)
+      .filter((request) => (
+        request.toolName === 'skillhub.localBot.switch'
+        && request.deviceId === 'device-a'
+      ));
+    expect(staleSwitches).toHaveLength(0);
+    expect(container.textContent).toContain('请选择要操作的本地 XiaoBa');
+    expect(container.textContent).not.toContain('正在切换本地 Bot 并同步 Skills');
   });
 
   it('ignores a late save response after switching bots', async () => {
