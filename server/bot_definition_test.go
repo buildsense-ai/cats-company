@@ -281,6 +281,39 @@ func TestRuntimeDefinitionAcknowledgementTracksApplyState(t *testing.T) {
 	}
 }
 
+func TestCatalogDefinitionShipsContextWindowTokens(t *testing.T) {
+	db := &botDefinitionTestStore{
+		owners: map[int64]int64{43: 7},
+		records: map[int64]*types.BotDefinitionRecord{
+			43: {
+				Definition: types.BotDefinition{
+					Schema: types.BotDefinitionSchema,
+					BotID:  "43",
+					// 存储为旧数据：catalog 模型不带 context window，
+					// 响应必须从 catalog 权威补全，设备不依赖本地 profile。
+					Model: types.BotDefinitionModel{Kind: "catalog", ModelID: "gpt-5.6-sol"},
+				},
+				Runtime: types.BotDefinitionRuntime{DesiredRevision: 3},
+				Exists:  true,
+			},
+		},
+	}
+	models := &botModelConfigTestStore{owners: db.owners, models: map[int64]*types.BotModelConfig{}}
+	handler := NewBotDefinitionHandler(db, db, models, NewBotModelConfigHandler(db, models))
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/bot/definition", nil)
+	getReq = getReq.WithContext(context.WithValue(getReq.Context(), uidKey, int64(43)))
+	getRec := httptest.NewRecorder()
+	handler.HandleRuntimeDefinition(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("runtime get status=%d body=%s", getRec.Code, getRec.Body.String())
+	}
+	if !strings.Contains(getRec.Body.String(), `"modelId":"gpt-5.6-sol"`) ||
+		!strings.Contains(getRec.Body.String(), `"contextWindowTokens":256000`) {
+		t.Fatalf("catalog definition must ship cloud context window: body=%s", getRec.Body.String())
+	}
+}
+
 func TestRuntimeDefinitionAcknowledgementRedactsCustomModelSecret(t *testing.T) {
 	enableBotModelEncryption(t)
 	codec, err := newBotModelSecretCodecFromEnv()
