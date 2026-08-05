@@ -115,6 +115,8 @@ export default function MessagesView({
   const historyOffsetRef = useRef(0);
   const hasMoreHistoryRef = useRef(false);
   const loadingOlderRef = useRef(false);
+  const groupMembersRequestRef = useRef(0);
+  const peerProfileRequestRef = useRef(0);
   const activeTopicRef = useRef(topic);
   const composerDraftsRef = useRef(new Map());
   const attachmentDraftsRef = useRef(new Map());
@@ -299,6 +301,8 @@ export default function MessagesView({
   // Load message history and group members when topic changes
   useEffect(() => {
     if (!topic) return;
+    groupMembersRequestRef.current += 1;
+    peerProfileRequestRef.current += 1;
     activeTopicRef.current = topic;
     setInput(composerDraftsRef.current.get(topic) || '');
     setMessages([]);
@@ -346,7 +350,7 @@ export default function MessagesView({
     } else {
       loadPeerProfile();
     }
-  }, [topic]);
+  }, [groupId, isGroup, topic, user.uid]);
 
   useEffect(() => {
     const preventBrowserFileOpen = (event) => {
@@ -372,8 +376,12 @@ export default function MessagesView({
   }, []);
 
   const loadGroupMembers = async () => {
+    const requestID = ++groupMembersRequestRef.current;
+    const requestTopic = topic;
+    const requestGroupID = groupId;
     try {
-      const res = await api.getGroupInfo(groupId);
+      const res = await api.getGroupInfo(requestGroupID);
+      if (requestID !== groupMembersRequestRef.current || activeTopicRef.current !== requestTopic) return;
       if (res.members) {
         setMembers(res.members);
       }
@@ -385,18 +393,21 @@ export default function MessagesView({
   };
 
   const loadPeerProfile = async () => {
+    const requestID = ++peerProfileRequestRef.current;
+    const requestTopic = topic;
     try {
-      const [left, right] = topic.replace('p2p_', '').split('_').map((n) => parseInt(n, 10));
-      const peerId = left === user.uid ? right : left;
+      const [left, right] = requestTopic.replace('p2p_', '').split('_').map((n) => parseInt(n, 10));
+      const peerId = left === parseUid(user.uid) ? right : left;
       const [friendsRes, agentsRes] = await Promise.all([
         api.getFriends().catch(() => ({})),
         api.getAgents ? api.getAgents().catch(() => ({})) : Promise.resolve({}),
       ]);
       const friends = friendsRes.friends || [];
       const agents = agentsRes.agents || [];
-      const friendPeer = friends.find((friend) => friend.id === peerId);
-      const agentPeer = agents.find((agent) => agent.uid === peerId || agent.id === peerId);
+      const friendPeer = friends.find((friend) => sameUID(friend.id, peerId));
+      const agentPeer = agents.find((agent) => sameUID(agent.uid || agent.id, peerId));
       const peer = agentPeer ? { ...friendPeer, ...agentPeer } : friendPeer;
+      if (requestID !== peerProfileRequestRef.current || activeTopicRef.current !== requestTopic) return;
       if (peer) setPeerProfile(peer);
     } catch (e) {
     }
@@ -618,7 +629,7 @@ export default function MessagesView({
     let lastBotTextIndex = -1;
 
     messages.forEach((message, index) => {
-      if (message.from_uid === user.uid) return;
+      if (sameUID(message.from_uid, user.uid)) return;
       if (isWorkingMessage(message)) {
         lastWorkingIndex = index;
         return;
@@ -647,7 +658,7 @@ export default function MessagesView({
 
   const topicAgent = availableAgents.find((agent) => agent.topic_id === topic) || null;
   const groupAgent = isGroup
-    ? availableAgents.find((agent) => members.some((member) => member.user_id === (agent.uid || agent.id))) || null
+    ? availableAgents.find((agent) => members.some((member) => sameUID(member.user_id, agent.uid || agent.id))) || null
     : null;
   const selectedAgent = isGroup
     ? groupAgent
@@ -881,7 +892,7 @@ export default function MessagesView({
     const previousTask = (messageIndex < 0 ? messages : messages.slice(0, messageIndex))
       .slice()
       .reverse()
-      .find((item) => item.from_uid === user.uid && isFinalTextMessage(item));
+      .find((item) => sameUID(item.from_uid, user.uid) && isFinalTextMessage(item));
     const taskText = typeof previousTask?.content === 'string' ? previousTask.content.trim() : '';
     if (!taskText) {
       throw new Error('没有找到可以重新发送的上一条任务');
@@ -1171,13 +1182,14 @@ export default function MessagesView({
   // Find the display name for a uid in group context
   const getMemberName = (fromUid) => {
     if (!isGroup || !members.length) return null;
-    const m = members.find((mem) => mem.user_id === fromUid);
-    return m ? (m.display_name || m.username) : `usr${fromUid}`;
+    const normalizedUID = parseUid(fromUid);
+    const m = members.find((mem) => sameUID(mem.user_id, normalizedUID));
+    return m ? (m.display_name || m.username) : `usr${normalizedUID || fromUid}`;
   };
 
 
   const filteredMembers = members.filter((m) => {
-    if (m.user_id === user.uid) return false;
+    if (sameUID(m.user_id, user.uid)) return false;
     if (!mentionFilter) return true;
     const name = (m.display_name || m.username || '').toLowerCase();
     return name.includes(mentionFilter);
@@ -1187,9 +1199,9 @@ export default function MessagesView({
     if (isGroup || !topic || !String(topic).startsWith('p2p_')) return 0;
     const [left, right] = String(topic).replace('p2p_', '').split('_').map((n) => parseInt(n, 10));
     if (!Number.isFinite(left) || !Number.isFinite(right)) return 0;
-    return left === user.uid ? right : left;
+    return left === parseUid(user.uid) ? right : left;
   }, [isGroup, topic, user.uid]);
-  const rosterPeer = availableAgents.find((agent) => agent.uid === peerUID || agent.id === peerUID);
+  const rosterPeer = availableAgents.find((agent) => sameUID(agent.uid || agent.id, peerUID));
   const resolvedPeerProfile = rosterPeer ? { ...peerProfile, ...rosterPeer } : peerProfile;
   const peerIsBot = Boolean(rosterPeer)
     || resolvedPeerProfile?.bot === true
@@ -1233,10 +1245,20 @@ export default function MessagesView({
   const memberMap = useMemo(() => {
     const map = new Map();
     members.forEach((member) => {
-      map.set(member.user_id, member);
+      const uid = parseUid(member?.user_id);
+      if (uid > 0) map.set(uid, member);
     });
     return map;
   }, [members]);
+
+  const availableAgentByUID = useMemo(() => {
+    const map = new Map();
+    availableAgents.forEach((agent) => {
+      const uid = parseUid(agent?.uid || agent?.id);
+      if (uid > 0) map.set(uid, agent);
+    });
+    return map;
+  }, [availableAgents]);
 
 
   const messageById = useMemo(() => {
@@ -1248,7 +1270,7 @@ export default function MessagesView({
   }, [messages]);
 
   const getSender = (msg) => {
-    if (msg.from_uid === user.uid) {
+    if (sameUID(msg.from_uid, user.uid)) {
       return {
         name: user.display_name || user.username,
         avatarUrl: user.avatar_url,
@@ -1256,16 +1278,27 @@ export default function MessagesView({
       };
     }
     if (isGroup) {
-      const member = memberMap.get(msg.from_uid);
+      const senderUID = parseUid(msg.from_uid);
+      const member = memberMap.get(senderUID);
+      const rosterAgent = availableAgentByUID.get(senderUID);
+      const senderProfile = member || rosterAgent;
       return {
-        name: member ? (member.display_name || member.username) : `usr${msg.from_uid}`,
-        avatarUrl: member?.avatar_url,
-        isBot: member?.is_bot,
+        name: senderProfile?.display_name
+          || senderProfile?.username
+          || msg.from_name
+          || `usr${senderUID || msg.from_uid}`,
+        avatarUrl: senderProfile?.avatar_url,
+        isBot: Boolean(
+          member?.is_bot
+          || member?.account_type === 'bot'
+          || rosterAgent
+          || isAssistantAuthoredMessage(msg),
+        ),
       };
     }
     return {
-      name: peerProfile?.display_name || peerProfile?.username || topicName || topic,
-      avatarUrl: peerProfile?.avatar_url || topicAvatarUrl,
+      name: resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic,
+      avatarUrl: displayAvatarUrl,
       isBot: peerIsBot,
     };
   };
@@ -1276,10 +1309,12 @@ export default function MessagesView({
     let currentWorking = null;
     let prevSenderUid = null;
     let prevTime = 0;
+    let prevVisibleSenderUid = null;
+    let prevVisibleTime = 0;
 
     messages.forEach(msg => {
       const msgTime = new Date(msg.created_at || Date.now()).getTime();
-      const senderUid = msg.from_uid;
+      const senderUid = parseUid(msg.from_uid) || String(msg.from_uid || '');
       const isConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
 
       if (isWorkingMessage(msg)) {
@@ -1296,15 +1331,22 @@ export default function MessagesView({
         }
         // Recalculate isConsecutive in case a working block just processed
         const textIsConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
+        const textIsConsecutiveWithoutWorking = (
+          prevVisibleSenderUid === senderUid
+          && (msgTime - prevVisibleTime < 5 * 60 * 1000)
+        );
         groups.push({
           type: 'text',
           message: msg,
           sender: getSender(msg),
           replyMessage: msg.reply_to ? (messageById.get(msg.reply_to) || null) : null,
           isConsecutive: textIsConsecutive,
+          isConsecutiveWithoutWorking: textIsConsecutiveWithoutWorking,
         });
         prevSenderUid = senderUid;
         prevTime = msgTime;
+        prevVisibleSenderUid = senderUid;
+        prevVisibleTime = msgTime;
       }
     });
 
@@ -1313,7 +1355,7 @@ export default function MessagesView({
     }
 
     return groups;
-  }, [messages, user.uid, isGroup, memberMap, messageById, peerProfile, topicName, topic, topicAvatarUrl]);
+  }, [availableAgentByUID, displayAvatarUrl, isGroup, memberMap, messageById, messages, peerIsBot, resolvedPeerProfile, topic, topicAvatarUrl, topicName, user.uid]);
 
   const openTutorialTask = (task) => {
     setShowTutorialPicker(false);
@@ -1393,7 +1435,7 @@ export default function MessagesView({
                 <ChatMessage
                   message={group.messages[0]}
                   workingMessages={group.messages}
-                  isSelf={group.messages[0].from_uid === user.uid}
+                  isSelf={sameUID(group.messages[0].from_uid, user.uid)}
                   isGroup={isGroup}
                   senderName={group.sender.name}
                   senderAvatarUrl={group.sender.avatarUrl}
@@ -1410,7 +1452,7 @@ export default function MessagesView({
             <ChatMessage
               key={group.message.id || i}
               message={group.message}
-              isSelf={group.message.from_uid === user.uid}
+              isSelf={sameUID(group.message.from_uid, user.uid)}
               isGroup={isGroup}
               senderName={group.sender.name}
               senderAvatarUrl={group.sender.avatarUrl}
@@ -1418,12 +1460,14 @@ export default function MessagesView({
               replyMessage={group.replyMessage}
               onReply={() => setReplyTo(group.message)}
               onRegenerate={canRegenerateAssistantMessages
-                && group.message.from_uid !== user.uid
+                && !sameUID(group.message.from_uid, user.uid)
                 && isAssistantAuthoredMessage(group.message, group.sender.isBot)
                 ? handleRegenerateMessage
                 : undefined}
               showThinking={showThinking}
-              isConsecutive={group.isConsecutive}
+              isConsecutive={showThinking
+                ? group.isConsecutive
+                : (group.isConsecutiveWithoutWorking ?? group.isConsecutive)}
               onPreviewFile={setPreviewFile}
               activePreviewFile={previewFile}
             />
@@ -2030,6 +2074,13 @@ function parseUid(uidStr) {
     return parseInt(normalized.slice(3), 10) || 0;
   }
   return parseInt(normalized, 10) || 0;
+}
+
+function sameUID(left, right) {
+  if (left === right) return true;
+  const leftUID = parseUid(left);
+  const rightUID = parseUid(right);
+  return leftUID > 0 && leftUID === rightUID;
 }
 
 function mergeMessages(primary, secondary) {
