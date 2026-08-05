@@ -30,16 +30,20 @@ var userDeviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}
 type DeviceGrantOperation string
 
 const (
-	DeviceGrantReadFile       DeviceGrantOperation = "read_file"
-	DeviceGrantResolveDir     DeviceGrantOperation = "resolve_common_directory"
-	DeviceGrantWriteFile      DeviceGrantOperation = "write_file"
-	DeviceGrantEditFile       DeviceGrantOperation = "edit_file"
-	DeviceGrantSendFile       DeviceGrantOperation = "send_file"
-	DeviceGrantExecuteShell   DeviceGrantOperation = "execute_shell"
-	DeviceGrantGlob           DeviceGrantOperation = "glob"
-	DeviceGrantGrep           DeviceGrantOperation = "grep"
-	DeviceGrantBrowserControl DeviceGrantOperation = "browser_control"
-	DeviceGrantDesktopControl DeviceGrantOperation = "desktop_control"
+	DeviceGrantReadFile              DeviceGrantOperation = "read_file"
+	DeviceGrantResolveDir            DeviceGrantOperation = "resolve_common_directory"
+	DeviceGrantWriteFile             DeviceGrantOperation = "write_file"
+	DeviceGrantEditFile              DeviceGrantOperation = "edit_file"
+	DeviceGrantSendFile              DeviceGrantOperation = "send_file"
+	DeviceGrantExecuteShell          DeviceGrantOperation = "execute_shell"
+	DeviceGrantGlob                  DeviceGrantOperation = "glob"
+	DeviceGrantGrep                  DeviceGrantOperation = "grep"
+	DeviceGrantBrowserControl        DeviceGrantOperation = "browser_control"
+	DeviceGrantDesktopControl        DeviceGrantOperation = "desktop_control"
+	DeviceGrantSkillHubWorkspaceGet  DeviceGrantOperation = "skillhub.localWorkspace.get"
+	DeviceGrantSkillHubSkillShare    DeviceGrantOperation = "skillhub.localSkill.share"
+	DeviceGrantSkillHubSkillFinalize DeviceGrantOperation = "skillhub.localSkill.finalize"
+	DeviceGrantSkillHubBotSwitch     DeviceGrantOperation = "skillhub.localBot.switch"
 )
 
 type UserDevice struct {
@@ -879,7 +883,11 @@ func isAllowedDeviceGrantRuntimeOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantWriteFile,
 		DeviceGrantEditFile,
 		DeviceGrantSendFile,
-		DeviceGrantExecuteShell:
+		DeviceGrantExecuteShell,
+		DeviceGrantSkillHubWorkspaceGet,
+		DeviceGrantSkillHubSkillShare,
+		DeviceGrantSkillHubSkillFinalize,
+		DeviceGrantSkillHubBotSwitch:
 		return true
 	default:
 		return false
@@ -965,7 +973,11 @@ func isAllowedDeviceGrantOperation(operation DeviceGrantOperation) bool {
 		DeviceGrantGlob,
 		DeviceGrantGrep,
 		DeviceGrantBrowserControl,
-		DeviceGrantDesktopControl:
+		DeviceGrantDesktopControl,
+		DeviceGrantSkillHubWorkspaceGet,
+		DeviceGrantSkillHubSkillShare,
+		DeviceGrantSkillHubSkillFinalize,
+		DeviceGrantSkillHubBotSwitch:
 		return true
 	default:
 		return false

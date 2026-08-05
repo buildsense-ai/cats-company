@@ -2,13 +2,19 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 import SkillHubView, {
+  assertSkillHubDeviceResult,
   normalizeOwnedBots,
+  normalizeSkillHubDevices,
   normalizeLocalSkills,
   normalizeSkillHubSkills,
+  isLocalSkillShared,
+  isPrivateSkillHubReference,
   resolveSkillHubEntry,
+  resolveSharedSkillHubMetadata,
   upsertSkillRef,
+  waitForPublishedSkillHubEntry,
 } from './skillhub-view';
-import { api } from '../api';
+import { api, requestSkillHubDeviceTool } from '../api';
 
 vi.mock('../api', () => ({
   api: {
@@ -17,12 +23,15 @@ vi.mock('../api', () => ({
     updateBotDefinitionSkills: vi.fn(),
     searchSkillHubSkills: vi.fn(),
     getSkillHubSkill: vi.fn(),
+    getSkillHubVersion: vi.fn(),
+    getDevices: vi.fn(),
     switchLocalBot: vi.fn(),
     getLocalCatsStatus: vi.fn(),
     getLocalSkills: vi.fn(),
     getLocalStatusDetails: vi.fn(),
     shareLocalSkill: vi.fn(),
   },
+  requestSkillHubDeviceTool: vi.fn(),
 }));
 
 function deferred() {
@@ -66,6 +75,14 @@ describe('SkillHubView', () => {
         { source: 'skillhub', skillId: 'tools/summarize', version: '2.0.0', contentHash: 'b'.repeat(64) },
       ],
     });
+    api.getSkillHubVersion.mockResolvedValue({
+      version: {
+        id: 'alice/local-demo',
+        version: '1.0.0',
+        contentHash: 'd'.repeat(64),
+      },
+    });
+    api.getDevices.mockResolvedValue({ devices: [] });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -74,6 +91,7 @@ describe('SkillHubView', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.unstubAllGlobals();
   });
 
   it('normalizes owner bots and SkillHub entries', () => {
@@ -95,12 +113,106 @@ describe('SkillHubView', () => {
       relativePath: 'local-demo',
       skillHub: { version: '1.0.0' },
     });
+    expect(isLocalSkillShared({
+      canShare: true,
+      skillHub: { author: 'alice', version: '1.0.0' },
+    })).toBe(false);
+    expect(isLocalSkillShared({
+      canShare: false,
+      skillHub: {
+        author: 'alice',
+        version: '1.0.0',
+        reference: {
+          skillId: 'alice/local-demo',
+          version: '1.0.0',
+          contentHash: 'a'.repeat(64),
+        },
+      },
+    })).toBe(true);
     expect(upsertSkillRef([{ skillId: 'a', version: '1' }], { skillId: 'b', version: '2' }))
       .toEqual([{ skillId: 'a', version: '1' }, { skillId: 'b', version: '2' }]);
     expect(resolveSkillHubEntry(
       { skillId: 'a', latestVersion: '2.0.0', contentHash: '' },
       { skill: { id: 'a', latestVersion: '2.0.0' }, versions: [{ id: 'a', version: '2.0.0', contentHash: 'c'.repeat(64) }] },
     )).toMatchObject({ latestVersion: '2.0.0', contentHash: 'c'.repeat(64) });
+    expect(normalizeSkillHubDevices({ devices: [
+      {
+        deviceId: 'ready',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      },
+      {
+        deviceId: 'partial',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: ['skillhub.localWorkspace.get'],
+      },
+      {
+        deviceId: 'legacy',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: ['read_file'],
+      },
+    ] }).map((device) => device.deviceId)).toEqual(['ready']);
+    expect(resolveSharedSkillHubMetadata({
+      skill_hub: { author: 'alice', version: '1.0.0', uploaded_at: '2026-08-05T00:00:00.000Z' },
+    }, {})).toEqual({
+      author: 'alice',
+      version: '1.0.0',
+      uploadedAt: '2026-08-05T00:00:00.000Z',
+    });
+    expect(isPrivateSkillHubReference('priv_0123456789abcdef')).toBe(true);
+    expect(isPrivateSkillHubReference('alice/local-demo')).toBe(false);
+    expect(() => assertSkillHubDeviceResult({ schema: 'legacy', bot_uid: '42' }, {
+      toolName: 'skillhub.localWorkspace.get',
+      botUID: '42',
+    })).toThrow(/不兼容/);
+  });
+
+  it('waits for an asynchronously published Skill when share initially returns only its ID', async () => {
+    const getSkill = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('not found'), { status: 404 }))
+      .mockResolvedValue({
+        skill: {
+          id: 'alice/local-demo',
+          latestVersion: '1.0.0',
+          contentHash: 'd'.repeat(64),
+        },
+      });
+    const getVersion = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('not found'), { status: 404 }))
+      .mockResolvedValue({
+        version: {
+          id: 'alice/local-demo',
+          version: '1.0.0',
+          contentHash: 'd'.repeat(64),
+        },
+      });
+    const waitFor = vi.fn().mockResolvedValue(undefined);
+
+    await expect(waitForPublishedSkillHubEntry({
+      skillId: 'alice/local-demo',
+      shared: { skill: { id: 'alice/local-demo' } },
+      getSkill,
+      getVersion,
+      waitFor,
+    })).resolves.toMatchObject({
+      skillId: 'alice/local-demo',
+      latestVersion: '1.0.0',
+      contentHash: 'd'.repeat(64),
+    });
+    expect(getSkill).toHaveBeenCalledTimes(2);
+    expect(getVersion).toHaveBeenCalledTimes(2);
+    expect(waitFor).toHaveBeenCalledTimes(2);
   });
 
   it('loads only owner bots and binds a precise SkillHub reference', async () => {
@@ -110,7 +222,7 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelectorAll('.cc-skillhub-bot-picker option')).toHaveLength(1);
+    expect(container.querySelectorAll('.cc-skillhub-bot-picker:first-child option')).toHaveLength(1);
     expect(container.textContent).toContain('tools/review');
     expect(container.textContent).not.toContain('Friend Bot');
 
@@ -129,6 +241,251 @@ describe('SkillHubView', () => {
         contentHash: 'b'.repeat(64),
       }),
     ]));
+  });
+
+  it('loads a production local workspace and shares through the selected XiaoBa device', async () => {
+    api.getBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 3,
+      skills: [{
+        source: 'skillhub',
+        skillId: 'priv_local1',
+        version: 'sha256-private',
+        contentHash: 'c'.repeat(64),
+      }],
+    });
+    api.getDevices.mockResolvedValue({
+      devices: [{
+        deviceId: 'alice-device',
+        displayName: 'Alice Laptop',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockImplementation(async ({ toolName }) => {
+      if (toolName === 'skillhub.localWorkspace.get') {
+        return {
+          schema: 'xiaoba.skillhub.local_workspace.v1',
+          bot_uid: '42',
+          active_bot_uid: '42',
+          skills_path: 'C:\\xiaoba\\skills',
+          skills: [{
+            local_skill_id: 'local-1',
+            name: 'local-demo',
+            description: 'Local demo',
+            relative_path: 'local-demo',
+            source: 'user',
+            can_share: true,
+            skill_hub: {
+              reference: {
+                source: 'skillhub',
+                skillId: 'priv_local1',
+                version: 'sha256-private',
+                contentHash: 'c'.repeat(64),
+              },
+            },
+          }],
+        };
+      }
+      if (toolName === 'skillhub.localSkill.share') {
+        return {
+          schema: 'xiaoba.skillhub.local_share.v1',
+          bot_uid: '42',
+          skill: { id: 'alice/local-demo', name: 'local-demo' },
+          latest_version: '1.0.0',
+          content_hash: 'd'.repeat(64),
+          skill_hub: {
+            author: 'alice',
+            version: '1.0.0',
+            uploaded_at: '2026-08-05T00:00:00.000Z',
+          },
+        };
+      }
+      if (toolName === 'skillhub.localSkill.finalize') {
+        return {
+          schema: 'xiaoba.skillhub.local_finalize.v1',
+          bot_uid: '42',
+          skill_id: 'alice/local-demo',
+          version: '1.0.0',
+          content_hash: 'd'.repeat(64),
+          direction: 'local_to_cloud',
+        };
+      }
+      throw new Error(`unexpected tool ${toolName}`);
+    });
+    api.updateBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 4,
+      skills: [{
+        source: 'skillhub',
+        skillId: 'alice/local-demo',
+        version: '1.0.0',
+        contentHash: 'd'.repeat(64),
+      }],
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('Alice Laptop');
+    expect(container.textContent).toContain('local-demo');
+    expect(container.textContent).toContain('C:\\xiaoba\\skills');
+
+    const shareButton = container.querySelector('.cc-skillhub-local-card button');
+    await act(async () => {
+      Simulate.click(shareButton);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: 'alice-device',
+      toolName: 'skillhub.localSkill.share',
+      payload: expect.objectContaining({
+        bot_uid: '42',
+        local_skill_id: 'local-1',
+        skill_name: 'local-demo',
+      }),
+    }));
+    expect(api.updateBotDefinitionSkills).toHaveBeenCalledWith('42', 3, [expect.objectContaining({
+      skillId: 'alice/local-demo',
+      version: '1.0.0',
+      contentHash: 'd'.repeat(64),
+    })]);
+    expect(api.getSkillHubVersion).toHaveBeenCalledWith(
+      'alice/local-demo',
+      '1.0.0',
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'skillhub.localSkill.finalize',
+      payload: expect.objectContaining({
+        skill_id: 'alice/local-demo',
+        author: 'alice',
+        uploaded_at: '2026-08-05T00:00:00.000Z',
+      }),
+    }));
+  });
+
+  it('retries a version share only after confirmation and sends confirm_publish', async () => {
+    api.getBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 3,
+      skills: [{
+        source: 'skillhub',
+        skillId: 'priv_local1',
+        version: 'sha256-private',
+        contentHash: 'c'.repeat(64),
+      }],
+    });
+    api.getDevices.mockResolvedValue({
+      devices: [{
+        deviceId: 'alice-device',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    let shareAttempts = 0;
+    requestSkillHubDeviceTool.mockImplementation(async ({ toolName }) => {
+      if (toolName === 'skillhub.localWorkspace.get') {
+        return {
+          schema: 'xiaoba.skillhub.local_workspace.v1',
+          bot_uid: '42',
+          active_bot_uid: '42',
+          skills_path: 'C:\\xiaoba\\skills',
+          skills: [{
+            local_skill_id: 'local-1',
+            name: 'local-demo',
+            relative_path: 'local-demo',
+            source: 'user',
+            can_share: true,
+          }],
+        };
+      }
+      if (toolName === 'skillhub.localSkill.share') {
+        shareAttempts += 1;
+        if (shareAttempts === 1) {
+          return {
+            schema: 'xiaoba.skillhub.local_share.v1',
+            bot_uid: '42',
+            requires_confirmation: true,
+          };
+        }
+        return {
+          schema: 'xiaoba.skillhub.local_share.v1',
+          bot_uid: '42',
+          skill: { id: 'alice/local-demo', name: 'local-demo' },
+          latest_version: '2.0.0',
+          content_hash: 'd'.repeat(64),
+        };
+      }
+      if (toolName === 'skillhub.localSkill.finalize') {
+        return {
+          schema: 'xiaoba.skillhub.local_finalize.v1',
+          bot_uid: '42',
+          skill_id: 'alice/local-demo',
+          version: '2.0.0',
+          content_hash: 'd'.repeat(64),
+        };
+      }
+      throw new Error(`unexpected tool ${toolName}`);
+    });
+    api.getSkillHubVersion.mockResolvedValue({
+      version: {
+        id: 'alice/local-demo',
+        version: '2.0.0',
+        contentHash: 'd'.repeat(64),
+      },
+    });
+    api.updateBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 4,
+      skills: [{
+        source: 'skillhub',
+        skillId: 'alice/local-demo',
+        version: '2.0.0',
+        contentHash: 'd'.repeat(64),
+      }],
+    });
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('.cc-skillhub-local-card button'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const shareCalls = requestSkillHubDeviceTool.mock.calls
+      .map(([request]) => request)
+      .filter((request) => request.toolName === 'skillhub.localSkill.share');
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(shareCalls).toHaveLength(2);
+    expect(shareCalls[0].payload.confirm_publish).toBeUndefined();
+    expect(shareCalls[1].payload.confirm_publish).toBe(true);
   });
 
   it('refreshes after a revision conflict instead of overwriting remote changes', async () => {

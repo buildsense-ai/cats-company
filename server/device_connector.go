@@ -165,7 +165,7 @@ func normalizeDeviceConnectorCapabilityStrings(values []string) []string {
 	ops := normalizeDeviceCapabilities(values)
 	out := make([]string, 0, len(ops))
 	for _, op := range ops {
-		if isAllowedDeviceRPCOperation(op) {
+		if isAllowedDeviceConnectorCapability(op) {
 			out = append(out, string(op))
 		}
 	}
@@ -173,6 +173,10 @@ func normalizeDeviceConnectorCapabilityStrings(values []string) []string {
 		return []string{"read_file"}
 	}
 	return out
+}
+
+func isAllowedDeviceConnectorCapability(operation DeviceGrantOperation) bool {
+	return isAllowedDeviceRPCOperation(operation) || isSkillHubThinToolOperation(operation)
 }
 
 func deviceConnectorHasScope(claims *DeviceConnectorClaims, scope string) bool {

@@ -190,6 +190,89 @@ func TestDeviceConnectorEnrollmentCannotEscalatePairingCapabilities(t *testing.T
 	}
 }
 
+func TestDeviceConnectorPreservesSkillHubCapabilitiesThroughEnrollment(t *testing.T) {
+	oldSecret := append([]byte(nil), jwtSecret...)
+	defer func() { jwtSecret = oldSecret }()
+	SetJWTSecret("device-connector-skillhub-capability-test")
+
+	store := &deviceHandlerStore{users: map[int64]*types.User{
+		7: {ID: 7, Username: "alice", AccountType: types.AccountHuman, State: 0},
+	}}
+	hub := NewHub(store, nil)
+	handler := NewDeviceConnectorHandler(store, hub)
+	capabilities := []DeviceGrantOperation{
+		DeviceGrantSkillHubWorkspaceGet,
+		DeviceGrantSkillHubSkillShare,
+		DeviceGrantSkillHubSkillFinalize,
+		DeviceGrantSkillHubBotSwitch,
+	}
+
+	pairingReq := httptest.NewRequest(http.MethodPost, "/api/device-connectors/pairings", bytes.NewBufferString(`{
+		"device_name": "Alice Laptop",
+		"capabilities": [
+			"skillhub.localWorkspace.get",
+			"skillhub.localSkill.share",
+			"skillhub.localSkill.finalize",
+			"skillhub.localBot.switch"
+		]
+	}`))
+	pairingReq = pairingReq.WithContext(context.WithValue(pairingReq.Context(), uidKey, int64(7)))
+	pairingRec := httptest.NewRecorder()
+	handler.HandleCreatePairing(pairingRec, pairingReq)
+	if pairingRec.Code != http.StatusOK {
+		t.Fatalf("create pairing status=%d body=%s", pairingRec.Code, pairingRec.Body.String())
+	}
+	var pairing struct {
+		PairingCode  string   `json:"pairing_code"`
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := json.Unmarshal(pairingRec.Body.Bytes(), &pairing); err != nil {
+		t.Fatalf("decode pairing: %v", err)
+	}
+	if len(pairing.Capabilities) != len(capabilities) {
+		t.Fatalf("pairing capabilities=%#v", pairing.Capabilities)
+	}
+
+	enrollReq := httptest.NewRequest(http.MethodPost, "/api/device-connectors/enroll", bytes.NewBufferString(`{
+		"pairing_code": "`+pairing.PairingCode+`",
+		"device_id": "alice-laptop",
+		"installation_id": "install-alice",
+		"capabilities": [
+			"skillhub.localWorkspace.get",
+			"skillhub.localSkill.share",
+			"skillhub.localSkill.finalize",
+			"skillhub.localBot.switch"
+		]
+	}`))
+	enrollRec := httptest.NewRecorder()
+	handler.HandleEnroll(enrollRec, enrollReq)
+	if enrollRec.Code != http.StatusOK {
+		t.Fatalf("enroll status=%d body=%s", enrollRec.Code, enrollRec.Body.String())
+	}
+	var enroll struct {
+		ConnectorToken string     `json:"connector_token"`
+		Device         UserDevice `json:"device"`
+	}
+	if err := json.Unmarshal(enrollRec.Body.Bytes(), &enroll); err != nil {
+		t.Fatalf("decode enroll: %v", err)
+	}
+	if len(enroll.Device.Capabilities) != len(capabilities) {
+		t.Fatalf("enrolled device capabilities=%#v", enroll.Device.Capabilities)
+	}
+	claims, err := ParseDeviceConnectorToken(enroll.ConnectorToken)
+	if err != nil {
+		t.Fatalf("ParseDeviceConnectorToken: %v", err)
+	}
+	if len(claims.Capabilities) != len(capabilities) {
+		t.Fatalf("connector token capabilities=%#v", claims.Capabilities)
+	}
+	for index, capability := range capabilities {
+		if enroll.Device.Capabilities[index] != capability || claims.Capabilities[index] != string(capability) {
+			t.Fatalf("capability %d was not preserved: device=%q token=%q", index, enroll.Device.Capabilities[index], claims.Capabilities[index])
+		}
+	}
+}
+
 func TestDeviceConnectorRefreshPreservesScopes(t *testing.T) {
 	oldSecret := append([]byte(nil), jwtSecret...)
 	defer func() { jwtSecret = oldSecret }()

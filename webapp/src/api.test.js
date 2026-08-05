@@ -82,6 +82,103 @@ describe('WebSocket connection recovery', () => {
     unsubscribe();
   });
 
+  test('keeps a SkillHub device request pending after its ack and resolves its result', async () => {
+    api.connectWS(vi.fn());
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+
+    const request = api.requestSkillHubDeviceTool({
+      deviceId: 'alice-device',
+      ownerUserId: 7,
+      toolName: 'skillhub.localWorkspace.get',
+      payload: { bot_uid: '42' },
+      timeoutMs: 5_000,
+    });
+    const envelope = JSON.parse(socket.send.mock.calls.at(-1)[0]);
+    const settled = vi.fn();
+    request.then(settled);
+
+    socket.onmessage({ data: JSON.stringify({
+      ctrl: { id: envelope.thin_tool_rpc.id, code: 200, text: 'accepted' },
+    }) });
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+
+    socket.onmessage({ data: JSON.stringify({
+      thin_tool_rpc: {
+        type: 'result',
+        request_id: envelope.thin_tool_rpc.request_id,
+        result: { bot_uid: '42' },
+      },
+    }) });
+    await expect(request).resolves.toEqual({ bot_uid: '42' });
+  });
+
+  test('rejects a SkillHub device request when the socket disconnects', async () => {
+    api.connectWS(vi.fn());
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    const request = api.requestSkillHubDeviceTool({
+      deviceId: 'alice-device',
+      ownerUserId: 7,
+      toolName: 'skillhub.localWorkspace.get',
+      payload: { bot_uid: '42' },
+    });
+
+    socket.serverClose();
+
+    await expect(request).rejects.toMatchObject({ code: 'skillhub_websocket_disconnected' });
+  });
+
+  test('rejects a pending SkillHub device request before a forced reconnect replaces its route', async () => {
+    const onMessage = vi.fn();
+    api.connectWS(onMessage);
+    MockWebSocket.instances[0].open();
+    const request = api.requestSkillHubDeviceTool({
+      deviceId: 'alice-device',
+      ownerUserId: 7,
+      toolName: 'skillhub.localSkill.share',
+      payload: { bot_uid: '42' },
+    });
+
+    api.reconnectWS(onMessage);
+
+    await expect(request).rejects.toMatchObject({ code: 'skillhub_websocket_disconnected' });
+    expect(MockWebSocket.instances).toHaveLength(2);
+  });
+
+  test('rejects a pending SkillHub device request on a programmatic disconnect', async () => {
+    api.connectWS(vi.fn());
+    MockWebSocket.instances[0].open();
+    const request = api.requestSkillHubDeviceTool({
+      deviceId: 'alice-device',
+      ownerUserId: 7,
+      toolName: 'skillhub.localSkill.finalize',
+      payload: { bot_uid: '42' },
+    });
+
+    api.disconnectWS();
+
+    await expect(request).rejects.toMatchObject({ code: 'skillhub_websocket_disconnected' });
+  });
+
+  test('times out a SkillHub device request that never returns a result', async () => {
+    api.connectWS(vi.fn());
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    const request = api.requestSkillHubDeviceTool({
+      deviceId: 'alice-device',
+      ownerUserId: 7,
+      toolName: 'skillhub.localWorkspace.get',
+      payload: { bot_uid: '42' },
+      timeoutMs: 5_000,
+    });
+
+    vi.advanceTimersByTime(6_001);
+
+    await expect(request).rejects.toMatchObject({ code: 'skillhub_device_timeout' });
+  });
+
   test('sends messaging attention in the handshake and on state changes', () => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     api.connectWS(vi.fn());

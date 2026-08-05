@@ -81,6 +81,13 @@
   gap: 7px;
 }
 
+.cc-skillhub-pickers {
+  display: grid;
+  flex: 0 0 min(620px, 56vw);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
 .cc-skillhub-bot-picker select,
 .cc-skillhub-search input {
   min-width: 0;
@@ -374,6 +381,11 @@
 
   .cc-skillhub-bot-picker {
     flex-basis: auto;
+  }
+
+  .cc-skillhub-pickers {
+    flex-basis: auto;
+    grid-template-columns: 1fr;
   }
 
   .cc-skillhub-search {
