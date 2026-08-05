@@ -394,6 +394,38 @@ func (h *Hub) registerClient(client *Client) bool {
 		return false
 	}
 
+	// A bot registering a new connection starts a new connection generation:
+	// recovery timers scheduled for an earlier disconnection must not recover
+	// tasks owned by this generation. When a cluster-wide generation store is
+	// available the bump must be durable BEFORE this connection is accepted:
+	// a locally-only bump is invisible to other nodes (botConnectionEpoch reads
+	// the persisted value), so accepting a bot whose generation was not
+	// persisted would let an old timer recover the fresh connection's work.
+	// Fail closed: reject the connection instead of carrying tasks without a
+	// durable generation (review 2026-08-05).
+	if client.accountType == types.AccountBot {
+		if genStore, ok := h.db.(store.ConversationTaskGenerationStore); ok {
+			bumped, err := genStore.BumpBotConnectionGeneration(client.uid)
+			if err != nil {
+				log.Printf("client connect: bump bot connection generation failed uid=%d, rejecting connection: %v", client.uid, err)
+				client.closeSend()
+				if client.conn != nil {
+					_ = client.conn.Close()
+				}
+				return false
+			}
+			h.mu.Lock()
+			h.botConnectionEpochs[client.uid] = bumped
+			h.mu.Unlock()
+		} else {
+			// No generation store (single-process deployments): the per-process
+			// map is the only fence and there are no other nodes to agree with.
+			h.mu.Lock()
+			h.botConnectionEpochs[client.uid]++
+			h.mu.Unlock()
+		}
+	}
+
 	firstConn, deviceCount, onlineUsers, replaced := h.addRegisteredClient(client)
 	for _, stale := range replaced {
 		h.clearClientRuntimeRoute(stale)
@@ -401,38 +433,6 @@ func (h *Hub) registerClient(client *Client) bool {
 		stale.closeSend()
 		if stale.conn != nil {
 			_ = stale.conn.Close()
-		}
-	}
-
-	// A bot registering a new connection starts a new connection generation:
-	// recovery timers scheduled for an earlier disconnection must not recover
-	// tasks owned by this generation. When a cluster-wide generation store is
-	// available the bump is persisted there so every node agrees on the new
-	// generation; the per-process map mirrors it as a read cache.
-	if client.accountType == types.AccountBot {
-		generation := uint64(0)
-		if genStore, ok := h.db.(store.ConversationTaskGenerationStore); ok {
-			if bumped, err := genStore.BumpBotConnectionGeneration(client.uid); err == nil {
-				generation = bumped
-			} else {
-				// Persist failed (e.g. DB hiccup). Fall back to the per-process
-				// bump so this reconnect still advances the fence locally; the
-				// database CAS re-checks generation transactionally anyway, so
-				// a stale snapshot can never recover fresh work.
-				log.Printf("client connect: bump bot connection generation failed uid=%d: %v", client.uid, err)
-				h.mu.Lock()
-				h.botConnectionEpochs[client.uid]++
-				h.mu.Unlock()
-			}
-		} else {
-			h.mu.Lock()
-			h.botConnectionEpochs[client.uid]++
-			h.mu.Unlock()
-		}
-		if generation > 0 {
-			h.mu.Lock()
-			h.botConnectionEpochs[client.uid] = generation
-			h.mu.Unlock()
 		}
 	}
 

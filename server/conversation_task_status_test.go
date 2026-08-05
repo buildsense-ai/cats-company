@@ -1,6 +1,8 @@
 package server
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -80,6 +82,15 @@ type taskRecoveryTestStore struct {
 	current    *types.ConversationTaskStatus
 	upserts    []*types.ConversationTaskStatus
 	generation uint64
+	bumpErr    error
+}
+
+func (s *taskRecoveryTestStore) GetFriends(_ int64) ([]*types.User, error) {
+	return nil, nil
+}
+
+func (s *taskRecoveryTestStore) GetBotOwner(_ int64) (int64, error) {
+	return 0, fmt.Errorf("no owner in test store")
 }
 
 func (s *taskRecoveryTestStore) ListActiveConversationTaskStatusesForSource(_ int64, _ time.Time) ([]*types.ConversationTaskStatus, error) {
@@ -109,6 +120,9 @@ func (s *taskRecoveryTestStore) MarkConversationTaskStatusStaleIfUnchanged(topic
 }
 
 func (s *taskRecoveryTestStore) BumpBotConnectionGeneration(botUID int64) (uint64, error) {
+	if s.bumpErr != nil {
+		return 0, s.bumpErr
+	}
 	s.generation++
 	return s.generation, nil
 }
@@ -344,5 +358,69 @@ func TestRecoverDisconnectedBotTasksCrossNodeGenerationBumpedElsewhere(t *testin
 
 	if len(db.upserts) != 0 {
 		t.Fatalf("cross-node stale generation recovery upserts = %d, want 0", len(db.upserts))
+	}
+}
+
+func TestRegisterClientRejectsBotWhenGenerationBumpFails(t *testing.T) {
+	// Fail-closed: when a cluster-wide generation store is configured but the
+	// durable bump fails, the connection must be rejected. Accepting it with
+	// only a process-local bump would leave the new generation invisible to
+	// other nodes (botConnectionEpoch reads the persisted value), so an old
+	// recovery timer could still mark the fresh connection's work stale.
+	db := &taskRecoveryTestStore{bumpErr: errors.New("db hiccup")}
+	hub := NewHub(db, nil)
+	if _, err := hub.bodyLeases.acquire(42, "body-fail", "conn-fail"); err != nil {
+		t.Fatalf("acquire body lease: %v", err)
+	}
+	client := &Client{
+		uid:          42,
+		accountType:  types.AccountBot,
+		bodyID:       "body-fail",
+		connectionID: "conn-fail",
+		send:         make(chan []byte, 256),
+	}
+
+	accepted := hub.registerClient(client)
+
+	if accepted {
+		t.Fatalf("bot connection accepted despite durable generation bump failure")
+	}
+	if len(hub.clients[42]) != 0 {
+		t.Fatalf("rejected bot left a registered client")
+	}
+	if db.generation != 0 {
+		t.Fatalf("rejected bot still advanced generation = %d", db.generation)
+	}
+}
+
+func TestRegisterClientBumpsDurableGenerationBeforeAccept(t *testing.T) {
+	// The durable bump must complete before the bot is accepted so every node
+	// observes the new generation the moment the bot can carry tasks.
+	db := &taskRecoveryTestStore{}
+	hub := NewHub(db, nil)
+	if _, err := hub.bodyLeases.acquire(42, "body-ok", "conn-ok"); err != nil {
+		t.Fatalf("acquire body lease: %v", err)
+	}
+	client := &Client{
+		uid:          42,
+		accountType:  types.AccountBot,
+		bodyID:       "body-ok",
+		connectionID: "conn-ok",
+		send:         make(chan []byte, 256),
+	}
+
+	accepted := hub.registerClient(client)
+
+	if !accepted {
+		t.Fatalf("bot connection rejected when generation bump succeeds")
+	}
+	if db.generation != 1 {
+		t.Fatalf("generation after accept = %d, want 1", db.generation)
+	}
+	if hub.botConnectionEpoch(42) != 1 {
+		t.Fatalf("botConnectionEpoch after accept = %d, want 1", hub.botConnectionEpoch(42))
+	}
+	if len(hub.clients[42]) != 1 {
+		t.Fatalf("accepted bot not registered")
 	}
 }
