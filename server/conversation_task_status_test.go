@@ -83,6 +83,7 @@ type taskRecoveryTestStore struct {
 	upserts    []*types.ConversationTaskStatus
 	generation uint64
 	bumpErr    error
+	listErr    error
 }
 
 func (s *taskRecoveryTestStore) GetFriends(_ int64) ([]*types.User, error) {
@@ -95,6 +96,22 @@ func (s *taskRecoveryTestStore) GetBotOwner(_ int64) (int64, error) {
 
 func (s *taskRecoveryTestStore) ListActiveConversationTaskStatusesForSource(_ int64, _ time.Time) ([]*types.ConversationTaskStatus, error) {
 	return s.active, nil
+}
+
+// ListAllActiveConversationTaskStatusesBefore returns the subset of active
+// rows whose last update is at or before the cutoff, mirroring the durable
+// reaper query.
+func (s *taskRecoveryTestStore) ListAllActiveConversationTaskStatusesBefore(cutoff time.Time) ([]*types.ConversationTaskStatus, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	var out []*types.ConversationTaskStatus
+	for _, st := range s.active {
+		if (st.State == "running" || st.State == "waiting") && !st.UpdatedAt.After(cutoff) {
+			out = append(out, st)
+		}
+	}
+	return out, nil
 }
 
 // MarkConversationTaskStatusStaleIfUnchanged models the database CAS: it only
@@ -422,5 +439,125 @@ func TestRegisterClientBumpsDurableGenerationBeforeAccept(t *testing.T) {
 	}
 	if len(hub.clients[42]) != 1 {
 		t.Fatalf("accepted bot not registered")
+	}
+}
+
+func TestConversationTaskReaperMarksExpiredOfflineRunStale(t *testing.T) {
+	now := time.Now()
+	candidate := &types.ConversationTaskStatus{
+		TopicID:   "p2p_7_42",
+		RunID:     "run-expired",
+		State:     "running",
+		SourceUID: 42,
+		UpdatedAt: now.Add(-10 * time.Minute),
+	}
+	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{candidate}, current: candidate}
+	hub := NewHub(db, nil)
+
+	hub.recoverStaleDisconnectedBotTasks(now)
+
+	if len(db.upserts) != 1 {
+		t.Fatalf("reaper upserts = %d, want 1", len(db.upserts))
+	}
+	if db.upserts[0].State != "stale" || db.upserts[0].RunID != "run-expired" {
+		t.Fatalf("reaped status = %+v", db.upserts[0])
+	}
+}
+
+func TestConversationTaskReaperSkipsBotStillOnlineLocally(t *testing.T) {
+	now := time.Now()
+	candidate := &types.ConversationTaskStatus{
+		TopicID:   "p2p_7_42",
+		RunID:     "run-expired",
+		State:     "running",
+		SourceUID: 42,
+		UpdatedAt: now.Add(-10 * time.Minute),
+	}
+	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{candidate}, current: candidate}
+	hub := NewHub(db, nil)
+	hub.clients[42] = map[*Client]struct{}{
+		&Client{uid: 42, accountType: types.AccountBot}: {},
+	}
+
+	hub.recoverStaleDisconnectedBotTasks(now)
+
+	if len(db.upserts) != 0 {
+		t.Fatalf("reaper upserts for online bot = %d, want 0", len(db.upserts))
+	}
+}
+
+func TestConversationTaskReaperSkipsRunNewerThanCutoff(t *testing.T) {
+	now := time.Now()
+	// The row was updated after the cutoff (e.g. the bot sent a fresh status
+	// update), so it must not be reaped even though it is older than the grace.
+	candidate := &types.ConversationTaskStatus{
+		TopicID:   "p2p_7_42",
+		RunID:     "run-fresh",
+		State:     "running",
+		SourceUID: 42,
+		UpdatedAt: now.Add(30 * time.Second),
+	}
+	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{candidate}, current: candidate}
+	hub := NewHub(db, nil)
+
+	hub.recoverStaleDisconnectedBotTasks(now)
+
+	if len(db.upserts) != 0 {
+		t.Fatalf("reaper upserts for fresh run = %d, want 0", len(db.upserts))
+	}
+}
+
+func TestConversationTaskReaperSkipsBotOnlineElsewhere(t *testing.T) {
+	now := time.Now()
+	candidate := &types.ConversationTaskStatus{
+		TopicID:   "p2p_7_42",
+		RunID:     "run-expired",
+		State:     "running",
+		SourceUID: 42,
+		UpdatedAt: now.Add(-10 * time.Minute),
+	}
+	shared := newSharedMemoryRuntimeState()
+	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{candidate}, current: candidate}
+	hubA := NewHubWithRuntime(db, nil, shared, "node-a")
+	hubB := NewHubWithRuntime(nil, nil, shared, "node-b")
+
+	// The bot reconnects to node B while node A's reaper sweeps.
+	if _, err := hubB.bodyLeases.acquire(42, "body-b", "conn-b"); err != nil {
+		t.Fatalf("acquire body lease on node b: %v", err)
+	}
+	hubA.recoverStaleDisconnectedBotTasks(now)
+
+	if len(db.upserts) != 0 {
+		t.Fatalf("reaper upserts while bot online elsewhere = %d, want 0", len(db.upserts))
+	}
+}
+
+func TestConversationTaskReaperRetriesAfterListError(t *testing.T) {
+	now := time.Now()
+	candidate := &types.ConversationTaskStatus{
+		TopicID:   "p2p_7_42",
+		RunID:     "run-expired",
+		State:     "running",
+		SourceUID: 42,
+		UpdatedAt: now.Add(-10 * time.Minute),
+	}
+	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{candidate}, current: candidate}
+	hub := NewHub(db, nil)
+
+	// First sweep fails transiently (e.g. DB hiccup): nothing reaped.
+	db.listErr = fmt.Errorf("transient db error")
+	hub.recoverStaleDisconnectedBotTasks(now)
+	if len(db.upserts) != 0 {
+		t.Fatalf("reaper upserts on list error = %d, want 0", len(db.upserts))
+	}
+
+	// Next sweep succeeds and converges.
+	db.listErr = nil
+	hub.recoverStaleDisconnectedBotTasks(now)
+	if len(db.upserts) != 1 {
+		t.Fatalf("reaper upserts after retry = %d, want 1", len(db.upserts))
+	}
+	if db.upserts[0].State != "stale" {
+		t.Fatalf("reaped status = %+v", db.upserts[0])
 	}
 }

@@ -365,3 +365,84 @@ func (h *Hub) recoverDisconnectedBotTasks(sourceUID int64, disconnectedAt time.T
 		log.Printf("task status recovery: marked stale uid=%d topic=%s run=%s", sourceUID, candidate.TopicID, candidate.RunID)
 	}
 }
+
+// runConversationTaskReaper periodically re-scans durable active task rows and
+// recovers any that have outlived the grace period while their bot is offline.
+//
+// It is the durable complement to the per-disconnect time.AfterFunc: a process
+// crash/restart or a transient List/CAS error can lose the one-shot timer, and
+// without this reaper the row would stay running/waiting until expiry. The
+// reaper reuses the same generation fence and compare-and-set, so it is safe
+// to run on multiple nodes: only one CAS wins per row, and a bot that
+// reconnected (bumping generation) or updated its run after the cutoff is
+// never marked stale.
+func (h *Hub) runConversationTaskReaper() {
+	if h == nil {
+		return
+	}
+	interval := h.taskReaperInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	grace := h.taskGrace
+	if grace < 0 {
+		grace = 0
+	}
+
+	// Startup sweep: catch rows whose disconnect timer was lost in a previous
+	// process before the first tick.
+	h.recoverStaleDisconnectedBotTasks(time.Now().Add(-grace))
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		h.recoverStaleDisconnectedBotTasks(time.Now().Add(-grace))
+	}
+}
+
+// recoverStaleDisconnectedBotTasks marks stale every active source run that was
+// last updated before the cutoff and whose bot is offline everywhere. Each row
+// is fenced on the bot's current cluster-wide generation, so a reconnect on any
+// node (which bumps the generation) makes the CAS a no-op. Errors are logged
+// and retried on the next sweep, matching the reaper's durable-retry contract.
+func (h *Hub) recoverStaleDisconnectedBotTasks(cutoff time.Time) {
+	if h == nil || h.db == nil {
+		return
+	}
+	recoveryStore, ok := h.db.(store.ConversationTaskStatusRecoveryStore)
+	if !ok {
+		return
+	}
+
+	statuses, err := recoveryStore.ListAllActiveConversationTaskStatusesBefore(cutoff)
+	if err != nil {
+		log.Printf("task status reaper: list failed: %v", err)
+		return
+	}
+	for _, candidate := range statuses {
+		if candidate.SourceUID <= 0 {
+			continue
+		}
+		// Local clients and a cluster-wide lease held by another node both mean
+		// the bot is still reachable; only recover when it is offline everywhere.
+		if h.IsOnline(candidate.SourceUID) || h.botOnlineElsewhere(candidate.SourceUID) {
+			continue
+		}
+		// Use the bot's current generation: a reconnect on any node bumps it and
+		// makes the CAS a no-op, so a fresh connection's work is never recovered.
+		generation := h.botConnectionEpoch(candidate.SourceUID)
+		recovered, updated, err := recoveryStore.MarkConversationTaskStatusStaleIfUnchanged(
+			candidate.TopicID, candidate.SourceUID, candidate.RunID, cutoff, generation)
+		if err != nil {
+			log.Printf("task status reaper: persist failed for uid=%d topic=%s: %v", candidate.SourceUID, candidate.TopicID, err)
+			continue
+		}
+		if !updated {
+			// A concurrent reconnect or a newer run already won the race; do not fanout.
+			continue
+		}
+		h.observeGroupAgentTaskStatus(recovered)
+		h.fanoutConversationTaskStatus(candidate.SourceUID, recovered, nil)
+		log.Printf("task status reaper: marked stale uid=%d topic=%s run=%s", candidate.SourceUID, candidate.TopicID, candidate.RunID)
+	}
+}

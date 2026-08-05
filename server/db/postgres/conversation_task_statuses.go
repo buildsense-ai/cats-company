@@ -317,6 +317,43 @@ func reconcileLegacyConversationTaskStatuses(execer conversationTaskStatusExecer
 	return err
 }
 
+// ListAllActiveConversationTaskStatusesBefore returns every active source run
+// last updated before the cutoff (feeds the periodic/startup reaper).
+func (a *Adapter) ListAllActiveConversationTaskStatusesBefore(updatedBefore time.Time) ([]*types.ConversationTaskStatus, error) {
+	rows, err := a.db.Query(
+		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, expires_at
+		 FROM conversation_task_status_sources
+		 WHERE state IN ('running', 'waiting')
+		   AND updated_at <= $1
+		   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+		 ORDER BY updated_at`,
+		updatedBefore,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list all active conversation task statuses before: %w", err)
+	}
+	defer rows.Close()
+
+	var statuses []*types.ConversationTaskStatus
+	for rows.Next() {
+		status := &types.ConversationTaskStatus{}
+		if err := rows.Scan(
+			&status.TopicID,
+			&status.RunID,
+			&status.State,
+			&status.Summary,
+			&status.Error,
+			&status.SourceUID,
+			&status.UpdatedAt,
+			&status.ExpiresAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan active conversation task status: %w", err)
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, rows.Err()
+}
+
 // ListActiveConversationTaskStatusesForSource returns active runs that were
 // last updated before a bot connection disappeared.
 func (a *Adapter) ListActiveConversationTaskStatusesForSource(sourceUID int64, updatedBefore time.Time) ([]*types.ConversationTaskStatus, error) {

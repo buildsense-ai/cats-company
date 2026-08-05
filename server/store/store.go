@@ -133,6 +133,12 @@ func ValidateConversationTaskStatusTransition(current, next *types.ConversationT
 // recover active task states left behind when a bot process disconnects.
 type ConversationTaskStatusRecoveryStore interface {
 	ListActiveConversationTaskStatusesForSource(sourceUID int64, updatedBefore time.Time) ([]*types.ConversationTaskStatus, error)
+	// ListAllActiveConversationTaskStatusesBefore returns every source run that
+	// is still active (running/waiting) and was last updated before the cutoff.
+	// It feeds the periodic/startup reaper that survives process crashes and
+	// transient DB failures, so a missed in-process recovery timer does not
+	// leave tasks active indefinitely.
+	ListAllActiveConversationTaskStatusesBefore(updatedBefore time.Time) ([]*types.ConversationTaskStatus, error)
 	// MarkConversationTaskStatusStaleIfUnchanged atomically marks a source run
 	// stale only when it still matches the disconnected run and was not updated
 	// after the disconnection. The bool reports whether a row actually changed;

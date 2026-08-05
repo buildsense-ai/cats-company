@@ -300,4 +300,45 @@ func TestMySQLConversationTaskStatusContract(t *testing.T) {
 	if _, updated, err := db.MarkConversationTaskStatusStaleIfUnchanged(microTopic, sourceUID, "run-cas-micro", afterWriteDisconnectedAt, currentGeneration); err != nil || !updated {
 		t.Fatalf("same-second cutoff CAS updated=%v err=%v", updated, err)
 	}
+
+	// Reaper list semantics: only active, unexpired rows last updated at/before
+	// the cutoff are returned. Terminal and fresh rows must be excluded.
+	cutoff := time.Now().UTC().Add(-time.Minute)
+	seedReaperRow := func(topicID, runID, state string, updatedAt time.Time) {
+		t.Helper()
+		if err := db.CreateTopic(topicID, "p2p", sourceUID); err != nil {
+			t.Fatalf("create reaper topic %s: %v", topicID, err)
+		}
+		if _, err := db.db.Exec(
+			`INSERT INTO conversation_task_status_sources
+			   (topic_id, source_uid, run_id, state, summary, error, expires_at, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, '', '', NULL, CURRENT_TIMESTAMP(6), ?)`,
+			topicID, sourceUID, runID, state, updatedAt,
+		); err != nil {
+			t.Fatalf("seed reaper row %s: %v", runID, err)
+		}
+	}
+	reaperOld := fmt.Sprintf("task_reaper_old_%d", time.Now().UnixNano())
+	reaperFresh := fmt.Sprintf("task_reaper_fresh_%d", time.Now().UnixNano())
+	reaperTerminal := fmt.Sprintf("task_reaper_term_%d", time.Now().UnixNano())
+	seedReaperRow(reaperOld, "run-reaper-old", "running", cutoff.Add(-30*time.Second))
+	seedReaperRow(reaperFresh, "run-reaper-fresh", "running", time.Now().UTC())
+	seedReaperRow(reaperTerminal, "run-reaper-terminal", "completed", cutoff.Add(-30*time.Second))
+
+	reaped, err := db.ListAllActiveConversationTaskStatusesBefore(cutoff)
+	if err != nil {
+		t.Fatalf("list reaper candidates: %v", err)
+	}
+	foundOld := false
+	for _, st := range reaped {
+		switch st.TopicID {
+		case reaperOld:
+			foundOld = true
+		case reaperFresh, reaperTerminal:
+			t.Fatalf("reaper returned excluded row %s (state=%s)", st.TopicID, st.State)
+		}
+	}
+	if !foundOld {
+		t.Fatalf("reaper did not return run-reaper-old; got %d rows", len(reaped))
+	}
 }

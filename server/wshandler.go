@@ -56,6 +56,11 @@ type Hub struct {
 	push          *PushNotificationService
 	agentPush     *agentPushTurnCoordinator
 	taskGrace     time.Duration
+	// taskReaperInterval is how often the disconnected-task recovery reaper
+	// scans durable rows. It complements the per-disconnect time.AfterFunc so
+	// a crashed/restarted process or transient DB error cannot permanently
+	// skip recovery.
+	taskReaperInterval time.Duration
 	// botConnectionEpochs is incremented every time a bot registers a new
 	// connection. Disconnected-task recovery timers snapshot the current epoch
 	// and skip recovery when a newer connection generation appeared, so an old
@@ -123,6 +128,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		groupTurns:          newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
 		agentPush:           newAgentPushTurnCoordinator(),
 		taskGrace:           90 * time.Second,
+		taskReaperInterval:  30 * time.Second,
 		botConnectionEpochs: make(map[int64]uint64),
 	}
 	if shared != nil {
@@ -130,6 +136,11 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	}
 	go hub.runPresence()
 	go hub.runDeviceRPCTimeouts()
+	// Periodic + startup reaper for disconnected bot task recovery. The
+	// disconnect-triggered time.AfterFunc can be lost on process crash/restart
+	// or a transient DB error; the reaper re-scans durable rows so a missed
+	// timer still converges to stale (review 2026-08-05).
+	go hub.runConversationTaskReaper()
 	return hub
 }
 
