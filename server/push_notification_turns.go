@@ -31,6 +31,13 @@ type activeAgentPushTurn struct {
 	timer        *time.Timer
 }
 
+func (active *activeAgentPushTurn) effectiveDeadline() time.Time {
+	if !active.hardDeadline.IsZero() && active.hardDeadline.Before(active.expiresAt) {
+		return active.hardDeadline
+	}
+	return active.expiresAt
+}
+
 type agentPushCandidate struct {
 	key     string
 	deliver func() bool
@@ -118,10 +125,7 @@ func (c *agentPushTurnCoordinator) resetActiveTimerLocked(scope string, active *
 	if active.timer != nil {
 		active.timer.Stop()
 	}
-	deadline := active.expiresAt
-	if !active.hardDeadline.IsZero() && active.hardDeadline.Before(deadline) {
-		deadline = active.hardDeadline
-	}
+	deadline := active.effectiveDeadline()
 	delay := time.Until(deadline)
 	if delay < 0 {
 		delay = 0
@@ -139,10 +143,7 @@ func (c *agentPushTurnCoordinator) expireActiveTurn(scope, runID string) {
 		c.mu.Unlock()
 		return
 	}
-	deadline := active.expiresAt
-	if !active.hardDeadline.IsZero() && active.hardDeadline.Before(deadline) {
-		deadline = active.hardDeadline
-	}
+	deadline := active.effectiveDeadline()
 	if time.Now().Before(deadline) {
 		c.mu.Unlock()
 		return
@@ -237,25 +238,25 @@ func agentPushTurnKey(recipientUID, senderUID int64, msg *ServerMessage) string 
 	if recipientUID <= 0 || senderUID <= 0 || msg == nil || msg.Data == nil {
 		return ""
 	}
-	turnID := agentPushMessageTurnID(msg)
-	if turnID != "" {
-		return fmt.Sprintf("turn:%d:%d:%s:%s", recipientUID, senderUID, msg.Data.Topic, turnID)
+	dedupID := agentPushMessageDedupID(msg)
+	if dedupID != "" {
+		return fmt.Sprintf("turn:%d:%d:%s:%s", recipientUID, senderUID, msg.Data.Topic, dedupID)
 	}
 	return ""
 }
 
-func agentPushMessageTurnID(msg *ServerMessage) string {
+func agentPushMessageDedupID(msg *ServerMessage) string {
 	if msg == nil || msg.Data == nil {
 		return ""
 	}
-	turnID := firstMetadataString(
+	dedupID := firstMetadataString(
 		msg.Data.Metadata,
 		"turn_id", "turnId",
 		"response_id", "responseId",
 		"run_id", "runId",
 		"stream_id", "streamId",
 	)
-	return truncateUTF8(turnID, 128)
+	return truncateUTF8(dedupID, 128)
 }
 
 func agentPushMessageCorrelationID(msg *ServerMessage) string {
@@ -275,7 +276,7 @@ func isCompletedAgentMessage(msg *ServerMessage) bool {
 		return false
 	}
 	data := msg.Data
-	if agentPushMessageTurnID(msg) == "" {
+	if agentPushMessageDedupID(msg) == "" {
 		return false
 	}
 	return metadataBool(data.Metadata, "turn_complete") ||

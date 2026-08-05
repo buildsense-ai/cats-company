@@ -1158,7 +1158,7 @@ func TestAgentPushExplicitRunIDTakesPriorityForStatusCorrelation(t *testing.T) {
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
 	})
-	delivered := make(chan struct{}, 1)
+	deliveries := 0
 	msg := &ServerMessage{Data: &MsgServerData{
 		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer",
 		Metadata: map[string]interface{}{
@@ -1168,24 +1168,17 @@ func TestAgentPushExplicitRunIDTakesPriorityForStatusCorrelation(t *testing.T) {
 			"stream_id":   "stream-9",
 		},
 	}}
-	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool {
-		delivered <- struct{}{}
-		return true
-	}) {
+	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
 		t.Fatal("message with a matching explicit run_id failed open because another metadata identifier differed")
 	}
-	select {
-	case <-delivered:
+	if deliveries != 0 {
 		t.Fatal("message notified before the matching task status became terminal")
-	case <-time.After(100 * time.Millisecond):
 	}
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
 	})
-	select {
-	case <-delivered:
-	case <-time.After(time.Second):
-		t.Fatal("matching terminal task status did not deliver the retained candidate")
+	if deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1", deliveries)
 	}
 }
 
@@ -1242,37 +1235,48 @@ func TestAgentPushMissingTerminalFallsBackAfterBoundedTimeout(t *testing.T) {
 	}
 }
 
-func TestAgentPushHeartbeatsDoNotExtendFallbackDeadline(t *testing.T) {
-	const fallbackTimeout = 100 * time.Millisecond
+func TestAgentPushHeartbeatsPreserveFallbackDeadline(t *testing.T) {
+	const fallbackTimeout = 30 * time.Second
 	coordinator := newAgentPushTurnCoordinatorWithTimeout(fallbackTimeout)
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "heartbeat-run", State: "running", SourceUID: 7,
 	})
-	delivered := make(chan struct{}, 1)
+	deliveries := 0
 	msg := &ServerMessage{Data: &MsgServerData{
 		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer",
 		Metadata: map[string]interface{}{"turn_id": "heartbeat-run"},
 	}}
-	started := time.Now()
-	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool {
-		delivered <- struct{}{}
-		return true
-	}) {
+	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
 		t.Fatal("active turn did not retain the notification candidate")
 	}
+	scope := agentPushScope(7, "p2p_7_8")
+	coordinator.mu.Lock()
+	initialDeadline := coordinator.active[scope].hardDeadline
+	coordinator.mu.Unlock()
 	for index := 0; index < 3; index++ {
-		time.Sleep(25 * time.Millisecond)
 		coordinator.observeStatus(&types.ConversationTaskStatus{
 			TopicID: "p2p_7_8", RunID: "heartbeat-run", State: "waiting", SourceUID: 7,
 		})
 	}
-	select {
-	case <-delivered:
-		if elapsed := time.Since(started); elapsed > 150*time.Millisecond {
-			t.Fatalf("heartbeats extended fallback delivery to %s", elapsed)
-		}
-	case <-time.After(75 * time.Millisecond):
-		t.Fatal("heartbeats postponed the fixed fallback deadline")
+	coordinator.mu.Lock()
+	active := coordinator.active[scope]
+	actualDeadline := active.hardDeadline
+	effectiveDeadline := active.effectiveDeadline()
+	coordinator.mu.Unlock()
+	if !actualDeadline.Equal(initialDeadline) {
+		t.Fatalf("hard deadline changed from %s to %s", initialDeadline, actualDeadline)
+	}
+	if !effectiveDeadline.Equal(initialDeadline) {
+		t.Fatalf("effective deadline = %s, want %s", effectiveDeadline, initialDeadline)
+	}
+	if deliveries != 0 {
+		t.Fatal("heartbeat delivered the retained candidate")
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "heartbeat-run", State: "completed", SourceUID: 7,
+	})
+	if deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1", deliveries)
 	}
 }
 
