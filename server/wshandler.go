@@ -102,27 +102,27 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		nodeID = newRuntimeNodeID()
 	}
 	hub := &Hub{
-		clients:       make(map[int64]map[*Client]struct{}),
-		clientsByConn: make(map[string]*Client),
-		register:      make(chan *Client, 256),
-		unregister:    make(chan *Client, 256),
-		presence:      make(chan presenceEvent, 256),
-		db:            db,
-		rateLimiter:   rl,
-		botStats:      NewBotStats(),
-		botConvo:      botConvoTracker{counters: make(map[string]*botConvoCount)},
-		nodeID:        nodeID,
-		sharedRuntime: shared,
-		bodyLeases:    newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
-		userDevices:   newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
-		deviceAudit:   newDeviceAuditLog(),
-		deviceRevokes: newDeviceConnectorRevocationList(),
-		deviceClients: make(map[int64]map[string]*Client),
-		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
-		thinToolRPC:   newThinToolRPCRouter(defaultThinToolRPCTTL),
-		groupTurns:    newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
-		agentPush:     newAgentPushTurnCoordinator(),
-		taskGrace:     90 * time.Second,
+		clients:             make(map[int64]map[*Client]struct{}),
+		clientsByConn:       make(map[string]*Client),
+		register:            make(chan *Client, 256),
+		unregister:          make(chan *Client, 256),
+		presence:            make(chan presenceEvent, 256),
+		db:                  db,
+		rateLimiter:         rl,
+		botStats:            NewBotStats(),
+		botConvo:            botConvoTracker{counters: make(map[string]*botConvoCount)},
+		nodeID:              nodeID,
+		sharedRuntime:       shared,
+		bodyLeases:          newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
+		userDevices:         newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
+		deviceAudit:         newDeviceAuditLog(),
+		deviceRevokes:       newDeviceConnectorRevocationList(),
+		deviceClients:       make(map[int64]map[string]*Client),
+		deviceRPC:           newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
+		thinToolRPC:         newThinToolRPCRouter(defaultThinToolRPCTTL),
+		groupTurns:          newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
+		agentPush:           newAgentPushTurnCoordinator(),
+		taskGrace:           90 * time.Second,
 		botConnectionEpochs: make(map[int64]uint64),
 	}
 	if shared != nil {
@@ -406,11 +406,27 @@ func (h *Hub) registerClient(client *Client) bool {
 
 	// A bot registering a new connection starts a new connection generation:
 	// recovery timers scheduled for an earlier disconnection must not recover
-	// tasks owned by this generation.
+	// tasks owned by this generation. When a cluster-wide generation store is
+	// available the bump is persisted there so every node agrees on the new
+	// generation; the per-process map mirrors it as a read cache.
 	if client.accountType == types.AccountBot {
-		h.mu.Lock()
-		h.botConnectionEpochs[client.uid]++
-		h.mu.Unlock()
+		generation := uint64(0)
+		if genStore, ok := h.db.(store.ConversationTaskGenerationStore); ok {
+			if bumped, err := genStore.BumpBotConnectionGeneration(client.uid); err == nil {
+				generation = bumped
+			} else {
+				log.Printf("client connect: bump bot connection generation failed uid=%d: %v", client.uid, err)
+			}
+		} else {
+			h.mu.Lock()
+			h.botConnectionEpochs[client.uid]++
+			h.mu.Unlock()
+		}
+		if generation > 0 {
+			h.mu.Lock()
+			h.botConnectionEpochs[client.uid] = generation
+			h.mu.Unlock()
+		}
 	}
 
 	if client.accountType == types.AccountBot {

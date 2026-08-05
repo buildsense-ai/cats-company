@@ -301,11 +301,20 @@ func (h *Hub) scheduleDisconnectedBotTaskRecovery(sourceUID int64, disconnectedA
 	})
 }
 
-// botConnectionEpoch returns the current connection generation for a bot. It is
-// incremented on every bot connection registration (see registerClient).
+// botConnectionEpoch returns the current connection generation for a bot.
+//
+// With a generation store the value is cluster-wide (persisted and bumped in
+// the shared database), so a reconnect on another node bumps the same counter
+// this node reads and an old timer can never recover a fresh generation. The
+// per-process map is only a fallback for stores without generation support.
 func (h *Hub) botConnectionEpoch(uid int64) uint64 {
 	if h == nil {
 		return 0
+	}
+	if genStore, ok := h.db.(store.ConversationTaskGenerationStore); ok {
+		if generation, err := genStore.BotConnectionGeneration(uid); err == nil {
+			return generation
+		}
 	}
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -321,10 +330,10 @@ func (h *Hub) recoverDisconnectedBotTasksIfSameGeneration(sourceUID int64, disco
 	if h == nil || h.botConnectionEpoch(sourceUID) != generation {
 		return
 	}
-	h.recoverDisconnectedBotTasks(sourceUID, disconnectedAt)
+	h.recoverDisconnectedBotTasks(sourceUID, disconnectedAt, generation)
 }
 
-func (h *Hub) recoverDisconnectedBotTasks(sourceUID int64, disconnectedAt time.Time) {
+func (h *Hub) recoverDisconnectedBotTasks(sourceUID int64, disconnectedAt time.Time, generation uint64) {
 	// Local clients and a cluster-wide lease held by another node both mean the
 	// bot is still reachable; only recover when it is offline everywhere.
 	if h == nil || h.IsOnline(sourceUID) || h.botOnlineElsewhere(sourceUID) {
@@ -342,7 +351,7 @@ func (h *Hub) recoverDisconnectedBotTasks(sourceUID int64, disconnectedAt time.T
 	}
 	for _, candidate := range statuses {
 		recovered, updated, err := recoveryStore.MarkConversationTaskStatusStaleIfUnchanged(
-			candidate.TopicID, sourceUID, candidate.RunID, disconnectedAt)
+			candidate.TopicID, sourceUID, candidate.RunID, disconnectedAt, generation)
 		if err != nil {
 			log.Printf("task status recovery: persist failed for uid=%d topic=%s: %v", sourceUID, candidate.TopicID, err)
 			continue

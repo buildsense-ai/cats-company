@@ -370,7 +370,7 @@ func (a *Adapter) ListActiveConversationTaskStatusesForSource(sourceUID int64, u
 // updated after the disconnection (compare-and-set). This closes the
 // check-then-write race in task recovery: a bot that reconnects and updates the
 // same run before this write wins, and this call reports updated=false.
-func (a *Adapter) MarkConversationTaskStatusStaleIfUnchanged(topicID string, sourceUID int64, runID string, disconnectedAt time.Time) (*types.ConversationTaskStatus, bool, error) {
+func (a *Adapter) MarkConversationTaskStatusStaleIfUnchanged(topicID string, sourceUID int64, runID string, disconnectedAt time.Time, generation uint64) (*types.ConversationTaskStatus, bool, error) {
 	if topicID == "" || sourceUID <= 0 || runID == "" {
 		return nil, false, fmt.Errorf("conversation task stale requires topic, source uid and run id")
 	}
@@ -381,10 +381,32 @@ func (a *Adapter) MarkConversationTaskStatusStaleIfUnchanged(topicID string, sou
 	}
 	defer tx.Rollback()
 
+	// Fence on the cluster-wide bot connection generation inside the same
+	// transaction: a newer connection generation (any node) must win, otherwise
+	// an old recovery timer could mark work owned by a fresh connection stale.
+	// The row is locked so a concurrent BumpBotConnectionGeneration cannot slip
+	// between this check and the stale update (closes the cross-node TOCTOU).
+	if _, err := tx.Exec(
+		`INSERT IGNORE INTO bot_connection_generations (bot_uid, generation) VALUES (?, 0)`,
+		sourceUID,
+	); err != nil {
+		return nil, false, fmt.Errorf("ensure bot connection generation: %w", err)
+	}
+	var currentGeneration uint64
+	if err := tx.QueryRow(
+		`SELECT generation FROM bot_connection_generations WHERE bot_uid = ? FOR UPDATE`,
+		sourceUID,
+	).Scan(&currentGeneration); err != nil {
+		return nil, false, fmt.Errorf("lock bot connection generation: %w", err)
+	}
+	if currentGeneration != generation {
+		return nil, false, nil
+	}
+
 	if _, err := tx.Exec(
 		`INSERT IGNORE INTO conversation_task_statuses
 		   (topic_id, run_id, state, summary, error, source_uid, expires_at, updated_at)
-		 VALUES (?, '', 'idle', '', '', NULL, NULL, CURRENT_TIMESTAMP)`,
+		 VALUES (?, '', 'idle', '', '', NULL, NULL, CURRENT_TIMESTAMP(6))`,
 		topicID,
 	); err != nil {
 		return nil, false, fmt.Errorf("ensure conversation task aggregate: %w", err)
@@ -497,4 +519,57 @@ func (a *Adapter) MarkConversationTaskStatusStaleIfUnchanged(topicID string, sou
 		return nil, false, fmt.Errorf("commit conversation task stale: %w", err)
 	}
 	return out, true, nil
+}
+
+// BumpBotConnectionGeneration atomically increments the cluster-wide connection
+// generation for a bot and returns the new value. Missing rows start at 1.
+func (a *Adapter) BumpBotConnectionGeneration(botUID int64) (uint64, error) {
+	if botUID <= 0 {
+		return 0, fmt.Errorf("bot uid is required")
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin bot connection generation transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(
+		`INSERT INTO bot_connection_generations (bot_uid, generation)
+		 VALUES (?, 1)
+		 ON DUPLICATE KEY UPDATE generation = generation + 1`,
+		botUID,
+	); err != nil {
+		return 0, fmt.Errorf("bump bot connection generation: %w", err)
+	}
+	var generation uint64
+	if err := tx.QueryRow(
+		`SELECT generation FROM bot_connection_generations WHERE bot_uid = ?`,
+		botUID,
+	).Scan(&generation); err != nil {
+		return 0, fmt.Errorf("reload bot connection generation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit bot connection generation: %w", err)
+	}
+	return generation, nil
+}
+
+// BotConnectionGeneration returns the current cluster-wide connection
+// generation for a bot, or 0 when the bot has never connected.
+func (a *Adapter) BotConnectionGeneration(botUID int64) (uint64, error) {
+	if botUID <= 0 {
+		return 0, fmt.Errorf("bot uid is required")
+	}
+	var generation uint64
+	err := a.db.QueryRow(
+		`SELECT generation FROM bot_connection_generations WHERE bot_uid = ?`,
+		botUID,
+	).Scan(&generation)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("load bot connection generation: %w", err)
+	}
+	return generation, nil
 }
