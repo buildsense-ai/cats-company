@@ -178,6 +178,9 @@ func (c *agentPushTurnCoordinator) observeVisibleMessage(recipientUID, senderUID
 	if active == nil || !time.Now().Before(active.expiresAt) {
 		return false
 	}
+	if turnID := agentPushMessageTurnID(msg); turnID != "" && turnID != active.runID {
+		return false
+	}
 	key := agentPushTurnKey(recipientUID, senderUID, msg)
 	if key == "" {
 		key = fmt.Sprintf("turn:%d:%d:%s:%s", recipientUID, senderUID, msg.Data.Topic, active.runID)
@@ -234,19 +237,25 @@ func agentPushTurnKey(recipientUID, senderUID int64, msg *ServerMessage) string 
 	if recipientUID <= 0 || senderUID <= 0 || msg == nil || msg.Data == nil {
 		return ""
 	}
-	data := msg.Data
+	turnID := agentPushMessageTurnID(msg)
+	if turnID != "" {
+		return fmt.Sprintf("turn:%d:%d:%s:%s", recipientUID, senderUID, msg.Data.Topic, turnID)
+	}
+	return ""
+}
+
+func agentPushMessageTurnID(msg *ServerMessage) string {
+	if msg == nil || msg.Data == nil {
+		return ""
+	}
 	turnID := firstMetadataString(
-		data.Metadata,
+		msg.Data.Metadata,
 		"turn_id", "turnId",
 		"response_id", "responseId",
 		"run_id", "runId",
 		"stream_id", "streamId",
 	)
-	if turnID != "" {
-		turnID = truncateUTF8(turnID, 128)
-		return fmt.Sprintf("turn:%d:%d:%s:%s", recipientUID, senderUID, data.Topic, turnID)
-	}
-	return ""
+	return truncateUTF8(turnID, 128)
 }
 
 func isCompletedAgentMessage(msg *ServerMessage) bool {
@@ -254,13 +263,7 @@ func isCompletedAgentMessage(msg *ServerMessage) bool {
 		return false
 	}
 	data := msg.Data
-	if firstMetadataString(
-		data.Metadata,
-		"turn_id", "turnId",
-		"response_id", "responseId",
-		"run_id", "runId",
-		"stream_id", "streamId",
-	) == "" {
+	if agentPushMessageTurnID(msg) == "" {
 		return false
 	}
 	return metadataBool(data.Metadata, "turn_complete") ||

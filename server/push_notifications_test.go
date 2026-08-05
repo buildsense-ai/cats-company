@@ -1128,6 +1128,31 @@ func TestAgentPushTerminalBeforeMessageFailsOpen(t *testing.T) {
 	}
 }
 
+func TestAgentPushMessageForDifferentActiveRunFailsOpen(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "stale-run", State: "running", SourceUID: 7,
+	})
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "new run answer",
+		Metadata: map[string]interface{}{"turn_id": "new-run"},
+	}}
+	deliveries := 0
+	deliver := func() bool { deliveries++; return true }
+	if coordinator.observeVisibleMessage(8, 7, msg, deliver) {
+		t.Fatal("message for a different run was deferred under the stale active run")
+	}
+	if !coordinator.deliverOnce(agentPushTurnKey(8, 7, msg), deliver) {
+		t.Fatal("message for a different run did not fail open")
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "stale-run", State: "completed", SourceUID: 7,
+	})
+	if deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1", deliveries)
+	}
+}
+
 func TestAgentPushMissingTerminalFallsBackAfterBoundedTimeout(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinatorWithTimeout(25 * time.Millisecond)
 	coordinator.observeStatus(&types.ConversationTaskStatus{
@@ -1153,6 +1178,40 @@ func TestAgentPushMissingTerminalFallsBackAfterBoundedTimeout(t *testing.T) {
 	case <-delivered:
 	case <-time.After(time.Second):
 		t.Fatal("missing terminal status permanently swallowed the notification")
+	}
+}
+
+func TestAgentPushHeartbeatsDoNotExtendFallbackDeadline(t *testing.T) {
+	const fallbackTimeout = 100 * time.Millisecond
+	coordinator := newAgentPushTurnCoordinatorWithTimeout(fallbackTimeout)
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "heartbeat-run", State: "running", SourceUID: 7,
+	})
+	delivered := make(chan struct{}, 1)
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer",
+		Metadata: map[string]interface{}{"turn_id": "heartbeat-run"},
+	}}
+	started := time.Now()
+	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool {
+		delivered <- struct{}{}
+		return true
+	}) {
+		t.Fatal("active turn did not retain the notification candidate")
+	}
+	for index := 0; index < 3; index++ {
+		time.Sleep(25 * time.Millisecond)
+		coordinator.observeStatus(&types.ConversationTaskStatus{
+			TopicID: "p2p_7_8", RunID: "heartbeat-run", State: "waiting", SourceUID: 7,
+		})
+	}
+	select {
+	case <-delivered:
+		if elapsed := time.Since(started); elapsed > 150*time.Millisecond {
+			t.Fatalf("heartbeats extended fallback delivery to %s", elapsed)
+		}
+	case <-time.After(75 * time.Millisecond):
+		t.Fatal("heartbeats postponed the fixed fallback deadline")
 	}
 }
 
