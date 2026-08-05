@@ -44,7 +44,10 @@ beforeEach(() => {
   Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true });
   Object.defineProperty(window, 'Notification', {
     configurable: true,
-    value: { permission: 'default' },
+    value: {
+      permission: 'default',
+      requestPermission: vi.fn().mockResolvedValue('granted'),
+    },
   });
   Object.defineProperty(window, 'PushManager', { configurable: true, value: function PushManager() {} });
   Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: {} });
@@ -99,6 +102,29 @@ test('registers an active tab under its push registration id', () => {
   renderController('user:42');
 
   expect(pushTabCoordinator.setActive).toHaveBeenCalledWith(true, 'registration-1');
+});
+
+test('requests notification permission before awaiting the push configuration', async () => {
+  const order = [];
+  window.Notification.requestPermission.mockImplementation(async () => {
+    order.push('permission');
+    return 'granted';
+  });
+  api.getPushConfig.mockImplementation(async () => {
+    order.push('config');
+    return { enabled: false };
+  });
+
+  renderController('user:42');
+  const enable = Array.from(container.querySelectorAll('button'))
+    .find((button) => button.textContent === '开启');
+
+  await act(async () => {
+    enable.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+
+  await vi.waitFor(() => expect(window.Notification.requestPermission).toHaveBeenCalledTimes(1));
+  expect(order).toEqual(['permission', 'config']);
 });
 
 test('waits for the active-tab lock before reconciling a browser subscription', async () => {

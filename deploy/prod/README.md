@@ -64,6 +64,17 @@ keeps Web Push disabled; supplying only some is rejected. It retains the
 existing first-deploy check, so `prod.env` must already contain the rest of its
 real configuration. Keep the production key pair separate from test.
 
+When the production host cannot reach browser push providers directly, also
+configure these two `prod` environment secrets with the same values used by the
+Cloudflare Worker relay:
+
+- `CATSCO_PUSH_RELAY_URL` (for example, `https://push-relay.example.workers.dev/v1/push/relay`)
+- `CATSCO_PUSH_RELAY_TOKEN`
+
+They are synchronized over SSH standard input as a pair. Leaving both empty
+removes an earlier relay configuration; supplying only one is rejected. The
+Worker never receives the VAPID private key.
+
 ## Image generation gateway
 
 Keep image-provider credentials only under the persistent server root. For the

@@ -316,6 +316,77 @@ func TestPushHTTPClientTimesOutStalledConnections(t *testing.T) {
 	}
 }
 
+func TestPushRelayTransportForwardsSignedRequestWithoutChangingItsTarget(t *testing.T) {
+	relayURL, err := validatePushRelayURL("https://relay.example.test/v1/push/relay")
+	if err != nil {
+		t.Fatalf("validatePushRelayURL: %v", err)
+	}
+	var received *http.Request
+	transport := &pushRelayRoundTripper{
+		relayURL: relayURL,
+		token:    "relay-token",
+		base: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			received = request.Clone(request.Context())
+			return &http.Response{
+				StatusCode: http.StatusCreated,
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}),
+	}
+	providerEndpoint := "https://fcm.googleapis.com/fcm/send/subscription-token"
+	request := httptest.NewRequest(http.MethodPost, providerEndpoint, strings.NewReader("encrypted-payload"))
+	request.RequestURI = ""
+	request.Header.Set("Authorization", "vapid signed-for-fcm")
+	request.Header.Set("Content-Encoding", "aes128gcm")
+
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		t.Fatalf("relay RoundTrip: %v", err)
+	}
+	defer response.Body.Close()
+	if received == nil {
+		t.Fatal("relay transport did not call its base transport")
+	}
+	if got, want := received.URL.String(), "https://relay.example.test/v1/push/relay"; got != want {
+		t.Fatalf("relay request URL = %q, want %q", got, want)
+	}
+	if got := received.Header.Get(pushRelayEndpointHeader); got != providerEndpoint {
+		t.Fatalf("relay target header = %q, want original endpoint %q", got, providerEndpoint)
+	}
+	if got := received.Header.Get(pushRelayTokenHeader); got != "relay-token" {
+		t.Fatalf("relay token header = %q, want configured token", got)
+	}
+	if got := received.Header.Get("Authorization"); got != "vapid signed-for-fcm" {
+		t.Fatalf("VAPID authorization header = %q, want original request header", got)
+	}
+	if got := received.Header.Get("Content-Encoding"); got != "aes128gcm" {
+		t.Fatalf("content encoding = %q, want aes128gcm", got)
+	}
+}
+
+func TestPushRelayConfigIsAllOrNothing(t *testing.T) {
+	partial := NewPushNotificationServiceWithConfig(&memoryPushSubscriptionStore{}, PushNotificationConfig{
+		PublicKey:  "public-key",
+		PrivateKey: "private-key",
+		Subject:    "mailto:push@example.com",
+		RelayURL:   "https://relay.example.test/v1/push/relay",
+	})
+	if partial.Enabled() {
+		t.Fatal("partially configured relay unexpectedly enabled push delivery")
+	}
+	if err := partial.ConfigError(); err == nil || !strings.Contains(err.Error(), "configured together") {
+		t.Fatalf("partial relay config error = %v", err)
+	}
+
+	client, err := newPushHTTPClientWithRelay("https://relay.example.test/v1/push/relay", "relay-token")
+	if err != nil {
+		t.Fatalf("newPushHTTPClientWithRelay: %v", err)
+	}
+	if _, ok := client.Transport.(*pushRelayRoundTripper); !ok {
+		t.Fatalf("relay client transport = %T, want *pushRelayRoundTripper", client.Transport)
+	}
+}
+
 func TestPushNotificationSubscribeUsesAuthenticatedUID(t *testing.T) {
 	store := &memoryPushSubscriptionStore{}
 	service := enabledPushService(store)

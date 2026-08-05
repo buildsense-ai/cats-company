@@ -174,21 +174,24 @@ export default function PwaController({
     setBusy(true);
     setPushError('');
     try {
+      // iOS only allows the permission prompt when it is directly caused by a
+      // user gesture. Do this before any network or lock await so Safari does
+      // not lose the transient activation while we fetch the VAPID config.
+      const nextPermission = await Notification.requestPermission();
+      if (!isCurrent()) return;
+      setPermission(nextPermission);
+      if (nextPermission !== 'granted') {
+        persistDismissed(pushPromptOwner);
+        setDismissed(true);
+        return;
+      }
+
       await enqueuePushOperation(async () => {
         const registrationID = getPushRegistrationID();
         const config = await api.getPushConfig(controller.signal);
         if (!isCurrent()) return;
         const publicKey = config.public_key;
         if (!config.enabled || !publicKey) throw new Error('推送服务尚未配置');
-
-        const nextPermission = await Notification.requestPermission();
-        if (!isCurrent()) return;
-        setPermission(nextPermission);
-        if (nextPermission !== 'granted') {
-          persistDismissed(pushPromptOwner);
-          setDismissed(true);
-          return;
-        }
 
         pushTabCoordinator.setActive(true, registrationID);
         const activeLockReady = await pushTabCoordinator.waitUntilActive?.(registrationID);

@@ -33,6 +33,8 @@ const (
 	maxQueuedPushDeliveries     = 128
 	pushRequestTimeout          = 15 * time.Second
 	pushDeliveryTimeout         = 20 * time.Second
+	pushRelayEndpointHeader     = "X-Catsco-Push-Endpoint"
+	pushRelayTokenHeader        = "X-Catsco-Relay-Token"
 )
 
 var nonPublicPushPrefixes = []netip.Prefix{
@@ -76,6 +78,11 @@ type PushNotificationConfig struct {
 	PublicKey  string
 	PrivateKey string
 	Subject    string
+	// RelayURL and RelayToken are optional. When both are present, the server
+	// encrypts and VAPID-signs for the browser endpoint locally, then sends that
+	// exact request through the constrained egress relay.
+	RelayURL   string
+	RelayToken string
 }
 
 type pushSendFunc func(context.Context, []byte, *webpush.Subscription, *webpush.Options) (*http.Response, error)
@@ -90,12 +97,14 @@ type pushDeliveryJob struct {
 }
 
 // PushNotificationService owns the Web Push API and delivery behavior. The
-// service is disabled unless a subscription store and all VAPID values exist.
+// service is disabled unless a subscription store, all VAPID values, and any
+// configured relay values are valid.
 type PushNotificationService struct {
 	store         store.PushSubscriptionStore
 	config        PushNotificationConfig
 	send          pushSendFunc
 	client        webpush.HTTPClient
+	configErr     error
 	logf          func(string, ...interface{})
 	deliveryQueue chan pushDeliveryJob
 	startWorkers  sync.Once
@@ -108,6 +117,8 @@ func NewPushNotificationService(subscriptionStore store.PushSubscriptionStore) *
 		PublicKey:  os.Getenv("VAPID_PUBLIC_KEY"),
 		PrivateKey: os.Getenv("VAPID_PRIVATE_KEY"),
 		Subject:    os.Getenv("VAPID_SUBJECT"),
+		RelayURL:   os.Getenv("CATSCO_PUSH_RELAY_URL"),
+		RelayToken: os.Getenv("CATSCO_PUSH_RELAY_TOKEN"),
 	})
 }
 
@@ -116,11 +127,15 @@ func NewPushNotificationServiceWithConfig(subscriptionStore store.PushSubscripti
 	config.PublicKey = strings.TrimSpace(config.PublicKey)
 	config.PrivateKey = strings.TrimSpace(config.PrivateKey)
 	config.Subject = strings.TrimSpace(config.Subject)
+	config.RelayURL = strings.TrimSpace(config.RelayURL)
+	config.RelayToken = strings.TrimSpace(config.RelayToken)
+	client, configErr := newPushHTTPClientWithRelay(config.RelayURL, config.RelayToken)
 	return &PushNotificationService{
 		store:         subscriptionStore,
 		config:        config,
 		send:          webpush.SendNotificationWithContext,
-		client:        newPushHTTPClient(),
+		client:        client,
+		configErr:     configErr,
 		logf:          log.Printf,
 		deliveryQueue: make(chan pushDeliveryJob, maxQueuedPushDeliveries),
 	}
@@ -129,6 +144,64 @@ func NewPushNotificationServiceWithConfig(subscriptionStore store.PushSubscripti
 func newPushHTTPClient() *http.Client {
 	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
 	return newPushHTTPClientWithNetwork(net.DefaultResolver.LookupIPAddr, dialer.DialContext, pushRequestTimeout)
+}
+
+func newPushHTTPClientWithRelay(relayURL, relayToken string) (*http.Client, error) {
+	relayURL = strings.TrimSpace(relayURL)
+	relayToken = strings.TrimSpace(relayToken)
+	if relayURL == "" && relayToken == "" {
+		return newPushHTTPClient(), nil
+	}
+	if relayURL == "" || relayToken == "" {
+		return nil, errors.New("CATSCO_PUSH_RELAY_URL and CATSCO_PUSH_RELAY_TOKEN must be configured together")
+	}
+	if strings.ContainsAny(relayToken, "\r\n") {
+		return nil, errors.New("CATSCO_PUSH_RELAY_TOKEN must be a single-line value")
+	}
+
+	parsedRelayURL, err := validatePushRelayURL(relayURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CATSCO_PUSH_RELAY_URL: %w", err)
+	}
+
+	client := newPushHTTPClient()
+	client.Transport = &pushRelayRoundTripper{
+		base:     client.Transport,
+		relayURL: parsedRelayURL,
+		token:    relayToken,
+	}
+	return client, nil
+}
+
+type pushRelayRoundTripper struct {
+	base     http.RoundTripper
+	relayURL *url.URL
+	token    string
+}
+
+func (t *pushRelayRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if t == nil || t.relayURL == nil || strings.TrimSpace(t.token) == "" {
+		return nil, errors.New("push relay transport is not configured")
+	}
+	if request == nil || request.URL == nil {
+		return nil, errors.New("push relay received an invalid provider request")
+	}
+
+	endpoint := request.URL.String()
+	relayRequest := request.Clone(request.Context())
+	relayTarget := *t.relayURL
+	relayRequest.URL = &relayTarget
+	relayRequest.Host = ""
+	relayRequest.RequestURI = ""
+	relayRequest.Header = request.Header.Clone()
+	relayRequest.Header.Set(pushRelayEndpointHeader, endpoint)
+	relayRequest.Header.Set(pushRelayTokenHeader, t.token)
+
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(relayRequest)
 }
 
 func newPushHTTPClientWithNetwork(lookup pushLookupIPFunc, dial pushDialContextFunc, timeout time.Duration) *http.Client {
@@ -176,6 +249,28 @@ func newPushHTTPClientWithNetwork(lookup pushLookupIPFunc, dial pushDialContextF
 	}
 }
 
+func validatePushRelayURL(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > maxPushEndpointLen {
+		return nil, errors.New("relay URL is empty or too long")
+	}
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		return nil, errors.New("relay URL must be an absolute HTTPS URL")
+	}
+	if parsed.Port() != "" && parsed.Port() != "443" {
+		return nil, errors.New("relay URL must use the standard HTTPS port")
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
+		return nil, errors.New("relay URL host is local")
+	}
+	if ip := net.ParseIP(host); ip != nil && !isPublicPushIP(ip) {
+		return nil, errors.New("relay URL IP is not publicly routable")
+	}
+	return parsed, nil
+}
+
 func isPublicPushIP(ip net.IP) bool {
 	address, ok := netip.AddrFromSlice(ip)
 	if !ok {
@@ -195,7 +290,16 @@ func isPublicPushIP(ip net.IP) bool {
 
 // Enabled reports whether delivery and subscription mutation are available.
 func (s *PushNotificationService) Enabled() bool {
-	return s != nil && s.store != nil && s.config.PublicKey != "" && s.config.PrivateKey != "" && s.config.Subject != ""
+	return s != nil && s.store != nil && s.client != nil && s.configErr == nil && s.config.PublicKey != "" && s.config.PrivateKey != "" && s.config.Subject != ""
+}
+
+// ConfigError returns a relay configuration error without exposing any secret
+// values. It is primarily used by startup logging.
+func (s *PushNotificationService) ConfigError() error {
+	if s == nil {
+		return errors.New("push notification service is not configured")
+	}
+	return s.configErr
 }
 
 // HandleStatus serves the public GET status endpoint.
