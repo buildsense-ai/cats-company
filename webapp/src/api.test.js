@@ -538,3 +538,45 @@ describe('agent file requests', () => {
     );
   });
 });
+
+describe('local XiaoBa SkillHub bridge', () => {
+  let apiModule;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    localStorage.clear();
+    apiModule = await import('./api');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test('exchanges the current CatsCo identity before every local SkillHub share', async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({ authenticated: true }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: vi.fn().mockResolvedValue({ ok: true, skill: { id: 'owner/demo' } }),
+      });
+
+    await expect(apiModule.api.shareLocalSkill('demo', '218', '85')).resolves.toMatchObject({
+      ok: true,
+      skill: { id: 'owner/demo' },
+    });
+    expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([
+      '/local-xiaoba/api/skillhub/auth/catsco',
+      '/local-xiaoba/api/skillhub/share-local-skill',
+    ]);
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body)).toEqual({
+      skillName: 'demo',
+      expectedBotUid: '218',
+      expectedUserUid: '85',
+    });
+  });
+});
