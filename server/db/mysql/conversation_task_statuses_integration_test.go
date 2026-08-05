@@ -191,6 +191,10 @@ func TestMySQLConversationTaskStatusContract(t *testing.T) {
 	if _, updated, err := db.MarkConversationTaskStatusStaleIfUnchanged(topicID, sourceUID, "run-cas-other", pastDisconnectedAt); err != nil || updated {
 		t.Fatalf("run id mismatch CAS updated=%v err=%v", updated, err)
 	}
+	// Explicitly terminate the scenario-1 active run before switching to another
+	// run, otherwise the transition validator rejects the next scenario with
+	// ErrConversationTaskRunSuperseded.
+	upsert("run-cas-mismatch", "completed")
 	upsert("run-cas-terminal", "completed")
 	if _, updated, err := db.MarkConversationTaskStatusStaleIfUnchanged(topicID, sourceUID, "run-cas-terminal", pastDisconnectedAt); err != nil || updated {
 		t.Fatalf("terminal run CAS updated=%v err=%v", updated, err)

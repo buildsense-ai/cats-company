@@ -238,3 +238,49 @@ func TestRecoverDisconnectedBotTasksRunsWhenOfflineEverywhere(t *testing.T) {
 		t.Fatalf("recovery upserts while offline everywhere = %d, want 1", len(db.upserts))
 	}
 }
+
+func TestRecoverDisconnectedBotTasksSkipsOlderConnectionGeneration(t *testing.T) {
+	disconnectedAt := time.Now()
+	active := &types.ConversationTaskStatus{
+		TopicID:   "p2p_7_42",
+		RunID:     "run-old",
+		State:     "running",
+		SourceUID: 42,
+		UpdatedAt: disconnectedAt.Add(-time.Minute),
+	}
+	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{active}, current: active}
+	hub := NewHub(db, nil)
+
+	// Disconnect A: snapshot the generation at that moment.
+	oldGeneration := hub.botConnectionEpoch(42)
+	// The bot reconnects (registerClient bumps the generation) and disconnects
+	// again; the old timer for disconnect A must not recover the new generation.
+	hub.mu.Lock()
+	hub.botConnectionEpochs[42]++
+	hub.mu.Unlock()
+	hub.recoverDisconnectedBotTasksIfSameGeneration(42, disconnectedAt, oldGeneration)
+
+	if len(db.upserts) != 0 {
+		t.Fatalf("old generation recovery upserts = %d, want 0", len(db.upserts))
+	}
+}
+
+func TestRecoverDisconnectedBotTasksRunsForCurrentGeneration(t *testing.T) {
+	disconnectedAt := time.Now()
+	active := &types.ConversationTaskStatus{
+		TopicID:   "p2p_7_42",
+		RunID:     "run-old",
+		State:     "running",
+		SourceUID: 42,
+		UpdatedAt: disconnectedAt.Add(-time.Minute),
+	}
+	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{active}, current: active}
+	hub := NewHub(db, nil)
+
+	generation := hub.botConnectionEpoch(42)
+	hub.recoverDisconnectedBotTasksIfSameGeneration(42, disconnectedAt, generation)
+
+	if len(db.upserts) != 1 {
+		t.Fatalf("current generation recovery upserts = %d, want 1", len(db.upserts))
+	}
+}

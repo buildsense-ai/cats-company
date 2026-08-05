@@ -295,9 +295,33 @@ func (h *Hub) scheduleDisconnectedBotTaskRecovery(sourceUID int64, disconnectedA
 	if grace < 0 {
 		grace = 0
 	}
+	generation := h.botConnectionEpoch(sourceUID)
 	time.AfterFunc(grace, func() {
-		h.recoverDisconnectedBotTasks(sourceUID, disconnectedAt)
+		h.recoverDisconnectedBotTasksIfSameGeneration(sourceUID, disconnectedAt, generation)
 	})
+}
+
+// botConnectionEpoch returns the current connection generation for a bot. It is
+// incremented on every bot connection registration (see registerClient).
+func (h *Hub) botConnectionEpoch(uid int64) uint64 {
+	if h == nil {
+		return 0
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.botConnectionEpochs[uid]
+}
+
+// recoverDisconnectedBotTasksIfSameGeneration recovers disconnected bot tasks
+// only when the bot's connection generation still matches the one observed when
+// the recovery timer was scheduled. A bot that reconnects (and thus bumps the
+// generation) and disconnects again must not have its freshly-reconnected work
+// marked stale by an older timer with a stale disconnectedAt timestamp.
+func (h *Hub) recoverDisconnectedBotTasksIfSameGeneration(sourceUID int64, disconnectedAt time.Time, generation uint64) {
+	if h == nil || h.botConnectionEpoch(sourceUID) != generation {
+		return
+	}
+	h.recoverDisconnectedBotTasks(sourceUID, disconnectedAt)
 }
 
 func (h *Hub) recoverDisconnectedBotTasks(sourceUID int64, disconnectedAt time.Time) {

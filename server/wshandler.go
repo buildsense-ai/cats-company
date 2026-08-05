@@ -56,6 +56,11 @@ type Hub struct {
 	push          *PushNotificationService
 	agentPush     *agentPushTurnCoordinator
 	taskGrace     time.Duration
+	// botConnectionEpochs is incremented every time a bot registers a new
+	// connection. Disconnected-task recovery timers snapshot the current epoch
+	// and skip recovery when a newer connection generation appeared, so an old
+	// timer never marks work owned by a fresh connection as stale.
+	botConnectionEpochs map[int64]uint64
 }
 
 type presenceEvent struct {
@@ -118,6 +123,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		groupTurns:    newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
 		agentPush:     newAgentPushTurnCoordinator(),
 		taskGrace:     90 * time.Second,
+		botConnectionEpochs: make(map[int64]uint64),
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
@@ -396,6 +402,15 @@ func (h *Hub) registerClient(client *Client) bool {
 		if stale.conn != nil {
 			_ = stale.conn.Close()
 		}
+	}
+
+	// A bot registering a new connection starts a new connection generation:
+	// recovery timers scheduled for an earlier disconnection must not recover
+	// tasks owned by this generation.
+	if client.accountType == types.AccountBot {
+		h.mu.Lock()
+		h.botConnectionEpochs[client.uid]++
+		h.mu.Unlock()
 	}
 
 	if client.accountType == types.AccountBot {
