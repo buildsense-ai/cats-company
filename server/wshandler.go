@@ -1924,7 +1924,9 @@ func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessa
 		if h.agentPush.observeVisibleMessage(uid, senderUID, msg, deliver) {
 			return
 		}
-		if agentPushTurnKey(uid, senderUID, msg) == "" {
+		if key := agentPushTurnKey(uid, senderUID, msg); key != "" {
+			h.agentPush.deliverOnce(key, deliver)
+		} else {
 			deliver()
 		}
 		return

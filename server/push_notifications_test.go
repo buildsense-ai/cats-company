@@ -1034,16 +1034,22 @@ func TestAgentPushNewRunReplacesAbandonedTurn(t *testing.T) {
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "run-abandoned", State: "running", SourceUID: 7,
 	})
+	abandonedDelivered := make(chan struct{}, 1)
 	coordinator.observeVisibleMessage(8, 7, &ServerMessage{Data: &MsgServerData{
 		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "old",
 	}}, func() bool {
-		t.Error("abandoned run delivered")
+		abandonedDelivered <- struct{}{}
 		return true
 	})
 
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "run-restarted", State: "running", SourceUID: 7,
 	})
+	select {
+	case <-abandonedDelivered:
+	case <-time.After(time.Second):
+		t.Fatal("replacing an abandoned run permanently swallowed its candidate")
+	}
 	delivered := make(chan struct{}, 1)
 	coordinator.observeVisibleMessage(8, 7, &ServerMessage{Data: &MsgServerData{
 		Topic: "p2p_7_8", SeqID: 2, Type: "text", Content: "new",
@@ -1071,6 +1077,206 @@ func TestAgentPushIgnoresExpiredRunningStatus(t *testing.T) {
 	msg := &ServerMessage{Data: &MsgServerData{Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "late"}}
 	if coordinator.observeVisibleMessage(8, 7, msg, func() bool { return true }) {
 		t.Fatal("an expired task status opened an active notification turn")
+	}
+}
+
+func TestAgentPushMessageWithTurnIDFailsOpenWithoutActiveStatus(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer",
+		Metadata: map[string]interface{}{"turn_id": "turn-without-status"},
+	}}
+	deliveries := 0
+	deliver := func() bool { deliveries++; return true }
+	if coordinator.observeVisibleMessage(8, 7, msg, deliver) {
+		t.Fatal("message without an active task status was unexpectedly deferred")
+	}
+	key := agentPushTurnKey(8, 7, msg)
+	if !coordinator.deliverOnce(key, deliver) {
+		t.Fatal("message without an active task status did not fail open")
+	}
+	if coordinator.deliverOnce(key, deliver) {
+		t.Fatal("duplicate message for the same turn bypassed deliverOnce")
+	}
+	if deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1", deliveries)
+	}
+}
+
+func TestAgentPushTerminalBeforeMessageFailsOpen(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "terminal-first", State: "running", SourceUID: 7,
+	})
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "terminal-first", State: "completed", SourceUID: 7,
+	})
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "late final answer",
+		Metadata: map[string]interface{}{"turn_id": "terminal-first"},
+	}}
+	deliveries := 0
+	deliver := func() bool { deliveries++; return true }
+	if coordinator.observeVisibleMessage(8, 7, msg, deliver) {
+		t.Fatal("message after terminal status was unexpectedly deferred")
+	}
+	if !coordinator.deliverOnce(agentPushTurnKey(8, 7, msg), deliver) {
+		t.Fatal("message after terminal status did not fail open")
+	}
+	if deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1", deliveries)
+	}
+}
+
+func TestAgentPushMessageForDifferentActiveRunFailsOpen(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "stale-run", State: "running", SourceUID: 7,
+	})
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "new run answer",
+		Metadata: map[string]interface{}{"turn_id": "new-run"},
+	}}
+	deliveries := 0
+	deliver := func() bool { deliveries++; return true }
+	if coordinator.observeVisibleMessage(8, 7, msg, deliver) {
+		t.Fatal("message for a different run was deferred under the stale active run")
+	}
+	if !coordinator.deliverOnce(agentPushTurnKey(8, 7, msg), deliver) {
+		t.Fatal("message for a different run did not fail open")
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "stale-run", State: "completed", SourceUID: 7,
+	})
+	if deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1", deliveries)
+	}
+}
+
+func TestAgentPushExplicitRunIDTakesPriorityForStatusCorrelation(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
+	})
+	deliveries := 0
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer",
+		Metadata: map[string]interface{}{
+			"turn_id":     "response-7",
+			"response_id": "response-8",
+			"run_id":      "run-1",
+			"stream_id":   "stream-9",
+		},
+	}}
+	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
+		t.Fatal("message with a matching explicit run_id failed open because another metadata identifier differed")
+	}
+	if deliveries != 0 {
+		t.Fatal("message notified before the matching task status became terminal")
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
+	})
+	if deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1", deliveries)
+	}
+}
+
+func TestAgentPushResponseAndStreamIDsDoNotOverrideActiveRun(t *testing.T) {
+	for _, metadata := range []map[string]interface{}{
+		{"response_id": "response-7"},
+		{"stream_id": "stream-9"},
+	} {
+		coordinator := newAgentPushTurnCoordinator()
+		coordinator.observeStatus(&types.ConversationTaskStatus{
+			TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
+		})
+		msg := &ServerMessage{Data: &MsgServerData{
+			Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer", Metadata: metadata,
+		}}
+		deliveries := 0
+		if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
+			t.Fatalf("metadata %v was incorrectly treated as a task-status run ID", metadata)
+		}
+		coordinator.observeStatus(&types.ConversationTaskStatus{
+			TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
+		})
+		if deliveries != 1 {
+			t.Fatalf("metadata %v deliveries = %d, want 1", metadata, deliveries)
+		}
+	}
+}
+
+func TestAgentPushMissingTerminalFallsBackAfterBoundedTimeout(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinatorWithTimeout(25 * time.Millisecond)
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "missing-terminal", State: "running", SourceUID: 7,
+	})
+	delivered := make(chan struct{}, 1)
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer",
+		Metadata: map[string]interface{}{"turn_id": "missing-terminal"},
+	}}
+	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool {
+		delivered <- struct{}{}
+		return true
+	}) {
+		t.Fatal("active turn did not retain the notification candidate")
+	}
+	select {
+	case <-delivered:
+		t.Fatal("fallback delivered before the bounded timeout")
+	case <-time.After(10 * time.Millisecond):
+	}
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("missing terminal status permanently swallowed the notification")
+	}
+}
+
+func TestAgentPushHeartbeatsPreserveFallbackDeadline(t *testing.T) {
+	const fallbackTimeout = 30 * time.Second
+	coordinator := newAgentPushTurnCoordinatorWithTimeout(fallbackTimeout)
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "heartbeat-run", State: "running", SourceUID: 7,
+	})
+	deliveries := 0
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer",
+		Metadata: map[string]interface{}{"turn_id": "heartbeat-run"},
+	}}
+	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
+		t.Fatal("active turn did not retain the notification candidate")
+	}
+	scope := agentPushScope(7, "p2p_7_8")
+	coordinator.mu.Lock()
+	initialDeadline := coordinator.active[scope].hardDeadline
+	coordinator.mu.Unlock()
+	for index := 0; index < 3; index++ {
+		coordinator.observeStatus(&types.ConversationTaskStatus{
+			TopicID: "p2p_7_8", RunID: "heartbeat-run", State: "waiting", SourceUID: 7,
+		})
+	}
+	coordinator.mu.Lock()
+	active := coordinator.active[scope]
+	actualDeadline := active.hardDeadline
+	effectiveDeadline := active.effectiveDeadline()
+	coordinator.mu.Unlock()
+	if !actualDeadline.Equal(initialDeadline) {
+		t.Fatalf("hard deadline changed from %s to %s", initialDeadline, actualDeadline)
+	}
+	if !effectiveDeadline.Equal(initialDeadline) {
+		t.Fatalf("effective deadline = %s, want %s", effectiveDeadline, initialDeadline)
+	}
+	if deliveries != 0 {
+		t.Fatal("heartbeat delivered the retained candidate")
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "heartbeat-run", State: "completed", SourceUID: 7,
+	})
+	if deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1", deliveries)
 	}
 }
 
@@ -1390,8 +1596,8 @@ func TestP2PAgentWorkingMessagesNotifyOnlyOnFinalAnswer(t *testing.T) {
 	}, 2, nil)
 	select {
 	case <-delivered:
-		t.Fatal("an incomplete agent segment delivered a push")
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(time.Second):
+		t.Fatal("agent message with turn metadata but no active task status did not fail open")
 	}
 	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
 		DisplayContent: "second final segment",
@@ -1402,12 +1608,7 @@ func TestP2PAgentWorkingMessagesNotifyOnlyOnFinalAnswer(t *testing.T) {
 
 	select {
 	case <-delivered:
-	case <-time.After(time.Second):
-		t.Fatal("agent final answer did not deliver a push")
-	}
-	select {
-	case <-delivered:
-		t.Fatal("one agent turn delivered more than one push")
+		t.Fatal("completed segment duplicated the fail-open push for the same turn")
 	case <-time.After(100 * time.Millisecond):
 	}
 
