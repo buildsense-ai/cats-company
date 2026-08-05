@@ -525,6 +525,20 @@ func normalizeBotModelSelection(modelID, reasoning string) (botModelCatalogItem,
 	return botModelCatalogItem{}, "", false
 }
 
+// catalogContextWindowTokens returns the standard context window for a catalog
+// model id. It is the authoritative cloud-side value so devices never need to
+// guess it from a local profile; catalog ids that are not in the catalog (e.g.
+// legacy aliases) fall back to the callers' defaults.
+func catalogContextWindowTokens(modelID string) (int64, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(modelID))
+	for _, model := range botModelCatalog {
+		if model.ID == normalized && model.ContextWindowTokens > 0 {
+			return model.ContextWindowTokens, true
+		}
+	}
+	return 0, false
+}
+
 func botModelConfigIsConfigured(config *types.BotModelConfig) bool {
 	return config != nil &&
 		strings.TrimSpace(config.Kind) != botModelKindLocal &&
@@ -560,10 +574,7 @@ func botModelConfigResponse(botUID int64, config *types.BotModelConfig) map[stri
 	response := map[string]interface{}{
 		"uid":        botUID,
 		"configured": configured,
-		"desired": map[string]interface{}{
-			"kind": desiredKind, "model_id": desiredModelID, "reasoning_effort": desiredReasoning,
-			"revision": config.Revision, "updated_at": config.UpdatedAt,
-		},
+		"desired":    desiredModelConfigResponse(desiredKind, desiredModelID, desiredReasoning, config),
 		"applied": map[string]interface{}{
 			"kind": config.AppliedKind, "model_id": config.AppliedModelID, "reasoning_effort": config.AppliedReasoning,
 			"revision": config.AppliedRevision, "applied_at": config.AppliedAt,
@@ -573,6 +584,22 @@ func botModelConfigResponse(botUID int64, config *types.BotModelConfig) map[stri
 		"apply_mode": "runtime_reload",
 	}
 	return response
+}
+
+// desiredModelConfigResponse builds the desired model selection payload. For
+// catalog models it includes the authoritative cloud context window so the
+// device does not rely on a local profile that can drift from the catalog.
+func desiredModelConfigResponse(kind, modelID, reasoning string, config *types.BotModelConfig) map[string]interface{} {
+	desired := map[string]interface{}{
+		"kind": kind, "model_id": modelID, "reasoning_effort": reasoning,
+		"revision": config.Revision, "updated_at": config.UpdatedAt,
+	}
+	if kind == botModelKindCatalog {
+		if tokens, ok := catalogContextWindowTokens(modelID); ok {
+			desired["context_window_tokens"] = tokens
+		}
+	}
+	return desired
 }
 
 func (h *BotModelConfigHandler) ownerConfigResponse(

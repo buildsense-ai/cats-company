@@ -346,6 +346,9 @@ func (h *BotDefinitionHandler) prepareStoredModel(
 		}
 		return types.BotDefinitionModel{
 			Kind: botModelKindCatalog, ModelID: model.ID, ReasoningEffort: reasoning,
+			// Persist the standard catalog context window so responses can serve
+			// it directly instead of depending on a catalog lookup at read time.
+			ContextWindowTokens: model.ContextWindowTokens,
 		}, nil
 	}
 	if kind != botModelKindCustom {
@@ -425,6 +428,13 @@ func (h *BotDefinitionHandler) definitionResponse(
 		modelResponse["modelId"] = model.ModelID
 		if model.ReasoningEffort != "" {
 			modelResponse["reasoningEffort"] = model.ReasoningEffort
+		}
+		// Catalog models ship the authoritative cloud context window so devices
+		// follow the catalog even when a stored definition predates the field.
+		if model.ContextWindowTokens > 0 {
+			modelResponse["contextWindowTokens"] = model.ContextWindowTokens
+		} else if tokens, ok := catalogContextWindowTokens(model.ModelID); ok {
+			modelResponse["contextWindowTokens"] = tokens
 		}
 	}
 	definition := map[string]interface{}{

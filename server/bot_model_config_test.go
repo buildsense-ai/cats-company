@@ -228,6 +228,51 @@ func TestGPT56CatalogUsesRelayReasoningEfforts(t *testing.T) {
 	}
 }
 
+func TestCatalogModelRuntimeShipsContextWindowTokens(t *testing.T) {
+	db := &botModelConfigTestStore{
+		owners: map[int64]int64{43: 7},
+		models: map[int64]*types.BotModelConfig{},
+	}
+	handler := NewBotModelConfigHandler(db, db)
+
+	// 注册 cloud runtime protocol（模拟旧运行时升级）
+	runtimeRegister := httptest.NewRequest(http.MethodGet, "/api/bot/model-config", nil)
+	runtimeRegister = runtimeRegister.WithContext(context.WithValue(runtimeRegister.Context(), uidKey, int64(43)))
+	runtimeRegisterRec := httptest.NewRecorder()
+	handler.HandleRuntimeConfig(runtimeRegisterRec, runtimeRegister)
+	if runtimeRegisterRec.Code != http.StatusOK || !botModelRuntimeSupported(db.models[43]) {
+		t.Fatalf("runtime registration status=%d body=%s", runtimeRegisterRec.Code, runtimeRegisterRec.Body.String())
+	}
+
+	// 选择 gpt-5.6-sol catalog 模型
+	patch := httptest.NewRequest(http.MethodPatch, "/api/bots/model-config?uid=43", strings.NewReader(
+		`{"kind":"catalog","model_id":"gpt-5.6-sol","reasoning_effort":"medium"}`,
+	))
+	patch = patch.WithContext(context.WithValue(patch.Context(), uidKey, int64(7)))
+	patchRec := httptest.NewRecorder()
+	handler.HandleOwnerConfig(patchRec, patch)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("patch status=%d body=%s", patchRec.Code, patchRec.Body.String())
+	}
+
+	// 云端 runtime 响应必须带上 catalog 权威 context_window_tokens=256000，
+	// 设备不再从本地 profile 猜测。
+	runtimeReq := httptest.NewRequest(http.MethodGet, "/api/bot/model-config", nil)
+	runtimeReq = runtimeReq.WithContext(context.WithValue(runtimeReq.Context(), uidKey, int64(43)))
+	runtimeRec := httptest.NewRecorder()
+	handler.HandleRuntimeConfig(runtimeRec, runtimeReq)
+	if runtimeRec.Code != http.StatusOK ||
+		!strings.Contains(runtimeRec.Body.String(), `"model_id":"gpt-5.6-sol"`) ||
+		!strings.Contains(runtimeRec.Body.String(), `"context_window_tokens":256000`) {
+		t.Fatalf("runtime status=%d body=%s", runtimeRec.Code, runtimeRec.Body.String())
+	}
+
+	// 自定义模型不受影响：catalog 只对 catalog kind 生效
+	if _, ok := catalogContextWindowTokens("custom"); ok {
+		t.Fatal("catalogContextWindowTokens must not resolve custom model ids")
+	}
+}
+
 func TestDefaultModelIsDisplayOnlyUntilOwnerEnablesCloudManagement(t *testing.T) {
 	db := &botModelConfigTestStore{
 		owners: map[int64]int64{43: 7},
