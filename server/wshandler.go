@@ -415,7 +415,14 @@ func (h *Hub) registerClient(client *Client) bool {
 			if bumped, err := genStore.BumpBotConnectionGeneration(client.uid); err == nil {
 				generation = bumped
 			} else {
+				// Persist failed (e.g. DB hiccup). Fall back to the per-process
+				// bump so this reconnect still advances the fence locally; the
+				// database CAS re-checks generation transactionally anyway, so
+				// a stale snapshot can never recover fresh work.
 				log.Printf("client connect: bump bot connection generation failed uid=%d: %v", client.uid, err)
+				h.mu.Lock()
+				h.botConnectionEpochs[client.uid]++
+				h.mu.Unlock()
 			}
 		} else {
 			h.mu.Lock()

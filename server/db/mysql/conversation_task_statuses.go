@@ -30,7 +30,7 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 	if _, err := tx.Exec(
 		`INSERT IGNORE INTO conversation_task_statuses
 		   (topic_id, run_id, state, summary, error, source_uid, expires_at, updated_at)
-		 VALUES (?, '', 'idle', '', '', NULL, NULL, CURRENT_TIMESTAMP)`,
+		 VALUES (?, '', 'idle', '', '', NULL, NULL, CURRENT_TIMESTAMP(6))`,
 		status.TopicID,
 	); err != nil {
 		return nil, fmt.Errorf("ensure conversation task aggregate: %w", err)
@@ -72,14 +72,14 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 	if _, err := tx.Exec(
 		`INSERT INTO conversation_task_status_sources
 		   (topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6))
 		 ON DUPLICATE KEY UPDATE
 		   run_id = VALUES(run_id),
 		   state = VALUES(state),
 		   summary = VALUES(summary),
 		   error = VALUES(error),
 		   expires_at = VALUES(expires_at),
-		   updated_at = CURRENT_TIMESTAMP`,
+		   updated_at = CURRENT_TIMESTAMP(6)`,
 		status.TopicID,
 		status.SourceUID,
 		status.RunID,
@@ -127,7 +127,7 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 		   error = ?,
 		   source_uid = NULLIF(?, 0),
 		   expires_at = ?,
-		   updated_at = CURRENT_TIMESTAMP
+		   updated_at = CURRENT_TIMESTAMP(6)
 		 WHERE topic_id = ?`,
 		aggregate.RunID,
 		aggregate.State,
@@ -429,7 +429,7 @@ func (a *Adapter) MarkConversationTaskStatusStaleIfUnchanged(topicID string, sou
 		       summary = '机器人连接中断，任务已自动中止，可重新发送',
 		       error = 'bot disconnected before terminal task status',
 		       expires_at = NULL,
-		       updated_at = CURRENT_TIMESTAMP
+		       updated_at = CURRENT_TIMESTAMP(6)
 		 WHERE topic_id = ? AND source_uid = ?
 		   AND run_id = ?
 		   AND state IN ('running', 'waiting')
@@ -493,7 +493,7 @@ func (a *Adapter) MarkConversationTaskStatusStaleIfUnchanged(topicID string, sou
 		   error = ?,
 		   source_uid = NULLIF(?, 0),
 		   expires_at = ?,
-		   updated_at = CURRENT_TIMESTAMP
+		   updated_at = CURRENT_TIMESTAMP(6)
 		 WHERE topic_id = ?`,
 		aggregate.RunID,
 		aggregate.State,
