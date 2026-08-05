@@ -1153,6 +1153,67 @@ func TestAgentPushMessageForDifferentActiveRunFailsOpen(t *testing.T) {
 	}
 }
 
+func TestAgentPushExplicitRunIDTakesPriorityForStatusCorrelation(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
+	})
+	delivered := make(chan struct{}, 1)
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer",
+		Metadata: map[string]interface{}{
+			"turn_id":     "response-7",
+			"response_id": "response-8",
+			"run_id":      "run-1",
+			"stream_id":   "stream-9",
+		},
+	}}
+	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool {
+		delivered <- struct{}{}
+		return true
+	}) {
+		t.Fatal("message with a matching explicit run_id failed open because another metadata identifier differed")
+	}
+	select {
+	case <-delivered:
+		t.Fatal("message notified before the matching task status became terminal")
+	case <-time.After(100 * time.Millisecond):
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
+	})
+	select {
+	case <-delivered:
+	case <-time.After(time.Second):
+		t.Fatal("matching terminal task status did not deliver the retained candidate")
+	}
+}
+
+func TestAgentPushResponseAndStreamIDsDoNotOverrideActiveRun(t *testing.T) {
+	for _, metadata := range []map[string]interface{}{
+		{"response_id": "response-7"},
+		{"stream_id": "stream-9"},
+	} {
+		coordinator := newAgentPushTurnCoordinator()
+		coordinator.observeStatus(&types.ConversationTaskStatus{
+			TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
+		})
+		msg := &ServerMessage{Data: &MsgServerData{
+			Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer", Metadata: metadata,
+		}}
+		deliveries := 0
+		if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
+			t.Fatalf("metadata %v was incorrectly treated as a task-status run ID", metadata)
+		}
+		coordinator.observeStatus(&types.ConversationTaskStatus{
+			TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
+		})
+		if deliveries != 1 {
+			t.Fatalf("metadata %v deliveries = %d, want 1", metadata, deliveries)
+		}
+	}
+}
+
 func TestAgentPushMissingTerminalFallsBackAfterBoundedTimeout(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinatorWithTimeout(25 * time.Millisecond)
 	coordinator.observeStatus(&types.ConversationTaskStatus{

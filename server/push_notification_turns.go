@@ -178,7 +178,7 @@ func (c *agentPushTurnCoordinator) observeVisibleMessage(recipientUID, senderUID
 	if active == nil || !time.Now().Before(active.expiresAt) {
 		return false
 	}
-	if turnID := agentPushMessageTurnID(msg); turnID != "" && turnID != active.runID {
+	if correlationID := agentPushMessageCorrelationID(msg); correlationID != "" && correlationID != active.runID {
 		return false
 	}
 	key := agentPushTurnKey(recipientUID, senderUID, msg)
@@ -256,6 +256,18 @@ func agentPushMessageTurnID(msg *ServerMessage) string {
 		"stream_id", "streamId",
 	)
 	return truncateUTF8(turnID, 128)
+}
+
+func agentPushMessageCorrelationID(msg *ServerMessage) string {
+	if msg == nil || msg.Data == nil {
+		return ""
+	}
+	correlationID := firstMetadataString(
+		msg.Data.Metadata,
+		"run_id", "runId",
+		"turn_id", "turnId",
+	)
+	return truncateUTF8(correlationID, 128)
 }
 
 func isCompletedAgentMessage(msg *ServerMessage) bool {
