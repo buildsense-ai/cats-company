@@ -56,7 +56,15 @@ export default function PwaController({
     if (updateServiceWorkerRef.current) return;
     updateServiceWorkerRef.current = registerSW({
       immediate: true,
-      onNeedRefresh: () => setNeedRefresh(true),
+      onNeedRefresh: () => {
+        // Activate transport fixes immediately. Otherwise the new WebApp can
+        // keep running behind an older worker that still clones POST bodies.
+        Promise.resolve().then(() => {
+          const updateServiceWorker = updateServiceWorkerRef.current;
+          if (updateServiceWorker) updateServiceWorker(true);
+          else setNeedRefresh(true);
+        });
+      },
       onRegisterError: (error) => console.warn('PWA registration failed:', error),
     });
   }, []);

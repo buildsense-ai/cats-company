@@ -38,10 +38,9 @@ const neverCache = ({ url }) => (
 );
 
 registerRoute(neverCache, new NetworkOnly(), 'GET');
-registerRoute(neverCache, new NetworkOnly(), 'POST');
-registerRoute(neverCache, new NetworkOnly(), 'PUT');
-registerRoute(neverCache, new NetworkOnly(), 'PATCH');
-registerRoute(neverCache, new NetworkOnly(), 'DELETE');
+// Unhandled mutation requests fall through to the browser's native network
+// stack. Non-cacheable writes do not benefit from a Workbox strategy, and the
+// native path avoids an extra Request clone for large mobile upload bodies.
 
 const navigationHandler = new NetworkFirst({
   cacheName: NAVIGATION_CACHE_NAME,

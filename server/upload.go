@@ -6,24 +6,35 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	urlpath "path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	maxUploadSizeMB = 300
-	maxImageSize    = maxUploadSizeMB << 20
-	maxFileSize     = maxUploadSizeMB << 20
-	uploadDir       = "uploads"
+	maxUploadSizeMB           = 300
+	maxImageSize              = maxUploadSizeMB << 20
+	maxFileSize               = maxUploadSizeMB << 20
+	uploadDir                 = "uploads"
+	rawUploadQueryParam       = "raw"
+	rawUploadQueryValue       = "1"
+	rawUploadFileNameHeader   = "X-CatsCo-File-Name"
+	rawUploadFileSizeHeader   = "X-CatsCo-File-Size"
+	uploadIncompleteCode      = "upload_incomplete"
+	uploadMetadataInvalidCode = "upload_metadata_invalid"
+	uploadTooLargeCode        = "upload_too_large"
 )
 
 var allowedImageExts = map[string]bool{
@@ -123,10 +134,14 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	if isImageUpload {
 		maxSize = maxImageSize
 	}
+	if r.URL.Query().Get(rawUploadQueryParam) == rawUploadQueryValue {
+		if payload, ok := h.receiveRawUpload(w, r, uploadType, maxSize, isImageUpload); ok {
+			writeUploadJSON(w, http.StatusOK, payload)
+		}
+		return
+	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, int64(maxSize))
-	if err := r.ParseMultipartForm(int64(maxSize)); err != nil {
-		writeUploadJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("file too large; maximum supported size is %dMB", maxUploadSizeMB)})
+	if !parseUploadMultipart(w, r, maxSize) {
 		return
 	}
 
@@ -335,10 +350,21 @@ func (h *UploadHandler) handleMobileUploadFile(w http.ResponseWriter, r *http.Re
 	if isImageUpload {
 		maxSize = maxImageSize
 	}
+	if r.URL.Query().Get(rawUploadQueryParam) == rawUploadQueryValue {
+		payload, ok := h.receiveRawUpload(w, r, uploadType, maxSize, isImageUpload)
+		if !ok {
+			return
+		}
+		h.mobileMu.Lock()
+		if current := h.mobileSessions[sessionID]; current != nil {
+			current.Files = append(current.Files, payload)
+		}
+		h.mobileMu.Unlock()
+		writeUploadJSON(w, http.StatusOK, payload)
+		return
+	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, int64(maxSize))
-	if err := r.ParseMultipartForm(int64(maxSize)); err != nil {
-		writeUploadJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("file too large; maximum supported size is %dMB", maxUploadSizeMB)})
+	if !parseUploadMultipart(w, r, maxSize) {
 		return
 	}
 
@@ -579,6 +605,149 @@ func containsTheoraIdentificationHeader(file io.ReaderAt) bool {
 	probe := make([]byte, 64<<10)
 	n, _ := file.ReadAt(probe, 0)
 	return bytes.Contains(probe[:n], []byte("\x80theora"))
+}
+
+func (h *UploadHandler) receiveRawUpload(
+	w http.ResponseWriter,
+	r *http.Request,
+	uploadType string,
+	maxSize int,
+	isImageUpload bool,
+) (uploadPayload, bool) {
+	encodedName := strings.TrimSpace(r.Header.Get(rawUploadFileNameHeader))
+	expectedSize, sizeErr := strconv.ParseInt(strings.TrimSpace(r.Header.Get(rawUploadFileSizeHeader)), 10, 64)
+	decodedName, nameErr := url.PathUnescape(encodedName)
+	fileName := filepath.Base(strings.ReplaceAll(decodedName, "\\", "/"))
+	if encodedName == "" || nameErr != nil || sizeErr != nil || expectedSize < 0 || fileName == "" || fileName == "." {
+		writeUploadJSON(w, http.StatusBadRequest, map[string]string{
+			"code":  uploadMetadataInvalidCode,
+			"error": "upload metadata is invalid",
+		})
+		return uploadPayload{}, false
+	}
+	if expectedSize > int64(maxSize) || r.ContentLength > int64(maxSize) {
+		writeUploadTooLarge(w)
+		return uploadPayload{}, false
+	}
+
+	ext := strings.ToLower(filepath.Ext(fileName))
+	if isImageUpload && !allowedImageExts[ext] {
+		writeUploadJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid image type"})
+		return uploadPayload{}, false
+	}
+	if !isImageUpload && !allowedFileExts[ext] {
+		writeUploadJSON(w, http.StatusBadRequest, map[string]string{"error": "file type not allowed"})
+		return uploadPayload{}, false
+	}
+	contentType := r.Header.Get("Content-Type")
+	if isImageUpload && !isAllowedImageContentType(contentType) {
+		writeUploadJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid image type"})
+		return uploadPayload{}, false
+	}
+
+	subDir := "files"
+	if uploadType == "image" {
+		subDir = "images"
+	} else if uploadType == "feedback" {
+		subDir = "feedback"
+	}
+	destinationDir := filepath.Join(h.baseDir, subDir)
+	if err := os.MkdirAll(destinationDir, 0755); err != nil {
+		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+		return uploadPayload{}, false
+	}
+
+	temp, err := os.CreateTemp(destinationDir, ".upload-*")
+	if err != nil {
+		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+		return uploadPayload{}, false
+	}
+	tempPath := temp.Name()
+	defer func() {
+		_ = temp.Close()
+		if tempPath != "" {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	r.Body = http.MaxBytesReader(w, r.Body, int64(maxSize))
+	written, copyErr := io.Copy(temp, r.Body)
+	if copyErr != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(copyErr, &maxBytesError) {
+			writeUploadTooLarge(w)
+			return uploadPayload{}, false
+		}
+		log.Printf("[upload] interrupted raw body path=%q expected_size=%d written=%d user_agent=%q err=%v",
+			r.URL.Path, expectedSize, written, r.UserAgent(), copyErr)
+		writeUploadIncomplete(w)
+		return uploadPayload{}, false
+	}
+	if written != expectedSize {
+		log.Printf("[upload] incomplete raw body path=%q expected_size=%d written=%d user_agent=%q",
+			r.URL.Path, expectedSize, written, r.UserAgent())
+		writeUploadIncomplete(w)
+		return uploadPayload{}, false
+	}
+
+	storedExt, mimeType := normalizedUploadMetadata(ext, contentType, temp)
+	fileKey := generateFileKey(storedExt)
+	destPath := filepath.Join(destinationDir, fileKey)
+	if err := temp.Chmod(0644); err != nil {
+		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+		return uploadPayload{}, false
+	}
+	if err := temp.Close(); err != nil {
+		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+		return uploadPayload{}, false
+	}
+	if err := os.Rename(tempPath, destPath); err != nil {
+		writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+		return uploadPayload{}, false
+	}
+	tempPath = ""
+
+	return uploadPayload{
+		FileKey:  fileKey,
+		URL:      fmt.Sprintf("%s/%s/%s", h.baseURL, subDir, fileKey),
+		Name:     fileName,
+		Size:     written,
+		Type:     uploadType,
+		MimeType: mimeType,
+	}, true
+}
+
+func parseUploadMultipart(w http.ResponseWriter, r *http.Request, maxSize int) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, int64(maxSize))
+	if err := r.ParseMultipartForm(int64(maxSize)); err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			writeUploadTooLarge(w)
+			return false
+		}
+
+		log.Printf("[upload] incomplete multipart path=%q content_length=%d user_agent=%q err=%v",
+			r.URL.Path, r.ContentLength, r.UserAgent(), err)
+		writeUploadIncomplete(w)
+		return false
+	}
+	return true
+}
+
+func writeUploadTooLarge(w http.ResponseWriter) {
+	writeUploadJSON(w, http.StatusRequestEntityTooLarge, map[string]interface{}{
+		"code":        uploadTooLargeCode,
+		"error":       fmt.Sprintf("file too large; maximum supported size is %dMB", maxUploadSizeMB),
+		"max_size_mb": maxUploadSizeMB,
+	})
+}
+
+func writeUploadIncomplete(w http.ResponseWriter) {
+	writeUploadJSON(w, http.StatusBadRequest, map[string]interface{}{
+		"code":      uploadIncompleteCode,
+		"error":     "upload request is incomplete; please retry",
+		"retryable": true,
+	})
 }
 
 func generateFileKey(ext string) string {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -603,6 +604,103 @@ func TestHandleUploadRejectsUnsupportedImageMimeType(t *testing.T) {
 	}
 }
 
+func TestHandleUploadReportsIncompleteMultipartWithoutCallingItTooLarge(t *testing.T) {
+	handler := NewUploadHandler(t.TempDir(), "/uploads")
+	body := strings.NewReader("--catsco-boundary\r\n" +
+		"Content-Disposition: form-data; name=\"file\"; filename=\"tiny.jpg\"\r\n" +
+		"Content-Type: image/jpeg\r\n\r\n" +
+		"tiny")
+	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image", body)
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=catsco-boundary")
+	rec := httptest.NewRecorder()
+
+	handler.HandleUpload(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	var response struct {
+		Code      string `json:"code"`
+		Error     string `json:"error"`
+		Retryable bool   `json:"retryable"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Code != "upload_incomplete" || !response.Retryable {
+		t.Fatalf("response = %+v, want retryable upload_incomplete", response)
+	}
+	if strings.Contains(strings.ToLower(response.Error), "too large") {
+		t.Fatalf("error = %q, must not report an incomplete request as too large", response.Error)
+	}
+}
+
+func TestHandleUploadAcceptsRawImageBodyFromWebApp(t *testing.T) {
+	baseDir := t.TempDir()
+	handler := NewUploadHandler(baseDir, "/uploads")
+	content := []byte("raw phone image bytes")
+	fileName := "试卷 01.jpg"
+	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
+	req.Header.Set("Content-Type", "image/jpeg")
+	req.Header.Set("X-CatsCo-File-Name", url.PathEscape(fileName))
+	req.Header.Set("X-CatsCo-File-Size", fmt.Sprintf("%d", len(content)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUpload(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response uploadPayload
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Name != fileName || response.Size != int64(len(content)) || response.Type != "image" {
+		t.Fatalf("response = %+v, want raw %s image payload", response, fileName)
+	}
+	stored, err := os.ReadFile(filepath.Join(baseDir, "images", response.FileKey))
+	if err != nil {
+		t.Fatalf("read stored upload: %v", err)
+	}
+	if !bytes.Equal(stored, content) {
+		t.Fatalf("stored content = %q, want %q", stored, content)
+	}
+}
+
+func TestHandleUploadRejectsIncompleteRawBodyWithoutSavingIt(t *testing.T) {
+	baseDir := t.TempDir()
+	handler := NewUploadHandler(baseDir, "/uploads")
+	content := []byte("partial image")
+	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
+	req.Header.Set("Content-Type", "image/jpeg")
+	req.Header.Set("X-CatsCo-File-Name", "paper.jpg")
+	req.Header.Set("X-CatsCo-File-Size", fmt.Sprintf("%d", len(content)+100))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUpload(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	var response struct {
+		Code      string `json:"code"`
+		Retryable bool   `json:"retryable"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Code != "upload_incomplete" || !response.Retryable {
+		t.Fatalf("response = %+v, want retryable upload_incomplete", response)
+	}
+	entries, err := os.ReadDir(filepath.Join(baseDir, "images"))
+	if err != nil {
+		t.Fatalf("read upload directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("stored entries = %v, want none for incomplete upload", entries)
+	}
+}
+
 func TestMobileUploadSessionAcceptsPhoneUploadsAndListsFiles(t *testing.T) {
 	handler := NewUploadHandler(t.TempDir(), "/uploads")
 
@@ -628,7 +726,15 @@ func TestMobileUploadSessionAcceptsPhoneUploadsAndListsFiles(t *testing.T) {
 		t.Fatalf("session id length = %d, want at least 32 hex chars", len(created.SessionID))
 	}
 
-	uploadReq := buildUploadRequestWithPartContentType(t, "/api/mobile-upload/sessions/"+created.SessionID+"/files?type=image", "paper.jpg", "image/jpeg", []byte("fake paper image"))
+	rawImage := []byte("fake paper image")
+	uploadReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/mobile-upload/sessions/"+created.SessionID+"/files?type=image&raw=1",
+		bytes.NewReader(rawImage),
+	)
+	uploadReq.Header.Set("Content-Type", "image/jpeg")
+	uploadReq.Header.Set("X-CatsCo-File-Name", "paper.jpg")
+	uploadReq.Header.Set("X-CatsCo-File-Size", fmt.Sprintf("%d", len(rawImage)))
 	uploadRec := httptest.NewRecorder()
 	handler.HandleMobileUploadSession(uploadRec, uploadReq)
 	if uploadRec.Code != http.StatusOK {

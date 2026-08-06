@@ -375,6 +375,104 @@ function statusMessage(status) {
   return '请求失败，请稍后重试';
 }
 
+const RAW_UPLOAD_QUERY = 'raw=1';
+const RAW_UPLOAD_FILE_NAME_HEADER = 'X-CatsCo-File-Name';
+const RAW_UPLOAD_FILE_SIZE_HEADER = 'X-CatsCo-File-Size';
+const UPLOAD_INCOMPLETE_CODE = 'upload_incomplete';
+const UPLOAD_RESPONSE_INTERRUPTED_CODE = 'upload_response_interrupted';
+const UPLOAD_TOO_LARGE_CODE = 'upload_too_large';
+
+function rawUploadHeaders(file, authToken = '') {
+  const headers = {
+    [RAW_UPLOAD_FILE_NAME_HEADER]: encodeURIComponent(file?.name || 'upload'),
+    [RAW_UPLOAD_FILE_SIZE_HEADER]: String(file?.size ?? 0),
+  };
+  if (file?.type) headers['Content-Type'] = file.type;
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  return headers;
+}
+
+function uploadResponseInterruptedMessage(path) {
+  if (path.startsWith('/api/mobile-upload/sessions/')) {
+    return '上传响应中断，无法确认是否成功；请刷新页面查看“已上传”列表，确认后再重试。';
+  }
+  return '上传响应中断，无法确认是否成功；请检查网络后重新选择该文件。';
+}
+
+async function readUploadResponse(response, path) {
+  let raw;
+  try {
+    raw = await response.text();
+  } catch (cause) {
+    const error = new Error(uploadResponseInterruptedMessage(path));
+    error.code = UPLOAD_RESPONSE_INTERRUPTED_CODE;
+    error.status = response.status;
+    error.cause = cause;
+    throw error;
+  }
+  let data = {};
+  if (raw) {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      if (response.status === 413 || raw.includes('413') || raw.includes('Payload Too Large')) {
+        const error = new Error('Payload Too Large');
+        error.code = UPLOAD_TOO_LARGE_CODE;
+        error.status = response.status;
+        throw error;
+      }
+      const error = new Error(
+        response.ok
+          ? 'Upload failed: invalid server response'
+          : `Upload failed with HTTP ${response.status}`,
+      );
+      error.status = response.status;
+      throw error;
+    }
+  }
+  if (!response.ok) {
+    const message = data.code === UPLOAD_INCOMPLETE_CODE
+      ? '上传过程中断，请重新选择该文件后重试。'
+      : (data.error || `Upload failed with HTTP ${response.status}`);
+    const error = new Error(message);
+    error.code = data.code || (response.status === 413 ? UPLOAD_TOO_LARGE_CODE : 'upload_failed');
+    error.status = response.status;
+    error.retryable = data.retryable === true;
+    error.data = data;
+    throw error;
+  }
+  return data;
+}
+
+async function uploadRawFile(path, file, { authToken = '' } = {}) {
+  let attempts = 0;
+  while (true) {
+    let response;
+    try {
+      response = await fetch(`${API_BASE}${path}`, {
+        method: 'POST',
+        headers: rawUploadHeaders(file, authToken),
+        body: file,
+      });
+    } catch (cause) {
+      const error = new Error('上传连接中断，请检查网络后重试。');
+      error.code = 'upload_network_error';
+      error.cause = cause;
+      throw error;
+    }
+
+    try {
+      return await readUploadResponse(response, path);
+    } catch (error) {
+      const canRetry = attempts === 0
+        && error?.code === UPLOAD_INCOMPLETE_CODE
+        && error?.retryable === true;
+      if (!canRetry) throw error;
+      attempts += 1;
+    }
+  }
+}
+
 export const api = {
   sendVerificationCode: (email) => request('POST', '/api/auth/send-code', { email }),
   sendPasswordResetCode: (email) => request('POST', '/api/auth/reset-password/send-code', { email }),
@@ -636,45 +734,14 @@ export const api = {
     return data;
   },
   uploadFile: async (file, type = 'file') => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const res = await fetch(`${API_BASE}/api/upload?type=${type}`, {
-      method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      body: formData,
-    });
-
-    const raw = await res.text();
-    let data = {};
-    if (raw) {
-      try {
-        data = JSON.parse(raw);
-      } catch (err) {
-        if (res.status === 413 || raw.includes('413') || raw.includes('Payload Too Large')) {
-          throw new Error('Payload Too Large');
-        }
-        if (!res.ok) {
-          throw new Error(`Upload failed with HTTP ${res.status}`);
-        }
-        throw new Error('Upload failed: invalid server response');
-      }
-    }
-    if (!res.ok) throw new Error(data.error || `Upload failed with HTTP ${res.status}`);
-    return data;
+    return uploadRawFile(`/api/upload?type=${type}&${RAW_UPLOAD_QUERY}`, file, { authToken: token });
   },
   createMobileUploadSession: async (topic) => request('POST', '/api/mobile-upload/sessions', { topic }),
   getMobileUploadSession: async (sessionId) => request('GET', `/api/mobile-upload/sessions/${encodeURIComponent(sessionId)}`),
-  uploadMobileSessionFile: async (sessionId, file, type = 'file') => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const res = await fetch(`${API_BASE}/api/mobile-upload/sessions/${encodeURIComponent(sessionId)}/files?type=${type}`, {
-      method: 'POST',
-      body: formData,
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Upload failed');
-    return data;
-  },
+  uploadMobileSessionFile: (sessionId, file, type = 'file') => uploadRawFile(
+    `/api/mobile-upload/sessions/${encodeURIComponent(sessionId)}/files?type=${type}&${RAW_UPLOAD_QUERY}`,
+    file,
+  ),
   uploadFeedbackImage: (file) => api.uploadFile(file, 'feedback'),
   submitFeedback: (data) => request('POST', '/api/feedback', data),
   getTutorialTasks: () => request('GET', '/api/tutorial-tasks'),

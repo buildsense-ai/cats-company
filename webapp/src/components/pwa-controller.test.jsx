@@ -173,21 +173,18 @@ test('retries a pending browser cleanup while signed out', async () => {
   expect(localStorage.getItem('oc_push_pending_unsubscribe_v1')).toBeNull();
 });
 
-test('updates through the service worker updater registered after mount', () => {
+test('activates a waiting service worker immediately so old upload routing cannot persist', async () => {
   renderController('user:1');
   expect(registerSW).toHaveBeenCalledTimes(1);
 
   const registrationOptions = registerSW.mock.calls[0][0];
   expect(registrationOptions.onOfflineReady).toBeUndefined();
   const updateServiceWorker = registerSW.mock.results[0].value;
-  act(() => registrationOptions.onNeedRefresh());
-
-  const update = Array.from(container.querySelectorAll('button'))
-    .find((button) => button.textContent === '立即更新');
-  expect(update).toBeTruthy();
-
-  act(() => {
-    update.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  await act(async () => {
+    registrationOptions.onNeedRefresh();
+    await Promise.resolve();
   });
+
   expect(updateServiceWorker).toHaveBeenCalledWith(true);
+  expect(container.textContent).not.toContain('发现新版本');
 });
