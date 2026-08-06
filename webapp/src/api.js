@@ -496,7 +496,16 @@ export const api = {
   createDeviceConnectorPairing: (deviceName) =>
     request('POST', '/api/device-connectors/pairings', {
       device_name: deviceName || '',
-      capabilities: ['read_file', 'resolve_common_directory', 'glob', 'grep'],
+      capabilities: [
+        'read_file',
+        'resolve_common_directory',
+        'glob',
+        'grep',
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
     }),
   getDeviceConnectorPairing: (pairingId) =>
     request('GET', `/api/device-connectors/pairings/${encodeURIComponent(pairingId)}`),
@@ -612,13 +621,17 @@ export const api = {
     const suffix = params.toString() ? `?${params}` : '';
     return request('GET', `/api/skillhub/skills${suffix}`);
   },
-  getSkillHubSkill: (skillId) => request(
+  getSkillHubSkill: (skillId, options = {}) => request(
     'GET',
     `/api/skillhub/skills/${encodeSkillHubID(skillId)}`,
+    undefined,
+    options,
   ),
-  getSkillHubVersion: (skillId, version) => request(
+  getSkillHubVersion: (skillId, version, options = {}) => request(
     'GET',
     `/api/skillhub/skills/${encodeSkillHubID(skillId)}/versions/${encodeURIComponent(version)}`,
+    undefined,
+    options,
   ),
   getBotFriends: (uid) => request('GET', `/api/bots/friends?uid=${uid}`),
   removeBotFriend: (uid, userId) => request('DELETE', `/api/bots/friends?uid=${uid}&user_id=${userId}`),
@@ -737,6 +750,9 @@ export function connectWS(onMessage, { force = false } = {}) {
   if (wsConn) {
     const staleConn = wsConn;
     wsConn = null;
+    const closeMessage = { _type: 'ws_close', attempt: wsReconnectAttempt, retryInMs: 0 };
+    onMessage(closeMessage);
+    msgHandlers.forEach((handler) => handler(closeMessage));
     staleConn.onopen = null;
     staleConn.onclose = null;
     staleConn.onerror = null;
@@ -811,9 +827,13 @@ export function connectWS(onMessage, { force = false } = {}) {
     wsConn = null;
     wsReconnectAttempt += 1;
     const retryInMs = reconnectDelay(wsReconnectAttempt);
-    onMessage({ _type: 'ws_close', attempt: wsReconnectAttempt, retryInMs });
+    const closeMessage = { _type: 'ws_close', attempt: wsReconnectAttempt, retryInMs };
+    onMessage(closeMessage);
+    msgHandlers.forEach((handler) => handler(closeMessage));
     if (isTokenExpired()) {
-      onMessage({ _type: 'ws_auth_expired' });
+      const authExpiredMessage = { _type: 'ws_auth_expired' };
+      onMessage(authExpiredMessage);
+      msgHandlers.forEach((handler) => handler(authExpiredMessage));
       return;
     }
     if (token) {
@@ -861,6 +881,8 @@ export function disconnectWS() {
   if (wsConn) {
     const staleConn = wsConn;
     wsConn = null;
+    const closeMessage = { _type: 'ws_close', attempt: 0, retryInMs: 0 };
+    msgHandlers.forEach((handler) => handler(closeMessage));
     staleConn.onopen = null;
     staleConn.onclose = null;
     staleConn.onerror = null;
@@ -874,7 +896,90 @@ export function disconnectWS() {
 export function sendWS(msg) {
   if (wsConn && wsConn.readyState === WebSocket.OPEN) {
     wsConn.send(JSON.stringify(msg));
+    return true;
   }
+  return false;
+}
+
+export function requestSkillHubDeviceTool({
+  deviceId,
+  ownerUserId,
+  toolName,
+  payload,
+  timeoutMs = 30_000,
+}) {
+  const requestId = globalThis.crypto?.randomUUID?.()
+    || `skillhub-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  const messageId = nextMsgId();
+  const expiresAt = Date.now() + Math.max(5_000, Math.min(Number(timeoutMs) || 30_000, 120_000));
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let removeHandler = () => {};
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      removeHandler();
+      callback();
+    };
+    const timer = setTimeout(() => finish(() => {
+      const error = new Error('等待本地 XiaoBa 响应超时，请确认设备在线并已更新到最新版本。');
+      error.code = 'skillhub_device_timeout';
+      reject(error);
+    }), expiresAt - Date.now() + 1_000);
+
+    removeHandler = onWSMessage((message) => {
+      if (message?._type === 'ws_close' || message?._type === 'ws_auth_expired') {
+        finish(() => {
+          const error = new Error('CatsCo 实时连接已断开，请等待重连后再试。');
+          error.code = 'skillhub_websocket_disconnected';
+          reject(error);
+        });
+        return;
+      }
+      if (message?.ctrl?.id === messageId && Number(message.ctrl.code || 0) >= 400) {
+        finish(() => {
+          const error = new Error(message.ctrl.text || 'CatsCo 拒绝了本地设备请求。');
+          error.code = 'skillhub_device_request_rejected';
+          error.status = Number(message.ctrl.code || 0);
+          reject(error);
+        });
+        return;
+      }
+      const response = message?.thin_tool_rpc;
+      if (!response || response.type !== 'result' || response.request_id !== requestId) return;
+      finish(() => {
+        if (response.error) {
+          const error = new Error(response.error.message || response.error.code || '本地 XiaoBa 操作失败。');
+          error.code = response.error.code || 'skillhub_device_error';
+          reject(error);
+          return;
+        }
+        resolve(response.result || {});
+      });
+    });
+
+    const sent = sendWS({
+      thin_tool_rpc: {
+        id: messageId,
+        type: 'request',
+        request_id: requestId,
+        target_owner_user_id: String(ownerUserId || ''),
+        target_device_id: String(deviceId || ''),
+        tool_name: String(toolName || ''),
+        payload: payload && typeof payload === 'object' ? payload : {},
+        expires_at: expiresAt,
+      },
+    });
+    if (!sent) {
+      finish(() => {
+        const error = new Error('CatsCo 实时连接尚未建立，请稍后重试。');
+        error.code = 'skillhub_websocket_unavailable';
+        reject(error);
+      });
+    }
+  });
 }
 
 export function sendWSPageVisibility(visibility = currentPageVisibility()) {
