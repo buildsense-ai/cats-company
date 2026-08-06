@@ -739,10 +739,9 @@ export default function SkillHubView({ user }) {
   return (
     <main className="cc-skillhub-page">
       <header className="cc-skillhub-header">
-        <div>
-          <span className="cc-skillhub-eyebrow"><Package size={15} /> SkillHub</span>
-          <h1>为当前 Bot 配置 Skills</h1>
-          <p>此处只保存 Skill 的精确版本引用；XiaoBa 在线后会根据 BotDefinition 同步到对应的本地工作区。</p>
+        <div className="cc-skillhub-heading-copy">
+          <h1>SkillHub</h1>
+          <p>管理当前 Bot 的本地 Skills 与精确版本引用。</p>
         </div>
         <div className="cc-skillhub-pickers">
           <label className="cc-skillhub-bot-picker">
@@ -784,111 +783,154 @@ export default function SkillHubView({ user }) {
         </div>
       </header>
 
-      {definitionError && <div className="cc-skillhub-alert error">{definitionError}</div>}
+      {definitionError && <div className="cc-skillhub-alert error" role="alert">{definitionError}</div>}
 
-      <section className="cc-skillhub-installed">
-        <div className="cc-skillhub-section-heading">
-          <div>
-            <h2>当前 Bot 已配置</h2>
-            <span>{definition.skills.length} 个 Skill</span>
+      <div className="cc-skillhub-workspace">
+        <section className="cc-skillhub-local">
+          <div className="cc-skillhub-section-heading">
+            <div>
+              <h2>本地 Skills</h2>
+              <span>当前 Bot 在 XiaoBa 中实际加载的工作区</span>
+            </div>
+            <div className="cc-skillhub-local-actions">
+              <button
+                type="button"
+                className="cc-skillhub-icon-button"
+                title="刷新本地 Skills"
+                aria-label="刷新本地 Skills"
+                onClick={() => loadLocalWorkspace()}
+                disabled={!selectedBotUID || !selectedDeviceID || loadingLocalSkills || Boolean(sharingSkill)}
+              >
+                <RefreshCw size={15} />
+                <span className="cc-skillhub-visually-hidden">刷新本地</span>
+              </button>
+            </div>
           </div>
-          <button type="button" onClick={() => loadDefinition()} disabled={!selectedBotUID || loadingDefinition || saving || Boolean(sharingSkill)}>
-            <RefreshCw size={14} /> 刷新
-          </button>
-        </div>
-        {!selectedBotUID ? (
-          <div className="cc-skillhub-empty">先创建或选择一个自己拥有的 Bot。</div>
-        ) : loadingDefinition ? (
-          <div className="cc-skillhub-empty">正在读取 BotDefinition…</div>
-        ) : definition.skills.length === 0 ? (
-          <div className="cc-skillhub-empty">这个 Bot 还没有配置 Skill。</div>
-        ) : (
-          <div className="cc-skillhub-installed-list">
-            {definition.skills.map((skill) => (
-              <article key={skill.skillId} className="cc-skillhub-installed-item">
-                <div>
-                  <strong>{skill.skillId}</strong>
-                  <span>v{skill.version}</span>
-                </div>
-                <button
-                  type="button"
-                  className="danger"
-                  disabled={saving || Boolean(sharingSkill) || !definitionReady}
-                  onClick={() => removeSkill(skill.skillId)}
-                >
-                  <Trash2 size={14} /> 移除
-                </button>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
+          {localSkillsPath && (
+            <div className="cc-skillhub-local-path" title={localSkillsPath}>
+              <FolderOpen size={14} />
+              <code>{localSkillsPath}</code>
+              <button
+                type="button"
+                className="cc-skillhub-icon-button"
+                title="复制 Skills 路径"
+                aria-label="复制 Skills 路径"
+                onClick={copyLocalSkillsPath}
+              >
+                <Clipboard size={14} />
+                <span className="cc-skillhub-visually-hidden">复制 Skills 路径</span>
+              </button>
+            </div>
+          )}
+          {!loadingDevices && devices.length === 0 && (
+            <div className="cc-skillhub-alert error" role="alert">没有检测到支持该功能的在线 XiaoBa，请启动或更新本地 XiaoBa。</div>
+          )}
+          {!loadingDevices && devices.length > 1 && !selectedDeviceID && (
+            <div className="cc-skillhub-empty">请选择要操作的本地 XiaoBa，避免修改到其他电脑。</div>
+          )}
+          {localNotice && <div className="cc-skillhub-alert success" role="status">{localNotice}</div>}
+          {localSkillsError ? (
+            <div className="cc-skillhub-alert error" role="alert">{localSkillsError}</div>
+          ) : loadingLocalSkills ? (
+            <div className="cc-skillhub-empty">正在切换本地 Bot 并同步 Skills…</div>
+          ) : localSkills.length === 0 ? (
+            <div className="cc-skillhub-empty">当前本地工作区还没有可用 Skill。</div>
+          ) : (
+            <div className="cc-skillhub-local-grid">
+              {localSkills.map((skill) => {
+                const reference = skill.skillHub?.reference;
+                const installedReference = reference?.skillId ? installedByID.get(reference.skillId) : null;
+                const shared = isLocalSkillShared(skill, installedReference);
+                const canShare = skill.canShare !== false && skill.source !== 'system' && !shared;
+                const sharedVersion = skill.skillHub?.version || reference?.version;
+                return (
+                  <article key={`${skill.relativePath}:${skill.name}`} className="cc-skillhub-local-card">
+                    <div className="cc-skillhub-local-card-title">
+                      <strong>{skill.name}</strong>
+                      <span className={`cc-skillhub-status ${shared ? 'synced' : 'local'}`}>
+                        {shared ? `已分享 v${sharedVersion}` : '仅本地'}
+                      </span>
+                    </div>
+                    <p title={skill.description || '暂无描述'}>{skill.description || '暂无描述'}</p>
+                    <code title={skill.path || skill.relativePath}>{skill.relativePath || skill.path}</code>
+                    {shared ? (
+                      <div className="cc-skillhub-complete-state"><Check size={14} /> 已分享到 SkillHub</div>
+                    ) : canShare ? (
+                      <button
+                        type="button"
+                        disabled={!definitionReady || loadingLocalSkills || saving || Boolean(sharingSkill)}
+                        onClick={() => shareLocalSkill(skill)}
+                      >
+                        <Share2 size={14} />
+                        {sharingSkill === skill.name ? '正在分享…' : '分享到 SkillHub'}
+                      </button>
+                    ) : (
+                      <div className="cc-skillhub-unavailable-state">此 Skill 不可分享</div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
 
-      <section className="cc-skillhub-local">
-        <div className="cc-skillhub-section-heading">
-          <div>
-            <h2>本地 Skills</h2>
-            <span>当前 Bot 在 XiaoBa 中实际加载的工作区</span>
-          </div>
-          <div className="cc-skillhub-local-actions">
-            <button type="button" onClick={copyLocalSkillsPath} disabled={!localSkillsPath}>
-              <Clipboard size={14} /> 复制 Skills 路径
+        <section className="cc-skillhub-installed">
+          <div className="cc-skillhub-section-heading">
+            <div>
+              <h2>当前 Bot 已配置</h2>
+              <span>{definition.skills.length} 个 Skill</span>
+            </div>
+            <button
+              type="button"
+              className="cc-skillhub-icon-button"
+              title="刷新 Bot 配置"
+              aria-label="刷新 Bot 配置"
+              onClick={() => loadDefinition()}
+              disabled={!selectedBotUID || loadingDefinition || saving || Boolean(sharingSkill)}
+            >
+              <RefreshCw size={15} />
+              <span className="cc-skillhub-visually-hidden">刷新</span>
             </button>
-            <button type="button" onClick={() => loadLocalWorkspace()} disabled={!selectedBotUID || !selectedDeviceID || loadingLocalSkills || Boolean(sharingSkill)}>
-              <RefreshCw size={14} /> 刷新本地
-            </button>
           </div>
-        </div>
-        {!loadingDevices && devices.length === 0 && (
-          <div className="cc-skillhub-alert error">没有检测到支持该功能的在线 XiaoBa，请启动或更新本地 XiaoBa。</div>
-        )}
-        {!loadingDevices && devices.length > 1 && !selectedDeviceID && (
-          <div className="cc-skillhub-empty">请选择要操作的本地 XiaoBa，避免修改到其他电脑。</div>
-        )}
-        {localSkillsPath && (
-          <div className="cc-skillhub-local-path"><FolderOpen size={14} /><code>{localSkillsPath}</code></div>
-        )}
-        {localNotice && <div className="cc-skillhub-alert success">{localNotice}</div>}
-        {localSkillsError ? (
-          <div className="cc-skillhub-alert error">{localSkillsError}</div>
-        ) : loadingLocalSkills ? (
-          <div className="cc-skillhub-empty">正在切换本地 Bot 并同步 Skills…</div>
-        ) : localSkills.length === 0 ? (
-          <div className="cc-skillhub-empty">当前本地工作区还没有可用 Skill。</div>
-        ) : (
-          <div className="cc-skillhub-local-grid">
-            {localSkills.map((skill) => {
-              const reference = skill.skillHub?.reference;
-              const installedReference = reference?.skillId ? installedByID.get(reference.skillId) : null;
-              const shared = isLocalSkillShared(skill, installedReference);
-              const canShare = skill.canShare !== false && skill.source !== 'system' && !shared;
-              const sharedVersion = skill.skillHub?.version || reference?.version;
-              return (
-                <article key={`${skill.relativePath}:${skill.name}`} className="cc-skillhub-local-card">
+          {!selectedBotUID ? (
+            <div className="cc-skillhub-empty">先创建或选择一个自己拥有的 Bot。</div>
+          ) : loadingDefinition ? (
+            <div className="cc-skillhub-empty">正在读取 BotDefinition…</div>
+          ) : definition.skills.length === 0 ? (
+            <div className="cc-skillhub-empty">这个 Bot 还没有配置 Skill。</div>
+          ) : (
+            <div className="cc-skillhub-installed-list">
+              {definition.skills.map((skill) => (
+                <article key={skill.skillId} className="cc-skillhub-installed-item">
                   <div>
-                    <strong>{skill.name}</strong>
-                    <span className={`cc-skillhub-status ${shared ? 'synced' : 'local'}`}>
-                      {shared ? `已分享 v${sharedVersion}` : '仅本地'}
-                    </span>
+                    <strong>{skill.skillId}</strong>
+                    <span>v{skill.version}</span>
                   </div>
-                  <p>{skill.description || '暂无描述'}</p>
-                  <code>{skill.relativePath || skill.path}</code>
                   <button
                     type="button"
-                    disabled={!canShare || !definitionReady || loadingLocalSkills || saving || Boolean(sharingSkill)}
-                    onClick={() => shareLocalSkill(skill)}
+                    className="cc-skillhub-icon-button danger"
+                    title={`从当前 Bot 移除 ${skill.skillId}`}
+                    aria-label={`从当前 Bot 移除 ${skill.skillId}`}
+                    disabled={saving || Boolean(sharingSkill) || !definitionReady}
+                    onClick={() => removeSkill(skill.skillId)}
                   >
-                    {shared ? <Check size={14} /> : <Share2 size={14} />}
-                    {shared ? '已分享到 SkillHub' : sharingSkill === skill.name ? '正在分享…' : '分享到 SkillHub'}
+                    <Trash2 size={14} />
+                    <span className="cc-skillhub-visually-hidden">移除</span>
                   </button>
                 </article>
-              );
-            })}
-          </div>
-        )}
-      </section>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
 
       <section className="cc-skillhub-catalogue">
+        <div className="cc-skillhub-section-heading cc-skillhub-catalogue-heading">
+          <div>
+            <h2>全局 SkillHub</h2>
+            <span>搜索并绑定团队共享的 Skills</span>
+          </div>
+        </div>
         <form
           className="cc-skillhub-search"
           onSubmit={(event) => {
@@ -897,11 +939,16 @@ export default function SkillHubView({ user }) {
           }}
         >
           <Search size={17} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 Skill 名称或描述" />
+          <input
+            value={query}
+            aria-label="搜索 Skill 名称或描述"
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索 Skill 名称或描述"
+          />
           <button type="submit" disabled={loadingCatalogue}>搜索</button>
         </form>
         {catalogueError ? (
-          <div className="cc-skillhub-alert error">{catalogueError}</div>
+          <div className="cc-skillhub-alert error" role="alert">{catalogueError}</div>
         ) : loadingCatalogue ? (
           <div className="cc-skillhub-empty">正在读取 SkillHub…</div>
         ) : catalogue.length === 0 ? (
@@ -926,19 +973,23 @@ export default function SkillHubView({ user }) {
                       <span>{skill.skillId}</span>
                     </div>
                   </div>
-                  <p>{skill.description || '暂无描述'}</p>
+                  <p title={skill.description || '暂无描述'}>{skill.description || '暂无描述'}</p>
                   <div className="cc-skillhub-card-meta">
                     <span>{skill.author || 'SkillHub'}</span>
                     <span>{skill.latestVersion ? `v${skill.latestVersion}` : '版本待确认'}</span>
                   </div>
-                  <button
-                    type="button"
-                    disabled={!definitionReady || sameVersion || saving || Boolean(sharingSkill)}
-                    onClick={() => installSkill(skill)}
-                  >
-                    {sameVersion ? <Check size={14} /> : <Link2 size={14} />}
-                    {sameVersion ? '已绑定' : installed ? '更新绑定' : '绑定到当前 Bot'}
-                  </button>
+                  {sameVersion ? (
+                    <div className="cc-skillhub-complete-state"><Check size={14} /> 已绑定</div>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={!definitionReady || saving || Boolean(sharingSkill)}
+                      onClick={() => installSkill(skill)}
+                    >
+                      <Link2 size={14} />
+                      {installed ? '更新绑定' : '绑定到当前 Bot'}
+                    </button>
+                  )}
                 </article>
               );
             })}
