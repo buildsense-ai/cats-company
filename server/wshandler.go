@@ -225,6 +225,7 @@ func (h *Hub) Run() {
 			if !removed {
 				continue
 			}
+			h.cancelThinToolRPCRequestsByRequesterRoute(h.clientRoute(client))
 			client.closeSend()
 			h.releaseBotBodyLease(client)
 			h.clearClientRuntimeRoute(client)
@@ -368,8 +369,11 @@ func (h *Hub) registerClient(client *Client) bool {
 
 	firstConn, deviceCount, onlineUsers, replaced := h.addRegisteredClient(client)
 	for _, stale := range replaced {
+		staleRoute := h.clientRoute(stale)
+		h.cancelThinToolRPCRequestsByRequesterRoute(staleRoute)
 		h.clearClientRuntimeRoute(stale)
 		h.unbindDeviceClient(stale)
+		h.cancelThinToolRPCRequestsByTargetRoute(staleRoute)
 		stale.closeSend()
 		if stale.conn != nil {
 			_ = stale.conn.Close()
@@ -474,7 +478,6 @@ func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	if h.deviceClients == nil {
 		h.deviceClients = make(map[int64]map[string]*Client)
@@ -492,7 +495,9 @@ func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client
 		ownerDevices = make(map[string]*Client)
 		h.deviceClients[ownerUID] = ownerDevices
 	}
+	var replacedRoute runtimeRoute
 	if existing := ownerDevices[device.DeviceID]; existing != nil && existing != client {
+		replacedRoute = h.clientRoute(existing)
 		existing.deviceOwnerUID = 0
 		existing.deviceID = ""
 		existing.deviceBodyID = ""
@@ -509,6 +514,11 @@ func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client
 		route.ExpiresAt = now.Add(defaultUserDeviceTTL)
 		h.sharedRuntime.bindRuntimeRoute(route, now)
 		h.sharedRuntime.bindUserDeviceRoute(ownerUID, device, route, now)
+	}
+	h.mu.Unlock()
+
+	if replacedRoute.NodeID != "" && replacedRoute.ConnectionID != "" {
+		h.cancelThinToolRPCRequestsByTargetRoute(replacedRoute)
 	}
 }
 
