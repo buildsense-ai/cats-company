@@ -604,6 +604,65 @@ func TestHandleUploadRejectsUnsupportedImageMimeType(t *testing.T) {
 	}
 }
 
+func TestHandleUploadRejectsMalformedMultipartWithoutRetrying(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{
+			name:        "missing boundary",
+			contentType: "multipart/form-data",
+			body:        "not a valid multipart body",
+		},
+		{
+			name:        "non multipart",
+			contentType: "application/octet-stream",
+			body:        "not a valid multipart body",
+		},
+		{
+			name:        "body does not contain declared boundary",
+			contentType: "multipart/form-data; boundary=catsco-boundary",
+			body:        "not a valid multipart body",
+		},
+		{
+			name:        "malformed part headers",
+			contentType: "multipart/form-data; boundary=catsco-boundary",
+			body: "--catsco-boundary\r\n" +
+				"malformed header\r\n\r\nbody\r\n" +
+				"--catsco-boundary--\r\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := NewUploadHandler(t.TempDir(), "/uploads")
+			req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", tt.contentType)
+			rec := httptest.NewRecorder()
+
+			handler.HandleUpload(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			var response struct {
+				Code      string `json:"code"`
+				Retryable bool   `json:"retryable"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if response.Code != "upload_invalid_request" {
+				t.Fatalf("code = %q, want upload_invalid_request", response.Code)
+			}
+			if response.Retryable {
+				t.Fatal("malformed multipart request must not be retryable")
+			}
+		})
+	}
+}
+
 func TestHandleUploadReportsIncompleteMultipartWithoutCallingItTooLarge(t *testing.T) {
 	handler := NewUploadHandler(t.TempDir(), "/uploads")
 	body := strings.NewReader("--catsco-boundary\r\n" +
@@ -611,6 +670,7 @@ func TestHandleUploadReportsIncompleteMultipartWithoutCallingItTooLarge(t *testi
 		"Content-Type: image/jpeg\r\n\r\n" +
 		"tiny")
 	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image", body)
+	req.ContentLength += 100
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=catsco-boundary")
 	rec := httptest.NewRecorder()
 
@@ -698,6 +758,110 @@ func TestHandleUploadRejectsIncompleteRawBodyWithoutSavingIt(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("stored entries = %v, want none for incomplete upload", entries)
+	}
+}
+
+func TestReceiveRawUploadReportsActualBodyLimitError(t *testing.T) {
+	baseDir := t.TempDir()
+	handler := NewUploadHandler(baseDir, "/uploads")
+	content := []byte("body exceeds the test limit")
+	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
+	req.Header.Set("Content-Type", "image/jpeg")
+	req.Header.Set("X-CatsCo-File-Name", "paper.jpg")
+	req.Header.Set("X-CatsCo-File-Size", fmt.Sprintf("%d", len(content)))
+	rec := httptest.NewRecorder()
+
+	if _, ok := handler.receiveRawUpload(rec, req, "image", len(content)-1, true); ok {
+		t.Fatal("receiveRawUpload succeeded for a body above the actual byte limit")
+	}
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+	var response struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Code != uploadTooLargeCode {
+		t.Fatalf("code = %q, want %q", response.Code, uploadTooLargeCode)
+	}
+	entries, err := os.ReadDir(filepath.Join(baseDir, "images"))
+	if err != nil {
+		t.Fatalf("read upload directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("stored entries = %v, want none for an oversized body", entries)
+	}
+}
+
+func TestHandleUploadDoesNotCallRawMetadataMismatchTooLarge(t *testing.T) {
+	baseDir := t.TempDir()
+	handler := NewUploadHandler(baseDir, "/uploads")
+	content := []byte("small image body")
+	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
+	req.Header.Set("Content-Type", "image/jpeg")
+	req.Header.Set("X-CatsCo-File-Name", "paper.jpg")
+	req.Header.Set("X-CatsCo-File-Size", fmt.Sprintf("%d", maxImageSize+1))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUpload(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	var response struct {
+		Code      string `json:"code"`
+		Retryable bool   `json:"retryable"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Code != uploadIncompleteCode || !response.Retryable {
+		t.Fatalf("response = %+v, want retryable upload_incomplete", response)
+	}
+	entries, err := os.ReadDir(filepath.Join(baseDir, "images"))
+	if err != nil {
+		t.Fatalf("read upload directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("stored entries = %v, want none for metadata mismatch", entries)
+	}
+}
+
+func TestHandleUploadDoesNotCallRawContentLengthMismatchTooLarge(t *testing.T) {
+	baseDir := t.TempDir()
+	handler := NewUploadHandler(baseDir, "/uploads")
+	content := []byte("small image body")
+	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
+	req.ContentLength = int64(maxImageSize) + 1
+	req.Header.Set("Content-Type", "image/jpeg")
+	req.Header.Set("X-CatsCo-File-Name", "paper.jpg")
+	req.Header.Set("X-CatsCo-File-Size", fmt.Sprintf("%d", len(content)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUpload(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	var response struct {
+		Code      string `json:"code"`
+		Retryable bool   `json:"retryable"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Code != uploadIncompleteCode || !response.Retryable {
+		t.Fatalf("response = %+v, want retryable upload_incomplete", response)
+	}
+	entries, err := os.ReadDir(filepath.Join(baseDir, "images"))
+	if err != nil {
+		t.Fatalf("read upload directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("stored entries = %v, want none for content-length mismatch", entries)
 	}
 }
 

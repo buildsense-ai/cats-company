@@ -3,6 +3,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -33,6 +35,7 @@ const (
 	rawUploadFileNameHeader   = "X-CatsCo-File-Name"
 	rawUploadFileSizeHeader   = "X-CatsCo-File-Size"
 	uploadIncompleteCode      = "upload_incomplete"
+	uploadInvalidRequestCode  = "upload_invalid_request"
 	uploadMetadataInvalidCode = "upload_metadata_invalid"
 	uploadTooLargeCode        = "upload_too_large"
 )
@@ -105,6 +108,17 @@ type uploadPayload struct {
 	Size     int64  `json:"size"`
 	Type     string `json:"type"`
 	MimeType string `json:"mime_type"`
+}
+
+type countingReadCloser struct {
+	io.ReadCloser
+	bytesRead int64
+}
+
+func (r *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	r.bytesRead += int64(n)
+	return n, err
 }
 
 // NewUploadHandler creates a new UploadHandler.
@@ -625,11 +639,6 @@ func (h *UploadHandler) receiveRawUpload(
 		})
 		return uploadPayload{}, false
 	}
-	if expectedSize > int64(maxSize) || r.ContentLength > int64(maxSize) {
-		writeUploadTooLarge(w)
-		return uploadPayload{}, false
-	}
-
 	ext := strings.ToLower(filepath.Ext(fileName))
 	if isImageUpload && !allowedImageExts[ext] {
 		writeUploadJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid image type"})
@@ -670,6 +679,7 @@ func (h *UploadHandler) receiveRawUpload(
 		}
 	}()
 
+	declaredContentLength := r.ContentLength
 	r.Body = http.MaxBytesReader(w, r.Body, int64(maxSize))
 	written, copyErr := io.Copy(temp, r.Body)
 	if copyErr != nil {
@@ -680,6 +690,12 @@ func (h *UploadHandler) receiveRawUpload(
 		}
 		log.Printf("[upload] interrupted raw body path=%q expected_size=%d written=%d user_agent=%q err=%v",
 			r.URL.Path, expectedSize, written, r.UserAgent(), copyErr)
+		writeUploadIncomplete(w)
+		return uploadPayload{}, false
+	}
+	if declaredContentLength >= 0 && written != declaredContentLength {
+		log.Printf("[upload] incomplete raw content length path=%q content_length=%d written=%d user_agent=%q",
+			r.URL.Path, declaredContentLength, written, r.UserAgent())
 		writeUploadIncomplete(w)
 		return uploadPayload{}, false
 	}
@@ -718,7 +734,8 @@ func (h *UploadHandler) receiveRawUpload(
 }
 
 func parseUploadMultipart(w http.ResponseWriter, r *http.Request, maxSize int) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, int64(maxSize))
+	body := &countingReadCloser{ReadCloser: r.Body}
+	r.Body = http.MaxBytesReader(w, body, int64(maxSize))
 	if err := r.ParseMultipartForm(int64(maxSize)); err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
@@ -726,10 +743,41 @@ func parseUploadMultipart(w http.ResponseWriter, r *http.Request, maxSize int) b
 			return false
 		}
 
-		log.Printf("[upload] incomplete multipart path=%q content_length=%d user_agent=%q err=%v",
+		var pathError *os.PathError
+		if errors.As(err, &pathError) {
+			log.Printf("[upload] multipart storage failure path=%q user_agent=%q err=%v",
+				r.URL.Path, r.UserAgent(), err)
+			writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+			return false
+		}
+
+		if isUploadBodyInterrupted(err, r.ContentLength, body.bytesRead) {
+			log.Printf("[upload] incomplete multipart path=%q content_length=%d user_agent=%q err=%v",
+				r.URL.Path, r.ContentLength, r.UserAgent(), err)
+			writeUploadIncomplete(w)
+			return false
+		}
+
+		log.Printf("[upload] invalid multipart path=%q content_length=%d user_agent=%q err=%v",
 			r.URL.Path, r.ContentLength, r.UserAgent(), err)
-		writeUploadIncomplete(w)
+		writeUploadInvalidRequest(w)
 		return false
+	}
+	return true
+}
+
+func isUploadBodyInterrupted(err error, contentLength, bytesRead int64) bool {
+	interrupted := errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
+	var networkError net.Error
+	interrupted = interrupted || errors.As(err, &networkError)
+	if !interrupted {
+		return false
+	}
+	if contentLength >= 0 {
+		return bytesRead < contentLength
 	}
 	return true
 }
@@ -747,6 +795,14 @@ func writeUploadIncomplete(w http.ResponseWriter) {
 		"code":      uploadIncompleteCode,
 		"error":     "upload request is incomplete; please retry",
 		"retryable": true,
+	})
+}
+
+func writeUploadInvalidRequest(w http.ResponseWriter) {
+	writeUploadJSON(w, http.StatusBadRequest, map[string]interface{}{
+		"code":      uploadInvalidRequestCode,
+		"error":     "upload request is invalid",
+		"retryable": false,
 	})
 }
 
