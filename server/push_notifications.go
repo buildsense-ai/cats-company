@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,16 +26,17 @@ import (
 )
 
 const (
-	maxPushRequestBody          = 8 << 10
-	maxPushEndpointLen          = 512
-	maxPushPayloadLen           = 4096
-	maxPushSubscriptionsPerUser = 10
-	maxConcurrentPushDeliveries = 8
-	maxQueuedPushDeliveries     = 128
-	pushRequestTimeout          = 15 * time.Second
-	pushDeliveryTimeout         = 20 * time.Second
-	pushRelayEndpointHeader     = "X-Catsco-Push-Endpoint"
-	pushRelayTokenHeader        = "X-Catsco-Relay-Token"
+	maxPushRequestBody            = 8 << 10
+	maxPushEndpointLen            = 512
+	maxPushPayloadLen             = 4096
+	maxPushSubscriptionsPerUser   = 10
+	maxConcurrentPushDeliveries   = 8
+	maxQueuedPushDeliveries       = 128
+	pushRequestTimeout            = 15 * time.Second
+	pushDeliveryTimeout           = 20 * time.Second
+	pushRelayEndpointHeader       = "X-Catsco-Push-Endpoint"
+	pushRelayTokenHeader          = "X-Catsco-Relay-Token"
+	pushRelayProviderStatusHeader = "X-Catsco-Relay-Provider-Status"
 )
 
 var nonPublicPushPrefixes = []netip.Prefix{
@@ -255,7 +257,7 @@ func validatePushRelayURL(raw string) (*url.URL, error) {
 		return nil, errors.New("relay URL is empty or too long")
 	}
 	parsed, err := url.ParseRequestURI(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+	if err != nil || strings.Contains(raw, "#") || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
 		return nil, errors.New("relay URL must be an absolute HTTPS URL")
 	}
 	if parsed.Port() != "" && parsed.Port() != "443" {
@@ -300,6 +302,20 @@ func (s *PushNotificationService) ConfigError() error {
 		return errors.New("push notification service is not configured")
 	}
 	return s.configErr
+}
+
+// isAuthoritativePushProviderResponse reports whether a terminal status can
+// safely be attributed to the browser push provider. Direct delivery receives
+// provider responses directly. Relay delivery requires the Worker marker so a
+// relay-owned route or authentication error cannot delete a valid subscription.
+func (s *PushNotificationService) isAuthoritativePushProviderResponse(response *http.Response) bool {
+	if s == nil {
+		return false
+	}
+	if s.config.RelayURL == "" {
+		return true
+	}
+	return response != nil && strings.TrimSpace(response.Header.Get(pushRelayProviderStatusHeader)) == strconv.Itoa(response.StatusCode)
 }
 
 // HandleStatus serves the public GET status endpoint.
@@ -608,6 +624,12 @@ func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid in
 			continue
 		}
 		if status == http.StatusNotFound || status == http.StatusGone {
+			if !s.isAuthoritativePushProviderResponse(response) {
+				deliveryErr := fmt.Errorf("relay returned HTTP %d without a provider response marker for %q", status, endpointID)
+				s.logf("web push: %v", deliveryErr)
+				deliveryErrors = append(deliveryErrors, deliveryErr)
+				continue
+			}
 			if deleteErr := s.store.DeletePushSubscription(ctx, uid, subscription.Endpoint, subscription.RegistrationID); deleteErr != nil {
 				cleanupErr := fmt.Errorf("remove expired provider %q: %w", endpointID, redactPushEndpointError(deleteErr, subscription.Endpoint))
 				s.logf("web push: %v", cleanupErr)

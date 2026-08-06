@@ -120,7 +120,7 @@ export default function PwaController({
   }, [cleanupRetryVersion, loggedIn, online]);
 
   useEffect(() => {
-    if (!loggedIn || !canUsePush()) {
+    if (!loggedIn || !online || !canUsePush()) {
       setPushConfig(null);
       return undefined;
     }
@@ -148,7 +148,7 @@ export default function PwaController({
       cancelled = true;
       controller.abort();
     };
-  }, [loggedIn, sessionRevision]);
+  }, [loggedIn, online, sessionRevision]);
 
   useEffect(() => {
     const publicKey = pushConfig?.public_key;

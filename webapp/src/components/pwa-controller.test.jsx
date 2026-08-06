@@ -41,6 +41,7 @@ let root;
 
 beforeEach(() => {
   localStorage.clear();
+  Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
   Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true });
   Object.defineProperty(window, 'Notification', {
     configurable: true,
@@ -114,6 +115,23 @@ test('does not offer or request notification permission while server push is dis
   await vi.waitFor(() => expect(api.getPushConfig).toHaveBeenCalledTimes(1));
   expect(container.textContent).not.toContain('开启通知，及时收到新消息');
   expect(window.Notification.requestPermission).not.toHaveBeenCalled();
+});
+
+test('loads push configuration after a signed-in offline page reconnects', async () => {
+  Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+
+  renderController('user:42');
+
+  expect(api.getPushConfig).not.toHaveBeenCalled();
+  expect(container.textContent).toContain('当前离线');
+
+  Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+  act(() => {
+    window.dispatchEvent(new Event('online'));
+  });
+
+  await vi.waitFor(() => expect(api.getPushConfig).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() => expect(container.textContent).toContain('开启通知，及时收到新消息'));
 });
 
 test('requests notification permission from a user gesture after loading configuration', async () => {

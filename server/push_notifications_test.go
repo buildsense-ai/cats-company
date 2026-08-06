@@ -192,6 +192,31 @@ func TestValidatePushEndpointRejectsLocalAndPrivateTargets(t *testing.T) {
 	}
 }
 
+func TestValidatePushRelayURLRejectsUnsafeOrMalformedValues(t *testing.T) {
+	tests := []string{
+		"http://relay.example.test/v1/push/relay",
+		"https://localhost/v1/push/relay",
+		"https://relay.local/v1/push/relay",
+		"https://127.0.0.1/v1/push/relay",
+		"https://relay.example.test:8443/v1/push/relay",
+		"https://user:password@relay.example.test/v1/push/relay",
+		"https://relay.example.test/v1/push/relay#fragment",
+		"https://" + strings.Repeat("a", maxPushEndpointLen),
+	}
+	for _, raw := range tests {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := validatePushRelayURL(raw); err == nil {
+				t.Fatalf("validatePushRelayURL(%q) error = nil", raw)
+			}
+		})
+	}
+
+	const valid = "https://relay.example.test/v1/push/relay"
+	if parsed, err := validatePushRelayURL(valid); err != nil || parsed.String() != valid {
+		t.Fatalf("validatePushRelayURL(%q) = %v, %v", valid, parsed, err)
+	}
+}
+
 func TestPushHTTPClientRejectsPrivateDNSResolution(t *testing.T) {
 	dialed := false
 	client := newPushHTTPClientWithNetwork(
@@ -553,6 +578,68 @@ func TestPushNotificationSendCleansExpiredSubscriptions(t *testing.T) {
 		if _, ok := payload[key]; !ok {
 			t.Fatalf("payload missing %q: %s", key, payloads[0])
 		}
+	}
+}
+
+func TestPushNotificationRelayExpiredCleanupRequiresProviderMarker(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		marker      string
+		wantDeleted bool
+	}{
+		{name: "unmarked relay 404", status: http.StatusNotFound},
+		{name: "mismatched relay marker", status: http.StatusNotFound, marker: "410"},
+		{name: "marked provider 404", status: http.StatusNotFound, marker: "404", wantDeleted: true},
+		{name: "marked provider 410", status: http.StatusGone, marker: "410", wantDeleted: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			const endpoint = "https://push.example.test/subscription/relay-cleanup"
+			store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+				Endpoint: endpoint,
+				P256DH:   "p256dh",
+				Auth:     "auth",
+			}}}
+			service := NewPushNotificationServiceWithConfig(store, PushNotificationConfig{
+				PublicKey:  "public-key",
+				PrivateKey: "private-key",
+				Subject:    "mailto:push@example.com",
+				RelayURL:   "https://relay.example.test/v1/push/relay",
+				RelayToken: "relay-token",
+			})
+			service.logf = func(string, ...interface{}) {}
+			service.send = func(context.Context, []byte, *webpush.Subscription, *webpush.Options) (*http.Response, error) {
+				header := make(http.Header)
+				if test.marker != "" {
+					header.Set(pushRelayProviderStatusHeader, test.marker)
+				}
+				return &http.Response{
+					StatusCode: test.status,
+					Header:     header,
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			}
+
+			err := service.SendToUser(context.Background(), 15, PushNotification{Title: "title"})
+			if test.wantDeleted {
+				if err != nil {
+					t.Fatalf("SendToUser returned error: %v", err)
+				}
+				if got := store.deleted; got != endpoint {
+					t.Fatalf("deleted endpoint = %q, want %q", got, endpoint)
+				}
+				return
+			}
+
+			if err == nil || !strings.Contains(err.Error(), "without a provider response marker") {
+				t.Fatalf("SendToUser error = %v, want relay marker error", err)
+			}
+			if len(store.deletedScoped) != 0 {
+				t.Fatalf("relay-owned response deleted a subscription: %#v", store.deletedScoped)
+			}
+		})
 	}
 }
 
