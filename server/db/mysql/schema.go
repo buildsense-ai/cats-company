@@ -19,6 +19,7 @@ func (a *Adapter) CreateSchema() error {
 		createMessagesTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
+		createBotConnectionGenerationsTable,
 		createBotConfigTable,
 		createRateLimitTable,
 		createGroupsTable,
@@ -86,6 +87,12 @@ func (a *Adapter) CreateSchema() error {
 		migrateChannelAgentAccessOwnerAgentIndex,
 		migrateChannelAgentAccessActorAgentIndex,
 		migrateChannelAgentAccessLookupIndex,
+		migrateConversationTaskStatusesTimestampPrecision,
+		migrateConversationTaskStatusesCreatedAtPrecision,
+		migrateConversationTaskStatusesUpdatedAtPrecision,
+		migrateConversationTaskStatusSourcesExpiresAtPrecision,
+		migrateConversationTaskStatusSourcesCreatedAtPrecision,
+		migrateConversationTaskStatusSourcesUpdatedAtPrecision,
 	}
 	for _, m := range migrations {
 		if _, err := a.db.Exec(m); err != nil {
@@ -277,9 +284,9 @@ CREATE TABLE IF NOT EXISTS conversation_task_statuses (
     summary TEXT NOT NULL,
     error TEXT NOT NULL,
     source_uid BIGINT DEFAULT NULL,
-    expires_at TIMESTAMP NULL DEFAULT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP(6) NULL DEFAULT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     INDEX idx_conversation_task_statuses_updated_at (updated_at),
     INDEX idx_conversation_task_statuses_state (state),
     FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
@@ -295,14 +302,23 @@ CREATE TABLE IF NOT EXISTS conversation_task_status_sources (
     state ENUM('idle','running','completed','failed','cancelled','stale','waiting') NOT NULL DEFAULT 'idle',
     summary TEXT NOT NULL,
     error TEXT NOT NULL,
-    expires_at TIMESTAMP NULL DEFAULT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP(6) NULL DEFAULT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY (topic_id, source_uid),
     INDEX idx_conversation_task_status_sources_updated_at (updated_at),
     INDEX idx_conversation_task_status_sources_state (state),
     FOREIGN KEY (topic_id) REFERENCES topics(id) ON DELETE CASCADE,
     FOREIGN KEY (source_uid) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
+const createBotConnectionGenerationsTable = `
+CREATE TABLE IF NOT EXISTS bot_connection_generations (
+    bot_uid BIGINT PRIMARY KEY,
+    generation BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    FOREIGN KEY (bot_uid) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
@@ -845,4 +861,35 @@ ALTER TABLE channel_agent_access_requests ADD INDEX idx_channel_agent_access_act
 
 const migrateChannelAgentAccessLookupIndex = `
 ALTER TABLE channel_agent_access_requests ADD INDEX idx_channel_agent_access_lookup (channel, channel_app_id, channel_user_id, status);
+`
+
+// Migration: upgrade task-status timestamps to fractional-second precision.
+// Recovery compares a Go time.Now() (with sub-second precision) against the
+// stored updated_at; a second-precision TIMESTAMP would treat progress written
+// later in the same wall-clock second as <= disconnectedAt and could mark
+// healthy work stale. TIMESTAMP(6) keeps the cutoff CAS exact. Statements are
+// kept one-per-Exec because the MySQL driver does not enable multiStatements.
+const migrateConversationTaskStatusesTimestampPrecision = `
+ALTER TABLE conversation_task_statuses
+  MODIFY expires_at TIMESTAMP(6) NULL DEFAULT NULL;
+`
+const migrateConversationTaskStatusesCreatedAtPrecision = `
+ALTER TABLE conversation_task_statuses
+  MODIFY created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6);
+`
+const migrateConversationTaskStatusesUpdatedAtPrecision = `
+ALTER TABLE conversation_task_statuses
+  MODIFY updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6);
+`
+const migrateConversationTaskStatusSourcesExpiresAtPrecision = `
+ALTER TABLE conversation_task_status_sources
+  MODIFY expires_at TIMESTAMP(6) NULL DEFAULT NULL;
+`
+const migrateConversationTaskStatusSourcesCreatedAtPrecision = `
+ALTER TABLE conversation_task_status_sources
+  MODIFY created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6);
+`
+const migrateConversationTaskStatusSourcesUpdatedAtPrecision = `
+ALTER TABLE conversation_task_status_sources
+  MODIFY updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6);
 `

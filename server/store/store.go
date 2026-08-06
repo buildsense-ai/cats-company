@@ -129,6 +129,44 @@ func ValidateConversationTaskStatusTransition(current, next *types.ConversationT
 	return nil
 }
 
+// ConversationTaskStatusRecoveryStore is optional. It lets the WebSocket hub
+// recover active task states left behind when a bot process disconnects.
+type ConversationTaskStatusRecoveryStore interface {
+	ListActiveConversationTaskStatusesForSource(sourceUID int64, updatedBefore time.Time) ([]*types.ConversationTaskStatus, error)
+	// ListAllActiveConversationTaskStatusesBefore returns every source run that
+	// is still active (running/waiting) and was last updated before the cutoff.
+	// It feeds the periodic/startup reaper that survives process crashes and
+	// transient DB failures, so a missed in-process recovery timer does not
+	// leave tasks active indefinitely.
+	ListAllActiveConversationTaskStatusesBefore(updatedBefore time.Time) ([]*types.ConversationTaskStatus, error)
+	// MarkConversationTaskStatusStaleIfUnchanged atomically marks a source run
+	// stale only when it still matches the disconnected run and was not updated
+	// after the disconnection. The bool reports whether a row actually changed;
+	// fanout must be skipped when it is false (a concurrent writer won).
+	//
+	// generation is the cluster-wide bot connection generation that the recovery
+	// timer snapshotted when it was scheduled. The store verifies inside the same
+	// transaction that the bot's current generation still equals generation; a
+	// newer connection generation (any node) wins and this call reports
+	// updated=false. This closes the cross-node race where an old timer would
+	// otherwise recover work owned by a fresh connection generation.
+	MarkConversationTaskStatusStaleIfUnchanged(topicID string, sourceUID int64, runID string, disconnectedAt time.Time, generation uint64) (*types.ConversationTaskStatus, bool, error)
+}
+
+// ConversationTaskGenerationStore is optional. It persists a cluster-wide
+// monotonic connection generation per bot so disconnected-task recovery can
+// distinguish a fresh connection generation (possibly on another node) from
+// the one that actually disconnected. Implementations must make both calls
+// atomic and durable; the hub bumps the generation on every bot connection.
+type ConversationTaskGenerationStore interface {
+	// BumpBotConnectionGeneration atomically increments the generation for a
+	// bot and returns the new value. Missing rows start at 1.
+	BumpBotConnectionGeneration(botUID int64) (uint64, error)
+	// BotConnectionGeneration returns the current generation for a bot, or 0
+	// when the bot has never connected through this store.
+	BotConnectionGeneration(botUID int64) (uint64, error)
+}
+
 // ProjectStore persists user-owned projects and assignments for conversations the user can access.
 // It remains optional so narrow server test stores do not need project methods.
 type ProjectStore interface {
