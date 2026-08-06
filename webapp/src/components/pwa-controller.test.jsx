@@ -55,6 +55,7 @@ beforeEach(() => {
     configurable: true,
     value: { request: vi.fn() },
   });
+  api.getPushConfig.mockResolvedValue({ enabled: true, public_key: 'AQIDBA' });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -78,8 +79,9 @@ function renderController(pushPromptOwner, sessionRevision = 1, loggedIn = true)
   });
 }
 
-test('shows the push prompt again when a different account signs in', () => {
+test('shows the push prompt again when a different account signs in', async () => {
   renderController('user:1');
+  await vi.waitFor(() => expect(container.textContent).toContain('开启通知，及时收到新消息'));
   const dismiss = Array.from(container.querySelectorAll('button'))
     .find((button) => button.textContent === '暂不');
   expect(dismiss).toBeTruthy();
@@ -91,7 +93,7 @@ test('shows the push prompt again when a different account signs in', () => {
 
   renderController('user:2', 2);
 
-  expect(container.textContent).toContain('开启通知，及时收到新消息');
+  await vi.waitFor(() => expect(container.textContent).toContain('开启通知，及时收到新消息'));
   expect(localStorage.getItem('cc_push_prompt_dismissed_v1:user:1')).toBe('true');
   expect(localStorage.getItem('cc_push_prompt_dismissed_v1:user:2')).toBeNull();
 });
@@ -104,18 +106,29 @@ test('registers an active tab under its push registration id', () => {
   expect(pushTabCoordinator.setActive).toHaveBeenCalledWith(true, 'registration-1');
 });
 
-test('requests notification permission before awaiting the push configuration', async () => {
+test('does not offer or request notification permission while server push is disabled', async () => {
+  api.getPushConfig.mockResolvedValue({ enabled: false });
+
+  renderController('user:42');
+
+  await vi.waitFor(() => expect(api.getPushConfig).toHaveBeenCalledTimes(1));
+  expect(container.textContent).not.toContain('开启通知，及时收到新消息');
+  expect(window.Notification.requestPermission).not.toHaveBeenCalled();
+});
+
+test('requests notification permission from a user gesture after loading configuration', async () => {
   const order = [];
+  api.getPushConfig.mockImplementation(async () => {
+    order.push('config');
+    return { enabled: true, public_key: 'AQIDBA' };
+  });
   window.Notification.requestPermission.mockImplementation(async () => {
     order.push('permission');
     return 'granted';
   });
-  api.getPushConfig.mockImplementation(async () => {
-    order.push('config');
-    return { enabled: false };
-  });
 
   renderController('user:42');
+  await vi.waitFor(() => expect(container.textContent).toContain('开启通知，及时收到新消息'));
   const enable = Array.from(container.querySelectorAll('button'))
     .find((button) => button.textContent === '开启');
 
@@ -124,13 +137,13 @@ test('requests notification permission before awaiting the push configuration', 
   });
 
   await vi.waitFor(() => expect(window.Notification.requestPermission).toHaveBeenCalledTimes(1));
-  expect(order).toEqual(['permission', 'config']);
+  expect(order).toEqual(['config', 'permission']);
 });
 
 test('waits for the active-tab lock before reconciling a browser subscription', async () => {
   let releaseActiveLock;
   window.Notification.permission = 'granted';
-  api.getPushConfig.mockResolvedValue({ enabled: false });
+  api.getPushConfig.mockResolvedValue({ enabled: true, public_key: 'AQIDBA' });
   pushTabCoordinator.waitUntilActive.mockImplementationOnce(() => new Promise((resolve) => {
     releaseActiveLock = resolve;
   }));
@@ -138,10 +151,9 @@ test('waits for the active-tab lock before reconciling a browser subscription', 
   renderController('user:42');
 
   await vi.waitFor(() => expect(releaseActiveLock).toBeTypeOf('function'));
-  expect(api.getPushConfig).not.toHaveBeenCalled();
+  await vi.waitFor(() => expect(api.getPushConfig).toHaveBeenCalledTimes(1));
 
   releaseActiveLock(true);
-  await vi.waitFor(() => expect(api.getPushConfig).toHaveBeenCalledTimes(1));
 });
 
 test('re-registers an active account when another tab hands off the browser subscription', async () => {

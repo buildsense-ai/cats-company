@@ -45,6 +45,7 @@ export default function PwaController({
   const [permission, setPermission] = useState(() => (
     'Notification' in window ? Notification.permission : 'unsupported'
   ));
+  const [pushConfig, setPushConfig] = useState(null);
   const [busy, setBusy] = useState(false);
   const [pushError, setPushError] = useState('');
   const [needRefresh, setNeedRefresh] = useState(false);
@@ -119,7 +120,39 @@ export default function PwaController({
   }, [cleanupRetryVersion, loggedIn, online]);
 
   useEffect(() => {
-    if (!canUsePush() || !loggedIn || Notification.permission !== 'granted') return undefined;
+    if (!loggedIn || !canUsePush()) {
+      setPushConfig(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+    setPushConfig(null);
+    api.getPushConfig(controller.signal)
+      .then((config) => {
+        if (cancelled) return;
+        const publicKey = String(config?.public_key || '').trim();
+        setPushConfig(config?.enabled && publicKey ? {
+          enabled: true,
+          public_key: publicKey,
+        } : null);
+      })
+      .catch((error) => {
+        if (!cancelled && error?.name !== 'AbortError') {
+          console.warn('Push configuration lookup failed:', error);
+        }
+        if (!cancelled) setPushConfig(null);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [loggedIn, sessionRevision]);
+
+  useEffect(() => {
+    const publicKey = pushConfig?.public_key;
+    if (!canUsePush() || !loggedIn || Notification.permission !== 'granted' || !publicKey) return undefined;
     let cancelled = false;
     const isCurrent = () => (
       !cancelled && sessionRevisionRef.current === sessionRevision
@@ -131,10 +164,6 @@ export default function PwaController({
         const registrationID = getPushRegistrationID();
         const activeLockReady = await pushTabCoordinator.waitUntilActive?.(registrationID);
         if (activeLockReady === false || !isCurrent()) return;
-        const config = await api.getPushConfig(controller.signal);
-        if (!isCurrent()) return;
-        const publicKey = config.public_key;
-        if (!config.enabled || !publicKey) return;
         const subscription = await ensurePushSubscription(
           publicKey,
           (endpoint) => api.unsubscribePush(endpoint, undefined, registrationID),
@@ -153,9 +182,10 @@ export default function PwaController({
       cancelled = true;
       controller.abort();
     };
-  }, [loggedIn, reconcileVersion, sessionRevision]);
+  }, [loggedIn, pushConfig, reconcileVersion, sessionRevision]);
 
-  const offerPush = shouldOfferPush({ loggedIn, permission, dismissed });
+  const offerPush = Boolean(pushConfig?.enabled && pushConfig.public_key)
+    && shouldOfferPush({ loggedIn, permission, dismissed });
 
   const dismissPush = useCallback(() => {
     persistDismissed(pushPromptOwner);
@@ -163,7 +193,8 @@ export default function PwaController({
   }, [pushPromptOwner]);
 
   const enablePush = useCallback(async () => {
-    if (!canUsePush() || busy) return;
+    const publicKey = pushConfig?.public_key;
+    if (!canUsePush() || busy || !pushConfig?.enabled || !publicKey) return;
     const requestedRevision = sessionRevision;
     const isCurrent = () => (
       sessionRevisionRef.current === requestedRevision
@@ -188,10 +219,6 @@ export default function PwaController({
 
       await enqueuePushOperation(async () => {
         const registrationID = getPushRegistrationID();
-        const config = await api.getPushConfig(controller.signal);
-        if (!isCurrent()) return;
-        const publicKey = config.public_key;
-        if (!config.enabled || !publicKey) throw new Error('推送服务尚未配置');
 
         pushTabCoordinator.setActive(true, registrationID);
         const activeLockReady = await pushTabCoordinator.waitUntilActive?.(registrationID);
@@ -217,7 +244,7 @@ export default function PwaController({
       window.removeEventListener('cc:auth-changed', abortOnSessionChange);
       setBusy(false);
     }
-  }, [busy, pushPromptOwner, sessionRevision]);
+  }, [busy, pushConfig, pushPromptOwner, sessionRevision]);
 
   return (
     <div className="cc-pwa-status" aria-live="polite">
