@@ -13,7 +13,8 @@
   letter-spacing: 0;
 }
 
-html[data-theme="dark"] .cc-skillhub-page {
+html[data-theme="dark"] .cc-skillhub-page,
+html[data-theme="liquid"][data-liquid-variant="green"] .cc-skillhub-page {
   --cc-skillhub-action-bg: color-mix(in srgb, var(--cc-accent-text) 52%, #000);
   --cc-skillhub-action-hover: color-mix(in srgb, var(--cc-accent-text) 44%, #000);
 }
