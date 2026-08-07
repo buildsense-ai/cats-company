@@ -69,6 +69,16 @@ describe('PWA notification badge', () => {
     expect(indexHtml).toContain('viewport-fit=cover');
   });
 
+  it('matches the installed app chrome to the active surfaces', () => {
+    const indexHtml = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8');
+    const offlineHtml = readFileSync(resolve(process.cwd(), 'public/offline.html'), 'utf8');
+    const viteConfig = readFileSync(resolve(process.cwd(), 'vite.config.js'), 'utf8');
+
+    expect(indexHtml).toContain('<meta name="theme-color" content="#f8f8f8" />');
+    expect(viteConfig).toContain("theme_color: '#f8f8f8'");
+    expect(offlineHtml).toContain('<meta name="theme-color" content="#111827" />');
+  });
+
   it('uses a transparent monochrome asset distinct from the launcher icon', () => {
     const badgePath = resolve(process.cwd(), 'public/pwa-notification-badge-96x96.png');
     const { width, height, pixels } = decodeRGBA8PNG(badgePath);
