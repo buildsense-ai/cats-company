@@ -319,6 +319,15 @@ html[data-theme="liquid"][data-liquid-variant="green"] .cc-skillhub-page {
   -webkit-line-clamp: 3;
 }
 
+.cc-skillhub-local-card p.cc-skillhub-validation-error {
+  display: block;
+  overflow: visible;
+  color: var(--cc-danger);
+  overflow-wrap: anywhere;
+  white-space: normal;
+  -webkit-line-clamp: unset;
+}
+
 .cc-skillhub-local-card code {
   font-size: 11px;
 }

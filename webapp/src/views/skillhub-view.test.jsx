@@ -112,10 +112,12 @@ describe('SkillHubView', () => {
       name: 'local-demo',
       relative_path: 'local-demo',
       skill_hub: { version: '1.0.0' },
+      share_error: 'SKILL.md 缺少必填字段 name 或 description。',
     }] })[0]).toMatchObject({
       name: 'local-demo',
       relativePath: 'local-demo',
       skillHub: { version: '1.0.0' },
+      shareError: 'SKILL.md 缺少必填字段 name 或 description。',
     });
     expect(isLocalSkillShared({
       canShare: true,
@@ -379,6 +381,52 @@ describe('SkillHubView', () => {
         uploaded_at: '2026-08-05T00:00:00.000Z',
       }),
     }));
+  });
+
+  it('shows an invalid local Skill reason without exposing a share action', async () => {
+    api.getDevices.mockResolvedValue({
+      devices: [{
+        deviceId: 'alice-device',
+        displayName: 'Alice Laptop',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockResolvedValue({
+      schema: 'xiaoba.skillhub.local_workspace.v1',
+      bot_uid: '42',
+      active_bot_uid: '42',
+      skills_path: 'C:\\xiaoba\\skills',
+      skills: [{
+        local_skill_id: 'invalid-1',
+        name: 'test_8_7',
+        relative_path: 'test_8_7',
+        source: 'user',
+        can_share: false,
+        share_error: 'SKILL.md 缺少必填字段 name 或 description。请在文件顶部的 YAML frontmatter 中补全后重试。',
+      }],
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const card = container.querySelector('.cc-skillhub-local-card');
+    expect(card.textContent).toContain('test_8_7');
+    expect(card.textContent).toContain('缺少必填字段 name 或 description');
+    expect(card.querySelector('.cc-skillhub-validation-error')).not.toBeNull();
+    expect(card.querySelector('button')).toBeNull();
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledTimes(1);
   });
 
   it('retries a version share only after confirmation and sends confirm_publish', async () => {

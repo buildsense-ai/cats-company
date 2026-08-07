@@ -68,6 +68,7 @@ export function normalizeLocalSkills(response) {
     skillHub: skill?.skillHub || skill?.skill_hub || null,
     localSkillId: String(skill?.localSkillId || skill?.local_skill_id || '').trim(),
     canShare: skill?.canShare ?? skill?.can_share ?? true,
+    shareError: String(skill?.shareError || skill?.share_error || '').trim(),
   })).filter((skill) => skill.name);
 }
 
@@ -851,7 +852,12 @@ export default function SkillHubView({ user }) {
                         {shared ? `已分享 v${sharedVersion}` : '仅本地'}
                       </span>
                     </div>
-                    <p title={skill.description || '暂无描述'}>{skill.description || '暂无描述'}</p>
+                    <p
+                      className={skill.shareError ? 'cc-skillhub-validation-error' : undefined}
+                      title={skill.shareError || skill.description || '暂无描述'}
+                    >
+                      {skill.shareError || skill.description || '暂无描述'}
+                    </p>
                     <code title={skill.path || skill.relativePath}>{skill.relativePath || skill.path}</code>
                     {shared ? (
                       <div className="cc-skillhub-complete-state"><Check size={14} /> 已分享到 SkillHub</div>
