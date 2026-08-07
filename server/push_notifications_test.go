@@ -801,6 +801,25 @@ func TestPushNotificationSendCleansExpiredSubscriptions(t *testing.T) {
 	}
 }
 
+func TestPushNotificationNormalizesMailtoSubjectForWebPushLibrary(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		UID: 21, Endpoint: "https://push.example.test/current", P256DH: "p256dh", Auth: "auth",
+	}}}
+	service := enabledPushService(store)
+	var subscriber string
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, options *webpush.Options) (*http.Response, error) {
+		subscriber = options.Subscriber
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	if err := service.SendToUser(context.Background(), 21, PushNotification{Title: "test"}); err != nil {
+		t.Fatalf("SendToUser returned error: %v", err)
+	}
+	if subscriber != "push@example.com" {
+		t.Fatalf("web push subscriber = %q, want %q", subscriber, "push@example.com")
+	}
+}
+
 func TestPushNotificationRelayExpiredCleanupRequiresProviderMarker(t *testing.T) {
 	tests := []struct {
 		name        string
