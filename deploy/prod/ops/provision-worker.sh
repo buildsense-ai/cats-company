@@ -107,12 +107,29 @@ find_instance() {
   jq -r --arg n "$name" '.returnObj.results[]? | select(.instanceName == $n)' <<<"$resp" || true
 }
 
+# 可移植 UUID（clientToken/身份）：优先内核文件，其次 uuidgen，最后时间/pid/随机兜底
+gen_uuid() {
+  if [[ -r /proc/sys/kernel/random/uuid ]]; then
+    cat /proc/sys/kernel/random/uuid
+  elif command -v uuidgen >/dev/null 2>&1; then
+    uuidgen
+  else
+    printf 'catsco-%s-%s-%s\n' "$$" "$(date +%s)" "${RANDOM}${RANDOM}"
+  fi
+}
+
 cleanup_failed() {
   # fail-closed：删除刚创建的实例 + key pair（尽力，聚合报错）
   local errors=""
   if [[ -n "${CREATED_INSTANCE_ID:-}" ]]; then
-    if ctyun ecs DeleteEcsInstance --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
-        --instanceID "$CREATED_INSTANCE_ID" >/dev/null 2>&1; then
+    # 实测（2026-08-07）：DeleteEcsInstance 需 clientToken 且不接受 --projectID；
+    # 实例 ID 用列表返回的 instanceID（UUID）优先，创建返回的 masterResourceID 兜底
+    local del_id="" inst
+    inst="$(find_instance "$INSTANCE_NAME" 2>/dev/null || true)"
+    [[ -n "$inst" ]] && del_id="$(jq -r '.instanceID // ""' <<<"$inst")"
+    [[ -n "$del_id" ]] || del_id="$CREATED_INSTANCE_ID"
+    if ctyun ecs DeleteEcsInstance --regionID "$REGION_ID" \
+        --clientToken "$(gen_uuid)" --instanceID "$del_id" >/dev/null 2>&1; then
       : # ok
     else
       errors="instance delete failed; "
@@ -120,8 +137,8 @@ cleanup_failed() {
   fi
   # 只在本次新建 key pair 时删除（复用对象可能仍绑定其他实例，不清理）
   if [[ -n "${KEYPAIR_NAME:-}" && "${KEYPAIR_CREATED:-0}" == "1" ]]; then
-    if ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
-        --keyPairName "$KEYPAIR_NAME" >/dev/null 2>&1; then
+    # 实测（2026-08-07）：DeleteEcsKeypair 不接受 --projectID，会报 unknown flag
+    if ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --keyPairName "$KEYPAIR_NAME" >/dev/null 2>&1; then
       : # ok
     else
       errors="${errors}key pair delete failed; "
@@ -136,7 +153,8 @@ trap 'if [[ $? -ne 0 && $DRY_RUN -eq 0 ]]; then cleanup_failed; fi' EXIT
 existing="$(find_instance "$INSTANCE_NAME")"
 if [[ -n "$existing" ]]; then
   # 幂等只接受 running/active；残留的 stopped/error 同名实例不能当"已供给"
-  existing_state="$(jq -r '.state // .status // ""' <<<"$existing")"
+  # （真实 API 状态字段是 instanceStatus，2026-08-07 云端实测确认）
+  existing_state="$(jq -r '.instanceStatus // .state // .status // ""' <<<"$existing")"
   if [[ "$existing_state" != "running" && "$existing_state" != "active" ]]; then
     echo "error: instance $INSTANCE_NAME already exists but is not running (state=$existing_state); handle it first" >&2
     exit 1
@@ -184,18 +202,6 @@ if [[ -z "$keypair_id" ]]; then
 fi
 
 # --- 4. 创建实例（私有 worker 镜像 → imageType 0） ---
-# 可移植 UUID：优先内核文件，其次 uuidgen，最后时间/pid/随机兜底
-# （BODY_ID/INSTALLATION_ID 只需全局唯一；clientToken 用于幂等重试）
-gen_uuid() {
-  if [[ -r /proc/sys/kernel/random/uuid ]]; then
-    cat /proc/sys/kernel/random/uuid
-  elif command -v uuidgen >/dev/null 2>&1; then
-    uuidgen
-  else
-    printf 'catsco-%s-%s-%s\n' "$$" "$(date +%s)" "${RANDOM}${RANDOM}"
-  fi
-}
-
 # reset 重装时由调用方显式传入（保持 bot 身份不变）；缺省才生成新 UUID
 BODY_ID="${BODY_ID:-$(gen_uuid)}"
 INSTALLATION_ID="${INSTALLATION_ID:-$(gen_uuid)}"
@@ -235,7 +241,7 @@ INSTANCE_IP=""
 for _ in $(seq 1 60); do
   inst="$(find_instance "$INSTANCE_NAME")"
   if [[ -n "$inst" ]]; then
-    state="$(jq -r '.state // .status // ""' <<<"$inst")"
+    state="$(jq -r '.instanceStatus // .state // .status // ""' <<<"$inst")"
     ip="$(jq -r '.floatingIP // .publicIP // ""' <<<"$inst")"
     if [[ "$state" == "running" || "$state" == "active" ]]; then
       [[ -n "$ip" ]] && { INSTANCE_IP="$ip"; break; }

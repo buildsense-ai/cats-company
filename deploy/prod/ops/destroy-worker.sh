@@ -76,6 +76,17 @@ find_instance() {
   jq -r --arg n "$name" '.returnObj.results[]? | select(.instanceName == $n)' <<<"$resp" || true
 }
 
+# 可移植 UUID（clientToken）：优先内核文件，其次 uuidgen，最后时间/pid/随机兜底
+gen_uuid() {
+  if [[ -r /proc/sys/kernel/random/uuid ]]; then
+    cat /proc/sys/kernel/random/uuid
+  elif command -v uuidgen >/dev/null 2>&1; then
+    uuidgen
+  else
+    printf 'catsco-%s-%s-%s\n' "$$" "$(date +%s)" "${RANDOM}${RANDOM}"
+  fi
+}
+
 # --- 1. 删实例（不存在则跳过） ---
 instance_id=""
 inst="$(find_instance "$INSTANCE_NAME")"
@@ -85,8 +96,9 @@ if [[ -n "$inst" ]]; then
     echo "{\"status\":\"dry-run\",\"instance_name\":\"$INSTANCE_NAME\",\"instance_id\":\"$instance_id\"}"
     exit 0
   fi
+  # 实测（2026-08-07）：DeleteEcsInstance 需 clientToken 且不接受 --projectID
   if [[ -n "$instance_id" ]] && ! ctyun ecs DeleteEcsInstance \
-      --regionID "$REGION_ID" --projectID "$PROJECT_ID" --instanceID "$instance_id" >/dev/null 2>&1; then
+      --regionID "$REGION_ID" --clientToken "$(gen_uuid)" --instanceID "$instance_id" >/dev/null 2>&1; then
     echo "error: instance delete failed (instance_id=$instance_id)" >&2
     exit 1
   fi
@@ -102,8 +114,8 @@ kp="$(ctyun ecs GetEcsKeypairDetails --regionID "$REGION_ID" --projectID "$PROJE
   --keyPairName "$KEYPAIR_NAME" --pageNo 1 --pageSize 10 \
   | jq -r --arg n "$KEYPAIR_NAME" '.returnObj.results[]? | select(.keyPairName == $n) | .keyPairID' | head -n1)"
 if [[ -n "$kp" ]]; then
-  if ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
-      --keyPairName "$KEYPAIR_NAME" >/dev/null 2>&1; then
+  # 实测（2026-08-07）：DeleteEcsKeypair 不接受 --projectID，会报 unknown flag
+  if ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --keyPairName "$KEYPAIR_NAME" >/dev/null 2>&1; then
     : # ok
   else
     errors="key pair delete failed; "
