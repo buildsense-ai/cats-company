@@ -355,8 +355,9 @@ type pushSubscriptionKeys struct {
 }
 
 type deletePushSubscriptionRequest struct {
-	Endpoint       string `json:"endpoint"`
-	RegistrationID string `json:"registration_id"`
+	Endpoint         string `json:"endpoint"`
+	RegistrationID   string `json:"registration_id"`
+	AllRegistrations bool   `json:"all_registrations"`
 }
 
 type testPushNotificationRequest struct {
@@ -421,27 +422,6 @@ func (s *PushNotificationService) HandleTest(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	subscriptions, err := s.store.ListPushSubscriptions(r.Context(), uid)
-	if err != nil {
-		s.logf("web push: list test subscriptions for uid %d: %v", uid, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to inspect push subscription"})
-		return
-	}
-	found := false
-	for _, subscription := range subscriptions {
-		if subscription != nil && subscription.RegistrationID == registrationID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"code":  "push_subscription_missing",
-			"error": "no active push subscription for this device",
-		})
-		return
-	}
-
 	result, err := s.sendToUserFiltered(r.Context(), uid, PushNotification{
 		Title: "CatsCo 测试通知",
 		Body:  "如果你看到这条通知，说明当前设备与浏览器可以接收 CatsCo 消息通知。",
@@ -465,7 +445,7 @@ func (s *PushNotificationService) HandleTest(w http.ResponseWriter, r *http.Requ
 		})
 		return
 	}
-	if result.Accepted == 0 {
+	if result.Attempted == 0 {
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"code":  "push_subscription_missing",
 			"error": "no active push subscription for this device",
@@ -535,6 +515,15 @@ func (s *PushNotificationService) handleUnsubscribe(w http.ResponseWriter, r *ht
 	registrationID := strings.TrimSpace(req.RegistrationID)
 	if len(registrationID) > 64 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid registration id"})
+		return
+	}
+	if req.AllRegistrations {
+		if err := s.store.DeletePushSubscriptionsByEndpoint(r.Context(), uid, endpoint); err != nil {
+			s.logf("web push: delete endpoint subscriptions for uid %d: %v", uid, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete subscriptions"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"subscribed": false})
 		return
 	}
 	if err := s.store.DeletePushSubscription(r.Context(), uid, endpoint, registrationID); err != nil {

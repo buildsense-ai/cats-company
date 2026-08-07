@@ -168,3 +168,16 @@ func (a *Adapter) DeletePushSubscription(ctx context.Context, uid int64, endpoin
 	}
 	return nil
 }
+
+// DeletePushSubscriptionsByEndpoint removes the current user's endpoint
+// regardless of which tab most recently registered it.
+func (a *Adapter) DeletePushSubscriptionsByEndpoint(ctx context.Context, uid int64, endpoint string) error {
+	if _, err := a.db.ExecContext(ctx,
+		`DELETE FROM push_subscriptions WHERE uid = ? AND endpoint = ?`,
+		uid,
+		endpoint,
+	); err != nil {
+		return fmt.Errorf("delete push subscriptions by endpoint: %w", err)
+	}
+	return nil
+}

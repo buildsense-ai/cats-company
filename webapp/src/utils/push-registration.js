@@ -1,6 +1,7 @@
 import {
   api,
   getPushRegistrationID,
+  getToken,
   setWSPushSubscriptionEndpoint,
 } from '../api';
 import {
@@ -14,6 +15,7 @@ export async function registerBrowserPush({
   signal,
   isCurrent = () => true,
 }) {
+  const registrationToken = getToken();
   const subscription = await ensurePushSubscription(
     publicKey,
     (endpoint) => api.unsubscribePush(endpoint, undefined, registrationID),
@@ -24,7 +26,26 @@ export async function registerBrowserPush({
   const serialized = serializePushSubscription(subscription);
   if (signal) await api.subscribePush(serialized, registrationID, signal);
   else await api.subscribePush(serialized, registrationID);
-  if (!isCurrent()) return null;
-  await setWSPushSubscriptionEndpoint(subscription.endpoint);
+  const rollbackRegistration = async (cause) => {
+    try {
+      await api.unsubscribePush(subscription.endpoint, registrationToken, registrationID);
+    } catch (rollbackCause) {
+      const error = new Error('通知已注册，但当前页面同步失败，请刷新后重试。');
+      error.code = 'PUSH_REGISTRATION_PARTIAL';
+      error.cause = cause;
+      error.rollbackCause = rollbackCause;
+      throw error;
+    }
+  };
+  if (!isCurrent()) {
+    await rollbackRegistration(new Error('push registration session changed'));
+    return null;
+  }
+  try {
+    await setWSPushSubscriptionEndpoint(subscription.endpoint);
+  } catch (cause) {
+    await rollbackRegistration(cause);
+    throw cause;
+  }
   return { registrationID, subscription };
 }

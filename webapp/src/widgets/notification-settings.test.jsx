@@ -7,9 +7,11 @@ vi.mock('../api', () => ({
     getPushConfig: vi.fn(),
     subscribePush: vi.fn(),
     unsubscribePush: vi.fn(),
+    unsubscribeAllPushRegistrations: vi.fn(),
     sendPushTest: vi.fn(),
   },
   getPushRegistrationID: vi.fn(() => 'registration-current'),
+  getToken: vi.fn(() => 'token-current'),
   setWSPushSubscriptionEndpoint: vi.fn(() => Promise.resolve('subscription-id')),
 }));
 
@@ -17,7 +19,16 @@ vi.mock('../utils/push-operation', () => ({
   enqueuePushOperation: vi.fn((operation) => operation()),
 }));
 
+vi.mock('../utils/push-tab-coordination', () => ({
+  pushTabCoordinator: {
+    setActive: vi.fn(),
+    runWhenNoOtherActiveTabs: vi.fn((operation) => operation()),
+    requestReconcile: vi.fn(),
+  },
+}));
+
 import { api, setWSPushSubscriptionEndpoint } from '../api';
+import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import NotificationSettings from './notification-settings';
 
 describe('NotificationSettings', () => {
@@ -64,6 +75,7 @@ describe('NotificationSettings', () => {
     api.getPushConfig.mockResolvedValue({ enabled: true, public_key: 'AQID' });
     api.subscribePush.mockResolvedValue({ subscribed: true });
     api.unsubscribePush.mockResolvedValue({ subscribed: false });
+    api.unsubscribeAllPushRegistrations.mockResolvedValue({ subscribed: false });
     api.sendPushTest.mockResolvedValue({ accepted: true });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -94,13 +106,13 @@ describe('NotificationSettings', () => {
     });
 
     await vi.waitFor(() => expect(subscription.unsubscribe).toHaveBeenCalledTimes(1));
-    expect(api.unsubscribePush).toHaveBeenCalledWith(subscription.endpoint);
+    expect(api.unsubscribeAllPushRegistrations).toHaveBeenCalledWith(subscription.endpoint);
     expect(setWSPushSubscriptionEndpoint).toHaveBeenCalledWith('');
     expect(localStorage.getItem('cc_push_enabled_v1:user:7')).toBe('false');
     expect(container.textContent).toContain('已在当前设备关闭消息通知');
   });
 
-  it('reports incomplete cleanup and remembers a failed browser unsubscribe', async () => {
+  it('keeps the browser cleanup pending when the server record was removed', async () => {
     subscription.unsubscribe.mockResolvedValue(false);
     await renderSettings();
 
@@ -109,13 +121,12 @@ describe('NotificationSettings', () => {
       await Promise.resolve();
     });
 
-    await vi.waitFor(() => expect(container.textContent).toContain('订阅清理未完成'));
+    await vi.waitFor(() => expect(container.textContent).toContain('已在当前设备关闭消息通知'));
     expect(localStorage.getItem('oc_push_pending_unsubscribe_v1')).toBe(subscription.endpoint);
-    expect(container.textContent).not.toContain('已在当前设备关闭消息通知');
   });
 
-  it('reports incomplete cleanup when the server unsubscribe fails', async () => {
-    api.unsubscribePush.mockRejectedValue(new Error('server unavailable'));
+  it('closes notifications when browser cleanup succeeds after a server failure', async () => {
+    api.unsubscribeAllPushRegistrations.mockRejectedValue(new Error('server unavailable'));
     await renderSettings();
 
     await act(async () => {
@@ -123,9 +134,126 @@ describe('NotificationSettings', () => {
       await Promise.resolve();
     });
 
-    await vi.waitFor(() => expect(container.textContent).toContain('订阅清理未完成'));
+    await vi.waitFor(() => expect(container.textContent).toContain('已在当前设备关闭消息通知'));
     expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
-    expect(container.textContent).not.toContain('已在当前设备关闭消息通知');
+  });
+
+  it('preserves the shared browser subscription while another tab is active', async () => {
+    pushTabCoordinator.runWhenNoOtherActiveTabs.mockResolvedValueOnce(false);
+    await renderSettings();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[role="switch"]'));
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => expect(container.textContent).toContain('已在当前设备关闭消息通知'));
+    expect(api.unsubscribeAllPushRegistrations).toHaveBeenCalledWith(subscription.endpoint);
+    expect(subscription.unsubscribe).not.toHaveBeenCalled();
+  });
+
+  it('restores the enabled state when neither cleanup path can run', async () => {
+    api.unsubscribeAllPushRegistrations.mockRejectedValueOnce(new Error('server unavailable'));
+    pushTabCoordinator.runWhenNoOtherActiveTabs.mockResolvedValueOnce(false);
+    await renderSettings();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[role="switch"]'));
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => expect(container.textContent).toContain('通知关闭失败'));
+    expect(container.querySelector('[role="switch"]').getAttribute('aria-checked')).toBe('true');
+    expect(localStorage.getItem('cc_push_enabled_v1:user:7')).toBe('true');
+    expect(subscription.unsubscribe).not.toHaveBeenCalled();
+    expect(pushTabCoordinator.requestReconcile).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores the enabled state when both cleanup operations fail', async () => {
+    api.unsubscribeAllPushRegistrations.mockRejectedValueOnce(new Error('server unavailable'));
+    subscription.unsubscribe.mockResolvedValueOnce(false);
+    await renderSettings();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[role="switch"]'));
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => expect(container.textContent).toContain('通知关闭失败'));
+    expect(container.querySelector('[role="switch"]').getAttribute('aria-checked')).toBe('true');
+    expect(localStorage.getItem('cc_push_enabled_v1:user:7')).toBe('true');
+  });
+
+  it('allows an existing subscription to be disabled after permission is denied', async () => {
+    window.Notification.permission = 'denied';
+    await renderSettings();
+    const toggle = container.querySelector('[role="switch"]');
+
+    expect(toggle.disabled).toBe(false);
+    await act(async () => {
+      Simulate.click(toggle);
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => expect(subscription.unsubscribe).toHaveBeenCalledTimes(1));
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('synchronizes the switch when another tab changes the preference', async () => {
+    await renderSettings();
+
+    localStorage.setItem('cc_push_enabled_v1:user:7', 'false');
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: 'cc_push_enabled_v1:user:7',
+        newValue: 'false',
+      }));
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector('[role="switch"]').getAttribute('aria-checked')).toBe('false');
+    });
+  });
+
+  it('rolls back the server record when WebSocket registration fails', async () => {
+    localStorage.setItem('cc_push_enabled_v1:user:7', 'false');
+    setWSPushSubscriptionEndpoint.mockRejectedValueOnce(new Error('digest unavailable'));
+    await act(async () => root.render(<NotificationSettings user={{ uid: 7 }} />));
+    await vi.waitFor(() => {
+      expect(container.querySelector('[role="switch"]').getAttribute('aria-checked')).toBe('false');
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[role="switch"]'));
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => expect(container.textContent).toContain('digest unavailable'));
+    expect(api.unsubscribePush).toHaveBeenCalledWith(
+      subscription.endpoint,
+      'token-current',
+      'registration-current',
+    );
+    expect(localStorage.getItem('cc_push_enabled_v1:user:7')).toBe('false');
+  });
+
+  it('keeps notifications enabled when registration rollback also fails', async () => {
+    localStorage.setItem('cc_push_enabled_v1:user:7', 'false');
+    setWSPushSubscriptionEndpoint.mockRejectedValueOnce(new Error('digest unavailable'));
+    api.unsubscribePush.mockRejectedValueOnce(new Error('rollback unavailable'));
+    await act(async () => root.render(<NotificationSettings user={{ uid: 7 }} />));
+    await vi.waitFor(() => {
+      expect(container.querySelector('[role="switch"]').getAttribute('aria-checked')).toBe('false');
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[role="switch"]'));
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => expect(container.textContent).toContain('通知已注册'));
+    expect(container.querySelector('[role="switch"]').getAttribute('aria-checked')).toBe('true');
+    expect(localStorage.getItem('cc_push_enabled_v1:user:7')).toBe('true');
   });
 
   it('sends a background push test for the current browser registration', async () => {

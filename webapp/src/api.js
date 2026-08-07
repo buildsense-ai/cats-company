@@ -497,6 +497,11 @@ export const api = {
       signal: controller.signal,
     }).finally(() => window.clearTimeout(timer));
   },
+  unsubscribeAllPushRegistrations: (endpoint) => request(
+    'DELETE',
+    '/api/push/subscriptions',
+    { endpoint, all_registrations: true },
+  ),
   updateMe: (displayName, avatarUrl) =>
     request('POST', '/api/me/update', { display_name: displayName, avatar_url: avatarUrl }),
 

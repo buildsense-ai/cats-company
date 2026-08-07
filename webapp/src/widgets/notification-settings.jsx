@@ -7,11 +7,13 @@ import {
 } from 'lucide-react';
 import {
   api,
+  getPushRegistrationID,
   setWSPushSubscriptionEndpoint,
 } from '../api';
 import {
   canUsePush,
   getPushSubscription,
+  pushEnabledStorageKey,
   readPushEnabled,
   writePushEnabled,
 } from '../utils/push-notifications';
@@ -21,6 +23,7 @@ import {
   clearPendingPushUnsubscribe,
   rememberPendingPushUnsubscribe,
 } from '../utils/push-session-cleanup';
+import { pushTabCoordinator } from '../utils/push-tab-coordination';
 
 function pushOwnerForUser(user) {
   const uid = user?.uid || user?.id;
@@ -77,9 +80,13 @@ export default function NotificationSettings({ user }) {
 
   useEffect(() => {
     let cancelled = false;
+    let inspectionVersion = 0;
     const inspect = async () => {
+      const version = ++inspectionVersion;
+      const isCurrent = () => !cancelled && version === inspectionVersion;
+      if (isCurrent()) setLoading(true);
       if (!supported || !readPushEnabled(owner)) {
-        if (!cancelled) {
+        if (isCurrent()) {
           setEnabled(false);
           setLoading(false);
         }
@@ -87,15 +94,28 @@ export default function NotificationSettings({ user }) {
       }
       try {
         const subscription = await getPushSubscription();
-        if (!cancelled) setEnabled(Boolean(subscription));
+        if (isCurrent()) setEnabled(Boolean(subscription));
       } catch {
-        if (!cancelled) setEnabled(false);
+        if (isCurrent()) setEnabled(false);
       } finally {
-        if (!cancelled) setLoading(false);
+        if (isCurrent()) setLoading(false);
       }
     };
+    const handlePreferenceChanged = (event) => {
+      if (event.detail?.owner && event.detail.owner !== owner) return;
+      inspect();
+    };
+    const handleStorage = (event) => {
+      if (event.key === pushEnabledStorageKey(owner)) inspect();
+    };
     inspect();
-    return () => { cancelled = true; };
+    window.addEventListener('cc:push-preference-changed', handlePreferenceChanged);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('cc:push-preference-changed', handlePreferenceChanged);
+      window.removeEventListener('storage', handleStorage);
+    };
   }, [owner, supported]);
 
   const enableNotifications = async () => {
@@ -123,8 +143,9 @@ export default function NotificationSettings({ user }) {
       setMessage('已在当前设备开启消息通知。');
       notifyPreferenceChanged(owner);
     } catch (err) {
-      writePushEnabled(owner, false);
-      setEnabled(false);
+      const partiallyRegistered = err?.code === 'PUSH_REGISTRATION_PARTIAL';
+      writePushEnabled(owner, partiallyRegistered);
+      setEnabled(partiallyRegistered);
       notifyPreferenceChanged(owner);
       setError(err?.message || '通知开启失败，请稍后重试。');
     } finally {
@@ -143,31 +164,46 @@ export default function NotificationSettings({ user }) {
       await enqueuePushOperation(async () => {
         const subscription = await getPushSubscription();
         if (subscription) {
-          const [serverResult, browserResult] = await Promise.allSettled([
-            api.unsubscribePush(subscription.endpoint),
-            subscription.unsubscribe(),
-          ]);
-          const serverRemoved = serverResult.status === 'fulfilled';
-          const browserRemoved = browserResult.status === 'fulfilled' && browserResult.value === true;
-          if (browserRemoved) clearPendingPushUnsubscribe(subscription.endpoint);
-          else rememberPendingPushUnsubscribe(subscription.endpoint);
-          if (!serverRemoved || !browserRemoved) {
-            throw new Error('通知已关闭，但订阅清理未完成，请稍后重新开启再关闭。');
+          const registrationID = getPushRegistrationID();
+          pushTabCoordinator.setActive(false, registrationID);
+          let serverRemoved = false;
+          try {
+            await api.unsubscribeAllPushRegistrations(subscription.endpoint);
+            serverRemoved = true;
+          } catch {
+            // A successful browser unsubscribe is also sufficient to stop delivery.
+          }
+          const browserRemoved = await pushTabCoordinator.runWhenNoOtherActiveTabs(async () => {
+            try {
+              const removed = (await subscription.unsubscribe()) === true;
+              if (removed) clearPendingPushUnsubscribe(subscription.endpoint);
+              else rememberPendingPushUnsubscribe(subscription.endpoint);
+              return removed;
+            } catch {
+              rememberPendingPushUnsubscribe(subscription.endpoint);
+              return false;
+            }
+          });
+          if (!serverRemoved && !browserRemoved) {
+            pushTabCoordinator.requestReconcile?.();
+            throw new Error('通知关闭失败，请稍后重试。');
           }
         }
-        await setWSPushSubscriptionEndpoint('');
+        await setWSPushSubscriptionEndpoint('').catch(() => {});
       });
       setMessage('已在当前设备关闭消息通知。');
     } catch (err) {
-      await setWSPushSubscriptionEndpoint('').catch(() => {});
-      setError(err?.message || '通知已关闭，但订阅清理未完成，请稍后重新开启再关闭。');
+      writePushEnabled(owner, true);
+      setEnabled(true);
+      notifyPreferenceChanged(owner);
+      setError(err?.message || '通知关闭失败，请稍后重试。');
     } finally {
       setBusy(false);
     }
   };
 
   const handleToggle = () => {
-    if (busy || loading || !supported || permission === 'denied') return;
+    if (busy || loading || !supported || (permission === 'denied' && !enabled)) return;
     if (enabled) disableNotifications();
     else enableNotifications();
   };
@@ -206,7 +242,7 @@ export default function NotificationSettings({ user }) {
           role="switch"
           aria-checked={enabled}
           aria-label="接收消息通知"
-          disabled={busy || loading || !supported || permission === 'denied'}
+          disabled={busy || loading || !supported || (permission === 'denied' && !enabled)}
           onClick={handleToggle}
         >
           <span aria-hidden="true" />

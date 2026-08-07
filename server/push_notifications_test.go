@@ -28,6 +28,7 @@ type memoryPushSubscriptionStore struct {
 	deletedUID            int64
 	deleted               string
 	deletedRegistrationID string
+	deletedAll            bool
 	deletedScoped         []string
 	upsertErr             error
 	listErr               error
@@ -93,6 +94,22 @@ func (m *memoryPushSubscriptionStore) DeletePushSubscription(_ context.Context, 
 		if subscription != nil && subscription.UID == uid && subscription.Endpoint == endpoint && subscription.RegistrationID == registrationID {
 			m.subscriptions = append(m.subscriptions[:index], m.subscriptions[index+1:]...)
 			break
+		}
+	}
+	return nil
+}
+
+func (m *memoryPushSubscriptionStore) DeletePushSubscriptionsByEndpoint(_ context.Context, uid int64, endpoint string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	m.deletedUID = uid
+	m.deleted = endpoint
+	m.deletedAll = true
+	for index := len(m.subscriptions) - 1; index >= 0; index-- {
+		subscription := m.subscriptions[index]
+		if subscription != nil && subscription.UID == uid && subscription.Endpoint == endpoint {
+			m.subscriptions = append(m.subscriptions[:index], m.subscriptions[index+1:]...)
 		}
 	}
 	return nil
@@ -522,6 +539,26 @@ func TestPushNotificationDeleteSubscriptionAllowsLegacyEmptyRegistrationID(t *te
 	}
 	if store.deleted != "https://push.example.test/subscription/delete" || store.deletedRegistrationID != "" {
 		t.Fatalf("legacy delete called with endpoint=%q registration_id=%q", store.deleted, store.deletedRegistrationID)
+	}
+}
+
+func TestPushNotificationDeleteAllRegistrationsForCurrentUserEndpoint(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{UID: 104, Endpoint: "https://push.example.test/subscription/shared", RegistrationID: "other-tab"},
+		{UID: 105, Endpoint: "https://push.example.test/subscription/other-user", RegistrationID: "other-user"},
+	}}
+	service := enabledPushService(store)
+	recorder := httptest.NewRecorder()
+	service.HandleSubscription(recorder, pushRequest(t, http.MethodDelete, `{"endpoint":"https://push.example.test/subscription/shared","all_registrations":true}`, 104))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if !store.deletedAll || store.deletedUID != 104 || store.deleted != "https://push.example.test/subscription/shared" {
+		t.Fatalf("delete all called with all=%v uid=%d endpoint=%q", store.deletedAll, store.deletedUID, store.deleted)
+	}
+	if len(store.subscriptions) != 1 || store.subscriptions[0].UID != 105 {
+		t.Fatalf("delete all removed another user's subscription: %+v", store.subscriptions)
 	}
 }
 

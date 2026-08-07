@@ -158,3 +158,29 @@ func TestDeletePushSubscriptionMatchesExactRegistrationID(t *testing.T) {
 		t.Fatalf("unmet database expectations: %v", err)
 	}
 }
+
+func TestDeletePushSubscriptionsByEndpointIgnoresRegistrationID(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("create mock database: %v", err)
+	}
+	defer sqlDB.Close()
+
+	const (
+		uid      = int64(42)
+		endpoint = "https://push.example.test/all-registrations"
+	)
+	mock.ExpectExec(regexp.QuoteMeta(
+		"DELETE FROM push_subscriptions WHERE uid = ? AND endpoint = ?",
+	)).
+		WithArgs(uid, endpoint).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	adapter := &Adapter{db: sqlDB}
+	if err := adapter.DeletePushSubscriptionsByEndpoint(context.Background(), uid, endpoint); err != nil {
+		t.Fatalf("delete push subscriptions by endpoint: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet database expectations: %v", err)
+	}
+}
