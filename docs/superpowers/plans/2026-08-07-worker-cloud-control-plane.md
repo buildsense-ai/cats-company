@@ -93,7 +93,7 @@
 - **`catsco-agent.service` 位置**：`/etc/systemd/system/catsco-agent.service`（镜像 bake 时写入；User=catsco-agent，WorkingDirectory=/srv/catsco-agent，`EnvironmentFile=-/srv/catsco-agent/.env`，`ExecStart=... dist/index.js catsco`，XIAOBA_USER_DATA_DIR=/srv/catsco-agent）——provision 的 .env 注入 + `systemctl enable --now` 与该定义完全匹配。
 - **bootstrap 必须写 `.xiaoba/catsco.json`（localConfig v1）**：worker 的 catsco 命令（`resolveCatsCoRuntimeConfig`）不开 `migrateLegacyEnvBinding`，且 **`bodyId` 只从 `localConfig.device.bodyId` 读**（.env 的 CATSCO_BODY_ID 不生效）、botUid/apiKey 需 `hasConfirmedLocalBotBinding`（localConfig.currentBot）——只写 .env 时 connector 不 ready，worker exit(1)「配置缺失」。provision 已改为注入 .env 后额外写 `/srv/catsco-agent/.xiaoba/catsco.json`（device.bodyId/installationId=provision 生成值以匹配服务器记录、currentBot 绑定 bindingSource=cloud-provision、account、endpoints），chmod 600。
 
-- [ ] **步骤 B4-2：cats-company 对接**：`runScript` 已支持直接 exec 脚本（PR #158）；只需在部署时配置 4-5 个 `CATSCO_WORKER_*_SCRIPT` env 指向 `deploy/prod/ops/*.sh`。Dockerfile 变更随 B4-1。🟡（配置文档已写 `deploy/prod/ops/README.md`——env→脚本映射 + CTYUN_* + 权限/持久化/配额注意；端到端待 PR #158 合并后在部署时配置 env）
+- [x] **步骤 B4-2：cats-company 对接**：控制面通过 `runScript` 直接执行上述 bash 脚本，生产/测试 Compose 已显式接入 `CATSCO_WORKER_*_SCRIPT`、`CTYUN_*` 和持久化状态目录；端到端配置随 #163 / #158 完成。
 
 ## 环境变量（新增）
 - `CATSCO_WORKER_CREATE_QUOTA`（创建配额，`<uid>=<n>` 分号分隔，默认空=0）

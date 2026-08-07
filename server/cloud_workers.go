@@ -10,8 +10,10 @@
 //     and recreate from image) — strictly separate, documented actions
 //
 // Heavy cloud operations (provision / rollback / reset / image list) are
-// delegated to PowerShell scripts configured through environment variables so
-// credentials stay server-side. When a script is not configured the matching
+// delegated to executable scripts configured through environment variables so
+// credentials stay server-side. Scripts run on the Linux server image (no
+// PowerShell), so each one must be an executable file with a proper shebang
+// (e.g. #!/usr/bin/env bash). When a script is not configured the matching
 // endpoint returns 503, which keeps the control plane safe to ship without the
 // worker pipeline wired up.
 package server
@@ -403,7 +405,11 @@ func (h *CloudWorkerHandler) HandleSub(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// runScript executes a PowerShell script with the given arguments.
+// runScript executes the worker operation script directly. The script must be
+// an executable file with a proper shebang (e.g. #!/usr/bin/env bash) because
+// the production server runs on a minimal Linux image without PowerShell.
+// Arguments are passed through the exec argv, so there is no shell
+// interpolation and no injection surface.
 func (h *CloudWorkerHandler) runScript(ctx context.Context, script string, args ...string) (string, error) {
 	if script == "" {
 		return "", fmt.Errorf("cloud worker script not configured")
@@ -411,8 +417,7 @@ func (h *CloudWorkerHandler) runScript(ctx context.Context, script string, args 
 	cmdCtx, cancel := context.WithTimeout(ctx, h.scriptTimeout)
 	defer cancel()
 
-	fullArgs := append([]string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script}, args...)
-	cmd := exec.CommandContext(cmdCtx, "powershell", fullArgs...)
+	cmd := exec.CommandContext(cmdCtx, script, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("script failed: %w", err)

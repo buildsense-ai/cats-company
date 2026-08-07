@@ -7,6 +7,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/openchat/openchat/server/store"
@@ -267,6 +272,38 @@ func TestCloudWorkerHandleActionNotOwned(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status=%d want 404 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCloudWorkerRunScriptDirectExec(t *testing.T) {
+	// runScript must execute the script directly (its shebang decides the
+	// interpreter) rather than assuming PowerShell — the production server
+	// image is a minimal Linux image without PowerShell. Cross-platform:
+	// Windows uses a .cmd script, POSIX hosts use an sh shebang script.
+	h, _ := newCloudWorkerTestHandler("7=1")
+	dir := t.TempDir()
+	var script string
+	if runtime.GOOS == "windows" {
+		script = filepath.Join(dir, "worker-op.cmd")
+		if err := os.WriteFile(script, []byte("@echo off\r\necho ok-%1\r\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if _, err := exec.LookPath("sh"); err != nil {
+			t.Skip("no sh in PATH")
+		}
+		script = filepath.Join(dir, "worker-op.sh")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\necho ok-$1\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out, err := h.runScript(context.Background(), script, "hello")
+	if err != nil {
+		t.Fatalf("runScript direct exec failed: %v (out=%s)", err, out)
+	}
+	if !strings.Contains(out, "ok-hello") {
+		t.Fatalf("unexpected output: %q", out)
 	}
 }
 
