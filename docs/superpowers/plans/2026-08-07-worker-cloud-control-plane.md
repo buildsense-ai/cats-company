@@ -77,9 +77,16 @@
 
 **认证（2026-08-07 用户确认）**：**一个账号（创建者）可以拥有多个机器人**。云托管虚拟员工 = 为创建者**新建一个机器人（bot）** + 在云实例运行它的 XiaoBa。XiaoBa 客户端本身需要登录——provision 注入**两样**：① 创建者（网页已登录账号）的**登录凭证**（网页登录态，worker 以创建者账号登录、云端持久化）；② 该 bot 的**连接凭证**（api key / 链接，按原来 createBot 方式）。
 
+**`.env` 键名（2026-08-07 已从 worker1 服务器核实，只键名）**：
+- **bot 连接**：`CATSCO_API_KEY`、`CATSCO_BOT_UID`、`CATSCO_BODY_ID`、`CATSCO_INSTALLATION_ID`
+- **创建者登录**：`CATSCO_USER_TOKEN`、`CATSCO_USER_UID`、`CATSCO_USER_NAME`、`CATSCO_USER_DISPLAY_NAME`（代码同时支持 `CATSCOMPANY_*` 别名，`firstNonEmpty` 优先 `CATSCO_*`）
+- **端点**：`CATSCO_HTTP_BASE_URL`、`CATSCO_SERVER_URL`
+- **运行时**：`PATH`、`XIAOBA_NODE_MODULES`、`XIAOBA_GPTR_PYTHON`、浏览器路径（`CHROME_PATH`/`PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` 等，镜像默认或按需）
+- **日志**：`CATSCO_LOG_UPLOAD_ENABLED`
+- 对应 XiaoBa 代码：`src/catscompany/runtime-config.ts`（serverUrl/apiKey/uid 解析）+ `local-config.ts`（getAuthState：CATSCO_USER_TOKEN/UID、CATSCO_BOT_UID、CATSCO_API_KEY）
+
 **待确认**：
 - ⚠️ 后端如何获取「网页登录凭证」并传给 provision：登录用户的 JWT / 专门登录 token / 会话？机制实现时定
-- ⚠️ `/srv/catsco-agent/.env` 的**确切键名**（XiaoBa 登录 + CatsCompany 连接：参考 XiaoBa-CLI `src/catscompany/runtime-config.ts` 的 `CATSCO_*` 别名 + 现有 worker 的 .env 模板）
 - bootstrap 是否还要写 `.xiaoba` runtime profile / 其他身份文件
 - `catsco-agent.service` 文件在镜像内的确切位置与依赖
 
