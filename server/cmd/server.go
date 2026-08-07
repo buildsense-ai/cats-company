@@ -308,6 +308,8 @@ func main() {
 	hub.SetPushNotificationService(pushNotificationService)
 	if pushNotificationService.Enabled() {
 		log.Printf("web push notifications are enabled")
+	} else if err := pushNotificationService.ConfigError(); err != nil {
+		log.Printf("web push notifications are disabled: %v", err)
 	} else {
 		log.Printf("web push notifications are disabled; configure VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT")
 	}
