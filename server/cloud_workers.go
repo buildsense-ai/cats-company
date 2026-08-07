@@ -26,9 +26,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/openchat/openchat/server/store"
@@ -42,14 +44,25 @@ type CloudWorkerHandler struct {
 	// create quota per owner uid, from CATSCO_WORKER_CREATE_QUOTA.
 	quota map[int64]int
 
-	// PowerShell scripts invoked for heavy cloud operations (empty = disabled).
+	// Executable scripts invoked for heavy cloud operations (empty = disabled).
 	provisionScript string
 	resetScript     string
 	rollbackScript  string
+	destroyScript   string
 	imagesScript    string
 
 	scriptTimeout time.Duration
+
+	// opMu serializes all cloud operations (create / rollback / reset /
+	// delete). These are low-frequency, long-running, paid-instance actions;
+	// a global lock keeps quota checks atomic and prevents a single user from
+	// piling up concurrent script processes.
+	opMu sync.Mutex
 }
+
+// workerUsernameRe constrains cloud worker usernames so the derived tenant
+// name stays safe to embed in URL paths and script argv.
+var workerUsernameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
 
 // CloudWorkerConfig configures the cloud worker control plane.
 type CloudWorkerConfig struct {
@@ -57,6 +70,7 @@ type CloudWorkerConfig struct {
 	ProvisionScript string // CATSCO_WORKER_PROVISION_SCRIPT
 	ResetScript     string // CATSCO_WORKER_RESET_SCRIPT
 	RollbackScript  string // CATSCO_WORKER_ROLLBACK_SCRIPT
+	DestroyScript   string // CATSCO_WORKER_DESTROY_SCRIPT
 	ImagesScript    string // CATSCO_WORKER_IMAGES_SCRIPT
 }
 
@@ -67,6 +81,7 @@ func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 		ProvisionScript: strings.TrimSpace(os.Getenv("CATSCO_WORKER_PROVISION_SCRIPT")),
 		ResetScript:     strings.TrimSpace(os.Getenv("CATSCO_WORKER_RESET_SCRIPT")),
 		RollbackScript:  strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
+		DestroyScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
 		ImagesScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_IMAGES_SCRIPT")),
 	}
 }
@@ -80,6 +95,7 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 		provisionScript: cfg.ProvisionScript,
 		resetScript:     cfg.ResetScript,
 		rollbackScript:  cfg.RollbackScript,
+		destroyScript:   cfg.DestroyScript,
 		imagesScript:    cfg.ImagesScript,
 		scriptTimeout:   10 * time.Minute,
 	}
@@ -219,8 +235,11 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 			"remaining": remaining,
 		},
 	}
+	// Image listing is a cheap, read-only probe: use a short timeout and
+	// never block the request for the full scriptTimeout.
 	if h.imagesScript != "" {
-		if out, listErr := h.runScript(r.Context(), h.imagesScript, "-Action", "List"); listErr == nil {
+		const imageListTimeout = 30 * time.Second
+		if out, listErr := h.runScriptTimeout(imageListTimeout, h.imagesScript, "-Action", "List"); listErr == nil {
 			meta["images"] = parseImageLines(out)
 		}
 	}
@@ -240,6 +259,12 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+
+	// All paid-instance operations are serialized so the quota check and the
+	// bot creation stay atomic and no single user can pile up concurrent
+	// script processes.
+	h.opMu.Lock()
+	defer h.opMu.Unlock()
 
 	total := h.quota[uid]
 	if total <= 0 {
@@ -262,6 +287,14 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
+	// Constrain the username so the derived tenant name stays safe in URL
+	// paths and script argv (no '/', '..', whitespace, or shell metachars).
+	if !workerUsernameRe.MatchString(req.Username) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid username: only [a-z0-9_-] allowed, 2-64 chars",
+		})
+		return
+	}
 
 	result, status, err := h.bots.createBotAccount(uid, req)
 	if err != nil {
@@ -281,21 +314,25 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "cloud worker provisioning is not configured"})
 		return
 	}
-	if out, err := h.runScript(r.Context(), h.provisionScript,
+	if _, err := h.runScript(h.provisionScript,
 		"-Action", "Provision", "-Name", tenantName, "-ApiKey", result.APIKey); err != nil {
 		log.Printf("[cloud-worker] provision %s failed: %v", tenantName, err)
 		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
 			log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
 		}
-		writeJSON(w, http.StatusBadGateway, map[string]string{
-			"error":  "failed to provision cloud worker",
-			"detail": strings.TrimSpace(out),
-		})
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to provision cloud worker"})
 		return
 	}
 
 	if err := h.db.SetTenantName(result.UID, tenantName); err != nil {
 		log.Printf("[cloud-worker] failed to save tenant_name for uid %d: %v", result.UID, err)
+		// The instance was already provisioned; destroy it so we do not leave
+		// an orphaned, still-billed cloud instance behind.
+		if h.destroyScript != "" {
+			if _, destroyErr := h.runScript(h.destroyScript, "-Action", "Destroy", "-Name", tenantName); destroyErr != nil {
+				log.Printf("[cloud-worker] destroy %s after finalize failure also failed: %v", tenantName, destroyErr)
+			}
+		}
 		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
 			log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
 		}
@@ -312,11 +349,13 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		friendAutoAdded = true
 	}
 
+	// The provision script ran synchronously to completion, so the worker is
+	// provisioned/running rather than still "provisioning".
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"uid":               result.UID,
 		"username":          result.Username,
 		"tenant_name":       tenantName,
-		"deployment_status": "provisioning",
+		"deployment_status": "running",
 		"friend_auto_added": friendAutoAdded,
 	})
 }
@@ -376,16 +415,97 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	out, err := h.runScript(r.Context(), script, "-Action", action, "-Name", name)
-	if err != nil {
+	// Optional version selector forwarded to the script (rollback/reset can
+	// target a specific image version when the script supports it).
+	var body struct {
+		Version string `json:"version,omitempty"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body) // malformed body is ignored
+	}
+	args := []string{"-Action", action, "-Name", name}
+	if body.Version != "" {
+		args = append(args, "-Version", body.Version)
+	}
+
+	h.opMu.Lock()
+	defer h.opMu.Unlock()
+
+	if _, err := h.runScript(script, args...); err != nil {
 		log.Printf("[cloud-worker] %s %s failed: %v", action, name, err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{
-			"error":  "cloud worker " + action + " failed",
-			"detail": strings.TrimSpace(out),
-		})
+		// Script output stays in the server logs; never echo it back (the
+		// provision script receives an API key via argv).
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "cloud worker " + action + " failed"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": action + "_started"})
+	// The script ran synchronously to completion.
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": action})
+}
+
+// HandleDelete handles DELETE /api/cloud-workers/{name} — destroy the cloud
+// instance (when a destroy script is configured) and then remove the bot
+// record. Without a destroy script the DB record is still removed so the
+// caller is not locked out, but a warning is returned.
+func (h *CloudWorkerHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	uid := UIDFromContext(r.Context())
+	if uid == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	name := r.PathValue("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing worker name"})
+		return
+	}
+
+	workers, err := h.cloudWorkersOfOwner(uid)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list cloud workers"})
+		return
+	}
+	var botUID int64
+	owned := false
+	for _, w := range workers {
+		if w.TenantName == name {
+			owned = true
+			botUID = w.UID
+			break
+		}
+	}
+	if !owned {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "cloud worker not found"})
+		return
+	}
+
+	h.opMu.Lock()
+	defer h.opMu.Unlock()
+
+	if h.destroyScript != "" {
+		if _, err := h.runScript(h.destroyScript, "-Action", "Destroy", "-Name", name); err != nil {
+			log.Printf("[cloud-worker] destroy %s failed: %v", name, err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to destroy cloud worker instance"})
+			return
+		}
+	}
+	if botUID != 0 {
+		if err := h.db.DeleteBot(botUID); err != nil {
+			log.Printf("[cloud-worker] delete bot %d failed: %v", botUID, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete cloud worker"})
+			return
+		}
+	}
+
+	resp := map[string]interface{}{"status": "deleted"}
+	if h.destroyScript == "" {
+		resp["warning"] = "no destroy script configured; the cloud instance may still be running"
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // HandleSub routes /api/cloud-workers/ subtree by path segment.
@@ -400,24 +520,37 @@ func (h *CloudWorkerHandler) HandleSub(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(rest, "/reset"):
 		r.SetPathValue("name", strings.TrimSuffix(rest, "/reset"))
 		h.HandleReset(w, r)
+	case rest != "" && !strings.Contains(rest, "/"):
+		// DELETE /api/cloud-workers/{name} (method enforced in HandleDelete)
+		r.SetPathValue("name", rest)
+		h.HandleDelete(w, r)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
 }
 
-// runScript executes the worker operation script directly. The script must be
-// an executable file with a proper shebang (e.g. #!/usr/bin/env bash) because
-// the production server runs on a minimal Linux image without PowerShell.
-// Arguments are passed through the exec argv, so there is no shell
-// interpolation and no injection surface.
-func (h *CloudWorkerHandler) runScript(ctx context.Context, script string, args ...string) (string, error) {
+// runScript executes the worker operation script with the default timeout. The
+// script must be an executable file with a proper shebang (e.g.
+// #!/usr/bin/env bash) because the production server runs on a minimal Linux
+// image without PowerShell. Execution is decoupled from the request context so
+// a client disconnect or proxy timeout cannot kill an in-flight provision or
+// reset (which would orphan cloud instances). Arguments are passed through the
+// exec argv — no shell interpolation, no injection surface.
+func (h *CloudWorkerHandler) runScript(script string, args ...string) (string, error) {
+	return h.runScriptTimeout(h.scriptTimeout, script, args...)
+}
+
+// runScriptTimeout runs a script with an explicit timeout against a fresh
+// background context, so callers can bound short probes (image listing) and
+// long operations (provision/reset) independently.
+func (h *CloudWorkerHandler) runScriptTimeout(timeout time.Duration, script string, args ...string) (string, error) {
 	if script == "" {
 		return "", fmt.Errorf("cloud worker script not configured")
 	}
-	cmdCtx, cancel := context.WithTimeout(ctx, h.scriptTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(cmdCtx, script, args...)
+	cmd := exec.CommandContext(ctx, script, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("script failed: %w", err)
@@ -426,11 +559,18 @@ func (h *CloudWorkerHandler) runScript(ctx context.Context, script string, args 
 }
 
 // parseImageLines extracts image identifiers from a script's line-based output.
+// Comment lines ("#") and column headers are skipped; a real identifier is a
+// single token and is never treated as a header.
 func parseImageLines(out string) []string {
 	images := []string{}
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "Name") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		first := strings.Fields(line)[0]
+		switch first {
+		case "imageID", "name", "version", "commit":
 			continue
 		}
 		images = append(images, line)

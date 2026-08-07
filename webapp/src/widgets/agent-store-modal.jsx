@@ -168,6 +168,7 @@ export default function AgentStoreModal({
   const [copiedField, setCopiedField] = useState('');
   const [copyingBotKey, setCopyingBotKey] = useState(null);
   const [cloudQuota, setCloudQuota] = useState(null); // {enabled,total,used,remaining}
+  const [cloudQuotaError, setCloudQuotaError] = useState(false); // true when the quota fetch itself failed
   const [cloudActioning, setCloudActioning] = useState(null); // tenant_name being acted on
   const [editingBot, setEditingBot] = useState(null);
   const [entryBot, setEntryBot] = useState(null);
@@ -265,6 +266,9 @@ export default function AgentStoreModal({
         friendsRes.friends || [],
       ).filter(isOwnedBot);
       setBots(manageableBots);
+      // Distinguish "quota fetch failed" (null + error) from "cloud hosting
+      // disabled" (quota.enabled === false) so the UI does not mislead.
+      setCloudQuotaError(!cloudRes.quota && !cloudRes.workers);
       setCloudQuota(cloudRes.quota || null);
       // Enrich cloud-managed workers with version/status from the control plane.
       const cloudWorkers = cloudRes.workers || [];
@@ -399,7 +403,16 @@ export default function AgentStoreModal({
     if (!confirmed) return;
     try {
       if (owned) {
-        await api.deleteBot(botId);
+        if (bot.tenant_name) {
+          // Cloud workers are removed through the control plane so the cloud
+          // instance gets destroyed (when a destroy script is configured).
+          const result = await api.deleteCloudWorker(bot.tenant_name);
+          if (result && result.warning) {
+            feedback.notify({ tone: 'warning', message: result.warning });
+          }
+        } else {
+          await api.deleteBot(botId);
+        }
       } else {
         await api.removeFriend(botId);
       }
@@ -782,20 +795,22 @@ export default function AgentStoreModal({
                   <input type="radio" name="hosting" checked={createMode === CREATE_MODES.SELF_HOSTED} onChange={() => setCreateMode(CREATE_MODES.SELF_HOSTED)} />
                   <span><strong>自托管</strong><small>生成本地身份 Key，后续连接你的服务。</small></span>
                 </label>
-                <label className={createMode === CREATE_MODES.MANAGED ? 'active' : (cloudQuota && cloudQuota.remaining > 0 ? '' : 'disabled')}>
+                <label className={createMode === CREATE_MODES.MANAGED ? 'active' : (cloudQuotaError || !cloudQuota || cloudQuota.remaining <= 0 ? 'disabled' : '')}>
                   <input
                     type="radio"
                     name="hosting"
                     checked={createMode === CREATE_MODES.MANAGED}
-                    disabled={!cloudQuota || cloudQuota.remaining <= 0}
+                    disabled={cloudQuotaError || !cloudQuota || cloudQuota.remaining <= 0}
                     onChange={() => setCreateMode(CREATE_MODES.MANAGED)}
                   />
                   <span>
                     <strong>云托管</strong>
                     <small>
-                      {cloudQuota && cloudQuota.enabled
-                        ? `部署到云端虚拟员工（可创建 ${cloudQuota.remaining}/${cloudQuota.total}）`
-                        : '云端部署当前未开放，请联系管理员开通'}
+                      {cloudQuotaError
+                        ? '云端状态查询失败，请稍后重试'
+                        : (cloudQuota && cloudQuota.enabled
+                            ? `部署到云端虚拟员工（可创建 ${cloudQuota.remaining}/${cloudQuota.total}）`
+                            : '云端部署当前未开放，请联系管理员开通')}
                     </small>
                   </span>
                 </label>
@@ -814,29 +829,39 @@ export default function AgentStoreModal({
               <h2 style={{ margin: '0 0 8px 0', color: 'var(--v3-text-name)' }}>创建成功</h2>
               <p style={{ margin: '0 0 24px 0', color: 'var(--v3-text-muted)', fontSize: 14 }}>AI 助手 <b style={{color: 'var(--v3-text-name)'}}>{createdBot.display_name}</b> 已准备好连接。</p>
 
-              <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 16 }}>
-                <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>API KEY</div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-primary)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
-                    {createdBot.api_key}
-                  </code>
-                  <button className="oc-btn oc-btn-default" onClick={() => handleCopy('api', createdBot.api_key)}>
-                    {copiedField === 'api' ? '已复制' : '复制'}
-                  </button>
+              {createdMode === CREATE_MODES.MANAGED ? (
+                <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
+                  <div style={{ fontSize: 13, color: 'var(--v3-text-muted)' }}>
+                    已部署到云端虚拟员工，无需配置 API Key，可直接使用。
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <>
+                  <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 16 }}>
+                    <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>API KEY</div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-primary)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
+                        {createdBot.api_key}
+                      </code>
+                      <button className="oc-btn oc-btn-default" onClick={() => handleCopy('api', createdBot.api_key)}>
+                        {copiedField === 'api' ? '已复制' : '复制'}
+                      </button>
+                    </div>
+                  </div>
 
-              <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
-                <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>WebSocket 连接地址</div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-text-main)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
-                    {wsUrl}
-                  </code>
-                  <button className="oc-btn oc-btn-default" onClick={() => handleCopy('ws', wsUrl)}>
-                    {copiedField === 'ws' ? '已复制' : '复制'}
-                  </button>
-                </div>
-              </div>
+                  <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
+                    <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>WebSocket 连接地址</div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-text-main)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
+                        {wsUrl}
+                      </code>
+                      <button className="oc-btn oc-btn-default" onClick={() => handleCopy('ws', wsUrl)}>
+                        {copiedField === 'ws' ? '已复制' : '复制'}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
 
               <button className="oc-btn oc-btn-default" style={{ width: '100%', padding: '12px 0', borderRadius: 8 }} onClick={() => setTab('hub')}>
                 返回列表

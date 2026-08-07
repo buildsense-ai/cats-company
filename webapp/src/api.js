@@ -717,6 +717,8 @@ export const api = {
     request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback`, {}),
   resetCloudWorker: (name) =>
     request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset`, {}),
+  deleteCloudWorker: (name) =>
+    request('DELETE', `/api/cloud-workers/${encodeURIComponent(name)}`, {}),
   updateBot: (uid, { display_name, avatar_url }) =>
     request('PATCH', `/api/bots?uid=${uid}`, { display_name, avatar_url }),
   deleteBot: (uid) => request('DELETE', `/api/bots?uid=${uid}`),
