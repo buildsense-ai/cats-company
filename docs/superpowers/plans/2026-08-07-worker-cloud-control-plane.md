@@ -56,22 +56,46 @@
 - [ ] **步骤 B3-2：「回滚（保留数据）」**：`POST /api/cloud-workers/{name}/rollback` —— Part A 制品切版本（`update-worker-artifact.sh --rollback`），`/srv/catsco-agent` 数据不动。UI 标注"保留数据"。
 - [ ] **步骤 B3-3：「重置 / 重装（丢弃数据）」**：`POST /api/cloud-workers/{name}/reset` —— 销毁该 worker 云实例 → 从所选历史镜像（`Manage-WorkerImages.ps1 -Action List`）或最新镜像重建 → 初始化供给。UI 标注"丢弃数据，不可恢复"+ 强二次确认；**与回滚严格分开**（不同入口/警示色/确认文案）。
 
-### 模块 B4：后端能力接入（天翼云 worker 镜像实例）
-- [ ] **步骤 B4-1：XiaoBa-CLI 侧供给/重置脚本**（在 XiaoBa-CLI 仓库）
-  - 新建 `Provision-WorkerInstance.ps1`（按最新/指定镜像创建实例 + 初始化供给）、`Reset-WorkerInstance.ps1`（销毁重建）；与 `Manage-WorkerImages.ps1` 配套。
-- [ ] **步骤 B4-2：cats-company 对接**：新增 handler（参考 `relay_admin_proxy.go`/`cloud_artifacts.go` 模式），把云托管员工操作转发到 XiaoBa-CLI 脚本/云 API（凭据经服务端环境变量）。
+### 模块 B4：云操作脚本（bash，跑在 Linux server）—— B4-1 详细设计
+
+**执行环境（已确认）**：生产 server 是 `alpine:3.24.1` 极简镜像，**无 PowerShell/无 bash/无 ctyun-cli/无 SSH 工具**。需改 `deploy/Dockerfile.server` 加装：`bash`、`openssh-client`（`ssh`/`scp`/`ssh-keygen`）、`ctyun-cli`（从天翼云 zos 下载，同 bake 的 SHA256 校验方式）。脚本放 `deploy/prod/ops/`，带 shebang 可执行文件，`runScript` 直接 `exec`（无 shell 插值，无注入）。
+
+**worker 镜像供给契约（2026-08-07 调研）**：镜像由 XiaoBa-CLI `New-CatsCoWorkerImage.ps1` + `prepare-image.sh` bake：
+- 应用已内置在 `/opt/catsco/releases/<version>-<sha>` + `/opt/catsco/current` 软链；`catsco-agent.service` 存在但 **disabled**
+- 运行时数据已清空：`/srv/catsco-agent/.env`、`.xiaoba`、`data`、`files`、`logs`、`skills`、SSH authorized_keys、ssh_host_*、machine-id
+- **供给（provision）要做**：创建实例 → 等 SSH（`cloud-init status` done）→ 注入 `.env`/`.xiaoba` 凭据（认领 bot 身份）→ 启用 `catsco-agent.service` → worker 启动连接 CatsCompany
+
+**5 个脚本（`deploy/prod/ops/`）**：
+
+- [ ] **B4-1a `list-worker-images.sh`**：`ims ListImage --imageVisibilityCode 0` 过滤 `catsco-worker-*` + bake label，输出每行 `imageID name version commit`（供 `/api/cloud-workers/meta` + 回滚选择）。纯查询，先做，可测。
+- [ ] **B4-1b `provision-worker.sh`**：`--name <tenant> [--image-id <id>]` → resolve 最新镜像（缺省）→ 生成/导入 key pair（`ImportEcsKeypair`，注意 EPS 权限前置）→ `CreateEcsInstance`（flavor/vpc/subnet/secgroup 走 env，参数对齐 bake）→ 等实例 running + SSH → **注入创建者（网页已登录账号）的连接凭证，worker 直接以创建者身份登入云托管 catsco**（不是独立 bot key）→ 启用 service → 幂等（tenant 已存在则 skip）。
+- [ ] **B4-1c `destroy-worker.sh`**：`--name <tenant>` → 按实例名/标签找实例 → 删除 + 清理 key pair（fail-closed 聚合，参照 bake 删除确认）。
+- [ ] **B4-1d `reset-worker.sh`**：`--name <tenant> [--image-id <id>]` → destroy（丢数据）→ 从指定/最新镜像重建 → 重新供给（丢弃数据语义，强确认在 UI）。
+- [ ] **B4-1e `rollback-worker.sh`**：`--name <tenant> [--version <v>]` → **保留数据**：SSH 到实例 → 切换 `/opt/catsco/current` 到历史 release 版本（Part A 语义；Part A 的 `update-worker-artifact.sh` 是后续项，先做镜像内多版本切换，Part A 接入后扩展）。
+
+**环境变量**（server 侧，不进前端/仓库）：`CTYUN_AK/CTYUN_SK`、`CTYUN_WORKER_REGION_ID`、`CTYUN_WORKER_PROJECT_ID`、`CTYUN_WORKER_AZ_NAME`、`CTYUN_WORKER_FLAVOR_ID`、`CTYUN_WORKER_VPC_ID`、`CTYUN_WORKER_SUBNET_ID`、`CTYUN_WORKER_SECURITY_GROUP_ID`（对齐 bake 的 vars）。
+
+**认证方式（2026-08-07 用户确认）**：云托管 worker **直接用网页已登录账号的权限凭证登入云托管 catsco**——即把创建者（登录用户）的凭证注入 worker，让 worker 以创建者身份连接 CatsCompany，而非为每个 worker 单独发独立 bot 身份。
+
+**待确认**：
+- ⚠️ 注入凭证的具体形态（登录 token / 账号 uid / 会话）与 `/srv/catsco-agent/.env` 的**确切键名**（参考 XiaoBa-CLI `src/catscompany/runtime-config.ts` 的 `CATSCO_*` 别名 + 现有 worker 的 .env 模板）
+- bootstrap 是否还要写 `.xiaoba` runtime profile / 其他身份文件
+- `catsco-agent.service` 文件在镜像内的确切位置与依赖
+
+- [ ] **步骤 B4-2：cats-company 对接**：`runScript` 已支持直接 exec 脚本（PR #158）；只需在部署时配置 4-5 个 `CATSCO_WORKER_*_SCRIPT` env 指向 `deploy/prod/ops/*.sh`。Dockerfile 变更随 B4-1。
 
 ## 环境变量（新增）
 - `CATSCO_WORKER_CREATE_QUOTA`（创建配额，`<uid>=<n>` 分号分隔，默认空=0）
-- 云操作相关（镜像 API base / 凭据 / XiaoBa-CLI 脚本路径）——实现时定名，凭据只在服务端/CI，不落前端。
+- 云操作相关（`CTYUN_*` + `CATSCO_WORKER_*_SCRIPT`）——见模块 B4 详细设计，凭据只在服务端/CI，不落前端。
 
 ## 测试与验收
 - 前端：`agent-store-modal` / 相关组件测试（vitest，参考现有 `*.test.jsx`）；radio 启用、配额置灰、回滚/重置 UI 分开。
 - 后端：Go 测试（配额解析/校验、列表/回滚/重置 handler 的 fake 依赖）。
+- 脚本：`list-worker-images.sh` 用 fake ctyun-cli 测试（对齐 manage-worker-images 模式）；provision/destroy 提供 `--dry-run` + 环境变量模拟；bash 语法检查。
 - 云端验收：真实天翼云 worker 实例上验证「回滚（保数据）」与「重置（丢数据）」行为差异。
 
 ## 依赖与顺序
-1. **B4-1**（XiaoBa-CLI 供给/重置脚本）先行——控制面操作依赖它。
+1. **B4-1a/b/c/d/e**（bash 脚本）先行——控制面操作依赖它。
 2. **B1/B2**（列表 + 配额 + 启用云托管）→ 独立可交付。
 3. **B3**（回滚/重置，依赖 B4 能力）。
 
