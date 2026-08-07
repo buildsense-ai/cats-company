@@ -89,6 +89,11 @@ if (cmd.includes("cloud-init status")) {
   const env = fs.readFileSync(0, "utf8");
   state.injectedEnv = env;
   fs.writeFileSync(statePath, JSON.stringify(state));
+} else if (cmd.includes("cat > /srv/catsco-agent/.xiaoba/catsco.json")) {
+  // localConfig（bootstrap 身份）写入
+  const cfg = fs.readFileSync(0, "utf8");
+  state.localConfig = cfg;
+  fs.writeFileSync(statePath, JSON.stringify(state));
 } else if (cmd.includes("systemctl enable")) {
   state.serviceEnabled = true;
   fs.writeFileSync(statePath, JSON.stringify(state));
@@ -240,6 +245,20 @@ test("provision-worker: happy path creates instance, injects env, enables servic
   assert.match(state.injectedEnv, /CATSCO_BODY_ID=body-1/);
   assert.match(state.injectedEnv, /CATSCO_INSTALLATION_ID=inst-1/);
   assert.equal(state.serviceEnabled, true, "service should be enabled");
+
+  // localConfig（bootstrap 身份）：worker catsco 命令依赖它（bodyId + 绑定确认）
+  assert.ok(state.localConfig, "localConfig should be written");
+  const lc = JSON.parse(state.localConfig);
+  assert.equal(lc.version, 1);
+  assert.equal(lc.currentBot.uid, "42");
+  assert.equal(lc.currentBot.apiKey, "BOTKEY");
+  assert.equal(lc.currentBot.boundByUserUid, "7");
+  assert.equal(lc.currentBot.bindingSource, "cloud-provision");
+  assert.equal(lc.device.bodyId, "body-1");
+  assert.equal(lc.device.installationId, "inst-1");
+  assert.equal(lc.account.token, "USERJWT");
+  assert.equal(lc.account.uid, "7");
+  assert.equal(lc.endpoints.serverUrl, "wss://app.catsco.cc/v0/channels");
   assert.ok((state.keypairs || []).some(k => k.keyPairName === "worker-key-bot-a"), "key pair created");
 });
 

@@ -87,9 +87,9 @@
 
 **登录凭证获取（2026-08-07 用户确认）**：web 登录凭证 = 本地 XiaoBa 登录凭证（同一套登录态，"云端都登录了"）。后端从请求 `Authorization: Bearer <token>` 取 web 登录 JWT，透传给 provision → 注入 `CATSCO_USER_TOKEN`——worker 拿到的登录态与用户本地直接登录 XiaoBa 无区别。
 
-**待确认**：
-- bootstrap 是否还要写 `.xiaoba` runtime profile / 其他身份文件
-- `catsco-agent.service` 文件在镜像内的确切位置与依赖
+**已确认（2026-08-07 调研 XiaoBa 源码 + bake 脚本）**：
+- **`catsco-agent.service` 位置**：`/etc/systemd/system/catsco-agent.service`（镜像 bake 时写入；User=catsco-agent，WorkingDirectory=/srv/catsco-agent，`EnvironmentFile=-/srv/catsco-agent/.env`，`ExecStart=... dist/index.js catsco`，XIAOBA_USER_DATA_DIR=/srv/catsco-agent）——provision 的 .env 注入 + `systemctl enable --now` 与该定义完全匹配。
+- **bootstrap 必须写 `.xiaoba/catsco.json`（localConfig v1）**：worker 的 catsco 命令（`resolveCatsCoRuntimeConfig`）不开 `migrateLegacyEnvBinding`，且 **`bodyId` 只从 `localConfig.device.bodyId` 读**（.env 的 CATSCO_BODY_ID 不生效）、botUid/apiKey 需 `hasConfirmedLocalBotBinding`（localConfig.currentBot）——只写 .env 时 connector 不 ready，worker exit(1)「配置缺失」。provision 已改为注入 .env 后额外写 `/srv/catsco-agent/.xiaoba/catsco.json`（device.bodyId/installationId=provision 生成值以匹配服务器记录、currentBot 绑定 bindingSource=cloud-provision、account、endpoints），chmod 600。
 
 - [ ] **步骤 B4-2：cats-company 对接**：`runScript` 已支持直接 exec 脚本（PR #158）；只需在部署时配置 4-5 个 `CATSCO_WORKER_*_SCRIPT` env 指向 `deploy/prod/ops/*.sh`。Dockerfile 变更随 B4-1。🟡（配置文档已写 `deploy/prod/ops/README.md`——env→脚本映射 + CTYUN_* + 权限/持久化/配额注意；端到端待 PR #158 合并后在部署时配置 env）
 

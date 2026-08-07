@@ -288,6 +288,30 @@ ssh_run "root@$INSTANCE_IP" "install -d -o catsco-agent -g catsco-agent /srv/cat
 printf '%s\n' "$ENV_CONTENT" > "$STATE_DIR/inject.env"
 chmod 600 "$STATE_DIR/inject.env"
 
+# --- 6.5 写 localConfig（bootstrap 身份，必需） ---
+# worker 的 catsco 命令（ExecStart: dist/index.js catsco）通过
+# resolveCatsCoRuntimeConfig 解析凭证，且该入口不开 migrateLegacyEnvBinding：
+#   - bodyId 只从 localConfig.device.bodyId 读（.env 里的 CATSCO_BODY_ID 不生效）
+#   - botUid/apiKey 需要 hasConfirmedLocalBotBinding（localConfig.currentBot）
+# 只写 .env 时 connector 不 ready，worker 会 exit(1) "配置缺失"。
+# 因此 bootstrap 必须写 /srv/catsco-agent/.xiaoba/catsco.json（version 1 schema，
+# runtimeRoot = XIAOBA_USER_DATA_DIR = /srv/catsco-agent）。
+LOCAL_CONFIG_JSON="$(jq -n \
+  --arg http "$HTTP_BASE_URL" \
+  --arg server "$SERVER_URL" \
+  --arg token "$LOGIN_TOKEN" \
+  --arg uid "$USER_UID" \
+  --arg uname "$USER_NAME" \
+  --arg display "$USER_DISPLAY" \
+  --arg botUid "$BOT_UID" \
+  --arg apiKey "$BOT_API_KEY" \
+  --arg bodyId "$BODY_ID" \
+  --arg installId "$INSTALLATION_ID" \
+  --arg tenant "$NAME" \
+  --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{version:1, endpoints:{httpBaseUrl:$http, serverUrl:$server}, account:{token:$token, uid:$uid, username:$uname, displayName:$display}, currentBot:{uid:$botUid, name:"Bot", username:"", apiKey:$apiKey, boundAt:$now, boundByUserUid:$uid, bindingSource:"cloud-provision"}, device:{deviceId:$bodyId, bodyId:$bodyId, installationId:$installId, name:$tenant}, updatedAt:$now}')"
+ssh_run "root@$INSTANCE_IP" "install -d -o catsco-agent -g catsco-agent /srv/catsco-agent/.xiaoba && cat > /srv/catsco-agent/.xiaoba/catsco.json && chown catsco-agent:catsco-agent /srv/catsco-agent/.xiaoba/catsco.json && chmod 600 /srv/catsco-agent/.xiaoba/catsco.json" <<<"$LOCAL_CONFIG_JSON"
+
 # --- 7. 启用 service ---
 # 输出重定向：is-active 的 stdout（"active"）会污染下方 JSON 约定，仅保留退出码
 ssh_run "root@$INSTANCE_IP" "systemctl enable --now catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service" >/dev/null 2>&1

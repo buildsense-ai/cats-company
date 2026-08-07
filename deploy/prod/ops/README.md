@@ -8,7 +8,7 @@
 | 脚本 | 动作 | 语义 |
 |---|---|---|
 | `list-worker-images.sh` | 列出 bake 通道镜像 | `/api/cloud-workers/meta` 展示 + 回滚选择 |
-| `provision-worker.sh` | 创建实例 + 注入身份 + 启 service | 新建云托管员工 |
+| `provision-worker.sh` | 创建实例 + 注入身份 + 写 localConfig + 启 service | 新建云托管员工 |
 | `destroy-worker.sh` | 删实例 + key pair + 本地 state | 删除（幂等） |
 | `reset-worker.sh` | 销毁重建（丢数据） | 重置 / 重装 |
 | `rollback-worker.sh` | 切换 `/opt/catsco/current`（保数据） | 版本回滚 |
