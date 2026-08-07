@@ -1,8 +1,26 @@
 export const PUSH_DISMISSED_KEY = 'cc_push_prompt_dismissed_v1';
+export const PUSH_ENABLED_KEY = 'cc_push_enabled_v1';
 
 export function pushDismissedStorageKey(owner) {
   const normalizedOwner = String(owner || '').trim();
   return normalizedOwner ? `${PUSH_DISMISSED_KEY}:${normalizedOwner}` : '';
+}
+
+export function pushEnabledStorageKey(owner) {
+  const normalizedOwner = String(owner || '').trim();
+  return normalizedOwner ? `${PUSH_ENABLED_KEY}:${normalizedOwner}` : '';
+}
+
+export function readPushEnabled(owner) {
+  const storageKey = pushEnabledStorageKey(owner);
+  if (!storageKey) return true;
+  return localStorage.getItem(storageKey) !== 'false';
+}
+
+export function writePushEnabled(owner, enabled) {
+  const storageKey = pushEnabledStorageKey(owner);
+  if (!storageKey) return;
+  localStorage.setItem(storageKey, String(Boolean(enabled)));
 }
 
 export function urlBase64ToUint8Array(value) {

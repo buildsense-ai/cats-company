@@ -353,6 +353,10 @@ type deletePushSubscriptionRequest struct {
 	RegistrationID string `json:"registration_id"`
 }
 
+type testPushNotificationRequest struct {
+	RegistrationID string `json:"registration_id"`
+}
+
 // HandleSubscription serves POST and DELETE for the authenticated user. Mount
 // this handler behind AuthMiddleware (JWT only); it intentionally trusts only
 // the uid established in request context and never accepts a uid in the body.
@@ -379,6 +383,70 @@ func (s *PushNotificationService) HandleSubscription(w http.ResponseWriter, r *h
 	case http.MethodDelete:
 		s.handleUnsubscribe(w, r, uid)
 	}
+}
+
+// HandleTest sends a real Web Push notification to the authenticated browser
+// registration only. Provider acceptance does not guarantee device display.
+func (s *PushNotificationService) HandleTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	uid, ok := r.Context().Value(uidKey).(int64)
+	if !ok || uid <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !s.Enabled() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "push notifications are disabled"})
+		return
+	}
+
+	var req testPushNotificationRequest
+	if err := decodeStrictPushJSON(w, r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	registrationID := strings.TrimSpace(req.RegistrationID)
+	if registrationID == "" || len(registrationID) > 64 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid registration id"})
+		return
+	}
+
+	subscriptions, err := s.store.ListPushSubscriptions(r.Context(), uid)
+	if err != nil {
+		s.logf("web push: list test subscriptions for uid %d: %v", uid, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to inspect push subscription"})
+		return
+	}
+	found := false
+	for _, subscription := range subscriptions {
+		if subscription != nil && subscription.RegistrationID == registrationID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "no active push subscription for this device"})
+		return
+	}
+
+	err = s.sendToUserFiltered(r.Context(), uid, PushNotification{
+		Title: "CatsCo 通知测试",
+		Body:  "如果你看到这条通知，说明当前设备与浏览器可以接收 CatsCo 消息通知。",
+		URL:   "/",
+		Tag:   fmt.Sprintf("catsco-push-test-%d", time.Now().UnixNano()),
+	}, func(subscription *types.PushSubscription) bool {
+		return subscription.RegistrationID == registrationID
+	})
+	if err != nil {
+		s.logf("web push: test delivery for uid %d: %v", uid, err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "push provider rejected the test notification"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
 }
 
 func (s *PushNotificationService) handleSubscribe(w http.ResponseWriter, r *http.Request, uid int64) {

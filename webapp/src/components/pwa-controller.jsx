@@ -13,8 +13,11 @@ import {
   canUsePush,
   ensurePushSubscription,
   pushDismissedStorageKey,
+  pushEnabledStorageKey,
+  readPushEnabled,
   serializePushSubscription,
   shouldOfferPush,
+  writePushEnabled,
 } from '../utils/push-notifications';
 import { enqueuePushOperation } from '../utils/push-operation';
 import { retryPendingPushUnsubscribe } from '../utils/push-session-cleanup';
@@ -42,6 +45,7 @@ export default function PwaController({
   sessionRevisionRef.current = sessionRevision;
   const [online, setOnline] = useState(() => navigator.onLine);
   const [dismissed, setDismissed] = useState(() => readDismissed(pushPromptOwner));
+  const [pushEnabled, setPushEnabled] = useState(() => readPushEnabled(pushPromptOwner));
   const [permission, setPermission] = useState(() => (
     'Notification' in window ? Notification.permission : 'unsupported'
   ));
@@ -83,18 +87,39 @@ export default function PwaController({
 
   useEffect(() => {
     setDismissed(readDismissed(pushPromptOwner));
+    setPushEnabled(readPushEnabled(pushPromptOwner));
     setPushError('');
   }, [pushPromptOwner]);
 
   useEffect(() => {
-    const active = loggedIn && canUsePush() && Notification.permission === 'granted';
+    const syncPreference = () => {
+      setPushEnabled(readPushEnabled(pushPromptOwner));
+      setPermission('Notification' in window ? Notification.permission : 'unsupported');
+    };
+    const handlePreferenceChanged = (event) => {
+      if (event.detail?.owner && event.detail.owner !== pushPromptOwner) return;
+      syncPreference();
+    };
+    const handleStorage = (event) => {
+      if (event.key === pushEnabledStorageKey(pushPromptOwner)) syncPreference();
+    };
+    window.addEventListener('cc:push-preference-changed', handlePreferenceChanged);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener('cc:push-preference-changed', handlePreferenceChanged);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, [pushPromptOwner]);
+
+  useEffect(() => {
+    const active = loggedIn && pushEnabled && canUsePush() && Notification.permission === 'granted';
     const registrationID = active ? getPushRegistrationID() : '';
     pushTabCoordinator.setActive(
       active,
       registrationID,
     );
     return () => pushTabCoordinator.setActive(false, registrationID);
-  }, [loggedIn, permission, sessionRevision]);
+  }, [loggedIn, permission, pushEnabled, sessionRevision]);
 
   useEffect(() => {
     if (!loggedIn || typeof pushTabCoordinator.onReconcile !== 'function') return undefined;
@@ -128,7 +153,7 @@ export default function PwaController({
   }, [cleanupRetryVersion, loggedIn, online]);
 
   useEffect(() => {
-    if (!loggedIn || !online || !canUsePush()) {
+    if (!pushEnabled || !loggedIn || !online || !canUsePush()) {
       setPushConfig(null);
       return undefined;
     }
@@ -156,11 +181,12 @@ export default function PwaController({
       cancelled = true;
       controller.abort();
     };
-  }, [loggedIn, online, sessionRevision]);
+  }, [loggedIn, online, pushEnabled, sessionRevision]);
 
   useEffect(() => {
     const publicKey = pushConfig?.public_key;
-    if (!canUsePush() || !loggedIn || Notification.permission !== 'granted' || !publicKey) return undefined;
+    if (!pushEnabled || !canUsePush() || !loggedIn || Notification.permission !== 'granted') return undefined;
+    if (!publicKey) return undefined;
     let cancelled = false;
     const isCurrent = () => (
       !cancelled && sessionRevisionRef.current === sessionRevision
@@ -190,9 +216,10 @@ export default function PwaController({
       cancelled = true;
       controller.abort();
     };
-  }, [loggedIn, pushConfig, reconcileVersion, sessionRevision]);
+  }, [loggedIn, pushConfig, pushEnabled, reconcileVersion, sessionRevision]);
 
   const offerPush = Boolean(pushConfig?.enabled && pushConfig.public_key)
+    && pushEnabled
     && shouldOfferPush({ loggedIn, permission, dismissed });
 
   const dismissPush = useCallback(() => {
@@ -220,6 +247,8 @@ export default function PwaController({
       if (!isCurrent()) return;
       setPermission(nextPermission);
       if (nextPermission !== 'granted') {
+        writePushEnabled(pushPromptOwner, false);
+        setPushEnabled(false);
         persistDismissed(pushPromptOwner);
         setDismissed(true);
         return;
@@ -242,6 +271,8 @@ export default function PwaController({
         if (!isCurrent()) return;
         await api.subscribePush(serializePushSubscription(subscription), registrationID, controller.signal);
         if (isCurrent()) {
+          writePushEnabled(pushPromptOwner, true);
+          setPushEnabled(true);
           persistDismissed(pushPromptOwner);
           setDismissed(true);
         }

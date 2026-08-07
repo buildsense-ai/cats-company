@@ -519,6 +519,11 @@ func main() {
 		jwtAuthWithDB,
 		pushSubscriptionUserLimit,
 	))
+	mux.HandleFunc("/api/push/test", chainHTTP(
+		pushNotificationService.HandleTest,
+		jwtAuthWithDB,
+		pushSubscriptionUserLimit,
+	))
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))
 	mux.HandleFunc("/api/projects/topic", authWithDB(projectHandler.HandleProjectTopic))
