@@ -525,7 +525,7 @@ func TestPushNotificationDeleteSubscriptionAllowsLegacyEmptyRegistrationID(t *te
 	}
 }
 
-func TestPushNotificationTestTargetsCurrentBrowserRegistration(t *testing.T) {
+func TestPushNotificationVerifyTargetsCurrentBrowserRegistration(t *testing.T) {
 	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
 		{UID: 104, Endpoint: "https://push.example.test/current", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
 		{UID: 104, Endpoint: "https://push.example.test/other", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-other"},
@@ -538,17 +538,17 @@ func TestPushNotificationTestTargetsCurrentBrowserRegistration(t *testing.T) {
 		if err := json.Unmarshal(payload, &notification); err != nil {
 			t.Fatalf("decode test payload %s: %v", payload, err)
 		}
-		if notification.Title != "CatsCo 通知测试" {
-			t.Fatalf("test payload = %s", payload)
+		if notification.Title != "CatsCo 通知验证" {
+			t.Fatalf("verification payload = %s", payload)
 		}
-		if !strings.HasPrefix(notification.Tag, "catsco-push-test-") || notification.Tag == "catsco-push-test" {
-			t.Fatalf("test notification tag = %q, want unique tag", notification.Tag)
+		if !strings.HasPrefix(notification.Tag, "catsco-push-verify-") || notification.Tag == "catsco-push-verify" {
+			t.Fatalf("verification notification tag = %q, want unique tag", notification.Tag)
 		}
 		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
 	}
 
 	recorder := httptest.NewRecorder()
-	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-current"}`, 104))
+	service.HandleVerify(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-current"}`, 104))
 
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusAccepted, recorder.Body.String())
@@ -559,18 +559,18 @@ func TestPushNotificationTestTargetsCurrentBrowserRegistration(t *testing.T) {
 	}
 }
 
-func TestPushNotificationTestRejectsMissingBrowserRegistration(t *testing.T) {
+func TestPushNotificationVerifyRejectsMissingBrowserRegistration(t *testing.T) {
 	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
 		UID: 104, Endpoint: "https://push.example.test/current", RegistrationID: "registration-current",
 	}}}
 	service := enabledPushService(store)
 	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
-		t.Fatal("test notification unexpectedly sent")
+		t.Fatal("verification notification unexpectedly sent")
 		return nil, nil
 	}
 
 	recorder := httptest.NewRecorder()
-	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-stale"}`, 104))
+	service.HandleVerify(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-stale"}`, 104))
 
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusConflict, recorder.Body.String())

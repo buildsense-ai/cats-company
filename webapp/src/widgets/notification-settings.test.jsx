@@ -7,7 +7,7 @@ vi.mock('../api', () => ({
     getPushConfig: vi.fn(),
     subscribePush: vi.fn(),
     unsubscribePush: vi.fn(),
-    testPush: vi.fn(),
+    verifyPush: vi.fn(),
   },
   getPushRegistrationID: vi.fn(() => 'registration-current'),
   setWSPushSubscriptionEndpoint: vi.fn(() => Promise.resolve('subscription-id')),
@@ -67,7 +67,7 @@ describe('NotificationSettings', () => {
     api.getPushConfig.mockResolvedValue({ enabled: true, public_key: 'AQID' });
     api.subscribePush.mockResolvedValue({ subscribed: true });
     api.unsubscribePush.mockResolvedValue({ subscribed: false });
-    api.testPush.mockResolvedValue({ accepted: true });
+    api.verifyPush.mockResolvedValue({ accepted: true });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -103,22 +103,22 @@ describe('NotificationSettings', () => {
     expect(container.textContent).toContain('已在当前设备关闭消息通知');
   });
 
-  it('sends a real test to the current browser registration and explains delivery uncertainty', async () => {
+  it('verifies background delivery for the current browser registration', async () => {
     await renderSettings();
     const testButton = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent.includes('测试后台推送'));
+      .find((button) => button.textContent.includes('验证后台通知'));
 
     await act(async () => {
       Simulate.click(testButton);
       await Promise.resolve();
     });
 
-    expect(api.testPush).toHaveBeenCalledWith('registration-current');
+    expect(api.verifyPush).toHaveBeenCalledWith('registration-current');
     expect(api.subscribePush).toHaveBeenCalledWith({
       endpoint: subscription.endpoint,
       keys: subscription.keys,
     }, 'registration-current');
-    expect(container.textContent).toContain('后台测试通知已发送');
+    expect(container.textContent).toContain('验证通知已发送');
     expect(container.textContent).toContain('当前设备的后台推送通道可能不可用');
     expect(container.textContent).toContain('部分国产 Android 手机');
   });
@@ -137,7 +137,7 @@ describe('NotificationSettings', () => {
       body: expect.stringContaining('本机通知'),
       tag: expect.stringMatching(/^catsco-local-display-test-\d+$/),
     }));
-    expect(api.testPush).not.toHaveBeenCalled();
+    expect(api.verifyPush).not.toHaveBeenCalled();
     expect(container.textContent).toContain('已请求本机显示通知');
   });
 
@@ -153,6 +153,6 @@ describe('NotificationSettings', () => {
     });
 
     expect(container.textContent).toContain('本机通知无法显示');
-    expect(api.testPush).not.toHaveBeenCalled();
+    expect(api.verifyPush).not.toHaveBeenCalled();
   });
 });

@@ -353,7 +353,7 @@ type deletePushSubscriptionRequest struct {
 	RegistrationID string `json:"registration_id"`
 }
 
-type testPushNotificationRequest struct {
+type verifyPushNotificationRequest struct {
 	RegistrationID string `json:"registration_id"`
 }
 
@@ -385,9 +385,9 @@ func (s *PushNotificationService) HandleSubscription(w http.ResponseWriter, r *h
 	}
 }
 
-// HandleTest sends a real Web Push notification to the authenticated browser
-// registration only. Provider acceptance does not guarantee device display.
-func (s *PushNotificationService) HandleTest(w http.ResponseWriter, r *http.Request) {
+// HandleVerify verifies background delivery for the authenticated user's
+// current browser registration. Provider acceptance does not guarantee display.
+func (s *PushNotificationService) HandleVerify(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -404,7 +404,7 @@ func (s *PushNotificationService) HandleTest(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	var req testPushNotificationRequest
+	var req verifyPushNotificationRequest
 	if err := decodeStrictPushJSON(w, r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
@@ -417,7 +417,7 @@ func (s *PushNotificationService) HandleTest(w http.ResponseWriter, r *http.Requ
 
 	subscriptions, err := s.store.ListPushSubscriptions(r.Context(), uid)
 	if err != nil {
-		s.logf("web push: list test subscriptions for uid %d: %v", uid, err)
+		s.logf("web push: list verification subscriptions for uid %d: %v", uid, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to inspect push subscription"})
 		return
 	}
@@ -434,16 +434,16 @@ func (s *PushNotificationService) HandleTest(w http.ResponseWriter, r *http.Requ
 	}
 
 	err = s.sendToUserFiltered(r.Context(), uid, PushNotification{
-		Title: "CatsCo 通知测试",
+		Title: "CatsCo 通知验证",
 		Body:  "如果你看到这条通知，说明当前设备与浏览器可以接收 CatsCo 消息通知。",
 		URL:   "/",
-		Tag:   fmt.Sprintf("catsco-push-test-%d", time.Now().UnixNano()),
+		Tag:   fmt.Sprintf("catsco-push-verify-%d", time.Now().UnixNano()),
 	}, func(subscription *types.PushSubscription) bool {
 		return subscription.RegistrationID == registrationID
 	})
 	if err != nil {
-		s.logf("web push: test delivery for uid %d: %v", uid, err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "push provider rejected the test notification"})
+		s.logf("web push: verification delivery for uid %d: %v", uid, err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "push provider rejected the verification notification"})
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})

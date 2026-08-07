@@ -403,6 +403,9 @@ func main() {
 	pushSubscriptionUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "push_subscription_user", Limit: 30, Window: time.Minute, Burst: 10,
 	})
+	pushVerificationUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "push_verification_user", Limit: 6, Window: time.Minute, Burst: 2,
+	})
 	readerIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "reader_ip", Limit: 20, Window: time.Minute, Burst: 5,
 	})
@@ -519,10 +522,10 @@ func main() {
 		jwtAuthWithDB,
 		pushSubscriptionUserLimit,
 	))
-	mux.HandleFunc("/api/push/test", chainHTTP(
-		pushNotificationService.HandleTest,
+	mux.HandleFunc("/api/push/verify", chainHTTP(
+		pushNotificationService.HandleVerify,
 		jwtAuthWithDB,
-		pushSubscriptionUserLimit,
+		pushVerificationUserLimit,
 	))
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))

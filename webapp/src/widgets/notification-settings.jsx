@@ -174,9 +174,9 @@ export default function NotificationSettings({ user }) {
     try {
       await enqueuePushOperation(async () => {
         const registrationID = await registerCurrentBrowser();
-        await api.testPush(registrationID);
+        await api.verifyPush(registrationID);
       });
-      setMessage('后台测试通知已发送。若本机测试可见但这条通知未到达，说明当前设备的后台推送通道可能不可用。');
+      setMessage('验证通知已发送。若本机通知可见但验证通知未到达，说明当前设备的后台推送通道可能不可用。');
     } catch (err) {
       setError(testErrorCopy(err));
     } finally {
@@ -252,7 +252,7 @@ export default function NotificationSettings({ user }) {
           onClick={sendTestNotification}
         >
           {testing ? <LoaderCircle className="oc-spin" size={15} aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}
-          {testing ? '发送中' : '测试后台推送'}
+          {testing ? '发送中' : '验证后台通知'}
         </button>
       </div>
       {message && <div className="oc-notification-feedback is-success" role="status">{message}</div>}
