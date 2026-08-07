@@ -677,3 +677,133 @@ describe('local XiaoBa SkillHub bridge', () => {
     });
   });
 });
+
+describe('upload transport', () => {
+  let apiModule;
+
+  const response = (status, data, raw = JSON.stringify(data)) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: vi.fn().mockResolvedValue(data),
+    text: vi.fn().mockResolvedValue(raw),
+  });
+
+  beforeEach(async () => {
+    vi.resetModules();
+    localStorage.clear();
+    sessionStorage.clear();
+    apiModule = await import('./api');
+  });
+
+  afterEach(() => {
+    apiModule.disconnectWS();
+    vi.restoreAllMocks();
+  });
+
+  test('sends authenticated composer uploads as the original file body', async () => {
+    global.fetch = vi.fn().mockResolvedValue(response(200, {
+      file_key: 'stored.jpg',
+      name: '试卷 01.jpg',
+      size: 5,
+      type: 'image',
+      url: '/uploads/images/stored.jpg',
+    }));
+    apiModule.setToken('upload-token');
+    const file = new File(['paper'], '试卷 01.jpg', { type: 'image/jpeg' });
+
+    await apiModule.api.uploadFile(file, 'image');
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const [url, options] = global.fetch.mock.calls[0];
+    expect(url).toBe('/api/upload?type=image&raw=1');
+    expect(options.body).toBe(file);
+    expect(options.headers).toMatchObject({
+      Authorization: 'Bearer upload-token',
+      'Content-Type': 'image/jpeg',
+      'X-CatsCo-File-Name': encodeURIComponent(file.name),
+      'X-CatsCo-File-Size': String(file.size),
+    });
+  });
+
+  test('retries a phone upload once when the server confirms no complete file was stored', async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(response(400, {
+        code: 'upload_incomplete',
+        error: 'upload request is incomplete; please retry',
+        retryable: true,
+      }))
+      .mockResolvedValueOnce(response(200, {
+        file_key: 'stored.jpg',
+        name: 'paper.jpg',
+        size: 5,
+        type: 'image',
+        url: '/uploads/images/stored.jpg',
+      }));
+    const file = new File(['paper'], 'paper.jpg', { type: 'image/jpeg' });
+
+    await expect(apiModule.api.uploadMobileSessionFile('session-1', file, 'image')).resolves.toMatchObject({
+      file_key: 'stored.jpg',
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    for (const [url, options] of global.fetch.mock.calls) {
+      expect(url).toBe('/api/mobile-upload/sessions/session-1/files?type=image&raw=1');
+      expect(options.body).toBe(file);
+      expect(options.headers).toMatchObject({
+        'Content-Type': 'image/jpeg',
+        'X-CatsCo-File-Name': encodeURIComponent(file.name),
+        'X-CatsCo-File-Size': String(file.size),
+      });
+    }
+  });
+
+  test('stops after one retry and returns an actionable mobile error', async () => {
+    const incomplete = {
+      code: 'upload_incomplete',
+      error: 'upload request is incomplete; please retry',
+      retryable: true,
+    };
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(response(400, incomplete))
+      .mockResolvedValueOnce(response(400, incomplete));
+    const file = new File(['paper'], 'paper.jpg', { type: 'image/jpeg' });
+
+    await expect(apiModule.api.uploadMobileSessionFile('session-1', file, 'image')).rejects.toMatchObject({
+      code: 'upload_incomplete',
+      message: '上传过程中断，请重新选择该文件后重试。',
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not retry when the upload response body is interrupted', async () => {
+    const bodyReadFailure = new TypeError('Load failed');
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: vi.fn().mockRejectedValue(bodyReadFailure),
+    });
+    const file = new File(['paper'], 'paper.jpg', { type: 'image/jpeg' });
+
+    await expect(apiModule.api.uploadMobileSessionFile('session-1', file, 'image')).rejects.toMatchObject({
+      code: 'upload_response_interrupted',
+      message: '上传响应中断，无法确认是否成功；请刷新页面查看“已上传”列表，确认后再重试。',
+      cause: bodyReadFailure,
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('uses a generic actionable error when a composer upload response is interrupted', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: vi.fn().mockRejectedValue(new TypeError('Load failed')),
+    });
+    const file = new File(['paper'], 'paper.jpg', { type: 'image/jpeg' });
+
+    await expect(apiModule.api.uploadFile(file, 'image')).rejects.toMatchObject({
+      code: 'upload_response_interrupted',
+      message: '上传响应中断，无法确认是否成功；请检查网络后重新选择该文件。',
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+});
