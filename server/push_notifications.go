@@ -422,7 +422,9 @@ func (s *PushNotificationService) HandleTest(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	result, err := s.sendToUserFiltered(r.Context(), uid, PushNotification{
+	ctx, cancel := context.WithTimeout(r.Context(), pushRequestTimeout)
+	defer cancel()
+	result, err := s.sendToUserFiltered(ctx, uid, PushNotification{
 		Title: "CatsCo 测试通知",
 		Body:  "如果你看到这条通知，说明当前设备与浏览器可以接收 CatsCo 消息通知。",
 		URL:   "/",
@@ -430,7 +432,14 @@ func (s *PushNotificationService) HandleTest(w http.ResponseWriter, r *http.Requ
 	}, func(subscription *types.PushSubscription) bool {
 		return subscription.RegistrationID == registrationID
 	})
-	if result.Accepted == 0 && result.Expired > 0 {
+	if result.Accepted > 0 {
+		if err != nil {
+			s.logf("web push: partial test delivery for uid %d: %v", uid, err)
+		}
+		writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+		return
+	}
+	if result.Expired > 0 && result.Expired == result.Attempted {
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"code":  "push_subscription_expired",
 			"error": "push subscription for this device has expired",
@@ -452,7 +461,10 @@ func (s *PushNotificationService) HandleTest(w http.ResponseWriter, r *http.Requ
 		})
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+	writeJSON(w, http.StatusConflict, map[string]string{
+		"code":  "push_subscription_missing",
+		"error": "no active push subscription for this device",
+	})
 }
 
 func (s *PushNotificationService) handleSubscribe(w http.ResponseWriter, r *http.Request, uid int64) {
@@ -507,14 +519,27 @@ func (s *PushNotificationService) handleUnsubscribe(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	endpoint, err := validatePushEndpoint(req.Endpoint)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid endpoint"})
-		return
-	}
 	registrationID := strings.TrimSpace(req.RegistrationID)
 	if len(registrationID) > 64 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid registration id"})
+		return
+	}
+	if strings.TrimSpace(req.Endpoint) == "" {
+		if registrationID == "" || req.AllRegistrations {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid endpoint"})
+			return
+		}
+		if err := s.store.DeletePushSubscriptionsByRegistrationID(r.Context(), uid, registrationID); err != nil {
+			s.logf("web push: delete registration subscriptions for uid %d: %v", uid, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete subscriptions"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"subscribed": false})
+		return
+	}
+	endpoint, err := validatePushEndpoint(req.Endpoint)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid endpoint"})
 		return
 	}
 	if req.AllRegistrations {

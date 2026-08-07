@@ -181,3 +181,16 @@ func (a *Adapter) DeletePushSubscriptionsByEndpoint(ctx context.Context, uid int
 	}
 	return nil
 }
+
+// DeletePushSubscriptionsByRegistrationID removes orphaned endpoints for one
+// browser registration after its local subscription has disappeared.
+func (a *Adapter) DeletePushSubscriptionsByRegistrationID(ctx context.Context, uid int64, registrationID string) error {
+	if _, err := a.db.ExecContext(ctx,
+		`DELETE FROM push_subscriptions WHERE uid = ? AND registration_id = ?`,
+		uid,
+		registrationID,
+	); err != nil {
+		return fmt.Errorf("delete push subscriptions by registration id: %w", err)
+	}
+	return nil
+}

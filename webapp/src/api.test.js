@@ -368,6 +368,20 @@ describe('WebSocket connection recovery', () => {
     });
   });
 
+  test('can remove an orphaned server registration without a local endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ subscribed: false }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.api.unsubscribePushRegistration('registration-current');
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      registration_id: 'registration-current',
+    });
+  });
+
   test('publishes session revisions', () => {
     const onAuthChanged = vi.fn();
     window.addEventListener('cc:auth-changed', onAuthChanged);

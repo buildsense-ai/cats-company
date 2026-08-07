@@ -23,18 +23,19 @@ import (
 )
 
 type memoryPushSubscriptionStore struct {
-	subscriptions         []*types.PushSubscription
-	upserted              *types.PushSubscription
-	deletedUID            int64
-	deleted               string
-	deletedRegistrationID string
-	deletedAll            bool
-	deletedScoped         []string
-	upsertErr             error
-	listErr               error
-	listBlock             <-chan struct{}
-	deleteErr             error
-	beforeDelete          func()
+	subscriptions           []*types.PushSubscription
+	upserted                *types.PushSubscription
+	deletedUID              int64
+	deleted                 string
+	deletedRegistrationID   string
+	deletedAll              bool
+	deletedRegistrationOnly string
+	deletedScoped           []string
+	upsertErr               error
+	listErr                 error
+	listBlock               <-chan struct{}
+	deleteErr               error
+	beforeDelete            func()
 }
 
 type pushHubUserStore struct {
@@ -109,6 +110,21 @@ func (m *memoryPushSubscriptionStore) DeletePushSubscriptionsByEndpoint(_ contex
 	for index := len(m.subscriptions) - 1; index >= 0; index-- {
 		subscription := m.subscriptions[index]
 		if subscription != nil && subscription.UID == uid && subscription.Endpoint == endpoint {
+			m.subscriptions = append(m.subscriptions[:index], m.subscriptions[index+1:]...)
+		}
+	}
+	return nil
+}
+
+func (m *memoryPushSubscriptionStore) DeletePushSubscriptionsByRegistrationID(_ context.Context, uid int64, registrationID string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	m.deletedUID = uid
+	m.deletedRegistrationOnly = registrationID
+	for index := len(m.subscriptions) - 1; index >= 0; index-- {
+		subscription := m.subscriptions[index]
+		if subscription != nil && subscription.UID == uid && subscription.RegistrationID == registrationID {
 			m.subscriptions = append(m.subscriptions[:index], m.subscriptions[index+1:]...)
 		}
 	}
@@ -562,6 +578,23 @@ func TestPushNotificationDeleteAllRegistrationsForCurrentUserEndpoint(t *testing
 	}
 }
 
+func TestPushNotificationDeleteOrphanedRegistrationWithoutEndpoint(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{UID: 104, Endpoint: "https://push.example.test/subscription/orphan", RegistrationID: "registration-current"},
+		{UID: 104, Endpoint: "https://push.example.test/subscription/other", RegistrationID: "registration-other"},
+	}}
+	service := enabledPushService(store)
+	recorder := httptest.NewRecorder()
+	service.HandleSubscription(recorder, pushRequest(t, http.MethodDelete, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if store.deletedRegistrationOnly != "registration-current" || len(store.subscriptions) != 1 {
+		t.Fatalf("registration cleanup = %q subscriptions=%+v", store.deletedRegistrationOnly, store.subscriptions)
+	}
+}
+
 func TestPushNotificationTestTargetsCurrentBrowserRegistration(t *testing.T) {
 	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
 		{UID: 104, Endpoint: "https://push.example.test/current", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
@@ -569,7 +602,11 @@ func TestPushNotificationTestTargetsCurrentBrowserRegistration(t *testing.T) {
 	}}
 	service := enabledPushService(store)
 	var delivered []string
-	service.send = func(_ context.Context, payload []byte, subscription *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+	service.send = func(ctx context.Context, payload []byte, subscription *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > pushRequestTimeout {
+			t.Fatalf("test delivery deadline = %v, want within %v", deadline, pushRequestTimeout)
+		}
 		delivered = append(delivered, subscription.Endpoint)
 		var notification PushNotification
 		if err := json.Unmarshal(payload, &notification); err != nil {
@@ -648,6 +685,53 @@ func TestPushNotificationTestReportsProviderRejection(t *testing.T) {
 	service := enabledPushService(store)
 	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusBadGateway, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"push_provider_rejected"`) {
+		t.Fatalf("body = %s, want stable provider-rejection code", recorder.Body.String())
+	}
+}
+
+func TestPushNotificationTestAcceptsPartialProviderSuccess(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{UID: 104, Endpoint: "https://push.example.test/accepted", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
+		{UID: 104, Endpoint: "https://push.example.test/rejected", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
+	}}
+	service := enabledPushService(store)
+	service.send = func(_ context.Context, _ []byte, subscription *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		status := http.StatusCreated
+		if strings.HasSuffix(subscription.Endpoint, "/rejected") {
+			status = http.StatusBadGateway
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+}
+
+func TestPushNotificationTestReportsMixedExpiredAndRejectedAsRejection(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{UID: 104, Endpoint: "https://push.example.test/rejected", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
+		{UID: 104, Endpoint: "https://push.example.test/expired", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
+	}}
+	service := enabledPushService(store)
+	service.send = func(_ context.Context, _ []byte, subscription *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		status := http.StatusBadGateway
+		if strings.HasSuffix(subscription.Endpoint, "/expired") {
+			status = http.StatusGone
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
 	}
 
 	recorder := httptest.NewRecorder()

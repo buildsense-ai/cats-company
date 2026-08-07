@@ -8,6 +8,7 @@ vi.mock('../api', () => ({
     subscribePush: vi.fn(),
     unsubscribePush: vi.fn(),
     unsubscribeAllPushRegistrations: vi.fn(),
+    unsubscribePushRegistration: vi.fn(),
     sendPushTest: vi.fn(),
   },
   getPushRegistrationID: vi.fn(() => 'registration-current'),
@@ -76,6 +77,7 @@ describe('NotificationSettings', () => {
     api.subscribePush.mockResolvedValue({ subscribed: true });
     api.unsubscribePush.mockResolvedValue({ subscribed: false });
     api.unsubscribeAllPushRegistrations.mockResolvedValue({ subscribed: false });
+    api.unsubscribePushRegistration.mockResolvedValue({ subscribed: false });
     api.sendPushTest.mockResolvedValue({ accepted: true });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -150,6 +152,19 @@ describe('NotificationSettings', () => {
     await vi.waitFor(() => expect(container.textContent).toContain('已在当前设备关闭消息通知'));
     expect(api.unsubscribeAllPushRegistrations).toHaveBeenCalledWith(subscription.endpoint);
     expect(subscription.unsubscribe).not.toHaveBeenCalled();
+  });
+
+  it('cleans an orphaned server registration when the local subscription disappears', async () => {
+    await renderSettings();
+    navigator.serviceWorker.getRegistration.mockResolvedValueOnce(null);
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[role="switch"]'));
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => expect(api.unsubscribePushRegistration).toHaveBeenCalledWith('registration-current'));
+    expect(container.textContent).toContain('已在当前设备关闭消息通知');
   });
 
   it('restores the enabled state when neither cleanup path can run', async () => {
@@ -274,6 +289,29 @@ describe('NotificationSettings', () => {
     expect(container.textContent).toContain('测试通知已交给推送服务');
     expect(container.textContent).toContain('未收到通常表示当前设备环境不可用');
     expect(container.textContent).toContain('部分国产 Android 手机');
+  });
+
+  it('does not allow the notification switch to change while a test is sending', async () => {
+    let finishTest;
+    api.sendPushTest.mockImplementationOnce(() => new Promise((resolve) => {
+      finishTest = resolve;
+    }));
+    await renderSettings();
+    const testButton = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('发送测试通知'));
+    const toggle = container.querySelector('[role="switch"]');
+
+    await act(async () => {
+      Simulate.click(testButton);
+      await Promise.resolve();
+    });
+    expect(toggle.disabled).toBe(true);
+
+    Simulate.click(toggle);
+    expect(api.unsubscribeAllPushRegistrations).not.toHaveBeenCalled();
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+
+    await act(async () => finishTest({ accepted: true }));
   });
 
   it.each([

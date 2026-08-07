@@ -162,9 +162,9 @@ export default function NotificationSettings({ user }) {
     notifyPreferenceChanged(owner);
     try {
       await enqueuePushOperation(async () => {
+        const registrationID = getPushRegistrationID();
         const subscription = await getPushSubscription();
         if (subscription) {
-          const registrationID = getPushRegistrationID();
           pushTabCoordinator.setActive(false, registrationID);
           let serverRemoved = false;
           try {
@@ -188,6 +188,8 @@ export default function NotificationSettings({ user }) {
             pushTabCoordinator.requestReconcile?.();
             throw new Error('通知关闭失败，请稍后重试。');
           }
+        } else {
+          await api.unsubscribePushRegistration(registrationID).catch(() => {});
         }
         await setWSPushSubscriptionEndpoint('').catch(() => {});
       });
@@ -203,7 +205,7 @@ export default function NotificationSettings({ user }) {
   };
 
   const handleToggle = () => {
-    if (busy || loading || !supported || (permission === 'denied' && !enabled)) return;
+    if (busy || loading || testing || !supported || (permission === 'denied' && !enabled)) return;
     if (enabled) disableNotifications();
     else enableNotifications();
   };
@@ -242,7 +244,7 @@ export default function NotificationSettings({ user }) {
           role="switch"
           aria-checked={enabled}
           aria-label="接收消息通知"
-          disabled={busy || loading || !supported || (permission === 'denied' && !enabled)}
+          disabled={busy || loading || testing || !supported || (permission === 'denied' && !enabled)}
           onClick={handleToggle}
         >
           <span aria-hidden="true" />

@@ -502,6 +502,11 @@ export const api = {
     '/api/push/subscriptions',
     { endpoint, all_registrations: true },
   ),
+  unsubscribePushRegistration: (registrationID = getPushRegistrationID()) => request(
+    'DELETE',
+    '/api/push/subscriptions',
+    { registration_id: registrationID },
+  ),
   updateMe: (displayName, avatarUrl) =>
     request('POST', '/api/me/update', { display_name: displayName, avatar_url: avatarUrl }),
 
