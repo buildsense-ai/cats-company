@@ -707,6 +707,16 @@ export const api = {
   getBotAPIKey: (uid) => request('GET', `/api/bots/api-key?uid=${uid}`),
   createBot: ({ username, display_name }, deployToCloud = false) =>
     request('POST', deployToCloud ? '/api/bots/deploy' : '/api/bots', { username, display_name }),
+
+  // Cloud virtual employee control plane (云托管)
+  getCloudWorkers: () => request('GET', '/api/cloud-workers'),
+  getCloudWorkerMeta: () => request('GET', '/api/cloud-workers/meta'),
+  createCloudWorker: ({ username, display_name }) =>
+    request('POST', '/api/cloud-workers', { username, display_name }),
+  rollbackCloudWorker: (name) =>
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback`, {}),
+  resetCloudWorker: (name) =>
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset`, {}),
   updateBot: (uid, { display_name, avatar_url }) =>
     request('PATCH', `/api/bots?uid=${uid}`, { display_name, avatar_url }),
   deleteBot: (uid) => request('DELETE', `/api/bots?uid=${uid}`),

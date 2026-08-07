@@ -37,17 +37,19 @@
 ## 模块
 
 ### 模块 B1：云托管入口启用 + 云虚拟员工列表（前端 + 后端）
-- [ ] **步骤 B1-1：后端「云虚拟员工」列表 API**
-  - 新增 `GET /api/cloud-workers`（jwt+owner）：返回云虚拟员工（天翼云实例或云托管 bot）列表：`name/status/version/commit/imageID/createdTime`。
-  - 数据源：查询云镜像/实例（对接 XiaoBa-CLI `Manage-WorkerImages.ps1 -Action List` 或云 API）；与现有 `/api/agents`（bot 花名册）关系理清（建议云托管员工独立罗列）。
+- [x] **步骤 B1-1：后端「云虚拟员工」列表 API**（2026-08-07，`server/cloud_workers.go`）
+  - 新增 `GET /api/cloud-workers`（jwt）：返回云虚拟员工列表（`tenant_name/status`）+ 配额信息。数据源：`ListBotsByOwner` 过滤 `tenant_name` 非空（云托管 bot）。
+  - `GET /api/cloud-workers/meta`：配额 + 可用镜像（`CATSCO_WORKER_IMAGES_SCRIPT -Action List`，未配则无）。
+  - `POST /api/cloud-workers/{name}/rollback` / `{name}/reset`：所有权校验 + 脚本执行（未配脚本 503）。
+  - 路由：`server/cmd/server.go` `/api/cloud-workers` + `/api/cloud-workers/`；测试 `server/cloud_workers_test.go`（9 项全绿）。
 - [ ] **步骤 B1-2：前端启用「云托管」radio + 员工管理视图**
   - `agent-store-modal.jsx`：`MANAGED` radio 由 `disabled` → 可用（受配额/开关控制）；创建后进入"云托管员工"管理视图（列表：名称/状态/**版本**/镜像/创建时间）。
   - `api.js` 新增 `getCloudWorkers` / `createCloudWorker` / `rollbackCloudWorker` / `resetCloudWorker`；i18n 补 `bot_*` 键。
 
 ### 模块 B2：创建配额（环境变量，初始 0）
-- [ ] **步骤 B2-1：后端配额**
-  - 环境变量（例如 `CATSCO_WORKER_CREATE_QUOTA=<uid>=<n>;...`，**初始 0** 即未配置不可创建）；解析复用 `envInt64Set` 风格。
-  - 创建接口校验：已创建云托管员工数 < 配额才放行；创建成功扣减（或按"已创建数 < 配额"实时判断）。
+- [x] **步骤 B2-1：后端配额**（2026-08-07，`server/cloud_workers.go`）
+  - `CATSCO_WORKER_CREATE_QUOTA=<uid>=<n>;...`（**默认空 = 0 = 不可创建**）；`parseWorkerCreateQuota` 解析 + 创建前校验"已创建数 < 配额"。
+  - `.env.example` 已补充 `CATSCO_WORKER_CREATE_QUOTA` + 4 个脚本变量。
 - [ ] **步骤 B2-2：前端配额展示**
   - 「可创建云虚拟员工次数」展示在创建按钮处；剩余 0 → 置灰并提示；有剩余 → 可点触发创建。
 
