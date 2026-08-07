@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -14,6 +15,18 @@ import (
 	"strings"
 	"testing"
 )
+
+type failingReadCloser struct {
+	err error
+}
+
+func (r failingReadCloser) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
+func (r failingReadCloser) Close() error {
+	return nil
+}
 
 func TestHandleUploadAllowsHTMLAsFileAttachment(t *testing.T) {
 	handler := NewUploadHandler(t.TempDir(), "/uploads")
@@ -793,6 +806,72 @@ func TestReceiveRawUploadReportsActualBodyLimitError(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("stored entries = %v, want none for an oversized body", entries)
+	}
+}
+
+func TestReceiveRawUploadDoesNotRetryStorageCopyFailure(t *testing.T) {
+	handler := NewUploadHandler(t.TempDir(), "/uploads")
+	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image&raw=1", strings.NewReader("unused"))
+	req.Body = failingReadCloser{err: &os.PathError{
+		Op:   "write",
+		Path: "/dev/full",
+		Err:  errors.New("no space left on device"),
+	}}
+	req.Header.Set("Content-Type", "image/jpeg")
+	req.Header.Set("X-CatsCo-File-Name", "paper.jpg")
+	req.Header.Set("X-CatsCo-File-Size", "6")
+	rec := httptest.NewRecorder()
+
+	if _, ok := handler.receiveRawUpload(rec, req, "image", maxImageSize, true); ok {
+		t.Fatal("receiveRawUpload succeeded after a storage copy failure")
+	}
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	var response struct {
+		Error     string `json:"error"`
+		Retryable bool   `json:"retryable"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Error != "upload failed" || response.Retryable {
+		t.Fatalf("response = %+v, want non-retryable upload failure", response)
+	}
+}
+
+func TestHandleUploadRejectsRawBodyWithUnderreportedSizeMetadata(t *testing.T) {
+	baseDir := t.TempDir()
+	handler := NewUploadHandler(baseDir, "/uploads")
+	content := []byte("small image body")
+	req := httptest.NewRequest(http.MethodPost, "/api/upload?type=image&raw=1", bytes.NewReader(content))
+	req.Header.Set("Content-Type", "image/jpeg")
+	req.Header.Set("X-CatsCo-File-Name", "paper.jpg")
+	req.Header.Set("X-CatsCo-File-Size", fmt.Sprintf("%d", len(content)-1))
+	rec := httptest.NewRecorder()
+
+	handler.HandleUpload(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	var response struct {
+		Code      string `json:"code"`
+		Retryable bool   `json:"retryable"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Code != uploadMetadataInvalidCode || response.Retryable {
+		t.Fatalf("response = %+v, want non-retryable metadata error", response)
+	}
+	entries, err := os.ReadDir(filepath.Join(baseDir, "images"))
+	if err != nil {
+		t.Fatalf("read upload directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("stored entries = %v, want none for invalid metadata", entries)
 	}
 }
 

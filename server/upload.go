@@ -633,10 +633,7 @@ func (h *UploadHandler) receiveRawUpload(
 	decodedName, nameErr := url.PathUnescape(encodedName)
 	fileName := filepath.Base(strings.ReplaceAll(decodedName, "\\", "/"))
 	if encodedName == "" || nameErr != nil || sizeErr != nil || expectedSize < 0 || fileName == "" || fileName == "." {
-		writeUploadJSON(w, http.StatusBadRequest, map[string]string{
-			"code":  uploadMetadataInvalidCode,
-			"error": "upload metadata is invalid",
-		})
+		writeUploadMetadataInvalid(w)
 		return uploadPayload{}, false
 	}
 	ext := strings.ToLower(filepath.Ext(fileName))
@@ -688,18 +685,33 @@ func (h *UploadHandler) receiveRawUpload(
 			writeUploadTooLarge(w)
 			return uploadPayload{}, false
 		}
+		var pathError *os.PathError
+		if errors.As(copyErr, &pathError) {
+			log.Printf("[upload] raw storage failure path=%q user_agent=%q err=%v",
+				r.URL.Path, r.UserAgent(), copyErr)
+			writeUploadJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+			return uploadPayload{}, false
+		}
 		log.Printf("[upload] interrupted raw body path=%q expected_size=%d written=%d user_agent=%q err=%v",
 			r.URL.Path, expectedSize, written, r.UserAgent(), copyErr)
 		writeUploadIncomplete(w)
 		return uploadPayload{}, false
 	}
 	if declaredContentLength >= 0 && written != declaredContentLength {
+		if written > declaredContentLength {
+			writeUploadMetadataInvalid(w)
+			return uploadPayload{}, false
+		}
 		log.Printf("[upload] incomplete raw content length path=%q content_length=%d written=%d user_agent=%q",
 			r.URL.Path, declaredContentLength, written, r.UserAgent())
 		writeUploadIncomplete(w)
 		return uploadPayload{}, false
 	}
 	if written != expectedSize {
+		if written > expectedSize {
+			writeUploadMetadataInvalid(w)
+			return uploadPayload{}, false
+		}
 		log.Printf("[upload] incomplete raw body path=%q expected_size=%d written=%d user_agent=%q",
 			r.URL.Path, expectedSize, written, r.UserAgent())
 		writeUploadIncomplete(w)
@@ -795,6 +807,14 @@ func writeUploadIncomplete(w http.ResponseWriter) {
 		"code":      uploadIncompleteCode,
 		"error":     "upload request is incomplete; please retry",
 		"retryable": true,
+	})
+}
+
+func writeUploadMetadataInvalid(w http.ResponseWriter) {
+	writeUploadJSON(w, http.StatusBadRequest, map[string]interface{}{
+		"code":      uploadMetadataInvalidCode,
+		"error":     "upload metadata is invalid",
+		"retryable": false,
 	})
 }
 

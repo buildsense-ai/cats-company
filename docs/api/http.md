@@ -160,7 +160,7 @@ X-CatsCo-File-Size: 12345
 <raw file bytes>
 ```
 
-`X-CatsCo-File-Name` 使用 URL 编码。`upload_incomplete` 表示服务端确认未保存完整文件，可安全重试；`upload_invalid_request` 表示请求格式错误，不应自动重试；应用层只有在实际读取字节超过限制时才返回 `upload_too_large`。上游代理的请求体限制仍独立生效。
+`X-CatsCo-File-Name` 使用 URL 编码。`upload_incomplete` 表示服务端确认未保存完整文件，可安全重试；`upload_metadata_invalid` 表示声明的大小与实际 body 冲突，不应自动重试；`upload_invalid_request` 表示请求格式错误，不应自动重试；应用层只有在实际读取字节超过限制时才返回 `upload_too_large`。上游代理的请求体限制仍独立生效。
 
 返回：
 ```json
