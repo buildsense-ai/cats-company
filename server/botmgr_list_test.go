@@ -49,7 +49,7 @@ func TestHandleListMyBotsIncludesFriendBotsReadOnly(t *testing.T) {
 		},
 		owners: map[int64]int64{42: 7, 43: 9},
 	}
-	handler := NewBotHandler(db, nil)
+	handler := NewBotHandler(db)
 	req := httptest.NewRequest(http.MethodGet, "/api/bots", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
 	rec := httptest.NewRecorder()
@@ -98,7 +98,7 @@ func TestHandleListMyBotsDeduplicatesOwnedBotFriendRelation(t *testing.T) {
 		},
 		owners: map[int64]int64{42: 7},
 	}
-	handler := NewBotHandler(db, nil)
+	handler := NewBotHandler(db)
 	req := httptest.NewRequest(http.MethodGet, "/api/bots", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
 	rec := httptest.NewRecorder()
@@ -121,3 +121,4 @@ func TestHandleListMyBotsDeduplicatesOwnedBotFriendRelation(t *testing.T) {
 		t.Fatalf("owned bot should keep owner relation: %+v", body.Bots[0])
 	}
 }
+

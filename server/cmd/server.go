@@ -254,13 +254,6 @@ func main() {
 
 	server.SetBotStats(hub.BotStats())
 
-	// Initialize deployer (optional — only if DEPLOY_API_URL is set)
-	var deployer *server.Deployer
-	if deployURL := os.Getenv("DEPLOY_API_URL"); deployURL != "" {
-		deployer = server.NewDeployer(deployURL)
-		log.Printf("Deploy API enabled: %s", deployURL)
-	}
-
 	userHandler := server.NewUserHandler(db)
 	accountServiceVerifier, err := server.NewAccountServiceVerifier(os.Getenv("OC_ACCOUNT_SERVICE_TOKENS"), db)
 	if err != nil {
@@ -285,7 +278,7 @@ func main() {
 	weixinClawBotHandler.InstallOutboundDispatcher()
 	weixinClawBotHandler.Start()
 	defer weixinClawBotHandler.Stop()
-	botHandler := server.NewBotHandler(db, deployer)
+	botHandler := server.NewBotHandler(db)
 	botHandler.SetHub(hub)
 	cloudWorkerHandler := server.NewCloudWorkerHandler(db, botHandler, server.CloudWorkerConfigFromEnv())
 	botModelStore, _ := db.(store.BotModelConfigStore)
@@ -603,7 +596,6 @@ func main() {
 
 	// Bot management (user-facing — owner creates/manages their bots)
 	mux.HandleFunc("/api/bots", ownerAuthWithDB(botHandler.HandleBotsRouter))
-	mux.HandleFunc("/api/bots/deploy", ownerAuthWithDB(botHandler.HandleDeployBot))
 	mux.HandleFunc("/api/bots/api-key", ownerAuthWithDB(botHandler.HandleGetBotAPIKey))
 	mux.HandleFunc("/api/bots/body-status", ownerAuthWithDB(botHandler.HandleGetBotBodyStatus))
 	mux.HandleFunc("/api/bots/visibility", ownerAuthWithDB(botHandler.HandleSetBotVisibility))

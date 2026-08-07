@@ -97,7 +97,7 @@ func newCloudWorkerTestHandler(quota string) (*CloudWorkerHandler, *cloudWorkerT
 
 func newCloudWorkerTestHandlerCfg(cfg CloudWorkerConfig) (*CloudWorkerHandler, *cloudWorkerTestStore) {
 	ts := &cloudWorkerTestStore{}
-	botHandler := NewBotHandler(ts, nil)
+	botHandler := NewBotHandler(ts)
 	return NewCloudWorkerHandler(ts, botHandler, cfg), ts
 }
 

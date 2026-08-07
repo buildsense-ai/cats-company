@@ -176,7 +176,7 @@ func TestHandleGetBotBodyStatus(t *testing.T) {
 		send:         make(chan []byte, 1),
 	})
 
-	handler := NewBotHandler(&botBodyStatusStore{ownerUID: 7, bodyID: "body-a"}, nil)
+	handler := NewBotHandler(&botBodyStatusStore{ownerUID: 7, bodyID: "body-a"})
 	handler.SetHub(hub)
 	req := httptest.NewRequest(http.MethodGet, "/api/bots/body-status?uid=42", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
@@ -208,7 +208,7 @@ func TestHandleGetBotBodyStatusIgnoresStaleLeaseWithoutClient(t *testing.T) {
 		t.Fatalf("acquire failed: %v", err)
 	}
 
-	handler := NewBotHandler(&botBodyStatusStore{ownerUID: 7, bodyID: "body-a"}, nil)
+	handler := NewBotHandler(&botBodyStatusStore{ownerUID: 7, bodyID: "body-a"})
 	handler.SetHub(hub)
 	req := httptest.NewRequest(http.MethodGet, "/api/bots/body-status?uid=42", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
@@ -229,7 +229,7 @@ func TestHandleGetBotBodyStatusIgnoresStaleLeaseWithoutClient(t *testing.T) {
 }
 
 func TestHandleGetBotBodyStatusReturnsOfflineBinding(t *testing.T) {
-	handler := NewBotHandler(&botBodyStatusStore{ownerUID: 7, bodyID: "body-a"}, nil)
+	handler := NewBotHandler(&botBodyStatusStore{ownerUID: 7, bodyID: "body-a"})
 	handler.SetHub(NewHub(nil, nil))
 	req := httptest.NewRequest(http.MethodGet, "/api/bots/body-status?uid=42", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
@@ -288,7 +288,7 @@ func TestHandleGetBotBodyStatusRejectsInvalidRequests(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			handler := NewBotHandler(tc.store, nil)
+			handler := NewBotHandler(tc.store)
 			handler.SetHub(NewHub(nil, nil))
 			req := httptest.NewRequest(http.MethodGet, "/api/bots/body-status?uid="+tc.queryUID, nil)
 			req = req.WithContext(context.WithValue(req.Context(), uidKey, tc.ownerUID))
@@ -322,3 +322,4 @@ func TestNormalizeBotBodyID(t *testing.T) {
 		}
 	}
 }
+
