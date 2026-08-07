@@ -107,14 +107,18 @@ cleanup_failed() {
   # fail-closed：删除刚创建的实例 + key pair（尽力，聚合报错）
   local errors=""
   if [[ -n "${CREATED_INSTANCE_ID:-}" ]]; then
-    if ! ctyun ecs DeleteEcsInstance --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
+    if ctyun ecs DeleteEcsInstance --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
         --instanceID "$CREATED_INSTANCE_ID" >/dev/null 2>&1; then
+      : # ok
+    else
       errors="instance delete failed; "
     fi
   fi
   if [[ -n "${KEYPAIR_NAME:-}" ]]; then
-    if ! ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
+    if ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
         --keyPairName "$KEYPAIR_NAME" >/dev/null 2>&1; then
+      : # ok
+    else
       errors="${errors}key pair delete failed; "
     fi
   fi
@@ -255,6 +259,10 @@ CATSCO_LOG_UPLOAD_ENABLED=true
 EOF
 )"
 ssh_run "root@$INSTANCE_IP" "install -d -o catsco-agent -g catsco-agent /srv/catsco-agent && cat > /srv/catsco-agent/.env && chown catsco-agent:catsco-agent /srv/catsco-agent/.env && chmod 600 /srv/catsco-agent/.env" <<<"$ENV_CONTENT"
+
+# 保存注入快照（供 reset-worker.sh 无参数重建时复用身份），chmod 600
+printf '%s\n' "$ENV_CONTENT" > "$STATE_DIR/inject.env"
+chmod 600 "$STATE_DIR/inject.env"
 
 # --- 7. 启用 service ---
 ssh_run "root@$INSTANCE_IP" "systemctl enable --now catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service"

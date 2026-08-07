@@ -27,12 +27,12 @@ ctyun() {
   raw="$(timeout --signal=TERM --kill-after=15s 90s ctyun-cli "$@" --output json 2>&1)" || {
     echo "error: ctyun-cli failed: $*" >&2
     echo "$raw" >&2
-    exit 1
+    return 1
   }
   status="$(jq -r '.statusCode // empty' <<<"$raw")"
   if [[ "$status" != "800" ]]; then
     echo "error: Tianyi Cloud API failed: $(jq -r '.errorCode // ""' <<<"$raw") $(jq -r '.message // ""' <<<"$raw")" >&2
-    exit 1
+    return 1
   fi
   printf '%s' "$raw"
 }

@@ -67,11 +67,11 @@
 
 **5 个脚本（`deploy/prod/ops/`）**：
 
-- [ ] **B4-1a `list-worker-images.sh`**：`ims ListImage --imageVisibilityCode 0` 过滤 `catsco-worker-*` + bake label，输出每行 `imageID name version commit`（供 `/api/cloud-workers/meta` + 回滚选择）。纯查询，先做，可测。
-- [ ] **B4-1b `provision-worker.sh`**：`--name <tenant> --login-token <user-token> --api-key <bot-key> [--image-id <id>]` → resolve 最新镜像（缺省）→ 生成/导入 key pair（`ImportEcsKeypair`，注意 EPS 权限前置）→ `CreateEcsInstance`（flavor/vpc/subnet/secgroup 走 env，参数对齐 bake）→ 等实例 running + SSH → **注入两样**：① 创建者（网页已登录账号）的**登录凭证**（XiaoBa 登录用，登录在云端持久化）；② 该 bot 机器人的**连接凭证**（api key / 链接，按原来 createBot 的方式）→ 启用 service → 幂等（tenant 已存在则 skip）。
-- [ ] **B4-1c `destroy-worker.sh`**：`--name <tenant>` → 按实例名/标签找实例 → 删除 + 清理 key pair（fail-closed 聚合，参照 bake 删除确认）。
-- [ ] **B4-1d `reset-worker.sh`**：`--name <tenant> [--image-id <id>]` → destroy（丢数据）→ 从指定/最新镜像重建 → 重新供给（丢弃数据语义，强确认在 UI）。
-- [ ] **B4-1e `rollback-worker.sh`**：`--name <tenant> [--version <v>]` → **保留数据**：SSH 到实例 → 切换 `/opt/catsco/current` 到历史 release 版本（Part A 语义；Part A 的 `update-worker-artifact.sh` 是后续项，先做镜像内多版本切换，Part A 接入后扩展）。
+- [x] **B4-1a `list-worker-images.sh`**：`ims ListImage --imageVisibilityCode 0` 过滤 `catsco-worker-*` + bake label，输出每行 `imageID name version commit`（供 `/api/cloud-workers/meta` + 回滚选择）。纯查询，先做，可测。✅（2026-08-07 完成 + 4 测试绿）
+- [x] **B4-1b `provision-worker.sh`**：`--name <tenant> --login-token <user-token> --api-key <bot-key> [--image-id <id>]` → resolve 最新镜像（缺省）→ 生成/导入 key pair（`ImportEcsKeypair`，注意 EPS 权限前置）→ `CreateEcsInstance`（flavor/vpc/subnet/secgroup 走 env，参数对齐 bake）→ 等实例 running + SSH → **注入两样**：① 创建者（网页已登录账号）的**登录凭证**（XiaoBa 登录用，登录在云端持久化）；② 该 bot 机器人的**连接凭证**（api key / 链接，按原来 createBot 的方式）→ 启用 service → 幂等（tenant 已存在则 skip）。✅（2026-08-07 完成 + 5 测试绿；另把注入快照写到 `$STATE_DIR/inject.env` 供 reset 复用）
+- [x] **B4-1c `destroy-worker.sh`**：`--name <tenant>` → 按实例名/标签找实例 → 删除 + 清理 key pair（fail-closed 聚合，参照 bake 删除确认）。✅（2026-08-07 完成 + 7 测试绿；实例不存在按 not-found 幂等；删除失败聚合报错）
+- [x] **B4-1d `reset-worker.sh`**：`--name <tenant> [--image-id <id>]` → destroy（丢数据）→ 从指定/最新镜像重建 → 重新供给（丢弃数据语义，强确认在 UI）。✅（2026-08-07 完成 + 5 测试绿；注入凭证命令行优先、缺省回退 `$STATE_DIR/inject.env` 快照）
+- [x] **B4-1e `rollback-worker.sh`**：`--name <tenant> [--version <v>]` → **保留数据**：SSH 到实例 → 切换 `/opt/catsco/current` 到历史 release 版本（Part A 语义；Part A 的 `update-worker-artifact.sh` 是后续项，先做镜像内多版本切换，Part A 接入后扩展）。✅（2026-08-07 完成 + 7 测试绿；`--version` 缺省列出镜像内可用版本）
 
 **环境变量**（server 侧，不进前端/仓库）：`CTYUN_AK/CTYUN_SK`、`CTYUN_WORKER_REGION_ID`、`CTYUN_WORKER_PROJECT_ID`、`CTYUN_WORKER_AZ_NAME`、`CTYUN_WORKER_FLAVOR_ID`、`CTYUN_WORKER_VPC_ID`、`CTYUN_WORKER_SUBNET_ID`、`CTYUN_WORKER_SECURITY_GROUP_ID`（对齐 bake 的 vars）。
 
