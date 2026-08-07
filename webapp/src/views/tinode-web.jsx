@@ -61,6 +61,7 @@ import {
   isLiquidThemeUnlocked,
   normalizeTheme,
   saveLiquidThemeUnlock,
+  syncThemeColor,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
 import { Cloud, Download, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
@@ -306,6 +307,7 @@ function TinodeWebApp() {
     } else {
       delete document.documentElement.dataset.liquidVariant;
     }
+    syncThemeColor(theme);
     localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
