@@ -3,6 +3,7 @@ import { api } from '../api';
 import t from '../i18n';
 import Avatar from './avatar';
 import PasswordResetForm from './password-reset-form';
+import NotificationSettings from './notification-settings';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
 import { Check, Droplets, LockKeyhole, Moon, Sun, X } from 'lucide-react';
 
@@ -233,6 +234,7 @@ export default function ProfileEditor({
               )}
             </div>
           )}
+          <NotificationSettings user={user} />
           <div className="oc-settings-section">
             <div className="oc-settings-section-title">账号安全</div>
             {showPasswordReset ? (
