@@ -475,23 +475,70 @@ func TestCloudWorkerHandleCreateInvalidUsername(t *testing.T) {
 }
 
 func TestCloudWorkerHandleCreateProvisionFails(t *testing.T) {
-	cfg := workerScriptCfg(t, "7=5", map[string]string{"provision": writeWorkerOpScript(t, "fail")})
-	if cfg.ProvisionScript == "" {
+	// --- provision fails but destroy succeeds: partially created instance is
+	// cleaned up and the bot record is rolled back (no orphan) ---
+	cfg := workerScriptCfg(t, "7=5", map[string]string{
+		"provision": writeWorkerOpScript(t, "fail"),
+		"destroy":   writeWorkerOpScript(t, "ok"),
+	})
+	if cfg.ProvisionScript == "" || cfg.DestroyScript == "" {
 		t.Skip("no POSIX shell")
 	}
 	h, ts := newCloudWorkerTestHandlerCfg(cfg)
-
 	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers", map[string]string{
 		"username": "bot-x", "display_name": "X",
 	})
 	rec := httptest.NewRecorder()
 	h.HandleCreate(rec, req)
-
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status=%d want 502 body=%s", rec.Code, rec.Body.String())
 	}
 	if len(ts.deletedBots) != 1 {
-		t.Fatalf("want 1 rollback delete, got %v", ts.deletedBots)
+		t.Fatalf("want 1 rollback delete after successful cleanup, got %v", ts.deletedBots)
+	}
+	if len(ts.tenantNames) != 0 {
+		t.Fatalf("tenant_name should not be persisted when destroy cleaned up: %v", ts.tenantNames)
+	}
+
+	// --- provision fails and destroy is NOT configured: keep the bot record
+	// as a retryable handle (tenant_name persisted) instead of deleting the
+	// only record that can locate a possibly-running, still-billed instance ---
+	h2, ts2 := newCloudWorkerTestHandlerCfg(workerScriptCfg(t, "7=5", map[string]string{"provision": writeWorkerOpScript(t, "fail")}))
+	req2 := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers", map[string]string{
+		"username": "bot-y", "display_name": "Y",
+	})
+	rec2 := httptest.NewRecorder()
+	h2.HandleCreate(rec2, req2)
+	if rec2.Code != http.StatusBadGateway {
+		t.Fatalf("no-destroy status=%d want 502 body=%s", rec2.Code, rec2.Body.String())
+	}
+	if len(ts2.deletedBots) != 0 {
+		t.Fatalf("bot must be kept when no destroy script can clean up: %v", ts2.deletedBots)
+	}
+	if len(ts2.tenantNames) != 1 {
+		t.Fatalf("tenant_name must be persisted as retryable state: %v", ts2.tenantNames)
+	}
+
+	// --- provision fails and destroy also fails: keep bot + tenant_name so
+	// the roster still shows the worker and delete can be retried ---
+	cfg3 := workerScriptCfg(t, "7=5", map[string]string{
+		"provision": writeWorkerOpScript(t, "fail"),
+		"destroy":   writeWorkerOpScript(t, "fail"),
+	})
+	h3, ts3 := newCloudWorkerTestHandlerCfg(cfg3)
+	req3 := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers", map[string]string{
+		"username": "bot-z", "display_name": "Z",
+	})
+	rec3 := httptest.NewRecorder()
+	h3.HandleCreate(rec3, req3)
+	if rec3.Code != http.StatusBadGateway {
+		t.Fatalf("destroy-fail status=%d want 502 body=%s", rec3.Code, rec3.Body.String())
+	}
+	if len(ts3.deletedBots) != 0 {
+		t.Fatalf("bot must be kept when destroy also fails: %v", ts3.deletedBots)
+	}
+	if len(ts3.tenantNames) != 1 {
+		t.Fatalf("tenant_name must be persisted when destroy also fails: %v", ts3.tenantNames)
 	}
 }
 
@@ -571,7 +618,7 @@ func TestCloudWorkerHandleDelete(t *testing.T) {
 		t.Fatalf("deletedBots=%v want [1]", ts.deletedBots)
 	}
 
-	// --- without destroy script: DB removed + warning returned ---
+	// --- without destroy script: fail closed (503), record kept ---
 	h2, ts2 := newCloudWorkerTestHandler("7=5")
 	ts2.ownerBots = []map[string]interface{}{
 		{"id": int64(2), "username": "bot-b", "display_name": "B", "tenant_name": "bot-bot-b"},
@@ -579,15 +626,23 @@ func TestCloudWorkerHandleDelete(t *testing.T) {
 	req2 := cloudWorkerRequest(7, http.MethodDelete, "/api/cloud-workers/bot-bot-b", nil)
 	rec2 := httptest.NewRecorder()
 	h2.HandleSub(rec2, req2)
-	if rec2.Code != http.StatusOK {
-		t.Fatalf("no-destroy status=%d body=%s", rec2.Code, rec2.Body.String())
+	if rec2.Code != http.StatusServiceUnavailable {
+		t.Fatalf("no-destroy status=%d want 503 body=%s", rec2.Code, rec2.Body.String())
 	}
-	out2 := decodeCloudWorkerList(t, rec2)
-	if _, ok := out2["warning"]; !ok {
-		t.Fatalf("expected warning without destroy script: %v", out2)
+	if len(ts2.deletedBots) != 0 {
+		t.Fatalf("deletedBots=%v want 0 (fail closed)", ts2.deletedBots)
+	}
+
+	// --- without destroy script but explicit operator override (?force=1):
+	// the record may be deleted (instance cleanup is the operator's duty) ---
+	req2f := cloudWorkerRequest(7, http.MethodDelete, "/api/cloud-workers/bot-bot-b?force=1", nil)
+	rec2f := httptest.NewRecorder()
+	h2.HandleSub(rec2f, req2f)
+	if rec2f.Code != http.StatusOK {
+		t.Fatalf("force status=%d want 200 body=%s", rec2f.Code, rec2f.Body.String())
 	}
 	if len(ts2.deletedBots) != 1 {
-		t.Fatalf("deletedBots=%v want 1", ts2.deletedBots)
+		t.Fatalf("deletedBots=%v want 1 after force override", ts2.deletedBots)
 	}
 
 	// --- destroy failure: 502, bot kept ---

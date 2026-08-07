@@ -317,10 +317,36 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	if _, err := h.runScript(h.provisionScript,
 		"-Action", "Provision", "-Name", tenantName, "-ApiKey", result.APIKey); err != nil {
 		log.Printf("[cloud-worker] provision %s failed: %v", tenantName, err)
-		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
-			log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
+		// The provision script may have created the cloud instance before
+		// failing on a later step. Try to destroy any partially created
+		// instance so we do not leave a still-billed orphan behind (the
+		// destroy script must be idempotent and tolerate a missing instance).
+		destroyOK := true
+		if h.destroyScript == "" {
+			destroyOK = false
+			log.Printf("[cloud-worker] no destroy script configured; cannot clean up partially provisioned %s", tenantName)
+		} else if _, destroyErr := h.runScript(h.destroyScript, "-Action", "Destroy", "-Name", tenantName); destroyErr != nil {
+			destroyOK = false
+			log.Printf("[cloud-worker] destroy %s after provision failure also failed: %v", tenantName, destroyErr)
 		}
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to provision cloud worker"})
+		if destroyOK {
+			if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
+				log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to provision cloud worker"})
+			return
+		}
+		// Cleanup could not be confirmed: the instance may still exist and
+		// keep billing. Keep the bot record and persist the tenant name so
+		// the roster still shows this worker and the owner can retry the
+		// delete (which will attempt the destroy again). Deleting the only
+		// record would leave an orphan with no handle left to remove it.
+		if setErr := h.db.SetTenantName(result.UID, tenantName); setErr != nil {
+			log.Printf("[cloud-worker] failed to persist tenant_name for uid %d after failed provision: %v", result.UID, setErr)
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "failed to provision cloud worker; the instance may still exist, retry delete to clean up",
+		})
 		return
 	}
 
@@ -444,8 +470,9 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 
 // HandleDelete handles DELETE /api/cloud-workers/{name} — destroy the cloud
 // instance (when a destroy script is configured) and then remove the bot
-// record. Without a destroy script the DB record is still removed so the
-// caller is not locked out, but a warning is returned.
+// record. Fail-closed: without a destroy script the record is NOT deleted
+// (503) because the instance may still be running and billing; only an
+// explicit operator override (?force=1) may skip the destroy step.
 func (h *CloudWorkerHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -486,7 +513,20 @@ func (h *CloudWorkerHandler) HandleDelete(w http.ResponseWriter, r *http.Request
 	h.opMu.Lock()
 	defer h.opMu.Unlock()
 
-	if h.destroyScript != "" {
+	// Fail closed: without a destroy script we cannot guarantee the cloud
+	// instance is gone, so deleting the DB record would silently orphan a
+	// still-billed instance. Only an explicit operator override (?force=1)
+	// may skip the destroy step (intended for manual cleanup flows).
+	force := r.URL.Query().Get("force") == "1"
+	if h.destroyScript == "" {
+		if !force {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error": "cloud worker destroy is not configured; refusing to delete the record while the instance may still run",
+			})
+			return
+		}
+		log.Printf("[cloud-worker] FORCED delete of %s without destroy script (operator override)", name)
+	} else {
 		if _, err := h.runScript(h.destroyScript, "-Action", "Destroy", "-Name", name); err != nil {
 			log.Printf("[cloud-worker] destroy %s failed: %v", name, err)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to destroy cloud worker instance"})
@@ -501,11 +541,7 @@ func (h *CloudWorkerHandler) HandleDelete(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	resp := map[string]interface{}{"status": "deleted"}
-	if h.destroyScript == "" {
-		resp["warning"] = "no destroy script configured; the cloud instance may still be running"
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "deleted"})
 }
 
 // HandleSub routes /api/cloud-workers/ subtree by path segment.
