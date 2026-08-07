@@ -7,19 +7,17 @@ import {
   api,
   getPushRegistrationID,
   getToken,
-  setWSPushSubscriptionEndpoint,
 } from '../api';
 import {
   canUsePush,
-  ensurePushSubscription,
   pushDismissedStorageKey,
   pushEnabledStorageKey,
   readPushEnabled,
-  serializePushSubscription,
   shouldOfferPush,
   writePushEnabled,
 } from '../utils/push-notifications';
 import { enqueuePushOperation } from '../utils/push-operation';
+import { registerBrowserPush } from '../utils/push-registration';
 import { retryPendingPushUnsubscribe } from '../utils/push-session-cleanup';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import './pwa-controller.css';
@@ -198,15 +196,13 @@ export default function PwaController({
         const registrationID = getPushRegistrationID();
         const activeLockReady = await pushTabCoordinator.waitUntilActive?.(registrationID);
         if (activeLockReady === false || !isCurrent()) return;
-        const subscription = await ensurePushSubscription(
+        const registration = await registerBrowserPush({
           publicKey,
-          (endpoint) => api.unsubscribePush(endpoint, undefined, registrationID),
+          registrationID,
+          signal: controller.signal,
           isCurrent,
-        );
-        if (!subscription || !isCurrent()) return;
-        await setWSPushSubscriptionEndpoint(subscription.endpoint);
-        if (!isCurrent()) return;
-        await api.subscribePush(serializePushSubscription(subscription), registrationID, controller.signal);
+        });
+        if (!registration || !isCurrent()) return;
       } catch (error) {
         if (!cancelled) console.warn('Push subscription reconciliation failed:', error);
       }
@@ -261,15 +257,13 @@ export default function PwaController({
         const activeLockReady = await pushTabCoordinator.waitUntilActive?.(registrationID);
         if (activeLockReady === false || !isCurrent()) return;
 
-        const subscription = await ensurePushSubscription(
+        const registration = await registerBrowserPush({
           publicKey,
-          (endpoint) => api.unsubscribePush(endpoint, undefined, registrationID),
+          registrationID,
+          signal: controller.signal,
           isCurrent,
-        );
-        if (!subscription || !isCurrent()) return;
-        await setWSPushSubscriptionEndpoint(subscription.endpoint);
-        if (!isCurrent()) return;
-        await api.subscribePush(serializePushSubscription(subscription), registrationID, controller.signal);
+        });
+        if (!registration || !isCurrent()) return;
         if (isCurrent()) {
           writePushEnabled(pushPromptOwner, true);
           setPushEnabled(true);

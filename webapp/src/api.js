@@ -486,8 +486,8 @@ export const api = {
   subscribePush: (subscription, registrationID, signal) => (
     request('POST', '/api/push/subscriptions', { ...subscription, registration_id: registrationID }, { signal })
   ),
-  verifyPush: (registrationID) => (
-    request('POST', '/api/push/verify', { registration_id: registrationID })
+  sendPushTest: (registrationID) => (
+    request('POST', '/api/push/test', { registration_id: registrationID })
   ),
   unsubscribePush: (endpoint, authToken = token, registrationID = getPushRegistrationID()) => {
     const controller = new AbortController();

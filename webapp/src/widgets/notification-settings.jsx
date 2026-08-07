@@ -3,23 +3,24 @@ import {
   Bell,
   CircleAlert,
   LoaderCircle,
-  MonitorCheck,
   Send,
 } from 'lucide-react';
 import {
   api,
-  getPushRegistrationID,
   setWSPushSubscriptionEndpoint,
 } from '../api';
 import {
   canUsePush,
-  ensurePushSubscription,
   getPushSubscription,
   readPushEnabled,
-  serializePushSubscription,
   writePushEnabled,
 } from '../utils/push-notifications';
 import { enqueuePushOperation } from '../utils/push-operation';
+import { registerBrowserPush } from '../utils/push-registration';
+import {
+  clearPendingPushUnsubscribe,
+  rememberPendingPushUnsubscribe,
+} from '../utils/push-session-cleanup';
 
 function pushOwnerForUser(user) {
   const uid = user?.uid || user?.id;
@@ -40,28 +41,25 @@ function statusCopy({ supported, permission, enabled }) {
 }
 
 function testErrorCopy(error) {
-  const message = String(error?.message || '');
-  if (message.includes('no active push subscription')) {
+  const code = error?.data?.code || error?.code;
+  if (code === 'push_subscription_missing') {
     return '当前设备没有有效通知订阅，请关闭后重新开启通知再试。';
   }
-  if (message.includes('provider rejected')) {
+  if (code === 'push_subscription_expired') {
+    return '当前设备的通知订阅已失效，请关闭后重新开启通知再试。';
+  }
+  if (code === 'push_provider_rejected') {
     return '推送服务未接受测试通知，请稍后重试。';
   }
-  return message || '测试通知发送失败，请稍后重试。';
+  return error?.message || '测试通知发送失败，请稍后重试。';
 }
 
 async function registerCurrentBrowser() {
-  const registrationID = getPushRegistrationID();
   const config = await api.getPushConfig();
   if (!config.enabled || !config.public_key) throw new Error('推送服务尚未配置。');
-  const subscription = await ensurePushSubscription(
-    config.public_key,
-    (endpoint) => api.unsubscribePush(endpoint, undefined, registrationID),
-  );
-  if (!subscription) throw new Error('未能创建浏览器通知订阅。');
-  await api.subscribePush(serializePushSubscription(subscription), registrationID);
-  await setWSPushSubscriptionEndpoint(subscription.endpoint);
-  return registrationID;
+  const registration = await registerBrowserPush({ publicKey: config.public_key });
+  if (!registration) throw new Error('未能创建浏览器通知订阅。');
+  return registration.registrationID;
 }
 
 export default function NotificationSettings({ user }) {
@@ -73,7 +71,6 @@ export default function NotificationSettings({ user }) {
   const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [displayTesting, setDisplayTesting] = useState(false);
   const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -146,16 +143,24 @@ export default function NotificationSettings({ user }) {
       await enqueuePushOperation(async () => {
         const subscription = await getPushSubscription();
         if (subscription) {
-          await Promise.allSettled([
+          const [serverResult, browserResult] = await Promise.allSettled([
             api.unsubscribePush(subscription.endpoint),
             subscription.unsubscribe(),
           ]);
+          const serverRemoved = serverResult.status === 'fulfilled';
+          const browserRemoved = browserResult.status === 'fulfilled' && browserResult.value === true;
+          if (browserRemoved) clearPendingPushUnsubscribe(subscription.endpoint);
+          else rememberPendingPushUnsubscribe(subscription.endpoint);
+          if (!serverRemoved || !browserRemoved) {
+            throw new Error('通知已关闭，但订阅清理未完成，请稍后重新开启再关闭。');
+          }
         }
         await setWSPushSubscriptionEndpoint('');
       });
       setMessage('已在当前设备关闭消息通知。');
     } catch (err) {
-      setError(err?.message || '通知已关闭，但订阅清理未完成。');
+      await setWSPushSubscriptionEndpoint('').catch(() => {});
+      setError(err?.message || '通知已关闭，但订阅清理未完成，请稍后重新开启再关闭。');
     } finally {
       setBusy(false);
     }
@@ -174,37 +179,13 @@ export default function NotificationSettings({ user }) {
     try {
       await enqueuePushOperation(async () => {
         const registrationID = await registerCurrentBrowser();
-        await api.verifyPush(registrationID);
+        await api.sendPushTest(registrationID);
       });
-      setMessage('验证通知已发送。若本机通知可见但验证通知未到达，说明当前设备的后台推送通道可能不可用。');
+      setMessage('测试通知已交给推送服务。请切到后台或锁屏确认是否收到；未收到通常表示当前设备环境不可用。');
     } catch (err) {
       setError(testErrorCopy(err));
     } finally {
       setTesting(false);
-    }
-  };
-
-  const testLocalDisplay = async () => {
-    setDisplayTesting(true);
-    setMessage('');
-    setError('');
-    try {
-      const registration = await navigator.serviceWorker.ready;
-      if (typeof registration.showNotification !== 'function') {
-        throw new Error('notification display unavailable');
-      }
-      await registration.showNotification('CatsCo 本机显示测试', {
-        body: '如果你看到这条本机通知，说明浏览器与系统可以显示通知。',
-        icon: '/pwa-192x192.png',
-        badge: '/pwa-notification-badge-96x96.png',
-        tag: `catsco-local-display-test-${Date.now()}`,
-        data: { url: '/' },
-      });
-      setMessage('已请求本机显示通知。若仍未看到，请检查 Chrome 通知权限、系统通知设置与专注模式。');
-    } catch {
-      setError('本机通知无法显示，请检查 Chrome 与系统通知权限后再试。');
-    } finally {
-      setDisplayTesting(false);
     }
   };
 
@@ -239,20 +220,11 @@ export default function NotificationSettings({ user }) {
         <button
           type="button"
           className="oc-btn oc-btn-default oc-notification-test"
-          disabled={!enabled || busy || displayTesting || testing}
-          onClick={testLocalDisplay}
-        >
-          {displayTesting ? <LoaderCircle className="oc-spin" size={15} aria-hidden="true" /> : <MonitorCheck size={15} aria-hidden="true" />}
-          {displayTesting ? '测试中' : '测试本机显示'}
-        </button>
-        <button
-          type="button"
-          className="oc-btn oc-btn-default oc-notification-test"
-          disabled={!enabled || busy || displayTesting || testing}
+          disabled={!enabled || busy || testing}
           onClick={sendTestNotification}
         >
           {testing ? <LoaderCircle className="oc-spin" size={15} aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}
-          {testing ? '发送中' : '验证后台通知'}
+          {testing ? '发送中' : '发送测试通知'}
         </button>
       </div>
       {message && <div className="oc-notification-feedback is-success" role="status">{message}</div>}

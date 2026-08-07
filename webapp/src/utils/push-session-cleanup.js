@@ -10,7 +10,7 @@ function pendingPushUnsubscribeEndpoint() {
   }
 }
 
-function rememberPendingPushUnsubscribe(endpoint) {
+export function rememberPendingPushUnsubscribe(endpoint) {
   const normalizedEndpoint = String(endpoint || '').trim();
   if (!normalizedEndpoint) return;
   try {
@@ -20,7 +20,7 @@ function rememberPendingPushUnsubscribe(endpoint) {
   }
 }
 
-function clearPendingPushUnsubscribe(endpoint = '') {
+export function clearPendingPushUnsubscribe(endpoint = '') {
   const normalizedEndpoint = String(endpoint || '').trim();
   try {
     const pendingEndpoint = pendingPushUnsubscribeEndpoint();

@@ -7,7 +7,7 @@ vi.mock('../api', () => ({
     getPushConfig: vi.fn(),
     subscribePush: vi.fn(),
     unsubscribePush: vi.fn(),
-    verifyPush: vi.fn(),
+    sendPushTest: vi.fn(),
   },
   getPushRegistrationID: vi.fn(() => 'registration-current'),
   setWSPushSubscriptionEndpoint: vi.fn(() => Promise.resolve('subscription-id')),
@@ -24,7 +24,6 @@ describe('NotificationSettings', () => {
   let container;
   let root;
   let subscription;
-  let showNotification;
 
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
@@ -38,7 +37,6 @@ describe('NotificationSettings', () => {
         return { endpoint: this.endpoint, keys: this.keys };
       },
     };
-    showNotification = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true });
     Object.defineProperty(window, 'Notification', {
       configurable: true,
@@ -56,7 +54,6 @@ describe('NotificationSettings', () => {
           pushManager: { getSubscription: vi.fn().mockResolvedValue(subscription) },
         }),
         ready: Promise.resolve({
-          showNotification,
           pushManager: {
             getSubscription: vi.fn().mockResolvedValue(subscription),
             subscribe: vi.fn(),
@@ -67,7 +64,7 @@ describe('NotificationSettings', () => {
     api.getPushConfig.mockResolvedValue({ enabled: true, public_key: 'AQID' });
     api.subscribePush.mockResolvedValue({ subscribed: true });
     api.unsubscribePush.mockResolvedValue({ subscribed: false });
-    api.verifyPush.mockResolvedValue({ accepted: true });
+    api.sendPushTest.mockResolvedValue({ accepted: true });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -103,56 +100,71 @@ describe('NotificationSettings', () => {
     expect(container.textContent).toContain('已在当前设备关闭消息通知');
   });
 
-  it('verifies background delivery for the current browser registration', async () => {
+  it('reports incomplete cleanup and remembers a failed browser unsubscribe', async () => {
+    subscription.unsubscribe.mockResolvedValue(false);
+    await renderSettings();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[role="switch"]'));
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => expect(container.textContent).toContain('订阅清理未完成'));
+    expect(localStorage.getItem('oc_push_pending_unsubscribe_v1')).toBe(subscription.endpoint);
+    expect(container.textContent).not.toContain('已在当前设备关闭消息通知');
+  });
+
+  it('reports incomplete cleanup when the server unsubscribe fails', async () => {
+    api.unsubscribePush.mockRejectedValue(new Error('server unavailable'));
+    await renderSettings();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[role="switch"]'));
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => expect(container.textContent).toContain('订阅清理未完成'));
+    expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(container.textContent).not.toContain('已在当前设备关闭消息通知');
+  });
+
+  it('sends a background push test for the current browser registration', async () => {
     await renderSettings();
     const testButton = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent.includes('验证后台通知'));
+      .find((button) => button.textContent.includes('发送测试通知'));
 
     await act(async () => {
       Simulate.click(testButton);
       await Promise.resolve();
     });
 
-    expect(api.verifyPush).toHaveBeenCalledWith('registration-current');
+    expect(api.sendPushTest).toHaveBeenCalledWith('registration-current');
     expect(api.subscribePush).toHaveBeenCalledWith({
       endpoint: subscription.endpoint,
       keys: subscription.keys,
     }, 'registration-current');
-    expect(container.textContent).toContain('验证通知已发送');
-    expect(container.textContent).toContain('当前设备的后台推送通道可能不可用');
+    expect(container.textContent).toContain('测试通知已交给推送服务');
+    expect(container.textContent).toContain('未收到通常表示当前设备环境不可用');
     expect(container.textContent).toContain('部分国产 Android 手机');
   });
 
-  it('tests notification display locally without calling the push provider', async () => {
+  it.each([
+    ['push_subscription_missing', '没有有效通知订阅'],
+    ['push_subscription_expired', '通知订阅已失效'],
+    ['push_provider_rejected', '推送服务未接受测试通知'],
+  ])('maps the %s server code to actionable copy', async (code, copy) => {
+    const error = new Error('backend prose may change');
+    error.data = { code };
+    api.sendPushTest.mockRejectedValue(error);
     await renderSettings();
-    const displayButton = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent.includes('测试本机显示'));
+    const testButton = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('发送测试通知'));
 
     await act(async () => {
-      Simulate.click(displayButton);
+      Simulate.click(testButton);
       await Promise.resolve();
     });
 
-    expect(showNotification).toHaveBeenCalledWith('CatsCo 本机显示测试', expect.objectContaining({
-      body: expect.stringContaining('本机通知'),
-      tag: expect.stringMatching(/^catsco-local-display-test-\d+$/),
-    }));
-    expect(api.verifyPush).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('已请求本机显示通知');
-  });
-
-  it('reports a local display failure separately from push delivery', async () => {
-    showNotification.mockRejectedValue(new Error('display blocked'));
-    await renderSettings();
-    const displayButton = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent.includes('测试本机显示'));
-
-    await act(async () => {
-      Simulate.click(displayButton);
-      await Promise.resolve();
-    });
-
-    expect(container.textContent).toContain('本机通知无法显示');
-    expect(api.verifyPush).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(container.textContent).toContain(copy));
   });
 });
