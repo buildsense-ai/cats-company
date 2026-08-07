@@ -645,6 +645,18 @@ func pushSubscriptionID(endpoint string) string {
 	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
+// webpush-go expects an email address rather than a mailto URI and adds the
+// scheme itself. Keep accepting the standard URI form used by our deployment
+// configuration without producing an invalid "mailto:mailto:" VAPID subject.
+func webPushSubscriber(subject string) string {
+	subject = strings.TrimSpace(subject)
+	const mailtoPrefix = "mailto:"
+	if len(subject) >= len(mailtoPrefix) && strings.EqualFold(subject[:len(mailtoPrefix)], mailtoPrefix) {
+		return strings.TrimSpace(subject[len(mailtoPrefix):])
+	}
+	return subject
+}
+
 func redactPushEndpointError(err error, endpoint string) error {
 	if err == nil {
 		return nil
@@ -712,7 +724,7 @@ func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid in
 			},
 		}, &webpush.Options{
 			HTTPClient:      s.client,
-			Subscriber:      s.config.Subject,
+			Subscriber:      webPushSubscriber(s.config.Subject),
 			VAPIDPublicKey:  s.config.PublicKey,
 			VAPIDPrivateKey: s.config.PrivateKey,
 			TTL:             60,

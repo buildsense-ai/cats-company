@@ -36,6 +36,7 @@ describe('NotificationSettings', () => {
   let container;
   let root;
   let subscription;
+  let showNotification;
 
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
@@ -49,6 +50,7 @@ describe('NotificationSettings', () => {
         return { endpoint: this.endpoint, keys: this.keys };
       },
     };
+    showNotification = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true });
     Object.defineProperty(window, 'Notification', {
       configurable: true,
@@ -66,6 +68,7 @@ describe('NotificationSettings', () => {
           pushManager: { getSubscription: vi.fn().mockResolvedValue(subscription) },
         }),
         ready: Promise.resolve({
+          showNotification,
           pushManager: {
             getSubscription: vi.fn().mockResolvedValue(subscription),
             subscribe: vi.fn(),
@@ -289,6 +292,39 @@ describe('NotificationSettings', () => {
     expect(container.textContent).toContain('测试通知已交给推送服务');
     expect(container.textContent).toContain('未收到通常表示当前设备环境不可用');
     expect(container.textContent).toContain('部分国产 Android 手机');
+  });
+
+  it('tests browser notification display without calling the push provider', async () => {
+    await renderSettings();
+    const browserTestButton = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('测试浏览器通知'));
+
+    await act(async () => {
+      Simulate.click(browserTestButton);
+      await Promise.resolve();
+    });
+
+    expect(showNotification).toHaveBeenCalledWith('CatsCo 浏览器通知测试', expect.objectContaining({
+      body: expect.stringContaining('不代表后台推送链路可用'),
+      tag: expect.stringMatching(/^catsco-browser-display-test-\d+$/),
+    }));
+    expect(api.sendPushTest).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('已请求浏览器显示通知');
+  });
+
+  it('reports browser notification display failures separately', async () => {
+    showNotification.mockRejectedValueOnce(new Error('display blocked'));
+    await renderSettings();
+    const browserTestButton = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('测试浏览器通知'));
+
+    await act(async () => {
+      Simulate.click(browserTestButton);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('浏览器通知无法显示');
+    expect(api.sendPushTest).not.toHaveBeenCalled();
   });
 
   it('does not allow the notification switch to change while a test is sending', async () => {

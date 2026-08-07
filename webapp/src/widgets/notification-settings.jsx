@@ -3,6 +3,7 @@ import {
   Bell,
   CircleAlert,
   LoaderCircle,
+  MonitorCheck,
   Send,
 } from 'lucide-react';
 import {
@@ -74,6 +75,7 @@ export default function NotificationSettings({ user }) {
   const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [displayTesting, setDisplayTesting] = useState(false);
   const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -205,7 +207,7 @@ export default function NotificationSettings({ user }) {
   };
 
   const handleToggle = () => {
-    if (busy || loading || testing || !supported || (permission === 'denied' && !enabled)) return;
+    if (busy || loading || displayTesting || testing || !supported || (permission === 'denied' && !enabled)) return;
     if (enabled) disableNotifications();
     else enableNotifications();
   };
@@ -227,6 +229,30 @@ export default function NotificationSettings({ user }) {
     }
   };
 
+  const testBrowserNotification = async () => {
+    setDisplayTesting(true);
+    setMessage('');
+    setError('');
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      if (typeof registration.showNotification !== 'function') {
+        throw new Error('notification display unavailable');
+      }
+      await registration.showNotification('CatsCo 浏览器通知测试', {
+        body: '这条通知只验证浏览器与系统能否显示通知，不代表后台推送链路可用。',
+        icon: '/pwa-192x192.png',
+        badge: '/pwa-notification-badge-96x96.png',
+        tag: `catsco-browser-display-test-${Date.now()}`,
+        data: { url: '/' },
+      });
+      setMessage('已请求浏览器显示通知。若未看到，请检查浏览器与系统通知权限。');
+    } catch {
+      setError('浏览器通知无法显示，请检查浏览器与系统通知权限后再试。');
+    } finally {
+      setDisplayTesting(false);
+    }
+  };
+
   return (
     <div className="oc-settings-section oc-notification-settings">
       <div className="oc-settings-section-title">消息通知</div>
@@ -244,7 +270,7 @@ export default function NotificationSettings({ user }) {
           role="switch"
           aria-checked={enabled}
           aria-label="接收消息通知"
-          disabled={busy || loading || testing || !supported || (permission === 'denied' && !enabled)}
+          disabled={busy || loading || displayTesting || testing || !supported || (permission === 'denied' && !enabled)}
           onClick={handleToggle}
         >
           <span aria-hidden="true" />
@@ -258,7 +284,16 @@ export default function NotificationSettings({ user }) {
         <button
           type="button"
           className="oc-btn oc-btn-default oc-notification-test"
-          disabled={!enabled || busy || testing}
+          disabled={!enabled || busy || displayTesting || testing}
+          onClick={testBrowserNotification}
+        >
+          {displayTesting ? <LoaderCircle className="oc-spin" size={15} aria-hidden="true" /> : <MonitorCheck size={15} aria-hidden="true" />}
+          {displayTesting ? '测试中' : '测试浏览器通知'}
+        </button>
+        <button
+          type="button"
+          className="oc-btn oc-btn-default oc-notification-test"
+          disabled={!enabled || busy || displayTesting || testing}
           onClick={sendTestNotification}
         >
           {testing ? <LoaderCircle className="oc-spin" size={15} aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}
