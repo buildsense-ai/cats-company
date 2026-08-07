@@ -68,17 +68,18 @@
 **5 个脚本（`deploy/prod/ops/`）**：
 
 - [ ] **B4-1a `list-worker-images.sh`**：`ims ListImage --imageVisibilityCode 0` 过滤 `catsco-worker-*` + bake label，输出每行 `imageID name version commit`（供 `/api/cloud-workers/meta` + 回滚选择）。纯查询，先做，可测。
-- [ ] **B4-1b `provision-worker.sh`**：`--name <tenant> --api-key <bot-key> [--image-id <id>]` → resolve 最新镜像（缺省）→ 生成/导入 key pair（`ImportEcsKeypair`，注意 EPS 权限前置）→ `CreateEcsInstance`（flavor/vpc/subnet/secgroup 走 env，参数对齐 bake）→ 等实例 running + SSH → **注入该 bot 机器人的身份（bot api key / 连接配置），worker 以 bot 自身身份连接 CatsCompany** → 启用 service → 幂等（tenant 已存在则 skip）。
+- [ ] **B4-1b `provision-worker.sh`**：`--name <tenant> --login-token <user-token> [--image-id <id>]` → resolve 最新镜像（缺省）→ 生成/导入 key pair（`ImportEcsKeypair`，注意 EPS 权限前置）→ `CreateEcsInstance`（flavor/vpc/subnet/secgroup 走 env，参数对齐 bake）→ 等实例 running + SSH → **注入创建者（网页已登录账号）的登录凭证，worker 以创建者账号登录 CatsCompany（登录在云端持久化）** → 启用 service → 幂等（tenant 已存在则 skip）。
 - [ ] **B4-1c `destroy-worker.sh`**：`--name <tenant>` → 按实例名/标签找实例 → 删除 + 清理 key pair（fail-closed 聚合，参照 bake 删除确认）。
 - [ ] **B4-1d `reset-worker.sh`**：`--name <tenant> [--image-id <id>]` → destroy（丢数据）→ 从指定/最新镜像重建 → 重新供给（丢弃数据语义，强确认在 UI）。
 - [ ] **B4-1e `rollback-worker.sh`**：`--name <tenant> [--version <v>]` → **保留数据**：SSH 到实例 → 切换 `/opt/catsco/current` 到历史 release 版本（Part A 语义；Part A 的 `update-worker-artifact.sh` 是后续项，先做镜像内多版本切换，Part A 接入后扩展）。
 
 **环境变量**（server 侧，不进前端/仓库）：`CTYUN_AK/CTYUN_SK`、`CTYUN_WORKER_REGION_ID`、`CTYUN_WORKER_PROJECT_ID`、`CTYUN_WORKER_AZ_NAME`、`CTYUN_WORKER_FLAVOR_ID`、`CTYUN_WORKER_VPC_ID`、`CTYUN_WORKER_SUBNET_ID`、`CTYUN_WORKER_SECURITY_GROUP_ID`（对齐 bake 的 vars）。
 
-**架构（2026-08-07 用户确认）**：云托管虚拟员工 = **新建一个独立 bot 机器人账号**（`createBotAccount`，创建者为 owner）+ **在云实例上运行该机器人**（provision 注入 bot 自身 api key/身份 → 启用 `catsco-agent.service` → bot 以自身身份连接 CatsCompany）。创建者凭证的角色是**授权创建**（owner + 自动加好友），不是 worker 运行时身份。
+**认证（2026-08-07 用户确认）**：云托管虚拟员工 = 新建一个机器人（bot 记录）+ 云实例运行 XiaoBa。**XiaoBa 客户端本身需要登录才能使用**——provision 注入的是**创建者（网页已登录账号）的登录凭证**（网页登录态），worker 以创建者账号登录 CatsCompany；登录后在云端**持久化**（worker 保持登录态），不是 bot 的 api key。
 
 **待确认**：
-- ⚠️ `/srv/catsco-agent/.env` 的**确切键名**（bot 连接 CatsCompany：参考 XiaoBa-CLI `src/catscompany/runtime-config.ts` 的 `CATSCO_*` 别名 + 现有 worker 的 .env 模板）
+- ⚠️ 后端如何获取「网页登录凭证」并传给 provision：登录用户的 JWT / 专门登录 token / 会话？机制实现时定
+- ⚠️ `/srv/catsco-agent/.env` 的**确切键名**（XiaoBa 登录 + CatsCompany 连接：参考 XiaoBa-CLI `src/catscompany/runtime-config.ts` 的 `CATSCO_*` 别名 + 现有 worker 的 .env 模板）
 - bootstrap 是否还要写 `.xiaoba` runtime profile / 其他身份文件
 - `catsco-agent.service` 文件在镜像内的确切位置与依赖
 
