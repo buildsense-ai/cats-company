@@ -91,7 +91,7 @@
 - bootstrap 是否还要写 `.xiaoba` runtime profile / 其他身份文件
 - `catsco-agent.service` 文件在镜像内的确切位置与依赖
 
-- [ ] **步骤 B4-2：cats-company 对接**：`runScript` 已支持直接 exec 脚本（PR #158）；只需在部署时配置 4-5 个 `CATSCO_WORKER_*_SCRIPT` env 指向 `deploy/prod/ops/*.sh`。Dockerfile 变更随 B4-1。
+- [ ] **步骤 B4-2：cats-company 对接**：`runScript` 已支持直接 exec 脚本（PR #158）；只需在部署时配置 4-5 个 `CATSCO_WORKER_*_SCRIPT` env 指向 `deploy/prod/ops/*.sh`。Dockerfile 变更随 B4-1。🟡（配置文档已写 `deploy/prod/ops/README.md`——env→脚本映射 + CTYUN_* + 权限/持久化/配额注意；端到端待 PR #158 合并后在部署时配置 env）
 
 ## 环境变量（新增）
 - `CATSCO_WORKER_CREATE_QUOTA`（创建配额，`<uid>=<n>` 分号分隔，默认空=0）
