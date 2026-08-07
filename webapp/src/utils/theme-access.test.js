@@ -5,6 +5,8 @@ import {
   isLiquidThemeUnlocked,
   normalizeTheme,
   saveLiquidThemeUnlock,
+  syncThemeColor,
+  themeColor,
   verifyLiquidThemePassword,
 } from './theme-access';
 
@@ -18,6 +20,25 @@ describe('theme access', () => {
     expect(isLiquidTheme('liquid')).toBe(true);
     expect(isLiquidTheme('liquid-green')).toBe(true);
     expect(isLiquidTheme('dark')).toBe(false);
+  });
+
+  it('matches browser chrome to every supported theme surface', () => {
+    expect(themeColor('light')).toBe('#f8f8f8');
+    expect(themeColor('dark')).toBe('#0f0f0f');
+    expect(themeColor('liquid')).toBe('#f5f7fc');
+    expect(themeColor('liquid-green')).toBe('#151718');
+    expect(themeColor('neon')).toBe('#f8f8f8');
+  });
+
+  it('syncs the browser theme-color metadata', () => {
+    const meta = document.createElement('meta');
+    meta.name = 'theme-color';
+    document.head.appendChild(meta);
+
+    syncThemeColor('dark');
+
+    expect(meta.content).toBe('#0f0f0f');
+    meta.remove();
   });
 
   it('stores the local liquid-theme unlock without storing a password', () => {
