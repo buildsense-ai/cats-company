@@ -211,7 +211,8 @@ test("provision-worker: dry-run resolves image and creates nothing", () => {
 test("provision-worker: happy path creates instance, injects env, enables service", () => {
   const sb = setupSandbox({});
   const r = run(sb, ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY",
-    "--bot-uid", "42", "--user-uid", "7", "--user-name", "alice", "--user-display", "Alice", "--image-id", "img-1"]);
+    "--bot-uid", "42", "--user-uid", "7", "--user-name", "alice", "--user-display", "Alice",
+    "--image-id", "img-1", "--body-id", "body-1", "--installation-id", "inst-1"]);
   if (r.status !== 0) {
     const dbg = fs.readFileSync(sb.statePath, "utf8");
     assert.equal(r.status, 0, `status=${r.status}\nSTDOUT:\n${r.stdout}\nSTDERR:\n${r.stderr}\nSTATE:\n${dbg}`);
@@ -225,8 +226,8 @@ test("provision-worker: happy path creates instance, injects env, enables servic
   assert.match(state.injectedEnv, /CATSCO_API_KEY=BOTKEY/);
   assert.match(state.injectedEnv, /CATSCO_BOT_UID=42/);
   assert.match(state.injectedEnv, /CATSCO_USER_UID=7/);
-  assert.match(state.injectedEnv, /CATSCO_BODY_ID=/);
-  assert.match(state.injectedEnv, /CATSCO_INSTALLATION_ID=/);
+  assert.match(state.injectedEnv, /CATSCO_BODY_ID=body-1/);
+  assert.match(state.injectedEnv, /CATSCO_INSTALLATION_ID=inst-1/);
   assert.equal(state.serviceEnabled, true, "service should be enabled");
   assert.ok((state.keypairs || []).some(k => k.keyPairName === "worker-key-bot-a"), "key pair created");
 });

@@ -253,4 +253,7 @@ test("reset-worker: falls back to inject.env snapshot for identity", () => {
   assert.match(state.injectedEnv, /CATSCO_USER_TOKEN=SNAPJWT/);
   assert.match(state.injectedEnv, /CATSCO_API_KEY=SNAPKEY/);
   assert.match(state.injectedEnv, /CATSCO_BOT_UID=99/);
+  // 身份保持：BODY_ID/INSTALLATION_ID 从快照回退而非重新生成
+  assert.match(state.injectedEnv, /CATSCO_BODY_ID=body-1/);
+  assert.match(state.injectedEnv, /CATSCO_INSTALLATION_ID=inst-1/);
 });

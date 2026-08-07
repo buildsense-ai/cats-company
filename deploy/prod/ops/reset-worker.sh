@@ -26,6 +26,8 @@ BOT_UID=""
 USER_UID=""
 USER_NAME=""
 USER_DISPLAY=""
+BODY_ID=""
+INSTALLATION_ID=""
 DRY_RUN=0
 
 usage() {
@@ -42,6 +44,8 @@ while (($#)); do
     --user-uid) USER_UID="${2:-}"; shift 2 ;;
     --user-name) USER_NAME="${2:-}"; shift 2 ;;
     --user-display) USER_DISPLAY="${2:-}"; shift 2 ;;
+    --body-id) BODY_ID="${2:-}"; shift 2 ;;
+    --installation-id) INSTALLATION_ID="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -70,6 +74,8 @@ if [[ -f "$STATE_DIR/inject.env" ]]; then
   [[ -n "$USER_UID" ]] || USER_UID="$(sed -n 's/^CATSCO_USER_UID=//p' "$STATE_DIR/inject.env" | tail -n1)"
   [[ -n "$USER_NAME" ]] || USER_NAME="$(sed -n 's/^CATSCO_USER_NAME=//p' "$STATE_DIR/inject.env" | tail -n1)"
   [[ -n "$USER_DISPLAY" ]] || USER_DISPLAY="$(sed -n 's/^CATSCO_USER_DISPLAY_NAME=//p' "$STATE_DIR/inject.env" | tail -n1)"
+  [[ -n "$BODY_ID" ]] || BODY_ID="$(sed -n 's/^CATSCO_BODY_ID=//p' "$STATE_DIR/inject.env" | tail -n1)"
+  [[ -n "$INSTALLATION_ID" ]] || INSTALLATION_ID="$(sed -n 's/^CATSCO_INSTALLATION_ID=//p' "$STATE_DIR/inject.env" | tail -n1)"
 fi
 
 # 重供给需要完整身份（bot 连接凭证 + 创建者登录凭证）
@@ -92,6 +98,6 @@ prov_args=(--name "$NAME" --login-token "$LOGIN_TOKEN" --api-key "$BOT_API_KEY")
 [[ -n "$USER_UID" ]] && prov_args+=(--user-uid "$USER_UID")
 [[ -n "$USER_NAME" ]] && prov_args+=(--user-name "$USER_NAME")
 [[ -n "$USER_DISPLAY" ]] && prov_args+=(--user-display "$USER_DISPLAY")
-[[ $DRY_RUN -eq 1 ]] && prov_args+=(--dry-run)
-
+  [[ -n "$BODY_ID" ]] && prov_args+=(--body-id "$BODY_ID")
+  [[ -n "$INSTALLATION_ID" ]] && prov_args+=(--installation-id "$INSTALLATION_ID")
 "$OPS_DIR/provision-worker.sh" "${prov_args[@]}"

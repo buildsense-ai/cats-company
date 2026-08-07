@@ -111,7 +111,12 @@ if [[ -n "$kp" ]]; then
 fi
 
 # --- 3. 清理本地 state（尽力，不阻塞结果） ---
-[[ ! -d "$STATE_DIR" ]] || rm -rf "$STATE_DIR" 2>/dev/null || true
+# 防御：CTYUN_WORKER_STATE_DIR 来自环境变量，拒绝根/空等危险路径
+if [[ -z "$STATE_DIR" || "$STATE_DIR" == "/" || "$STATE_DIR" == "//" || "$STATE_DIR" == "$HOME" ]]; then
+  echo "warning: refusing to remove unsafe STATE_DIR='$STATE_DIR'" >&2
+else
+  [[ ! -d "$STATE_DIR" ]] || rm -rf "$STATE_DIR" 2>/dev/null || true
+fi
 
 if [[ -n "$errors" ]]; then
   echo "error: destroy incomplete: ${errors}" >&2

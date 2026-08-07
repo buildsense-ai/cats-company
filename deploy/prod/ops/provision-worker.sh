@@ -26,6 +26,8 @@ USER_UID=""
 USER_NAME=""
 USER_DISPLAY=""
 IMAGE_ID=""
+BODY_ID=""
+INSTALLATION_ID=""
 DRY_RUN=0
 
 usage() {
@@ -42,6 +44,8 @@ while (($#)); do
     --user-name) USER_NAME="${2:-}"; shift 2 ;;
     --user-display) USER_DISPLAY="${2:-}"; shift 2 ;;
     --image-id) IMAGE_ID="${2:-}"; shift 2 ;;
+    --body-id) BODY_ID="${2:-}"; shift 2 ;;
+    --installation-id) INSTALLATION_ID="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -179,8 +183,9 @@ gen_uuid() {
   fi
 }
 
-BODY_ID="$(gen_uuid)"
-INSTALLATION_ID="$(gen_uuid)"
+# reset 重装时由调用方显式传入（保持 bot 身份不变）；缺省才生成新 UUID
+BODY_ID="${BODY_ID:-$(gen_uuid)}"
+INSTALLATION_ID="${INSTALLATION_ID:-$(gen_uuid)}"
 
 create_resp="$(ctyun ecs CreateEcsInstance \
   --regionID "$REGION_ID" \
