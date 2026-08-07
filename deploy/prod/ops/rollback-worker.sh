@@ -111,14 +111,14 @@ if [[ -z "$VERSION" ]]; then
 fi
 
 # --- 3. 切换 current 软链到目标版本并重启 service ---
-if [[ $DRY_RUN -eq 1 ]]; then
-  echo "{\"status\":\"dry-run\",\"instance_name\":\"$INSTANCE_NAME\",\"version\":\"$VERSION\"}"
-  exit 0
-fi
-
 # 前缀匹配 <version>-<sha> 的 release 目录（glob 受上面正则约束）
 target="$(ssh_run "root@$INSTANCE_IP" "ls -1d /opt/catsco/releases/${VERSION}*/ 2>/dev/null | head -n1 | xargs -n1 basename" 2>/dev/null || true)"
 [[ -n "$target" ]] || { echo "error: release $VERSION not found on instance" >&2; exit 1; }
+
+if [[ $DRY_RUN -eq 1 ]]; then
+  echo "{\"status\":\"dry-run\",\"instance_name\":\"$INSTANCE_NAME\",\"version\":\"$target\"}"
+  exit 0
+fi
 
 ssh_run "root@$INSTANCE_IP" "ln -sfn /opt/catsco/releases/${target} /opt/catsco/current && systemctl restart catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service" >/dev/null 2>&1 \
   || { echo "error: rollback to $target failed" >&2; exit 1; }

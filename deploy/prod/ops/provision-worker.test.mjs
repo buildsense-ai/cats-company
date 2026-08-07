@@ -197,6 +197,15 @@ test("provision-worker: idempotent when instance exists", () => {
   assert.ok(!state.injectedEnv, "no env injected on existing worker");
 });
 
+test("provision-worker: refuses when same-name instance exists but not running", () => {
+  const sb = setupSandbox({ instances: [{ instanceName: "worker-bot-a", instanceID: "i-stopped", state: "stopped", floatingIP: "10.0.0.9" }] });
+  const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k", "--image-id", "img-1"]);
+  assert.notEqual(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /not running/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.ok(!state.injectedEnv, "must not provision over a non-running instance");
+});
+
 test("provision-worker: dry-run resolves image and creates nothing", () => {
   const sb = setupSandbox({});
   // fake list-worker-images not present; dry-run needs an image → provide --image-id
@@ -217,8 +226,10 @@ test("provision-worker: happy path creates instance, injects env, enables servic
     const dbg = fs.readFileSync(sb.statePath, "utf8");
     assert.equal(r.status, 0, `status=${r.status}\nSTDOUT:\n${r.stdout}\nSTDERR:\n${r.stderr}\nSTATE:\n${dbg}`);
   }
-  assert.match(r.stdout, /"status":"provisioned"/);
-  assert.match(r.stdout, /"instance_name":"worker-bot-a"/);
+  // stdout 必须是纯 JSON（systemctl is-active 的输出不得污染约定）
+  const parsed = JSON.parse(r.stdout.trim());
+  assert.equal(parsed.status, "provisioned");
+  assert.equal(parsed.instance_name, "worker-bot-a");
 
   const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
   assert.ok(state.injectedEnv, "env should be injected");

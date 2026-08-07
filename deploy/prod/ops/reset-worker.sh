@@ -100,4 +100,5 @@ prov_args=(--name "$NAME" --login-token "$LOGIN_TOKEN" --api-key "$BOT_API_KEY")
 [[ -n "$USER_DISPLAY" ]] && prov_args+=(--user-display "$USER_DISPLAY")
   [[ -n "$BODY_ID" ]] && prov_args+=(--body-id "$BODY_ID")
   [[ -n "$INSTALLATION_ID" ]] && prov_args+=(--installation-id "$INSTALLATION_ID")
+  [[ $DRY_RUN -eq 1 ]] && prov_args+=(--dry-run)
 "$OPS_DIR/provision-worker.sh" "${prov_args[@]}"

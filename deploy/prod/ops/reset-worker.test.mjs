@@ -204,6 +204,17 @@ test("reset-worker: refuses without credentials and no snapshot", () => {
   assert.match(r.stderr, /--api-key and --login-token are required/);
 });
 
+test("reset-worker: dry-run destroys nothing and provisions nothing", () => {
+  const sb = setupSandbox({ instances: [{ instanceName: "worker-bot-a", instanceID: "i-old", state: "running", floatingIP: "10.0.0.9" }] });
+  const r = run(sb, ["--name", "bot-a", "--login-token", "JWT", "--api-key", "KEY", "--image-id", "img-1", "--dry-run"]);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal((state.deletedInstances || []).length, 0, "no instance deleted in dry-run");
+  assert.ok((state.instances || []).some(i => i.instanceID === "i-old"), "old instance untouched");
+  assert.ok(!state.injectedEnv, "no env injected in dry-run");
+  assert.ok(!state.serviceEnabled, "no service enabled in dry-run");
+});
+
 test("reset-worker: happy path destroys then reprovisions", () => {
   const sb = setupSandbox({});
   const r = run(sb, ["--name", "bot-a", "--login-token", "JWT", "--api-key", "KEY",

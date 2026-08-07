@@ -111,8 +111,10 @@ if [[ -n "$kp" ]]; then
 fi
 
 # --- 3. 清理本地 state（尽力，不阻塞结果） ---
-# 防御：CTYUN_WORKER_STATE_DIR 来自环境变量，拒绝根/空等危险路径
-if [[ -z "$STATE_DIR" || "$STATE_DIR" == "/" || "$STATE_DIR" == "//" || "$STATE_DIR" == "$HOME" ]]; then
+# 防御：CTYUN_WORKER_STATE_DIR 来自环境变量——必须绝对路径、不含 .. 、
+# 非根/非 HOME，否则拒绝（防止 rm -rf 逃逸到 / 或祖先目录）
+if [[ -z "$STATE_DIR" || "$STATE_DIR" == "/" || "$STATE_DIR" == "//" || "$STATE_DIR" == "$HOME" \
+  || "$STATE_DIR" != /* || "$STATE_DIR" == *..* ]]; then
   echo "warning: refusing to remove unsafe STATE_DIR='$STATE_DIR'" >&2
 else
   [[ ! -d "$STATE_DIR" ]] || rm -rf "$STATE_DIR" 2>/dev/null || true

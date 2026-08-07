@@ -88,12 +88,12 @@ STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
 ctyun() {
   local raw status
   raw="$(timeout --signal=TERM --kill-after=15s 120s ctyun-cli "$@" --output json 2>&1)" || {
-    echo "error: ctyun-cli failed: $*" >&2; echo "$raw" >&2; exit 1
+    echo "error: ctyun-cli failed: $*" >&2; echo "$raw" >&2; return 1
   }
   status="$(jq -r '.statusCode // empty' <<<"$raw")"
   if [[ "$status" != "800" ]]; then
     echo "error: Tianyi Cloud API failed: $(jq -r '.errorCode // ""' <<<"$raw") $(jq -r '.message // ""' <<<"$raw")" >&2
-    exit 1
+    return 1
   fi
   printf '%s' "$raw"
 }
@@ -118,7 +118,8 @@ cleanup_failed() {
       errors="instance delete failed; "
     fi
   fi
-  if [[ -n "${KEYPAIR_NAME:-}" ]]; then
+  # 只在本次新建 key pair 时删除（复用对象可能仍绑定其他实例，不清理）
+  if [[ -n "${KEYPAIR_NAME:-}" && "${KEYPAIR_CREATED:-0}" == "1" ]]; then
     if ctyun ecs DeleteEcsKeypair --regionID "$REGION_ID" --projectID "$PROJECT_ID" \
         --keyPairName "$KEYPAIR_NAME" >/dev/null 2>&1; then
       : # ok
@@ -134,13 +135,21 @@ trap 'if [[ $? -ne 0 && $DRY_RUN -eq 0 ]]; then cleanup_failed; fi' EXIT
 # --- 1. 幂等检查 ---
 existing="$(find_instance "$INSTANCE_NAME")"
 if [[ -n "$existing" ]]; then
-  echo "{\"status\":\"exists\",\"instance_id\":\"$(jq -r '.instanceID // ""' <<<"$existing")\",\"instance_name\":\"$INSTANCE_NAME\"}"
+  # 幂等只接受 running/active；残留的 stopped/error 同名实例不能当"已供给"
+  existing_state="$(jq -r '.state // .status // ""' <<<"$existing")"
+  if [[ "$existing_state" != "running" && "$existing_state" != "active" ]]; then
+    echo "error: instance $INSTANCE_NAME already exists but is not running (state=$existing_state); handle it first" >&2
+    exit 1
+  fi
+  echo "{\"status\":\"exists\",\"instance_id\":\"$(jq -r '.instanceID // ""' <<<"$existing")\",\"instance_name\":\"$INSTANCE_NAME\",\"state\":\"$existing_state\"}"
   exit 0
 fi
 
 # --- 2. resolve 镜像（指定或最新） ---
 if [[ -z "$IMAGE_ID" ]]; then
-  IMAGE_ID="$(timeout --signal=TERM --kill-after=15s 90s /opt/catsco/ops/list-worker-images.sh 2>/dev/null | head -n1 | cut -f1)"
+  # list 输出 TSV，第 5 列为 createdTime（数字毫秒）→ 按最新排序取第一
+  IMAGE_ID="$(timeout --signal=TERM --kill-after=15s 90s /opt/catsco/ops/list-worker-images.sh 2>/dev/null \
+    | sort -t $'\t' -k5,5nr | head -n1 | cut -f1)"
 fi
 [[ -n "$IMAGE_ID" ]] || { echo "error: no worker image resolved (set --image-id or run list-worker-images)" >&2; exit 1; }
 
@@ -158,6 +167,10 @@ keypair_id="$(ctyun ecs GetEcsKeypairDetails --regionID "$REGION_ID" --projectID
   --keyPairName "$KEYPAIR_NAME" --pageNo 1 --pageSize 10 \
   | jq -r --arg n "$KEYPAIR_NAME" '.returnObj.results[]? | select(.keyPairName == $n) | .keyPairID' | head -n1)"
 if [[ -z "$keypair_id" ]]; then
+  # 本次新建的 key pair 才允许失败清理删除（复用的不动，可能仍绑其他实例）
+  KEYPAIR_CREATED=1
+  # 清除本地残留私钥，避免 ssh-keygen 在非交互环境询问覆盖
+  rm -f "$PRIVATE_KEY" "${PRIVATE_KEY}.pub"
   ssh-keygen -q -t rsa -b 3072 -N "" -C "catsco-worker-${NAME}" -f "$PRIVATE_KEY"
   chmod 600 "$PRIVATE_KEY"
   PUBLIC_KEY="$(cat "${PRIVATE_KEY}.pub")"
@@ -249,20 +262,20 @@ done
 [[ -n "$ssh_ready" ]] || { echo "error: timed out waiting for SSH/cloud-init on $INSTANCE_IP" >&2; exit 1; }
 
 # --- 6. 注入 .env（创建者登录凭证 + bot 连接凭证） ---
-ENV_CONTENT="$(cat <<EOF
-CATSCO_HTTP_BASE_URL=${HTTP_BASE_URL}
-CATSCO_SERVER_URL=${SERVER_URL}
-CATSCO_API_KEY=${BOT_API_KEY}
-CATSCO_BOT_UID=${BOT_UID}
-CATSCO_BODY_ID=${BODY_ID}
-CATSCO_INSTALLATION_ID=${INSTALLATION_ID}
-CATSCO_USER_TOKEN=${LOGIN_TOKEN}
-CATSCO_USER_UID=${USER_UID}
-CATSCO_USER_NAME=${USER_NAME}
-CATSCO_USER_DISPLAY_NAME=${USER_DISPLAY}
-CATSCO_LOG_UPLOAD_ENABLED=true
-EOF
-)"
+# 用 printf 逐行生成（heredoc 会在值内二次展开 $ 反引号，破坏含特殊字符的
+# api-key/token）；%s 只做一次展开，值原样保留
+ENV_CONTENT="$(printf '%s\n' \
+  "CATSCO_HTTP_BASE_URL=${HTTP_BASE_URL}" \
+  "CATSCO_SERVER_URL=${SERVER_URL}" \
+  "CATSCO_API_KEY=${BOT_API_KEY}" \
+  "CATSCO_BOT_UID=${BOT_UID}" \
+  "CATSCO_BODY_ID=${BODY_ID}" \
+  "CATSCO_INSTALLATION_ID=${INSTALLATION_ID}" \
+  "CATSCO_USER_TOKEN=${LOGIN_TOKEN}" \
+  "CATSCO_USER_UID=${USER_UID}" \
+  "CATSCO_USER_NAME=${USER_NAME}" \
+  "CATSCO_USER_DISPLAY_NAME=${USER_DISPLAY}" \
+  "CATSCO_LOG_UPLOAD_ENABLED=true")"
 ssh_run "root@$INSTANCE_IP" "install -d -o catsco-agent -g catsco-agent /srv/catsco-agent && cat > /srv/catsco-agent/.env && chown catsco-agent:catsco-agent /srv/catsco-agent/.env && chmod 600 /srv/catsco-agent/.env" <<<"$ENV_CONTENT"
 
 # 保存注入快照（供 reset-worker.sh 无参数重建时复用身份），chmod 600
@@ -270,7 +283,8 @@ printf '%s\n' "$ENV_CONTENT" > "$STATE_DIR/inject.env"
 chmod 600 "$STATE_DIR/inject.env"
 
 # --- 7. 启用 service ---
-ssh_run "root@$INSTANCE_IP" "systemctl enable --now catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service"
+# 输出重定向：is-active 的 stdout（"active"）会污染下方 JSON 约定，仅保留退出码
+ssh_run "root@$INSTANCE_IP" "systemctl enable --now catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service" >/dev/null 2>&1
 
 echo "{\"status\":\"provisioned\",\"instance_id\":\"$CREATED_INSTANCE_ID\",\"instance_name\":\"$INSTANCE_NAME\",\"ip\":\"$INSTANCE_IP\",\"image_id\":\"$IMAGE_ID\"}"
 trap - EXIT
