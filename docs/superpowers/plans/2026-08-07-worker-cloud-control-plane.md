@@ -85,8 +85,9 @@
 - **日志**：`CATSCO_LOG_UPLOAD_ENABLED`
 - 对应 XiaoBa 代码：`src/catscompany/runtime-config.ts`（serverUrl/apiKey/uid 解析）+ `local-config.ts`（getAuthState：CATSCO_USER_TOKEN/UID、CATSCO_BOT_UID、CATSCO_API_KEY）
 
+**登录凭证获取（2026-08-07 用户确认）**：web 登录凭证 = 本地 XiaoBa 登录凭证（同一套登录态，"云端都登录了"）。后端从请求 `Authorization: Bearer <token>` 取 web 登录 JWT，透传给 provision → 注入 `CATSCO_USER_TOKEN`——worker 拿到的登录态与用户本地直接登录 XiaoBa 无区别。
+
 **待确认**：
-- ⚠️ 后端如何获取「网页登录凭证」并传给 provision：登录用户的 JWT / 专门登录 token / 会话？机制实现时定
 - bootstrap 是否还要写 `.xiaoba` runtime profile / 其他身份文件
 - `catsco-agent.service` 文件在镜像内的确切位置与依赖
 
