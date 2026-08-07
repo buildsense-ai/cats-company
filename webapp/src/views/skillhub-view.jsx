@@ -18,6 +18,20 @@ const SKILLHUB_DEVICE_SCHEMAS = {
   [SKILLHUB_DEVICE_TOOLS.switchBot]: 'xiaoba.skillhub.bot_switch.v1',
 };
 
+const SKILLHUB_SELECTED_BOT_STORAGE_PREFIX = 'catsco.skillhub.selectedBot';
+const SKILLHUB_SWITCH_RETRY_ATTEMPTS = 40;
+const SKILLHUB_SWITCH_RETRY_DELAY_MS = 1_500;
+const RETRYABLE_SKILLHUB_SWITCH_ERRORS = new Set([
+  'BOT_NOT_ACTIVE',
+  'REQUEST_EXPIRED',
+  'SHUTTING_DOWN',
+  'device_rpc_timeout',
+  'skillhub_device_timeout',
+  'skillhub_websocket_disconnected',
+  'skillhub_websocket_unavailable',
+  'target_device_unavailable',
+]);
+
 const wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
 
 export function normalizeSkillHubDevices(response) {
@@ -39,6 +53,91 @@ export function normalizeOwnedBots(response, userUid) {
     const ownerUID = Number(bot?.owner_id || bot?.owner_uid || 0);
     return ownerUID > 0 && ownerUID === Number(userUid);
   });
+}
+
+function selectedBotStorageKey(userUid) {
+  const uid = String(userUid || '').trim();
+  return uid ? `${SKILLHUB_SELECTED_BOT_STORAGE_PREFIX}.${uid}` : '';
+}
+
+function browserStorage() {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+export function readRememberedSkillHubBotUID(userUid, storage = browserStorage()) {
+  const key = selectedBotStorageKey(userUid);
+  if (!key || !storage) return '';
+  try {
+    return String(storage.getItem(key) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+export function rememberSkillHubBotUID(userUid, botUid, storage = browserStorage()) {
+  const key = selectedBotStorageKey(userUid);
+  const uid = String(botUid || '').trim();
+  if (!key || !storage) return;
+  try {
+    if (uid) storage.setItem(key, uid);
+    else storage.removeItem(key);
+  } catch {
+    // Storage can be unavailable in hardened or private browser contexts.
+  }
+}
+
+export function resolvePreferredSkillHubBotUID(bots, userUid, storage = browserStorage()) {
+  const remembered = readRememberedSkillHubBotUID(userUid, storage);
+  if (remembered && bots.some((bot) => String(botUID(bot)) === remembered)) return remembered;
+  const firstUID = botUID(bots[0]);
+  return firstUID ? String(firstUID) : '';
+}
+
+export function isRetryableSkillHubSwitchError(error) {
+  if (RETRYABLE_SKILLHUB_SWITCH_ERRORS.has(String(error?.code || ''))) return true;
+  return error?.code === 'skillhub_device_request_rejected'
+    && [404, 409, 503].includes(Number(error?.status || 0));
+}
+
+export async function waitForSkillHubWorkspaceAfterSwitch({
+  deviceId,
+  readWorkspace,
+  getDevices = api.getDevices,
+  isCurrent = () => true,
+  waitFor = wait,
+  maxAttempts = SKILLHUB_SWITCH_RETRY_ATTEMPTS,
+  retryDelayMs = SKILLHUB_SWITCH_RETRY_DELAY_MS,
+}) {
+  let lastError;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    await waitFor(attempt === 0 ? 2_000 : retryDelayMs);
+    if (!isCurrent()) return null;
+
+    try {
+      const capable = normalizeSkillHubDevices(await getDevices());
+      const routeReady = capable.some((device) => String(device.deviceId || '') === String(deviceId || ''));
+      if (!routeReady) continue;
+    } catch (error) {
+      lastError = error;
+      continue;
+    }
+
+    try {
+      return await readWorkspace();
+    } catch (error) {
+      if (!isRetryableSkillHubSwitchError(error)) throw error;
+      lastError = error;
+    }
+  }
+  if (!isCurrent()) return null;
+  const error = new Error('本地 XiaoBa 切换超时，请确认 XiaoBa 仍在运行后重试。');
+  error.code = 'skillhub_device_switch_timeout';
+  error.cause = lastError;
+  throw error;
 }
 
 export function normalizeSkillHubSkills(response) {
@@ -286,6 +385,7 @@ export default function SkillHubView({ user }) {
   const catalogueRequestRef = useRef(0);
   const localRequestRef = useRef(0);
   const saveRequestRef = useRef(0);
+  const requestedBotSwitchRef = useRef('');
 
   useEffect(() => {
     selectedBotUIDRef.current = selectedBotUID;
@@ -337,8 +437,7 @@ export default function SkillHubView({ user }) {
       setBots(owned);
       setSelectedBotUID((current) => {
         if (current && owned.some((bot) => String(botUID(bot)) === current)) return current;
-        const firstUID = botUID(owned[0]);
-        return firstUID ? String(firstUID) : '';
+        return resolvePreferredSkillHubBotUID(owned, user?.uid);
       });
     } finally {
       setLoadingBots(false);
@@ -411,7 +510,11 @@ export default function SkillHubView({ user }) {
     }
   }, []);
 
-  const loadLocalWorkspace = useCallback(async (botUID = selectedBotUIDRef.current, deviceID = selectedDeviceID) => {
+  const loadLocalWorkspace = useCallback(async (
+    botUID = selectedBotUIDRef.current,
+    deviceID = selectedDeviceID,
+    options = {},
+  ) => {
     const requestedBotUID = String(botUID || '');
     const requestedDeviceID = String(deviceID || '');
     const requestID = localRequestRef.current + 1;
@@ -423,6 +526,9 @@ export default function SkillHubView({ user }) {
       setLoadingLocalSkills(false);
       return;
     }
+    const allowBotSwitch = options.allowBotSwitch === true
+      || requestedBotSwitchRef.current === requestedBotUID;
+    if (requestedBotSwitchRef.current === requestedBotUID) requestedBotSwitchRef.current = '';
     setLoadingLocalSkills(true);
     // Do not leave the previous Bot's cards actionable while XiaoBa switches
     // its active workspace. The local bridge reads the currently active
@@ -453,21 +559,19 @@ export default function SkillHubView({ user }) {
       } catch (error) {
         if (error?.code !== 'BOT_NOT_ACTIVE') throw error;
         if (!isCurrentRequest()) return;
+        if (!allowBotSwitch) {
+          setLocalNotice('当前 Bot 尚未在本地 XiaoBa 激活。');
+          return;
+        }
         await invoke(SKILLHUB_DEVICE_TOOLS.switchBot, {}, 10_000);
         if (!isCurrentRequest()) return;
         setLocalNotice('正在切换本地 Bot，等待 XiaoBa 重新连接…');
-        let lastError = error;
-        for (let attempt = 0; attempt < 12; attempt += 1) {
-          await wait(attempt === 0 ? 2_000 : 1_500);
-          if (!isCurrentRequest()) return;
-          try {
-            workspace = await invoke(SKILLHUB_DEVICE_TOOLS.workspace, {}, 8_000);
-            break;
-          } catch (retryError) {
-            lastError = retryError;
-          }
-        }
-        if (!workspace) throw lastError;
+        workspace = await waitForSkillHubWorkspaceAfterSwitch({
+          deviceId: requestedDeviceID,
+          readWorkspace: () => invoke(SKILLHUB_DEVICE_TOOLS.workspace, {}, 8_000),
+          isCurrent: isCurrentRequest,
+        });
+        if (!workspace) return;
       }
       if (!isCurrentRequest()) return;
       if (String(workspace?.bot_uid || '') !== requestedBotUID) {
@@ -750,9 +854,12 @@ export default function SkillHubView({ user }) {
               value={selectedBotUID}
               disabled={loadingBots || bots.length === 0 || Boolean(sharingSkill)}
               onChange={(event) => {
-                selectedBotUIDRef.current = event.target.value;
+                const nextBotUID = event.target.value;
+                selectedBotUIDRef.current = nextBotUID;
+                requestedBotSwitchRef.current = nextBotUID;
+                rememberSkillHubBotUID(user?.uid, nextBotUID);
                 localRequestRef.current += 1;
-                setSelectedBotUID(event.target.value);
+                setSelectedBotUID(nextBotUID);
               }}
             >
               {bots.length === 0 && <option value="">暂无自己拥有的 Bot</option>}
@@ -798,7 +905,11 @@ export default function SkillHubView({ user }) {
                 className="cc-skillhub-icon-button"
                 title="刷新本地 Skills"
                 aria-label="刷新本地 Skills"
-                onClick={() => loadLocalWorkspace()}
+                onClick={() => loadLocalWorkspace(
+                  selectedBotUID,
+                  selectedDeviceID,
+                  { allowBotSwitch: true },
+                )}
                 disabled={!selectedBotUID || !selectedDeviceID || loadingLocalSkills || Boolean(sharingSkill)}
               >
                 <RefreshCw size={15} />
