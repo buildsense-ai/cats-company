@@ -664,3 +664,49 @@ func TestParseImageLines(t *testing.T) {
 		t.Fatalf("got %v want [img-123]", got)
 	}
 }
+
+func TestCloudWorkerMuxRouting(t *testing.T) {
+	// End-to-end route test through a real ServeMux, registered exactly like
+	// server/cmd/server.go (minus JWT auth; requests carry the uid in context).
+	// This guards the GET/POST split on /api/cloud-workers — the create path
+	// must hit HandleCreate, not the GET-only HandleList.
+	cfg := workerScriptCfg(t, "7=5", map[string]string{
+		"provision": writeWorkerOpScript(t, "ok"),
+		"rollback":  writeWorkerOpScript(t, "ok"),
+		"reset":     writeWorkerOpScript(t, "ok"),
+		"destroy":   writeWorkerOpScript(t, "ok"),
+	})
+	if cfg.ProvisionScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/cloud-workers", h.HandleList)
+	mux.HandleFunc("POST /api/cloud-workers", h.HandleCreate)
+	mux.HandleFunc("/api/cloud-workers/", h.HandleSub)
+
+	cases := []struct {
+		method, path string
+		body         interface{}
+		want         int
+	}{
+		{http.MethodGet, "/api/cloud-workers", nil, http.StatusOK},
+		{http.MethodPost, "/api/cloud-workers", map[string]string{"username": "bot-x", "display_name": "X"}, http.StatusCreated},
+		{http.MethodGet, "/api/cloud-workers/meta", nil, http.StatusOK},
+		{http.MethodPost, "/api/cloud-workers/bot-bot-a/rollback", nil, http.StatusOK},
+		{http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", nil, http.StatusOK},
+		{http.MethodDelete, "/api/cloud-workers/bot-bot-a", nil, http.StatusOK},
+	}
+	for _, c := range cases {
+		req := cloudWorkerRequest(7, c.method, c.path, c.body)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != c.want {
+			t.Fatalf("%s %s status=%d want %d body=%s", c.method, c.path, rec.Code, c.want, rec.Body.String())
+		}
+	}
+}

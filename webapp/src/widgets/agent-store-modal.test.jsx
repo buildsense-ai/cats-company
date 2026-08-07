@@ -101,7 +101,6 @@ describe('AgentStoreModal', () => {
 
     expect(api.createBot).toHaveBeenCalledWith(
       expect.objectContaining({ display_name: '测试助手' }),
-      false,
     );
   });
 

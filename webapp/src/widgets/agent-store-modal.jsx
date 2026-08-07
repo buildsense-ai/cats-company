@@ -325,7 +325,7 @@ export default function AgentStoreModal({
       // provisions a Tianyi cloud instance). Self-hosted bots use the normal path.
       const result = isManaged
         ? await api.createCloudWorker({ username, display_name: displayName })
-        : await api.createBot({ username, display_name: displayName }, false);
+        : await api.createBot({ username, display_name: displayName });
       const fullResult = { ...result, id: result.uid, display_name: displayName, visibility: 'public' };
 
       // [CRITICAL HANDSHAKE]: Automatically force a bidirectional subscription so the bot 
