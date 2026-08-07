@@ -176,7 +176,7 @@ export default function NotificationSettings({ user }) {
         const registrationID = await registerCurrentBrowser();
         await api.testPush(registrationID);
       });
-      setMessage('后台推送已被服务商接受。若本机测试可见但这条通知未到达，说明当前浏览器到 FCM 的设备推送通道不可用；Cloudflare Relay 无法修复这一段。');
+      setMessage('后台测试通知已发送。若本机测试可见但这条通知未到达，说明当前设备的后台推送通道可能不可用。');
     } catch (err) {
       setError(testErrorCopy(err));
     } finally {

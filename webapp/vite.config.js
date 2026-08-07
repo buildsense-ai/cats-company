@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
-const backendTarget = process.env.CATSCO_BACKEND_TARGET || 'http://localhost:6061';
+const backendTarget = 'http://localhost:6061';
 const localXiaobaTarget = 'http://127.0.0.1:3800';
 
 const proxy = {
@@ -77,9 +77,6 @@ export default defineConfig({
     outDir: 'build',
   },
   server: {
-    proxy,
-  },
-  preview: {
     proxy,
   },
   test: {

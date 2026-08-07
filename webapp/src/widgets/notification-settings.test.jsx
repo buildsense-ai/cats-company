@@ -118,8 +118,8 @@ describe('NotificationSettings', () => {
       endpoint: subscription.endpoint,
       keys: subscription.keys,
     }, 'registration-current');
-    expect(container.textContent).toContain('后台推送已被服务商接受');
-    expect(container.textContent).toContain('Cloudflare Relay 无法修复');
+    expect(container.textContent).toContain('后台测试通知已发送');
+    expect(container.textContent).toContain('当前设备的后台推送通道可能不可用');
     expect(container.textContent).toContain('部分国产 Android 手机');
   });
 
