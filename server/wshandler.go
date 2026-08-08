@@ -2001,11 +2001,7 @@ func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessa
 		return
 	}
 	deliver := func() bool { return h.enqueueOfflineUserPush(uid, topic) }
-	if !isCompletedAgentMessage(msg) {
-		h.agentPush.observeVisibleMessage(uid, senderUID, msg, deliver)
-		return
-	}
-	h.agentPush.deliverOnce(agentPushTurnKey(uid, senderUID, msg), deliver)
+	h.agentPush.observeVisibleMessage(uid, senderUID, msg, deliver)
 }
 
 // broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.

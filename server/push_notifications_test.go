@@ -1392,32 +1392,36 @@ func TestPushSuppressionProvenanceIsNotSerialized(t *testing.T) {
 	}
 }
 
-func TestAgentPushCompletionRequiresAuthoritativeTaskStatus(t *testing.T) {
-	for _, msg := range []*ServerMessage{
-		{Data: &MsgServerData{
-			Topic: "p2p_7_8", From: formatUID(7), SeqID: 1, Type: "text", Content: "still working",
-			Metadata: map[string]interface{}{"turn_id": "turn-1"},
-		}},
-		{Data: &MsgServerData{
-			Topic: "p2p_7_8", From: formatUID(7), SeqID: 2, Type: "text", Content: "final answer",
-			Metadata: map[string]interface{}{"turn_id": "turn-1", "turn_complete": true},
-		}},
-	} {
-		if isCompletedAgentMessage(msg) {
-			t.Fatal("message metadata was treated as an authoritative completion signal")
-		}
-	}
-}
-
 func TestAgentPushCoordinatorBoundsDedupKeys(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
 	expiresAt := time.Now().Add(agentPushTurnDedupTTL)
 	for index := 0; index < maxTrackedAgentPushTurns; index++ {
-		coordinator.delivered[fmt.Sprintf("delivered-%d", index)] = expiresAt
+		coordinator.delivered[agentPushDeliveryKey{
+			recipientUID: int64(index + 1),
+			scope:        agentPushScope(7, "p2p_7_8"),
+			runID:        "capacity",
+		}] = expiresAt
 	}
 
-	if coordinator.deliverOnce("over-capacity", func() bool { return true }) {
+	if coordinator.deliverOnce(agentPushTurnDeliveryKey(9999, agentPushScope(7, "p2p_7_8"), "over-capacity"), func() bool { return true }) {
 		t.Fatal("new turn was accepted after dedup capacity was exhausted")
+	}
+}
+
+func TestAgentPushTypedDeliveryKeysDoNotCollideOnDelimiters(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	deliveries := 0
+	keys := []agentPushDeliveryKey{
+		agentPushTurnDeliveryKey(8, agentPushScope(7, "topic:a"), "b"),
+		agentPushTurnDeliveryKey(8, agentPushScope(7, "topic"), "a:b"),
+	}
+	for _, key := range keys {
+		if !coordinator.deliverOnce(key, func() bool { deliveries++; return true }) {
+			t.Fatalf("delivery key %+v was incorrectly deduplicated", key)
+		}
+	}
+	if deliveries != len(keys) {
+		t.Fatalf("deliveries = %d, want %d", deliveries, len(keys))
 	}
 }
 
@@ -1559,6 +1563,37 @@ func TestAgentPushTerminalBeforeMessageDeliversExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestAgentPushUncorrelatedMessageHandlesTerminalOnlyOrdering(t *testing.T) {
+	for _, terminalFirst := range []bool{false, true} {
+		name := "message_before_terminal"
+		if terminalFirst {
+			name = "terminal_before_message"
+		}
+		t.Run(name, func(t *testing.T) {
+			coordinator := newAgentPushTurnCoordinator()
+			terminal := &types.ConversationTaskStatus{
+				TopicID: "p2p_7_8", RunID: "terminal-only", State: "completed", SourceUID: 7,
+			}
+			msg := &ServerMessage{Data: &MsgServerData{
+				Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "uncorrelated final answer",
+			}}
+			deliveries := 0
+			if terminalFirst {
+				coordinator.observeStatus(terminal)
+			}
+			if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
+				t.Fatal("uncorrelated message was not retained by the coordinator")
+			}
+			if !terminalFirst {
+				coordinator.observeStatus(terminal)
+			}
+			if deliveries != 1 {
+				t.Fatalf("deliveries = %d, want 1", deliveries)
+			}
+		})
+	}
+}
+
 func TestAgentPushOutOfOrderRunDoesNotCompleteWithStaleStatus(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
 	coordinator.observeStatus(&types.ConversationTaskStatus{
@@ -1669,6 +1704,37 @@ func TestAgentPushStaleStatusesDoNotRebindUntaggedMessage(t *testing.T) {
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "run-2", State: "completed", SourceUID: 7, UpdatedAt: baseTime.Add(2 * time.Second),
 	})
+	if deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1", deliveries)
+	}
+}
+
+func TestAgentPushSupersededRunCannotReclaimCurrentAfterProductionNormalization(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	normalize := func(runID, state string) *types.ConversationTaskStatus {
+		status, err := normalizeConversationTaskStatus(7, "p2p_7_8", &normalizedMessagePayload{
+			DisplayContent: map[string]interface{}{"run_id": runID, "state": state},
+		})
+		if err != nil {
+			t.Fatalf("normalize %s %s status: %v", runID, state, err)
+		}
+		return status
+	}
+
+	coordinator.observeStatus(normalize("run-1", "running"))
+	coordinator.observeStatus(normalize("run-2", "running"))
+	coordinator.observeStatus(normalize("run-1", "waiting"))
+
+	deliveries := 0
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "untagged run-2 answer",
+	}}
+	coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true })
+	coordinator.observeStatus(normalize("run-1", "completed"))
+	if deliveries != 0 {
+		t.Fatal("superseded run reclaimed the current untagged message")
+	}
+	coordinator.observeStatus(normalize("run-2", "completed"))
 	if deliveries != 1 {
 		t.Fatalf("deliveries = %d, want 1", deliveries)
 	}
