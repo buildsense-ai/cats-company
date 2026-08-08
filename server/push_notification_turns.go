@@ -33,6 +33,7 @@ type agentPushCurrentRun struct {
 type agentPushTurn struct {
 	runID      string
 	terminal   bool
+	updatedAt  time.Time
 	candidates map[int64]agentPushCandidate
 	expiresAt  time.Time
 	timer      *time.Timer
@@ -110,6 +111,11 @@ func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskS
 		if updatedAt.IsZero() {
 			updatedAt = now
 		}
+		if !turn.updatedAt.IsZero() && updatedAt.Before(turn.updatedAt) {
+			c.mu.Unlock()
+			return
+		}
+		turn.updatedAt = updatedAt
 		current := c.current[scope]
 		makeCurrent := current.runID == "" || current.runID == runID || !updatedAt.Before(current.updatedAt)
 		if makeCurrent {
@@ -128,9 +134,16 @@ func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskS
 	}
 
 	current := c.current[scope]
+	if !status.UpdatedAt.IsZero() && !turn.updatedAt.IsZero() && status.UpdatedAt.Before(turn.updatedAt) {
+		c.mu.Unlock()
+		return
+	}
 	if current.runID == runID {
 		c.attachPendingLocked(scope, turn)
 		delete(c.current, scope)
+	}
+	if !status.UpdatedAt.IsZero() {
+		turn.updatedAt = status.UpdatedAt
 	}
 	turn.terminal = true
 	turn.expiresAt = now.Add(agentPushTurnDedupTTL)

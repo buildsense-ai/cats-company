@@ -1640,6 +1640,38 @@ func TestAgentPushStaleStatusesDoNotRebindUntaggedMessage(t *testing.T) {
 	}
 }
 
+func TestAgentPushStaleTerminalStatusDoesNotCompleteCurrentRun(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	baseTime := time.Now()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
+		UpdatedAt: baseTime.Add(time.Second),
+	})
+
+	deliveries := 0
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer",
+		Metadata: map[string]interface{}{"run_id": "run-1"},
+	}}
+	coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true })
+
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
+		UpdatedAt: baseTime,
+	})
+	if deliveries != 0 {
+		t.Fatalf("stale terminal status delivered a push; deliveries = %d", deliveries)
+	}
+
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
+		UpdatedAt: baseTime.Add(2 * time.Second),
+	})
+	if deliveries != 1 {
+		t.Fatalf("fresh terminal status deliveries = %d, want 1", deliveries)
+	}
+}
+
 func TestAgentPushFailedDeliveryRetriesOnDuplicateTerminal(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
 	coordinator.observeStatus(&types.ConversationTaskStatus{
