@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -634,6 +635,84 @@ func TestHandleGetMessagesAgentContextUsesStableBeforeCursor(t *testing.T) {
 	}
 	if body.Messages[0]["id"] != float64(2) || body.Messages[1]["id"] != float64(3) {
 		t.Fatalf("messages=%#v, want ids 2,3", body.Messages)
+	}
+}
+
+func TestHandleGetMessagesUsesAfterSequenceCursor(t *testing.T) {
+	history := make([]*types.Message, 0, 401)
+	for id := int64(1); id <= 401; id++ {
+		history = append(history, &types.Message{ID: id, TopicID: "p2p_7_42", FromUID: 7, Content: fmt.Sprintf("message-%d", id), MsgType: "text"})
+	}
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice"},
+			42: {ID: 42, Username: "dev_agent", AccountType: types.AccountBot},
+		},
+		history: history,
+	}
+	handler := NewMessageHandler(store, NewHub(store, nil))
+	readPage := func(after int64) struct {
+		Messages   []map[string]interface{} `json:"messages"`
+		HasMore    bool                     `json:"has_more"`
+		NextCursor float64                  `json:"next_cursor"`
+	} {
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/messages?topic_id=p2p_7_42&after_seq=%d&limit=200", after), nil)
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
+		rec := httptest.NewRecorder()
+		handler.HandleGetMessages(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("after_seq=%d status=%d body=%s", after, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Messages   []map[string]interface{} `json:"messages"`
+			HasMore    bool                     `json:"has_more"`
+			NextCursor float64                  `json:"next_cursor"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode after_seq=%d response: %v", after, err)
+		}
+		return body
+	}
+
+	first := readPage(0)
+	if !first.HasMore || first.NextCursor != 200 || len(first.Messages) != 200 {
+		t.Fatalf("first after_seq page=%#v", first)
+	}
+	if first.Messages[0]["id"] != float64(1) || first.Messages[199]["id"] != float64(200) {
+		t.Fatalf("first after_seq page is not contiguous from the cursor: %#v .. %#v", first.Messages[0], first.Messages[199])
+	}
+	second := readPage(int64(first.NextCursor))
+	if !second.HasMore || second.NextCursor != 400 || len(second.Messages) != 200 {
+		t.Fatalf("second after_seq page=%#v", second)
+	}
+	if second.Messages[0]["id"] != float64(201) || second.Messages[199]["id"] != float64(400) {
+		t.Fatalf("second after_seq page skipped or duplicated messages: %#v .. %#v", second.Messages[0], second.Messages[199])
+	}
+	third := readPage(int64(second.NextCursor))
+	if third.HasMore || third.NextCursor != 401 || len(third.Messages) != 1 || third.Messages[0]["id"] != float64(401) {
+		t.Fatalf("third after_seq page=%#v", third)
+	}
+}
+
+func TestHandleGetMessagesRejectsInvalidAfterSequenceCursor(t *testing.T) {
+	store := &identityMessageStore{
+		users:   map[int64]*types.User{7: {ID: 7, Username: "alice"}, 42: {ID: 42, Username: "dev_agent", AccountType: types.AccountBot}},
+		history: []*types.Message{{ID: 1, TopicID: "p2p_7_42", FromUID: 7, Content: "one", MsgType: "text"}},
+	}
+	handler := NewMessageHandler(store, NewHub(store, nil))
+	for _, target := range []string{
+		"/api/messages?topic_id=p2p_7_42&after_seq=-1",
+		"/api/messages?topic_id=p2p_7_42&after_seq=not-a-number",
+		"/api/messages?topic_id=p2p_7_42&after_seq=0&after_seq=1",
+		"/api/messages?topic_id=p2p_7_42&after_seq=0&latest=1",
+	} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
+		rec := httptest.NewRecorder()
+		handler.HandleGetMessages(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("target=%s status=%d body=%s, want bad request", target, rec.Code, rec.Body.String())
+		}
 	}
 }
 

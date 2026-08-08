@@ -828,11 +828,30 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	latest := r.URL.Query().Get("latest") == "1" || r.URL.Query().Get("latest") == "true"
-	agentContext := r.URL.Query().Get("agent_context") == "1" || r.URL.Query().Get("agent_context") == "true"
-	beforeID, _ := strconv.ParseInt(r.URL.Query().Get("before_id"), 10, 64)
+	query := r.URL.Query()
+	limit, _ := strconv.Atoi(query.Get("limit"))
+	offset, _ := strconv.Atoi(query.Get("offset"))
+	latest := query.Get("latest") == "1" || query.Get("latest") == "true"
+	agentContext := query.Get("agent_context") == "1" || query.Get("agent_context") == "true"
+	beforeID, _ := strconv.ParseInt(query.Get("before_id"), 10, 64)
+	afterSeqValues, afterSeqMode := query["after_seq"]
+	var afterSeq int64
+	if afterSeqMode {
+		if len(afterSeqValues) != 1 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "after_seq must appear exactly once"})
+			return
+		}
+		var err error
+		afterSeq, err = strconv.ParseInt(afterSeqValues[0], 10, 64)
+		if err != nil || afterSeq < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "after_seq must be a non-negative integer"})
+			return
+		}
+		if latest || agentContext || beforeID > 0 || offset > 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "after_seq cannot be combined with latest, agent_context, before_id, or offset"})
+			return
+		}
+	}
 
 	if agentContext {
 		if h.hub == nil {
@@ -877,7 +896,21 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 
 	var rawMsgs []*types.Message
 	var err error
-	if latest {
+	var hasMore bool
+	nextBeforeID := int64(0)
+	nextCursor := afterSeq
+	if afterSeqMode {
+		rawMsgs, err = h.db.GetMessagesSince(topicID, afterSeq, limit+1)
+		if err == nil {
+			hasMore = len(rawMsgs) > limit
+			if hasMore {
+				rawMsgs = rawMsgs[:limit]
+			}
+			if len(rawMsgs) > 0 {
+				nextCursor = rawMsgs[len(rawMsgs)-1].ID
+			}
+		}
+	} else if latest {
 		queryLimit := limit + 1
 		if beforeID > 0 {
 			if storeWithCursor, ok := h.db.(latestMessagesBeforeStore); ok {
@@ -888,20 +921,21 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 		} else {
 			rawMsgs, err = h.db.GetLatestMessages(topicID, queryLimit, offset)
 		}
+		if err == nil {
+			hasMore = len(rawMsgs) > limit
+			if hasMore {
+				rawMsgs = rawMsgs[len(rawMsgs)-limit:]
+			}
+			if len(rawMsgs) > 0 {
+				nextBeforeID = rawMsgs[0].ID
+			}
+		}
 	} else {
 		rawMsgs, err = h.db.GetMessages(topicID, limit, offset)
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load messages"})
 		return
-	}
-	hasMore := latest && len(rawMsgs) > limit
-	if hasMore {
-		rawMsgs = rawMsgs[len(rawMsgs)-limit:]
-	}
-	nextBeforeID := int64(0)
-	if latest && len(rawMsgs) > 0 {
-		nextBeforeID = rawMsgs[0].ID
 	}
 
 	msgs := make([]map[string]interface{}, 0, len(rawMsgs))
@@ -928,7 +962,11 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 	}
 
 	response := map[string]interface{}{"messages": msgs}
-	if latest {
+	if afterSeqMode {
+		response["cursor_version"] = "after_seq_v1"
+		response["has_more"] = hasMore
+		response["next_cursor"] = nextCursor
+	} else if latest {
 		response["has_more"] = hasMore
 		response["next_before_id"] = nextBeforeID
 	}
