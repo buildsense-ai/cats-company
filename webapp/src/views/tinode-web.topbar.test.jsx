@@ -147,11 +147,12 @@ describe('resolveDisplayedActiveAgent', () => {
 });
 
 describe('cloud artifact action visibility', () => {
-  it('is available whenever the active conversation resolves to a capable agent', () => {
+  it('is available whenever the active conversation resolves to an Agent', () => {
     const doubao = { uid: 440, cloud_artifacts_enabled: true };
     expect(canOpenCloudArtifacts({ topicId: 'p2p_7_440', isGroup: false }, doubao)).toBe(true);
     expect(canOpenCloudArtifacts({ topicId: 'grp_8', isGroup: true }, doubao)).toBe(true);
-    expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, { uid: 441 })).toBe(false);
+    expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, { uid: 441 })).toBe(true);
+    expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, null)).toBe(false);
     expect(canOpenCloudArtifacts(null, doubao)).toBe(false);
   });
 });
@@ -257,16 +258,19 @@ describe('LocalAssistantBar model selector', () => {
     expect(container.querySelector('button[aria-label="中转用量"]')).toBeNull();
   });
 
-  it('renders the generated-artifacts button only when the parent enables it', async () => {
+  it('always renders the cloud button and enables it when an Agent resource handler is available', async () => {
     const onOpenCloudArtifacts = vi.fn();
     await renderBar({ onOpenCloudArtifacts });
-    const button = container.querySelector('button[aria-label="打开产物"]');
+    const button = container.querySelector('button[aria-label="打开云文件"]');
     expect(button).toBeTruthy();
+    expect(button.disabled).toBe(false);
     await act(async () => button.click());
     expect(onOpenCloudArtifacts).toHaveBeenCalledTimes(1);
 
     await renderBar({ onOpenCloudArtifacts: undefined });
-    expect(container.querySelector('button[aria-label="打开产物"]')).toBeNull();
+    const unavailableButton = container.querySelector('button[aria-label="云文件，需要先进入 Agent 会话"]');
+    expect(unavailableButton).toBeTruthy();
+    expect(unavailableButton.disabled).toBe(true);
   });
 
   it('keeps the current model and quota together in the header', async () => {

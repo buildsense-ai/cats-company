@@ -50,6 +50,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateMessagesAddReplyTo,
 		migrateBotConfigAddOwnerID,
 		migrateBotConfigAddVisibility,
+		migrateBotConfigAddSkillsVisibility,
 		migrateBotConfigAddTenantName,
 		migrateBotConfigAddBodyID,
 		migrateMessagesAddCodeMode,
@@ -313,6 +314,7 @@ CREATE TABLE IF NOT EXISTS bot_config (
     model VARCHAR(128) DEFAULT '',
     enabled TINYINT(1) NOT NULL DEFAULT 1,
     config JSON DEFAULT NULL,
+    skills_visibility ENUM('owner','authorized','public') NOT NULL DEFAULT 'owner',
     body_id VARCHAR(128) DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -691,6 +693,11 @@ ALTER TABLE bot_config ADD COLUMN owner_id BIGINT DEFAULT NULL;
 // Migration: add visibility column to bot_config table.
 const migrateBotConfigAddVisibility = `
 ALTER TABLE bot_config ADD COLUMN visibility ENUM('public','private') NOT NULL DEFAULT 'public';
+`
+
+// Migration: add redacted skill-list visibility to bot_config.
+const migrateBotConfigAddSkillsVisibility = `
+ALTER TABLE bot_config ADD COLUMN skills_visibility ENUM('owner','authorized','public') NOT NULL DEFAULT 'owner';
 `
 
 // Migration: add tenant_name column to bot_config table.

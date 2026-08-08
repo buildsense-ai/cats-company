@@ -203,6 +203,8 @@ REST 备用通道（推荐使用 WebSocket）。
 | POST | `/api/bots` | 创建新 Bot | `{ "username": "my_bot", "display_name": "My Bot" }` |
 | DELETE | `/api/bots?uid={uid}` | 删除我的 Bot | - |
 | PATCH | `/api/bots/visibility` | 设置 Bot 可见性 | `{ "uid": 10, "visibility": "public" }` |
+| PATCH | `/api/bots/skills-visibility?uid={uid}&v={scope}` | 设置技能列表可见范围 | - |
+| GET | `/api/agents/skills?uid={uid}` | 按所有者权限读取脱敏技能列表 | - |
 
 #### POST /api/bots — 创建 Bot
 
@@ -233,6 +235,42 @@ REST 备用通道（推荐使用 WebSocket）。
 ```
 
 `visibility` 可选值：`"public"`（所有人可见）、`"private"`（仅创建者可见）。
+
+#### PATCH /api/bots/skills-visibility — 设置技能列表可见范围
+
+仅 Agent 所有者可调用。`v` 可选值：
+
+- `owner`：仅所有者可查看。
+- `authorized`：所有者和已添加该 Agent 的用户可查看。
+- `public`：所有已登录用户可查看。
+
+未设置的已有 Agent 默认按 `owner` 处理。
+
+```json
+// Response 200
+{ "uid": 10, "skills_visibility": "authorized" }
+```
+
+#### GET /api/agents/skills — 读取 Agent 技能列表
+
+需要用户 JWT 鉴权，并按 Agent 所有者设置的范围授权。响应只包含技能标识、来源和版本，不返回内容哈希、Bot definition、模型、提示词或密钥。
+
+```json
+// Response 200
+{
+  "botId": "10",
+  "skills_visibility": "authorized",
+  "skills": [
+    { "source": "skillhub", "skillId": "catsco/example", "version": "1.0.0" }
+  ]
+}
+```
+
+无权查看时返回 `403`：
+
+```json
+{ "error": "Agent 所有者未公开技能列表" }
+```
 
 #### 2.8.2 管理员 Bot 管理（需要管理员鉴权）
 

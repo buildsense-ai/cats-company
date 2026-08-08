@@ -8,6 +8,7 @@ import {
   ExternalLink,
   FileCode2,
   FileText,
+  Package,
   RefreshCw,
   RotateCcw,
   Trash2,
@@ -82,6 +83,7 @@ export default function CloudArtifactsPanel({
   const tab = controlledTab ?? localTab;
   const [artifacts, setArtifacts] = useState([]);
   const [files, setFiles] = useState([]);
+  const [skills, setSkills] = useState([]);
   const [fileCursor, setFileCursor] = useState(0);
   const [fileHasMore, setFileHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -112,12 +114,28 @@ export default function CloudArtifactsPanel({
         setFileHasMore(Boolean(result?.has_more));
         return;
       }
+      if (tab === 'skills') {
+        const result = await api.getAgentSkills(agentUid);
+        if (!isCurrentRequest()) return;
+        setSkills(Array.isArray(result?.skills) ? result.skills : []);
+        return;
+      }
       const result = await api.getCloudArtifacts(agentUid, tab);
       if (!isCurrentRequest()) return;
       setArtifacts(Array.isArray(result?.artifacts) ? result.artifacts : []);
     } catch (err) {
       if (!isCurrentRequest()) return;
-      setError(err.message || (tab === 'files' ? '历史文件读取失败' : '云端产物读取失败'));
+      setError(
+        tab === 'skills' && err.status === 403 && !err.message
+          ? '当前账号无法查看这个 Agent 的技能配置'
+          : err.message || (
+            tab === 'files'
+              ? '历史文件读取失败'
+              : tab === 'skills'
+                ? '技能配置读取失败'
+                : '云端产物读取失败'
+          ),
+      );
     } finally {
       if (isCurrentRequest()) setLoading(false);
     }
@@ -126,6 +144,7 @@ export default function CloudArtifactsPanel({
   useEffect(() => {
     setArtifacts([]);
     setFiles([]);
+    setSkills([]);
     setFileCursor(0);
     setFileHasMore(false);
     loadContent();
@@ -190,27 +209,33 @@ export default function CloudArtifactsPanel({
     ? '还没有已部署的网页'
     : tab === 'files'
       ? '当前会话还没有这个 Bot 生成的文件'
-      : '回收站是空的';
-  const visibleCount = tab === 'files' ? files.length : artifacts.length;
-  const artifactTabSelected = tab !== 'files';
+      : tab === 'skills'
+        ? '这个 Agent 还没有添加技能'
+        : '回收站是空的';
+  const visibleCount = tab === 'files'
+    ? files.length
+    : tab === 'skills'
+      ? skills.length
+      : artifacts.length;
+  const artifactTabSelected = tab === 'active' || tab === 'deleted';
 
   return (
     <>
       <button
         className="v3-file-preview-backdrop"
         type="button"
-        aria-label="关闭文件与产物"
+        aria-label="关闭云文件"
         onClick={onClose}
       />
-      <section className="v3-file-preview-panel cloud-artifacts-panel" aria-label="文件与产物">
+      <section className="v3-file-preview-panel cloud-artifacts-panel" aria-label="云文件">
         <button
           className="v3-file-preview-drag-handle"
           type="button"
-          aria-label="关闭文件与产物"
+          aria-label="关闭云文件"
           onClick={onClose}
         />
         <header className="cloud-artifacts-header">
-          <div className="cloud-artifacts-tabs" role="tablist" aria-label="文件与产物">
+          <div className="cloud-artifacts-tabs" role="tablist" aria-label="云文件">
             <button
               type="button"
               role="tab"
@@ -229,6 +254,15 @@ export default function CloudArtifactsPanel({
             >
               产物
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'skills'}
+              className={tab === 'skills' ? 'active' : ''}
+              onClick={() => selectTab('skills')}
+            >
+              技能
+            </button>
           </div>
           <div className="cloud-artifacts-header-actions">
             {tab === 'active' && (
@@ -244,7 +278,7 @@ export default function CloudArtifactsPanel({
             <button type="button" onClick={() => loadContent()} disabled={loading} aria-label="刷新当前栏目" title="刷新">
               <RefreshCw size={18} className={loading ? 'is-spinning' : ''} />
             </button>
-            <button type="button" onClick={onClose} aria-label="关闭文件与产物" title="关闭">
+            <button type="button" onClick={onClose} aria-label="关闭云文件" title="关闭">
               <X size={18} />
             </button>
           </div>
@@ -252,12 +286,16 @@ export default function CloudArtifactsPanel({
 
         <div className="cloud-artifacts-body">
           {loading && visibleCount === 0 && (
-            <div className="cloud-artifacts-status">
-              {tab === 'files' ? '正在读取文件...' : '正在读取产物...'}
+            <div className="cloud-artifacts-status" role="status" aria-live="polite">
+              {tab === 'files'
+                ? '正在读取文件…'
+                : tab === 'skills'
+                  ? '正在读取技能…'
+                  : '正在读取产物…'}
             </div>
           )}
           {!loading && error && (
-            <div className="cloud-artifacts-status error">
+            <div className="cloud-artifacts-status error" role="alert">
               <span>{error}</span>
               <button type="button" onClick={() => loadContent()}>重试</button>
             </div>
@@ -288,7 +326,14 @@ export default function CloudArtifactsPanel({
               )}
             </>
           )}
-          {tab !== 'files' && artifacts.length > 0 && (
+          {tab === 'skills' && skills.length > 0 && (
+            <div className="cloud-artifacts-list">
+              {skills.map((skill) => (
+                <SkillItem skill={skill} key={skill.skillId + ':' + (skill.version || '')} />
+              ))}
+            </div>
+          )}
+          {artifactTabSelected && artifacts.length > 0 && (
             <div className="cloud-artifacts-list">
               {artifacts.map((artifact) => (
                 <article className="cloud-artifact-item" key={artifact.id}>
@@ -409,6 +454,29 @@ function FileSummary({ file }) {
         </p>
       </div>
     </>
+  );
+}
+
+function SkillItem({ skill }) {
+  const skillID = String(skill?.skillId || '').trim() || '未命名技能';
+  const version = String(skill?.version || '').trim();
+  const source = skill?.source === 'skillhub' ? 'SkillHub' : '本地技能';
+
+  return (
+    <article className="cloud-artifact-item cloud-skill-item">
+      <div className="cloud-artifact-main is-static">
+        <span className="cloud-artifact-kind-icon skill" aria-hidden="true">
+          <Package size={18} />
+        </span>
+        <div className="cloud-artifact-copy">
+          <h4 translate="no">{skillID}</h4>
+          <p>
+            <span>{source}</span>
+            {version && <span translate="no">版本 {version}</span>}
+          </p>
+        </div>
+      </div>
+    </article>
   );
 }
 

@@ -168,6 +168,12 @@ type BotStore interface {
 	SetBotVisibility(botUID int64, visibility string) error
 }
 
+// BotSkillsVisibilityStore is optional so focused Store test doubles do not
+// need to implement the skills visibility write path.
+type BotSkillsVisibilityStore interface {
+	SetBotSkillsVisibility(botUID int64, visibility string) error
+}
+
 // BotModelConfigStore is optional so existing narrow Store test doubles do not
 // need cloud-model methods. Production database adapters implement it.
 type BotModelConfigStore interface {
