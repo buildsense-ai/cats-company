@@ -1269,6 +1269,40 @@ func TestShouldNotifyOfflineForFinalUserVisibleMessagesOnly(t *testing.T) {
 	}
 }
 
+func TestTaskStatusPublisherRejectedMessageDoesNotFailOpen(t *testing.T) {
+	const (
+		senderUID    int64 = 7
+		recipientUID int64 = 8
+	)
+	db := &identityMessageStore{users: map[int64]*types.User{
+		senderUID:    {ID: senderUID, AccountType: types.AccountBot},
+		recipientUID: {ID: recipientUID, AccountType: types.AccountHuman},
+	}}
+	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/subscription/no-fail-open",
+		P256DH:   "p256dh",
+		Auth:     "auth",
+	}}}
+	service := enabledPushService(pushStore)
+	delivered := make(chan struct{}, 1)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		delivered <- struct{}{}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	hub := NewHub(db, nil)
+	hub.SetPushNotificationService(service)
+
+	hub.notifyOfflineUserForMessage(recipientUID, senderUID, &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 0, Type: "text", Content: "transient agent output",
+	}}, true)
+
+	select {
+	case <-delivered:
+		t.Fatal("rejected task-status publisher message failed open to an immediate push")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestThirdPartyProviderGroupMessagePushEligibility(t *testing.T) {
 	providerMetadata := withChannelBindingDeliveryMetadata(nil, &types.ChannelAgentBinding{
 		Channel:       "feishu",
@@ -1661,6 +1695,12 @@ func TestAgentPushStaleTerminalStatusDoesNotCompleteCurrentRun(t *testing.T) {
 	})
 	if deliveries != 0 {
 		t.Fatalf("stale terminal status delivered a push; deliveries = %d", deliveries)
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
+	})
+	if deliveries != 0 {
+		t.Fatalf("timestamp-less terminal status delivered a push; deliveries = %d", deliveries)
 	}
 
 	coordinator.observeStatus(&types.ConversationTaskStatus{
@@ -2257,6 +2297,29 @@ func TestPushNotificationSendReportsProviderErrors(t *testing.T) {
 	}
 	if len(store.deletedScoped) != 0 {
 		t.Fatalf("non-expired subscriptions were deleted: %#v", store.deletedScoped)
+	}
+}
+
+func TestPushNotificationRetriesTransientProviderRejection(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/transient", P256DH: "p256dh", Auth: "auth",
+	}}}
+	service := enabledPushService(store)
+	attempts := 0
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		attempts++
+		status := http.StatusServiceUnavailable
+		if attempts == maxPushProviderAttempts {
+			status = http.StatusCreated
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	if err := service.SendToUser(context.Background(), 15, PushNotification{Title: "title"}); err != nil {
+		t.Fatalf("SendToUser returned error after transient retry: %v", err)
+	}
+	if attempts != maxPushProviderAttempts {
+		t.Fatalf("provider attempts = %d, want %d", attempts, maxPushProviderAttempts)
 	}
 }
 

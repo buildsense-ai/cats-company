@@ -107,19 +107,22 @@ func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskS
 	}
 
 	if !terminal {
-		updatedAt := status.UpdatedAt
-		if updatedAt.IsZero() {
-			updatedAt = now
-		}
-		if !turn.updatedAt.IsZero() && updatedAt.Before(turn.updatedAt) {
+		statusUpdatedAt := status.UpdatedAt
+		if !turn.updatedAt.IsZero() && (statusUpdatedAt.IsZero() || statusUpdatedAt.Before(turn.updatedAt)) {
 			c.mu.Unlock()
 			return
 		}
-		turn.updatedAt = updatedAt
+		if !statusUpdatedAt.IsZero() {
+			turn.updatedAt = statusUpdatedAt
+		}
+		orderingTime := statusUpdatedAt
+		if orderingTime.IsZero() {
+			orderingTime = now
+		}
 		current := c.current[scope]
-		makeCurrent := current.runID == "" || current.runID == runID || !updatedAt.Before(current.updatedAt)
+		makeCurrent := current.runID == "" || current.runID == runID || !orderingTime.Before(current.updatedAt)
 		if makeCurrent {
-			c.current[scope] = agentPushCurrentRun{runID: runID, updatedAt: updatedAt}
+			c.current[scope] = agentPushCurrentRun{runID: runID, updatedAt: orderingTime}
 			c.attachPendingLocked(scope, turn)
 		}
 
@@ -134,7 +137,7 @@ func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskS
 	}
 
 	current := c.current[scope]
-	if !status.UpdatedAt.IsZero() && !turn.updatedAt.IsZero() && status.UpdatedAt.Before(turn.updatedAt) {
+	if !turn.updatedAt.IsZero() && (status.UpdatedAt.IsZero() || status.UpdatedAt.Before(turn.updatedAt)) {
 		c.mu.Unlock()
 		return
 	}
