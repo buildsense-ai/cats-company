@@ -1434,10 +1434,10 @@ func TestAgentPushRunningHeartbeatExtendsActiveTurn(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 
 	scope := agentPushScope(7, "p2p_7_8")
-	turnKey := agentPushTrackedTurnKey(scope, "run-1")
+	turnKey := newAgentPushTrackedTurnKey(scope, "run-1")
 	coordinator.mu.Lock()
-	_, turnStillActive := coordinator.turns[turnKey]
-	currentRun := coordinator.current[scope].runID
+	_, turnStillActive := coordinator.trackedTurns[turnKey]
+	currentRun := coordinator.currentRuns[scope].runID
 	coordinator.mu.Unlock()
 	if !turnStillActive || currentRun != "run-1" {
 		t.Fatal("running heartbeat did not preserve the original active turn")
