@@ -308,6 +308,8 @@ func main() {
 	hub.SetPushNotificationService(pushNotificationService)
 	if pushNotificationService.Enabled() {
 		log.Printf("web push notifications are enabled")
+	} else if err := pushNotificationService.ConfigError(); err != nil {
+		log.Printf("web push notifications are disabled: %v", err)
 	} else {
 		log.Printf("web push notifications are disabled; configure VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_SUBJECT")
 	}
@@ -326,6 +328,7 @@ func main() {
 		return server.LatestDeviceModelStatus(hub, uid)
 	})
 	relayAdminClient := server.NewRelayAdminClientFromEnv()
+	userHandler.SetRelayRegistrationProvisioning(relayAdminClient)
 	botModelConfigHandler.SetRelayUsageClient(relayAdminClient)
 	agentHandler.SetRelayUsageDependencies(relayAdminClient, func(uid int64, bodyID string) (server.DeviceModelStatus, bool) {
 		if strings.TrimSpace(bodyID) == "" {
@@ -399,6 +402,9 @@ func main() {
 	})
 	pushSubscriptionUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "push_subscription_user", Limit: 30, Window: time.Minute, Burst: 10,
+	})
+	pushTestUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "push_test_user", Limit: 6, Window: time.Minute, Burst: 2,
 	})
 	readerIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "reader_ip", Limit: 20, Window: time.Minute, Burst: 5,
@@ -515,6 +521,11 @@ func main() {
 		pushNotificationService.HandleSubscription,
 		jwtAuthWithDB,
 		pushSubscriptionUserLimit,
+	))
+	mux.HandleFunc("/api/push/test", chainHTTP(
+		pushNotificationService.HandleTest,
+		jwtAuthWithDB,
+		pushTestUserLimit,
 	))
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))

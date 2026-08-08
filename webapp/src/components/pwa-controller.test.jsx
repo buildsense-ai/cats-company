@@ -41,10 +41,14 @@ let root;
 
 beforeEach(() => {
   localStorage.clear();
+  Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
   Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true });
   Object.defineProperty(window, 'Notification', {
     configurable: true,
-    value: { permission: 'default' },
+    value: {
+      permission: 'default',
+      requestPermission: vi.fn().mockResolvedValue('granted'),
+    },
   });
   Object.defineProperty(window, 'PushManager', { configurable: true, value: function PushManager() {} });
   Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: {} });
@@ -52,6 +56,7 @@ beforeEach(() => {
     configurable: true,
     value: { request: vi.fn() },
   });
+  api.getPushConfig.mockResolvedValue({ enabled: true, public_key: 'AQIDBA' });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -75,8 +80,9 @@ function renderController(pushPromptOwner, sessionRevision = 1, loggedIn = true)
   });
 }
 
-test('shows the push prompt again when a different account signs in', () => {
+test('shows the push prompt again when a different account signs in', async () => {
   renderController('user:1');
+  await vi.waitFor(() => expect(container.textContent).toContain('开启通知，及时收到新消息'));
   const dismiss = Array.from(container.querySelectorAll('button'))
     .find((button) => button.textContent === '暂不');
   expect(dismiss).toBeTruthy();
@@ -88,7 +94,7 @@ test('shows the push prompt again when a different account signs in', () => {
 
   renderController('user:2', 2);
 
-  expect(container.textContent).toContain('开启通知，及时收到新消息');
+  await vi.waitFor(() => expect(container.textContent).toContain('开启通知，及时收到新消息'));
   expect(localStorage.getItem('cc_push_prompt_dismissed_v1:user:1')).toBe('true');
   expect(localStorage.getItem('cc_push_prompt_dismissed_v1:user:2')).toBeNull();
 });
@@ -101,10 +107,85 @@ test('registers an active tab under its push registration id', () => {
   expect(pushTabCoordinator.setActive).toHaveBeenCalledWith(true, 'registration-1');
 });
 
+test('does not offer or request notification permission while server push is disabled', async () => {
+  api.getPushConfig.mockResolvedValue({ enabled: false });
+
+  renderController('user:42');
+
+  await vi.waitFor(() => expect(api.getPushConfig).toHaveBeenCalledTimes(1));
+  expect(container.textContent).not.toContain('开启通知，及时收到新消息');
+  expect(window.Notification.requestPermission).not.toHaveBeenCalled();
+});
+
+test('loads push configuration after a signed-in offline page reconnects', async () => {
+  Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
+
+  renderController('user:42');
+
+  expect(api.getPushConfig).not.toHaveBeenCalled();
+  expect(container.textContent).toContain('当前离线');
+
+  Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
+  act(() => {
+    window.dispatchEvent(new Event('online'));
+  });
+
+  await vi.waitFor(() => expect(api.getPushConfig).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() => expect(container.textContent).toContain('开启通知，及时收到新消息'));
+});
+
+test('requests notification permission from a user gesture after loading configuration', async () => {
+  const order = [];
+  api.getPushConfig.mockImplementation(async () => {
+    order.push('config');
+    return { enabled: true, public_key: 'AQIDBA' };
+  });
+  window.Notification.requestPermission.mockImplementation(async () => {
+    order.push('permission');
+    return 'granted';
+  });
+
+  renderController('user:42');
+  await vi.waitFor(() => expect(container.textContent).toContain('开启通知，及时收到新消息'));
+  const enable = Array.from(container.querySelectorAll('button'))
+    .find((button) => button.textContent === '开启');
+
+  await act(async () => {
+    enable.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+
+  await vi.waitFor(() => expect(window.Notification.requestPermission).toHaveBeenCalledTimes(1));
+  expect(order).toEqual(['config', 'permission']);
+});
+
+test('does not reconcile or advertise an active tab after notifications are disabled in settings', () => {
+  window.Notification.permission = 'granted';
+  localStorage.setItem('cc_push_enabled_v1:user:42', 'false');
+
+  renderController('user:42');
+
+  expect(pushTabCoordinator.setActive).toHaveBeenCalledWith(false, '');
+  expect(api.getPushConfig).not.toHaveBeenCalled();
+});
+
+test('stops advertising the tab when another tab disables notifications', () => {
+  window.Notification.permission = 'granted';
+  renderController('user:42');
+  pushTabCoordinator.setActive.mockClear();
+
+  localStorage.setItem('cc_push_enabled_v1:user:42', 'false');
+  act(() => window.dispatchEvent(new StorageEvent('storage', {
+    key: 'cc_push_enabled_v1:user:42',
+    newValue: 'false',
+  })));
+
+  expect(pushTabCoordinator.setActive).toHaveBeenCalledWith(false, '');
+});
+
 test('waits for the active-tab lock before reconciling a browser subscription', async () => {
   let releaseActiveLock;
   window.Notification.permission = 'granted';
-  api.getPushConfig.mockResolvedValue({ enabled: false });
+  api.getPushConfig.mockResolvedValue({ enabled: true, public_key: 'AQIDBA' });
   pushTabCoordinator.waitUntilActive.mockImplementationOnce(() => new Promise((resolve) => {
     releaseActiveLock = resolve;
   }));
@@ -112,10 +193,9 @@ test('waits for the active-tab lock before reconciling a browser subscription', 
   renderController('user:42');
 
   await vi.waitFor(() => expect(releaseActiveLock).toBeTypeOf('function'));
-  expect(api.getPushConfig).not.toHaveBeenCalled();
+  await vi.waitFor(() => expect(api.getPushConfig).toHaveBeenCalledTimes(1));
 
   releaseActiveLock(true);
-  await vi.waitFor(() => expect(api.getPushConfig).toHaveBeenCalledTimes(1));
 });
 
 test('re-registers an active account when another tab hands off the browser subscription', async () => {
@@ -173,21 +253,18 @@ test('retries a pending browser cleanup while signed out', async () => {
   expect(localStorage.getItem('oc_push_pending_unsubscribe_v1')).toBeNull();
 });
 
-test('updates through the service worker updater registered after mount', () => {
+test('activates a waiting service worker immediately so old upload routing cannot persist', async () => {
   renderController('user:1');
   expect(registerSW).toHaveBeenCalledTimes(1);
 
   const registrationOptions = registerSW.mock.calls[0][0];
   expect(registrationOptions.onOfflineReady).toBeUndefined();
   const updateServiceWorker = registerSW.mock.results[0].value;
-  act(() => registrationOptions.onNeedRefresh());
-
-  const update = Array.from(container.querySelectorAll('button'))
-    .find((button) => button.textContent === '立即更新');
-  expect(update).toBeTruthy();
-
-  act(() => {
-    update.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  await act(async () => {
+    registrationOptions.onNeedRefresh();
+    await Promise.resolve();
   });
+
   expect(updateServiceWorker).toHaveBeenCalledWith(true);
+  expect(container.textContent).not.toContain('发现新版本');
 });

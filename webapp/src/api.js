@@ -375,6 +375,104 @@ function statusMessage(status) {
   return '请求失败，请稍后重试';
 }
 
+const RAW_UPLOAD_QUERY = 'raw=1';
+const RAW_UPLOAD_FILE_NAME_HEADER = 'X-CatsCo-File-Name';
+const RAW_UPLOAD_FILE_SIZE_HEADER = 'X-CatsCo-File-Size';
+const UPLOAD_INCOMPLETE_CODE = 'upload_incomplete';
+const UPLOAD_RESPONSE_INTERRUPTED_CODE = 'upload_response_interrupted';
+const UPLOAD_TOO_LARGE_CODE = 'upload_too_large';
+
+function rawUploadHeaders(file, authToken = '') {
+  const headers = {
+    [RAW_UPLOAD_FILE_NAME_HEADER]: encodeURIComponent(file?.name || 'upload'),
+    [RAW_UPLOAD_FILE_SIZE_HEADER]: String(file?.size ?? 0),
+  };
+  if (file?.type) headers['Content-Type'] = file.type;
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  return headers;
+}
+
+function uploadResponseInterruptedMessage(path) {
+  if (path.startsWith('/api/mobile-upload/sessions/')) {
+    return '上传响应中断，无法确认是否成功；请刷新页面查看“已上传”列表，确认后再重试。';
+  }
+  return '上传响应中断，无法确认是否成功；请检查网络后重新选择该文件。';
+}
+
+async function readUploadResponse(response, path) {
+  let raw;
+  try {
+    raw = await response.text();
+  } catch (cause) {
+    const error = new Error(uploadResponseInterruptedMessage(path));
+    error.code = UPLOAD_RESPONSE_INTERRUPTED_CODE;
+    error.status = response.status;
+    error.cause = cause;
+    throw error;
+  }
+  let data = {};
+  if (raw) {
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      if (response.status === 413 || raw.includes('413') || raw.includes('Payload Too Large')) {
+        const error = new Error('Payload Too Large');
+        error.code = UPLOAD_TOO_LARGE_CODE;
+        error.status = response.status;
+        throw error;
+      }
+      const error = new Error(
+        response.ok
+          ? 'Upload failed: invalid server response'
+          : `Upload failed with HTTP ${response.status}`,
+      );
+      error.status = response.status;
+      throw error;
+    }
+  }
+  if (!response.ok) {
+    const message = data.code === UPLOAD_INCOMPLETE_CODE
+      ? '上传过程中断，请重新选择该文件后重试。'
+      : (data.error || `Upload failed with HTTP ${response.status}`);
+    const error = new Error(message);
+    error.code = data.code || (response.status === 413 ? UPLOAD_TOO_LARGE_CODE : 'upload_failed');
+    error.status = response.status;
+    error.retryable = data.retryable === true;
+    error.data = data;
+    throw error;
+  }
+  return data;
+}
+
+async function uploadRawFile(path, file, { authToken = '' } = {}) {
+  let attempts = 0;
+  while (true) {
+    let response;
+    try {
+      response = await fetch(`${API_BASE}${path}`, {
+        method: 'POST',
+        headers: rawUploadHeaders(file, authToken),
+        body: file,
+      });
+    } catch (cause) {
+      const error = new Error('上传连接中断，请检查网络后重试。');
+      error.code = 'upload_network_error';
+      error.cause = cause;
+      throw error;
+    }
+
+    try {
+      return await readUploadResponse(response, path);
+    } catch (error) {
+      const canRetry = attempts === 0
+        && error?.code === UPLOAD_INCOMPLETE_CODE
+        && error?.retryable === true;
+      if (!canRetry) throw error;
+      attempts += 1;
+    }
+  }
+}
+
 export const api = {
   sendVerificationCode: (email) => request('POST', '/api/auth/send-code', { email }),
   sendPasswordResetCode: (email) => request('POST', '/api/auth/reset-password/send-code', { email }),
@@ -388,6 +486,9 @@ export const api = {
   subscribePush: (subscription, registrationID, signal) => (
     request('POST', '/api/push/subscriptions', { ...subscription, registration_id: registrationID }, { signal })
   ),
+  sendPushTest: (registrationID) => (
+    request('POST', '/api/push/test', { registration_id: registrationID })
+  ),
   unsubscribePush: (endpoint, authToken = token, registrationID = getPushRegistrationID()) => {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), PUSH_UNSUBSCRIBE_TIMEOUT_MS);
@@ -396,6 +497,16 @@ export const api = {
       signal: controller.signal,
     }).finally(() => window.clearTimeout(timer));
   },
+  unsubscribeAllPushRegistrations: (endpoint) => request(
+    'DELETE',
+    '/api/push/subscriptions',
+    { endpoint, all_registrations: true },
+  ),
+  unsubscribePushRegistration: (registrationID = getPushRegistrationID()) => request(
+    'DELETE',
+    '/api/push/subscriptions',
+    { registration_id: registrationID },
+  ),
   updateMe: (displayName, avatarUrl) =>
     request('POST', '/api/me/update', { display_name: displayName, avatar_url: avatarUrl }),
 
@@ -496,7 +607,16 @@ export const api = {
   createDeviceConnectorPairing: (deviceName) =>
     request('POST', '/api/device-connectors/pairings', {
       device_name: deviceName || '',
-      capabilities: ['read_file', 'resolve_common_directory', 'glob', 'grep'],
+      capabilities: [
+        'read_file',
+        'resolve_common_directory',
+        'glob',
+        'grep',
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
     }),
   getDeviceConnectorPairing: (pairingId) =>
     request('GET', `/api/device-connectors/pairings/${encodeURIComponent(pairingId)}`),
@@ -617,13 +737,17 @@ export const api = {
     const suffix = params.toString() ? `?${params}` : '';
     return request('GET', `/api/skillhub/skills${suffix}`);
   },
-  getSkillHubSkill: (skillId) => request(
+  getSkillHubSkill: (skillId, options = {}) => request(
     'GET',
     `/api/skillhub/skills/${encodeSkillHubID(skillId)}`,
+    undefined,
+    options,
   ),
-  getSkillHubVersion: (skillId, version) => request(
+  getSkillHubVersion: (skillId, version, options = {}) => request(
     'GET',
     `/api/skillhub/skills/${encodeSkillHubID(skillId)}/versions/${encodeURIComponent(version)}`,
+    undefined,
+    options,
   ),
   getBotFriends: (uid) => request('GET', `/api/bots/friends?uid=${uid}`),
   removeBotFriend: (uid, userId) => request('DELETE', `/api/bots/friends?uid=${uid}&user_id=${userId}`),
@@ -641,45 +765,14 @@ export const api = {
     return data;
   },
   uploadFile: async (file, type = 'file') => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const res = await fetch(`${API_BASE}/api/upload?type=${type}`, {
-      method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      body: formData,
-    });
-
-    const raw = await res.text();
-    let data = {};
-    if (raw) {
-      try {
-        data = JSON.parse(raw);
-      } catch (err) {
-        if (res.status === 413 || raw.includes('413') || raw.includes('Payload Too Large')) {
-          throw new Error('Payload Too Large');
-        }
-        if (!res.ok) {
-          throw new Error(`Upload failed with HTTP ${res.status}`);
-        }
-        throw new Error('Upload failed: invalid server response');
-      }
-    }
-    if (!res.ok) throw new Error(data.error || `Upload failed with HTTP ${res.status}`);
-    return data;
+    return uploadRawFile(`/api/upload?type=${type}&${RAW_UPLOAD_QUERY}`, file, { authToken: token });
   },
   createMobileUploadSession: async (topic) => request('POST', '/api/mobile-upload/sessions', { topic }),
   getMobileUploadSession: async (sessionId) => request('GET', `/api/mobile-upload/sessions/${encodeURIComponent(sessionId)}`),
-  uploadMobileSessionFile: async (sessionId, file, type = 'file') => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const res = await fetch(`${API_BASE}/api/mobile-upload/sessions/${encodeURIComponent(sessionId)}/files?type=${type}`, {
-      method: 'POST',
-      body: formData,
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Upload failed');
-    return data;
-  },
+  uploadMobileSessionFile: (sessionId, file, type = 'file') => uploadRawFile(
+    `/api/mobile-upload/sessions/${encodeURIComponent(sessionId)}/files?type=${type}&${RAW_UPLOAD_QUERY}`,
+    file,
+  ),
   uploadFeedbackImage: (file) => api.uploadFile(file, 'feedback'),
   submitFeedback: (data) => request('POST', '/api/feedback', data),
   getTutorialTasks: () => request('GET', '/api/tutorial-tasks'),
@@ -742,6 +835,9 @@ export function connectWS(onMessage, { force = false } = {}) {
   if (wsConn) {
     const staleConn = wsConn;
     wsConn = null;
+    const closeMessage = { _type: 'ws_close', attempt: wsReconnectAttempt, retryInMs: 0 };
+    onMessage(closeMessage);
+    msgHandlers.forEach((handler) => handler(closeMessage));
     staleConn.onopen = null;
     staleConn.onclose = null;
     staleConn.onerror = null;
@@ -816,9 +912,13 @@ export function connectWS(onMessage, { force = false } = {}) {
     wsConn = null;
     wsReconnectAttempt += 1;
     const retryInMs = reconnectDelay(wsReconnectAttempt);
-    onMessage({ _type: 'ws_close', attempt: wsReconnectAttempt, retryInMs });
+    const closeMessage = { _type: 'ws_close', attempt: wsReconnectAttempt, retryInMs };
+    onMessage(closeMessage);
+    msgHandlers.forEach((handler) => handler(closeMessage));
     if (isTokenExpired()) {
-      onMessage({ _type: 'ws_auth_expired' });
+      const authExpiredMessage = { _type: 'ws_auth_expired' };
+      onMessage(authExpiredMessage);
+      msgHandlers.forEach((handler) => handler(authExpiredMessage));
       return;
     }
     if (token) {
@@ -866,6 +966,8 @@ export function disconnectWS() {
   if (wsConn) {
     const staleConn = wsConn;
     wsConn = null;
+    const closeMessage = { _type: 'ws_close', attempt: 0, retryInMs: 0 };
+    msgHandlers.forEach((handler) => handler(closeMessage));
     staleConn.onopen = null;
     staleConn.onclose = null;
     staleConn.onerror = null;
@@ -879,7 +981,90 @@ export function disconnectWS() {
 export function sendWS(msg) {
   if (wsConn && wsConn.readyState === WebSocket.OPEN) {
     wsConn.send(JSON.stringify(msg));
+    return true;
   }
+  return false;
+}
+
+export function requestSkillHubDeviceTool({
+  deviceId,
+  ownerUserId,
+  toolName,
+  payload,
+  timeoutMs = 30_000,
+}) {
+  const requestId = globalThis.crypto?.randomUUID?.()
+    || `skillhub-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  const messageId = nextMsgId();
+  const expiresAt = Date.now() + Math.max(5_000, Math.min(Number(timeoutMs) || 30_000, 120_000));
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let removeHandler = () => {};
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      removeHandler();
+      callback();
+    };
+    const timer = setTimeout(() => finish(() => {
+      const error = new Error('等待本地 XiaoBa 响应超时，请确认设备在线并已更新到最新版本。');
+      error.code = 'skillhub_device_timeout';
+      reject(error);
+    }), expiresAt - Date.now() + 1_000);
+
+    removeHandler = onWSMessage((message) => {
+      if (message?._type === 'ws_close' || message?._type === 'ws_auth_expired') {
+        finish(() => {
+          const error = new Error('CatsCo 实时连接已断开，请等待重连后再试。');
+          error.code = 'skillhub_websocket_disconnected';
+          reject(error);
+        });
+        return;
+      }
+      if (message?.ctrl?.id === messageId && Number(message.ctrl.code || 0) >= 400) {
+        finish(() => {
+          const error = new Error(message.ctrl.text || 'CatsCo 拒绝了本地设备请求。');
+          error.code = 'skillhub_device_request_rejected';
+          error.status = Number(message.ctrl.code || 0);
+          reject(error);
+        });
+        return;
+      }
+      const response = message?.thin_tool_rpc;
+      if (!response || response.type !== 'result' || response.request_id !== requestId) return;
+      finish(() => {
+        if (response.error) {
+          const error = new Error(response.error.message || response.error.code || '本地 XiaoBa 操作失败。');
+          error.code = response.error.code || 'skillhub_device_error';
+          reject(error);
+          return;
+        }
+        resolve(response.result || {});
+      });
+    });
+
+    const sent = sendWS({
+      thin_tool_rpc: {
+        id: messageId,
+        type: 'request',
+        request_id: requestId,
+        target_owner_user_id: String(ownerUserId || ''),
+        target_device_id: String(deviceId || ''),
+        tool_name: String(toolName || ''),
+        payload: payload && typeof payload === 'object' ? payload : {},
+        expires_at: expiresAt,
+      },
+    });
+    if (!sent) {
+      finish(() => {
+        const error = new Error('CatsCo 实时连接尚未建立，请稍后重试。');
+        error.code = 'skillhub_websocket_unavailable';
+        reject(error);
+      });
+    }
+  });
 }
 
 export function sendWSPageVisibility(visibility = currentPageVisibility()) {

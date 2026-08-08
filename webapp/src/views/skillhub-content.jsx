@@ -545,7 +545,7 @@ function CatalogueCard({ definitionReady, installedByID, onInstallSkill, saving,
 }
 
 function CustomSkills(props) {
-  const { localSkills, localSkillsError, loadingLocalSkills, localNotice, localSkillsPath, onChangeSection } = props;
+  const { devices, localSkills, localSkillsError, loadingDevices, loadingLocalSkills, localNotice, localSkillsPath, onChangeSection, selectedDeviceID } = props;
   return (
     <section className='cc-skillhub-surface cc-skillhub-custom' aria-labelledby='skillhub-custom-title'>
       <div className='cc-skillhub-custom-header'>
@@ -553,6 +553,12 @@ function CustomSkills(props) {
         <button type='button' className='cc-skillhub-back' onClick={() => onChangeSection('added')}><ArrowLeft size={15} aria-hidden='true' /> 返回能力管理</button>
       </div>
       <CustomToolbar {...props} localSkillsPath={localSkillsPath} />
+      {!loadingDevices && devices?.length === 0 && (
+        <div className='cc-skillhub-alert error' role='alert'>没有检测到支持 SkillHub 的在线 XiaoBa，请启动或更新本地 XiaoBa。</div>
+      )}
+      {!loadingDevices && devices?.length > 1 && !selectedDeviceID && (
+        <div className='cc-skillhub-empty'>请选择要操作的本地 XiaoBa，避免修改到其他电脑。</div>
+      )}
       {localNotice && <div className='cc-skillhub-alert success' role='status'>{localNotice}</div>}
       {localSkillsError ? <div className='cc-skillhub-alert error' role='alert'>{localSkillsError}</div> : loadingLocalSkills ? (
         <EmptyState icon={<RefreshCw className='is-spinning' size={20} />} title='正在读取本地能力' copy='正在同步当前 Agent 对应的 XiaoBa 工作区。' status />
@@ -563,9 +569,21 @@ function CustomSkills(props) {
   );
 }
 
-function CustomToolbar({ loadingLocalSkills, localSkillsPath, onCopyLocalPath, onRefreshLocal, saving, selectedBotUID, sharingSkill }) {
+function CustomToolbar({ devices = [], loadingDevices, loadingLocalSkills, localSkillsPath, onCopyLocalPath, onRefreshLocal, onSelectDevice, saving, selectedBotUID, selectedDeviceID, sharingSkill }) {
   return (
     <div className='cc-skillhub-custom-toolbar'>
+      <label className='cc-skillhub-device-picker'>
+        <span>本地 XiaoBa</span>
+        <select
+          value={selectedDeviceID || ''}
+          disabled={loadingDevices || devices.length === 0 || Boolean(sharingSkill)}
+          onChange={(event) => onSelectDevice?.(event.target.value)}
+        >
+          {devices.length === 0 && <option value=''>暂无支持 SkillHub 的在线设备</option>}
+          {devices.length > 1 && <option value=''>请选择要操作的设备</option>}
+          {devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.displayName || device.deviceId}</option>)}
+        </select>
+      </label>
       <div className='cc-skillhub-local-path'><FolderOpen size={15} aria-hidden='true' /><code>{localSkillsPath || '尚未读取本地 Skills 目录'}</code></div>
       <div className='cc-skillhub-local-actions'>
         <button type='button' onClick={onCopyLocalPath} disabled={!localSkillsPath}><Clipboard size={14} aria-hidden='true' /> 复制路径</button>
@@ -581,7 +599,7 @@ function CustomGrid(props) {
   return <div className='cc-skillhub-local-grid'>{props.localSkills.map((skill) => <CustomCard key={`${skill.relativePath}:${skill.name}`} skill={skill} {...props} />)}</div>;
 }
 
-function CustomCard({ definitionReady, loadingLocalSkills, onShareLocalSkill, saving, sharingSkill, skill }) {
+function CustomCard({ definitionReady, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill }) {
   const shared = Boolean(skill.skillHub?.author && skill.skillHub?.version);
   const canShare = skill.source !== 'system' && !shared;
   return (
@@ -589,7 +607,7 @@ function CustomCard({ definitionReady, loadingLocalSkills, onShareLocalSkill, sa
       <div className='cc-skillhub-local-card-heading'><strong>{skill.name}</strong><span className={`cc-skillhub-status ${shared ? 'synced' : 'local'}`}>{shared ? '已发布' : '仅本地'}</span></div>
       <p>{skill.description || '这个自定义能力暂时没有补充说明。'}</p>
       <code>{skill.relativePath || skill.path}</code>
-      <button type='button' className={shared ? 'added' : 'primary'} disabled={!canShare || !definitionReady || loadingLocalSkills || saving || Boolean(sharingSkill)} onClick={() => onShareLocalSkill(skill)}>
+      <button type='button' className={shared ? 'added' : 'primary'} disabled={!canShare || !selectedDeviceID || !definitionReady || loadingLocalSkills || saving || Boolean(sharingSkill)} onClick={() => onShareLocalSkill(skill)}>
         {shared ? <Check size={14} aria-hidden='true' /> : <Share2 size={14} aria-hidden='true' />}
         {shared ? '已发布到团队' : sharingSkill === skill.name ? '发布并添加中…' : '发布并添加'}
       </button>

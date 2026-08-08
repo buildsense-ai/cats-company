@@ -1,4 +1,8 @@
 .cc-skillhub-page {
+  --cc-skillhub-action-bg: var(--cc-accent-text);
+  --cc-skillhub-action-hover: color-mix(in srgb, var(--cc-accent-text) 82%, #000);
+  --cc-skillhub-action-text: #fff;
+
   box-sizing: border-box;
   width: 100%;
   height: 100%;
@@ -297,7 +301,6 @@
   min-width: 0;
 }
 
-.cc-skillhub-installed,
 .cc-skillhub-local,
 .cc-skillhub-catalogue {
   min-width: 0;
@@ -870,6 +873,11 @@
 .cc-skillhub-back { align-self: start; min-height: 34px !important; border-color: var(--cc-border) !important; padding: 0 10px !important; background: var(--cc-panel-raised) !important; color: var(--cc-muted) !important; white-space: nowrap; }
 .cc-skillhub-back:hover:not(:disabled) { border-color: var(--cc-border-strong) !important; background: var(--cc-hover) !important; color: var(--cc-text) !important; }
 .cc-skillhub-custom-toolbar { display: flex; align-items: center; gap: 12px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--cc-border); }
+.cc-skillhub-device-picker { display: grid; flex: 0 1 220px; min-width: 170px; gap: 5px; color: var(--cc-muted); font-size: 11px; font-weight: 600; }
+.cc-skillhub-device-picker select { width: 100%; min-height: 34px; padding: 0 30px 0 10px; border: 1px solid var(--cc-border); border-radius: var(--cc-radius-sm); background: var(--cc-control-surface); color: var(--cc-text); font: inherit; font-size: 12px; }
+.cc-skillhub-device-picker select:hover:not(:disabled) { border-color: var(--cc-border-strong); }
+.cc-skillhub-device-picker select:focus-visible { outline: 2px solid color-mix(in srgb, var(--cc-accent) 36%, transparent); outline-offset: 2px; }
+.cc-skillhub-device-picker select:disabled { cursor: not-allowed; opacity: .58; }
 .cc-skillhub-custom-toolbar .cc-skillhub-local-path { flex: 1; min-width: 0; margin-top: 0; }
 .cc-skillhub-custom .cc-skillhub-local-grid { padding: 16px 0 0; }
 .cc-skillhub-local-card { min-height: 175px; }

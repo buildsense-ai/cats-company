@@ -26,6 +26,7 @@ vi.mock('../widgets/chat-message', () => ({
         data-text-block-roles={textBlocks.map((block) => block.presentation_role || 'body').join(',')}
         data-text-block-texts={textBlocks.map((block) => block.text || '').join('|')}
         data-sender-name={props.senderName || ''}
+        data-sender-avatar={props.senderAvatarUrl || ''}
         data-sender-is-bot={String(Boolean(props.senderIsBot))}
       >
         {props.onReply && (
@@ -490,6 +491,131 @@ describe('MessagesView composer draft isolation', () => {
     });
     expect(container.querySelector('textarea.v3-composer-input').placeholder)
       .toBe('输入消息');
+  });
+
+  it('resolves group sender identity when message uid is a string', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 72, seq_id: 72, topic_id: 'grp_9', from_uid: '2', type: 'text', content: '来自助手的消息' },
+      ],
+    });
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 9, name: '字符串 UID 群聊' },
+      members: [{ user_id: 1, display_name: 'Me' }, {
+        user_id: 2,
+        display_name: 'Design Agent',
+        avatar_url: '/uploads/design-agent.png',
+        is_bot: true,
+      }],
+    });
+
+    await mountTopic(root, 'grp_9', { isGroup: true, groupId: 9 });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="72"]');
+    expect(message?.dataset.senderName).toBe('Design Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/design-agent.png');
+  });
+
+  it('keeps sender metadata on the first visible reply when thinking is hidden', async () => {
+    localStorage.setItem('cc_show_thinking', 'false');
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        { id: 73, seq_id: 73, topic_id: 'p2p_1_2', from_uid: 2, type: 'thinking', content: '内部过程', created_at: '2026-07-01T00:00:00Z' },
+        { id: 74, seq_id: 74, topic_id: 'p2p_1_2', from_uid: 2, type: 'text', content: '最终回复', created_at: '2026-07-01T00:00:01Z' },
+      ],
+    });
+    api.getFriends.mockResolvedValueOnce({
+      friends: [{ id: 2, display_name: 'Agent', avatar_url: '/uploads/agent.png', is_bot: true }],
+    });
+
+    await mountTopic(root, 'p2p_1_2', { topicName: 'Agent', topicAvatarUrl: '/uploads/agent.png' });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="74"]');
+    expect(message?.dataset.senderName).toBe('Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/agent.png');
+    expect(message?.dataset.consecutive).toBe('false');
+  });
+
+  it('ignores a stale group profile response after switching conversations', async () => {
+    const firstGroupProfile = deferred();
+    const secondGroupProfile = deferred();
+    api.getMessages
+      .mockResolvedValueOnce({ messages: [] })
+      .mockResolvedValueOnce({
+        messages: [
+          { id: 75, seq_id: 75, topic_id: 'grp_10', from_uid: 3, type: 'text', content: '当前群的消息' },
+        ],
+      });
+    api.getGroupInfo
+      .mockImplementationOnce(() => firstGroupProfile.promise)
+      .mockImplementationOnce(() => secondGroupProfile.promise);
+
+    await mountTopic(root, 'grp_9', { isGroup: true, groupId: 9 });
+    await mountTopic(root, 'grp_10', { isGroup: true, groupId: 10 });
+
+    await act(async () => {
+      secondGroupProfile.resolve({
+        group: { id: 10, name: '当前群' },
+        members: [{ user_id: 1, display_name: 'Me' }, {
+          user_id: 3,
+          display_name: 'Current Agent',
+          avatar_url: '/uploads/current-agent.png',
+          is_bot: true,
+        }],
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      firstGroupProfile.resolve({
+        group: { id: 9, name: '旧群' },
+        members: [{ user_id: 1, display_name: 'Me' }, {
+          user_id: 2,
+          display_name: 'Stale Agent',
+          avatar_url: '/uploads/stale-agent.png',
+          is_bot: true,
+        }],
+      });
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="75"]');
+    expect(message?.dataset.senderName).toBe('Current Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/current-agent.png');
+  });
+
+  it('uses the live Agent roster when the peer profile request has no result', async () => {
+    const rosterAgent = {
+      uid: 2,
+      username: 'roster-agent',
+      display_name: 'Roster Agent',
+      avatar_url: '/uploads/roster-agent.png',
+      is_bot: true,
+    };
+    let agentRequestCount = 0;
+    api.getAgents.mockImplementation(() => {
+      agentRequestCount += 1;
+      return Promise.resolve(agentRequestCount === 1 ? { agents: [rosterAgent] } : { agents: [] });
+    });
+    api.getFriends.mockResolvedValueOnce({ friends: [] });
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{ id: 76, seq_id: 76, topic_id: 'p2p_1_2', from_uid: 2, type: 'text', content: 'Roster reply' }],
+    });
+
+    await mountTopic(root, 'p2p_1_2', { topicName: '', topicAvatarUrl: '' });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="76"]');
+    expect(message?.dataset.senderName).toBe('Roster Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/roster-agent.png');
   });
 
   it('does not restore a failed old-topic draft after the user has switched topics', async () => {

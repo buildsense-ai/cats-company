@@ -80,6 +80,14 @@ all three are absent, the workflow removes any earlier VAPID values. Keep the
 test key pair separate from production. The existing first-deploy check still
 requires `test.env` to contain the rest of its real configuration.
 
+If the test host also needs mainland egress through the relay, configure these
+optional `test` secrets as a pair:
+
+- `CATSCO_PUSH_RELAY_URL`
+- `CATSCO_PUSH_RELAY_TOKEN`
+
+They are synchronized over SSH standard input and removed when both are empty.
+
 ## Manual start
 
 Run on the server:

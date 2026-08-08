@@ -2,10 +2,14 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -15,12 +19,50 @@ import (
 
 // UserHandler handles user-related API requests.
 type UserHandler struct {
-	db store.Store
+	db                       store.Store
+	relayRegistrationCreate  func(context.Context, int64, string) error
+	relayRegistrationDelays  []time.Duration
+	relayRegistrationTimeout time.Duration
 }
 
 // NewUserHandler creates a new UserHandler.
 func NewUserHandler(db store.Store) *UserHandler {
-	return &UserHandler{db: db}
+	return &UserHandler{
+		db:                       db,
+		relayRegistrationDelays:  []time.Duration{0, 2 * time.Second, 10 * time.Second},
+		relayRegistrationTimeout: defaultRelayAdminTimeout,
+	}
+}
+
+// SetRelayRegistrationProvisioning asynchronously provisions a relay key for
+// newly registered users. Relay availability must never gate account creation.
+// The create closure is idempotent: it queries the existing key first and only
+// creates when none exists (query-before-create), so a retried run after a lost
+// response cannot mint duplicate keys.
+func (h *UserHandler) SetRelayRegistrationProvisioning(admin *RelayAdminClient) {
+	if h == nil {
+		return
+	}
+	if admin == nil {
+		h.relayRegistrationCreate = nil
+		return
+	}
+	h.relayRegistrationCreate = func(ctx context.Context, uid int64, username string) error {
+		var existing relayKeyResponse
+		if err := admin.Do(ctx, http.MethodGet, fmt.Sprintf("/internal/users/%d/key", uid), nil, &existing); err == nil {
+			if existing.Configured {
+				return nil // already provisioned; keep it idempotent
+			}
+		} else if !isNotFoundRelayError(err) {
+			// GET failed for a non-404 reason; let the retry policy decide.
+			return err
+		}
+		var out relayKeyResponse
+		return admin.Do(ctx, http.MethodPost, fmt.Sprintf("/internal/users/%d/key", uid), relayKeyProxyRequest{
+			Name:     "CatsCo relay key",
+			Username: username,
+		}, &out)
+	}
 }
 
 // RegisterRequest is the JSON body for user registration.
@@ -244,13 +286,81 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		PassHash:    hash,
 	}
 
-	_, err = h.db.CreateUser(user)
+	uid, err := h.db.CreateUser(user)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email already exists"})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+	h.provisionRegisteredUserRelayKey(uid, username)
+}
+
+func (h *UserHandler) provisionRegisteredUserRelayKey(uid int64, username string) {
+	if h == nil || h.relayRegistrationCreate == nil || uid <= 0 {
+		return
+	}
+	create := h.relayRegistrationCreate
+	delays := append([]time.Duration(nil), h.relayRegistrationDelays...)
+	if len(delays) == 0 {
+		delays = []time.Duration{0}
+	}
+	timeout := h.relayRegistrationTimeout
+	if timeout <= 0 {
+		timeout = defaultRelayAdminTimeout
+	}
+
+	go func() {
+		var lastErr error
+		for attempt, delay := range delays {
+			if delay > 0 {
+				timer := time.NewTimer(delay)
+				<-timer.C
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			lastErr = create(ctx, uid, username)
+			cancel()
+			if lastErr == nil {
+				log.Printf("relay registration key provisioned: uid=%d username=%s", uid, username)
+				return
+			}
+			log.Printf(
+				"relay registration key provisioning failed: uid=%d attempt=%d/%d error=%v",
+				uid,
+				attempt+1,
+				len(delays),
+				lastErr,
+			)
+			if !retryableRelayError(lastErr) {
+				log.Printf("relay registration key provisioning stopped: permanent error uid=%d error=%v", uid, lastErr)
+				return
+			}
+		}
+	}()
+}
+
+// retryableRelayError reports whether a relay admin failure may succeed on a
+// retry. Transport/timeout errors and HTTP 408/429/5xx are retryable; permanent
+// 4xx responses are not, so a doomed request is not hammered repeatedly.
+func retryableRelayError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var relayErr relayAdminError
+	if !errors.As(err, &relayErr) {
+		return true // network / transport / timeout
+	}
+	switch relayErr.status {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	default:
+		return relayErr.status >= http.StatusInternalServerError
+	}
+}
+
+func isNotFoundRelayError(err error) bool {
+	var relayErr relayAdminError
+	return errors.As(err, &relayErr) && relayErr.status == http.StatusNotFound
 }
 
 // HandleLogin handles POST /api/auth/login

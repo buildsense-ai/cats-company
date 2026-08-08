@@ -55,6 +55,17 @@ type Hub struct {
 	groupTurns    *groupAgentTurnTracker
 	push          *PushNotificationService
 	agentPush     *agentPushTurnCoordinator
+	taskGrace     time.Duration
+	// taskReaperInterval is how often the disconnected-task recovery reaper
+	// scans durable rows. It complements the per-disconnect time.AfterFunc so
+	// a crashed/restarted process or transient DB error cannot permanently
+	// skip recovery.
+	taskReaperInterval time.Duration
+	// botConnectionEpochs is incremented every time a bot registers a new
+	// connection. Disconnected-task recovery timers snapshot the current epoch
+	// and skip recovery when a newer connection generation appeared, so an old
+	// timer never marks work owned by a fresh connection as stale.
+	botConnectionEpochs map[int64]uint64
 }
 
 type presenceEvent struct {
@@ -96,32 +107,40 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		nodeID = newRuntimeNodeID()
 	}
 	hub := &Hub{
-		clients:       make(map[int64]map[*Client]struct{}),
-		clientsByConn: make(map[string]*Client),
-		register:      make(chan *Client, 256),
-		unregister:    make(chan *Client, 256),
-		presence:      make(chan presenceEvent, 256),
-		db:            db,
-		rateLimiter:   rl,
-		botStats:      NewBotStats(),
-		botConvo:      botConvoTracker{counters: make(map[string]*botConvoCount)},
-		nodeID:        nodeID,
-		sharedRuntime: shared,
-		bodyLeases:    newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
-		userDevices:   newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
-		deviceAudit:   newDeviceAuditLog(),
-		deviceRevokes: newDeviceConnectorRevocationList(),
-		deviceClients: make(map[int64]map[string]*Client),
-		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
-		thinToolRPC:   newThinToolRPCRouter(defaultThinToolRPCTTL),
-		groupTurns:    newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
-		agentPush:     newAgentPushTurnCoordinator(),
+		clients:             make(map[int64]map[*Client]struct{}),
+		clientsByConn:       make(map[string]*Client),
+		register:            make(chan *Client, 256),
+		unregister:          make(chan *Client, 256),
+		presence:            make(chan presenceEvent, 256),
+		db:                  db,
+		rateLimiter:         rl,
+		botStats:            NewBotStats(),
+		botConvo:            botConvoTracker{counters: make(map[string]*botConvoCount)},
+		nodeID:              nodeID,
+		sharedRuntime:       shared,
+		bodyLeases:          newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
+		userDevices:         newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
+		deviceAudit:         newDeviceAuditLog(),
+		deviceRevokes:       newDeviceConnectorRevocationList(),
+		deviceClients:       make(map[int64]map[string]*Client),
+		deviceRPC:           newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
+		thinToolRPC:         newThinToolRPCRouter(defaultThinToolRPCTTL),
+		groupTurns:          newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
+		agentPush:           newAgentPushTurnCoordinator(),
+		taskGrace:           90 * time.Second,
+		taskReaperInterval:  30 * time.Second,
+		botConnectionEpochs: make(map[int64]uint64),
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
 	}
 	go hub.runPresence()
 	go hub.runDeviceRPCTimeouts()
+	// Periodic + startup reaper for disconnected bot task recovery. The
+	// disconnect-triggered time.AfterFunc can be lost on process crash/restart
+	// or a transient DB error; the reaper re-scans durable rows so a missed
+	// timer still converges to stale (review 2026-08-05).
+	go hub.runConversationTaskReaper()
 	return hub
 }
 
@@ -196,6 +215,23 @@ func (h *Hub) hasRegisteredBotBodyClient(lease botBodyLease) bool {
 	return false
 }
 
+// botOnlineElsewhere reports whether the bot holds an active body lease owned
+// by another node. With a shared runtime (Redis / shared memory) the lease is
+// cluster-wide, so a bot that reconnected on node B must not be recovered as
+// stale by node A. Process-local clients are covered by Hub.IsOnline; a lease
+// owned by this node is intentionally ignored so a crash-leaked local lease is
+// still reconciled by the database compare-and-set.
+func (h *Hub) botOnlineElsewhere(botUID int64) bool {
+	if h == nil || h.bodyLeases == nil || botUID <= 0 {
+		return false
+	}
+	lease, ok := h.bodyLeases.status(botUID)
+	if !ok || lease.nodeID == "" {
+		return false
+	}
+	return lease.nodeID != h.nodeID
+}
+
 func (h *Hub) RuntimeMode() string {
 	if h != nil && h.bodyLeases != nil {
 		return h.bodyLeases.runtimeMode()
@@ -225,6 +261,7 @@ func (h *Hub) Run() {
 			if !removed {
 				continue
 			}
+			h.cancelThinToolRPCRequestsByRequesterRoute(h.clientRoute(client))
 			client.closeSend()
 			h.releaseBotBodyLease(client)
 			h.clearClientRuntimeRoute(client)
@@ -236,6 +273,9 @@ func (h *Hub) Run() {
 			}
 			if lastConn {
 				h.enqueuePresence(client.uid, "off")
+				if client.accountType == types.AccountBot {
+					h.scheduleDisconnectedBotTaskRecovery(client.uid, time.Now())
+				}
 			}
 		}
 	}
@@ -366,10 +406,45 @@ func (h *Hub) registerClient(client *Client) bool {
 		return false
 	}
 
+	// A bot registering a new connection starts a new connection generation:
+	// recovery timers scheduled for an earlier disconnection must not recover
+	// tasks owned by this generation. When a cluster-wide generation store is
+	// available the bump must be durable BEFORE this connection is accepted:
+	// a locally-only bump is invisible to other nodes (botConnectionEpoch reads
+	// the persisted value), so accepting a bot whose generation was not
+	// persisted would let an old timer recover the fresh connection's work.
+	// Fail closed: reject the connection instead of carrying tasks without a
+	// durable generation (review 2026-08-05).
+	if client.accountType == types.AccountBot {
+		if genStore, ok := h.db.(store.ConversationTaskGenerationStore); ok {
+			bumped, err := genStore.BumpBotConnectionGeneration(client.uid)
+			if err != nil {
+				log.Printf("client connect: bump bot connection generation failed uid=%d, rejecting connection: %v", client.uid, err)
+				client.closeSend()
+				if client.conn != nil {
+					_ = client.conn.Close()
+				}
+				return false
+			}
+			h.mu.Lock()
+			h.botConnectionEpochs[client.uid] = bumped
+			h.mu.Unlock()
+		} else {
+			// No generation store (single-process deployments): the per-process
+			// map is the only fence and there are no other nodes to agree with.
+			h.mu.Lock()
+			h.botConnectionEpochs[client.uid]++
+			h.mu.Unlock()
+		}
+	}
+
 	firstConn, deviceCount, onlineUsers, replaced := h.addRegisteredClient(client)
 	for _, stale := range replaced {
+		staleRoute := h.clientRoute(stale)
+		h.cancelThinToolRPCRequestsByRequesterRoute(staleRoute)
 		h.clearClientRuntimeRoute(stale)
 		h.unbindDeviceClient(stale)
+		h.cancelThinToolRPCRequestsByTargetRoute(staleRoute)
 		stale.closeSend()
 		if stale.conn != nil {
 			_ = stale.conn.Close()
@@ -474,7 +549,6 @@ func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	if h.deviceClients == nil {
 		h.deviceClients = make(map[int64]map[string]*Client)
@@ -492,7 +566,9 @@ func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client
 		ownerDevices = make(map[string]*Client)
 		h.deviceClients[ownerUID] = ownerDevices
 	}
+	var replacedRoute runtimeRoute
 	if existing := ownerDevices[device.DeviceID]; existing != nil && existing != client {
+		replacedRoute = h.clientRoute(existing)
 		existing.deviceOwnerUID = 0
 		existing.deviceID = ""
 		existing.deviceBodyID = ""
@@ -509,6 +585,11 @@ func (h *Hub) bindDeviceClient(ownerUID int64, device UserDevice, client *Client
 		route.ExpiresAt = now.Add(defaultUserDeviceTTL)
 		h.sharedRuntime.bindRuntimeRoute(route, now)
 		h.sharedRuntime.bindUserDeviceRoute(ownerUID, device, route, now)
+	}
+	h.mu.Unlock()
+
+	if replacedRoute.NodeID != "" && replacedRoute.ConnectionID != "" {
+		h.cancelThinToolRPCRequestsByTargetRoute(replacedRoute)
 	}
 }
 

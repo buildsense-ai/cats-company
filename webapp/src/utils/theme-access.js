@@ -1,6 +1,13 @@
 export const THEME_STORAGE_KEY = 'catsco_theme';
 export const LIQUID_THEME_UNLOCK_STORAGE_KEY = 'catsco_liquid_theme_unlocked_v1';
 
+const THEME_COLORS = {
+  light: '#f8f8f8',
+  dark: '#0f0f0f',
+  liquid: '#f5f7fc',
+  'liquid-green': '#151718',
+};
+
 const LIQUID_THEME_PASSWORD_SALT = 'catsco-liquid-theme-v1';
 const LIQUID_THEME_PASSWORD_ITERATIONS = 210000;
 const LIQUID_THEME_PASSWORD_VERIFIER = 'q3V748DOo0hRhrrZ8n8N5T7yVPS0uQCFU4xRuO8CW1s=';
@@ -11,6 +18,15 @@ export function isLiquidTheme(value) {
 
 export function normalizeTheme(value) {
   return value === 'dark' || isLiquidTheme(value) ? value : 'light';
+}
+
+export function themeColor(value) {
+  return THEME_COLORS[normalizeTheme(value)];
+}
+
+export function syncThemeColor(value, target = globalThis.document) {
+  target?.querySelector?.('meta[name="theme-color"]')
+    ?.setAttribute('content', themeColor(value));
 }
 
 export function isLiquidThemeUnlocked(storage = globalThis.localStorage) {

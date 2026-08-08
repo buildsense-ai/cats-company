@@ -316,3 +316,270 @@ func reconcileLegacyConversationTaskStatuses(execer conversationTaskStatusExecer
 	)
 	return err
 }
+
+// ListAllActiveConversationTaskStatusesBefore returns every active source run
+// last updated before the cutoff (feeds the periodic/startup reaper).
+func (a *Adapter) ListAllActiveConversationTaskStatusesBefore(updatedBefore time.Time) ([]*types.ConversationTaskStatus, error) {
+	rows, err := a.db.Query(
+		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, expires_at
+		 FROM conversation_task_status_sources
+		 WHERE state IN ('running', 'waiting')
+		   AND updated_at <= $1
+		   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+		 ORDER BY updated_at`,
+		updatedBefore,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list all active conversation task statuses before: %w", err)
+	}
+	defer rows.Close()
+
+	var statuses []*types.ConversationTaskStatus
+	for rows.Next() {
+		status := &types.ConversationTaskStatus{}
+		if err := rows.Scan(
+			&status.TopicID,
+			&status.RunID,
+			&status.State,
+			&status.Summary,
+			&status.Error,
+			&status.SourceUID,
+			&status.UpdatedAt,
+			&status.ExpiresAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan active conversation task status: %w", err)
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, rows.Err()
+}
+
+// ListActiveConversationTaskStatusesForSource returns active runs that were
+// last updated before a bot connection disappeared.
+func (a *Adapter) ListActiveConversationTaskStatusesForSource(sourceUID int64, updatedBefore time.Time) ([]*types.ConversationTaskStatus, error) {
+	rows, err := a.db.Query(
+		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, expires_at
+		 FROM conversation_task_status_sources
+		 WHERE source_uid = $1
+		   AND state IN ('running', 'waiting')
+		   AND updated_at <= $2
+		   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+		 ORDER BY updated_at`,
+		sourceUID,
+		updatedBefore,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list active conversation task statuses for source: %w", err)
+	}
+	defer rows.Close()
+
+	var statuses []*types.ConversationTaskStatus
+	for rows.Next() {
+		status := &types.ConversationTaskStatus{}
+		if err := rows.Scan(
+			&status.TopicID,
+			&status.RunID,
+			&status.State,
+			&status.Summary,
+			&status.Error,
+			&status.SourceUID,
+			&status.UpdatedAt,
+			&status.ExpiresAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan active conversation task status for source: %w", err)
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, rows.Err()
+}
+
+// MarkConversationTaskStatusStaleIfUnchanged atomically marks a source run
+// stale, but only when the row still matches the disconnected run and was not
+// updated after the disconnection (compare-and-set). This closes the
+// check-then-write race in task recovery: a bot that reconnects and updates the
+// same run before this write wins, and this call reports updated=false.
+func (a *Adapter) MarkConversationTaskStatusStaleIfUnchanged(topicID string, sourceUID int64, runID string, disconnectedAt time.Time, generation uint64) (*types.ConversationTaskStatus, bool, error) {
+	if topicID == "" || sourceUID <= 0 || runID == "" {
+		return nil, false, fmt.Errorf("conversation task stale requires topic, source uid and run id")
+	}
+
+	tx, err := a.db.Begin()
+	if err != nil {
+		return nil, false, fmt.Errorf("begin conversation task stale transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Fence on the cluster-wide bot connection generation inside the same
+	// transaction: a newer connection generation (any node) must win, otherwise
+	// an old recovery timer could mark work owned by a fresh connection stale.
+	// The row is locked so a concurrent BumpBotConnectionGeneration cannot slip
+	// between this check and the stale update (closes the cross-node TOCTOU).
+	if _, err := tx.Exec(
+		`INSERT INTO bot_connection_generations (bot_uid, generation)
+		 VALUES ($1, 0)
+		 ON CONFLICT (bot_uid) DO NOTHING`,
+		sourceUID,
+	); err != nil {
+		return nil, false, fmt.Errorf("ensure bot connection generation: %w", err)
+	}
+	var currentGeneration uint64
+	if err := tx.QueryRow(
+		`SELECT generation FROM bot_connection_generations WHERE bot_uid = $1 FOR UPDATE`,
+		sourceUID,
+	).Scan(&currentGeneration); err != nil {
+		return nil, false, fmt.Errorf("lock bot connection generation: %w", err)
+	}
+	if currentGeneration != generation {
+		return nil, false, nil
+	}
+
+	if _, err := tx.Exec(
+		`INSERT INTO conversation_task_statuses (topic_id, state, summary, error, updated_at)
+		 VALUES ($1, 'idle', '', '', CURRENT_TIMESTAMP)
+		 ON CONFLICT (topic_id) DO NOTHING`,
+		topicID,
+	); err != nil {
+		return nil, false, fmt.Errorf("ensure conversation task aggregate: %w", err)
+	}
+	var lockedTopicID string
+	if err := tx.QueryRow(
+		`SELECT topic_id FROM conversation_task_statuses WHERE topic_id = $1 FOR UPDATE`,
+		topicID,
+	).Scan(&lockedTopicID); err != nil {
+		return nil, false, fmt.Errorf("lock conversation task aggregate: %w", err)
+	}
+
+	if err := reconcileLegacyConversationTaskStatuses(tx, "$1", topicID); err != nil {
+		return nil, false, fmt.Errorf("reconcile legacy conversation task status: %w", err)
+	}
+
+	res, err := tx.Exec(
+		`UPDATE conversation_task_status_sources
+		   SET state = 'stale',
+		       summary = '机器人连接中断，任务已自动中止，可重新发送',
+		       error = 'bot disconnected before terminal task status',
+		       expires_at = NULL,
+		       updated_at = CURRENT_TIMESTAMP
+		 WHERE topic_id = $1 AND source_uid = $2
+		   AND run_id = $3
+		   AND state IN ('running', 'waiting')
+		   AND updated_at <= $4`,
+		topicID,
+		sourceUID,
+		runID,
+		disconnectedAt,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("mark conversation task stale: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, false, fmt.Errorf("mark conversation task stale rows affected: %w", err)
+	}
+	if affected == 0 {
+		return nil, false, nil
+	}
+
+	aggregate := &types.ConversationTaskStatus{}
+	err = tx.QueryRow(
+		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, expires_at
+		 FROM conversation_task_status_sources
+		 WHERE topic_id = $1
+		   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+		 ORDER BY
+		   CASE WHEN state IN ('running', 'waiting') THEN 0 ELSE 1 END,
+		   updated_at DESC,
+		   source_uid DESC
+		 LIMIT 1`,
+		topicID,
+	).Scan(
+		&aggregate.TopicID,
+		&aggregate.RunID,
+		&aggregate.State,
+		&aggregate.Summary,
+		&aggregate.Error,
+		&aggregate.SourceUID,
+		&aggregate.UpdatedAt,
+		&aggregate.ExpiresAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		aggregate = &types.ConversationTaskStatus{
+			TopicID:   topicID,
+			RunID:     runID,
+			State:     "stale",
+			Summary:   "机器人连接中断，任务已自动中止，可重新发送",
+			Error:     "bot disconnected before terminal task status",
+			SourceUID: sourceUID,
+		}
+	} else if err != nil {
+		return nil, false, fmt.Errorf("load conversation task aggregate after stale: %w", err)
+	}
+
+	out := &types.ConversationTaskStatus{}
+	err = tx.QueryRow(
+		`UPDATE conversation_task_statuses SET
+		   run_id = $2,
+		   state = $3,
+		   summary = $4,
+		   error = $5,
+		   source_uid = NULLIF($6, 0),
+		   expires_at = $7,
+		   updated_at = CURRENT_TIMESTAMP
+		 WHERE topic_id = $1
+		 RETURNING topic_id, run_id, state, summary, error, COALESCE(source_uid, 0), updated_at, expires_at`,
+		aggregate.TopicID,
+		aggregate.RunID,
+		aggregate.State,
+		aggregate.Summary,
+		aggregate.Error,
+		aggregate.SourceUID,
+		aggregate.ExpiresAt,
+	).Scan(&out.TopicID, &out.RunID, &out.State, &out.Summary, &out.Error, &out.SourceUID, &out.UpdatedAt, &out.ExpiresAt)
+	if err != nil {
+		return nil, false, fmt.Errorf("refresh conversation task aggregate after stale: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("commit conversation task stale: %w", err)
+	}
+	return out, true, nil
+}
+
+// BumpBotConnectionGeneration atomically increments the cluster-wide connection
+// generation for a bot and returns the new value. Missing rows start at 1.
+func (a *Adapter) BumpBotConnectionGeneration(botUID int64) (uint64, error) {
+	if botUID <= 0 {
+		return 0, fmt.Errorf("bot uid is required")
+	}
+	var generation uint64
+	err := a.db.QueryRow(
+		`INSERT INTO bot_connection_generations (bot_uid, generation)
+		 VALUES ($1, 1)
+		 ON CONFLICT (bot_uid) DO UPDATE SET generation = bot_connection_generations.generation + 1
+		 RETURNING generation`,
+		botUID,
+	).Scan(&generation)
+	if err != nil {
+		return 0, fmt.Errorf("bump bot connection generation: %w", err)
+	}
+	return generation, nil
+}
+
+// BotConnectionGeneration returns the current cluster-wide connection
+// generation for a bot, or 0 when the bot has never connected.
+func (a *Adapter) BotConnectionGeneration(botUID int64) (uint64, error) {
+	if botUID <= 0 {
+		return 0, fmt.Errorf("bot uid is required")
+	}
+	var generation uint64
+	err := a.db.QueryRow(
+		`SELECT generation FROM bot_connection_generations WHERE bot_uid = $1`,
+		botUID,
+	).Scan(&generation)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("load bot connection generation: %w", err)
+	}
+	return generation, nil
+}

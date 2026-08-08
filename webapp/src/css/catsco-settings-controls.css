@@ -7,3 +7,145 @@
   outline-offset: 0 !important;
   box-shadow: none !important;
 }
+
+.oc-notification-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 42px;
+  align-items: center;
+  gap: 11px;
+  min-height: 66px;
+  padding: 11px 12px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-panel-raised);
+}
+
+.oc-notification-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--cc-radius-sm);
+  background: var(--cc-accent-soft);
+  color: var(--cc-accent-text);
+}
+
+.oc-notification-label {
+  margin-bottom: 3px;
+  color: var(--cc-text);
+  font-size: 14px;
+  font-weight: var(--cc-font-weight-medium);
+}
+
+.oc-notification-row .oc-settings-secondary {
+  line-height: 1.45;
+}
+
+.oc-settings-switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: 11px;
+  background: var(--cc-control-surface);
+  cursor: pointer;
+  transition: background 180ms ease-out, border-color 180ms ease-out;
+}
+
+.oc-settings-switch > span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--cc-panel);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--cc-text) 24%, transparent);
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.oc-settings-switch[aria-checked="true"] {
+  border-color: var(--cc-accent);
+  background: var(--cc-accent);
+}
+
+.oc-settings-switch[aria-checked="true"] > span {
+  transform: translateX(18px);
+}
+
+.oc-settings-switch:focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 2px;
+}
+
+.oc-settings-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.oc-notification-warning {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--cc-warning-text) 22%, var(--cc-border));
+  border-radius: var(--cc-radius-sm);
+  background: color-mix(in srgb, var(--cc-warning-text) 7%, transparent);
+  color: var(--cc-warning-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.oc-notification-warning svg {
+  margin-top: 1px;
+}
+
+.oc-notification-test-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.oc-notification-test {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.oc-notification-feedback {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.oc-notification-feedback.is-success {
+  color: var(--cc-success-text);
+}
+
+.oc-notification-feedback.is-error {
+  color: var(--cc-danger);
+}
+
+@keyframes oc-notification-spin {
+  to { transform: rotate(360deg); }
+}
+
+.oc-notification-test .oc-spin {
+  animation: oc-notification-spin 800ms linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oc-settings-switch,
+  .oc-settings-switch > span {
+    transition: none;
+  }
+
+  .oc-notification-test .oc-spin {
+    animation: none;
+  }
+}

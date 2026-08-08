@@ -82,6 +82,103 @@ describe('WebSocket connection recovery', () => {
     unsubscribe();
   });
 
+  test('keeps a SkillHub device request pending after its ack and resolves its result', async () => {
+    api.connectWS(vi.fn());
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+
+    const request = api.requestSkillHubDeviceTool({
+      deviceId: 'alice-device',
+      ownerUserId: 7,
+      toolName: 'skillhub.localWorkspace.get',
+      payload: { bot_uid: '42' },
+      timeoutMs: 5_000,
+    });
+    const envelope = JSON.parse(socket.send.mock.calls.at(-1)[0]);
+    const settled = vi.fn();
+    request.then(settled);
+
+    socket.onmessage({ data: JSON.stringify({
+      ctrl: { id: envelope.thin_tool_rpc.id, code: 200, text: 'accepted' },
+    }) });
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+
+    socket.onmessage({ data: JSON.stringify({
+      thin_tool_rpc: {
+        type: 'result',
+        request_id: envelope.thin_tool_rpc.request_id,
+        result: { bot_uid: '42' },
+      },
+    }) });
+    await expect(request).resolves.toEqual({ bot_uid: '42' });
+  });
+
+  test('rejects a SkillHub device request when the socket disconnects', async () => {
+    api.connectWS(vi.fn());
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    const request = api.requestSkillHubDeviceTool({
+      deviceId: 'alice-device',
+      ownerUserId: 7,
+      toolName: 'skillhub.localWorkspace.get',
+      payload: { bot_uid: '42' },
+    });
+
+    socket.serverClose();
+
+    await expect(request).rejects.toMatchObject({ code: 'skillhub_websocket_disconnected' });
+  });
+
+  test('rejects a pending SkillHub device request before a forced reconnect replaces its route', async () => {
+    const onMessage = vi.fn();
+    api.connectWS(onMessage);
+    MockWebSocket.instances[0].open();
+    const request = api.requestSkillHubDeviceTool({
+      deviceId: 'alice-device',
+      ownerUserId: 7,
+      toolName: 'skillhub.localSkill.share',
+      payload: { bot_uid: '42' },
+    });
+
+    api.reconnectWS(onMessage);
+
+    await expect(request).rejects.toMatchObject({ code: 'skillhub_websocket_disconnected' });
+    expect(MockWebSocket.instances).toHaveLength(2);
+  });
+
+  test('rejects a pending SkillHub device request on a programmatic disconnect', async () => {
+    api.connectWS(vi.fn());
+    MockWebSocket.instances[0].open();
+    const request = api.requestSkillHubDeviceTool({
+      deviceId: 'alice-device',
+      ownerUserId: 7,
+      toolName: 'skillhub.localSkill.finalize',
+      payload: { bot_uid: '42' },
+    });
+
+    api.disconnectWS();
+
+    await expect(request).rejects.toMatchObject({ code: 'skillhub_websocket_disconnected' });
+  });
+
+  test('times out a SkillHub device request that never returns a result', async () => {
+    api.connectWS(vi.fn());
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    const request = api.requestSkillHubDeviceTool({
+      deviceId: 'alice-device',
+      ownerUserId: 7,
+      toolName: 'skillhub.localWorkspace.get',
+      payload: { bot_uid: '42' },
+      timeoutMs: 5_000,
+    });
+
+    vi.advanceTimersByTime(6_001);
+
+    await expect(request).rejects.toMatchObject({ code: 'skillhub_device_timeout' });
+  });
+
   test('sends messaging attention in the handshake and on state changes', () => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     api.connectWS(vi.fn());
@@ -254,6 +351,35 @@ describe('WebSocket connection recovery', () => {
       method: 'DELETE',
       headers: expect.objectContaining({ Authorization: 'Bearer captured-token' }),
     }));
+  });
+
+  test('can remove every tab registration for the current account endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ subscribed: false }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.api.unsubscribeAllPushRegistrations('https://push.example/shared');
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      endpoint: 'https://push.example/shared',
+      all_registrations: true,
+    });
+  });
+
+  test('can remove an orphaned server registration without a local endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ subscribed: false }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.api.unsubscribePushRegistration('registration-current');
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      registration_id: 'registration-current',
+    });
   });
 
   test('publishes session revisions', () => {
@@ -578,5 +704,135 @@ describe('local XiaoBa SkillHub bridge', () => {
       expectedBotUid: '218',
       expectedUserUid: '85',
     });
+  });
+});
+
+describe('upload transport', () => {
+  let apiModule;
+
+  const response = (status, data, raw = JSON.stringify(data)) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: vi.fn().mockResolvedValue(data),
+    text: vi.fn().mockResolvedValue(raw),
+  });
+
+  beforeEach(async () => {
+    vi.resetModules();
+    localStorage.clear();
+    sessionStorage.clear();
+    apiModule = await import('./api');
+  });
+
+  afterEach(() => {
+    apiModule.disconnectWS();
+    vi.restoreAllMocks();
+  });
+
+  test('sends authenticated composer uploads as the original file body', async () => {
+    global.fetch = vi.fn().mockResolvedValue(response(200, {
+      file_key: 'stored.jpg',
+      name: '试卷 01.jpg',
+      size: 5,
+      type: 'image',
+      url: '/uploads/images/stored.jpg',
+    }));
+    apiModule.setToken('upload-token');
+    const file = new File(['paper'], '试卷 01.jpg', { type: 'image/jpeg' });
+
+    await apiModule.api.uploadFile(file, 'image');
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const [url, options] = global.fetch.mock.calls[0];
+    expect(url).toBe('/api/upload?type=image&raw=1');
+    expect(options.body).toBe(file);
+    expect(options.headers).toMatchObject({
+      Authorization: 'Bearer upload-token',
+      'Content-Type': 'image/jpeg',
+      'X-CatsCo-File-Name': encodeURIComponent(file.name),
+      'X-CatsCo-File-Size': String(file.size),
+    });
+  });
+
+  test('retries a phone upload once when the server confirms no complete file was stored', async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(response(400, {
+        code: 'upload_incomplete',
+        error: 'upload request is incomplete; please retry',
+        retryable: true,
+      }))
+      .mockResolvedValueOnce(response(200, {
+        file_key: 'stored.jpg',
+        name: 'paper.jpg',
+        size: 5,
+        type: 'image',
+        url: '/uploads/images/stored.jpg',
+      }));
+    const file = new File(['paper'], 'paper.jpg', { type: 'image/jpeg' });
+
+    await expect(apiModule.api.uploadMobileSessionFile('session-1', file, 'image')).resolves.toMatchObject({
+      file_key: 'stored.jpg',
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    for (const [url, options] of global.fetch.mock.calls) {
+      expect(url).toBe('/api/mobile-upload/sessions/session-1/files?type=image&raw=1');
+      expect(options.body).toBe(file);
+      expect(options.headers).toMatchObject({
+        'Content-Type': 'image/jpeg',
+        'X-CatsCo-File-Name': encodeURIComponent(file.name),
+        'X-CatsCo-File-Size': String(file.size),
+      });
+    }
+  });
+
+  test('stops after one retry and returns an actionable mobile error', async () => {
+    const incomplete = {
+      code: 'upload_incomplete',
+      error: 'upload request is incomplete; please retry',
+      retryable: true,
+    };
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(response(400, incomplete))
+      .mockResolvedValueOnce(response(400, incomplete));
+    const file = new File(['paper'], 'paper.jpg', { type: 'image/jpeg' });
+
+    await expect(apiModule.api.uploadMobileSessionFile('session-1', file, 'image')).rejects.toMatchObject({
+      code: 'upload_incomplete',
+      message: '上传过程中断，请重新选择该文件后重试。',
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not retry when the upload response body is interrupted', async () => {
+    const bodyReadFailure = new TypeError('Load failed');
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: vi.fn().mockRejectedValue(bodyReadFailure),
+    });
+    const file = new File(['paper'], 'paper.jpg', { type: 'image/jpeg' });
+
+    await expect(apiModule.api.uploadMobileSessionFile('session-1', file, 'image')).rejects.toMatchObject({
+      code: 'upload_response_interrupted',
+      message: '上传响应中断，无法确认是否成功；请刷新页面查看“已上传”列表，确认后再重试。',
+      cause: bodyReadFailure,
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('uses a generic actionable error when a composer upload response is interrupted', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: vi.fn().mockRejectedValue(new TypeError('Load failed')),
+    });
+    const file = new File(['paper'], 'paper.jpg', { type: 'image/jpeg' });
+
+    await expect(apiModule.api.uploadFile(file, 'image')).rejects.toMatchObject({
+      code: 'upload_response_interrupted',
+      message: '上传响应中断，无法确认是否成功；请检查网络后重新选择该文件。',
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });

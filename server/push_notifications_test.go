@@ -23,17 +23,19 @@ import (
 )
 
 type memoryPushSubscriptionStore struct {
-	subscriptions         []*types.PushSubscription
-	upserted              *types.PushSubscription
-	deletedUID            int64
-	deleted               string
-	deletedRegistrationID string
-	deletedScoped         []string
-	upsertErr             error
-	listErr               error
-	listBlock             <-chan struct{}
-	deleteErr             error
-	beforeDelete          func()
+	subscriptions           []*types.PushSubscription
+	upserted                *types.PushSubscription
+	deletedUID              int64
+	deleted                 string
+	deletedRegistrationID   string
+	deletedAll              bool
+	deletedRegistrationOnly string
+	deletedScoped           []string
+	upsertErr               error
+	listErr                 error
+	listBlock               <-chan struct{}
+	deleteErr               error
+	beforeDelete            func()
 }
 
 type pushHubUserStore struct {
@@ -93,6 +95,37 @@ func (m *memoryPushSubscriptionStore) DeletePushSubscription(_ context.Context, 
 		if subscription != nil && subscription.UID == uid && subscription.Endpoint == endpoint && subscription.RegistrationID == registrationID {
 			m.subscriptions = append(m.subscriptions[:index], m.subscriptions[index+1:]...)
 			break
+		}
+	}
+	return nil
+}
+
+func (m *memoryPushSubscriptionStore) DeletePushSubscriptionsByEndpoint(_ context.Context, uid int64, endpoint string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	m.deletedUID = uid
+	m.deleted = endpoint
+	m.deletedAll = true
+	for index := len(m.subscriptions) - 1; index >= 0; index-- {
+		subscription := m.subscriptions[index]
+		if subscription != nil && subscription.UID == uid && subscription.Endpoint == endpoint {
+			m.subscriptions = append(m.subscriptions[:index], m.subscriptions[index+1:]...)
+		}
+	}
+	return nil
+}
+
+func (m *memoryPushSubscriptionStore) DeletePushSubscriptionsByRegistrationID(_ context.Context, uid int64, registrationID string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	m.deletedUID = uid
+	m.deletedRegistrationOnly = registrationID
+	for index := len(m.subscriptions) - 1; index >= 0; index-- {
+		subscription := m.subscriptions[index]
+		if subscription != nil && subscription.UID == uid && subscription.RegistrationID == registrationID {
+			m.subscriptions = append(m.subscriptions[:index], m.subscriptions[index+1:]...)
 		}
 	}
 	return nil
@@ -189,6 +222,31 @@ func TestValidatePushEndpointRejectsLocalAndPrivateTargets(t *testing.T) {
 	const valid = "https://push.example.test/subscription/one"
 	if endpoint, err := validatePushEndpoint(valid); err != nil || endpoint != valid {
 		t.Fatalf("validatePushEndpoint(%q) = %q, %v", valid, endpoint, err)
+	}
+}
+
+func TestValidatePushRelayURLRejectsUnsafeOrMalformedValues(t *testing.T) {
+	tests := []string{
+		"http://relay.example.test/v1/push/relay",
+		"https://localhost/v1/push/relay",
+		"https://relay.local/v1/push/relay",
+		"https://127.0.0.1/v1/push/relay",
+		"https://relay.example.test:8443/v1/push/relay",
+		"https://user:password@relay.example.test/v1/push/relay",
+		"https://relay.example.test/v1/push/relay#fragment",
+		"https://" + strings.Repeat("a", maxPushEndpointLen),
+	}
+	for _, raw := range tests {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := validatePushRelayURL(raw); err == nil {
+				t.Fatalf("validatePushRelayURL(%q) error = nil", raw)
+			}
+		})
+	}
+
+	const valid = "https://relay.example.test/v1/push/relay"
+	if parsed, err := validatePushRelayURL(valid); err != nil || parsed.String() != valid {
+		t.Fatalf("validatePushRelayURL(%q) = %v, %v", valid, parsed, err)
 	}
 }
 
@@ -316,6 +374,77 @@ func TestPushHTTPClientTimesOutStalledConnections(t *testing.T) {
 	}
 }
 
+func TestPushRelayTransportForwardsSignedRequestWithoutChangingItsTarget(t *testing.T) {
+	relayURL, err := validatePushRelayURL("https://relay.example.test/v1/push/relay")
+	if err != nil {
+		t.Fatalf("validatePushRelayURL: %v", err)
+	}
+	var received *http.Request
+	transport := &pushRelayRoundTripper{
+		relayURL: relayURL,
+		token:    "relay-token",
+		base: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			received = request.Clone(request.Context())
+			return &http.Response{
+				StatusCode: http.StatusCreated,
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}),
+	}
+	providerEndpoint := "https://fcm.googleapis.com/fcm/send/subscription-token"
+	request := httptest.NewRequest(http.MethodPost, providerEndpoint, strings.NewReader("encrypted-payload"))
+	request.RequestURI = ""
+	request.Header.Set("Authorization", "vapid signed-for-fcm")
+	request.Header.Set("Content-Encoding", "aes128gcm")
+
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		t.Fatalf("relay RoundTrip: %v", err)
+	}
+	defer response.Body.Close()
+	if received == nil {
+		t.Fatal("relay transport did not call its base transport")
+	}
+	if got, want := received.URL.String(), "https://relay.example.test/v1/push/relay"; got != want {
+		t.Fatalf("relay request URL = %q, want %q", got, want)
+	}
+	if got := received.Header.Get(pushRelayEndpointHeader); got != providerEndpoint {
+		t.Fatalf("relay target header = %q, want original endpoint %q", got, providerEndpoint)
+	}
+	if got := received.Header.Get(pushRelayTokenHeader); got != "relay-token" {
+		t.Fatalf("relay token header = %q, want configured token", got)
+	}
+	if got := received.Header.Get("Authorization"); got != "vapid signed-for-fcm" {
+		t.Fatalf("VAPID authorization header = %q, want original request header", got)
+	}
+	if got := received.Header.Get("Content-Encoding"); got != "aes128gcm" {
+		t.Fatalf("content encoding = %q, want aes128gcm", got)
+	}
+}
+
+func TestPushRelayConfigIsAllOrNothing(t *testing.T) {
+	partial := NewPushNotificationServiceWithConfig(&memoryPushSubscriptionStore{}, PushNotificationConfig{
+		PublicKey:  "public-key",
+		PrivateKey: "private-key",
+		Subject:    "mailto:push@example.com",
+		RelayURL:   "https://relay.example.test/v1/push/relay",
+	})
+	if partial.Enabled() {
+		t.Fatal("partially configured relay unexpectedly enabled push delivery")
+	}
+	if err := partial.ConfigError(); err == nil || !strings.Contains(err.Error(), "configured together") {
+		t.Fatalf("partial relay config error = %v", err)
+	}
+
+	client, err := newPushHTTPClientWithRelay("https://relay.example.test/v1/push/relay", "relay-token")
+	if err != nil {
+		t.Fatalf("newPushHTTPClientWithRelay: %v", err)
+	}
+	if _, ok := client.Transport.(*pushRelayRoundTripper); !ok {
+		t.Fatalf("relay client transport = %T, want *pushRelayRoundTripper", client.Transport)
+	}
+}
+
 func TestPushNotificationSubscribeUsesAuthenticatedUID(t *testing.T) {
 	store := &memoryPushSubscriptionStore{}
 	service := enabledPushService(store)
@@ -429,6 +558,193 @@ func TestPushNotificationDeleteSubscriptionAllowsLegacyEmptyRegistrationID(t *te
 	}
 }
 
+func TestPushNotificationDeleteAllRegistrationsForCurrentUserEndpoint(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{UID: 104, Endpoint: "https://push.example.test/subscription/shared", RegistrationID: "other-tab"},
+		{UID: 105, Endpoint: "https://push.example.test/subscription/other-user", RegistrationID: "other-user"},
+	}}
+	service := enabledPushService(store)
+	recorder := httptest.NewRecorder()
+	service.HandleSubscription(recorder, pushRequest(t, http.MethodDelete, `{"endpoint":"https://push.example.test/subscription/shared","all_registrations":true}`, 104))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if !store.deletedAll || store.deletedUID != 104 || store.deleted != "https://push.example.test/subscription/shared" {
+		t.Fatalf("delete all called with all=%v uid=%d endpoint=%q", store.deletedAll, store.deletedUID, store.deleted)
+	}
+	if len(store.subscriptions) != 1 || store.subscriptions[0].UID != 105 {
+		t.Fatalf("delete all removed another user's subscription: %+v", store.subscriptions)
+	}
+}
+
+func TestPushNotificationDeleteOrphanedRegistrationWithoutEndpoint(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{UID: 104, Endpoint: "https://push.example.test/subscription/orphan", RegistrationID: "registration-current"},
+		{UID: 104, Endpoint: "https://push.example.test/subscription/other", RegistrationID: "registration-other"},
+	}}
+	service := enabledPushService(store)
+	recorder := httptest.NewRecorder()
+	service.HandleSubscription(recorder, pushRequest(t, http.MethodDelete, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if store.deletedRegistrationOnly != "registration-current" || len(store.subscriptions) != 1 {
+		t.Fatalf("registration cleanup = %q subscriptions=%+v", store.deletedRegistrationOnly, store.subscriptions)
+	}
+}
+
+func TestPushNotificationTestTargetsCurrentBrowserRegistration(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{UID: 104, Endpoint: "https://push.example.test/current", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
+		{UID: 104, Endpoint: "https://push.example.test/other", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-other"},
+	}}
+	service := enabledPushService(store)
+	var delivered []string
+	service.send = func(ctx context.Context, payload []byte, subscription *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > pushRequestTimeout {
+			t.Fatalf("test delivery deadline = %v, want within %v", deadline, pushRequestTimeout)
+		}
+		delivered = append(delivered, subscription.Endpoint)
+		var notification PushNotification
+		if err := json.Unmarshal(payload, &notification); err != nil {
+			t.Fatalf("decode test payload %s: %v", payload, err)
+		}
+		if notification.Title != "CatsCo 测试通知" {
+			t.Fatalf("test payload = %s", payload)
+		}
+		if !strings.HasPrefix(notification.Tag, "catsco-push-test-") || notification.Tag == "catsco-push-test" {
+			t.Fatalf("test notification tag = %q, want unique tag", notification.Tag)
+		}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+	want := []string{"https://push.example.test/current"}
+	if fmt.Sprint(delivered) != fmt.Sprint(want) {
+		t.Fatalf("delivered endpoints = %#v, want %#v", delivered, want)
+	}
+}
+
+func TestPushNotificationTestRejectsMissingBrowserRegistration(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		UID: 104, Endpoint: "https://push.example.test/current", RegistrationID: "registration-current",
+	}}}
+	service := enabledPushService(store)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		t.Fatal("test notification unexpectedly sent")
+		return nil, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-stale"}`, 104))
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusConflict, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"push_subscription_missing"`) {
+		t.Fatalf("body = %s, want stable missing-subscription code", recorder.Body.String())
+	}
+}
+
+func TestPushNotificationTestReportsExpiredSubscription(t *testing.T) {
+	const endpoint = "https://push.example.test/expired"
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		UID: 104, Endpoint: endpoint, P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current",
+	}}}
+	service := enabledPushService(store)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusGone, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusConflict, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"push_subscription_expired"`) {
+		t.Fatalf("body = %s, want stable expired-subscription code", recorder.Body.String())
+	}
+	if store.deleted != endpoint {
+		t.Fatalf("expired endpoint was not removed: deleted=%q", store.deleted)
+	}
+}
+
+func TestPushNotificationTestReportsProviderRejection(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		UID: 104, Endpoint: "https://push.example.test/rejected", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current",
+	}}}
+	service := enabledPushService(store)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusBadGateway, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"push_provider_rejected"`) {
+		t.Fatalf("body = %s, want stable provider-rejection code", recorder.Body.String())
+	}
+}
+
+func TestPushNotificationTestAcceptsPartialProviderSuccess(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{UID: 104, Endpoint: "https://push.example.test/accepted", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
+		{UID: 104, Endpoint: "https://push.example.test/rejected", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
+	}}
+	service := enabledPushService(store)
+	service.send = func(_ context.Context, _ []byte, subscription *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		status := http.StatusCreated
+		if strings.HasSuffix(subscription.Endpoint, "/rejected") {
+			status = http.StatusBadGateway
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+}
+
+func TestPushNotificationTestReportsMixedExpiredAndRejectedAsRejection(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{UID: 104, Endpoint: "https://push.example.test/rejected", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
+		{UID: 104, Endpoint: "https://push.example.test/expired", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
+	}}
+	service := enabledPushService(store)
+	service.send = func(_ context.Context, _ []byte, subscription *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		status := http.StatusBadGateway
+		if strings.HasSuffix(subscription.Endpoint, "/expired") {
+			status = http.StatusGone
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusBadGateway, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"push_provider_rejected"`) {
+		t.Fatalf("body = %s, want stable provider-rejection code", recorder.Body.String())
+	}
+}
+
 func TestPushNotificationSendCleansExpiredSubscriptions(t *testing.T) {
 	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
 		{Endpoint: "https://push.example.test/gone", P256DH: "p256dh", Auth: "auth"},
@@ -482,6 +798,87 @@ func TestPushNotificationSendCleansExpiredSubscriptions(t *testing.T) {
 		if _, ok := payload[key]; !ok {
 			t.Fatalf("payload missing %q: %s", key, payloads[0])
 		}
+	}
+}
+
+func TestPushNotificationNormalizesMailtoSubjectForWebPushLibrary(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		UID: 21, Endpoint: "https://push.example.test/current", P256DH: "p256dh", Auth: "auth",
+	}}}
+	service := enabledPushService(store)
+	var subscriber string
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, options *webpush.Options) (*http.Response, error) {
+		subscriber = options.Subscriber
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	if err := service.SendToUser(context.Background(), 21, PushNotification{Title: "test"}); err != nil {
+		t.Fatalf("SendToUser returned error: %v", err)
+	}
+	if subscriber != "push@example.com" {
+		t.Fatalf("web push subscriber = %q, want %q", subscriber, "push@example.com")
+	}
+}
+
+func TestPushNotificationRelayExpiredCleanupRequiresProviderMarker(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		marker      string
+		wantDeleted bool
+	}{
+		{name: "unmarked relay 404", status: http.StatusNotFound},
+		{name: "mismatched relay marker", status: http.StatusNotFound, marker: "410"},
+		{name: "marked provider 404", status: http.StatusNotFound, marker: "404", wantDeleted: true},
+		{name: "marked provider 410", status: http.StatusGone, marker: "410", wantDeleted: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			const endpoint = "https://push.example.test/subscription/relay-cleanup"
+			store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+				Endpoint: endpoint,
+				P256DH:   "p256dh",
+				Auth:     "auth",
+			}}}
+			service := NewPushNotificationServiceWithConfig(store, PushNotificationConfig{
+				PublicKey:  "public-key",
+				PrivateKey: "private-key",
+				Subject:    "mailto:push@example.com",
+				RelayURL:   "https://relay.example.test/v1/push/relay",
+				RelayToken: "relay-token",
+			})
+			service.logf = func(string, ...interface{}) {}
+			service.send = func(context.Context, []byte, *webpush.Subscription, *webpush.Options) (*http.Response, error) {
+				header := make(http.Header)
+				if test.marker != "" {
+					header.Set(pushRelayProviderStatusHeader, test.marker)
+				}
+				return &http.Response{
+					StatusCode: test.status,
+					Header:     header,
+					Body:       io.NopCloser(strings.NewReader("")),
+				}, nil
+			}
+
+			err := service.SendToUser(context.Background(), 15, PushNotification{Title: "title"})
+			if test.wantDeleted {
+				if err != nil {
+					t.Fatalf("SendToUser returned error: %v", err)
+				}
+				if got := store.deleted; got != endpoint {
+					t.Fatalf("deleted endpoint = %q, want %q", got, endpoint)
+				}
+				return
+			}
+
+			if err == nil || !strings.Contains(err.Error(), "without a provider response marker") {
+				t.Fatalf("SendToUser error = %v, want relay marker error", err)
+			}
+			if len(store.deletedScoped) != 0 {
+				t.Fatalf("relay-owned response deleted a subscription: %#v", store.deletedScoped)
+			}
+		})
 	}
 }
 

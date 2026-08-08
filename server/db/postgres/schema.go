@@ -19,6 +19,7 @@ func (a *Adapter) CreateSchema() error {
 		createMessagesTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
+		createBotConnectionGenerationsTable,
 		createBotConfigTable,
 		createRateLimitTable,
 		createGroupsTable,
@@ -261,6 +262,14 @@ CREATE TABLE IF NOT EXISTS conversation_task_status_sources (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (topic_id, source_uid)
+);
+`
+
+const createBotConnectionGenerationsTable = `
+CREATE TABLE IF NOT EXISTS bot_connection_generations (
+    bot_uid BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    generation BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `
 

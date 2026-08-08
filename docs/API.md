@@ -169,7 +169,15 @@ REST 备用通道（推荐使用 WebSocket）。
 
 #### POST /api/upload?type={image|file}
 
-使用 `multipart/form-data`，字段名 `file`。
+兼容两种上传方式：
+
+- 通用客户端可继续使用 `multipart/form-data`，字段名为 `file`。
+- WebApp 使用 `POST /api/upload?type={image|file}&raw=1`，请求体直接发送文件字节，并携带：
+  - `X-CatsCo-File-Name`：经过 URL 编码的原始文件名。
+  - `X-CatsCo-File-Size`：原始文件字节数。
+  - `Content-Type`：文件 MIME 类型（已知时）。
+
+Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`；上游代理的请求体限制仍独立生效。请求体少于声明字节数时返回可安全重试的 `upload_incomplete`；元数据与实际字节数冲突时返回不可重试的 `upload_metadata_invalid`；非法 multipart 请求返回不可重试的 `upload_invalid_request`。
 
 **上传限制**：
 - 单文件最大：1GB（图片和文件均为1GB）

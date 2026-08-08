@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,14 +26,17 @@ import (
 )
 
 const (
-	maxPushRequestBody          = 8 << 10
-	maxPushEndpointLen          = 512
-	maxPushPayloadLen           = 4096
-	maxPushSubscriptionsPerUser = 10
-	maxConcurrentPushDeliveries = 8
-	maxQueuedPushDeliveries     = 128
-	pushRequestTimeout          = 15 * time.Second
-	pushDeliveryTimeout         = 20 * time.Second
+	maxPushRequestBody            = 8 << 10
+	maxPushEndpointLen            = 512
+	maxPushPayloadLen             = 4096
+	maxPushSubscriptionsPerUser   = 10
+	maxConcurrentPushDeliveries   = 8
+	maxQueuedPushDeliveries       = 128
+	pushRequestTimeout            = 15 * time.Second
+	pushDeliveryTimeout           = 20 * time.Second
+	pushRelayEndpointHeader       = "X-Catsco-Push-Endpoint"
+	pushRelayTokenHeader          = "X-Catsco-Relay-Token"
+	pushRelayProviderStatusHeader = "X-Catsco-Relay-Provider-Status"
 )
 
 var nonPublicPushPrefixes = []netip.Prefix{
@@ -76,6 +80,11 @@ type PushNotificationConfig struct {
 	PublicKey  string
 	PrivateKey string
 	Subject    string
+	// RelayURL and RelayToken are optional. When both are present, the server
+	// encrypts and VAPID-signs for the browser endpoint locally, then sends that
+	// exact request through the constrained egress relay.
+	RelayURL   string
+	RelayToken string
 }
 
 type pushSendFunc func(context.Context, []byte, *webpush.Subscription, *webpush.Options) (*http.Response, error)
@@ -89,13 +98,21 @@ type pushDeliveryJob struct {
 	queuedAt           time.Time
 }
 
+type pushDeliveryResult struct {
+	Attempted int
+	Accepted  int
+	Expired   int
+}
+
 // PushNotificationService owns the Web Push API and delivery behavior. The
-// service is disabled unless a subscription store and all VAPID values exist.
+// service is disabled unless a subscription store, all VAPID values, and any
+// configured relay values are valid.
 type PushNotificationService struct {
 	store         store.PushSubscriptionStore
 	config        PushNotificationConfig
 	send          pushSendFunc
 	client        webpush.HTTPClient
+	configErr     error
 	logf          func(string, ...interface{})
 	deliveryQueue chan pushDeliveryJob
 	startWorkers  sync.Once
@@ -108,6 +125,8 @@ func NewPushNotificationService(subscriptionStore store.PushSubscriptionStore) *
 		PublicKey:  os.Getenv("VAPID_PUBLIC_KEY"),
 		PrivateKey: os.Getenv("VAPID_PRIVATE_KEY"),
 		Subject:    os.Getenv("VAPID_SUBJECT"),
+		RelayURL:   os.Getenv("CATSCO_PUSH_RELAY_URL"),
+		RelayToken: os.Getenv("CATSCO_PUSH_RELAY_TOKEN"),
 	})
 }
 
@@ -116,11 +135,15 @@ func NewPushNotificationServiceWithConfig(subscriptionStore store.PushSubscripti
 	config.PublicKey = strings.TrimSpace(config.PublicKey)
 	config.PrivateKey = strings.TrimSpace(config.PrivateKey)
 	config.Subject = strings.TrimSpace(config.Subject)
+	config.RelayURL = strings.TrimSpace(config.RelayURL)
+	config.RelayToken = strings.TrimSpace(config.RelayToken)
+	client, configErr := newPushHTTPClientWithRelay(config.RelayURL, config.RelayToken)
 	return &PushNotificationService{
 		store:         subscriptionStore,
 		config:        config,
 		send:          webpush.SendNotificationWithContext,
-		client:        newPushHTTPClient(),
+		client:        client,
+		configErr:     configErr,
 		logf:          log.Printf,
 		deliveryQueue: make(chan pushDeliveryJob, maxQueuedPushDeliveries),
 	}
@@ -129,6 +152,64 @@ func NewPushNotificationServiceWithConfig(subscriptionStore store.PushSubscripti
 func newPushHTTPClient() *http.Client {
 	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
 	return newPushHTTPClientWithNetwork(net.DefaultResolver.LookupIPAddr, dialer.DialContext, pushRequestTimeout)
+}
+
+func newPushHTTPClientWithRelay(relayURL, relayToken string) (*http.Client, error) {
+	relayURL = strings.TrimSpace(relayURL)
+	relayToken = strings.TrimSpace(relayToken)
+	if relayURL == "" && relayToken == "" {
+		return newPushHTTPClient(), nil
+	}
+	if relayURL == "" || relayToken == "" {
+		return nil, errors.New("CATSCO_PUSH_RELAY_URL and CATSCO_PUSH_RELAY_TOKEN must be configured together")
+	}
+	if strings.ContainsAny(relayToken, "\r\n") {
+		return nil, errors.New("CATSCO_PUSH_RELAY_TOKEN must be a single-line value")
+	}
+
+	parsedRelayURL, err := validatePushRelayURL(relayURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CATSCO_PUSH_RELAY_URL: %w", err)
+	}
+
+	client := newPushHTTPClient()
+	client.Transport = &pushRelayRoundTripper{
+		base:     client.Transport,
+		relayURL: parsedRelayURL,
+		token:    relayToken,
+	}
+	return client, nil
+}
+
+type pushRelayRoundTripper struct {
+	base     http.RoundTripper
+	relayURL *url.URL
+	token    string
+}
+
+func (t *pushRelayRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if t == nil || t.relayURL == nil || strings.TrimSpace(t.token) == "" {
+		return nil, errors.New("push relay transport is not configured")
+	}
+	if request == nil || request.URL == nil {
+		return nil, errors.New("push relay received an invalid provider request")
+	}
+
+	endpoint := request.URL.String()
+	relayRequest := request.Clone(request.Context())
+	relayTarget := *t.relayURL
+	relayRequest.URL = &relayTarget
+	relayRequest.Host = ""
+	relayRequest.RequestURI = ""
+	relayRequest.Header = request.Header.Clone()
+	relayRequest.Header.Set(pushRelayEndpointHeader, endpoint)
+	relayRequest.Header.Set(pushRelayTokenHeader, t.token)
+
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(relayRequest)
 }
 
 func newPushHTTPClientWithNetwork(lookup pushLookupIPFunc, dial pushDialContextFunc, timeout time.Duration) *http.Client {
@@ -176,6 +257,28 @@ func newPushHTTPClientWithNetwork(lookup pushLookupIPFunc, dial pushDialContextF
 	}
 }
 
+func validatePushRelayURL(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > maxPushEndpointLen {
+		return nil, errors.New("relay URL is empty or too long")
+	}
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || strings.Contains(raw, "#") || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		return nil, errors.New("relay URL must be an absolute HTTPS URL")
+	}
+	if parsed.Port() != "" && parsed.Port() != "443" {
+		return nil, errors.New("relay URL must use the standard HTTPS port")
+	}
+	host := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
+		return nil, errors.New("relay URL host is local")
+	}
+	if ip := net.ParseIP(host); ip != nil && !isPublicPushIP(ip) {
+		return nil, errors.New("relay URL IP is not publicly routable")
+	}
+	return parsed, nil
+}
+
 func isPublicPushIP(ip net.IP) bool {
 	address, ok := netip.AddrFromSlice(ip)
 	if !ok {
@@ -195,7 +298,30 @@ func isPublicPushIP(ip net.IP) bool {
 
 // Enabled reports whether delivery and subscription mutation are available.
 func (s *PushNotificationService) Enabled() bool {
-	return s != nil && s.store != nil && s.config.PublicKey != "" && s.config.PrivateKey != "" && s.config.Subject != ""
+	return s != nil && s.store != nil && s.client != nil && s.configErr == nil && s.config.PublicKey != "" && s.config.PrivateKey != "" && s.config.Subject != ""
+}
+
+// ConfigError returns a relay configuration error without exposing any secret
+// values. It is primarily used by startup logging.
+func (s *PushNotificationService) ConfigError() error {
+	if s == nil {
+		return errors.New("push notification service is not configured")
+	}
+	return s.configErr
+}
+
+// isAuthoritativePushProviderResponse reports whether a terminal status can
+// safely be attributed to the browser push provider. Direct delivery receives
+// provider responses directly. Relay delivery requires the Worker marker so a
+// relay-owned route or authentication error cannot delete a valid subscription.
+func (s *PushNotificationService) isAuthoritativePushProviderResponse(response *http.Response) bool {
+	if s == nil {
+		return false
+	}
+	if s.config.RelayURL == "" {
+		return true
+	}
+	return response != nil && strings.TrimSpace(response.Header.Get(pushRelayProviderStatusHeader)) == strconv.Itoa(response.StatusCode)
 }
 
 // HandleStatus serves the public GET status endpoint.
@@ -229,7 +355,12 @@ type pushSubscriptionKeys struct {
 }
 
 type deletePushSubscriptionRequest struct {
-	Endpoint       string `json:"endpoint"`
+	Endpoint         string `json:"endpoint"`
+	RegistrationID   string `json:"registration_id"`
+	AllRegistrations bool   `json:"all_registrations"`
+}
+
+type testPushNotificationRequest struct {
 	RegistrationID string `json:"registration_id"`
 }
 
@@ -259,6 +390,81 @@ func (s *PushNotificationService) HandleSubscription(w http.ResponseWriter, r *h
 	case http.MethodDelete:
 		s.handleUnsubscribe(w, r, uid)
 	}
+}
+
+// HandleTest asks the push provider to deliver a test notification to the
+// authenticated user's current browser. Acceptance does not guarantee display.
+func (s *PushNotificationService) HandleTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	uid, ok := r.Context().Value(uidKey).(int64)
+	if !ok || uid <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !s.Enabled() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "push notifications are disabled"})
+		return
+	}
+
+	var req testPushNotificationRequest
+	if err := decodeStrictPushJSON(w, r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	registrationID := strings.TrimSpace(req.RegistrationID)
+	if registrationID == "" || len(registrationID) > 64 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid registration id"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), pushRequestTimeout)
+	defer cancel()
+	result, err := s.sendToUserFiltered(ctx, uid, PushNotification{
+		Title: "CatsCo 测试通知",
+		Body:  "如果你看到这条通知，说明当前设备与浏览器可以接收 CatsCo 消息通知。",
+		URL:   "/",
+		Tag:   fmt.Sprintf("catsco-push-test-%d", time.Now().UnixNano()),
+	}, func(subscription *types.PushSubscription) bool {
+		return subscription.RegistrationID == registrationID
+	})
+	if result.Accepted > 0 {
+		if err != nil {
+			s.logf("web push: partial test delivery for uid %d: %v", uid, err)
+		}
+		writeJSON(w, http.StatusAccepted, map[string]bool{"accepted": true})
+		return
+	}
+	if result.Expired > 0 && result.Expired == result.Attempted {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"code":  "push_subscription_expired",
+			"error": "push subscription for this device has expired",
+		})
+		return
+	}
+	if err != nil {
+		s.logf("web push: test delivery for uid %d: %v", uid, err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"code":  "push_provider_rejected",
+			"error": "push provider rejected the test notification",
+		})
+		return
+	}
+	if result.Attempted == 0 {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"code":  "push_subscription_missing",
+			"error": "no active push subscription for this device",
+		})
+		return
+	}
+	writeJSON(w, http.StatusConflict, map[string]string{
+		"code":  "push_subscription_missing",
+		"error": "no active push subscription for this device",
+	})
 }
 
 func (s *PushNotificationService) handleSubscribe(w http.ResponseWriter, r *http.Request, uid int64) {
@@ -313,14 +519,36 @@ func (s *PushNotificationService) handleUnsubscribe(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
+	registrationID := strings.TrimSpace(req.RegistrationID)
+	if len(registrationID) > 64 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid registration id"})
+		return
+	}
+	if strings.TrimSpace(req.Endpoint) == "" {
+		if registrationID == "" || req.AllRegistrations {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid endpoint"})
+			return
+		}
+		if err := s.store.DeletePushSubscriptionsByRegistrationID(r.Context(), uid, registrationID); err != nil {
+			s.logf("web push: delete registration subscriptions for uid %d: %v", uid, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete subscriptions"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"subscribed": false})
+		return
+	}
 	endpoint, err := validatePushEndpoint(req.Endpoint)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid endpoint"})
 		return
 	}
-	registrationID := strings.TrimSpace(req.RegistrationID)
-	if len(registrationID) > 64 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid registration id"})
+	if req.AllRegistrations {
+		if err := s.store.DeletePushSubscriptionsByEndpoint(r.Context(), uid, endpoint); err != nil {
+			s.logf("web push: delete endpoint subscriptions for uid %d: %v", uid, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete subscriptions"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"subscribed": false})
 		return
 	}
 	if err := s.store.DeletePushSubscription(r.Context(), uid, endpoint, registrationID); err != nil {
@@ -417,6 +645,18 @@ func pushSubscriptionID(endpoint string) string {
 	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
+// webpush-go expects an email address rather than a mailto URI and adds the
+// scheme itself. Keep accepting the standard URI form used by our deployment
+// configuration without producing an invalid "mailto:mailto:" VAPID subject.
+func webPushSubscriber(subject string) string {
+	subject = strings.TrimSpace(subject)
+	const mailtoPrefix = "mailto:"
+	if len(subject) >= len(mailtoPrefix) && strings.EqualFold(subject[:len(mailtoPrefix)], mailtoPrefix) {
+		return strings.TrimSpace(subject[len(mailtoPrefix):])
+	}
+	return subject
+}
+
 func redactPushEndpointError(err error, endpoint string) error {
 	if err == nil {
 		return nil
@@ -428,31 +668,33 @@ func redactPushEndpointError(err error, endpoint string) error {
 // belonging to uid. Disabled service is a no-op, so Hub callers do not need
 // configuration checks.
 func (s *PushNotificationService) SendToUser(ctx context.Context, uid int64, notification PushNotification) error {
-	return s.sendToUserFiltered(ctx, uid, notification, nil)
+	_, err := s.sendToUserFiltered(ctx, uid, notification, nil)
+	return err
 }
 
-func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid int64, notification PushNotification, shouldSendToDevice func(*types.PushSubscription) bool) error {
+func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid int64, notification PushNotification, shouldSendToDevice func(*types.PushSubscription) bool) (pushDeliveryResult, error) {
+	var result pushDeliveryResult
 	if !s.Enabled() {
-		return nil
+		return result, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if uid <= 0 {
-		return errors.New("invalid push notification uid")
+		return result, errors.New("invalid push notification uid")
 	}
 
 	payload, err := json.Marshal(notification)
 	if err != nil {
-		return fmt.Errorf("marshal push notification: %w", err)
+		return result, fmt.Errorf("marshal push notification: %w", err)
 	}
 	if len(payload) > maxPushPayloadLen {
-		return errors.New("push notification payload is too large")
+		return result, errors.New("push notification payload is too large")
 	}
 
 	subscriptions, err := s.store.ListPushSubscriptions(ctx, uid)
 	if err != nil {
-		return fmt.Errorf("list push subscriptions: %w", err)
+		return result, fmt.Errorf("list push subscriptions: %w", err)
 	}
 
 	var deliveryErrors []error
@@ -472,6 +714,7 @@ func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid in
 			break
 		}
 		deliveries++
+		result.Attempted++
 		endpointID := pushEndpointLogID(subscription.Endpoint)
 		response, sendErr := s.send(ctx, payload, &webpush.Subscription{
 			Endpoint: subscription.Endpoint,
@@ -481,7 +724,7 @@ func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid in
 			},
 		}, &webpush.Options{
 			HTTPClient:      s.client,
-			Subscriber:      s.config.Subject,
+			Subscriber:      webPushSubscriber(s.config.Subject),
 			VAPIDPublicKey:  s.config.PublicKey,
 			VAPIDPrivateKey: s.config.PrivateKey,
 			TTL:             60,
@@ -504,20 +747,29 @@ func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid in
 			continue
 		}
 		if status == http.StatusNotFound || status == http.StatusGone {
+			if !s.isAuthoritativePushProviderResponse(response) {
+				deliveryErr := fmt.Errorf("relay returned HTTP %d without a provider response marker for %q", status, endpointID)
+				s.logf("web push: %v", deliveryErr)
+				deliveryErrors = append(deliveryErrors, deliveryErr)
+				continue
+			}
 			if deleteErr := s.store.DeletePushSubscription(ctx, uid, subscription.Endpoint, subscription.RegistrationID); deleteErr != nil {
 				cleanupErr := fmt.Errorf("remove expired provider %q: %w", endpointID, redactPushEndpointError(deleteErr, subscription.Endpoint))
 				s.logf("web push: %v", cleanupErr)
 				deliveryErrors = append(deliveryErrors, cleanupErr)
 			}
+			result.Expired++
 			continue
 		}
 		if status < http.StatusOK || status >= http.StatusMultipleChoices {
 			deliveryErr := fmt.Errorf("provider %q returned HTTP %d", endpointID, status)
 			s.logf("web push: %v", deliveryErr)
 			deliveryErrors = append(deliveryErrors, deliveryErr)
+			continue
 		}
+		result.Accepted++
 	}
-	return errors.Join(deliveryErrors...)
+	return result, errors.Join(deliveryErrors...)
 }
 
 func (s *PushNotificationService) runDeliveryWorkers() {
@@ -525,7 +777,7 @@ func (s *PushNotificationService) runDeliveryWorkers() {
 		go func() {
 			for job := range s.deliveryQueue {
 				ctx, cancel := context.WithDeadline(context.Background(), job.queuedAt.Add(pushDeliveryTimeout))
-				if err := s.sendToUserFiltered(ctx, job.uid, job.notification, job.shouldSendToDevice); err != nil {
+				if _, err := s.sendToUserFiltered(ctx, job.uid, job.notification, job.shouldSendToDevice); err != nil {
 					s.logf("send offline push: uid=%d err=%v", job.uid, err)
 				}
 				cancel()

@@ -1,17 +1,20 @@
 import {
   canUsePush,
   ensurePushSubscription,
+  readPushEnabled,
   serializePushSubscription,
   shouldOfferPush,
   urlBase64ToUint8Array,
+  writePushEnabled,
 } from './push-notifications';
 
 describe('push notification helpers', () => {
   beforeEach(() => {
+    localStorage.clear();
     Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true });
     Object.defineProperty(window, 'Notification', {
       configurable: true,
-      value: { permission: 'default' },
+      value: { permission: 'default', requestPermission: vi.fn() },
     });
     Object.defineProperty(window, 'PushManager', { configurable: true, value: function PushManager() {} });
     Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: {} });
@@ -19,6 +22,26 @@ describe('push notification helpers', () => {
       configurable: true,
       value: { request: vi.fn() },
     });
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/140.0.0.0',
+    });
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Linux x86_64' });
+    Object.defineProperty(navigator, 'maxTouchPoints', { configurable: true, value: 0 });
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: false });
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({ matches: false })),
+    });
+  });
+
+  test('stores an explicit notification preference per account', () => {
+    expect(readPushEnabled('user:1')).toBe(true);
+
+    writePushEnabled('user:1', false);
+
+    expect(readPushEnabled('user:1')).toBe(false);
+    expect(readPushEnabled('user:2')).toBe(true);
   });
 
   test('converts a URL-safe VAPID key to bytes', () => {
@@ -33,10 +56,29 @@ describe('push notification helpers', () => {
     expect(shouldOfferPush({ loggedIn: true, permission: 'default', dismissed: true })).toBe(false);
   });
 
-  test('requires Web Locks because multi-tab cleanup must be atomic', () => {
+  test('does not require Web Locks to offer Web Push', () => {
     Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined });
 
+    expect(canUsePush()).toBe(true);
+  });
+
+  test('does not offer push from an iPhone browser tab before it is installed', () => {
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15',
+    });
+
     expect(canUsePush()).toBe(false);
+  });
+
+  test('offers push from an installed iPhone web app', () => {
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15',
+    });
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: true });
+
+    expect(canUsePush()).toBe(true);
   });
 
   test('serializes only the fields accepted by the push subscription API', () => {
