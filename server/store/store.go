@@ -18,6 +18,9 @@ var ErrProjectTopicNotFound = errors.New("project or topic not found")
 var ErrGroupInviteRequestNotPending = errors.New("group invite request is not pending")
 var ErrConversationTaskRunTerminal = errors.New("cannot resume a terminal task run; publish a new run_id")
 var ErrConversationTaskRunSuperseded = errors.New("cannot complete a superseded task run while a newer run is active")
+var ErrConversationTaskStatusStale = errors.New("cannot apply an older task status update")
+
+const maxConversationTaskStatusFutureClockSkew = 5 * time.Minute
 
 // UserStore contains user and profile persistence operations.
 type UserStore interface {
@@ -106,6 +109,8 @@ type MessageStore interface {
 // ConversationTaskStatusStore persists per-source runtime state and exposes a
 // backwards-compatible aggregate status per topic.
 type ConversationTaskStatusStore interface {
+	// UpsertConversationTaskStatus writes the resolved publisher event time back
+	// to status after commit so downstream observers share the store's ordering.
 	UpsertConversationTaskStatus(status *types.ConversationTaskStatus) (*types.ConversationTaskStatus, error)
 	GetConversationTaskStatusForSource(topicID string, sourceUID int64) (*types.ConversationTaskStatus, error)
 	GetConversationTaskStatuses(topicIDs []string) (map[string]*types.ConversationTaskStatus, error)
@@ -116,6 +121,9 @@ type ConversationTaskStatusStore interface {
 func ValidateConversationTaskStatusTransition(current, next *types.ConversationTaskStatus, now time.Time) error {
 	if current == nil || next == nil {
 		return nil
+	}
+	if !current.EventUpdatedAt.IsZero() && !next.EventUpdatedAt.IsZero() && next.EventUpdatedAt.Before(current.EventUpdatedAt) {
+		return ErrConversationTaskStatusStale
 	}
 	if current.RunID == next.RunID &&
 		types.IsTerminalConversationTaskState(current.State) &&
@@ -129,6 +137,36 @@ func ValidateConversationTaskStatusTransition(current, next *types.ConversationT
 		return ErrConversationTaskRunSuperseded
 	}
 	return nil
+}
+
+// PrepareConversationTaskStatusForStore separates publisher event ordering
+// from server-observed liveness. Callers without an explicit EventUpdatedAt
+// inherit the post-lock receivedAt value, while every write receives that same
+// fresh server timestamp for recovery and reaping.
+func PrepareConversationTaskStatusForStore(status *types.ConversationTaskStatus, receivedAt time.Time) *types.ConversationTaskStatus {
+	if status == nil {
+		return nil
+	}
+	prepared := *status
+	if prepared.EventUpdatedAt.IsZero() {
+		prepared.EventUpdatedAt = receivedAt
+	}
+	prepared.EventUpdatedAt = BoundConversationTaskStatusEventTime(prepared.EventUpdatedAt, receivedAt)
+	// Both supported databases persist task event timestamps at microsecond
+	// precision. Normalize before returning the value to in-memory observers so
+	// their causal ordering uses the exact precision committed by the store.
+	prepared.EventUpdatedAt = prepared.EventUpdatedAt.Truncate(time.Microsecond)
+	prepared.UpdatedAt = receivedAt
+	return &prepared
+}
+
+// BoundConversationTaskStatusEventTime prevents a badly skewed publisher
+// clock from suppressing later lifecycle events for an extended period.
+func BoundConversationTaskStatusEventTime(eventAt, receivedAt time.Time) time.Time {
+	if eventAt.After(receivedAt.Add(maxConversationTaskStatusFutureClockSkew)) {
+		return receivedAt
+	}
+	return eventAt
 }
 
 // ConversationTaskStatusRecoveryStore is optional. It lets the WebSocket hub
