@@ -19,11 +19,7 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 	if status.SourceUID <= 0 {
 		return nil, fmt.Errorf("conversation task status source uid is required")
 	}
-	if status.UpdatedAt.IsZero() {
-		copyStatus := *status
-		copyStatus.UpdatedAt = time.Now().UTC()
-		status = &copyStatus
-	}
+	status = store.PrepareConversationTaskStatusForStore(status, time.Now().UTC())
 
 	tx, err := a.db.Begin()
 	if err != nil {
@@ -54,13 +50,13 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 	}
 
 	var currentRunID, currentState string
-	var currentExpiresAt, currentUpdatedAt sql.NullTime
+	var currentExpiresAt, currentUpdatedAt, currentEventUpdatedAt sql.NullTime
 	err = tx.QueryRow(
-		`SELECT run_id, state, expires_at, updated_at FROM conversation_task_status_sources
+		`SELECT run_id, state, expires_at, updated_at, event_updated_at FROM conversation_task_status_sources
 		 WHERE topic_id = $1 AND source_uid = $2`,
 		status.TopicID,
 		status.SourceUID,
-	).Scan(&currentRunID, &currentState, &currentExpiresAt, &currentUpdatedAt)
+	).Scan(&currentRunID, &currentState, &currentExpiresAt, &currentUpdatedAt, &currentEventUpdatedAt)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("load current conversation task status: %w", err)
 	}
@@ -68,6 +64,9 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 		current := &types.ConversationTaskStatus{RunID: currentRunID, State: currentState}
 		if currentUpdatedAt.Valid {
 			current.UpdatedAt = currentUpdatedAt.Time
+		}
+		if currentEventUpdatedAt.Valid {
+			current.EventUpdatedAt = currentEventUpdatedAt.Time
 		}
 		if currentExpiresAt.Valid {
 			expiresAt := currentExpiresAt.Time
@@ -80,15 +79,16 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 
 	if _, err := tx.Exec(
 		`INSERT INTO conversation_task_status_sources
-		   (topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		   (topic_id, source_uid, run_id, state, summary, error, expires_at, event_updated_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
 		 ON CONFLICT (topic_id, source_uid) DO UPDATE SET
 		   run_id = EXCLUDED.run_id,
 		   state = EXCLUDED.state,
 		   summary = EXCLUDED.summary,
 		   error = EXCLUDED.error,
 		   expires_at = EXCLUDED.expires_at,
-		   updated_at = EXCLUDED.updated_at`,
+		   event_updated_at = EXCLUDED.event_updated_at,
+		   updated_at = CURRENT_TIMESTAMP`,
 		status.TopicID,
 		status.SourceUID,
 		status.RunID,
@@ -96,20 +96,20 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 		status.Summary,
 		status.Error,
 		status.ExpiresAt,
-		status.UpdatedAt,
+		status.EventUpdatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("upsert conversation task source status: %w", err)
 	}
 
 	aggregate := &types.ConversationTaskStatus{}
 	err = tx.QueryRow(
-		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, expires_at
+		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, event_updated_at, expires_at
 		 FROM conversation_task_status_sources
 		 WHERE topic_id = $1
 		   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
 		 ORDER BY
 		   CASE WHEN state IN ('running', 'waiting') THEN 0 ELSE 1 END,
-		   updated_at DESC,
+		   event_updated_at DESC,
 		   source_uid DESC
 		 LIMIT 1`,
 		status.TopicID,
@@ -121,6 +121,7 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 		&aggregate.Error,
 		&aggregate.SourceUID,
 		&aggregate.UpdatedAt,
+		&aggregate.EventUpdatedAt,
 		&aggregate.ExpiresAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -166,12 +167,12 @@ func (a *Adapter) GetConversationTaskStatusForSource(topicID string, sourceUID i
 	}
 	out := &types.ConversationTaskStatus{}
 	err := a.db.QueryRow(
-		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, expires_at
+		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, event_updated_at, expires_at
 		 FROM conversation_task_status_sources
 		 WHERE topic_id = $1 AND source_uid = $2`,
 		topicID,
 		sourceUID,
-	).Scan(&out.TopicID, &out.RunID, &out.State, &out.Summary, &out.Error, &out.SourceUID, &out.UpdatedAt, &out.ExpiresAt)
+	).Scan(&out.TopicID, &out.RunID, &out.State, &out.Summary, &out.Error, &out.SourceUID, &out.UpdatedAt, &out.EventUpdatedAt, &out.ExpiresAt)
 	if err == nil {
 		return out, nil
 	}
@@ -214,14 +215,14 @@ func (a *Adapter) GetConversationTaskStatuses(topicIDs []string) (map[string]*ty
 	rows, err := a.db.Query(
 		fmt.Sprintf(
 			`SELECT DISTINCT ON (topic_id)
-			   topic_id, run_id, state, summary, error, source_uid, updated_at, expires_at
+			   topic_id, run_id, state, summary, error, source_uid, updated_at, event_updated_at, expires_at
 			 FROM conversation_task_status_sources
 			 WHERE topic_id IN (%s)
 			   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
 			 ORDER BY
 			   topic_id,
 			   CASE WHEN state IN ('running', 'waiting') THEN 0 ELSE 1 END,
-			   updated_at DESC,
+			   event_updated_at DESC,
 			   source_uid DESC`,
 			placeholders,
 		),
@@ -234,7 +235,7 @@ func (a *Adapter) GetConversationTaskStatuses(topicIDs []string) (map[string]*ty
 	out := make(map[string]*types.ConversationTaskStatus, len(topicIDs))
 	for rows.Next() {
 		status := &types.ConversationTaskStatus{}
-		if err := rows.Scan(&status.TopicID, &status.RunID, &status.State, &status.Summary, &status.Error, &status.SourceUID, &status.UpdatedAt, &status.ExpiresAt); err != nil {
+		if err := rows.Scan(&status.TopicID, &status.RunID, &status.State, &status.Summary, &status.Error, &status.SourceUID, &status.UpdatedAt, &status.EventUpdatedAt, &status.ExpiresAt); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan conversation task source aggregate: %w", err)
 		}
@@ -281,8 +282,8 @@ func reconcileLegacyConversationTaskStatuses(execer conversationTaskStatusExecer
 	_, err := execer.Exec(
 		fmt.Sprintf(
 			`INSERT INTO conversation_task_status_sources
-			   (topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at)
-			 SELECT topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at
+			   (topic_id, source_uid, run_id, state, summary, error, expires_at, event_updated_at, updated_at)
+			 SELECT topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at, CURRENT_TIMESTAMP
 			 FROM conversation_task_statuses
 			 WHERE topic_id IN (%s) AND source_uid IS NOT NULL
 			 FOR UPDATE
@@ -292,7 +293,8 @@ func reconcileLegacyConversationTaskStatuses(execer conversationTaskStatusExecer
 			   summary = EXCLUDED.summary,
 			   error = EXCLUDED.error,
 			   expires_at = EXCLUDED.expires_at,
-			   updated_at = EXCLUDED.updated_at
+			   event_updated_at = EXCLUDED.event_updated_at,
+			   updated_at = CURRENT_TIMESTAMP
 			 WHERE NOT (
 			   (
 			     conversation_task_status_sources.state IN ('running', 'waiting')
@@ -330,7 +332,7 @@ func reconcileLegacyConversationTaskStatuses(execer conversationTaskStatusExecer
 // last updated before the cutoff (feeds the periodic/startup reaper).
 func (a *Adapter) ListAllActiveConversationTaskStatusesBefore(updatedBefore time.Time) ([]*types.ConversationTaskStatus, error) {
 	rows, err := a.db.Query(
-		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, expires_at
+		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, event_updated_at, expires_at
 		 FROM conversation_task_status_sources
 		 WHERE state IN ('running', 'waiting')
 		   AND updated_at <= $1
@@ -354,6 +356,7 @@ func (a *Adapter) ListAllActiveConversationTaskStatusesBefore(updatedBefore time
 			&status.Error,
 			&status.SourceUID,
 			&status.UpdatedAt,
+			&status.EventUpdatedAt,
 			&status.ExpiresAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan active conversation task status: %w", err)
@@ -367,7 +370,7 @@ func (a *Adapter) ListAllActiveConversationTaskStatusesBefore(updatedBefore time
 // last updated before a bot connection disappeared.
 func (a *Adapter) ListActiveConversationTaskStatusesForSource(sourceUID int64, updatedBefore time.Time) ([]*types.ConversationTaskStatus, error) {
 	rows, err := a.db.Query(
-		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, expires_at
+		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, event_updated_at, expires_at
 		 FROM conversation_task_status_sources
 		 WHERE source_uid = $1
 		   AND state IN ('running', 'waiting')
@@ -393,6 +396,7 @@ func (a *Adapter) ListActiveConversationTaskStatusesForSource(sourceUID int64, u
 			&status.Error,
 			&status.SourceUID,
 			&status.UpdatedAt,
+			&status.EventUpdatedAt,
 			&status.ExpiresAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan active conversation task status for source: %w", err)
@@ -468,6 +472,7 @@ func (a *Adapter) MarkConversationTaskStatusStaleIfUnchanged(topicID string, sou
 		       summary = '机器人连接中断，任务已自动中止，可重新发送',
 		       error = 'bot disconnected before terminal task status',
 		       expires_at = NULL,
+		       event_updated_at = GREATEST(event_updated_at, CURRENT_TIMESTAMP),
 		       updated_at = CURRENT_TIMESTAMP
 		 WHERE topic_id = $1 AND source_uid = $2
 		   AND run_id = $3
@@ -491,13 +496,13 @@ func (a *Adapter) MarkConversationTaskStatusStaleIfUnchanged(topicID string, sou
 
 	aggregate := &types.ConversationTaskStatus{}
 	err = tx.QueryRow(
-		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, expires_at
+		`SELECT topic_id, run_id, state, summary, error, source_uid, updated_at, event_updated_at, expires_at
 		 FROM conversation_task_status_sources
 		 WHERE topic_id = $1
 		   AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
 		 ORDER BY
 		   CASE WHEN state IN ('running', 'waiting') THEN 0 ELSE 1 END,
-		   updated_at DESC,
+		   event_updated_at DESC,
 		   source_uid DESC
 		 LIMIT 1`,
 		topicID,
@@ -509,6 +514,7 @@ func (a *Adapter) MarkConversationTaskStatusStaleIfUnchanged(topicID string, sou
 		&aggregate.Error,
 		&aggregate.SourceUID,
 		&aggregate.UpdatedAt,
+		&aggregate.EventUpdatedAt,
 		&aggregate.ExpiresAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -547,6 +553,7 @@ func (a *Adapter) MarkConversationTaskStatusStaleIfUnchanged(topicID string, sou
 	if err != nil {
 		return nil, false, fmt.Errorf("refresh conversation task aggregate after stale: %w", err)
 	}
+	out.EventUpdatedAt = aggregate.EventUpdatedAt
 	if err := tx.Commit(); err != nil {
 		return nil, false, fmt.Errorf("commit conversation task stale: %w", err)
 	}

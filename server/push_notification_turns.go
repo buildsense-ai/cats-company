@@ -123,7 +123,7 @@ func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskS
 	}
 
 	if !terminal {
-		statusUpdatedAt := status.UpdatedAt
+		statusUpdatedAt := agentPushStatusEventTime(status, now)
 		if !turn.updatedAt.IsZero() && (statusUpdatedAt.IsZero() || statusUpdatedAt.Before(turn.updatedAt)) {
 			c.mu.Unlock()
 			return
@@ -132,9 +132,6 @@ func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskS
 			turn.updatedAt = statusUpdatedAt
 		}
 		orderingTime := statusUpdatedAt
-		if orderingTime.IsZero() {
-			orderingTime = now
-		}
 		current := c.currentRuns[scope]
 		makeCurrent := !turn.superseded && (current.runID == "" || current.runID == runID || !orderingTime.Before(current.updatedAt))
 		if makeCurrent {
@@ -158,27 +155,34 @@ func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskS
 	}
 
 	current := c.currentRuns[scope]
-	if !turn.updatedAt.IsZero() && (status.UpdatedAt.IsZero() || status.UpdatedAt.Before(turn.updatedAt)) {
+	statusUpdatedAt := agentPushStatusEventTime(status, now)
+	if !turn.updatedAt.IsZero() && statusUpdatedAt.Before(turn.updatedAt) {
 		c.mu.Unlock()
 		return
 	}
 	if current.runID == "" || current.runID == runID {
 		c.attachPendingLocked(scope, turn)
-		orderingTime := status.UpdatedAt
-		if orderingTime.IsZero() {
-			orderingTime = now
-		}
-		c.currentRuns[scope] = agentPushCurrentRun{runID: runID, updatedAt: orderingTime}
+		c.currentRuns[scope] = agentPushCurrentRun{runID: runID, updatedAt: statusUpdatedAt}
 	}
-	if !status.UpdatedAt.IsZero() {
-		turn.updatedAt = status.UpdatedAt
-	}
+	turn.updatedAt = statusUpdatedAt
 	turn.terminal = true
 	turn.expiresAt = now.Add(agentPushTurnDedupTTL)
 	c.resetTurnTimerLocked(turnKey, turn)
 	candidates := candidateValues(turn.candidates)
 	c.mu.Unlock()
 	c.deliverTurnCandidates(scope, runID, candidates)
+}
+
+func agentPushStatusEventTime(status *types.ConversationTaskStatus, fallback time.Time) time.Time {
+	if status != nil {
+		if !status.EventUpdatedAt.IsZero() {
+			return status.EventUpdatedAt
+		}
+		if !status.UpdatedAt.IsZero() {
+			return status.UpdatedAt
+		}
+	}
+	return fallback
 }
 
 func (c *agentPushTurnCoordinator) attachPendingLocked(scope agentPushScopeKey, turn *agentPushTurn) {

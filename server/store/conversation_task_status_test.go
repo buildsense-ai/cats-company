@@ -48,13 +48,42 @@ func TestValidateConversationTaskStatusTransitionAllowsTerminalForExpiredSuperse
 func TestValidateConversationTaskStatusTransitionRejectsOlderPublisherUpdate(t *testing.T) {
 	current := &types.ConversationTaskStatus{
 		RunID: "run-new", State: "running",
-		UpdatedAt: time.Date(2026, time.August, 8, 3, 0, 2, 0, time.UTC),
+		UpdatedAt:      time.Date(2026, time.August, 8, 3, 0, 1, 0, time.UTC),
+		EventUpdatedAt: time.Date(2026, time.August, 8, 3, 0, 2, 0, time.UTC),
 	}
 	stale := &types.ConversationTaskStatus{
 		RunID: "run-old", State: "waiting",
-		UpdatedAt: time.Date(2026, time.August, 8, 3, 0, 1, 0, time.UTC),
+		UpdatedAt:      time.Date(2026, time.August, 8, 3, 0, 3, 0, time.UTC),
+		EventUpdatedAt: time.Date(2026, time.August, 8, 3, 0, 1, 0, time.UTC),
 	}
 	if err := ValidateConversationTaskStatusTransition(current, stale, time.Now()); !errors.Is(err, ErrConversationTaskStatusStale) {
 		t.Fatalf("ValidateConversationTaskStatusTransition() error = %v, want %v", err, ErrConversationTaskStatusStale)
+	}
+}
+
+func TestPrepareConversationTaskStatusForStoreSeparatesEventAndLivenessTimes(t *testing.T) {
+	eventAt := time.Date(2026, time.August, 8, 3, 0, 0, 0, time.UTC)
+	receivedAt := eventAt.Add(time.Hour)
+	input := &types.ConversationTaskStatus{UpdatedAt: eventAt}
+
+	prepared := PrepareConversationTaskStatusForStore(input, receivedAt)
+	if !prepared.EventUpdatedAt.Equal(eventAt) {
+		t.Fatalf("event_updated_at=%v, want %v", prepared.EventUpdatedAt, eventAt)
+	}
+	if !prepared.UpdatedAt.Equal(receivedAt) {
+		t.Fatalf("updated_at=%v, want %v", prepared.UpdatedAt, receivedAt)
+	}
+	if !input.EventUpdatedAt.IsZero() || !input.UpdatedAt.Equal(eventAt) {
+		t.Fatalf("PrepareConversationTaskStatusForStore mutated input: %+v", input)
+	}
+}
+
+func TestPrepareConversationTaskStatusForStoreBoundsExtremeFutureEventTime(t *testing.T) {
+	receivedAt := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	prepared := PrepareConversationTaskStatusForStore(&types.ConversationTaskStatus{
+		EventUpdatedAt: receivedAt.Add(24 * time.Hour),
+	}, receivedAt)
+	if !prepared.EventUpdatedAt.Equal(receivedAt) {
+		t.Fatalf("event_updated_at=%v, want bounded receipt time %v", prepared.EventUpdatedAt, receivedAt)
 	}
 }

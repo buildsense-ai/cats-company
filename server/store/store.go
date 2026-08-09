@@ -20,6 +20,8 @@ var ErrConversationTaskRunTerminal = errors.New("cannot resume a terminal task r
 var ErrConversationTaskRunSuperseded = errors.New("cannot complete a superseded task run while a newer run is active")
 var ErrConversationTaskStatusStale = errors.New("cannot apply an older task status update")
 
+const maxConversationTaskStatusFutureClockSkew = 5 * time.Minute
+
 // UserStore contains user and profile persistence operations.
 type UserStore interface {
 	CreateUser(u *types.User) (int64, error)
@@ -118,7 +120,7 @@ func ValidateConversationTaskStatusTransition(current, next *types.ConversationT
 	if current == nil || next == nil {
 		return nil
 	}
-	if !current.UpdatedAt.IsZero() && !next.UpdatedAt.IsZero() && next.UpdatedAt.Before(current.UpdatedAt) {
+	if !current.EventUpdatedAt.IsZero() && !next.EventUpdatedAt.IsZero() && next.EventUpdatedAt.Before(current.EventUpdatedAt) {
 		return ErrConversationTaskStatusStale
 	}
 	if current.RunID == next.RunID &&
@@ -133,6 +135,35 @@ func ValidateConversationTaskStatusTransition(current, next *types.ConversationT
 		return ErrConversationTaskRunSuperseded
 	}
 	return nil
+}
+
+// PrepareConversationTaskStatusForStore separates publisher event ordering
+// from server-observed liveness. Legacy/direct callers that only set UpdatedAt
+// keep that value as their event time, while every write receives a fresh
+// server timestamp for recovery and reaping.
+func PrepareConversationTaskStatusForStore(status *types.ConversationTaskStatus, receivedAt time.Time) *types.ConversationTaskStatus {
+	if status == nil {
+		return nil
+	}
+	prepared := *status
+	if prepared.EventUpdatedAt.IsZero() {
+		prepared.EventUpdatedAt = prepared.UpdatedAt
+		if prepared.EventUpdatedAt.IsZero() {
+			prepared.EventUpdatedAt = receivedAt
+		}
+	}
+	prepared.EventUpdatedAt = BoundConversationTaskStatusEventTime(prepared.EventUpdatedAt, receivedAt)
+	prepared.UpdatedAt = receivedAt
+	return &prepared
+}
+
+// BoundConversationTaskStatusEventTime prevents a badly skewed publisher
+// clock from suppressing later lifecycle events for an extended period.
+func BoundConversationTaskStatusEventTime(eventAt, receivedAt time.Time) time.Time {
+	if eventAt.After(receivedAt.Add(maxConversationTaskStatusFutureClockSkew)) {
+		return receivedAt
+	}
+	return eventAt
 }
 
 // ConversationTaskStatusRecoveryStore is optional. It lets the WebSocket hub

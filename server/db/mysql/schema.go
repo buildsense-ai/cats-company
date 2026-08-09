@@ -91,6 +91,9 @@ func (a *Adapter) CreateSchema() error {
 		migrateConversationTaskStatusesCreatedAtPrecision,
 		migrateConversationTaskStatusesUpdatedAtPrecision,
 		migrateConversationTaskStatusSourcesExpiresAtPrecision,
+		migrateConversationTaskStatusSourcesAddEventUpdatedAt,
+		migrateConversationTaskStatusSourcesBackfillEventUpdatedAt,
+		migrateConversationTaskStatusSourcesEventUpdatedAtNotNull,
 		migrateConversationTaskStatusSourcesCreatedAtPrecision,
 		migrateConversationTaskStatusSourcesUpdatedAtPrecision,
 	}
@@ -303,6 +306,7 @@ CREATE TABLE IF NOT EXISTS conversation_task_status_sources (
     summary TEXT NOT NULL,
     error TEXT NOT NULL,
     expires_at TIMESTAMP(6) NULL DEFAULT NULL,
+    event_updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY (topic_id, source_uid),
@@ -884,6 +888,19 @@ ALTER TABLE conversation_task_statuses
 const migrateConversationTaskStatusSourcesExpiresAtPrecision = `
 ALTER TABLE conversation_task_status_sources
   MODIFY expires_at TIMESTAMP(6) NULL DEFAULT NULL;
+`
+const migrateConversationTaskStatusSourcesAddEventUpdatedAt = `
+ALTER TABLE conversation_task_status_sources
+  ADD COLUMN event_updated_at TIMESTAMP(6) NULL DEFAULT NULL AFTER expires_at;
+`
+const migrateConversationTaskStatusSourcesBackfillEventUpdatedAt = `
+UPDATE conversation_task_status_sources
+  SET event_updated_at = updated_at
+  WHERE event_updated_at IS NULL;
+`
+const migrateConversationTaskStatusSourcesEventUpdatedAtNotNull = `
+ALTER TABLE conversation_task_status_sources
+  MODIFY event_updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6);
 `
 const migrateConversationTaskStatusSourcesCreatedAtPrecision = `
 ALTER TABLE conversation_task_status_sources

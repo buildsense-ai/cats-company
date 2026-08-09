@@ -234,14 +234,17 @@ type ConversationSummary struct {
 // It is intentionally separate from normal messages so runtime status can
 // survive reloads without polluting the chat transcript.
 type ConversationTaskStatus struct {
-	TopicID   string     `json:"topic_id"`
-	RunID     string     `json:"run_id,omitempty"`
-	State     string     `json:"state"`
-	Summary   string     `json:"summary,omitempty"`
-	Error     string     `json:"error,omitempty"`
-	SourceUID int64      `json:"source_uid,omitempty"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	TopicID   string    `json:"topic_id"`
+	RunID     string    `json:"run_id,omitempty"`
+	State     string    `json:"state"`
+	Summary   string    `json:"summary,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	SourceUID int64     `json:"source_uid,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+	// EventUpdatedAt orders publisher lifecycle events. UpdatedAt remains the
+	// server-observed liveness timestamp used by recovery and reaping.
+	EventUpdatedAt time.Time  `json:"-"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
 }
 
 // IsTerminalConversationTaskState reports whether a task run has finished.

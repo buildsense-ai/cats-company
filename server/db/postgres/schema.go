@@ -73,6 +73,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateGroupsCreatedAtNotNull,
 		migrateGroupsAddAnnouncement,
 		migrateGroupMembersAddMuted,
+		migrateConversationTaskStatusSourcesAddEventUpdatedAt,
 		createUsersIndexes,
 		createFriendsIndexes,
 		createTopicsIndexes,
@@ -258,10 +259,23 @@ CREATE TABLE IF NOT EXISTS conversation_task_status_sources (
     summary TEXT NOT NULL DEFAULT '',
     error TEXT NOT NULL DEFAULT '',
     expires_at TIMESTAMPTZ DEFAULT NULL,
+    event_updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (topic_id, source_uid)
 );
+`
+
+const migrateConversationTaskStatusSourcesAddEventUpdatedAt = `
+ALTER TABLE conversation_task_status_sources
+ADD COLUMN IF NOT EXISTS event_updated_at TIMESTAMPTZ;
+UPDATE conversation_task_status_sources
+SET event_updated_at = updated_at
+WHERE event_updated_at IS NULL;
+ALTER TABLE conversation_task_status_sources
+ALTER COLUMN event_updated_at SET DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE conversation_task_status_sources
+ALTER COLUMN event_updated_at SET NOT NULL;
 `
 
 const createBotConnectionGenerationsTable = `
