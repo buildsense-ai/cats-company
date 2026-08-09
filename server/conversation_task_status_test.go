@@ -10,6 +10,14 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+func prepareTestConversationTaskStatus(status *types.ConversationTaskStatus) *types.ConversationTaskStatus {
+	prepared := store.PrepareConversationTaskStatusForStore(status, time.Now().UTC())
+	if status != nil && prepared != nil {
+		status.EventUpdatedAt = prepared.EventUpdatedAt
+	}
+	return prepared
+}
+
 func TestNormalizeConversationTaskStatusDefaultsActiveExpiry(t *testing.T) {
 	status, err := normalizeConversationTaskStatus(42, "p2p_7_42", &normalizedMessagePayload{
 		DisplayContent: map[string]interface{}{
@@ -219,11 +227,10 @@ func (s *taskRecoveryTestStore) GetConversationTaskStatusForSource(_ string, _ i
 }
 
 func (s *taskRecoveryTestStore) UpsertConversationTaskStatus(status *types.ConversationTaskStatus) (*types.ConversationTaskStatus, error) {
-	copyStatus := *status
-	copyStatus.UpdatedAt = time.Now()
-	s.current = &copyStatus
-	s.upserts = append(s.upserts, &copyStatus)
-	return &copyStatus, nil
+	prepared := prepareTestConversationTaskStatus(status)
+	s.current = prepared
+	s.upserts = append(s.upserts, prepared)
+	return prepared, nil
 }
 
 func (s *taskRecoveryTestStore) GetConversationTaskStatuses(_ []string) (map[string]*types.ConversationTaskStatus, error) {

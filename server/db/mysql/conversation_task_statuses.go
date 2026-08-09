@@ -20,6 +20,7 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 	if status.SourceUID <= 0 {
 		return nil, fmt.Errorf("conversation task status source uid is required")
 	}
+	inputStatus := status
 	tx, err := a.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("begin conversation task status transaction: %w", err)
@@ -163,6 +164,9 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit conversation task status: %w", err)
 	}
+	// Propagate the post-lock causal time to the caller so in-memory observers
+	// order the committed event exactly as the database did.
+	inputStatus.EventUpdatedAt = status.EventUpdatedAt
 	return out, nil
 }
 

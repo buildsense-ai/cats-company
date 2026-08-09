@@ -83,12 +83,12 @@ func TestPrepareConversationTaskStatusForStoreSeparatesEventAndLivenessTimes(t *
 
 func TestPrepareConversationTaskStatusForStoreOrdersMissingEventTimeAfterLock(t *testing.T) {
 	preLockTime := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
-	postLockTime := preLockTime.Add(time.Second)
+	postLockTime := preLockTime.Add(time.Second + 789*time.Nanosecond)
 	prepared := PrepareConversationTaskStatusForStore(&types.ConversationTaskStatus{
 		UpdatedAt: preLockTime,
 	}, postLockTime)
-	if !prepared.EventUpdatedAt.Equal(postLockTime) || !prepared.UpdatedAt.Equal(postLockTime) {
-		t.Fatalf("prepared times = event:%v liveness:%v, want post-lock %v", prepared.EventUpdatedAt, prepared.UpdatedAt, postLockTime)
+	if !prepared.EventUpdatedAt.Equal(postLockTime.Truncate(time.Microsecond)) || !prepared.UpdatedAt.Equal(postLockTime) {
+		t.Fatalf("prepared times = event:%v liveness:%v, want persisted event precision %v and post-lock liveness %v", prepared.EventUpdatedAt, prepared.UpdatedAt, postLockTime.Truncate(time.Microsecond), postLockTime)
 	}
 }
 

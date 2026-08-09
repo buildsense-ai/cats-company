@@ -1295,6 +1295,32 @@ func TestPushNotificationMessageBodyUsesVisibleContent(t *testing.T) {
 			want: "report is ready",
 		},
 		{
+			name: "visible block overrides internal raw content",
+			data: &MsgServerData{
+				Content: "private tool output",
+				ContentBlocks: []types.ContentBlock{
+					{Type: "tool_result", Content: "private tool output"},
+					{Type: "assistant_text", Text: "safe final answer"},
+				},
+			},
+			want: "safe final answer",
+		},
+		{
+			name: "assistant content block",
+			data: &MsgServerData{ContentBlocks: []types.ContentBlock{
+				{Type: "assistant_text", Content: "content field answer"},
+			}},
+			want: "content field answer",
+		},
+		{
+			name: "internal raw content is excluded",
+			data: &MsgServerData{
+				Content:       "private tool output",
+				ContentBlocks: []types.ContentBlock{{Type: "tool_result", Content: "private tool output"}},
+			},
+			want: "",
+		},
+		{
 			name: "image fallback",
 			data: &MsgServerData{Type: "image", ContentBlocks: []types.ContentBlock{{Type: "image"}}},
 			want: "发来了一张图片",
@@ -1966,8 +1992,7 @@ func (s *aggregateTaskStatusPushStore) GetConversationTaskStatusForSource(topicI
 }
 
 func (s *aggregateTaskStatusPushStore) UpsertConversationTaskStatus(status *types.ConversationTaskStatus) (*types.ConversationTaskStatus, error) {
-	copyOfStatus := *status
-	s.source = &copyOfStatus
+	s.source = prepareTestConversationTaskStatus(status)
 	aggregate := *s.aggregate
 	return &aggregate, nil
 }

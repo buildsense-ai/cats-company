@@ -668,6 +668,22 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 	}); err != nil {
 		t.Fatalf("complete publisher-clock run: %v", err)
 	}
+	implicitStatus := &types.ConversationTaskStatus{
+		TopicID: topicID, RunID: "run-implicit-clock", State: "completed", SourceUID: firstBotID,
+	}
+	if _, err := db.UpsertConversationTaskStatus(implicitStatus); err != nil {
+		t.Fatalf("upsert implicit-clock status: %v", err)
+	}
+	if implicitStatus.EventUpdatedAt.IsZero() {
+		t.Fatal("implicit event time was not propagated to the caller after commit")
+	}
+	persistedImplicitStatus, err := db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || persistedImplicitStatus == nil {
+		t.Fatalf("load implicit-clock status: status=%+v err=%v", persistedImplicitStatus, err)
+	}
+	if !implicitStatus.EventUpdatedAt.Equal(persistedImplicitStatus.EventUpdatedAt) {
+		t.Fatalf("caller event time=%v, want persisted event time %v", implicitStatus.EventUpdatedAt, persistedImplicitStatus.EventUpdatedAt)
+	}
 	upsert := func(sourceUID int64, runID, state string) *types.ConversationTaskStatus {
 		t.Helper()
 		status, upsertErr := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{

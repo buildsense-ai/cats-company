@@ -2010,21 +2010,21 @@ func pushNotificationMessageBody(msg *ServerMessage) string {
 	if msg == nil || msg.Data == nil {
 		return ""
 	}
-	if text := pushNotificationContentText(msg.Data.Content); text != "" {
-		return pushNotificationExcerpt(text)
-	}
 
 	var texts []string
 	for _, block := range msg.Data.ContentBlocks {
 		switch strings.ToLower(strings.TrimSpace(block.Type)) {
 		case "text", "assistant_text":
-			if text := strings.TrimSpace(block.Text); text != "" {
+			if text := strings.TrimSpace(firstNonEmpty(block.Text, block.Content)); text != "" {
 				texts = append(texts, text)
 			}
 		}
 	}
 	if len(texts) > 0 {
 		return pushNotificationExcerpt(strings.Join(texts, " "))
+	}
+	if text := pushNotificationContentText(msg.Data.Content); text != "" && !hasInternalAgentContentBlocks(msg.Data.ContentBlocks) {
+		return pushNotificationExcerpt(text)
 	}
 
 	displayType := strings.ToLower(strings.TrimSpace(firstNonEmpty(msg.Data.Type, msg.Data.MsgType)))
@@ -2045,6 +2045,15 @@ func pushNotificationMessageBody(msg *ServerMessage) string {
 	default:
 		return ""
 	}
+}
+
+func hasInternalAgentContentBlocks(blocks []types.ContentBlock) bool {
+	for _, block := range blocks {
+		if isInternalAgentContentBlock(block.Type) {
+			return true
+		}
+	}
+	return false
 }
 
 func pushNotificationContentText(content interface{}) string {

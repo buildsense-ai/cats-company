@@ -109,6 +109,8 @@ type MessageStore interface {
 // ConversationTaskStatusStore persists per-source runtime state and exposes a
 // backwards-compatible aggregate status per topic.
 type ConversationTaskStatusStore interface {
+	// UpsertConversationTaskStatus writes the resolved publisher event time back
+	// to status after commit so downstream observers share the store's ordering.
 	UpsertConversationTaskStatus(status *types.ConversationTaskStatus) (*types.ConversationTaskStatus, error)
 	GetConversationTaskStatusForSource(topicID string, sourceUID int64) (*types.ConversationTaskStatus, error)
 	GetConversationTaskStatuses(topicIDs []string) (map[string]*types.ConversationTaskStatus, error)
@@ -150,6 +152,10 @@ func PrepareConversationTaskStatusForStore(status *types.ConversationTaskStatus,
 		prepared.EventUpdatedAt = receivedAt
 	}
 	prepared.EventUpdatedAt = BoundConversationTaskStatusEventTime(prepared.EventUpdatedAt, receivedAt)
+	// Both supported databases persist task event timestamps at microsecond
+	// precision. Normalize before returning the value to in-memory observers so
+	// their causal ordering uses the exact precision committed by the store.
+	prepared.EventUpdatedAt = prepared.EventUpdatedAt.Truncate(time.Microsecond)
 	prepared.UpdatedAt = receivedAt
 	return &prepared
 }

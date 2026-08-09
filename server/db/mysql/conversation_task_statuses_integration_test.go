@@ -94,6 +94,22 @@ func TestMySQLConversationTaskStatusContract(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("complete publisher-clock run: %v", err)
 	}
+	implicitStatus := &types.ConversationTaskStatus{
+		TopicID: topicID, RunID: "run-implicit-clock", State: "completed", SourceUID: sourceUID,
+	}
+	if _, err := db.UpsertConversationTaskStatus(implicitStatus); err != nil {
+		t.Fatalf("upsert implicit-clock status: %v", err)
+	}
+	if implicitStatus.EventUpdatedAt.IsZero() {
+		t.Fatal("implicit event time was not propagated to the caller after commit")
+	}
+	persistedImplicitStatus, err := db.GetConversationTaskStatusForSource(topicID, sourceUID)
+	if err != nil || persistedImplicitStatus == nil {
+		t.Fatalf("load implicit-clock status: status=%+v err=%v", persistedImplicitStatus, err)
+	}
+	if !implicitStatus.EventUpdatedAt.Equal(persistedImplicitStatus.EventUpdatedAt) {
+		t.Fatalf("caller event time=%v, want persisted event time %v", implicitStatus.EventUpdatedAt, persistedImplicitStatus.EventUpdatedAt)
+	}
 	upsert := func(runID, state string) {
 		t.Helper()
 		if _, err := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
