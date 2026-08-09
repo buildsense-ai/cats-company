@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/openchat/openchat/server/store"
@@ -1090,7 +1091,7 @@ func TestEnqueueUserPushQueuesOnlyWhenNoVisibleHumanClient(t *testing.T) {
 				hub.setClientPageVisibility(client, pageVisibility)
 			}
 
-			hub.enqueueOfflineUserPush(uid, "grp_7")
+			hub.enqueueOfflineUserPush(uid, "grp_7", "")
 
 			select {
 			case <-delivered:
@@ -1142,7 +1143,7 @@ func TestEnqueueUserPushSuppressesOnlyFocusedSubscriptionOnTargetTopic(t *testin
 		Focused:        true,
 	}, send: make(chan []byte, 1)})
 
-	hub.enqueueOfflineUserPush(uid, "grp_7")
+	hub.enqueueOfflineUserPush(uid, "grp_7", "")
 
 	select {
 	case endpoint := <-delivered:
@@ -1193,7 +1194,7 @@ func TestEnqueueUserPushDoesNotSuppressLegacyClientWithoutSubscriptionIdentity(t
 		Focused:     true,
 	}, send: make(chan []byte, 1)})
 
-	hub.enqueueOfflineUserPush(uid, "grp_7")
+	hub.enqueueOfflineUserPush(uid, "grp_7", "")
 
 	seen := map[string]bool{}
 	for range 2 {
@@ -1266,6 +1267,55 @@ func TestShouldNotifyOfflineForFinalUserVisibleMessagesOnly(t *testing.T) {
 				t.Fatalf("shouldNotifyOfflineForMessage() = %t, want %t", got, test.want)
 			}
 		})
+	}
+}
+
+func TestPushNotificationMessageBodyUsesVisibleContent(t *testing.T) {
+	tests := []struct {
+		name string
+		data *MsgServerData
+		want string
+	}{
+		{
+			name: "plain text",
+			data: &MsgServerData{Content: "  final\nanswer  "},
+			want: "final answer",
+		},
+		{
+			name: "structured text",
+			data: &MsgServerData{Content: map[string]interface{}{"text": "deployment complete"}},
+			want: "deployment complete",
+		},
+		{
+			name: "assistant text block",
+			data: &MsgServerData{ContentBlocks: []types.ContentBlock{
+				{Type: "thinking", Thinking: "private reasoning"},
+				{Type: "assistant_text", Text: "report is ready"},
+			}},
+			want: "report is ready",
+		},
+		{
+			name: "image fallback",
+			data: &MsgServerData{Type: "image", ContentBlocks: []types.ContentBlock{{Type: "image"}}},
+			want: "发来了一张图片",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := pushNotificationMessageBody(&ServerMessage{Data: test.data})
+			if got != test.want {
+				t.Fatalf("pushNotificationMessageBody() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestPushNotificationMessageBodyTruncatesLongContent(t *testing.T) {
+	got := pushNotificationMessageBody(&ServerMessage{Data: &MsgServerData{
+		Content: strings.Repeat("猫", maxPushNotificationBodyRunes+20),
+	}})
+	if utf8.RuneCountInString(got) != maxPushNotificationBodyRunes || !strings.HasSuffix(got, "…") {
+		t.Fatalf("truncated body length=%d body=%q", utf8.RuneCountInString(got), got)
 	}
 }
 
@@ -1946,9 +1996,13 @@ func TestAgentPushWaitsForMatchingTerminalTaskStatus(t *testing.T) {
 		Auth:     "auth",
 	}}}
 	service := enabledPushService(pushStore)
-	delivered := make(chan struct{}, 1)
-	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
-		delivered <- struct{}{}
+	delivered := make(chan PushNotification, 1)
+	service.send = func(_ context.Context, payload []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		var notification PushNotification
+		if err := json.Unmarshal(payload, &notification); err != nil {
+			t.Errorf("decode push notification: %v", err)
+		}
+		delivered <- notification
 		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
 	}
 	hub := NewHub(db, nil)
@@ -1990,7 +2044,10 @@ func TestAgentPushWaitsForMatchingTerminalTaskStatus(t *testing.T) {
 		t.Fatalf("publish completed task status: %v", err)
 	}
 	select {
-	case <-delivered:
+	case notification := <-delivered:
+		if notification.Body != "final answer" {
+			t.Fatalf("notification body = %q, want detailed message content", notification.Body)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("matching terminal task status did not notify the offline recipient")
 	}

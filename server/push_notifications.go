@@ -68,8 +68,9 @@ var nonPublicPushPrefixes = []netip.Prefix{
 }
 
 // PushNotification is the complete payload sent to a browser. Keep this type
-// deliberately small: notification payloads must not contain message IDs,
-// sender identities, tokens, or any other sensitive metadata.
+// deliberately small: the body may contain a short user-visible message
+// excerpt, but payloads must not contain message IDs, sender identities,
+// authentication tokens, or any other internal metadata.
 type PushNotification struct {
 	Title string `json:"title,omitempty"`
 	Body  string `json:"body,omitempty"`
