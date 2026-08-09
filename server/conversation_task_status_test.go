@@ -27,6 +27,9 @@ func TestNormalizeConversationTaskStatusDefaultsActiveExpiry(t *testing.T) {
 	if got := status.ExpiresAt.Sub(status.UpdatedAt); got != defaultActiveTaskStatusTTL {
 		t.Fatalf("default expiry=%s, want %s", got, defaultActiveTaskStatusTTL)
 	}
+	if !status.EventUpdatedAt.IsZero() {
+		t.Fatalf("event_updated_at=%v without publisher timestamp, want zero for post-lock ordering", status.EventUpdatedAt)
+	}
 }
 
 func TestNormalizeConversationTaskStatusPreservesExplicitExpiry(t *testing.T) {

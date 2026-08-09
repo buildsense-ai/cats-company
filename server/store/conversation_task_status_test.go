@@ -64,7 +64,10 @@ func TestValidateConversationTaskStatusTransitionRejectsOlderPublisherUpdate(t *
 func TestPrepareConversationTaskStatusForStoreSeparatesEventAndLivenessTimes(t *testing.T) {
 	eventAt := time.Date(2026, time.August, 8, 3, 0, 0, 0, time.UTC)
 	receivedAt := eventAt.Add(time.Hour)
-	input := &types.ConversationTaskStatus{UpdatedAt: eventAt}
+	input := &types.ConversationTaskStatus{
+		UpdatedAt:      eventAt.Add(-time.Hour),
+		EventUpdatedAt: eventAt,
+	}
 
 	prepared := PrepareConversationTaskStatusForStore(input, receivedAt)
 	if !prepared.EventUpdatedAt.Equal(eventAt) {
@@ -73,8 +76,19 @@ func TestPrepareConversationTaskStatusForStoreSeparatesEventAndLivenessTimes(t *
 	if !prepared.UpdatedAt.Equal(receivedAt) {
 		t.Fatalf("updated_at=%v, want %v", prepared.UpdatedAt, receivedAt)
 	}
-	if !input.EventUpdatedAt.IsZero() || !input.UpdatedAt.Equal(eventAt) {
+	if !input.EventUpdatedAt.Equal(eventAt) || !input.UpdatedAt.Equal(eventAt.Add(-time.Hour)) {
 		t.Fatalf("PrepareConversationTaskStatusForStore mutated input: %+v", input)
+	}
+}
+
+func TestPrepareConversationTaskStatusForStoreOrdersMissingEventTimeAfterLock(t *testing.T) {
+	preLockTime := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	postLockTime := preLockTime.Add(time.Second)
+	prepared := PrepareConversationTaskStatusForStore(&types.ConversationTaskStatus{
+		UpdatedAt: preLockTime,
+	}, postLockTime)
+	if !prepared.EventUpdatedAt.Equal(postLockTime) || !prepared.UpdatedAt.Equal(postLockTime) {
+		t.Fatalf("prepared times = event:%v liveness:%v, want post-lock %v", prepared.EventUpdatedAt, prepared.UpdatedAt, postLockTime)
 	}
 }
 

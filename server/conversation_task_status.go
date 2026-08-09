@@ -114,11 +114,10 @@ func normalizeConversationTaskStatus(uid int64, topicID string, payload *normali
 	}
 
 	now := time.Now().UTC()
-	eventUpdatedAt := now
+	var eventUpdatedAt time.Time
 	if publisherUpdatedAt := firstTaskStatusTime(body, payload.Metadata, "updated_at", "updatedAt"); publisherUpdatedAt != nil {
-		eventUpdatedAt = *publisherUpdatedAt
+		eventUpdatedAt = store.BoundConversationTaskStatusEventTime(*publisherUpdatedAt, now)
 	}
-	eventUpdatedAt = store.BoundConversationTaskStatusEventTime(eventUpdatedAt, now)
 	expiresAt := firstTaskStatusTime(body, payload.Metadata, "expires_at", "expiresAt")
 	if expiresAt == nil && (state == "running" || state == "waiting") {
 		defaultExpiry := now.Add(defaultActiveTaskStatusTTL)

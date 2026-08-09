@@ -19,8 +19,6 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 	if status.SourceUID <= 0 {
 		return nil, fmt.Errorf("conversation task status source uid is required")
 	}
-	status = store.PrepareConversationTaskStatusForStore(status, time.Now().UTC())
-
 	tx, err := a.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("begin conversation task status transaction: %w", err)
@@ -48,6 +46,9 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 	if err := reconcileLegacyConversationTaskStatuses(tx, "$1", status.TopicID); err != nil {
 		return nil, fmt.Errorf("reconcile legacy conversation task status: %w", err)
 	}
+	// When a legacy/direct caller provides no publisher event time, derive it
+	// only after the per-topic lock is held so event order matches commit order.
+	status = store.PrepareConversationTaskStatusForStore(status, time.Now().UTC())
 
 	var currentRunID, currentState string
 	var currentExpiresAt, currentUpdatedAt, currentEventUpdatedAt sql.NullTime

@@ -138,19 +138,16 @@ func ValidateConversationTaskStatusTransition(current, next *types.ConversationT
 }
 
 // PrepareConversationTaskStatusForStore separates publisher event ordering
-// from server-observed liveness. Legacy/direct callers that only set UpdatedAt
-// keep that value as their event time, while every write receives a fresh
-// server timestamp for recovery and reaping.
+// from server-observed liveness. Callers without an explicit EventUpdatedAt
+// inherit the post-lock receivedAt value, while every write receives that same
+// fresh server timestamp for recovery and reaping.
 func PrepareConversationTaskStatusForStore(status *types.ConversationTaskStatus, receivedAt time.Time) *types.ConversationTaskStatus {
 	if status == nil {
 		return nil
 	}
 	prepared := *status
 	if prepared.EventUpdatedAt.IsZero() {
-		prepared.EventUpdatedAt = prepared.UpdatedAt
-		if prepared.EventUpdatedAt.IsZero() {
-			prepared.EventUpdatedAt = receivedAt
-		}
+		prepared.EventUpdatedAt = receivedAt
 	}
 	prepared.EventUpdatedAt = BoundConversationTaskStatusEventTime(prepared.EventUpdatedAt, receivedAt)
 	prepared.UpdatedAt = receivedAt
