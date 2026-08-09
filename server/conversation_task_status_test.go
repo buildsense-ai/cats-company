@@ -45,6 +45,23 @@ func TestNormalizeConversationTaskStatusPreservesExplicitExpiry(t *testing.T) {
 	}
 }
 
+func TestNormalizeConversationTaskStatusPreservesPublisherUpdatedAt(t *testing.T) {
+	updatedAt := time.Date(2026, 8, 8, 3, 0, 0, 0, time.UTC)
+	status, err := normalizeConversationTaskStatus(42, "p2p_7_42", &normalizedMessagePayload{
+		DisplayContent: map[string]interface{}{
+			"run_id":     "run-1",
+			"state":      "running",
+			"updated_at": updatedAt.Format(time.RFC3339),
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize task status: %v", err)
+	}
+	if !status.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("updated_at=%v, want %v", status.UpdatedAt, updatedAt)
+	}
+}
+
 func TestNormalizeConversationTaskStatusLeavesTerminalExpiryOptional(t *testing.T) {
 	status, err := normalizeConversationTaskStatus(42, "grp_9", &normalizedMessagePayload{
 		DisplayContent: map[string]interface{}{"state": "completed"},

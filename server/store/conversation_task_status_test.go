@@ -44,3 +44,17 @@ func TestValidateConversationTaskStatusTransitionAllowsTerminalForExpiredSuperse
 		t.Fatalf("ValidateConversationTaskStatusTransition() error = %v, want nil", err)
 	}
 }
+
+func TestValidateConversationTaskStatusTransitionRejectsOlderPublisherUpdate(t *testing.T) {
+	current := &types.ConversationTaskStatus{
+		RunID: "run-new", State: "running",
+		UpdatedAt: time.Date(2026, time.August, 8, 3, 0, 2, 0, time.UTC),
+	}
+	stale := &types.ConversationTaskStatus{
+		RunID: "run-old", State: "waiting",
+		UpdatedAt: time.Date(2026, time.August, 8, 3, 0, 1, 0, time.UTC),
+	}
+	if err := ValidateConversationTaskStatusTransition(current, stale, time.Now()); !errors.Is(err, ErrConversationTaskStatusStale) {
+		t.Fatalf("ValidateConversationTaskStatusTransition() error = %v, want %v", err, ErrConversationTaskStatusStale)
+	}
+}

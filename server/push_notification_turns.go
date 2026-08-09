@@ -288,7 +288,15 @@ func (c *agentPushTurnCoordinator) observeVisibleMessage(recipientUID, senderUID
 	c.mu.Lock()
 	c.removeExpiredLocked(now)
 	if runID == "" {
-		runID = c.currentRuns[scope].runID
+		currentRunID := c.currentRuns[scope].runID
+		if currentRunID != "" {
+			currentTurn := c.trackedTurns[newAgentPushTrackedTurnKey(scope, currentRunID)]
+			deliveryKey := agentPushTurnDeliveryKey(recipientUID, scope, currentRunID)
+			_, deliveryInFlight := c.inFlight[deliveryKey]
+			if currentTurn == nil || !currentTurn.terminal || (!deliveryInFlight && !c.deliveryRecordedLocked(deliveryKey, now)) {
+				runID = currentRunID
+			}
+		}
 	}
 	candidate := c.newCandidateLocked(deliver)
 	if runID == "" {

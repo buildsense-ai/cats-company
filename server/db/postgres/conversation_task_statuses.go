@@ -19,6 +19,11 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 	if status.SourceUID <= 0 {
 		return nil, fmt.Errorf("conversation task status source uid is required")
 	}
+	if status.UpdatedAt.IsZero() {
+		copyStatus := *status
+		copyStatus.UpdatedAt = time.Now().UTC()
+		status = &copyStatus
+	}
 
 	tx, err := a.db.Begin()
 	if err != nil {
@@ -49,18 +54,21 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 	}
 
 	var currentRunID, currentState string
-	var currentExpiresAt sql.NullTime
+	var currentExpiresAt, currentUpdatedAt sql.NullTime
 	err = tx.QueryRow(
-		`SELECT run_id, state, expires_at FROM conversation_task_status_sources
+		`SELECT run_id, state, expires_at, updated_at FROM conversation_task_status_sources
 		 WHERE topic_id = $1 AND source_uid = $2`,
 		status.TopicID,
 		status.SourceUID,
-	).Scan(&currentRunID, &currentState, &currentExpiresAt)
+	).Scan(&currentRunID, &currentState, &currentExpiresAt, &currentUpdatedAt)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("load current conversation task status: %w", err)
 	}
 	if err == nil {
 		current := &types.ConversationTaskStatus{RunID: currentRunID, State: currentState}
+		if currentUpdatedAt.Valid {
+			current.UpdatedAt = currentUpdatedAt.Time
+		}
 		if currentExpiresAt.Valid {
 			expiresAt := currentExpiresAt.Time
 			current.ExpiresAt = &expiresAt
@@ -73,14 +81,14 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 	if _, err := tx.Exec(
 		`INSERT INTO conversation_task_status_sources
 		   (topic_id, source_uid, run_id, state, summary, error, expires_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 ON CONFLICT (topic_id, source_uid) DO UPDATE SET
 		   run_id = EXCLUDED.run_id,
 		   state = EXCLUDED.state,
 		   summary = EXCLUDED.summary,
 		   error = EXCLUDED.error,
 		   expires_at = EXCLUDED.expires_at,
-		   updated_at = CURRENT_TIMESTAMP`,
+		   updated_at = EXCLUDED.updated_at`,
 		status.TopicID,
 		status.SourceUID,
 		status.RunID,
@@ -88,6 +96,7 @@ func (a *Adapter) UpsertConversationTaskStatus(status *types.ConversationTaskSta
 		status.Summary,
 		status.Error,
 		status.ExpiresAt,
+		status.UpdatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("upsert conversation task source status: %w", err)
 	}

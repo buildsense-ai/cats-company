@@ -18,6 +18,7 @@ var ErrProjectTopicNotFound = errors.New("project or topic not found")
 var ErrGroupInviteRequestNotPending = errors.New("group invite request is not pending")
 var ErrConversationTaskRunTerminal = errors.New("cannot resume a terminal task run; publish a new run_id")
 var ErrConversationTaskRunSuperseded = errors.New("cannot complete a superseded task run while a newer run is active")
+var ErrConversationTaskStatusStale = errors.New("cannot apply an older task status update")
 
 // UserStore contains user and profile persistence operations.
 type UserStore interface {
@@ -116,6 +117,9 @@ type ConversationTaskStatusStore interface {
 func ValidateConversationTaskStatusTransition(current, next *types.ConversationTaskStatus, now time.Time) error {
 	if current == nil || next == nil {
 		return nil
+	}
+	if !current.UpdatedAt.IsZero() && !next.UpdatedAt.IsZero() && next.UpdatedAt.Before(current.UpdatedAt) {
+		return ErrConversationTaskStatusStale
 	}
 	if current.RunID == next.RunID &&
 		types.IsTerminalConversationTaskState(current.State) &&

@@ -114,6 +114,10 @@ func normalizeConversationTaskStatus(uid int64, topicID string, payload *normali
 	}
 
 	now := time.Now().UTC()
+	updatedAt := firstTaskStatusTime(body, payload.Metadata, "updated_at", "updatedAt")
+	if updatedAt == nil {
+		updatedAt = &now
+	}
 	expiresAt := firstTaskStatusTime(body, payload.Metadata, "expires_at", "expiresAt")
 	if expiresAt == nil && (state == "running" || state == "waiting") {
 		defaultExpiry := now.Add(defaultActiveTaskStatusTTL)
@@ -126,7 +130,7 @@ func normalizeConversationTaskStatus(uid int64, topicID string, payload *normali
 		Summary:   truncateUTF8(firstTaskStatusString(body, payload.Metadata, "summary", "text", "message"), maxTaskSummaryLength),
 		Error:     truncateUTF8(firstTaskStatusString(body, payload.Metadata, "error", "error_message", "errorMessage"), maxTaskErrorLength),
 		SourceUID: uid,
-		UpdatedAt: now,
+		UpdatedAt: *updatedAt,
 		ExpiresAt: expiresAt,
 	}
 	return status, nil

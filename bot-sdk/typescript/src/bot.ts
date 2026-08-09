@@ -169,12 +169,16 @@ export class CatsBot {
    */
   async sendTaskStatus(topic: string, status: ConversationTaskStatusInput): Promise<ConversationTaskStatus> {
     const id = this.nextId();
+    const timestampedStatus = {
+      ...status,
+      updated_at: status.updated_at || new Date().toISOString(),
+    };
     const pub: ClientMessage = {
       pub: {
         id,
         topic,
         type: 'task_status',
-        content: status,
+        content: timestampedStatus,
       },
     };
     const ctrl = await this.sendWithCtrlAck(id, pub);

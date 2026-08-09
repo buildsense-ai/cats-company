@@ -1594,6 +1594,39 @@ func TestAgentPushUncorrelatedMessageHandlesTerminalOnlyOrdering(t *testing.T) {
 	}
 }
 
+func TestAgentPushCompletedRunDoesNotConsumeNextUncorrelatedMessage(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	deliveries := 0
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
+	})
+	coordinator.observeVisibleMessage(8, 7, &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "run-1 answer",
+	}}, func() bool { deliveries++; return true })
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
+	})
+	if deliveries != 1 {
+		t.Fatalf("run-1 deliveries = %d, want 1", deliveries)
+	}
+
+	coordinator.observeVisibleMessage(8, 7, &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 2, Type: "text", Content: "run-2 answer before status",
+	}}, func() bool { deliveries++; return true })
+	if deliveries != 1 {
+		t.Fatal("completed run consumed the next run's uncorrelated message")
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-2", State: "running", SourceUID: 7,
+	})
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-2", State: "completed", SourceUID: 7,
+	})
+	if deliveries != 2 {
+		t.Fatalf("deliveries = %d, want 2", deliveries)
+	}
+}
+
 func TestAgentPushOutOfOrderRunDoesNotCompleteWithStaleStatus(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
 	coordinator.observeStatus(&types.ConversationTaskStatus{
@@ -1709,11 +1742,14 @@ func TestAgentPushStaleStatusesDoNotRebindUntaggedMessage(t *testing.T) {
 	}
 }
 
-func TestAgentPushSupersededRunCannotReclaimCurrentAfterProductionNormalization(t *testing.T) {
+func TestAgentPushFirstSeenStaleRunCannotReclaimCurrentAfterProductionNormalization(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
-	normalize := func(runID, state string) *types.ConversationTaskStatus {
+	baseTime := time.Date(2026, 8, 8, 3, 0, 0, 0, time.UTC)
+	normalize := func(runID, state string, updatedAt time.Time) *types.ConversationTaskStatus {
 		status, err := normalizeConversationTaskStatus(7, "p2p_7_8", &normalizedMessagePayload{
-			DisplayContent: map[string]interface{}{"run_id": runID, "state": state},
+			DisplayContent: map[string]interface{}{
+				"run_id": runID, "state": state, "updated_at": updatedAt.Format(time.RFC3339),
+			},
 		})
 		if err != nil {
 			t.Fatalf("normalize %s %s status: %v", runID, state, err)
@@ -1721,20 +1757,19 @@ func TestAgentPushSupersededRunCannotReclaimCurrentAfterProductionNormalization(
 		return status
 	}
 
-	coordinator.observeStatus(normalize("run-1", "running"))
-	coordinator.observeStatus(normalize("run-2", "running"))
-	coordinator.observeStatus(normalize("run-1", "waiting"))
+	coordinator.observeStatus(normalize("run-2", "running", baseTime.Add(2*time.Second)))
+	coordinator.observeStatus(normalize("run-1", "waiting", baseTime))
 
 	deliveries := 0
 	msg := &ServerMessage{Data: &MsgServerData{
 		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "untagged run-2 answer",
 	}}
 	coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true })
-	coordinator.observeStatus(normalize("run-1", "completed"))
+	coordinator.observeStatus(normalize("run-1", "completed", baseTime.Add(time.Second)))
 	if deliveries != 0 {
-		t.Fatal("superseded run reclaimed the current untagged message")
+		t.Fatal("first-seen stale run reclaimed the current untagged message")
 	}
-	coordinator.observeStatus(normalize("run-2", "completed"))
+	coordinator.observeStatus(normalize("run-2", "completed", baseTime.Add(3*time.Second)))
 	if deliveries != 1 {
 		t.Fatalf("deliveries = %d, want 1", deliveries)
 	}
