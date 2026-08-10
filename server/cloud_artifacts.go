@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/openchat/openchat/server/store"
@@ -42,6 +43,11 @@ type CloudArtifactHandler struct {
 	nodeRegistryErr   error
 	directTemplate    *artifactDirectURLTemplate
 	directTemplateErr error
+
+	artifactContextCacheMu    sync.Mutex
+	artifactContextCache      map[artifactContextCacheKey]artifactContextCacheEntry
+	artifactContextCacheTTL   time.Duration
+	artifactContextCacheEpoch uint64
 }
 
 type cloudArtifactIndex struct {
@@ -528,6 +534,7 @@ func (h *CloudArtifactHandler) handleMutation(
 		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
 		return
 	}
+	h.invalidateArtifactContextCache(agentUID, artifactID)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, operation)
 }

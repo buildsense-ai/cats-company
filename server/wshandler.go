@@ -2,6 +2,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -32,30 +33,31 @@ const (
 
 // Hub maintains the set of active clients and broadcasts messages.
 type Hub struct {
-	mu            sync.RWMutex
-	clients       map[int64]map[*Client]struct{}
-	clientsByConn map[string]*Client
-	register      chan *Client
-	unregister    chan *Client
-	presence      chan presenceEvent
-	db            store.Store
-	rateLimiter   *RateLimiter
-	botStats      *BotStats
-	botConvo      botConvoTracker
-	nodeID        string
-	sharedRuntime sharedRuntimeState
-	bodyLeases    *botBodyLeaseManager
-	userDevices   *userDeviceRegistry
-	deviceAudit   *deviceAuditLog
-	deviceRevokes *deviceConnectorRevocationList
-	deviceClients map[int64]map[string]*Client
-	deviceRPC     *deviceRPCRouter
-	thinToolRPC   *thinToolRPCRouter
-	channelOut    *ChannelOutboundDispatcher
-	groupTurns    *groupAgentTurnTracker
-	push          *PushNotificationService
-	agentPush     *agentPushTurnCoordinator
-	taskGrace     time.Duration
+	mu                      sync.RWMutex
+	clients                 map[int64]map[*Client]struct{}
+	clientsByConn           map[string]*Client
+	register                chan *Client
+	unregister              chan *Client
+	presence                chan presenceEvent
+	db                      store.Store
+	rateLimiter             *RateLimiter
+	botStats                *BotStats
+	botConvo                botConvoTracker
+	nodeID                  string
+	sharedRuntime           sharedRuntimeState
+	bodyLeases              *botBodyLeaseManager
+	userDevices             *userDeviceRegistry
+	deviceAudit             *deviceAuditLog
+	deviceRevokes           *deviceConnectorRevocationList
+	deviceClients           map[int64]map[string]*Client
+	deviceRPC               *deviceRPCRouter
+	thinToolRPC             *thinToolRPCRouter
+	channelOut              *ChannelOutboundDispatcher
+	groupTurns              *groupAgentTurnTracker
+	artifactContextResolver ArtifactContextResolver
+	push                    *PushNotificationService
+	agentPush               *agentPushTurnCoordinator
+	taskGrace               time.Duration
 	// taskReaperInterval is how often the disconnected-task recovery reaper
 	// scans durable rows. It complements the per-disconnect time.AfterFunc so
 	// a crashed/restarted process or transient DB error cannot permanently
@@ -1341,6 +1343,7 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 		})
 		return
 	}
+	payload.Metadata = h.canonicalizeArtifactMessageMetadata(context.Background(), uid, topic, payload.Metadata)
 
 	// Route based on topic type
 	if isGroupTopic(topic) {
@@ -2083,6 +2086,7 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 				h.buildCatscoIdentityMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID), normalizeContentText(msg.Data.Content), catscoIdentityMetadataOptions{SourceMetadata: msg.Data.Metadata}),
 			)
 			metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(senderUID, m.UserID, msg.Data.Topic))
+			metadata = artifactMetadataForRecipient(metadata, m.UserID)
 			out = cloneDataMessageWithMetadata(
 				msg,
 				metadata,

@@ -101,6 +101,13 @@ type MessageStore interface {
 	GetLatestMessagesForTopics(topicIDs []string) (map[string]*types.Message, error)
 }
 
+// MessageMetadataStore atomically persists normalized messages with their
+// optional metadata. It is optional so focused stores can keep implementing
+// the legacy MessageStore surface.
+type MessageMetadataStore interface {
+	SaveMessageWithMetadata(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string, metadata map[string]interface{}) (id int64, duplicate bool, err error)
+}
+
 // ConversationTaskStatusStore persists per-source runtime state and exposes a
 // backwards-compatible aggregate status per topic.
 type ConversationTaskStatusStore interface {

@@ -320,6 +320,7 @@ func main() {
 	readerHandler := server.NewReaderProxyHandlerFromEnv()
 	cloudArtifactHandler := server.NewCloudArtifactHandlerFromEnv()
 	cloudArtifactHandler.SetStore(db)
+	hub.SetArtifactContextResolver(cloudArtifactHandler)
 	imageGenerationHandler := server.NewImageGenerationProxyHandlerFromEnv()
 	feedbackHandler := server.NewFeedbackHandler(db)
 	relayConfigHandler := server.NewRelayConfigHandler()

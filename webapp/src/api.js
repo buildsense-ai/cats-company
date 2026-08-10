@@ -758,8 +758,13 @@ export const api = {
   uploadFeedbackImage: (file) => api.uploadFile(file, 'feedback'),
   submitFeedback: (data) => request('POST', '/api/feedback', data),
   getTutorialTasks: () => request('GET', '/api/tutorial-tasks'),
-  getCloudArtifacts: (agentUid, status = 'active') =>
-    request('GET', `/api/agents/${encodeURIComponent(agentUid)}/artifacts?status=${encodeURIComponent(status)}`),
+  getCloudArtifacts: (agentUid, status = 'active', options = {}) =>
+    request(
+      'GET',
+      `/api/agents/${encodeURIComponent(agentUid)}/artifacts?status=${encodeURIComponent(status)}`,
+      undefined,
+      options,
+    ),
   getAgentFiles: (agentUid, { topicId, beforeId = 0, limit = 40 } = {}) => {
     const params = new URLSearchParams();
     params.set('topic_id', String(topicId || ''));

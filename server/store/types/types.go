@@ -183,15 +183,16 @@ type Topic struct {
 
 // Message represents a chat message.
 type Message struct {
-	ID            int64          `json:"id"`
-	TopicID       string         `json:"topic_id"`
-	FromUID       int64          `json:"from_uid"`
-	Content       string         `json:"content,omitempty"`
-	ContentBlocks []ContentBlock `json:"content_blocks,omitempty"`
-	MsgType       string         `json:"msg_type"` // "text", "image", "voice", "file"
-	Mode          string         `json:"mode,omitempty"`
-	Role          string         `json:"role,omitempty"`
-	CreatedAt     time.Time      `json:"created_at"`
+	ID            int64                  `json:"id"`
+	TopicID       string                 `json:"topic_id"`
+	FromUID       int64                  `json:"from_uid"`
+	Content       string                 `json:"content,omitempty"`
+	ContentBlocks []ContentBlock         `json:"content_blocks,omitempty"`
+	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+	MsgType       string                 `json:"msg_type"` // "text", "image", "voice", "file"
+	Mode          string                 `json:"mode,omitempty"`
+	Role          string                 `json:"role,omitempty"`
+	CreatedAt     time.Time              `json:"created_at"`
 }
 
 // ContentBlock represents a block of content in code mode.

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/openchat/openchat/server/store"
@@ -275,6 +276,83 @@ func TestSaveNormalizedMessageUsesIdempotentStore(t *testing.T) {
 	}
 	if store.clientMsgID != "catsco-1" || store.calls != 1 {
 		t.Fatalf("idempotent save was not used: store=%#v", store)
+	}
+}
+
+func TestSaveNormalizedMessagePersistsMetadataThroughOptionalStore(t *testing.T) {
+	messageStore := &metadataMessageStore{idempotentMessageStore: idempotentMessageStore{id: 73, duplicate: true}}
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID:     "p2p_1_2",
+		ClientMsgID: "catsco-metadata-1",
+		Content:     json.RawMessage(`"hello"`),
+		Metadata: map[string]interface{}{
+			"source_channel": "feishu",
+			"nested": map[string]interface{}{
+				"attempt": float64(2),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	result, err := saveNormalizedMessage(messageStore, "p2p_1_2", 1, 12, payload)
+	if err != nil {
+		t.Fatalf("save normalized message: %v", err)
+	}
+	if result.ID != 73 || !result.Duplicate {
+		t.Fatalf("result = %#v, want id=73 duplicate=true", result)
+	}
+	if messageStore.calls != 1 || messageStore.replyTo != 12 || messageStore.clientMsgID != "catsco-metadata-1" {
+		t.Fatalf("metadata save arguments = %#v", messageStore)
+	}
+	if got := firstMetadataString(messageStore.metadata, "source_channel"); got != "feishu" {
+		t.Fatalf("persisted source_channel = %q, want feishu", got)
+	}
+}
+
+func TestSaveNormalizedMessageRejectsArtifactMetadataWithoutPersistenceCapability(t *testing.T) {
+	messageStore := &idempotentMessageStore{id: 73}
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID:     "p2p_1_2",
+		ClientMsgID: "legacy-metadata-1",
+		Content:     json.RawMessage(`"hello"`),
+		Metadata: map[string]interface{}{
+			"artifact_context": map[string]interface{}{"id": "lesson-game"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	if _, err := saveNormalizedMessage(messageStore, "p2p_1_2", 1, 0, payload); err == nil || !strings.Contains(err.Error(), "metadata persistence") {
+		t.Fatalf("save error = %v, want metadata persistence failure", err)
+	}
+	if messageStore.calls != 0 {
+		t.Fatalf("legacy store should not receive a lossy fallback save: calls=%d", messageStore.calls)
+	}
+}
+
+func TestSaveNormalizedMessageKeepsLegacyFallbackForUntrustedMetadata(t *testing.T) {
+	messageStore := &idempotentMessageStore{id: 74}
+	payload, err := normalizeMessageRequest(&SendMessageRequest{
+		TopicID:     "p2p_1_2",
+		ClientMsgID: "legacy-metadata-1",
+		Content:     json.RawMessage(`"hello"`),
+		Metadata: map[string]interface{}{
+			"source_channel": "feishu",
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+
+	result, err := saveNormalizedMessage(messageStore, "p2p_1_2", 1, 0, payload)
+	if err != nil {
+		t.Fatalf("legacy fallback save: %v", err)
+	}
+	if result.ID != 74 || messageStore.calls != 1 {
+		t.Fatalf("legacy fallback result = %#v store=%#v", result, messageStore)
 	}
 }
 
@@ -844,4 +922,20 @@ func (s *idempotentMessageStore) GetLatestMessages(topicID string, limit, offset
 }
 func (s *idempotentMessageStore) GetLatestMessagesForTopics(topicIDs []string) (map[string]*types.Message, error) {
 	return nil, nil
+}
+
+type metadataMessageStore struct {
+	idempotentMessageStore
+	replyTo     int64
+	metadata    map[string]interface{}
+	clientMsgID string
+	calls       int
+}
+
+func (s *metadataMessageStore) SaveMessageWithMetadata(topicID string, fromUID int64, content string, blocks []types.ContentBlock, mode, role, msgType string, replyTo int64, clientMsgID string, metadata map[string]interface{}) (int64, bool, error) {
+	s.calls++
+	s.replyTo = replyTo
+	s.clientMsgID = clientMsgID
+	s.metadata = metadata
+	return s.id, s.duplicate, nil
 }

@@ -67,6 +67,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateChannelGroupBindingsSelectedAtNotNull,
 		migrateMessagesAddCodeMode,
 		migrateMessagesAddClientMsgID,
+		migrateMessagesAddMetadata,
 		migrateGroupsAddCreatedAtColumn,
 		migrateGroupsBackfillCreatedAt,
 		migrateGroupsCreatedAtDefault,
@@ -231,6 +232,7 @@ CREATE TABLE IF NOT EXISTS messages (
     role VARCHAR(20) DEFAULT NULL,
     reply_to BIGINT DEFAULT NULL,
     client_msg_id VARCHAR(128) DEFAULT NULL,
+    metadata JSONB DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `
@@ -712,6 +714,7 @@ ALTER TABLE messages
   ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT NULL;
 `
 const migrateMessagesAddClientMsgID = `ALTER TABLE messages ADD COLUMN IF NOT EXISTS client_msg_id VARCHAR(128) DEFAULT NULL;`
+const migrateMessagesAddMetadata = `ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT NULL;`
 const migrateGroupsAddCreatedAtColumn = `ALTER TABLE "groups" ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NULL;`
 const migrateGroupsBackfillCreatedAt = `
 UPDATE "groups" g
