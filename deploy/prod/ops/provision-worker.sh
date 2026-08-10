@@ -87,7 +87,7 @@ STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
 # --- 工具 ---
 ctyun() {
   local raw status
-  raw="$(timeout --signal=TERM --kill-after=15s 120s ctyun-cli "$@" --output json 2>&1)" || {
+  raw="$(timeout -s TERM -k 15 120s ctyun-cli "$@" --output json 2>&1)" || {
     echo "error: ctyun-cli failed: $*" >&2; echo "$raw" >&2; return 1
   }
   status="$(jq -r '.statusCode // empty' <<<"$raw")"
@@ -166,7 +166,7 @@ fi
 # --- 2. resolve 镜像（指定或最新） ---
 if [[ -z "$IMAGE_ID" ]]; then
   # list 输出 TSV，第 5 列为 createdTime（数字毫秒）→ 按最新排序取第一
-  IMAGE_ID="$(timeout --signal=TERM --kill-after=15s 90s /opt/catsco/ops/list-worker-images.sh 2>/dev/null \
+  IMAGE_ID="$(timeout -s TERM -k 15 90s /opt/catsco/ops/list-worker-images.sh 2>/dev/null \
     | sort -t $'\t' -k5,5nr | head -n1 | cut -f1)"
 fi
 [[ -n "$IMAGE_ID" ]] || { echo "error: no worker image resolved (set --image-id or run list-worker-images)" >&2; exit 1; }
@@ -256,7 +256,7 @@ ssh_opts=(-i "$PRIVATE_KEY" -o BatchMode=yes -o ConnectTimeout=10 \
   -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$STATE_DIR/known_hosts")
 # ssh 统一走 timeout 限时（防挂死；与 bake 脚本一致）
 ssh_run() {
-  timeout --signal=TERM --kill-after=15s 60s ssh "${ssh_opts[@]}" "$@"
+  timeout -s TERM -k 15 60s ssh "${ssh_opts[@]}" "$@"
 }
 ssh_ready=""
 for _ in $(seq 1 36); do

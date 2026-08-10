@@ -6,7 +6,7 @@
 # 只列名称以 catsco-worker- 开头且带 bake label 的私有镜像（与 XiaoBa-CLI
 # Manage-WorkerImages.ps1 同语义，bash 版跑在 Linux server）。
 #
-# 依赖：ctyun-cli + jq + GNU timeout（服务端镜像已装）
+# 依赖：ctyun-cli + jq + timeout（BusyBox/GNU 兼容短选项 -s/-k；服务端镜像已装）
 # 凭据：CTYUN_AK/CTYUN_SK（ctyun-cli 环境变量或 ~/.ctyun-cli.yaml），不进仓库
 set -Eeuo pipefail
 
@@ -24,7 +24,7 @@ done
 # 调 ctyun-cli 并校验 statusCode（fail-closed）
 ctyun() {
   local raw status
-  raw="$(timeout --signal=TERM --kill-after=15s 90s ctyun-cli "$@" --output json 2>&1)" || {
+  raw="$(timeout -s TERM -k 15 90s ctyun-cli "$@" --output json 2>&1)" || {
     echo "error: ctyun-cli failed: $*" >&2
     echo "$raw" >&2
     return 1
