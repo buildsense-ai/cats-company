@@ -55,7 +55,7 @@ STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
 # --- 工具 ---
 ctyun() {
   local raw status
-  raw="$(timeout --signal=TERM --kill-after=15s 120s ctyun-cli "$@" --output json 2>&1)" || {
+  raw="$(timeout -s TERM -k 15 120s ctyun-cli "$@" --output json 2>&1)" || {
     echo "error: ctyun-cli failed: $*" >&2
     echo "$raw" >&2
     return 1

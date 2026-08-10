@@ -71,10 +71,23 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 const args = process.argv.slice(2);
-const idx = args.findIndex(a => !a.startsWith("-"));
-if (idx < 0 || !args[idx + 1]) process.exit(2);
-const cmd = args[idx + 1];
-const rest = args.slice(idx + 2);
+// BusyBox-style timeout: accept only -s SIG / -k KILL_SECS (+ short -sSIG/
+// -kSECS). GNU-only long options (--signal/--kill-after) MUST fail — the
+// production alpine image ships BusyBox timeout.
+let i = 0;
+while (i < args.length) {
+  const a = args[i];
+  if (a.startsWith("--")) {
+    process.stderr.write("fake busybox timeout rejects GNU option: " + a + "\\n");
+    process.exit(2);
+  }
+  if (a === "-s" || a === "-k") { i += 2; continue; }
+  if (a.startsWith("-s") || a.startsWith("-k")) { i += 1; continue; }
+  break; // first non-option = SECS
+}
+if (i >= args.length || i + 1 >= args.length) process.exit(2);
+const cmd = args[i + 1];
+const rest = args.slice(i + 2);
 if (process.platform === "win32") {
   const here = path.join(path.dirname(process.argv[1]), cmd);
   if (fs.existsSync(here) && !path.extname(here)) {
