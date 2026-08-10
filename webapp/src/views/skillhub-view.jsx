@@ -31,6 +31,11 @@ const RETRYABLE_SKILLHUB_SWITCH_ERRORS = new Set([
   'skillhub_websocket_unavailable',
   'target_device_unavailable',
 ]);
+const RETRYABLE_SKILLHUB_DEVICE_LIST_ERRORS = new Set([
+  'NETWORK_ERROR',
+  'REQUEST_TIMEOUT',
+]);
+const RETRYABLE_SKILLHUB_DEVICE_LIST_STATUSES = new Set([500, 502, 503, 504]);
 
 const wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
 
@@ -103,6 +108,12 @@ export function isRetryableSkillHubSwitchError(error) {
     && [404, 409, 503].includes(Number(error?.status || 0));
 }
 
+export function isRetryableSkillHubDeviceListError(error) {
+  const status = Number(error?.status || 0);
+  if (status > 0) return RETRYABLE_SKILLHUB_DEVICE_LIST_STATUSES.has(status);
+  return RETRYABLE_SKILLHUB_DEVICE_LIST_ERRORS.has(String(error?.code || ''));
+}
+
 export async function waitForSkillHubWorkspaceAfterSwitch({
   deviceId,
   readWorkspace,
@@ -122,6 +133,7 @@ export async function waitForSkillHubWorkspaceAfterSwitch({
       const routeReady = capable.some((device) => String(device.deviceId || '') === String(deviceId || ''));
       if (!routeReady) continue;
     } catch (error) {
+      if (!isRetryableSkillHubDeviceListError(error)) throw error;
       lastError = error;
       continue;
     }

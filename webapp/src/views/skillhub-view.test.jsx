@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 import SkillHubView, {
   assertSkillHubDeviceResult,
+  isRetryableSkillHubDeviceListError,
   isRetryableSkillHubSwitchError,
   normalizeOwnedBots,
   normalizeSkillHubDevices,
@@ -250,6 +251,74 @@ describe('SkillHubView', () => {
       waitFor: vi.fn().mockResolvedValue(undefined),
       maxAttempts: 3,
     })).rejects.toMatchObject({ code: 'OWNER_MISMATCH' });
+  });
+
+  it('classifies only transient device-list failures as retryable', () => {
+    expect(isRetryableSkillHubDeviceListError({ code: 'NETWORK_ERROR' })).toBe(true);
+    expect(isRetryableSkillHubDeviceListError({ code: 'REQUEST_TIMEOUT' })).toBe(true);
+    expect(isRetryableSkillHubDeviceListError({ status: 500 })).toBe(true);
+    expect(isRetryableSkillHubDeviceListError({ status: 502 })).toBe(true);
+    expect(isRetryableSkillHubDeviceListError({ status: 503 })).toBe(true);
+    expect(isRetryableSkillHubDeviceListError({ status: 504 })).toBe(true);
+    expect(isRetryableSkillHubDeviceListError({ status: 401 })).toBe(false);
+    expect(isRetryableSkillHubDeviceListError({ status: 403 })).toBe(false);
+    expect(isRetryableSkillHubDeviceListError({ status: 404 })).toBe(false);
+    expect(isRetryableSkillHubDeviceListError({ status: 501 })).toBe(false);
+    expect(isRetryableSkillHubDeviceListError({ code: 'REQUEST_ABORTED' })).toBe(false);
+    expect(isRetryableSkillHubDeviceListError({
+      code: 'NETWORK_ERROR',
+      status: 403,
+    })).toBe(false);
+  });
+
+  it('retries transient device-list failures before reading the workspace', async () => {
+    const readyDevice = {
+      deviceId: 'alice-device',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    };
+    const getDevices = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('offline'), { code: 'NETWORK_ERROR' }))
+      .mockRejectedValueOnce(Object.assign(new Error('unavailable'), { status: 503 }))
+      .mockResolvedValue({ devices: [readyDevice] });
+    const readWorkspace = vi.fn().mockResolvedValue({ bot_uid: '44' });
+    const waitFor = vi.fn().mockResolvedValue(undefined);
+
+    await expect(waitForSkillHubWorkspaceAfterSwitch({
+      deviceId: 'alice-device',
+      getDevices,
+      readWorkspace,
+      waitFor,
+      maxAttempts: 3,
+    })).resolves.toEqual({ bot_uid: '44' });
+    expect(getDevices).toHaveBeenCalledTimes(3);
+    expect(readWorkspace).toHaveBeenCalledTimes(1);
+    expect(waitFor).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([401, 403])('stops immediately when the device list returns HTTP %s', async (status) => {
+    const permanentError = Object.assign(new Error(`HTTP ${status}`), { status });
+    const getDevices = vi.fn().mockRejectedValue(permanentError);
+    const readWorkspace = vi.fn();
+    const waitFor = vi.fn().mockResolvedValue(undefined);
+
+    await expect(waitForSkillHubWorkspaceAfterSwitch({
+      deviceId: 'alice-device',
+      getDevices,
+      readWorkspace,
+      waitFor,
+      maxAttempts: 3,
+    })).rejects.toBe(permanentError);
+    expect(getDevices).toHaveBeenCalledTimes(1);
+    expect(readWorkspace).not.toHaveBeenCalled();
+    expect(waitFor).toHaveBeenCalledTimes(1);
   });
 
   it('waits for an asynchronously published Skill when share initially returns only its ID', async () => {
