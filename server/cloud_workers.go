@@ -352,17 +352,36 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 
 	if err := h.db.SetTenantName(result.UID, tenantName); err != nil {
 		log.Printf("[cloud-worker] failed to save tenant_name for uid %d: %v", result.UID, err)
-		// The instance was already provisioned; destroy it so we do not leave
-		// an orphaned, still-billed cloud instance behind.
-		if h.destroyScript != "" {
-			if _, destroyErr := h.runScript(h.destroyScript, "-Action", "Destroy", "-Name", tenantName); destroyErr != nil {
-				log.Printf("[cloud-worker] destroy %s after finalize failure also failed: %v", tenantName, destroyErr)
+		// The instance was already provisioned; try to destroy it so we do
+		// not leave an orphaned, still-billed instance. Same invariant as the
+		// provision-failure path: only delete the bot record once the destroy
+		// is CONFIRMED successful; otherwise keep a recoverable handle.
+		destroyOK := true
+		if h.destroyScript == "" {
+			destroyOK = false
+			log.Printf("[cloud-worker] no destroy script configured; cannot clean up %s after finalize failure", tenantName)
+		} else if _, destroyErr := h.runScript(h.destroyScript, "-Action", "Destroy", "-Name", tenantName); destroyErr != nil {
+			destroyOK = false
+			log.Printf("[cloud-worker] destroy %s after finalize failure also failed: %v", tenantName, destroyErr)
+		}
+		if destroyOK {
+			if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
+				log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize cloud worker"})
+			return
+		}
+		// Destroy could not be confirmed: keep the bot record and retry
+		// persisting the tenant name so the roster still shows this worker
+		// and the owner can retry delete (which attempts the destroy again).
+		for retry := 0; retry < 3; retry++ {
+			if setErr := h.db.SetTenantName(result.UID, tenantName); setErr == nil {
+				break
 			}
 		}
-		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
-			log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize cloud worker"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "failed to finalize cloud worker; the instance may still exist, retry delete to clean up",
+		})
 		return
 	}
 
@@ -515,23 +534,20 @@ func (h *CloudWorkerHandler) HandleDelete(w http.ResponseWriter, r *http.Request
 
 	// Fail closed: without a destroy script we cannot guarantee the cloud
 	// instance is gone, so deleting the DB record would silently orphan a
-	// still-billed instance. Only an explicit operator override (?force=1)
-	// may skip the destroy step (intended for manual cleanup flows).
-	force := r.URL.Query().Get("force") == "1"
+	// still-billed instance. There is NO public force override on this route
+	// (an unauthenticated ?force=1 would let any owner bypass the guard);
+	// operators must configure CATSCO_WORKER_DESTROY_SCRIPT so every delete
+	// destroys the instance first.
 	if h.destroyScript == "" {
-		if !force {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-				"error": "cloud worker destroy is not configured; refusing to delete the record while the instance may still run",
-			})
-			return
-		}
-		log.Printf("[cloud-worker] FORCED delete of %s without destroy script (operator override)", name)
-	} else {
-		if _, err := h.runScript(h.destroyScript, "-Action", "Destroy", "-Name", name); err != nil {
-			log.Printf("[cloud-worker] destroy %s failed: %v", name, err)
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to destroy cloud worker instance"})
-			return
-		}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "cloud worker destroy is not configured; refusing to delete the record while the instance may still run",
+		})
+		return
+	}
+	if _, err := h.runScript(h.destroyScript, "-Action", "Destroy", "-Name", name); err != nil {
+		log.Printf("[cloud-worker] destroy %s failed: %v", name, err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to destroy cloud worker instance"})
+		return
 	}
 	if botUID != 0 {
 		if err := h.db.DeleteBot(botUID); err != nil {
@@ -594,22 +610,55 @@ func (h *CloudWorkerHandler) runScriptTimeout(timeout time.Duration, script stri
 	return string(out), nil
 }
 
-// parseImageLines extracts image identifiers from a script's line-based output.
-// Comment lines ("#") and column headers are skipped; a real identifier is a
-// single token and is never treated as a header.
-func parseImageLines(out string) []string {
-	images := []string{}
+// cloudImageSummary is one image row from the CATSCO_WORKER_IMAGES_SCRIPT
+// output. Contract: the script MUST be the bash list-worker-images.sh (or any
+// executable emitting the same TSV) — one image per line,
+// `imageID<TAB>name<TAB>version<TAB>commit<TAB>createdTime<TAB>status`.
+// PowerShell .ps1 scripts are NOT runnable on the Linux server image.
+type cloudImageSummary struct {
+	ImageID     string `json:"image_id"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Commit      string `json:"commit"`
+	CreatedTime string `json:"created_time,omitempty"`
+	Status      string `json:"status,omitempty"`
+}
+
+// parseImageLines parses the line-based image listing into structured rows.
+// Comment lines ("#") and column headers are skipped.
+func parseImageLines(out string) []cloudImageSummary {
+	images := []cloudImageSummary{}
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		first := strings.Fields(line)[0]
+		fields := strings.Split(line, "\t")
+		if len(fields) == 0 || strings.TrimSpace(fields[0]) == "" {
+			continue
+		}
+		first := strings.TrimSpace(fields[0])
 		switch first {
 		case "imageID", "name", "version", "commit":
 			continue
 		}
-		images = append(images, line)
+		img := cloudImageSummary{ImageID: first}
+		if len(fields) > 1 {
+			img.Name = strings.TrimSpace(fields[1])
+		}
+		if len(fields) > 2 {
+			img.Version = strings.TrimSpace(fields[2])
+		}
+		if len(fields) > 3 {
+			img.Commit = strings.TrimSpace(fields[3])
+		}
+		if len(fields) > 4 {
+			img.CreatedTime = strings.TrimSpace(fields[4])
+		}
+		if len(fields) > 5 {
+			img.Status = strings.TrimSpace(fields[5])
+		}
+		images = append(images, img)
 	}
 	return images
 }

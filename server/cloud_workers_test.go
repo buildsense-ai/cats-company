@@ -118,6 +118,9 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 			body = "@echo off\r\nexit /b 1\r\n"
 		case "record":
 			body = "@echo off\r\necho %*\r\n"
+		case "tsv":
+			// 真实 list-worker-images.sh TSV 契约：imageID<TAB>name<TAB>version<TAB>commit<TAB>createdTime<TAB>status
+			body = "@echo off\r\necho 79f5b7f4-c06e-4f97-90fa-d69566f23d63\tcatsco-worker-1-4-8-f3f1f3e6\tv1.4.8\tf3f1f3e6\t1786066647\tactive\r\n"
 		default:
 			t.Fatalf("unknown behavior %q", behavior)
 		}
@@ -138,6 +141,9 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 		body = "#!/bin/sh\nexit 1\n"
 	case "record":
 		body = "#!/bin/sh\necho \"$@\"\n"
+	case "tsv":
+		// 真实 list-worker-images.sh TSV 契约（printf 的 \\t 是字面 tab）
+		body = "#!/bin/sh\nprintf '79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tcatsco-worker-1-4-8-f3f1f3e6\\tv1.4.8\\tf3f1f3e6\\t1786066647\\tactive\\n'\n"
 	default:
 		t.Fatalf("unknown behavior %q", behavior)
 	}
@@ -403,7 +409,8 @@ func TestCloudWorkerHandleMetaQuota(t *testing.T) {
 }
 
 func TestCloudWorkerHandleMetaWithImagesScript(t *testing.T) {
-	cfg := workerScriptCfg(t, "7=3", map[string]string{"images": writeWorkerOpScript(t, "ok")})
+	// 用真实 list-worker-images.sh TSV 输出契约（配对 B4-1 bash 脚本）
+	cfg := workerScriptCfg(t, "7=3", map[string]string{"images": writeWorkerOpScript(t, "tsv")})
 	if cfg.ImagesScript == "" {
 		t.Skip("no POSIX shell")
 	}
@@ -422,6 +429,38 @@ func TestCloudWorkerHandleMetaWithImagesScript(t *testing.T) {
 	images, ok := out["images"].([]interface{})
 	if !ok || len(images) != 1 {
 		t.Fatalf("images=%v want 1 entry", out["images"])
+	}
+	first := images[0].(map[string]interface{})
+	if first["image_id"] != "79f5b7f4-c06e-4f97-90fa-d69566f23d63" {
+		t.Fatalf("image_id=%v", first["image_id"])
+	}
+	if first["name"] != "catsco-worker-1-4-8-f3f1f3e6" {
+		t.Fatalf("name=%v", first["name"])
+	}
+	if first["version"] != "v1.4.8" {
+		t.Fatalf("version=%v", first["version"])
+	}
+}
+
+func TestParseImageLines(t *testing.T) {
+	// 真实 list-worker-images.sh TSV 契约（配对小仓 B4-1 bash 脚本）
+	out := "79f5b7f4-c06e-4f97-90fa-d69566f23d63\tcatsco-worker-1-4-8-f3f1f3e6\tv1.4.8\tf3f1f3e6\t1786066647\tactive\n" +
+		"# comment line\n" +
+		"\n" +
+		"imageID\tname\tversion\tcommit\tcreatedTime\tstatus\n" +
+		"abc-123\tcatsco-worker-1-4-7-aaa\tv1.4.7\taaa\t1786000000\tactive\n"
+	images := parseImageLines(out)
+	if len(images) != 2 {
+		t.Fatalf("want 2 images, got %d: %+v", len(images), images)
+	}
+	if images[0].ImageID != "79f5b7f4-c06e-4f97-90fa-d69566f23d63" || images[0].Name != "catsco-worker-1-4-8-f3f1f3e6" || images[0].Version != "v1.4.8" || images[0].Commit != "f3f1f3e6" {
+		t.Fatalf("first row mismatch: %+v", images[0])
+	}
+	if images[0].CreatedTime != "1786066647" || images[0].Status != "active" {
+		t.Fatalf("first row extra fields: %+v", images[0])
+	}
+	if images[1].ImageID != "abc-123" || images[1].Version != "v1.4.7" {
+		t.Fatalf("second row mismatch: %+v", images[1])
 	}
 }
 
@@ -543,24 +582,62 @@ func TestCloudWorkerHandleCreateProvisionFails(t *testing.T) {
 }
 
 func TestCloudWorkerHandleCreateSetTenantFails(t *testing.T) {
-	cfg := workerScriptCfg(t, "7=5", map[string]string{"provision": writeWorkerOpScript(t, "ok")})
-	if cfg.ProvisionScript == "" {
+	// --- SetTenantName fails + destroy ok: instance cleaned up, bot rolled back ---
+	cfg := workerScriptCfg(t, "7=5", map[string]string{
+		"provision": writeWorkerOpScript(t, "ok"),
+		"destroy":   writeWorkerOpScript(t, "ok"),
+	})
+	if cfg.ProvisionScript == "" || cfg.DestroyScript == "" {
 		t.Skip("no POSIX shell")
 	}
 	h, ts := newCloudWorkerTestHandlerCfg(cfg)
 	ts.setTenantNameFail = true
-
 	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers", map[string]string{
 		"username": "bot-x", "display_name": "X",
 	})
 	rec := httptest.NewRecorder()
 	h.HandleCreate(rec, req)
-
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status=%d want 500 body=%s", rec.Code, rec.Body.String())
 	}
 	if len(ts.deletedBots) != 1 {
-		t.Fatalf("want 1 rollback delete, got %v", ts.deletedBots)
+		t.Fatalf("want 1 rollback delete after confirmed destroy, got %v", ts.deletedBots)
+	}
+
+	// --- SetTenantName fails + destroy NOT configured: keep the bot record
+	// (destroy cannot be confirmed; deleting the only record orphans the
+	// possibly-running instance) ---
+	h2, ts2 := newCloudWorkerTestHandlerCfg(workerScriptCfg(t, "7=5", map[string]string{"provision": writeWorkerOpScript(t, "ok")}))
+	ts2.setTenantNameFail = true
+	req2 := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers", map[string]string{
+		"username": "bot-y", "display_name": "Y",
+	})
+	rec2 := httptest.NewRecorder()
+	h2.HandleCreate(rec2, req2)
+	if rec2.Code != http.StatusInternalServerError {
+		t.Fatalf("no-destroy status=%d want 500 body=%s", rec2.Code, rec2.Body.String())
+	}
+	if len(ts2.deletedBots) != 0 {
+		t.Fatalf("bot must be kept when destroy cannot be confirmed: %v", ts2.deletedBots)
+	}
+
+	// --- SetTenantName fails + destroy also fails: keep the bot record ---
+	cfg3 := workerScriptCfg(t, "7=5", map[string]string{
+		"provision": writeWorkerOpScript(t, "ok"),
+		"destroy":   writeWorkerOpScript(t, "fail"),
+	})
+	h3, ts3 := newCloudWorkerTestHandlerCfg(cfg3)
+	ts3.setTenantNameFail = true
+	req3 := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers", map[string]string{
+		"username": "bot-z", "display_name": "Z",
+	})
+	rec3 := httptest.NewRecorder()
+	h3.HandleCreate(rec3, req3)
+	if rec3.Code != http.StatusInternalServerError {
+		t.Fatalf("destroy-fail status=%d want 500 body=%s", rec3.Code, rec3.Body.String())
+	}
+	if len(ts3.deletedBots) != 0 {
+		t.Fatalf("bot must be kept when destroy also fails: %v", ts3.deletedBots)
 	}
 }
 
@@ -633,16 +710,16 @@ func TestCloudWorkerHandleDelete(t *testing.T) {
 		t.Fatalf("deletedBots=%v want 0 (fail closed)", ts2.deletedBots)
 	}
 
-	// --- without destroy script but explicit operator override (?force=1):
-	// the record may be deleted (instance cleanup is the operator's duty) ---
+	// --- without destroy script: force=1 is NOT honored (no public override;
+	// any owner could otherwise bypass the fail-closed guard) ---
 	req2f := cloudWorkerRequest(7, http.MethodDelete, "/api/cloud-workers/bot-bot-b?force=1", nil)
 	rec2f := httptest.NewRecorder()
 	h2.HandleSub(rec2f, req2f)
-	if rec2f.Code != http.StatusOK {
-		t.Fatalf("force status=%d want 200 body=%s", rec2f.Code, rec2f.Body.String())
+	if rec2f.Code != http.StatusServiceUnavailable {
+		t.Fatalf("force status=%d want 503 body=%s", rec2f.Code, rec2f.Body.String())
 	}
-	if len(ts2.deletedBots) != 1 {
-		t.Fatalf("deletedBots=%v want 1 after force override", ts2.deletedBots)
+	if len(ts2.deletedBots) != 0 {
+		t.Fatalf("deletedBots=%v want 0 (force must not bypass fail-closed)", ts2.deletedBots)
 	}
 
 	// --- destroy failure: 502, bot kept ---
@@ -710,13 +787,6 @@ func TestCloudWorkerRunScriptVersionArg(t *testing.T) {
 	}
 	if !strings.Contains(out, "-Version") || !strings.Contains(out, "v1") {
 		t.Fatalf("version arg not forwarded: %q", out)
-	}
-}
-
-func TestParseImageLines(t *testing.T) {
-	got := parseImageLines("imageID name version commit\n# comment\nimg-123\n  \nname\n")
-	if len(got) != 1 || got[0] != "img-123" {
-		t.Fatalf("got %v want [img-123]", got)
 	}
 }
 

@@ -18,8 +18,9 @@
 - 仍调用 `/api/bots/deploy`、`Deployer.Status`、`Deployer.Remove` 的旧客户端会收到 404/405。由于前端零引用且同仓部署，实际无存量调用方；如需兼容，见"回滚方案"。
 - 数据库里已有 `tenant_name` 的 bot（旧链路托管或历史标记）会被新控制面 `/api/cloud-workers` 列表归为 cloud worker：
   - 列表 `status` 为 `unknown`（新控制面不反查旧 gauz-platform 状态；回滚/重置/删除的操作结果由脚本反馈）。
-  - **删除走新的 `CATSCO_WORKER_DESTROY_SCRIPT`；未配置 destroy 脚本时 `DELETE /api/cloud-workers/{name}` 返回 503 且保留记录**（fail-closed，防止"无法销毁实例却删除唯一可定位记录"导致孤儿实例持续计费）。运维可先配置 destroy 脚本，或使用显式运维强制解绑 `DELETE /api/cloud-workers/{name}?force=1`。
-  - 创建失败时的兜底：若 provision 脚本已创建实例后失败，服务端会立即按 `tenant_name` 调用 destroy 脚本清理；若销毁也失败，则**保留 bot 记录并落 `tenant_name`** 作为可重试句柄（列表仍可见，可重试删除），而不是先删唯一关联记录。
+  - **删除走新的 `CATSCO_WORKER_DESTROY_SCRIPT`；未配置 destroy 脚本时 `DELETE /api/cloud-workers/{name}` 返回 503 且保留记录**（fail-closed，防止"无法销毁实例却删除唯一可定位记录"导致孤儿实例持续计费）。**无公开 force 开关**（`?force=1` 不生效——任意 owner 不能绕过保护）；运维必须先配置 destroy 脚本才能走正常删除，或直接在云控制台/DB 层处理。
+  - 创建失败时的兜底：若 provision 脚本已创建实例后失败，服务端会立即按 `tenant_name` 调用 destroy 脚本清理；若销毁也失败，则**保留 bot 记录并落 `tenant_name`** 作为可重试句柄（列表仍可见，可重试删除），而不是先删唯一关联记录。**同一不变量也适用 finalize（SetTenantName）失败**：只有 destroy 确认成功才删除 bot 记录。
+  - **镜像列表契约**：`CATSCO_WORKER_IMAGES_SCRIPT` 必须指向 Linux 可执行脚本（B4-1 的 `list-worker-images.sh`），输出每行一个镜像的 TSV：`imageID<TAB>name<TAB>version<TAB>commit<TAB>createdTime<TAB>status`。控制面 `/api/cloud-workers/meta` 解析为结构化数组。PowerShell `Manage-WorkerImages.ps1` 是 CI/开发机 bake 工具链，不能在 Linux server 上执行，不作为控制面脚本。
 
 ## 迁移路径
 
