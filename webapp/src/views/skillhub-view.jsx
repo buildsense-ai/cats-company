@@ -21,7 +21,11 @@ const SKILLHUB_DEVICE_SCHEMAS = {
 
 const SKILLHUB_SELECTED_BOT_STORAGE_PREFIX = 'catsco.skillhub.selectedBot';
 const SKILLHUB_SWITCH_RETRY_ATTEMPTS = 40;
+const SKILLHUB_SWITCH_TIMEOUT_MS = 60_000;
+const SKILLHUB_SWITCH_INITIAL_DELAY_MS = 2_000;
 const SKILLHUB_SWITCH_RETRY_DELAY_MS = 1_500;
+const SKILLHUB_DEVICE_LIST_TIMEOUT_MS = 5_000;
+const SKILLHUB_WORKSPACE_TIMEOUT_MS = 8_000;
 const RETRYABLE_SKILLHUB_SWITCH_ERRORS = new Set([
   'BOT_NOT_ACTIVE',
   'REQUEST_EXPIRED',
@@ -39,6 +43,40 @@ const RETRYABLE_SKILLHUB_DEVICE_LIST_ERRORS = new Set([
 const RETRYABLE_SKILLHUB_DEVICE_LIST_STATUSES = new Set([500, 502, 503, 504]);
 
 const wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
+
+function runWithTimeout(operation, timeoutMs, createTimeoutError) {
+  let result;
+  try {
+    result = operation();
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(createTimeoutError()), timeoutMs);
+    Promise.resolve(result).then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function skillHubDeviceListTimeoutError() {
+  const error = new Error('请求设备列表超时，请稍后重试');
+  error.code = 'REQUEST_TIMEOUT';
+  return error;
+}
+
+function skillHubWorkspaceTimeoutError() {
+  const error = new Error('等待本地 XiaoBa 响应超时，请确认设备在线并已更新到最新版本。');
+  error.code = 'skillhub_device_timeout';
+  return error;
+}
 
 export function normalizeSkillHubDevices(response) {
   const devices = Array.isArray(response) ? response : (response?.devices || []);
@@ -122,15 +160,33 @@ export async function waitForSkillHubWorkspaceAfterSwitch({
   isCurrent = () => true,
   waitFor = wait,
   maxAttempts = SKILLHUB_SWITCH_RETRY_ATTEMPTS,
+  timeoutMs = SKILLHUB_SWITCH_TIMEOUT_MS,
+  initialDelayMs = SKILLHUB_SWITCH_INITIAL_DELAY_MS,
   retryDelayMs = SKILLHUB_SWITCH_RETRY_DELAY_MS,
+  deviceListTimeoutMs = SKILLHUB_DEVICE_LIST_TIMEOUT_MS,
+  workspaceTimeoutMs = SKILLHUB_WORKSPACE_TIMEOUT_MS,
+  now = () => Date.now(),
 }) {
+  const deadline = now() + Math.max(1, Number(timeoutMs) || SKILLHUB_SWITCH_TIMEOUT_MS);
+  const remainingMs = () => Math.max(0, deadline - now());
   let lastError;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    await waitFor(attempt === 0 ? 2_000 : retryDelayMs);
+    const delayMs = Math.min(
+      attempt === 0 ? initialDelayMs : retryDelayMs,
+      remainingMs(),
+    );
+    if (delayMs <= 0) break;
+    await waitFor(delayMs);
     if (!isCurrent()) return null;
+    if (remainingMs() <= 0) break;
 
     try {
-      const capable = normalizeSkillHubDevices(await getDevices());
+      const requestTimeoutMs = Math.min(deviceListTimeoutMs, remainingMs());
+      const capable = normalizeSkillHubDevices(await runWithTimeout(
+        () => getDevices({ timeoutMs: requestTimeoutMs }),
+        requestTimeoutMs,
+        skillHubDeviceListTimeoutError,
+      ));
       const routeReady = capable.some((device) => String(device.deviceId || '') === String(deviceId || ''));
       if (!routeReady) continue;
     } catch (error) {
@@ -140,7 +196,12 @@ export async function waitForSkillHubWorkspaceAfterSwitch({
     }
 
     try {
-      return await readWorkspace();
+      const requestTimeoutMs = Math.min(workspaceTimeoutMs, remainingMs());
+      return await runWithTimeout(
+        () => readWorkspace(requestTimeoutMs),
+        requestTimeoutMs,
+        skillHubWorkspaceTimeoutError,
+      );
     } catch (error) {
       if (!isRetryableSkillHubSwitchError(error)) throw error;
       lastError = error;
@@ -628,7 +689,7 @@ export default function SkillHubView({ user }) {
         setLocalNotice('正在切换本地 Bot，等待 XiaoBa 重新连接…');
         workspace = await waitForSkillHubWorkspaceAfterSwitch({
           deviceId: requestedDeviceID,
-          readWorkspace: () => invoke(SKILLHUB_DEVICE_TOOLS.workspace, {}, 8_000),
+          readWorkspace: (timeoutMs) => invoke(SKILLHUB_DEVICE_TOOLS.workspace, {}, timeoutMs),
           isCurrent: isCurrentRequest,
         });
         if (!workspace) return;

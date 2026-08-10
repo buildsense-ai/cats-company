@@ -621,7 +621,7 @@ export const api = {
   getDeviceConnectorPairing: (pairingId) =>
     request('GET', `/api/device-connectors/pairings/${encodeURIComponent(pairingId)}`),
   getCatsCoDesktopReleases: () => request('GET', '/api/catsco/desktop-releases'),
-  getDevices: () => request('GET', '/api/devices'),
+  getDevices: (options = {}) => request('GET', '/api/devices', undefined, options),
   unlinkDevice: (deviceId) => request('DELETE', `/api/devices/${encodeURIComponent(deviceId)}`),
   getDeviceAudit: (limit = 20) => request('GET', `/api/devices/audit?limit=${limit}`),
 
@@ -996,7 +996,8 @@ export function requestSkillHubDeviceTool({
   const requestId = globalThis.crypto?.randomUUID?.()
     || `skillhub-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
   const messageId = nextMsgId();
-  const expiresAt = Date.now() + Math.max(5_000, Math.min(Number(timeoutMs) || 30_000, 120_000));
+  const requestTimeoutMs = Math.max(1, Math.min(Number(timeoutMs) || 30_000, 120_000));
+  const expiresAt = Date.now() + requestTimeoutMs;
 
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -1012,7 +1013,7 @@ export function requestSkillHubDeviceTool({
       const error = new Error('等待本地 XiaoBa 响应超时，请确认设备在线并已更新到最新版本。');
       error.code = 'skillhub_device_timeout';
       reject(error);
-    }), expiresAt - Date.now() + 1_000);
+    }), requestTimeoutMs);
 
     removeHandler = onWSMessage((message) => {
       if (message?._type === 'ws_close' || message?._type === 'ws_auth_expired') {

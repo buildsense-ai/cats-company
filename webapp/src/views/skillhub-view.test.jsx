@@ -349,6 +349,72 @@ describe('SkillHubView', () => {
     expect(waitFor).toHaveBeenCalledTimes(1);
   });
 
+  it('stops at the absolute deadline when the device list never settles', async () => {
+    vi.useFakeTimers();
+    const getDevices = vi.fn(() => new Promise(() => {}));
+    const readWorkspace = vi.fn();
+
+    const result = waitForSkillHubWorkspaceAfterSwitch({
+      deviceId: 'alice-device',
+      getDevices,
+      readWorkspace,
+      timeoutMs: 250,
+      initialDelayMs: 25,
+      retryDelayMs: 25,
+      deviceListTimeoutMs: 50,
+    }).catch((error) => error);
+
+    await vi.advanceTimersByTimeAsync(251);
+
+    await expect(result).resolves.toMatchObject({
+      code: 'skillhub_device_switch_timeout',
+      cause: { code: 'REQUEST_TIMEOUT' },
+    });
+    expect(getDevices).toHaveBeenCalledTimes(3);
+    expect(getDevices.mock.calls.map(([options]) => options.timeoutMs)).toEqual([50, 50, 50]);
+    expect(readWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('caps repeated workspace attempts to the remaining absolute deadline', async () => {
+    const readyDevice = {
+      deviceId: 'alice-device',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    };
+    let clock = 0;
+    const waitFor = vi.fn(async (delayMs) => { clock += delayMs; });
+    const readWorkspace = vi.fn(async (requestTimeoutMs) => {
+      clock += requestTimeoutMs;
+      throw Object.assign(new Error('workspace timeout'), { code: 'skillhub_device_timeout' });
+    });
+
+    await expect(waitForSkillHubWorkspaceAfterSwitch({
+      deviceId: 'alice-device',
+      getDevices: vi.fn().mockResolvedValue({ devices: [readyDevice] }),
+      readWorkspace,
+      waitFor,
+      timeoutMs: 103,
+      initialDelayMs: 10,
+      retryDelayMs: 10,
+      deviceListTimeoutMs: 20,
+      workspaceTimeoutMs: 20,
+      now: () => clock,
+    })).rejects.toMatchObject({
+      code: 'skillhub_device_switch_timeout',
+      cause: { code: 'skillhub_device_timeout' },
+    });
+    expect(readWorkspace.mock.calls.map(([requestTimeoutMs]) => requestTimeoutMs))
+      .toEqual([20, 20, 20, 3]);
+    expect(clock).toBe(103);
+  });
+
   it('waits for an asynchronously published Skill when share initially returns only its ID', async () => {
     const getSkill = vi.fn()
       .mockRejectedValueOnce(Object.assign(new Error('not found'), { status: 404 }))
