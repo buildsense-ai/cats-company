@@ -28,6 +28,7 @@ export default function ChatComposer({
   stop = false,
   onStop,
   stopDisabled = false,
+  agentReplyActive = false,
   onCloseMenus,
   context,
   notices,
@@ -124,7 +125,9 @@ export default function ChatComposer({
           context ? 'has-context' : '',
           notices ? 'has-notices' : '',
           attachments.length > 0 ? 'has-attachments' : '',
+          agentReplyActive ? 'is-agent-reply-active' : '',
         ].filter(Boolean).join(' ')}
+        aria-busy={agentReplyActive}
       >
         {boxOverlay}
         {context && <div className="v3-composer-context">{context}</div>}

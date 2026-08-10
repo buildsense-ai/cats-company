@@ -42,15 +42,16 @@ func (a *Adapter) SaveBotConfigWithOwner(uid, ownerID int64, apiEndpoint, model 
 // GetBotConfig retrieves bot configuration by user ID.
 func (a *Adapter) GetBotConfig(uid int64) (*types.BotConfig, error) {
 	bc := &types.BotConfig{}
-	var visibility string
+	var visibility, skillsVisibility string
 	err := a.db.QueryRow(
-		`SELECT user_id, COALESCE(owner_id, 0), api_endpoint, model, enabled, COALESCE(visibility, 'public'), COALESCE(body_id, '')
+		`SELECT user_id, COALESCE(owner_id, 0), api_endpoint, model, enabled, COALESCE(visibility, 'public'), COALESCE(skills_visibility, 'owner'), COALESCE(body_id, '')
 		 FROM bot_config WHERE user_id = $1`, uid,
-	).Scan(&bc.UserID, &bc.OwnerID, &bc.APIEndpoint, &bc.Model, &bc.Enabled, &visibility, &bc.BodyID)
+	).Scan(&bc.UserID, &bc.OwnerID, &bc.APIEndpoint, &bc.Model, &bc.Enabled, &visibility, &skillsVisibility, &bc.BodyID)
 	if err != nil {
 		return nil, fmt.Errorf("get bot config: %w", err)
 	}
 	bc.Visibility = types.BotVisibility(visibility)
+	bc.SkillsVisibility = types.BotSkillsVisibility(skillsVisibility)
 	return bc, nil
 }
 
@@ -214,6 +215,7 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 		        COALESCE(b.model, '') as model,
 		        COALESCE(b.enabled, true) as enabled,
 		        COALESCE(b.visibility, 'public') as visibility,
+		        COALESCE(b.skills_visibility, 'owner') as skills_visibility,
 		        b.tenant_name
 		 FROM users u LEFT JOIN bot_config b ON u.id = b.user_id
 		 WHERE u.account_type = 'bot' AND b.owner_id = $1
@@ -228,24 +230,25 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 	var bots []map[string]interface{}
 	for rows.Next() {
 		var id int64
-		var username, displayName, avatarURL, apiEndpoint, model, visibility string
+		var username, displayName, avatarURL, apiEndpoint, model, visibility, skillsVisibility string
 		var tenantName *string
 		var state int
 		var enabled bool
 		if err := rows.Scan(&id, &username, &displayName, &avatarURL, &state,
-			&apiEndpoint, &model, &enabled, &visibility, &tenantName); err != nil {
+			&apiEndpoint, &model, &enabled, &visibility, &skillsVisibility, &tenantName); err != nil {
 			return nil, err
 		}
 		bot := map[string]interface{}{
-			"id":           id,
-			"username":     username,
-			"display_name": displayName,
-			"avatar_url":   avatarURL,
-			"state":        state,
-			"api_endpoint": apiEndpoint,
-			"model":        model,
-			"enabled":      enabled,
-			"visibility":   visibility,
+			"id":                id,
+			"username":          username,
+			"display_name":      displayName,
+			"avatar_url":        avatarURL,
+			"state":             state,
+			"api_endpoint":      apiEndpoint,
+			"model":             model,
+			"enabled":           enabled,
+			"visibility":        visibility,
+			"skills_visibility": skillsVisibility,
 		}
 		if tenantName != nil {
 			bot["tenant_name"] = *tenantName
@@ -319,6 +322,15 @@ func (a *Adapter) GetTenantName(botUID int64) (string, error) {
 func (a *Adapter) SetBotVisibility(botUID int64, visibility string) error {
 	_, err := a.db.Exec(
 		`UPDATE bot_config SET visibility = $1 WHERE user_id = $2`,
+		visibility, botUID,
+	)
+	return err
+}
+
+// SetBotSkillsVisibility updates who can inspect a bot's redacted skill list.
+func (a *Adapter) SetBotSkillsVisibility(botUID int64, visibility string) error {
+	_, err := a.db.Exec(
+		`UPDATE bot_config SET skills_visibility = $1 WHERE user_id = $2`,
 		visibility, botUID,
 	)
 	return err

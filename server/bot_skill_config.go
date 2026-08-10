@@ -34,6 +34,36 @@ type botDefinitionSkillsResponse struct {
 	UpdatedAt string              `json:"updatedAt,omitempty"`
 }
 
+type botViewerSkill struct {
+	Source  string `json:"source"`
+	SkillID string `json:"skillId"`
+	Version string `json:"version"`
+}
+
+type botViewerSkillsResponse struct {
+	BotID            string                    `json:"botId"`
+	SkillsVisibility types.BotSkillsVisibility `json:"skills_visibility"`
+	Skills           []botViewerSkill          `json:"skills"`
+}
+
+type botSkillAccessStore interface {
+	GetBotConfig(botUID int64) (*types.BotConfig, error)
+	AreFriends(uid1, uid2 int64) (bool, error)
+}
+
+func validBotSkillsVisibility(visibility types.BotSkillsVisibility) bool {
+	return visibility == types.BotSkillsOwner ||
+		visibility == types.BotSkillsAuthorized ||
+		visibility == types.BotSkillsPublic
+}
+
+func normalizeBotSkillsVisibility(visibility types.BotSkillsVisibility) types.BotSkillsVisibility {
+	if validBotSkillsVisibility(visibility) {
+		return visibility
+	}
+	return types.BotSkillsOwner
+}
+
 // HandleOwnerSkills exposes a field-level convenience API for WebApp callers.
 // Persistence and concurrency still belong to the canonical BotDefinition.
 func (h *BotDefinitionHandler) HandleOwnerSkills(w http.ResponseWriter, r *http.Request) {
@@ -47,6 +77,80 @@ func (h *BotDefinitionHandler) HandleOwnerSkills(w http.ResponseWriter, r *http.
 		return
 	}
 	h.handleSkillsForBot(w, r, botUID)
+}
+
+// HandleViewerSkills exposes only the skill identity fields allowed by the
+// owner's visibility policy. The full Bot definition remains owner-only.
+func (h *BotDefinitionHandler) HandleViewerSkills(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	viewerUID := UIDFromContext(r.Context())
+	if viewerUID <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	botUID, err := strconv.ParseInt(r.URL.Query().Get("uid"), 10, 64)
+	if err != nil || botUID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
+		return
+	}
+	access, ok := h.owners.(botSkillAccessStore)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "skill access policy is unavailable"})
+		return
+	}
+	config, err := access.GetBotConfig(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+		return
+	}
+	ownerUID, err := h.owners.GetBotOwner(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+		return
+	}
+	visibility := normalizeBotSkillsVisibility(config.SkillsVisibility)
+	allowed := viewerUID == ownerUID || visibility == types.BotSkillsPublic
+	if !allowed && visibility == types.BotSkillsAuthorized {
+		allowed, err = access.AreFriends(viewerUID, botUID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check Agent access"})
+			return
+		}
+	}
+	if !allowed {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "Agent 所有者未公开技能列表"})
+		return
+	}
+	if h == nil || h.definitions == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot definition is unavailable"})
+		return
+	}
+	record, err := h.loadDefinition(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load bot definition"})
+		return
+	}
+	response := botViewerSkillsResponse{
+		BotID:            strconv.FormatInt(botUID, 10),
+		SkillsVisibility: visibility,
+		Skills:           []botViewerSkill{},
+	}
+	if record != nil {
+		if strings.TrimSpace(record.Definition.BotID) != "" {
+			response.BotID = strings.TrimSpace(record.Definition.BotID)
+		}
+		for _, skill := range record.Definition.Skills {
+			response.Skills = append(response.Skills, botViewerSkill{
+				Source: skill.Source, SkillID: skill.SkillID, Version: skill.Version,
+			})
+		}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, response)
 }
 
 // HandleRuntimeSkills is the bot API-key form of the same field-level API.

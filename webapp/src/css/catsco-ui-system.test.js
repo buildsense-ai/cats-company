@@ -121,16 +121,20 @@ describe('CatsCo shell styling', () => {
 
   it('keeps sidebar chrome fixed while the navigation list owns overflow', () => {
     const headerRule = ruleFor('.v3-sidebar-header');
+    const collapsedHeaderRule = ruleFor('.v3-sidebar.collapsed .v3-sidebar-header');
     const collapseButtonRule = ruleFor('.v3-sidebar-collapse-btn');
     const sidebarRule = ruleFor('.v3-sidebar');
     const toolsRule = ruleFor('.cc-sidebar-tools');
     const listRule = ruleFor('.v3-chat-list');
     const footerRule = ruleFor('.v3-profile-footer');
 
-    expect(headerRule).toContain('height: 44.8px;');
-    expect(headerRule).toContain('min-height: 44.8px;');
-    expect(headerRule).toContain('flex: 0 0 44.8px;');
+    expect(headerRule).toContain('height: 48px;');
+    expect(headerRule).toContain('min-height: 48px;');
+    expect(headerRule).toContain('flex: 0 0 48px;');
+    expect(headerRule).toContain('padding: 0 8px 0 12px;');
     expect(headerRule).toContain('border-bottom: 0;');
+    expect(collapsedHeaderRule).toContain('height: 44.8px;');
+    expect(collapsedHeaderRule).toContain('flex-basis: 44.8px;');
     expect(sidebarRule).toContain('font-family: var(--cc-font-sans);');
     expect(collapseButtonRule).toContain('width: 30.4px;');
     expect(collapseButtonRule).toContain('height: 30.4px;');
@@ -822,7 +826,7 @@ describe('CatsCo shell styling', () => {
   });
 
   it('zooms compact task artwork without resizing its button and shows a fixed label', () => {
-    const buttonRule = ruleFor('.cc-compact-new-chat,\n.cc-compact-conversation');
+    const buttonRule = ruleFor('.cc-compact-new-chat,\n.cc-compact-tool,\n.cc-compact-conversation');
     const avatarRule = ruleFor('.cc-compact-conversation .oc-avatar');
     const hintRule = ruleFor('.cc-compact-task-hint');
 
@@ -834,6 +838,50 @@ describe('CatsCo shell styling', () => {
     expect(css).toContain('transform: scale(1.14);');
     expect(hintRule).toContain('position: fixed;');
     expect(hintRule).toContain('pointer-events: none;');
+  });
+
+  it('keeps collapsed sidebar tools transparent until an interaction state is active', () => {
+    const newChatRule = ruleFor('.cc-compact-new-chat');
+    const skillHubRule = ruleFor('.v3-sidebar.collapsed .cc-sidebar-skillhub-entry');
+    const activeSkillHubRule = ruleFor('.v3-sidebar.collapsed .cc-sidebar-skillhub-entry:is(:active, .active)');
+    const expandedHistoryRule = ruleFor('.cc-compact-history-trigger[aria-expanded="true"]');
+    const historyPanelRule = ruleFor('.cc-compact-history-panel');
+    const historyItemRule = ruleFor('.cc-compact-history-item');
+    const historyLabelRule = ruleFor('.cc-compact-history-label');
+    const historyTooltipRule = ruleFor('.cc-compact-history-tooltip');
+    const compactHistoryHoverRule = ruleFor('.cc-compact-history-item:is(:hover, :focus-visible)');
+    const expandedHistoryHoverRule = ruleFor('.v3-chat-item.cc-history-item:is(:hover, :focus-within)');
+    const interactionRule = ruleFor('.cc-compact-new-chat:hover,\n.cc-compact-tool:hover,\n.cc-compact-conversation:hover,\n.cc-compact-new-chat:active,\n.cc-compact-tool:active,\n.cc-compact-conversation.active,\n.cc-compact-new-chat:focus-visible,\n.cc-compact-tool:focus-visible,\n.cc-compact-conversation:focus-visible');
+
+    expect(newChatRule).not.toContain('background: var(--cc-panel);');
+    expect(skillHubRule).toContain('width: 42px;');
+    expect(skillHubRule).toContain('height: 42px;');
+    expect(skillHubRule).toContain('min-height: 42px;');
+    expect(skillHubRule).toContain('border-radius: 12px;');
+    expect(skillHubRule).toContain('background: transparent;');
+    expect(activeSkillHubRule).toContain('background: transparent;');
+    expect(activeSkillHubRule).toContain('color: var(--cc-accent-text);');
+    expect(expandedHistoryRule).toContain('background: var(--cc-hover);');
+    expect(expandedHistoryRule).toContain('box-shadow: none;');
+    expect(historyPanelRule).toContain('background: var(--cc-history-panel-bg);');
+    expect(historyPanelRule).toContain('grid-template-columns: minmax(0, 1fr);');
+    expect(historyPanelRule).toContain('overflow-x: hidden;');
+    expect(historyPanelRule).toContain('overflow-y: auto;');
+    expect(historyItemRule).toContain('min-width: 0;');
+    expect(historyItemRule).toContain('overflow: hidden;');
+    expect(historyLabelRule).toContain('flex: 1 1 auto;');
+    expect(historyLabelRule).toContain('text-overflow: ellipsis;');
+    expect(historyTooltipRule).toContain('position: fixed;');
+    expect(historyTooltipRule).toContain('background: var(--cc-history-panel-bg);');
+    expect(historyTooltipRule).toContain('pointer-events: none;');
+    expect(css).toContain('--cc-history-panel-bg: #272729;');
+    expect(css).toContain('--cc-history-hover: #37373a;');
+    expect(css).toContain('--cc-history-hover-border: rgba(255, 255, 255, 0.08);');
+    expect(compactHistoryHoverRule).toContain('background: var(--cc-history-hover);');
+    expect(compactHistoryHoverRule).toContain('box-shadow: inset 0 0 0 1px var(--cc-history-hover-border);');
+    expect(expandedHistoryHoverRule).toContain('background: var(--cc-history-hover);');
+    expect(expandedHistoryHoverRule).toContain('box-shadow: inset 0 0 0 1px var(--cc-history-hover-border);');
+    expect(interactionRule).toContain('background: var(--cc-hover);');
   });
 
   it('overlays compact task status on the avatar without changing rail geometry', () => {
@@ -1000,6 +1048,18 @@ describe('CatsCo shell styling', () => {
     expect(css).toContain('opacity: 0.88;');
     expect(css).toContain('animation: none;');
     expect(ruleFor('.v3-composer-box')).toContain('width: min(760px, 100%);');
+    expect(ruleFor('.v3-composer-box.is-agent-reply-active'))
+      .toContain('animation: cc-composer-agent-reply 1800ms ease-in-out infinite;');
+    expect(css).toContain('@keyframes cc-composer-agent-reply');
+    expect(css).toContain('border-color: color-mix(in srgb, var(--cc-accent) 56%, transparent);');
+    expect(css).toContain('border-color: color-mix(in srgb, var(--cc-accent) 88%, white 12%);');
+    expect(css).not.toContain('border-color: rgba(31, 211, 151, 0.95);');
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.v3-composer-box\.is-agent-reply-active \{[^}]*animation: none;/,
+    );
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?border-color: color-mix\(in srgb, var\(--cc-accent\) 84%, transparent\);/,
+    );
     expect(ruleFor('.v3-composer-notices')).toContain('width: 100%;');
     expect(noticeRule).toContain('min-height: 36px;');
     expect(noticeRule).toContain('padding: 8px 14px 8px 28px;');

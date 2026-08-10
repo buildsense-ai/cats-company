@@ -16,6 +16,8 @@ import (
 type botDefinitionTestStore struct {
 	owners  map[int64]int64
 	records map[int64]*types.BotDefinitionRecord
+	configs map[int64]*types.BotConfig
+	friends map[[2]int64]bool
 }
 
 func (s *botDefinitionTestStore) GetBotOwner(botUID int64) (int64, error) {
@@ -23,6 +25,18 @@ func (s *botDefinitionTestStore) GetBotOwner(botUID int64) (int64, error) {
 		return owner, nil
 	}
 	return 0, store.ErrStaleBotModelRevision
+}
+
+func (s *botDefinitionTestStore) GetBotConfig(botUID int64) (*types.BotConfig, error) {
+	if config := s.configs[botUID]; config != nil {
+		copy := *config
+		return &copy, nil
+	}
+	return nil, store.ErrStaleBotModelRevision
+}
+
+func (s *botDefinitionTestStore) AreFriends(uid1, uid2 int64) (bool, error) {
+	return s.friends[[2]int64{uid1, uid2}] || s.friends[[2]int64{uid2, uid1}], nil
 }
 
 func (s *botDefinitionTestStore) GetBotDefinition(botUID int64) (*types.BotDefinitionRecord, error) {

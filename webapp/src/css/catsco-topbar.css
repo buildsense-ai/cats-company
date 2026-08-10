@@ -720,6 +720,12 @@
   border-radius: var(--cc-radius-md);
 }
 
+.v3-cloud-action:disabled:hover {
+  border-color: transparent;
+  background: transparent;
+  color: var(--cc-muted);
+}
+
 .v3-local-assistant-status:focus-visible,
 .v3-action-btn:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--cc-accent) 72%, transparent);

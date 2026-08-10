@@ -52,6 +52,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddAPIKey,
 		migrateBotConfigAddOwnerID,
 		migrateBotConfigAddVisibility,
+		migrateBotConfigAddSkillsVisibility,
 		migrateBotConfigAddTenantName,
 		migrateBotConfigAddBodyID,
 		migrateChannelAgentEntriesAddAppID,
@@ -296,6 +297,7 @@ CREATE TABLE IF NOT EXISTS bot_config (
     config JSONB DEFAULT NULL,
     api_key VARCHAR(128) DEFAULT NULL,
     visibility VARCHAR(16) NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','private')),
+	 skills_visibility VARCHAR(16) NOT NULL DEFAULT 'owner' CHECK (skills_visibility IN ('owner','authorized','public')),
     tenant_name VARCHAR(128) DEFAULT NULL,
     body_id VARCHAR(128) DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -697,6 +699,7 @@ const migrateMessagesAddReplyTo = `ALTER TABLE messages ADD COLUMN IF NOT EXISTS
 const migrateBotConfigAddAPIKey = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS api_key VARCHAR(128) DEFAULT NULL;`
 const migrateBotConfigAddOwnerID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS owner_id BIGINT DEFAULT NULL;`
 const migrateBotConfigAddVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'public';`
+const migrateBotConfigAddSkillsVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS skills_visibility VARCHAR(16) NOT NULL DEFAULT 'owner';`
 const migrateBotConfigAddTenantName = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(128) DEFAULT NULL;`
 const migrateBotConfigAddBodyID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS body_id VARCHAR(128) DEFAULT NULL;`
 const migrateChannelAgentEntriesAddAppID = `ALTER TABLE channel_agent_entries ADD COLUMN IF NOT EXISTS channel_app_id VARCHAR(128) NOT NULL DEFAULT '';`

@@ -8,6 +8,7 @@ vi.mock('../api', () => ({
     getAgents: vi.fn(),
     getFriends: vi.fn(),
     getMyBots: vi.fn(),
+    setBotSkillsVisibility: vi.fn(),
     uploadFile: vi.fn(),
   },
   getWebSocketURL: vi.fn(() => 'wss://app.catsco.cc/v0/channels'),
@@ -27,6 +28,7 @@ describe('AgentStoreModal', () => {
     api.getAgents.mockReset().mockResolvedValue({ agents: [] });
     api.getFriends.mockReset().mockResolvedValue({ friends: [] });
     api.getMyBots.mockReset().mockResolvedValue({ bots: [] });
+    api.setBotSkillsVisibility.mockReset().mockResolvedValue({ skills_visibility: 'owner' });
     api.uploadFile.mockReset().mockResolvedValue({ url: '/uploads/avatar.png' });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -258,5 +260,93 @@ describe('AgentStoreModal', () => {
     expect(container.querySelector('.cc-agent-manager-body input[type="text"]').value).toBe('Beta Agent');
     expect(container.querySelector('.cc-agent-manager-body .oc-avatar-img')?.getAttribute('src'))
       .toBe('/uploads/beta.png');
+  });
+
+  test('defaults skill visibility to owner and saves a selected audience', async () => {
+    let resolveVisibility;
+    api.setBotSkillsVisibility.mockReturnValue(new Promise((resolve) => {
+      resolveVisibility = resolve;
+    }));
+    api.getMyBots.mockResolvedValue({
+      bots: [{
+        id: 42,
+        uid: 42,
+        username: 'dev-agent',
+        display_name: 'Dev Agent',
+        relation: 'owner',
+        is_owner: true,
+        visibility: 'public',
+      }],
+    });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        initialAgentId: 42,
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const options = [...container.querySelectorAll('.cc-agent-permission-options > button')];
+    expect(options.map((button) => button.textContent)).toEqual([
+      '仅自己只有你能查看技能列表',
+      'Agent 使用者已添加该 Agent 的用户可查看',
+      '公开所有已登录用户都可查看',
+    ]);
+    expect(options[0].getAttribute('aria-pressed')).toBe('true');
+
+    await act(async () => {
+      Simulate.click(options[1]);
+      await Promise.resolve();
+    });
+    expect(api.setBotSkillsVisibility).toHaveBeenCalledWith(42, 'authorized');
+    expect(options.every((button) => button.disabled)).toBe(true);
+    expect(container.querySelector('.cc-agent-permission-heading > span')?.textContent).toBe('保存中...');
+
+    await act(async () => {
+      resolveVisibility({ skills_visibility: 'authorized' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(options[1].getAttribute('aria-pressed')).toBe('true');
+    expect(options.every((button) => !button.disabled)).toBe(true);
+  });
+
+  test('keeps the previous skill visibility and reports a save failure', async () => {
+    api.setBotSkillsVisibility.mockRejectedValue(new Error('保存失败，请重试'));
+    api.getMyBots.mockResolvedValue({
+      bots: [{
+        id: 42,
+        uid: 42,
+        username: 'dev-agent',
+        display_name: 'Dev Agent',
+        relation: 'owner',
+        is_owner: true,
+        visibility: 'public',
+        skills_visibility: 'public',
+      }],
+    });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        initialAgentId: 42,
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const options = [...container.querySelectorAll('.cc-agent-permission-options > button')];
+
+    await act(async () => {
+      Simulate.click(options[0]);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(options[2].getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector('.cc-agent-inline-feedback')?.textContent).toContain('保存失败，请重试');
   });
 });
