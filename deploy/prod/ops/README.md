@@ -29,8 +29,8 @@ CATSCO_WORKER_CREATE_QUOTA=            # "<uid>=<n>;<uid>=<n>"，留空 = 未开
 ```
 
 未配置某脚本时，对应动作返回 503（fail-closed）；删除未配 destroy 脚本时
-`DELETE /api/cloud-workers/{name}` 返回 503 且保留记录（显式运维强制解绑用
-`?force=1`）。
+`DELETE /api/cloud-workers/{name}` 返回 503 且保留记录（无 `?force=1` 绕过
+——fail-closed，运维需配置 destroy 脚本或走云控制台/DB 层处理）。
 
 ### 云凭据与环境（CTYUN_*）
 

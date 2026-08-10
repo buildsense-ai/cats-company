@@ -136,6 +136,26 @@ services:
       CATS_RELAY_COMMERCIAL_TEST_UIDS: "${CATS_RELAY_COMMERCIAL_TEST_UIDS:-}"
       CATS_RELAY_COMMERCIAL_ENFORCE_ENABLED: "${CATS_RELAY_COMMERCIAL_ENFORCE_ENABLED:-0}"
       CATS_RELAY_COMMERCIAL_ENFORCE_UIDS: "${CATS_RELAY_COMMERCIAL_ENFORCE_UIDS:-}"
+      # Cloud worker control plane (B4-1/B4-2): mirrored from prod compose so
+      # local/test stacks validate the same wiring. Empty by default = 503.
+      CATSCO_WORKER_CREATE_QUOTA: "${CATSCO_WORKER_CREATE_QUOTA:-}"
+      CATSCO_WORKER_PROVISION_SCRIPT: "${CATSCO_WORKER_PROVISION_SCRIPT:-}"
+      CATSCO_WORKER_DESTROY_SCRIPT: "${CATSCO_WORKER_DESTROY_SCRIPT:-}"
+      CATSCO_WORKER_RESET_SCRIPT: "${CATSCO_WORKER_RESET_SCRIPT:-}"
+      CATSCO_WORKER_ROLLBACK_SCRIPT: "${CATSCO_WORKER_ROLLBACK_SCRIPT:-}"
+      CATSCO_WORKER_IMAGES_SCRIPT: "${CATSCO_WORKER_IMAGES_SCRIPT:-}"
+      CTYUN_AK: "${CTYUN_AK:-}"
+      CTYUN_SK: "${CTYUN_SK:-}"
+      CTYUN_WORKER_REGION_ID: "${CTYUN_WORKER_REGION_ID:-}"
+      CTYUN_WORKER_PROJECT_ID: "${CTYUN_WORKER_PROJECT_ID:-0}"
+      CTYUN_WORKER_AZ_NAME: "${CTYUN_WORKER_AZ_NAME:-}"
+      CTYUN_WORKER_FLAVOR_ID: "${CTYUN_WORKER_FLAVOR_ID:-}"
+      CTYUN_WORKER_VPC_ID: "${CTYUN_WORKER_VPC_ID:-}"
+      CTYUN_WORKER_SUBNET_ID: "${CTYUN_WORKER_SUBNET_ID:-}"
+      CTYUN_WORKER_SECURITY_GROUP_ID: "${CTYUN_WORKER_SECURITY_GROUP_ID:-}"
+      CTYUN_WORKER_STATE_DIR: "${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker}"
+      CATSCO_WORKER_HTTP_BASE_URL: "${CATSCO_WORKER_HTTP_BASE_URL:-}"
+      CATSCO_WORKER_SERVER_URL: "${CATSCO_WORKER_SERVER_URL:-}"
       APP_ENV: test
       TZ: Asia/Shanghai
     ports:
@@ -145,6 +165,7 @@ services:
       - "${TEST_STACK_ROOT}/data/uploads:/app/uploads"
       - "${TEST_STACK_ROOT}/compose/tinode.test.conf:/app/tinode.conf:ro"
       - "${TEST_STACK_ROOT}/secrets:/run/catsco-secrets:ro"
+      - "${TEST_STACK_ROOT}/data/catsco-worker:/var/lib/catsco-worker"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
