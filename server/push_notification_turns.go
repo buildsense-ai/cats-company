@@ -9,20 +9,24 @@ import (
 )
 
 const (
-	agentPushTurnDedupTTL    = 10 * time.Minute
-	maxTrackedAgentPushTurns = 4096
-	maxActiveAgentPushTurns  = 1024
-	maxAgentPushTailSegments = 32
+	agentPushTurnDedupTTL = 10 * time.Minute
+	// Task status normally follows all reply messages. This bounded quiet window
+	// tolerates transport reordering without delaying every notification
+	// indefinitely; the current protocol has no per-message finality marker.
+	agentPushTerminalSettleDelay = 500 * time.Millisecond
+	maxTrackedAgentPushTurns     = 4096
+	maxActiveAgentPushTurns      = 1024
 )
 
 type agentPushTurnCoordinator struct {
-	mu             sync.Mutex
-	delivered      map[agentPushDeliveryKey]time.Time
-	inFlight       map[agentPushDeliveryKey]struct{}
-	trackedTurns   map[agentPushTrackedTurnKey]*agentPushTurn
-	currentRuns    map[agentPushScopeKey]agentPushCurrentRun
-	pendingByScope map[agentPushScopeKey]*pendingAgentPushMessages
-	nextCandidate  uint64
+	mu                  sync.Mutex
+	delivered           map[agentPushDeliveryKey]time.Time
+	inFlight            map[agentPushDeliveryKey]struct{}
+	trackedTurns        map[agentPushTrackedTurnKey]*agentPushTurn
+	currentRuns         map[agentPushScopeKey]agentPushCurrentRun
+	pendingByScope      map[agentPushScopeKey]*pendingAgentPushMessages
+	nextCandidate       uint64
+	terminalSettleDelay time.Duration
 }
 
 type agentPushScopeKey struct {
@@ -47,13 +51,15 @@ type agentPushCurrentRun struct {
 }
 
 type agentPushTurn struct {
-	runID      string
-	terminal   bool
-	superseded bool
-	updatedAt  time.Time
-	candidates map[int64]agentPushCandidate
-	expiresAt  time.Time
-	timer      *time.Timer
+	runID              string
+	terminal           bool
+	superseded         bool
+	updatedAt          time.Time
+	candidates         map[int64]agentPushCandidate
+	expiresAt          time.Time
+	timer              *time.Timer
+	deliveryTimer      *time.Timer
+	deliveryGeneration uint64
 }
 
 type pendingAgentPushMessages struct {
@@ -70,11 +76,12 @@ type agentPushCandidate struct {
 
 func newAgentPushTurnCoordinator() *agentPushTurnCoordinator {
 	return &agentPushTurnCoordinator{
-		delivered:      make(map[agentPushDeliveryKey]time.Time),
-		inFlight:       make(map[agentPushDeliveryKey]struct{}),
-		trackedTurns:   make(map[agentPushTrackedTurnKey]*agentPushTurn),
-		currentRuns:    make(map[agentPushScopeKey]agentPushCurrentRun),
-		pendingByScope: make(map[agentPushScopeKey]*pendingAgentPushMessages),
+		delivered:           make(map[agentPushDeliveryKey]time.Time),
+		inFlight:            make(map[agentPushDeliveryKey]struct{}),
+		trackedTurns:        make(map[agentPushTrackedTurnKey]*agentPushTurn),
+		currentRuns:         make(map[agentPushScopeKey]agentPushCurrentRun),
+		pendingByScope:      make(map[agentPushScopeKey]*pendingAgentPushMessages),
+		terminalSettleDelay: agentPushTerminalSettleDelay,
 	}
 }
 
@@ -170,6 +177,11 @@ func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskS
 	turn.terminal = true
 	turn.expiresAt = now.Add(agentPushTurnDedupTTL)
 	c.resetTurnTimerLocked(turnKey, turn)
+	if c.terminalSettleDelay > 0 {
+		c.resetTerminalDeliveryTimerLocked(turnKey, turn)
+		c.mu.Unlock()
+		return
+	}
 	candidates := candidateValues(turn.candidates)
 	c.mu.Unlock()
 	c.deliverTurnCandidates(scope, runID, candidates)
@@ -208,6 +220,34 @@ func (c *agentPushTurnCoordinator) resetTurnTimerLocked(turnKey agentPushTracked
 	})
 }
 
+func (c *agentPushTurnCoordinator) resetTerminalDeliveryTimerLocked(turnKey agentPushTrackedTurnKey, turn *agentPushTurn) {
+	if turn == nil || !turn.terminal || c.terminalSettleDelay <= 0 {
+		return
+	}
+	if turn.deliveryTimer != nil {
+		turn.deliveryTimer.Stop()
+	}
+	turn.deliveryGeneration++
+	deliveryGeneration := turn.deliveryGeneration
+	runID := turn.runID
+	turn.deliveryTimer = time.AfterFunc(c.terminalSettleDelay, func() {
+		c.deliverSettledTurn(turnKey, runID, deliveryGeneration)
+	})
+}
+
+func (c *agentPushTurnCoordinator) deliverSettledTurn(turnKey agentPushTrackedTurnKey, runID string, deliveryGeneration uint64) {
+	c.mu.Lock()
+	turn := c.trackedTurns[turnKey]
+	if turn == nil || turn.runID != runID || !turn.terminal || turn.deliveryGeneration != deliveryGeneration {
+		c.mu.Unlock()
+		return
+	}
+	turn.deliveryTimer = nil
+	candidates := candidateValues(turn.candidates)
+	c.mu.Unlock()
+	c.deliverTurnCandidates(turnKey.scope, runID, candidates)
+}
+
 func (c *agentPushTurnCoordinator) expireTurn(turnKey agentPushTrackedTurnKey, runID string) {
 	c.mu.Lock()
 	turn := c.trackedTurns[turnKey]
@@ -222,6 +262,9 @@ func (c *agentPushTurnCoordinator) expireTurn(turnKey agentPushTrackedTurnKey, r
 func (c *agentPushTurnCoordinator) removeTurnLocked(turnKey agentPushTrackedTurnKey, turn *agentPushTurn) {
 	if turn != nil && turn.timer != nil {
 		turn.timer.Stop()
+	}
+	if turn != nil && turn.deliveryTimer != nil {
+		turn.deliveryTimer.Stop()
 	}
 	delete(c.trackedTurns, turnKey)
 	if current := c.currentRuns[turnKey.scope]; turn != nil && current.runID == turn.runID {
@@ -264,8 +307,11 @@ func (c *agentPushTurnCoordinator) appendCandidateLocked(current agentPushCandid
 	if body = strings.TrimSpace(body); body != "" {
 		bodies = append(bodies, body)
 	}
-	if len(bodies) > maxAgentPushTailSegments {
-		bodies = append([]string(nil), bodies[len(bodies)-maxAgentPushTailSegments:]...)
+	joined := strings.Join(bodies, " ")
+	if retained := truncateUTF8(joined, maxPushNotificationBodyRunes+1); retained != joined {
+		// Keep one rune beyond the final body budget so pushNotificationExcerpt
+		// can still detect truncation and append an ellipsis at delivery time.
+		bodies = []string{retained}
 	}
 	return agentPushCandidate{id: c.nextCandidate, bodies: bodies, deliver: deliver}
 }
@@ -375,8 +421,11 @@ func (c *agentPushTurnCoordinator) observeVisibleMessageBody(
 	turn.candidates[recipientUID] = candidate
 	terminal := turn.terminal
 	deliveryCandidate := cloneAgentPushCandidate(candidate)
+	if terminal && c.terminalSettleDelay > 0 {
+		c.resetTerminalDeliveryTimerLocked(turnKey, turn)
+	}
 	c.mu.Unlock()
-	if terminal {
+	if terminal && c.terminalSettleDelay <= 0 {
 		c.deliverTurnCandidates(scope, runID, map[int64]agentPushCandidate{
 			recipientUID: deliveryCandidate,
 		})
@@ -384,7 +433,7 @@ func (c *agentPushTurnCoordinator) observeVisibleMessageBody(
 	return true
 }
 
-func (c *agentPushTurnCoordinator) observeWorkingMessage(senderUID int64, msg *ServerMessage) {
+func (c *agentPushTurnCoordinator) resetVisibleTailAtWorkingBoundary(senderUID int64, msg *ServerMessage) {
 	if c == nil || senderUID <= 0 || msg == nil || msg.Data == nil {
 		return
 	}
@@ -396,6 +445,12 @@ func (c *agentPushTurnCoordinator) observeWorkingMessage(senderUID int64, msg *S
 
 	scope := agentPushScope(senderUID, data.Topic)
 	runID := agentPushMessageCorrelationID(msg)
+	if runID == "" && isUncorrelatedSubagentWorkingMessage(data.Metadata) {
+		// Subagent runtime events are asynchronous and may outlive the parent
+		// turn that spawned them. Without an explicit run ID, assigning one to
+		// the current turn can erase an unrelated reply that is being delivered.
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if runID == "" {
@@ -407,6 +462,17 @@ func (c *agentPushTurnCoordinator) observeWorkingMessage(senderUID int64, msg *S
 	if turn := c.trackedTurns[newAgentPushTrackedTurnKey(scope, runID)]; turn != nil && !turn.terminal {
 		turn.candidates = make(map[int64]agentPushCandidate)
 	}
+}
+
+func isUncorrelatedSubagentWorkingMessage(metadata map[string]interface{}) bool {
+	if strings.EqualFold(strings.TrimSpace(firstMetadataString(metadata, "kind")), "subagent_event") {
+		return true
+	}
+	return firstMetadataString(
+		metadata,
+		"subagent_id", "subagentId",
+		"subagent_event_type", "subagentEventType",
+	) != ""
 }
 
 func (c *agentPushTurnCoordinator) deliverOnce(key agentPushDeliveryKey, deliver func() bool) bool {
