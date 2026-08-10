@@ -35,6 +35,7 @@ func (a *Adapter) CreateSchema() error {
 		createCommercialQuotaGrantsTable,
 		createCommercialQuotaLedgerTable,
 		createCommercialOrdersTable,
+		createCommercialOrderRequestIDsTable,
 		createCommercialPaymentEventsTable,
 		createCommercialManagedRelayBudgetsTable,
 		createChannelAgentEntriesTable,
@@ -561,6 +562,21 @@ CREATE TABLE IF NOT EXISTS commercial_orders (
 );
 `
 
+const createCommercialOrderRequestIDsTable = `
+CREATE TABLE IF NOT EXISTS commercial_order_request_ids (
+	uid BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+	client_request_id VARCHAR(64) NOT NULL,
+	order_no VARCHAR(40) NOT NULL REFERENCES commercial_orders(order_no) ON DELETE CASCADE,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY(uid, client_request_id)
+);
+
+INSERT INTO commercial_order_request_ids(uid, client_request_id, order_no)
+SELECT uid, client_request_id, order_no
+FROM commercial_orders
+ON CONFLICT(uid, client_request_id) DO NOTHING;
+`
+
 const createCommercialPaymentEventsTable = `
 CREATE TABLE IF NOT EXISTS commercial_payment_events (
 	id BIGSERIAL PRIMARY KEY,
@@ -917,6 +933,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_entitlements_trial_once
 CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_orders_uid_request ON commercial_orders (uid, client_request_id);
 CREATE INDEX IF NOT EXISTS idx_commercial_orders_uid_created ON commercial_orders (uid, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_commercial_orders_status_expires ON commercial_orders (status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_commercial_order_request_ids_order ON commercial_order_request_ids (order_no);
 CREATE INDEX IF NOT EXISTS idx_commercial_payment_events_order ON commercial_payment_events (order_no, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_commercial_managed_relay_uid ON commercial_managed_relay_budgets (uid);
 `
