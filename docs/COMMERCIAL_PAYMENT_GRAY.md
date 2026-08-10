@@ -6,7 +6,8 @@
 
 - `CATS_RELAY_COMMERCIAL_ENABLED=0`：不向普通用户开放商业化入口。
 - `CATS_COMMERCIAL_TEST_PAYMENT_ENABLED=0`：不开放测试支付。
-- `CATS_ALIPAY_ENABLED=0`：不初始化支付宝客户端，也不展示真实支付渠道。
+- `CATS_ALIPAY_ENABLED=0`：不初始化支付宝客户端；回调、主动查单和新下单都会停止。
+- `CATS_ALIPAY_SALES_ENABLED=0`：不开放新订单，但保留已创建订单的回调、主动查单和补单能力。停卖时应先关闭此开关，不要直接关闭 `CATS_ALIPAY_ENABLED`。
 - `CATS_ALIPAY_PRODUCTION=0`：使用支付宝沙箱；生产 Compose 默认显式设为 `1`。
 - 新增套餐的 `sale_state` 默认是 `hidden`，旧套餐升级后也不会自动出现在购买列表。
 - 应用私钥只从容器内的 secret 文件读取，不支持写进前端或仓库配置。
@@ -33,6 +34,8 @@
 `3天体验` 是付费、限购一次的短周期套餐，不是免费领取体验包。`CATS_COMMERCIAL_TRIAL_PLAN_SLUG` 只能指向售价为 0、状态为 `hidden` 且包含有效额度的独立套餐，不能填写 `catsco-trial-3d`。
 
 当前权益和 Relay 同步仍按单个 UID 发放。团队月卡的“多人共享”需要单独的成员、席位和共享额度归属机制；完成前必须保持 `hidden`，不能把单账号大额包当成团队套餐公开售卖。
+
+`monthly_budget_cny` 目前只作为后台账本字段保留，不能用于可售套餐或体验包。可履约套餐必须只配置明确的分模型额度；同时配置月总额度和模型额度也会被购买链路拒绝，避免 `*` 额度被记账但没有写入 Relay。
 
 ## 灰度流程
 
@@ -71,6 +74,7 @@ ${PROD_STACK_ROOT}/secrets/alipay/
 
 ```dotenv
 CATS_ALIPAY_ENABLED=1
+CATS_ALIPAY_SALES_ENABLED=0
 CATS_ALIPAY_PRODUCTION=1
 CATS_ALIPAY_APP_ID=
 CATS_ALIPAY_SELLER_ID=
@@ -85,6 +89,7 @@ CATS_ALIPAY_RETURN_URL=https://app.catsco.cc/
 ## 订单和履约边界
 
 - 创建订单使用 `(uid, client_request_id)` 幂等，重复点击不会产生重复订单。
+- 浏览器在超时、502/503/504 或响应丢失后会复用同一个 `client_request_id`；重新打开页面时会恢复最近的待支付订单。
 - 下单使用 `alipay.trade.page.pay` 和产品码 `FAST_INSTANT_TRADE_PAY`，前端只跳转支付宝官方收银台，不自行伪造支付页面。
 - 支付事件使用 `(channel, event_id)` 幂等，重复通知不会重复发套餐。
 - 履约事务同时写入订单、支付事件、权益、额度 grant 和 ledger。
@@ -93,6 +98,10 @@ CATS_ALIPAY_RETURN_URL=https://app.catsco.cc/
 - 只有 `TRADE_SUCCESS` 或 `TRADE_FINISHED` 可以履约。
 - 成功处理后只返回纯文本 `success`；任何验签、订单或金额错误均返回 `failure`，让支付宝继续重试。
 - 待支付页面轮询本地订单时会按 10 秒节流调用 `alipay.trade.query`；即使回调延迟或最终丢失，已支付订单仍能进入同一套幂等履约事务。
+- 前端支付轮询使用单飞请求、20 秒超时和卸载取消；关闭弹窗不会留下后台轮询。过期订单在关闭后 7 天内仍可通过主动查单恢复已支付交易。
+- 真实支付渠道只会对已启用 Relay enforce、已配置 Relay key 且套餐模型可映射到 Relay provider budget 的 UID 开放。下单前会预检，额度写入后会回读核验，避免 Relay 管理接口静默忽略更新。
+- Relay enforce 控制新用户是否具备购买资格，不是已售权益的撤销开关。订单已履约后，即使 UID 后续移出 enforce，系统仍会在套餐有效期内同步额度并在到期后写入阻断值；退款或停权必须显式撤销权益，不能只改 allowlist。
+- 权威回读依赖 Relay Admin 的 `GET /internal/users/{uid}/key/limits`。该接口直接读取 Bifrost key 的持久化 provider config，不合并默认展示配置；必须先部署对应 Relay 版本，再开启本 PR 的真实支付销售开关。
 - 金额始终以整数“分”存储，调用支付宝时转换为两位小数的人民币“元”，不使用浮点数。
 - 自动同步只处理 `commercial_managed_relay_budgets` 中由 CatsCompany 接管的模型额度，不改管理员手工维护的其他模型预算。
 - 套餐到期后不能把 Relay 预算写成 `0`，因为 `0` 表示移除限制；系统会写入 `0.000001 CNY` 的阻断额度并保留接管记录，防止额度过期后模型意外变成无限制。
@@ -100,7 +109,7 @@ CATS_ALIPAY_RETURN_URL=https://app.catsco.cc/
 
 ## 上线顺序
 
-1. 先部署代码，保持所有新增开关关闭。
+1. 先部署带权威预算回读接口的 Relay Admin，再部署 CatsCompany；保持所有新增销售开关关闭。
 2. 用账号后台预设建立五档价格，填入经过成本核算的模型额度；团队月卡保持隐藏。
 3. 只给内部 UID 开测试支付与 Relay enforce，完成创建、支付、到账、重复通知和到期清退测试。
 4. 准备支付宝沙箱应用和 secret 文件，开启沙箱支付，但套餐继续保持 `test`。
@@ -108,4 +117,4 @@ CATS_ALIPAY_RETURN_URL=https://app.catsco.cc/
 6. 更换正式应用材料，设置 `CATS_ALIPAY_PRODUCTION=1`，完成一笔真实小额支付。
 7. 完成人工退款和额度回收演练后，再把套餐改为 `public` 并开启公共商业化入口。
 
-退款自动化、发票和对账单下载不在本阶段范围内；订单状态已预留 `refunding/refunded`，上线真实支付前需明确人工退款 SOP。
+退款自动化、发票和对账单下载不在本阶段范围内；订单状态已预留 `refunding/refunded`。灰度期退款必须按订单号在账号后台核对支付宝交易号，在支付宝商家后台人工退款，再由管理员回收对应权益和 Relay 额度并留存操作记录。完成这套演练前不得开启公共销售。

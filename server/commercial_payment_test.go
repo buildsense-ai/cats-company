@@ -32,6 +32,8 @@ type queryCommercialPaymentProvider struct {
 	paid         bool
 	confirmation *types.CommercialPaymentConfirmation
 	calls        int
+	intent       *CommercialPaymentIntent
+	createCalls  int
 }
 
 func (p *queryCommercialPaymentProvider) Channel() string {
@@ -39,7 +41,11 @@ func (p *queryCommercialPaymentProvider) Channel() string {
 }
 func (p *queryCommercialPaymentProvider) Label() string { return "支付宝" }
 func (p *queryCommercialPaymentProvider) CreatePayment(context.Context, *types.CommercialOrder) (*CommercialPaymentIntent, error) {
-	return nil, context.Canceled
+	p.createCalls++
+	if p.intent == nil {
+		return nil, context.Canceled
+	}
+	return p.intent, nil
 }
 func (p *queryCommercialPaymentProvider) ParseNotification(context.Context, *http.Request) (string, *types.CommercialPaymentConfirmation, error) {
 	return "", nil, context.Canceled
@@ -144,13 +150,15 @@ func (s *commercialPaymentTestStore) BeginCommercialOrderPayment(orderNo string,
 	if order == nil {
 		return nil, false, context.Canceled
 	}
-	if order.Status != "created" && order.Status != "failed" {
+	stalePending := order.Status == "pending" && order.CheckoutURL == "" && order.UpdatedAt.Before(time.Now().UTC().Add(-30*time.Second))
+	if order.Status != "created" && order.Status != "failed" && !stalePending {
 		copy := *order
 		return &copy, false, nil
 	}
 	order.Status = "pending"
 	order.CheckoutURL = ""
 	order.ExpiresAt = &expiresAt
+	order.UpdatedAt = time.Now().UTC()
 	copy := *order
 	return &copy, true, nil
 }
@@ -224,6 +232,7 @@ func TestCommercialCatalogRespectsSaleRollout(t *testing.T) {
 		{ID: 2, Slug: "test", Name: "Test", PriceFen: 200, Currency: "CNY", SaleState: "test", DurationDays: 30, State: 0, InternalQuotaTokens: 50_000_000, ModelBudgets: map[string]float64{"MiniMax-M3": 2}},
 		{ID: 3, Slug: "public", Name: "Public", PriceFen: 300, Currency: "CNY", SaleState: "public", DurationDays: 30, State: 0, ModelBudgets: map[string]float64{"MiniMax-M3": 3}},
 		{ID: 4, Slug: "empty", Name: "Empty", PriceFen: 400, Currency: "CNY", SaleState: "test", DurationDays: 30, State: 0},
+		{ID: 5, Slug: "monthly-only", Name: "Monthly only", PriceFen: 500, Currency: "CNY", SaleState: "test", DurationDays: 30, State: 0, MonthlyBudget: 10},
 	}
 	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
 		TestUIDs:     map[int64]bool{38: true},
@@ -256,6 +265,27 @@ func TestCommercialCatalogRespectsSaleRollout(t *testing.T) {
 	}
 }
 
+func TestCommercialRealPaymentChannelRequiresRelayEnforcement(t *testing.T) {
+	provider := &queryCommercialPaymentProvider{}
+	withoutSync := NewCommercialPaymentHandler(newCommercialPaymentTestStore(), CommercialPaymentHandlerOptions{
+		Providers: []CommercialPaymentProvider{provider}, SaleChannels: map[string]bool{commercialPaymentChannelAlipayPage: true},
+	})
+	if channels := withoutSync.channelsFor(38); len(channels) != 0 {
+		t.Fatalf("real payment channel was exposed without relay enforcement: %#v", channels)
+	}
+	withSync := NewCommercialPaymentHandler(newCommercialPaymentTestStore(), CommercialPaymentHandlerOptions{
+		Providers:    []CommercialPaymentProvider{provider},
+		SaleChannels: map[string]bool{commercialPaymentChannelAlipayPage: true},
+		Syncer:       &CommercialRelaySyncer{enforceUIDs: map[int64]bool{38: true}},
+	})
+	if channels := withSync.channelsFor(38); len(channels) != 1 || channels[0].ID != commercialPaymentChannelAlipayPage {
+		t.Fatalf("eligible real payment channel was not exposed: %#v", channels)
+	}
+	if channels := withSync.channelsFor(39); len(channels) != 0 {
+		t.Fatalf("real payment channel leaked outside the relay enforce allowlist: %#v", channels)
+	}
+}
+
 func TestCommercialTrialRequiresDedicatedFreeHiddenPlan(t *testing.T) {
 	valid := &types.CommercialPlan{
 		Slug: "trial", PriceFen: 0, SaleState: "hidden", DurationDays: 7, State: 0,
@@ -269,6 +299,10 @@ func TestCommercialTrialRequiresDedicatedFreeHiddenPlan(t *testing.T) {
 		"public":   func(plan *types.CommercialPlan) { plan.SaleState = "public" },
 		"disabled": func(plan *types.CommercialPlan) { plan.State = 1 },
 		"empty":    func(plan *types.CommercialPlan) { plan.ModelBudgets = map[string]float64{} },
+		"monthly": func(plan *types.CommercialPlan) {
+			plan.ModelBudgets = map[string]float64{}
+			plan.MonthlyBudget = 1
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := *valid
@@ -383,6 +417,117 @@ func TestCommercialPendingOrderQueriesAreThrottled(t *testing.T) {
 	}
 	if provider.calls != 1 {
 		t.Fatalf("expected one provider query inside throttle window, got %d", provider.calls)
+	}
+}
+
+func TestCommercialClosedOrderUsesProviderQueryFallback(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	closedAt := time.Now().UTC().Add(-time.Hour)
+	store.orders["CC-CLOSED-PAID"] = &types.CommercialOrder{
+		OrderNo: "CC-CLOSED-PAID", UID: 38, AmountFen: 2990, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "closed", ClosedAt: &closedAt,
+	}
+	provider := &queryCommercialPaymentProvider{
+		paid: true,
+		confirmation: &types.CommercialPaymentConfirmation{
+			Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-CLOSED-1", ProviderTradeNo: "ALI-CLOSED-1",
+			AmountFen: 2990, Currency: "CNY", PaidAt: time.Now().UTC(),
+		},
+	}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		TestUIDs: map[int64]bool{38: true}, Providers: []CommercialPaymentProvider{provider}, SaleChannels: map[string]bool{},
+	})
+	recorder := httptest.NewRecorder()
+	handler.HandleOrders(recorder, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders?order_no=CC-CLOSED-PAID", "", 38))
+	if recorder.Code != http.StatusOK || store.orders["CC-CLOSED-PAID"].Status != "fulfilled" {
+		t.Fatalf("closed order was not recovered: status=%d body=%s order=%#v", recorder.Code, recorder.Body.String(), store.orders["CC-CLOSED-PAID"])
+	}
+}
+
+func TestCommercialPendingOrderRecoversMissingCheckoutIntent(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	expiresAt := time.Now().UTC().Add(10 * time.Minute)
+	store.orders["CC-MISSING-CHECKOUT"] = &types.CommercialOrder{
+		OrderNo: "CC-MISSING-CHECKOUT", UID: 38, AmountFen: 2990, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "pending", ExpiresAt: &expiresAt,
+		UpdatedAt: time.Now().UTC().Add(-time.Minute),
+	}
+	provider := &queryCommercialPaymentProvider{intent: &CommercialPaymentIntent{
+		CheckoutURL: "https://openapi.alipay.test/pay", ExpiresAt: time.Now().UTC().Add(20 * time.Minute),
+	}}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		TestUIDs: map[int64]bool{38: true}, Providers: []CommercialPaymentProvider{provider},
+	})
+	recorder := httptest.NewRecorder()
+	handler.HandleOrders(recorder, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders?order_no=CC-MISSING-CHECKOUT", "", 38))
+	if recorder.Code != http.StatusOK || provider.createCalls != 1 || store.orders["CC-MISSING-CHECKOUT"].CheckoutURL == "" {
+		t.Fatalf("missing checkout intent was not recovered: status=%d body=%s calls=%d order=%#v", recorder.Code, recorder.Body.String(), provider.createCalls, store.orders["CC-MISSING-CHECKOUT"])
+	}
+}
+
+func TestCommercialCreatedOrderRecoversCheckoutIntent(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-CREATED-CHECKOUT"] = &types.CommercialOrder{
+		OrderNo: "CC-CREATED-CHECKOUT", UID: 38, AmountFen: 2990, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "created",
+	}
+	provider := &queryCommercialPaymentProvider{intent: &CommercialPaymentIntent{
+		CheckoutURL: "https://openapi.alipay.test/pay", ExpiresAt: time.Now().UTC().Add(20 * time.Minute),
+	}}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		TestUIDs: map[int64]bool{38: true}, Providers: []CommercialPaymentProvider{provider},
+	})
+	recorder := httptest.NewRecorder()
+	handler.HandleOrders(recorder, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders?order_no=CC-CREATED-CHECKOUT", "", 38))
+	if recorder.Code != http.StatusOK || provider.createCalls != 1 || store.orders["CC-CREATED-CHECKOUT"].CheckoutURL == "" {
+		t.Fatalf("created checkout intent was not recovered: status=%d body=%s calls=%d order=%#v", recorder.Code, recorder.Body.String(), provider.createCalls, store.orders["CC-CREATED-CHECKOUT"])
+	}
+}
+
+func TestCommercialRelayValidationRejectsMissingModelMapping(t *testing.T) {
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{{
+		Provider: "openai", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra"},
+	}}}}
+	if err := validateCommercialRelayModels(map[string]float64{"gpt-5.6-terra": 10}, relayUser); err != nil {
+		t.Fatalf("configured model was rejected: %v", err)
+	}
+	if err := validateCommercialRelayModels(map[string]float64{"MiniMax-M3": 10}, relayUser); err == nil {
+		t.Fatal("missing relay model mapping was accepted")
+	}
+}
+
+func TestCommercialRelayUpdateVerificationRejectsSilentNoop(t *testing.T) {
+	updates := []commercialRelayProviderBudgetUpdate{{
+		Provider: "openai", AllowedModels: []string{"gpt-5.6-terra"}, MaxLimit: 100, ResetDuration: "1M",
+	}}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{{
+		Provider: "openai", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra"},
+		Budget: commercialRelayBudget{MaxLimit: 50},
+	}}}}
+	if err := verifyCommercialRelayUpdates(updates, relayUser); err == nil {
+		t.Fatal("silent relay update no-op was accepted")
+	}
+	relayUser.Limits.ModelLimits[0].Budget.MaxLimit = 100
+	if err := verifyCommercialRelayUpdates(updates, relayUser); err != nil {
+		t.Fatalf("verified relay update was rejected: %v", err)
+	}
+}
+
+func TestCommercialRelayManagedPlanSkipsUnmappedHistoricalModels(t *testing.T) {
+	summary := &types.CommercialSummary{UID: 38, TotalsByModel: map[string]float64{
+		"gpt-5.6-terra": 100,
+		"retired-model": 50,
+	}}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{{
+		Provider: "openai", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra"},
+		Budget: commercialRelayBudget{MaxLimit: 10, ResetDuration: "1M"},
+	}}}}
+	staleManaged := []*types.CommercialManagedRelayBudget{{
+		UID: 38, Model: "retired-model", Provider: "retired-provider", AllowedModels: []string{"retired-model"}, MaxLimit: 50,
+	}}
+	updates, managed := commercialRelayManagedPlan(38, summary, relayUser, staleManaged)
+	if len(updates) != 1 || updates[0].MaxLimit != 100 || len(managed) != 1 || managed[0].Model != "gpt-5.6-terra" {
+		t.Fatalf("mapped model was blocked by historical data: updates=%#v managed=%#v", updates, managed)
 	}
 }
 

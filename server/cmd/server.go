@@ -389,8 +389,11 @@ func main() {
 	})
 	paymentTestUIDs := envInt64Set("CATS_COMMERCIAL_TEST_PAYMENT_UIDS")
 	paymentProviders := []server.CommercialPaymentProvider{}
+	paymentSaleChannels := map[string]bool{}
+	alipaySalesEnabled := envBool("CATS_ALIPAY_SALES_ENABLED")
 	if envBool("CATS_COMMERCIAL_TEST_PAYMENT_ENABLED") {
 		paymentProviders = append(paymentProviders, server.NewTestCommercialPaymentProvider())
+		paymentSaleChannels["test"] = true
 		log.Printf("commercial test payment is enabled for %d uid(s)", len(paymentTestUIDs))
 	}
 	if envBool("CATS_ALIPAY_ENABLED") {
@@ -401,8 +404,16 @@ func main() {
 			log.Printf("Alipay is waiting for configuration: %s", strings.Join(missing, ", "))
 		} else {
 			paymentProviders = append(paymentProviders, provider)
-			log.Printf("Alipay page payment is enabled")
+			if alipaySalesEnabled {
+				paymentSaleChannels["alipay_page"] = true
+				log.Printf("Alipay page payment sales are enabled")
+			} else {
+				log.Printf("Alipay payment provider is enabled for callback and reconciliation only")
+			}
 		}
+	}
+	if alipaySalesEnabled && (!relayCommercialEnforceEnabled && len(relayCommercialEnforceUIDs) == 0) {
+		log.Printf("Alipay sales are configured, but no uid is eligible until relay commercial enforcement is enabled")
 	}
 	commercialPaymentHandler := server.NewCommercialPaymentHandler(commercialPaymentStore, server.CommercialPaymentHandlerOptions{
 		PublicEnabled: relayCommercialPublicEnabled,
@@ -410,6 +421,7 @@ func main() {
 		TestPayments:  paymentTestUIDs,
 		TrialPlanSlug: envString("CATS_COMMERCIAL_TRIAL_PLAN_SLUG"),
 		Providers:     paymentProviders,
+		SaleChannels:  paymentSaleChannels,
 		Syncer:        commercialRelaySyncer,
 	})
 	// usageHandler := server.NewUsageHandler(db)

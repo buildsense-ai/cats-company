@@ -30,6 +30,7 @@ describe('RelayAccessModal commercial rollout', () => {
 
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
+    window.sessionStorage.clear();
     api.getRelayConfig.mockResolvedValue({
       base_url: 'https://relay.catsco.cc',
       default_model: 'MiniMax-M3',
@@ -441,7 +442,7 @@ describe('RelayAccessModal commercial rollout', () => {
       await Promise.resolve();
     });
 
-    expect(api.createCommercialOrder).toHaveBeenCalledWith(9, 'test', expect.stringMatching(/^order_/));
+    expect(api.createCommercialOrder).toHaveBeenCalledWith(9, 'test', expect.stringMatching(/^order_/), { timeoutMs: 40_000 });
     expect(container.textContent).toContain('待支付');
     const confirmButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('完成灰度测试支付'));
     await act(async () => {
@@ -453,7 +454,7 @@ describe('RelayAccessModal commercial rollout', () => {
 
     expect(api.confirmCommercialTestPayment).toHaveBeenCalledWith('CCWEBTEST0001');
     expect(container.textContent).toContain('支付成功');
-    expect(container.textContent).toContain('已到账');
+    expect(container.textContent).toContain('额度正在同步');
   });
 
   it('renders an Alipay page checkout without exposing the test confirmation action', async () => {
@@ -495,7 +496,7 @@ describe('RelayAccessModal commercial rollout', () => {
       await Promise.resolve();
     });
 
-    expect(api.createCommercialOrder).toHaveBeenCalledWith(10, 'alipay_page', expect.stringMatching(/^order_/));
+    expect(api.createCommercialOrder).toHaveBeenCalledWith(10, 'alipay_page', expect.stringMatching(/^order_/), { timeoutMs: 40_000 });
     expect(container.textContent).toContain('支付宝支付 ¥9.9');
     const paymentLink = container.querySelector('.relay-access-payment-redirect a');
     expect(paymentLink?.getAttribute('href')).toBe('https://openapi.alipay.test/gateway.do');
@@ -534,5 +535,115 @@ describe('RelayAccessModal commercial rollout', () => {
     });
 
     expect(container.textContent).toContain('支付宝支付 ¥9.9');
+  });
+
+  it('reuses the client request id across modal remount after an uncertain server failure', async () => {
+    const plan = {
+      id: 11,
+      slug: 'network-retry-plan',
+      name: '网络重试包',
+      price_fen: 990,
+      currency: 'CNY',
+      sale_state: 'test',
+      duration_days: 30,
+    };
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      test_mode: true,
+      channels: [{ id: 'test', label: '灰度测试支付', test_mode: true }],
+      plans: [plan],
+    });
+    const networkError = new Error('服务暂时不可用');
+    networkError.status = 500;
+    api.createCommercialOrder
+      .mockRejectedValueOnce(networkError)
+      .mockResolvedValueOnce({
+        order: {
+          order_no: 'CCRETRY0001',
+          plan_name: plan.name,
+          amount_fen: plan.price_fen,
+          channel: 'test',
+          status: 'pending',
+        },
+      });
+
+    await renderModal();
+    await clickButton('购买');
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await renderModal();
+    await clickButton('购买');
+
+    expect(api.createCommercialOrder).toHaveBeenCalledTimes(2);
+    expect(api.createCommercialOrder.mock.calls[0][2]).toBe(api.createCommercialOrder.mock.calls[1][2]);
+    expect(api.createCommercialOrder.mock.calls[0][3]).toEqual({ timeoutMs: 40_000 });
+  });
+
+  it('opens an existing pending order instead of creating another payable order', async () => {
+    const plan = {
+      id: 12,
+      slug: 'resume-plan',
+      name: '恢复订单包',
+      price_fen: 1990,
+      currency: 'CNY',
+      sale_state: 'test',
+      duration_days: 30,
+    };
+    const pending = {
+      order_no: 'CCRESUME0001',
+      plan_id: plan.id,
+      plan_name: plan.name,
+      amount_fen: plan.price_fen,
+      channel: 'alipay_page',
+      status: 'pending',
+      checkout_url: '',
+    };
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      test_mode: false,
+      channels: [{ id: 'alipay_page', label: '支付宝支付', test_mode: false }],
+      plans: [plan],
+    });
+    api.getCommercialOrders.mockResolvedValue({ orders: [pending] });
+
+    await renderModal();
+    expect(container.textContent).toContain('正在恢复支付宝收银台链接');
+    await clickButton('购买');
+
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('CCRESUME0001');
+  });
+
+  it('actively recovers a recently closed Alipay order when the user opens it', async () => {
+    const closed = {
+      order_no: 'CCCLOSEDWEB0001',
+      plan_id: 13,
+      plan_name: '关闭订单恢复包',
+      amount_fen: 990,
+      channel: 'alipay_page',
+      status: 'closed',
+      closed_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+    };
+    api.getCommercialOrders.mockImplementation((orderNo) => Promise.resolve(
+      orderNo
+        ? { order: { ...closed, status: 'fulfilled', paid_at: new Date().toISOString() } }
+        : { orders: [closed] },
+    ));
+
+    await renderModal();
+    await clickButton('关闭订单恢复包');
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getCommercialOrders).toHaveBeenCalledWith('CCCLOSEDWEB0001', {
+      signal: expect.any(AbortSignal),
+      timeoutMs: 20_000,
+    });
+    expect(container.textContent).toContain('额度同步中');
   });
 });

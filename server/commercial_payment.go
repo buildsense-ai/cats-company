@@ -60,6 +60,7 @@ type CommercialPaymentHandlerOptions struct {
 	TestPayments  map[int64]bool
 	TrialPlanSlug string
 	Providers     []CommercialPaymentProvider
+	SaleChannels  map[string]bool
 	Syncer        *CommercialRelaySyncer
 }
 
@@ -70,6 +71,7 @@ type CommercialPaymentHandler struct {
 	testPayments  map[int64]bool
 	trialPlanSlug string
 	providers     map[string]CommercialPaymentProvider
+	saleChannels  map[string]bool
 	syncer        *CommercialRelaySyncer
 	queryMu       sync.Mutex
 	nextQueries   map[string]time.Time
@@ -89,6 +91,7 @@ func NewCommercialPaymentHandler(store CommercialPaymentStore, opts CommercialPa
 		testPayments:  copyCommercialUIDSet(opts.TestPayments),
 		trialPlanSlug: strings.TrimSpace(opts.TrialPlanSlug),
 		providers:     map[string]CommercialPaymentProvider{},
+		saleChannels:  map[string]bool{},
 		syncer:        opts.Syncer,
 		nextQueries:   map[string]time.Time{},
 	}
@@ -97,6 +100,9 @@ func NewCommercialPaymentHandler(store CommercialPaymentStore, opts CommercialPa
 			continue
 		}
 		h.providers[provider.Channel()] = provider
+		if opts.SaleChannels == nil || opts.SaleChannels[provider.Channel()] {
+			h.saleChannels[provider.Channel()] = true
+		}
 	}
 	return h
 }
@@ -119,9 +125,19 @@ func (h *CommercialPaymentHandler) testAllowedFor(uid int64) bool {
 	return h != nil && h.testPayments[uid]
 }
 
+func (h *CommercialPaymentHandler) saleChannelAvailable(uid int64, channel string) bool {
+	if h == nil || h.providers[channel] == nil || !h.saleChannels[channel] {
+		return false
+	}
+	if channel == commercialPaymentChannelTest {
+		return h.testAllowedFor(uid)
+	}
+	return h.syncer != nil && h.syncer.EnforcedFor(uid)
+}
+
 func (h *CommercialPaymentHandler) planVisibleFor(uid int64, plan *types.CommercialPlan) bool {
 	if plan == nil || plan.State != 0 || plan.PriceFen <= 0 || plan.DurationDays <= 0 ||
-		!strings.EqualFold(plan.Currency, "CNY") || !commercialPlanHasBenefits(plan) {
+		!strings.EqualFold(plan.Currency, "CNY") || plan.MonthlyBudget > 0 || !commercialModelBudgetsConfigured(plan.ModelBudgets) {
 		return false
 	}
 	switch plan.SaleState {
@@ -150,10 +166,10 @@ func commercialPlanHasBenefits(plan *types.CommercialPlan) bool {
 }
 
 func commercialTrialPlanAvailable(plan *types.CommercialPlan) bool {
-	if plan == nil || plan.State != 0 || plan.PriceFen != 0 || plan.SaleState != "hidden" || plan.DurationDays <= 0 {
+	if plan == nil || plan.State != 0 || plan.PriceFen != 0 || plan.SaleState != "hidden" || plan.DurationDays <= 0 || plan.MonthlyBudget > 0 {
 		return false
 	}
-	return commercialPlanHasBenefits(plan)
+	return commercialModelBudgetsConfigured(plan.ModelBudgets)
 }
 
 func commercialOrderForUser(order *types.CommercialOrder) *types.CommercialOrder {
@@ -180,7 +196,7 @@ func (h *CommercialPaymentHandler) channelsFor(uid int64) []commercialPaymentCha
 	channels := []commercialPaymentChannel{}
 	for _, id := range []string{commercialPaymentChannelAlipayPage, commercialPaymentChannelTest} {
 		provider := h.providers[id]
-		if provider == nil || (id == commercialPaymentChannelTest && !h.testAllowedFor(uid)) {
+		if provider == nil || !h.saleChannelAvailable(uid, id) {
 			continue
 		}
 		channels = append(channels, commercialPaymentChannel{ID: id, Label: provider.Label(), TestMode: id == commercialPaymentChannelTest})
@@ -235,7 +251,6 @@ func (h *CommercialPaymentHandler) HandleOrders(w http.ResponseWriter, r *http.R
 	}
 	switch r.Method {
 	case http.MethodGet:
-		_, _ = h.store.CloseExpiredCommercialOrders(100)
 		orderNo := strings.TrimSpace(r.URL.Query().Get("order_no"))
 		if orderNo != "" {
 			order, err := h.store.GetCommercialOrder(uid, orderNo)
@@ -248,9 +263,16 @@ func (h *CommercialPaymentHandler) HandleOrders(w http.ResponseWriter, r *http.R
 				return
 			}
 			order = h.refreshPendingCommercialOrder(r.Context(), order)
+			if order.Status == "pending" && order.ExpiresAt != nil && !order.ExpiresAt.After(time.Now().UTC()) {
+				_, _ = h.store.CloseExpiredCommercialOrders(100)
+				if closed, loadErr := h.store.GetCommercialOrder(uid, orderNo); loadErr == nil && closed != nil {
+					order = closed
+				}
+			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"order": commercialOrderForUser(order)})
 			return
 		}
+		_, _ = h.store.CloseExpiredCommercialOrders(100)
 		orders, err := h.store.ListCommercialOrders(uid, 20)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load orders"})
@@ -265,27 +287,54 @@ func (h *CommercialPaymentHandler) HandleOrders(w http.ResponseWriter, r *http.R
 }
 
 func (h *CommercialPaymentHandler) refreshPendingCommercialOrder(ctx context.Context, order *types.CommercialOrder) *types.CommercialOrder {
-	if h == nil || order == nil || order.Status != "pending" {
+	if h == nil || order == nil || (order.Status != "created" && order.Status != "pending" && order.Status != "closed") {
 		return order
+	}
+	if order.Status == "closed" {
+		closedAt := order.ClosedAt
+		if closedAt == nil || closedAt.Before(time.Now().UTC().Add(-7*24*time.Hour)) {
+			return order
+		}
 	}
 	provider := h.providers[order.Channel]
 	querier, ok := provider.(CommercialPaymentQuerier)
-	if !ok || !h.claimCommercialPaymentQuery(order.OrderNo, time.Now().UTC()) {
+	if order.Status != "created" && ok && h.claimCommercialPaymentQuery(order.OrderNo, time.Now().UTC()) {
+		confirmation, paid, err := querier.QueryPayment(ctx, order)
+		if err == nil && paid && confirmation != nil {
+			fulfilled, changed, fulfillErr := h.store.FulfillCommercialOrder(order.OrderNo, confirmation)
+			if fulfillErr == nil && fulfilled != nil {
+				h.clearCommercialPaymentQuery(order.OrderNo)
+				if changed {
+					h.enqueueRelaySync(fulfilled.UID)
+				}
+				return fulfilled
+			}
+		}
+	}
+	if (order.Status != "created" && order.Status != "pending") || strings.TrimSpace(order.CheckoutURL) != "" || provider == nil {
 		return order
 	}
-	confirmation, paid, err := querier.QueryPayment(ctx, order)
-	if err != nil || !paid || confirmation == nil {
+	expiresAt := time.Now().UTC().Add(20 * time.Minute)
+	claimedOrder, claimed, err := h.store.BeginCommercialOrderPayment(order.OrderNo, expiresAt)
+	if err != nil || !claimed {
 		return order
 	}
-	fulfilled, changed, err := h.store.FulfillCommercialOrder(order.OrderNo, confirmation)
-	if err != nil || fulfilled == nil {
+	intent, err := provider.CreatePayment(ctx, claimedOrder)
+	if err != nil || intent == nil || intent.ExpiresAt.IsZero() {
+		if err == nil {
+			err = fmt.Errorf("payment provider returned an invalid intent")
+		}
+		_ = h.store.FailCommercialOrder(order.OrderNo, err.Error())
 		return order
 	}
-	h.clearCommercialPaymentQuery(order.OrderNo)
-	if changed {
-		h.enqueueRelaySync(fulfilled.UID)
+	recovered, err := h.store.SetCommercialOrderPaymentIntent(order.OrderNo, intent.CheckoutURL, intent.ExpiresAt)
+	if err != nil || recovered == nil {
+		if err != nil {
+			_ = h.store.FailCommercialOrder(order.OrderNo, err.Error())
+		}
+		return order
 	}
-	return fulfilled
+	return recovered
 }
 
 func (h *CommercialPaymentHandler) claimCommercialPaymentQuery(orderNo string, now time.Time) bool {
@@ -336,7 +385,7 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 		return
 	}
 	provider := h.providers[req.Channel]
-	if provider == nil || (req.Channel == commercialPaymentChannelTest && !h.testAllowedFor(uid)) {
+	if provider == nil || !h.saleChannelAvailable(uid, req.Channel) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "payment channel is unavailable"})
 		return
 	}
@@ -348,6 +397,15 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 	if !h.planVisibleFor(uid, plan) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "commercial plan is unavailable"})
 		return
+	}
+	if req.Channel != commercialPaymentChannelTest {
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		err = h.syncer.ValidatePurchase(ctx, uid, plan)
+		cancel()
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "套餐额度暂时无法同步，请稍后重试"})
+			return
+		}
 	}
 	expiresAt := time.Now().UTC().Add(20 * time.Minute)
 	order, err := h.store.CreateCommercialOrder(&types.CommercialOrder{
@@ -374,7 +432,7 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 		writeJSON(w, status, map[string]string{"error": message})
 		return
 	}
-	if order.Status != "created" && order.Status != "failed" {
+	if order.Status != "created" && order.Status != "failed" && !(order.Status == "pending" && strings.TrimSpace(order.CheckoutURL) == "") {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"order": commercialOrderForUser(order)})
 		return
 	}
@@ -400,6 +458,7 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 	}
 	order, err = h.store.SetCommercialOrderPaymentIntent(order.OrderNo, intent.CheckoutURL, intent.ExpiresAt)
 	if err != nil {
+		_ = h.store.FailCommercialOrder(order.OrderNo, err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save payment order"})
 		return
 	}

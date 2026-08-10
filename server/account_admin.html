@@ -1771,6 +1771,9 @@ http://127.0.0.1:26061/local/account-admin</code>
             <div>
               <strong>${escapeHTML(order.plan_name || order.plan_slug)} · ¥${escapeHTML((Number(order.amount_fen || 0) / 100).toFixed(2))}</strong>
               <div class="commercial-meta">${escapeHTML(order.order_no)} · UID ${escapeHTML(order.uid)} · ${escapeHTML(order.channel)} · ${escapeHTML(order.status)} · ${escapeHTML(formatCommercialTime(order.created_at))}</div>
+              ${order.provider_trade_no ? `<div class="commercial-meta">支付宝交易号 ${escapeHTML(order.provider_trade_no)}</div>` : ''}
+              ${order.paid_at ? `<div class="commercial-meta">支付 ${escapeHTML(formatCommercialTime(order.paid_at))}${order.fulfilled_at ? ` · 入账 ${escapeHTML(formatCommercialTime(order.fulfilled_at))}` : ''}</div>` : ''}
+              ${order.last_error ? `<div class="commercial-meta error visible">${escapeHTML(order.last_error)}</div>` : ''}
             </div>
             <span class="badge">${escapeHTML(order.status)}</span>
           </div>

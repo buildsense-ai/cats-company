@@ -117,7 +117,7 @@ func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.Co
 	if err != nil {
 		return nil, fmt.Errorf("load commercial plan: %w", err)
 	}
-	if plan.State != 0 || plan.PriceFen <= 0 || plan.DurationDays <= 0 || !commercialPlanHasPositiveBudget(plan) {
+	if plan.State != 0 || plan.PriceFen <= 0 || plan.DurationDays <= 0 || plan.MonthlyBudget > 0 || !commercialPlanHasPositiveModelBudget(plan) {
 		return nil, fmt.Errorf("commercial plan is not purchasable")
 	}
 	if plan.PurchaseLimit > 0 {
@@ -194,11 +194,26 @@ func commercialPlanHasPositiveBudget(plan *types.CommercialPlan) bool {
 	return false
 }
 
+func commercialPlanHasPositiveModelBudget(plan *types.CommercialPlan) bool {
+	if plan == nil {
+		return false
+	}
+	for model, amount := range plan.ModelBudgets {
+		if strings.TrimSpace(model) != "" && strings.TrimSpace(model) != "*" && amount > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *Adapter) BeginCommercialOrderPayment(orderNo string, expiresAt time.Time) (*types.CommercialOrder, bool, error) {
 	order, err := scanCommercialOrder(a.db.QueryRow(`
 		UPDATE commercial_orders
 		SET status = 'pending', checkout_url = '', expires_at = $2, closed_at = NULL, last_error = ''
-		WHERE order_no = $1 AND status IN ('created','failed')
+		WHERE order_no = $1 AND (
+			status IN ('created','failed') OR
+			(status = 'pending' AND checkout_url = '' AND updated_at <= CURRENT_TIMESTAMP - INTERVAL '30 seconds')
+		)
 		RETURNING `+commercialOrderColumns, strings.TrimSpace(orderNo), expiresAt.UTC()))
 	if err == nil {
 		return order, true, nil
@@ -558,6 +573,20 @@ func (a *Adapter) ReplaceCommercialManagedRelayBudgets(uid int64, budgets []*typ
 	return nil
 }
 
+func (a *Adapter) CommercialRelaySyncRequired(uid int64) (bool, error) {
+	var required bool
+	if err := a.db.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM commercial_entitlements
+			WHERE uid = $1 AND source IN ('order','trial') AND state = 'active'
+			  AND starts_at <= CURRENT_TIMESTAMP
+			  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+		)`, uid).Scan(&required); err != nil {
+		return false, fmt.Errorf("check commercial relay entitlement: %w", err)
+	}
+	return required, nil
+}
+
 func defaultString(value, fallback string) string {
 	if strings.TrimSpace(value) == "" {
 		return fallback
@@ -565,7 +594,7 @@ func defaultString(value, fallback string) string {
 	return strings.TrimSpace(value)
 }
 
-func (a *Adapter) ListCommercialReconcileUIDs(limit int) ([]int64, error) {
+func (a *Adapter) ListCommercialReconcileUIDs(afterUID int64, limit int) ([]int64, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
@@ -576,8 +605,9 @@ func (a *Adapter) ListCommercialReconcileUIDs(limit int) ([]int64, error) {
 			SELECT DISTINCT uid FROM commercial_quota_grants
 			WHERE effective_at <= CURRENT_TIMESTAMP AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
 		) candidates
+		WHERE uid > $1
 		ORDER BY uid
-		LIMIT $1`, limit)
+		LIMIT $2`, afterUID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list commercial reconcile users: %w", err)
 	}

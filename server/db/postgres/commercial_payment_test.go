@@ -105,6 +105,10 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	if err != nil || !changed || fulfilled.Status != "fulfilled" {
 		t.Fatalf("fulfill commercial order: order=%#v changed=%v err=%v", fulfilled, changed, err)
 	}
+	required, err := db.CommercialRelaySyncRequired(uid)
+	if err != nil || !required {
+		t.Fatalf("fulfilled paid entitlement must remain relay-sync eligible: required=%v err=%v", required, err)
+	}
 	duplicate, changed, err := db.FulfillCommercialOrder(created.OrderNo, confirmation)
 	if err != nil || changed || duplicate.Status != "fulfilled" {
 		t.Fatalf("duplicate payment callback was not idempotent: order=%#v changed=%v err=%v", duplicate, changed, err)

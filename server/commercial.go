@@ -957,7 +957,27 @@ func (h *AccountAdminHandler) HandleCommercialOrders(w http.ResponseWriter, r *h
 		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list commercial orders"})
 		return
 	}
-	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"orders": orders})
+	adminOrders := make([]map[string]interface{}, 0, len(orders))
+	for _, order := range orders {
+		if order == nil {
+			continue
+		}
+		adminOrders = append(adminOrders, map[string]interface{}{
+			"order_no":          order.OrderNo,
+			"uid":               order.UID,
+			"plan_name":         order.PlanName,
+			"plan_slug":         order.PlanSlug,
+			"amount_fen":        order.AmountFen,
+			"channel":           order.Channel,
+			"status":            order.Status,
+			"provider_trade_no": order.ProviderTradeNo,
+			"paid_at":           order.PaidAt,
+			"fulfilled_at":      order.FulfilledAt,
+			"last_error":        order.LastError,
+			"created_at":        order.CreatedAt,
+		})
+	}
+	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"orders": adminOrders})
 }
 
 func strconvParsePositiveInt64(raw string) (int64, error) {

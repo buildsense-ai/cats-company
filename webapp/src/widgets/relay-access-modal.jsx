@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CalendarDays, Check, Copy, CreditCard, ExternalLink, Gift, KeyRound, ReceiptText, RotateCcw, Server, Sparkles, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
@@ -144,7 +144,7 @@ function commercialOrderStatus(status) {
     created: '创建中',
     pending: '待支付',
     paid: '已支付',
-    fulfilled: '已到账',
+    fulfilled: '额度同步中',
     closed: '已关闭',
     failed: '创建失败',
     refunding: '退款中',
@@ -155,6 +155,39 @@ function commercialOrderStatus(status) {
 function newCommercialClientRequestID() {
   const random = globalThis.crypto?.randomUUID?.().replaceAll('-', '') || Math.random().toString(36).slice(2);
   return `order_${Date.now()}_${random}`.slice(0, 64);
+}
+
+const COMMERCIAL_PAYMENT_REQUEST_STORAGE_KEY = 'catsco_commercial_payment_request_ids_v1';
+
+function commercialClientRequestIDValid(value) {
+  return typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{7,63}$/.test(value);
+}
+
+function loadCommercialPaymentRequestIDs() {
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(COMMERCIAL_PAYMENT_REQUEST_STORAGE_KEY) || '{}');
+    const freshAfter = Date.now() - (30 * 60 * 1000);
+    return new Map(Object.entries(parsed).flatMap(([key, value]) => {
+      const id = typeof value === 'string' ? value : value?.id;
+      const createdAt = typeof value === 'string' ? Date.now() : Number(value?.created_at || 0);
+      return key && commercialClientRequestIDValid(id) && createdAt >= freshAfter ? [[key, id]] : [];
+    }));
+  } catch {
+    return new Map();
+  }
+}
+
+function saveCommercialPaymentRequestIDs(requestIDs) {
+  try {
+    window.sessionStorage.setItem(
+      COMMERCIAL_PAYMENT_REQUEST_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(
+        [...requestIDs].map(([key, id]) => [key, { id, created_at: Date.now() }]),
+      )),
+    );
+  } catch {
+    // In-memory idempotency still applies when storage is unavailable.
+  }
 }
 
 function formatPercent(value) {
@@ -428,6 +461,7 @@ export default function RelayAccessModal({ onClose }) {
   const [paymentChannel, setPaymentChannel] = useState('');
   const [checkoutOrder, setCheckoutOrder] = useState(null);
   const [paymentLoading, setPaymentLoading] = useState('');
+  const [paymentPollError, setPaymentPollError] = useState('');
   const [trialLoading, setTrialLoading] = useState(false);
   const [currentUsage, setCurrentUsage] = useState(undefined);
   const [usageByModel, setUsageByModel] = useState({});
@@ -435,67 +469,72 @@ export default function RelayAccessModal({ onClose }) {
   const [inviteLoading, setInviteLoading] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState('');
+  const paymentRequestIDs = useRef(loadCommercialPaymentRequestIDs());
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
+    const requestOptions = { signal: controller.signal, timeoutMs: 20_000 };
     async function load() {
       setLoading(true);
       setError('');
+      let nextConfig = FALLBACK_CONFIG;
       try {
-        const data = await api.getRelayConfig();
-        if (cancelled) return;
-        const nextConfig = {
+        const data = await api.getRelayConfig(requestOptions);
+        nextConfig = {
           ...FALLBACK_CONFIG,
           ...data,
           endpoints: Array.isArray(data.endpoints) && data.endpoints.length > 0
             ? data.endpoints
             : FALLBACK_CONFIG.endpoints,
         };
-        setConfig(nextConfig);
-        if (nextConfig.self_service_enabled) {
-          setKeyLoading(true);
-          try {
-            const keyData = await api.getRelayKey();
-            if (!cancelled) setRelayKey(keyData.key || null);
-          } finally {
-            if (!cancelled) setKeyLoading(false);
-          }
-        }
-        try {
-          const commercialData = await api.getRelayCommercial();
-          if (!cancelled) setCommercial(commercialData);
-        } catch (err) {
-          if (!cancelled) setCommercial(null);
-        }
-        try {
-          const [catalogData, ordersData] = await Promise.all([
-            api.getCommercialCatalog(),
-            api.getCommercialOrders(),
-          ]);
-          if (!cancelled) {
-            setCommercialCatalog(catalogData);
-            setCommercialOrders(Array.isArray(ordersData?.orders) ? ordersData.orders : []);
-            const channels = Array.isArray(catalogData?.channels) ? catalogData.channels : [];
-            setPaymentChannel(channels[0]?.id || '');
-          }
-        } catch {
-          if (!cancelled) {
-            setCommercialCatalog(null);
-            setCommercialOrders([]);
-          }
-        }
+        if (!cancelled) setConfig(nextConfig);
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && err.code !== 'REQUEST_ABORTED') {
           console.warn('Failed to load relay config:', err);
           setError('配置读取失败，已显示默认配置');
         }
-      } finally {
-        if (!cancelled) setLoading(false);
       }
+      if (nextConfig.self_service_enabled) {
+        try {
+          setKeyLoading(true);
+          const keyData = await api.getRelayKey(requestOptions);
+          if (!cancelled) setRelayKey(keyData.key || null);
+        } catch {
+          if (!cancelled) setRelayKey(null);
+        } finally {
+          if (!cancelled) setKeyLoading(false);
+        }
+      }
+      const [commercialResult, catalogResult, ordersResult] = await Promise.allSettled([
+        api.getRelayCommercial(requestOptions),
+        api.getCommercialCatalog(requestOptions),
+        api.getCommercialOrders('', requestOptions),
+      ]);
+      if (cancelled) return;
+      setCommercial(commercialResult.status === 'fulfilled' ? commercialResult.value : null);
+      if (catalogResult.status === 'fulfilled') {
+        const catalogData = catalogResult.value;
+        setCommercialCatalog(catalogData);
+        const channels = Array.isArray(catalogData?.channels) ? catalogData.channels : [];
+        setPaymentChannel(channels[0]?.id || '');
+      } else {
+        setCommercialCatalog(null);
+      }
+      if (ordersResult.status === 'fulfilled') {
+        const orders = Array.isArray(ordersResult.value?.orders) ? ordersResult.value.orders : [];
+        setCommercialOrders(orders);
+        setCheckoutOrder((current) => current || orders.find((order) => ['created', 'pending'].includes(order.status)) || null);
+      } else {
+        setCommercialOrders([]);
+        setError('订单状态读取失败，请关闭后重试。');
+      }
+      if (!cancelled) setLoading(false);
     }
     load();
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, []);
 
@@ -712,11 +751,11 @@ export default function RelayAccessModal({ onClose }) {
     }
   };
 
-  const refreshCommercialState = async () => {
+  const refreshCommercialState = async (options = {}) => {
     const [commercialData, catalogData, ordersData] = await Promise.all([
-      api.getRelayCommercial(),
-      api.getCommercialCatalog(),
-      api.getCommercialOrders(),
+      api.getRelayCommercial(options),
+      api.getCommercialCatalog(options),
+      api.getCommercialOrders('', options),
     ]);
     setCommercial(commercialData);
     setCommercialCatalog(catalogData);
@@ -730,16 +769,36 @@ export default function RelayAccessModal({ onClose }) {
       setError('支付通道尚未配置。');
       return;
     }
+    const existing = commercialOrders.find((order) => (
+      ['created', 'pending'].includes(order.status) && order.plan_id === plan.id && order.channel === paymentChannel
+    ));
+    if (existing) {
+      setPaymentPollError('');
+      setCheckoutOrder(existing);
+      setError('');
+      return;
+    }
     setPaymentLoading(`create:${plan.id}`);
     setError('');
+    const requestKey = `${plan.id}:${paymentChannel}`;
+    const clientRequestID = paymentRequestIDs.current.get(requestKey) || newCommercialClientRequestID();
+    paymentRequestIDs.current.set(requestKey, clientRequestID);
+    saveCommercialPaymentRequestIDs(paymentRequestIDs.current);
     try {
-      const data = await api.createCommercialOrder(plan.id, paymentChannel, newCommercialClientRequestID());
+      const data = await api.createCommercialOrder(plan.id, paymentChannel, clientRequestID, { timeoutMs: 40_000 });
+      paymentRequestIDs.current.delete(requestKey);
+      saveCommercialPaymentRequestIDs(paymentRequestIDs.current);
+      setPaymentPollError('');
       setCheckoutOrder(data.order || null);
       setCommercialOrders((current) => {
         const next = (current || []).filter((item) => item.order_no !== data.order?.order_no);
         return data.order ? [data.order, ...next] : next;
       });
     } catch (err) {
+      if (Number(err.status) >= 400 && Number(err.status) < 500 && Number(err.status) !== 408) {
+        paymentRequestIDs.current.delete(requestKey);
+        saveCommercialPaymentRequestIDs(paymentRequestIDs.current);
+      }
       setError(err.message || '创建订单失败');
     } finally {
       setPaymentLoading('');
@@ -776,24 +835,45 @@ export default function RelayAccessModal({ onClose }) {
   };
 
   useEffect(() => {
-    if (!checkoutOrder?.order_no || checkoutOrder.status !== 'pending') return undefined;
+    if (!checkoutOrder?.order_no || !['created', 'pending', 'closed'].includes(checkoutOrder.status)) return undefined;
     let cancelled = false;
+    let timer = null;
+    let failures = 0;
+    let shouldContinue = true;
+    const controller = new AbortController();
     const poll = async () => {
       try {
-        const data = await api.getCommercialOrders(checkoutOrder.order_no);
+        const data = await api.getCommercialOrders(checkoutOrder.order_no, {
+          signal: controller.signal,
+          timeoutMs: 20_000,
+        });
         if (cancelled || !data?.order) return;
+        failures = 0;
+        setPaymentPollError('');
         setCheckoutOrder(data.order);
+        setCommercialOrders((current) => {
+          const next = (current || []).filter((item) => item.order_no !== data.order.order_no);
+          return [data.order, ...next];
+        });
+        shouldContinue = ['created', 'pending'].includes(data.order.status);
         if (data.order.status === 'fulfilled') {
-          await refreshCommercialState();
+          await refreshCommercialState({ signal: controller.signal, timeoutMs: 20_000 });
         }
-      } catch {
-        // Keep the payment panel open; the next poll or callback can recover.
+      } catch (err) {
+        if (cancelled || err.code === 'REQUEST_ABORTED') return;
+        failures += 1;
+        if (failures >= 2) {
+          setPaymentPollError('支付状态暂时未更新，订单已保留，正在继续查询。');
+        }
+      } finally {
+        if (!cancelled && shouldContinue) timer = window.setTimeout(poll, 2500);
       }
     };
-    const timer = window.setInterval(poll, 2500);
+    poll();
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      controller.abort();
+      if (timer) window.clearTimeout(timer);
     };
   }, [checkoutOrder?.order_no, checkoutOrder?.status]);
 
@@ -1011,6 +1091,12 @@ export default function RelayAccessModal({ onClose }) {
                     </a>
                   </div>
                 )}
+                {checkoutOrder.status === 'pending' && checkoutOrder.channel !== 'test' && !checkoutOrder.checkout_url && (
+                  <div className="relay-access-period-note">正在恢复支付宝收银台链接，请稍候。</div>
+                )}
+                {checkoutOrder.status === 'created' && (
+                  <div className="relay-access-period-note">订单已保存，正在恢复支付链接。</div>
+                )}
                 {checkoutOrder.status === 'pending' && checkoutOrder.channel === 'test' && commercialCatalog?.test_mode && (
                   <button
                     type="button"
@@ -1022,8 +1108,9 @@ export default function RelayAccessModal({ onClose }) {
                   </button>
                 )}
                 {checkoutOrder.status === 'fulfilled' && (
-                  <div className="relay-access-payment-success"><Check size={16} />支付成功，套餐额度已到账。</div>
+                  <div className="relay-access-payment-success"><Check size={16} />支付成功，额度正在同步；如暂不可用请稍后刷新。</div>
                 )}
+                {paymentPollError && <InlineFeedback tone="warning">{paymentPollError}</InlineFeedback>}
               </div>
             )}
 
@@ -1031,7 +1118,10 @@ export default function RelayAccessModal({ onClose }) {
               <div className="relay-access-order-list">
                 <div className="relay-access-mini-title"><ReceiptText size={15} />最近订单</div>
                 {commercialOrders.slice(0, 5).map((order) => (
-                  <button type="button" key={order.order_no} onClick={() => setCheckoutOrder(order)}>
+                  <button type="button" key={order.order_no} onClick={() => {
+                    setPaymentPollError('');
+                    setCheckoutOrder(order);
+                  }}>
                     <span>
                       <strong>{order.plan_name}</strong>
                       <em>{formatShortDateTime(order.created_at)}</em>
