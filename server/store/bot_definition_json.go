@@ -148,6 +148,13 @@ func normalizeDefinitionRecord(record *types.BotDefinitionRecord, botUID int64) 
 	if record.Definition.Model.Kind == "" && record.Definition.Model.ModelID != "" {
 		record.Definition.Model.Kind = "catalog"
 	}
+	if record.Definition.Model.Kind == "" && record.Definition.Model.ModelID == "" {
+		appliedKind := strings.ToLower(strings.TrimSpace(record.Runtime.AppliedKind))
+		appliedModelID := strings.ToLower(strings.TrimSpace(record.Runtime.AppliedModelID))
+		if record.Runtime.DesiredRevision > 0 || appliedKind == "local" || appliedModelID == "local" {
+			record.Definition.Model = types.BotDefinitionModel{Kind: "local", ModelID: "local"}
+		}
+	}
 	if record.Definition.Skills == nil {
 		record.Definition.Skills = []types.BotSkillRef{}
 	}
