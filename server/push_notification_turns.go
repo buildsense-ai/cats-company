@@ -9,9 +9,10 @@ import (
 )
 
 const (
-	agentPushTurnDedupTTL    = 10 * time.Minute
-	maxTrackedAgentPushTurns = 4096
-	maxActiveAgentPushTurns  = 1024
+	agentPushTurnDedupTTL        = 10 * time.Minute
+	agentPushTerminalSettleDelay = 750 * time.Millisecond
+	maxTrackedAgentPushTurns     = 4096
+	maxActiveAgentPushTurns      = 1024
 )
 
 type agentPushTurnCoordinator struct {
@@ -22,6 +23,7 @@ type agentPushTurnCoordinator struct {
 	currentRuns    map[agentPushScopeKey]agentPushCurrentRun
 	pendingByScope map[agentPushScopeKey]*pendingAgentPushMessages
 	nextCandidate  uint64
+	settleDelay    time.Duration
 }
 
 type agentPushScopeKey struct {
@@ -46,13 +48,15 @@ type agentPushCurrentRun struct {
 }
 
 type agentPushTurn struct {
-	runID      string
-	terminal   bool
-	superseded bool
-	updatedAt  time.Time
-	candidates map[int64]agentPushCandidate
-	expiresAt  time.Time
-	timer      *time.Timer
+	runID           string
+	terminal        bool
+	superseded      bool
+	updatedAt       time.Time
+	candidates      map[int64]agentPushCandidate
+	expiresAt       time.Time
+	timer           *time.Timer
+	deliveryTimer   *time.Timer
+	deliveryTimerID uint64
 }
 
 type pendingAgentPushMessages struct {
@@ -74,6 +78,12 @@ func newAgentPushTurnCoordinator() *agentPushTurnCoordinator {
 		currentRuns:    make(map[agentPushScopeKey]agentPushCurrentRun),
 		pendingByScope: make(map[agentPushScopeKey]*pendingAgentPushMessages),
 	}
+}
+
+func newHubAgentPushTurnCoordinator() *agentPushTurnCoordinator {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.settleDelay = agentPushTerminalSettleDelay
+	return coordinator
 }
 
 func agentPushScope(senderUID int64, topicID string) agentPushScopeKey {
@@ -169,6 +179,11 @@ func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskS
 	turn.expiresAt = now.Add(agentPushTurnDedupTTL)
 	c.resetTurnTimerLocked(turnKey, turn)
 	candidates := candidateValues(turn.candidates)
+	if len(candidates) > 0 && c.settleDelay > 0 {
+		c.resetTurnDeliveryTimerLocked(turnKey, turn)
+		c.mu.Unlock()
+		return
+	}
 	c.mu.Unlock()
 	c.deliverTurnCandidates(scope, runID, candidates)
 }
@@ -221,10 +236,37 @@ func (c *agentPushTurnCoordinator) removeTurnLocked(turnKey agentPushTrackedTurn
 	if turn != nil && turn.timer != nil {
 		turn.timer.Stop()
 	}
+	if turn != nil && turn.deliveryTimer != nil {
+		turn.deliveryTimer.Stop()
+	}
 	delete(c.trackedTurns, turnKey)
 	if current := c.currentRuns[turnKey.scope]; turn != nil && current.runID == turn.runID {
 		delete(c.currentRuns, turnKey.scope)
 	}
+}
+
+func (c *agentPushTurnCoordinator) resetTurnDeliveryTimerLocked(turnKey agentPushTrackedTurnKey, turn *agentPushTurn) {
+	if turn == nil || c.settleDelay <= 0 {
+		return
+	}
+	if turn.deliveryTimer != nil {
+		turn.deliveryTimer.Stop()
+	}
+	runID := turn.runID
+	turn.deliveryTimerID++
+	timerID := turn.deliveryTimerID
+	turn.deliveryTimer = time.AfterFunc(c.settleDelay, func() {
+		c.mu.Lock()
+		current := c.trackedTurns[turnKey]
+		if current == nil || current != turn || current.runID != runID || !current.terminal || current.deliveryTimerID != timerID {
+			c.mu.Unlock()
+			return
+		}
+		current.deliveryTimer = nil
+		candidates := candidateValues(current.candidates)
+		c.mu.Unlock()
+		c.deliverTurnCandidates(turnKey.scope, runID, candidates)
+	})
 }
 
 func (c *agentPushTurnCoordinator) resetPendingTimerLocked(scope agentPushScopeKey, pending *pendingAgentPushMessages) {
@@ -339,6 +381,11 @@ func (c *agentPushTurnCoordinator) observeVisibleMessage(recipientUID, senderUID
 	}
 	turn.candidates[recipientUID] = candidate
 	terminal := turn.terminal
+	if terminal && c.settleDelay > 0 {
+		c.resetTurnDeliveryTimerLocked(turnKey, turn)
+		c.mu.Unlock()
+		return true
+	}
 	c.mu.Unlock()
 	if terminal {
 		c.deliverTurnCandidates(scope, runID, map[int64]agentPushCandidate{recipientUID: candidate})

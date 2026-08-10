@@ -128,7 +128,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		deviceRPC:           newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
 		thinToolRPC:         newThinToolRPCRouter(defaultThinToolRPCTTL),
 		groupTurns:          newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
-		agentPush:           newAgentPushTurnCoordinator(),
+		agentPush:           newHubAgentPushTurnCoordinator(),
 		taskGrace:           90 * time.Second,
 		taskReaperInterval:  30 * time.Second,
 		botConnectionEpochs: make(map[int64]uint64),

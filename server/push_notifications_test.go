@@ -1686,6 +1686,86 @@ func TestAgentPushTerminalBeforeMessageDeliversExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestAgentPushTerminalBeforeMessagesUsesLatestVisibleMessage(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.settleDelay = 20 * time.Millisecond
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "terminal-first-latest", State: "completed", SourceUID: 7,
+	})
+
+	delivered := make(chan string, 2)
+	for seq, content := range []string{"intermediate answer", "final answer"} {
+		messageBody := content
+		msg := &ServerMessage{Data: &MsgServerData{
+			Topic: "p2p_7_8", SeqID: seq + 1, Type: "text", Content: content,
+			Metadata: map[string]interface{}{"run_id": "terminal-first-latest"},
+		}}
+		if !coordinator.observeVisibleMessage(8, 7, msg, func() bool {
+			delivered <- messageBody
+			return true
+		}) {
+			t.Fatal("message after terminal status was not handled by the coordinator")
+		}
+	}
+
+	select {
+	case got := <-delivered:
+		if got != "final answer" {
+			t.Fatalf("notification body = %q, want final answer", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("latest visible message was not delivered")
+	}
+	select {
+	case got := <-delivered:
+		t.Fatalf("unexpected duplicate notification body %q", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestAgentPushTerminalBetweenMessagesUsesLatestVisibleMessage(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.settleDelay = 20 * time.Millisecond
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "terminal-between", State: "running", SourceUID: 7,
+	})
+
+	delivered := make(chan string, 2)
+	observe := func(seq int, content string) {
+		messageBody := content
+		msg := &ServerMessage{Data: &MsgServerData{
+			Topic: "p2p_7_8", SeqID: seq, Type: "text", Content: content,
+			Metadata: map[string]interface{}{"run_id": "terminal-between"},
+		}}
+		if !coordinator.observeVisibleMessage(8, 7, msg, func() bool {
+			delivered <- messageBody
+			return true
+		}) {
+			t.Fatal("visible message was not handled by the coordinator")
+		}
+	}
+
+	observe(1, "intermediate answer")
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "terminal-between", State: "completed", SourceUID: 7,
+	})
+	observe(2, "final answer")
+
+	select {
+	case got := <-delivered:
+		if got != "final answer" {
+			t.Fatalf("notification body = %q, want final answer", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("latest visible message was not delivered")
+	}
+	select {
+	case got := <-delivered:
+		t.Fatalf("unexpected duplicate notification body %q", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestAgentPushUncorrelatedMessageHandlesTerminalOnlyOrdering(t *testing.T) {
 	for _, terminalFirst := range []bool{false, true} {
 		name := "message_before_terminal"
