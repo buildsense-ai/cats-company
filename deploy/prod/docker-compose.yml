@@ -142,8 +142,10 @@ services:
       - "${PROD_STACK_ROOT}/compose/tinode.prod.conf:/app/tinode.conf:ro"
       - "${PROD_STACK_ROOT}/secrets:/run/catsco-secrets:ro"
       # Cloud worker state (id_rsa/known_hosts/inject.env per tenant) must
-      # survive server container recreation for destroy/reset/rollback.
-      - "${PROD_STACK_ROOT}/data/catsco-worker:/var/lib/catsco-worker"
+      # survive server container recreation for destroy/reset/rollback. The
+      # container-side target follows CTYUN_WORKER_STATE_DIR so an override in
+      # prod.env can never silently escape the persistent volume.
+      - "${PROD_STACK_ROOT}/data/catsco-worker:${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

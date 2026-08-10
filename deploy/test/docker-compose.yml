@@ -165,7 +165,9 @@ services:
       - "${TEST_STACK_ROOT}/data/uploads:/app/uploads"
       - "${TEST_STACK_ROOT}/compose/tinode.test.conf:/app/tinode.conf:ro"
       - "${TEST_STACK_ROOT}/secrets:/run/catsco-secrets:ro"
-      - "${TEST_STACK_ROOT}/data/catsco-worker:/var/lib/catsco-worker"
+      # Mirrors prod: container-side target follows CTYUN_WORKER_STATE_DIR so
+      # an override never escapes the persistent volume.
+      - "${TEST_STACK_ROOT}/data/catsco-worker:${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
