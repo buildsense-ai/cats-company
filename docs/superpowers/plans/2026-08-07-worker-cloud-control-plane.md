@@ -44,7 +44,7 @@
   - `GET /api/cloud-workers/meta`：配额 + 可用镜像（`CATSCO_WORKER_IMAGES_SCRIPT -Action List`，未配则无）。
   - `POST /api/cloud-workers/{name}/rollback` / `{name}/reset`：所有权校验 + 脚本执行（未配脚本 503）。
   - 路由：`server/cmd/server.go` `/api/cloud-workers` + `/api/cloud-workers/`；测试 `server/cloud_workers_test.go`（9 项全绿）。
-- [ ] **步骤 B1-2：前端启用「云托管」radio + 员工管理视图**
+- [x] **步骤 B1-2：前端启用「云托管」radio + 员工管理视图**（2026-08-10，#158 合并）
   - `agent-store-modal.jsx`：`MANAGED` radio 由 `disabled` → 可用（受配额/开关控制）；创建后进入"云托管员工"管理视图（列表：名称/状态/**版本**/镜像/创建时间）。
   - `api.js` 新增 `getCloudWorkers` / `createCloudWorker` / `rollbackCloudWorker` / `resetCloudWorker`；i18n 补 `bot_*` 键。
 
@@ -52,13 +52,13 @@
 - [x] **步骤 B2-1：后端配额**（2026-08-07，`server/cloud_workers.go`）
   - `CATSCO_WORKER_CREATE_QUOTA=<uid>=<n>;...`（**默认空 = 0 = 不可创建**）；`parseWorkerCreateQuota` 解析 + 创建前校验"已创建数 < 配额"。
   - `.env.example` 已补充 `CATSCO_WORKER_CREATE_QUOTA` + 4 个脚本变量。
-- [ ] **步骤 B2-2：前端配额展示**
+- [x] **步骤 B2-2：前端配额展示**（2026-08-10，#158 合并）
   - 「可创建云虚拟员工次数」展示在创建按钮处；剩余 0 → 置灰并提示；有剩余 → 可点触发创建。
 
 ### 模块 B3：版本展示 + 「回滚」与「重置」两个动作（分开，写清楚）
-- [ ] **步骤 B3-1：版本展示**：员工列表显示 `version/commit`（来自镜像 label 或运行状态）。
-- [ ] **步骤 B3-2：「回滚（保留数据）」**：`POST /api/cloud-workers/{name}/rollback` —— Part A 制品切版本（`update-worker-artifact.sh --rollback`），`/srv/catsco-agent` 数据不动。UI 标注"保留数据"。
-- [ ] **步骤 B3-3：「重置 / 重装（丢弃数据）」**：`POST /api/cloud-workers/{name}/reset` —— 销毁该 worker 云实例 → 从所选历史镜像（`Manage-WorkerImages.ps1 -Action List`）或最新镜像重建 → 初始化供给。UI 标注"丢弃数据，不可恢复"+ 强二次确认；**与回滚严格分开**（不同入口/警示色/确认文案）。
+- [x] **步骤 B3-1：版本展示**（2026-08-10，#158 合并）：员工列表显示 `version/commit`（来自镜像 label 或运行状态）。
+- [x] **步骤 B3-2：「回滚（保留数据）」**（2026-08-10，#158 合并）：`POST /api/cloud-workers/{name}/rollback` —— 当前为镜像内多版本切换（`rollback-worker.sh`）；Part A 制品切版本（`update-worker-artifact.sh --rollback`）接入后扩展。UI 标注"保留数据"。
+- [x] **步骤 B3-3：「重置 / 重装（丢弃数据）」**（2026-08-10，#158 合并）：`POST /api/cloud-workers/{name}/reset` —— 销毁该 worker 云实例 → 从所选历史镜像（`Manage-WorkerImages.ps1 -Action List`）或最新镜像重建 → 初始化供给。UI 标注"丢弃数据，不可恢复"+ 强二次确认；**与回滚严格分开**（不同入口/警示色/确认文案）。
 
 ### 模块 B4：云操作脚本（bash，跑在 Linux server）—— B4-1 详细设计
 
