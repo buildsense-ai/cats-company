@@ -151,7 +151,7 @@ func newTaskRecoveryTestHubWithRuntime(db store.Store, shared sharedRuntimeState
 		sharedRuntime:       shared,
 		bodyLeases:          newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
 		groupTurns:          newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
-		agentPush:           newAgentPushTurnCoordinator(),
+		agentPush:           newImmediateAgentPushTurnCoordinator(),
 		botConnectionEpochs: make(map[int64]uint64),
 	}
 	if shared != nil {

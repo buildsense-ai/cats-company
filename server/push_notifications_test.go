@@ -1502,6 +1502,12 @@ func TestThirdPartyProviderGroupMessagePushEligibility(t *testing.T) {
 	}
 }
 
+func newImmediateAgentPushTurnCoordinator() *agentPushTurnCoordinator {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.terminalSettleDelay = 0
+	return coordinator
+}
+
 func TestPushSuppressionProvenanceIsNotSerialized(t *testing.T) {
 	encoded, err := json.Marshal(&ServerMessage{
 		Data:                     &MsgServerData{Topic: "grp_83", SeqID: 1, Type: "text", Content: "hello"},
@@ -1516,7 +1522,7 @@ func TestPushSuppressionProvenanceIsNotSerialized(t *testing.T) {
 }
 
 func TestAgentPushCoordinatorBoundsDedupKeys(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	expiresAt := time.Now().Add(agentPushTurnDedupTTL)
 	for index := 0; index < maxTrackedAgentPushTurns; index++ {
 		coordinator.delivered[agentPushDeliveryKey{
@@ -1532,7 +1538,7 @@ func TestAgentPushCoordinatorBoundsDedupKeys(t *testing.T) {
 }
 
 func TestAgentPushTypedDeliveryKeysDoNotCollideOnDelimiters(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	deliveries := 0
 	keys := []agentPushDeliveryKey{
 		agentPushTurnDeliveryKey(8, agentPushScope(7, "topic:a"), "b"),
@@ -1549,7 +1555,7 @@ func TestAgentPushTypedDeliveryKeysDoNotCollideOnDelimiters(t *testing.T) {
 }
 
 func TestAgentPushRunningHeartbeatExtendsActiveTurn(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	firstExpiry := time.Now().Add(20 * time.Millisecond)
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7, ExpiresAt: &firstExpiry,
@@ -1589,7 +1595,7 @@ func TestAgentPushRunningHeartbeatExtendsActiveTurn(t *testing.T) {
 }
 
 func TestAgentPushSeparateRunsWaitForTheirOwnTerminalStatus(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	delivered := make(chan string, 2)
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
@@ -1627,7 +1633,7 @@ func TestAgentPushSeparateRunsWaitForTheirOwnTerminalStatus(t *testing.T) {
 }
 
 func TestAgentPushIgnoresExpiredRunningStatus(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	expired := time.Now().Add(-time.Second)
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "run-expired", State: "running", SourceUID: 7, ExpiresAt: &expired,
@@ -1643,7 +1649,7 @@ func TestAgentPushIgnoresExpiredRunningStatus(t *testing.T) {
 }
 
 func TestAgentPushMessageBeforeStatusWaitsForMatchingTerminal(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	msg := &ServerMessage{Data: &MsgServerData{
 		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "answer before status",
 		Metadata: map[string]interface{}{"run_id": "run-before-status"},
@@ -1666,23 +1672,231 @@ func TestAgentPushMessageBeforeStatusWaitsForMatchingTerminal(t *testing.T) {
 	}
 }
 
-func TestAgentPushTerminalBeforeMessageDeliversExactlyOnce(t *testing.T) {
+func TestAgentPushNotificationAggregatesVisibleTailAfterWorkingBoundary(t *testing.T) {
+	coordinator := newImmediateAgentPushTurnCoordinator()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-visible-tail", State: "running", SourceUID: 7,
+	})
+
+	deliveredBodies := make([]string, 0, 1)
+	observe := func(seq int, body string) {
+		msg := &ServerMessage{Data: &MsgServerData{
+			Topic: "p2p_7_8", SeqID: seq, Type: "text", Content: body,
+		}}
+		if !coordinator.observeVisibleMessageBody(8, 7, msg, body, func(notificationBody string) bool {
+			deliveredBodies = append(deliveredBodies, notificationBody)
+			return true
+		}) {
+			t.Fatalf("message %d was not retained by the coordinator", seq)
+		}
+	}
+
+	observe(1, "我先检查一下现有实现。")
+	coordinator.resetVisibleTailAtWorkingBoundary(7, &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 2, Type: "tool_use", Content: "execute_shell",
+	}})
+	for index, body := range []string{"第一部分结论。", "第二部分证据。", "第三部分建议。"} {
+		observe(index+3, body)
+	}
+
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-visible-tail", State: "completed", SourceUID: 7,
+	})
+
+	if len(deliveredBodies) != 1 {
+		t.Fatalf("delivered bodies = %q, want exactly one notification", deliveredBodies)
+	}
+	if got, want := deliveredBodies[0], "第一部分结论。 第二部分证据。 第三部分建议。"; got != want {
+		t.Fatalf("notification body = %q, want %q", got, want)
+	}
+}
+
+func TestAgentPushWorkingBoundaryClearsPendingTextBeforeRunningStatus(t *testing.T) {
+	coordinator := newImmediateAgentPushTurnCoordinator()
+	deliveredBodies := make([]string, 0, 1)
+	observe := func(seq int, body string) {
+		msg := &ServerMessage{Data: &MsgServerData{
+			Topic: "p2p_7_8", SeqID: seq, Type: "text", Content: body,
+		}}
+		coordinator.observeVisibleMessageBody(8, 7, msg, body, func(notificationBody string) bool {
+			deliveredBodies = append(deliveredBodies, notificationBody)
+			return true
+		})
+	}
+
+	observe(1, "状态到达前的工具前文字。")
+	coordinator.resetVisibleTailAtWorkingBoundary(7, &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 2, Type: "tool_result", Content: "内部工具结果",
+	}})
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-pending-boundary", State: "running", SourceUID: 7,
+	})
+	observe(3, "最终回复。")
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-pending-boundary", State: "completed", SourceUID: 7,
+	})
+
+	if len(deliveredBodies) != 1 || deliveredBodies[0] != "最终回复。" {
+		t.Fatalf("delivered bodies = %q, want only text after the working boundary", deliveredBodies)
+	}
+}
+
+func TestAgentPushAsynchronousSubagentEventDoesNotClearVisibleReply(t *testing.T) {
+	metadataShapes := map[string]map[string]interface{}{
+		"kind":                {"kind": "subagent_event"},
+		"subagent ID":         {"subagent_id": "child-1"},
+		"subagent event type": {"subagent_event_type": "agent_progress"},
+	}
+	for name, metadata := range metadataShapes {
+		t.Run(name, func(t *testing.T) {
+			coordinator := newImmediateAgentPushTurnCoordinator()
+			coordinator.observeStatus(&types.ConversationTaskStatus{
+				TopicID: "p2p_7_8", RunID: "run-with-background-subagent", State: "running", SourceUID: 7,
+			})
+
+			deliveredBodies := make([]string, 0, 1)
+			msg := &ServerMessage{Data: &MsgServerData{
+				Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "最终回复。",
+			}}
+			coordinator.observeVisibleMessageBody(8, 7, msg, "最终回复。", func(body string) bool {
+				deliveredBodies = append(deliveredBodies, body)
+				return true
+			})
+			coordinator.resetVisibleTailAtWorkingBoundary(7, &ServerMessage{Data: &MsgServerData{
+				Topic: "p2p_7_8", SeqID: 2, Type: "thinking", Content: "后台子智能体仍在工作",
+				Metadata: metadata,
+			}})
+			coordinator.observeStatus(&types.ConversationTaskStatus{
+				TopicID: "p2p_7_8", RunID: "run-with-background-subagent", State: "completed", SourceUID: 7,
+			})
+
+			if len(deliveredBodies) != 1 || deliveredBodies[0] != "最终回复。" {
+				t.Fatalf("delivered bodies = %q, want the visible reply preserved across an asynchronous subagent event", deliveredBodies)
+			}
+		})
+	}
+}
+
+func TestAgentPushAmbiguousConsecutiveVisibleTextIsPreserved(t *testing.T) {
+	coordinator := newImmediateAgentPushTurnCoordinator()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-text-only", State: "running", SourceUID: 7,
+	})
+	deliveredBodies := make([]string, 0, 1)
+	for seq, body := range []string{"我先处理一下。", "已经处理完成。"} {
+		msg := &ServerMessage{Data: &MsgServerData{
+			Topic: "p2p_7_8", SeqID: seq + 1, Type: "text", Content: body,
+		}}
+		coordinator.observeVisibleMessageBody(8, 7, msg, body, func(notificationBody string) bool {
+			deliveredBodies = append(deliveredBodies, notificationBody)
+			return true
+		})
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-text-only", State: "completed", SourceUID: 7,
+	})
+
+	if len(deliveredBodies) != 1 || deliveredBodies[0] != "我先处理一下。 已经处理完成。" {
+		t.Fatalf("delivered bodies = %q, want all indistinguishable visible text preserved", deliveredBodies)
+	}
+}
+
+func TestAgentPushVisibleReplyIsBoundedByNotificationBodyInsteadOfSegmentCount(t *testing.T) {
+	coordinator := newImmediateAgentPushTurnCoordinator()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-many-short-segments", State: "running", SourceUID: 7,
+	})
+
+	segments := make([]string, 33)
+	deliveredBodies := make([]string, 0, 1)
+	for index := range segments {
+		segments[index] = fmt.Sprintf("%02d", index+1)
+		msg := &ServerMessage{Data: &MsgServerData{
+			Topic: "p2p_7_8", SeqID: index + 1, Type: "text", Content: segments[index],
+		}}
+		coordinator.observeVisibleMessageBody(8, 7, msg, segments[index], func(body string) bool {
+			deliveredBodies = append(deliveredBodies, body)
+			return true
+		})
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-many-short-segments", State: "completed", SourceUID: 7,
+	})
+
+	want := strings.Join(segments, " ")
+	if len(deliveredBodies) != 1 || deliveredBodies[0] != want {
+		t.Fatalf("delivered bodies = %q, want all short segments %q", deliveredBodies, want)
+	}
+}
+
+func TestAgentPushTerminalBeforeSegmentedMessageWithinSettleWindowDeliversCompleteReplyOnce(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
+	coordinator.terminalSettleDelay = 20 * time.Millisecond
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "terminal-first", State: "completed", SourceUID: 7,
 	})
-	deliveries := 0
-	for seq, content := range []string{"late final answer", "late intermediate duplicate"} {
+	deliveredBodies := make(chan string, 2)
+	for seq, content := range []string{"late final answer part one", "late final answer part two"} {
 		msg := &ServerMessage{Data: &MsgServerData{
 			Topic: "p2p_7_8", SeqID: seq + 1, Type: "text", Content: content,
 			Metadata: map[string]interface{}{"run_id": "terminal-first"},
 		}}
-		if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
+		if !coordinator.observeVisibleMessageBody(8, 7, msg, content, func(body string) bool {
+			deliveredBodies <- body
+			return true
+		}) {
 			t.Fatal("message after terminal status was not handled by the coordinator")
 		}
 	}
-	if deliveries != 1 {
-		t.Fatalf("deliveries = %d, want 1", deliveries)
+	select {
+	case body := <-deliveredBodies:
+		if body != "late final answer part one late final answer part two" {
+			t.Fatalf("delivered body = %q, want the complete segmented reply", body)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the terminal notification")
+	}
+	select {
+	case body := <-deliveredBodies:
+		t.Fatalf("unexpected duplicate notification body %q", body)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestAgentPushStaleTerminalSettleCallbackCannotDeliver(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.terminalSettleDelay = time.Hour
+	scope := agentPushScope(7, "p2p_7_8")
+	turnKey := newAgentPushTrackedTurnKey(scope, "run-stale-settle")
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: scope.topicID, RunID: "run-stale-settle", State: "running", SourceUID: scope.senderUID,
+	})
+
+	deliveredBodies := make([]string, 0, 1)
+	observe := func(seq int, body string) {
+		msg := &ServerMessage{Data: &MsgServerData{
+			Topic: scope.topicID, SeqID: seq, Type: "text", Content: body,
+		}}
+		coordinator.observeVisibleMessageBody(8, scope.senderUID, msg, body, func(notificationBody string) bool {
+			deliveredBodies = append(deliveredBodies, notificationBody)
+			return true
+		})
+	}
+	observe(1, "first segment")
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: scope.topicID, RunID: "run-stale-settle", State: "completed", SourceUID: scope.senderUID,
+	})
+	staleGeneration := coordinator.trackedTurns[turnKey].deliveryGeneration
+	observe(2, "second segment")
+	currentGeneration := coordinator.trackedTurns[turnKey].deliveryGeneration
+
+	coordinator.deliverSettledTurn(turnKey, "run-stale-settle", staleGeneration)
+	if len(deliveredBodies) != 0 {
+		t.Fatalf("stale settle callback delivered bodies %q", deliveredBodies)
+	}
+	coordinator.deliverSettledTurn(turnKey, "run-stale-settle", currentGeneration)
+	if len(deliveredBodies) != 1 || deliveredBodies[0] != "first segment second segment" {
+		t.Fatalf("delivered bodies = %q, want the latest settled reply once", deliveredBodies)
 	}
 }
 
@@ -1693,7 +1907,7 @@ func TestAgentPushUncorrelatedMessageHandlesTerminalOnlyOrdering(t *testing.T) {
 			name = "terminal_before_message"
 		}
 		t.Run(name, func(t *testing.T) {
-			coordinator := newAgentPushTurnCoordinator()
+			coordinator := newImmediateAgentPushTurnCoordinator()
 			terminal := &types.ConversationTaskStatus{
 				TopicID: "p2p_7_8", RunID: "terminal-only", State: "completed", SourceUID: 7,
 			}
@@ -1718,7 +1932,7 @@ func TestAgentPushUncorrelatedMessageHandlesTerminalOnlyOrdering(t *testing.T) {
 }
 
 func TestAgentPushCompletedRunDoesNotConsumeNextUncorrelatedMessage(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	deliveries := 0
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
@@ -1751,7 +1965,7 @@ func TestAgentPushCompletedRunDoesNotConsumeNextUncorrelatedMessage(t *testing.T
 }
 
 func TestAgentPushOutOfOrderRunDoesNotCompleteWithStaleStatus(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "stale-run", State: "running", SourceUID: 7,
 	})
@@ -1778,7 +1992,7 @@ func TestAgentPushOutOfOrderRunDoesNotCompleteWithStaleStatus(t *testing.T) {
 }
 
 func TestAgentPushExplicitRunIDTakesPriorityForStatusCorrelation(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
 	})
@@ -1811,7 +2025,7 @@ func TestAgentPushResponseAndStreamIDsDoNotOverrideActiveRun(t *testing.T) {
 		{"response_id": "response-7"},
 		{"stream_id": "stream-9"},
 	} {
-		coordinator := newAgentPushTurnCoordinator()
+		coordinator := newImmediateAgentPushTurnCoordinator()
 		coordinator.observeStatus(&types.ConversationTaskStatus{
 			TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
 		})
@@ -1832,7 +2046,7 @@ func TestAgentPushResponseAndStreamIDsDoNotOverrideActiveRun(t *testing.T) {
 }
 
 func TestAgentPushStaleStatusesDoNotRebindUntaggedMessage(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	baseTime := time.Now()
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7, UpdatedAt: baseTime,
@@ -1866,7 +2080,7 @@ func TestAgentPushStaleStatusesDoNotRebindUntaggedMessage(t *testing.T) {
 }
 
 func TestAgentPushFirstSeenStaleRunCannotReclaimCurrentAfterProductionNormalization(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	baseTime := time.Date(2026, 8, 8, 3, 0, 0, 0, time.UTC)
 	normalize := func(runID, state string, updatedAt time.Time) *types.ConversationTaskStatus {
 		status, err := normalizeConversationTaskStatus(7, "p2p_7_8", &normalizedMessagePayload{
@@ -1899,7 +2113,7 @@ func TestAgentPushFirstSeenStaleRunCannotReclaimCurrentAfterProductionNormalizat
 }
 
 func TestAgentPushStaleTerminalStatusDoesNotCompleteCurrentRun(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	baseTime := time.Now()
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
@@ -1937,7 +2151,7 @@ func TestAgentPushStaleTerminalStatusDoesNotCompleteCurrentRun(t *testing.T) {
 }
 
 func TestAgentPushFailedDeliveryRetriesOnDuplicateTerminal(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "retry-run", State: "running", SourceUID: 7,
 	})
@@ -1968,7 +2182,7 @@ func TestAgentPushFailedDeliveryRetriesOnDuplicateTerminal(t *testing.T) {
 }
 
 func TestAgentPushMissingTerminalNeverFallsBack(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	expiresAt := time.Now().Add(25 * time.Millisecond)
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "missing-terminal", State: "running", SourceUID: 7, ExpiresAt: &expiresAt,
@@ -1992,7 +2206,7 @@ func TestAgentPushMissingTerminalNeverFallsBack(t *testing.T) {
 }
 
 func TestAgentPushHeartbeatsRemainSilentUntilTerminal(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinator()
+	coordinator := newImmediateAgentPushTurnCoordinator()
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "heartbeat-run", State: "running", SourceUID: 7,
 	})
@@ -2313,9 +2527,13 @@ func TestP2PAgentMultipleIntermediateMessagesWaitForTerminalStatus(t *testing.T)
 		Auth:     "auth",
 	}}}
 	service := enabledPushService(pushStore)
-	delivered := make(chan struct{}, 3)
-	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
-		delivered <- struct{}{}
+	delivered := make(chan PushNotification, 3)
+	service.send = func(_ context.Context, payload []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		var notification PushNotification
+		if err := json.Unmarshal(payload, &notification); err != nil {
+			t.Errorf("decode push notification: %v", err)
+		}
+		delivered <- notification
 		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
 	}
 	hub := NewHub(db, nil)
@@ -2324,16 +2542,37 @@ func TestP2PAgentMultipleIntermediateMessagesWaitForTerminalStatus(t *testing.T)
 		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: senderUID,
 	})
 
-	for seq, content := range []string{"first progress update", "second progress update", "partial answer"} {
-		hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
-			DisplayContent: content,
-			DisplayType:    "text",
-			StoredType:     "text",
-			Metadata:       map[string]interface{}{"run_id": "run-1"},
-		}, int64(seq+1), nil)
-	}
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "first progress update",
+		DisplayType:    "text",
+		StoredType:     "text",
+	}, 1, nil)
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "execute_shell",
+		DisplayType:    "tool_use",
+		StoredType:     "tool_use",
+	}, 2, nil)
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "first final segment",
+		DisplayType:    "text",
+		StoredType:     "text",
+	}, 3, nil)
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "background child progress",
+		DisplayType:    "thinking",
+		StoredType:     "thinking",
+		Metadata:       map[string]interface{}{"kind": "subagent_event", "subagent_id": "child-1"},
+	}, 4, nil)
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "second final segment",
+		DisplayType:    "text",
+		StoredType:     "text",
+	}, 5, nil)
 	select {
-	case <-delivered:
+	case notification := <-delivered:
+		if notification.Body != "first final segment second final segment" {
+			t.Fatalf("notification body = %q, want complete visible tail", notification.Body)
+		}
 		t.Fatal("intermediate agent text notified before terminal status")
 	case <-time.After(100 * time.Millisecond):
 	}
@@ -2342,7 +2581,10 @@ func TestP2PAgentMultipleIntermediateMessagesWaitForTerminalStatus(t *testing.T)
 		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: senderUID,
 	})
 	select {
-	case <-delivered:
+	case notification := <-delivered:
+		if notification.Body != "first final segment second final segment" {
+			t.Fatalf("notification body = %q, want complete visible tail across an asynchronous subagent event", notification.Body)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("terminal status did not notify the offline recipient")
 	}
@@ -2355,7 +2597,7 @@ func TestP2PAgentMultipleIntermediateMessagesWaitForTerminalStatus(t *testing.T)
 		DisplayType:    "text",
 		StoredType:     "text",
 		Metadata:       map[string]interface{}{"run_id": "run-1"},
-	}, 4, nil)
+	}, 6, nil)
 	select {
 	case <-delivered:
 		t.Fatal("duplicate terminal or late chunk delivered another push")
