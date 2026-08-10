@@ -1,3 +1,5 @@
+import { isStandaloneWebApp } from './standalone-web-app';
+
 export const PUSH_DISMISSED_KEY = 'cc_push_prompt_dismissed_v1';
 export const PUSH_ENABLED_KEY = 'cc_push_enabled_v1';
 
@@ -35,11 +37,6 @@ function isIOSDevice() {
   return /iPad|iPhone|iPod/.test(userAgent)
     // iPadOS can identify itself as a Mac in desktop mode.
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-}
-
-function isStandaloneWebApp() {
-  return navigator.standalone === true
-    || window.matchMedia?.('(display-mode: standalone)')?.matches === true;
 }
 
 export function canUsePush() {
