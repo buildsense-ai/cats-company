@@ -1971,17 +1971,13 @@ func shouldNotifyOfflineForMessage(msg *ServerMessage) bool {
 	return !isInternalAgentWorkingMessage(displayType, data.Content, data.ContentBlocks)
 }
 
-func (h *Hub) enqueueOfflineUserPush(uid int64, topic string, messageBody ...string) bool {
+func (h *Hub) enqueueOfflineUserPush(uid int64, topic, body string) bool {
 	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 {
 		return false
 	}
 	user, err := h.db.GetUser(uid)
 	if err != nil || user == nil || user.AccountType != types.AccountHuman || user.State != 0 {
 		return false
-	}
-	body := ""
-	if len(messageBody) > 0 {
-		body = messageBody[0]
 	}
 	notification := PushNotification{
 		Title: h.pushNotificationTitle(uid, topic),
@@ -2006,27 +2002,17 @@ func (h *Hub) pushNotificationTitle(uid int64, topic string) string {
 		}
 	}
 	if isGroupTopic(topic) {
-		groupDB, ok := h.db.(interface {
-			GetGroup(int64) (*types.Group, error)
-		})
-		if ok {
-			group, err := groupDB.GetGroup(extractGroupID(topic))
-			if err == nil && group != nil {
-				if name := strings.TrimSpace(group.Name); name != "" {
-					return truncateUTF8(name, maxPushNotificationTitleRunes)
-				}
+		group, err := h.db.GetGroup(extractGroupID(topic))
+		if err == nil && group != nil {
+			if name := strings.TrimSpace(group.Name); name != "" {
+				return truncateUTF8(name, maxPushNotificationTitleRunes)
 			}
 		}
 	} else if peerUID := extractPeerUID(topic, uid); peerUID > 0 {
-		userDB, ok := h.db.(interface {
-			GetUser(int64) (*types.User, error)
-		})
-		if ok {
-			user, err := userDB.GetUser(peerUID)
-			if err == nil && user != nil {
-				if name := strings.TrimSpace(firstNonEmpty(user.DisplayName, user.Username)); name != "" {
-					return truncateUTF8(name, maxPushNotificationTitleRunes)
-				}
+		user, err := h.db.GetUser(peerUID)
+		if err == nil && user != nil {
+			if name := strings.TrimSpace(firstNonEmpty(user.DisplayName, user.Username)); name != "" {
+				return truncateUTF8(name, maxPushNotificationTitleRunes)
 			}
 		}
 	}

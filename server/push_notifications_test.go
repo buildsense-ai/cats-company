@@ -1113,7 +1113,7 @@ func TestEnqueueUserPushQueuesOnlyWhenNoVisibleHumanClient(t *testing.T) {
 				hub.setClientPageVisibility(client, pageVisibility)
 			}
 
-			hub.enqueueOfflineUserPush(uid, "grp_7")
+			hub.enqueueOfflineUserPush(uid, "grp_7", "")
 
 			select {
 			case <-delivered:
@@ -1165,7 +1165,7 @@ func TestEnqueueUserPushSuppressesOnlyFocusedSubscriptionOnTargetTopic(t *testin
 		Focused:        true,
 	}, send: make(chan []byte, 1)})
 
-	hub.enqueueOfflineUserPush(uid, "grp_7")
+	hub.enqueueOfflineUserPush(uid, "grp_7", "")
 
 	select {
 	case endpoint := <-delivered:
@@ -1216,7 +1216,7 @@ func TestEnqueueUserPushDoesNotSuppressLegacyClientWithoutSubscriptionIdentity(t
 		Focused:     true,
 	}, send: make(chan []byte, 1)})
 
-	hub.enqueueOfflineUserPush(uid, "grp_7")
+	hub.enqueueOfflineUserPush(uid, "grp_7", "")
 
 	seen := map[string]bool{}
 	for range 2 {
