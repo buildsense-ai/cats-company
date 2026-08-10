@@ -1,5 +1,7 @@
 # 云虚拟员工控制面（Part B：云托管）实现计划
 
+> **历史说明（2026-08-10）：** 下文的“现状调研”是新控制面实施前的快照，因此会提及已移除的 `gauz-platform`、`server/deployer.go`、`DEPLOY_API_URL` 和 `/api/bots/deploy`。当前主线仅通过 `server/cloud_workers.go` 及 `CATSCO_WORKER_*_SCRIPT` 管理天翼云 worker；迁移和兼容边界见 `docs/cloud-worker-deploy-migration.md`。
+
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
 ## 当前状态（2026-08-07）
