@@ -431,13 +431,28 @@ export default function AgentStoreModal({
     const confirmed = await feedback.confirm({
       title: `回滚“${bot.display_name}”？`,
       message: '回滚会把云端虚拟员工切换到所选镜像版本，但会保留当前数据。',
-      confirmLabel: '回滚（保留数据）',
+      confirmLabel: '选择版本…',
       tone: 'default',
     });
     if (!confirmed) return;
+    let version = '';
     try {
+      // 从控制面 meta 拉可用镜像版本供选择（镜像列表契约：TSV -> 结构化数组）
+      let meta = null;
+      try { meta = await api.getCloudWorkerMeta(); } catch { meta = null; }
+      const versions = (meta?.images || []).map((img) => img?.version).filter(Boolean);
+      if (versions.length > 1) {
+        const picked = window.prompt(
+          `可用版本：\n${versions.join('\n')}\n\n输入要回滚到的版本（留空=最新）：`,
+          '',
+        );
+        if (picked === null) return; // 用户取消
+        version = picked.trim();
+      } else if (versions.length === 1) {
+        version = versions[0];
+      }
       setCloudActioning(name);
-      await api.rollbackCloudWorker(name);
+      await api.rollbackCloudWorker(name, version ? { version } : {});
       feedback.notify({ tone: 'success', message: '回滚已触发，稍后刷新查看状态' });
     } catch (e) {
       setError(e.message || t('error_server'));

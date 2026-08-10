@@ -713,10 +713,10 @@ export const api = {
   getCloudWorkerMeta: () => request('GET', '/api/cloud-workers/meta'),
   createCloudWorker: ({ username, display_name }) =>
     request('POST', '/api/cloud-workers', { username, display_name }),
-  rollbackCloudWorker: (name) =>
-    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback`, {}),
-  resetCloudWorker: (name) =>
-    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset`, {}),
+  rollbackCloudWorker: (name, payload = {}) =>
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback`, payload),
+  resetCloudWorker: (name, payload = {}) =>
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset`, payload),
   deleteCloudWorker: (name) =>
     request('DELETE', `/api/cloud-workers/${encodeURIComponent(name)}`, {}),
   updateBot: (uid, { display_name, avatar_url }) =>
