@@ -1666,16 +1666,16 @@ func TestAgentPushMessageBeforeStatusWaitsForMatchingTerminal(t *testing.T) {
 	}
 }
 
-func TestAgentPushNotificationUsesCompleteFinalResponseAndExcludesProgress(t *testing.T) {
+func TestAgentPushNotificationAggregatesVisibleTailAfterWorkingBoundary(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
 	coordinator.observeStatus(&types.ConversationTaskStatus{
-		TopicID: "p2p_7_8", RunID: "run-segmented-final", State: "running", SourceUID: 7,
+		TopicID: "p2p_7_8", RunID: "run-visible-tail", State: "running", SourceUID: 7,
 	})
 
 	deliveredBodies := make([]string, 0, 1)
-	observe := func(seq int, body string, metadata map[string]interface{}) {
+	observe := func(seq int, body string) {
 		msg := &ServerMessage{Data: &MsgServerData{
-			Topic: "p2p_7_8", SeqID: seq, Type: "text", Content: body, Metadata: metadata,
+			Topic: "p2p_7_8", SeqID: seq, Type: "text", Content: body,
 		}}
 		if !coordinator.observeVisibleMessageBody(8, 7, msg, body, func(notificationBody string) bool {
 			deliveredBodies = append(deliveredBodies, notificationBody)
@@ -1685,19 +1685,16 @@ func TestAgentPushNotificationUsesCompleteFinalResponseAndExcludesProgress(t *te
 		}
 	}
 
-	observe(1, "我先检查一下现有实现。", map[string]interface{}{
-		"run_id": "run-segmented-final", "response_id": "progress-1", "response_kind": "progress",
-		"segment_index": 0, "segment_count": 1,
-	})
+	observe(1, "我先检查一下现有实现。")
+	coordinator.observeWorkingMessage(7, &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 2, Type: "tool_use", Content: "execute_shell",
+	}})
 	for index, body := range []string{"第一部分结论。", "第二部分证据。", "第三部分建议。"} {
-		observe(index+2, body, map[string]interface{}{
-			"run_id": "run-segmented-final", "response_id": "final-1", "response_kind": "final",
-			"segment_index": index, "segment_count": 3,
-		})
+		observe(index+3, body)
 	}
 
 	coordinator.observeStatus(&types.ConversationTaskStatus{
-		TopicID: "p2p_7_8", RunID: "run-segmented-final", State: "completed", SourceUID: 7,
+		TopicID: "p2p_7_8", RunID: "run-visible-tail", State: "completed", SourceUID: 7,
 	})
 
 	if len(deliveredBodies) != 1 {
@@ -1708,20 +1705,12 @@ func TestAgentPushNotificationUsesCompleteFinalResponseAndExcludesProgress(t *te
 	}
 }
 
-func TestAgentPushSegmentedFinalWaitsForAllSegmentsAfterEarlyTerminal(t *testing.T) {
+func TestAgentPushWorkingBoundaryClearsPendingTextBeforeRunningStatus(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
-	coordinator.observeStatus(&types.ConversationTaskStatus{
-		TopicID: "p2p_7_8", RunID: "run-terminal-first-segments", State: "completed", SourceUID: 7,
-	})
-
 	deliveredBodies := make([]string, 0, 1)
-	observe := func(seq, index int, body string) {
+	observe := func(seq int, body string) {
 		msg := &ServerMessage{Data: &MsgServerData{
 			Topic: "p2p_7_8", SeqID: seq, Type: "text", Content: body,
-			Metadata: map[string]interface{}{
-				"run_id": "run-terminal-first-segments", "response_id": "final-1", "response_kind": "final",
-				"segment_index": index, "segment_count": 3,
-			},
 		}}
 		coordinator.observeVisibleMessageBody(8, 7, msg, body, func(notificationBody string) bool {
 			deliveredBodies = append(deliveredBodies, notificationBody)
@@ -1729,46 +1718,44 @@ func TestAgentPushSegmentedFinalWaitsForAllSegmentsAfterEarlyTerminal(t *testing
 		})
 	}
 
-	observe(1, 2, "第三段。")
-	observe(2, 0, "第一段。")
-	if len(deliveredBodies) != 0 {
-		t.Fatalf("incomplete response delivered early: %q", deliveredBodies)
-	}
-	observe(3, 1, "第二段。")
+	observe(1, "状态到达前的工具前文字。")
+	coordinator.observeWorkingMessage(7, &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 2, Type: "tool_result", Content: "内部工具结果",
+	}})
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-pending-boundary", State: "running", SourceUID: 7,
+	})
+	observe(3, "最终回复。")
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-pending-boundary", State: "completed", SourceUID: 7,
+	})
 
-	if len(deliveredBodies) != 1 || deliveredBodies[0] != "第一段。 第二段。 第三段。" {
-		t.Fatalf("delivered bodies = %q, want one ordered complete response", deliveredBodies)
+	if len(deliveredBodies) != 1 || deliveredBodies[0] != "最终回复。" {
+		t.Fatalf("delivered bodies = %q, want only text after the working boundary", deliveredBodies)
 	}
 }
 
-func TestAgentPushLateProgressDoesNotReplaceFinalResponse(t *testing.T) {
+func TestAgentPushAmbiguousConsecutiveVisibleTextIsPreserved(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
 	coordinator.observeStatus(&types.ConversationTaskStatus{
-		TopicID: "p2p_7_8", RunID: "run-late-progress", State: "running", SourceUID: 7,
+		TopicID: "p2p_7_8", RunID: "run-text-only", State: "running", SourceUID: 7,
 	})
 	deliveredBodies := make([]string, 0, 1)
-	observe := func(seq int, body, responseID, responseKind string) {
+	for seq, body := range []string{"我先处理一下。", "已经处理完成。"} {
 		msg := &ServerMessage{Data: &MsgServerData{
-			Topic: "p2p_7_8", SeqID: seq, Type: "text", Content: body,
-			Metadata: map[string]interface{}{
-				"run_id": "run-late-progress", "response_id": responseID, "response_kind": responseKind,
-				"segment_index": 0, "segment_count": 1,
-			},
+			Topic: "p2p_7_8", SeqID: seq + 1, Type: "text", Content: body,
 		}}
 		coordinator.observeVisibleMessageBody(8, 7, msg, body, func(notificationBody string) bool {
 			deliveredBodies = append(deliveredBodies, notificationBody)
 			return true
 		})
 	}
-
-	observe(1, "最终结论。", "final-1", "final")
-	observe(2, "这是一条迟到的进度。", "progress-2", "progress")
 	coordinator.observeStatus(&types.ConversationTaskStatus{
-		TopicID: "p2p_7_8", RunID: "run-late-progress", State: "completed", SourceUID: 7,
+		TopicID: "p2p_7_8", RunID: "run-text-only", State: "completed", SourceUID: 7,
 	})
 
-	if len(deliveredBodies) != 1 || deliveredBodies[0] != "最终结论。" {
-		t.Fatalf("delivered bodies = %q, want only the final response", deliveredBodies)
+	if len(deliveredBodies) != 1 || deliveredBodies[0] != "我先处理一下。 已经处理完成。" {
+		t.Fatalf("delivered bodies = %q, want all indistinguishable visible text preserved", deliveredBodies)
 	}
 }
 
@@ -2419,9 +2406,13 @@ func TestP2PAgentMultipleIntermediateMessagesWaitForTerminalStatus(t *testing.T)
 		Auth:     "auth",
 	}}}
 	service := enabledPushService(pushStore)
-	delivered := make(chan struct{}, 3)
-	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
-		delivered <- struct{}{}
+	delivered := make(chan PushNotification, 3)
+	service.send = func(_ context.Context, payload []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		var notification PushNotification
+		if err := json.Unmarshal(payload, &notification); err != nil {
+			t.Errorf("decode push notification: %v", err)
+		}
+		delivered <- notification
 		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
 	}
 	hub := NewHub(db, nil)
@@ -2430,16 +2421,28 @@ func TestP2PAgentMultipleIntermediateMessagesWaitForTerminalStatus(t *testing.T)
 		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: senderUID,
 	})
 
-	for seq, content := range []string{"first progress update", "second progress update", "partial answer"} {
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "first progress update",
+		DisplayType:    "text",
+		StoredType:     "text",
+	}, 1, nil)
+	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+		DisplayContent: "execute_shell",
+		DisplayType:    "tool_use",
+		StoredType:     "tool_use",
+	}, 2, nil)
+	for seq, content := range []string{"first final segment", "second final segment"} {
 		hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
 			DisplayContent: content,
 			DisplayType:    "text",
 			StoredType:     "text",
-			Metadata:       map[string]interface{}{"run_id": "run-1"},
-		}, int64(seq+1), nil)
+		}, int64(seq+3), nil)
 	}
 	select {
-	case <-delivered:
+	case notification := <-delivered:
+		if notification.Body != "first final segment second final segment" {
+			t.Fatalf("notification body = %q, want complete visible tail", notification.Body)
+		}
 		t.Fatal("intermediate agent text notified before terminal status")
 	case <-time.After(100 * time.Millisecond):
 	}
@@ -2461,7 +2464,7 @@ func TestP2PAgentMultipleIntermediateMessagesWaitForTerminalStatus(t *testing.T)
 		DisplayType:    "text",
 		StoredType:     "text",
 		Metadata:       map[string]interface{}{"run_id": "run-1"},
-	}, 4, nil)
+	}, 5, nil)
 	select {
 	case <-delivered:
 		t.Fatal("duplicate terminal or late chunk delivered another push")

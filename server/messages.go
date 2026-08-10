@@ -233,6 +233,9 @@ func (h *Hub) fanoutNormalizedMessage(uid int64, topicID string, replyTo int, pa
 	if dataMsg == nil {
 		return
 	}
+	if h.isTaskStatusPublisher(uid) {
+		h.agentPush.observeWorkingMessage(uid, dataMsg)
+	}
 
 	if isGroupTopic(topicID) {
 		groupID := extractGroupID(topicID)
