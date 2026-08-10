@@ -8,12 +8,12 @@ const COMPOSER_INPUT_MIN_HEIGHT = 40;
 const COMPOSER_INPUT_MAX_HEIGHT = 200;
 const VOICE_HOLD_DELAY_MS = 280;
 const VOICE_HOLD_CANCEL_DISTANCE = 72;
-const VOICE_WAVE_RAMP_FRAMES = 36;
+const VOICE_WAVE_RAMP_MS = 2200;
 
-export function voiceWavePhaseStep(frame) {
-  const progress = Math.min(1, Math.max(0, frame / VOICE_WAVE_RAMP_FRAMES));
+export function voiceWavePhaseSpeed(elapsedMs) {
+  const progress = Math.min(1, Math.max(0, elapsedMs / VOICE_WAVE_RAMP_MS));
   const eased = progress * progress * (3 - (2 * progress));
-  return 0.018 + (0.132 * eased);
+  return 0.08 + (1.72 * eased);
 }
 
 function voiceWavePath(level, phase, baseline) {
@@ -191,6 +191,24 @@ export default function ChatComposer({
     transcript.scrollTop = transcript.scrollHeight;
   }, [voiceHoldActive, voiceHoldCancel, voicePartial, voiceState]);
 
+  useEffect(() => {
+    if (!voiceHoldActive || typeof window.requestAnimationFrame !== 'function') return undefined;
+    let animationFrame = 0;
+    let startedAt = null;
+    let previousAt = null;
+    const animate = (now) => {
+      if (startedAt === null) startedAt = now;
+      if (previousAt === null) previousAt = now;
+      const deltaSeconds = Math.min(50, Math.max(0, now - previousAt)) / 1000;
+      previousAt = now;
+      const phaseDelta = voiceWavePhaseSpeed(now - startedAt) * deltaSeconds;
+      setVoiceWave((current) => ({ ...current, phase: current.phase + phaseDelta }));
+      animationFrame = window.requestAnimationFrame(animate);
+    };
+    animationFrame = window.requestAnimationFrame(animate);
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [voiceHoldActive]);
+
   const startVoiceInput = async ({ hold = false } = {}) => {
     if (voiceActive) {
       if (!hold) await voiceSessionRef.current?.stop();
@@ -215,8 +233,7 @@ export default function ChatComposer({
         if (voiceSessionRef.current !== session) return;
         setVoiceWave((current) => ({
           level: current.level + ((level - current.level) * (level > current.level ? 0.4 : 0.15)),
-          phase: current.phase + voiceWavePhaseStep((current.frame || 0) + 1),
-          frame: (current.frame || 0) + 1,
+          phase: current.phase,
         }));
       },
       onFinal: (text) => {

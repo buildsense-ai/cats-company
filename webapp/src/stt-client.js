@@ -1,5 +1,8 @@
+import PCM_WORKLET_URL from './stt-pcm-worklet.js?url&no-inline';
+
 const MAX_BUFFERED_AUDIO_BYTES = 160_000;
 const PARTIAL_RENDER_INTERVAL_MS = 120;
+const CAPTURE_FLUSH_TIMEOUT_MS = 300;
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
 function normalizeAudioLevel(rms) {
@@ -62,16 +65,18 @@ export async function createPCM16Capture({ onFrame, onLevel, onSuspended }) {
   const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
   const context = new AudioContextClass({ latencyHint: 'interactive' });
   try {
-    await context.audioWorklet.addModule('/stt-pcm-worklet.js');
+    await context.audioWorklet.addModule(PCM_WORKLET_URL);
     const source = context.createMediaStreamSource(stream);
     const worklet = new AudioWorkletNode(context, 'catsco-pcm16-capture', {
       numberOfInputs: 1,
       numberOfOutputs: 0,
       channelCount: 1,
     });
+    let resolveFlush = null;
     worklet.port.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) onFrame(event.data);
       if (event.data?.type === 'level') onLevel?.(event.data.rms);
+      if (event.data?.type === 'flushed') resolveFlush?.();
     };
     source.connect(worklet);
     context.onstatechange = () => {
@@ -79,17 +84,30 @@ export async function createPCM16Capture({ onFrame, onLevel, onSuspended }) {
     };
     if (context.state === 'suspended') await context.resume();
 
-    let stopped = false;
+    let stopPromise = null;
     return {
       stop() {
-        if (stopped) return;
-        stopped = true;
-        worklet.port.onmessage = null;
-        context.onstatechange = null;
-        source.disconnect();
-        worklet.disconnect();
-        stream.getTracks().forEach((track) => track.stop());
-        void context.close();
+        if (stopPromise) return stopPromise;
+        stopPromise = new Promise((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            globalThis.clearTimeout(timeout);
+            resolveFlush = null;
+            worklet.port.onmessage = null;
+            context.onstatechange = null;
+            source.disconnect();
+            worklet.disconnect();
+            stream.getTracks().forEach((track) => track.stop());
+            void context.close();
+            resolve();
+          };
+          const timeout = globalThis.setTimeout(finish, CAPTURE_FLUSH_TIMEOUT_MS);
+          resolveFlush = finish;
+          worklet.port.postMessage({ type: 'flush' });
+        });
+        return stopPromise;
       },
     };
   } catch (error) {
@@ -132,6 +150,12 @@ export class StreamingSTTSession {
     this.onState(state);
   }
 
+  setDurationLimit(seconds) {
+    const maxSeconds = Math.max(1, Number(seconds) || 90);
+    if (this.durationTimer) window.clearTimeout(this.durationTimer);
+    this.durationTimer = window.setTimeout(() => void this.stop(), maxSeconds * 1000);
+  }
+
   async start() {
     if (this.state !== 'idle') return;
     this.setState('starting');
@@ -142,15 +166,21 @@ export class StreamingSTTSession {
         onSuspended: () => void this.stop(),
       });
       if (this.terminal) {
-        capture.stop();
+        await capture.stop();
+        return;
+      }
+      if (this.stopRequested) {
+        await capture.stop();
+        this.terminal = true;
+        this.cleanup();
+        this.setState('complete');
         return;
       }
       this.capture = capture;
       document.addEventListener('visibilitychange', this.handleVisibilityChange);
       const session = await this.createSession();
       if (this.terminal) return;
-      const maxSeconds = Math.max(1, Number(session.max_session_seconds) || 90);
-      this.durationTimer = window.setTimeout(() => void this.stop(), maxSeconds * 1000);
+      this.setDurationLimit(session.max_session_seconds);
       this.setState('connecting');
       const socket = this.createWebSocket(this.resolveWebSocketURL(session.ticket));
       this.socket = socket;
@@ -210,6 +240,7 @@ export class StreamingSTTSession {
     switch (message.type) {
       case 'ready':
         this.ready = true;
+        if (message.max_session_seconds) this.setDurationLimit(message.max_session_seconds);
         this.setState(this.stopRequested ? 'finalizing' : 'recording');
         for (const frame of this.preconnectFrames) {
           if (this.terminal) return;
@@ -266,10 +297,12 @@ export class StreamingSTTSession {
 
   async stop() {
     if (this.terminal || this.state === 'idle' || this.state === 'complete') return;
-    this.capture?.stop();
-    this.capture = null;
+    if (this.stopRequested) return;
     this.stopRequested = true;
+    const capture = this.capture;
+    this.capture = null;
     this.setState('finalizing');
+    await capture?.stop();
     if (this.ready) this.sendControl('stop');
   }
 

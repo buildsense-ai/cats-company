@@ -138,6 +138,16 @@ func TestVolcengineDefiniteUtteranceIsNotSessionFinalWithoutNegativeSequence(t *
 	}
 }
 
+func TestVolcengineEmptyFinalResponseCompletesTheSession(t *testing.T) {
+	event, ok := parseVolcengineServerFrame(volcengineServerFrameWithFlags(2, volcengineFinalFlags, map[string]interface{}{
+		"code":   1000,
+		"result": map[string]interface{}{"text": ""},
+	}))
+	if !ok || event.Type != STTEventFinal || event.Text != "" {
+		t.Fatalf("event=%#v ok=%v", event, ok)
+	}
+}
+
 func TestVolcengineAsyncAudioFramesUseAutoAssignedSequence(t *testing.T) {
 	audio := volcengineClientAudioFrame([]byte{1, 2}, false)
 	if audio[1] != 0x20 {

@@ -1,14 +1,14 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import ChatComposer, { CHAT_COMPOSER_HINT, voiceWavePhaseStep } from './chat-composer';
+import ChatComposer, { CHAT_COMPOSER_HINT, voiceWavePhaseSpeed } from './chat-composer';
 
 describe('ChatComposer', () => {
 	it('eases the waveform into its steady movement speed', () => {
-		expect(voiceWavePhaseStep(1)).toBeLessThan(voiceWavePhaseStep(18));
-		expect(voiceWavePhaseStep(18)).toBeLessThan(voiceWavePhaseStep(36));
-		expect(voiceWavePhaseStep(36)).toBeCloseTo(0.15);
-		expect(voiceWavePhaseStep(72)).toBeCloseTo(0.15);
+		expect(voiceWavePhaseSpeed(100)).toBeLessThan(voiceWavePhaseSpeed(1100));
+		expect(voiceWavePhaseSpeed(1100)).toBeLessThan(voiceWavePhaseSpeed(2200));
+		expect(voiceWavePhaseSpeed(2200)).toBeCloseTo(1.8);
+		expect(voiceWavePhaseSpeed(4400)).toBeCloseTo(1.8);
 	});
 
 	it('keeps unsupported voice input visible as a disabled control', async () => {

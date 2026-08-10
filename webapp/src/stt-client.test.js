@@ -143,4 +143,46 @@ describe('StreamingSTTSession', () => {
     expect(session.createSession).not.toHaveBeenCalled();
     expect(session.state).toBe('cancelled');
   });
+
+  it('stops without opening a session when hold-to-talk is released during microphone startup', async () => {
+    let resolveCapture;
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const session = new StreamingSTTSession({
+      createCapture: vi.fn(() => new Promise((resolve) => { resolveCapture = resolve; })),
+      createSession: vi.fn(),
+    });
+
+    const starting = session.start();
+    const stopping = session.stop();
+    resolveCapture(capture);
+    await Promise.all([starting, stopping]);
+
+    expect(capture.stop).toHaveBeenCalledTimes(1);
+    expect(session.createSession).not.toHaveBeenCalled();
+    expect(session.state).toBe('complete');
+  });
+
+  it('uses the quota-reduced duration returned by the realtime ready event', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-quota', max_session_seconds: 90 }),
+      createCapture: vi.fn().mockResolvedValue(capture),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+    });
+
+    await session.start();
+    socket.open();
+    socket.receive({ type: 'ready', max_session_seconds: 2 });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(capture.stop).toHaveBeenCalledTimes(1);
+    expect(socket.sent).toContain(JSON.stringify({ type: 'stop' }));
+    session.cancel();
+    vi.useRealTimers();
+  });
 });

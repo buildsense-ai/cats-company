@@ -24,6 +24,12 @@ type volcengineStreamingProvider struct {
 	dialer websocket.Dialer
 }
 
+const (
+	volcengineMessageTypeFullResponse = 0x09
+	volcengineMessageTypeError        = 0x0f
+	volcengineFinalFlags              = 0x03
+)
+
 func NewVolcengineStreamingProvider(config VolcengineSTTConfig) (STTProvider, error) {
 	parsed, err := url.Parse(strings.TrimSpace(config.WebSocketURL))
 	if err != nil || (parsed.Scheme != "ws" && parsed.Scheme != "wss") || parsed.Host == "" {
@@ -64,6 +70,7 @@ func (p *volcengineStreamingProvider) Open(ctx context.Context, request STTSessi
 	stream := &volcengineSTTUpstream{
 		conn:   conn,
 		events: make(chan STTEvent, 32),
+		done:   make(chan struct{}),
 	}
 	initial, err := buildVolcengineInitialFrame(p.config, request)
 	if err != nil {
@@ -117,6 +124,7 @@ func volcengineClientFrame(messageType, serialization byte, payload []byte) []by
 type volcengineSTTUpstream struct {
 	conn      *websocket.Conn
 	events    chan STTEvent
+	done      chan struct{}
 	writeMu   sync.Mutex
 	closeOnce sync.Once
 }
@@ -165,6 +173,7 @@ func volcengineClientAudioFrame(payload []byte, final bool) []byte {
 func (s *volcengineSTTUpstream) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
+		close(s.done)
 		err = s.conn.Close()
 	})
 	return err
@@ -184,7 +193,11 @@ func (s *volcengineSTTUpstream) readLoop() {
 		if !ok {
 			continue
 		}
-		s.events <- event
+		select {
+		case s.events <- event:
+		case <-s.done:
+			return
+		}
 		if event.Type == STTEventFinal || event.Type == STTEventError {
 			return
 		}
@@ -232,14 +245,14 @@ func parseVolcengineServerFrame(frame []byte) (STTEvent, bool) {
 		}
 		payload = decompressed
 	}
-	if messageType == 0x0f {
+	if messageType == volcengineMessageTypeError {
 		message := volcengineErrorMessage(payload)
 		if message == "" {
 			message = "语音识别服务处理失败"
 		}
 		return STTEvent{Type: STTEventError, Code: strconv.FormatInt(int64(sequence), 10), Message: message}, true
 	}
-	if messageType != 0x09 {
+	if messageType != volcengineMessageTypeFullResponse {
 		return STTEvent{}, false
 	}
 	var response struct {
@@ -258,10 +271,13 @@ func parseVolcengineServerFrame(frame []byte) (STTEvent, bool) {
 		return STTEvent{Type: STTEventError, Code: strconv.Itoa(response.Code), Message: message}, true
 	}
 	text := volcengineResponseText(response.Result)
+	isFinal := sequence < 0 || flags == volcengineFinalFlags
 	if text == "" {
+		if isFinal {
+			return STTEvent{Type: STTEventFinal}, true
+		}
 		return STTEvent{}, false
 	}
-	isFinal := sequence < 0 || flags == 0x03
 	eventType := STTEventPartial
 	if isFinal {
 		eventType = STTEventFinal

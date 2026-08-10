@@ -430,11 +430,17 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 	defer hardTimer.Stop()
 
 	incoming := make(chan sttBrowserMessage, 4)
+	readerDone := make(chan struct{})
+	defer close(readerDone)
 	go func() {
 		conn.SetReadLimit(sttMaxBrowserFrameBytes)
 		for {
 			messageType, payload, err := conn.ReadMessage()
-			incoming <- sttBrowserMessage{messageType: messageType, payload: payload, err: err}
+			select {
+			case incoming <- sttBrowserMessage{messageType: messageType, payload: payload, err: err}:
+			case <-readerDone:
+				return
+			}
 			if err != nil {
 				return
 			}
