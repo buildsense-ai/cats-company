@@ -572,8 +572,9 @@ func TestCloudWorkerHandleCreateProvisionFails(t *testing.T) {
 	if len(ts.deletedBots) != 1 {
 		t.Fatalf("want 1 rollback delete after successful cleanup, got %v", ts.deletedBots)
 	}
-	if len(ts.tenantNames) != 0 {
-		t.Fatalf("tenant_name should not be persisted when destroy cleaned up: %v", ts.tenantNames)
+	// tenant_name 现在总是在 provision 之前持久化（句柄先行），即使 destroy 清理后删 bot
+	if len(ts.tenantNames) != 1 {
+		t.Fatalf("tenant_name should be persisted (before provision) even when destroy cleaned up: %v", ts.tenantNames)
 	}
 
 	// --- provision fails and destroy is NOT configured: keep the bot record
@@ -619,62 +620,36 @@ func TestCloudWorkerHandleCreateProvisionFails(t *testing.T) {
 }
 
 func TestCloudWorkerHandleCreateSetTenantFails(t *testing.T) {
-	// --- SetTenantName fails + destroy ok: instance cleaned up, bot rolled back ---
-	cfg := workerScriptCfg(t, "7=5", map[string]string{
-		"provision": writeWorkerOpScript(t, "ok"),
-		"destroy":   writeWorkerOpScript(t, "ok"),
-	})
-	if cfg.ProvisionScript == "" || cfg.DestroyScript == "" {
-		t.Skip("no POSIX shell")
+	// SetTenantName 现在总是在 provision（云资源创建）之前持久化；写入失败时云资源
+	// 尚未创建，直接回滚删 bot 是安全的（不会产生孤儿实例）——与 destroy 脚本配置无关。
+	cases := []struct {
+		name string
+		cfg  CloudWorkerConfig
+	}{
+		{"destroy ok", workerScriptCfg(t, "7=5", map[string]string{"provision": writeWorkerOpScript(t, "ok"), "destroy": writeWorkerOpScript(t, "ok")})},
+		{"destroy missing", workerScriptCfg(t, "7=5", map[string]string{"provision": writeWorkerOpScript(t, "ok")})},
+		{"destroy fail", workerScriptCfg(t, "7=5", map[string]string{"provision": writeWorkerOpScript(t, "ok"), "destroy": writeWorkerOpScript(t, "fail")})},
 	}
-	h, ts := newCloudWorkerTestHandlerCfg(cfg)
-	ts.setTenantNameFail = true
-	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers", map[string]string{
-		"username": "bot-x", "display_name": "X",
-	})
-	rec := httptest.NewRecorder()
-	h.HandleCreate(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status=%d want 500 body=%s", rec.Code, rec.Body.String())
-	}
-	if len(ts.deletedBots) != 1 {
-		t.Fatalf("want 1 rollback delete after confirmed destroy, got %v", ts.deletedBots)
-	}
-
-	// --- SetTenantName fails + destroy NOT configured: keep the bot record
-	// (destroy cannot be confirmed; deleting the only record orphans the
-	// possibly-running instance) ---
-	h2, ts2 := newCloudWorkerTestHandlerCfg(workerScriptCfg(t, "7=5", map[string]string{"provision": writeWorkerOpScript(t, "ok")}))
-	ts2.setTenantNameFail = true
-	req2 := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers", map[string]string{
-		"username": "bot-y", "display_name": "Y",
-	})
-	rec2 := httptest.NewRecorder()
-	h2.HandleCreate(rec2, req2)
-	if rec2.Code != http.StatusInternalServerError {
-		t.Fatalf("no-destroy status=%d want 500 body=%s", rec2.Code, rec2.Body.String())
-	}
-	if len(ts2.deletedBots) != 0 {
-		t.Fatalf("bot must be kept when destroy cannot be confirmed: %v", ts2.deletedBots)
-	}
-
-	// --- SetTenantName fails + destroy also fails: keep the bot record ---
-	cfg3 := workerScriptCfg(t, "7=5", map[string]string{
-		"provision": writeWorkerOpScript(t, "ok"),
-		"destroy":   writeWorkerOpScript(t, "fail"),
-	})
-	h3, ts3 := newCloudWorkerTestHandlerCfg(cfg3)
-	ts3.setTenantNameFail = true
-	req3 := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers", map[string]string{
-		"username": "bot-z", "display_name": "Z",
-	})
-	rec3 := httptest.NewRecorder()
-	h3.HandleCreate(rec3, req3)
-	if rec3.Code != http.StatusInternalServerError {
-		t.Fatalf("destroy-fail status=%d want 500 body=%s", rec3.Code, rec3.Body.String())
-	}
-	if len(ts3.deletedBots) != 0 {
-		t.Fatalf("bot must be kept when destroy also fails: %v", ts3.deletedBots)
+	for _, tc := range cases {
+		if tc.cfg.ProvisionScript == "" {
+			t.Skip("no POSIX shell")
+		}
+		h, ts := newCloudWorkerTestHandlerCfg(tc.cfg)
+		ts.setTenantNameFail = true
+		req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers", map[string]string{
+			"username": "bot-x", "display_name": "X",
+		})
+		rec := httptest.NewRecorder()
+		h.HandleCreate(rec, req)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("[%s] status=%d want 500 body=%s", tc.name, rec.Code, rec.Body.String())
+		}
+		if len(ts.deletedBots) != 1 {
+			t.Fatalf("[%s] want 1 rollback delete (safe: no cloud resource created yet), got %v", tc.name, ts.deletedBots)
+		}
+		if len(ts.tenantNames) != 0 {
+			t.Fatalf("[%s] tenant_name must not be persisted when SetTenantName failed: %v", tc.name, ts.tenantNames)
+		}
 	}
 }
 

@@ -41,5 +41,5 @@
 `server/cloud_workers_test.go` 覆盖存量 `tenant_name` bot 在新控制面的行为：
 
 - `TestCloudWorkerHandleList`：带 `tenant_name` 的存量 bot 被列表归类，自托管 bot（无 `tenant_name`）被排除。
-- `TestCloudWorkerHandleDelete`：存量 `tenant_name` bot 删除——配置 destroy 时销毁实例并删记录；未配置时 503 fail-closed（记录保留）；`?force=1` 显式强制解绑。
+- `TestCloudWorkerHandleDelete`：存量 `tenant_name` bot 删除——配置 destroy 时销毁实例并删记录；未配置时 503 fail-closed（记录保留）；无公开 force 开关（`?force=1` 不生效）。
 - `TestCloudWorkerHandleCreateProvisionFails`：provision 失败时 destroy 兜底（销毁成功则回滚 bot 记录；无 destroy 或销毁失败则保留记录并落 `tenant_name` 作为可重试句柄）。

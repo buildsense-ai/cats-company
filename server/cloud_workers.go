@@ -305,8 +305,21 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 
 	tenantName := fmt.Sprintf("bot-%s", result.Username)
 
+	// 在创建任何云资源之前持久化 tenant 标识。这样无论 provision 后续怎么失败，
+	// bot 记录都有 tenant handle —— 云托管列表可见、可重试删除、且计入创建配额。
+	// 若这里写入失败，云资源尚未创建，直接回滚删 bot 是安全的（不会产生孤儿实例）。
+	if err := h.db.SetTenantName(result.UID, tenantName); err != nil {
+		log.Printf("[cloud-worker] failed to persist tenant_name for uid %d before provision: %v", result.UID, err)
+		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
+			log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize cloud worker"})
+		return
+	}
+
 	// Provision the cloud instance (Tianyi worker image). Without a configured
-	// script this control plane cannot provision, so roll back the bot account.
+	// script this control plane cannot provision, so roll back the bot account
+	// (no cloud resource was created yet, so deleting the record is safe).
 	if h.provisionScript == "" {
 		log.Printf("[cloud-worker] provision script not configured; rolling back bot %d", result.UID)
 		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
@@ -352,51 +365,13 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to provision cloud worker"})
 			return
 		}
-		// Cleanup could not be confirmed: the instance may still exist and
-		// keep billing. Keep the bot record and persist the tenant name so
-		// the roster still shows this worker and the owner can retry the
-		// delete (which will attempt the destroy again). Deleting the only
-		// record would leave an orphan with no handle left to remove it.
-		if setErr := h.db.SetTenantName(result.UID, tenantName); setErr != nil {
-			log.Printf("[cloud-worker] failed to persist tenant_name for uid %d after failed provision: %v", result.UID, setErr)
-		}
+		// Destroy could not be confirmed: the instance may still exist and
+		// keep billing. The bot record already carries tenant_name (persisted
+		// before provision), so the roster still shows this worker and the
+		// owner can retry delete (which attempts the destroy again) — the
+		// record is never lost while an instance might still be billed.
 		writeJSON(w, http.StatusBadGateway, map[string]string{
 			"error": "failed to provision cloud worker; the instance may still exist, retry delete to clean up",
-		})
-		return
-	}
-
-	if err := h.db.SetTenantName(result.UID, tenantName); err != nil {
-		log.Printf("[cloud-worker] failed to save tenant_name for uid %d: %v", result.UID, err)
-		// The instance was already provisioned; try to destroy it so we do
-		// not leave an orphaned, still-billed instance. Same invariant as the
-		// provision-failure path: only delete the bot record once the destroy
-		// is CONFIRMED successful; otherwise keep a recoverable handle.
-		destroyOK := true
-		if h.destroyScript == "" {
-			destroyOK = false
-			log.Printf("[cloud-worker] no destroy script configured; cannot clean up %s after finalize failure", tenantName)
-		} else if _, destroyErr := h.runScript(h.destroyScript, "--name", tenantName); destroyErr != nil {
-			destroyOK = false
-			log.Printf("[cloud-worker] destroy %s after finalize failure also failed: %v", tenantName, destroyErr)
-		}
-		if destroyOK {
-			if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
-				log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
-			}
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize cloud worker"})
-			return
-		}
-		// Destroy could not be confirmed: keep the bot record and retry
-		// persisting the tenant name so the roster still shows this worker
-		// and the owner can retry delete (which attempts the destroy again).
-		for retry := 0; retry < 3; retry++ {
-			if setErr := h.db.SetTenantName(result.UID, tenantName); setErr == nil {
-				break
-			}
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "failed to finalize cloud worker; the instance may still exist, retry delete to clean up",
 		})
 		return
 	}
