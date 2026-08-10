@@ -8,6 +8,15 @@ const ARTIFACT_ID_MAX_LENGTH = 64;
 const PAGE_CONTEXT_TIMEOUT_MS = 250;
 const PAGE_CONTEXT_MAX_BYTES = 16 * 1024;
 const PAGE_CONTEXT_MAX_CONTROLS = 24;
+const PAGE_CONTEXT_MAX_SEMANTIC_BYTES = 8 * 1024;
+const PAGE_CONTEXT_SEMANTIC_MAX_DEPTH = 6;
+const PAGE_CONTEXT_SEMANTIC_MAX_ARRAY_ITEMS = 50;
+const PAGE_CONTEXT_SEMANTIC_MAX_OBJECT_KEYS = 50;
+const PAGE_CONTEXT_SEMANTIC_MAX_KEY_LENGTH = 128;
+const PAGE_CONTEXT_SEMANTIC_MAX_STRING_LENGTH = 1000;
+const PAGE_CONTEXT_SEMANTIC_MAX_VISITS = 4096;
+const INVALID_SEMANTIC_VALUE = Symbol('invalid-semantic-value');
+const UNSAFE_SEMANTIC_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const PAGE_CONTEXT_CONTROL_TYPES = new Set([
   'checkbox',
   'radio',
@@ -138,7 +147,15 @@ export async function requestArtifactPageContext(binding, artifactRef, timeoutMs
 export function normalizeArtifactPageContext(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   if (value.contract_version !== ARTIFACT_PAGE_CONTEXT_CONTRACT) return null;
-  const rawSize = jsonSize(value);
+  const rawSize = jsonSize({
+    contract_version: value.contract_version,
+    observed_at: value.observed_at,
+    title: value.title,
+    location: value.location,
+    selected_text: value.selected_text,
+    last_interaction: value.last_interaction,
+    controls: value.controls,
+  });
   if (rawSize <= 0 || rawSize > PAGE_CONTEXT_MAX_BYTES) return null;
 
   const observedAt = boundedText(value.observed_at, 64, false);
@@ -161,8 +178,130 @@ export function normalizeArtifactPageContext(value) {
     ? value.controls.slice(0, PAGE_CONTEXT_MAX_CONTROLS).map(normalizeControl).filter(Boolean)
     : [];
   if (controls.length > 0) normalized.controls = controls;
+
+  const semanticContext = normalizeSemanticContext(value.semantic_context);
+  if (semanticContext !== INVALID_SEMANTIC_VALUE) normalized.semantic_context = semanticContext;
   if (Object.keys(normalized).length === 2) return null;
-  return jsonSize(normalized) <= PAGE_CONTEXT_MAX_BYTES ? normalized : null;
+  if (jsonSize(normalized) <= PAGE_CONTEXT_MAX_BYTES) return normalized;
+  delete normalized.semantic_context;
+  return Object.keys(normalized).length > 2 && jsonSize(normalized) <= PAGE_CONTEXT_MAX_BYTES
+    ? normalized
+    : null;
+}
+
+function normalizeSemanticContext(value) {
+  try {
+    const sanitized = sanitizeSemanticValue(value, 0, new WeakSet(), {
+      remaining: PAGE_CONTEXT_SEMANTIC_MAX_VISITS,
+    });
+    if (sanitized === INVALID_SEMANTIC_VALUE || !hasSemanticContent(sanitized)) {
+      return INVALID_SEMANTIC_VALUE;
+    }
+    const size = jsonSize(sanitized);
+    return size > 0 && size <= PAGE_CONTEXT_MAX_SEMANTIC_BYTES
+      ? sanitized
+      : INVALID_SEMANTIC_VALUE;
+  } catch {
+    return INVALID_SEMANTIC_VALUE;
+  }
+}
+
+function sanitizeSemanticValue(value, depth, ancestors, visits) {
+  if (depth > PAGE_CONTEXT_SEMANTIC_MAX_DEPTH || visits.remaining <= 0) return INVALID_SEMANTIC_VALUE;
+  visits.remaining -= 1;
+  if (value === null) return null;
+  if (typeof value === 'string') return truncateSemanticString(value, PAGE_CONTEXT_SEMANTIC_MAX_STRING_LENGTH);
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : INVALID_SEMANTIC_VALUE;
+  if (!value || typeof value !== 'object' || ancestors.has(value)) return INVALID_SEMANTIC_VALUE;
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const result = [];
+      const limit = Math.min(value.length, PAGE_CONTEXT_SEMANTIC_MAX_ARRAY_ITEMS);
+      for (let index = 0; index < limit && visits.remaining > 0; index += 1) {
+        let item;
+        try {
+          item = value[index];
+        } catch {
+          continue;
+        }
+        const sanitized = sanitizeSemanticValue(item, depth + 1, ancestors, visits);
+        if (sanitized !== INVALID_SEMANTIC_VALUE) result.push(sanitized);
+      }
+      return result;
+    }
+    if (!semanticPlainObject(value)) return INVALID_SEMANTIC_VALUE;
+
+    const result = {};
+    let keys;
+    try {
+      keys = [];
+      for (const key in value) {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+        if (!semanticLengthAtMost(key, PAGE_CONTEXT_SEMANTIC_MAX_KEY_LENGTH)
+          || UNSAFE_SEMANTIC_KEYS.has(key)) continue;
+        keys.push(key);
+        if (keys.length >= PAGE_CONTEXT_SEMANTIC_MAX_OBJECT_KEYS) break;
+      }
+      keys.sort();
+    } catch {
+      return INVALID_SEMANTIC_VALUE;
+    }
+    for (const key of keys) {
+      if (visits.remaining <= 0) break;
+      let child;
+      try {
+        child = value[key];
+      } catch {
+        continue;
+      }
+      const sanitized = sanitizeSemanticValue(child, depth + 1, ancestors, visits);
+      if (sanitized !== INVALID_SEMANTIC_VALUE) result[key] = sanitized;
+    }
+    return result;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function semanticPlainObject(value) {
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === null || prototype === Object.prototype;
+  } catch {
+    return false;
+  }
+}
+
+function truncateSemanticString(value, limit) {
+  let count = 0;
+  let end = 0;
+  for (const character of value) {
+    if (count >= limit) break;
+    count += 1;
+    end += character.length;
+  }
+  return value.slice(0, end);
+}
+
+function semanticLengthAtMost(value, limit) {
+  let count = 0;
+  for (const unused of value) {
+    void unused;
+    count += 1;
+    if (count > limit) return false;
+  }
+  return true;
+}
+
+function hasSemanticContent(value) {
+  if (value === null) return false;
+  if (typeof value === 'string') return value.length > 0;
+  if (typeof value === 'boolean' || typeof value === 'number') return true;
+  if (Array.isArray(value)) return value.length > 0;
+  return semanticPlainObject(value) && Object.keys(value).length > 0;
 }
 
 function normalizeLocation(value) {

@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +30,13 @@ const (
 	artifactContextCacheTTLDefault   = 2 * time.Second
 	artifactPageContextMaxBytes      = 16 * 1024
 	artifactPageContextMaxControls   = 24
+	artifactSemanticContextMaxBytes  = 8 * 1024
+	artifactSemanticContextMaxDepth  = 6
+	artifactSemanticContextMaxItems  = 50
+	artifactSemanticContextMaxKeys   = 50
+	artifactSemanticContextMaxKeyLen = 128
+	artifactSemanticContextMaxString = 1000
+	artifactSemanticContextMaxVisits = 4096
 )
 
 var artifactPageContextTagPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
@@ -42,6 +51,12 @@ var artifactPageContextControlTypes = map[string]struct{}{
 	"number":          {},
 	"range":           {},
 	"textarea":        {},
+}
+
+var artifactSemanticUnsafeKeys = map[string]struct{}{
+	"__proto__":   {},
+	"constructor": {},
+	"prototype":   {},
 }
 
 type artifactContextCacheKey struct {
@@ -276,7 +291,13 @@ func parseArtifactPageContextCandidate(metadata map[string]interface{}) (map[str
 	if !ok || firstMetadataString(contextValue, "contract_version") != artifactPageContextContract {
 		return nil, false
 	}
-	encoded, err := json.Marshal(contextValue)
+	contextWithoutSemantic := make(map[string]interface{}, len(contextValue))
+	for key, value := range contextValue {
+		if key != "semantic_context" {
+			contextWithoutSemantic[key] = value
+		}
+	}
+	encoded, err := json.Marshal(contextWithoutSemantic)
 	if err != nil || len(encoded) == 0 || len(encoded) > artifactPageContextMaxBytes {
 		return nil, false
 	}
@@ -307,14 +328,124 @@ func parseArtifactPageContextCandidate(metadata map[string]interface{}) (map[str
 	if controls := artifactPageContextControls(contextValue["controls"]); len(controls) > 0 {
 		next["controls"] = controls
 	}
+	if rawSemantic, exists := contextValue["semantic_context"]; exists {
+		if semanticContext, ok := artifactPageContextSemantic(rawSemantic); ok {
+			next["semantic_context"] = semanticContext
+		}
+	}
 	if len(next) == 2 {
 		return nil, false
 	}
 	encoded, err = json.Marshal(next)
-	if err != nil || len(encoded) > artifactPageContextMaxBytes {
+	if err != nil {
 		return nil, false
 	}
+	if len(encoded) > artifactPageContextMaxBytes {
+		delete(next, "semantic_context")
+		if len(next) == 2 {
+			return nil, false
+		}
+		encoded, err = json.Marshal(next)
+		if err != nil || len(encoded) > artifactPageContextMaxBytes {
+			return nil, false
+		}
+	}
 	return next, true
+}
+
+func artifactPageContextSemantic(value interface{}) (interface{}, bool) {
+	remainingVisits := artifactSemanticContextMaxVisits
+	sanitized, ok := sanitizeArtifactSemanticValue(value, 0, &remainingVisits)
+	if !ok || !artifactSemanticHasContent(sanitized) {
+		return nil, false
+	}
+	encoded, err := json.Marshal(sanitized)
+	if err != nil || len(encoded) == 0 || len(encoded) > artifactSemanticContextMaxBytes {
+		return nil, false
+	}
+	return sanitized, true
+}
+
+func sanitizeArtifactSemanticValue(value interface{}, depth int, remainingVisits *int) (interface{}, bool) {
+	if remainingVisits == nil || depth > artifactSemanticContextMaxDepth || *remainingVisits <= 0 {
+		return nil, false
+	}
+	*remainingVisits--
+	switch typed := value.(type) {
+	case nil:
+		return nil, true
+	case string:
+		return truncateUTF8(typed, artifactSemanticContextMaxString), true
+	case bool:
+		return typed, true
+	case float64:
+		return typed, !math.IsNaN(typed) && !math.IsInf(typed, 0)
+	case float32:
+		value := float64(typed)
+		return typed, !math.IsNaN(value) && !math.IsInf(value, 0)
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return typed, true
+	case json.Number:
+		value, err := typed.Float64()
+		return typed, err == nil && !math.IsNaN(value) && !math.IsInf(value, 0)
+	case []interface{}:
+		limit := len(typed)
+		if limit > artifactSemanticContextMaxItems {
+			limit = artifactSemanticContextMaxItems
+		}
+		result := make([]interface{}, 0, limit)
+		for _, item := range typed[:limit] {
+			if *remainingVisits <= 0 {
+				break
+			}
+			if sanitized, ok := sanitizeArtifactSemanticValue(item, depth+1, remainingVisits); ok {
+				result = append(result, sanitized)
+			}
+		}
+		return result, true
+	case map[string]interface{}:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			if len([]rune(key)) > artifactSemanticContextMaxKeyLen {
+				continue
+			}
+			if _, unsafe := artifactSemanticUnsafeKeys[key]; unsafe {
+				continue
+			}
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		if len(keys) > artifactSemanticContextMaxKeys {
+			keys = keys[:artifactSemanticContextMaxKeys]
+		}
+		result := make(map[string]interface{}, len(keys))
+		for _, key := range keys {
+			if *remainingVisits <= 0 {
+				break
+			}
+			if sanitized, ok := sanitizeArtifactSemanticValue(typed[key], depth+1, remainingVisits); ok {
+				result[key] = sanitized
+			}
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
+func artifactSemanticHasContent(value interface{}) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case string:
+		return typed != ""
+	case []interface{}:
+		return len(typed) > 0
+	case map[string]interface{}:
+		return len(typed) > 0
+	default:
+		return true
+	}
 }
 
 func artifactPageContextLocation(value interface{}) map[string]interface{} {

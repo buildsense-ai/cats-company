@@ -106,6 +106,12 @@ describe('artifact context message metadata', () => {
         { type: 'checkbox', name: 'feedback', value: 'f12', checked: true },
         { type: 'password', name: 'secret', value: 'do-not-send' },
       ],
+      semantic_context: {
+        view: 'customer-comparison',
+        selection: ['c12', 'c18'],
+        filters: { region: 'east' },
+        ignored: () => 'not serializable',
+      },
       local_storage: { token: 'forged' },
     };
     expect(withArtifactRef('分析这些', {
@@ -126,9 +132,120 @@ describe('artifact context message metadata', () => {
           observed_at: '2026-08-07T12:00:00.000Z',
           selected_text: '企业客户',
           controls: [{ type: 'checkbox', name: 'feedback', value: 'f12', checked: true }],
+          semantic_context: {
+            filters: { region: 'east' },
+            selection: ['c12', 'c18'],
+            view: 'customer-comparison',
+          },
         },
       },
     });
+  });
+
+  it('drops invalid or oversized semantic state without losing the generic observation', () => {
+    const cyclic = { view: 'feedback-list' };
+    cyclic.self = cyclic;
+    expect(normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+      semantic_context: cyclic,
+    })).toEqual({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+      semantic_context: { view: 'feedback-list' },
+    });
+
+    const oversized = Object.fromEntries(Array.from({ length: 20 }, (_, index) => [
+      `field_${index}`,
+      'x'.repeat(1000),
+    ]));
+    expect(normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+      semantic_context: oversized,
+    })).toEqual({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+    });
+
+    const revoked = Proxy.revocable([], {});
+    revoked.revoke();
+    expect(normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+      semantic_context: revoked.proxy,
+    })).toEqual({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+    });
+
+    const DisguisedObject = class Object {};
+    const classInstance = new DisguisedObject();
+    classInstance.view = 'must-not-pass';
+    expect(normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+      semantic_context: classInstance,
+    })).toEqual({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+    });
+  });
+
+  it('bounds traversal work and preserves complete Unicode characters', () => {
+    let branching = { leaf: true };
+    for (let depth = 0; depth < 6; depth += 1) {
+      branching = Array.from({ length: 50 }, () => branching);
+    }
+    expect(normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+      semantic_context: branching,
+    })).toEqual({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'keep this',
+    });
+
+    const result = normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      semantic_context: { note: `${'x'.repeat(999)}😀z` },
+    });
+    expect(Array.from(result.semantic_context.note)).toHaveLength(1000);
+    expect(result.semantic_context.note.endsWith('😀')).toBe(true);
+  });
+
+  it('drops only semantic state when the combined page context exceeds 16 KB', () => {
+    const controls = Array.from({ length: 20 }, (_, index) => ({
+      type: 'text',
+      name: `field_${index}`,
+      value: 'v'.repeat(512),
+      text: 't'.repeat(128),
+    }));
+    const semanticContext = Object.fromEntries(
+      Array.from({ length: 6 }, (_, index) => [`section_${index}`, 's'.repeat(1000)]),
+    );
+    const result = normalizeArtifactPageContext({
+      contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
+      observed_at: '2026-08-07T12:00:00Z',
+      selected_text: 'x'.repeat(1000),
+      controls,
+      semantic_context: semanticContext,
+    });
+
+    expect(result.controls).toHaveLength(20);
+    expect(result.selected_text).toHaveLength(1000);
+    expect(result.semantic_context).toBeUndefined();
   });
 
   it('rejects invalid or observation-only page context envelopes', () => {
@@ -162,6 +279,7 @@ describe('artifact context message metadata', () => {
                   contract_version: ARTIFACT_PAGE_CONTEXT_CONTRACT,
                   observed_at: '2026-08-07T12:00:00Z',
                   selected_text: '当前选区',
+                  semantic_context: { view: 'feedback-list', selection: ['f12'] },
                 },
               },
             },
@@ -180,6 +298,7 @@ describe('artifact context message metadata', () => {
       currently_visible: true,
     }, 50);
     expect(result?.selected_text).toBe('当前选区');
+    expect(result?.semantic_context).toEqual({ selection: ['f12'], view: 'feedback-list' });
   });
 
   it('falls back without blocking when the iframe does not answer', async () => {
