@@ -3366,7 +3366,7 @@ function TaskRowStatusIndicator({ status, time, showTime }) {
   if (normalized.state === 'completed') {
     return (
       <span className="cc-task-row-status completed" title={detail || '任务已完成'} aria-label="任务已完成" role="status">
-        <span className="cc-task-status-dot cc-task-completed-dot" />
+        <Check className="cc-task-status-icon cc-task-completed-icon" size={15} strokeWidth={2.4} aria-hidden="true" />
       </span>
     );
   }
@@ -3374,7 +3374,7 @@ function TaskRowStatusIndicator({ status, time, showTime }) {
   if (normalized.state === 'failed') {
     return (
       <span className="cc-task-row-status failed" title={detail || '任务执行失败'} aria-label="任务执行失败" role="status">
-        <span className="cc-task-status-dot" />
+        <X className="cc-task-status-icon cc-task-failed-icon" size={15} strokeWidth={2.4} aria-hidden="true" />
       </span>
     );
   }
@@ -3384,7 +3384,7 @@ function TaskRowStatusIndicator({ status, time, showTime }) {
     const label = isStale ? '任务已自动中止' : '任务已中止';
     return (
       <span className={`cc-task-row-status ${normalized.state}`} title={detail || label} aria-label={label} role="status">
-        <span className="cc-task-status-dot" />
+        <Ban className="cc-task-status-icon cc-task-interrupted-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
       </span>
     );
   }

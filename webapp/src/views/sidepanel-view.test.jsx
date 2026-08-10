@@ -1582,11 +1582,11 @@ describe('ChatListView sidebar sections', () => {
     });
 
     expect(task.querySelector('.cc-task-row-status.running')).toBeFalsy();
-    expect(task.querySelector('.cc-task-row-status.completed .cc-task-completed-dot')).toBeTruthy();
+    expect(task.querySelector('.cc-task-row-status.completed .cc-task-completed-icon')).toBeTruthy();
     expect(task.querySelector('.cc-chat-row-time')).toBeFalsy();
   });
 
-  it('shows an unread green dot for a completed background task and restores time after opening it', async () => {
+  it('shows an unread completion icon for a completed background task and restores time after opening it', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{
         id: 'p2p_7_42',
@@ -1607,7 +1607,7 @@ describe('ChatListView sidebar sections', () => {
     await mount();
 
     const task = container.querySelector('.cc-history-item');
-    expect(task.querySelector('.cc-task-row-status.completed .cc-task-completed-dot')).toBeTruthy();
+    expect(task.querySelector('.cc-task-row-status.completed .cc-task-completed-icon')).toBeTruthy();
     expect(task.querySelector('.cc-chat-row-time')).toBeFalsy();
 
     await act(async () => {
@@ -1644,7 +1644,7 @@ describe('ChatListView sidebar sections', () => {
     expect(task.querySelector('.cc-chat-row-time')).toBeTruthy();
   });
 
-  it('shows a red unread dot for a failed task', async () => {
+  it('shows a distinct unread failure icon for a failed task', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{
         id: 'p2p_7_42',
@@ -1666,15 +1666,15 @@ describe('ChatListView sidebar sections', () => {
     await mount();
 
     const task = container.querySelector('.cc-history-item');
-    expect(task.querySelector('.cc-task-row-status.failed .cc-task-status-dot')).toBeTruthy();
-    expect(task.querySelector('.cc-task-completed-dot')).toBeFalsy();
+    expect(task.querySelector('.cc-task-row-status.failed .cc-task-failed-icon')).toBeTruthy();
+    expect(task.querySelector('.cc-task-completed-icon')).toBeFalsy();
     expect(task.querySelector('.cc-chat-row-time')).toBeFalsy();
   });
 
   it.each([
     ['cancelled', '任务已中止'],
     ['stale', '任务已自动中止'],
-  ])('shows a yellow unread dot for a %s task', async (state, label) => {
+  ])('shows a distinct interruption icon for a %s task', async (state, label) => {
     api.getConversations.mockResolvedValue({
       conversations: [{
         id: 'p2p_7_42',
@@ -1695,7 +1695,7 @@ describe('ChatListView sidebar sections', () => {
     await mount();
 
     const task = container.querySelector('.cc-history-item');
-    expect(task.querySelector(`.cc-task-row-status.${state} .cc-task-status-dot`)).toBeTruthy();
+    expect(task.querySelector(`.cc-task-row-status.${state} .cc-task-interrupted-icon`)).toBeTruthy();
     expect(task.querySelector(`.cc-task-row-status.${state}`).getAttribute('aria-label')).toBe(label);
     expect(task.querySelector('.cc-chat-row-time')).toBeFalsy();
 

@@ -669,7 +669,7 @@ describe('CatsCo shell styling', () => {
     opacity: 0;
   }
 
-  .cc-history-item .cc-chat-row-trailing {
+  .cc-history-item .cc-chat-row-trailing:has(> .cc-task-row-status) {
     flex-basis: 108px;
     width: 108px;
     min-width: 108px;
@@ -679,6 +679,9 @@ describe('CatsCo shell styling', () => {
     right: calc((var(--cc-sidebar-action-size) * 2) + 4px);
     opacity: 1;
   }`);
+    expect(ruleFor('.cc-history-item .cc-chat-row-trailing')).toContain(
+      'width: var(--cc-sidebar-trailing-width);',
+    );
   });
 
   it('makes top-level sidebar section titles distinct from expanded items', () => {
