@@ -22,7 +22,8 @@ RUN set -eux; \
     curl --fail --silent --show-error --location --retry 4 --retry-all-errors \
       "https://huabei-2.zos.ctyun.cn/ctyun-cli/${CTYUN_CLI_VERSION}/ctyun-cli-${CTYUN_CLI_VERSION}-linux-amd64-setup.tar.gz" \
       -o "$pkg"; \
-    echo "${CTYUN_CLI_SHA256}  ${pkg}" | sha256sum --check --strict; \
+    # alpine 的 sha256sum 是 busybox 版，不支持 GNU --check/--strict，改为 shell 比较
+    test "$(sha256sum "$pkg" | awk '{print $1}')" = "${CTYUN_CLI_SHA256}"; \
     tar -xzf "$pkg" -C /tmp; \
     install -d /usr/local/bin; \
     install -m 0755 /tmp/ctyun-cli /usr/local/bin/ctyun-cli; \
