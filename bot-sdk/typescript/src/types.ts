@@ -256,6 +256,7 @@ export interface ConversationTaskStatusInput {
   state: ConversationTaskStatusState;
   summary?: string;
   error?: string;
+  updated_at?: string;
   expires_at?: string;
 }
 

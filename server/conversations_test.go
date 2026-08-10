@@ -349,8 +349,9 @@ func (s *conversationTestStore) UpsertConversationTaskStatus(status *types.Conve
 	if s.taskStatuses == nil {
 		s.taskStatuses = make(map[string]*types.ConversationTaskStatus)
 	}
-	s.taskStatuses[status.TopicID] = status
-	return status, nil
+	prepared := prepareTestConversationTaskStatus(status)
+	s.taskStatuses[prepared.TopicID] = prepared
+	return prepared, nil
 }
 
 func (s *conversationTestStore) ListProjectTopics(ownerUID int64) ([]*types.ProjectTopic, error) {

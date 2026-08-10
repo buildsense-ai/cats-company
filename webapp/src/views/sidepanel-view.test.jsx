@@ -1902,12 +1902,12 @@ describe('ChatListView sidebar sections', () => {
     expect(task.textContent).not.toContain('不应继续显示');
   });
 
-  it('opens global search from the sidebar search trigger', async () => {
-    await mount();
+  it('opens global search from the compact sidebar search icon', async () => {
+    await mount({ compact: true });
 
     const trigger = container.querySelector('[aria-label="打开全局搜索"]');
     expect(trigger).toBeTruthy();
-    expect(trigger.textContent).toContain('搜索');
+    expect(trigger.textContent).toBe('');
     expect(trigger.querySelector('kbd')).toBeNull();
 
     await act(async () => {
@@ -2399,7 +2399,7 @@ describe('ChatListView sidebar sections', () => {
     expect(document.body.querySelector('.cc-new-task-dialog')).toBeFalsy();
   });
 
-  it('keeps collapsed sections collapsed when opening global search', async () => {
+  it('does not duplicate global search inside the expanded sidebar tools', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{
         id: 'p2p_7_8',
@@ -2415,12 +2415,10 @@ describe('ChatListView sidebar sections', () => {
     api.getAgents.mockResolvedValue({ agents: [] });
 
     await mount();
-    await act(async () => {
-      clickSection('联系人');
-      Simulate.click(container.querySelector('[aria-label="打开全局搜索"]'));
-    });
+    await act(async () => clickSection('联系人'));
 
-    expect(onOpenSearch).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[aria-label="打开全局搜索"]')).toBeFalsy();
+    expect(onOpenSearch).not.toHaveBeenCalled();
     expect(container.querySelector('.cc-contacts-section .cc-section-toggle').getAttribute('aria-expanded')).toBe('false');
   });
 
@@ -2895,7 +2893,21 @@ describe('ChatListView sidebar sections', () => {
     expect(document.body.querySelector('.cc-new-task-dialog')).toBeTruthy();
   });
 
-  it('shows a new-task action and recent Agent tasks in compact mode', async () => {
+  it('places additional sidebar tools directly after new task', async () => {
+    await mount({
+      additionalSidebarTools: (
+        <button type="button" className="cc-sidebar-primary cc-sidebar-skillhub-entry">
+          SkillHub
+        </button>
+      ),
+    });
+
+    const toolLabels = Array.from(container.querySelectorAll('.cc-sidebar-tools > button'))
+      .map((button) => button.textContent.trim());
+    expect(toolLabels).toEqual(['新建任务', 'SkillHub']);
+  });
+
+  it('shows the four compact navigation tools and recent Agent tasks in a history menu', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [
         {
@@ -2909,26 +2921,38 @@ describe('ChatListView sidebar sections', () => {
       ],
     });
 
-    await mount({ compact: true });
+    await mount({
+      compact: true,
+      additionalSidebarTools: <button type="button" aria-label="打开 SkillHub">SkillHub</button>,
+    });
 
     expect(container.querySelector('[aria-label="新建任务"]')).toBeTruthy();
-    const recentButton = container.querySelector('[aria-label="打开任务：Recent assistant"]');
-    expect(recentButton).toBeTruthy();
+    expect(container.querySelector('[aria-label="打开全局搜索"]')).toBeTruthy();
+    expect(container.querySelector('[aria-label="打开 SkillHub"]')).toBeTruthy();
+    const historyButton = container.querySelector('[aria-label="历史任务"]');
+    expect(historyButton).toBeTruthy();
     expect(container.querySelector('.cc-sidebar-tools')).toBeFalsy();
 
-    recentButton.getBoundingClientRect = () => ({ right: 56, top: 100, height: 42 });
     await act(async () => {
-      Simulate.focus(recentButton);
+      Simulate.focus(historyButton);
     });
-    const compactHint = document.body.querySelector('.cc-compact-task-hint');
-    expect(compactHint?.textContent).toBe('Recent assistant');
-    expect(compactHint?.style.left).toBe('64px');
-    expect(compactHint?.style.top).toBe('121px');
+    expect(document.body.querySelector('.cc-compact-history-panel')?.textContent).toContain('Recent assistant');
+    const recentButton = document.body.querySelector('[aria-label="打开任务：Recent assistant"]');
+    expect(recentButton).toBeTruthy();
+
+    const recentLabel = recentButton.querySelector('.cc-compact-history-label');
+    Object.defineProperty(recentLabel, 'scrollWidth', { configurable: true, value: 260 });
+    Object.defineProperty(recentLabel, 'clientWidth', { configurable: true, value: 120 });
+    await act(async () => {
+      Simulate.mouseEnter(recentButton);
+    });
+    expect(document.body.querySelector('[role="tooltip"]')?.textContent).toBe('Recent assistant');
+    expect(recentButton.getAttribute('aria-describedby')).toBe('cc-compact-history-tooltip');
 
     await act(async () => {
-      Simulate.blur(recentButton);
+      Simulate.mouseLeave(recentButton);
     });
-    expect(document.body.querySelector('.cc-compact-task-hint')).toBeFalsy();
+    expect(document.body.querySelector('[role="tooltip"]')).toBeFalsy();
 
     await act(async () => {
       Simulate.click(recentButton);
@@ -2981,7 +3005,10 @@ describe('ChatListView sidebar sections', () => {
 
     await mount({ compact: true });
 
-    const compactTasks = Array.from(container.querySelectorAll('.cc-compact-conversation'));
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="历史任务"]'));
+    });
+    const compactTasks = Array.from(document.body.querySelectorAll('.cc-compact-history-item'));
     expect(compactTasks.map((button) => button.getAttribute('aria-label'))).toEqual([
       '打开任务：Newest project task',
       '打开任务：Middle unassigned task',
@@ -3033,27 +3060,25 @@ describe('ChatListView sidebar sections', () => {
 
     await mount({ compact: true });
 
-    const buttonFor = (name) => Array.from(container.querySelectorAll('.cc-compact-conversation'))
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="历史任务"]'));
+    });
+    const buttonFor = (name) => Array.from(document.body.querySelectorAll('.cc-compact-history-item'))
       .find((button) => button.getAttribute('aria-label')?.endsWith(name));
     const runningButton = buttonFor('Running task');
     const completedButton = buttonFor('Completed task');
     const failedButton = buttonFor('Failed task');
     const stoppedButton = buttonFor('Stopped task');
-
-    expect(runningButton.querySelector('.cc-compact-task-status.running .lucide-loader-circle')).toBeTruthy();
-    expect(completedButton.querySelector('.cc-compact-task-status.completed')).toBeTruthy();
-    expect(failedButton.querySelector('.cc-compact-task-status.failed')).toBeTruthy();
-    expect(stoppedButton.querySelector('.cc-compact-task-status.stale')).toBeTruthy();
-    expect(completedButton.querySelector('.cc-compact-task-status.completed').getAttribute('aria-label')).toBe('任务已完成');
-    expect(failedButton.querySelector('.cc-compact-task-status.failed').getAttribute('aria-label')).toBe('任务执行失败');
-    expect(stoppedButton.querySelector('.cc-compact-task-status.stale').getAttribute('aria-label')).toBe('任务已自动中止');
+    expect(runningButton).toBeTruthy();
+    expect(completedButton).toBeTruthy();
+    expect(failedButton).toBeTruthy();
+    expect(stoppedButton).toBeTruthy();
 
     await act(async () => {
       Simulate.click(completedButton);
       await Promise.resolve();
     });
-    expect(completedButton.querySelector('.cc-compact-task-status')).toBeFalsy();
-    expect(runningButton.querySelector('.cc-compact-task-status.running')).toBeTruthy();
+    expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({ name: 'Completed task' }));
   });
 
   it('collects contact creation actions in one accessible menu and closes it appropriately', async () => {

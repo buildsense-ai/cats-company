@@ -52,6 +52,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddAPIKey,
 		migrateBotConfigAddOwnerID,
 		migrateBotConfigAddVisibility,
+		migrateBotConfigAddSkillsVisibility,
 		migrateBotConfigAddTenantName,
 		migrateBotConfigAddBodyID,
 		migrateChannelAgentEntriesAddAppID,
@@ -73,6 +74,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateGroupsCreatedAtNotNull,
 		migrateGroupsAddAnnouncement,
 		migrateGroupMembersAddMuted,
+		migrateConversationTaskStatusSourcesAddEventUpdatedAt,
 		createUsersIndexes,
 		createFriendsIndexes,
 		createTopicsIndexes,
@@ -258,10 +260,23 @@ CREATE TABLE IF NOT EXISTS conversation_task_status_sources (
     summary TEXT NOT NULL DEFAULT '',
     error TEXT NOT NULL DEFAULT '',
     expires_at TIMESTAMPTZ DEFAULT NULL,
+    event_updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (topic_id, source_uid)
 );
+`
+
+const migrateConversationTaskStatusSourcesAddEventUpdatedAt = `
+ALTER TABLE conversation_task_status_sources
+ADD COLUMN IF NOT EXISTS event_updated_at TIMESTAMPTZ;
+UPDATE conversation_task_status_sources
+SET event_updated_at = updated_at
+WHERE event_updated_at IS NULL;
+ALTER TABLE conversation_task_status_sources
+ALTER COLUMN event_updated_at SET DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE conversation_task_status_sources
+ALTER COLUMN event_updated_at SET NOT NULL;
 `
 
 const createBotConnectionGenerationsTable = `
@@ -282,6 +297,7 @@ CREATE TABLE IF NOT EXISTS bot_config (
     config JSONB DEFAULT NULL,
     api_key VARCHAR(128) DEFAULT NULL,
     visibility VARCHAR(16) NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','private')),
+	 skills_visibility VARCHAR(16) NOT NULL DEFAULT 'owner' CHECK (skills_visibility IN ('owner','authorized','public')),
     tenant_name VARCHAR(128) DEFAULT NULL,
     body_id VARCHAR(128) DEFAULT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -683,6 +699,7 @@ const migrateMessagesAddReplyTo = `ALTER TABLE messages ADD COLUMN IF NOT EXISTS
 const migrateBotConfigAddAPIKey = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS api_key VARCHAR(128) DEFAULT NULL;`
 const migrateBotConfigAddOwnerID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS owner_id BIGINT DEFAULT NULL;`
 const migrateBotConfigAddVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'public';`
+const migrateBotConfigAddSkillsVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS skills_visibility VARCHAR(16) NOT NULL DEFAULT 'owner';`
 const migrateBotConfigAddTenantName = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(128) DEFAULT NULL;`
 const migrateBotConfigAddBodyID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS body_id VARCHAR(128) DEFAULT NULL;`
 const migrateChannelAgentEntriesAddAppID = `ALTER TABLE channel_agent_entries ADD COLUMN IF NOT EXISTS channel_app_id VARCHAR(128) NOT NULL DEFAULT '';`

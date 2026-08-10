@@ -32,8 +32,10 @@ const (
 	maxPushSubscriptionsPerUser   = 10
 	maxConcurrentPushDeliveries   = 8
 	maxQueuedPushDeliveries       = 128
+	maxPushProviderAttempts       = 2
 	pushRequestTimeout            = 15 * time.Second
 	pushDeliveryTimeout           = 20 * time.Second
+	pushProviderRetryBackoff      = 100 * time.Millisecond
 	pushRelayEndpointHeader       = "X-Catsco-Push-Endpoint"
 	pushRelayTokenHeader          = "X-Catsco-Relay-Token"
 	pushRelayProviderStatusHeader = "X-Catsco-Relay-Provider-Status"
@@ -66,8 +68,9 @@ var nonPublicPushPrefixes = []netip.Prefix{
 }
 
 // PushNotification is the complete payload sent to a browser. Keep this type
-// deliberately small: notification payloads must not contain message IDs,
-// sender identities, tokens, or any other sensitive metadata.
+// deliberately small: the body may contain a short user-visible message
+// excerpt, but payloads must not contain message IDs, sender identities,
+// authentication tokens, or any other internal metadata.
 type PushNotification struct {
 	Title string `json:"title,omitempty"`
 	Body  string `json:"body,omitempty"`
@@ -716,27 +719,43 @@ func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid in
 		deliveries++
 		result.Attempted++
 		endpointID := pushEndpointLogID(subscription.Endpoint)
-		response, sendErr := s.send(ctx, payload, &webpush.Subscription{
-			Endpoint: subscription.Endpoint,
-			Keys: webpush.Keys{
-				P256dh: subscription.P256DH,
-				Auth:   subscription.Auth,
-			},
-		}, &webpush.Options{
-			HTTPClient:      s.client,
-			Subscriber:      webPushSubscriber(s.config.Subject),
-			VAPIDPublicKey:  s.config.PublicKey,
-			VAPIDPrivateKey: s.config.PrivateKey,
-			TTL:             60,
-		})
-
+		var response *http.Response
+		var sendErr error
 		status := 0
-		if response != nil {
-			status = response.StatusCode
-			if response.Body != nil {
-				if closeErr := response.Body.Close(); closeErr != nil {
-					s.logf("web push: close response for provider %q: %v", endpointID, closeErr)
+		for attempt := 1; attempt <= maxPushProviderAttempts; attempt++ {
+			response, sendErr = s.send(ctx, payload, &webpush.Subscription{
+				Endpoint: subscription.Endpoint,
+				Keys: webpush.Keys{
+					P256dh: subscription.P256DH,
+					Auth:   subscription.Auth,
+				},
+			}, &webpush.Options{
+				HTTPClient:      s.client,
+				Subscriber:      webPushSubscriber(s.config.Subject),
+				VAPIDPublicKey:  s.config.PublicKey,
+				VAPIDPrivateKey: s.config.PrivateKey,
+				TTL:             60,
+			})
+
+			status = 0
+			if response != nil {
+				status = response.StatusCode
+				if response.Body != nil {
+					if closeErr := response.Body.Close(); closeErr != nil {
+						s.logf("web push: close response for provider %q: %v", endpointID, closeErr)
+					}
 				}
+			}
+			if attempt == maxPushProviderAttempts || !shouldRetryPushProviderResponse(status, sendErr) {
+				break
+			}
+			timer := time.NewTimer(pushProviderRetryBackoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				sendErr = ctx.Err()
+				attempt = maxPushProviderAttempts
+			case <-timer.C:
 			}
 		}
 
@@ -770,6 +789,13 @@ func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid in
 		result.Accepted++
 	}
 	return result, errors.Join(deliveryErrors...)
+}
+
+func shouldRetryPushProviderResponse(status int, sendErr error) bool {
+	if sendErr != nil {
+		return true
+	}
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= http.StatusInternalServerError
 }
 
 func (s *PushNotificationService) runDeliveryWorkers() {

@@ -41,6 +41,30 @@ const BOT_VISIBILITY = {
   PRIVATE: 'private',
 };
 
+const BOT_SKILLS_VISIBILITY = {
+  OWNER: 'owner',
+  AUTHORIZED: 'authorized',
+  PUBLIC: 'public',
+};
+
+const SKILLS_VISIBILITY_OPTIONS = [
+  {
+    value: BOT_SKILLS_VISIBILITY.OWNER,
+    label: '仅自己',
+    description: '只有你能查看技能列表',
+  },
+  {
+    value: BOT_SKILLS_VISIBILITY.AUTHORIZED,
+    label: 'Agent 使用者',
+    description: '已添加该 Agent 的用户可查看',
+  },
+  {
+    value: BOT_SKILLS_VISIBILITY.PUBLIC,
+    label: '公开',
+    description: '所有已登录用户都可查看',
+  },
+];
+
 const CHANNEL_OPTIONS = [
   { value: 'weixin', label: '微信公众号', shortLabel: '公众号' },
   { value: 'feishu', label: '飞书', shortLabel: '飞书' },
@@ -109,6 +133,12 @@ const normalizeBotVisibility = (visibility) => (
   visibility === BOT_VISIBILITY.PRIVATE ? BOT_VISIBILITY.PRIVATE : BOT_VISIBILITY.PUBLIC
 );
 
+const normalizeBotSkillsVisibility = (visibility) => (
+  Object.values(BOT_SKILLS_VISIBILITY).includes(visibility)
+    ? visibility
+    : BOT_SKILLS_VISIBILITY.OWNER
+);
+
 const botVisibilityLabel = (visibility) => (
   normalizeBotVisibility(visibility) === BOT_VISIBILITY.PRIVATE ? '私有不可搜索' : '公开可搜索'
 );
@@ -144,6 +174,7 @@ export default function AgentStoreModal({
   const dialogOpenerRef = useRef(null);
   const editingBotRef = useRef(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const [skillsVisibilitySaving, setSkillsVisibilitySaving] = useState('');
   const initialAgentAppliedRef = useRef(false);
   const botOverview = useMemo(() => {
     const online = bots.filter((bot) => bot.is_online === true || bot.online === true).length;
@@ -404,6 +435,33 @@ export default function AgentStoreModal({
       if (onBotsChanged) onBotsChanged();
     } catch (e) {
       setError(e.message || '更新助手可见性失败');
+    }
+  };
+
+  const handleSetSkillsVisibility = async (bot, visibility) => {
+    const botId = bot?.id || bot?.uid;
+    if (!botId || !isOwnedBot(bot) || skillsVisibilitySaving) return;
+    const nextVisibility = normalizeBotSkillsVisibility(visibility);
+    if (normalizeBotSkillsVisibility(bot.skills_visibility) === nextVisibility) return;
+    try {
+      setError('');
+      setSkillsVisibilitySaving(nextVisibility);
+      await api.setBotSkillsVisibility(botId, nextVisibility);
+      setBots(prev => prev.map(item => (
+        String(item.id || item.uid) === String(botId)
+          ? { ...item, skills_visibility: nextVisibility }
+          : item
+      )));
+      setEditingBot(prev => (
+        prev && String(prev.id || prev.uid) === String(botId)
+          ? { ...prev, skills_visibility: nextVisibility }
+          : prev
+      ));
+      if (onBotsChanged) onBotsChanged();
+    } catch (e) {
+      setError(e.message || '技能可见范围保存失败');
+    } finally {
+      setSkillsVisibilitySaving('');
     }
   };
 
@@ -833,6 +891,39 @@ export default function AgentStoreModal({
                   </button>
                 </div>
               </div>
+
+              <section className="cc-agent-skills-visibility" aria-labelledby="cc-agent-skills-visibility-title">
+                <div className="cc-agent-permission-heading">
+                  <div>
+                    <h3 id="cc-agent-skills-visibility-title">技能可见范围</h3>
+                    <p>控制其他用户能否在云文件中查看这个 Agent 使用的技能。技能内容和配置始终不会公开。</p>
+                  </div>
+                  <span aria-live="polite">
+                    {skillsVisibilitySaving ? '保存中...' : '自动保存'}
+                  </span>
+                </div>
+                <div className="cc-agent-permission-options" role="group" aria-label="技能可见范围">
+                  {SKILLS_VISIBILITY_OPTIONS.map((option) => {
+                    const selected = normalizeBotSkillsVisibility(editingBot.skills_visibility) === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={selected ? 'is-selected' : ''}
+                        aria-pressed={selected}
+                        disabled={Boolean(skillsVisibilitySaving)}
+                        onClick={() => handleSetSkillsVisibility(editingBot, option.value)}
+                      >
+                        <span className="cc-agent-permission-option-title">
+                          {selected && <CheckCircle size={15} aria-hidden="true" />}
+                          {option.label}
+                        </span>
+                        <small>{option.description}</small>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
 
               <div style={{ display: 'flex', gap: 12 }}>
                 <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '14px 0', borderRadius: 8 }} onClick={() => setTab('hub')}>

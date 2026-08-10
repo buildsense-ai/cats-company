@@ -5,6 +5,7 @@ import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
 import { canDragChatAttachment, clearChatAttachmentDrag, writeChatAttachmentDrag } from '../chat-attachment-drag';
+import { isStandaloneWebApp } from '../utils/standalone-web-app';
 import {
   hasPlainTextTableLikeBlock,
   hasRenderableTable,
@@ -1940,6 +1941,7 @@ function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = 
   if (!payload) return null;
   const descriptor = previewFileDescriptor(payload);
   const { url, ext, canPreview, downloadURL, meta, sizeStr, key } = descriptor;
+  const downloadTarget = isStandaloneWebApp() ? undefined : '_blank';
   const activeKey = activePreviewFile ? previewFileDescriptor(activePreviewFile)?.key : '';
   const isActive = canPreview && activeKey === key;
   const subtitle = [meta.label, sizeStr].filter(Boolean).join(' · ');
@@ -1986,8 +1988,8 @@ function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = 
           href={downloadURL || undefined}
           download={payload.name || true}
           onClick={(event) => event.stopPropagation()}
-          rel="noopener noreferrer"
-          target="_blank"
+          target={downloadTarget}
+          rel={downloadTarget ? 'noopener noreferrer' : undefined}
           title="下载"
         >
           <Download size={15} />
@@ -2030,6 +2032,7 @@ export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
   const meta = descriptor?.meta || artifactMeta(file || {});
   const sizeStr = descriptor?.sizeStr || '';
   const downloadURL = descriptor?.downloadURL || url;
+  const downloadTarget = isStandaloneWebApp() ? undefined : '_blank';
 
   useEffect(() => {
     let cancelled = false;
@@ -2283,7 +2286,7 @@ export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
           </div>
           <div className="v3-file-preview-actions">
             {!isRemoteArtifact && (
-              <a href={downloadURL} download={file.name || true} title="下载原文件" target="_blank" rel="noopener noreferrer" aria-label="下载原文件">
+              <a href={downloadURL} download={file.name || true} title="下载原文件" target={downloadTarget} rel={downloadTarget ? 'noopener noreferrer' : undefined} aria-label="下载原文件">
                 <Download size={18} />
               </a>
             )}
@@ -2362,7 +2365,7 @@ export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
               <span>新标签页打开</span>
             </a>
           ) : (
-            <a href={downloadURL} download={file.name || true} target="_blank" rel="noopener noreferrer">
+            <a href={downloadURL} download={file.name || true} target={downloadTarget} rel={downloadTarget ? 'noopener noreferrer' : undefined}>
               <Download size={17} />
               <span>下载原文件</span>
             </a>

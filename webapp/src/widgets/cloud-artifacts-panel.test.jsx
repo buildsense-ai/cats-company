@@ -6,6 +6,7 @@ vi.mock('../api', () => ({
   api: {
     getCloudArtifacts: vi.fn(),
     getAgentFiles: vi.fn(),
+    getAgentSkills: vi.fn(),
     deleteCloudArtifact: vi.fn(),
     restoreCloudArtifact: vi.fn(),
   },
@@ -48,6 +49,13 @@ const historicalFile = {
   topic_id: 'p2p_7_440',
   topic_name: '期末材料',
   created_at: '2026-07-29T02:20:00.000Z',
+};
+
+const installedSkill = {
+  source: 'skillhub',
+  skillId: 'catsco/prompt-editor',
+  version: '1.0.0',
+  contentHash: 'a'.repeat(64),
 };
 
 function deferred() {
@@ -93,6 +101,10 @@ describe('CloudArtifactsPanel', () => {
       has_more: false,
       next_before_id: 0,
     });
+    api.getAgentSkills.mockReset().mockResolvedValue({
+      skills: [installedSkill],
+      revision: 3,
+    });
     api.deleteCloudArtifact.mockReset().mockResolvedValue({ ok: true, artifact: deletedArtifact });
     api.restoreCloudArtifact.mockReset().mockResolvedValue({ ok: true, artifact: activeArtifact });
     onPreviewArtifact = vi.fn();
@@ -101,6 +113,7 @@ describe('CloudArtifactsPanel', () => {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
     });
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: false });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -269,7 +282,64 @@ describe('CloudArtifactsPanel', () => {
     ).toBe('true');
     expect(container.querySelector('button[aria-label="返回产物列表"]')).not.toBeNull();
     expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
-      .toEqual(['文件', '产物']);
+      .toEqual(['文件', '产物', '技能']);
+  });
+
+  test('loads the skills bound to the current Agent', async () => {
+    await renderPanel();
+
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '技能')
+        .click();
+      await Promise.resolve();
+    });
+
+    expect(api.getAgentSkills).toHaveBeenCalledWith(440);
+    expect(container.textContent).toContain('catsco/prompt-editor');
+    expect(container.textContent).toContain('SkillHub');
+    expect(container.textContent).toContain('版本 1.0.0');
+    expect(container.querySelector('.cloud-skill-item .cloud-artifact-main')?.tagName).toBe('DIV');
+    expect(container.querySelector('button[aria-label="打开回收站"]')).toBeNull();
+  });
+
+  test('shows the skills empty state', async () => {
+    api.getAgentSkills.mockResolvedValueOnce({ skills: [], skills_visibility: 'owner' });
+    await renderPanel({ initialTab: 'skills' });
+
+    expect(container.textContent).toContain('这个 Agent 还没有添加技能');
+  });
+
+  test('explains when the current account cannot inspect Agent skills', async () => {
+    const error = new Error('Agent 所有者未公开技能列表');
+    error.status = 403;
+    api.getAgentSkills.mockRejectedValueOnce(error);
+    await renderPanel({ initialTab: 'skills' });
+
+    expect(container.querySelector('[role="alert"]')?.textContent)
+      .toContain('Agent 所有者未公开技能列表');
+  });
+
+  test('ignores an older artifact request after switching to skills', async () => {
+    const artifactRequest = deferred();
+    api.getCloudArtifacts.mockReturnValueOnce(artifactRequest.promise);
+    await renderPanel();
+
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '技能')
+        .click();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('catsco/prompt-editor');
+
+    await act(async () => {
+      artifactRequest.resolve({ artifacts: [activeArtifact] });
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('catsco/prompt-editor');
+    expect(container.textContent).not.toContain('课堂小游戏');
   });
 
   test('indexes historical agent files and opens one in the parent preview', async () => {
@@ -336,13 +406,43 @@ describe('CloudArtifactsPanel', () => {
       container.querySelector('a[aria-label="下载 复习清单.docx"]')?.getAttribute('href'),
     ).toBe('/uploads/files/review-list.docx?download=1');
     expect(
+      container.querySelector('a[aria-label="下载 复习清单.docx"]')?.getAttribute('target'),
+    ).toBe('_blank');
+    expect(
       container.querySelector('a[aria-label="在新窗口打开 课程素材.zip"]')?.getAttribute('href'),
     ).toBe('/uploads/files/course-assets.zip');
     expect(
       container.querySelector('a[aria-label="下载 课程素材.zip"]')?.getAttribute('href'),
     ).toBe('/uploads/files/course-assets.zip?download=1');
+    expect(
+      container.querySelector('a[aria-label="下载 课程素材.zip"]')?.getAttribute('target'),
+    ).toBe('_blank');
     expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
     expect(onPreviewFile).not.toHaveBeenCalled();
+  });
+
+  test('keeps CatsCo OSS downloads in the current context in an installed PWA', async () => {
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: true });
+    api.getAgentFiles.mockResolvedValueOnce({
+      files: [{
+        ...historicalFile,
+        name: '复习清单.docx',
+        url: '/uploads/files/review-list.docx',
+        mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      }],
+      has_more: false,
+      next_before_id: 0,
+    });
+    await renderPanel();
+
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '文件')
+        .click();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('a[aria-label="下载 复习清单.docx"]')?.getAttribute('target')).toBeNull();
   });
 
   test('loads older historical files with a stable message cursor', async () => {
@@ -400,7 +500,7 @@ describe('CloudArtifactsPanel', () => {
     expect(api.getCloudArtifacts).toHaveBeenCalledTimes(2);
   });
 
-  test('shows only 文件 and 产物 at the top and defaults an uncontrolled panel to current-conversation files', async () => {
+  test('shows 文件、产物 and 技能 at the top and defaults an uncontrolled panel to current-conversation files', async () => {
     await act(async () => {
       root.render(
         <CloudArtifactsPanel
@@ -420,7 +520,7 @@ describe('CloudArtifactsPanel', () => {
       limit: 40,
     });
     expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
-      .toEqual(['文件', '产物']);
+      .toEqual(['文件', '产物', '技能']);
     expect(container.querySelector('.cloud-artifacts-heading')).toBeNull();
     expect(container.textContent).not.toContain('共 1 个');
     expect(container.querySelector('button[aria-label="打开回收站"]')).toBeNull();
