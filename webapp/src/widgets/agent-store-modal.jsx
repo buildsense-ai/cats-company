@@ -41,6 +41,30 @@ const BOT_VISIBILITY = {
   PRIVATE: 'private',
 };
 
+const BOT_SKILLS_VISIBILITY = {
+  OWNER: 'owner',
+  AUTHORIZED: 'authorized',
+  PUBLIC: 'public',
+};
+
+const SKILLS_VISIBILITY_OPTIONS = [
+  {
+    value: BOT_SKILLS_VISIBILITY.OWNER,
+    label: '仅自己',
+    description: '只有你能查看技能列表',
+  },
+  {
+    value: BOT_SKILLS_VISIBILITY.AUTHORIZED,
+    label: 'Agent 使用者',
+    description: '已添加该 Agent 的用户可查看',
+  },
+  {
+    value: BOT_SKILLS_VISIBILITY.PUBLIC,
+    label: '公开',
+    description: '所有已登录用户都可查看',
+  },
+];
+
 const CHANNEL_OPTIONS = [
   { value: 'weixin', label: '微信公众号', shortLabel: '公众号' },
   { value: 'feishu', label: '飞书', shortLabel: '飞书' },
@@ -109,6 +133,12 @@ const normalizeBotVisibility = (visibility) => (
   visibility === BOT_VISIBILITY.PRIVATE ? BOT_VISIBILITY.PRIVATE : BOT_VISIBILITY.PUBLIC
 );
 
+const normalizeBotSkillsVisibility = (visibility) => (
+  Object.values(BOT_SKILLS_VISIBILITY).includes(visibility)
+    ? visibility
+    : BOT_SKILLS_VISIBILITY.OWNER
+);
+
 const botVisibilityLabel = (visibility) => (
   normalizeBotVisibility(visibility) === BOT_VISIBILITY.PRIVATE ? '私有不可搜索' : '公开可搜索'
 );
@@ -137,6 +167,9 @@ export default function AgentStoreModal({
   const [createdMode, setCreatedMode] = useState(CREATE_MODES.SELF_HOSTED);
   const [copiedField, setCopiedField] = useState('');
   const [copyingBotKey, setCopyingBotKey] = useState(null);
+  const [cloudQuota, setCloudQuota] = useState(null); // {enabled,total,used,remaining}
+  const [cloudQuotaError, setCloudQuotaError] = useState(false); // true when the quota fetch itself failed
+  const [cloudActioning, setCloudActioning] = useState(null); // tenant_name being acted on
   const [editingBot, setEditingBot] = useState(null);
   const [entryBot, setEntryBot] = useState(null);
   const avatarFileRef = useRef(null);
@@ -144,6 +177,7 @@ export default function AgentStoreModal({
   const dialogOpenerRef = useRef(null);
   const editingBotRef = useRef(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const [skillsVisibilitySaving, setSkillsVisibilitySaving] = useState('');
   const initialAgentAppliedRef = useRef(false);
   const botOverview = useMemo(() => {
     const online = bots.filter((bot) => bot.is_online === true || bot.online === true).length;
@@ -218,12 +252,13 @@ export default function AgentStoreModal({
   const loadBots = async ({ silent = false } = {}) => {
     try {
       if (!silent) setLoading(true);
-      const [botsRes, agentsRes, friendsRes] = await Promise.all([
+      const [botsRes, agentsRes, friendsRes, cloudRes] = await Promise.all([
         api.getMyBots().catch((err) => {
           throw err;
         }),
         api.getAgents ? api.getAgents().catch(() => ({})) : Promise.resolve({}),
         api.getFriends ? api.getFriends().catch(() => ({})) : Promise.resolve({}),
+        api.getCloudWorkers ? api.getCloudWorkers().catch(() => ({})) : Promise.resolve({}),
       ]);
       const manageableBots = mergeManageableBots(
         botsRes.bots || [],
@@ -231,6 +266,20 @@ export default function AgentStoreModal({
         friendsRes.friends || [],
       ).filter(isOwnedBot);
       setBots(manageableBots);
+      // Distinguish "quota fetch failed" (null + error) from "cloud hosting
+      // disabled" (quota.enabled === false) so the UI does not mislead.
+      setCloudQuotaError(!cloudRes.quota && !cloudRes.workers);
+      setCloudQuota(cloudRes.quota || null);
+      // Enrich cloud-managed workers with version/status from the control plane.
+      const cloudWorkers = cloudRes.workers || [];
+      if (cloudWorkers.length > 0) {
+        setBots(prev => prev.map(bot => {
+          const cloud = cloudWorkers.find(w => w.tenant_name === bot.tenant_name);
+          return cloud
+            ? { ...bot, cloud_status: cloud.status, cloud_version: cloud.version, cloud_image_id: cloud.image_id }
+            : bot;
+        }));
+      }
 
       if (
         !initialAgentAppliedRef.current
@@ -272,7 +321,11 @@ export default function AgentStoreModal({
       setCreatedBot(null);
       setIsSubmitting(true);
 
-      const result = await api.createBot({ username, display_name: displayName }, isManaged);
+      // Cloud-managed workers go through the cloud control plane (quota-checked,
+      // provisions a Tianyi cloud instance). Self-hosted bots use the normal path.
+      const result = isManaged
+        ? await api.createCloudWorker({ username, display_name: displayName })
+        : await api.createBot({ username, display_name: displayName });
       const fullResult = { ...result, id: result.uid, display_name: displayName, visibility: 'public' };
 
       // [CRITICAL HANDSHAKE]: Automatically force a bidirectional subscription so the bot 
@@ -350,7 +403,16 @@ export default function AgentStoreModal({
     if (!confirmed) return;
     try {
       if (owned) {
-        await api.deleteBot(botId);
+        if (bot.tenant_name) {
+          // Cloud workers are removed through the control plane so the cloud
+          // instance gets destroyed (when a destroy script is configured).
+          const result = await api.deleteCloudWorker(bot.tenant_name);
+          if (result && result.warning) {
+            feedback.notify({ tone: 'warning', message: result.warning });
+          }
+        } else {
+          await api.deleteBot(botId);
+        }
       } else {
         await api.removeFriend(botId);
       }
@@ -360,6 +422,63 @@ export default function AgentStoreModal({
       feedback.notify({ tone: 'success', message: owned ? '虚拟员工已删除' : '助手已移除' });
     } catch (e) {
       setError(e.message || t('error_server'));
+    }
+  };
+
+  const handleCloudRollback = async (bot) => {
+    const name = bot.tenant_name;
+    if (!name) return;
+    const confirmed = await feedback.confirm({
+      title: `回滚“${bot.display_name}”？`,
+      message: '回滚会把云端虚拟员工切换到所选镜像版本，但会保留当前数据。',
+      confirmLabel: '选择版本…',
+      tone: 'default',
+    });
+    if (!confirmed) return;
+    let version = '';
+    try {
+      // 从控制面 meta 拉可用镜像版本供选择（镜像列表契约：TSV -> 结构化数组）
+      let meta = null;
+      try { meta = await api.getCloudWorkerMeta(); } catch { meta = null; }
+      const versions = (meta?.images || []).map((img) => img?.version).filter(Boolean);
+      if (versions.length > 1) {
+        const picked = window.prompt(
+          `可用版本：\n${versions.join('\n')}\n\n输入要回滚到的版本（留空=最新）：`,
+          '',
+        );
+        if (picked === null) return; // 用户取消
+        version = picked.trim();
+      } else if (versions.length === 1) {
+        version = versions[0];
+      }
+      setCloudActioning(name);
+      await api.rollbackCloudWorker(name, version ? { version } : {});
+      feedback.notify({ tone: 'success', message: '回滚已触发，稍后刷新查看状态' });
+    } catch (e) {
+      setError(e.message || t('error_server'));
+    } finally {
+      setCloudActioning(null);
+    }
+  };
+
+  const handleCloudReset = async (bot) => {
+    const name = bot.tenant_name;
+    if (!name) return;
+    const confirmed = await feedback.confirm({
+      title: `重置“${bot.display_name}”？`,
+      message: '重置会销毁该云端虚拟员工的实例并从镜像重建，所有数据将丢失且无法恢复！',
+      confirmLabel: '重置并清空数据',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    try {
+      setCloudActioning(name);
+      await api.resetCloudWorker(name);
+      feedback.notify({ tone: 'success', message: '重置已触发，稍后刷新查看状态' });
+    } catch (e) {
+      setError(e.message || t('error_server'));
+    } finally {
+      setCloudActioning(null);
     }
   };
 
@@ -404,6 +523,33 @@ export default function AgentStoreModal({
       if (onBotsChanged) onBotsChanged();
     } catch (e) {
       setError(e.message || '更新助手可见性失败');
+    }
+  };
+
+  const handleSetSkillsVisibility = async (bot, visibility) => {
+    const botId = bot?.id || bot?.uid;
+    if (!botId || !isOwnedBot(bot) || skillsVisibilitySaving) return;
+    const nextVisibility = normalizeBotSkillsVisibility(visibility);
+    if (normalizeBotSkillsVisibility(bot.skills_visibility) === nextVisibility) return;
+    try {
+      setError('');
+      setSkillsVisibilitySaving(nextVisibility);
+      await api.setBotSkillsVisibility(botId, nextVisibility);
+      setBots(prev => prev.map(item => (
+        String(item.id || item.uid) === String(botId)
+          ? { ...item, skills_visibility: nextVisibility }
+          : item
+      )));
+      setEditingBot(prev => (
+        prev && String(prev.id || prev.uid) === String(botId)
+          ? { ...prev, skills_visibility: nextVisibility }
+          : prev
+      ));
+      if (onBotsChanged) onBotsChanged();
+    } catch (e) {
+      setError(e.message || '技能可见范围保存失败');
+    } finally {
+      setSkillsVisibilitySaving('');
     }
   };
 
@@ -491,7 +637,11 @@ export default function AgentStoreModal({
                         </div>
                       </div>
                       <div style={{ fontSize: 12, color: 'var(--v3-text-muted)', marginBottom: 16, marginTop: 12 }}>
-                        {owned ? (bot.tenant_name ? '我创建的 · 云托管' : '我创建的 · 自托管') : '已添加的助手'}
+                        {owned
+                          ? (bot.tenant_name
+                              ? `我创建的 · 云托管${bot.cloud_version ? ` · 版本 ${bot.cloud_version}` : ''}`
+                              : '我创建的 · 自托管')
+                          : '已添加的助手'}
                       </div>
                       {owned && (
                         <div className={`v3-agent-visibility-badge ${normalizeBotVisibility(bot.visibility) === BOT_VISIBILITY.PRIVATE ? 'private' : 'public'}`}>
@@ -531,6 +681,28 @@ export default function AgentStoreModal({
                           >
                             {copiedField === `api_${botId}` ? '已复制' : copyingBotKey === botId ? '加载中...' : '复制 Key'}
                           </button>
+                        )}
+                        {owned && bot.tenant_name && (
+                          <>
+                            <button
+                              type="button"
+                              className="oc-btn oc-btn-default cc-agent-card-action"
+                              onClick={() => handleCloudRollback(bot)}
+                              disabled={cloudActioning === bot.tenant_name}
+                              title="回滚：切换镜像版本，保留数据"
+                            >
+                              {cloudActioning === bot.tenant_name ? '处理中...' : '回滚'}
+                            </button>
+                            <button
+                              type="button"
+                              className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-delete"
+                              onClick={() => handleCloudReset(bot)}
+                              disabled={cloudActioning === bot.tenant_name}
+                              title="重置：销毁并从镜像重建，数据会丢失"
+                            >
+                              {cloudActioning === bot.tenant_name ? '处理中...' : '重置'}
+                            </button>
+                          </>
                         )}
                         <button
                           type="button"
@@ -638,9 +810,24 @@ export default function AgentStoreModal({
                   <input type="radio" name="hosting" checked={createMode === CREATE_MODES.SELF_HOSTED} onChange={() => setCreateMode(CREATE_MODES.SELF_HOSTED)} />
                   <span><strong>自托管</strong><small>生成本地身份 Key，后续连接你的服务。</small></span>
                 </label>
-                <label className="disabled">
-                  <input type="radio" name="hosting" disabled />
-                  <span><strong>云托管</strong><small>无需部署，创建后直接使用，即将推出。</small></span>
+                <label className={createMode === CREATE_MODES.MANAGED ? 'active' : (cloudQuotaError || !cloudQuota || cloudQuota.remaining <= 0 ? 'disabled' : '')}>
+                  <input
+                    type="radio"
+                    name="hosting"
+                    checked={createMode === CREATE_MODES.MANAGED}
+                    disabled={cloudQuotaError || !cloudQuota || cloudQuota.remaining <= 0}
+                    onChange={() => setCreateMode(CREATE_MODES.MANAGED)}
+                  />
+                  <span>
+                    <strong>云托管</strong>
+                    <small>
+                      {cloudQuotaError
+                        ? '云端状态查询失败，请稍后重试'
+                        : (cloudQuota && cloudQuota.enabled
+                            ? `部署到云端虚拟员工（可创建 ${cloudQuota.remaining}/${cloudQuota.total}）`
+                            : '云端部署当前未开放，请联系管理员开通')}
+                    </small>
+                  </span>
                 </label>
               </fieldset>
 
@@ -657,29 +844,39 @@ export default function AgentStoreModal({
               <h2 style={{ margin: '0 0 8px 0', color: 'var(--v3-text-name)' }}>创建成功</h2>
               <p style={{ margin: '0 0 24px 0', color: 'var(--v3-text-muted)', fontSize: 14 }}>AI 助手 <b style={{color: 'var(--v3-text-name)'}}>{createdBot.display_name}</b> 已准备好连接。</p>
 
-              <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 16 }}>
-                <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>API KEY</div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-primary)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
-                    {createdBot.api_key}
-                  </code>
-                  <button className="oc-btn oc-btn-default" onClick={() => handleCopy('api', createdBot.api_key)}>
-                    {copiedField === 'api' ? '已复制' : '复制'}
-                  </button>
+              {createdMode === CREATE_MODES.MANAGED ? (
+                <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
+                  <div style={{ fontSize: 13, color: 'var(--v3-text-muted)' }}>
+                    已部署到云端虚拟员工，无需配置 API Key，可直接使用。
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <>
+                  <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 16 }}>
+                    <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>API KEY</div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-primary)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
+                        {createdBot.api_key}
+                      </code>
+                      <button className="oc-btn oc-btn-default" onClick={() => handleCopy('api', createdBot.api_key)}>
+                        {copiedField === 'api' ? '已复制' : '复制'}
+                      </button>
+                    </div>
+                  </div>
 
-              <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
-                <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>WebSocket 连接地址</div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-text-main)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
-                    {wsUrl}
-                  </code>
-                  <button className="oc-btn oc-btn-default" onClick={() => handleCopy('ws', wsUrl)}>
-                    {copiedField === 'ws' ? '已复制' : '复制'}
-                  </button>
-                </div>
-              </div>
+                  <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
+                    <div style={{ fontSize: 11, color: 'var(--v3-text-muted)', marginBottom: 8, letterSpacing: 0.5 }}>WebSocket 连接地址</div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <code style={{ flex: 1, background: '#111', padding: '10px 12px', borderRadius: 6, color: 'var(--v3-text-main)', fontFamily: 'var(--cc-font-mono)', fontSize: 13, userSelect: 'all' }}>
+                        {wsUrl}
+                      </code>
+                      <button className="oc-btn oc-btn-default" onClick={() => handleCopy('ws', wsUrl)}>
+                        {copiedField === 'ws' ? '已复制' : '复制'}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
 
               <button className="oc-btn oc-btn-default" style={{ width: '100%', padding: '12px 0', borderRadius: 8 }} onClick={() => setTab('hub')}>
                 返回列表
@@ -833,6 +1030,39 @@ export default function AgentStoreModal({
                   </button>
                 </div>
               </div>
+
+              <section className="cc-agent-skills-visibility" aria-labelledby="cc-agent-skills-visibility-title">
+                <div className="cc-agent-permission-heading">
+                  <div>
+                    <h3 id="cc-agent-skills-visibility-title">技能可见范围</h3>
+                    <p>控制其他用户能否在云文件中查看这个 Agent 使用的技能。技能内容和配置始终不会公开。</p>
+                  </div>
+                  <span aria-live="polite">
+                    {skillsVisibilitySaving ? '保存中...' : '自动保存'}
+                  </span>
+                </div>
+                <div className="cc-agent-permission-options" role="group" aria-label="技能可见范围">
+                  {SKILLS_VISIBILITY_OPTIONS.map((option) => {
+                    const selected = normalizeBotSkillsVisibility(editingBot.skills_visibility) === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={selected ? 'is-selected' : ''}
+                        aria-pressed={selected}
+                        disabled={Boolean(skillsVisibilitySaving)}
+                        onClick={() => handleSetSkillsVisibility(editingBot, option.value)}
+                      >
+                        <span className="cc-agent-permission-option-title">
+                          {selected && <CheckCircle size={15} aria-hidden="true" />}
+                          {option.label}
+                        </span>
+                        <small>{option.description}</small>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
 
               <div style={{ display: 'flex', gap: 12 }}>
                 <button type="button" className="oc-btn oc-btn-default" style={{ flex: 1, padding: '14px 0', borderRadius: 8 }} onClick={() => setTab('hub')}>

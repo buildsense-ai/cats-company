@@ -158,6 +158,30 @@ test('requests notification permission from a user gesture after loading configu
   expect(order).toEqual(['config', 'permission']);
 });
 
+test('does not reconcile or advertise an active tab after notifications are disabled in settings', () => {
+  window.Notification.permission = 'granted';
+  localStorage.setItem('cc_push_enabled_v1:user:42', 'false');
+
+  renderController('user:42');
+
+  expect(pushTabCoordinator.setActive).toHaveBeenCalledWith(false, '');
+  expect(api.getPushConfig).not.toHaveBeenCalled();
+});
+
+test('stops advertising the tab when another tab disables notifications', () => {
+  window.Notification.permission = 'granted';
+  renderController('user:42');
+  pushTabCoordinator.setActive.mockClear();
+
+  localStorage.setItem('cc_push_enabled_v1:user:42', 'false');
+  act(() => window.dispatchEvent(new StorageEvent('storage', {
+    key: 'cc_push_enabled_v1:user:42',
+    newValue: 'false',
+  })));
+
+  expect(pushTabCoordinator.setActive).toHaveBeenCalledWith(false, '');
+});
+
 test('waits for the active-tab lock before reconciling a browser subscription', async () => {
   let releaseActiveLock;
   window.Notification.permission = 'granted';

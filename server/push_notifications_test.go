@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/openchat/openchat/server/store"
@@ -23,17 +24,19 @@ import (
 )
 
 type memoryPushSubscriptionStore struct {
-	subscriptions         []*types.PushSubscription
-	upserted              *types.PushSubscription
-	deletedUID            int64
-	deleted               string
-	deletedRegistrationID string
-	deletedScoped         []string
-	upsertErr             error
-	listErr               error
-	listBlock             <-chan struct{}
-	deleteErr             error
-	beforeDelete          func()
+	subscriptions           []*types.PushSubscription
+	upserted                *types.PushSubscription
+	deletedUID              int64
+	deleted                 string
+	deletedRegistrationID   string
+	deletedAll              bool
+	deletedRegistrationOnly string
+	deletedScoped           []string
+	upsertErr               error
+	listErr                 error
+	listBlock               <-chan struct{}
+	deleteErr               error
+	beforeDelete            func()
 }
 
 type pushHubUserStore struct {
@@ -41,8 +44,31 @@ type pushHubUserStore struct {
 	users map[int64]*types.User
 }
 
+type pushHubConversationTitleStore struct {
+	pushHubUserStore
+	titles map[string]string
+}
+
 func (s pushHubUserStore) GetUser(uid int64) (*types.User, error) {
 	return s.users[uid], nil
+}
+
+func (s pushHubUserStore) GetGroup(int64) (*types.Group, error) {
+	return nil, nil
+}
+
+func (s pushHubConversationTitleStore) GetConversationTitles(_ int64, topicIDs []string) (map[string]string, error) {
+	titles := make(map[string]string, len(topicIDs))
+	for _, topicID := range topicIDs {
+		if title := s.titles[topicID]; title != "" {
+			titles[topicID] = title
+		}
+	}
+	return titles, nil
+}
+
+func (s pushHubConversationTitleStore) UpdateConversationTitle(_ int64, _, _ string) (bool, error) {
+	return false, nil
 }
 
 func (m *memoryPushSubscriptionStore) UpsertPushSubscription(_ context.Context, subscription *types.PushSubscription, maxSubscriptions int) (bool, error) {
@@ -93,6 +119,37 @@ func (m *memoryPushSubscriptionStore) DeletePushSubscription(_ context.Context, 
 		if subscription != nil && subscription.UID == uid && subscription.Endpoint == endpoint && subscription.RegistrationID == registrationID {
 			m.subscriptions = append(m.subscriptions[:index], m.subscriptions[index+1:]...)
 			break
+		}
+	}
+	return nil
+}
+
+func (m *memoryPushSubscriptionStore) DeletePushSubscriptionsByEndpoint(_ context.Context, uid int64, endpoint string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	m.deletedUID = uid
+	m.deleted = endpoint
+	m.deletedAll = true
+	for index := len(m.subscriptions) - 1; index >= 0; index-- {
+		subscription := m.subscriptions[index]
+		if subscription != nil && subscription.UID == uid && subscription.Endpoint == endpoint {
+			m.subscriptions = append(m.subscriptions[:index], m.subscriptions[index+1:]...)
+		}
+	}
+	return nil
+}
+
+func (m *memoryPushSubscriptionStore) DeletePushSubscriptionsByRegistrationID(_ context.Context, uid int64, registrationID string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	m.deletedUID = uid
+	m.deletedRegistrationOnly = registrationID
+	for index := len(m.subscriptions) - 1; index >= 0; index-- {
+		subscription := m.subscriptions[index]
+		if subscription != nil && subscription.UID == uid && subscription.RegistrationID == registrationID {
+			m.subscriptions = append(m.subscriptions[:index], m.subscriptions[index+1:]...)
 		}
 	}
 	return nil
@@ -525,6 +582,193 @@ func TestPushNotificationDeleteSubscriptionAllowsLegacyEmptyRegistrationID(t *te
 	}
 }
 
+func TestPushNotificationDeleteAllRegistrationsForCurrentUserEndpoint(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{UID: 104, Endpoint: "https://push.example.test/subscription/shared", RegistrationID: "other-tab"},
+		{UID: 105, Endpoint: "https://push.example.test/subscription/other-user", RegistrationID: "other-user"},
+	}}
+	service := enabledPushService(store)
+	recorder := httptest.NewRecorder()
+	service.HandleSubscription(recorder, pushRequest(t, http.MethodDelete, `{"endpoint":"https://push.example.test/subscription/shared","all_registrations":true}`, 104))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if !store.deletedAll || store.deletedUID != 104 || store.deleted != "https://push.example.test/subscription/shared" {
+		t.Fatalf("delete all called with all=%v uid=%d endpoint=%q", store.deletedAll, store.deletedUID, store.deleted)
+	}
+	if len(store.subscriptions) != 1 || store.subscriptions[0].UID != 105 {
+		t.Fatalf("delete all removed another user's subscription: %+v", store.subscriptions)
+	}
+}
+
+func TestPushNotificationDeleteOrphanedRegistrationWithoutEndpoint(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{UID: 104, Endpoint: "https://push.example.test/subscription/orphan", RegistrationID: "registration-current"},
+		{UID: 104, Endpoint: "https://push.example.test/subscription/other", RegistrationID: "registration-other"},
+	}}
+	service := enabledPushService(store)
+	recorder := httptest.NewRecorder()
+	service.HandleSubscription(recorder, pushRequest(t, http.MethodDelete, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if store.deletedRegistrationOnly != "registration-current" || len(store.subscriptions) != 1 {
+		t.Fatalf("registration cleanup = %q subscriptions=%+v", store.deletedRegistrationOnly, store.subscriptions)
+	}
+}
+
+func TestPushNotificationTestTargetsCurrentBrowserRegistration(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{UID: 104, Endpoint: "https://push.example.test/current", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
+		{UID: 104, Endpoint: "https://push.example.test/other", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-other"},
+	}}
+	service := enabledPushService(store)
+	var delivered []string
+	service.send = func(ctx context.Context, payload []byte, subscription *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > pushRequestTimeout {
+			t.Fatalf("test delivery deadline = %v, want within %v", deadline, pushRequestTimeout)
+		}
+		delivered = append(delivered, subscription.Endpoint)
+		var notification PushNotification
+		if err := json.Unmarshal(payload, &notification); err != nil {
+			t.Fatalf("decode test payload %s: %v", payload, err)
+		}
+		if notification.Title != "CatsCo 测试通知" {
+			t.Fatalf("test payload = %s", payload)
+		}
+		if !strings.HasPrefix(notification.Tag, "catsco-push-test-") || notification.Tag == "catsco-push-test" {
+			t.Fatalf("test notification tag = %q, want unique tag", notification.Tag)
+		}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+	want := []string{"https://push.example.test/current"}
+	if fmt.Sprint(delivered) != fmt.Sprint(want) {
+		t.Fatalf("delivered endpoints = %#v, want %#v", delivered, want)
+	}
+}
+
+func TestPushNotificationTestRejectsMissingBrowserRegistration(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		UID: 104, Endpoint: "https://push.example.test/current", RegistrationID: "registration-current",
+	}}}
+	service := enabledPushService(store)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		t.Fatal("test notification unexpectedly sent")
+		return nil, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-stale"}`, 104))
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusConflict, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"push_subscription_missing"`) {
+		t.Fatalf("body = %s, want stable missing-subscription code", recorder.Body.String())
+	}
+}
+
+func TestPushNotificationTestReportsExpiredSubscription(t *testing.T) {
+	const endpoint = "https://push.example.test/expired"
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		UID: 104, Endpoint: endpoint, P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current",
+	}}}
+	service := enabledPushService(store)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusGone, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusConflict, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"push_subscription_expired"`) {
+		t.Fatalf("body = %s, want stable expired-subscription code", recorder.Body.String())
+	}
+	if store.deleted != endpoint {
+		t.Fatalf("expired endpoint was not removed: deleted=%q", store.deleted)
+	}
+}
+
+func TestPushNotificationTestReportsProviderRejection(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		UID: 104, Endpoint: "https://push.example.test/rejected", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current",
+	}}}
+	service := enabledPushService(store)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusBadGateway, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"push_provider_rejected"`) {
+		t.Fatalf("body = %s, want stable provider-rejection code", recorder.Body.String())
+	}
+}
+
+func TestPushNotificationTestAcceptsPartialProviderSuccess(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{UID: 104, Endpoint: "https://push.example.test/accepted", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
+		{UID: 104, Endpoint: "https://push.example.test/rejected", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
+	}}
+	service := enabledPushService(store)
+	service.send = func(_ context.Context, _ []byte, subscription *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		status := http.StatusCreated
+		if strings.HasSuffix(subscription.Endpoint, "/rejected") {
+			status = http.StatusBadGateway
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+}
+
+func TestPushNotificationTestReportsMixedExpiredAndRejectedAsRejection(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
+		{UID: 104, Endpoint: "https://push.example.test/rejected", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
+		{UID: 104, Endpoint: "https://push.example.test/expired", P256DH: "p256dh", Auth: "auth", RegistrationID: "registration-current"},
+	}}
+	service := enabledPushService(store)
+	service.send = func(_ context.Context, _ []byte, subscription *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		status := http.StatusBadGateway
+		if strings.HasSuffix(subscription.Endpoint, "/expired") {
+			status = http.StatusGone
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	service.HandleTest(recorder, pushRequest(t, http.MethodPost, `{"registration_id":"registration-current"}`, 104))
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusBadGateway, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"push_provider_rejected"`) {
+		t.Fatalf("body = %s, want stable provider-rejection code", recorder.Body.String())
+	}
+}
+
 func TestPushNotificationSendCleansExpiredSubscriptions(t *testing.T) {
 	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{
 		{Endpoint: "https://push.example.test/gone", P256DH: "p256dh", Auth: "auth"},
@@ -578,6 +822,25 @@ func TestPushNotificationSendCleansExpiredSubscriptions(t *testing.T) {
 		if _, ok := payload[key]; !ok {
 			t.Fatalf("payload missing %q: %s", key, payloads[0])
 		}
+	}
+}
+
+func TestPushNotificationNormalizesMailtoSubjectForWebPushLibrary(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		UID: 21, Endpoint: "https://push.example.test/current", P256DH: "p256dh", Auth: "auth",
+	}}}
+	service := enabledPushService(store)
+	var subscriber string
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, options *webpush.Options) (*http.Response, error) {
+		subscriber = options.Subscriber
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	if err := service.SendToUser(context.Background(), 21, PushNotification{Title: "test"}); err != nil {
+		t.Fatalf("SendToUser returned error: %v", err)
+	}
+	if subscriber != "push@example.com" {
+		t.Fatalf("web push subscriber = %q, want %q", subscriber, "push@example.com")
 	}
 }
 
@@ -851,7 +1114,7 @@ func TestEnqueueUserPushQueuesOnlyWhenNoVisibleHumanClient(t *testing.T) {
 				hub.setClientPageVisibility(client, pageVisibility)
 			}
 
-			hub.enqueueOfflineUserPush(uid, "grp_7")
+			hub.enqueueOfflineUserPush(uid, "grp_7", "")
 
 			select {
 			case <-delivered:
@@ -903,7 +1166,7 @@ func TestEnqueueUserPushSuppressesOnlyFocusedSubscriptionOnTargetTopic(t *testin
 		Focused:        true,
 	}, send: make(chan []byte, 1)})
 
-	hub.enqueueOfflineUserPush(uid, "grp_7")
+	hub.enqueueOfflineUserPush(uid, "grp_7", "")
 
 	select {
 	case endpoint := <-delivered:
@@ -954,7 +1217,7 @@ func TestEnqueueUserPushDoesNotSuppressLegacyClientWithoutSubscriptionIdentity(t
 		Focused:     true,
 	}, send: make(chan []byte, 1)})
 
-	hub.enqueueOfflineUserPush(uid, "grp_7")
+	hub.enqueueOfflineUserPush(uid, "grp_7", "")
 
 	seen := map[string]bool{}
 	for range 2 {
@@ -1027,6 +1290,139 @@ func TestShouldNotifyOfflineForFinalUserVisibleMessagesOnly(t *testing.T) {
 				t.Fatalf("shouldNotifyOfflineForMessage() = %t, want %t", got, test.want)
 			}
 		})
+	}
+}
+
+func TestPushNotificationMessageBodyUsesVisibleContent(t *testing.T) {
+	tests := []struct {
+		name string
+		data *MsgServerData
+		want string
+	}{
+		{
+			name: "plain text",
+			data: &MsgServerData{Content: "  final\nanswer  "},
+			want: "final answer",
+		},
+		{
+			name: "structured text",
+			data: &MsgServerData{Content: map[string]interface{}{"text": "deployment complete"}},
+			want: "deployment complete",
+		},
+		{
+			name: "assistant text block",
+			data: &MsgServerData{ContentBlocks: []types.ContentBlock{
+				{Type: "thinking", Thinking: "private reasoning"},
+				{Type: "assistant_text", Text: "report is ready"},
+			}},
+			want: "report is ready",
+		},
+		{
+			name: "visible block overrides internal raw content",
+			data: &MsgServerData{
+				Content: "private tool output",
+				ContentBlocks: []types.ContentBlock{
+					{Type: "tool_result", Content: "private tool output"},
+					{Type: "assistant_text", Text: "safe final answer"},
+				},
+			},
+			want: "safe final answer",
+		},
+		{
+			name: "assistant content block",
+			data: &MsgServerData{ContentBlocks: []types.ContentBlock{
+				{Type: "assistant_text", Content: "content field answer"},
+			}},
+			want: "content field answer",
+		},
+		{
+			name: "array content",
+			data: &MsgServerData{Content: []interface{}{"first paragraph", "second paragraph"}},
+			want: "first paragraph second paragraph",
+		},
+		{
+			name: "nested content",
+			data: &MsgServerData{Content: map[string]interface{}{
+				"content": []interface{}{map[string]interface{}{"text": "nested answer"}},
+			}},
+			want: "nested answer",
+		},
+		{
+			name: "internal raw content is excluded",
+			data: &MsgServerData{
+				Content:       "private tool output",
+				ContentBlocks: []types.ContentBlock{{Type: "tool_result", Content: "private tool output"}},
+			},
+			want: "",
+		},
+		{
+			name: "image fallback",
+			data: &MsgServerData{Type: "image", ContentBlocks: []types.ContentBlock{{Type: "image"}}},
+			want: "发来了一张图片",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := pushNotificationMessageBody(&ServerMessage{Data: test.data})
+			if got != test.want {
+				t.Fatalf("pushNotificationMessageBody() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestPushNotificationTitleUsesSessionName(t *testing.T) {
+	hub := NewHub(pushHubConversationTitleStore{
+		pushHubUserStore: pushHubUserStore{users: map[int64]*types.User{
+			42: {ID: 42, DisplayName: "小明", Username: "xiaoming"},
+		}},
+		titles: map[string]string{"p2p_7_42": "项目 Alpha"},
+	}, nil)
+	if got := hub.pushNotificationTitle(7, "p2p_7_42"); got != "项目 Alpha" {
+		t.Fatalf("pushNotificationTitle() = %q, want %q", got, "项目 Alpha")
+	}
+}
+
+func TestPushNotificationMessageBodyTruncatesLongContent(t *testing.T) {
+	got := pushNotificationMessageBody(&ServerMessage{Data: &MsgServerData{
+		Content: strings.Repeat("猫", maxPushNotificationBodyRunes+20),
+	}})
+	if utf8.RuneCountInString(got) != maxPushNotificationBodyRunes || !strings.HasSuffix(got, "…") {
+		t.Fatalf("truncated body length=%d body=%q", utf8.RuneCountInString(got), got)
+	}
+}
+
+func TestTaskStatusPublisherRejectedMessageDoesNotFailOpen(t *testing.T) {
+	const (
+		senderUID    int64 = 7
+		recipientUID int64 = 8
+	)
+	db := &identityMessageStore{users: map[int64]*types.User{
+		senderUID:    {ID: senderUID, AccountType: types.AccountBot},
+		recipientUID: {ID: recipientUID, AccountType: types.AccountHuman},
+	}}
+	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/subscription/no-fail-open",
+		P256DH:   "p256dh",
+		Auth:     "auth",
+	}}}
+	service := enabledPushService(pushStore)
+	delivered := make(chan struct{}, 1)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		delivered <- struct{}{}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	hub := NewHub(db, nil)
+	hub.SetPushNotificationService(service)
+
+	hub.notifyOfflineUserForMessage(recipientUID, senderUID, &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 0, Type: "text", Content: "transient agent output",
+	}}, true)
+
+	select {
+	case <-delivered:
+		t.Fatal("rejected task-status publisher message failed open to an immediate push")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
@@ -1119,41 +1515,36 @@ func TestPushSuppressionProvenanceIsNotSerialized(t *testing.T) {
 	}
 }
 
-func TestAgentPushCompletionRequiresExplicitFinalSignal(t *testing.T) {
-	working := &ServerMessage{Data: &MsgServerData{
-		Topic:    "p2p_7_8",
-		From:     formatUID(7),
-		SeqID:    1,
-		Type:     "text",
-		Content:  "still working",
-		Metadata: map[string]interface{}{"turn_id": "turn-1"},
-	}}
-	if isCompletedAgentMessage(working) {
-		t.Fatal("a persisted visible segment without an explicit final signal was treated as complete")
-	}
-
-	final := &ServerMessage{Data: &MsgServerData{
-		Topic:    "p2p_7_8",
-		From:     formatUID(7),
-		SeqID:    2,
-		Type:     "text",
-		Content:  "final answer",
-		Metadata: map[string]interface{}{"turn_id": "turn-1", "turn_complete": true},
-	}}
-	if !isCompletedAgentMessage(final) {
-		t.Fatal("an explicitly completed visible agent message was not treated as complete")
-	}
-}
-
 func TestAgentPushCoordinatorBoundsDedupKeys(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
 	expiresAt := time.Now().Add(agentPushTurnDedupTTL)
 	for index := 0; index < maxTrackedAgentPushTurns; index++ {
-		coordinator.delivered[fmt.Sprintf("delivered-%d", index)] = expiresAt
+		coordinator.delivered[agentPushDeliveryKey{
+			recipientUID: int64(index + 1),
+			scope:        agentPushScope(7, "p2p_7_8"),
+			runID:        "capacity",
+		}] = expiresAt
 	}
 
-	if coordinator.deliverOnce("over-capacity", func() bool { return true }) {
+	if coordinator.deliverOnce(agentPushTurnDeliveryKey(9999, agentPushScope(7, "p2p_7_8"), "over-capacity"), func() bool { return true }) {
 		t.Fatal("new turn was accepted after dedup capacity was exhausted")
+	}
+}
+
+func TestAgentPushTypedDeliveryKeysDoNotCollideOnDelimiters(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	deliveries := 0
+	keys := []agentPushDeliveryKey{
+		agentPushTurnDeliveryKey(8, agentPushScope(7, "topic:a"), "b"),
+		agentPushTurnDeliveryKey(8, agentPushScope(7, "topic"), "a:b"),
+	}
+	for _, key := range keys {
+		if !coordinator.deliverOnce(key, func() bool { deliveries++; return true }) {
+			t.Fatalf("delivery key %+v was incorrectly deduplicated", key)
+		}
+	}
+	if deliveries != len(keys) {
+		t.Fatalf("deliveries = %d, want %d", deliveries, len(keys))
 	}
 }
 
@@ -1168,6 +1559,16 @@ func TestAgentPushRunningHeartbeatExtendsActiveTurn(t *testing.T) {
 		TopicID: "p2p_7_8", RunID: "run-1", State: "waiting", SourceUID: 7, ExpiresAt: &refreshedExpiry,
 	})
 	time.Sleep(30 * time.Millisecond)
+
+	scope := agentPushScope(7, "p2p_7_8")
+	turnKey := newAgentPushTrackedTurnKey(scope, "run-1")
+	coordinator.mu.Lock()
+	_, turnStillActive := coordinator.trackedTurns[turnKey]
+	currentRun := coordinator.currentRuns[scope].runID
+	coordinator.mu.Unlock()
+	if !turnStillActive || currentRun != "run-1" {
+		t.Fatal("running heartbeat did not preserve the original active turn")
+	}
 
 	delivered := make(chan struct{}, 1)
 	msg := &ServerMessage{Data: &MsgServerData{Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "done"}}
@@ -1187,42 +1588,41 @@ func TestAgentPushRunningHeartbeatExtendsActiveTurn(t *testing.T) {
 	}
 }
 
-func TestAgentPushNewRunReplacesAbandonedTurn(t *testing.T) {
+func TestAgentPushSeparateRunsWaitForTheirOwnTerminalStatus(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
+	delivered := make(chan string, 2)
 	coordinator.observeStatus(&types.ConversationTaskStatus{
-		TopicID: "p2p_7_8", RunID: "run-abandoned", State: "running", SourceUID: 7,
+		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
 	})
-	abandonedDelivered := make(chan struct{}, 1)
 	coordinator.observeVisibleMessage(8, 7, &ServerMessage{Data: &MsgServerData{
-		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "old",
-	}}, func() bool {
-		abandonedDelivered <- struct{}{}
-		return true
-	})
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "first run",
+		Metadata: map[string]interface{}{"run_id": "run-1"},
+	}}, func() bool { delivered <- "run-1"; return true })
 
 	coordinator.observeStatus(&types.ConversationTaskStatus{
-		TopicID: "p2p_7_8", RunID: "run-restarted", State: "running", SourceUID: 7,
+		TopicID: "p2p_7_8", RunID: "run-2", State: "running", SourceUID: 7,
 	})
+	coordinator.observeVisibleMessage(8, 7, &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 2, Type: "text", Content: "second run",
+		Metadata: map[string]interface{}{"run_id": "run-2"},
+	}}, func() bool { delivered <- "run-2"; return true })
 	select {
-	case <-abandonedDelivered:
-	case <-time.After(time.Second):
-		t.Fatal("replacing an abandoned run permanently swallowed its candidate")
+	case got := <-delivered:
+		t.Fatalf("run %s notified before authoritative terminal status", got)
+	case <-time.After(25 * time.Millisecond):
 	}
-	delivered := make(chan struct{}, 1)
-	coordinator.observeVisibleMessage(8, 7, &ServerMessage{Data: &MsgServerData{
-		Topic: "p2p_7_8", SeqID: 2, Type: "text", Content: "new",
-	}}, func() bool {
-		delivered <- struct{}{}
-		return true
-	})
-	coordinator.observeStatus(&types.ConversationTaskStatus{
-		TopicID: "p2p_7_8", RunID: "run-restarted", State: "completed", SourceUID: 7,
-	})
 
-	select {
-	case <-delivered:
-	case <-time.After(time.Second):
-		t.Fatal("restarted run did not deliver after completion")
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
+	})
+	if got := <-delivered; got != "run-1" {
+		t.Fatalf("first terminal status delivered %q, want run-1", got)
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-2", State: "completed", SourceUID: 7,
+	})
+	if got := <-delivered; got != "run-2" {
+		t.Fatalf("second terminal status delivered %q, want run-2", got)
 	}
 }
 
@@ -1233,78 +1633,144 @@ func TestAgentPushIgnoresExpiredRunningStatus(t *testing.T) {
 		TopicID: "p2p_7_8", RunID: "run-expired", State: "running", SourceUID: 7, ExpiresAt: &expired,
 	})
 	msg := &ServerMessage{Data: &MsgServerData{Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "late"}}
-	if coordinator.observeVisibleMessage(8, 7, msg, func() bool { return true }) {
-		t.Fatal("an expired task status opened an active notification turn")
+	deliveries := 0
+	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
+		t.Fatal("message after an expired task status was not suppressed")
+	}
+	if deliveries != 0 {
+		t.Fatal("expired task status authorized a notification")
 	}
 }
 
-func TestAgentPushMessageWithTurnIDFailsOpenWithoutActiveStatus(t *testing.T) {
+func TestAgentPushMessageBeforeStatusWaitsForMatchingTerminal(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
 	msg := &ServerMessage{Data: &MsgServerData{
-		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer",
-		Metadata: map[string]interface{}{"turn_id": "turn-without-status"},
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "answer before status",
+		Metadata: map[string]interface{}{"run_id": "run-before-status"},
 	}}
 	deliveries := 0
-	deliver := func() bool { deliveries++; return true }
-	if coordinator.observeVisibleMessage(8, 7, msg, deliver) {
-		t.Fatal("message without an active task status was unexpectedly deferred")
+	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
+		t.Fatal("out-of-order message was not retained by the coordinator")
 	}
-	key := agentPushTurnKey(8, 7, msg)
-	if !coordinator.deliverOnce(key, deliver) {
-		t.Fatal("message without an active task status did not fail open")
+	if deliveries != 0 {
+		t.Fatal("out-of-order message notified before terminal status")
 	}
-	if coordinator.deliverOnce(key, deliver) {
-		t.Fatal("duplicate message for the same turn bypassed deliverOnce")
-	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-before-status", State: "completed", SourceUID: 7,
+	})
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-before-status", State: "completed", SourceUID: 7,
+	})
 	if deliveries != 1 {
 		t.Fatalf("deliveries = %d, want 1", deliveries)
 	}
 }
 
-func TestAgentPushTerminalBeforeMessageFailsOpen(t *testing.T) {
+func TestAgentPushTerminalBeforeMessageDeliversExactlyOnce(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
-	coordinator.observeStatus(&types.ConversationTaskStatus{
-		TopicID: "p2p_7_8", RunID: "terminal-first", State: "running", SourceUID: 7,
-	})
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "terminal-first", State: "completed", SourceUID: 7,
 	})
-	msg := &ServerMessage{Data: &MsgServerData{
-		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "late final answer",
-		Metadata: map[string]interface{}{"turn_id": "terminal-first"},
-	}}
 	deliveries := 0
-	deliver := func() bool { deliveries++; return true }
-	if coordinator.observeVisibleMessage(8, 7, msg, deliver) {
-		t.Fatal("message after terminal status was unexpectedly deferred")
-	}
-	if !coordinator.deliverOnce(agentPushTurnKey(8, 7, msg), deliver) {
-		t.Fatal("message after terminal status did not fail open")
+	for seq, content := range []string{"late final answer", "late intermediate duplicate"} {
+		msg := &ServerMessage{Data: &MsgServerData{
+			Topic: "p2p_7_8", SeqID: seq + 1, Type: "text", Content: content,
+			Metadata: map[string]interface{}{"run_id": "terminal-first"},
+		}}
+		if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
+			t.Fatal("message after terminal status was not handled by the coordinator")
+		}
 	}
 	if deliveries != 1 {
 		t.Fatalf("deliveries = %d, want 1", deliveries)
 	}
 }
 
-func TestAgentPushMessageForDifferentActiveRunFailsOpen(t *testing.T) {
+func TestAgentPushUncorrelatedMessageHandlesTerminalOnlyOrdering(t *testing.T) {
+	for _, terminalFirst := range []bool{false, true} {
+		name := "message_before_terminal"
+		if terminalFirst {
+			name = "terminal_before_message"
+		}
+		t.Run(name, func(t *testing.T) {
+			coordinator := newAgentPushTurnCoordinator()
+			terminal := &types.ConversationTaskStatus{
+				TopicID: "p2p_7_8", RunID: "terminal-only", State: "completed", SourceUID: 7,
+			}
+			msg := &ServerMessage{Data: &MsgServerData{
+				Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "uncorrelated final answer",
+			}}
+			deliveries := 0
+			if terminalFirst {
+				coordinator.observeStatus(terminal)
+			}
+			if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
+				t.Fatal("uncorrelated message was not retained by the coordinator")
+			}
+			if !terminalFirst {
+				coordinator.observeStatus(terminal)
+			}
+			if deliveries != 1 {
+				t.Fatalf("deliveries = %d, want 1", deliveries)
+			}
+		})
+	}
+}
+
+func TestAgentPushCompletedRunDoesNotConsumeNextUncorrelatedMessage(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	deliveries := 0
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
+	})
+	coordinator.observeVisibleMessage(8, 7, &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "run-1 answer",
+	}}, func() bool { deliveries++; return true })
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
+	})
+	if deliveries != 1 {
+		t.Fatalf("run-1 deliveries = %d, want 1", deliveries)
+	}
+
+	coordinator.observeVisibleMessage(8, 7, &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 2, Type: "text", Content: "run-2 answer before status",
+	}}, func() bool { deliveries++; return true })
+	if deliveries != 1 {
+		t.Fatal("completed run consumed the next run's uncorrelated message")
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-2", State: "running", SourceUID: 7,
+	})
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-2", State: "completed", SourceUID: 7,
+	})
+	if deliveries != 2 {
+		t.Fatalf("deliveries = %d, want 2", deliveries)
+	}
+}
+
+func TestAgentPushOutOfOrderRunDoesNotCompleteWithStaleStatus(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "stale-run", State: "running", SourceUID: 7,
 	})
 	msg := &ServerMessage{Data: &MsgServerData{
 		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "new run answer",
-		Metadata: map[string]interface{}{"turn_id": "new-run"},
+		Metadata: map[string]interface{}{"run_id": "new-run"},
 	}}
 	deliveries := 0
-	deliver := func() bool { deliveries++; return true }
-	if coordinator.observeVisibleMessage(8, 7, msg, deliver) {
-		t.Fatal("message for a different run was deferred under the stale active run")
-	}
-	if !coordinator.deliverOnce(agentPushTurnKey(8, 7, msg), deliver) {
-		t.Fatal("message for a different run did not fail open")
+	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
+		t.Fatal("message for a different run was not retained")
 	}
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "stale-run", State: "completed", SourceUID: 7,
+	})
+	if deliveries != 0 {
+		t.Fatal("stale terminal status completed a different run")
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "new-run", State: "completed", SourceUID: 7,
 	})
 	if deliveries != 1 {
 		t.Fatalf("deliveries = %d, want 1", deliveries)
@@ -1365,15 +1831,152 @@ func TestAgentPushResponseAndStreamIDsDoNotOverrideActiveRun(t *testing.T) {
 	}
 }
 
-func TestAgentPushMissingTerminalFallsBackAfterBoundedTimeout(t *testing.T) {
-	coordinator := newAgentPushTurnCoordinatorWithTimeout(25 * time.Millisecond)
+func TestAgentPushStaleStatusesDoNotRebindUntaggedMessage(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	baseTime := time.Now()
 	coordinator.observeStatus(&types.ConversationTaskStatus{
-		TopicID: "p2p_7_8", RunID: "missing-terminal", State: "running", SourceUID: 7,
+		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7, UpdatedAt: baseTime,
+	})
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-2", State: "running", SourceUID: 7, UpdatedAt: baseTime.Add(time.Second),
+	})
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "waiting", SourceUID: 7, UpdatedAt: baseTime.Add(-time.Second),
+	})
+
+	deliveries := 0
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "untagged run-2 progress",
+	}}
+	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
+		t.Fatal("untagged message was not retained")
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7, UpdatedAt: baseTime,
+	})
+	if deliveries != 0 {
+		t.Fatal("late terminal status rebound an untagged message to the stale run")
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-2", State: "completed", SourceUID: 7, UpdatedAt: baseTime.Add(2 * time.Second),
+	})
+	if deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1", deliveries)
+	}
+}
+
+func TestAgentPushFirstSeenStaleRunCannotReclaimCurrentAfterProductionNormalization(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	baseTime := time.Date(2026, 8, 8, 3, 0, 0, 0, time.UTC)
+	normalize := func(runID, state string, updatedAt time.Time) *types.ConversationTaskStatus {
+		status, err := normalizeConversationTaskStatus(7, "p2p_7_8", &normalizedMessagePayload{
+			DisplayContent: map[string]interface{}{
+				"run_id": runID, "state": state, "updated_at": updatedAt.Format(time.RFC3339),
+			},
+		})
+		if err != nil {
+			t.Fatalf("normalize %s %s status: %v", runID, state, err)
+		}
+		return status
+	}
+
+	coordinator.observeStatus(normalize("run-2", "running", baseTime.Add(2*time.Second)))
+	coordinator.observeStatus(normalize("run-1", "waiting", baseTime))
+
+	deliveries := 0
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "untagged run-2 answer",
+	}}
+	coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true })
+	coordinator.observeStatus(normalize("run-1", "completed", baseTime.Add(time.Second)))
+	if deliveries != 0 {
+		t.Fatal("first-seen stale run reclaimed the current untagged message")
+	}
+	coordinator.observeStatus(normalize("run-2", "completed", baseTime.Add(3*time.Second)))
+	if deliveries != 1 {
+		t.Fatalf("deliveries = %d, want 1", deliveries)
+	}
+}
+
+func TestAgentPushStaleTerminalStatusDoesNotCompleteCurrentRun(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	baseTime := time.Now()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: 7,
+		UpdatedAt: baseTime.Add(time.Second),
+	})
+
+	deliveries := 0
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer",
+		Metadata: map[string]interface{}{"run_id": "run-1"},
+	}}
+	coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true })
+
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
+		UpdatedAt: baseTime,
+	})
+	if deliveries != 0 {
+		t.Fatalf("stale terminal status delivered a push; deliveries = %d", deliveries)
+	}
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
+	})
+	if deliveries != 0 {
+		t.Fatalf("timestamp-less terminal status delivered a push; deliveries = %d", deliveries)
+	}
+
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: 7,
+		UpdatedAt: baseTime.Add(2 * time.Second),
+	})
+	if deliveries != 1 {
+		t.Fatalf("fresh terminal status deliveries = %d, want 1", deliveries)
+	}
+}
+
+func TestAgentPushFailedDeliveryRetriesOnDuplicateTerminal(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "retry-run", State: "running", SourceUID: 7,
+	})
+	attempts := 0
+	msg := &ServerMessage{Data: &MsgServerData{
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer",
+		Metadata: map[string]interface{}{"run_id": "retry-run"},
+	}}
+	coordinator.observeVisibleMessage(8, 7, msg, func() bool {
+		attempts++
+		return attempts > 1
+	})
+	terminal := &types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "retry-run", State: "completed", SourceUID: 7,
+	}
+	coordinator.observeStatus(terminal)
+	if attempts != 1 {
+		t.Fatalf("attempts after first terminal = %d, want 1", attempts)
+	}
+	coordinator.observeStatus(terminal)
+	if attempts != 2 {
+		t.Fatalf("attempts after retry terminal = %d, want 2", attempts)
+	}
+	coordinator.observeStatus(terminal)
+	if attempts != 2 {
+		t.Fatalf("successful delivery retried again; attempts = %d", attempts)
+	}
+}
+
+func TestAgentPushMissingTerminalNeverFallsBack(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	expiresAt := time.Now().Add(25 * time.Millisecond)
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "missing-terminal", State: "running", SourceUID: 7, ExpiresAt: &expiresAt,
 	})
 	delivered := make(chan struct{}, 1)
 	msg := &ServerMessage{Data: &MsgServerData{
-		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer",
-		Metadata: map[string]interface{}{"turn_id": "missing-terminal"},
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "intermediate answer",
+		Metadata: map[string]interface{}{"run_id": "missing-terminal"},
 	}}
 	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool {
 		delivered <- struct{}{}
@@ -1383,49 +1986,28 @@ func TestAgentPushMissingTerminalFallsBackAfterBoundedTimeout(t *testing.T) {
 	}
 	select {
 	case <-delivered:
-		t.Fatal("fallback delivered before the bounded timeout")
-	case <-time.After(10 * time.Millisecond):
-	}
-	select {
-	case <-delivered:
-	case <-time.After(time.Second):
-		t.Fatal("missing terminal status permanently swallowed the notification")
+		t.Fatal("message notified without an authoritative terminal status")
+	case <-time.After(75 * time.Millisecond):
 	}
 }
 
-func TestAgentPushHeartbeatsPreserveFallbackDeadline(t *testing.T) {
-	const fallbackTimeout = 30 * time.Second
-	coordinator := newAgentPushTurnCoordinatorWithTimeout(fallbackTimeout)
+func TestAgentPushHeartbeatsRemainSilentUntilTerminal(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
 	coordinator.observeStatus(&types.ConversationTaskStatus{
 		TopicID: "p2p_7_8", RunID: "heartbeat-run", State: "running", SourceUID: 7,
 	})
 	deliveries := 0
 	msg := &ServerMessage{Data: &MsgServerData{
-		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "final answer",
-		Metadata: map[string]interface{}{"turn_id": "heartbeat-run"},
+		Topic: "p2p_7_8", SeqID: 1, Type: "text", Content: "intermediate answer",
+		Metadata: map[string]interface{}{"run_id": "heartbeat-run"},
 	}}
 	if !coordinator.observeVisibleMessage(8, 7, msg, func() bool { deliveries++; return true }) {
 		t.Fatal("active turn did not retain the notification candidate")
 	}
-	scope := agentPushScope(7, "p2p_7_8")
-	coordinator.mu.Lock()
-	initialDeadline := coordinator.active[scope].hardDeadline
-	coordinator.mu.Unlock()
 	for index := 0; index < 3; index++ {
 		coordinator.observeStatus(&types.ConversationTaskStatus{
 			TopicID: "p2p_7_8", RunID: "heartbeat-run", State: "waiting", SourceUID: 7,
 		})
-	}
-	coordinator.mu.Lock()
-	active := coordinator.active[scope]
-	actualDeadline := active.hardDeadline
-	effectiveDeadline := active.effectiveDeadline()
-	coordinator.mu.Unlock()
-	if !actualDeadline.Equal(initialDeadline) {
-		t.Fatalf("hard deadline changed from %s to %s", initialDeadline, actualDeadline)
-	}
-	if !effectiveDeadline.Equal(initialDeadline) {
-		t.Fatalf("effective deadline = %s, want %s", effectiveDeadline, initialDeadline)
 	}
 	if deliveries != 0 {
 		t.Fatal("heartbeat delivered the retained candidate")
@@ -1457,8 +2039,7 @@ func (s *aggregateTaskStatusPushStore) GetConversationTaskStatusForSource(topicI
 }
 
 func (s *aggregateTaskStatusPushStore) UpsertConversationTaskStatus(status *types.ConversationTaskStatus) (*types.ConversationTaskStatus, error) {
-	copyOfStatus := *status
-	s.source = &copyOfStatus
+	s.source = prepareTestConversationTaskStatus(status)
 	aggregate := *s.aggregate
 	return &aggregate, nil
 }
@@ -1487,9 +2068,13 @@ func TestAgentPushWaitsForMatchingTerminalTaskStatus(t *testing.T) {
 		Auth:     "auth",
 	}}}
 	service := enabledPushService(pushStore)
-	delivered := make(chan struct{}, 1)
-	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
-		delivered <- struct{}{}
+	delivered := make(chan PushNotification, 1)
+	service.send = func(_ context.Context, payload []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		var notification PushNotification
+		if err := json.Unmarshal(payload, &notification); err != nil {
+			t.Errorf("decode push notification: %v", err)
+		}
+		delivered <- notification
 		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
 	}
 	hub := NewHub(db, nil)
@@ -1531,7 +2116,10 @@ func TestAgentPushWaitsForMatchingTerminalTaskStatus(t *testing.T) {
 		t.Fatalf("publish completed task status: %v", err)
 	}
 	select {
-	case <-delivered:
+	case notification := <-delivered:
+		if notification.Body != "final answer" {
+			t.Fatalf("notification body = %q, want detailed message content", notification.Body)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("matching terminal task status did not notify the offline recipient")
 	}
@@ -1669,17 +2257,17 @@ func TestServiceAccountGroupPushWaitsForMatchingTerminalTaskStatus(t *testing.T)
 	}
 }
 
-func TestLegacyP2PAgentReplyNotifiesWithoutTurnMetadata(t *testing.T) {
+func TestOrdinaryP2PMessageStillNotifiesWithoutTurnMetadata(t *testing.T) {
 	const (
 		senderUID  int64 = 7
 		offlineUID int64 = 8
 	)
 	db := &identityMessageStore{users: map[int64]*types.User{
-		senderUID:  {ID: senderUID, AccountType: types.AccountBot},
+		senderUID:  {ID: senderUID, AccountType: types.AccountHuman},
 		offlineUID: {ID: offlineUID, AccountType: types.AccountHuman},
 	}}
 	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
-		Endpoint: "https://push.example.test/subscription/legacy-agent",
+		Endpoint: "https://push.example.test/subscription/ordinary-message",
 		P256DH:   "p256dh",
 		Auth:     "auth",
 	}}}
@@ -1693,7 +2281,7 @@ func TestLegacyP2PAgentReplyNotifiesWithoutTurnMetadata(t *testing.T) {
 	hub.SetPushNotificationService(service)
 
 	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
-		DisplayContent: "legacy final answer",
+		DisplayContent: "ordinary message",
 		DisplayType:    "text",
 		StoredType:     "text",
 	}, 1, nil)
@@ -1701,16 +2289,16 @@ func TestLegacyP2PAgentReplyNotifiesWithoutTurnMetadata(t *testing.T) {
 	select {
 	case <-delivered:
 	case <-time.After(time.Second):
-		t.Fatal("legacy agent reply without turn metadata did not notify the offline recipient")
+		t.Fatal("ordinary non-agent message did not notify the offline recipient")
 	}
 	select {
 	case <-delivered:
-		t.Fatal("one legacy agent reply delivered more than one push")
+		t.Fatal("one ordinary message delivered more than one push")
 	case <-time.After(100 * time.Millisecond):
 	}
 }
 
-func TestP2PAgentWorkingMessagesNotifyOnlyOnFinalAnswer(t *testing.T) {
+func TestP2PAgentMultipleIntermediateMessagesWaitForTerminalStatus(t *testing.T) {
 	const (
 		senderUID  int64 = 7
 		offlineUID int64 = 8
@@ -1732,65 +2320,45 @@ func TestP2PAgentWorkingMessagesNotifyOnlyOnFinalAnswer(t *testing.T) {
 	}
 	hub := NewHub(db, nil)
 	hub.SetPushNotificationService(service)
+	hub.agentPush.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "running", SourceUID: senderUID,
+	})
 
-	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
-		DisplayContent: "working",
-		DisplayType:    "thinking",
-		StoredType:     "text",
-		ContentBlocks:  []types.ContentBlock{{Type: "thinking", Thinking: "working"}},
-	}, 1, nil)
-
+	for seq, content := range []string{"first progress update", "second progress update", "partial answer"} {
+		hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
+			DisplayContent: content,
+			DisplayType:    "text",
+			StoredType:     "text",
+			Metadata:       map[string]interface{}{"run_id": "run-1"},
+		}, int64(seq+1), nil)
+	}
 	select {
 	case <-delivered:
-		t.Fatal("agent working message unexpectedly delivered a push")
+		t.Fatal("intermediate agent text notified before terminal status")
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
-		DisplayContent: "first final segment",
-		DisplayType:    "text",
-		StoredType:     "text",
-		Metadata:       map[string]interface{}{"turn_id": "turn-1"},
-	}, 2, nil)
+	hub.agentPush.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: senderUID,
+	})
 	select {
 	case <-delivered:
 	case <-time.After(time.Second):
-		t.Fatal("agent message with turn metadata but no active task status did not fail open")
-	}
-	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
-		DisplayContent: "second final segment",
-		DisplayType:    "text",
-		StoredType:     "text",
-		Metadata:       map[string]interface{}{"turn_id": "turn-1", "turn_complete": true},
-	}, 3, nil)
-
-	select {
-	case <-delivered:
-		t.Fatal("completed segment duplicated the fail-open push for the same turn")
-	case <-time.After(100 * time.Millisecond):
+		t.Fatal("terminal status did not notify the offline recipient")
 	}
 
+	hub.agentPush.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-1", State: "completed", SourceUID: senderUID,
+	})
 	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
-		DisplayContent: "next turn final answer",
+		DisplayContent: "out-of-order late chunk",
 		DisplayType:    "text",
 		StoredType:     "text",
-		Metadata:       map[string]interface{}{"turn_id": "turn-2", "turn_complete": true},
+		Metadata:       map[string]interface{}{"run_id": "run-1"},
 	}, 4, nil)
 	select {
 	case <-delivered:
-	case <-time.After(time.Second):
-		t.Fatal("a different agent turn did not deliver a push")
-	}
-
-	hub.fanoutNormalizedMessage(senderUID, "p2p_7_8", 0, &normalizedMessagePayload{
-		DisplayContent: "duplicate completion",
-		DisplayType:    "text",
-		StoredType:     "text",
-		Metadata:       map[string]interface{}{"turn_id": "turn-2", "turn_complete": true},
-	}, 5, nil)
-	select {
-	case <-delivered:
-		t.Fatal("duplicate completion for one agent turn delivered another push")
+		t.Fatal("duplicate terminal or late chunk delivered another push")
 	case <-time.After(100 * time.Millisecond):
 	}
 }
@@ -1959,6 +2527,29 @@ func TestPushNotificationSendReportsProviderErrors(t *testing.T) {
 	}
 	if len(store.deletedScoped) != 0 {
 		t.Fatalf("non-expired subscriptions were deleted: %#v", store.deletedScoped)
+	}
+}
+
+func TestPushNotificationRetriesTransientProviderRejection(t *testing.T) {
+	store := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/transient", P256DH: "p256dh", Auth: "auth",
+	}}}
+	service := enabledPushService(store)
+	attempts := 0
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		attempts++
+		status := http.StatusServiceUnavailable
+		if attempts == maxPushProviderAttempts {
+			status = http.StatusCreated
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	if err := service.SendToUser(context.Background(), 15, PushNotification{Title: "title"}); err != nil {
+		t.Fatalf("SendToUser returned error after transient retry: %v", err)
+	}
+	if attempts != maxPushProviderAttempts {
+		t.Fatalf("provider attempts = %d, want %d", attempts, maxPushProviderAttempts)
 	}
 }
 

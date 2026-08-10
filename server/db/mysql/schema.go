@@ -51,6 +51,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateMessagesAddReplyTo,
 		migrateBotConfigAddOwnerID,
 		migrateBotConfigAddVisibility,
+		migrateBotConfigAddSkillsVisibility,
 		migrateBotConfigAddTenantName,
 		migrateBotConfigAddBodyID,
 		migrateMessagesAddCodeMode,
@@ -92,6 +93,9 @@ func (a *Adapter) CreateSchema() error {
 		migrateConversationTaskStatusesCreatedAtPrecision,
 		migrateConversationTaskStatusesUpdatedAtPrecision,
 		migrateConversationTaskStatusSourcesExpiresAtPrecision,
+		migrateConversationTaskStatusSourcesAddEventUpdatedAt,
+		migrateConversationTaskStatusSourcesBackfillEventUpdatedAt,
+		migrateConversationTaskStatusSourcesEventUpdatedAtNotNull,
 		migrateConversationTaskStatusSourcesCreatedAtPrecision,
 		migrateConversationTaskStatusSourcesUpdatedAtPrecision,
 	}
@@ -305,6 +309,7 @@ CREATE TABLE IF NOT EXISTS conversation_task_status_sources (
     summary TEXT NOT NULL,
     error TEXT NOT NULL,
     expires_at TIMESTAMP(6) NULL DEFAULT NULL,
+    event_updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY (topic_id, source_uid),
@@ -331,6 +336,7 @@ CREATE TABLE IF NOT EXISTS bot_config (
     model VARCHAR(128) DEFAULT '',
     enabled TINYINT(1) NOT NULL DEFAULT 1,
     config JSON DEFAULT NULL,
+    skills_visibility ENUM('owner','authorized','public') NOT NULL DEFAULT 'owner',
     body_id VARCHAR(128) DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -711,6 +717,11 @@ const migrateBotConfigAddVisibility = `
 ALTER TABLE bot_config ADD COLUMN visibility ENUM('public','private') NOT NULL DEFAULT 'public';
 `
 
+// Migration: add redacted skill-list visibility to bot_config.
+const migrateBotConfigAddSkillsVisibility = `
+ALTER TABLE bot_config ADD COLUMN skills_visibility ENUM('owner','authorized','public') NOT NULL DEFAULT 'owner';
+`
+
 // Migration: add tenant_name column to bot_config table.
 // NULL = self-hosted (third-party), non-NULL = platform-managed deployment.
 const migrateBotConfigAddTenantName = `
@@ -891,6 +902,19 @@ ALTER TABLE conversation_task_statuses
 const migrateConversationTaskStatusSourcesExpiresAtPrecision = `
 ALTER TABLE conversation_task_status_sources
   MODIFY expires_at TIMESTAMP(6) NULL DEFAULT NULL;
+`
+const migrateConversationTaskStatusSourcesAddEventUpdatedAt = `
+ALTER TABLE conversation_task_status_sources
+  ADD COLUMN event_updated_at TIMESTAMP(6) NULL DEFAULT NULL AFTER expires_at;
+`
+const migrateConversationTaskStatusSourcesBackfillEventUpdatedAt = `
+UPDATE conversation_task_status_sources
+  SET event_updated_at = updated_at
+  WHERE event_updated_at IS NULL;
+`
+const migrateConversationTaskStatusSourcesEventUpdatedAtNotNull = `
+ALTER TABLE conversation_task_status_sources
+  MODIFY event_updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6);
 `
 const migrateConversationTaskStatusSourcesCreatedAtPrecision = `
 ALTER TABLE conversation_task_status_sources

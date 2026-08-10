@@ -179,11 +179,14 @@ X-CatsCo-File-Size: 12345
 **POST /api/bots**
 创建 Bot
 
-**POST /api/bots/deploy**
-部署 managed Bot
-
-**POST /api/bots/visibility**
+**PATCH /api/bots/visibility**
 设置 Bot 可见性
+
+**PATCH /api/bots/skills-visibility?uid={uid}&v=owner|authorized|public**
+设置 Agent 技能列表的可见范围。仅 Agent 所有者可调用；未设置时默认为 `owner`。
+
+**GET /api/agents/skills?uid={uid}**
+按技能可见范围返回脱敏技能列表。需要用户 JWT；响应不包含内容哈希或完整 Agent 配置。
 
 ### 管理员 API
 

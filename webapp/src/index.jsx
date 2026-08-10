@@ -7,10 +7,13 @@ import TinodeWeb from './views/tinode-web';
 import PwaController from './components/pwa-controller';
 import { getAuthRevision, getPushPromptOwner, getToken } from './api';
 import { FeedbackProvider } from './components/feedback-system';
+import { syncThemeColor, THEME_STORAGE_KEY } from './utils/theme-access';
 import './css/catsco-topbar.css';
 import './css/catsco-secondary-headers.css';
 import './css/catsco-settings-controls.css';
 import './css/search-overlay.css';
+
+syncThemeColor(localStorage.getItem(THEME_STORAGE_KEY));
 
 function App() {
   const [auth, setAuth] = useState(() => ({

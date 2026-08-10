@@ -185,6 +185,7 @@ vi.mock('../api', () => ({
 import MessagesView, {
   collectStructuredMentionTargets,
   reconcileStructuredMentionSelections,
+  shouldConvertPastedTextToDocument,
 } from './messages-view';
 import { TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { api, onWSMessage, wsSendStreamCancel } from '../api';
@@ -234,6 +235,21 @@ function typeDraft(textarea, value) {
       selectionStart: value.length,
     },
   });
+}
+
+function pasteInto(textarea, { text = '', files = [] } = {}) {
+  const event = new Event('paste', { bubbles: true, cancelable: true });
+  const items = files.map((file) => ({ kind: 'file', getAsFile: () => file }));
+  Object.defineProperty(event, 'clipboardData', {
+    configurable: true,
+    value: {
+      files,
+      items,
+      getData: (type) => (type === 'text/plain' ? text : ''),
+    },
+  });
+  textarea.dispatchEvent(event);
+  return event;
 }
 
 async function openPhoneUploadFromComposer(container) {
@@ -336,6 +352,17 @@ describe('structured composer mention provenance', () => {
     expect(collectStructuredMentionTargets('@usr42x ', selection)).toEqual([]);
   });
 
+});
+
+describe('long pasted text detection', () => {
+  it('keeps ordinary multi-paragraph text inline', () => {
+    expect(shouldConvertPastedTextToDocument('一段普通文字\n\n再补充一段。')).toBe(false);
+  });
+
+  it('recognizes very long text and substantial multi-line text', () => {
+    expect(shouldConvertPastedTextToDocument('长'.repeat(4000))).toBe(true);
+    expect(shouldConvertPastedTextToDocument(Array.from({ length: 60 }, () => '一行较长的内容'.repeat(6)).join('\n'))).toBe(true);
+  });
 });
 
 describe('MessagesView composer draft isolation', () => {
@@ -3736,6 +3763,110 @@ describe('MessagesView composer draft isolation', () => {
     });
   });
 
+  it('keeps a normal text paste in the composer without starting an upload', async () => {
+    await mountTopic(root, 'p2p_1_2');
+    const textarea = container.querySelector('textarea.v3-composer-input');
+
+    const pasteEvent = pasteInto(textarea, { text: '这是普通长度的粘贴内容。' });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(pasteEvent.defaultPrevented).toBe(false);
+    expect(api.uploadFile).not.toHaveBeenCalled();
+  });
+
+  it('turns a long text paste into a Markdown attachment and sends it through the file message path', async () => {
+    api.uploadFile.mockImplementationOnce(async (file) => ({
+      file_key: `long-paste/${file.name}`,
+      url: `/uploads/files/${file.name}`,
+      name: file.name,
+      size: file.size,
+      mime_type: file.type,
+    }));
+    await mountTopic(root, 'p2p_1_2');
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    const pastedText = `产品需求说明\n\n${'这是一段需要作为文档发送的详细内容。'.repeat(260)}`;
+
+    let pasteEvent;
+    await act(async () => {
+      pasteEvent = pasteInto(textarea, { text: pastedText });
+      await flushPromises();
+    });
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(textarea.value).toBe('');
+    expect(api.uploadFile).toHaveBeenCalledTimes(1);
+    const [uploadedFile, requestedType] = api.uploadFile.mock.calls[0];
+    expect(requestedType).toBe('file');
+    expect(uploadedFile.name).toMatch(/^粘贴内容-\d{8}-\d{6}\.md$/u);
+    expect(uploadedFile.type).toBe('text/markdown;charset=utf-8');
+    expect(container.querySelector('.v3-composer-attachment-chip.is-file')?.textContent)
+      .toContain(uploadedFile.name);
+    expect(container.textContent).toContain('长文本已整理为文档');
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    const [, payload] = api.sendMessage.mock.calls.at(-1);
+    expect(payload.type).toBe('text');
+    expect(payload.content).toBe(`[文件] ${uploadedFile.name}`);
+    expect(payload.content_blocks).toEqual([{
+      type: 'file',
+      payload: {
+        file_key: `long-paste/${uploadedFile.name}`,
+        url: `/uploads/files/${uploadedFile.name}`,
+        name: uploadedFile.name,
+        size: uploadedFile.size,
+        mime_type: 'text/markdown;charset=utf-8',
+      },
+    }]);
+  });
+
+  it('restores the original long paste at the caret when document upload fails', async () => {
+    api.uploadFile.mockRejectedValueOnce(new Error('network unavailable'));
+    await mountTopic(root, 'p2p_1_2');
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    const pastedText = '长文本'.repeat(1400);
+    await act(async () => {
+      typeDraft(textarea, '前后');
+    });
+    textarea.setSelectionRange(1, 1);
+
+    await act(async () => {
+      pasteInto(textarea, { text: pastedText });
+      await flushPromises();
+    });
+
+    expect(textarea.value).toBe(`前${pastedText}后`);
+    expect(container.querySelector('.v3-composer-attachment-chip')).toBeNull();
+    expect(container.textContent).toContain('原文已恢复到输入框');
+  });
+
+  it('keeps clipboard files ahead of long clipboard text', async () => {
+    const image = new File(['image'], 'clipboard.png', { type: 'image/png' });
+    api.uploadFile.mockResolvedValueOnce({
+      file_key: 'clipboard.png',
+      url: '/uploads/images/clipboard.png',
+      name: 'clipboard.png',
+      size: image.size,
+      mime_type: image.type,
+    });
+    await mountTopic(root, 'p2p_1_2');
+    const textarea = container.querySelector('textarea.v3-composer-input');
+
+    await act(async () => {
+      pasteInto(textarea, { text: '不会被转换'.repeat(1000), files: [image] });
+      await flushPromises();
+    });
+
+    expect(api.uploadFile).toHaveBeenCalledTimes(1);
+    expect(api.uploadFile).toHaveBeenCalledWith(image, 'image');
+    expect(container.querySelector('[aria-label="预览图片：clipboard.png"]')).not.toBeNull();
+  });
+
   it('shows an inline error when an unsupported image is selected', async () => {
     await mountTopic(root, 'p2p_1_2');
 
@@ -5399,5 +5530,52 @@ describe('MessagesView composer draft isolation', () => {
     expect(stepsRegion?.id).toBe(toggle.getAttribute('aria-controls'));
     expect(stepsRegion?.getAttribute('role')).toBe('region');
     expect(stepsRegion?.textContent).toContain('验证计划展开');
+  });
+
+  it('keeps the composer border active from sending until the Agent final reply', async () => {
+    api.getAgents.mockResolvedValueOnce({
+      agents: [{
+        uid: 2,
+        id: 2,
+        topic_id: 'p2p_1_2',
+        display_name: 'Agent Two',
+        is_bot: true,
+        relation: 'friend',
+      }],
+    });
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '开始处理这个任务');
+    });
+    await act(async () => {
+      Simulate.keyDown(textarea, { key: 'Enter', shiftKey: false });
+      await flushPromises();
+    });
+
+    const composerBox = container.querySelector('.v3-composer-box');
+    expect(composerBox.classList.contains('is-agent-reply-active')).toBe(true);
+    expect(composerBox.getAttribute('aria-busy')).toBe('true');
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 101,
+          seq: 101,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: '任务已经完成',
+          type: 'text',
+          msg_type: 'text',
+        },
+      });
+    });
+
+    expect(composerBox.classList.contains('is-agent-reply-active')).toBe(false);
+    expect(composerBox.getAttribute('aria-busy')).toBe('false');
   });
 });

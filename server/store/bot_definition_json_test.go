@@ -258,6 +258,45 @@ func TestLegacyEmptySelectionWithoutHistoryDoesNotBecomeLocal(t *testing.T) {
 	}
 }
 
+func TestCanonicalEmptySelectionWithRuntimeHistoryNormalizesToExplicitLocal(t *testing.T) {
+	raw, err := json.Marshal(map[string]any{
+		botDefinitionJSONKey: types.BotDefinition{
+			Schema: types.BotDefinitionSchema,
+			BotID:  "43",
+			Prompt: &types.BotPromptDefinition{Selected: "default"},
+		},
+		botDefinitionRuntimeJSONKey: types.BotDefinitionRuntime{
+			DesiredRevision: 3,
+			AppliedKind:     "local",
+			AppliedModelID:  "local",
+			AppliedRevision: 3,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := DecodeBotDefinitionJSON(raw, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Exists || record.Definition.Model.Kind != "local" || record.Definition.Model.ModelID != "local" {
+		t.Fatalf("record=%+v", record)
+	}
+
+	encoded, err := EncodeBotDefinitionJSON(raw, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := DecodeBotDefinitionJSON(encoded, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Definition.Model.Kind != "local" || reloaded.Definition.Model.ModelID != "local" {
+		t.Fatalf("reloaded=%+v", reloaded)
+	}
+}
+
 func TestLegacyModelAdapterPreservesExplicitLocalAcrossJSONRoundTrip(t *testing.T) {
 	initial, err := EncodeBotDefinitionJSON(nil, &types.BotDefinitionRecord{
 		Definition: types.BotDefinition{

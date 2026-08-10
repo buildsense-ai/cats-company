@@ -10,6 +10,14 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+func prepareTestConversationTaskStatus(status *types.ConversationTaskStatus) *types.ConversationTaskStatus {
+	prepared := store.PrepareConversationTaskStatusForStore(status, time.Now().UTC())
+	if status != nil && prepared != nil {
+		status.EventUpdatedAt = prepared.EventUpdatedAt
+	}
+	return prepared
+}
+
 func TestNormalizeConversationTaskStatusDefaultsActiveExpiry(t *testing.T) {
 	status, err := normalizeConversationTaskStatus(42, "p2p_7_42", &normalizedMessagePayload{
 		DisplayContent: map[string]interface{}{
@@ -27,6 +35,9 @@ func TestNormalizeConversationTaskStatusDefaultsActiveExpiry(t *testing.T) {
 	if got := status.ExpiresAt.Sub(status.UpdatedAt); got != defaultActiveTaskStatusTTL {
 		t.Fatalf("default expiry=%s, want %s", got, defaultActiveTaskStatusTTL)
 	}
+	if !status.EventUpdatedAt.IsZero() {
+		t.Fatalf("event_updated_at=%v without publisher timestamp, want zero for post-lock ordering", status.EventUpdatedAt)
+	}
 }
 
 func TestNormalizeConversationTaskStatusPreservesExplicitExpiry(t *testing.T) {
@@ -42,6 +53,45 @@ func TestNormalizeConversationTaskStatusPreservesExplicitExpiry(t *testing.T) {
 	}
 	if status.ExpiresAt == nil || !status.ExpiresAt.Equal(expiresAt) {
 		t.Fatalf("expires_at=%v, want %v", status.ExpiresAt, expiresAt)
+	}
+}
+
+func TestNormalizeConversationTaskStatusSeparatesPublisherEventTimeFromServerLiveness(t *testing.T) {
+	eventUpdatedAt := time.Date(2026, 8, 8, 3, 0, 0, 0, time.UTC)
+	before := time.Now().UTC()
+	status, err := normalizeConversationTaskStatus(42, "p2p_7_42", &normalizedMessagePayload{
+		DisplayContent: map[string]interface{}{
+			"run_id":     "run-1",
+			"state":      "running",
+			"updated_at": eventUpdatedAt.Format(time.RFC3339),
+		},
+	})
+	after := time.Now().UTC()
+	if err != nil {
+		t.Fatalf("normalize task status: %v", err)
+	}
+	if status.UpdatedAt.Before(before) || status.UpdatedAt.After(after) {
+		t.Fatalf("server updated_at=%v, want within [%v, %v]", status.UpdatedAt, before, after)
+	}
+	if !status.EventUpdatedAt.Equal(eventUpdatedAt) {
+		t.Fatalf("event_updated_at=%v, want %v", status.EventUpdatedAt, eventUpdatedAt)
+	}
+}
+
+func TestNormalizeConversationTaskStatusBoundsExtremeFuturePublisherTime(t *testing.T) {
+	before := time.Now().UTC()
+	status, err := normalizeConversationTaskStatus(42, "p2p_7_42", &normalizedMessagePayload{
+		DisplayContent: map[string]interface{}{
+			"run_id": "run-1", "state": "running",
+			"updated_at": before.Add(24 * time.Hour).Format(time.RFC3339),
+		},
+	})
+	after := time.Now().UTC()
+	if err != nil {
+		t.Fatalf("normalize task status: %v", err)
+	}
+	if status.EventUpdatedAt.Before(before) || status.EventUpdatedAt.After(after) {
+		t.Fatalf("bounded event_updated_at=%v, want within [%v, %v]", status.EventUpdatedAt, before, after)
 	}
 }
 
@@ -84,6 +134,30 @@ type taskRecoveryTestStore struct {
 	generation uint64
 	bumpErr    error
 	listErr    error
+}
+
+func newTaskRecoveryTestHub(db store.Store) *Hub {
+	return newTaskRecoveryTestHubWithRuntime(db, nil, "")
+}
+
+func newTaskRecoveryTestHubWithRuntime(db store.Store, shared sharedRuntimeState, nodeID string) *Hub {
+	if nodeID == "" {
+		nodeID = newRuntimeNodeID()
+	}
+	hub := &Hub{
+		clients:             make(map[int64]map[*Client]struct{}),
+		db:                  db,
+		nodeID:              nodeID,
+		sharedRuntime:       shared,
+		bodyLeases:          newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
+		groupTurns:          newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
+		agentPush:           newAgentPushTurnCoordinator(),
+		botConnectionEpochs: make(map[int64]uint64),
+	}
+	if shared != nil {
+		shared.registerRuntimeNode(nodeID, hub)
+	}
+	return hub
 }
 
 func (s *taskRecoveryTestStore) GetFriends(_ int64) ([]*types.User, error) {
@@ -153,11 +227,10 @@ func (s *taskRecoveryTestStore) GetConversationTaskStatusForSource(_ string, _ i
 }
 
 func (s *taskRecoveryTestStore) UpsertConversationTaskStatus(status *types.ConversationTaskStatus) (*types.ConversationTaskStatus, error) {
-	copyStatus := *status
-	copyStatus.UpdatedAt = time.Now()
-	s.current = &copyStatus
-	s.upserts = append(s.upserts, &copyStatus)
-	return &copyStatus, nil
+	prepared := prepareTestConversationTaskStatus(status)
+	s.current = prepared
+	s.upserts = append(s.upserts, prepared)
+	return prepared, nil
 }
 
 func (s *taskRecoveryTestStore) GetConversationTaskStatuses(_ []string) (map[string]*types.ConversationTaskStatus, error) {
@@ -174,7 +247,12 @@ func TestRecoverDisconnectedBotTasksMarksOldActiveRunStale(t *testing.T) {
 		UpdatedAt: disconnectedAt.Add(-time.Minute),
 	}
 	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{active}, current: active}
-	hub := NewHub(db, nil)
+	hub := newTaskRecoveryTestHub(db)
+	deliveries := 0
+	hub.observeAgentPushTaskStatus(active)
+	hub.agentPush.observeVisibleMessage(7, 42, &ServerMessage{Data: &MsgServerData{
+		Topic: active.TopicID, SeqID: 1, Type: "text", Content: "partial answer",
+	}}, func() bool { deliveries++; return true })
 
 	hub.recoverDisconnectedBotTasks(42, disconnectedAt, hub.botConnectionEpoch(42))
 
@@ -183,6 +261,9 @@ func TestRecoverDisconnectedBotTasksMarksOldActiveRunStale(t *testing.T) {
 	}
 	if db.upserts[0].State != "stale" || db.upserts[0].RunID != "run-old" {
 		t.Fatalf("recovered status = %+v", db.upserts[0])
+	}
+	if deliveries != 1 {
+		t.Fatalf("recovery terminal push deliveries = %d, want 1", deliveries)
 	}
 }
 
@@ -196,10 +277,12 @@ func TestRecoverDisconnectedBotTasksLeavesReconnectedBotRunning(t *testing.T) {
 		UpdatedAt: disconnectedAt.Add(-time.Minute),
 	}
 	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{active}, current: active}
-	hub := NewHub(db, nil)
+	hub := newTaskRecoveryTestHub(db)
+	hub.mu.Lock()
 	hub.clients[42] = map[*Client]struct{}{
 		&Client{uid: 42, accountType: types.AccountBot}: {},
 	}
+	hub.mu.Unlock()
 
 	hub.recoverDisconnectedBotTasks(42, disconnectedAt, hub.botConnectionEpoch(42))
 
@@ -228,7 +311,7 @@ func TestRecoverDisconnectedBotTasksDoesNotOverwriteNewerRun(t *testing.T) {
 		active:  []*types.ConversationTaskStatus{candidate},
 		current: current,
 	}
-	hub := NewHub(db, nil)
+	hub := newTaskRecoveryTestHub(db)
 
 	hub.recoverDisconnectedBotTasks(42, disconnectedAt, hub.botConnectionEpoch(42))
 
@@ -248,8 +331,8 @@ func TestRecoverDisconnectedBotTasksSkipsBotOnlineElsewhere(t *testing.T) {
 	}
 	shared := newSharedMemoryRuntimeState()
 	dbA := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{active}, current: active}
-	hubA := NewHubWithRuntime(dbA, nil, shared, "node-a")
-	hubB := NewHubWithRuntime(nil, nil, shared, "node-b")
+	hubA := newTaskRecoveryTestHubWithRuntime(dbA, shared, "node-a")
+	hubB := newTaskRecoveryTestHubWithRuntime(nil, shared, "node-b")
 
 	// The bot disconnects from node A and reconnects to node B.
 	if _, err := hubB.bodyLeases.acquire(42, "body-b", "conn-b"); err != nil {
@@ -273,7 +356,7 @@ func TestRecoverDisconnectedBotTasksRunsWhenOfflineEverywhere(t *testing.T) {
 	}
 	shared := newSharedMemoryRuntimeState()
 	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{active}, current: active}
-	hub := NewHubWithRuntime(db, nil, shared, "node-a")
+	hub := newTaskRecoveryTestHubWithRuntime(db, shared, "node-a")
 
 	hub.recoverDisconnectedBotTasks(42, disconnectedAt, hub.botConnectionEpoch(42))
 
@@ -294,8 +377,8 @@ func TestRecoverDisconnectedBotTasksSkipsOlderConnectionGeneration(t *testing.T)
 	// Both nodes share the same generation store, so a bump on node B is visible
 	// to node A (cluster-wide fencing), exactly like a shared database.
 	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{active}, current: active}
-	hubA := NewHub(db, nil)
-	hubB := NewHub(db, nil)
+	hubA := newTaskRecoveryTestHub(db)
+	hubB := newTaskRecoveryTestHub(db)
 
 	// Disconnect A: snapshot the generation at that moment.
 	oldGeneration := hubA.botConnectionEpoch(42)
@@ -325,7 +408,7 @@ func TestRecoverDisconnectedBotTasksRunsForCurrentGeneration(t *testing.T) {
 		UpdatedAt: disconnectedAt.Add(-time.Minute),
 	}
 	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{active}, current: active}
-	hub := NewHub(db, nil)
+	hub := newTaskRecoveryTestHub(db)
 
 	generation := hub.botConnectionEpoch(42)
 	hub.recoverDisconnectedBotTasksIfSameGeneration(42, disconnectedAt, generation)
@@ -351,8 +434,8 @@ func TestRecoverDisconnectedBotTasksCrossNodeGenerationBumpedElsewhere(t *testin
 	}
 	shared := newSharedMemoryRuntimeState()
 	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{active}, current: active}
-	hubA := NewHubWithRuntime(db, nil, shared, "node-a")
-	hubB := NewHubWithRuntime(db, nil, shared, "node-b")
+	hubA := newTaskRecoveryTestHubWithRuntime(db, shared, "node-a")
+	hubB := newTaskRecoveryTestHubWithRuntime(db, shared, "node-b")
 
 	// Disconnect 1 on node A: snapshot generation 0.
 	oldGeneration := hubA.botConnectionEpoch(42)
@@ -402,7 +485,7 @@ func TestRegisterClientRejectsBotWhenGenerationBumpFails(t *testing.T) {
 	if accepted {
 		t.Fatalf("bot connection accepted despite durable generation bump failure")
 	}
-	if len(hub.clients[42]) != 0 {
+	if len(hub.getClients(42)) != 0 {
 		t.Fatalf("rejected bot left a registered client")
 	}
 	if db.generation != 0 {
@@ -437,7 +520,7 @@ func TestRegisterClientBumpsDurableGenerationBeforeAccept(t *testing.T) {
 	if hub.botConnectionEpoch(42) != 1 {
 		t.Fatalf("botConnectionEpoch after accept = %d, want 1", hub.botConnectionEpoch(42))
 	}
-	if len(hub.clients[42]) != 1 {
+	if len(hub.getClients(42)) != 1 {
 		t.Fatalf("accepted bot not registered")
 	}
 }
@@ -452,7 +535,12 @@ func TestConversationTaskReaperMarksExpiredOfflineRunStale(t *testing.T) {
 		UpdatedAt: now.Add(-10 * time.Minute),
 	}
 	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{candidate}, current: candidate}
-	hub := NewHub(db, nil)
+	hub := newTaskRecoveryTestHub(db)
+	deliveries := 0
+	hub.observeAgentPushTaskStatus(candidate)
+	hub.agentPush.observeVisibleMessage(7, 42, &ServerMessage{Data: &MsgServerData{
+		Topic: candidate.TopicID, SeqID: 1, Type: "text", Content: "partial answer",
+	}}, func() bool { deliveries++; return true })
 
 	hub.recoverStaleDisconnectedBotTasks(now)
 
@@ -461,6 +549,9 @@ func TestConversationTaskReaperMarksExpiredOfflineRunStale(t *testing.T) {
 	}
 	if db.upserts[0].State != "stale" || db.upserts[0].RunID != "run-expired" {
 		t.Fatalf("reaped status = %+v", db.upserts[0])
+	}
+	if deliveries != 1 {
+		t.Fatalf("reaper terminal push deliveries = %d, want 1", deliveries)
 	}
 }
 
@@ -474,10 +565,12 @@ func TestConversationTaskReaperSkipsBotStillOnlineLocally(t *testing.T) {
 		UpdatedAt: now.Add(-10 * time.Minute),
 	}
 	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{candidate}, current: candidate}
-	hub := NewHub(db, nil)
+	hub := newTaskRecoveryTestHub(db)
+	hub.mu.Lock()
 	hub.clients[42] = map[*Client]struct{}{
 		&Client{uid: 42, accountType: types.AccountBot}: {},
 	}
+	hub.mu.Unlock()
 
 	hub.recoverStaleDisconnectedBotTasks(now)
 
@@ -498,7 +591,7 @@ func TestConversationTaskReaperSkipsRunNewerThanCutoff(t *testing.T) {
 		UpdatedAt: now.Add(30 * time.Second),
 	}
 	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{candidate}, current: candidate}
-	hub := NewHub(db, nil)
+	hub := newTaskRecoveryTestHub(db)
 
 	hub.recoverStaleDisconnectedBotTasks(now)
 
@@ -518,7 +611,7 @@ func TestConversationTaskReaperSkipsBotOnlineElsewhere(t *testing.T) {
 	}
 	shared := newSharedMemoryRuntimeState()
 	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{candidate}, current: candidate}
-	hubB := NewHubWithRuntime(nil, nil, shared, "node-b")
+	hubB := newTaskRecoveryTestHubWithRuntime(nil, shared, "node-b")
 
 	// Establish the remote lease before starting node A. NewHubWithRuntime starts
 	// an immediate background sweep, so creating node A first makes this test race
@@ -544,7 +637,7 @@ func TestConversationTaskReaperRetriesAfterListError(t *testing.T) {
 		UpdatedAt: now.Add(-10 * time.Minute),
 	}
 	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{candidate}, current: candidate}
-	hub := NewHub(db, nil)
+	hub := newTaskRecoveryTestHub(db)
 
 	// First sweep fails transiently (e.g. DB hiccup): nothing reaped.
 	db.listErr = fmt.Errorf("transient db error")

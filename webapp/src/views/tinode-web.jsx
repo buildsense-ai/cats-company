@@ -61,9 +61,10 @@ import {
   isLiquidThemeUnlocked,
   normalizeTheme,
   saveLiquidThemeUnlock,
+  syncThemeColor,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
-import { Cloud, Download, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { Cloud, Download, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 import '../css/catsco-liquid-green.css';
@@ -306,6 +307,7 @@ function TinodeWebApp() {
     } else {
       delete document.documentElement.dataset.liquidVariant;
     }
+    syncThemeColor(theme);
     localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
@@ -1002,37 +1004,37 @@ function TinodeWebApp() {
             <span className="catsco-brand-mark" aria-hidden="true" />
             <span className="catsco-brand-name">CatsCo</span>
           </div>
-          <button
-            className="v3-sidebar-collapse-btn"
-            type="button"
-            onClick={toggleAppSidebar}
-            aria-label={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
-            title={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
-          >
-            {appSidebarCollapsed ? (
-              <>
-                <span className="catsco-brand-mark v3-collapsed-brand-icon" aria-hidden="true" />
-                <PanelLeftClose size={18} className="v3-collapsed-expand-icon" aria-hidden="true" />
-              </>
-            ) : <PanelLeftClose size={18} />}
-          </button>
+          <div className="v3-sidebar-header-actions">
+            {!appSidebarCollapsed && (
+              <button
+                className="v3-sidebar-collapse-btn v3-sidebar-header-search-btn"
+                type="button"
+                onClick={() => setSearchOpen(true)}
+                aria-label="打开全局搜索"
+                aria-keyshortcuts="Control+K Meta+K"
+                title="搜索"
+              >
+                <Search size={18} aria-hidden="true" />
+              </button>
+            )}
+            <button
+              className="v3-sidebar-collapse-btn"
+              type="button"
+              onClick={toggleAppSidebar}
+              aria-label={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
+              title={appSidebarCollapsed ? '展开左侧栏' : '收起左侧栏'}
+            >
+              {appSidebarCollapsed ? (
+                <>
+                  <span className="catsco-brand-mark v3-collapsed-brand-icon" aria-hidden="true" />
+                  <PanelLeftClose size={18} className="v3-collapsed-expand-icon" aria-hidden="true" />
+                </>
+              ) : <PanelLeftClose size={18} />}
+            </button>
+          </div>
         </div>
         
         <div className="cc-sidebar-content-shell">
-          <button
-            type="button"
-            className={`cc-sidebar-skillhub-entry${activeView === 'skillhub' ? ' active' : ''}`}
-            onClick={() => {
-              setActiveView('skillhub');
-              setMobileSidebarOpen(false);
-            }}
-            aria-label="打开 SkillHub"
-            aria-current={activeView === 'skillhub' ? 'page' : undefined}
-            title="SkillHub"
-          >
-            <Package size={17} />
-            <span>SkillHub</span>
-          </button>
           <SidebarContent
             activeTopic={activeTopic ? activeTopic.topicId : null}
             onSelectTopic={(topic) => {
@@ -1047,6 +1049,15 @@ function TinodeWebApp() {
             user={user}
             onlineUsers={onlineUsers}
             compact={appSidebarCollapsed}
+            additionalSidebarTools={(
+              <SkillHubSidebarButton
+                active={activeView === 'skillhub'}
+                onClick={() => {
+                  setActiveView('skillhub');
+                  setMobileSidebarOpen(false);
+                }}
+              />
+            )}
             onManageGroup={(group) => {
               setManagedGroup(group);
               setMobileSidebarOpen(false);
@@ -1236,11 +1247,16 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
             <Settings2 size={17} />
           </button>
         )}
-        {onOpenCloudArtifacts && (
-          <button type="button" className="v3-action-btn" onClick={onOpenCloudArtifacts} aria-label="打开产物" title="产物">
-            <Cloud size={17} />
-          </button>
-        )}
+        <button
+          type="button"
+          className="v3-action-btn v3-cloud-action"
+          onClick={onOpenCloudArtifacts}
+          disabled={!onOpenCloudArtifacts}
+          aria-label={onOpenCloudArtifacts ? '打开云文件' : '云文件，需要先进入 Agent 会话'}
+          title={onOpenCloudArtifacts ? '云文件' : '请先进入 Agent 会话'}
+        >
+          <Cloud size={17} aria-hidden="true" />
+        </button>
         <button type="button" className="v3-action-btn" onClick={onDownload} aria-label="下载桌面端">
           <Download size={17} />
         </button>
@@ -1252,7 +1268,7 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
 export { canOpenCloudArtifacts, describeModelApplyError, describeModelConfigRequestError, resolveDisplayedActiveAgent };
 
 function canOpenCloudArtifacts(activeTopic, activeAgent) {
-  return Boolean(activeAgent?.cloud_artifacts_enabled && activeTopic?.topicId);
+  return Boolean(Number(activeAgent?.uid || 0) > 0 && activeTopic?.topicId);
 }
 
 function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft) {
@@ -1297,6 +1313,7 @@ function SidebarContent({
   activeTopic,
   onSelectTopic,
   onOpenSearch,
+  additionalSidebarTools,
   onStartAgentTask,
   user,
   onlineUsers,
@@ -1308,12 +1325,29 @@ function SidebarContent({
       activeTopic={activeTopic}
       onSelectTopic={onSelectTopic}
       onOpenSearch={onOpenSearch}
+      additionalSidebarTools={additionalSidebarTools}
       onStartAgentTask={onStartAgentTask}
       user={user}
       onlineUsers={onlineUsers}
       compact={compact}
       onManageGroup={onManageGroup}
     />
+  );
+}
+
+function SkillHubSidebarButton({ active, onClick }) {
+  return (
+    <button
+      type="button"
+      className={`cc-sidebar-primary cc-sidebar-skillhub-entry${active ? ' active' : ''}`}
+      onClick={onClick}
+      aria-label="打开 SkillHub"
+      aria-current={active ? 'page' : undefined}
+      title="SkillHub"
+    >
+      <Package size={17} />
+      <span>SkillHub</span>
+    </button>
   );
 }
 

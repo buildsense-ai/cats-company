@@ -110,6 +110,7 @@ describe('ChatMessage rich file rendering', () => {
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     window.open = vi.fn();
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: false });
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: {
@@ -2172,6 +2173,7 @@ describe('ChatMessage rich file rendering', () => {
     const downloadLink = panel.querySelector('.v3-file-preview-actions a');
     expect(downloadLink.getAttribute('href')).toBe('/uploads/files/report.pdf?download=1');
     expect(downloadLink.getAttribute('download')).toBe('report.pdf');
+    expect(downloadLink.getAttribute('target')).toBe('_blank');
   });
 
   it('closes the file preview from its backdrop and the Escape key', async () => {
@@ -2578,6 +2580,40 @@ describe('ChatMessage rich file rendering', () => {
     expect(actions[1].getAttribute('href')).toBe('/uploads/files/20260715_f547bf132d510e621877d89214098db5.pdf?download=1');
     expect(actions[1].hasAttribute('download')).toBe(true);
     expect(actions[1].getAttribute('download')).toBe('【电商带货主播_广州 4-6K】何荧 25年应届生.pdf');
+    expect(actions[1].getAttribute('target')).toBe('_blank');
+  });
+
+  it('keeps CatsCo OSS downloads in the current context only in an installed PWA', async () => {
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: true });
+    const file = {
+      name: 'report.pdf',
+      url: '/uploads/files/report.pdf',
+      size: 2048,
+      mime_type: 'application/pdf',
+    };
+
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 71,
+            from_uid: 2,
+            content: '[文件] report.pdf',
+            content_blocks: [{ type: 'file', payload: file }],
+            created_at: '2026-06-09T00:00:00Z',
+          }}
+        />,
+      );
+      await flushAsync();
+    });
+
+    expect(container.querySelector('.v3-artifact-action[download]').getAttribute('target')).toBeNull();
+    await act(async () => {
+      Simulate.click(container.querySelector('.v3-artifact-main'));
+      await flushAsync();
+    });
+    expect(container.querySelector('.v3-file-preview-actions a[download]').getAttribute('target')).toBeNull();
+    expect(container.querySelector('.v3-file-preview-mobile-actions a[download]').getAttribute('target')).toBeNull();
   });
 
   it('renders MP4 attachments as image-sized thumbnails that open a video preview', async () => {

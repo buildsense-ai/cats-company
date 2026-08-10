@@ -486,6 +486,9 @@ export const api = {
   subscribePush: (subscription, registrationID, signal) => (
     request('POST', '/api/push/subscriptions', { ...subscription, registration_id: registrationID }, { signal })
   ),
+  sendPushTest: (registrationID) => (
+    request('POST', '/api/push/test', { registration_id: registrationID })
+  ),
   unsubscribePush: (endpoint, authToken = token, registrationID = getPushRegistrationID()) => {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), PUSH_UNSUBSCRIBE_TIMEOUT_MS);
@@ -494,6 +497,16 @@ export const api = {
       signal: controller.signal,
     }).finally(() => window.clearTimeout(timer));
   },
+  unsubscribeAllPushRegistrations: (endpoint) => request(
+    'DELETE',
+    '/api/push/subscriptions',
+    { endpoint, all_registrations: true },
+  ),
+  unsubscribePushRegistration: (registrationID = getPushRegistrationID()) => request(
+    'DELETE',
+    '/api/push/subscriptions',
+    { registration_id: registrationID },
+  ),
   updateMe: (displayName, avatarUrl) =>
     request('POST', '/api/me/update', { display_name: displayName, avatar_url: avatarUrl }),
 
@@ -692,16 +705,33 @@ export const api = {
   // Bot management
   getMyBots: () => request('GET', '/api/bots'),
   getBotAPIKey: (uid) => request('GET', `/api/bots/api-key?uid=${uid}`),
-  createBot: ({ username, display_name }, deployToCloud = false) =>
-    request('POST', deployToCloud ? '/api/bots/deploy' : '/api/bots', { username, display_name }),
+  createBot: ({ username, display_name }) =>
+    request('POST', '/api/bots', { username, display_name }),
+
+  // Cloud virtual employee control plane (云托管)
+  getCloudWorkers: () => request('GET', '/api/cloud-workers'),
+  getCloudWorkerMeta: () => request('GET', '/api/cloud-workers/meta'),
+  createCloudWorker: ({ username, display_name }) =>
+    request('POST', '/api/cloud-workers', { username, display_name }),
+  rollbackCloudWorker: (name, payload = {}) =>
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback`, payload),
+  resetCloudWorker: (name, payload = {}) =>
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/reset`, payload),
+  deleteCloudWorker: (name) =>
+    request('DELETE', `/api/cloud-workers/${encodeURIComponent(name)}`, {}),
   updateBot: (uid, { display_name, avatar_url }) =>
     request('PATCH', `/api/bots?uid=${uid}`, { display_name, avatar_url }),
   deleteBot: (uid) => request('DELETE', `/api/bots?uid=${uid}`),
   setBotVisibility: (uid, visibility) => request('PATCH', `/api/bots/visibility?uid=${uid}&v=${visibility}`),
+  setBotSkillsVisibility: (uid, visibility) => request(
+    'PATCH',
+    `/api/bots/skills-visibility?uid=${encodeURIComponent(uid)}&v=${encodeURIComponent(visibility)}`,
+  ),
   getBotModelConfig: (uid, { includeUsage = false } = {}) =>
     request('GET', `/api/bots/model-config?uid=${uid}${includeUsage ? '&include_usage=1' : ''}`),
   updateBotModelConfig: (uid, modelConfig) => request('PATCH', `/api/bots/model-config?uid=${uid}`, modelConfig),
   getBotDefinitionSkills: (uid) => request('GET', `/api/bots/definition/skills?uid=${encodeURIComponent(uid)}`),
+  getAgentSkills: (uid) => request('GET', `/api/agents/skills?uid=${encodeURIComponent(uid)}`),
   updateBotDefinitionSkills: (uid, revision, skills) => request(
     'PATCH',
     `/api/bots/definition/skills?uid=${encodeURIComponent(uid)}`,

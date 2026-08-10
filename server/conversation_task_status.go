@@ -114,20 +114,25 @@ func normalizeConversationTaskStatus(uid int64, topicID string, payload *normali
 	}
 
 	now := time.Now().UTC()
+	var eventUpdatedAt time.Time
+	if publisherUpdatedAt := firstTaskStatusTime(body, payload.Metadata, "updated_at", "updatedAt"); publisherUpdatedAt != nil {
+		eventUpdatedAt = store.BoundConversationTaskStatusEventTime(*publisherUpdatedAt, now)
+	}
 	expiresAt := firstTaskStatusTime(body, payload.Metadata, "expires_at", "expiresAt")
 	if expiresAt == nil && (state == "running" || state == "waiting") {
 		defaultExpiry := now.Add(defaultActiveTaskStatusTTL)
 		expiresAt = &defaultExpiry
 	}
 	status := &types.ConversationTaskStatus{
-		TopicID:   topicID,
-		RunID:     truncateUTF8(firstTaskStatusString(body, payload.Metadata, "run_id", "runId", "run"), maxTaskRunIDLength),
-		State:     state,
-		Summary:   truncateUTF8(firstTaskStatusString(body, payload.Metadata, "summary", "text", "message"), maxTaskSummaryLength),
-		Error:     truncateUTF8(firstTaskStatusString(body, payload.Metadata, "error", "error_message", "errorMessage"), maxTaskErrorLength),
-		SourceUID: uid,
-		UpdatedAt: now,
-		ExpiresAt: expiresAt,
+		TopicID:        topicID,
+		RunID:          truncateUTF8(firstTaskStatusString(body, payload.Metadata, "run_id", "runId", "run"), maxTaskRunIDLength),
+		State:          state,
+		Summary:        truncateUTF8(firstTaskStatusString(body, payload.Metadata, "summary", "text", "message"), maxTaskSummaryLength),
+		Error:          truncateUTF8(firstTaskStatusString(body, payload.Metadata, "error", "error_message", "errorMessage"), maxTaskErrorLength),
+		SourceUID:      uid,
+		UpdatedAt:      now,
+		EventUpdatedAt: eventUpdatedAt,
+		ExpiresAt:      expiresAt,
 	}
 	return status, nil
 }
@@ -350,6 +355,9 @@ func (h *Hub) recoverDisconnectedBotTasks(sourceUID int64, disconnectedAt time.T
 		return
 	}
 	for _, candidate := range statuses {
+		if candidate == nil {
+			continue
+		}
 		recovered, updated, err := recoveryStore.MarkConversationTaskStatusStaleIfUnchanged(
 			candidate.TopicID, sourceUID, candidate.RunID, disconnectedAt, generation)
 		if err != nil {
@@ -360,10 +368,27 @@ func (h *Hub) recoverDisconnectedBotTasks(sourceUID int64, disconnectedAt time.T
 			// A concurrent reconnect or a newer run already won the race; do not fanout.
 			continue
 		}
+		h.observeAgentPushTaskStatus(recoveredTaskSourceStatus(candidate, time.Now().UTC()))
 		h.observeGroupAgentTaskStatus(recovered)
 		h.fanoutConversationTaskStatus(sourceUID, recovered, nil)
 		log.Printf("task status recovery: marked stale uid=%d topic=%s run=%s", sourceUID, candidate.TopicID, candidate.RunID)
 	}
+}
+
+func recoveredTaskSourceStatus(candidate *types.ConversationTaskStatus, recoveredAt time.Time) *types.ConversationTaskStatus {
+	if candidate == nil {
+		return nil
+	}
+	recovered := *candidate
+	recovered.State = "stale"
+	recovered.Summary = "机器人连接中断，任务已自动中止，可重新发送"
+	recovered.Error = "bot disconnected before terminal task status"
+	recovered.ExpiresAt = nil
+	recovered.UpdatedAt = recoveredAt
+	if recovered.EventUpdatedAt.Before(recoveredAt) {
+		recovered.EventUpdatedAt = recoveredAt
+	}
+	return &recovered
 }
 
 // runConversationTaskReaper periodically re-scans durable active task rows and
@@ -420,7 +445,7 @@ func (h *Hub) recoverStaleDisconnectedBotTasks(cutoff time.Time) {
 		return
 	}
 	for _, candidate := range statuses {
-		if candidate.SourceUID <= 0 {
+		if candidate == nil || candidate.SourceUID <= 0 {
 			continue
 		}
 		// Local clients and a cluster-wide lease held by another node both mean
@@ -441,6 +466,7 @@ func (h *Hub) recoverStaleDisconnectedBotTasks(cutoff time.Time) {
 			// A concurrent reconnect or a newer run already won the race; do not fanout.
 			continue
 		}
+		h.observeAgentPushTaskStatus(recoveredTaskSourceStatus(candidate, time.Now().UTC()))
 		h.observeGroupAgentTaskStatus(recovered)
 		h.fanoutConversationTaskStatus(candidate.SourceUID, recovered, nil)
 		log.Printf("task status reaper: marked stale uid=%d topic=%s run=%s", candidate.SourceUID, candidate.TopicID, candidate.RunID)

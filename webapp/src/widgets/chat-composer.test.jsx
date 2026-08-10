@@ -109,6 +109,18 @@ describe('ChatComposer', () => {
     expect(notices.nextElementSibling).toBe(row);
   });
 
+  it('marks the composer busy while an Agent reply is in progress', async () => {
+    await renderComposer({ agentReplyActive: true });
+
+    const box = container.querySelector('.v3-composer-box');
+    expect(box.classList.contains('is-agent-reply-active')).toBe(true);
+    expect(box.getAttribute('aria-busy')).toBe('true');
+
+    await renderComposer({ agentReplyActive: false });
+    expect(box.classList.contains('is-agent-reply-active')).toBe(false);
+    expect(box.getAttribute('aria-busy')).toBe('false');
+  });
+
   it('uses the same action slot for stop while working and send after input', async () => {
     const onSend = vi.fn();
     const onStop = vi.fn();

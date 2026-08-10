@@ -394,7 +394,14 @@ func (h *BotDefinitionHandler) definitionResponse(
 			"revision":   int64(0),
 		}, nil
 	}
-	model := record.Definition.Model
+	model, configured := botDefinitionModelForResponse(record)
+	if !configured {
+		return map[string]interface{}{
+			"uid":        botUID,
+			"configured": false,
+			"revision":   int64(0),
+		}, nil
+	}
 	modelResponse := map[string]interface{}{"kind": model.Kind}
 	if model.Kind == botModelKindCustom {
 		modelResponse["protocol"] = model.Protocol
@@ -424,6 +431,8 @@ func (h *BotDefinitionHandler) definitionResponse(
 				modelResponse["apiKeyHint"] = secretHint(custom.APIKey)
 			}
 		}
+	} else if model.Kind == botModelKindLocal {
+		modelResponse["modelId"] = botModelKindLocal
 	} else {
 		modelResponse["modelId"] = model.ModelID
 		if model.ReasoningEffort != "" {
@@ -461,6 +470,32 @@ func (h *BotDefinitionHandler) definitionResponse(
 		response["management_enabled"] = h.modelConfig.managementEnabled(ownerUID)
 	}
 	return response, nil
+}
+
+// Historical local handoffs can exist as an empty canonical model with a
+// non-zero runtime revision. Normalize them at the API boundary without
+// mutating storage; a truly untouched revision-zero record remains
+// unconfigured so the device can bootstrap its current local model.
+func botDefinitionModelForResponse(record *types.BotDefinitionRecord) (types.BotDefinitionModel, bool) {
+	model := record.Definition.Model
+	kind := strings.ToLower(strings.TrimSpace(model.Kind))
+	modelID := strings.ToLower(strings.TrimSpace(model.ModelID))
+
+	if kind == botModelKindLocal || modelID == botModelKindLocal {
+		return types.BotDefinitionModel{Kind: botModelKindLocal, ModelID: botModelKindLocal}, true
+	}
+	if kind == "" && modelID == "" {
+		appliedKind := strings.ToLower(strings.TrimSpace(record.Runtime.AppliedKind))
+		appliedModelID := strings.ToLower(strings.TrimSpace(record.Runtime.AppliedModelID))
+		if record.Runtime.DesiredRevision > 0 || appliedKind == botModelKindLocal || appliedModelID == botModelKindLocal {
+			return types.BotDefinitionModel{Kind: botModelKindLocal, ModelID: botModelKindLocal}, true
+		}
+		return types.BotDefinitionModel{}, false
+	}
+	if kind == "" && modelID != "" {
+		model.Kind = botModelKindCatalog
+	}
+	return model, true
 }
 
 func validateBotPromptDefinition(prompt types.BotPromptDefinition) error {

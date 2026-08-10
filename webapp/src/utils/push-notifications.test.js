@@ -1,13 +1,16 @@
 import {
   canUsePush,
   ensurePushSubscription,
+  readPushEnabled,
   serializePushSubscription,
   shouldOfferPush,
   urlBase64ToUint8Array,
+  writePushEnabled,
 } from './push-notifications';
 
 describe('push notification helpers', () => {
   beforeEach(() => {
+    localStorage.clear();
     Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true });
     Object.defineProperty(window, 'Notification', {
       configurable: true,
@@ -30,6 +33,15 @@ describe('push notification helpers', () => {
       configurable: true,
       value: vi.fn(() => ({ matches: false })),
     });
+  });
+
+  test('stores an explicit notification preference per account', () => {
+    expect(readPushEnabled('user:1')).toBe(true);
+
+    writePushEnabled('user:1', false);
+
+    expect(readPushEnabled('user:1')).toBe(false);
+    expect(readPushEnabled('user:2')).toBe(true);
   });
 
   test('converts a URL-safe VAPID key to bytes', () => {

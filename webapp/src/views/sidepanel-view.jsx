@@ -10,7 +10,7 @@ import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
 import Avatar from '../widgets/avatar';
 import { useFeedback } from '../components/feedback-system';
 import { formatSidebarTime } from '../utils/sidebar-time';
-import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, MoreHorizontal, UserX, Ban, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
+import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
 const DEFAULT_COLLAPSED_SECTIONS = { conversations: false, contacts: false, projects: false };
@@ -266,6 +266,7 @@ export default function ChatListView({
   activeTopic,
   onSelectTopic,
   onOpenSearch,
+  additionalSidebarTools = null,
   user,
   onlineUsers,
   compact = false,
@@ -323,7 +324,9 @@ export default function ChatListView({
   const [historyNameDraft, setHistoryNameDraft] = useState('');
   const [renamingTopicId, setRenamingTopicId] = useState('');
   const [sidebarTimeNowMs, setSidebarTimeNowMs] = useState(() => Date.now());
-  const [compactTaskHint, setCompactTaskHint] = useState(null);
+  const [compactHistoryPanel, setCompactHistoryPanel] = useState(null);
+  const [compactHistoryTooltip, setCompactHistoryTooltip] = useState(null);
+  const compactHistoryCloseTimerRef = useRef(null);
   const justHiddenHistoryRef = useRef('');
   const activeTopicRef = useRef(activeTopic);
   const userUidRef = useRef(user?.uid);
@@ -1351,6 +1354,61 @@ export default function ChatListView({
     isHistoryTask(chat)
     && (chat.isGroup || !hiddenHistoryIds.has(String(chat.id)))
   ))).slice(0, 12);
+
+  useEffect(() => () => {
+    if (compactHistoryCloseTimerRef.current) clearTimeout(compactHistoryCloseTimerRef.current);
+  }, []);
+
+  const openCompactHistory = (trigger) => {
+    if (compactHistoryCloseTimerRef.current) clearTimeout(compactHistoryCloseTimerRef.current);
+    setCompactHistoryTooltip(null);
+    const rect = trigger.getBoundingClientRect();
+    const viewportGutter = 8;
+    const width = Math.min(232, Math.max(0, window.innerWidth - viewportGutter * 2));
+    const estimatedHeight = Math.min(420, Math.max(76, compactChats.length * 40 + 48));
+    setCompactHistoryPanel({
+      left: Math.max(
+        viewportGutter,
+        Math.min(rect.right + 8, window.innerWidth - width - viewportGutter),
+      ),
+      top: Math.min(Math.max(8, rect.top), Math.max(8, window.innerHeight - estimatedHeight - 8)),
+      width,
+    });
+  };
+
+  const scheduleCompactHistoryClose = () => {
+    if (compactHistoryCloseTimerRef.current) clearTimeout(compactHistoryCloseTimerRef.current);
+    setCompactHistoryTooltip(null);
+    compactHistoryCloseTimerRef.current = setTimeout(() => setCompactHistoryPanel(null), 120);
+  };
+
+  const showCompactHistoryTooltip = (event, chat) => {
+    const label = event.currentTarget.querySelector('.cc-compact-history-label');
+    if (!label || label.scrollWidth <= label.clientWidth + 1) {
+      setCompactHistoryTooltip(null);
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const viewportGutter = 8;
+    const tooltipGap = 8;
+    const availableRight = window.innerWidth - rect.right - tooltipGap - viewportGutter;
+    const placeRight = availableRight >= 180;
+    setCompactHistoryTooltip({
+      topicId: chat.id,
+      name: chat.name,
+      style: placeRight ? {
+        left: rect.right + tooltipGap,
+        top: Math.min(window.innerHeight - 24, Math.max(24, rect.top + rect.height / 2)),
+        maxWidth: Math.min(320, availableRight),
+      } : {
+        left: viewportGutter,
+        top: Math.min(window.innerHeight - 24, rect.bottom + tooltipGap),
+        maxWidth: Math.max(0, window.innerWidth - viewportGutter * 2),
+        transform: 'none',
+      },
+    });
+  };
 
   const selectConversation = (chat) => {
     rememberDismissedTaskStatus(chat.id, chat.taskStatus);
@@ -2509,54 +2567,80 @@ export default function ChatListView({
           >
             <Plus size={20} />
           </button>
-          <div className="cc-compact-conversations" aria-label="最近任务">
-            {compactChats.map((chat) => {
-              const visibleStatus = taskStatusForDisplay(chat);
-              return (
+          <button
+            type="button"
+            className="cc-compact-tool"
+            onClick={onOpenSearch}
+            aria-label="打开全局搜索"
+            aria-keyshortcuts="Control+K Meta+K"
+            title="搜索"
+          >
+            <Search size={18} aria-hidden="true" />
+          </button>
+          {additionalSidebarTools}
+          <button
+            type="button"
+            className="cc-compact-tool cc-compact-history-trigger"
+            aria-label="历史任务"
+            aria-haspopup="menu"
+            aria-expanded={Boolean(compactHistoryPanel)}
+            title="历史任务"
+            onClick={(event) => compactHistoryPanel ? setCompactHistoryPanel(null) : openCompactHistory(event.currentTarget)}
+            onPointerEnter={(event) => openCompactHistory(event.currentTarget)}
+            onPointerLeave={scheduleCompactHistoryClose}
+            onFocus={(event) => openCompactHistory(event.currentTarget)}
+          >
+            <History size={18} aria-hidden="true" />
+          </button>
+          {compactHistoryPanel && createPortal(
+            <div
+              className="cc-compact-history-panel"
+              role="menu"
+              aria-label="历史任务列表"
+              style={compactHistoryPanel}
+              onPointerEnter={() => {
+                if (compactHistoryCloseTimerRef.current) clearTimeout(compactHistoryCloseTimerRef.current);
+              }}
+              onPointerLeave={scheduleCompactHistoryClose}
+              onScroll={() => setCompactHistoryTooltip(null)}
+            >
+              <div className="cc-compact-history-heading">历史任务</div>
+              {compactChats.length === 0 ? (
+                <div className="cc-compact-history-empty">暂无历史任务</div>
+              ) : compactChats.map((chat) => (
                 <button
                   type="button"
+                  role="menuitem"
                   key={chat.id}
-                  className={`cc-compact-conversation${activeTopic === chat.id ? ' active' : ''}`}
+                  className={`cc-compact-history-item${activeTopic === chat.id ? ' active' : ''}`}
                   onClick={() => {
-                    setCompactTaskHint(null);
+                    setCompactHistoryTooltip(null);
+                    setCompactHistoryPanel(null);
                     selectConversation(chat);
                   }}
-                  onPointerEnter={(event) => {
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    setCompactTaskHint({
-                      id: chat.id,
-                      name: chat.name,
-                      left: rect.right + 8,
-                      top: rect.top + (rect.height / 2),
-                    });
-                  }}
-                  onPointerLeave={() => setCompactTaskHint(null)}
-                  onFocus={(event) => {
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    setCompactTaskHint({
-                      id: chat.id,
-                      name: chat.name,
-                      left: rect.right + 8,
-                      top: rect.top + (rect.height / 2),
-                    });
-                  }}
-                  onBlur={() => setCompactTaskHint(null)}
                   aria-label={`打开任务：${chat.name}`}
+                  aria-describedby={compactHistoryTooltip?.topicId === chat.id ? 'cc-compact-history-tooltip' : undefined}
+                  onMouseEnter={(event) => showCompactHistoryTooltip(event, chat)}
+                  onMouseLeave={() => setCompactHistoryTooltip(null)}
+                  onFocus={(event) => showCompactHistoryTooltip(event, chat)}
+                  onBlur={() => setCompactHistoryTooltip(null)}
                 >
-                  <Avatar name={chat.name} src={chat.avatar_url} size={32} />
-                  <CompactTaskStatusIndicator status={visibleStatus} />
+                  <span className="cc-compact-history-label">{chat.name}</span>
+                  {activeTopic === chat.id && <Check size={14} aria-hidden="true" />}
                 </button>
-              );
-            })}
-          </div>
-          {compactTaskHint && createPortal(
-            <span
-              className="cc-compact-task-hint"
-              style={{ left: compactTaskHint.left, top: compactTaskHint.top }}
-              aria-hidden="true"
+              ))}
+            </div>,
+            document.body,
+          )}
+          {compactHistoryPanel && compactHistoryTooltip && createPortal(
+            <div
+              id="cc-compact-history-tooltip"
+              className="cc-compact-history-tooltip"
+              role="tooltip"
+              style={compactHistoryTooltip.style}
             >
-              {compactTaskHint.name}
-            </span>,
+              {compactHistoryTooltip.name}
+            </div>,
             document.body,
           )}
         </nav>
@@ -2567,16 +2651,7 @@ export default function ChatListView({
           <Plus size={17} />
           <span>新建任务</span>
         </button>
-        <button
-          type="button"
-          className="cc-sidebar-search cc-sidebar-search-trigger"
-          onClick={onOpenSearch}
-          aria-label="打开全局搜索"
-          aria-keyshortcuts="Control+K Meta+K"
-        >
-          <Search size={15} aria-hidden="true" />
-          <span className="cc-sidebar-search-label">搜索</span>
-        </button>
+        {additionalSidebarTools}
       </div>}
 
       {!compact && <div ref={sidebarListRef} className="v3-chat-list">
