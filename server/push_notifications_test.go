@@ -1666,6 +1666,112 @@ func TestAgentPushMessageBeforeStatusWaitsForMatchingTerminal(t *testing.T) {
 	}
 }
 
+func TestAgentPushNotificationUsesCompleteFinalResponseAndExcludesProgress(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-segmented-final", State: "running", SourceUID: 7,
+	})
+
+	deliveredBodies := make([]string, 0, 1)
+	observe := func(seq int, body string, metadata map[string]interface{}) {
+		msg := &ServerMessage{Data: &MsgServerData{
+			Topic: "p2p_7_8", SeqID: seq, Type: "text", Content: body, Metadata: metadata,
+		}}
+		if !coordinator.observeVisibleMessageBody(8, 7, msg, body, func(notificationBody string) bool {
+			deliveredBodies = append(deliveredBodies, notificationBody)
+			return true
+		}) {
+			t.Fatalf("message %d was not retained by the coordinator", seq)
+		}
+	}
+
+	observe(1, "我先检查一下现有实现。", map[string]interface{}{
+		"run_id": "run-segmented-final", "response_id": "progress-1", "response_kind": "progress",
+		"segment_index": 0, "segment_count": 1,
+	})
+	for index, body := range []string{"第一部分结论。", "第二部分证据。", "第三部分建议。"} {
+		observe(index+2, body, map[string]interface{}{
+			"run_id": "run-segmented-final", "response_id": "final-1", "response_kind": "final",
+			"segment_index": index, "segment_count": 3,
+		})
+	}
+
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-segmented-final", State: "completed", SourceUID: 7,
+	})
+
+	if len(deliveredBodies) != 1 {
+		t.Fatalf("delivered bodies = %q, want exactly one notification", deliveredBodies)
+	}
+	if got, want := deliveredBodies[0], "第一部分结论。 第二部分证据。 第三部分建议。"; got != want {
+		t.Fatalf("notification body = %q, want %q", got, want)
+	}
+}
+
+func TestAgentPushSegmentedFinalWaitsForAllSegmentsAfterEarlyTerminal(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-terminal-first-segments", State: "completed", SourceUID: 7,
+	})
+
+	deliveredBodies := make([]string, 0, 1)
+	observe := func(seq, index int, body string) {
+		msg := &ServerMessage{Data: &MsgServerData{
+			Topic: "p2p_7_8", SeqID: seq, Type: "text", Content: body,
+			Metadata: map[string]interface{}{
+				"run_id": "run-terminal-first-segments", "response_id": "final-1", "response_kind": "final",
+				"segment_index": index, "segment_count": 3,
+			},
+		}}
+		coordinator.observeVisibleMessageBody(8, 7, msg, body, func(notificationBody string) bool {
+			deliveredBodies = append(deliveredBodies, notificationBody)
+			return true
+		})
+	}
+
+	observe(1, 2, "第三段。")
+	observe(2, 0, "第一段。")
+	if len(deliveredBodies) != 0 {
+		t.Fatalf("incomplete response delivered early: %q", deliveredBodies)
+	}
+	observe(3, 1, "第二段。")
+
+	if len(deliveredBodies) != 1 || deliveredBodies[0] != "第一段。 第二段。 第三段。" {
+		t.Fatalf("delivered bodies = %q, want one ordered complete response", deliveredBodies)
+	}
+}
+
+func TestAgentPushLateProgressDoesNotReplaceFinalResponse(t *testing.T) {
+	coordinator := newAgentPushTurnCoordinator()
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-late-progress", State: "running", SourceUID: 7,
+	})
+	deliveredBodies := make([]string, 0, 1)
+	observe := func(seq int, body, responseID, responseKind string) {
+		msg := &ServerMessage{Data: &MsgServerData{
+			Topic: "p2p_7_8", SeqID: seq, Type: "text", Content: body,
+			Metadata: map[string]interface{}{
+				"run_id": "run-late-progress", "response_id": responseID, "response_kind": responseKind,
+				"segment_index": 0, "segment_count": 1,
+			},
+		}}
+		coordinator.observeVisibleMessageBody(8, 7, msg, body, func(notificationBody string) bool {
+			deliveredBodies = append(deliveredBodies, notificationBody)
+			return true
+		})
+	}
+
+	observe(1, "最终结论。", "final-1", "final")
+	observe(2, "这是一条迟到的进度。", "progress-2", "progress")
+	coordinator.observeStatus(&types.ConversationTaskStatus{
+		TopicID: "p2p_7_8", RunID: "run-late-progress", State: "completed", SourceUID: 7,
+	})
+
+	if len(deliveredBodies) != 1 || deliveredBodies[0] != "最终结论。" {
+		t.Fatalf("delivered bodies = %q, want only the final response", deliveredBodies)
+	}
+}
+
 func TestAgentPushTerminalBeforeMessageDeliversExactlyOnce(t *testing.T) {
 	coordinator := newAgentPushTurnCoordinator()
 	coordinator.observeStatus(&types.ConversationTaskStatus{

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +13,8 @@ const (
 	agentPushTurnDedupTTL    = 10 * time.Minute
 	maxTrackedAgentPushTurns = 4096
 	maxActiveAgentPushTurns  = 1024
+	maxAgentPushResponses    = 16
+	maxAgentPushSegments     = 256
 )
 
 type agentPushTurnCoordinator struct {
@@ -51,6 +54,7 @@ type agentPushTurn struct {
 	superseded bool
 	updatedAt  time.Time
 	candidates map[int64]agentPushCandidate
+	responses  map[string]*agentPushResponse
 	expiresAt  time.Time
 	timer      *time.Timer
 }
@@ -62,8 +66,32 @@ type pendingAgentPushMessages struct {
 }
 
 type agentPushCandidate struct {
-	id      uint64
-	deliver func() bool
+	id       uint64
+	body     string
+	response *agentPushResponse
+	deliver  func(string) bool
+}
+
+type agentPushResponse struct {
+	segmentCount int
+	segments     map[int]string
+}
+
+func (response *agentPushResponse) complete() bool {
+	return response != nil && response.segmentCount > 0 && len(response.segments) == response.segmentCount
+}
+
+func (response *agentPushResponse) body() string {
+	if response == nil || response.segmentCount <= 0 {
+		return ""
+	}
+	segments := make([]string, 0, response.segmentCount)
+	for index := 0; index < response.segmentCount; index++ {
+		if segment := strings.TrimSpace(response.segments[index]); segment != "" {
+			segments = append(segments, segment)
+		}
+	}
+	return strings.Join(segments, " ")
 }
 
 func newAgentPushTurnCoordinator() *agentPushTurnCoordinator {
@@ -118,7 +146,7 @@ func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskS
 			c.mu.Unlock()
 			return
 		}
-		turn = &agentPushTurn{runID: runID, candidates: make(map[int64]agentPushCandidate)}
+		turn = newAgentPushTurn(runID)
 		c.trackedTurns[turnKey] = turn
 	}
 
@@ -249,24 +277,47 @@ func resetAgentPushTimer(timer **time.Timer, expiresAt time.Time, callback func(
 	*timer = time.AfterFunc(delay, callback)
 }
 
-func (c *agentPushTurnCoordinator) newCandidateLocked(deliver func() bool) agentPushCandidate {
+func newAgentPushTurn(runID string) *agentPushTurn {
+	return &agentPushTurn{
+		runID:      runID,
+		candidates: make(map[int64]agentPushCandidate),
+		responses:  make(map[string]*agentPushResponse),
+	}
+}
+
+func (c *agentPushTurnCoordinator) newCandidateLocked(body string, response *agentPushResponse, deliver func(string) bool) agentPushCandidate {
 	c.nextCandidate++
-	return agentPushCandidate{id: c.nextCandidate, deliver: deliver}
+	return agentPushCandidate{id: c.nextCandidate, body: body, response: response, deliver: deliver}
 }
 
 func candidateValues(candidates map[int64]agentPushCandidate) map[int64]agentPushCandidate {
 	values := make(map[int64]agentPushCandidate, len(candidates))
 	for recipientUID, candidate := range candidates {
-		values[recipientUID] = candidate
+		values[recipientUID] = snapshotAgentPushCandidate(candidate)
 	}
 	return values
+}
+
+func snapshotAgentPushCandidate(candidate agentPushCandidate) agentPushCandidate {
+	if candidate.response != nil && candidate.response.complete() {
+		candidate.body = candidate.response.body()
+		candidate.response = nil
+	}
+	return candidate
 }
 
 func (c *agentPushTurnCoordinator) deliverTurnCandidates(scope agentPushScopeKey, runID string, candidates map[int64]agentPushCandidate) {
 	turnKey := newAgentPushTrackedTurnKey(scope, runID)
 	for recipientUID, candidate := range candidates {
+		// A non-nil response is an intentionally incomplete snapshot. It stays
+		// queued until every declared segment has arrived.
+		if candidate.response != nil {
+			continue
+		}
 		deliveryKey := agentPushTurnDeliveryKey(recipientUID, scope, runID)
-		c.deliverOnce(deliveryKey, candidate.deliver)
+		c.deliverOnce(deliveryKey, func() bool {
+			return candidate.deliver(candidate.body)
+		})
 
 		c.mu.Lock()
 		turn := c.trackedTurns[turnKey]
@@ -281,6 +332,20 @@ func (c *agentPushTurnCoordinator) deliverTurnCandidates(scope agentPushScopeKey
 }
 
 func (c *agentPushTurnCoordinator) observeVisibleMessage(recipientUID, senderUID int64, msg *ServerMessage, deliver func() bool) bool {
+	if deliver == nil {
+		return false
+	}
+	return c.observeVisibleMessageBody(recipientUID, senderUID, msg, pushNotificationMessageBody(msg), func(string) bool {
+		return deliver()
+	})
+}
+
+func (c *agentPushTurnCoordinator) observeVisibleMessageBody(
+	recipientUID, senderUID int64,
+	msg *ServerMessage,
+	body string,
+	deliver func(string) bool,
+) bool {
 	if c == nil || recipientUID <= 0 || senderUID <= 0 || msg == nil || msg.Data == nil || deliver == nil || !shouldNotifyOfflineForMessage(msg) {
 		return false
 	}
@@ -302,8 +367,13 @@ func (c *agentPushTurnCoordinator) observeVisibleMessage(recipientUID, senderUID
 			}
 		}
 	}
-	candidate := c.newCandidateLocked(deliver)
+	responseKind, responseID, segmentIndex, segmentCount, hasResponseEnvelope := agentPushResponseEnvelope(msg)
+	if hasResponseEnvelope && responseKind == "progress" {
+		c.mu.Unlock()
+		return true
+	}
 	if runID == "" {
+		candidate := c.newCandidateLocked(body, nil, deliver)
 		pending := c.pendingByScope[scope]
 		if pending == nil {
 			if len(c.pendingByScope) >= maxActiveAgentPushTurns {
@@ -329,19 +399,33 @@ func (c *agentPushTurnCoordinator) observeVisibleMessage(recipientUID, senderUID
 			c.mu.Unlock()
 			return true
 		}
-		turn = &agentPushTurn{
-			runID:      runID,
-			candidates: make(map[int64]agentPushCandidate),
-			expiresAt:  now.Add(defaultActiveTaskStatusTTL),
-		}
+		turn = newAgentPushTurn(runID)
+		turn.expiresAt = now.Add(defaultActiveTaskStatusTTL)
 		c.trackedTurns[turnKey] = turn
 		c.resetTurnTimerLocked(turnKey, turn)
 	}
+	var response *agentPushResponse
+	if hasResponseEnvelope && responseKind == "final" {
+		response = turn.responses[responseID]
+		if response == nil && len(turn.responses) < maxAgentPushResponses {
+			response = &agentPushResponse{segmentCount: segmentCount, segments: make(map[int]string)}
+			turn.responses[responseID] = response
+		}
+		if response == nil || response.segmentCount != segmentCount {
+			c.mu.Unlock()
+			return true
+		}
+		response.segments[segmentIndex] = body
+	}
+	candidate := c.newCandidateLocked(body, response, deliver)
 	turn.candidates[recipientUID] = candidate
 	terminal := turn.terminal
+	deliveryCandidate := snapshotAgentPushCandidate(candidate)
 	c.mu.Unlock()
 	if terminal {
-		c.deliverTurnCandidates(scope, runID, map[int64]agentPushCandidate{recipientUID: candidate})
+		c.deliverTurnCandidates(scope, runID, map[int64]agentPushCandidate{
+			recipientUID: deliveryCandidate,
+		})
 	}
 	return true
 }
@@ -416,4 +500,49 @@ func agentPushMessageCorrelationID(msg *ServerMessage) string {
 		"turn_id", "turnId",
 	)
 	return truncateUTF8(correlationID, 128)
+}
+
+func agentPushResponseEnvelope(msg *ServerMessage) (kind, responseID string, segmentIndex, segmentCount int, ok bool) {
+	if msg == nil || msg.Data == nil || agentPushMessageCorrelationID(msg) == "" {
+		return "", "", 0, 0, false
+	}
+	metadata := msg.Data.Metadata
+	kind = strings.ToLower(firstMetadataString(metadata, "response_kind", "responseKind"))
+	if kind != "progress" && kind != "final" {
+		return "", "", 0, 0, false
+	}
+	responseID = truncateUTF8(firstMetadataString(metadata, "response_id", "responseId"), 128)
+	if responseID == "" {
+		return "", "", 0, 0, false
+	}
+	segmentIndex, indexOK := agentPushMetadataInteger(metadata, "segment_index", "segmentIndex")
+	segmentCount, countOK := agentPushMetadataInteger(metadata, "segment_count", "segmentCount")
+	if !indexOK || !countOK || segmentCount <= 0 || segmentCount > maxAgentPushSegments || segmentIndex < 0 || segmentIndex >= segmentCount {
+		return "", "", 0, 0, false
+	}
+	return kind, responseID, segmentIndex, segmentCount, true
+}
+
+func agentPushMetadataInteger(metadata map[string]interface{}, keys ...string) (int, bool) {
+	for _, key := range keys {
+		value, exists := metadata[key]
+		if !exists {
+			continue
+		}
+		switch typed := value.(type) {
+		case int:
+			return typed, true
+		case int32:
+			return int(typed), true
+		case int64:
+			return int(typed), int64(int(typed)) == typed
+		case float64:
+			parsed := int(typed)
+			return parsed, float64(parsed) == typed
+		case json.Number:
+			parsed, err := typed.Int64()
+			return int(parsed), err == nil && int64(int(parsed)) == parsed
+		}
+	}
+	return 0, false
 }

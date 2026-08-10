@@ -2035,8 +2035,10 @@ func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessa
 	if h == nil || h.agentPush == nil {
 		return
 	}
-	deliver := func() bool { return h.enqueueOfflineUserPush(uid, topic, body) }
-	h.agentPush.observeVisibleMessage(uid, senderUID, msg, deliver)
+	deliver := func(notificationBody string) bool {
+		return h.enqueueOfflineUserPush(uid, topic, notificationBody)
+	}
+	h.agentPush.observeVisibleMessageBody(uid, senderUID, msg, body, deliver)
 }
 
 func pushNotificationMessageBody(msg *ServerMessage) string {
