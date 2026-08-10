@@ -265,6 +265,26 @@ export function isLocalSkillShared(skill, installedReference) {
   return skill?.canShare === false && hasPublishedIdentity;
 }
 
+export function resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference) {
+  const skillId = String(skill?.skillId || '').trim();
+  const details = catalogueByID?.get(skillId);
+  const candidate = localSkillsByReference?.get(skillId);
+  const candidateReference = candidate?.skillHub?.reference;
+  const localDetails = candidate
+    && (!skill?.version || candidateReference?.version === skill.version)
+    && (!skill?.contentHash || candidateReference?.contentHash === skill.contentHash)
+    ? candidate
+    : null;
+  const privateReference = isPrivateSkillHubReference(skillId);
+  return {
+    details,
+    localDetails,
+    privateReference,
+    label: details?.displayName || localDetails?.name || (privateReference ? '私有能力' : skillId),
+    description: details?.description || localDetails?.description || '此能力已添加到当前 Agent，可立即使用。',
+  };
+}
+
 export function upsertSkillRef(skills, nextRef, replacedSkillId = '') {
   const previousID = String(replacedSkillId || '').trim();
   return [...(skills || []).filter((skill) => (
@@ -525,6 +545,13 @@ export default function SkillHubView({ user }) {
   const catalogueByID = useMemo(() => new Map(
     catalogue.map((skill) => [skill.skillId, skill]),
   ), [catalogue]);
+
+  const addedSkillPresentationByID = useMemo(() => new Map(
+    (definition.skills || []).map((skill) => [
+      skill.skillId,
+      resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference),
+    ]),
+  ), [catalogueByID, definition.skills, localSkillsByReference]);
 
   const selectedAgent = useMemo(() => (
     bots.find((bot) => String(botUID(bot)) === selectedBotUID) || null
@@ -844,7 +871,7 @@ export default function SkillHubView({ user }) {
     if (!skillID || !definitionReady || saving || sharingSkill || skillAction) return;
     const requestedBotUID = selectedBotUIDRef.current;
     const agentName = botLabel(selectedAgent);
-    const skillName = catalogueByID.get(skillID)?.displayName || skillID;
+    const skillName = addedSkillPresentationByID.get(skillID)?.label || skillID;
     const confirmed = await feedback.confirm({
       title: `从“${agentName}”移除“${skillName}”？`,
       message: '该 Agent 将无法继续调用此能力。技能本身不会从 SkillHub 删除。',
@@ -867,10 +894,10 @@ export default function SkillHubView({ user }) {
   const copySkill = async (skillID) => {
     if (!skillID || !definitionReady || saving || sharingSkill || skillAction) return;
     const requestedBotUID = selectedBotUIDRef.current;
-    const details = catalogueByID.get(skillID);
-    const localSkill = localSkillsByReference.get(skillID);
-    const skillName = details?.displayName || localSkill?.name || skillID;
-    const privateReference = isPrivateSkillHubReference(skillID);
+    const presentation = addedSkillPresentationByID.get(skillID);
+    const details = presentation?.details || catalogueByID.get(skillID);
+    const skillName = presentation?.label || skillID;
+    const privateReference = presentation?.privateReference ?? isPrivateSkillHubReference(skillID);
     const shareURL = String(details?.shareUrl || details?.share_url || details?.url || '').trim();
     const copiedValue = shareURL || skillID;
     setSkillAction({ type: 'copy', skillId: skillID });
@@ -1030,6 +1057,7 @@ export default function SkillHubView({ user }) {
   return <SkillHubContent
     actionNotice={actionNotice}
     activeSection={activeSection}
+    addedSkillPresentationByID={addedSkillPresentationByID}
     agentOptions={agentOptions}
     catalogue={catalogue}
     catalogueByID={catalogueByID}
@@ -1048,7 +1076,6 @@ export default function SkillHubView({ user }) {
     loadingLocalSkills={loadingLocalSkills}
     localNotice={localNotice}
     localSkills={localSkills}
-    localSkillsByReference={localSkillsByReference}
     localSkillsError={localSkillsError}
     localSkillsPath={localSkillsPath}
     onChangeSection={setActiveSection}

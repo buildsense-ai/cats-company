@@ -244,19 +244,11 @@ function AddedSkills(props) {
   );
 }
 
-function AddedSkillItem({ catalogueByID, definitionReady, localSkillsByReference, onCopySkill, onRemoveSkill, saving, sharingSkill, skill, skillAction }) {
-  const details = catalogueByID.get(skill.skillId);
-  const candidate = localSkillsByReference?.get(skill.skillId);
-  const candidateReference = candidate?.skillHub?.reference;
-  const localDetails = candidate
-    && (!skill.version || candidateReference?.version === skill.version)
-    && (!skill.contentHash || candidateReference?.contentHash === skill.contentHash)
-    ? candidate
-    : null;
-  const privateReference = String(skill.skillId || '').startsWith('priv_')
-    || String(skill.skillId || '').startsWith('private/');
-  const label = details?.displayName || localDetails?.name || (privateReference ? '私有能力' : skill.skillId);
-  const description = details?.description || localDetails?.description || '此能力已添加到当前 Agent，可立即使用。';
+function AddedSkillItem({ addedSkillPresentationByID, definitionReady, onCopySkill, onRemoveSkill, saving, sharingSkill, skill, skillAction }) {
+  const presentation = addedSkillPresentationByID.get(skill.skillId);
+  const {
+    description, details, label, localDetails, privateReference,
+  } = presentation;
   const copying = skillAction?.type === 'copy' && skillAction.skillId === skill.skillId;
   const removing = skillAction?.type === 'remove' && skillAction.skillId === skill.skillId;
   const actionsDisabled = saving || Boolean(sharingSkill) || !definitionReady || Boolean(skillAction);

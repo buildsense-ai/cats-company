@@ -14,6 +14,7 @@ import SkillHubView, {
   readRememberedSkillHubBotUID,
   rememberSkillHubBotUID,
   resolvePreferredSkillHubBotUID,
+  resolveAddedSkillPresentation,
   resolveSkillHubEntry,
   resolveSharedSkillHubMetadata,
   upsertSkillRef,
@@ -224,6 +225,22 @@ describe('SkillHubView', () => {
     });
     expect(isPrivateSkillHubReference('priv_0123456789abcdef')).toBe(true);
     expect(isPrivateSkillHubReference('alice/local-demo')).toBe(false);
+    expect(resolveAddedSkillPresentation({
+      skillId: 'priv_local1',
+      version: 'private-v1',
+      contentHash: 'a'.repeat(64),
+    }, new Map(), new Map([['priv_local1', {
+      name: 'stale-local-name',
+      skillHub: { reference: {
+        skillId: 'priv_local1',
+        version: 'private-v1',
+        contentHash: 'b'.repeat(64),
+      } },
+    }]]))).toMatchObject({
+      label: '私有能力',
+      localDetails: null,
+      privateReference: true,
+    });
     expect(() => assertSkillHubDeviceResult({ schema: 'legacy', bot_uid: '42' }, {
       toolName: 'skillhub.localWorkspace.get',
       botUID: '42',
@@ -584,6 +601,90 @@ describe('SkillHubView', () => {
 
     expect(api.updateBotDefinitionSkills).toHaveBeenCalledWith('42', 3, []);
     expect(container.textContent).toContain('已从 Agent“Owner Bot”移除 tools/review');
+  });
+
+  it('uses a matching local name when removing a private ability', async () => {
+    api.getBotDefinitionSkills.mockResolvedValue({
+      botId: '42',
+      revision: 3,
+      skills: [{
+        source: 'skillhub',
+        skillId: 'priv_local1',
+        version: 'private-v1',
+        contentHash: 'c'.repeat(64),
+      }],
+    });
+    api.getDevices.mockResolvedValue({
+      devices: [{
+        deviceId: 'alice-device',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockImplementation(async ({ toolName }) => {
+      if (toolName !== 'skillhub.localWorkspace.get') throw new Error(`unexpected tool ${toolName}`);
+      return {
+        schema: 'xiaoba.skillhub.local_workspace.v1',
+        bot_uid: '42',
+        active_bot_uid: '42',
+        skills_path: 'C:\\xiaoba\\skills',
+        skills: [{
+          local_skill_id: 'local-1',
+          name: 'local-demo',
+          description: 'Local demo',
+          relative_path: 'local-demo',
+          source: 'user',
+          can_share: true,
+          skill_hub: { reference: {
+            source: 'skillhub',
+            skillId: 'priv_local1',
+            version: 'private-v1',
+            contentHash: 'c'.repeat(64),
+          } },
+        }],
+      };
+    });
+    api.updateBotDefinitionSkills.mockResolvedValueOnce({ botId: '42', revision: 4, skills: [] });
+
+    await act(async () => {
+      root.render(<FeedbackProvider><SkillHubView user={{ uid: 7 }} /></FeedbackProvider>);
+      await Promise.resolve();
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('.cc-skillhub-added-title h3')?.textContent).toBe('local-demo');
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="更多操作 local-demo"]'));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+    const menu = document.body.querySelector('[role="menu"][aria-label="local-demo 操作"]');
+    await act(async () => {
+      Simulate.click([...menu.querySelectorAll('[role="menuitem"]')]
+        .find((button) => button.textContent.includes('从 Agent 移除')));
+      await Promise.resolve();
+    });
+
+    const confirmation = document.body.querySelector('[role="alertdialog"]');
+    expect(confirmation.textContent).toContain('从“Owner Bot”移除“local-demo”');
+    expect(confirmation.textContent).not.toContain('priv_local1');
+    await act(async () => {
+      Simulate.click([...confirmation.querySelectorAll('button')]
+        .find((button) => button.textContent === '从 Agent 移除'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.updateBotDefinitionSkills).toHaveBeenCalledWith('42', 3, []);
+    expect(container.textContent).toContain('已从 Agent“Owner Bot”移除 local-demo');
+    expect(container.textContent).not.toContain('priv_local1');
   });
 
   it('uses an accessible themed Agent listbox', async () => {
