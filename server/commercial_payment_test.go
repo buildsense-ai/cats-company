@@ -1,0 +1,966 @@
+package server
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/openchat/openchat/server/store/types"
+	"github.com/smartwalle/alipay/v3"
+)
+
+type commercialPaymentTestStore struct {
+	*commercialTestStore
+	orders      map[string]*types.CommercialOrder
+	requestIDs  map[string]string
+	trialClaims map[int64]bool
+}
+
+type queryCommercialPaymentProvider struct {
+	paid         bool
+	confirmation *types.CommercialPaymentConfirmation
+	calls        int
+	intent       *CommercialPaymentIntent
+	createCalls  int
+}
+
+func (p *queryCommercialPaymentProvider) Channel() string {
+	return commercialPaymentChannelAlipayPage
+}
+func (p *queryCommercialPaymentProvider) Label() string { return "支付宝" }
+func (p *queryCommercialPaymentProvider) CreatePayment(context.Context, *types.CommercialOrder) (*CommercialPaymentIntent, error) {
+	p.createCalls++
+	if p.intent == nil {
+		return nil, context.Canceled
+	}
+	return p.intent, nil
+}
+func (p *queryCommercialPaymentProvider) ParseNotification(context.Context, *http.Request) (string, *types.CommercialPaymentConfirmation, error) {
+	return "", nil, context.Canceled
+}
+func (p *queryCommercialPaymentProvider) QueryPayment(context.Context, *types.CommercialOrder) (*types.CommercialPaymentConfirmation, bool, error) {
+	p.calls++
+	return p.confirmation, p.paid, nil
+}
+
+type fakeAlipayPaymentClient struct {
+	pageURL          *url.URL
+	pageErr          error
+	query            *alipay.TradeQueryRsp
+	queryErr         error
+	notification     *alipay.Notification
+	notificationErr  error
+	lastPagePay      alipay.TradePagePay
+	lastQuery        alipay.TradeQuery
+	lastNotification url.Values
+}
+
+func (c *fakeAlipayPaymentClient) TradePagePay(request alipay.TradePagePay) (*url.URL, error) {
+	c.lastPagePay = request
+	return c.pageURL, c.pageErr
+}
+
+func (c *fakeAlipayPaymentClient) TradeQuery(_ context.Context, request alipay.TradeQuery) (*alipay.TradeQueryRsp, error) {
+	c.lastQuery = request
+	return c.query, c.queryErr
+}
+
+func (c *fakeAlipayPaymentClient) DecodeNotification(_ context.Context, values url.Values) (*alipay.Notification, error) {
+	c.lastNotification = values
+	return c.notification, c.notificationErr
+}
+
+func newCommercialPaymentTestStore() *commercialPaymentTestStore {
+	return &commercialPaymentTestStore{
+		commercialTestStore: &commercialTestStore{},
+		orders:              map[string]*types.CommercialOrder{},
+		requestIDs:          map[string]string{},
+		trialClaims:         map[int64]bool{},
+	}
+}
+
+func (s *commercialPaymentTestStore) GetCommercialPlan(id int64) (*types.CommercialPlan, error) {
+	for _, plan := range s.plans {
+		if plan.ID == id {
+			copy := *plan
+			return &copy, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *commercialPaymentTestStore) GetCommercialPlanBySlug(slug string) (*types.CommercialPlan, error) {
+	for _, plan := range s.plans {
+		if plan.Slug == slug {
+			copy := *plan
+			return &copy, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *commercialPaymentTestStore) CreateCommercialOrder(order *types.CommercialOrder) (*types.CommercialOrder, error) {
+	key := string(rune(order.UID)) + ":" + order.ClientRequestID
+	if orderNo := s.requestIDs[key]; orderNo != "" {
+		copy := *s.orders[orderNo]
+		return &copy, nil
+	}
+	plan, _ := s.GetCommercialPlan(order.PlanID)
+	copy := *order
+	copy.ID = int64(len(s.orders) + 1)
+	copy.PlanSlug = plan.Slug
+	copy.PlanName = plan.Name
+	copy.PlanDescription = plan.Description
+	copy.PlanDurationDays = plan.DurationDays
+	copy.PlanMonthlyBudget = plan.MonthlyBudget
+	copy.PlanModelBudgets = plan.ModelBudgets
+	copy.AmountFen = plan.PriceFen
+	copy.Currency = plan.Currency
+	copy.Status = "created"
+	copy.CreatedAt = time.Now().UTC()
+	copy.UpdatedAt = copy.CreatedAt
+	s.orders[copy.OrderNo] = &copy
+	s.requestIDs[key] = copy.OrderNo
+	return &copy, nil
+}
+
+func (s *commercialPaymentTestStore) SetCommercialOrderPaymentIntent(orderNo, checkoutURL string, expiresAt time.Time) (*types.CommercialOrder, error) {
+	order := s.orders[orderNo]
+	order.Status = "pending"
+	order.CheckoutURL = checkoutURL
+	order.ExpiresAt = &expiresAt
+	copy := *order
+	return &copy, nil
+}
+
+func (s *commercialPaymentTestStore) BeginCommercialOrderPayment(orderNo string, expiresAt time.Time) (*types.CommercialOrder, bool, error) {
+	order := s.orders[orderNo]
+	if order == nil {
+		return nil, false, context.Canceled
+	}
+	stalePending := order.Status == "pending" && order.CheckoutURL == "" && order.UpdatedAt.Before(time.Now().UTC().Add(-30*time.Second))
+	if order.Status != "created" && order.Status != "failed" && !stalePending {
+		copy := *order
+		return &copy, false, nil
+	}
+	order.Status = "pending"
+	order.CheckoutURL = ""
+	order.ExpiresAt = &expiresAt
+	order.UpdatedAt = time.Now().UTC()
+	copy := *order
+	return &copy, true, nil
+}
+
+func (s *commercialPaymentTestStore) FailCommercialOrder(orderNo, message string) error {
+	s.orders[orderNo].Status = "failed"
+	s.orders[orderNo].LastError = message
+	return nil
+}
+
+func (s *commercialPaymentTestStore) GetCommercialOrder(uid int64, orderNo string) (*types.CommercialOrder, error) {
+	order := s.orders[orderNo]
+	if order == nil || (uid > 0 && order.UID != uid) {
+		return nil, nil
+	}
+	copy := *order
+	return &copy, nil
+}
+
+func (s *commercialPaymentTestStore) ListCommercialOrders(uid int64, limit int) ([]*types.CommercialOrder, error) {
+	orders := []*types.CommercialOrder{}
+	for _, order := range s.orders {
+		if uid == 0 || order.UID == uid {
+			copy := *order
+			orders = append(orders, &copy)
+		}
+	}
+	return orders, nil
+}
+
+func (s *commercialPaymentTestStore) CloseExpiredCommercialOrders(limit int) (int64, error) {
+	return 0, nil
+}
+
+func (s *commercialPaymentTestStore) FulfillCommercialOrder(orderNo string, confirmation *types.CommercialPaymentConfirmation) (*types.CommercialOrder, bool, error) {
+	order := s.orders[orderNo]
+	if order.Status == "fulfilled" {
+		copy := *order
+		return &copy, false, nil
+	}
+	if confirmation.AmountFen != order.AmountFen || confirmation.Currency != order.Currency {
+		return nil, false, context.Canceled
+	}
+	now := time.Now().UTC()
+	order.Status = "fulfilled"
+	order.PaidAt = &now
+	order.FulfilledAt = &now
+	copy := *order
+	return &copy, true, nil
+}
+
+func (s *commercialPaymentTestStore) ClaimCommercialTrial(uid int64, planSlug string) (*types.CommercialSummary, error) {
+	s.trialClaims[uid] = true
+	return s.GetCommercialSummary(uid)
+}
+
+func (s *commercialPaymentTestStore) HasCommercialTrial(uid int64, planSlug string) (bool, error) {
+	return s.trialClaims[uid], nil
+}
+
+func commercialPaymentRequest(method, path, body string, uid int64) *http.Request {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, uid))
+	return req
+}
+
+func TestCommercialCatalogRespectsSaleRollout(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.plans = []*types.CommercialPlan{
+		{ID: 1, Slug: "hidden", Name: "Hidden", PriceFen: 100, Currency: "CNY", SaleState: "hidden", DurationDays: 30, State: 0, ModelBudgets: map[string]float64{"MiniMax-M3": 1}},
+		{ID: 2, Slug: "test", Name: "Test", PriceFen: 200, Currency: "CNY", SaleState: "test", DurationDays: 30, State: 0, InternalQuotaTokens: 50_000_000, ModelBudgets: map[string]float64{"MiniMax-M3": 2}},
+		{ID: 3, Slug: "public", Name: "Public", PriceFen: 300, Currency: "CNY", SaleState: "public", DurationDays: 30, State: 0, ModelBudgets: map[string]float64{"MiniMax-M3": 3}},
+		{ID: 4, Slug: "empty", Name: "Empty", PriceFen: 400, Currency: "CNY", SaleState: "test", DurationDays: 30, State: 0},
+		{ID: 5, Slug: "monthly-only", Name: "Monthly only", PriceFen: 500, Currency: "CNY", SaleState: "test", DurationDays: 30, State: 0, MonthlyBudget: 10},
+	}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		TestUIDs:     map[int64]bool{38: true},
+		TestPayments: map[int64]bool{38: true},
+		Providers:    []CommercialPaymentProvider{NewTestCommercialPaymentProvider()},
+	})
+	recorder := httptest.NewRecorder()
+	handler.HandleCatalog(recorder, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/catalog", "", 38))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Plans    []*types.CommercialPlan    `json:"plans"`
+		Channels []commercialPaymentChannel `json:"channels"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Plans) != 2 || payload.Plans[0].Slug != "test" || payload.Plans[1].Slug != "public" {
+		t.Fatalf("unexpected plans: %#v", payload.Plans)
+	}
+	if payload.Plans[0].InternalQuotaTokens != 0 || len(payload.Plans[0].ModelBudgets) != 0 || payload.Plans[0].MonthlyBudget != 0 {
+		t.Fatalf("public catalog leaked internal quota data: %#v", payload.Plans[0])
+	}
+	if strings.Contains(recorder.Body.String(), "internal_quota_tokens") || strings.Contains(recorder.Body.String(), "model_budgets") || strings.Contains(recorder.Body.String(), "monthly_budget_cny") {
+		t.Fatalf("public catalog leaked internal quota fields: %s", recorder.Body.String())
+	}
+	if len(payload.Channels) != 1 || payload.Channels[0].ID != commercialPaymentChannelTest {
+		t.Fatalf("unexpected channels: %#v", payload.Channels)
+	}
+}
+
+func TestCommercialRealPaymentChannelRequiresRelayEnforcement(t *testing.T) {
+	provider := &queryCommercialPaymentProvider{}
+	withoutSync := NewCommercialPaymentHandler(newCommercialPaymentTestStore(), CommercialPaymentHandlerOptions{
+		Providers: []CommercialPaymentProvider{provider}, SaleChannels: map[string]bool{commercialPaymentChannelAlipayPage: true},
+	})
+	if channels := withoutSync.channelsFor(38); len(channels) != 0 {
+		t.Fatalf("real payment channel was exposed without relay enforcement: %#v", channels)
+	}
+	withSync := NewCommercialPaymentHandler(newCommercialPaymentTestStore(), CommercialPaymentHandlerOptions{
+		Providers:    []CommercialPaymentProvider{provider},
+		SaleChannels: map[string]bool{commercialPaymentChannelAlipayPage: true},
+		Syncer:       &CommercialRelaySyncer{enforceUIDs: map[int64]bool{38: true}},
+	})
+	if channels := withSync.channelsFor(38); len(channels) != 1 || channels[0].ID != commercialPaymentChannelAlipayPage {
+		t.Fatalf("eligible real payment channel was not exposed: %#v", channels)
+	}
+	if channels := withSync.channelsFor(39); len(channels) != 0 {
+		t.Fatalf("real payment channel leaked outside the relay enforce allowlist: %#v", channels)
+	}
+}
+
+func TestCommercialTrialRequiresDedicatedFreeHiddenPlan(t *testing.T) {
+	valid := &types.CommercialPlan{
+		Slug: "trial", PriceFen: 0, SaleState: "hidden", DurationDays: 7, State: 0,
+		ModelBudgets: map[string]float64{"MiniMax-M3": 5},
+	}
+	if !commercialTrialPlanAvailable(valid) {
+		t.Fatal("expected dedicated trial plan to be available")
+	}
+	for name, mutate := range map[string]func(*types.CommercialPlan){
+		"paid":     func(plan *types.CommercialPlan) { plan.PriceFen = 1 },
+		"public":   func(plan *types.CommercialPlan) { plan.SaleState = "public" },
+		"disabled": func(plan *types.CommercialPlan) { plan.State = 1 },
+		"empty":    func(plan *types.CommercialPlan) { plan.ModelBudgets = map[string]float64{} },
+		"monthly": func(plan *types.CommercialPlan) {
+			plan.ModelBudgets = map[string]float64{}
+			plan.MonthlyBudget = 1
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := *valid
+			candidate.ModelBudgets = map[string]float64{"MiniMax-M3": 5}
+			mutate(&candidate)
+			if commercialTrialPlanAvailable(&candidate) {
+				t.Fatalf("unsafe trial plan %s was accepted: %#v", name, candidate)
+			}
+		})
+	}
+}
+
+func TestCommercialTestPaymentOrderAndFulfillment(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.plans = []*types.CommercialPlan{{
+		ID: 7, Slug: "gray", Name: "Gray", PriceFen: 2990, Currency: "CNY", SaleState: "test", DurationDays: 30, State: 0,
+		ModelBudgets: map[string]float64{"MiniMax-M3": 500},
+	}}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		TestUIDs:     map[int64]bool{38: true},
+		TestPayments: map[int64]bool{38: true},
+		Providers:    []CommercialPaymentProvider{NewTestCommercialPaymentProvider()},
+	})
+	createRecorder := httptest.NewRecorder()
+	handler.HandleOrders(createRecorder, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders", `{"plan_id":7,"channel":"test","client_request_id":"order_request_123456"}`, 38))
+	if createRecorder.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", createRecorder.Code, createRecorder.Body.String())
+	}
+	var created struct {
+		Order *types.CommercialOrder `json:"order"`
+	}
+	if err := json.Unmarshal(createRecorder.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Order == nil || created.Order.Status != "pending" || created.Order.AmountFen != 2990 {
+		t.Fatalf("unexpected order: %#v", created.Order)
+	}
+	if len(created.Order.PlanModelBudgets) != 0 || created.Order.PlanMonthlyBudget != 0 {
+		t.Fatalf("user order leaked internal plan budgets: %#v", created.Order)
+	}
+	if strings.Contains(createRecorder.Body.String(), "plan_model_budgets") || strings.Contains(createRecorder.Body.String(), "plan_monthly_budget_cny") {
+		t.Fatalf("user order response leaked internal plan fields: %s", createRecorder.Body.String())
+	}
+	confirmRecorder := httptest.NewRecorder()
+	handler.HandleTestConfirm(confirmRecorder, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders/test-confirm", `{"order_no":"`+created.Order.OrderNo+`"}`, 38))
+	if confirmRecorder.Code != http.StatusOK {
+		t.Fatalf("confirm status=%d body=%s", confirmRecorder.Code, confirmRecorder.Body.String())
+	}
+	if store.orders[created.Order.OrderNo].Status != "fulfilled" {
+		t.Fatalf("order was not fulfilled: %#v", store.orders[created.Order.OrderNo])
+	}
+}
+
+func TestCommercialPaymentIntentCanOnlyBeClaimedOnce(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-ONCE"] = &types.CommercialOrder{OrderNo: "CC-ONCE", Status: "created"}
+	expiresAt := time.Now().UTC().Add(20 * time.Minute)
+	_, first, err := store.BeginCommercialOrderPayment("CC-ONCE", expiresAt)
+	if err != nil || !first {
+		t.Fatalf("first claim failed: claimed=%v err=%v", first, err)
+	}
+	order, second, err := store.BeginCommercialOrderPayment("CC-ONCE", expiresAt)
+	if err != nil || second || order.Status != "pending" {
+		t.Fatalf("duplicate claim was not suppressed: order=%#v claimed=%v err=%v", order, second, err)
+	}
+}
+
+func TestCommercialPendingOrderUsesProviderQueryFallback(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-QUERY"] = &types.CommercialOrder{
+		OrderNo: "CC-QUERY", UID: 38, PlanName: "查询兜底套餐", AmountFen: 2990, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "pending",
+	}
+	provider := &queryCommercialPaymentProvider{
+		paid: true,
+		confirmation: &types.CommercialPaymentConfirmation{
+			Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-QUERY-1", ProviderTradeNo: "ALI-QUERY-1",
+			AmountFen: 2990, Currency: "CNY", PaidAt: time.Now().UTC(),
+		},
+	}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		TestUIDs:  map[int64]bool{38: true},
+		Providers: []CommercialPaymentProvider{provider},
+	})
+	recorder := httptest.NewRecorder()
+	handler.HandleOrders(recorder, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders?order_no=CC-QUERY", "", 38))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("query fallback status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if provider.calls != 1 || store.orders["CC-QUERY"].Status != "fulfilled" {
+		t.Fatalf("query fallback did not fulfill order: calls=%d order=%#v", provider.calls, store.orders["CC-QUERY"])
+	}
+}
+
+func TestCommercialPendingOrderQueriesAreThrottled(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-PENDING"] = &types.CommercialOrder{
+		OrderNo: "CC-PENDING", UID: 38, AmountFen: 2990, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "pending",
+	}
+	provider := &queryCommercialPaymentProvider{}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		TestUIDs:  map[int64]bool{38: true},
+		Providers: []CommercialPaymentProvider{provider},
+	})
+	for range 2 {
+		recorder := httptest.NewRecorder()
+		handler.HandleOrders(recorder, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders?order_no=CC-PENDING", "", 38))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("pending query status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+	if provider.calls != 1 {
+		t.Fatalf("expected one provider query inside throttle window, got %d", provider.calls)
+	}
+}
+
+func TestCommercialClosedOrderUsesProviderQueryFallback(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	closedAt := time.Now().UTC().Add(-time.Hour)
+	store.orders["CC-CLOSED-PAID"] = &types.CommercialOrder{
+		OrderNo: "CC-CLOSED-PAID", UID: 38, AmountFen: 2990, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "closed", ClosedAt: &closedAt,
+	}
+	provider := &queryCommercialPaymentProvider{
+		paid: true,
+		confirmation: &types.CommercialPaymentConfirmation{
+			Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-CLOSED-1", ProviderTradeNo: "ALI-CLOSED-1",
+			AmountFen: 2990, Currency: "CNY", PaidAt: time.Now().UTC(),
+		},
+	}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		TestUIDs: map[int64]bool{38: true}, Providers: []CommercialPaymentProvider{provider}, SaleChannels: map[string]bool{},
+	})
+	recorder := httptest.NewRecorder()
+	handler.HandleOrders(recorder, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders?order_no=CC-CLOSED-PAID", "", 38))
+	if recorder.Code != http.StatusOK || store.orders["CC-CLOSED-PAID"].Status != "fulfilled" {
+		t.Fatalf("closed order was not recovered: status=%d body=%s order=%#v", recorder.Code, recorder.Body.String(), store.orders["CC-CLOSED-PAID"])
+	}
+}
+
+func TestCommercialHistoricalOrderQuerySurvivesGrayDisable(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	closedAt := time.Now().UTC().Add(-time.Hour)
+	store.orders["CC-CLOSED-DISABLED"] = &types.CommercialOrder{
+		OrderNo: "CC-CLOSED-DISABLED", UID: 38, AmountFen: 2990, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "closed", ClosedAt: &closedAt,
+	}
+	provider := &queryCommercialPaymentProvider{
+		paid: true,
+		confirmation: &types.CommercialPaymentConfirmation{
+			Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-DISABLED-1", ProviderTradeNo: "ALI-DISABLED-1",
+			AmountFen: 2990, Currency: "CNY", PaidAt: time.Now().UTC(),
+		},
+	}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		Providers: []CommercialPaymentProvider{provider}, SaleChannels: map[string]bool{},
+	})
+	recorder := httptest.NewRecorder()
+	handler.HandleOrders(recorder, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders?order_no=CC-CLOSED-DISABLED", "", 38))
+	if recorder.Code != http.StatusOK || store.orders["CC-CLOSED-DISABLED"].Status != "fulfilled" {
+		t.Fatalf("disabled gray user could not recover historical order: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	postRecorder := httptest.NewRecorder()
+	handler.HandleOrders(postRecorder, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders", `{}`, 38))
+	if postRecorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("disabled gray user unexpectedly created an order: status=%d body=%s", postRecorder.Code, postRecorder.Body.String())
+	}
+}
+
+func TestCommercialPendingOrderRecoversMissingCheckoutIntent(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	expiresAt := time.Now().UTC().Add(10 * time.Minute)
+	store.orders["CC-MISSING-CHECKOUT"] = &types.CommercialOrder{
+		OrderNo: "CC-MISSING-CHECKOUT", UID: 38, AmountFen: 2990, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "pending", ExpiresAt: &expiresAt,
+		UpdatedAt: time.Now().UTC().Add(-time.Minute),
+	}
+	provider := &queryCommercialPaymentProvider{intent: &CommercialPaymentIntent{
+		CheckoutURL: "https://openapi.alipay.test/pay", ExpiresAt: time.Now().UTC().Add(20 * time.Minute),
+	}}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		TestUIDs: map[int64]bool{38: true}, Providers: []CommercialPaymentProvider{provider},
+	})
+	recorder := httptest.NewRecorder()
+	handler.HandleOrders(recorder, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders?order_no=CC-MISSING-CHECKOUT", "", 38))
+	if recorder.Code != http.StatusOK || provider.createCalls != 1 || store.orders["CC-MISSING-CHECKOUT"].CheckoutURL == "" {
+		t.Fatalf("missing checkout intent was not recovered: status=%d body=%s calls=%d order=%#v", recorder.Code, recorder.Body.String(), provider.createCalls, store.orders["CC-MISSING-CHECKOUT"])
+	}
+}
+
+func TestCommercialCreatedOrderRecoversCheckoutIntent(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-CREATED-CHECKOUT"] = &types.CommercialOrder{
+		OrderNo: "CC-CREATED-CHECKOUT", UID: 38, AmountFen: 2990, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "created",
+	}
+	provider := &queryCommercialPaymentProvider{intent: &CommercialPaymentIntent{
+		CheckoutURL: "https://openapi.alipay.test/pay", ExpiresAt: time.Now().UTC().Add(20 * time.Minute),
+	}}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		TestUIDs: map[int64]bool{38: true}, Providers: []CommercialPaymentProvider{provider},
+	})
+	recorder := httptest.NewRecorder()
+	handler.HandleOrders(recorder, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders?order_no=CC-CREATED-CHECKOUT", "", 38))
+	if recorder.Code != http.StatusOK || provider.createCalls != 1 || store.orders["CC-CREATED-CHECKOUT"].CheckoutURL == "" {
+		t.Fatalf("created checkout intent was not recovered: status=%d body=%s calls=%d order=%#v", recorder.Code, recorder.Body.String(), provider.createCalls, store.orders["CC-CREATED-CHECKOUT"])
+	}
+}
+
+func TestCommercialRelayValidationRejectsMissingModelMapping(t *testing.T) {
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{{
+		Provider: "openai", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra"},
+	}}}}
+	if err := validateCommercialRelayModels(map[string]float64{"gpt-5.6-terra": 10}, relayUser); err != nil {
+		t.Fatalf("configured model was rejected: %v", err)
+	}
+	if err := validateCommercialRelayModels(map[string]float64{"MiniMax-M3": 10}, relayUser); err == nil {
+		t.Fatal("missing relay model mapping was accepted")
+	}
+}
+
+func TestCommercialRelayRequiredPaymentModelRejectsMappingDrift(t *testing.T) {
+	summary := &types.CommercialSummary{
+		UID:           38,
+		TotalsByModel: map[string]float64{"gpt-5.6-terra": 100, "retired-model": 50},
+		Grants: []*types.CommercialQuotaGrant{
+			{GrantType: "order", Model: "gpt-5.6-terra", AmountCNY: 100},
+			{GrantType: "manual", Model: "retired-model", AmountCNY: 50},
+		},
+	}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{}}}
+	if err := validateCommercialRelayRequiredModels(summary, relayUser, nil); err == nil || !strings.Contains(err.Error(), "gpt-5.6-terra") {
+		t.Fatalf("paid model mapping drift was accepted: %v", err)
+	}
+	relayUser.Limits.ModelLimits = []commercialRelayModelLimit{{
+		Provider: "openai", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra"},
+	}}
+	if err := validateCommercialRelayRequiredModels(summary, relayUser, nil); err != nil {
+		t.Fatalf("historical manual model should not block paid model sync: %v", err)
+	}
+}
+
+func TestCommercialRelayManagedModelRejectsMappingDrift(t *testing.T) {
+	summary := &types.CommercialSummary{UID: 38, TotalsByModel: map[string]float64{"gpt-5.6-terra": 100}}
+	managed := []*types.CommercialManagedRelayBudget{{
+		UID: 38, Model: "gpt-5.6-terra", Provider: "openai", AllowedModels: []string{"gpt-5.6-terra"}, MaxLimit: 100,
+	}}
+	if err := validateCommercialRelayRequiredModels(summary, &commercialRelayUsageUser{Configured: true}, managed); err == nil {
+		t.Fatal("managed model mapping drift was accepted")
+	}
+}
+
+func TestCommercialRelayUpdateVerificationRejectsSilentNoop(t *testing.T) {
+	updates := []commercialRelayProviderBudgetUpdate{{
+		Provider: "openai", AllowedModels: []string{"gpt-5.6-terra"}, MaxLimit: 100, ResetDuration: "1M",
+	}}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{{
+		Provider: "openai", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra"},
+		Budget: commercialRelayBudget{MaxLimit: 50},
+	}}}}
+	if err := verifyCommercialRelayUpdates(updates, relayUser); err == nil {
+		t.Fatal("silent relay update no-op was accepted")
+	}
+	relayUser.Limits.ModelLimits[0].Budget.MaxLimit = 100
+	if err := verifyCommercialRelayUpdates(updates, relayUser); err != nil {
+		t.Fatalf("verified relay update was rejected: %v", err)
+	}
+}
+
+func TestCommercialRelayManagedPlanSkipsUnmappedHistoricalModels(t *testing.T) {
+	summary := &types.CommercialSummary{UID: 38, TotalsByModel: map[string]float64{
+		"gpt-5.6-terra": 100,
+		"retired-model": 50,
+	}}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{{
+		Provider: "openai", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra"},
+		Budget: commercialRelayBudget{MaxLimit: 10, ResetDuration: "1M"},
+	}}}}
+	staleManaged := []*types.CommercialManagedRelayBudget{{
+		UID: 38, Model: "retired-model", Provider: "retired-provider", AllowedModels: []string{"retired-model"}, MaxLimit: 50,
+	}}
+	updates, managed := commercialRelayManagedPlan(38, summary, relayUser, staleManaged)
+	if len(updates) != 1 || updates[0].MaxLimit != 100 || len(managed) != 1 || managed[0].Model != "gpt-5.6-terra" {
+		t.Fatalf("mapped model was blocked by historical data: updates=%#v managed=%#v", updates, managed)
+	}
+}
+
+func TestCommercialRelayManagedPlanOnlyRemovesOwnedBudgets(t *testing.T) {
+	relayUser := &commercialRelayUsageUser{Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+		{Provider: "deepseek", Model: "deepseek-v4-flash", AllowedModels: []string{"deepseek-v4-flash"}, Budget: commercialRelayBudget{MaxLimit: 100}},
+		{Provider: "minimax", Model: "MiniMax-M3", AllowedModels: []string{"MiniMax-M3"}, Budget: commercialRelayBudget{MaxLimit: 500}},
+	}}}
+	managed := []*types.CommercialManagedRelayBudget{{
+		UID: 38, Model: "deepseek-v4-flash", Provider: "deepseek", AllowedModels: []string{"deepseek-v4-flash"}, MaxLimit: 100,
+	}}
+	updates, next := commercialRelayManagedPlan(38, &types.CommercialSummary{UID: 38, TotalsByModel: map[string]float64{}}, relayUser, managed)
+	if len(updates) != 1 || updates[0].Provider != "deepseek" || updates[0].MaxLimit != commercialRelayBlockedLimit {
+		t.Fatalf("unexpected removal updates: %#v", updates)
+	}
+	if len(next) != 1 || next[0].MaxLimit != commercialRelayBlockedLimit {
+		t.Fatalf("managed budget should retain the expiry block: %#v", next)
+	}
+}
+
+func TestCommercialRelayManagedPlanSumsSharedProviderBudget(t *testing.T) {
+	shared := []string{"model-a", "model-b"}
+	relayUser := &commercialRelayUsageUser{Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+		{Provider: "shared-provider", Model: "model-a", AllowedModels: shared, SharedBudget: true, Budget: commercialRelayBudget{MaxLimit: 5}},
+		{Provider: "shared-provider", Model: "model-b", AllowedModels: shared, SharedBudget: true, Budget: commercialRelayBudget{MaxLimit: 5}},
+	}}}
+	summary := &types.CommercialSummary{UID: 38, TotalsByModel: map[string]float64{"model-a": 10, "model-b": 20}}
+	updates, next := commercialRelayManagedPlan(38, summary, relayUser, nil)
+	if len(updates) != 1 || updates[0].MaxLimit != 30 {
+		t.Fatalf("shared budget should be summed once: %#v", updates)
+	}
+	if len(next) != 2 || next[0].MaxLimit != 30 || next[1].MaxLimit != 30 {
+		t.Fatalf("shared ownership records should retain the summed limit: %#v", next)
+	}
+}
+
+func TestCommercialRelayDryRunRecognizesSharedProviderBudget(t *testing.T) {
+	shared := []string{"model-a", "model-b"}
+	relayUser := &commercialRelayUsageUser{Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+		{Provider: "shared-provider", Model: "model-a", AllowedModels: shared, SharedBudget: true, Budget: commercialRelayBudget{MaxLimit: 30}},
+		{Provider: "shared-provider", Model: "model-b", AllowedModels: shared, SharedBudget: true, Budget: commercialRelayBudget{MaxLimit: 30}},
+	}}}
+	summary := &types.CommercialSummary{UID: 38, TotalsByModel: map[string]float64{"model-a": 10, "model-b": 20}}
+	dryRun := compareCommercialRelayBudgets(38, summary, relayUser)
+	if dryRun.CanApply || len(dryRun.ProposedUpdates) != 0 {
+		t.Fatalf("shared budget should already match: %#v", dryRun.ProposedUpdates)
+	}
+	if len(dryRun.Comparisons) != 2 || dryRun.Comparisons[0].Status != "match" || dryRun.Comparisons[1].Status != "match" {
+		t.Fatalf("unexpected comparisons: %#v", dryRun.Comparisons)
+	}
+}
+
+func TestTruncateUTF8DoesNotSplitRune(t *testing.T) {
+	value := truncateUTF8Bytes("CatsCo 教师套餐", 10)
+	if !strings.HasPrefix("CatsCo 教师套餐", value) || len(value) > 10 {
+		t.Fatalf("invalid truncation %q", value)
+	}
+}
+
+func TestAlipayPaymentStaysDisabledWithoutSecrets(t *testing.T) {
+	for _, name := range []string{
+		"CATS_ALIPAY_APP_ID",
+		"CATS_ALIPAY_SELLER_ID",
+		"CATS_ALIPAY_PRIVATE_KEY_FILE",
+		"CATS_ALIPAY_PUBLIC_KEY_FILE",
+		"CATS_ALIPAY_NOTIFY_URL",
+		"CATS_ALIPAY_RETURN_URL",
+	} {
+		t.Setenv(name, "")
+	}
+	provider, missing, err := NewAlipayPagePaymentProviderFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider != nil || len(missing) != 6 {
+		t.Fatalf("provider=%#v missing=%#v", provider, missing)
+	}
+}
+
+func TestAlipayPaymentRejectsUnsafeNotifyURL(t *testing.T) {
+	t.Setenv("CATS_ALIPAY_APP_ID", "2026000000000001")
+	t.Setenv("CATS_ALIPAY_SELLER_ID", "2088000000000001")
+	t.Setenv("CATS_ALIPAY_PRIVATE_KEY_FILE", "unused-private-key.pem")
+	t.Setenv("CATS_ALIPAY_PUBLIC_KEY_FILE", "unused-public-key.pem")
+	t.Setenv("CATS_ALIPAY_NOTIFY_URL", "http://app.catsco.cc/api/payments/alipay/notify?source=test")
+	t.Setenv("CATS_ALIPAY_RETURN_URL", "https://app.catsco.cc/")
+
+	provider, missing, err := NewAlipayPagePaymentProviderFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "HTTPS URL without query or fragment") {
+		t.Fatalf("expected unsafe notify URL to be rejected, got provider=%#v missing=%#v err=%v", provider, missing, err)
+	}
+}
+
+func TestAlipayPaymentRejectsUnsafeReturnURL(t *testing.T) {
+	t.Setenv("CATS_ALIPAY_APP_ID", "2026000000000001")
+	t.Setenv("CATS_ALIPAY_SELLER_ID", "2088000000000001")
+	t.Setenv("CATS_ALIPAY_PRIVATE_KEY_FILE", "unused-private-key.pem")
+	t.Setenv("CATS_ALIPAY_PUBLIC_KEY_FILE", "unused-public-key.pem")
+	t.Setenv("CATS_ALIPAY_NOTIFY_URL", "https://app.catsco.cc/api/payments/alipay/notify")
+	t.Setenv("CATS_ALIPAY_RETURN_URL", "javascript:alert(1)")
+
+	provider, missing, err := NewAlipayPagePaymentProviderFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "HTTPS URL without fragment") {
+		t.Fatalf("expected unsafe return URL to be rejected, got provider=%#v missing=%#v err=%v", provider, missing, err)
+	}
+}
+
+func TestAlipayPaymentLoadsFileBackedKeys(t *testing.T) {
+	appPrivatePEM, _ := generateAlipayTestKeyPair(t)
+	_, alipayPublicPEM := generateAlipayTestKeyPair(t)
+	dir := t.TempDir()
+	privateKeyPath := filepath.Join(dir, "app_private_key.pem")
+	publicKeyPath := filepath.Join(dir, "alipay_public_key.pem")
+	for path, content := range map[string][]byte{
+		privateKeyPath: appPrivatePEM,
+		publicKeyPath:  alipayPublicPEM,
+	} {
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("CATS_ALIPAY_APP_ID", "2026000000000001")
+	t.Setenv("CATS_ALIPAY_SELLER_ID", "2088000000000001")
+	t.Setenv("CATS_ALIPAY_PRIVATE_KEY_FILE", privateKeyPath)
+	t.Setenv("CATS_ALIPAY_PUBLIC_KEY_FILE", publicKeyPath)
+	t.Setenv("CATS_ALIPAY_NOTIFY_URL", "https://app.catsco.cc/api/payments/alipay/notify")
+	t.Setenv("CATS_ALIPAY_RETURN_URL", "https://app.catsco.cc/")
+	t.Setenv("CATS_ALIPAY_PRODUCTION", "0")
+	provider, missing, err := NewAlipayPagePaymentProviderFromEnv()
+	if err != nil || provider == nil || len(missing) != 0 {
+		t.Fatalf("provider=%#v missing=%#v err=%v", provider, missing, err)
+	}
+	if provider.(*alipayPagePaymentProvider).production {
+		t.Fatal("Alipay should default to sandbox unless production is explicitly enabled")
+	}
+}
+
+func TestAlipayPaymentCreatesExactPageIntent(t *testing.T) {
+	orderNo := "CC202607140000000000000000000001"
+	paymentURL, err := url.Parse("https://openapi-sandbox.dl.alipaydev.com/gateway.do?method=alipay.trade.page.pay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeAlipayPaymentClient{pageURL: paymentURL}
+	expiresAt := time.Now().UTC().Add(20 * time.Minute).Truncate(time.Second)
+	provider := &alipayPagePaymentProvider{
+		appID: "2026000000000001", sellerID: "2088000000000001",
+		notifyURL: "https://app.catsco.cc/api/payments/alipay/notify",
+		returnURL: "https://app.catsco.cc/", client: fake,
+	}
+	intent, err := provider.CreatePayment(context.Background(), &types.CommercialOrder{
+		OrderNo: orderNo, PlanName: "教师套餐", AmountFen: 2990, Currency: "CNY", ExpiresAt: &expiresAt,
+	})
+	if err != nil || intent == nil || intent.CheckoutURL != paymentURL.String() {
+		t.Fatalf("create Alipay intent: intent=%#v err=%v", intent, err)
+	}
+	trade := fake.lastPagePay.Trade
+	if trade.OutTradeNo != orderNo || trade.TotalAmount != "29.90" || trade.ProductCode != alipayProductCodePagePay ||
+		trade.SellerId != provider.sellerID || trade.NotifyURL != provider.notifyURL ||
+		trade.ReturnURL != provider.returnURL || trade.GoodsType != "0" ||
+		fake.lastPagePay.IntegrationType != alipayIntegrationTypePCWeb {
+		t.Fatalf("unexpected page pay request: %#v", fake.lastPagePay)
+	}
+	if trade.TimeExpire != expiresAt.In(alipayChinaLocation).Format(alipayTimeLayout) {
+		t.Fatalf("unexpected expiry %q", trade.TimeExpire)
+	}
+}
+
+func TestAlipayPaymentNormalizesVerifiedNotification(t *testing.T) {
+	fake := &fakeAlipayPaymentClient{notification: &alipay.Notification{
+		AppId: "2026000000000001", SellerId: "2088000000000001",
+		NotifyType: alipay.NotifyTypeTradeStatusSync, TradeStatus: alipay.TradeStatusSuccess,
+		OutTradeNo: "CC202607140000000000000000000001", TradeNo: "2026071422000000000001",
+		TotalAmount: "29.90", GmtPayment: "2026-07-14 12:34:56",
+	}}
+	provider := &alipayPagePaymentProvider{
+		appID: fake.notification.AppId, sellerID: fake.notification.SellerId,
+		client: fake,
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader("notify_type=trade_status_sync"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	orderNo, confirmation, err := provider.ParseNotification(context.Background(), request)
+	if err != nil || orderNo != fake.notification.OutTradeNo || confirmation.EventID != fake.notification.TradeNo ||
+		confirmation.AmountFen != 2990 || confirmation.Currency != "CNY" || len(confirmation.PayloadHash) != 64 {
+		t.Fatalf("normalize Alipay notification: order=%q confirmation=%#v err=%v", orderNo, confirmation, err)
+	}
+	fake.notification.SellerId = "unexpected"
+	request = httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader("notify_type=trade_status_sync"))
+	if _, _, err := provider.ParseNotification(context.Background(), request); err == nil || !strings.Contains(err.Error(), "seller mismatch") {
+		t.Fatalf("expected seller mismatch, got %v", err)
+	}
+}
+
+func TestAlipayPaymentRejectsOversizedNotification(t *testing.T) {
+	provider := &alipayPagePaymentProvider{client: &fakeAlipayPaymentClient{}}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/payments/alipay/notify",
+		strings.NewReader(strings.Repeat("x", maxAlipayNotificationBytes+1)),
+	)
+
+	if _, _, err := provider.ParseNotification(context.Background(), request); err == nil ||
+		!strings.Contains(err.Error(), "request body is too large") {
+		t.Fatalf("expected oversized notification to be rejected, got %v", err)
+	}
+}
+
+func TestAlipayPaymentVerifiesRealRSA2Notification(t *testing.T) {
+	appPrivatePEM, _ := generateAlipayTestKeyPair(t)
+	alipayPrivatePEM, alipayPublicPEM := generateAlipayTestKeyPair(t)
+	receiver, err := alipay.New("2026000000000001", string(appPrivatePEM), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := receiver.LoadAliPayPublicKey(string(alipayPublicPEM)); err != nil {
+		t.Fatal(err)
+	}
+	signer, err := alipay.New("signer", string(alipayPrivatePEM), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := url.Values{
+		"app_id":       {"2026000000000001"},
+		"seller_id":    {"2088000000000001"},
+		"notify_type":  {alipay.NotifyTypeTradeStatusSync},
+		"trade_status": {string(alipay.TradeStatusSuccess)},
+		"out_trade_no": {"CC202607140000000000000000000001"},
+		"trade_no":     {"2026071422000000000001"},
+		"total_amount": {"29.90"},
+		"gmt_payment":  {"2026-07-14 12:34:56"},
+	}
+	signature, err := signer.SignValues(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values.Set("sign_type", "RSA2")
+	values.Set("sign", base64.StdEncoding.EncodeToString(signature))
+	provider := &alipayPagePaymentProvider{
+		appID: "2026000000000001", sellerID: "2088000000000001", client: receiver,
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader(values.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if _, confirmation, err := provider.ParseNotification(context.Background(), request); err != nil || confirmation.AmountFen != 2990 {
+		t.Fatalf("verify signed Alipay notification: confirmation=%#v err=%v", confirmation, err)
+	}
+	values.Set("total_amount", "0.01")
+	request = httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader(values.Encode()))
+	if _, _, err := provider.ParseNotification(context.Background(), request); err == nil {
+		t.Fatal("tampered Alipay notification should fail signature verification")
+	}
+}
+
+func TestAlipayPaymentQueryFallbackNormalizesPaidOrder(t *testing.T) {
+	fake := &fakeAlipayPaymentClient{query: &alipay.TradeQueryRsp{
+		Error:   alipay.Error{Code: alipay.Code("10000")},
+		TradeNo: "2026071422000000000001", OutTradeNo: "CC-QUERY-PAID",
+		TradeStatus: alipay.TradeStatusSuccess, TotalAmount: "29.90", SendPayDate: "2026-07-14 12:34:56",
+	}}
+	provider := &alipayPagePaymentProvider{client: fake}
+	confirmation, paid, err := provider.QueryPayment(context.Background(), &types.CommercialOrder{OrderNo: "CC-QUERY-PAID"})
+	if err != nil || !paid || confirmation.AmountFen != 2990 || confirmation.ProviderTradeNo != fake.query.TradeNo {
+		t.Fatalf("query paid order: paid=%v confirmation=%#v err=%v", paid, confirmation, err)
+	}
+	if fake.lastQuery.OutTradeNo != "CC-QUERY-PAID" {
+		t.Fatalf("unexpected query request: %#v", fake.lastQuery)
+	}
+}
+
+func TestAlipayNotifyHandlerAcknowledgesOnlyFulfilledOrders(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-ALI-NOTIFY"] = &types.CommercialOrder{
+		OrderNo: "CC-ALI-NOTIFY", UID: 38, Channel: commercialPaymentChannelAlipayPage,
+		Status: "pending", AmountFen: 2990, Currency: "CNY",
+	}
+	fake := &fakeAlipayPaymentClient{notification: &alipay.Notification{
+		AppId: "2026000000000001", SellerId: "2088000000000001",
+		NotifyType: alipay.NotifyTypeTradeStatusSync, TradeStatus: alipay.TradeStatusSuccess,
+		OutTradeNo: "CC-ALI-NOTIFY", TradeNo: "2026071422000000000001", TotalAmount: "29.90",
+	}}
+	provider := &alipayPagePaymentProvider{appID: fake.notification.AppId, sellerID: fake.notification.SellerId, client: fake}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{Providers: []CommercialPaymentProvider{provider}})
+	for range 2 {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader("notify_type=trade_status_sync"))
+		handler.HandleAlipayNotify(recorder, request)
+		if recorder.Code != http.StatusOK || recorder.Body.String() != "success" {
+			t.Fatalf("notify response status=%d body=%q", recorder.Code, recorder.Body.String())
+		}
+	}
+	if store.orders["CC-ALI-NOTIFY"].Status != "fulfilled" {
+		t.Fatalf("order was not fulfilled: %#v", store.orders["CC-ALI-NOTIFY"])
+	}
+}
+
+func TestAlipayNotifyHandlerRejectsUnavailableAndMismatchedPayments(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-ALI-MISMATCH"] = &types.CommercialOrder{
+		OrderNo: "CC-ALI-MISMATCH", UID: 38, Channel: commercialPaymentChannelAlipayPage,
+		Status: "pending", AmountFen: 2990, Currency: "CNY",
+	}
+
+	disabledHandler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{})
+	recorder := httptest.NewRecorder()
+	disabledHandler.HandleAlipayNotify(
+		recorder,
+		httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader("")),
+	)
+	if recorder.Code != http.StatusServiceUnavailable || recorder.Body.String() != "failure" {
+		t.Fatalf("disabled notify response status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+
+	fake := &fakeAlipayPaymentClient{notification: &alipay.Notification{
+		AppId: "2026000000000001", SellerId: "2088000000000001",
+		NotifyType: alipay.NotifyTypeTradeStatusSync, TradeStatus: alipay.TradeStatusSuccess,
+		OutTradeNo: "CC-ALI-MISMATCH", TradeNo: "2026071422000000000002", TotalAmount: "0.01",
+	}}
+	provider := &alipayPagePaymentProvider{
+		appID: fake.notification.AppId, sellerID: fake.notification.SellerId, client: fake,
+	}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		Providers: []CommercialPaymentProvider{provider},
+	})
+
+	recorder = httptest.NewRecorder()
+	handler.HandleAlipayNotify(
+		recorder,
+		httptest.NewRequest(http.MethodGet, "/api/payments/alipay/notify", nil),
+	)
+	if recorder.Code != http.StatusMethodNotAllowed || recorder.Body.String() != "failure" {
+		t.Fatalf("method notify response status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.HandleAlipayNotify(
+		recorder,
+		httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader("notify_type=trade_status_sync")),
+	)
+	if recorder.Code != http.StatusConflict || recorder.Body.String() != "failure" {
+		t.Fatalf("mismatched notify response status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if store.orders["CC-ALI-MISMATCH"].Status != "pending" {
+		t.Fatalf("mismatched payment must not fulfill order: %#v", store.orders["CC-ALI-MISMATCH"])
+	}
+}
+
+func TestAlipayMoneyParsingIsExact(t *testing.T) {
+	for input, expected := range map[string]int64{"0.01": 1, "1": 100, "29.9": 2990, "29.90": 2990} {
+		actual, err := parseCNYFen(input)
+		if err != nil || actual != expected {
+			t.Fatalf("parse %q: actual=%d expected=%d err=%v", input, actual, expected, err)
+		}
+	}
+	for _, input := range []string{"", "-1.00", "+1.00", "1.001", "1.", ".01", "abc", "92233720368547758.08"} {
+		if _, err := parseCNYFen(input); err == nil {
+			t.Fatalf("expected %q to be rejected", input)
+		}
+	}
+}
+
+func generateAlipayTestKeyPair(t *testing.T) ([]byte, []byte) {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER}),
+		pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER})
+}

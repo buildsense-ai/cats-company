@@ -92,6 +92,8 @@ CATS_RELAY_COMMERCIAL_ENFORCE_ENABLED=1
 
 - 默认尚未把 commercial quota 作为 relay 强制限额来源；真实接管需要显式开启 `CATS_RELAY_COMMERCIAL_ENFORCE_ENABLED` 并由管理员手动同步。
 - 尚未把 Bifrost 实际调用成本写入 `commercial_quota_ledger` 的消耗项。
+
+支付灰度、订单履约、体验包和自动 Relay 同步见 [COMMERCIAL_PAYMENT_GRAY.md](./COMMERCIAL_PAYMENT_GRAY.md)。
 - 尚未做支付、订单、发票、退款。
 - 尚未做组织/学校维度预算池。
 

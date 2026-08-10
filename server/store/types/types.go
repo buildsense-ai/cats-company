@@ -65,13 +65,73 @@ type CommercialPlan struct {
 	Slug          string             `json:"slug"`
 	Name          string             `json:"name"`
 	Description   string             `json:"description,omitempty"`
-	MonthlyBudget float64            `json:"monthly_budget_cny"`
+	PriceFen      int64              `json:"price_fen"`
+	Currency      string             `json:"currency"`
+	SaleState     string             `json:"sale_state"`
+	PurchaseLimit int                `json:"purchase_limit"`
+	MonthlyBudget float64            `json:"monthly_budget_cny,omitempty"`
 	ModelBudgets  map[string]float64 `json:"model_budgets,omitempty"`
-	DurationDays  int                `json:"duration_days"`
-	State         int                `json:"state"`
-	SortOrder     int                `json:"sort_order"`
-	CreatedAt     time.Time          `json:"created_at"`
-	UpdatedAt     time.Time          `json:"updated_at"`
+	// InternalQuotaTokens is an operator-only SOL-equivalent capacity reference.
+	// Relay enforcement continues to use the CNY budgets above.
+	InternalQuotaTokens int64     `json:"internal_quota_tokens,omitempty"`
+	DurationDays        int       `json:"duration_days"`
+	State               int       `json:"state"`
+	SortOrder           int       `json:"sort_order"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+// CommercialOrder is an immutable purchase snapshot plus its payment and
+// fulfillment state. Provider secrets and raw callback bodies are never stored.
+type CommercialOrder struct {
+	ID                int64              `json:"id"`
+	OrderNo           string             `json:"order_no"`
+	UID               int64              `json:"uid"`
+	PlanID            int64              `json:"plan_id"`
+	PlanSlug          string             `json:"plan_slug"`
+	PlanName          string             `json:"plan_name"`
+	PlanDescription   string             `json:"plan_description,omitempty"`
+	PlanDurationDays  int                `json:"plan_duration_days"`
+	PlanMonthlyBudget float64            `json:"plan_monthly_budget_cny,omitempty"`
+	PlanModelBudgets  map[string]float64 `json:"plan_model_budgets,omitempty"`
+	AmountFen         int64              `json:"amount_fen"`
+	Currency          string             `json:"currency"`
+	Channel           string             `json:"channel"`
+	Status            string             `json:"status"`
+	ProviderTradeNo   string             `json:"provider_trade_no,omitempty"`
+	CheckoutURL       string             `json:"checkout_url,omitempty"`
+	ClientRequestID   string             `json:"-"`
+	ExpiresAt         *time.Time         `json:"expires_at,omitempty"`
+	PaidAt            *time.Time         `json:"paid_at,omitempty"`
+	FulfilledAt       *time.Time         `json:"fulfilled_at,omitempty"`
+	ClosedAt          *time.Time         `json:"closed_at,omitempty"`
+	LastError         string             `json:"-"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at"`
+}
+
+// CommercialPaymentConfirmation is the normalized, verified result emitted by
+// a payment provider. PayloadHash is retained for audit without storing PII.
+type CommercialPaymentConfirmation struct {
+	Channel         string
+	EventID         string
+	ProviderTradeNo string
+	AmountFen       int64
+	Currency        string
+	PaidAt          time.Time
+	PayloadHash     string
+}
+
+// CommercialManagedRelayBudget records model budgets that CatsCompany owns.
+// Expiry reconciliation only removes entries present in this table.
+type CommercialManagedRelayBudget struct {
+	UID           int64     `json:"uid"`
+	Model         string    `json:"model"`
+	Provider      string    `json:"provider"`
+	AllowedModels []string  `json:"allowed_models"`
+	MaxLimit      float64   `json:"max_limit"`
+	ResetDuration string    `json:"reset_duration"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // CommercialInviteCode grants a plan entitlement when redeemed by a user.

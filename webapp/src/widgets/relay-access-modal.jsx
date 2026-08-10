@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CalendarDays, Check, Copy, ExternalLink, Gift, KeyRound, RotateCcw, Server, Sparkles, Trash2, X } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, CalendarDays, Check, Copy, CreditCard, ExternalLink, Gift, KeyRound, ReceiptText, RotateCcw, Server, Sparkles, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 
@@ -13,6 +13,41 @@ const FALLBACK_CONFIG = {
   key_hint: '访问凭证由 CatsCo 管理员发放。请妥善保存，泄露后可联系管理员撤销并重建。',
   docs_url: 'https://relay.catsco.cc',
   self_service_enabled: false,
+};
+
+const COMMERCIAL_PLAN_PRESENTATION = {
+  'catsco-trial-3d': {
+    kicker: '先感受',
+    tagline: '先跑一次真实任务',
+    audience: '首次体验 · 每位用户限购一次',
+    usageLabel: '体验用量',
+  },
+  'catsco-plus-minus': {
+    kicker: '轻松开始',
+    tagline: '轻量日常助手',
+    audience: '轻度使用 · 从体验转向月度使用',
+    usageLabel: '轻量用量',
+  },
+  'catsco-plus': {
+    kicker: '日常主力',
+    tagline: '稳定日常协作',
+    audience: '稳定日用 · 默认推荐',
+    usageLabel: '标准用量',
+    recommended: true,
+  },
+  'catsco-plus-plus': {
+    kicker: '高频推进',
+    tagline: '复杂任务与高频推进',
+    audience: '个人高频 · 专业工作流',
+    usageLabel: '高频用量',
+  },
+  'catsco-team-monthly': {
+    kicker: '多人协作',
+    tagline: '多人共享与并行协作',
+    audience: '多人使用 · 重度协作',
+    usageLabel: '团队用量',
+    wide: true,
+  },
 };
 
 function protocolLabel(protocol) {
@@ -84,6 +119,100 @@ function formatShortDateTime(value) {
   });
 }
 
+function formatPriceFen(value) {
+  return `¥${(Number(value || 0) / 100).toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+}
+
+function commercialPlanPresentation(plan) {
+  return COMMERCIAL_PLAN_PRESENTATION[plan?.slug] || {
+    kicker: '协作套餐',
+    tagline: plan?.name || '稳定协作',
+    audience: `${Number(plan?.duration_days || 30)} 天有效`,
+    usageLabel: '套餐用量',
+  };
+}
+
+function commercialPlanCycle(plan) {
+  const durationDays = Number(plan?.duration_days || 30);
+  if (durationDays === 3) return '/ 3天';
+  if (durationDays === 30) return '/ 月';
+  return `/ ${durationDays}天`;
+}
+
+function commercialOrderStatus(status) {
+  return {
+    created: '创建中',
+    pending: '待支付',
+    paid: '已支付',
+    fulfilled: '额度同步中',
+    closed: '已关闭',
+    failed: '创建失败',
+    refunding: '退款中',
+    refunded: '已退款',
+  }[status] || status || '未知状态';
+}
+
+function newCommercialClientRequestID() {
+  const random = globalThis.crypto?.randomUUID?.().replaceAll('-', '') || Math.random().toString(36).slice(2);
+  return `order_${Date.now()}_${random}`.slice(0, 64);
+}
+
+const COMMERCIAL_PAYMENT_REQUEST_STORAGE_KEY = 'catsco_commercial_payment_request_ids_v1';
+
+function commercialClientRequestIDValid(value) {
+  return typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_-]{7,63}$/.test(value);
+}
+
+function loadCommercialPaymentRequestIDs() {
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(COMMERCIAL_PAYMENT_REQUEST_STORAGE_KEY) || '{}');
+    const freshAfter = Date.now() - (30 * 60 * 1000);
+    return new Map(Object.entries(parsed).flatMap(([key, value]) => {
+      const id = typeof value === 'string' ? value : value?.id;
+      const createdAt = typeof value === 'string' ? Date.now() : Number(value?.created_at || 0);
+      return key && commercialClientRequestIDValid(id) && createdAt >= freshAfter ? [[key, id]] : [];
+    }));
+  } catch {
+    return new Map();
+  }
+}
+
+function saveCommercialPaymentRequestIDs(requestIDs) {
+  try {
+    window.sessionStorage.setItem(
+      COMMERCIAL_PAYMENT_REQUEST_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(
+        [...requestIDs].map(([key, id]) => [key, { id, created_at: Date.now() }]),
+      )),
+    );
+  } catch {
+    // In-memory idempotency still applies when storage is unavailable.
+  }
+}
+
+function reconcileCommercialPaymentRequestIDs(requestIDs, orders) {
+  const activeKeys = new Set((orders || []).filter((order) => ['created', 'pending'].includes(order?.status)).map(
+    (order) => `${order.plan_id}:${order.channel}`,
+  ));
+  const terminalKeys = new Set((orders || []).filter((order) => (
+    order?.plan_id && order?.channel && !['created', 'pending'].includes(order.status)
+  )).map((order) => `${order.plan_id}:${order.channel}`));
+  let changed = false;
+  for (const key of requestIDs.keys()) {
+    if (!activeKeys.has(key) && terminalKeys.has(key)) {
+      requestIDs.delete(key);
+      changed = true;
+    }
+  }
+  if (changed) saveCommercialPaymentRequestIDs(requestIDs);
+}
+
+function clearCommercialPaymentRequestIDForOrder(requestIDs, order) {
+  if (!order?.plan_id || !order?.channel) return;
+  if (requestIDs.delete(`${order.plan_id}:${order.channel}`)) {
+    saveCommercialPaymentRequestIDs(requestIDs);
+  }
+}
 
 function formatPercent(value) {
   const number = Number(value || 0);
@@ -97,9 +226,13 @@ function modelBudgetLabel(model) {
 }
 
 function summarizeCommercial(summary) {
-  const models = summary?.models || [];
+  const models = commercialModels(summary);
   if (!models.length) return '暂无已发放额度';
-  return `已发放 ${models.length} 项模型额度`;
+  return `${models.length} 个模型额度可用 · 具体容量按用量百分比展示`;
+}
+
+function commercialUsageTextForUser(plan, presentation) {
+  return `${presentation?.usageLabel || '套餐用量'} · ${Number(plan?.duration_days || 30)} 天有效`;
 }
 
 function activeEntitlements(summary) {
@@ -252,7 +385,7 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
       className: 'inactive',
       model: summary.model || fallbackModel,
       title: '当前模型未设置额度',
-      meta: `${summary.provider ? `${summary.provider} · ` : ''}额度未配置`,
+      meta: `${summary.provider ? `${summary.provider} · ` : ''}用量待同步`,
       detail: '等待模型限额同步',
       percent: 0,
       note: '管理员同步模型额度后，这里会显示剩余额度和用量百分比。',
@@ -263,12 +396,14 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
   const remainingPercent = Math.max(0, Number(summary.remaining_percent ?? (100 - percent)));
   const overLimit = summary.status === 'over_limit';
   const high = !overLimit && (summary.status === 'high' || percent >= 90);
+  const usedLabel = overLimit ? '已用 100%+' : `已用 ${formatPercent(percent)}`;
+  const remainingLabel = overLimit ? '剩余 0%' : `剩余 ${formatPercent(remainingPercent)}`;
   return {
     className: overLimit ? 'danger' : high ? 'warning' : 'active',
     model: summary.model || fallbackModel,
     title: overLimit ? '当前模型已超额' : high ? '当前模型接近上限' : '当前模型额度',
-    meta: `${summary.provider ? `${summary.provider} · ` : ''}已用 ${overLimit ? '100%+' : formatPercent(percent)}`,
-    detail: overLimit ? '剩余额度 0%' : `剩余 ${formatPercent(remainingPercent)}`,
+    meta: `${summary.provider ? `${summary.provider} · ` : ''}${usedLabel}`,
+    detail: remainingLabel,
     percent,
     note: overLimit
       ? '这组模型额度已超出，后续调用应被 relay 拦截；请联系管理员补额或重置。'
@@ -276,19 +411,23 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
   };
 }
 
-function budgetUsageMeta(model, usageByModel) {
+function budgetUsageDisplay(model, usageByModel) {
   const { loading, summary: usage } = usageStateForModel(usageByModel, model);
-  if (loading) return '额度读取中';
-  if (!usage) return '额度未同步';
-  if (usage.source === 'custom' || usage.status === 'custom') return '自定义模型不计入模型服务套餐';
-  if (!usage.model || usage.quota_configured !== true) return '额度未同步';
+  if (loading) return { label: '读取中', meta: '用量读取中' };
+  if (!usage) return { label: '待同步', meta: '未同步到 relay' };
+  if (usage.source === 'custom' || usage.status === 'custom') {
+    return { label: '自备额度', meta: '自定义模型不计入模型服务套餐' };
+  }
+  if (!usage.model || usage.quota_configured !== true) return { label: '待同步', meta: '未同步到 relay' };
+  const overLimit = usage.status === 'over_limit';
   const rawPercent = Number(usage.percent || 0);
   const percent = Math.min(100, Math.max(0, rawPercent));
-  const overLimit = usage.status === 'over_limit';
+  const remainingPercent = Math.max(0, Number(usage.remaining_percent ?? (100 - percent)));
   const resetLabel = usage.reset_duration ? ` · ${resetDurationLabel(usage.reset_duration)}` : '';
-  const usedLabel = overLimit ? '100%+' : formatPercent(percent);
-  const remainingLabel = overLimit ? '0%' : formatPercent(100 - percent);
-  return `${overLimit ? '已超额 · ' : ''}已用 ${usedLabel} · 剩余 ${remainingLabel}${resetLabel}`;
+  return {
+    label: overLimit ? '已用 100%+' : `已用 ${formatPercent(percent)}`,
+    meta: `${overLimit ? '已超额 · ' : ''}剩余 ${formatPercent(overLimit ? 0 : remainingPercent)}${resetLabel}`,
+  };
 }
 
 function nearestPackageExpiry(packages) {
@@ -303,6 +442,14 @@ function commercialRolloutLabel(commercial) {
   if (commercial?.enforce_enabled) return '已接管';
   if (commercial?.enabled) return '账本灰度';
   return '未开放';
+}
+
+function paymentChannelLabel(channels, channel) {
+  const configured = channels.find(item => item.id === channel)?.label;
+  if (configured) return configured;
+  if (channel === 'alipay_page') return '支付宝支付';
+  if (channel === 'test') return '灰度测试支付';
+  return '在线支付';
 }
 
 function extractPlainRelayKey(data) {
@@ -333,56 +480,87 @@ export default function RelayAccessModal({ onClose }) {
   const [keyLoading, setKeyLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState('');
   const [commercial, setCommercial] = useState(null);
+  const [commercialCatalog, setCommercialCatalog] = useState(null);
+  const [commercialOrders, setCommercialOrders] = useState([]);
+  const [paymentChannel, setPaymentChannel] = useState('');
+  const [checkoutOrder, setCheckoutOrder] = useState(null);
+  const [paymentLoading, setPaymentLoading] = useState('');
+  const [paymentPollError, setPaymentPollError] = useState('');
+  const [trialLoading, setTrialLoading] = useState(false);
   const [currentUsage, setCurrentUsage] = useState(undefined);
   const [usageByModel, setUsageByModel] = useState({});
   const [inviteCode, setInviteCode] = useState('');
   const [inviteLoading, setInviteLoading] = useState(false);
   const [error, setError] = useState('');
+  const [warning, setWarning] = useState('');
   const [copied, setCopied] = useState('');
+  const paymentRequestIDs = useRef(loadCommercialPaymentRequestIDs());
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
+    const requestOptions = { signal: controller.signal, timeoutMs: 20_000 };
     async function load() {
       setLoading(true);
       setError('');
+      let nextConfig = FALLBACK_CONFIG;
       try {
-        const data = await api.getRelayConfig();
-        if (cancelled) return;
-        const nextConfig = {
+        const data = await api.getRelayConfig(requestOptions);
+        nextConfig = {
           ...FALLBACK_CONFIG,
           ...data,
           endpoints: Array.isArray(data.endpoints) && data.endpoints.length > 0
             ? data.endpoints
             : FALLBACK_CONFIG.endpoints,
         };
-        setConfig(nextConfig);
-        if (nextConfig.self_service_enabled) {
-          setKeyLoading(true);
-          try {
-            const keyData = await api.getRelayKey();
-            if (!cancelled) setRelayKey(keyData.key || null);
-          } finally {
-            if (!cancelled) setKeyLoading(false);
-          }
-        }
-        try {
-          const commercialData = await api.getRelayCommercial();
-          if (!cancelled) setCommercial(commercialData);
-        } catch (err) {
-          if (!cancelled) setCommercial(null);
-        }
+        if (!cancelled) setConfig(nextConfig);
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && err.code !== 'REQUEST_ABORTED') {
           console.warn('Failed to load relay config:', err);
           setError('配置读取失败，已显示默认配置');
         }
-      } finally {
-        if (!cancelled) setLoading(false);
       }
+      if (nextConfig.self_service_enabled) {
+        try {
+          setKeyLoading(true);
+          const keyData = await api.getRelayKey(requestOptions);
+          if (!cancelled) setRelayKey(keyData.key || null);
+        } catch {
+          if (!cancelled) setRelayKey(null);
+        } finally {
+          if (!cancelled) setKeyLoading(false);
+        }
+      }
+      const [commercialResult, catalogResult, ordersResult] = await Promise.allSettled([
+        api.getRelayCommercial(requestOptions),
+        api.getCommercialCatalog(requestOptions),
+        api.getCommercialOrders('', requestOptions),
+      ]);
+      if (cancelled) return;
+      setCommercial(commercialResult.status === 'fulfilled' ? commercialResult.value : null);
+      if (catalogResult.status === 'fulfilled') {
+        const catalogData = catalogResult.value;
+        setCommercialCatalog(catalogData);
+        const channels = Array.isArray(catalogData?.channels) ? catalogData.channels : [];
+        setPaymentChannel(channels[0]?.id || '');
+      } else {
+        setCommercialCatalog(null);
+      }
+      if (ordersResult.status === 'fulfilled') {
+        const orders = Array.isArray(ordersResult.value?.orders) ? ordersResult.value.orders : [];
+        setCommercialOrders(orders);
+        reconcileCommercialPaymentRequestIDs(paymentRequestIDs.current, orders);
+        setCheckoutOrder((current) => current || orders.find((order) => ['created', 'pending'].includes(order.status)) || null);
+      } else {
+        setCommercialOrders([]);
+        setError('订单状态读取失败，请关闭后重试。');
+      }
+      if (!cancelled) setLoading(false);
     }
     load();
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, []);
 
@@ -515,8 +693,11 @@ export default function RelayAccessModal({ onClose }) {
   const commercialSummary = commercial?.summary;
   const commercialEnabled = commercial?.enabled === true && commercialSummary;
   const commercialEnforced = commercial?.enforce_enabled === true;
+  const salePlans = Array.isArray(commercialCatalog?.plans) ? commercialCatalog.plans : [];
+  const paymentChannels = Array.isArray(commercialCatalog?.channels) ? commercialCatalog.channels : [];
+  const checkoutPaymentLabel = paymentChannelLabel(paymentChannels, checkoutOrder?.channel);
   const activePackages = activeEntitlements(commercialSummary);
-  const modelTotals = commercialModels(commercialSummary);
+  const packageModels = commercialModels(commercialSummary);
   const packageExpiry = nearestPackageExpiry(activePackages);
   const packageExpiryText = activePackages.length > 0 ? formatShortDate(packageExpiry) : '无套餐';
   const currentResetInfo = usageResetInfo(currentUsage);
@@ -538,7 +719,7 @@ export default function RelayAccessModal({ onClose }) {
 
   useEffect(() => {
     let cancelled = false;
-    const models = modelTotals.map((model) => modelUsageKey(model)).filter(Boolean);
+    const models = packageModels.map(modelUsageKey).filter(Boolean);
     if (!commercialEnabled || models.length === 0) {
       setUsageByModel({});
       return () => {
@@ -573,7 +754,7 @@ export default function RelayAccessModal({ onClose }) {
     return () => {
       cancelled = true;
     };
-  }, [commercialEnabled, JSON.stringify(modelTotals)]);
+  }, [commercialEnabled, JSON.stringify(packageModels)]);
 
   const redeemInvite = async () => {
     const code = inviteCode.trim();
@@ -596,6 +777,203 @@ export default function RelayAccessModal({ onClose }) {
     }
   };
 
+  const refreshCommercialState = async (options = {}) => {
+    const [commercialResult, catalogResult, ordersResult] = await Promise.allSettled([
+      api.getRelayCommercial(options),
+      api.getCommercialCatalog(options),
+      api.getCommercialOrders('', options),
+    ]);
+    if (commercialResult.status === 'fulfilled') setCommercial(commercialResult.value);
+    if (catalogResult.status === 'fulfilled') {
+      const catalogData = catalogResult.value;
+      setCommercialCatalog(catalogData);
+      const channels = Array.isArray(catalogData?.channels) ? catalogData.channels : [];
+      setPaymentChannel((current) => channels.some((channel) => channel.id === current) ? current : (channels[0]?.id || ''));
+    }
+    if (ordersResult.status === 'fulfilled') {
+      const orders = Array.isArray(ordersResult.value?.orders) ? ordersResult.value.orders : [];
+      setCommercialOrders(orders);
+      reconcileCommercialPaymentRequestIDs(paymentRequestIDs.current, orders);
+    }
+    const failed = [commercialResult, catalogResult, ordersResult].find((result) => result.status === 'rejected');
+    if (failed) throw failed.reason;
+  };
+
+  const createCommercialOrder = async (plan) => {
+    if (!paymentChannel) {
+      setError('支付通道尚未配置。');
+      return;
+    }
+    const existing = commercialOrders.find((order) => (
+      ['created', 'pending'].includes(order.status) && order.plan_id === plan.id && order.channel === paymentChannel
+    ));
+    if (existing) {
+      setPaymentPollError('');
+      setCheckoutOrder(existing);
+      setError('');
+      return;
+    }
+    setPaymentLoading(`create:${plan.id}`);
+    setError('');
+    setWarning('');
+    const requestKey = `${plan.id}:${paymentChannel}`;
+    const clientRequestID = paymentRequestIDs.current.get(requestKey) || newCommercialClientRequestID();
+    paymentRequestIDs.current.set(requestKey, clientRequestID);
+    saveCommercialPaymentRequestIDs(paymentRequestIDs.current);
+    try {
+      const data = await api.createCommercialOrder(plan.id, paymentChannel, clientRequestID, { timeoutMs: 40_000 });
+      if (data.order && !['created', 'pending'].includes(data.order.status)) {
+        paymentRequestIDs.current.delete(requestKey);
+        saveCommercialPaymentRequestIDs(paymentRequestIDs.current);
+      }
+      setPaymentPollError('');
+      setCheckoutOrder(data.order || null);
+      setCommercialOrders((current) => {
+        const next = (current || []).filter((item) => item.order_no !== data.order?.order_no);
+        return data.order ? [data.order, ...next] : next;
+      });
+    } catch (err) {
+      if (Number(err.status) >= 400 && Number(err.status) < 500 && Number(err.status) !== 408) {
+        paymentRequestIDs.current.delete(requestKey);
+        saveCommercialPaymentRequestIDs(paymentRequestIDs.current);
+      }
+      if (['NETWORK_ERROR', 'REQUEST_TIMEOUT'].includes(err.code) || Number(err.status) >= 500) {
+        setError('暂时无法确认订单是否创建成功。请勿重复发起新订单；再次点击同一套餐会继续恢复原订单。');
+      } else {
+        setError(err.message || '创建订单失败');
+      }
+    } finally {
+      setPaymentLoading('');
+    }
+  };
+
+  const confirmCommercialTestPayment = async () => {
+    if (!checkoutOrder?.order_no) return;
+    setPaymentLoading(`confirm:${checkoutOrder.order_no}`);
+    setError('');
+    setWarning('');
+    try {
+      const data = await api.confirmCommercialTestPayment(checkoutOrder.order_no);
+      setCheckoutOrder(data.order || checkoutOrder);
+      try {
+        await refreshCommercialState();
+      } catch {
+        setWarning('测试支付已完成，但页面状态暂未全部刷新，请稍后重试。');
+      }
+    } catch (err) {
+      setError(err.message || '测试支付失败');
+    } finally {
+      setPaymentLoading('');
+    }
+  };
+
+  const claimCommercialTrial = async () => {
+    setTrialLoading(true);
+    setError('');
+    setWarning('');
+    try {
+      const data = await api.claimCommercialTrial();
+      setCommercial({ ...(commercial || {}), enabled: true, summary: data.summary });
+      try {
+        await refreshCommercialState();
+      } catch {
+        setWarning('体验包已领取，但页面状态暂未全部刷新，请稍后重试。');
+      }
+    } catch (err) {
+      setError(err.message || '体验包领取失败');
+    } finally {
+      setTrialLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!checkoutOrder?.order_no || !['created', 'pending', 'closed'].includes(checkoutOrder.status)) return undefined;
+    let cancelled = false;
+    let timer = null;
+    let failures = 0;
+    let shouldContinue = true;
+    let closedAttemptsRemaining = checkoutOrder.status === 'closed' ? 3 : 0;
+    let nextDelayMs = checkoutOrder.status === 'closed' ? 11_000 : 2500;
+    const controller = new AbortController();
+    const poll = async () => {
+      try {
+        const data = await api.getCommercialOrders(checkoutOrder.order_no, {
+          signal: controller.signal,
+          timeoutMs: 20_000,
+        });
+        if (cancelled || !data?.order) return;
+        failures = 0;
+        setPaymentPollError('');
+        setCheckoutOrder(data.order);
+        setCommercialOrders((current) => {
+          const next = (current || []).filter((item) => item.order_no !== data.order.order_no);
+          return [data.order, ...next];
+        });
+        if (data.order.status === 'closed') {
+          closedAttemptsRemaining -= 1;
+          shouldContinue = closedAttemptsRemaining > 0;
+          nextDelayMs = 11_000;
+        } else {
+          shouldContinue = ['created', 'pending'].includes(data.order.status);
+          nextDelayMs = 2500;
+        }
+        if (!shouldContinue) {
+          clearCommercialPaymentRequestIDForOrder(paymentRequestIDs.current, data.order);
+        }
+      } catch (err) {
+        if (cancelled || err.code === 'REQUEST_ABORTED') return;
+        failures += 1;
+        if (checkoutOrder.status === 'closed') {
+          closedAttemptsRemaining -= 1;
+          shouldContinue = closedAttemptsRemaining > 0;
+          nextDelayMs = 11_000;
+        }
+        if (failures >= 2) {
+          setPaymentPollError('支付状态暂时未更新，订单已保留，正在继续查询。');
+        }
+      } finally {
+        if (!cancelled && shouldContinue) timer = window.setTimeout(poll, nextDelayMs);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [checkoutOrder?.order_no, checkoutOrder?.status]);
+
+  useEffect(() => {
+    if (!checkoutOrder?.order_no || checkoutOrder.status !== 'fulfilled') return undefined;
+    let cancelled = false;
+    let timer = null;
+    let attempts = 0;
+    const controller = new AbortController();
+    const refresh = async () => {
+      attempts += 1;
+      try {
+        await refreshCommercialState({ signal: controller.signal, timeoutMs: 20_000 });
+        if (!cancelled) {
+          setPaymentPollError('');
+          setWarning('');
+        }
+      } catch (err) {
+        if (cancelled || err.code === 'REQUEST_ABORTED') return;
+        if (attempts < 3) {
+          timer = window.setTimeout(refresh, 5000);
+        } else {
+          setPaymentPollError('支付已经确认，但额度状态暂未刷新。订单已保留，请稍后重新打开查看。');
+        }
+      }
+    };
+    refresh();
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [checkoutOrder?.order_no, checkoutOrder?.status]);
+
   return (
     <div className="oc-modal-overlay" onClick={onClose}>
       <div className="oc-modal relay-access-modal" onClick={(event) => event.stopPropagation()}>
@@ -616,6 +994,7 @@ export default function RelayAccessModal({ onClose }) {
         <div className="relay-access-body">
           {loading && <div className="oc-settings-secondary">正在读取中转配置...</div>}
           {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
+          {warning && <InlineFeedback tone="warning">{warning}</InlineFeedback>}
 
           <div className="relay-access-hero">
             <div className="relay-access-hero-main">
@@ -685,8 +1064,8 @@ export default function RelayAccessModal({ onClose }) {
               <div className="relay-access-commerce-card">
                 <Sparkles size={17} />
                 <div>
-                  <strong>{commercialEnabled ? `${modelTotals.length} 项` : '无套餐'}</strong>
-                  <span>模型额度</span>
+                  <strong>{commercialEnabled && currentUsage ? formatPercent(currentQuota.percent) : '待同步'}</strong>
+                  <span>当前模型用量</span>
                 </div>
               </div>
               <div className="relay-access-commerce-card">
@@ -713,6 +1092,147 @@ export default function RelayAccessModal({ onClose }) {
             </div>
             <div className="relay-access-period-note">{currentResetInfo.note}</div>
 
+            {commercialCatalog?.trial_available && (
+              <div className="relay-access-trial-row">
+                <div>
+                  <strong>新用户体验包</strong>
+                  <span>领取后会直接加入当前模型额度，每个账号限一次。</span>
+                </div>
+                <button type="button" onClick={claimCommercialTrial} disabled={trialLoading}>
+                  {trialLoading ? '领取中...' : '领取体验包'}
+                </button>
+              </div>
+            )}
+
+            {salePlans.length > 0 && (
+              <div className="relay-access-storefront">
+                <div className="relay-access-storefront-head">
+                  <div>
+                    <div className="relay-access-mini-title">选一档，开始你的协作节奏</div>
+                    <span>先选与你当前节奏匹配的一档，需要更多时再升级。</span>
+                  </div>
+                  {paymentChannels.length > 1 ? (
+                    <select value={paymentChannel} onChange={(event) => setPaymentChannel(event.target.value)}>
+                      {paymentChannels.map((channel) => (
+                        <option value={channel.id} key={channel.id}>{channel.label}</option>
+                      ))}
+                    </select>
+                  ) : paymentChannels.length === 1 ? (
+                    <span className="relay-access-payment-channel">{paymentChannels[0].label}</span>
+                  ) : null}
+                </div>
+                <div className="relay-access-plan-list">
+                  {salePlans.map((plan) => {
+                    const presentation = commercialPlanPresentation(plan);
+                    return (
+                      <article
+                        className={`relay-access-plan-row${presentation.recommended ? ' recommended' : ''}${presentation.wide ? ' wide' : ''}`}
+                        key={plan.id}
+                      >
+                        <div className="relay-access-plan-heading">
+                          <span className="relay-access-plan-kicker">{presentation.kicker}</span>
+                          {presentation.recommended && <span className="relay-access-plan-badge">推荐</span>}
+                        </div>
+                        <strong className="relay-access-plan-name">{plan.name}</strong>
+                        <div className="relay-access-plan-price">
+                          <strong>{formatPriceFen(plan.price_fen)}</strong>
+                          <span>{commercialPlanCycle(plan)}</span>
+                        </div>
+                        <span className="relay-access-plan-tagline">{presentation.tagline}</span>
+                        <p>{plan.description || `${plan.duration_days} 天有效`}</p>
+                        <em>{commercialUsageTextForUser(plan, presentation)}</em>
+                        <span className="relay-access-plan-audience">适合：{presentation.audience}</span>
+                        <div className="relay-access-plan-action">
+                          <button
+                            type="button"
+                            onClick={() => createCommercialOrder(plan)}
+                            disabled={!paymentChannel || Boolean(paymentLoading)}
+                          >
+                            <CreditCard size={15} />
+                            {paymentLoading === `create:${plan.id}`
+                              ? '创建中...'
+                              : paymentChannels.length === 0 ? '暂未开放' : '购买'}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+                {paymentChannels.length === 0 && (
+                  <div className="relay-access-period-note">支付宝材料与支付通道仍在准备，当前套餐只能通过邀请码或后台发放。</div>
+                )}
+              </div>
+            )}
+
+            {checkoutOrder && (
+              <div className={`relay-access-checkout ${checkoutOrder.status}`}>
+                <div className="relay-access-checkout-head">
+                  <div>
+                    <strong>{checkoutOrder.plan_name}</strong>
+                    <span>订单 {checkoutOrder.order_no}</span>
+                  </div>
+                  <em>{commercialOrderStatus(checkoutOrder.status)}</em>
+                </div>
+                {checkoutOrder.status === 'pending' && checkoutOrder.checkout_url && (
+                  <div className="relay-access-payment-redirect">
+                    <div>
+                      <strong>{checkoutPaymentLabel} {formatPriceFen(checkoutOrder.amount_fen)}</strong>
+                      <span>将在支付宝官方收银台完成付款；支付成功后此处会自动更新。</span>
+                    </div>
+                    <a
+                      href={checkoutOrder.checkout_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      前往支付宝付款
+                      <ExternalLink size={15} />
+                    </a>
+                  </div>
+                )}
+                {checkoutOrder.status === 'pending' && checkoutOrder.channel !== 'test' && !checkoutOrder.checkout_url && (
+                  <div className="relay-access-period-note">正在恢复支付宝收银台链接，请稍候。</div>
+                )}
+                {checkoutOrder.status === 'created' && (
+                  <div className="relay-access-period-note">订单已保存，正在恢复支付链接。</div>
+                )}
+                {checkoutOrder.status === 'pending' && checkoutOrder.channel === 'test' && commercialCatalog?.test_mode && (
+                  <button
+                    type="button"
+                    className="relay-access-test-payment"
+                    onClick={confirmCommercialTestPayment}
+                    disabled={Boolean(paymentLoading)}
+                  >
+                    {paymentLoading === `confirm:${checkoutOrder.order_no}` ? '入账中...' : '完成灰度测试支付'}
+                  </button>
+                )}
+                {checkoutOrder.status === 'fulfilled' && (
+                  <div className="relay-access-payment-success"><Check size={16} />支付成功，额度正在同步；如暂不可用请稍后刷新。</div>
+                )}
+                {paymentPollError && <InlineFeedback tone="warning">{paymentPollError}</InlineFeedback>}
+              </div>
+            )}
+
+            {commercialOrders.length > 0 && (
+              <div className="relay-access-order-list">
+                <div className="relay-access-mini-title"><ReceiptText size={15} />最近订单</div>
+                {commercialOrders.slice(0, 5).map((order) => (
+                  <button type="button" key={order.order_no} onClick={() => {
+                    setPaymentPollError('');
+                    setCheckoutOrder(order);
+                  }}>
+                    <span>
+                      <strong>{order.plan_name}</strong>
+                      <em>{formatShortDateTime(order.created_at)}</em>
+                    </span>
+                    <span>
+                      <strong>{formatPriceFen(order.amount_fen)}</strong>
+                      <em>{commercialOrderStatus(order.status)}</em>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+
             {commercialEnabled && activePackages.length > 0 && (
               <div className="relay-access-package-list">
                 <div className="relay-access-mini-title">当前套餐</div>
@@ -732,17 +1252,20 @@ export default function RelayAccessModal({ onClose }) {
               </div>
             )}
 
-            {commercialEnabled && modelTotals.length > 0 && (
+            {commercialEnabled && packageModels.length > 0 && (
               <div className="relay-access-budget-list">
-                {modelTotals.map((model) => (
-                  <div key={model}>
-                    <span>
-                      <strong>{modelBudgetLabel(model)}</strong>
-                      <em>{budgetUsageMeta(model, usageByModel)}</em>
-                    </span>
-                    <strong>额度</strong>
-                  </div>
-                ))}
+                {packageModels.map((model) => {
+                  const usageDisplay = budgetUsageDisplay(model, usageByModel);
+                  return (
+                    <div key={model}>
+                      <span>
+                        <strong>{modelBudgetLabel(model)}</strong>
+                        <em>{usageDisplay.meta}</em>
+                      </span>
+                      <strong>{usageDisplay.label}</strong>
+                    </div>
+                  );
+                })}
               </div>
             )}
 

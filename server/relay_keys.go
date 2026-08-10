@@ -278,6 +278,18 @@ func fetchRelayUsageForUID(ctx context.Context, admin *RelayAdminClient, uid int
 	return nil, nil
 }
 
+func fetchRelayLimitsForUID(ctx context.Context, admin *RelayAdminClient, uid int64) (*commercialRelayUsageUser, error) {
+	if admin == nil {
+		return nil, nil
+	}
+	var out commercialRelayUsageUser
+	if err := admin.Do(ctx, http.MethodGet, fmt.Sprintf("/internal/users/%d/key/limits", uid), nil, &out); err != nil {
+		return nil, err
+	}
+	out.UID = uid
+	return &out, nil
+}
+
 func buildRelayUsageResponse(user *commercialRelayUsageUser, preferredModel string) relayUsageResponse {
 	if user == nil || !user.Configured {
 		return relayUsageResponse{Configured: false}

@@ -585,11 +585,20 @@ export const api = {
   assignProjectTopic: (projectId, topicId) => request('POST', '/api/projects/topic', { project_id: projectId, topic_id: topicId }),
   removeProjectTopic: (topicId) => request('DELETE', `/api/projects/topic?topic_id=${encodeURIComponent(topicId)}`),
   updateConversationTitle: (topicId, name) => request('PATCH', '/api/conversations', { topic_id: topicId, name }),
-  getRelayConfig: () => request('GET', '/api/relay/config'),
-  getRelayCommercial: () => request('GET', '/api/relay/commercial'),
+  getRelayConfig: (options = {}) => request('GET', '/api/relay/config', undefined, options),
+  getRelayCommercial: (options = {}) => request('GET', '/api/relay/commercial', undefined, options),
   redeemRelayInvite: (code) => request('POST', '/api/relay/invite/redeem', { code }),
+  getCommercialCatalog: (options = {}) => request('GET', '/api/relay/commercial/catalog', undefined, options),
+  getCommercialOrders: (orderNo = '', options = {}) => request('GET', `/api/relay/commercial/orders${orderNo ? `?order_no=${encodeURIComponent(orderNo)}` : ''}`, undefined, options),
+  createCommercialOrder: (planId, channel, clientRequestId, options = {}) => request('POST', '/api/relay/commercial/orders', {
+    plan_id: planId,
+    channel,
+    client_request_id: clientRequestId,
+  }, options),
+  confirmCommercialTestPayment: (orderNo) => request('POST', '/api/relay/commercial/orders/test-confirm', { order_no: orderNo }),
+  claimCommercialTrial: () => request('POST', '/api/relay/commercial/trial/claim', {}),
   createRelaySession: () => request('POST', '/api/relay/session', {}),
-  getRelayKey: () => request('GET', '/api/relay/key'),
+  getRelayKey: (options = {}) => request('GET', '/api/relay/key', undefined, options),
   getRelayUsage: ({ model, source } = {}) => {
     const params = new URLSearchParams();
     if (model) params.set('model', model);

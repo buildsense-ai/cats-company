@@ -28,10 +28,16 @@ func (a *Adapter) CreateSchema() error {
 		createFeedbackReportsTable,
 		createAuthServicesTable,
 		createCommercialPlansTable,
+		migrateCommercialPlansAddSaleFields,
+		migrateCommercialPlansAddInternalQuota,
 		createCommercialInviteCodesTable,
 		createCommercialEntitlementsTable,
 		createCommercialQuotaGrantsTable,
 		createCommercialQuotaLedgerTable,
+		createCommercialOrdersTable,
+		createCommercialOrderRequestIDsTable,
+		createCommercialPaymentEventsTable,
+		createCommercialManagedRelayBudgetsTable,
 		createChannelAgentEntriesTable,
 		createChannelAgentAccessRequestsTable,
 		createChannelAgentBindingsTable,
@@ -409,17 +415,53 @@ CREATE TABLE IF NOT EXISTS commercial_plans (
     slug VARCHAR(64) NOT NULL UNIQUE,
     name VARCHAR(128) NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+	price_fen BIGINT NOT NULL DEFAULT 0,
+	currency VARCHAR(8) NOT NULL DEFAULT 'CNY',
+	sale_state VARCHAR(16) NOT NULL DEFAULT 'hidden',
+	purchase_limit INT NOT NULL DEFAULT 0,
     monthly_budget_cny NUMERIC(14,6) NOT NULL DEFAULT 0,
     model_budgets JSONB NOT NULL DEFAULT '{}'::jsonb,
+    internal_quota_tokens BIGINT NOT NULL DEFAULT 0,
     duration_days INT NOT NULL DEFAULT 30,
     state SMALLINT NOT NULL DEFAULT 0,
     sort_order INT NOT NULL DEFAULT 100,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_commercial_plans_state CHECK (state IN (0, 1)),
+	CONSTRAINT chk_commercial_plans_price CHECK (price_fen >= 0),
+	CONSTRAINT chk_commercial_plans_sale_state CHECK (sale_state IN ('hidden','test','public')),
+	CONSTRAINT chk_commercial_plans_purchase_limit CHECK (purchase_limit >= 0),
+    CONSTRAINT chk_commercial_plans_internal_quota_tokens CHECK (internal_quota_tokens >= 0),
     CONSTRAINT chk_commercial_plans_duration CHECK (duration_days > 0),
     CONSTRAINT chk_commercial_plans_budget CHECK (monthly_budget_cny >= 0)
 );
+`
+
+const migrateCommercialPlansAddSaleFields = `
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS price_fen BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS currency VARCHAR(8) NOT NULL DEFAULT 'CNY';
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS sale_state VARCHAR(16) NOT NULL DEFAULT 'hidden';
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS purchase_limit INT NOT NULL DEFAULT 0;
+DO $$ BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_commercial_plans_price') THEN
+		ALTER TABLE commercial_plans ADD CONSTRAINT chk_commercial_plans_price CHECK (price_fen >= 0);
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_commercial_plans_sale_state') THEN
+		ALTER TABLE commercial_plans ADD CONSTRAINT chk_commercial_plans_sale_state CHECK (sale_state IN ('hidden','test','public'));
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_commercial_plans_purchase_limit') THEN
+		ALTER TABLE commercial_plans ADD CONSTRAINT chk_commercial_plans_purchase_limit CHECK (purchase_limit >= 0);
+	END IF;
+END $$;
+`
+
+const migrateCommercialPlansAddInternalQuota = `
+ALTER TABLE commercial_plans ADD COLUMN IF NOT EXISTS internal_quota_tokens BIGINT NOT NULL DEFAULT 0;
+DO $$ BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_commercial_plans_internal_quota_tokens') THEN
+		ALTER TABLE commercial_plans ADD CONSTRAINT chk_commercial_plans_internal_quota_tokens CHECK (internal_quota_tokens >= 0);
+	END IF;
+END $$;
 `
 
 const createCommercialInviteCodesTable = `
@@ -486,6 +528,82 @@ CREATE TABLE IF NOT EXISTS commercial_quota_ledger (
     source_id BIGINT DEFAULT NULL,
     note TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+`
+
+const createCommercialOrdersTable = `
+CREATE TABLE IF NOT EXISTS commercial_orders (
+	id BIGSERIAL PRIMARY KEY,
+	order_no VARCHAR(40) NOT NULL UNIQUE,
+	uid BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+	plan_id BIGINT NOT NULL REFERENCES commercial_plans(id) ON DELETE RESTRICT,
+	plan_slug VARCHAR(64) NOT NULL,
+	plan_name VARCHAR(128) NOT NULL,
+	plan_description TEXT NOT NULL DEFAULT '',
+	plan_duration_days INT NOT NULL,
+	plan_monthly_budget_cny NUMERIC(14,6) NOT NULL DEFAULT 0,
+	plan_model_budgets JSONB NOT NULL DEFAULT '{}'::jsonb,
+	amount_fen BIGINT NOT NULL,
+	currency VARCHAR(8) NOT NULL DEFAULT 'CNY',
+	channel VARCHAR(32) NOT NULL,
+	status VARCHAR(24) NOT NULL DEFAULT 'created',
+	provider_trade_no VARCHAR(128) NOT NULL DEFAULT '',
+	checkout_url TEXT NOT NULL DEFAULT '',
+	client_request_id VARCHAR(64) NOT NULL,
+	expires_at TIMESTAMPTZ DEFAULT NULL,
+	paid_at TIMESTAMPTZ DEFAULT NULL,
+	fulfilled_at TIMESTAMPTZ DEFAULT NULL,
+	closed_at TIMESTAMPTZ DEFAULT NULL,
+	last_error TEXT NOT NULL DEFAULT '',
+	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	CONSTRAINT chk_commercial_orders_amount CHECK (amount_fen > 0),
+	CONSTRAINT chk_commercial_orders_status CHECK (status IN ('created','pending','paid','fulfilled','closed','failed','refunding','refunded'))
+);
+`
+
+const createCommercialOrderRequestIDsTable = `
+CREATE TABLE IF NOT EXISTS commercial_order_request_ids (
+	uid BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+	client_request_id VARCHAR(64) NOT NULL,
+	order_no VARCHAR(40) NOT NULL REFERENCES commercial_orders(order_no) ON DELETE CASCADE,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY(uid, client_request_id)
+);
+
+INSERT INTO commercial_order_request_ids(uid, client_request_id, order_no)
+SELECT uid, client_request_id, order_no
+FROM commercial_orders
+ON CONFLICT(uid, client_request_id) DO NOTHING;
+`
+
+const createCommercialPaymentEventsTable = `
+CREATE TABLE IF NOT EXISTS commercial_payment_events (
+	id BIGSERIAL PRIMARY KEY,
+	channel VARCHAR(32) NOT NULL,
+	event_id VARCHAR(160) NOT NULL,
+	order_no VARCHAR(40) NOT NULL REFERENCES commercial_orders(order_no) ON DELETE RESTRICT,
+	provider_trade_no VARCHAR(128) NOT NULL DEFAULT '',
+	event_type VARCHAR(32) NOT NULL DEFAULT 'payment_success',
+	payload_hash VARCHAR(64) NOT NULL DEFAULT '',
+	status VARCHAR(16) NOT NULL DEFAULT 'processed',
+	error_message TEXT NOT NULL DEFAULT '',
+	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	CONSTRAINT chk_commercial_payment_events_status CHECK (status IN ('processed','rejected','ignored')),
+	UNIQUE(channel, event_id)
+);
+`
+
+const createCommercialManagedRelayBudgetsTable = `
+CREATE TABLE IF NOT EXISTS commercial_managed_relay_budgets (
+	uid BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	model VARCHAR(128) NOT NULL,
+	provider VARCHAR(128) NOT NULL,
+	allowed_models JSONB NOT NULL DEFAULT '[]'::jsonb,
+	max_limit NUMERIC(14,6) NOT NULL,
+	reset_duration VARCHAR(16) NOT NULL DEFAULT '1M',
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	PRIMARY KEY(uid, model, provider, allowed_models)
 );
 `
 
@@ -806,6 +924,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_entitlements_invite_once
 CREATE INDEX IF NOT EXISTS idx_commercial_quota_grants_uid_model ON commercial_quota_grants (uid, model, effective_at);
 CREATE INDEX IF NOT EXISTS idx_commercial_quota_grants_expires ON commercial_quota_grants (expires_at);
 CREATE INDEX IF NOT EXISTS idx_commercial_quota_ledger_uid_created ON commercial_quota_ledger (uid, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_entitlements_order_once
+	ON commercial_entitlements (uid, source, source_ref)
+	WHERE source = 'order';
+CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_entitlements_trial_once
+	ON commercial_entitlements (uid, source)
+	WHERE source = 'trial';
+CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_orders_uid_request ON commercial_orders (uid, client_request_id);
+CREATE INDEX IF NOT EXISTS idx_commercial_orders_uid_created ON commercial_orders (uid, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_commercial_orders_status_expires ON commercial_orders (status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_commercial_order_request_ids_order ON commercial_order_request_ids (order_no);
+CREATE INDEX IF NOT EXISTS idx_commercial_payment_events_order ON commercial_payment_events (order_no, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_commercial_managed_relay_uid ON commercial_managed_relay_budgets (uid);
 `
 
 const createChannelAgentIndexes = `
@@ -854,6 +984,10 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_commercial_invite_codes_updated_at BEFORE UPDATE ON commercial_invite_codes
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_commercial_entitlements_updated_at BEFORE UPDATE ON commercial_entitlements
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_commercial_orders_updated_at BEFORE UPDATE ON commercial_orders
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE OR REPLACE TRIGGER trg_commercial_managed_relay_budgets_updated_at BEFORE UPDATE ON commercial_managed_relay_budgets
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 CREATE OR REPLACE TRIGGER trg_channel_agent_entries_updated_at BEFORE UPDATE ON channel_agent_entries
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();

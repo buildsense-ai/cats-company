@@ -24,8 +24,15 @@ type AccountAdminHandler struct {
 	serviceStore             AccountAdminServiceStore
 	commercial               CommercialStore
 	relayAdmin               *RelayAdminClient
+	commercialRelaySyncer    *CommercialRelaySyncer
 	commercialEnforceEnabled bool
 	commercialEnforceUIDs    map[int64]bool
+}
+
+func (h *AccountAdminHandler) SetCommercialRelaySyncer(syncer *CommercialRelaySyncer) {
+	if h != nil {
+		h.commercialRelaySyncer = syncer
+	}
 }
 
 type AccountAdminUserLookup interface {
