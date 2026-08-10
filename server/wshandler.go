@@ -23,9 +23,10 @@ var upgrader = websocket.Upgrader{
 }
 
 const (
-	pageVisibilityVisible        = "visible"
-	pageVisibilityHidden         = "hidden"
-	maxPushNotificationBodyRunes = 180
+	pageVisibilityVisible         = "visible"
+	pageVisibilityHidden          = "hidden"
+	maxPushNotificationBodyRunes  = 180
+	maxPushNotificationTitleRunes = 80
 	// Visibility leases cover a missed heartbeat but expire promptly after a
 	// crashed node, so stale pages do not suppress pushes indefinitely.
 	pageVisibilityLeaseTTL = 2 * pongWait
@@ -1983,7 +1984,7 @@ func (h *Hub) enqueueOfflineUserPush(uid int64, topic string, messageBody ...str
 		body = messageBody[0]
 	}
 	notification := PushNotification{
-		Title: "CatsCo",
+		Title: h.pushNotificationTitle(uid, topic),
 		Body:  firstNonEmpty(pushNotificationExcerpt(body), "你有一条新消息"),
 		URL:   "/",
 		Tag:   "catsco-new-message",
@@ -1991,6 +1992,45 @@ func (h *Hub) enqueueOfflineUserPush(uid int64, topic string, messageBody ...str
 	return h.push.EnqueueToUserFiltered(uid, notification, func(subscription *types.PushSubscription) bool {
 		return !h.hasMessagingClientAttention(uid, pushSubscriptionID(subscription.Endpoint), topic)
 	})
+}
+
+func (h *Hub) pushNotificationTitle(uid int64, topic string) string {
+	if h == nil || h.db == nil {
+		return "CatsCo"
+	}
+	if titleDB, ok := h.db.(conversationTitleStore); ok {
+		if titles, err := titleDB.GetConversationTitles(uid, []string{topic}); err == nil {
+			if title := strings.TrimSpace(titles[topic]); title != "" {
+				return truncateUTF8(title, maxPushNotificationTitleRunes)
+			}
+		}
+	}
+	if isGroupTopic(topic) {
+		groupDB, ok := h.db.(interface {
+			GetGroup(int64) (*types.Group, error)
+		})
+		if ok {
+			group, err := groupDB.GetGroup(extractGroupID(topic))
+			if err == nil && group != nil {
+				if name := strings.TrimSpace(group.Name); name != "" {
+					return truncateUTF8(name, maxPushNotificationTitleRunes)
+				}
+			}
+		}
+	} else if peerUID := extractPeerUID(topic, uid); peerUID > 0 {
+		userDB, ok := h.db.(interface {
+			GetUser(int64) (*types.User, error)
+		})
+		if ok {
+			user, err := userDB.GetUser(peerUID)
+			if err == nil && user != nil {
+				if name := strings.TrimSpace(firstNonEmpty(user.DisplayName, user.Username)); name != "" {
+					return truncateUTF8(name, maxPushNotificationTitleRunes)
+				}
+			}
+		}
+	}
+	return "CatsCo"
 }
 
 func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessage, senderPublishesTaskStatus bool) {
