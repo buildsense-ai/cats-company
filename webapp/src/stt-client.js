@@ -150,10 +150,20 @@ export class StreamingSTTSession {
     this.onState(state);
   }
 
-  setDurationLimit(seconds) {
-    const maxSeconds = Math.max(1, Number(seconds) || 90);
+  setDurationLimit(milliseconds) {
+    const parsed = Number(milliseconds);
+    if (!Number.isFinite(parsed)) return;
+    const maxMilliseconds = Math.max(1, parsed);
     if (this.durationTimer) window.clearTimeout(this.durationTimer);
-    this.durationTimer = window.setTimeout(() => void this.stop(), maxSeconds * 1000);
+    this.durationTimer = window.setTimeout(() => void this.stop(), maxMilliseconds);
+  }
+
+  applyDurationLimit(payload) {
+    if (Object.hasOwn(payload || {}, 'max_session_ms')) {
+      this.setDurationLimit(payload.max_session_ms);
+    } else if (Object.hasOwn(payload || {}, 'max_session_seconds')) {
+      this.setDurationLimit(Number(payload.max_session_seconds) * 1000);
+    }
   }
 
   async start() {
@@ -180,7 +190,7 @@ export class StreamingSTTSession {
       document.addEventListener('visibilitychange', this.handleVisibilityChange);
       const session = await this.createSession();
       if (this.terminal) return;
-      this.setDurationLimit(session.max_session_seconds);
+      this.applyDurationLimit(session);
       this.setState('connecting');
       const socket = this.createWebSocket(this.resolveWebSocketURL(session.ticket));
       this.socket = socket;
@@ -240,7 +250,7 @@ export class StreamingSTTSession {
     switch (message.type) {
       case 'ready':
         this.ready = true;
-        if (message.max_session_seconds) this.setDurationLimit(message.max_session_seconds);
+        this.applyDurationLimit(message);
         this.setState(this.stopRequested ? 'finalizing' : 'recording');
         for (const frame of this.preconnectFrames) {
           if (this.terminal) return;

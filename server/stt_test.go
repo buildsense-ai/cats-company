@@ -21,7 +21,10 @@ type fakeSTTProvider struct {
 func (p *fakeSTTProvider) ID() string { return "fake" }
 
 func (p *fakeSTTProvider) Open(context.Context, STTSessionRequest) (STTUpstream, error) {
-	stream := &fakeSTTUpstream{events: make(chan STTEvent, 8)}
+	stream := &fakeSTTUpstream{
+		events:   make(chan STTEvent, 8),
+		finished: make(chan struct{}),
+	}
 	p.mu.Lock()
 	p.sessions = append(p.sessions, stream)
 	p.mu.Unlock()
@@ -29,11 +32,18 @@ func (p *fakeSTTProvider) Open(context.Context, STTSessionRequest) (STTUpstream,
 }
 
 type fakeSTTUpstream struct {
-	events chan STTEvent
+	events   chan STTEvent
+	finished chan struct{}
+	finish   sync.Once
 }
 
-func (s *fakeSTTUpstream) SendAudio([]byte) error  { return nil }
-func (s *fakeSTTUpstream) Finish() error           { return nil }
+func (s *fakeSTTUpstream) SendAudio([]byte) error { return nil }
+func (s *fakeSTTUpstream) Finish() error {
+	if s.finished != nil {
+		s.finish.Do(func() { close(s.finished) })
+	}
+	return nil
+}
 func (s *fakeSTTUpstream) Events() <-chan STTEvent { return s.events }
 func (s *fakeSTTUpstream) Close() error            { return nil }
 
@@ -166,6 +176,61 @@ func TestSTTHandlerDoesNotPromotePartialWhenProviderCloses(t *testing.T) {
 	}
 	if strings.Contains(string(terminal), `"type":"final"`) || !strings.Contains(string(terminal), `"code":"provider_closed"`) {
 		t.Fatalf("terminal=%s", terminal)
+	}
+}
+
+func TestSTTHandlerStopsAfterSilentAudioIdleTimeout(t *testing.T) {
+	provider := &fakeSTTProvider{}
+	handler := NewSTTHandler(STTConfig{
+		Enabled:          true,
+		Provider:         "fake",
+		TicketTTL:        time.Minute,
+		MaxDuration:      90 * time.Second,
+		IdleTimeout:      80 * time.Millisecond,
+		FinalTimeout:     time.Second,
+		MaxConcurrent:    4,
+		HourlyAudioLimit: 10 * time.Minute,
+		DailyAudioLimit:  time.Hour,
+	}, provider)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/stt/sessions", authenticatedSTTHandler(handler.HandleSession, 9))
+	mux.HandleFunc("/api/stt/realtime", handler.HandleRealtime)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ticket := issueSTTTicket(t, server.URL)
+	conn, _, err := websocket.DefaultDialer.Dial(
+		"ws"+strings.TrimPrefix(server.URL, "http")+"/api/stt/realtime?ticket="+ticket,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+
+	provider.mu.Lock()
+	stream := provider.sessions[0]
+	provider.mu.Unlock()
+	silence := make([]byte, 3200)
+	for range 3 {
+		if err := conn.WriteMessage(websocket.BinaryMessage, silence); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case <-stream.finished:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("silent PCM kept the STT session active past the idle timeout")
+	}
+	stream.events <- STTEvent{Type: STTEventFinal}
+	_, terminal, err := conn.ReadMessage()
+	if err != nil || !strings.Contains(string(terminal), `"type":"final"`) {
+		t.Fatalf("terminal=%s err=%v", terminal, err)
 	}
 }
 

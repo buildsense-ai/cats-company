@@ -54,6 +54,10 @@ func (p *volcengineStreamingProvider) ID() string {
 	return STTProviderVolcengineDoubaoStreamingV2
 }
 
+func (p *volcengineStreamingProvider) Model() string {
+	return p.config.ResourceID
+}
+
 func (p *volcengineStreamingProvider) Open(ctx context.Context, request STTSessionRequest) (STTUpstream, error) {
 	headers := http.Header{}
 	headers.Set("X-Api-Key", p.config.APIKey)

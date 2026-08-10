@@ -54,6 +54,7 @@ Defaults can be overridden through environment variables:
 |---|---:|---|
 | `CATSCO_STT_TICKET_TTL_SECONDS` | 45 | Ticket validity before WebSocket upgrade |
 | `CATSCO_STT_MAX_SESSION_SECONDS` | 90 | Maximum audio duration per session |
+| `CATSCO_STT_IDLE_TIMEOUT_MS` | 15000 | Stop after this much time without voiced PCM |
 | `CATSCO_STT_MAX_CONCURRENT` | 40 | Active sessions per server instance |
 | `CATSCO_STT_MAX_HOURLY_SECONDS` | 600 | Audio seconds per user in a rolling hour |
 | `CATSCO_STT_MAX_DAILY_SECONDS` | 3600 | Audio seconds per user in rolling 24 hours |
@@ -72,10 +73,17 @@ to the configured Redis runtime so limits remain global across replicas.
 Every completed connection emits a structured server log line containing:
 
 - provider
+- provider model/resource ID
+- outcome, error code, and stop reason
 - accepted audio milliseconds
+- connection duration and retry audio milliseconds
 - provider connect latency
 - first partial latency
 - stop-to-final latency
+
+`billed_usage_ms` is reported as `-1` until the provider exposes final billing
+usage in its streaming response. CatsCo does not infer vendor billing from
+client duration.
 
 Do not log audio bytes, partial text, final text, access tokens, or STT tickets.
 The dedicated Nginx WebSocket location disables access logging because the

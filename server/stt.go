@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ const (
 	sttPCMBytesPerSecond                   = 16000 * 2
 	sttMaxBrowserFrameBytes                = 16 * 1024
 	sttTicketType                          = "stt_ticket"
+	sttVADRMSThreshold                     = 0.008
 )
 
 type STTEventType string
@@ -57,6 +59,17 @@ type STTProvider interface {
 	Open(context.Context, STTSessionRequest) (STTUpstream, error)
 }
 
+type sttProviderTelemetry interface {
+	Model() string
+}
+
+func sttProviderModel(provider STTProvider) string {
+	if telemetry, ok := provider.(sttProviderTelemetry); ok {
+		return telemetry.Model()
+	}
+	return provider.ID()
+}
+
 type VolcengineSTTConfig struct {
 	WebSocketURL   string
 	APIKey         string
@@ -69,6 +82,7 @@ type STTConfig struct {
 	Provider         string
 	TicketTTL        time.Duration
 	MaxDuration      time.Duration
+	IdleTimeout      time.Duration
 	FinalTimeout     time.Duration
 	MaxConcurrent    int
 	HourlyAudioLimit time.Duration
@@ -82,6 +96,7 @@ func STTConfigFromEnv() STTConfig {
 		Provider:         sttEnvString("CATSCO_STT_PROVIDER", STTProviderVolcengineDoubaoStreamingV2),
 		TicketTTL:        sttEnvDurationSeconds("CATSCO_STT_TICKET_TTL_SECONDS", 45*time.Second),
 		MaxDuration:      sttEnvDurationSeconds("CATSCO_STT_MAX_SESSION_SECONDS", 90*time.Second),
+		IdleTimeout:      sttEnvDurationMilliseconds("CATSCO_STT_IDLE_TIMEOUT_MS", 15*time.Second),
 		FinalTimeout:     sttEnvDurationMilliseconds("CATSCO_STT_FINAL_TIMEOUT_MS", 1200*time.Millisecond),
 		MaxConcurrent:    sttEnvInt("CATSCO_STT_MAX_CONCURRENT", 40),
 		HourlyAudioLimit: sttEnvDurationSeconds("CATSCO_STT_MAX_HOURLY_SECONDS", 10*time.Minute),
@@ -233,6 +248,9 @@ type STTHandler struct {
 }
 
 func NewSTTHandler(config STTConfig, provider STTProvider) *STTHandler {
+	if config.IdleTimeout <= 0 {
+		config.IdleTimeout = 15 * time.Second
+	}
 	handler := &STTHandler{
 		config:      config,
 		provider:    provider,
@@ -326,6 +344,7 @@ func (h *STTHandler) HandleSession(w http.ResponseWriter, r *http.Request) {
 		"provider":            h.provider.ID(),
 		"expires_in_seconds":  int(h.config.TicketTTL / time.Second),
 		"max_session_seconds": int(h.config.MaxDuration / time.Second),
+		"max_session_ms":      h.config.MaxDuration.Milliseconds(),
 	})
 }
 
@@ -402,10 +421,45 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	sessionStartedAt := time.Now()
 	requestID := newSTTRequestID()
 	connectStarted := time.Now()
+	var startedAt time.Time
+	var firstPartialAt time.Time
+	var stopStartedAt time.Time
+	stopping := false
+	finalTimer := (*time.Timer)(nil)
+	var finalTimeout <-chan time.Time
+	outcome := "disconnected"
+	errorCode := ""
+	stopReason := "client_disconnect"
+	providerModel := sttProviderModel(h.provider)
+	defer func() {
+		if finalTimer != nil {
+			finalTimer.Stop()
+		}
+		firstPartialMS := int64(-1)
+		if !firstPartialAt.IsZero() {
+			firstPartialMS = firstPartialAt.Sub(startedAt).Milliseconds()
+		}
+		stopToFinalMS := int64(-1)
+		if !stopStartedAt.IsZero() {
+			stopToFinalMS = time.Since(stopStartedAt).Milliseconds()
+		}
+		connectMS := int64(-1)
+		if !startedAt.IsZero() {
+			connectMS = startedAt.Sub(connectStarted).Milliseconds()
+		}
+		log.Printf("stt session: provider=%s model=%s uid=%d outcome=%s error_code=%s stop_reason=%s accepted_ms=%d retry_audio_ms=0 billed_usage_ms=-1 connection_ms=%d connect_ms=%d first_partial_ms=%d stop_to_final_ms=%d",
+			h.provider.ID(), providerModel, claims.UID, outcome, errorCode, stopReason,
+			acceptedBytes*1000/sttPCMBytesPerSecond, time.Since(sessionStartedAt).Milliseconds(),
+			connectMS, firstPartialMS, stopToFinalMS)
+	}()
+
 	upstream, err := h.provider.Open(r.Context(), STTSessionRequest{UserID: claims.UID, RequestID: requestID})
 	if err != nil {
+		outcome = "error"
+		errorCode = "provider_connect_failed"
 		h.writeSTTJSON(conn, map[string]interface{}{"type": "error", "code": "provider_connect_failed", "message": "语音识别服务连接失败"})
 		return
 	}
@@ -415,19 +469,20 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 	if err := h.writeSTTJSON(conn, map[string]interface{}{
 		"type":                "ready",
 		"provider":            h.provider.ID(),
-		"max_session_seconds": int(allowedDuration / time.Second),
+		"max_session_seconds": sttDurationSecondsCeil(allowedDuration),
+		"max_session_ms":      allowedDuration.Milliseconds(),
 	}); err != nil {
+		outcome = "error"
+		errorCode = "client_write_failed"
 		return
 	}
 
-	startedAt := time.Now()
-	var firstPartialAt time.Time
-	var stopStartedAt time.Time
-	stopping := false
-	finalTimer := (*time.Timer)(nil)
-	var finalTimeout <-chan time.Time
+	startedAt = time.Now()
 	hardTimer := time.NewTimer(allowedDuration + 2*time.Second)
 	defer hardTimer.Stop()
+	idleTimer := time.NewTimer(h.config.IdleTimeout)
+	idleTimeout := idleTimer.C
+	defer idleTimer.Stop()
 
 	incoming := make(chan sttBrowserMessage, 4)
 	readerDone := make(chan struct{})
@@ -452,8 +507,13 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 			return true
 		}
 		stopping = true
+		if idleTimer.Stop() {
+			idleTimeout = nil
+		}
 		stopStartedAt = time.Now()
 		if err := upstream.Finish(); err != nil {
+			outcome = "error"
+			errorCode = "provider_finish_failed"
 			_ = h.writeSTTJSON(conn, map[string]interface{}{"type": "error", "code": "provider_finish_failed", "message": "语音识别结束失败"})
 			return false
 		}
@@ -461,23 +521,6 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 		finalTimeout = finalTimer.C
 		return true
 	}
-	defer func() {
-		if finalTimer != nil {
-			finalTimer.Stop()
-		}
-		firstPartialMS := int64(-1)
-		if !firstPartialAt.IsZero() {
-			firstPartialMS = firstPartialAt.Sub(startedAt).Milliseconds()
-		}
-		stopToFinalMS := int64(-1)
-		if !stopStartedAt.IsZero() {
-			stopToFinalMS = time.Since(stopStartedAt).Milliseconds()
-		}
-		log.Printf("stt session: provider=%s uid=%d accepted_ms=%d connect_ms=%d first_partial_ms=%d stop_to_final_ms=%d",
-			h.provider.ID(), claims.UID, acceptedBytes*1000/sttPCMBytesPerSecond,
-			startedAt.Sub(connectStarted).Milliseconds(), firstPartialMS, stopToFinalMS)
-	}()
-
 	for {
 		select {
 		case message := <-incoming:
@@ -490,16 +533,29 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				if acceptedBytes+int64(len(message.payload)) > maxBytes {
+					stopReason = "audio_limit"
 					if !finish() {
 						return
 					}
 					continue
 				}
 				if err := upstream.SendAudio(message.payload); err != nil {
+					outcome = "error"
+					errorCode = "provider_send_failed"
 					_ = h.writeSTTJSON(conn, map[string]interface{}{"type": "error", "code": "provider_send_failed", "message": "语音数据发送失败"})
 					return
 				}
 				acceptedBytes += int64(len(message.payload))
+				if sttPCMHasVoice(message.payload) {
+					if !idleTimer.Stop() {
+						select {
+						case <-idleTimer.C:
+						default:
+						}
+					}
+					idleTimer.Reset(h.config.IdleTimeout)
+					idleTimeout = idleTimer.C
+				}
 			case websocket.TextMessage:
 				var command struct {
 					Type string `json:"type"`
@@ -509,15 +565,20 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 				}
 				switch command.Type {
 				case "stop":
+					stopReason = "client_stop"
 					if !finish() {
 						return
 					}
 				case "cancel":
+					outcome = "cancelled"
+					stopReason = "client_cancel"
 					return
 				}
 			}
 		case event, open := <-upstream.Events():
 			if !open {
+				outcome = "error"
+				errorCode = "provider_closed"
 				_ = h.writeSTTJSON(conn, map[string]interface{}{"type": "error", "code": "provider_closed", "message": "语音识别连接已断开，请重试"})
 				return
 			}
@@ -530,21 +591,55 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			case STTEventFinal:
+				outcome = "success"
+				if !stopping {
+					stopReason = "provider_final"
+				}
 				_ = h.writeSTTJSON(conn, map[string]interface{}{"type": "final", "text": event.Text})
 				return
 			case STTEventError:
+				outcome = "error"
+				errorCode = event.Code
 				_ = h.writeSTTJSON(conn, map[string]interface{}{"type": "error", "code": event.Code, "message": event.Message})
 				return
 			}
 		case <-hardTimer.C:
+			stopReason = "hard_timeout"
+			if !finish() {
+				return
+			}
+		case <-idleTimeout:
+			stopReason = "idle_timeout"
 			if !finish() {
 				return
 			}
 		case <-finalTimeout:
+			outcome = "error"
+			errorCode = "final_timeout"
 			_ = h.writeSTTJSON(conn, map[string]interface{}{"type": "error", "code": "final_timeout", "message": "语音识别未能及时完成，请重试"})
 			return
 		}
 	}
+}
+
+func sttDurationSecondsCeil(duration time.Duration) int {
+	if duration <= 0 {
+		return 0
+	}
+	return int((duration + time.Second - 1) / time.Second)
+}
+
+func sttPCMHasVoice(payload []byte) bool {
+	if len(payload) < 2 {
+		return false
+	}
+	var sumSquares float64
+	samples := len(payload) / 2
+	for offset := 0; offset+1 < len(payload); offset += 2 {
+		sample := float64(int16(binary.LittleEndian.Uint16(payload[offset:offset+2]))) / 32768
+		sumSquares += sample * sample
+	}
+	return sumSquares/float64(samples) >= sttVADRMSThreshold*sttVADRMSThreshold
 }
 
 func (h *STTHandler) writeSTTJSON(conn *websocket.Conn, payload interface{}) error {

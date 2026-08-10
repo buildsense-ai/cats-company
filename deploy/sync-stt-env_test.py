@@ -25,6 +25,24 @@ spec.loader.exec_module(sync)
 
 
 class SyncSttEnvTest(unittest.TestCase):
+    def test_compose_and_examples_expose_every_documented_timeout(self) -> None:
+        expected = (
+            "CATSCO_STT_TICKET_TTL_SECONDS",
+            "CATSCO_STT_IDLE_TIMEOUT_MS",
+            "CATSCO_STT_CONNECT_TIMEOUT_MS",
+            "CATSCO_STT_FINAL_TIMEOUT_MS",
+        )
+        for relative_path in (
+            "deploy/prod/docker-compose.yml",
+            "deploy/test/docker-compose.yml",
+            "deploy/prod/env.prod.example",
+            "deploy/test/env.test.example",
+            "deploy/test/env.test.postgres.example",
+        ):
+            content = (SCRIPT_DIR.parent / relative_path).read_text(encoding="utf-8")
+            for key in expected:
+                self.assertIn(key, content, f"{key} missing from {relative_path}")
+
     def test_deploy_workflows_sync_one_api_key_after_bootstrap(self) -> None:
         for workflow_name, stack_root, environment in (
             ("deploy-prod.yml", "PROD_STACK_ROOT", "prod"),

@@ -185,4 +185,30 @@ describe('StreamingSTTSession', () => {
     session.cancel();
     vi.useRealTimers();
   });
+
+  it('honors a sub-second quota returned by the realtime ready event', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-subsecond', max_session_ms: 90_000 }),
+      createCapture: vi.fn().mockResolvedValue(capture),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+    });
+
+    await session.start();
+    socket.open();
+    socket.receive({ type: 'ready', max_session_ms: 250 });
+    await vi.advanceTimersByTimeAsync(249);
+    expect(capture.stop).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(capture.stop).toHaveBeenCalledTimes(1);
+    expect(socket.sent).toContain(JSON.stringify({ type: 'stop' }));
+    session.cancel();
+    vi.useRealTimers();
+  });
 });
