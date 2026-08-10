@@ -571,10 +571,35 @@ func TestPostgresStoreContract(t *testing.T) {
 
 func testPostgresMigrationFiles(t *testing.T, db *Adapter) {
 	t.Helper()
+	paths := postgresMigrationPaths(t)
+	assertUniquePostgresMigrationVersions(t, paths)
+	for _, path := range paths {
+		name := filepath.Base(path)
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read postgres migration %s: %v", name, err)
+		}
+		if _, err := db.db.Exec(string(contents)); err != nil {
+			t.Fatalf("execute postgres migration %s against current schema: %v", name, err)
+		}
+	}
+}
+
+func TestPostgresMigrationVersionsAreUnique(t *testing.T) {
+	assertUniquePostgresMigrationVersions(t, postgresMigrationPaths(t))
+}
+
+func postgresMigrationPaths(t *testing.T) []string {
+	t.Helper()
 	paths, err := filepath.Glob(filepath.Join("..", "migrations", "postgres", "*.up.sql"))
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("list postgres migrations: paths=%v err=%v", paths, err)
 	}
+	return paths
+}
+
+func assertUniquePostgresMigrationVersions(t *testing.T, paths []string) {
+	t.Helper()
 	versions := map[string]string{}
 	for _, path := range paths {
 		name := filepath.Base(path)
@@ -583,13 +608,6 @@ func testPostgresMigrationFiles(t *testing.T, db *Adapter) {
 			t.Fatalf("duplicate postgres migration version %s: %s and %s", version, previous, name)
 		}
 		versions[version] = name
-		contents, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read postgres migration %s: %v", name, err)
-		}
-		if _, err := db.db.Exec(string(contents)); err != nil {
-			t.Fatalf("execute postgres migration %s against current schema: %v", name, err)
-		}
 	}
 }
 
