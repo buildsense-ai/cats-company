@@ -26,6 +26,14 @@ type cloudWorkerTestStore struct {
 	nextUID           int64
 	friendPairs       map[string]bool
 	setTenantNameFail bool
+	creatorUser       *types.User
+}
+
+func (s *cloudWorkerTestStore) GetUser(id int64) (*types.User, error) {
+	if s.creatorUser != nil {
+		return s.creatorUser, nil
+	}
+	return &types.User{Username: "creator", DisplayName: "Creator"}, nil
 }
 
 func (s *cloudWorkerTestStore) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, error) {
@@ -121,6 +129,9 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 		case "tsv":
 			// 真实 list-worker-images.sh TSV 契约：imageID<TAB>name<TAB>version<TAB>commit<TAB>createdTime<TAB>status
 			body = "@echo off\r\necho 79f5b7f4-c06e-4f97-90fa-d69566f23d63\tcatsco-worker-1-4-8-f3f1f3e6\tv1.4.8\tf3f1f3e6\t1786066647\tactive\r\n"
+		case "require-identity":
+			// 校验 argv 含 --login-token 与 --bot-uid（弱校验：只查存在）
+			body = "@echo off\r\necho %* | findstr /C:\"--login-token\" >nul || exit /b 1\r\necho %* | findstr /C:\"--bot-uid\" >nul || exit /b 1\r\necho ok\r\n"
 		default:
 			t.Fatalf("unknown behavior %q", behavior)
 		}
@@ -144,6 +155,10 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 	case "tsv":
 		// 真实 list-worker-images.sh TSV 契约（printf 的 \\t 是字面 tab）
 		body = "#!/bin/sh\nprintf '79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tcatsco-worker-1-4-8-f3f1f3e6\\tv1.4.8\\tf3f1f3e6\\t1786066647\\tactive\\n'\n"
+	case "require-identity":
+		// 校验 argv 含非空 --login-token/--bot-uid/--user-uid/--user-name/--user-display
+		// （模拟 provision-worker.sh 写 localConfig 的必填身份），缺则 fail
+		body = "#!/bin/sh\nlogin=\"\"; bot=\"\"; user=\"\"; uname=\"\"; udisp=\"\"; prev=\"\"; for a in \"$@\"; do case \"$prev\" in --login-token) login=\"$a\";; --bot-uid) bot=\"$a\";; --user-uid) user=\"$a\";; --user-name) uname=\"$a\";; --user-display) udisp=\"$a\";; esac; prev=\"$a\"; done; [ -n \"$login\" ] && [ -n \"$bot\" ] && [ -n \"$user\" ] && [ -n \"$uname\" ] && [ -n \"$udisp\" ] || { echo \"missing identity: login=$login bot=$bot user=$user uname=$uname udisp=$udisp\" >&2; exit 1; }; echo ok\n"
 	default:
 		t.Fatalf("unknown behavior %q", behavior)
 	}
@@ -496,6 +511,28 @@ func TestCloudWorkerHandleCreateSuccess(t *testing.T) {
 	}
 	if !ts.friendPairs[agentPairKey(7, botUID)] {
 		t.Fatalf("friend was not auto added")
+	}
+}
+
+func TestCloudWorkerHandleCreatePassesIdentity(t *testing.T) {
+	// 链路验证：HandleCreate 必须把创建者 JWT + bot/user 身份完整传给 provision
+	// 脚本（--login-token/--api-key/--bot-uid/--user-uid/--user-name/--user-display）。
+	// require-identity fake 缺任何一项都会 exit 1 -> HandleCreate 走 502。
+	cfg := workerScriptCfg(t, "7=5", map[string]string{"provision": writeWorkerOpScript(t, "require-identity")})
+	if cfg.ProvisionScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.creatorUser = &types.User{Username: "alice", DisplayName: "Alice"}
+
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers", map[string]string{
+		"username": "bot-x", "display_name": "X",
+	})
+	req.Header.Set("Authorization", "Bearer testjwt")
+	rec := httptest.NewRecorder()
+	h.HandleCreate(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d want 201 body=%s", rec.Code, rec.Body.String())
 	}
 }
 

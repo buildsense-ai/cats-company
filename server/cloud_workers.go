@@ -239,7 +239,8 @@ func (h *CloudWorkerHandler) HandleMeta(w http.ResponseWriter, r *http.Request) 
 	// never block the request for the full scriptTimeout.
 	if h.imagesScript != "" {
 		const imageListTimeout = 30 * time.Second
-		if out, listErr := h.runScriptTimeout(imageListTimeout, h.imagesScript, "-Action", "List"); listErr == nil {
+		// list-worker-images.sh 无参数（TSV 契约，见 parseImageLines）——不传 -Action
+		if out, listErr := h.runScriptTimeout(imageListTimeout, h.imagesScript); listErr == nil {
 			meta["images"] = parseImageLines(out)
 		}
 	}
@@ -314,8 +315,23 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "cloud worker provisioning is not configured"})
 		return
 	}
+	// 创建者登录凭证（JWT）+ 身份信息：worker 以创建者登录态 + 新 bot 的连接凭证
+	// 启动（B4-1 供给契约：provision-worker.sh 需要 --login-token 必填 + 写
+	// localConfig 的 bot/user 身份）。JWT 从请求 Authorization 头取（context 只有 uid）。
+	creatorJWT := extractToken(r)
+	creatorName, creatorDisplay := "", ""
+	if creator, err := h.db.GetUser(uid); err == nil && creator != nil {
+		creatorName = creator.Username
+		creatorDisplay = creator.DisplayName
+	}
 	if _, err := h.runScript(h.provisionScript,
-		"-Action", "Provision", "-Name", tenantName, "-ApiKey", result.APIKey); err != nil {
+		"--name", tenantName,
+		"--login-token", creatorJWT,
+		"--api-key", result.APIKey,
+		"--bot-uid", strconv.FormatInt(result.UID, 10),
+		"--user-uid", strconv.FormatInt(uid, 10),
+		"--user-name", creatorName,
+		"--user-display", creatorDisplay); err != nil {
 		log.Printf("[cloud-worker] provision %s failed: %v", tenantName, err)
 		// The provision script may have created the cloud instance before
 		// failing on a later step. Try to destroy any partially created
@@ -325,7 +341,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		if h.destroyScript == "" {
 			destroyOK = false
 			log.Printf("[cloud-worker] no destroy script configured; cannot clean up partially provisioned %s", tenantName)
-		} else if _, destroyErr := h.runScript(h.destroyScript, "-Action", "Destroy", "-Name", tenantName); destroyErr != nil {
+		} else if _, destroyErr := h.runScript(h.destroyScript, "--name", tenantName); destroyErr != nil {
 			destroyOK = false
 			log.Printf("[cloud-worker] destroy %s after provision failure also failed: %v", tenantName, destroyErr)
 		}
@@ -360,7 +376,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		if h.destroyScript == "" {
 			destroyOK = false
 			log.Printf("[cloud-worker] no destroy script configured; cannot clean up %s after finalize failure", tenantName)
-		} else if _, destroyErr := h.runScript(h.destroyScript, "-Action", "Destroy", "-Name", tenantName); destroyErr != nil {
+		} else if _, destroyErr := h.runScript(h.destroyScript, "--name", tenantName); destroyErr != nil {
 			destroyOK = false
 			log.Printf("[cloud-worker] destroy %s after finalize failure also failed: %v", tenantName, destroyErr)
 		}
@@ -468,9 +484,10 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body) // malformed body is ignored
 	}
-	args := []string{"-Action", action, "-Name", name}
+	// B4-1 脚本契约：--name <tenant> [--version <v>]（脚本按名字区分动作，无 -Action）
+	args := []string{"--name", name}
 	if body.Version != "" {
-		args = append(args, "-Version", body.Version)
+		args = append(args, "--version", body.Version)
 	}
 
 	h.opMu.Lock()
@@ -544,7 +561,7 @@ func (h *CloudWorkerHandler) HandleDelete(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
-	if _, err := h.runScript(h.destroyScript, "-Action", "Destroy", "-Name", name); err != nil {
+	if _, err := h.runScript(h.destroyScript, "--name", name); err != nil {
 		log.Printf("[cloud-worker] destroy %s failed: %v", name, err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to destroy cloud worker instance"})
 		return
