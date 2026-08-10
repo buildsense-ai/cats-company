@@ -179,9 +179,6 @@ X-CatsCo-File-Size: 12345
 **POST /api/bots**
 创建 Bot
 
-**POST /api/bots/deploy**
-部署 managed Bot
-
 **PATCH /api/bots/visibility**
 设置 Bot 可见性
 

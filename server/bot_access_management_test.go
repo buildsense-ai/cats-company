@@ -25,7 +25,6 @@ type botAccessManagementStore struct {
 	removedA      int64
 	removedB      int64
 }
-
 func (s *botAccessManagementStore) GetUser(id int64) (*types.User, error) {
 	return s.users[id], nil
 }
@@ -133,7 +132,7 @@ func TestOwnerCanRemoveBotFriend(t *testing.T) {
 		configs:     map[int64]*types.BotConfig{},
 		friendPairs: map[string]bool{agentPairKey(7, 43): true},
 	}
-	handler := NewBotHandler(db, nil)
+	handler := NewBotHandler(db)
 	req := httptest.NewRequest(http.MethodDelete, "/api/bots/friends?uid=43&user_id=7", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(99)))
 	rec := httptest.NewRecorder()
@@ -156,7 +155,7 @@ func TestOwnerCannotRemoveOwnBotAccess(t *testing.T) {
 		},
 		owners: map[int64]int64{43: 99},
 	}
-	handler := NewBotHandler(db, nil)
+	handler := NewBotHandler(db)
 	req := httptest.NewRequest(http.MethodDelete, "/api/bots/friends?uid=43&user_id=99", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(99)))
 	rec := httptest.NewRecorder()
@@ -183,7 +182,7 @@ func TestGetBotFriendsFiltersOwner(t *testing.T) {
 			{ID: 7, Username: "alice", DisplayName: "Alice", AccountType: types.AccountHuman},
 		},
 	}
-	handler := NewBotHandler(db, nil)
+	handler := NewBotHandler(db)
 	req := httptest.NewRequest(http.MethodGet, "/api/bots/friends?uid=43", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(99)))
 	rec := httptest.NewRecorder()
