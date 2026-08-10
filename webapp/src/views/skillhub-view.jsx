@@ -513,6 +513,15 @@ export default function SkillHubView({ user }) {
     (definition.skills || []).map((skill) => [skill.skillId, skill]),
   ), [definition.skills]);
 
+  const localSkillsByReference = useMemo(() => {
+    const result = new Map();
+    for (const skill of localSkills) {
+      const skillId = String(skill?.skillHub?.reference?.skillId || '').trim();
+      if (skillId) result.set(skillId, skill);
+    }
+    return result;
+  }, [localSkills]);
+
   const catalogueByID = useMemo(() => new Map(
     catalogue.map((skill) => [skill.skillId, skill]),
   ), [catalogue]);
@@ -859,7 +868,9 @@ export default function SkillHubView({ user }) {
     if (!skillID || !definitionReady || saving || sharingSkill || skillAction) return;
     const requestedBotUID = selectedBotUIDRef.current;
     const details = catalogueByID.get(skillID);
-    const skillName = details?.displayName || skillID;
+    const localSkill = localSkillsByReference.get(skillID);
+    const skillName = details?.displayName || localSkill?.name || skillID;
+    const privateReference = isPrivateSkillHubReference(skillID);
     const shareURL = String(details?.shareUrl || details?.share_url || details?.url || '').trim();
     const copiedValue = shareURL || skillID;
     setSkillAction({ type: 'copy', skillId: skillID });
@@ -870,7 +881,9 @@ export default function SkillHubView({ user }) {
       if (requestedBotUID === selectedBotUIDRef.current) {
         setActionNotice(shareURL
           ? `已复制 ${skillName} 的链接。`
-          : `已复制 ${skillName} 的 SkillHub ID。`);
+          : privateReference
+            ? `已复制 ${skillName} 的私有能力引用。`
+            : `已复制 ${skillName} 的 SkillHub ID。`);
       }
     } catch (error) {
       if (requestedBotUID === selectedBotUIDRef.current) {
@@ -1026,6 +1039,7 @@ export default function SkillHubView({ user }) {
     definitionReady={definitionReady}
     devices={devices}
     installedByID={installedByID}
+    isLocalSkillShared={isLocalSkillShared}
     isLocalEnabled={true}
     loadingBots={loadingBots}
     loadingCatalogue={loadingCatalogue}
@@ -1034,6 +1048,7 @@ export default function SkillHubView({ user }) {
     loadingLocalSkills={loadingLocalSkills}
     localNotice={localNotice}
     localSkills={localSkills}
+    localSkillsByReference={localSkillsByReference}
     localSkillsError={localSkillsError}
     localSkillsPath={localSkillsPath}
     onChangeSection={setActiveSection}

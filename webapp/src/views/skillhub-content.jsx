@@ -244,9 +244,19 @@ function AddedSkills(props) {
   );
 }
 
-function AddedSkillItem({ catalogueByID, definitionReady, onCopySkill, onRemoveSkill, saving, sharingSkill, skill, skillAction }) {
+function AddedSkillItem({ catalogueByID, definitionReady, localSkillsByReference, onCopySkill, onRemoveSkill, saving, sharingSkill, skill, skillAction }) {
   const details = catalogueByID.get(skill.skillId);
-  const label = details?.displayName || skill.skillId;
+  const candidate = localSkillsByReference?.get(skill.skillId);
+  const candidateReference = candidate?.skillHub?.reference;
+  const localDetails = candidate
+    && (!skill.version || candidateReference?.version === skill.version)
+    && (!skill.contentHash || candidateReference?.contentHash === skill.contentHash)
+    ? candidate
+    : null;
+  const privateReference = String(skill.skillId || '').startsWith('priv_')
+    || String(skill.skillId || '').startsWith('private/');
+  const label = details?.displayName || localDetails?.name || (privateReference ? '私有能力' : skill.skillId);
+  const description = details?.description || localDetails?.description || '此能力已添加到当前 Agent，可立即使用。';
   const copying = skillAction?.type === 'copy' && skillAction.skillId === skill.skillId;
   const removing = skillAction?.type === 'remove' && skillAction.skillId === skill.skillId;
   const actionsDisabled = saving || Boolean(sharingSkill) || !definitionReady || Boolean(skillAction);
@@ -341,8 +351,8 @@ function AddedSkillItem({ catalogueByID, definitionReady, onCopySkill, onRemoveS
         <div className='cc-skillhub-added-title'>
           <h3>{label}</h3><span className='cc-skillhub-availability'><Check size={12} aria-hidden='true' /> 可用</span>
         </div>
-        <p>{details?.description || '此能力已添加到当前 Agent，可立即使用。'}</p>
-        <span className='cc-skillhub-version-note'><ShieldCheck size={12} aria-hidden='true' /> 自动保持稳定版本</span>
+        <p>{description}</p>
+        <span className='cc-skillhub-version-note'><ShieldCheck size={12} aria-hidden='true' /> {privateReference ? '仅当前 Agent 可用' : '自动保持稳定版本'}</span>
       </div>
       <div className='cc-skillhub-added-actions'>
         <button type='button' className='subtle cc-skillhub-copy-action' aria-label={`复制 ${label}`} disabled={actionsDisabled} onClick={() => onCopySkill(skill.skillId)}>
@@ -409,19 +419,19 @@ function AddedSkillItem({ catalogueByID, definitionReady, onCopySkill, onRemoveS
         document.body,
       )}
       {detailsOpen && createPortal(
-        <SkillDetailsDialog details={details} label={label} onClose={closeDetails} skill={skill} />,
+        <SkillDetailsDialog details={details} label={label} localDetails={localDetails} onClose={closeDetails} privateReference={privateReference} skill={skill} />,
         document.body,
       )}
     </article>
   );
 }
 
-function SkillDetailsDialog({ details, label, onClose, skill }) {
+function SkillDetailsDialog({ details, label, localDetails, onClose, privateReference, skill }) {
   const dialogRef = useRef(null);
   const closeButtonRef = useRef(null);
   const titleId = useId();
   const descriptionId = useId();
-  const description = details?.description || '此能力已添加到当前 Agent，可立即使用。';
+  const description = details?.description || localDetails?.description || '此能力已添加到当前 Agent，可立即使用。';
 
   useEffect(() => {
     closeButtonRef.current?.focus({ preventScroll: true });
@@ -466,7 +476,7 @@ function SkillDetailsDialog({ details, label, onClose, skill }) {
         <header className='cc-skillhub-detail-header'>
           <span className='cc-skillhub-detail-icon' aria-hidden='true'><Package size={19} /></span>
           <div>
-            <span>SkillHub 能力</span>
+            <span>{privateReference ? 'Agent 私有能力' : 'SkillHub 能力'}</span>
             <h2 id={titleId}>{label}</h2>
           </div>
           <button ref={closeButtonRef} type='button' className='icon-button' aria-label='关闭能力详情' onClick={onClose}>
@@ -475,9 +485,9 @@ function SkillDetailsDialog({ details, label, onClose, skill }) {
         </header>
         <p id={descriptionId} className='cc-skillhub-detail-description'>{description}</p>
         <dl className='cc-skillhub-detail-meta'>
-          <div><dt>SkillHub ID</dt><dd><code translate='no'>{skill.skillId}</code></dd></div>
+          <div><dt>{privateReference ? '能力引用' : 'SkillHub ID'}</dt><dd><code translate='no'>{skill.skillId}</code></dd></div>
           <div><dt>当前版本</dt><dd>{skill.version ? <code translate='no'>v{skill.version}</code> : '版本待确认'}</dd></div>
-          <div><dt>发布者</dt><dd>{details?.author || 'SkillHub'}</dd></div>
+          <div><dt>{privateReference ? '可见范围' : '发布者'}</dt><dd>{privateReference ? '仅当前 Agent' : details?.author || 'SkillHub'}</dd></div>
         </dl>
         <div className='cc-skillhub-detail-footer'>
           <button type='button' onClick={onClose}>完成</button>
@@ -599,12 +609,14 @@ function CustomGrid(props) {
   return <div className='cc-skillhub-local-grid'>{props.localSkills.map((skill) => <CustomCard key={`${skill.relativePath}:${skill.name}`} skill={skill} {...props} />)}</div>;
 }
 
-function CustomCard({ definitionReady, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill }) {
-  const shared = Boolean(skill.skillHub?.author && skill.skillHub?.version);
-  const canShare = skill.source !== 'system' && !shared;
+function CustomCard({ definitionReady, installedByID, isLocalSkillShared, loadingLocalSkills, onShareLocalSkill, saving, selectedDeviceID, sharingSkill, skill }) {
+  const reference = skill.skillHub?.reference;
+  const installedReference = reference?.skillId ? installedByID.get(reference.skillId) : null;
+  const shared = isLocalSkillShared(skill, installedReference);
+  const canShare = skill.canShare !== false && skill.source !== 'system' && !shared;
   return (
     <article className='cc-skillhub-local-card'>
-      <div className='cc-skillhub-local-card-heading'><strong>{skill.name}</strong><span className={`cc-skillhub-status ${shared ? 'synced' : 'local'}`}>{shared ? '已发布' : '仅本地'}</span></div>
+      <div className='cc-skillhub-local-card-heading'><strong>{skill.name}</strong><span className={`cc-skillhub-status ${shared ? 'synced' : 'local'}`}>{shared ? '已发布' : '未发布'}</span></div>
       <p>{skill.description || '这个自定义能力暂时没有补充说明。'}</p>
       <code>{skill.relativePath || skill.path}</code>
       <button type='button' className={shared ? 'added' : 'primary'} disabled={!canShare || !selectedDeviceID || !definitionReady || loadingLocalSkills || saving || Boolean(sharingSkill)} onClick={() => onShareLocalSkill(skill)}>

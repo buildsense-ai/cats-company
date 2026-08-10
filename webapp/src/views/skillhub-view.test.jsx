@@ -158,6 +158,18 @@ describe('SkillHubView', () => {
       skillHub: { author: 'alice', version: '1.0.0' },
     })).toBe(false);
     expect(isLocalSkillShared({
+      canShare: true,
+      skillHub: {
+        author: 'legacy-author',
+        version: '1.0.0',
+        reference: {
+          skillId: 'priv_local1',
+          version: 'sha256-private',
+          contentHash: 'c'.repeat(64),
+        },
+      },
+    })).toBe(false);
+    expect(isLocalSkillShared({
       canShare: false,
       skillHub: {
         author: 'alice',
@@ -680,6 +692,8 @@ describe('SkillHubView', () => {
             source: 'user',
             can_share: true,
             skill_hub: {
+              author: 'legacy-author',
+              version: '1.0.0',
               reference: {
                 source: 'skillhub',
                 skillId: 'priv_local1',
@@ -733,12 +747,18 @@ describe('SkillHubView', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+    expect(container.querySelector('.cc-skillhub-added-title h3')?.textContent).toBe('local-demo');
+    expect(container.querySelector('.cc-skillhub-version-note')?.textContent).toContain('仅当前 Agent 可用');
+    expect(container.textContent).not.toContain('priv_local1');
     await openCustomSkills();
     expect(container.textContent).toContain('Alice Laptop');
     expect(container.textContent).toContain('local-demo');
     expect(container.textContent).toContain('C:\\xiaoba\\skills');
 
     const shareButton = container.querySelector('.cc-skillhub-local-card button');
+    expect(container.querySelector('.cc-skillhub-local-card')?.textContent).toContain('未发布');
+    expect(shareButton.textContent).toContain('发布并添加');
+    expect(shareButton.textContent).not.toContain('已发布到团队');
     await act(async () => {
       Simulate.click(shareButton);
       await new Promise((resolve) => setTimeout(resolve, 0));
