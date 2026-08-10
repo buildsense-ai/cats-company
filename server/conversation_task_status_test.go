@@ -518,13 +518,15 @@ func TestConversationTaskReaperSkipsBotOnlineElsewhere(t *testing.T) {
 	}
 	shared := newSharedMemoryRuntimeState()
 	db := &taskRecoveryTestStore{active: []*types.ConversationTaskStatus{candidate}, current: candidate}
-	hubA := NewHubWithRuntime(db, nil, shared, "node-a")
 	hubB := NewHubWithRuntime(nil, nil, shared, "node-b")
 
-	// The bot reconnects to node B while node A's reaper sweeps.
+	// Establish the remote lease before starting node A. NewHubWithRuntime starts
+	// an immediate background sweep, so creating node A first makes this test race
+	// the condition it is meant to verify.
 	if _, err := hubB.bodyLeases.acquire(42, "body-b", "conn-b"); err != nil {
 		t.Fatalf("acquire body lease on node b: %v", err)
 	}
+	hubA := NewHubWithRuntime(db, nil, shared, "node-a")
 	hubA.recoverStaleDisconnectedBotTasks(now)
 
 	if len(db.upserts) != 0 {
