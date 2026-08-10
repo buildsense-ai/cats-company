@@ -30,6 +30,52 @@ function voiceWavePath(level, phase, baseline) {
   ].join(' ');
 }
 
+const VoiceHoldWave = React.memo(function VoiceHoldWave({ levelRef }) {
+  const rimPathRef = useRef(null);
+  const fillPathRef = useRef(null);
+
+  useEffect(() => {
+    if (typeof window.requestAnimationFrame !== 'function') return undefined;
+    let animationFrame = 0;
+    let startedAt = null;
+    let previousAt = null;
+    let phase = 0;
+    let level = 0;
+    const animate = (now) => {
+      if (startedAt === null) startedAt = now;
+      if (previousAt === null) previousAt = now;
+      const deltaSeconds = Math.min(50, Math.max(0, now - previousAt)) / 1000;
+      previousAt = now;
+      phase += voiceWavePhaseSpeed(now - startedAt) * deltaSeconds;
+      const targetLevel = Math.min(1, Math.max(0, Number(levelRef.current) || 0));
+      level += (targetLevel - level) * (targetLevel > level ? 0.4 : 0.15);
+      rimPathRef.current?.setAttribute('d', voiceWavePath(level * 0.72, phase + 0.42, 58));
+      fillPathRef.current?.setAttribute('d', voiceWavePath(level, phase, 72));
+      animationFrame = window.requestAnimationFrame(animate);
+    };
+    animationFrame = window.requestAnimationFrame(animate);
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [levelRef]);
+
+  return (
+    <div className="v3-voice-hold-wave" aria-hidden="true">
+      <svg viewBox="0 0 1000 260" preserveAspectRatio="none" focusable="false">
+        <path
+          ref={rimPathRef}
+          className="v3-voice-hold-wave-rim"
+          d={voiceWavePath(0, 0.42, 58)}
+        />
+        <path
+          ref={fillPathRef}
+          className="v3-voice-hold-wave-fill"
+          d={voiceWavePath(0, 0, 72)}
+        />
+      </svg>
+      <div className="v3-voice-hold-mic"><Mic size={38} strokeWidth={2.1} /></div>
+    </div>
+  );
+});
+
 export default function ChatComposer({
   className = '',
   textareaRef,
@@ -89,9 +135,9 @@ export default function ChatComposer({
   const voiceHoldTimerRef = useRef(null);
   const voiceHoldGestureRef = useRef(null);
   const suppressVoiceClickRef = useRef(false);
+  const voiceWaveLevelRef = useRef(0);
   const [voiceHoldActive, setVoiceHoldActive] = useState(false);
   const [voiceHoldCancel, setVoiceHoldCancel] = useState(false);
-  const [voiceWave, setVoiceWave] = useState({ level: 0, phase: 0 });
   const showAgentPicker = agentPickerVisible && (typeof onAgentToggle === 'function' || Boolean(agentMenu));
   const anyMenuOpen = attachmentOpen || (showAgentPicker && agentOpen);
 
@@ -177,7 +223,7 @@ export default function ChatComposer({
     voiceHoldGestureRef.current = null;
     setVoiceHoldActive(false);
     setVoiceHoldCancel(false);
-    setVoiceWave({ level: 0, phase: 0 });
+    voiceWaveLevelRef.current = 0;
     setVoiceState('idle');
     setVoicePartial('');
     setVoiceError('');
@@ -190,24 +236,6 @@ export default function ChatComposer({
     if (!transcript || !voiceHoldActive) return;
     transcript.scrollTop = transcript.scrollHeight;
   }, [voiceHoldActive, voiceHoldCancel, voicePartial, voiceState]);
-
-  useEffect(() => {
-    if (!voiceHoldActive || typeof window.requestAnimationFrame !== 'function') return undefined;
-    let animationFrame = 0;
-    let startedAt = null;
-    let previousAt = null;
-    const animate = (now) => {
-      if (startedAt === null) startedAt = now;
-      if (previousAt === null) previousAt = now;
-      const deltaSeconds = Math.min(50, Math.max(0, now - previousAt)) / 1000;
-      previousAt = now;
-      const phaseDelta = voiceWavePhaseSpeed(now - startedAt) * deltaSeconds;
-      setVoiceWave((current) => ({ ...current, phase: current.phase + phaseDelta }));
-      animationFrame = window.requestAnimationFrame(animate);
-    };
-    animationFrame = window.requestAnimationFrame(animate);
-    return () => window.cancelAnimationFrame(animationFrame);
-  }, [voiceHoldActive]);
 
   const startVoiceInput = async ({ hold = false } = {}) => {
     if (voiceActive) {
@@ -231,10 +259,7 @@ export default function ChatComposer({
       },
       onAudioLevel: (level) => {
         if (voiceSessionRef.current !== session) return;
-        setVoiceWave((current) => ({
-          level: current.level + ((level - current.level) * (level > current.level ? 0.4 : 0.15)),
-          phase: current.phase,
-        }));
+        voiceWaveLevelRef.current = level;
       },
       onFinal: (text) => {
         if (voiceSessionRef.current !== session) return;
@@ -243,16 +268,22 @@ export default function ChatComposer({
         voiceInsertionRef.current = null;
         setVoiceState('idle');
         setVoicePartial('');
-        setVoiceWave({ level: 0, phase: 0 });
+        voiceWaveLevelRef.current = 0;
         onVoiceFinal?.(text, insertion);
       },
       onError: (error) => {
         if (voiceSessionRef.current !== session) return;
         voiceSessionRef.current = null;
         voiceInsertionRef.current = null;
+        const gesture = voiceHoldGestureRef.current;
+        clearVoiceHoldTimer();
+        voiceHoldGestureRef.current = null;
+        if (gesture?.triggered) suppressVoiceClickRef.current = true;
+        setVoiceHoldActive(false);
+        setVoiceHoldCancel(false);
         setVoiceState('error');
         setVoicePartial('');
-        setVoiceWave({ level: 0, phase: 0 });
+        voiceWaveLevelRef.current = 0;
         setVoiceError(error.message || '语音识别失败');
       },
     });
@@ -267,13 +298,18 @@ export default function ChatComposer({
     session?.cancel();
     setVoiceState('idle');
     setVoicePartial('');
-    setVoiceWave({ level: 0, phase: 0 });
+    voiceWaveLevelRef.current = 0;
   };
 
   let voicePreviewText = '';
   if (voiceState === 'starting' || voiceState === 'connecting') voicePreviewText = '正在连接…';
   if (voiceState === 'recording') voicePreviewText = voicePartial || '正在听…';
   if (voiceState === 'finalizing') voicePreviewText = voicePartial || '正在整理文字…';
+  let voiceStatusText = '';
+  if (voiceState === 'starting' || voiceState === 'connecting') voiceStatusText = '正在连接语音输入…';
+  if (voiceState === 'recording') voiceStatusText = '正在听…';
+  if (voiceState === 'finalizing') voiceStatusText = '正在整理文字…';
+  if (voiceState === 'error') voiceStatusText = voiceError;
   const insertion = voiceInsertionRef.current;
   const showVoicePreview = voiceActive && insertion;
   const displayedValue = showVoicePreview
@@ -456,7 +492,7 @@ export default function ChatComposer({
             onPaste={onPaste}
           />
           <span className="oc-visually-hidden" role="status" aria-live="polite">
-            {showVoicePreview ? voicePreviewText : (voiceState === 'error' ? voiceError : '')}
+            {voiceStatusText}
           </span>
 
           {typeof onVoiceFinal === 'function' && (
@@ -521,8 +557,6 @@ export default function ChatComposer({
       {voiceHoldActive && (
         <div
           className={`v3-voice-hold-overlay${voiceHoldCancel ? ' is-cancelling' : ''}`}
-          role="status"
-          aria-live="polite"
         >
           <div className="v3-voice-hold-copy">
             <div ref={voiceTranscriptRef} className="v3-voice-hold-transcript">
@@ -534,19 +568,7 @@ export default function ChatComposer({
               {voiceHoldCancel ? '下滑继续录音' : '上滑取消'}
             </div>
           </div>
-          <div className="v3-voice-hold-wave" aria-hidden="true">
-            <svg viewBox="0 0 1000 260" preserveAspectRatio="none" focusable="false">
-              <path
-                className="v3-voice-hold-wave-rim"
-                d={voiceWavePath(voiceWave.level * 0.72, voiceWave.phase + 0.42, 58)}
-              />
-              <path
-                className="v3-voice-hold-wave-fill"
-                d={voiceWavePath(voiceWave.level, voiceWave.phase, 72)}
-              />
-            </svg>
-            <div className="v3-voice-hold-mic"><Mic size={38} strokeWidth={2.1} /></div>
-          </div>
+          <VoiceHoldWave levelRef={voiceWaveLevelRef} />
         </div>
       )}
       {previewImage && (
