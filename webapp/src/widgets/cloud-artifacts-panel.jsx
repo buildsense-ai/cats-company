@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 import { previewFileDescriptor } from './chat-message';
+import { isStandaloneWebApp } from '../utils/standalone-web-app';
 
 const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 
@@ -485,6 +486,7 @@ function HistoricalFileItem({ file, onPreviewFile }) {
   const canPreview = Boolean(descriptor?.canPreview);
   const openURL = descriptor?.url || file.url || '';
   const downloadURL = descriptor?.downloadURL || openURL;
+  const downloadTarget = isStandaloneWebApp() ? undefined : '_blank';
 
   return (
     <article className="cloud-artifact-item cloud-file-item">
@@ -515,8 +517,8 @@ function HistoricalFileItem({ file, onPreviewFile }) {
           <a
             href={downloadURL}
             download={file.name || true}
-            target="_blank"
-            rel="noopener noreferrer"
+            target={downloadTarget}
+            rel={downloadTarget ? 'noopener noreferrer' : undefined}
             aria-label={'下载 ' + file.name}
             title="下载"
           >

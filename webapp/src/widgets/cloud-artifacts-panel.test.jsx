@@ -113,6 +113,7 @@ describe('CloudArtifactsPanel', () => {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
     });
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: false });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -405,13 +406,43 @@ describe('CloudArtifactsPanel', () => {
       container.querySelector('a[aria-label="下载 复习清单.docx"]')?.getAttribute('href'),
     ).toBe('/uploads/files/review-list.docx?download=1');
     expect(
+      container.querySelector('a[aria-label="下载 复习清单.docx"]')?.getAttribute('target'),
+    ).toBe('_blank');
+    expect(
       container.querySelector('a[aria-label="在新窗口打开 课程素材.zip"]')?.getAttribute('href'),
     ).toBe('/uploads/files/course-assets.zip');
     expect(
       container.querySelector('a[aria-label="下载 课程素材.zip"]')?.getAttribute('href'),
     ).toBe('/uploads/files/course-assets.zip?download=1');
+    expect(
+      container.querySelector('a[aria-label="下载 课程素材.zip"]')?.getAttribute('target'),
+    ).toBe('_blank');
     expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
     expect(onPreviewFile).not.toHaveBeenCalled();
+  });
+
+  test('keeps CatsCo OSS downloads in the current context in an installed PWA', async () => {
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: true });
+    api.getAgentFiles.mockResolvedValueOnce({
+      files: [{
+        ...historicalFile,
+        name: '复习清单.docx',
+        url: '/uploads/files/review-list.docx',
+        mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      }],
+      has_more: false,
+      next_before_id: 0,
+    });
+    await renderPanel();
+
+    await act(async () => {
+      [...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '文件')
+        .click();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('a[aria-label="下载 复习清单.docx"]')?.getAttribute('target')).toBeNull();
   });
 
   test('loads older historical files with a stable message cursor', async () => {
