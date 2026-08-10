@@ -1,9 +1,16 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import ChatComposer, { CHAT_COMPOSER_HINT } from './chat-composer';
+import ChatComposer, { CHAT_COMPOSER_HINT, voiceWavePhaseStep } from './chat-composer';
 
 describe('ChatComposer', () => {
+	it('eases the waveform into its steady movement speed', () => {
+		expect(voiceWavePhaseStep(1)).toBeLessThan(voiceWavePhaseStep(18));
+		expect(voiceWavePhaseStep(18)).toBeLessThan(voiceWavePhaseStep(36));
+		expect(voiceWavePhaseStep(36)).toBeCloseTo(0.15);
+		expect(voiceWavePhaseStep(72)).toBeCloseTo(0.15);
+	});
+
 	it('keeps unsupported voice input visible as a disabled control', async () => {
 		await act(async () => {
 			root.render(

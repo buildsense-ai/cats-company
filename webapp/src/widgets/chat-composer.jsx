@@ -8,6 +8,13 @@ const COMPOSER_INPUT_MIN_HEIGHT = 40;
 const COMPOSER_INPUT_MAX_HEIGHT = 200;
 const VOICE_HOLD_DELAY_MS = 280;
 const VOICE_HOLD_CANCEL_DISTANCE = 72;
+const VOICE_WAVE_RAMP_FRAMES = 36;
+
+export function voiceWavePhaseStep(frame) {
+  const progress = Math.min(1, Math.max(0, frame / VOICE_WAVE_RAMP_FRAMES));
+  const eased = progress * progress * (3 - (2 * progress));
+  return 0.018 + (0.132 * eased);
+}
 
 function voiceWavePath(level, phase, baseline) {
   const amplitude = 12 + (level * 64);
@@ -208,7 +215,8 @@ export default function ChatComposer({
         if (voiceSessionRef.current !== session) return;
         setVoiceWave((current) => ({
           level: current.level + ((level - current.level) * (level > current.level ? 0.4 : 0.15)),
-          phase: current.phase + 0.15,
+          phase: current.phase + voiceWavePhaseStep((current.frame || 0) + 1),
+          frame: (current.frame || 0) + 1,
         }));
       },
       onFinal: (text) => {
