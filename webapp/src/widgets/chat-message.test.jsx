@@ -1557,6 +1557,334 @@ describe('ChatMessage rich file rendering', () => {
     expect(panel.querySelector('.v3-remote-artifact-preview-state.error a').getAttribute('href')).toBe(artifact.url);
   });
 
+  it('keeps the current Artifact visible until the hidden refresh frame answers through the page bridge', async () => {
+    const current = createCloudArtifactPreviewFile({
+      id: 'lesson-game',
+      agent_uid: 440,
+      title: '课堂小游戏',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+      publish_version: 2,
+    });
+    const pending = createCloudArtifactPreviewFile({
+      id: 'lesson-game',
+      agent_uid: 440,
+      title: '课堂小游戏',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/?artifact_version=3',
+      publish_version: 3,
+    });
+    const onReady = vi.fn();
+    const onFailed = vi.fn();
+    function RefreshHarness() {
+      const [activeFile, setActiveFile] = React.useState(current);
+      const [pendingFile, setPendingFile] = React.useState(pending);
+      return (
+        <FilePreviewPanel
+          file={activeFile}
+          pendingRemoteArtifactFile={pendingFile}
+          onRemoteArtifactRefreshReady={(candidate) => {
+            onReady(candidate);
+            setActiveFile(candidate);
+            setPendingFile(null);
+          }}
+          onRemoteArtifactRefreshFailed={onFailed}
+          onClose={vi.fn()}
+        />
+      );
+    }
+
+    await act(async () => {
+      root.render(<RefreshHarness />);
+      await flushAsync();
+    });
+
+    const visibleFrame = container.querySelector('iframe[title="Cloud Artifact Preview"]');
+    const refreshFrame = container.querySelector('iframe[title="Cloud Artifact Refresh Check"]');
+    expect(visibleFrame?.getAttribute('src')).toBe(current.url);
+    expect(refreshFrame?.getAttribute('src')).toBe(pending.url);
+
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe('https://artifacts.example.test');
+        const event = new Event('message');
+        Object.defineProperties(event, {
+          source: { value: frameWindow },
+          origin: { value: 'https://artifacts.example.test' },
+          data: {
+            value: {
+              type: 'catsco.artifact.context.response.v1',
+              request_id: message.request_id,
+              context: {
+                contract_version: 'catsco.artifact-page-context.v1',
+                observed_at: '2026-08-07T12:00:00Z',
+                title: '课堂小游戏',
+                location: { pathname: '/by-agent/440/lesson-game/latest/' },
+              },
+            },
+          },
+        });
+        window.dispatchEvent(event);
+      },
+    };
+    Object.defineProperty(refreshFrame, 'contentWindow', {
+      configurable: true,
+      value: frameWindow,
+    });
+
+    await act(async () => {
+      Simulate.load(refreshFrame);
+      await flushAsync();
+    });
+
+    expect(onReady).toHaveBeenCalledWith(pending);
+    expect(onFailed).not.toHaveBeenCalled();
+    const promotedFrame = container.querySelector('iframe[title="Cloud Artifact Preview"]');
+    expect(promotedFrame).toBe(refreshFrame);
+    expect(promotedFrame.getAttribute('src')).toBe(pending.url);
+    expect(visibleFrame.isConnected).toBe(false);
+    expect(container.querySelector('iframe[title="Cloud Artifact Refresh Check"]')).toBeNull();
+  });
+
+  it('replays a refresh-frame load that occurs before the passive attempt effect', async () => {
+    const current = createCloudArtifactPreviewFile({
+      id: 'lesson-game',
+      agent_uid: 440,
+      title: '课堂小游戏',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+      publish_version: 2,
+    });
+    const pending = createCloudArtifactPreviewFile({
+      id: 'lesson-game',
+      agent_uid: 440,
+      title: '课堂小游戏',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/?artifact_version=3',
+      publish_version: 3,
+    });
+    const onReady = vi.fn();
+    const onFailed = vi.fn();
+
+    function EarlyLoadTrigger({ enabled }) {
+      React.useLayoutEffect(() => {
+        if (!enabled) return;
+        const refreshFrame = container.querySelector('iframe[title="Cloud Artifact Refresh Check"]');
+        const frameWindow = {
+          postMessage(message, targetOrigin) {
+            expect(targetOrigin).toBe('https://artifacts.example.test');
+            const event = new Event('message');
+            Object.defineProperties(event, {
+              source: { value: frameWindow },
+              origin: { value: 'https://artifacts.example.test' },
+              data: {
+                value: {
+                  type: 'catsco.artifact.context.response.v1',
+                  request_id: message.request_id,
+                  context: {
+                    contract_version: 'catsco.artifact-page-context.v1',
+                    observed_at: '2026-08-10T12:00:00Z',
+                    title: '课堂小游戏',
+                  },
+                },
+              },
+            });
+            window.dispatchEvent(event);
+          },
+        };
+        Object.defineProperty(refreshFrame, 'contentWindow', {
+          configurable: true,
+          value: frameWindow,
+        });
+        Simulate.load(refreshFrame);
+      }, [enabled]);
+      return null;
+    }
+
+    function EarlyLoadHarness() {
+      const [pendingFile, setPendingFile] = React.useState(null);
+      React.useEffect(() => {
+        setPendingFile(pending);
+      }, []);
+      return (
+        <>
+          <FilePreviewPanel
+            file={current}
+            pendingRemoteArtifactFile={pendingFile}
+            onRemoteArtifactRefreshReady={onReady}
+            onRemoteArtifactRefreshFailed={onFailed}
+            onClose={vi.fn()}
+          />
+          <EarlyLoadTrigger enabled={Boolean(pendingFile)} />
+        </>
+      );
+    }
+
+    await act(async () => {
+      root.render(<EarlyLoadHarness />);
+      await flushAsync();
+    });
+
+    expect(onReady).toHaveBeenCalledWith(pending);
+    expect(onFailed).not.toHaveBeenCalled();
+  });
+
+  it('does not let an old same-key refresh attempt settle its replacement', async () => {
+    const current = createCloudArtifactPreviewFile({
+      id: 'lesson-game',
+      agent_uid: 440,
+      title: '课堂小游戏',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+      publish_version: 2,
+    });
+    const pendingA = createCloudArtifactPreviewFile({
+      id: 'lesson-game',
+      agent_uid: 440,
+      title: '课堂小游戏',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/?artifact_version=3',
+      publish_version: 3,
+    });
+    const pendingB = createCloudArtifactPreviewFile({
+      id: 'lesson-game',
+      agent_uid: 440,
+      title: '课堂小游戏',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/?artifact_version=3',
+      publish_version: 3,
+    });
+    const onReady = vi.fn();
+    const onFailed = vi.fn();
+    const responders = [];
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe('https://artifacts.example.test');
+        responders.push(() => {
+          const event = new Event('message');
+          Object.defineProperties(event, {
+            source: { value: frameWindow },
+            origin: { value: 'https://artifacts.example.test' },
+            data: {
+              value: {
+                type: 'catsco.artifact.context.response.v1',
+                request_id: message.request_id,
+                context: {
+                  contract_version: 'catsco.artifact-page-context.v1',
+                  observed_at: '2026-08-10T12:00:00Z',
+                  title: '课堂小游戏',
+                },
+              },
+            },
+          });
+          window.dispatchEvent(event);
+        });
+      },
+    };
+    let replacePending = null;
+    function RefreshHarness() {
+      const [pendingFile, setPendingFile] = React.useState(pendingA);
+      replacePending = () => setPendingFile(pendingB);
+      return (
+        <FilePreviewPanel
+          file={current}
+          pendingRemoteArtifactFile={pendingFile}
+          onRemoteArtifactRefreshReady={onReady}
+          onRemoteArtifactRefreshFailed={onFailed}
+          onClose={vi.fn()}
+        />
+      );
+    }
+
+    await act(async () => {
+      root.render(<RefreshHarness />);
+      await flushAsync();
+    });
+    let refreshFrame = container.querySelector('iframe[title="Cloud Artifact Refresh Check"]');
+    Object.defineProperty(refreshFrame, 'contentWindow', {
+      configurable: true,
+      value: frameWindow,
+    });
+    await act(async () => {
+      Simulate.load(refreshFrame);
+      await flushAsync();
+    });
+    expect(responders).toHaveLength(1);
+
+    await act(async () => {
+      replacePending();
+      await flushAsync();
+    });
+    refreshFrame = container.querySelector('iframe[title="Cloud Artifact Refresh Check"]');
+    await act(async () => {
+      Simulate.load(refreshFrame);
+      await flushAsync();
+    });
+    expect(responders).toHaveLength(2);
+
+    await act(async () => {
+      responders[0]();
+      await flushAsync();
+    });
+    expect(onReady).not.toHaveBeenCalled();
+    expect(onFailed).not.toHaveBeenCalled();
+
+    await act(async () => {
+      responders[1]();
+      await flushAsync();
+    });
+    expect(onReady).toHaveBeenCalledTimes(1);
+    expect(onReady.mock.calls[0][0]).toBe(pendingB);
+    expect(onFailed).not.toHaveBeenCalled();
+  });
+
+  it('rejects an onLoad-only refresh frame when the Artifact page bridge does not answer', async () => {
+    vi.useFakeTimers();
+    try {
+      const current = createCloudArtifactPreviewFile({
+        id: 'lesson-game',
+        agent_uid: 440,
+        title: '课堂小游戏',
+        url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+        publish_version: 2,
+      });
+      const pending = createCloudArtifactPreviewFile({
+        id: 'lesson-game',
+        agent_uid: 440,
+        title: '课堂小游戏',
+        url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/?artifact_version=3',
+        publish_version: 3,
+      });
+      const onReady = vi.fn();
+      const onFailed = vi.fn();
+
+      await act(async () => {
+        root.render(
+          <FilePreviewPanel
+            file={current}
+            pendingRemoteArtifactFile={pending}
+            onRemoteArtifactRefreshReady={onReady}
+            onRemoteArtifactRefreshFailed={onFailed}
+            onClose={vi.fn()}
+          />,
+        );
+        await flushAsync();
+      });
+
+      const visibleFrame = container.querySelector('iframe[title="Cloud Artifact Preview"]');
+      const refreshFrame = container.querySelector('iframe[title="Cloud Artifact Refresh Check"]');
+      Object.defineProperty(refreshFrame, 'contentWindow', {
+        configurable: true,
+        value: { postMessage: vi.fn() },
+      });
+
+      await act(async () => {
+        Simulate.load(refreshFrame);
+        await vi.advanceTimersByTimeAsync(1200);
+        await flushAsync();
+      });
+
+      expect(onReady).not.toHaveBeenCalled();
+      expect(onFailed).toHaveBeenCalledWith(pending);
+      expect(visibleFrame.getAttribute('src')).toBe(current.url);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reuses the side preview external-open action and returns to the managed Artifact list', async () => {
     const artifact = {
       id: 'managed-game',

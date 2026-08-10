@@ -57,6 +57,7 @@ func (a *Adapter) CreateSchema() error {
 		migrateMessagesAddCodeMode,
 		migrateMessagesAddClientMsgID,
 		migrateMessagesAddClientMsgIDIndex,
+		migrateMessagesAddMetadata,
 		migrateGroupsAddCreatedAtColumn,
 		migrateGroupsBackfillCreatedAt,
 		migrateGroupsCreatedAtNotNull,
@@ -271,6 +272,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL,
     msg_type ENUM('text','image','voice','file') NOT NULL DEFAULT 'text',
     client_msg_id VARCHAR(128) DEFAULT NULL,
+    metadata JSON DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_messages_topic (topic_id, created_at),
     INDEX idx_messages_topic_id (topic_id, id),
@@ -747,6 +749,11 @@ ALTER TABLE messages ADD COLUMN client_msg_id VARCHAR(128) DEFAULT NULL;
 // Migration: add a retry deduplication index for client-generated ids.
 const migrateMessagesAddClientMsgIDIndex = `
 ALTER TABLE messages ADD UNIQUE KEY uk_messages_client_msg_id (topic_id, from_uid, client_msg_id);
+`
+
+// Migration: persist optional normalized message metadata.
+const migrateMessagesAddMetadata = `
+ALTER TABLE messages ADD COLUMN metadata JSON DEFAULT NULL;
 `
 
 // Migration: add and backfill created_at for legacy groups tables.

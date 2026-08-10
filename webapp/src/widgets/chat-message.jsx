@@ -15,6 +15,7 @@ import {
 } from './markdown-utils';
 import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
 import MobilePdfPreview from './mobile-pdf-preview';
+import { artifactRefFromPreviewFile, requestArtifactPageContext } from '../artifact-context';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -34,7 +35,19 @@ const SPREADSHEET_MIME_TYPES = new Set([
 const HTML_PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-popups allow-modals';
 const FOCUSABLE_SELECTOR = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 const REMOTE_ARTIFACT_PREVIEW_SANDBOX = `${HTML_PREVIEW_SANDBOX} allow-same-origin`;
+const REMOTE_ARTIFACT_REFRESH_TIMEOUT_MS = 4000;
+const REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS = 1200;
 const trustedArtifactPreviewPayloads = new WeakSet();
+
+function remoteArtifactPreviewKey(file, descriptor) {
+  if (!descriptor?.isRemoteArtifact || !file?.artifact_id || !descriptor.url) return '';
+  return [
+    Number(file.artifact_agent_uid || 0),
+    String(file.artifact_id),
+    Number(file.publish_version || 0),
+    descriptor.url,
+  ].join('|');
+}
 
 function shouldHideToolProgressName(name) {
   return HIDDEN_TOOL_PROGRESS_NAMES.has(String(name || '').trim());
@@ -1409,6 +1422,8 @@ export function createCloudArtifactPreviewFile(artifact) {
     artifact_id: artifact.id || artifact.artifact_id || '',
     publish_version: artifact.publish_version || null,
   };
+  const agentUID = Number(artifact.agent_uid || artifact.agentUid || artifact.artifact_agent_uid || 0);
+  if (Number.isSafeInteger(agentUID) && agentUID > 0) payload.artifact_agent_uid = agentUID;
   trustedArtifactPreviewPayloads.add(payload);
   return payload;
 }
@@ -2000,7 +2015,16 @@ function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = 
   );
 }
 
-export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
+export function FilePreviewPanel({
+  file,
+  onBack,
+  onClose,
+  backgroundRef,
+  onRemoteArtifactFrameChange,
+  pendingRemoteArtifactFile,
+  onRemoteArtifactRefreshReady,
+  onRemoteArtifactRefreshFailed,
+}) {
   const [preview, setPreview] = useState(false);
   const [textContent, setTextContent] = useState(null);
   const [binaryContent, setBinaryContent] = useState(null);
@@ -2014,6 +2038,10 @@ export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
   const hasDismissedRef = useRef(false);
   const panelRef = useRef(null);
   const closeButtonRef = useRef(null);
+  const remoteArtifactFrameRef = useRef(null);
+  const pendingRemoteArtifactFrameRef = useRef(null);
+  const pendingRemoteArtifactAttemptRef = useRef(null);
+  const verifiedRemoteArtifactKeysRef = useRef(new Set());
   const focusBeforeSheetRef = useRef(null);
   const [isSheetMode, setIsSheetMode] = useState(
     () => window.matchMedia?.('(max-width: 1024px)').matches ?? window.innerWidth <= 1024,
@@ -2023,6 +2051,10 @@ export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
     : isSheetMode;
 
   const descriptor = useMemo(() => previewFileDescriptor(file), [file]);
+  const pendingRemoteArtifactDescriptor = useMemo(
+    () => previewFileDescriptor(pendingRemoteArtifactFile),
+    [pendingRemoteArtifactFile],
+  );
   const url = descriptor?.url || '';
   const isPdf = descriptor?.isPdf || false;
   const isHtml = descriptor?.isHtml || false;
@@ -2032,6 +2064,132 @@ export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
   const meta = descriptor?.meta || artifactMeta(file || {});
   const sizeStr = descriptor?.sizeStr || '';
   const downloadURL = descriptor?.downloadURL || url;
+  const currentRemoteArtifactKey = remoteArtifactPreviewKey(file, descriptor);
+  const pendingRemoteArtifactKey = remoteArtifactPreviewKey(
+    pendingRemoteArtifactFile,
+    pendingRemoteArtifactDescriptor,
+  );
+  const pendingRemoteArtifactAttemptSeed = useMemo(() => {
+    if (!pendingRemoteArtifactKey || !pendingRemoteArtifactFile) return null;
+    return {
+      file: pendingRemoteArtifactFile,
+      key: pendingRemoteArtifactKey,
+      loaded: false,
+      errored: false,
+      reported: false,
+      frame: null,
+    };
+  }, [pendingRemoteArtifactFile, pendingRemoteArtifactKey]);
+
+  const settlePendingRemoteArtifact = (status, expectedAttempt) => {
+    const attempt = pendingRemoteArtifactAttemptRef.current;
+    if (!attempt || attempt !== expectedAttempt || attempt.settled) return;
+    attempt.settled = true;
+    if (attempt.timer) window.clearTimeout(attempt.timer);
+    pendingRemoteArtifactAttemptRef.current = null;
+    if (attempt.seed.reported) return;
+    attempt.seed.reported = true;
+    if (status === 'ready') {
+      const verifiedKeys = verifiedRemoteArtifactKeysRef.current;
+      verifiedKeys.add(attempt.key);
+      while (verifiedKeys.size > 8) {
+        verifiedKeys.delete(verifiedKeys.values().next().value);
+      }
+      onRemoteArtifactRefreshReady?.(attempt.file);
+    } else {
+      onRemoteArtifactRefreshFailed?.(attempt.file);
+    }
+  };
+
+  const verifyPendingRemoteArtifact = async (attempt) => {
+    if (!attempt
+      || pendingRemoteArtifactAttemptRef.current !== attempt
+      || attempt.settled
+      || attempt.verifying
+      || !attempt.frame) return;
+    attempt.verifying = true;
+    const artifactRef = artifactRefFromPreviewFile(attempt.file);
+    if (!artifactRef) {
+      settlePendingRemoteArtifact('failed', attempt);
+      return;
+    }
+    const pageContext = await requestArtifactPageContext({
+      frame: attempt.frame,
+      artifactId: artifactRef.id,
+      url: attempt.file.url,
+      agentUid: attempt.file.artifact_agent_uid,
+    }, artifactRef, REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS);
+    settlePendingRemoteArtifact(pageContext ? 'ready' : 'failed', attempt);
+  };
+
+  useEffect(() => {
+    const previous = pendingRemoteArtifactAttemptRef.current;
+    if (previous?.timer) window.clearTimeout(previous.timer);
+    if (previous) previous.settled = true;
+    pendingRemoteArtifactAttemptRef.current = null;
+    const seed = pendingRemoteArtifactAttemptSeed;
+    if (!seed) return undefined;
+
+    const attempt = {
+      seed,
+      file: seed.file,
+      key: seed.key,
+      settled: false,
+      verifying: false,
+      frame: seed.frame || pendingRemoteArtifactFrameRef.current,
+      timer: null,
+    };
+    pendingRemoteArtifactAttemptRef.current = attempt;
+    if (seed.errored) {
+      settlePendingRemoteArtifact('failed', attempt);
+    } else {
+      attempt.timer = window.setTimeout(() => {
+        settlePendingRemoteArtifact('failed', attempt);
+      }, REMOTE_ARTIFACT_REFRESH_TIMEOUT_MS);
+      if (seed.loaded) void verifyPendingRemoteArtifact(attempt);
+    }
+    return () => {
+      if (attempt.timer) window.clearTimeout(attempt.timer);
+      attempt.settled = true;
+      if (pendingRemoteArtifactAttemptRef.current === attempt) {
+        pendingRemoteArtifactAttemptRef.current = null;
+      }
+    };
+  }, [pendingRemoteArtifactAttemptSeed]);
+
+  const handlePendingRemoteArtifactLoad = (seed, frame) => {
+    if (!seed) return;
+    seed.loaded = true;
+    seed.frame = frame || seed.frame;
+    const attempt = pendingRemoteArtifactAttemptRef.current;
+    if (!attempt || attempt.seed !== seed || attempt.settled) return;
+    attempt.frame = seed.frame || attempt.frame;
+    void verifyPendingRemoteArtifact(attempt);
+  };
+
+  const handlePendingRemoteArtifactError = (seed) => {
+    if (!seed) return;
+    seed.errored = true;
+    const attempt = pendingRemoteArtifactAttemptRef.current;
+    if (!attempt || attempt.seed !== seed || attempt.settled) return;
+    settlePendingRemoteArtifact('failed', attempt);
+  };
+
+  useEffect(() => {
+    const frame = remoteArtifactFrameRef.current;
+    if (!preview || !isRemoteArtifact || !frame || !file?.artifact_id) {
+      onRemoteArtifactFrameChange?.(null);
+      return undefined;
+    }
+    const binding = {
+      frame,
+      artifactId: String(file.artifact_id),
+      agentUid: Number(file.artifact_agent_uid || 0),
+      url,
+    };
+    onRemoteArtifactFrameChange?.(binding);
+    return () => onRemoteArtifactFrameChange?.(null);
+  }, [file?.artifact_agent_uid, file?.artifact_id, isRemoteArtifact, onRemoteArtifactFrameChange, preview, url]);
   const downloadTarget = isStandaloneWebApp() ? undefined : '_blank';
 
   useEffect(() => {
@@ -2040,7 +2198,11 @@ export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
     setTextContent(null);
     setBinaryContent(null);
     setPreviewError('');
-    setRemoteFrameState(isRemoteArtifact ? 'loading' : 'idle');
+    setRemoteFrameState(
+      isRemoteArtifact
+        ? (verifiedRemoteArtifactKeysRef.current.has(currentRemoteArtifactKey) ? 'ready' : 'loading')
+        : 'idle',
+    );
     setDragOffset(0);
     setIsDismissing(false);
     hasDismissedRef.current = false;
@@ -2093,7 +2255,7 @@ export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
     return () => {
       cancelled = true;
     };
-  }, [descriptor?.canPreview, file, isPdf, isRemoteArtifact, isSpreadsheet, url]);
+  }, [currentRemoteArtifactKey, descriptor?.canPreview, file, isPdf, isRemoteArtifact, isSpreadsheet, url]);
 
   useEffect(() => {
     if (!preview) return undefined;
@@ -2301,17 +2463,48 @@ export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
         <div className="v3-file-preview-body">
           {isRemoteArtifact ? (
             <div className="v3-remote-artifact-preview">
-              <iframe
-                src={url}
-                className="v3-file-preview-frame"
-                title="Cloud Artifact Preview"
-                sandbox={REMOTE_ARTIFACT_PREVIEW_SANDBOX}
-                credentialless=""
-                referrerPolicy="no-referrer"
-                tabIndex={isSheetMode ? -1 : undefined}
-                onLoad={() => setRemoteFrameState('ready')}
-                onError={() => setRemoteFrameState('error')}
-              />
+              {[
+                {
+                  key: currentRemoteArtifactKey,
+                  descriptor,
+                  current: true,
+                  attemptSeed: null,
+                },
+                pendingRemoteArtifactKey && pendingRemoteArtifactKey !== currentRemoteArtifactKey
+                  ? {
+                     key: pendingRemoteArtifactKey,
+                     descriptor: pendingRemoteArtifactDescriptor,
+                     current: false,
+                     attemptSeed: pendingRemoteArtifactAttemptSeed,
+                   }
+                  : null,
+              ].filter(Boolean).map((frameEntry) => (
+                <iframe
+                  key={frameEntry.key}
+                  ref={frameEntry.current ? remoteArtifactFrameRef : pendingRemoteArtifactFrameRef}
+                  src={frameEntry.descriptor.url}
+                  className={frameEntry.current ? 'v3-file-preview-frame' : 'v3-file-preview-frame-pending'}
+                  title={frameEntry.current ? 'Cloud Artifact Preview' : 'Cloud Artifact Refresh Check'}
+                  sandbox={REMOTE_ARTIFACT_PREVIEW_SANDBOX}
+                  credentialless=""
+                  referrerPolicy="no-referrer"
+                  aria-hidden={frameEntry.current ? undefined : 'true'}
+                  tabIndex={frameEntry.current && !isSheetMode ? undefined : -1}
+                  style={frameEntry.current ? undefined : {
+                    position: 'absolute',
+                    width: '1px',
+                    height: '1px',
+                    opacity: 0,
+                    pointerEvents: 'none',
+                  }}
+                  onLoad={frameEntry.current
+                    ? () => setRemoteFrameState('ready')
+                    : (event) => handlePendingRemoteArtifactLoad(frameEntry.attemptSeed, event.currentTarget)}
+                  onError={frameEntry.current
+                    ? () => setRemoteFrameState('error')
+                    : () => handlePendingRemoteArtifactError(frameEntry.attemptSeed)}
+                />
+              ))}
               {remoteFrameState === 'loading' && (
                 <div className="v3-remote-artifact-preview-state" role="status">正在加载云端生成物...</div>
               )}

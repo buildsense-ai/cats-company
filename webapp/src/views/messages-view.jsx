@@ -10,6 +10,12 @@ import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TAS
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
+import {
+  artifactRefFromPreviewFile,
+  artifactURLForVersion,
+  requestArtifactPageContext,
+  withArtifactRef,
+} from '../artifact-context';
 
 const PAGE_SIZE = 50;
 const HISTORY_CACHE_MAX_TOPICS = 12;
@@ -42,6 +48,42 @@ const PREVIEW_WIDTH_MIN = 360;
 const PREVIEW_WIDTH_DEFAULT = 640;
 const PREVIEW_WIDTH_MAX = 980;
 const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
+const ARTIFACT_REGISTRY_POLL_MS = 5000;
+
+function artifactRefreshFileKey(file) {
+  if (!file?.artifact_id || !file?.url) return '';
+  return [
+    Number(file.artifact_agent_uid || 0),
+    String(file.artifact_id),
+    Number(file.publish_version || 0),
+    String(file.url),
+  ].join('|');
+}
+
+function artifactMessageFocusFromPreviewFile(file, topic, topicGeneration = 0) {
+  const agentUid = Number(file?.artifact_agent_uid || 0);
+  const artifactRef = artifactRefFromPreviewFile(file, agentUid);
+  const previewKey = artifactRefreshFileKey(file);
+  if (!topic || agentUid <= 0 || !artifactRef || !previewKey) return null;
+  return {
+    topic,
+    topicGeneration,
+    agentUid,
+    artifactId: artifactRef.id,
+    displayedVersion: Number(artifactRef.displayed_version || 0),
+    url: String(file.url),
+    previewKey,
+    artifactRef,
+  };
+}
+
+function artifactBindingMatchesFocus(binding, focus) {
+  return Boolean(binding
+    && focus
+    && binding.artifactId === focus.artifactId
+    && Number(binding.agentUid || 0) === focus.agentUid
+    && String(binding.url || '') === focus.url);
+}
 
 function questionNavigationKey(message, index) {
   return String(message?.id ?? message?.seq_id ?? `question-${index}`);
@@ -272,6 +314,8 @@ export default function MessagesView({
   const [cloudArtifactsTab, setCloudArtifactsTab] = useState('files');
   const [artifactRegistryState, setArtifactRegistryState] = useState({ agentUID: 0, artifacts: [] });
   const [artifactRegistryRefreshEpoch, setArtifactRegistryRefreshEpoch] = useState(0);
+  const [artifactRegistryRevision, setArtifactRegistryRevision] = useState(0);
+  const [pendingArtifactRefresh, setPendingArtifactRefresh] = useState(null);
   const [previewWidth, setPreviewWidth] = useState(() => loadPreviewWidth());
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
@@ -325,6 +369,8 @@ export default function MessagesView({
   const dragDepthRef = useRef(0);
   const runtimePlanRef = useRef(null);
   const runtimePlanClearTimer = useRef(null);
+  const activeArtifactFrameRef = useRef(null);
+  const activeArtifactFocusRef = useRef(null);
   const historyOffsetRef = useRef(0);
   const historyBeforeIDRef = useRef(0);
   const historyRequestRef = useRef(0);
@@ -335,11 +381,14 @@ export default function MessagesView({
   const groupMembersRequestRef = useRef(0);
   const peerProfileRequestRef = useRef(0);
   const artifactRegistryRequestRef = useRef(0);
+  const activeArtifactAgentUIDRef = useRef(0);
   const historyCacheRef = useRef(new Map());
   const groupProfileCacheRef = useRef(new Map());
   const hasMoreHistoryRef = useRef(false);
   const loadingOlderRef = useRef(false);
   const activeTopicRef = useRef(topic);
+  const artifactTopicRef = useRef(topic);
+  const artifactTopicGenerationRef = useRef(0);
   const questionIndexCacheRef = useRef(new Map());
   const questionIndexRequestRef = useRef(0);
   const questionIndexLoadingRef = useRef(false);
@@ -355,6 +404,13 @@ export default function MessagesView({
   const phoneUploadTopicRef = useRef('');
   const phoneUploadSyncRef = useRef(null);
   const sendInFlightRef = useRef(false);
+
+  if (artifactTopicRef.current !== topic) {
+    artifactTopicRef.current = topic;
+    artifactTopicGenerationRef.current += 1;
+    activeArtifactFocusRef.current = null;
+    activeArtifactFrameRef.current = null;
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -460,26 +516,84 @@ export default function MessagesView({
     }
   }, [sidePanelOpen, updatePreviewWidth]);
 
-  const openFilePreview = useCallback((file) => {
-    setCloudArtifactsAgentUID(0);
-    setCloudArtifactsListOpen(false);
+  const clearActiveArtifactFocus = useCallback(() => {
+    activeArtifactFocusRef.current = null;
+    activeArtifactFrameRef.current = null;
+  }, []);
+
+  const setPreviewFileWithFocus = useCallback((file) => {
+    activeArtifactFocusRef.current = artifactMessageFocusFromPreviewFile(
+      file,
+      artifactTopicRef.current,
+      artifactTopicGenerationRef.current,
+    );
+    activeArtifactFrameRef.current = null;
     setPreviewFile(file);
   }, []);
 
+  const handleRemoteArtifactFrameChange = useCallback((binding) => {
+    activeArtifactFrameRef.current = artifactBindingMatchesFocus(
+      binding,
+      activeArtifactFocusRef.current,
+    ) ? binding : null;
+  }, []);
+
+  const openFilePreview = useCallback((file) => {
+    setCloudArtifactsAgentUID(0);
+    setCloudArtifactsListOpen(false);
+    setPendingArtifactRefresh(null);
+    setPreviewFileWithFocus(file);
+  }, [setPreviewFileWithFocus]);
+
   const closeSidePanel = useCallback(() => {
+    setPendingArtifactRefresh(null);
+    clearActiveArtifactFocus();
     setPreviewFile(null);
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
     setCloudArtifactsTab('files');
-  }, []);
+  }, [clearActiveArtifactFocus]);
 
   const previewCloudArtifact = useCallback((artifact) => {
-    setPreviewFile(createCloudArtifactPreviewFile(artifact));
+    setPendingArtifactRefresh(null);
+    setPreviewFileWithFocus(createCloudArtifactPreviewFile({
+      ...artifact,
+      agent_uid: artifact?.agent_uid || cloudArtifactsAgentUID,
+    }));
     setCloudArtifactsListOpen(false);
-  }, []);
+  }, [cloudArtifactsAgentUID, setPreviewFileWithFocus]);
+
+  const captureArtifactMessageContext = useCallback(async () => {
+    const focus = activeArtifactFocusRef.current;
+    const topicGeneration = artifactTopicGenerationRef.current;
+    const empty = { artifactRef: null, pageContext: null };
+    if (!focus
+      || focus.topic !== topic
+      || focus.topicGeneration !== topicGeneration
+      || artifactTopicRef.current !== topic
+      || activeTopicRef.current !== topic
+      || focus.agentUid !== activeArtifactAgentUIDRef.current) return empty;
+
+    const binding = activeArtifactFrameRef.current;
+    if (!artifactBindingMatchesFocus(binding, focus)) {
+      return activeArtifactFocusRef.current === focus
+        ? { artifactRef: focus.artifactRef, pageContext: null }
+        : empty;
+    }
+
+    const pageContext = await requestArtifactPageContext(binding, focus.artifactRef);
+    if (activeArtifactFocusRef.current !== focus
+      || activeArtifactFrameRef.current !== binding
+      || artifactTopicRef.current !== topic
+      || artifactTopicGenerationRef.current !== topicGeneration
+      || activeTopicRef.current !== topic
+      || activeArtifactAgentUIDRef.current !== focus.agentUid) return empty;
+    return { artifactRef: focus.artifactRef, pageContext };
+  }, [topic]);
 
   const previewAgentFile = useCallback((file) => {
-    setPreviewFile({
+    setPendingArtifactRefresh(null);
+    setPreviewFileWithFocus({
       name: file.name,
       url: file.url,
       file_key: file.file_key,
@@ -487,12 +601,14 @@ export default function MessagesView({
       size: file.size,
     });
     setCloudArtifactsListOpen(false);
-  }, []);
+  }, [setPreviewFileWithFocus]);
 
   const returnToCloudArtifacts = useCallback(() => {
+    setPendingArtifactRefresh(null);
+    clearActiveArtifactFocus();
     setPreviewFile(null);
     setCloudArtifactsListOpen(true);
-  }, []);
+  }, [clearActiveArtifactFocus]);
 
   const resizeComposerInput = useCallback(() => {
     const textarea = textareaRef.current;
@@ -583,6 +699,8 @@ export default function MessagesView({
     groupMembersRequestRef.current += 1;
     peerProfileRequestRef.current += 1;
     activeTopicRef.current = topic;
+    activeArtifactFocusRef.current = null;
+    activeArtifactFrameRef.current = null;
     setInput(composerDraftsRef.current.get(topic) || '');
     const cacheKey = historyCacheKey(user.uid, topic);
     const cachedHistory = historyCacheRef.current.get(cacheKey);
@@ -667,11 +785,12 @@ export default function MessagesView({
   useEffect(() => {
     const agentUID = Number(cloudArtifactsRequest?.agentUid || 0);
     if (agentUID <= 0 || !cloudArtifactsRequest?.requestId) return;
+    clearActiveArtifactFocus();
     setPreviewFile(null);
     setCloudArtifactsAgentUID(agentUID);
     setCloudArtifactsTab('files');
     setCloudArtifactsListOpen(true);
-  }, [cloudArtifactsRequest]);
+  }, [clearActiveArtifactFocus, cloudArtifactsRequest]);
 
   useEffect(() => {
     const preventBrowserFileOpen = (event) => {
@@ -1421,6 +1540,14 @@ export default function MessagesView({
             content_blocks: contentBlocks,
           }
         : text;
+      const artifactContext = switchesTopic
+        ? { artifactRef: null, pageContext: null }
+        : await captureArtifactMessageContext();
+      const sendPayload = withArtifactRef(
+        payload,
+        artifactContext.artifactRef,
+        artifactContext.pageContext,
+      );
 
       updateComposerDraft(topic, '');
       updateStructuredMentionDraft(topic, []);
@@ -1452,8 +1579,8 @@ export default function MessagesView({
       }
 
       const result = mentions.length > 0
-        ? await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
-        : await api.sendMessage(sendTopic, payload, currentReplyTo ? currentReplyTo.id : undefined);
+        ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
+        : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined);
       messageSent = true;
       if (switchesTopic) {
         if (activeTopicRef.current === topic) {
@@ -1496,7 +1623,7 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
+  }, [captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, input, isGroup, isUploadingAttachment, onActivateTopic, onResolveAgentTopic, removeOptimisticMessage, replyTo, selectedAgent, syncPhoneUploads, topic, updateAttachmentDraft, updateComposerDraft, updateStructuredMentionDraft, user.uid]);
 
   const handleStopGeneration = useCallback(async () => {
     if (!canStopActiveBotWorking || isStopRequested) return;
@@ -1549,7 +1676,13 @@ export default function MessagesView({
     }]));
 
     try {
-      const result = await api.sendMessage(topic, taskText, undefined);
+      const artifactContext = await captureArtifactMessageContext();
+      const sendPayload = withArtifactRef(
+        taskText,
+        artifactContext.artifactRef,
+        artifactContext.pageContext,
+      );
+      const result = await api.sendMessage(topic, sendPayload, undefined);
       finalizeOptimisticMessage(tempId, result);
     } catch (error) {
       removeOptimisticMessage(tempId);
@@ -1563,7 +1696,7 @@ export default function MessagesView({
       sendInFlightRef.current = false;
       setIsSendingMessage(false);
     }
-  }, [clearRuntimePlan, finalizeOptimisticMessage, messages, removeOptimisticMessage, topic, user.uid]);
+  }, [captureArtifactMessageContext, clearRuntimePlan, finalizeOptimisticMessage, messages, removeOptimisticMessage, topic, user.uid]);
 
   const handleKeyDown = (e) => {
     if (
@@ -2103,9 +2236,20 @@ export default function MessagesView({
   const activeArtifactAgentUID = isGroup
     ? (groupSupportsArtifacts ? groupAgentUID : 0)
     : (peerIsBot && peerUID > 0 && resolvedPeerProfile?.cloud_artifacts_enabled === true ? peerUID : 0);
+  activeArtifactAgentUIDRef.current = activeArtifactAgentUID;
   const knownArtifacts = artifactRegistryState.agentUID === activeArtifactAgentUID
     ? artifactRegistryState.artifacts
     : [];
+  const activePreviewArtifactRef = artifactRefFromPreviewFile(previewFile, activeArtifactAgentUID);
+  const activePreviewArtifactId = activePreviewArtifactRef?.id || '';
+  const activePreviewArtifactVersion = Number(activePreviewArtifactRef?.displayed_version || 0);
+  const latestActivePreviewArtifact = activePreviewArtifactId
+    ? knownArtifacts.find((artifact) => String(artifact?.id || artifact?.artifact_id || '') === activePreviewArtifactId)
+    : null;
+  const latestActivePreviewVersion = Number(latestActivePreviewArtifact?.publish_version || 0);
+  const latestActivePreviewURL = String(latestActivePreviewArtifact?.url || '');
+  const latestActivePreviewTitle = String(latestActivePreviewArtifact?.title || '');
+  const latestActivePreviewKind = String(latestActivePreviewArtifact?.kind || 'html');
   const artifactRegistryRefreshKey = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
@@ -2129,7 +2273,7 @@ export default function MessagesView({
 
   useEffect(() => {
     let cancelled = false;
-    let retryTimer = null;
+    let requestTimer = null;
     let hadSuccessfulResponse = false;
     const requestID = ++artifactRegistryRequestRef.current;
     if (activeArtifactAgentUID <= 0) return () => {
@@ -2137,39 +2281,136 @@ export default function MessagesView({
     };
 
     const requestAgentUID = activeArtifactAgentUID;
+    const controller = new AbortController();
     const retryDelays = artifactRegistryRefreshKey ? [750, 1750] : [];
+    const shouldPollActivePreview = Boolean(activePreviewArtifactId);
     const isCurrentRequest = () => (
       !cancelled && requestID === artifactRegistryRequestRef.current
     );
-    const loadArtifacts = async (attempt = 0) => {
+    const loadArtifacts = async (attempt = 0, polling = false) => {
       try {
-        const result = await api.getCloudArtifacts(requestAgentUID, 'active');
+        const result = await api.getCloudArtifacts(requestAgentUID, 'active', {
+          signal: controller.signal,
+        });
         if (!isCurrentRequest()) return;
         hadSuccessfulResponse = true;
         setArtifactRegistryState({
           agentUID: requestAgentUID,
           artifacts: Array.isArray(result?.artifacts) ? result.artifacts : [],
         });
+        setArtifactRegistryRevision((current) => current + 1);
       } catch {
         if (!isCurrentRequest()) return;
-        if (attempt >= retryDelays.length && !hadSuccessfulResponse) {
+        if ((polling || attempt >= retryDelays.length) && !hadSuccessfulResponse) {
           setArtifactRegistryState({ agentUID: requestAgentUID, artifacts: [] });
         }
       }
 
-      if (!isCurrentRequest() || attempt >= retryDelays.length) return;
-      retryTimer = window.setTimeout(() => {
-        retryTimer = null;
-        loadArtifacts(attempt + 1);
-      }, retryDelays[attempt]);
+      if (!isCurrentRequest()) return;
+      if (!polling && attempt < retryDelays.length) {
+        requestTimer = window.setTimeout(() => {
+          requestTimer = null;
+          loadArtifacts(attempt + 1, false);
+        }, retryDelays[attempt]);
+        return;
+      }
+      if (shouldPollActivePreview) {
+        requestTimer = window.setTimeout(() => {
+          requestTimer = null;
+          loadArtifacts(0, true);
+        }, ARTIFACT_REGISTRY_POLL_MS);
+      }
     };
 
     loadArtifacts();
     return () => {
       cancelled = true;
-      if (retryTimer) window.clearTimeout(retryTimer);
+      controller.abort();
+      if (requestTimer) window.clearTimeout(requestTimer);
     };
-  }, [activeArtifactAgentUID, artifactRegistryRefreshEpoch, artifactRegistryRefreshKey]);
+  }, [
+    activeArtifactAgentUID,
+    activePreviewArtifactId,
+    artifactRegistryRefreshEpoch,
+    artifactRegistryRefreshKey,
+  ]);
+
+  useEffect(() => {
+    if (!activePreviewArtifactId
+      || latestActivePreviewVersion <= activePreviewArtifactVersion
+      || !latestActivePreviewURL) {
+      setPendingArtifactRefresh(null);
+      return;
+    }
+    const refreshURL = artifactURLForVersion(latestActivePreviewURL, latestActivePreviewVersion);
+    if (!refreshURL) {
+      setPendingArtifactRefresh(null);
+      return;
+    }
+
+    const candidate = createCloudArtifactPreviewFile({
+      id: activePreviewArtifactId,
+      title: latestActivePreviewTitle || previewFile?.name || activePreviewArtifactId,
+      kind: latestActivePreviewKind,
+      url: refreshURL,
+      publish_version: latestActivePreviewVersion,
+      agent_uid: activeArtifactAgentUID,
+    });
+    const candidateKey = artifactRefreshFileKey(candidate);
+    setPendingArtifactRefresh((current) => (
+      artifactRefreshFileKey(current) === candidateKey ? current : candidate
+    ));
+  }, [
+    activeArtifactAgentUID,
+    activePreviewArtifactId,
+    activePreviewArtifactVersion,
+    artifactRegistryRevision,
+    latestActivePreviewKind,
+    latestActivePreviewTitle,
+    latestActivePreviewURL,
+    latestActivePreviewVersion,
+    previewFile?.name,
+  ]);
+
+  const handleArtifactRefreshReady = useCallback((candidate) => {
+    const candidateKey = artifactRefreshFileKey(candidate);
+    const candidateAgentUID = Number(candidate?.artifact_agent_uid || 0);
+    const candidateArtifactID = String(candidate?.artifact_id || '');
+    const candidateVersion = Number(candidate?.publish_version || 0);
+    const currentFocus = activeArtifactFocusRef.current;
+    const candidateFocus = artifactMessageFocusFromPreviewFile(
+      candidate,
+      topic,
+      artifactTopicGenerationRef.current,
+    );
+    if (!candidateKey
+      || !currentFocus
+      || !candidateFocus
+      || activeTopicRef.current !== topic
+      || activeArtifactAgentUIDRef.current !== candidateAgentUID
+      || currentFocus.topic !== topic
+      || currentFocus.topicGeneration !== artifactTopicGenerationRef.current
+      || candidateFocus.topicGeneration !== artifactTopicGenerationRef.current
+      || currentFocus.agentUid !== candidateAgentUID
+      || currentFocus.artifactId !== candidateArtifactID
+      || candidateVersion <= currentFocus.displayedVersion) {
+      setPendingArtifactRefresh((current) => (
+        artifactRefreshFileKey(current) === candidateKey ? null : current
+      ));
+      return;
+    }
+    setPreviewFileWithFocus(candidate);
+    setPendingArtifactRefresh((current) => (
+      artifactRefreshFileKey(current) === candidateKey ? null : current
+    ));
+  }, [setPreviewFileWithFocus, topic]);
+
+  const handleArtifactRefreshFailed = useCallback((candidate) => {
+    const candidateKey = artifactRefreshFileKey(candidate);
+    setPendingArtifactRefresh((current) => (
+      artifactRefreshFileKey(current) === candidateKey ? null : current
+    ));
+  }, []);
 
   useEffect(() => {
     if (isGroup) {
@@ -3246,9 +3487,13 @@ export default function MessagesView({
             ) : (
               <FilePreviewPanel
                 file={previewFile}
+                pendingRemoteArtifactFile={pendingArtifactRefresh}
                 onBack={cloudArtifactsAgentUID > 0 ? returnToCloudArtifacts : undefined}
                 onClose={closeSidePanel}
                 backgroundRef={chatColumnRef}
+                onRemoteArtifactRefreshReady={handleArtifactRefreshReady}
+                onRemoteArtifactRefreshFailed={handleArtifactRefreshFailed}
+                onRemoteArtifactFrameChange={handleRemoteArtifactFrameChange}
               />
             )}
           </div>
