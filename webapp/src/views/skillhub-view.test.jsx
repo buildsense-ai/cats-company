@@ -851,6 +851,16 @@ describe('SkillHubView', () => {
     expect(container.querySelector('.cc-skillhub-added-title h3')?.textContent).toBe('local-demo');
     expect(container.querySelector('.cc-skillhub-version-note')?.textContent).toContain('仅当前 Agent 可用');
     expect(container.textContent).not.toContain('priv_local1');
+
+    const clipboardFailure = vi.fn().mockRejectedValue(new Error('clipboard unavailable'));
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: clipboardFailure } });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="复制 local-demo"]'));
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('请手动复制 私有能力引用：priv_local1');
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+
     await openCustomSkills();
     expect(container.textContent).toContain('Alice Laptop');
     expect(container.textContent).toContain('local-demo');

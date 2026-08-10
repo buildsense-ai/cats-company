@@ -898,6 +898,7 @@ export default function SkillHubView({ user }) {
     const details = presentation?.details || catalogueByID.get(skillID);
     const skillName = presentation?.label || skillID;
     const privateReference = presentation?.privateReference ?? isPrivateSkillHubReference(skillID);
+    const manualCopyHint = privateReference ? '私有能力引用' : 'SkillHub ID';
     const shareURL = String(details?.shareUrl || details?.share_url || details?.url || '').trim();
     const copiedValue = shareURL || skillID;
     setSkillAction({ type: 'copy', skillId: skillID });
@@ -914,7 +915,7 @@ export default function SkillHubView({ user }) {
       }
     } catch (error) {
       if (requestedBotUID === selectedBotUIDRef.current) {
-        setDefinitionError(`${error?.message || '复制失败'} 请手动复制 SkillHub ID：${skillID}`);
+        setDefinitionError(`${error?.message || '复制失败'} 请手动复制 ${manualCopyHint}：${skillID}`);
       }
     } finally {
       if (requestedBotUID === selectedBotUIDRef.current) setSkillAction(null);
