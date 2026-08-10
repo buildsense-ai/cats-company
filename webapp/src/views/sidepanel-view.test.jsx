@@ -1672,9 +1672,9 @@ describe('ChatListView sidebar sections', () => {
   });
 
   it.each([
-    ['cancelled', '任务已中止'],
-    ['stale', '任务已自动中止'],
-  ])('shows a distinct interruption icon for a %s task', async (state, label) => {
+    ['cancelled', '任务已中止', 'cc-task-cancelled-icon'],
+    ['stale', '任务已自动中止', 'cc-task-stale-icon'],
+  ])('shows a state-specific interruption icon for a %s task', async (state, label, iconClass) => {
     api.getConversations.mockResolvedValue({
       conversations: [{
         id: 'p2p_7_42',
@@ -1695,7 +1695,7 @@ describe('ChatListView sidebar sections', () => {
     await mount();
 
     const task = container.querySelector('.cc-history-item');
-    expect(task.querySelector(`.cc-task-row-status.${state} .cc-task-interrupted-icon`)).toBeTruthy();
+    expect(task.querySelector(`.cc-task-row-status.${state} .${iconClass}`)).toBeTruthy();
     expect(task.querySelector(`.cc-task-row-status.${state}`).getAttribute('aria-label')).toBe(label);
     expect(task.querySelector('.cc-chat-row-time')).toBeFalsy();
 
