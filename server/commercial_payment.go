@@ -245,12 +245,12 @@ var commercialClientRequestPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_
 
 func (h *CommercialPaymentHandler) HandleOrders(w http.ResponseWriter, r *http.Request) {
 	uid := UIDFromContext(r.Context())
-	if !h.enabledFor(uid) {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "commercial payment is not enabled"})
-		return
-	}
 	switch r.Method {
 	case http.MethodGet:
+		if h == nil || h.store == nil || uid <= 0 {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "commercial payment is not available"})
+			return
+		}
 		orderNo := strings.TrimSpace(r.URL.Query().Get("order_no"))
 		if orderNo != "" {
 			order, err := h.store.GetCommercialOrder(uid, orderNo)
@@ -280,6 +280,10 @@ func (h *CommercialPaymentHandler) HandleOrders(w http.ResponseWriter, r *http.R
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"orders": commercialOrdersForUser(orders)})
 	case http.MethodPost:
+		if !h.enabledFor(uid) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "commercial payment is not enabled"})
+			return
+		}
 		h.createOrder(w, r, uid)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})

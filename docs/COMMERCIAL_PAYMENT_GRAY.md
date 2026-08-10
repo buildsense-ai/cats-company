@@ -88,7 +88,7 @@ CATS_ALIPAY_RETURN_URL=https://app.catsco.cc/
 
 ## 订单和履约边界
 
-- 创建订单使用 `(uid, client_request_id)` 幂等，重复点击不会产生重复订单。
+- 创建订单使用 `(uid, client_request_id)` 幂等；同一用户、套餐和渠道复用未过期订单时，新请求 ID 也会持久映射到原订单，响应丢失后重试不会产生第二张可支付订单。
 - 浏览器在超时、502/503/504 或响应丢失后会复用同一个 `client_request_id`；重新打开页面时会恢复最近的待支付订单。
 - 下单使用 `alipay.trade.page.pay` 和产品码 `FAST_INSTANT_TRADE_PAY`，前端只跳转支付宝官方收银台，不自行伪造支付页面。
 - 支付事件使用 `(channel, event_id)` 幂等，重复通知不会重复发套餐。

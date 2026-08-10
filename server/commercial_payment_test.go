@@ -444,6 +444,35 @@ func TestCommercialClosedOrderUsesProviderQueryFallback(t *testing.T) {
 	}
 }
 
+func TestCommercialHistoricalOrderQuerySurvivesGrayDisable(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	closedAt := time.Now().UTC().Add(-time.Hour)
+	store.orders["CC-CLOSED-DISABLED"] = &types.CommercialOrder{
+		OrderNo: "CC-CLOSED-DISABLED", UID: 38, AmountFen: 2990, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "closed", ClosedAt: &closedAt,
+	}
+	provider := &queryCommercialPaymentProvider{
+		paid: true,
+		confirmation: &types.CommercialPaymentConfirmation{
+			Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-DISABLED-1", ProviderTradeNo: "ALI-DISABLED-1",
+			AmountFen: 2990, Currency: "CNY", PaidAt: time.Now().UTC(),
+		},
+	}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+		Providers: []CommercialPaymentProvider{provider}, SaleChannels: map[string]bool{},
+	})
+	recorder := httptest.NewRecorder()
+	handler.HandleOrders(recorder, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders?order_no=CC-CLOSED-DISABLED", "", 38))
+	if recorder.Code != http.StatusOK || store.orders["CC-CLOSED-DISABLED"].Status != "fulfilled" {
+		t.Fatalf("disabled gray user could not recover historical order: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	postRecorder := httptest.NewRecorder()
+	handler.HandleOrders(postRecorder, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders", `{}`, 38))
+	if postRecorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("disabled gray user unexpectedly created an order: status=%d body=%s", postRecorder.Code, postRecorder.Body.String())
+	}
+}
+
 func TestCommercialPendingOrderRecoversMissingCheckoutIntent(t *testing.T) {
 	store := newCommercialPaymentTestStore()
 	expiresAt := time.Now().UTC().Add(10 * time.Minute)
@@ -493,6 +522,37 @@ func TestCommercialRelayValidationRejectsMissingModelMapping(t *testing.T) {
 	}
 	if err := validateCommercialRelayModels(map[string]float64{"MiniMax-M3": 10}, relayUser); err == nil {
 		t.Fatal("missing relay model mapping was accepted")
+	}
+}
+
+func TestCommercialRelayRequiredPaymentModelRejectsMappingDrift(t *testing.T) {
+	summary := &types.CommercialSummary{
+		UID:           38,
+		TotalsByModel: map[string]float64{"gpt-5.6-terra": 100, "retired-model": 50},
+		Grants: []*types.CommercialQuotaGrant{
+			{GrantType: "order", Model: "gpt-5.6-terra", AmountCNY: 100},
+			{GrantType: "manual", Model: "retired-model", AmountCNY: 50},
+		},
+	}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{}}}
+	if err := validateCommercialRelayRequiredModels(summary, relayUser, nil); err == nil || !strings.Contains(err.Error(), "gpt-5.6-terra") {
+		t.Fatalf("paid model mapping drift was accepted: %v", err)
+	}
+	relayUser.Limits.ModelLimits = []commercialRelayModelLimit{{
+		Provider: "openai", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra"},
+	}}
+	if err := validateCommercialRelayRequiredModels(summary, relayUser, nil); err != nil {
+		t.Fatalf("historical manual model should not block paid model sync: %v", err)
+	}
+}
+
+func TestCommercialRelayManagedModelRejectsMappingDrift(t *testing.T) {
+	summary := &types.CommercialSummary{UID: 38, TotalsByModel: map[string]float64{"gpt-5.6-terra": 100}}
+	managed := []*types.CommercialManagedRelayBudget{{
+		UID: 38, Model: "gpt-5.6-terra", Provider: "openai", AllowedModels: []string{"gpt-5.6-terra"}, MaxLimit: 100,
+	}}
+	if err := validateCommercialRelayRequiredModels(summary, &commercialRelayUsageUser{Configured: true}, managed); err == nil {
+		t.Fatal("managed model mapping drift was accepted")
 	}
 }
 

@@ -581,6 +581,47 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(api.createCommercialOrder.mock.calls[0][3]).toEqual({ timeoutMs: 40_000 });
   });
 
+  it('keeps the client request id after a successful pending response when order reload fails', async () => {
+    const plan = {
+      id: 14,
+      slug: 'reload-failure-plan',
+      name: '重载保护包',
+      price_fen: 990,
+      currency: 'CNY',
+      sale_state: 'test',
+      duration_days: 30,
+    };
+    const pending = {
+      order_no: 'CCRELOADSAFE0001',
+      plan_id: plan.id,
+      plan_name: plan.name,
+      amount_fen: plan.price_fen,
+      channel: 'test',
+      status: 'pending',
+    };
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      test_mode: true,
+      channels: [{ id: 'test', label: '灰度测试支付', test_mode: true }],
+      plans: [plan],
+    });
+    api.createCommercialOrder.mockResolvedValue({ order: pending });
+
+    await renderModal();
+    await clickButton('购买');
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    api.getCommercialOrders.mockRejectedValue(new Error('temporary order list failure'));
+    await renderModal();
+    await clickButton('购买');
+
+    expect(api.createCommercialOrder).toHaveBeenCalledTimes(2);
+    expect(api.createCommercialOrder.mock.calls[0][2]).toBe(api.createCommercialOrder.mock.calls[1][2]);
+    expect(container.textContent).toContain('CCRELOADSAFE0001');
+  });
+
   it('opens an existing pending order instead of creating another payable order', async () => {
     const plan = {
       id: 12,
@@ -644,6 +685,70 @@ describe('RelayAccessModal commercial rollout', () => {
       signal: expect.any(AbortSignal),
       timeoutMs: 20_000,
     });
+    expect(container.textContent).toContain('额度同步中');
+  });
+
+  it('retries a recently closed Alipay order instead of stopping after one unchanged query', async () => {
+    vi.useFakeTimers();
+    try {
+      const closed = {
+        order_no: 'CCCLOSEDRETRY0001',
+        plan_id: 15,
+        plan_name: '关闭订单重试包',
+        amount_fen: 990,
+        channel: 'alipay_page',
+        status: 'closed',
+        closed_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      };
+      api.getCommercialOrders.mockImplementation((orderNo) => Promise.resolve(
+        orderNo ? { order: closed } : { orders: [closed] },
+      ));
+
+      await renderModal();
+      await clickButton('关闭订单重试包');
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const orderCalls = () => api.getCommercialOrders.mock.calls.filter(([orderNo]) => orderNo === closed.order_no).length;
+      expect(orderCalls()).toBe(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(11_000);
+      });
+      expect(orderCalls()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refreshes fulfilled quota with a controller independent from payment polling', async () => {
+    const pending = {
+      order_no: 'CCFULFILLEDREFRESH0001',
+      plan_id: 16,
+      plan_name: '到账刷新包',
+      amount_fen: 990,
+      channel: 'alipay_page',
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    };
+    api.getCommercialOrders.mockImplementation((orderNo) => Promise.resolve(
+      orderNo ? { order: { ...pending, status: 'fulfilled' } } : { orders: [pending] },
+    ));
+
+    await renderModal();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getRelayCommercial.mock.calls.length).toBeGreaterThanOrEqual(2);
+    const refreshOptions = api.getRelayCommercial.mock.calls.at(-1)[0];
+    expect(refreshOptions.signal).toBeInstanceOf(AbortSignal);
+    expect(refreshOptions.signal.aborted).toBe(false);
     expect(container.textContent).toContain('额度同步中');
   });
 });

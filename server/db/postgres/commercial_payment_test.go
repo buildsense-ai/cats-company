@@ -78,6 +78,17 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	if err != nil || idempotent.ID != created.ID || idempotent.OrderNo != created.OrderNo {
 		t.Fatalf("commercial order idempotency failed: order=%#v err=%v", idempotent, err)
 	}
+	openOrder, err := db.CreateCommercialOrder(&types.CommercialOrder{
+		OrderNo:         "CCPGPAIDOPENIGNORED",
+		UID:             uid,
+		PlanID:          paidPlanID,
+		Channel:         "test",
+		ClientRequestID: "pg_paid_request_0002",
+		ExpiresAt:       &expiresAt,
+	})
+	if err != nil || openOrder.ID != created.ID || openOrder.OrderNo != created.OrderNo {
+		t.Fatalf("open commercial order was duplicated: order=%#v err=%v", openOrder, err)
+	}
 
 	pending, claimed, err := db.BeginCommercialOrderPayment(created.OrderNo, expiresAt)
 	if err != nil || !claimed || pending.Status != "pending" {
@@ -105,6 +116,17 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	if err != nil || !changed || fulfilled.Status != "fulfilled" {
 		t.Fatalf("fulfill commercial order: order=%#v changed=%v err=%v", fulfilled, changed, err)
 	}
+	aliasRetry, err := db.CreateCommercialOrder(&types.CommercialOrder{
+		OrderNo:         "CCPGPAIDALIASRETRY",
+		UID:             uid,
+		PlanID:          paidPlanID,
+		Channel:         "test",
+		ClientRequestID: "pg_paid_request_0002",
+		ExpiresAt:       &expiresAt,
+	})
+	if err != nil || aliasRetry.ID != created.ID || aliasRetry.Status != "fulfilled" {
+		t.Fatalf("open-order request alias lost idempotency after fulfillment: order=%#v err=%v", aliasRetry, err)
+	}
 	required, err := db.CommercialRelaySyncRequired(uid)
 	if err != nil || !required {
 		t.Fatalf("fulfilled paid entitlement must remain relay-sync eligible: required=%v err=%v", required, err)
@@ -123,7 +145,7 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 		UID:             uid,
 		PlanID:          paidPlanID,
 		Channel:         "test",
-		ClientRequestID: "pg_paid_request_0002",
+		ClientRequestID: "pg_paid_request_0003",
 		ExpiresAt:       &expiresAt,
 	}); err == nil || !strings.Contains(err.Error(), "purchase limit") {
 		t.Fatalf("expected purchase limit rejection, got %v", err)

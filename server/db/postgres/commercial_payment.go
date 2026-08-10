@@ -90,6 +90,10 @@ func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.Co
 	if order == nil || order.UID <= 0 || order.PlanID <= 0 || strings.TrimSpace(order.OrderNo) == "" || strings.TrimSpace(order.ClientRequestID) == "" {
 		return nil, fmt.Errorf("invalid commercial order")
 	}
+	channel := strings.TrimSpace(order.Channel)
+	if channel == "" {
+		return nil, fmt.Errorf("invalid commercial order")
+	}
 	tx, err := a.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("begin commercial order: %w", err)
@@ -101,13 +105,28 @@ func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.Co
 
 	existing, err := scanCommercialOrder(tx.QueryRow(`SELECT `+commercialOrderColumns+` FROM commercial_orders WHERE uid = $1 AND client_request_id = $2`, order.UID, order.ClientRequestID))
 	if err == nil {
-		if existing.PlanID != order.PlanID || existing.Channel != order.Channel {
+		if existing.PlanID != order.PlanID || existing.Channel != channel {
 			return nil, fmt.Errorf("client request id is already used by another order")
 		}
 		return existing, nil
 	}
 	if err != sql.ErrNoRows {
 		return nil, fmt.Errorf("check commercial order idempotency: %w", err)
+	}
+	existing, err = scanCommercialOrder(tx.QueryRow(`
+		SELECT `+commercialOrderColumns+` FROM commercial_orders
+		WHERE order_no = (
+			SELECT order_no FROM commercial_order_request_ids
+			WHERE uid = $1 AND client_request_id = $2
+		)`, order.UID, order.ClientRequestID))
+	if err == nil {
+		if existing.PlanID != order.PlanID || existing.Channel != channel {
+			return nil, fmt.Errorf("client request id is already used by another order")
+		}
+		return existing, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("check commercial order request alias: %w", err)
 	}
 
 	plan, err := scanCommercialPlan(tx.QueryRow(`SELECT `+commercialPlanColumns+` FROM commercial_plans WHERE id = $1 FOR SHARE`, order.PlanID))
@@ -119,6 +138,31 @@ func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.Co
 	}
 	if plan.State != 0 || plan.PriceFen <= 0 || plan.DurationDays <= 0 || plan.MonthlyBudget > 0 || !commercialPlanHasPositiveModelBudget(plan) {
 		return nil, fmt.Errorf("commercial plan is not purchasable")
+	}
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, fmt.Sprintf("commercial_open_order:%d:%d:%s", order.UID, plan.ID, channel)); err != nil {
+		return nil, fmt.Errorf("lock commercial open order: %w", err)
+	}
+	openOrder, err := scanCommercialOrder(tx.QueryRow(`
+		SELECT `+commercialOrderColumns+` FROM commercial_orders
+		WHERE uid = $1 AND plan_id = $2 AND channel = $3
+		  AND status IN ('created','pending')
+		  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1`, order.UID, plan.ID, channel))
+	if err == nil {
+		if _, aliasErr := tx.Exec(`
+			INSERT INTO commercial_order_request_ids(uid, client_request_id, order_no)
+			VALUES ($1, $2, $3)
+			ON CONFLICT(uid, client_request_id) DO NOTHING`, order.UID, order.ClientRequestID, openOrder.OrderNo); aliasErr != nil {
+			return nil, fmt.Errorf("save commercial order request alias: %w", aliasErr)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit commercial order request alias: %w", err)
+		}
+		return openOrder, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("find commercial open order: %w", err)
 	}
 	if plan.PurchaseLimit > 0 {
 		if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, fmt.Sprintf("commercial_purchase:%d:%d", order.UID, plan.ID)); err != nil {
@@ -166,12 +210,17 @@ func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.Co
 		string(budgets),
 		plan.PriceFen,
 		normalizeCommercialCurrency(plan.Currency),
-		strings.TrimSpace(order.Channel),
+		channel,
 		strings.TrimSpace(order.ClientRequestID),
 		expiresAt,
 	))
 	if err != nil {
 		return nil, fmt.Errorf("create commercial order: %w", err)
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO commercial_order_request_ids(uid, client_request_id, order_no)
+		VALUES ($1, $2, $3)`, order.UID, order.ClientRequestID, created.OrderNo); err != nil {
+		return nil, fmt.Errorf("save commercial order request id: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit commercial order: %w", err)

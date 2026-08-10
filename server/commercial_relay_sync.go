@@ -154,6 +154,9 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 	if relayUser == nil || !relayUser.Configured {
 		return nil, fmt.Errorf("relay key is not configured")
 	}
+	if err := validateCommercialRelayRequiredModels(summary, relayUser, managed); err != nil {
+		return nil, err
+	}
 	updates, nextManaged := commercialRelayManagedPlan(uid, summary, relayUser, managed)
 	if len(updates) > 0 {
 		var response map[string]interface{}
@@ -227,6 +230,46 @@ func validateCommercialRelayModels(budgets map[string]float64, relayUser *commer
 		}
 		if !matched {
 			return fmt.Errorf("relay model budget is not configured for %s", model)
+		}
+	}
+	return nil
+}
+
+func validateCommercialRelayRequiredModels(summary *types.CommercialSummary, relayUser *commercialRelayUsageUser, managed []*types.CommercialManagedRelayBudget) error {
+	required := map[string]bool{}
+	if summary != nil {
+		for _, grant := range summary.Grants {
+			if grant == nil || grant.AmountCNY <= 0 {
+				continue
+			}
+			model := strings.TrimSpace(grant.Model)
+			grantType := strings.ToLower(strings.TrimSpace(grant.GrantType))
+			if model != "" && model != "*" && (grantType == "order" || grantType == "trial") {
+				required[model] = true
+			}
+		}
+		for _, item := range managed {
+			if item == nil || summary.TotalsByModel[strings.TrimSpace(item.Model)] <= 0 {
+				continue
+			}
+			model := strings.TrimSpace(item.Model)
+			if model != "" && model != "*" {
+				required[model] = true
+			}
+		}
+	}
+	for model := range required {
+		matched := false
+		if relayUser != nil {
+			for _, limit := range relayUser.Limits.ModelLimits {
+				if strings.TrimSpace(limit.Model) == model && strings.TrimSpace(limit.Provider) != "" && len(limit.AllowedModels) > 0 {
+					matched = true
+					break
+				}
+			}
+		}
+		if !matched {
+			return fmt.Errorf("commercial relay model mapping is unavailable for %s", model)
 		}
 	}
 	return nil
