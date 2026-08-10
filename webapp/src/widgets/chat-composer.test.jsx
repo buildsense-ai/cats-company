@@ -243,14 +243,16 @@ describe('ChatComposer', () => {
     expect(container.querySelector('.v3-voice-hold-overlay')).not.toBeNull();
     expect(container.querySelector('textarea.v3-composer-input')).not.toBeNull();
 
+    const transcript = container.querySelector('.v3-voice-hold-transcript');
+    Object.defineProperty(transcript, 'scrollHeight', { configurable: true, value: 180 });
     const initialWavePath = container.querySelector('.v3-voice-hold-wave-fill').getAttribute('d');
     await act(async () => {
       callbacks.onState('recording');
-      callbacks.onPartial('这是实时转录的文字');
+      callbacks.onPartial('这是很长的实时转录文字，新的内容应该始终保持可见');
       callbacks.onAudioLevel(0.78);
     });
-    expect(container.querySelector('.v3-voice-hold-transcript')?.textContent)
-      .toContain('这是实时转录的文字');
+    expect(transcript.textContent).toContain('新的内容应该始终保持可见');
+    expect(transcript.scrollTop).toBe(180);
     expect(container.querySelector('.v3-voice-hold-wave-fill').getAttribute('d'))
       .not.toBe(initialWavePath);
 

@@ -78,6 +78,7 @@ export default function ChatComposer({
   const [voiceError, setVoiceError] = useState('');
   const voiceSessionRef = useRef(null);
   const voiceInsertionRef = useRef(null);
+  const voiceTranscriptRef = useRef(null);
   const voiceHoldTimerRef = useRef(null);
   const voiceHoldGestureRef = useRef(null);
   const suppressVoiceClickRef = useRef(false);
@@ -176,6 +177,13 @@ export default function ChatComposer({
   }, [clearVoiceHoldTimer, voiceSessionKey]);
 
   const voiceActive = ['starting', 'connecting', 'recording', 'finalizing'].includes(voiceState);
+
+  useLayoutEffect(() => {
+    const transcript = voiceTranscriptRef.current;
+    if (!transcript || !voiceHoldActive) return;
+    transcript.scrollTop = transcript.scrollHeight;
+  }, [voiceHoldActive, voiceHoldCancel, voicePartial, voiceState]);
+
   const startVoiceInput = async ({ hold = false } = {}) => {
     if (voiceActive) {
       if (!hold) await voiceSessionRef.current?.stop();
@@ -200,7 +208,7 @@ export default function ChatComposer({
         if (voiceSessionRef.current !== session) return;
         setVoiceWave((current) => ({
           level: current.level + ((level - current.level) * (level > current.level ? 0.4 : 0.15)),
-          phase: current.phase + 0.42,
+          phase: current.phase + 0.15,
         }));
       },
       onFinal: (text) => {
@@ -492,7 +500,7 @@ export default function ChatComposer({
           aria-live="polite"
         >
           <div className="v3-voice-hold-copy">
-            <div className="v3-voice-hold-transcript">
+            <div ref={voiceTranscriptRef} className="v3-voice-hold-transcript">
               {voiceHoldCancel
                 ? '松开取消输入'
                 : (voicePartial || (voiceState === 'starting' || voiceState === 'connecting' ? '正在连接…' : '正在听…'))}

@@ -3745,16 +3745,15 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .v3-voice-hold-transcript {
   width: 100%;
-  min-height: 76px;
+  height: 108px;
   overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
   color: var(--cc-text);
   font-size: 24px;
   font-weight: 500;
   line-height: 36px;
   text-align: center;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
 }
 
 .v3-voice-hold-instruction {
