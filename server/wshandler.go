@@ -2074,11 +2074,24 @@ func pushNotificationContentText(content interface{}) string {
 	case string:
 		return value
 	case map[string]interface{}:
-		for _, key := range []string{"text", "content", "message", "summary"} {
-			if text, ok := value[key].(string); ok && strings.TrimSpace(text) != "" {
+		if blockType, ok := value["type"].(string); ok && isInternalAgentContentBlock(blockType) {
+			return ""
+		}
+		for _, key := range []string{"text", "content", "message", "summary", "value", "output", "answer", "result"} {
+			if text := pushNotificationContentText(value[key]); strings.TrimSpace(text) != "" {
 				return text
 			}
 		}
+	case []interface{}:
+		texts := make([]string, 0, len(value))
+		for _, item := range value {
+			if text := strings.TrimSpace(pushNotificationContentText(item)); text != "" {
+				texts = append(texts, text)
+			}
+		}
+		return strings.Join(texts, "\n")
+	case []string:
+		return strings.Join(value, "\n")
 	case json.RawMessage:
 		var decoded interface{}
 		if json.Unmarshal(value, &decoded) == nil {

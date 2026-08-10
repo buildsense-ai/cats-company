@@ -1277,6 +1277,8 @@ func TestPushNotificationMessageBodyUsesVisibleContent(t *testing.T) {
 	}{
 		{name: "plain text", data: &MsgServerData{Content: "  final\nanswer  "}, want: "final answer"},
 		{name: "assistant block", data: &MsgServerData{ContentBlocks: []types.ContentBlock{{Type: "assistant_text", Content: "final answer"}}}, want: "final answer"},
+		{name: "array content", data: &MsgServerData{Content: []interface{}{"first paragraph", "second paragraph"}}, want: "first paragraph second paragraph"},
+		{name: "nested content", data: &MsgServerData{Content: map[string]interface{}{"content": []interface{}{map[string]interface{}{"text": "nested answer"}}}}, want: "nested answer"},
 		{name: "visible block wins over internal content", data: &MsgServerData{Content: "private tool output", ContentBlocks: []types.ContentBlock{{Type: "tool_result", Content: "private tool output"}, {Type: "assistant_text", Text: "safe answer"}}}, want: "safe answer"},
 		{name: "internal content excluded", data: &MsgServerData{Content: "private tool output", ContentBlocks: []types.ContentBlock{{Type: "tool_result", Content: "private tool output"}}}, want: ""},
 	}
