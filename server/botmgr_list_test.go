@@ -17,7 +17,6 @@ type botListTestStore struct {
 	friends   []*types.User
 	owners    map[int64]int64
 }
-
 func (s *botListTestStore) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, error) {
 	return s.ownerBots, nil
 }
@@ -121,4 +120,3 @@ func TestHandleListMyBotsDeduplicatesOwnedBotFriendRelation(t *testing.T) {
 		t.Fatalf("owned bot should keep owner relation: %+v", body.Bots[0])
 	}
 }
-

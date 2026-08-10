@@ -57,7 +57,6 @@ func TestBotBodyLeaseRejectsDifferentBodyAndAllowsSameBodyReconnect(t *testing.T
 		t.Fatalf("different body should acquire after current release: %v", err)
 	}
 }
-
 func TestBotBodyLeaseDoesNotExpireActiveConnectionByWallClock(t *testing.T) {
 	now := time.Unix(200, 0)
 	leases := newBotBodyLeaseManager(time.Minute)
@@ -322,4 +321,3 @@ func TestNormalizeBotBodyID(t *testing.T) {
 		}
 	}
 }
-
