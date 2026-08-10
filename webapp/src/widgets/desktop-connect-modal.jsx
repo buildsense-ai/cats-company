@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, Download, Laptop, Loader2, X } from 'lucide-react';
 import { api } from '../api';
-import { isStandaloneWebApp } from '../utils/standalone-web-app';
+import PwaDownloadLink from './pwa-download-link';
 import { FALLBACK_RELEASE_VERSION, buildDownloadOptions } from './catsco-download-modal';
 
 function detectRecommendedOption(downloadOptions) {
@@ -41,7 +41,6 @@ export default function DesktopConnectModal({ onClose, onConnected, onStatusChan
     () => downloadOptions.filter((option) => option.key !== recommendedDownload?.key),
     [downloadOptions, recommendedDownload?.key],
   );
-  const downloadTarget = isStandaloneWebApp() ? undefined : '_blank';
 
   useEffect(() => () => {
     launchCleanupRef.current?.();
@@ -180,12 +179,13 @@ export default function DesktopConnectModal({ onClose, onConnected, onStatusChan
   const renderDownload = (option, primary = false) => {
     const Icon = option.icon;
     return (
-      <a
+      <PwaDownloadLink
         key={option.key}
         className={`catsco-download-card ${primary ? 'catsco-download-card-primary' : ''}`}
         href={option.href}
-        target={downloadTarget}
-        rel={downloadTarget ? 'noopener noreferrer' : undefined}
+        target="_blank"
+        rel="noopener noreferrer"
+        download
       >
         <span className="catsco-download-icon"><Icon size={20} /></span>
         <span className="catsco-download-copy">
@@ -193,7 +193,7 @@ export default function DesktopConnectModal({ onClose, onConnected, onStatusChan
           <span className="catsco-download-desc">{option.description}</span>
         </span>
         <span className="catsco-download-action"><Download size={16} /></span>
-      </a>
+      </PwaDownloadLink>
     );
   };
 

@@ -8260,3 +8260,60 @@ html[data-theme="liquid"] .v3-message .v3-attachment-icon {
     font-size: 16px !important;
   }
 }
+
+.catsco-pwa-download-notice-host {
+  position: fixed;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  z-index: 2800;
+  display: grid;
+  width: min(420px, calc(100vw - 32px));
+  gap: 8px;
+  pointer-events: none;
+}
+
+.catsco-pwa-download-notice {
+  display: flex;
+  width: 100%;
+  min-height: 42px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 10px 9px 12px;
+  border: 1px solid var(--cc-border);
+  border-radius: 8px;
+  background: var(--cc-surface, var(--cc-main-bg));
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+  color: var(--cc-text);
+  font-size: 12px;
+  pointer-events: auto;
+}
+
+.catsco-pwa-download-notice.is-error {
+  border-color: color-mix(in srgb, var(--cc-danger, #dc2626) 30%, var(--cc-border));
+}
+
+.catsco-pwa-download-notice a {
+  color: var(--cc-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.catsco-pwa-download-notice button {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cc-muted);
+  cursor: pointer;
+}
+
+.catsco-pwa-download-notice button:hover,
+.catsco-pwa-download-notice button:focus-visible {
+  background: var(--cc-hover);
+  color: var(--cc-text);
+}

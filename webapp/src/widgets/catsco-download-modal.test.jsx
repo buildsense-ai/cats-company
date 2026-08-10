@@ -93,7 +93,7 @@ describe('CatsCoDownloadModal', () => {
     )).toBe(true);
   });
 
-  test('keeps desktop release downloads in the current context in an installed PWA', async () => {
+  test('uses native new-tab downloads for cross-origin desktop releases in an installed PWA', async () => {
     Object.defineProperty(navigator, 'standalone', { configurable: true, value: true });
 
     await act(async () => {
@@ -102,7 +102,7 @@ describe('CatsCoDownloadModal', () => {
     });
 
     expect(Array.from(container.querySelectorAll('.catsco-download-release-list a')).every(
-      (link) => link.getAttribute('target') === null,
+      (link) => link.getAttribute('target') === '_blank',
     )).toBe(true);
   });
 

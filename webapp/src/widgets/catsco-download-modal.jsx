@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Apple, Copy, Download, ExternalLink, Laptop, Monitor, RefreshCw, Trash2, X } from 'lucide-react';
 import { api, getApiBaseURL, getWebSocketURL } from '../api';
-import { isStandaloneWebApp } from '../utils/standalone-web-app';
+import PwaDownloadLink from './pwa-download-link';
 
 export const FALLBACK_RELEASE_VERSION = '1.4.1';
 const TOS_BASE_URL = 'https://github-release.tos-cn-guangzhou.volces.com/update';
@@ -156,7 +156,6 @@ export default function CatsCoDownloadModal({ onClose }) {
   const [launchMessage, setLaunchMessage] = useState('');
   const [desktopRelease, setDesktopRelease] = useState({ version: FALLBACK_RELEASE_VERSION });
   const downloadOptions = useMemo(() => buildDownloadOptions(desktopRelease), [desktopRelease]);
-  const downloadTarget = isStandaloneWebApp() ? undefined : '_blank';
 
   const loadDeviceState = useCallback(async () => {
     try {
@@ -340,12 +339,13 @@ export default function CatsCoDownloadModal({ onClose }) {
           {downloadOptions.map((option) => {
             const Icon = option.icon;
             return (
-              <a
+              <PwaDownloadLink
                 key={option.key}
                 className="catsco-download-card"
                 href={option.href}
-                target={downloadTarget}
-                rel={downloadTarget ? 'noopener noreferrer' : undefined}
+                target="_blank"
+                rel="noopener noreferrer"
+                download
               >
                 <span className="catsco-download-icon">
                   <Icon size={20} />
@@ -358,7 +358,7 @@ export default function CatsCoDownloadModal({ onClose }) {
                 <span className="catsco-download-action">
                   <Download size={16} />
                 </span>
-              </a>
+              </PwaDownloadLink>
             );
           })}
         </div>
