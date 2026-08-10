@@ -399,18 +399,22 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 // HandleRollback handles POST /api/cloud-workers/{name}/rollback — swap Part A
 // artifacts to the chosen image version while KEEPING worker data.
 func (h *CloudWorkerHandler) HandleRollback(w http.ResponseWriter, r *http.Request) {
-	h.handleWorkerAction(w, r, h.rollbackScript, "rollback")
+	h.handleWorkerAction(w, r, h.rollbackScript, "rollback", true)
 }
 
 // HandleReset handles POST /api/cloud-workers/{name}/reset — DESTROY the worker
 // instance and recreate from the selected image, DROPPING all worker data.
 func (h *CloudWorkerHandler) HandleReset(w http.ResponseWriter, r *http.Request) {
-	h.handleWorkerAction(w, r, h.resetScript, "reset")
+	// reset always rebuilds from the latest image; it does not accept a
+	// version selector (paired reset-worker.sh only takes --image-id).
+	h.handleWorkerAction(w, r, h.resetScript, "reset", false)
 }
 
 // handleWorkerAction guards a per-worker destructive action with ownership
-// checks and delegates to the configured script.
-func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.Request, script, action string) {
+// checks and delegates to the configured script. acceptVersion controls
+// whether an optional "version" selector is forwarded to the script
+// (rollback yes, reset no).
+func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.Request, script, action string, acceptVersion bool) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
@@ -462,6 +466,12 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 	// B4-1 脚本契约：--name <tenant> [--version <v>]（脚本按名字区分动作，无 -Action）
 	args := []string{"--name", name}
 	if body.Version != "" {
+		if !acceptVersion {
+			// reset-worker.sh only takes --image-id; passing --version would
+			// fail at argument parsing. Reject explicitly instead.
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cloud worker " + action + " does not accept a version selector (it always uses the latest image)"})
+			return
+		}
 		args = append(args, "--version", body.Version)
 	}
 

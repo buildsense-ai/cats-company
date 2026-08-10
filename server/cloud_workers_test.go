@@ -666,9 +666,9 @@ func TestCloudWorkerHandleRollbackResetSuccess(t *testing.T) {
 		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
 	}
 
+	// rollback forwards the optional version selector
 	for _, path := range []string{
 		"/api/cloud-workers/bot-bot-a/rollback",
-		"/api/cloud-workers/bot-bot-a/reset",
 	} {
 		req := cloudWorkerRequest(7, http.MethodPost, path, map[string]string{"version": "v1"})
 		rec := httptest.NewRecorder()
@@ -680,6 +680,100 @@ func TestCloudWorkerHandleRollbackResetSuccess(t *testing.T) {
 		if out["status"] != "ok" {
 			t.Fatalf("%s status field=%v", path, out["status"])
 		}
+	}
+
+	// reset without a version selector succeeds (rebuild from latest image)
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", nil)
+	rec := httptest.NewRecorder()
+	h.HandleSub(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reset status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestCloudWorkerHandleResetRejectsVersion guards the P2 contract gap: reset
+// always rebuilds from the latest image and must NOT forward a version
+// selector (the paired reset-worker.sh only accepts --image-id, so passing
+// --version would fail at argument parsing). Only rollback accepts a version.
+func TestCloudWorkerHandleResetRejectsVersion(t *testing.T) {
+	cfg := workerScriptCfg(t, "7=5", map[string]string{
+		"rollback": writeWorkerOpScript(t, "ok"),
+		"reset":    writeWorkerOpScript(t, "ok"),
+	})
+	if cfg.RollbackScript == "" || cfg.ResetScript == "" {
+		t.Skip("no POSIX shell")
+	}
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", map[string]string{"version": "v1"})
+	rec := httptest.NewRecorder()
+	h.HandleSub(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("reset with version status=%d want 400 body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestCloudWorkerHandleVersionForwarding asserts the exact argv passed to the
+// paired scripts: rollback receives --version <v>, reset receives no version.
+func TestCloudWorkerHandleVersionForwarding(t *testing.T) {
+	dir := t.TempDir()
+	recordFile := filepath.Join(dir, "argv.txt")
+	writeArgv := func(name string) string {
+		if runtime.GOOS == "windows" {
+			name += ".cmd" // .cmd shim: %* expands to the full argument list
+		}
+		script := filepath.Join(dir, name)
+		var body string
+		if runtime.GOOS == "windows" {
+			body = "@echo off\r\necho %* > \"" + recordFile + "\"\r\n"
+		} else {
+			body = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + recordFile + "\"\n"
+		}
+		if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return script
+	}
+	cfg := workerScriptCfg(t, "7=5", map[string]string{
+		"rollback": writeArgv("rollback-op.sh"),
+		"reset":    writeArgv("reset-op.sh"),
+	})
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+
+	// rollback forwards the version selector
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/rollback", map[string]string{"version": "v1.4.7"})
+	rec := httptest.NewRecorder()
+	h.HandleSub(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rollback status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	argv, err := os.ReadFile(recordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(argv), "--version") || !strings.Contains(string(argv), "v1.4.7") {
+		t.Fatalf("rollback argv=%q want --version v1.4.7", argv)
+	}
+
+	// reset receives no version selector
+	req = cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", nil)
+	rec = httptest.NewRecorder()
+	h.HandleSub(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reset status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	argv, err = os.ReadFile(recordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(argv), "--version") {
+		t.Fatalf("reset argv=%q should not contain --version (reset always rebuilds latest)", argv)
 	}
 }
 
