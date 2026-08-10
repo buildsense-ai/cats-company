@@ -34,6 +34,10 @@ describe('ChatComposer', () => {
 
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn().mockReturnValue({ matches: false }),
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -44,6 +48,7 @@ describe('ChatComposer', () => {
       root.unmount();
     });
     container.remove();
+    delete window.matchMedia;
     vi.clearAllMocks();
   });
 
@@ -294,6 +299,38 @@ describe('ChatComposer', () => {
     expect(voiceSession.stop).toHaveBeenCalledTimes(1);
     expect(voiceSession.cancel).not.toHaveBeenCalled();
     expect(container.querySelector('.v3-voice-hold-overlay')).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it('keeps the hold waveform static when reduced motion is requested', async () => {
+    vi.useFakeTimers();
+    window.matchMedia.mockReturnValue({ matches: true });
+    const requestAnimationFrame = vi.spyOn(window, 'requestAnimationFrame');
+    const voiceSession = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn(),
+    };
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: () => voiceSession,
+    });
+
+    const voiceButton = container.querySelector('button[aria-label="开始语音输入"]');
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        pointerId: 17,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      vi.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.v3-voice-hold-wave')).not.toBeNull();
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
 

@@ -170,6 +170,14 @@ export class StreamingSTTSession {
     if (this.state !== 'idle') return;
     this.setState('starting');
     try {
+      const session = await this.createSession();
+      if (this.terminal) return;
+      if (this.stopRequested) {
+        this.terminal = true;
+        this.cleanup();
+        this.setState('complete');
+        return;
+      }
       const capture = await this.createCapture({
         onFrame: (frame) => this.handleFrame(frame),
         onLevel: (rms) => this.publishAudioLevel(rms),
@@ -188,8 +196,6 @@ export class StreamingSTTSession {
       }
       this.capture = capture;
       document.addEventListener('visibilitychange', this.handleVisibilityChange);
-      const session = await this.createSession();
-      if (this.terminal) return;
       this.applyDurationLimit(session);
       this.setState('connecting');
       const socket = this.createWebSocket(this.resolveWebSocketURL(session.ticket));

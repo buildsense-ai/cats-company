@@ -36,6 +36,7 @@ const VoiceHoldWave = React.memo(function VoiceHoldWave({ levelRef }) {
 
   useEffect(() => {
     if (typeof window.requestAnimationFrame !== 'function') return undefined;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return undefined;
     let animationFrame = 0;
     let startedAt = null;
     let previousAt = null;

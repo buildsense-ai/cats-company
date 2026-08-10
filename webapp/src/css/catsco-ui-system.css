@@ -3712,8 +3712,8 @@ html[data-theme="liquid"] .catsco-brand-mark {
   -webkit-touch-callout: none;
 }
 .v3-voice-button.is-active {
-  border-color: color-mix(in srgb, var(--cc-danger) 42%, var(--cc-border));
-  background: color-mix(in srgb, var(--cc-danger) 10%, var(--cc-panel));
+  border-color: color-mix(in oklch, var(--cc-danger) 42%, var(--cc-border));
+  background: color-mix(in oklch, var(--cc-danger) 10%, var(--cc-panel));
   color: var(--cc-danger);
 }
 .v3-composer-hint.is-error {
@@ -3725,7 +3725,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
   inset: 0;
   z-index: 1100;
   overflow: hidden;
-  background: color-mix(in srgb, var(--cc-main-bg) 90%, var(--cc-accent-soft));
+  background: color-mix(in oklch, var(--cc-main-bg) 90%, var(--cc-accent-soft));
   pointer-events: none;
   transition: background-color 180ms cubic-bezier(.22, 1, .36, 1);
 }
@@ -3780,12 +3780,12 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .v3-voice-hold-wave-rim {
-  fill: color-mix(in srgb, var(--cc-accent) 14%, var(--cc-panel));
+  fill: color-mix(in oklch, var(--cc-accent) 14%, var(--cc-panel));
   transition: fill 180ms ease-out;
 }
 
 .v3-voice-hold-wave-fill {
-  fill: color-mix(in srgb, var(--cc-accent) 78%, var(--cc-panel));
+  fill: color-mix(in oklch, var(--cc-accent) 78%, var(--cc-panel));
   transition: fill 180ms ease-out;
 }
 
@@ -3799,7 +3799,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
   place-items: center;
   border-radius: 50%;
   color: var(--cc-panel);
-  box-shadow: 0 0 34px 22px color-mix(in srgb, var(--cc-accent) 11%, transparent);
+  box-shadow: 0 0 34px 22px color-mix(in oklch, var(--cc-accent) 11%, transparent);
   transform: translate(-50%, -50%);
 }
 

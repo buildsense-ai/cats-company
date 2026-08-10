@@ -32,6 +32,43 @@ class FakeWebSocket {
 }
 
 describe('StreamingSTTSession', () => {
+  it('acquires an authenticated session before requesting microphone capture', async () => {
+    const order = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn(async () => {
+        order.push('session');
+        return { ticket: 'ticket-auth-first' };
+      }),
+      createCapture: vi.fn(async () => {
+        order.push('capture');
+        return { stop: vi.fn() };
+      }),
+      createWebSocket: () => {
+        order.push('socket');
+        return new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+      },
+    });
+
+    await session.start();
+
+    expect(order).toEqual(['session', 'capture', 'socket']);
+    session.cancel();
+  });
+
+  it('does not request microphone capture when session admission fails', async () => {
+    const errors = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockRejectedValue(Object.assign(new Error('quota'), { status: 429 })),
+      createCapture: vi.fn(),
+      onError: (error) => errors.push(error.message),
+    });
+
+    await session.start();
+
+    expect(session.createCapture).not.toHaveBeenCalled();
+    expect(errors).toEqual(['语音输入额度已用完，请稍后再试']);
+  });
+
   it('buffers PCM before ready and publishes only the final transcript', async () => {
     let emitFrame;
     const capture = { stop: vi.fn() };
@@ -126,39 +163,35 @@ describe('StreamingSTTSession', () => {
     expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
   });
 
-  it('stops capture when cancelled while microphone startup is pending', async () => {
-    let resolveCapture;
-    const capture = { stop: vi.fn() };
+  it('does not start capture when cancelled while session admission is pending', async () => {
+    let resolveSession;
     const session = new StreamingSTTSession({
-      createCapture: vi.fn(() => new Promise((resolve) => { resolveCapture = resolve; })),
-      createSession: vi.fn(),
+      createSession: vi.fn(() => new Promise((resolve) => { resolveSession = resolve; })),
+      createCapture: vi.fn(),
     });
 
     const starting = session.start();
     session.cancel();
-    resolveCapture(capture);
+    resolveSession({ ticket: 'unused-ticket' });
     await starting;
 
-    expect(capture.stop).toHaveBeenCalledTimes(1);
-    expect(session.createSession).not.toHaveBeenCalled();
+    expect(session.createCapture).not.toHaveBeenCalled();
     expect(session.state).toBe('cancelled');
   });
 
-  it('stops without opening a session when hold-to-talk is released during microphone startup', async () => {
-    let resolveCapture;
-    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+  it('stops without opening microphone capture when hold-to-talk is released during admission', async () => {
+    let resolveSession;
     const session = new StreamingSTTSession({
-      createCapture: vi.fn(() => new Promise((resolve) => { resolveCapture = resolve; })),
-      createSession: vi.fn(),
+      createSession: vi.fn(() => new Promise((resolve) => { resolveSession = resolve; })),
+      createCapture: vi.fn(),
     });
 
     const starting = session.start();
     const stopping = session.stop();
-    resolveCapture(capture);
+    resolveSession({ ticket: 'unused-ticket' });
     await Promise.all([starting, stopping]);
 
-    expect(capture.stop).toHaveBeenCalledTimes(1);
-    expect(session.createSession).not.toHaveBeenCalled();
+    expect(session.createCapture).not.toHaveBeenCalled();
     expect(session.state).toBe('complete');
   });
 

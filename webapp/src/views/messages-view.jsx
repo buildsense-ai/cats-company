@@ -9,6 +9,7 @@ import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
+import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 import {
   artifactRefFromPreviewFile,
@@ -1768,24 +1769,20 @@ export default function MessagesView({
   };
 
   const handleVoiceFinal = (transcript, insertion) => {
-    const text = String(transcript || '').trim();
-    if (!text) return;
     const textarea = textareaRef.current;
-    const currentInput = insertion?.baseValue ?? (textarea ? textarea.value : input);
-    const start = insertion?.start ?? (textarea ? textarea.selectionStart : currentInput.length);
-    const end = insertion?.end ?? (textarea ? textarea.selectionEnd : start);
-    const nextInput = currentInput.slice(0, start) + text + currentInput.slice(end);
+    const result = insertTranscriptAtSelection(transcript, insertion, textarea, input);
+    if (!result) return;
     const nextStructuredMentions = reconcileStructuredMentionSelections(
-      currentInput,
-      nextInput,
+      result.baseValue,
+      result.value,
       structuredMentionDraftsRef.current.get(topic) || [],
     );
-    setInput(nextInput);
-    updateComposerDraft(topic, nextInput);
+    setInput(result.value);
+    updateComposerDraft(topic, result.value);
     updateStructuredMentionDraft(topic, nextStructuredMentions);
     setTimeout(() => {
       textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(start + text.length, start + text.length);
+      textareaRef.current?.setSelectionRange(result.caret, result.caret);
     }, 0);
   };
 

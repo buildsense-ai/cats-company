@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, FileText, Image, Smartphone, X } from 'lucide-react';
 import { api } from '../api';
+import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import {
   IMAGE_UPLOAD_ACCEPT,
   MAX_ATTACHMENT_SIZE,
@@ -312,18 +313,14 @@ export default function EmptyTaskComposer({
   }, []);
 
   const handleVoiceFinal = useCallback((transcript, insertion) => {
-    const text = String(transcript || '').trim();
-    if (!text) return;
     const textarea = textareaRef.current;
-    const currentInput = insertion?.baseValue ?? (textarea ? textarea.value : inputValueRef.current);
-    const start = insertion?.start ?? (textarea ? textarea.selectionStart : currentInput.length);
-    const end = insertion?.end ?? (textarea ? textarea.selectionEnd : start);
-    const nextInput = currentInput.slice(0, start) + text + currentInput.slice(end);
-    inputValueRef.current = nextInput;
-    setInput(nextInput);
+    const result = insertTranscriptAtSelection(transcript, insertion, textarea, inputValueRef.current);
+    if (!result) return;
+    inputValueRef.current = result.value;
+    setInput(result.value);
     window.setTimeout(() => {
       textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(start + text.length, start + text.length);
+      textareaRef.current?.setSelectionRange(result.caret, result.caret);
     }, 0);
   }, []);
 
