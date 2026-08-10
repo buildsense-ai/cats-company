@@ -1287,4 +1287,12 @@ describe('CatsCo shell styling', () => {
     }`);
   });
 
+  it('keeps PWA download notices stacked above modal overlays', () => {
+    const hostRule = ruleFor('.catsco-pwa-download-notice-host');
+
+    expect(hostRule).toContain('display: grid;');
+    expect(hostRule).toContain('z-index: 2800;');
+    expect(openchatCss).toMatch(/\.oc-modal-overlay\s*\{[^}]*z-index: 1000;/);
+  });
+
 });
