@@ -1269,6 +1269,26 @@ func TestShouldNotifyOfflineForFinalUserVisibleMessagesOnly(t *testing.T) {
 	}
 }
 
+func TestPushNotificationMessageBodyUsesVisibleContent(t *testing.T) {
+	tests := []struct {
+		name string
+		data *MsgServerData
+		want string
+	}{
+		{name: "plain text", data: &MsgServerData{Content: "  final\nanswer  "}, want: "final answer"},
+		{name: "assistant block", data: &MsgServerData{ContentBlocks: []types.ContentBlock{{Type: "assistant_text", Content: "final answer"}}}, want: "final answer"},
+		{name: "visible block wins over internal content", data: &MsgServerData{Content: "private tool output", ContentBlocks: []types.ContentBlock{{Type: "tool_result", Content: "private tool output"}, {Type: "assistant_text", Text: "safe answer"}}}, want: "safe answer"},
+		{name: "internal content excluded", data: &MsgServerData{Content: "private tool output", ContentBlocks: []types.ContentBlock{{Type: "tool_result", Content: "private tool output"}}}, want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := pushNotificationMessageBody(&ServerMessage{Data: test.data}); got != test.want {
+				t.Fatalf("pushNotificationMessageBody() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestThirdPartyProviderGroupMessagePushEligibility(t *testing.T) {
 	providerMetadata := withChannelBindingDeliveryMetadata(nil, &types.ChannelAgentBinding{
 		Channel:       "feishu",
