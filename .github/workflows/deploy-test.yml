@@ -71,6 +71,7 @@ jobs:
           cp deploy/test/remote-deploy.sh "${tmpdir}/compose/"
           cp deploy/test/remote-status.sh "${tmpdir}/compose/"
           cp deploy/sync-vapid-env.py "${tmpdir}/compose/"
+          cp deploy/sync-stt-env.py "${tmpdir}/compose/"
           cp deploy/test/docker-compose.yml "${tmpdir}/compose/"
           cp deploy/test/tinode.test.conf "${tmpdir}/compose/"
           cp deploy/init-db.sh "${tmpdir}/compose/"
@@ -94,6 +95,7 @@ jobs:
           VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
           CATSCO_PUSH_RELAY_URL: ${{ secrets.CATSCO_PUSH_RELAY_URL }}
           CATSCO_PUSH_RELAY_TOKEN: ${{ secrets.CATSCO_PUSH_RELAY_TOKEN }}
+          VOLCENGINE_STT_API_KEY: ${{ secrets.VOLCENGINE_STT_API_KEY }}
         run: |
           SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=40"
           REMOTE="${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}"
@@ -102,6 +104,9 @@ jobs:
             "$VAPID_PUBLIC_KEY" "$VAPID_PRIVATE_KEY" "$VAPID_SUBJECT" "$CATSCO_PUSH_RELAY_URL" "$CATSCO_PUSH_RELAY_TOKEN" |
             ssh ${SSH_OPTS} "${REMOTE}" \
               "python3 ${TEST_STACK_ROOT}/compose/sync-vapid-env.py ${TEST_STACK_ROOT}/env/test.env"
+          printf '%s\0' "$VOLCENGINE_STT_API_KEY" |
+            ssh ${SSH_OPTS} "${REMOTE}" \
+              "python3 ${TEST_STACK_ROOT}/compose/sync-stt-env.py ${TEST_STACK_ROOT}/env/test.env"
           ssh ${SSH_OPTS} "${REMOTE}" "GITHUB_SHA=${GITHUB_SHA} TEST_STACK_ROOT=${TEST_STACK_ROOT} GHCR_OWNER=${{ github.repository_owner }} GHCR_USERNAME=${GHCR_USERNAME} GHCR_TOKEN=${GHCR_TOKEN} CATSCO_ARTIFACT_INDEX_URL=${CATSCO_ARTIFACT_INDEX_URL} CATSCO_ARTIFACT_MANAGEMENT_URL=${CATSCO_ARTIFACT_MANAGEMENT_URL} CATSCO_ARTIFACT_MANAGEMENT_TOKEN=${CATSCO_ARTIFACT_MANAGEMENT_TOKEN} bash -s" <<'EOF'
           set -euo pipefail
 

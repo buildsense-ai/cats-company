@@ -4,6 +4,24 @@ import { createRoot } from 'react-dom/client';
 import ChatComposer, { CHAT_COMPOSER_HINT } from './chat-composer';
 
 describe('ChatComposer', () => {
+	it('keeps unsupported voice input visible as a disabled control', async () => {
+		await act(async () => {
+			root.render(
+				<ChatComposer
+					value=""
+					onChange={() => {}}
+					onSend={() => {}}
+					onVoiceFinal={() => {}}
+					voiceInputAvailable={false}
+				/>,
+			);
+		});
+
+		const button = container.querySelector('button[aria-label="当前浏览器不支持语音输入"]');
+		expect(button).not.toBeNull();
+		expect(button.disabled).toBe(true);
+	});
+
   let container;
   let root;
 
@@ -141,6 +159,162 @@ describe('ChatComposer', () => {
       sendButton.click();
     });
     expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps streaming partial text local and commits only the final transcript', async () => {
+	const onVoiceFinal = vi.fn();
+	let callbacks;
+	const voiceSession = {
+		start: vi.fn().mockResolvedValue(undefined),
+		stop: vi.fn(),
+		cancel: vi.fn(),
+	};
+	await renderComposer({
+		onVoiceFinal,
+		voiceInputAvailable: true,
+		createVoiceSession: (options) => {
+			callbacks = options;
+			return voiceSession;
+		},
+	});
+
+	const startButton = container.querySelector('button[aria-label="开始语音输入"]');
+	expect(startButton).not.toBeNull();
+	await act(async () => {
+		startButton.click();
+		await Promise.resolve();
+	});
+
+	await act(async () => {
+		callbacks.onState('recording');
+		callbacks.onPartial('正在识别的文字');
+	});
+	expect(container.querySelector('textarea.v3-composer-input').value).toBe('正在识别的文字');
+	expect(container.querySelector('.v3-voice-status')).toBeNull();
+	expect(onVoiceFinal).not.toHaveBeenCalled();
+
+	await act(async () => {
+		container.querySelector('button[aria-label="停止语音输入"]').click();
+	});
+	expect(voiceSession.stop).toHaveBeenCalledTimes(1);
+
+	await act(async () => {
+		callbacks.onFinal('最终文字');
+	});
+	expect(onVoiceFinal).toHaveBeenCalledWith('最终文字', expect.objectContaining({
+		baseValue: '',
+		start: 0,
+		end: 0,
+	}));
+  });
+
+  it('shows the mobile hold overlay and stops recognition when touch is released', async () => {
+    vi.useFakeTimers();
+    let callbacks;
+    const voiceSession = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn(),
+    };
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: (options) => {
+        callbacks = options;
+        return voiceSession;
+      },
+    });
+
+    const voiceButton = container.querySelector('button[aria-label="开始语音输入"]');
+    await act(async () => {
+      React.act(() => {
+        voiceButton.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true,
+          pointerId: 7,
+          pointerType: 'touch',
+          clientY: 420,
+        }));
+      });
+      vi.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+
+    expect(voiceSession.start).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('.v3-voice-hold-overlay')).not.toBeNull();
+    expect(container.querySelector('textarea.v3-composer-input')).not.toBeNull();
+
+    const initialWavePath = container.querySelector('.v3-voice-hold-wave-fill').getAttribute('d');
+    await act(async () => {
+      callbacks.onState('recording');
+      callbacks.onPartial('这是实时转录的文字');
+      callbacks.onAudioLevel(0.78);
+    });
+    expect(container.querySelector('.v3-voice-hold-transcript')?.textContent)
+      .toContain('这是实时转录的文字');
+    expect(container.querySelector('.v3-voice-hold-wave-fill').getAttribute('d'))
+      .not.toBe(initialWavePath);
+
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerup', {
+        bubbles: true,
+        pointerId: 7,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(voiceSession.stop).toHaveBeenCalledTimes(1);
+    expect(voiceSession.cancel).not.toHaveBeenCalled();
+    expect(container.querySelector('.v3-voice-hold-overlay')).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it('cancels a mobile hold recording after sliding upward', async () => {
+    vi.useFakeTimers();
+    const voiceSession = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn(),
+      cancel: vi.fn(),
+    };
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: () => voiceSession,
+    });
+
+    const voiceButton = container.querySelector('button[aria-label="开始语音输入"]');
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        pointerId: 9,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      vi.advanceTimersByTime(300);
+      await Promise.resolve();
+      voiceButton.dispatchEvent(new PointerEvent('pointermove', {
+        bubbles: true,
+        pointerId: 9,
+        pointerType: 'touch',
+        clientY: 330,
+      }));
+    });
+
+    expect(container.querySelector('.v3-voice-hold-overlay.is-cancelling')?.textContent).toContain('松开取消输入');
+
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerup', {
+        bubbles: true,
+        pointerId: 9,
+        pointerType: 'touch',
+        clientY: 330,
+      }));
+    });
+
+    expect(voiceSession.cancel).toHaveBeenCalledTimes(1);
+    expect(voiceSession.stop).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 
   it('renders removable image and file attachments inside the expanding composer box', async () => {

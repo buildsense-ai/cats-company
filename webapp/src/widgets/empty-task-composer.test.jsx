@@ -109,6 +109,76 @@ describe('EmptyTaskComposer', () => {
     expect(menu.textContent).toContain('手机扫码上传');
   });
 
+  it('shows voice input on the new task composer and inserts the final transcript', async () => {
+    let callbacks;
+    const session = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn(),
+    };
+    const createVoiceSession = vi.fn((options) => {
+      callbacks = options;
+      return session;
+    });
+    await mountComposer({ voiceInputAvailable: true, createVoiceSession });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await typeInto(textarea, '整理：');
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="开始语音输入"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      callbacks.onFinal('今天的会议记录');
+      vi.runOnlyPendingTimers();
+    });
+
+    expect(createVoiceSession).toHaveBeenCalledTimes(1);
+    expect(session.start).toHaveBeenCalledTimes(1);
+    expect(textarea.value).toBe('整理：今天的会议记录');
+  });
+
+  it('supports the same touch-hold voice overlay on the new task composer', async () => {
+    const session = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+      cancel: vi.fn(),
+    };
+    await mountComposer({
+      voiceInputAvailable: true,
+      createVoiceSession: () => session,
+    });
+
+    const voiceButton = container.querySelector('button[aria-label="开始语音输入"]');
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        pointerId: 17,
+        pointerType: 'touch',
+        clientY: 720,
+      }));
+      vi.advanceTimersByTime(300);
+      await flushPromises();
+    });
+
+    expect(container.querySelector('.v3-voice-hold-overlay')).not.toBeNull();
+    expect(container.querySelector('.v3-voice-hold-wave svg')).not.toBeNull();
+    expect(session.start).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerup', {
+        bubbles: true,
+        pointerId: 17,
+        pointerType: 'touch',
+        clientY: 720,
+      }));
+      await flushPromises();
+    });
+
+    expect(session.stop).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the Agent picker hidden while preserving automatic Agent selection', async () => {
     const { onResolveAgentTopic } = await mountComposer({ initialAgent: agents[1] });
 

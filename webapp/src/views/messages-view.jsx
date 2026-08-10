@@ -610,20 +610,6 @@ export default function MessagesView({
     setCloudArtifactsListOpen(true);
   }, [clearActiveArtifactFocus]);
 
-  const resizeComposerInput = useCallback(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    const maxHeight = 200;
-    textarea.style.height = 'auto';
-    const nextHeight = Math.min(Math.max(textarea.scrollHeight, 40), maxHeight);
-    textarea.style.height = `${nextHeight}px`;
-    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
-  }, []);
-
-  useEffect(() => {
-    resizeComposerInput();
-  }, [input, resizeComposerInput]);
-
   useEffect(() => {
     setTutorialDismissed(localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
   }, [topic, user.uid]);
@@ -1781,6 +1767,28 @@ export default function MessagesView({
     }
   };
 
+  const handleVoiceFinal = (transcript, insertion) => {
+    const text = String(transcript || '').trim();
+    if (!text) return;
+    const textarea = textareaRef.current;
+    const currentInput = insertion?.baseValue ?? (textarea ? textarea.value : input);
+    const start = insertion?.start ?? (textarea ? textarea.selectionStart : currentInput.length);
+    const end = insertion?.end ?? (textarea ? textarea.selectionEnd : start);
+    const nextInput = currentInput.slice(0, start) + text + currentInput.slice(end);
+    const nextStructuredMentions = reconcileStructuredMentionSelections(
+      currentInput,
+      nextInput,
+      structuredMentionDraftsRef.current.get(topic) || [],
+    );
+    setInput(nextInput);
+    updateComposerDraft(topic, nextInput);
+    updateStructuredMentionDraft(topic, nextStructuredMentions);
+    setTimeout(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(start + text.length, start + text.length);
+    }, 0);
+  };
+
   const insertMention = (member) => {
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -2823,7 +2831,6 @@ export default function MessagesView({
     setSelectedTutorialTask(null);
     window.setTimeout(() => {
       textareaRef.current?.focus();
-      resizeComposerInput();
     }, 0);
   };
 
@@ -2857,10 +2864,8 @@ export default function MessagesView({
       if (!textarea) return;
       textarea.focus();
       textarea.setSelectionRange(originalText.length, originalText.length);
-      resizeComposerInput();
     }, 0);
   }, [
-    resizeComposerInput,
     topic,
     updateAttachmentDraft,
     updateComposerDraft,
@@ -3303,6 +3308,9 @@ export default function MessagesView({
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
+        onVoiceFinal={handleVoiceFinal}
+        voiceInputDisabled={isSendingMessage || isUploadingAttachment}
+        voiceSessionKey={topic}
         textareaProps={{
           'aria-controls': showMentionPicker ? 'mention-picker' : undefined,
           'aria-expanded': showMentionPicker,

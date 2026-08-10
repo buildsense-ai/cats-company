@@ -13,7 +13,6 @@ import QRCode from './qr-code';
 
 const MAX_DROPPED_FILES = 200;
 const PHONE_UPLOAD_POLL_INTERVAL_MS = 2000;
-const COMPOSER_MAX_HEIGHT = 200;
 
 export default function EmptyTaskComposer({
   className = 'cc-empty-composer-wrap',
@@ -21,6 +20,8 @@ export default function EmptyTaskComposer({
   initialAgent,
   onResolveAgentTopic,
   onActivateTopic,
+  voiceInputAvailable,
+  createVoiceSession,
 }) {
   const [input, setInput] = useState('');
   const initialAgentId = agentKey(initialAgent);
@@ -84,19 +85,6 @@ export default function EmptyTaskComposer({
     if (!attachments?.length) return;
     replaceAttachments([...pendingAttachmentsRef.current, ...attachments]);
   }, [replaceAttachments]);
-
-  const resizeTextarea = useCallback(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = '0px';
-    const nextHeight = Math.min(textarea.scrollHeight, COMPOSER_MAX_HEIGHT);
-    textarea.style.height = `${nextHeight}px`;
-    textarea.style.overflowY = textarea.scrollHeight > COMPOSER_MAX_HEIGHT ? 'auto' : 'hidden';
-  }, []);
-
-  useEffect(() => {
-    resizeTextarea();
-  }, [input, resizeTextarea]);
 
   useEffect(() => {
     let cancelled = false;
@@ -321,6 +309,22 @@ export default function EmptyTaskComposer({
     const value = event.target.value;
     inputValueRef.current = value;
     setInput(value);
+  }, []);
+
+  const handleVoiceFinal = useCallback((transcript, insertion) => {
+    const text = String(transcript || '').trim();
+    if (!text) return;
+    const textarea = textareaRef.current;
+    const currentInput = insertion?.baseValue ?? (textarea ? textarea.value : inputValueRef.current);
+    const start = insertion?.start ?? (textarea ? textarea.selectionStart : currentInput.length);
+    const end = insertion?.end ?? (textarea ? textarea.selectionEnd : start);
+    const nextInput = currentInput.slice(0, start) + text + currentInput.slice(end);
+    inputValueRef.current = nextInput;
+    setInput(nextInput);
+    window.setTimeout(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(start + text.length, start + text.length);
+    }, 0);
   }, []);
 
   const handlePaste = useCallback(async (event) => {
@@ -585,6 +589,11 @@ export default function EmptyTaskComposer({
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
+        onVoiceFinal={handleVoiceFinal}
+        voiceInputAvailable={voiceInputAvailable}
+        createVoiceSession={createVoiceSession}
+        voiceInputDisabled={isSubmitting || isUploadingAttachment}
+        voiceSessionKey={`new-task:${selectedAgentId || ''}`}
         attachmentOpen={attachmentMenuOpen}
         attachmentDisabled={isUploadingAttachment || isSubmitting}
         onAttachmentToggle={() => {

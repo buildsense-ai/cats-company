@@ -139,6 +139,7 @@ jobs:
           bash -n deploy/test/remote-deploy.sh
           python3 deploy/prod/sync-artifact-node-env_test.py
           python3 deploy/sync-vapid-env_test.py
+          python3 deploy/sync-stt-env_test.py
 
       - name: Build server image
         run: docker build -f deploy/Dockerfile.server -t cats-company-server-ci .

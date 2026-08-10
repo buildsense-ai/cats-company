@@ -480,6 +480,7 @@ export const api = {
   register: (data) => request('POST', '/api/auth/register', data),
   login: (data) => request('POST', '/api/auth/login', data),
   getMe: () => request('GET', '/api/me'),
+  createSTTSession: () => request('POST', '/api/stt/sessions'),
   getRelayAdminAccess: () => request('GET', '/api/admin/relay/access'),
   relayAdminProxyURL: (path) => `/api/admin/relay${path}`,
   getPushConfig: (signal) => request('GET', '/api/push/config', undefined, { signal }),

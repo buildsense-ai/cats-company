@@ -3696,6 +3696,139 @@ html[data-theme="liquid"] .catsco-brand-mark {
   outline: none;
   box-shadow: none;
 }
+.v3-composer-input.is-voice-preview {
+  caret-color: transparent;
+}
+.v3-composer-input.is-voice-pending {
+  color: var(--cc-text-secondary);
+}
+.v3-voice-button {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  touch-action: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.v3-voice-button.is-active {
+  border-color: color-mix(in srgb, var(--cc-danger) 42%, var(--cc-border));
+  background: color-mix(in srgb, var(--cc-danger) 10%, var(--cc-panel));
+  color: var(--cc-danger);
+}
+.v3-composer-hint.is-error {
+  color: var(--cc-danger);
+}
+
+.v3-voice-hold-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--cc-main-bg) 90%, var(--cc-accent-soft));
+  pointer-events: none;
+  transition: background-color 180ms cubic-bezier(.22, 1, .36, 1);
+}
+
+.v3-voice-hold-copy {
+  position: absolute;
+  top: max(112px, 19svh);
+  left: 50%;
+  z-index: 2;
+  width: min(520px, calc(100vw - 48px));
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  transform: translateX(-50%);
+  transition: transform 180ms cubic-bezier(.22, 1, .36, 1);
+}
+
+.v3-voice-hold-transcript {
+  width: 100%;
+  min-height: 76px;
+  overflow: hidden;
+  color: var(--cc-text);
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 36px;
+  text-align: center;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.v3-voice-hold-instruction {
+  color: var(--cc-text-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.v3-voice-hold-wave {
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: 100%;
+  height: clamp(184px, 22svh, 268px);
+  transition: transform 180ms cubic-bezier(.22, 1, .36, 1);
+}
+
+.v3-voice-hold-wave > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.v3-voice-hold-wave-rim {
+  fill: color-mix(in srgb, var(--cc-accent) 14%, var(--cc-panel));
+  transition: fill 180ms ease-out;
+}
+
+.v3-voice-hold-wave-fill {
+  fill: color-mix(in srgb, var(--cc-accent) 78%, var(--cc-panel));
+  transition: fill 180ms ease-out;
+}
+
+.v3-voice-hold-mic {
+  position: absolute;
+  top: 56%;
+  left: 50%;
+  display: grid;
+  width: 72px;
+  height: 72px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--cc-panel);
+  box-shadow: 0 0 34px 22px color-mix(in srgb, var(--cc-accent) 11%, transparent);
+  transform: translate(-50%, -50%);
+}
+
+.v3-voice-hold-overlay.is-cancelling .v3-voice-hold-copy {
+  top: 42%;
+  transform: translate(-50%, -50%);
+}
+
+.v3-voice-hold-overlay.is-cancelling {
+  background: oklch(0.985 0.004 145);
+}
+
+.v3-voice-hold-overlay.is-cancelling .v3-voice-hold-transcript,
+.v3-voice-hold-overlay.is-cancelling .v3-voice-hold-instruction {
+  color: var(--cc-danger);
+}
+
+.v3-voice-hold-overlay.is-cancelling .v3-voice-hold-wave {
+  transform: translateY(100%);
+}
+
+.v3-voice-hold-overlay.is-cancelling .v3-voice-hold-wave-rim {
+  fill: transparent;
+}
+
+.v3-voice-hold-overlay.is-cancelling .v3-voice-hold-wave-fill {
+  fill: transparent;
+}
 
 .v3-composer :is(button, [role="button"]):focus-visible {
   outline-color: var(--cc-border-strong);
@@ -4554,30 +4687,70 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   }
 
   .v3-composer {
-    padding: 8px 10px 10px;
+    padding: 8px 8px calc(20px + env(safe-area-inset-bottom));
   }
 
-  .cc-empty-task {
-    padding: 20px 10px;
+  .v3-composer-row {
+    min-height: 60px;
+    gap: 4px;
+    padding: 7px 6px;
   }
 
-  .cc-empty-task-inner {
-    width: 100%;
-    max-width: 760px;
+  .v3-composer-input {
+    min-height: 46px;
+    padding: 12px 5px;
+    font-size: 16px;
+    line-height: 22px;
   }
 
-  .cc-empty-task-heading {
-    gap: 12px;
-    margin-bottom: 24px;
-  }
-
-  .cc-empty-task-mark {
-    width: 96px;
+  .v3-composer-plus,
+  .v3-voice-button,
+  .v3-send {
+    width: 42px;
     height: 42px;
   }
 
-  .cc-empty-task h1 {
-    font-size: clamp(24px, 7vw, 28px);
+  .cc-empty-task {
+    padding: 20px 10px calc(104px + env(safe-area-inset-bottom));
+  }
+
+  .cc-empty-task-inner {
+    width: auto;
+    max-width: none;
+    transform: none;
+  }
+
+  .cc-empty-task-heading {
+    margin-bottom: 0;
+  }
+
+  .cc-empty-task-heading h1 {
+    display: none;
+  }
+
+  .cc-empty-task-mark {
+    width: 88px;
+    height: 40px;
+  }
+
+  .v3-composer.cc-empty-composer-wrap {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 70;
+    width: 100%;
+    padding: 8px 8px calc(20px + env(safe-area-inset-bottom));
+    background: var(--cc-empty-task-bg);
+  }
+
+  .v3-composer-hint {
+    display: none;
+  }
+
+  .v3-composer-hint.is-error {
+    display: block;
+    margin-top: 4px;
   }
 
   .v3-agent-picker-button {
@@ -4600,6 +4773,16 @@ html[data-theme="liquid"] .cc-confirm-dialog {
     font-size: 11px;
     white-space: normal;
   }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-voice-hold-copy,
+  .v3-voice-hold-wave,
+  .v3-voice-hold-wave-rim,
+  .v3-voice-hold-wave-fill {
+    transition: none;
+  }
+
 }
 
 .v3-mobile-sidebar-toggle,
