@@ -2434,9 +2434,19 @@ html[data-theme="liquid"] .catsco-brand-mark {
     --cc-sidebar-trailing-width: 84px;
   }
 
-  .cc-chat-row-trailing .cc-chat-row-time,
-  .cc-chat-row-trailing .cc-task-row-status {
+  .cc-chat-row-trailing .cc-chat-row-time {
     opacity: 0;
+  }
+
+  .cc-history-item .cc-chat-row-trailing {
+    flex-basis: 108px;
+    width: 108px;
+    min-width: 108px;
+  }
+
+  .cc-history-item .cc-chat-row-trailing > .cc-task-row-status {
+    right: calc((var(--cc-sidebar-action-size) * 2) + 4px);
+    opacity: 1;
   }
 
   .cc-chat-row-actions {
