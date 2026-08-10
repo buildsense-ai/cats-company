@@ -10,8 +10,9 @@ RUN CGO_ENABLED=0 go build -mod=readonly -o openchat-server ./server/cmd/
 FROM alpine:3.24.1
 # bash + OpenSSH client + jq power the cloud worker provision scripts
 # (deploy/prod/ops/*.sh). gcompat provides glibc compatibility for the
-# linux-amd64 ctyun-cli binary.
-RUN apk add --no-cache ca-certificates bash openssh-client jq gcompat
+# linux-amd64 ctyun-cli binary. curl downloads the ctyun-cli package below
+# (not present in the minimal alpine base).
+RUN apk add --no-cache ca-certificates curl bash openssh-client jq gcompat
 
 # Tianyi Cloud CLI for the cloud virtual employee control plane.
 ARG CTYUN_CLI_VERSION=v0.1.1
