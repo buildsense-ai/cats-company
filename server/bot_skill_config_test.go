@@ -16,6 +16,10 @@ const testSkillHash = "0123456789abcdef0123456789abcdef0123456789abcdef012345678
 func newBotSkillDefinitionTestHandler() (*BotDefinitionHandler, *botDefinitionTestStore) {
 	db := &botDefinitionTestStore{
 		owners: map[int64]int64{43: 7},
+		configs: map[int64]*types.BotConfig{
+			43: {UserID: 43, OwnerID: 7, SkillsVisibility: types.BotSkillsOwner},
+		},
+		friends: map[[2]int64]bool{},
 		records: map[int64]*types.BotDefinitionRecord{
 			43: {
 				Definition: types.BotDefinition{
@@ -32,6 +36,53 @@ func newBotSkillDefinitionTestHandler() (*BotDefinitionHandler, *botDefinitionTe
 	}
 	models := &botModelConfigTestStore{owners: db.owners, models: map[int64]*types.BotModelConfig{}}
 	return NewBotDefinitionHandler(db, db, models, NewBotModelConfigHandler(db, models)), db
+}
+
+func TestBotDefinitionViewerSkillsRespectVisibilityAndRedactDefinition(t *testing.T) {
+	tests := []struct {
+		name       string
+		viewerUID  int64
+		visibility types.BotSkillsVisibility
+		friend     bool
+		wantStatus int
+	}{
+		{name: "owner", viewerUID: 7, visibility: types.BotSkillsOwner, wantStatus: http.StatusOK},
+		{name: "authorized friend", viewerUID: 8, visibility: types.BotSkillsAuthorized, friend: true, wantStatus: http.StatusOK},
+		{name: "authorized non-friend", viewerUID: 8, visibility: types.BotSkillsAuthorized, wantStatus: http.StatusForbidden},
+		{name: "public", viewerUID: 8, visibility: types.BotSkillsPublic, wantStatus: http.StatusOK},
+		{name: "owner only", viewerUID: 8, visibility: types.BotSkillsOwner, wantStatus: http.StatusForbidden},
+		{name: "missing legacy value defaults private", viewerUID: 8, visibility: "", wantStatus: http.StatusForbidden},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, db := newBotSkillDefinitionTestHandler()
+			db.configs[43].SkillsVisibility = tc.visibility
+			db.records[43].Definition.Skills = []types.BotSkillRef{{
+				Source: "skillhub", SkillID: "catsco/example", Version: "1.0.0", ContentHash: testSkillHash,
+			}}
+			if tc.friend {
+				db.friends[[2]int64{tc.viewerUID, 43}] = true
+			}
+			req := httptest.NewRequest(http.MethodGet, "/api/agents/skills?uid=43", nil)
+			req = req.WithContext(context.WithValue(req.Context(), uidKey, tc.viewerUID))
+			rec := httptest.NewRecorder()
+
+			handler.HandleViewerSkills(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if tc.wantStatus == http.StatusOK {
+				body := rec.Body.String()
+				if !strings.Contains(body, `"skillId":"catsco/example"`) || strings.Contains(body, "contentHash") || strings.Contains(body, "revision") {
+					t.Fatalf("viewer response was not redacted: %s", body)
+				}
+			} else if !strings.Contains(rec.Body.String(), "Agent 所有者未公开技能列表") {
+				t.Fatalf("missing private-state message: %s", rec.Body.String())
+			}
+		})
+	}
 }
 
 func TestBotDefinitionSkillsUseUnifiedRevisionAndCanonicalOrder(t *testing.T) {

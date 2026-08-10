@@ -21,6 +21,9 @@
   --cc-empty-task-bg: #f8f8f8;
   --cc-panel: #ffffff;
   --cc-panel-raised: #f7f7f8;
+  --cc-history-panel-bg: #ffffff;
+  --cc-history-hover: #f1f1f2;
+  --cc-history-hover-border: rgba(17, 24, 39, 0.06);
   --cc-control-surface: #f2f2f4;
   --cc-input-surface: var(--cc-code);
   --cc-border: #ececef;
@@ -99,6 +102,9 @@ html[data-theme="dark"] {
   --cc-empty-task-bg: #0f0f0f;
   --cc-panel: #232325;
   --cc-panel-raised: #272729;
+  --cc-history-panel-bg: #272729;
+  --cc-history-hover: #37373a;
+  --cc-history-hover-border: rgba(255, 255, 255, 0.08);
   --cc-control-surface: #2c2c2f;
   --cc-border: #2d2d2f;
   --cc-border-strong: #3a3a3d;
@@ -126,6 +132,9 @@ html[data-theme="liquid"] {
   --cc-empty-task-bg: transparent;
   --cc-panel: rgba(255, 255, 255, 0.86);
   --cc-panel-raised: rgba(255, 255, 255, 0.96);
+  --cc-history-panel-bg: #ffffff;
+  --cc-history-hover: rgba(86, 98, 217, 0.12);
+  --cc-history-hover-border: rgba(86, 98, 217, 0.14);
   --cc-control-surface: rgba(224, 230, 255, 0.68);
   --cc-input-surface: rgba(255, 255, 255, 0.78);
   --cc-border: rgba(73, 86, 168, 0.1);
@@ -534,6 +543,7 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .cc-compact-new-chat,
+.cc-compact-tool,
 .cc-compact-conversation {
   position: relative;
   width: 42px;
@@ -552,16 +562,27 @@ html[data-theme="liquid"] .catsco-brand-mark {
 
 .cc-compact-new-chat {
   flex: 0 0 auto;
-  border-color: var(--cc-border);
-  background: var(--cc-panel);
 }
 
 .cc-compact-new-chat:hover,
+.cc-compact-tool:hover,
 .cc-compact-conversation:hover,
-.cc-compact-conversation.active {
+.cc-compact-new-chat:active,
+.cc-compact-tool:active,
+.cc-compact-conversation.active,
+.cc-compact-new-chat:focus-visible,
+.cc-compact-tool:focus-visible,
+.cc-compact-conversation:focus-visible {
   border-color: var(--cc-border-strong);
   background: var(--cc-hover);
   color: var(--cc-text);
+}
+
+.cc-compact-history-trigger[aria-expanded="true"] {
+  border-color: var(--cc-border-strong);
+  background: var(--cc-hover);
+  color: var(--cc-text);
+  box-shadow: none;
 }
 
 .cc-compact-conversations {
@@ -662,6 +683,136 @@ html[data-theme="liquid"] .catsco-brand-mark {
   pointer-events: none;
 }
 
+.cc-compact-history-panel {
+  position: fixed;
+  z-index: 2600;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  max-width: calc(100vw - 16px);
+  max-height: min(420px, calc(100vh - 16px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 5px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: 7px;
+  background: var(--cc-history-panel-bg);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+  color: var(--cc-text);
+}
+
+.cc-compact-history-heading {
+  padding: 7px 9px 6px;
+  color: var(--cc-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.cc-compact-history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 34px;
+  overflow: hidden;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cc-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cc-compact-history-label {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cc-compact-history-item > svg {
+  flex: 0 0 auto;
+}
+
+.cc-compact-history-tooltip {
+  position: fixed;
+  z-index: 2700;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  transform: translateY(-50%);
+  border: 1px solid var(--cc-border-strong);
+  border-radius: 7px;
+  background: var(--cc-history-panel-bg);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.2);
+  color: var(--cc-text);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.cc-compact-history-item.active {
+  background: var(--cc-hover);
+  color: var(--cc-accent-text);
+}
+
+.cc-compact-history-item:is(:hover, :focus-visible) {
+  background: var(--cc-history-hover);
+  box-shadow: inset 0 0 0 1px var(--cc-history-hover-border);
+  color: var(--cc-text);
+}
+
+.cc-compact-history-item.active:is(:hover, :focus-visible) {
+  color: var(--cc-accent-text);
+}
+
+.cc-compact-history-empty {
+  padding: 12px 9px;
+  color: var(--cc-muted);
+  font-size: 12px;
+}
+
+.v3-sidebar.collapsed .cc-sidebar-skillhub-entry {
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  min-height: 42px;
+  margin-right: auto;
+  margin-left: auto;
+  gap: 0;
+  padding: 0;
+  border-color: transparent;
+  border-radius: 12px;
+  background: transparent;
+}
+
+.v3-sidebar.collapsed .cc-sidebar-skillhub-entry span {
+  display: none;
+}
+
+.v3-sidebar.collapsed .cc-sidebar-skillhub-entry:is(:hover, :focus-visible) {
+  border-color: var(--cc-border-strong);
+  background: var(--cc-hover);
+  color: var(--cc-text);
+}
+
+.v3-sidebar.collapsed .cc-sidebar-skillhub-entry:is(:active, .active) {
+  border-color: transparent;
+  background: transparent;
+  color: var(--cc-accent-text);
+}
+
 .v3-sidebar.collapsed .v3-profile-footer {
   width: 100%;
   min-height: 64px;
@@ -698,15 +849,34 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .v3-sidebar-header {
+  height: 48px;
+  min-height: 48px;
+  flex: 0 0 48px;
+  padding: 0 8px 0 12px;
+  border-bottom: 0;
+}
+
+.v3-sidebar.collapsed .v3-sidebar-header {
   height: 44.8px;
   min-height: 44.8px;
-  flex: 0 0 44.8px;
+  flex-basis: 44.8px;
   padding: 0 12px;
-  border-bottom: 0;
 }
 
 .v3-sidebar-header:hover {
   background: transparent;
+}
+
+.v3-sidebar-header-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.v3-sidebar.collapsed .v3-sidebar-header-actions {
+  margin-left: 0;
 }
 
 .v3-brand-title {
@@ -1886,6 +2056,11 @@ html[data-theme="liquid"] .catsco-brand-mark {
   min-height: var(--cc-sidebar-row-height);
   padding-top: var(--cc-sidebar-row-padding-y);
   padding-bottom: var(--cc-sidebar-row-padding-y);
+}
+
+.v3-chat-item.cc-history-item:is(:hover, :focus-within) {
+  background: var(--cc-history-hover);
+  box-shadow: inset 0 0 0 1px var(--cc-history-hover-border);
 }
 
 .cc-history-item .cc-chat-row-copy {
@@ -3315,6 +3490,33 @@ html[data-theme="liquid"] .catsco-brand-mark {
 .v3-composer-box:focus-within {
   border-color: var(--cc-border-strong);
   box-shadow: none;
+}
+
+.v3-composer-box.is-agent-reply-active {
+  animation: cc-composer-agent-reply 1800ms ease-in-out infinite;
+}
+
+@keyframes cc-composer-agent-reply {
+  0%, 100% {
+    border-color: color-mix(in srgb, var(--cc-accent) 56%, transparent);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--cc-accent) 6%, transparent),
+      0 3px 12px color-mix(in srgb, var(--cc-accent) 8%, transparent);
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--cc-accent) 88%, white 12%);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--cc-accent) 22%, transparent),
+      0 4px 16px color-mix(in srgb, var(--cc-accent) 18%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-composer-box.is-agent-reply-active {
+    border-color: color-mix(in srgb, var(--cc-accent) 84%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--cc-accent) 14%, transparent);
+    animation: none;
+  }
 }
 
 .v3-composer-attachment-tray {
@@ -5952,6 +6154,104 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   width: 100%;
 }
 
+.cc-agent-skills-visibility {
+  margin: 0 0 24px;
+  padding: 16px;
+  border: 1px solid var(--v3-border);
+  border-radius: 8px;
+  background: var(--v3-bg-app);
+}
+
+.cc-agent-permission-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.cc-agent-permission-heading h3 {
+  margin: 0 0 5px;
+  color: var(--v3-text-name);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cc-agent-permission-heading p {
+  margin: 0;
+  color: var(--v3-text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.cc-agent-permission-heading > span {
+  flex: 0 0 auto;
+  color: var(--v3-text-muted);
+  font-size: 11px;
+  line-height: 20px;
+}
+
+.cc-agent-permission-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.cc-agent-permission-options > button {
+  min-width: 0;
+  min-height: 68px;
+  padding: 10px 11px;
+  border: 1px solid var(--v3-border);
+  border-radius: 7px;
+  background: var(--v3-bg-elevated, var(--v3-bg-panel));
+  color: var(--v3-text-main);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.cc-agent-permission-options > button:hover:not(:disabled) {
+  border-color: var(--cc-border-strong, var(--v3-border));
+  background: var(--cc-hover);
+}
+
+.cc-agent-permission-options > button.is-selected {
+  border-color: var(--v3-primary);
+  background: color-mix(in srgb, var(--v3-primary) 10%, var(--v3-bg-app));
+}
+
+.cc-agent-permission-options > button:focus-visible {
+  outline: 2px solid var(--v3-primary);
+  outline-offset: 2px;
+}
+
+.cc-agent-permission-options > button:disabled {
+  cursor: wait;
+  opacity: .62;
+}
+
+.cc-agent-permission-option-title {
+  display: flex;
+  align-items: center;
+  min-height: 20px;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cc-agent-permission-option-title svg {
+  flex: 0 0 auto;
+  color: var(--v3-primary);
+}
+
+.cc-agent-permission-options small {
+  display: block;
+  margin-top: 4px;
+  color: var(--v3-text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .cc-agent-credential-value {
   min-width: 0;
   overflow: hidden;
@@ -6842,6 +7142,9 @@ html:not([data-theme="dark"]):not([data-theme="liquid"]) :is(
   .cc-agent-overview-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cc-agent-usage-items { grid-template-columns: 1fr; }
   .cc-agent-usage-items small { white-space: normal; }
+  .cc-agent-permission-heading { gap: 8px; }
+  .cc-agent-permission-options { grid-template-columns: 1fr; }
+  .cc-agent-permission-options > button { min-height: 58px; }
 }
 
 /* Liquid theme keeps the application geometry intact while changing material and light. */

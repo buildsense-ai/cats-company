@@ -629,6 +629,61 @@ func assertConversationTaskStatusAggregation(t *testing.T, db *Adapter, groupID,
 
 	topicID := fmt.Sprintf("grp_%d", groupID)
 	expiry := time.Now().UTC().Add(time.Hour)
+	eventAt := time.Now().UTC().Add(-24 * time.Hour).Truncate(time.Microsecond)
+	receivedAfter := time.Now().UTC()
+	if _, err := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+		TopicID: topicID, RunID: "run-clock", State: "running", SourceUID: firstBotID,
+		ExpiresAt: &expiry, EventUpdatedAt: eventAt,
+	}); err != nil {
+		t.Fatalf("upsert publisher-clock status: %v", err)
+	}
+	clockStatus, err := db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || clockStatus == nil {
+		t.Fatalf("load publisher-clock status: status=%+v err=%v", clockStatus, err)
+	}
+	if clockStatus.UpdatedAt.Before(receivedAfter) {
+		t.Fatalf("server updated_at=%v, want at/after receipt %v", clockStatus.UpdatedAt, receivedAfter)
+	}
+	if !clockStatus.EventUpdatedAt.Equal(eventAt) {
+		t.Fatalf("event_updated_at=%v, want publisher time %v", clockStatus.EventUpdatedAt, eventAt)
+	}
+	if candidates, err := db.ListAllActiveConversationTaskStatusesBefore(receivedAfter.Add(-time.Minute)); err != nil {
+		t.Fatalf("list clock-skew reaper candidates: %v", err)
+	} else {
+		for _, candidate := range candidates {
+			if candidate.TopicID == topicID {
+				t.Fatalf("old publisher clock made fresh task reapable: %+v", candidate)
+			}
+		}
+	}
+	if _, err := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+		TopicID: topicID, RunID: "run-clock", State: "waiting", SourceUID: firstBotID,
+		ExpiresAt: &expiry, EventUpdatedAt: eventAt.Add(-time.Minute),
+	}); !errors.Is(err, store.ErrConversationTaskStatusStale) {
+		t.Fatalf("older publisher event error=%v, want %v", err, store.ErrConversationTaskStatusStale)
+	}
+	if _, err := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{
+		TopicID: topicID, RunID: "run-clock", State: "completed", SourceUID: firstBotID,
+		EventUpdatedAt: eventAt.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("complete publisher-clock run: %v", err)
+	}
+	implicitStatus := &types.ConversationTaskStatus{
+		TopicID: topicID, RunID: "run-implicit-clock", State: "completed", SourceUID: firstBotID,
+	}
+	if _, err := db.UpsertConversationTaskStatus(implicitStatus); err != nil {
+		t.Fatalf("upsert implicit-clock status: %v", err)
+	}
+	if implicitStatus.EventUpdatedAt.IsZero() {
+		t.Fatal("implicit event time was not propagated to the caller after commit")
+	}
+	persistedImplicitStatus, err := db.GetConversationTaskStatusForSource(topicID, firstBotID)
+	if err != nil || persistedImplicitStatus == nil {
+		t.Fatalf("load implicit-clock status: status=%+v err=%v", persistedImplicitStatus, err)
+	}
+	if !implicitStatus.EventUpdatedAt.Equal(persistedImplicitStatus.EventUpdatedAt) {
+		t.Fatalf("caller event time=%v, want persisted event time %v", implicitStatus.EventUpdatedAt, persistedImplicitStatus.EventUpdatedAt)
+	}
 	upsert := func(sourceUID int64, runID, state string) *types.ConversationTaskStatus {
 		t.Helper()
 		status, upsertErr := db.UpsertConversationTaskStatus(&types.ConversationTaskStatus{

@@ -80,11 +80,10 @@ test('sendTaskStatus sends task_status and returns the acknowledged status', asy
     assert.ok(pub, 'expected a pub envelope');
     assert.equal(pub.topic, 'p2p_7_42');
     assert.equal(pub.type, 'task_status');
-    assert.deepEqual(pub.content, {
-      run_id: 'run-1',
-      state: 'running',
-      summary: 'building',
-    });
+    assert.equal(pub.content.run_id, 'run-1');
+    assert.equal(pub.content.state, 'running');
+    assert.equal(pub.content.summary, 'building');
+    assert.ok(!Number.isNaN(Date.parse(pub.content.updated_at)), 'expected SDK-generated updated_at');
   });
 });
 

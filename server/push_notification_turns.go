@@ -1,7 +1,6 @@
 package server
 
 import (
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -11,219 +10,379 @@ import (
 
 const (
 	agentPushTurnDedupTTL    = 10 * time.Minute
-	agentPushFallbackTimeout = 30 * time.Second
 	maxTrackedAgentPushTurns = 4096
 	maxActiveAgentPushTurns  = 1024
 )
 
 type agentPushTurnCoordinator struct {
-	mu              sync.Mutex
-	delivered       map[string]time.Time
-	active          map[string]*activeAgentPushTurn
-	fallbackTimeout time.Duration
+	mu             sync.Mutex
+	delivered      map[agentPushDeliveryKey]time.Time
+	inFlight       map[agentPushDeliveryKey]struct{}
+	trackedTurns   map[agentPushTrackedTurnKey]*agentPushTurn
+	currentRuns    map[agentPushScopeKey]agentPushCurrentRun
+	pendingByScope map[agentPushScopeKey]*pendingAgentPushMessages
+	nextCandidate  uint64
 }
 
-type activeAgentPushTurn struct {
+type agentPushScopeKey struct {
+	senderUID int64
+	topicID   string
+}
+
+type agentPushTrackedTurnKey struct {
+	scope agentPushScopeKey
+	runID string
+}
+
+type agentPushDeliveryKey struct {
+	recipientUID int64
+	scope        agentPushScopeKey
 	runID        string
-	candidates   map[int64]agentPushCandidate
-	expiresAt    time.Time
-	hardDeadline time.Time
-	timer        *time.Timer
 }
 
-func (active *activeAgentPushTurn) effectiveDeadline() time.Time {
-	if !active.hardDeadline.IsZero() && active.hardDeadline.Before(active.expiresAt) {
-		return active.hardDeadline
-	}
-	return active.expiresAt
+type agentPushCurrentRun struct {
+	runID     string
+	updatedAt time.Time
+}
+
+type agentPushTurn struct {
+	runID      string
+	terminal   bool
+	superseded bool
+	updatedAt  time.Time
+	candidates map[int64]agentPushCandidate
+	expiresAt  time.Time
+	timer      *time.Timer
+}
+
+type pendingAgentPushMessages struct {
+	candidates map[int64]agentPushCandidate
+	expiresAt  time.Time
+	timer      *time.Timer
 }
 
 type agentPushCandidate struct {
-	key     string
+	id      uint64
 	deliver func() bool
 }
 
 func newAgentPushTurnCoordinator() *agentPushTurnCoordinator {
-	return newAgentPushTurnCoordinatorWithTimeout(agentPushFallbackTimeout)
-}
-
-func newAgentPushTurnCoordinatorWithTimeout(fallbackTimeout time.Duration) *agentPushTurnCoordinator {
-	if fallbackTimeout <= 0 {
-		fallbackTimeout = agentPushFallbackTimeout
-	}
 	return &agentPushTurnCoordinator{
-		delivered:       make(map[string]time.Time),
-		active:          make(map[string]*activeAgentPushTurn),
-		fallbackTimeout: fallbackTimeout,
+		delivered:      make(map[agentPushDeliveryKey]time.Time),
+		inFlight:       make(map[agentPushDeliveryKey]struct{}),
+		trackedTurns:   make(map[agentPushTrackedTurnKey]*agentPushTurn),
+		currentRuns:    make(map[agentPushScopeKey]agentPushCurrentRun),
+		pendingByScope: make(map[agentPushScopeKey]*pendingAgentPushMessages),
 	}
 }
 
-func agentPushScope(senderUID int64, topicID string) string {
-	return fmt.Sprintf("%d:%s", senderUID, strings.TrimSpace(topicID))
+func agentPushScope(senderUID int64, topicID string) agentPushScopeKey {
+	return agentPushScopeKey{senderUID: senderUID, topicID: strings.TrimSpace(topicID)}
+}
+
+func newAgentPushTrackedTurnKey(scope agentPushScopeKey, runID string) agentPushTrackedTurnKey {
+	return agentPushTrackedTurnKey{scope: scope, runID: runID}
+}
+
+func agentPushTurnDeliveryKey(recipientUID int64, scope agentPushScopeKey, runID string) agentPushDeliveryKey {
+	return agentPushDeliveryKey{recipientUID: recipientUID, scope: scope, runID: runID}
 }
 
 func (c *agentPushTurnCoordinator) observeStatus(status *types.ConversationTaskStatus) {
 	if c == nil || status == nil || status.SourceUID <= 0 || strings.TrimSpace(status.TopicID) == "" || strings.TrimSpace(status.RunID) == "" {
 		return
 	}
+	state := strings.TrimSpace(status.State)
+	terminal := isTerminalTaskStatus(state)
+	if state != "running" && state != "waiting" && !terminal {
+		return
+	}
+
+	now := time.Now()
+	if !terminal && status.ExpiresAt != nil && !status.ExpiresAt.After(now) {
+		return
+	}
 	scope := agentPushScope(status.SourceUID, status.TopicID)
 	runID := truncateUTF8(strings.TrimSpace(status.RunID), 128)
-	if !isTerminalTaskStatus(status.State) {
-		if status.State != "running" && status.State != "waiting" {
+	turnKey := newAgentPushTrackedTurnKey(scope, runID)
+
+	c.mu.Lock()
+	c.removeExpiredLocked(now)
+	turn := c.trackedTurns[turnKey]
+	if turn != nil && turn.terminal && !terminal {
+		c.mu.Unlock()
+		return
+	}
+	if turn == nil {
+		if len(c.trackedTurns) >= maxActiveAgentPushTurns {
+			c.mu.Unlock()
 			return
 		}
-		now := time.Now()
-		if status.ExpiresAt != nil && !status.ExpiresAt.After(now) {
+		turn = &agentPushTurn{runID: runID, candidates: make(map[int64]agentPushCandidate)}
+		c.trackedTurns[turnKey] = turn
+	}
+
+	if !terminal {
+		statusUpdatedAt := agentPushStatusEventTime(status, now)
+		if !turn.updatedAt.IsZero() && (statusUpdatedAt.IsZero() || statusUpdatedAt.Before(turn.updatedAt)) {
+			c.mu.Unlock()
 			return
 		}
+		if !statusUpdatedAt.IsZero() {
+			turn.updatedAt = statusUpdatedAt
+		}
+		orderingTime := statusUpdatedAt
+		current := c.currentRuns[scope]
+		makeCurrent := !turn.superseded && (current.runID == "" || current.runID == runID || !orderingTime.Before(current.updatedAt))
+		if makeCurrent {
+			if current.runID != "" && current.runID != runID {
+				if previous := c.trackedTurns[newAgentPushTrackedTurnKey(scope, current.runID)]; previous != nil {
+					previous.superseded = true
+				}
+			}
+			c.currentRuns[scope] = agentPushCurrentRun{runID: runID, updatedAt: orderingTime}
+			c.attachPendingLocked(scope, turn)
+		}
+
 		expiresAt := now.Add(defaultActiveTaskStatusTTL)
 		if status.ExpiresAt != nil && status.ExpiresAt.Before(expiresAt) {
 			expiresAt = *status.ExpiresAt
 		}
-
-		var abandoned []agentPushCandidate
-		c.mu.Lock()
-		active := c.active[scope]
-		if active == nil {
-			if len(c.active) >= maxActiveAgentPushTurns {
-				c.mu.Unlock()
-				return
-			}
-			active = &activeAgentPushTurn{runID: runID, candidates: make(map[int64]agentPushCandidate)}
-			c.active[scope] = active
-		} else if active.runID != runID {
-			if active.timer != nil {
-				active.timer.Stop()
-			}
-			abandoned = candidateValues(active.candidates)
-			active = &activeAgentPushTurn{runID: runID, candidates: make(map[int64]agentPushCandidate)}
-			c.active[scope] = active
-		}
-		active.expiresAt = expiresAt
-		c.resetActiveTimerLocked(scope, active)
-		c.mu.Unlock()
-		c.deliverCandidates(abandoned)
-		return
-	}
-
-	c.mu.Lock()
-	active := c.active[scope]
-	if active == nil || active.runID != runID {
+		turn.expiresAt = expiresAt
+		c.resetTurnTimerLocked(turnKey, turn)
 		c.mu.Unlock()
 		return
 	}
-	delete(c.active, scope)
-	if active.timer != nil {
-		active.timer.Stop()
+
+	current := c.currentRuns[scope]
+	statusUpdatedAt := agentPushStatusEventTime(status, now)
+	if !turn.updatedAt.IsZero() && statusUpdatedAt.Before(turn.updatedAt) {
+		c.mu.Unlock()
+		return
 	}
-	candidates := candidateValues(active.candidates)
+	if current.runID == "" || current.runID == runID {
+		c.attachPendingLocked(scope, turn)
+		c.currentRuns[scope] = agentPushCurrentRun{runID: runID, updatedAt: statusUpdatedAt}
+	}
+	turn.updatedAt = statusUpdatedAt
+	turn.terminal = true
+	turn.expiresAt = now.Add(agentPushTurnDedupTTL)
+	c.resetTurnTimerLocked(turnKey, turn)
+	candidates := candidateValues(turn.candidates)
 	c.mu.Unlock()
-	c.deliverCandidates(candidates)
+	c.deliverTurnCandidates(scope, runID, candidates)
 }
 
-func (c *agentPushTurnCoordinator) resetActiveTimerLocked(scope string, active *activeAgentPushTurn) {
-	if active.timer != nil {
-		active.timer.Stop()
+func agentPushStatusEventTime(status *types.ConversationTaskStatus, fallback time.Time) time.Time {
+	if status != nil {
+		if !status.EventUpdatedAt.IsZero() {
+			return status.EventUpdatedAt
+		}
+		if !status.UpdatedAt.IsZero() {
+			return status.UpdatedAt
+		}
 	}
-	deadline := active.effectiveDeadline()
-	delay := time.Until(deadline)
-	if delay < 0 {
-		delay = 0
+	return fallback
+}
+
+func (c *agentPushTurnCoordinator) attachPendingLocked(scope agentPushScopeKey, turn *agentPushTurn) {
+	pending := c.pendingByScope[scope]
+	if pending == nil || turn == nil {
+		return
 	}
-	runID := active.runID
-	active.timer = time.AfterFunc(delay, func() {
-		c.expireActiveTurn(scope, runID)
+	if pending.timer != nil {
+		pending.timer.Stop()
+	}
+	for recipientUID, candidate := range pending.candidates {
+		turn.candidates[recipientUID] = candidate
+	}
+	delete(c.pendingByScope, scope)
+}
+
+func (c *agentPushTurnCoordinator) resetTurnTimerLocked(turnKey agentPushTrackedTurnKey, turn *agentPushTurn) {
+	runID := turn.runID
+	resetAgentPushTimer(&turn.timer, turn.expiresAt, func() {
+		c.expireTurn(turnKey, runID)
 	})
 }
 
-func (c *agentPushTurnCoordinator) expireActiveTurn(scope, runID string) {
+func (c *agentPushTurnCoordinator) expireTurn(turnKey agentPushTrackedTurnKey, runID string) {
 	c.mu.Lock()
-	active := c.active[scope]
-	if active == nil || active.runID != runID {
+	turn := c.trackedTurns[turnKey]
+	if turn == nil || turn.runID != runID || time.Now().Before(turn.expiresAt) {
 		c.mu.Unlock()
 		return
 	}
-	deadline := active.effectiveDeadline()
-	if time.Now().Before(deadline) {
-		c.mu.Unlock()
-		return
-	}
-	delete(c.active, scope)
-	candidates := candidateValues(active.candidates)
+	c.removeTurnLocked(turnKey, turn)
 	c.mu.Unlock()
-	c.deliverCandidates(candidates)
 }
 
-func candidateValues(candidates map[int64]agentPushCandidate) []agentPushCandidate {
-	values := make([]agentPushCandidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		values = append(values, candidate)
+func (c *agentPushTurnCoordinator) removeTurnLocked(turnKey agentPushTrackedTurnKey, turn *agentPushTurn) {
+	if turn != nil && turn.timer != nil {
+		turn.timer.Stop()
+	}
+	delete(c.trackedTurns, turnKey)
+	if current := c.currentRuns[turnKey.scope]; turn != nil && current.runID == turn.runID {
+		delete(c.currentRuns, turnKey.scope)
+	}
+}
+
+func (c *agentPushTurnCoordinator) resetPendingTimerLocked(scope agentPushScopeKey, pending *pendingAgentPushMessages) {
+	resetAgentPushTimer(&pending.timer, pending.expiresAt, func() {
+		c.mu.Lock()
+		current := c.pendingByScope[scope]
+		if current == pending && !time.Now().Before(current.expiresAt) {
+			delete(c.pendingByScope, scope)
+		}
+		c.mu.Unlock()
+	})
+}
+
+func resetAgentPushTimer(timer **time.Timer, expiresAt time.Time, callback func()) {
+	if *timer != nil {
+		(*timer).Stop()
+	}
+	delay := time.Until(expiresAt)
+	if delay < 0 {
+		delay = 0
+	}
+	*timer = time.AfterFunc(delay, callback)
+}
+
+func (c *agentPushTurnCoordinator) newCandidateLocked(deliver func() bool) agentPushCandidate {
+	c.nextCandidate++
+	return agentPushCandidate{id: c.nextCandidate, deliver: deliver}
+}
+
+func candidateValues(candidates map[int64]agentPushCandidate) map[int64]agentPushCandidate {
+	values := make(map[int64]agentPushCandidate, len(candidates))
+	for recipientUID, candidate := range candidates {
+		values[recipientUID] = candidate
 	}
 	return values
 }
 
-func (c *agentPushTurnCoordinator) deliverCandidates(candidates []agentPushCandidate) {
-	for _, candidate := range candidates {
-		c.deliverOnce(candidate.key, candidate.deliver)
+func (c *agentPushTurnCoordinator) deliverTurnCandidates(scope agentPushScopeKey, runID string, candidates map[int64]agentPushCandidate) {
+	turnKey := newAgentPushTrackedTurnKey(scope, runID)
+	for recipientUID, candidate := range candidates {
+		deliveryKey := agentPushTurnDeliveryKey(recipientUID, scope, runID)
+		c.deliverOnce(deliveryKey, candidate.deliver)
+
+		c.mu.Lock()
+		turn := c.trackedTurns[turnKey]
+		if turn != nil {
+			current, ok := turn.candidates[recipientUID]
+			if ok && current.id == candidate.id && c.deliveryRecordedLocked(deliveryKey, time.Now()) {
+				delete(turn.candidates, recipientUID)
+			}
+		}
+		c.mu.Unlock()
 	}
 }
 
 func (c *agentPushTurnCoordinator) observeVisibleMessage(recipientUID, senderUID int64, msg *ServerMessage, deliver func() bool) bool {
-	if c == nil || recipientUID <= 0 || senderUID <= 0 || msg == nil || msg.Data == nil || deliver == nil {
+	if c == nil || recipientUID <= 0 || senderUID <= 0 || msg == nil || msg.Data == nil || deliver == nil || !shouldNotifyOfflineForMessage(msg) {
 		return false
 	}
+
+	now := time.Now()
 	scope := agentPushScope(senderUID, msg.Data.Topic)
+	runID := agentPushMessageCorrelationID(msg)
+
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	active := c.active[scope]
-	if active == nil || !time.Now().Before(active.expiresAt) {
-		return false
+	c.removeExpiredLocked(now)
+	if runID == "" {
+		currentRunID := c.currentRuns[scope].runID
+		if currentRunID != "" {
+			currentTurn := c.trackedTurns[newAgentPushTrackedTurnKey(scope, currentRunID)]
+			deliveryKey := agentPushTurnDeliveryKey(recipientUID, scope, currentRunID)
+			_, deliveryInFlight := c.inFlight[deliveryKey]
+			if currentTurn == nil || !currentTurn.terminal || (!deliveryInFlight && !c.deliveryRecordedLocked(deliveryKey, now)) {
+				runID = currentRunID
+			}
+		}
 	}
-	if correlationID := agentPushMessageCorrelationID(msg); correlationID != "" && correlationID != active.runID {
-		return false
+	candidate := c.newCandidateLocked(deliver)
+	if runID == "" {
+		pending := c.pendingByScope[scope]
+		if pending == nil {
+			if len(c.pendingByScope) >= maxActiveAgentPushTurns {
+				c.mu.Unlock()
+				return true
+			}
+			pending = &pendingAgentPushMessages{
+				candidates: make(map[int64]agentPushCandidate),
+				expiresAt:  now.Add(defaultActiveTaskStatusTTL),
+			}
+			c.pendingByScope[scope] = pending
+			c.resetPendingTimerLocked(scope, pending)
+		}
+		pending.candidates[recipientUID] = candidate
+		c.mu.Unlock()
+		return true
 	}
-	key := agentPushTurnKey(recipientUID, senderUID, msg)
-	if key == "" {
-		key = fmt.Sprintf("turn:%d:%d:%s:%s", recipientUID, senderUID, msg.Data.Topic, active.runID)
+
+	turnKey := newAgentPushTrackedTurnKey(scope, runID)
+	turn := c.trackedTurns[turnKey]
+	if turn == nil {
+		if len(c.trackedTurns) >= maxActiveAgentPushTurns {
+			c.mu.Unlock()
+			return true
+		}
+		turn = &agentPushTurn{
+			runID:      runID,
+			candidates: make(map[int64]agentPushCandidate),
+			expiresAt:  now.Add(defaultActiveTaskStatusTTL),
+		}
+		c.trackedTurns[turnKey] = turn
+		c.resetTurnTimerLocked(turnKey, turn)
 	}
-	active.candidates[recipientUID] = agentPushCandidate{key: key, deliver: deliver}
-	if active.hardDeadline.IsZero() {
-		active.hardDeadline = time.Now().Add(c.fallbackTimeout)
-		c.resetActiveTimerLocked(scope, active)
+	turn.candidates[recipientUID] = candidate
+	terminal := turn.terminal
+	c.mu.Unlock()
+	if terminal {
+		c.deliverTurnCandidates(scope, runID, map[int64]agentPushCandidate{recipientUID: candidate})
 	}
 	return true
 }
 
-func (c *agentPushTurnCoordinator) deliverOnce(key string, deliver func() bool) bool {
-	if c == nil || strings.TrimSpace(key) == "" || deliver == nil {
+func (c *agentPushTurnCoordinator) deliverOnce(key agentPushDeliveryKey, deliver func() bool) bool {
+	if c == nil || key.recipientUID <= 0 || key.scope.senderUID <= 0 || key.scope.topicID == "" || key.runID == "" || deliver == nil {
 		return false
 	}
 
 	now := time.Now()
 	c.mu.Lock()
 	c.removeExpiredLocked(now)
-	if expiresAt, ok := c.delivered[key]; ok && now.Before(expiresAt) {
+	if c.deliveryRecordedLocked(key, now) {
 		c.mu.Unlock()
 		return false
 	}
-	if len(c.delivered) >= maxTrackedAgentPushTurns {
+	if _, ok := c.inFlight[key]; ok {
 		c.mu.Unlock()
 		return false
 	}
-	expiresAt := now.Add(agentPushTurnDedupTTL)
-	c.delivered[key] = expiresAt
+	if len(c.delivered)+len(c.inFlight) >= maxTrackedAgentPushTurns {
+		c.mu.Unlock()
+		return false
+	}
+	c.inFlight[key] = struct{}{}
 	c.mu.Unlock()
 
-	if deliver() {
-		return true
-	}
+	delivered := deliver()
 
 	c.mu.Lock()
-	if c.delivered[key] == expiresAt {
-		delete(c.delivered, key)
+	delete(c.inFlight, key)
+	if delivered {
+		c.delivered[key] = time.Now().Add(agentPushTurnDedupTTL)
 	}
 	c.mu.Unlock()
-	return false
+	return delivered
+}
+
+func (c *agentPushTurnCoordinator) deliveryRecordedLocked(key agentPushDeliveryKey, now time.Time) bool {
+	expiresAt, ok := c.delivered[key]
+	return ok && now.Before(expiresAt)
 }
 
 func (c *agentPushTurnCoordinator) removeExpiredLocked(now time.Time) {
@@ -232,31 +391,19 @@ func (c *agentPushTurnCoordinator) removeExpiredLocked(now time.Time) {
 			delete(c.delivered, key)
 		}
 	}
-}
-
-func agentPushTurnKey(recipientUID, senderUID int64, msg *ServerMessage) string {
-	if recipientUID <= 0 || senderUID <= 0 || msg == nil || msg.Data == nil {
-		return ""
+	for scope, pending := range c.pendingByScope {
+		if !now.Before(pending.expiresAt) {
+			if pending.timer != nil {
+				pending.timer.Stop()
+			}
+			delete(c.pendingByScope, scope)
+		}
 	}
-	dedupID := agentPushMessageDedupID(msg)
-	if dedupID != "" {
-		return fmt.Sprintf("turn:%d:%d:%s:%s", recipientUID, senderUID, msg.Data.Topic, dedupID)
+	for turnKey, turn := range c.trackedTurns {
+		if !now.Before(turn.expiresAt) {
+			c.removeTurnLocked(turnKey, turn)
+		}
 	}
-	return ""
-}
-
-func agentPushMessageDedupID(msg *ServerMessage) string {
-	if msg == nil || msg.Data == nil {
-		return ""
-	}
-	dedupID := firstMetadataString(
-		msg.Data.Metadata,
-		"turn_id", "turnId",
-		"response_id", "responseId",
-		"run_id", "runId",
-		"stream_id", "streamId",
-	)
-	return truncateUTF8(dedupID, 128)
 }
 
 func agentPushMessageCorrelationID(msg *ServerMessage) string {
@@ -269,16 +416,4 @@ func agentPushMessageCorrelationID(msg *ServerMessage) string {
 		"turn_id", "turnId",
 	)
 	return truncateUTF8(correlationID, 128)
-}
-
-func isCompletedAgentMessage(msg *ServerMessage) bool {
-	if !shouldNotifyOfflineForMessage(msg) {
-		return false
-	}
-	data := msg.Data
-	if agentPushMessageDedupID(msg) == "" {
-		return false
-	}
-	return metadataBool(data.Metadata, "turn_complete") ||
-		metadataBool(data.Metadata, "turnComplete")
 }

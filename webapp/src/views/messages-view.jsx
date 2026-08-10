@@ -21,6 +21,9 @@ const TYPING_TIMEOUT_MS = 10000;
 const WORKING_MESSAGE_TYPES = new Set(['thinking', 'tool_use', 'tool_result']);
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const MAX_DROPPED_FILES = 200;
+const LONG_PASTE_CHAR_THRESHOLD = 4000;
+const LONG_PASTE_LINE_THRESHOLD = 60;
+const LONG_PASTE_MULTILINE_CHAR_THRESHOLD = 2000;
 const HISTORY_AUTO_LOAD_THRESHOLD = 120;
 const HISTORY_REQUEST_TIMEOUT_MS = 15000;
 const HISTORY_AUTO_FILL_MAX_PAGES = 6;
@@ -292,6 +295,7 @@ export default function MessagesView({
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [availableAgents, setAvailableAgents] = useState([]);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [awaitingAgentReply, setAwaitingAgentReply] = useState(false);
   const [activeQuestionKey, setActiveQuestionKey] = useState('');
   const [questionIndexItems, setQuestionIndexItems] = useState([]);
   const [questionIndexLoading, setQuestionIndexLoading] = useState(false);
@@ -628,6 +632,7 @@ export default function MessagesView({
     setIsStopRequested(false);
     setSuppressedWorkingKey('');
     setLiveWorkingKey('');
+    setAwaitingAgentReply(false);
     if (liveWorkingTimer.current) {
       clearTimeout(liveWorkingTimer.current);
       liveWorkingTimer.current = null;
@@ -777,6 +782,7 @@ export default function MessagesView({
           clearLiveWorking();
           clearTimeout(peerTypingTimer.current);
           setPeerTyping(false);
+          setAwaitingAgentReply(false);
           return;
         }
 
@@ -857,6 +863,7 @@ export default function MessagesView({
           clearLiveWorking();
           clearTimeout(peerTypingTimer.current);
           setPeerTyping(false);
+          setAwaitingAgentReply(false);
         }
         updateTopicSeq(topic, serverMsg.id);
 
@@ -1372,6 +1379,7 @@ export default function MessagesView({
 
     sendInFlightRef.current = true;
     setIsSendingMessage(true);
+    setAwaitingAgentReply(Boolean(selectedAgent));
     setAttachmentMenuOpen(false);
 
     let sendTopic = topic;
@@ -1398,7 +1406,10 @@ export default function MessagesView({
 
       await syncPhoneUploads({ final: true });
       attachmentsToSend = [...(attachmentDraftsRef.current.get(topic) || [])];
-      if (!text && attachmentsToSend.length === 0) return;
+      if (!text && attachmentsToSend.length === 0) {
+        setAwaitingAgentReply(false);
+        return;
+      }
 
       const currentReplyTo = switchesTopic ? null : originalReplyTo;
       const contentBlocks = buildAtomicContentBlocks(text, attachmentsToSend);
@@ -1463,6 +1474,8 @@ export default function MessagesView({
         return;
       }
 
+      setAwaitingAgentReply(false);
+
       if (optimisticMessageAdded && activeTopicRef.current === topic) removeOptimisticMessage(tempId);
       if (stateCleared) {
         updateComposerDraft(topic, originalInput);
@@ -1495,6 +1508,7 @@ export default function MessagesView({
       clearLiveWorking();
       clearTimeout(peerTypingTimer.current);
       setPeerTyping(false);
+      setAwaitingAgentReply(false);
       setIsStopRequested(false);
     } catch (err) {
       setIsStopRequested(false);
@@ -1518,6 +1532,7 @@ export default function MessagesView({
 
     sendInFlightRef.current = true;
     setIsSendingMessage(true);
+    setAwaitingAgentReply(true);
     clearRuntimePlan();
     const tempId = Date.now();
     stickToBottomRef.current = true;
@@ -1538,6 +1553,7 @@ export default function MessagesView({
       finalizeOptimisticMessage(tempId, result);
     } catch (error) {
       removeOptimisticMessage(tempId);
+      setAwaitingAgentReply(false);
       setAttachmentStatus({
         tone: 'error',
         message: error?.message ? `重新生成失败：${error.message}` : '重新生成失败，请稍后重试。',
@@ -1895,16 +1911,78 @@ export default function MessagesView({
 
   const handlePaste = async (e) => {
     const files = collectClipboardFiles(e.clipboardData);
-    if (files.length === 0) return;
+    if (files.length > 0) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (isUploadingAttachment) {
+        setAttachmentStatus({ tone: 'info', message: '附件仍在上传中，请稍后再粘贴新的文件。' });
+        return;
+      }
+      await uploadAttachmentFiles(files);
+      return;
+    }
+
+    const pastedText = e.clipboardData?.getData?.('text/plain') || '';
+    if (!shouldConvertPastedTextToDocument(pastedText)) return;
+    if (isUploadingAttachment || sendInFlightRef.current) {
+      setAttachmentStatus({ tone: 'info', message: '附件仍在处理中，长文本已保留在输入框中。' });
+      return;
+    }
+
+    const pasteTopic = activeTopicRef.current;
+    const textarea = e.currentTarget;
+    const selectionStart = Number.isInteger(textarea?.selectionStart) ? textarea.selectionStart : input.length;
+    const selectionEnd = Number.isInteger(textarea?.selectionEnd) ? textarea.selectionEnd : selectionStart;
+    const documentFile = createPastedTextDocument(pastedText);
 
     e.preventDefault();
     e.stopPropagation();
+    setIsUploadingAttachment(true);
+    let uploaded = null;
+    try {
+      uploaded = await uploadAttachmentFile(documentFile, 'file', pasteTopic);
+    } finally {
+      setIsUploadingAttachment(false);
+    }
 
-    if (isUploadingAttachment) {
-      setAttachmentStatus({ tone: 'info', message: '附件仍在上传中，请稍后再粘贴新的文件。' });
+    if (uploaded) {
+      if (activeTopicRef.current === pasteTopic) {
+        setAttachmentStatus({
+          tone: 'success',
+          message: `长文本已整理为文档：${uploaded.name}。发送前可以移除。`,
+        });
+      }
       return;
     }
-    await uploadAttachmentFiles(files);
+
+    const currentText = pasteTopic === activeTopicRef.current
+      ? (textareaRef.current?.value ?? input)
+      : (composerDraftsRef.current.get(pasteTopic) || '');
+    const start = Math.min(Math.max(selectionStart, 0), currentText.length);
+    const end = Math.min(Math.max(selectionEnd, start), currentText.length);
+    const restoredText = `${currentText.slice(0, start)}${pastedText}${currentText.slice(end)}`;
+    const restoredMentions = reconcileStructuredMentionSelections(
+      currentText,
+      restoredText,
+      structuredMentionDraftsRef.current.get(pasteTopic) || [],
+    );
+    updateComposerDraft(pasteTopic, restoredText);
+    updateStructuredMentionDraft(pasteTopic, restoredMentions);
+    if (activeTopicRef.current === pasteTopic) {
+      setInput(restoredText);
+      setAttachmentStatus((current) => ({
+        tone: 'error',
+        message: `${current?.message || '长文本文档上传失败。'} 原文已恢复到输入框，可直接发送或稍后重试。`,
+      }));
+      setTimeout(() => {
+        const activeTextarea = textareaRef.current;
+        if (!activeTextarea) return;
+        const nextCursor = start + pastedText.length;
+        activeTextarea.focus();
+        activeTextarea.setSelectionRange(nextCursor, nextCursor);
+      }, 0);
+    }
   };
 
   // Find the display name for a uid in group context
@@ -3006,6 +3084,9 @@ export default function MessagesView({
           </div>
         )}
         onSend={handleSend}
+        agentReplyActive={Boolean(selectedAgent) && (
+          isSendingMessage || awaitingAgentReply || peerTyping || activeBotWorking
+        )}
         sendDisabled={isSendingMessage || isUploadingAttachment || (!input.trim() && pendingAttachments.length === 0)}
         stop={canStopActiveBotWorking && !input.trim() && pendingAttachments.length === 0}
         stopDisabled={isStopRequested}
@@ -3315,6 +3396,33 @@ function collectClipboardFiles(clipboardData) {
   }
 
   return files;
+}
+
+export function shouldConvertPastedTextToDocument(text) {
+  const value = typeof text === 'string' ? text : '';
+  if (!value.trim()) return false;
+  if (value.length >= LONG_PASTE_CHAR_THRESHOLD) return true;
+  if (value.length < LONG_PASTE_MULTILINE_CHAR_THRESHOLD) return false;
+  return value.split(/\r\n?|\n/u).length >= LONG_PASTE_LINE_THRESHOLD;
+}
+
+function createPastedTextDocument(text, now = new Date()) {
+  const normalizedText = String(text || '').replace(/\r\n?/gu, '\n');
+  const timestampParts = new Intl.DateTimeFormat('en-CA', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(now);
+  const timestamp = Object.fromEntries(timestampParts.map(({ type, value }) => [type, value]));
+  const filename = `粘贴内容-${timestamp.year}${timestamp.month}${timestamp.day}-${timestamp.hour}${timestamp.minute}${timestamp.second}.md`;
+  return new File([normalizedText], filename, {
+    type: 'text/markdown;charset=utf-8',
+    lastModified: now.getTime(),
+  });
 }
 
 async function readEntryFiles(entry, limit) {

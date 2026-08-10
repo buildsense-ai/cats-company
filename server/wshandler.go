@@ -23,8 +23,10 @@ var upgrader = websocket.Upgrader{
 }
 
 const (
-	pageVisibilityVisible = "visible"
-	pageVisibilityHidden  = "hidden"
+	pageVisibilityVisible         = "visible"
+	pageVisibilityHidden          = "hidden"
+	maxPushNotificationBodyRunes  = 180
+	maxPushNotificationTitleRunes = 80
 	// Visibility leases cover a missed heartbeat but expire promptly after a
 	// crashed node, so stale pages do not suppress pushes indefinitely.
 	pageVisibilityLeaseTTL = 2 * pongWait
@@ -1969,7 +1971,7 @@ func shouldNotifyOfflineForMessage(msg *ServerMessage) bool {
 	return !isInternalAgentWorkingMessage(displayType, data.Content, data.ContentBlocks)
 }
 
-func (h *Hub) enqueueOfflineUserPush(uid int64, topic string) bool {
+func (h *Hub) enqueueOfflineUserPush(uid int64, topic, body string) bool {
 	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 {
 		return false
 	}
@@ -1978,8 +1980,8 @@ func (h *Hub) enqueueOfflineUserPush(uid int64, topic string) bool {
 		return false
 	}
 	notification := PushNotification{
-		Title: "CatsCo",
-		Body:  "你有一条新消息",
+		Title: h.pushNotificationTitle(uid, topic),
+		Body:  firstNonEmpty(pushNotificationExcerpt(body), "你有一条新消息"),
 		URL:   "/",
 		Tag:   "catsco-new-message",
 	}
@@ -1988,31 +1990,144 @@ func (h *Hub) enqueueOfflineUserPush(uid int64, topic string) bool {
 	})
 }
 
+func (h *Hub) pushNotificationTitle(uid int64, topic string) string {
+	if h == nil || h.db == nil {
+		return "CatsCo"
+	}
+	if titleDB, ok := h.db.(conversationTitleStore); ok {
+		if titles, err := titleDB.GetConversationTitles(uid, []string{topic}); err == nil {
+			if title := strings.TrimSpace(titles[topic]); title != "" {
+				return truncateUTF8(title, maxPushNotificationTitleRunes)
+			}
+		}
+	}
+	if isGroupTopic(topic) {
+		group, err := h.db.GetGroup(extractGroupID(topic))
+		if err == nil && group != nil {
+			if name := strings.TrimSpace(group.Name); name != "" {
+				return truncateUTF8(name, maxPushNotificationTitleRunes)
+			}
+		}
+	} else if peerUID := extractPeerUID(topic, uid); peerUID > 0 {
+		user, err := h.db.GetUser(peerUID)
+		if err == nil && user != nil {
+			if name := strings.TrimSpace(firstNonEmpty(user.DisplayName, user.Username)); name != "" {
+				return truncateUTF8(name, maxPushNotificationTitleRunes)
+			}
+		}
+	}
+	return "CatsCo"
+}
+
 func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessage, senderPublishesTaskStatus bool) {
 	topic := ""
 	if msg != nil && msg.Data != nil {
 		topic = msg.Data.Topic
 	}
+	body := pushNotificationMessageBody(msg)
 	if !senderPublishesTaskStatus {
-		h.enqueueOfflineUserPush(uid, topic)
+		h.enqueueOfflineUserPush(uid, topic, body)
 		return
 	}
 	if h == nil || h.agentPush == nil {
 		return
 	}
-	deliver := func() bool { return h.enqueueOfflineUserPush(uid, topic) }
-	if !isCompletedAgentMessage(msg) {
-		if h.agentPush.observeVisibleMessage(uid, senderUID, msg, deliver) {
-			return
-		}
-		if key := agentPushTurnKey(uid, senderUID, msg); key != "" {
-			h.agentPush.deliverOnce(key, deliver)
-		} else {
-			deliver()
-		}
-		return
+	deliver := func() bool { return h.enqueueOfflineUserPush(uid, topic, body) }
+	h.agentPush.observeVisibleMessage(uid, senderUID, msg, deliver)
+}
+
+func pushNotificationMessageBody(msg *ServerMessage) string {
+	if msg == nil || msg.Data == nil {
+		return ""
 	}
-	h.agentPush.deliverOnce(agentPushTurnKey(uid, senderUID, msg), deliver)
+	var texts []string
+	for _, block := range msg.Data.ContentBlocks {
+		switch strings.ToLower(strings.TrimSpace(block.Type)) {
+		case "text", "assistant_text":
+			if text := strings.TrimSpace(firstNonEmpty(block.Text, block.Content)); text != "" {
+				texts = append(texts, text)
+			}
+		}
+	}
+	if len(texts) > 0 {
+		return pushNotificationExcerpt(strings.Join(texts, " "))
+	}
+	if text := pushNotificationContentText(msg.Data.Content); text != "" && !hasInternalAgentContentBlocks(msg.Data.ContentBlocks) {
+		return pushNotificationExcerpt(text)
+	}
+	displayType := strings.ToLower(strings.TrimSpace(firstNonEmpty(msg.Data.Type, msg.Data.MsgType)))
+	for _, block := range msg.Data.ContentBlocks {
+		blockType := strings.ToLower(strings.TrimSpace(block.Type))
+		if blockType != "" && blockType != "text" && blockType != "assistant_text" && !isInternalAgentContentBlock(blockType) {
+			displayType = blockType
+			break
+		}
+	}
+	switch displayType {
+	case "image":
+		return "发来了一张图片"
+	case "file":
+		return "发来了一个文件"
+	case "voice", "audio":
+		return "发来了一条语音消息"
+	default:
+		return ""
+	}
+}
+
+func hasInternalAgentContentBlocks(blocks []types.ContentBlock) bool {
+	for _, block := range blocks {
+		if isInternalAgentContentBlock(block.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func pushNotificationContentText(content interface{}) string {
+	switch value := content.(type) {
+	case string:
+		return value
+	case map[string]interface{}:
+		if blockType, ok := value["type"].(string); ok && isInternalAgentContentBlock(blockType) {
+			return ""
+		}
+		for _, key := range []string{"text", "content", "message", "summary", "value", "output", "answer", "result"} {
+			if text := pushNotificationContentText(value[key]); strings.TrimSpace(text) != "" {
+				return text
+			}
+		}
+	case []interface{}:
+		texts := make([]string, 0, len(value))
+		for _, item := range value {
+			if text := strings.TrimSpace(pushNotificationContentText(item)); text != "" {
+				texts = append(texts, text)
+			}
+		}
+		return strings.Join(texts, "\n")
+	case []string:
+		return strings.Join(value, "\n")
+	case json.RawMessage:
+		var decoded interface{}
+		if json.Unmarshal(value, &decoded) == nil {
+			return pushNotificationContentText(decoded)
+		}
+	case []byte:
+		return pushNotificationContentText(json.RawMessage(value))
+	}
+	return ""
+}
+
+func pushNotificationExcerpt(value string) string {
+	value = strings.Join(strings.Fields(strings.ReplaceAll(value, "\x00", "")), " ")
+	if value == "" {
+		return ""
+	}
+	truncated := truncateUTF8(value, maxPushNotificationBodyRunes)
+	if truncated != value {
+		return truncateUTF8(value, maxPushNotificationBodyRunes-1) + "…"
+	}
+	return value
 }
 
 // broadcastToGroupWithMentions sends a message to all online members with bot activation filtering.

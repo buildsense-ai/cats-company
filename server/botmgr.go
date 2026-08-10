@@ -628,6 +628,58 @@ func (h *BotHandler) HandleSetBotVisibility(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// HandleSetBotSkillsVisibility handles
+// PATCH /api/bots/skills-visibility?uid=xxx&v=owner|authorized|public.
+func (h *BotHandler) HandleSetBotSkillsVisibility(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch && r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	ownerUID := UIDFromContext(r.Context())
+	if ownerUID == 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	botUID, err := strconv.ParseInt(r.URL.Query().Get("uid"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
+		return
+	}
+
+	visibility := types.BotSkillsVisibility(r.URL.Query().Get("v"))
+	if !validBotSkillsVisibility(visibility) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "v must be owner, authorized, or public"})
+		return
+	}
+
+	actualOwner, err := h.db.GetBotOwner(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+		return
+	}
+	if actualOwner != ownerUID {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not your bot"})
+		return
+	}
+
+	visibilityStore, ok := h.db.(store.BotSkillsVisibilityStore)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "skills visibility is unavailable"})
+		return
+	}
+	if err := visibilityStore.SetBotSkillsVisibility(botUID, string(visibility)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "update failed"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"uid":               botUID,
+		"skills_visibility": visibility,
+	})
+}
+
 func mapInt64(value interface{}) int64 {
 	switch v := value.(type) {
 	case int64:

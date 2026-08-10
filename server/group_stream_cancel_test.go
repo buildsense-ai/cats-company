@@ -50,9 +50,9 @@ func (s *groupStreamCancelStore) UpsertConversationTaskStatus(status *types.Conv
 	if status == nil {
 		return nil, nil
 	}
-	copyOfStatus := *status
-	s.taskStatus = &copyOfStatus
-	return &copyOfStatus, nil
+	prepared := prepareTestConversationTaskStatus(status)
+	s.taskStatus = prepared
+	return prepared, nil
 }
 
 func (s *groupStreamCancelStore) GetConversationTaskStatusForSource(topicID string, sourceUID int64) (*types.ConversationTaskStatus, error) {
