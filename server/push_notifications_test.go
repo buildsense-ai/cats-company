@@ -44,8 +44,31 @@ type pushHubUserStore struct {
 	users map[int64]*types.User
 }
 
+type pushHubConversationTitleStore struct {
+	pushHubUserStore
+	titles map[string]string
+}
+
 func (s pushHubUserStore) GetUser(uid int64) (*types.User, error) {
 	return s.users[uid], nil
+}
+
+func (s pushHubUserStore) GetGroup(int64) (*types.Group, error) {
+	return nil, nil
+}
+
+func (s pushHubConversationTitleStore) GetConversationTitles(_ int64, topicIDs []string) (map[string]string, error) {
+	titles := make(map[string]string, len(topicIDs))
+	for _, topicID := range topicIDs {
+		if title := s.titles[topicID]; title != "" {
+			titles[topicID] = title
+		}
+	}
+	return titles, nil
+}
+
+func (s pushHubConversationTitleStore) UpdateConversationTitle(_ int64, _, _ string) (bool, error) {
+	return false, nil
 }
 
 func (m *memoryPushSubscriptionStore) UpsertPushSubscription(_ context.Context, subscription *types.PushSubscription, maxSubscriptions int) (bool, error) {
@@ -1313,6 +1336,18 @@ func TestPushNotificationMessageBodyUsesVisibleContent(t *testing.T) {
 			want: "content field answer",
 		},
 		{
+			name: "array content",
+			data: &MsgServerData{Content: []interface{}{"first paragraph", "second paragraph"}},
+			want: "first paragraph second paragraph",
+		},
+		{
+			name: "nested content",
+			data: &MsgServerData{Content: map[string]interface{}{
+				"content": []interface{}{map[string]interface{}{"text": "nested answer"}},
+			}},
+			want: "nested answer",
+		},
+		{
 			name: "internal raw content is excluded",
 			data: &MsgServerData{
 				Content:       "private tool output",
@@ -1333,6 +1368,18 @@ func TestPushNotificationMessageBodyUsesVisibleContent(t *testing.T) {
 				t.Fatalf("pushNotificationMessageBody() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestPushNotificationTitleUsesSessionName(t *testing.T) {
+	hub := NewHub(pushHubConversationTitleStore{
+		pushHubUserStore: pushHubUserStore{users: map[int64]*types.User{
+			42: {ID: 42, DisplayName: "小明", Username: "xiaoming"},
+		}},
+		titles: map[string]string{"p2p_7_42": "项目 Alpha"},
+	}, nil)
+	if got := hub.pushNotificationTitle(7, "p2p_7_42"); got != "项目 Alpha" {
+		t.Fatalf("pushNotificationTitle() = %q, want %q", got, "项目 Alpha")
 	}
 }
 

@@ -23,9 +23,10 @@ var upgrader = websocket.Upgrader{
 }
 
 const (
-	pageVisibilityVisible        = "visible"
-	pageVisibilityHidden         = "hidden"
-	maxPushNotificationBodyRunes = 180
+	pageVisibilityVisible         = "visible"
+	pageVisibilityHidden          = "hidden"
+	maxPushNotificationBodyRunes  = 180
+	maxPushNotificationTitleRunes = 80
 	// Visibility leases cover a missed heartbeat but expire promptly after a
 	// crashed node, so stale pages do not suppress pushes indefinitely.
 	pageVisibilityLeaseTTL = 2 * pongWait
@@ -1979,7 +1980,7 @@ func (h *Hub) enqueueOfflineUserPush(uid int64, topic, body string) bool {
 		return false
 	}
 	notification := PushNotification{
-		Title: "CatsCo",
+		Title: h.pushNotificationTitle(uid, topic),
 		Body:  firstNonEmpty(pushNotificationExcerpt(body), "你有一条新消息"),
 		URL:   "/",
 		Tag:   "catsco-new-message",
@@ -1987,6 +1988,35 @@ func (h *Hub) enqueueOfflineUserPush(uid int64, topic, body string) bool {
 	return h.push.EnqueueToUserFiltered(uid, notification, func(subscription *types.PushSubscription) bool {
 		return !h.hasMessagingClientAttention(uid, pushSubscriptionID(subscription.Endpoint), topic)
 	})
+}
+
+func (h *Hub) pushNotificationTitle(uid int64, topic string) string {
+	if h == nil || h.db == nil {
+		return "CatsCo"
+	}
+	if titleDB, ok := h.db.(conversationTitleStore); ok {
+		if titles, err := titleDB.GetConversationTitles(uid, []string{topic}); err == nil {
+			if title := strings.TrimSpace(titles[topic]); title != "" {
+				return truncateUTF8(title, maxPushNotificationTitleRunes)
+			}
+		}
+	}
+	if isGroupTopic(topic) {
+		group, err := h.db.GetGroup(extractGroupID(topic))
+		if err == nil && group != nil {
+			if name := strings.TrimSpace(group.Name); name != "" {
+				return truncateUTF8(name, maxPushNotificationTitleRunes)
+			}
+		}
+	} else if peerUID := extractPeerUID(topic, uid); peerUID > 0 {
+		user, err := h.db.GetUser(peerUID)
+		if err == nil && user != nil {
+			if name := strings.TrimSpace(firstNonEmpty(user.DisplayName, user.Username)); name != "" {
+				return truncateUTF8(name, maxPushNotificationTitleRunes)
+			}
+		}
+	}
+	return "CatsCo"
 }
 
 func (h *Hub) notifyOfflineUserForMessage(uid, senderUID int64, msg *ServerMessage, senderPublishesTaskStatus bool) {
@@ -2010,7 +2040,6 @@ func pushNotificationMessageBody(msg *ServerMessage) string {
 	if msg == nil || msg.Data == nil {
 		return ""
 	}
-
 	var texts []string
 	for _, block := range msg.Data.ContentBlocks {
 		switch strings.ToLower(strings.TrimSpace(block.Type)) {
@@ -2026,7 +2055,6 @@ func pushNotificationMessageBody(msg *ServerMessage) string {
 	if text := pushNotificationContentText(msg.Data.Content); text != "" && !hasInternalAgentContentBlocks(msg.Data.ContentBlocks) {
 		return pushNotificationExcerpt(text)
 	}
-
 	displayType := strings.ToLower(strings.TrimSpace(firstNonEmpty(msg.Data.Type, msg.Data.MsgType)))
 	for _, block := range msg.Data.ContentBlocks {
 		blockType := strings.ToLower(strings.TrimSpace(block.Type))
@@ -2061,11 +2089,24 @@ func pushNotificationContentText(content interface{}) string {
 	case string:
 		return value
 	case map[string]interface{}:
-		for _, key := range []string{"text", "content", "message", "summary"} {
-			if text, ok := value[key].(string); ok && strings.TrimSpace(text) != "" {
+		if blockType, ok := value["type"].(string); ok && isInternalAgentContentBlock(blockType) {
+			return ""
+		}
+		for _, key := range []string{"text", "content", "message", "summary", "value", "output", "answer", "result"} {
+			if text := pushNotificationContentText(value[key]); strings.TrimSpace(text) != "" {
 				return text
 			}
 		}
+	case []interface{}:
+		texts := make([]string, 0, len(value))
+		for _, item := range value {
+			if text := strings.TrimSpace(pushNotificationContentText(item)); text != "" {
+				texts = append(texts, text)
+			}
+		}
+		return strings.Join(texts, "\n")
+	case []string:
+		return strings.Join(value, "\n")
 	case json.RawMessage:
 		var decoded interface{}
 		if json.Unmarshal(value, &decoded) == nil {
