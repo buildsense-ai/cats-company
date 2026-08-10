@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { ChevronRight, Download, FileText, X } from 'lucide-react';
+import PwaDownloadLink from './pwa-download-link';
 
 export const TUTORIAL_TASKS = [
   {
@@ -134,7 +135,7 @@ export function TutorialTaskModal({
                         <span className="catsco-download-meta">已开始下载。下载完成后点击“填入任务”。</span>
                       )}
                     </span>
-                    <a
+                    <PwaDownloadLink
                       className="catsco-download-action"
                       href={file.url}
                       download={file.name}
@@ -142,7 +143,7 @@ export function TutorialTaskModal({
                       title="下载示例文件"
                     >
                       <Download size={16} />
-                    </a>
+                    </PwaDownloadLink>
                   </div>
                 );
               })}

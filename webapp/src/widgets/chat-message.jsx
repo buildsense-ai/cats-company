@@ -14,6 +14,7 @@ import {
 } from './markdown-utils';
 import { SpreadsheetPreview, SPREADSHEET_PREVIEW_MAX_BYTES } from './spreadsheet-preview';
 import MobilePdfPreview from './mobile-pdf-preview';
+import PwaDownloadLink from './pwa-download-link';
 
 const WORKING_TEXT_PREFIX = 'AI文本:';
 const HIDDEN_TOOL_PROGRESS_NAMES = new Set([
@@ -1981,18 +1982,18 @@ function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = 
           <Eye size={15} />
           <span>预览</span>
         </button>
-        <a
+        <PwaDownloadLink
           className="v3-artifact-action"
           href={downloadURL || undefined}
           download={payload.name || true}
           onClick={(event) => event.stopPropagation()}
-          rel="noopener noreferrer"
           target="_blank"
+          rel="noopener noreferrer"
           title="下载"
         >
           <Download size={15} />
           <span>下载</span>
-        </a>
+        </PwaDownloadLink>
       </div>
     </div>
   );
@@ -2283,9 +2284,9 @@ export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
           </div>
           <div className="v3-file-preview-actions">
             {!isRemoteArtifact && (
-              <a href={downloadURL} download={file.name || true} title="下载原文件" target="_blank" rel="noopener noreferrer" aria-label="下载原文件">
+              <PwaDownloadLink href={downloadURL} download={file.name || true} title="下载原文件" target="_blank" rel="noopener noreferrer" aria-label="下载原文件">
                 <Download size={18} />
-              </a>
+              </PwaDownloadLink>
             )}
             <a href={url} title="在新窗口打开" target="_blank" rel="noopener noreferrer" aria-label="在新窗口打开">
               <ExternalLink size={18} />
@@ -2362,10 +2363,10 @@ export function FilePreviewPanel({ file, onBack, onClose, backgroundRef }) {
               <span>新标签页打开</span>
             </a>
           ) : (
-            <a href={downloadURL} download={file.name || true} target="_blank" rel="noopener noreferrer">
+            <PwaDownloadLink href={downloadURL} download={file.name || true} target="_blank" rel="noopener noreferrer">
               <Download size={17} />
               <span>下载原文件</span>
-            </a>
+            </PwaDownloadLink>
           )}
         </div>
       </aside>

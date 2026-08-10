@@ -38,6 +38,7 @@ describe('CatsCoDownloadModal', () => {
     api.getDeviceAudit.mockResolvedValue({ events: [] });
     getApiBaseURL.mockReturnValue('https://app.catsco.cc');
     getWebSocketURL.mockReturnValue('wss://app.catsco.cc/v0/channels');
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: false });
     clickedHref = '';
     clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function click() {
       clickedHref = this.href;
@@ -87,6 +88,22 @@ describe('CatsCoDownloadModal', () => {
     expect(Array.from(scrollRegion.children).filter((element) => (
       element.classList.contains('catsco-download-list')
     ))).toHaveLength(2);
+    expect(Array.from(container.querySelectorAll('.catsco-download-release-list a')).every(
+      (link) => link.getAttribute('target') === '_blank',
+    )).toBe(true);
+  });
+
+  test('keeps desktop release downloads in the current context in an installed PWA', async () => {
+    Object.defineProperty(navigator, 'standalone', { configurable: true, value: true });
+
+    await act(async () => {
+      root.render(React.createElement(CatsCoDownloadModal, { onClose: vi.fn() }));
+      await Promise.resolve();
+    });
+
+    expect(Array.from(container.querySelectorAll('.catsco-download-release-list a')).every(
+      (link) => link.getAttribute('target') === null,
+    )).toBe(true);
   });
 
   test('updates download links from the desktop release API', async () => {

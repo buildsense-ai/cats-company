@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 import { previewFileDescriptor } from './chat-message';
+import PwaDownloadLink from './pwa-download-link';
 
 const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 
@@ -444,7 +445,7 @@ function HistoricalFileItem({ file, onPreviewFile }) {
       )}
       {!canPreview && downloadURL && (
         <div className="cloud-artifact-actions">
-          <a
+          <PwaDownloadLink
             href={downloadURL}
             download={file.name || true}
             target="_blank"
@@ -453,7 +454,7 @@ function HistoricalFileItem({ file, onPreviewFile }) {
             title="下载"
           >
             <Download size={17} />
-          </a>
+          </PwaDownloadLink>
         </div>
       )}
     </article>
