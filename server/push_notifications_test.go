@@ -1348,6 +1348,37 @@ func TestPushNotificationMessageBodyUsesVisibleContent(t *testing.T) {
 			want: "nested answer",
 		},
 		{
+			name: "structured payload content",
+			data: &MsgServerData{Content: map[string]interface{}{
+				"type":    "text",
+				"payload": map[string]interface{}{"text": "payload answer"},
+			}},
+			want: "payload answer",
+		},
+		{
+			name: "text block payload content",
+			data: &MsgServerData{ContentBlocks: []types.ContentBlock{{
+				Type:    "text",
+				Payload: map[string]interface{}{"content": "block payload answer"},
+			}}},
+			want: "block payload answer",
+		},
+		{
+			name: "parts content",
+			data: &MsgServerData{Content: map[string]interface{}{
+				"parts": []interface{}{map[string]interface{}{"text": "first"}, map[string]interface{}{"text": "second"}},
+			}},
+			want: "first second",
+		},
+		{
+			name: "internal structured payload is excluded",
+			data: &MsgServerData{Content: map[string]interface{}{
+				"type":    "tool_result",
+				"payload": map[string]interface{}{"content": "private tool output"},
+			}},
+			want: "",
+		},
+		{
 			name: "internal raw content is excluded",
 			data: &MsgServerData{
 				Content:       "private tool output",

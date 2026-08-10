@@ -2045,11 +2045,12 @@ func pushNotificationMessageBody(msg *ServerMessage) string {
 	}
 	var texts []string
 	for _, block := range msg.Data.ContentBlocks {
-		switch strings.ToLower(strings.TrimSpace(block.Type)) {
-		case "text", "assistant_text":
-			if text := strings.TrimSpace(firstNonEmpty(block.Text, block.Content)); text != "" {
-				texts = append(texts, text)
-			}
+		blockType := strings.ToLower(strings.TrimSpace(block.Type))
+		if isInternalAgentContentBlock(blockType) {
+			continue
+		}
+		if text := pushNotificationContentBlockText(block); text != "" {
+			texts = append(texts, text)
 		}
 	}
 	if len(texts) > 0 {
@@ -2078,6 +2079,17 @@ func pushNotificationMessageBody(msg *ServerMessage) string {
 	}
 }
 
+func pushNotificationContentBlockText(block types.ContentBlock) string {
+	blockType := strings.ToLower(strings.TrimSpace(block.Type))
+	if blockType != "text" && blockType != "assistant_text" {
+		return ""
+	}
+	if text := strings.TrimSpace(firstNonEmpty(block.Text, block.Content)); text != "" {
+		return text
+	}
+	return strings.TrimSpace(pushNotificationContentText(block.Payload))
+}
+
 func hasInternalAgentContentBlocks(blocks []types.ContentBlock) bool {
 	for _, block := range blocks {
 		if isInternalAgentContentBlock(block.Type) {
@@ -2095,7 +2107,12 @@ func pushNotificationContentText(content interface{}) string {
 		if blockType, ok := value["type"].(string); ok && isInternalAgentContentBlock(blockType) {
 			return ""
 		}
-		for _, key := range []string{"text", "content", "message", "summary", "value", "output", "answer", "result"} {
+		keys := []string{"text", "content", "message", "summary", "value", "output", "answer", "result", "parts", "messages"}
+		blockType, hasBlockType := value["type"].(string)
+		if !hasBlockType || strings.EqualFold(strings.TrimSpace(blockType), "text") || strings.EqualFold(strings.TrimSpace(blockType), "assistant_text") {
+			keys = append(keys, "payload")
+		}
+		for _, key := range keys {
 			if text := pushNotificationContentText(value[key]); strings.TrimSpace(text) != "" {
 				return text
 			}
