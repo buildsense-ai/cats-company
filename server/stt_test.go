@@ -234,6 +234,17 @@ func TestSTTHandlerStopsAfterSilentAudioIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestSTTStopToFinalMillisecondsOnlyIncludesSuccessfulFinals(t *testing.T) {
+	stoppedAt := time.Unix(100, 0)
+	completedAt := stoppedAt.Add(275 * time.Millisecond)
+	if got := sttStopToFinalMilliseconds("success", stoppedAt, completedAt); got != 275 {
+		t.Fatalf("successful stop-to-final=%d", got)
+	}
+	if got := sttStopToFinalMilliseconds("error", stoppedAt, completedAt); got != -1 {
+		t.Fatalf("failed stop-to-final=%d", got)
+	}
+}
+
 func sttResponseStatus(response *http.Response) int {
 	if response == nil {
 		return 0

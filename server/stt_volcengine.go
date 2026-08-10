@@ -25,6 +25,9 @@ type volcengineStreamingProvider struct {
 }
 
 const (
+	volcengineDoubaoStreamingV2URL    = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
+	volcengineResourceDuration        = "volc.seedasr.sauc.duration"
+	volcengineResourceConcurrent      = "volc.seedasr.sauc.concurrent"
 	volcengineMessageTypeFullResponse = 0x09
 	volcengineMessageTypeError        = 0x0f
 	volcengineFinalFlags              = 0x03
@@ -35,11 +38,15 @@ func NewVolcengineStreamingProvider(config VolcengineSTTConfig) (STTProvider, er
 	if err != nil || (parsed.Scheme != "ws" && parsed.Scheme != "wss") || parsed.Host == "" {
 		return nil, errors.New("VOLCENGINE_STT_WS_URL must be a ws:// or wss:// URL")
 	}
+	if !config.allowTestURL && (parsed.Scheme != "wss" || !strings.EqualFold(parsed.Host, "openspeech.bytedance.com") || parsed.Path != "/api/v3/sauc/bigmodel_async" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil) {
+		return nil, errors.New("VOLCENGINE_STT_WS_URL must use the Doubao streaming 2.0 endpoint")
+	}
 	if strings.TrimSpace(config.APIKey) == "" {
 		return nil, errors.New("VOLCENGINE_STT_API_KEY is required")
 	}
-	if strings.TrimSpace(config.ResourceID) == "" {
-		return nil, errors.New("VOLCENGINE_STT_RESOURCE_ID is required")
+	config.ResourceID = strings.TrimSpace(config.ResourceID)
+	if config.ResourceID != volcengineResourceDuration && config.ResourceID != volcengineResourceConcurrent {
+		return nil, errors.New("VOLCENGINE_STT_RESOURCE_ID must select Doubao streaming 2.0")
 	}
 	if config.ConnectTimeout <= 0 {
 		config.ConnectTimeout = 2 * time.Second

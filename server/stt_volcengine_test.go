@@ -102,6 +102,7 @@ func TestVolcengineStreamingProviderAuthenticatesAndMapsTranscriptEvents(t *test
 		APIKey:         "test-api-key",
 		ResourceID:     "volc.seedasr.sauc.duration",
 		ConnectTimeout: time.Second,
+		allowTestURL:   true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +123,27 @@ func TestVolcengineStreamingProviderAuthenticatesAndMapsTranscriptEvents(t *test
 	final := <-stream.Events()
 	if final.Type != STTEventFinal || final.Text != "你好世界" {
 		t.Fatalf("final=%#v", final)
+	}
+}
+
+func TestVolcengineStreamingProviderRejectsNonDoubaoV2Configuration(t *testing.T) {
+	for name, config := range map[string]VolcengineSTTConfig{
+		"resource": {
+			WebSocketURL: volcengineDoubaoStreamingV2URL,
+			APIKey:       "test-api-key",
+			ResourceID:   "volc.bigasr.sauc.duration",
+		},
+		"endpoint": {
+			WebSocketURL: "wss://example.com/api/v3/sauc/bigmodel_async",
+			APIKey:       "test-api-key",
+			ResourceID:   volcengineResourceDuration,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewVolcengineStreamingProvider(config); err == nil {
+				t.Fatalf("accepted non-Doubao-v2 configuration: %#v", config)
+			}
+		})
 	}
 }
 

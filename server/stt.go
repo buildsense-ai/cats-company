@@ -75,6 +75,7 @@ type VolcengineSTTConfig struct {
 	APIKey         string
 	ResourceID     string
 	ConnectTimeout time.Duration
+	allowTestURL   bool
 }
 
 type STTConfig struct {
@@ -102,9 +103,9 @@ func STTConfigFromEnv() STTConfig {
 		HourlyAudioLimit: sttEnvDurationSeconds("CATSCO_STT_MAX_HOURLY_SECONDS", 10*time.Minute),
 		DailyAudioLimit:  sttEnvDurationSeconds("CATSCO_STT_MAX_DAILY_SECONDS", time.Hour),
 		Volcengine: VolcengineSTTConfig{
-			WebSocketURL:   sttEnvString("VOLCENGINE_STT_WS_URL", "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"),
+			WebSocketURL:   sttEnvString("VOLCENGINE_STT_WS_URL", volcengineDoubaoStreamingV2URL),
 			APIKey:         strings.TrimSpace(os.Getenv("VOLCENGINE_STT_API_KEY")),
-			ResourceID:     sttEnvString("VOLCENGINE_STT_RESOURCE_ID", "volc.seedasr.sauc.duration"),
+			ResourceID:     sttEnvString("VOLCENGINE_STT_RESOURCE_ID", volcengineResourceDuration),
 			ConnectTimeout: sttEnvDurationMilliseconds("CATSCO_STT_CONNECT_TIMEOUT_MS", 2*time.Second),
 		},
 	}
@@ -442,10 +443,7 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 		if !firstPartialAt.IsZero() {
 			firstPartialMS = firstPartialAt.Sub(startedAt).Milliseconds()
 		}
-		stopToFinalMS := int64(-1)
-		if !stopStartedAt.IsZero() {
-			stopToFinalMS = time.Since(stopStartedAt).Milliseconds()
-		}
+		stopToFinalMS := sttStopToFinalMilliseconds(outcome, stopStartedAt, time.Now())
 		connectMS := int64(-1)
 		if !startedAt.IsZero() {
 			connectMS = startedAt.Sub(connectStarted).Milliseconds()
@@ -627,6 +625,13 @@ func sttDurationSecondsCeil(duration time.Duration) int {
 		return 0
 	}
 	return int((duration + time.Second - 1) / time.Second)
+}
+
+func sttStopToFinalMilliseconds(outcome string, stoppedAt, completedAt time.Time) int64 {
+	if outcome != "success" || stoppedAt.IsZero() {
+		return -1
+	}
+	return completedAt.Sub(stoppedAt).Milliseconds()
 }
 
 func sttPCMHasVoice(payload []byte) bool {
