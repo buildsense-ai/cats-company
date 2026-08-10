@@ -10,7 +10,7 @@ import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
 import Avatar from '../widgets/avatar';
 import { useFeedback } from '../components/feedback-system';
 import { formatSidebarTime } from '../utils/sidebar-time';
-import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
+import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, ClockAlert, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
 const DEFAULT_COLLAPSED_SECTIONS = { conversations: false, contacts: false, projects: false };
@@ -3366,7 +3366,7 @@ function TaskRowStatusIndicator({ status, time, showTime }) {
   if (normalized.state === 'completed') {
     return (
       <span className="cc-task-row-status completed" title={detail || '任务已完成'} aria-label="任务已完成" role="status">
-        <span className="cc-task-status-dot cc-task-completed-dot" />
+        <Check className="cc-task-status-icon cc-task-completed-icon" size={15} strokeWidth={2.4} aria-hidden="true" />
       </span>
     );
   }
@@ -3374,7 +3374,7 @@ function TaskRowStatusIndicator({ status, time, showTime }) {
   if (normalized.state === 'failed') {
     return (
       <span className="cc-task-row-status failed" title={detail || '任务执行失败'} aria-label="任务执行失败" role="status">
-        <span className="cc-task-status-dot" />
+        <X className="cc-task-status-icon cc-task-failed-icon" size={15} strokeWidth={2.4} aria-hidden="true" />
       </span>
     );
   }
@@ -3384,7 +3384,9 @@ function TaskRowStatusIndicator({ status, time, showTime }) {
     const label = isStale ? '任务已自动中止' : '任务已中止';
     return (
       <span className={`cc-task-row-status ${normalized.state}`} title={detail || label} aria-label={label} role="status">
-        <span className="cc-task-status-dot" />
+        {isStale
+          ? <ClockAlert className="cc-task-status-icon cc-task-stale-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
+          : <Ban className="cc-task-status-icon cc-task-cancelled-icon" size={14} strokeWidth={2.2} aria-hidden="true" />}
       </span>
     );
   }
