@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -18,6 +19,40 @@ type artifactContextResolverFunc func(context.Context, int64, string) (ArtifactC
 
 func (f artifactContextResolverFunc) ResolveActiveArtifact(ctx context.Context, agentUID int64, artifactID string) (ArtifactContextRecord, error) {
 	return f(ctx, agentUID, artifactID)
+}
+
+func TestParseArtifactRefCandidateEnforcesExactIDLength(t *testing.T) {
+	validID := "a" + strings.Repeat("b", artifactIDMaxLength-1)
+	if candidate, ok := parseArtifactRefCandidate(map[string]interface{}{
+		artifactRefMetadataKey: map[string]interface{}{
+			"contract_version": artifactRefContract, "id": validID, "currently_visible": true,
+		},
+	}); !ok || candidate.ID != validID {
+		t.Fatalf("64-character Artifact ID was rejected: %#v, %v", candidate, ok)
+	}
+
+	tooLongID := "a" + strings.Repeat("b", artifactIDMaxLength)
+	if candidate, ok := parseArtifactRefCandidate(map[string]interface{}{
+		artifactRefMetadataKey: map[string]interface{}{
+			"contract_version": artifactRefContract, "id": tooLongID, "currently_visible": true,
+		},
+	}); ok {
+		t.Fatalf("65-character Artifact ID was accepted: %#v", candidate)
+	}
+	if candidate, ok := parseArtifactRefCandidate(map[string]interface{}{
+		artifactRefMetadataKey: map[string]interface{}{
+			"contract_version": artifactRefContract, "id": " " + validID + " ", "currently_visible": true,
+		},
+	}); ok {
+		t.Fatalf("whitespace-normalized Artifact ID was accepted: %#v", candidate)
+	}
+	if candidate, ok := parseArtifactRefCandidate(map[string]interface{}{
+		artifactRefMetadataKey: map[string]interface{}{
+			"contract_version": " " + artifactRefContract + " ", "id": validID, "currently_visible": true,
+		},
+	}); ok {
+		t.Fatalf("whitespace-normalized contract was accepted: %#v", candidate)
+	}
 }
 
 func TestCanonicalizeArtifactMessageMetadataForP2P(t *testing.T) {
@@ -549,6 +584,72 @@ func TestCloudArtifactHandlerMutationRejectsInflightStaleResolution(t *testing.T
 	}
 	if listRequests != 2 {
 		t.Fatalf("list requests = %d, want 2", listRequests)
+	}
+}
+
+func TestArtifactContextCacheMutationOnlyInvalidatesTheTargetKey(t *testing.T) {
+	handler := &CloudArtifactHandler{}
+	lessonMutation := handler.artifactContextCacheMutationSnapshot(440, "lesson-game")
+	reportMutation := handler.artifactContextCacheMutationSnapshot(440, "report-board")
+
+	handler.invalidateArtifactContextCache(440, "lesson-game")
+
+	if handler.storeArtifactContext(440, "lesson-game", ArtifactContextRecord{
+		ID: "lesson-game", Title: "Lesson", Kind: "html", URL: "https://example.test/lesson-game",
+	}, lessonMutation) {
+		t.Fatal("mutated Artifact accepted an in-flight stale cache write")
+	}
+	if !handler.storeArtifactContext(440, "report-board", ArtifactContextRecord{
+		ID: "report-board", Title: "Report", Kind: "html", URL: "https://example.test/report-board",
+	}, reportMutation) {
+		t.Fatal("unrelated Artifact cache write was rejected")
+	}
+	if cached, ok := handler.cachedArtifactContext(440, "report-board"); !ok || cached.ID != "report-board" {
+		t.Fatalf("unrelated Artifact cache entry = %#v, %v", cached, ok)
+	}
+}
+
+func TestArtifactContextCacheWildcardMutationInvalidatesAllAgentsForTheArtifactID(t *testing.T) {
+	handler := &CloudArtifactHandler{}
+	agentAMutation := handler.artifactContextCacheMutationSnapshot(440, "lesson-game")
+	agentBMutation := handler.artifactContextCacheMutationSnapshot(441, "lesson-game")
+	unrelatedMutation := handler.artifactContextCacheMutationSnapshot(441, "report-board")
+
+	handler.invalidateArtifactContextCache(0, "lesson-game")
+
+	for _, test := range []struct {
+		agentUID int64
+		token    artifactContextCacheMutationToken
+	}{
+		{agentUID: 440, token: agentAMutation},
+		{agentUID: 441, token: agentBMutation},
+	} {
+		if handler.storeArtifactContext(test.agentUID, "lesson-game", ArtifactContextRecord{
+			ID: "lesson-game", Title: "Lesson", Kind: "html", URL: "https://example.test/lesson-game",
+		}, test.token) {
+			t.Fatalf("agent %d accepted a stale cache write after wildcard mutation", test.agentUID)
+		}
+	}
+	if !handler.storeArtifactContext(441, "report-board", ArtifactContextRecord{
+		ID: "report-board", Title: "Report", Kind: "html", URL: "https://example.test/report-board",
+	}, unrelatedMutation) {
+		t.Fatal("wildcard mutation rejected an unrelated Artifact cache write")
+	}
+}
+
+func TestArtifactContextCacheFailedLookupsDoNotGrowMutationMaps(t *testing.T) {
+	handler := &CloudArtifactHandler{}
+	for index := 0; index < 1000; index++ {
+		artifactID := fmt.Sprintf("missing-%d", index)
+		if _, err := handler.ResolveActiveArtifact(context.Background(), 440, artifactID); err == nil {
+			t.Fatalf("ResolveActiveArtifact(%q) unexpectedly succeeded", artifactID)
+		}
+	}
+	if got := len(handler.artifactContextExactMutationGeneration); got != 0 {
+		t.Fatalf("exact mutation map size = %d, want 0", got)
+	}
+	if got := len(handler.artifactContextIDMutationGeneration); got != 0 {
+		t.Fatalf("wildcard mutation map size = %d, want 0", got)
 	}
 }
 

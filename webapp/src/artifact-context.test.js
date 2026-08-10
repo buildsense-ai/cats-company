@@ -37,6 +37,21 @@ describe('artifact context message metadata', () => {
       mime_type: 'text/html',
       url: 'https://example.test/report.html',
     })).toBeNull();
+    expect(artifactRefFromPreviewFile({
+      artifact_id: ' lesson-game ',
+      mime_type: 'text/html',
+      url: 'https://example.test/report.html',
+    })).toBeNull();
+    expect(artifactRefFromPreviewFile({
+      artifact_id: `a${'b'.repeat(64)}`,
+      mime_type: 'text/html',
+      url: 'https://example.test/report.html',
+    })).toBeNull();
+    expect(artifactRefFromPreviewFile({
+      artifact_id: `a${'b'.repeat(63)}`,
+      mime_type: 'text/html',
+      url: 'https://example.test/report.html',
+    })?.id).toHaveLength(64);
   });
 
   it('only returns a focused reference for the Agent that owns the preview', () => {

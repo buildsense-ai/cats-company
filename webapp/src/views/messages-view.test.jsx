@@ -3352,6 +3352,321 @@ describe('MessagesView composer draft isolation', () => {
     }, undefined);
   });
 
+  it('drops a stale Artifact reference when the preview closes during page capture', async () => {
+    const origin = 'https://artifacts.example.test';
+    let respondToSnapshot = null;
+    const frameWindow = {
+      postMessage(message, targetOrigin) {
+        expect(targetOrigin).toBe(origin);
+        respondToSnapshot = () => {
+          const event = new Event('message');
+          Object.defineProperties(event, {
+            source: { value: frameWindow },
+            origin: { value: origin },
+            data: {
+              value: {
+                type: 'catsco.artifact.context.response.v1',
+                request_id: message.request_id,
+                context: {
+                  contract_version: 'catsco.artifact-page-context.v1',
+                  observed_at: '2026-08-10T12:00:00Z',
+                  selected_text: '旧页面状态',
+                },
+              },
+            },
+          });
+          window.dispatchEvent(event);
+        };
+      },
+    };
+    const artifact = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: `${origin}/by-agent/440/lesson-game/latest/`,
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'lesson-game',
+        agentUid: 440,
+        url: `${origin}/by-agent/440/lesson-game/latest/`,
+      },
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '产物'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '分析这些');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await Promise.resolve();
+    });
+    expect(respondToSnapshot).toEqual(expect.any(Function));
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-close-preview'));
+      respondToSnapshot();
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '分析这些', undefined);
+  });
+
+  it('does not rebind an in-flight message when the user switches to another Artifact', async () => {
+    const origin = 'https://artifacts.example.test';
+    let respondToFirstSnapshot = null;
+    const firstFrameWindow = {
+      postMessage(message) {
+        respondToFirstSnapshot = () => {
+          const event = new Event('message');
+          Object.defineProperties(event, {
+            source: { value: firstFrameWindow },
+            origin: { value: origin },
+            data: {
+              value: {
+                type: 'catsco.artifact.context.response.v1',
+                request_id: message.request_id,
+                context: {
+                  contract_version: 'catsco.artifact-page-context.v1',
+                  observed_at: '2026-08-10T12:00:00Z',
+                  selected_text: 'Artifact A',
+                },
+              },
+            },
+          });
+          window.dispatchEvent(event);
+        };
+      },
+    };
+    const artifacts = [
+      {
+        id: 'lesson-game',
+        agent_uid: '440',
+        title: '课堂小游戏',
+        kind: 'html',
+        url: `${origin}/by-agent/440/lesson-game/latest/`,
+        status: 'active',
+        publish_version: 2,
+        can_delete: true,
+        artifact_frame_binding: {
+          frame: { contentWindow: firstFrameWindow },
+          artifactId: 'lesson-game',
+          agentUid: 440,
+          url: `${origin}/by-agent/440/lesson-game/latest/`,
+        },
+      },
+      {
+        id: 'report-board',
+        agent_uid: '440',
+        title: '分析看板',
+        kind: 'html',
+        url: `${origin}/by-agent/440/report-board/latest/`,
+        status: 'active',
+        publish_version: 1,
+        can_delete: true,
+      },
+    ];
+    api.getCloudArtifacts.mockResolvedValue({ artifacts });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '产物'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '把这里改一下');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await Promise.resolve();
+    });
+    expect(respondToFirstSnapshot).toEqual(expect.any(Function));
+
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="返回产物列表"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 分析看板"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      respondToFirstSnapshot();
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '把这里改一下', undefined);
+  });
+
+  it('drops an in-flight Artifact snapshot when another topic uses the same Agent', async () => {
+    const origin = 'https://artifacts.example.test';
+    let respondToSnapshot = null;
+    const frameWindow = {
+      postMessage(message) {
+        respondToSnapshot = () => {
+          const event = new Event('message');
+          Object.defineProperties(event, {
+            source: { value: frameWindow },
+            origin: { value: origin },
+            data: {
+              value: {
+                type: 'catsco.artifact.context.response.v1',
+                request_id: message.request_id,
+                context: {
+                  contract_version: 'catsco.artifact-page-context.v1',
+                  observed_at: '2026-08-10T12:00:00Z',
+                  selected_text: '旧 topic 的页面状态',
+                },
+              },
+            },
+          });
+          window.dispatchEvent(event);
+        };
+      },
+    };
+    const artifact = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: `${origin}/by-agent/440/lesson-game/latest/`,
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+      artifact_frame_binding: {
+        frame: { contentWindow: frameWindow },
+        artifactId: 'lesson-game',
+        agentUid: 440,
+        url: `${origin}/by-agent/440/lesson-game/latest/`,
+      },
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.getGroupInfo.mockImplementation((groupId) => Promise.resolve({
+      group: { id: groupId, name: `Artifact topic ${groupId}`, kind: 'agent_task', is_agent_task: true },
+      members: [
+        { user_id: 1, display_name: 'Me', is_bot: false },
+        { user_id: 440, display_name: 'Artifact Agent', is_bot: true },
+      ],
+    }));
+
+    const cloudArtifactsRequest = { agentUid: 440, requestId: 1 };
+    let switchTopic = null;
+    function SnapshotResponder({ enabled }) {
+      React.useLayoutEffect(() => {
+        if (enabled) respondToSnapshot?.();
+      }, [enabled]);
+      return null;
+    }
+    function TopicHarness() {
+      const [current, setCurrent] = React.useState({ topic: 'grp_91', groupId: 91 });
+      switchTopic = () => setCurrent({ topic: 'grp_92', groupId: 92 });
+      return (
+        <>
+          <MessagesView
+            topic={current.topic}
+            topicName={current.topic}
+            user={user}
+            isGroup
+            groupId={current.groupId}
+            topicAvatarUrl=""
+            onTopicUpdated={vi.fn()}
+            cloudArtifactsRequest={cloudArtifactsRequest}
+          />
+          <SnapshotResponder enabled={current.topic === 'grp_92'} />
+        </>
+      );
+    }
+
+    await act(async () => {
+      root.render(<TopicHarness />);
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '产物'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '分析这些');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await Promise.resolve();
+    });
+    expect(respondToSnapshot).toEqual(expect.any(Function));
+
+    await act(async () => {
+      switchTopic();
+      await flushPromises();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_91', '分析这些', undefined);
+  });
+
   it('finds an agent file from history and opens it in the existing file preview', async () => {
     const historicalFile = {
       id: '820:0',

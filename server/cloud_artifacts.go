@@ -30,6 +30,12 @@ const (
 
 var artifactIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$`)
 
+const artifactIDMaxLength = 64
+
+func validArtifactID(value string) bool {
+	return len(value) > 0 && len(value) <= artifactIDMaxLength && artifactIDPattern.MatchString(value)
+}
+
 // CloudArtifactHandler proxies the public index and the protected artifact-management service.
 type CloudArtifactHandler struct {
 	indexURL          string
@@ -44,10 +50,11 @@ type CloudArtifactHandler struct {
 	directTemplate    *artifactDirectURLTemplate
 	directTemplateErr error
 
-	artifactContextCacheMu    sync.Mutex
-	artifactContextCache      map[artifactContextCacheKey]artifactContextCacheEntry
-	artifactContextCacheTTL   time.Duration
-	artifactContextCacheEpoch uint64
+	artifactContextCacheMu                 sync.Mutex
+	artifactContextCache                   map[artifactContextCacheKey]artifactContextCacheEntry
+	artifactContextCacheTTL                time.Duration
+	artifactContextExactMutationGeneration map[artifactContextCacheKey]uint64
+	artifactContextIDMutationGeneration    map[string]uint64
 }
 
 type cloudArtifactIndex struct {
@@ -708,7 +715,7 @@ func validateArtifactIdentity(artifact cloudArtifact) error {
 	if err != nil || artifactURL.Host == "" || (artifactURL.Scheme != "http" && artifactURL.Scheme != "https") {
 		return errors.New("invalid artifact URL")
 	}
-	if !artifactIDPattern.MatchString(artifact.ID) || strings.TrimSpace(artifact.Title) == "" {
+	if !validArtifactID(artifact.ID) || strings.TrimSpace(artifact.Title) == "" {
 		return errors.New("invalid artifact identity")
 	}
 	if artifact.Kind != "html" && artifact.Kind != "mini_app" {
@@ -724,7 +731,7 @@ func parseArtifactAPIPath(value string) (string, string, bool) {
 		return "", "", false
 	}
 	artifactID, err := url.PathUnescape(parts[0])
-	if err != nil || !artifactIDPattern.MatchString(artifactID) {
+	if err != nil || !validArtifactID(artifactID) {
 		return "", "", false
 	}
 	if len(parts) == 1 {
@@ -759,7 +766,7 @@ func parseAgentArtifactAPIPath(value string) (agentArtifactAPIRoute, bool) {
 		return agentArtifactAPIRoute{agentUID: agentUID, action: "list"}, true
 	}
 	artifactID, err := url.PathUnescape(parts[2])
-	if err != nil || !artifactIDPattern.MatchString(artifactID) {
+	if err != nil || !validArtifactID(artifactID) {
 		return agentArtifactAPIRoute{}, false
 	}
 	if len(parts) == 3 {

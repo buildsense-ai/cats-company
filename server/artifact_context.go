@@ -54,6 +54,11 @@ type artifactContextCacheEntry struct {
 	expiresAt time.Time
 }
 
+type artifactContextCacheMutationToken struct {
+	exact    uint64
+	wildcard uint64
+}
+
 // ArtifactContextRecord is the server-validated identity of one active
 // Artifact. It deliberately excludes user identity and authorization claims.
 type ArtifactContextRecord struct {
@@ -106,7 +111,7 @@ func (h *Hub) canonicalizeArtifactMessageMetadata(ctx context.Context, actorUID 
 		logArtifactContextDrop(topicID, actorUID, agentUID, candidate.ID, message)
 		return next
 	}
-	if record.ID != candidate.ID || !artifactIDPattern.MatchString(record.ID) ||
+	if record.ID != candidate.ID || !validArtifactID(record.ID) ||
 		strings.TrimSpace(record.Title) == "" || (record.Kind != "html" && record.Kind != "mini_app") ||
 		!validArtifactContextURL(record.URL) {
 		logArtifactContextDrop(topicID, actorUID, agentUID, candidate.ID, "resolver returned an invalid artifact")
@@ -195,12 +200,15 @@ func parseArtifactRefCandidate(metadata map[string]interface{}) (artifactRefCand
 		return artifactRefCandidate{}, false
 	}
 	ref, ok := raw.(map[string]interface{})
-	if !ok || firstMetadataString(ref, "contract_version") != artifactRefContract ||
-		!metadataBool(ref, "currently_visible") {
+	if !ok || !metadataBool(ref, "currently_visible") {
 		return artifactRefCandidate{}, false
 	}
-	id := strings.TrimSpace(firstMetadataString(ref, "id"))
-	if !artifactIDPattern.MatchString(id) {
+	contractVersion, ok := exactArtifactMetadataString(ref, "contract_version")
+	if !ok || contractVersion != artifactRefContract {
+		return artifactRefCandidate{}, false
+	}
+	id, ok := exactArtifactMetadataString(ref, "id")
+	if !ok || !validArtifactID(id) {
 		return artifactRefCandidate{}, false
 	}
 	displayedVersion := firstMetadataInt64(ref, "displayed_version")
@@ -208,6 +216,11 @@ func parseArtifactRefCandidate(metadata map[string]interface{}) (artifactRefCand
 		return artifactRefCandidate{}, false
 	}
 	return artifactRefCandidate{ID: id, DisplayedVersion: displayedVersion}, true
+}
+
+func exactArtifactMetadataString(metadata map[string]interface{}, key string) (string, bool) {
+	value, ok := metadata[key].(string)
+	return value, ok && value != "" && value == strings.TrimSpace(value)
 }
 
 func metadataWithoutArtifactContext(metadata map[string]interface{}) map[string]interface{} {
@@ -403,13 +416,13 @@ func logArtifactContextDrop(topicID string, actorUID, agentUID int64, artifactID
 // ResolveActiveArtifact implements ArtifactContextResolver using the same
 // configured node registry and upstream validation as the management panel.
 func (h *CloudArtifactHandler) ResolveActiveArtifact(ctx context.Context, agentUID int64, artifactID string) (ArtifactContextRecord, error) {
-	if h == nil || agentUID <= 0 || !artifactIDPattern.MatchString(artifactID) {
+	if h == nil || agentUID <= 0 || !validArtifactID(artifactID) {
 		return ArtifactContextRecord{}, errors.New("invalid artifact reference")
 	}
 	if cached, ok := h.cachedArtifactContext(agentUID, artifactID); ok {
 		return cached, nil
 	}
-	cacheEpoch := h.artifactContextCacheEpochSnapshot()
+	cacheMutation := h.artifactContextCacheMutationSnapshot(agentUID, artifactID)
 	node, err := h.resolveArtifactNode(agentUID)
 	if err != nil {
 		return ArtifactContextRecord{}, err
@@ -426,19 +439,23 @@ func (h *CloudArtifactHandler) ResolveActiveArtifact(ctx context.Context, agentU
 	if err != nil {
 		return ArtifactContextRecord{}, err
 	}
-	if !h.storeArtifactContext(agentUID, artifactID, record, cacheEpoch) {
+	if !h.storeArtifactContext(agentUID, artifactID, record, cacheMutation) {
 		return ArtifactContextRecord{}, errors.New("artifact changed during resolution")
 	}
 	return record, nil
 }
 
-func (h *CloudArtifactHandler) artifactContextCacheEpochSnapshot() uint64 {
+func (h *CloudArtifactHandler) artifactContextCacheMutationSnapshot(agentUID int64, artifactID string) artifactContextCacheMutationToken {
 	if h == nil {
-		return 0
+		return artifactContextCacheMutationToken{}
 	}
+	key := artifactContextCacheKey{agentUID: agentUID, artifactID: artifactID}
 	h.artifactContextCacheMu.Lock()
 	defer h.artifactContextCacheMu.Unlock()
-	return h.artifactContextCacheEpoch
+	return artifactContextCacheMutationToken{
+		exact:    h.artifactContextExactMutationGeneration[key],
+		wildcard: h.artifactContextIDMutationGeneration[artifactID],
+	}
 }
 
 func (h *CloudArtifactHandler) cachedArtifactContext(agentUID int64, artifactID string) (ArtifactContextRecord, bool) {
@@ -460,7 +477,7 @@ func (h *CloudArtifactHandler) cachedArtifactContext(agentUID int64, artifactID 
 	return entry.record, true
 }
 
-func (h *CloudArtifactHandler) storeArtifactContext(agentUID int64, artifactID string, record ArtifactContextRecord, expectedEpoch uint64) bool {
+func (h *CloudArtifactHandler) storeArtifactContext(agentUID int64, artifactID string, record ArtifactContextRecord, expectedMutation artifactContextCacheMutationToken) bool {
 	if h == nil {
 		return false
 	}
@@ -471,7 +488,11 @@ func (h *CloudArtifactHandler) storeArtifactContext(agentUID int64, artifactID s
 	key := artifactContextCacheKey{agentUID: agentUID, artifactID: artifactID}
 	h.artifactContextCacheMu.Lock()
 	defer h.artifactContextCacheMu.Unlock()
-	if h.artifactContextCacheEpoch != expectedEpoch {
+	currentMutation := artifactContextCacheMutationToken{
+		exact:    h.artifactContextExactMutationGeneration[key],
+		wildcard: h.artifactContextIDMutationGeneration[artifactID],
+	}
+	if currentMutation != expectedMutation {
 		return false
 	}
 	if h.artifactContextCache == nil {
@@ -490,11 +511,19 @@ func (h *CloudArtifactHandler) invalidateArtifactContextCache(agentUID int64, ar
 	}
 	h.artifactContextCacheMu.Lock()
 	defer h.artifactContextCacheMu.Unlock()
-	h.artifactContextCacheEpoch++
 	if agentUID > 0 {
-		delete(h.artifactContextCache, artifactContextCacheKey{agentUID: agentUID, artifactID: artifactID})
+		key := artifactContextCacheKey{agentUID: agentUID, artifactID: artifactID}
+		if h.artifactContextExactMutationGeneration == nil {
+			h.artifactContextExactMutationGeneration = make(map[artifactContextCacheKey]uint64)
+		}
+		h.artifactContextExactMutationGeneration[key]++
+		delete(h.artifactContextCache, key)
 		return
 	}
+	if h.artifactContextIDMutationGeneration == nil {
+		h.artifactContextIDMutationGeneration = make(map[string]uint64)
+	}
+	h.artifactContextIDMutationGeneration[artifactID]++
 	for key := range h.artifactContextCache {
 		if key.artifactID == artifactID {
 			delete(h.artifactContextCache, key)

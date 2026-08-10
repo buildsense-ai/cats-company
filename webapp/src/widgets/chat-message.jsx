@@ -2067,13 +2067,26 @@ export function FilePreviewPanel({
     pendingRemoteArtifactFile,
     pendingRemoteArtifactDescriptor,
   );
+  const pendingRemoteArtifactAttemptSeed = useMemo(() => {
+    if (!pendingRemoteArtifactKey || !pendingRemoteArtifactFile) return null;
+    return {
+      file: pendingRemoteArtifactFile,
+      key: pendingRemoteArtifactKey,
+      loaded: false,
+      errored: false,
+      reported: false,
+      frame: null,
+    };
+  }, [pendingRemoteArtifactFile, pendingRemoteArtifactKey]);
 
-  const settlePendingRemoteArtifact = (status, expectedKey = '') => {
+  const settlePendingRemoteArtifact = (status, expectedAttempt) => {
     const attempt = pendingRemoteArtifactAttemptRef.current;
-    if (!attempt || attempt.settled || (expectedKey && attempt.key !== expectedKey)) return;
+    if (!attempt || attempt !== expectedAttempt || attempt.settled) return;
     attempt.settled = true;
     if (attempt.timer) window.clearTimeout(attempt.timer);
     pendingRemoteArtifactAttemptRef.current = null;
+    if (attempt.seed.reported) return;
+    attempt.seed.reported = true;
     if (status === 'ready') {
       const verifiedKeys = verifiedRemoteArtifactKeysRef.current;
       verifiedKeys.add(attempt.key);
@@ -2086,24 +2099,53 @@ export function FilePreviewPanel({
     }
   };
 
+  const verifyPendingRemoteArtifact = async (attempt) => {
+    if (!attempt
+      || pendingRemoteArtifactAttemptRef.current !== attempt
+      || attempt.settled
+      || attempt.verifying
+      || !attempt.frame) return;
+    attempt.verifying = true;
+    const artifactRef = artifactRefFromPreviewFile(attempt.file);
+    if (!artifactRef) {
+      settlePendingRemoteArtifact('failed', attempt);
+      return;
+    }
+    const pageContext = await requestArtifactPageContext({
+      frame: attempt.frame,
+      artifactId: artifactRef.id,
+      url: attempt.file.url,
+      agentUid: attempt.file.artifact_agent_uid,
+    }, artifactRef, REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS);
+    settlePendingRemoteArtifact(pageContext ? 'ready' : 'failed', attempt);
+  };
+
   useEffect(() => {
     const previous = pendingRemoteArtifactAttemptRef.current;
     if (previous?.timer) window.clearTimeout(previous.timer);
     if (previous) previous.settled = true;
     pendingRemoteArtifactAttemptRef.current = null;
-    if (!pendingRemoteArtifactKey || !pendingRemoteArtifactFile) return undefined;
+    const seed = pendingRemoteArtifactAttemptSeed;
+    if (!seed) return undefined;
 
     const attempt = {
-      file: pendingRemoteArtifactFile,
-      key: pendingRemoteArtifactKey,
+      seed,
+      file: seed.file,
+      key: seed.key,
       settled: false,
       verifying: false,
+      frame: seed.frame || pendingRemoteArtifactFrameRef.current,
       timer: null,
     };
-    attempt.timer = window.setTimeout(() => {
-      settlePendingRemoteArtifact('failed', attempt.key);
-    }, REMOTE_ARTIFACT_REFRESH_TIMEOUT_MS);
     pendingRemoteArtifactAttemptRef.current = attempt;
+    if (seed.errored) {
+      settlePendingRemoteArtifact('failed', attempt);
+    } else {
+      attempt.timer = window.setTimeout(() => {
+        settlePendingRemoteArtifact('failed', attempt);
+      }, REMOTE_ARTIFACT_REFRESH_TIMEOUT_MS);
+      if (seed.loaded) void verifyPendingRemoteArtifact(attempt);
+    }
     return () => {
       if (attempt.timer) window.clearTimeout(attempt.timer);
       attempt.settled = true;
@@ -2111,25 +2153,24 @@ export function FilePreviewPanel({
         pendingRemoteArtifactAttemptRef.current = null;
       }
     };
-  }, [pendingRemoteArtifactFile, pendingRemoteArtifactKey]);
+  }, [pendingRemoteArtifactAttemptSeed]);
 
-  const handlePendingRemoteArtifactLoad = async () => {
+  const handlePendingRemoteArtifactLoad = (seed, frame) => {
+    if (!seed) return;
+    seed.loaded = true;
+    seed.frame = frame || seed.frame;
     const attempt = pendingRemoteArtifactAttemptRef.current;
-    const frame = pendingRemoteArtifactFrameRef.current;
-    if (!attempt || attempt.settled || attempt.verifying || !frame) return;
-    attempt.verifying = true;
-    const artifactRef = artifactRefFromPreviewFile(attempt.file);
-    if (!artifactRef) {
-      settlePendingRemoteArtifact('failed', attempt.key);
-      return;
-    }
-    const pageContext = await requestArtifactPageContext({
-      frame,
-      artifactId: artifactRef.id,
-      url: attempt.file.url,
-      agentUid: attempt.file.artifact_agent_uid,
-    }, artifactRef, REMOTE_ARTIFACT_REFRESH_HANDSHAKE_TIMEOUT_MS);
-    settlePendingRemoteArtifact(pageContext ? 'ready' : 'failed', attempt.key);
+    if (!attempt || attempt.seed !== seed || attempt.settled) return;
+    attempt.frame = seed.frame || attempt.frame;
+    void verifyPendingRemoteArtifact(attempt);
+  };
+
+  const handlePendingRemoteArtifactError = (seed) => {
+    if (!seed) return;
+    seed.errored = true;
+    const attempt = pendingRemoteArtifactAttemptRef.current;
+    if (!attempt || attempt.seed !== seed || attempt.settled) return;
+    settlePendingRemoteArtifact('failed', attempt);
   };
 
   useEffect(() => {
@@ -2424,13 +2465,15 @@ export function FilePreviewPanel({
                   key: currentRemoteArtifactKey,
                   descriptor,
                   current: true,
+                  attemptSeed: null,
                 },
                 pendingRemoteArtifactKey && pendingRemoteArtifactKey !== currentRemoteArtifactKey
                   ? {
-                    key: pendingRemoteArtifactKey,
-                    descriptor: pendingRemoteArtifactDescriptor,
-                    current: false,
-                  }
+                     key: pendingRemoteArtifactKey,
+                     descriptor: pendingRemoteArtifactDescriptor,
+                     current: false,
+                     attemptSeed: pendingRemoteArtifactAttemptSeed,
+                   }
                   : null,
               ].filter(Boolean).map((frameEntry) => (
                 <iframe
@@ -2453,10 +2496,10 @@ export function FilePreviewPanel({
                   }}
                   onLoad={frameEntry.current
                     ? () => setRemoteFrameState('ready')
-                    : handlePendingRemoteArtifactLoad}
+                    : (event) => handlePendingRemoteArtifactLoad(frameEntry.attemptSeed, event.currentTarget)}
                   onError={frameEntry.current
                     ? () => setRemoteFrameState('error')
-                    : () => settlePendingRemoteArtifact('failed', frameEntry.key)}
+                    : () => handlePendingRemoteArtifactError(frameEntry.attemptSeed)}
                 />
               ))}
               {remoteFrameState === 'loading' && (

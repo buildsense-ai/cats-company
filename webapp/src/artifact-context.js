@@ -4,6 +4,7 @@ export const ARTIFACT_CONTEXT_REQUEST_TYPE = 'catsco.artifact.context.request.v1
 export const ARTIFACT_CONTEXT_RESPONSE_TYPE = 'catsco.artifact.context.response.v1';
 
 const ARTIFACT_ID_PATTERN = /^[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$/;
+const ARTIFACT_ID_MAX_LENGTH = 64;
 const PAGE_CONTEXT_TIMEOUT_MS = 250;
 const PAGE_CONTEXT_MAX_BYTES = 16 * 1024;
 const PAGE_CONTEXT_MAX_CONTROLS = 24;
@@ -25,10 +26,13 @@ function positiveInteger(value) {
 }
 
 export function artifactRefFromPreviewFile(file, expectedAgentUid = null) {
-  const artifactId = String(file?.artifact_id || '').trim();
+  const artifactId = String(file?.artifact_id || '');
   const artifactURL = String(file?.url || '').trim();
   const mimeType = String(file?.mime_type || '').trim().toLowerCase();
-  if (!ARTIFACT_ID_PATTERN.test(artifactId) || mimeType !== 'text/html') return null;
+  if (artifactId !== artifactId.trim()
+    || artifactId.length > ARTIFACT_ID_MAX_LENGTH
+    || !ARTIFACT_ID_PATTERN.test(artifactId)
+    || mimeType !== 'text/html') return null;
 
   if (expectedAgentUid !== null && expectedAgentUid !== undefined) {
     const expectedAgent = positiveInteger(expectedAgentUid);
