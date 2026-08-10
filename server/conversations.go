@@ -19,8 +19,12 @@ type ConversationHandler struct {
 	hub *Hub
 }
 
-type conversationTitleStore interface {
+type conversationTitleReader interface {
 	GetConversationTitles(ownerID int64, topicIDs []string) (map[string]string, error)
+}
+
+type conversationTitleStore interface {
+	conversationTitleReader
 	UpdateConversationTitle(ownerID int64, topicID, title string) (bool, error)
 }
 

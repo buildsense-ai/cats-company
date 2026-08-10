@@ -25,6 +25,8 @@ var upgrader = websocket.Upgrader{
 const (
 	pageVisibilityVisible        = "visible"
 	pageVisibilityHidden         = "hidden"
+	defaultPushNotificationTitle = "CatsCo"
+	pushNotificationTitleDivider = " · "
 	maxPushNotificationBodyRunes = 180
 	// Visibility leases cover a missed heartbeat but expire promptly after a
 	// crashed node, so stale pages do not suppress pushes indefinitely.
@@ -1970,6 +1972,35 @@ func shouldNotifyOfflineForMessage(msg *ServerMessage) bool {
 	return !isInternalAgentWorkingMessage(displayType, data.Content, data.ContentBlocks)
 }
 
+func (h *Hub) offlinePushNotificationTitle(uid int64, topic string) string {
+	topic = strings.TrimSpace(topic)
+	if h == nil || h.db == nil || uid <= 0 || topic == "" {
+		return defaultPushNotificationTitle
+	}
+	titleReader, ok := h.db.(conversationTitleReader)
+	if !ok {
+		return defaultPushNotificationTitle
+	}
+	titles, err := titleReader.GetConversationTitles(uid, []string{topic})
+	if err != nil {
+		return defaultPushNotificationTitle
+	}
+	sessionName := strings.TrimSpace(titles[topic])
+	if sessionName == "" {
+		return defaultPushNotificationTitle
+	}
+	return defaultPushNotificationTitle + pushNotificationTitleDivider + sessionName
+}
+
+func (h *Hub) offlineUserPushNotification(uid int64, topic, body string) PushNotification {
+	return PushNotification{
+		Title: h.offlinePushNotificationTitle(uid, topic),
+		Body:  firstNonEmpty(pushNotificationExcerpt(body), "你有一条新消息"),
+		URL:   "/",
+		Tag:   "catsco-new-message",
+	}
+}
+
 func (h *Hub) enqueueOfflineUserPush(uid int64, topic, body string) bool {
 	if h == nil || h.push == nil || !h.push.Enabled() || uid <= 0 {
 		return false
@@ -1978,12 +2009,7 @@ func (h *Hub) enqueueOfflineUserPush(uid int64, topic, body string) bool {
 	if err != nil || user == nil || user.AccountType != types.AccountHuman || user.State != 0 {
 		return false
 	}
-	notification := PushNotification{
-		Title: "CatsCo",
-		Body:  firstNonEmpty(pushNotificationExcerpt(body), "你有一条新消息"),
-		URL:   "/",
-		Tag:   "catsco-new-message",
-	}
+	notification := h.offlineUserPushNotification(uid, topic, body)
 	return h.push.EnqueueToUserFiltered(uid, notification, func(subscription *types.PushSubscription) bool {
 		return !h.hasMessagingClientAttention(uid, pushSubscriptionID(subscription.Endpoint), topic)
 	})

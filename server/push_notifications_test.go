@@ -41,11 +41,26 @@ type memoryPushSubscriptionStore struct {
 
 type pushHubUserStore struct {
 	store.Store
-	users map[int64]*types.User
+	users                map[int64]*types.User
+	conversationTitles   map[string]string
+	conversationTitleErr error
 }
 
 func (s pushHubUserStore) GetUser(uid int64) (*types.User, error) {
 	return s.users[uid], nil
+}
+
+func (s pushHubUserStore) GetConversationTitles(_ int64, topicIDs []string) (map[string]string, error) {
+	if s.conversationTitleErr != nil {
+		return nil, s.conversationTitleErr
+	}
+	titles := make(map[string]string)
+	for _, topicID := range topicIDs {
+		if title, ok := s.conversationTitles[topicID]; ok {
+			titles[topicID] = title
+		}
+	}
+	return titles, nil
 }
 
 func (m *memoryPushSubscriptionStore) UpsertPushSubscription(_ context.Context, subscription *types.PushSubscription, maxSubscriptions int) (bool, error) {
@@ -1047,6 +1062,59 @@ func TestPushSubscriptionIDMatchesBrowserGoldenVector(t *testing.T) {
 	const want = "WUIrC4yppUY8v9TxFnhjVvwOgkISFt0ZOdGvyL0nals"
 	if got := pushSubscriptionID(endpoint); got != want {
 		t.Fatalf("pushSubscriptionID() = %q, want %q", got, want)
+	}
+}
+
+func TestOfflineUserPushNotificationIncludesSessionName(t *testing.T) {
+	const (
+		uid   int64 = 42
+		topic       = "p2p_7_42"
+	)
+	hub := NewHub(pushHubUserStore{
+		conversationTitles: map[string]string{topic: " Release checklist "},
+	}, nil)
+
+	notification := hub.offlineUserPushNotification(uid, topic, "final answer")
+
+	if notification.Title != "CatsCo · Release checklist" {
+		t.Fatalf("notification title = %q, want named session title", notification.Title)
+	}
+	if notification.Body != "final answer" || notification.URL != "/" || notification.Tag != "catsco-new-message" {
+		t.Fatalf("notification fields changed unexpectedly: %+v", notification)
+	}
+}
+
+func TestOfflineUserPushNotificationFallsBackWhenSessionNameIsUnavailable(t *testing.T) {
+	tests := []struct {
+		name  string
+		store pushHubUserStore
+	}{
+		{name: "missing title"},
+		{name: "empty title", store: pushHubUserStore{conversationTitles: map[string]string{"p2p_7_42": "   "}}},
+		{name: "title lookup error", store: pushHubUserStore{conversationTitleErr: errors.New("title lookup failed")}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hub := NewHub(test.store, nil)
+			notification := hub.offlineUserPushNotification(42, "p2p_7_42", "message")
+			if notification.Title != defaultPushNotificationTitle {
+				t.Fatalf("notification title = %q, want fallback %q", notification.Title, defaultPushNotificationTitle)
+			}
+		})
+	}
+}
+
+func TestOfflineUserPushNotificationKeepsOrdinaryNotificationCompatible(t *testing.T) {
+	hub := NewHub(pushHubUserStore{}, nil)
+
+	notification := hub.offlineUserPushNotification(42, "", "ordinary message")
+
+	if notification.Title != defaultPushNotificationTitle {
+		t.Fatalf("notification title = %q, want %q", notification.Title, defaultPushNotificationTitle)
+	}
+	if notification.Body != "ordinary message" || notification.URL != "/" || notification.Tag != "catsco-new-message" {
+		t.Fatalf("ordinary notification changed unexpectedly: %+v", notification)
 	}
 }
 
