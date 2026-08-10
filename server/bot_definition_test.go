@@ -328,6 +328,97 @@ func TestCatalogDefinitionShipsContextWindowTokens(t *testing.T) {
 	}
 }
 
+func TestRuntimeDefinitionLeavesUntouchedEmptyRecordUnconfigured(t *testing.T) {
+	db := &botDefinitionTestStore{
+		owners: map[int64]int64{43: 7},
+		records: map[int64]*types.BotDefinitionRecord{
+			43: {
+				Definition: types.BotDefinition{
+					Schema: types.BotDefinitionSchema,
+					BotID:  "43",
+				},
+				Exists: true,
+			},
+		},
+	}
+	models := &botModelConfigTestStore{owners: db.owners, models: map[int64]*types.BotModelConfig{}}
+	handler := NewBotDefinitionHandler(db, db, models, NewBotModelConfigHandler(db, models))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/bot/definition", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(43)))
+	rec := httptest.NewRecorder()
+	handler.HandleRuntimeDefinition(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["configured"] != false || response["revision"] != float64(0) || response["definition"] != nil {
+		t.Fatalf("response=%v", response)
+	}
+}
+
+func TestRuntimeDefinitionNormalizesHistoricalEmptyLocalHandoff(t *testing.T) {
+	db := &botDefinitionTestStore{
+		owners: map[int64]int64{43: 7},
+		records: map[int64]*types.BotDefinitionRecord{
+			43: {
+				Definition: types.BotDefinition{
+					Schema: types.BotDefinitionSchema,
+					BotID:  "43",
+					Prompt: &types.BotPromptDefinition{Selected: "custom", CustomSystemPrompt: "Keep local runtime."},
+				},
+				Runtime: types.BotDefinitionRuntime{
+					DesiredRevision: 3,
+					AppliedKind:     botModelKindLocal,
+					AppliedModelID:  botModelKindLocal,
+				},
+				Exists: true,
+			},
+		},
+	}
+	models := &botModelConfigTestStore{owners: db.owners, models: map[int64]*types.BotModelConfig{}}
+	handler := NewBotDefinitionHandler(db, db, models, NewBotModelConfigHandler(db, models))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/bot/definition", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(43)))
+	rec := httptest.NewRecorder()
+	handler.HandleRuntimeDefinition(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, expected := range []string{
+		`"configured":true`,
+		`"revision":3`,
+		`"kind":"local"`,
+		`"modelId":"local"`,
+		`"customSystemPrompt":"Keep local runtime."`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("missing %s in %s", expected, body)
+		}
+	}
+	if db.records[43].Definition.Model.Kind != "" || db.records[43].Definition.Model.ModelID != "" {
+		t.Fatalf("response normalization mutated storage: %+v", db.records[43].Definition.Model)
+	}
+
+	ackReq := httptest.NewRequest(http.MethodPost, "/api/bot/definition/ack", strings.NewReader(`{"revision":3}`))
+	ackReq = ackReq.WithContext(context.WithValue(ackReq.Context(), uidKey, int64(43)))
+	ackRec := httptest.NewRecorder()
+	handler.HandleRuntimeAck(ackRec, ackReq)
+	if ackRec.Code != http.StatusOK || !strings.Contains(ackRec.Body.String(), `"kind":"local"`) {
+		t.Fatalf("ack status=%d body=%s", ackRec.Code, ackRec.Body.String())
+	}
+	if got := db.records[43].Runtime; got.LastAttemptRevision != 3 || got.AppliedRevision != 3 {
+		t.Fatalf("runtime=%+v", got)
+	}
+}
+
 func TestRuntimeDefinitionAcknowledgementRedactsCustomModelSecret(t *testing.T) {
 	enableBotModelEncryption(t)
 	codec, err := newBotModelSecretCodecFromEnv()
