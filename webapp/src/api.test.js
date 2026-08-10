@@ -179,6 +179,27 @@ describe('WebSocket connection recovery', () => {
     await expect(request).rejects.toMatchObject({ code: 'skillhub_device_timeout' });
   });
 
+  test('honors a sub-second SkillHub device request budget without an extra grace period', async () => {
+    api.connectWS(vi.fn());
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    const request = api.requestSkillHubDeviceTool({
+      deviceId: 'alice-device',
+      ownerUserId: 7,
+      toolName: 'skillhub.localWorkspace.get',
+      payload: { bot_uid: '42' },
+      timeoutMs: 250,
+    });
+    const rejection = request.catch((error) => error);
+
+    await vi.advanceTimersByTimeAsync(249);
+    expect(await Promise.race([request.then(() => 'settled', () => 'settled'), Promise.resolve('pending')]))
+      .toBe('pending');
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(rejection).resolves.toMatchObject({ code: 'skillhub_device_timeout' });
+  });
+
   test('sends messaging attention in the handshake and on state changes', () => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     api.connectWS(vi.fn());

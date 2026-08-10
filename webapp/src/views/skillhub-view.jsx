@@ -19,7 +19,64 @@ const SKILLHUB_DEVICE_SCHEMAS = {
   [SKILLHUB_DEVICE_TOOLS.switchBot]: 'xiaoba.skillhub.bot_switch.v1',
 };
 
+const SKILLHUB_SELECTED_BOT_STORAGE_PREFIX = 'catsco.skillhub.selectedBot';
+const SKILLHUB_SWITCH_RETRY_ATTEMPTS = 40;
+const SKILLHUB_SWITCH_TIMEOUT_MS = 60_000;
+const SKILLHUB_SWITCH_INITIAL_DELAY_MS = 2_000;
+const SKILLHUB_SWITCH_RETRY_DELAY_MS = 1_500;
+const SKILLHUB_DEVICE_LIST_TIMEOUT_MS = 5_000;
+const SKILLHUB_WORKSPACE_TIMEOUT_MS = 8_000;
+const RETRYABLE_SKILLHUB_SWITCH_ERRORS = new Set([
+  'BOT_NOT_ACTIVE',
+  'REQUEST_EXPIRED',
+  'SHUTTING_DOWN',
+  'device_rpc_timeout',
+  'skillhub_device_timeout',
+  'skillhub_websocket_disconnected',
+  'skillhub_websocket_unavailable',
+  'target_device_unavailable',
+]);
+const RETRYABLE_SKILLHUB_DEVICE_LIST_ERRORS = new Set([
+  'NETWORK_ERROR',
+  'REQUEST_TIMEOUT',
+]);
+const RETRYABLE_SKILLHUB_DEVICE_LIST_STATUSES = new Set([500, 502, 503, 504]);
+
 const wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
+
+function runWithTimeout(operation, timeoutMs, createTimeoutError) {
+  let result;
+  try {
+    result = operation();
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(createTimeoutError()), timeoutMs);
+    Promise.resolve(result).then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function skillHubDeviceListTimeoutError() {
+  const error = new Error('请求设备列表超时，请稍后重试');
+  error.code = 'REQUEST_TIMEOUT';
+  return error;
+}
+
+function skillHubWorkspaceTimeoutError() {
+  const error = new Error('等待本地 XiaoBa 响应超时，请确认设备在线并已更新到最新版本。');
+  error.code = 'skillhub_device_timeout';
+  return error;
+}
 
 export function normalizeSkillHubDevices(response) {
   const devices = Array.isArray(response) ? response : (response?.devices || []);
@@ -40,6 +97,121 @@ export function normalizeOwnedBots(response, userUid) {
     const ownerUID = Number(bot?.owner_id || bot?.owner_uid || 0);
     return ownerUID > 0 && ownerUID === Number(userUid);
   });
+}
+
+function selectedBotStorageKey(userUid) {
+  const uid = String(userUid || '').trim();
+  return uid ? `${SKILLHUB_SELECTED_BOT_STORAGE_PREFIX}.${uid}` : '';
+}
+
+function browserStorage() {
+  try {
+    return globalThis.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+export function readRememberedSkillHubBotUID(userUid, storage = browserStorage()) {
+  const key = selectedBotStorageKey(userUid);
+  if (!key || !storage) return '';
+  try {
+    return String(storage.getItem(key) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+export function rememberSkillHubBotUID(userUid, botUid, storage = browserStorage()) {
+  const key = selectedBotStorageKey(userUid);
+  const uid = String(botUid || '').trim();
+  if (!key || !storage) return;
+  try {
+    if (uid) storage.setItem(key, uid);
+    else storage.removeItem(key);
+  } catch {
+    // Storage can be unavailable in hardened or private browser contexts.
+  }
+}
+
+export function resolvePreferredSkillHubBotUID(bots, userUid, storage = browserStorage()) {
+  const remembered = readRememberedSkillHubBotUID(userUid, storage);
+  if (remembered && bots.some((bot) => String(botUID(bot)) === remembered)) return remembered;
+  const firstUID = botUID(bots[0]);
+  return firstUID ? String(firstUID) : '';
+}
+
+export function isRetryableSkillHubSwitchError(error) {
+  if (RETRYABLE_SKILLHUB_SWITCH_ERRORS.has(String(error?.code || ''))) return true;
+  return error?.code === 'skillhub_device_request_rejected'
+    && [404, 409, 503].includes(Number(error?.status || 0));
+}
+
+export function isRetryableSkillHubDeviceListError(error) {
+  const status = Number(error?.status || 0);
+  if (status > 0) return RETRYABLE_SKILLHUB_DEVICE_LIST_STATUSES.has(status);
+  return RETRYABLE_SKILLHUB_DEVICE_LIST_ERRORS.has(String(error?.code || ''));
+}
+
+export async function waitForSkillHubWorkspaceAfterSwitch({
+  deviceId,
+  readWorkspace,
+  getDevices = api.getDevices,
+  isCurrent = () => true,
+  waitFor = wait,
+  maxAttempts = SKILLHUB_SWITCH_RETRY_ATTEMPTS,
+  timeoutMs = SKILLHUB_SWITCH_TIMEOUT_MS,
+  initialDelayMs = SKILLHUB_SWITCH_INITIAL_DELAY_MS,
+  retryDelayMs = SKILLHUB_SWITCH_RETRY_DELAY_MS,
+  deviceListTimeoutMs = SKILLHUB_DEVICE_LIST_TIMEOUT_MS,
+  workspaceTimeoutMs = SKILLHUB_WORKSPACE_TIMEOUT_MS,
+  now = () => Date.now(),
+}) {
+  const deadline = now() + Math.max(1, Number(timeoutMs) || SKILLHUB_SWITCH_TIMEOUT_MS);
+  const remainingMs = () => Math.max(0, deadline - now());
+  let lastError;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const delayMs = Math.min(
+      attempt === 0 ? initialDelayMs : retryDelayMs,
+      remainingMs(),
+    );
+    if (delayMs <= 0) break;
+    await waitFor(delayMs);
+    if (!isCurrent()) return null;
+    if (remainingMs() <= 0) break;
+
+    try {
+      const requestTimeoutMs = Math.min(deviceListTimeoutMs, remainingMs());
+      const capable = normalizeSkillHubDevices(await runWithTimeout(
+        () => getDevices({ timeoutMs: requestTimeoutMs }),
+        requestTimeoutMs,
+        skillHubDeviceListTimeoutError,
+      ));
+      const routeReady = capable.some((device) => String(device.deviceId || '') === String(deviceId || ''));
+      if (!routeReady) continue;
+    } catch (error) {
+      if (!isRetryableSkillHubDeviceListError(error)) throw error;
+      lastError = error;
+      continue;
+    }
+
+    try {
+      const requestTimeoutMs = Math.min(workspaceTimeoutMs, remainingMs());
+      return await runWithTimeout(
+        () => readWorkspace(requestTimeoutMs),
+        requestTimeoutMs,
+        skillHubWorkspaceTimeoutError,
+      );
+    } catch (error) {
+      if (!isRetryableSkillHubSwitchError(error)) throw error;
+      lastError = error;
+    }
+  }
+  if (!isCurrent()) return null;
+  const error = new Error('本地 XiaoBa 切换超时，请确认 XiaoBa 仍在运行后重试。');
+  error.code = 'skillhub_device_switch_timeout';
+  error.cause = lastError;
+  throw error;
 }
 
 export function normalizeSkillHubSkills(response) {
@@ -314,6 +486,7 @@ export default function SkillHubView({ user }) {
   const catalogueRequestRef = useRef(0);
   const localRequestRef = useRef(0);
   const saveRequestRef = useRef(0);
+  const requestedBotSwitchRef = useRef('');
 
   useEffect(() => {
     selectedBotUIDRef.current = selectedBotUID;
@@ -385,8 +558,7 @@ export default function SkillHubView({ user }) {
       setBots(owned);
       setSelectedBotUID((current) => {
         if (current && owned.some((bot) => String(botUID(bot)) === current)) return current;
-        const firstUID = botUID(owned[0]);
-        return firstUID ? String(firstUID) : '';
+        return resolvePreferredSkillHubBotUID(owned, user?.uid);
       });
     } finally {
       setLoadingBots(false);
@@ -459,7 +631,11 @@ export default function SkillHubView({ user }) {
     }
   }, []);
 
-  const loadLocalWorkspace = useCallback(async (botUID = selectedBotUIDRef.current, deviceID = selectedDeviceID) => {
+  const loadLocalWorkspace = useCallback(async (
+    botUID = selectedBotUIDRef.current,
+    deviceID = selectedDeviceID,
+    options = {},
+  ) => {
     const requestedBotUID = String(botUID || '');
     const requestedDeviceID = String(deviceID || '');
     const requestID = localRequestRef.current + 1;
@@ -471,6 +647,9 @@ export default function SkillHubView({ user }) {
       setLoadingLocalSkills(false);
       return;
     }
+    const allowBotSwitch = options.allowBotSwitch === true
+      || requestedBotSwitchRef.current === requestedBotUID;
+    if (requestedBotSwitchRef.current === requestedBotUID) requestedBotSwitchRef.current = '';
     setLoadingLocalSkills(true);
     // Do not leave the previous Bot's cards actionable while XiaoBa switches
     // its active workspace. The local bridge reads the currently active
@@ -501,21 +680,19 @@ export default function SkillHubView({ user }) {
       } catch (error) {
         if (error?.code !== 'BOT_NOT_ACTIVE') throw error;
         if (!isCurrentRequest()) return;
+        if (!allowBotSwitch) {
+          setLocalNotice('当前 Bot 尚未在本地 XiaoBa 激活。');
+          return;
+        }
         await invoke(SKILLHUB_DEVICE_TOOLS.switchBot, {}, 10_000);
         if (!isCurrentRequest()) return;
         setLocalNotice('正在切换本地 Bot，等待 XiaoBa 重新连接…');
-        let lastError = error;
-        for (let attempt = 0; attempt < 12; attempt += 1) {
-          await wait(attempt === 0 ? 2_000 : 1_500);
-          if (!isCurrentRequest()) return;
-          try {
-            workspace = await invoke(SKILLHUB_DEVICE_TOOLS.workspace, {}, 8_000);
-            break;
-          } catch (retryError) {
-            lastError = retryError;
-          }
-        }
-        if (!workspace) throw lastError;
+        workspace = await waitForSkillHubWorkspaceAfterSwitch({
+          deviceId: requestedDeviceID,
+          readWorkspace: (timeoutMs) => invoke(SKILLHUB_DEVICE_TOOLS.workspace, {}, timeoutMs),
+          isCurrent: isCurrentRequest,
+        });
+        if (!workspace) return;
       }
       if (!isCurrentRequest()) return;
       if (String(workspace?.bot_uid || '') !== requestedBotUID) {
@@ -865,10 +1042,20 @@ export default function SkillHubView({ user }) {
     onInstallSkill={installSkill}
     onQueryChange={setQuery}
     onRefreshDefinition={() => loadDefinition()}
-    onRefreshLocal={() => loadLocalWorkspace()}
+    onRefreshLocal={() => loadLocalWorkspace(
+      selectedBotUIDRef.current,
+      selectedDeviceIDRef.current,
+      { allowBotSwitch: true },
+    )}
     onRemoveSkill={removeSkill}
     onSearch={searchCatalogue}
-    onSelectAgent={setSelectedBotUID}
+    onSelectAgent={(nextBotUID) => {
+      selectedBotUIDRef.current = nextBotUID;
+      requestedBotSwitchRef.current = nextBotUID;
+      rememberSkillHubBotUID(user?.uid, nextBotUID);
+      localRequestRef.current += 1;
+      setSelectedBotUID(nextBotUID);
+    }}
     onSelectDevice={(deviceID) => {
       selectedDeviceIDRef.current = deviceID;
       localRequestRef.current += 1;

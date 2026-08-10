@@ -3,15 +3,21 @@ import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 import SkillHubView, {
   assertSkillHubDeviceResult,
+  isRetryableSkillHubDeviceListError,
+  isRetryableSkillHubSwitchError,
   normalizeOwnedBots,
   normalizeSkillHubDevices,
   normalizeLocalSkills,
   normalizeSkillHubSkills,
   isLocalSkillShared,
   isPrivateSkillHubReference,
+  readRememberedSkillHubBotUID,
+  rememberSkillHubBotUID,
+  resolvePreferredSkillHubBotUID,
   resolveSkillHubEntry,
   resolveSharedSkillHubMetadata,
   upsertSkillRef,
+  waitForSkillHubWorkspaceAfterSwitch,
   waitForPublishedSkillHubEntry,
 } from './skillhub-view';
 import { api, requestSkillHubDeviceTool } from '../api';
@@ -57,6 +63,7 @@ describe('SkillHubView', () => {
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     vi.clearAllMocks();
+    globalThis.localStorage?.clear();
     api.getMyBots.mockResolvedValue({
       bots: [
         { uid: 42, display_name: 'Owner Bot', relation: 'owner', is_owner: true },
@@ -209,6 +216,203 @@ describe('SkillHubView', () => {
       toolName: 'skillhub.localWorkspace.get',
       botUID: '42',
     })).toThrow(/不兼容/);
+  });
+
+  it('remembers the selected Bot per CatsCo user and ignores stale selections', () => {
+    const values = new Map();
+    const storage = {
+      getItem: (key) => values.get(key) || null,
+      setItem: (key, value) => values.set(key, value),
+      removeItem: (key) => values.delete(key),
+    };
+    const bots = [
+      { uid: 42, relation: 'owner' },
+      { uid: 44, relation: 'owner' },
+    ];
+
+    rememberSkillHubBotUID(7, '44', storage);
+    expect(readRememberedSkillHubBotUID(7, storage)).toBe('44');
+    expect(resolvePreferredSkillHubBotUID(bots, 7, storage)).toBe('44');
+    expect(resolvePreferredSkillHubBotUID([bots[0]], 7, storage)).toBe('42');
+  });
+
+  it('waits for the selected device route and retries transient switch errors', async () => {
+    const readyDevice = {
+      deviceId: 'alice-device',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    };
+    const getDevices = vi.fn()
+      .mockResolvedValueOnce({ devices: [{ ...readyDevice, routeConnected: false, routable: false }] })
+      .mockResolvedValue({ devices: [readyDevice] });
+    const readWorkspace = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('no route'), { code: 'target_device_unavailable' }))
+      .mockResolvedValue({ bot_uid: '44' });
+    const waitFor = vi.fn().mockResolvedValue(undefined);
+
+    await expect(waitForSkillHubWorkspaceAfterSwitch({
+      deviceId: 'alice-device',
+      getDevices,
+      readWorkspace,
+      waitFor,
+      maxAttempts: 3,
+    })).resolves.toEqual({ bot_uid: '44' });
+    expect(getDevices).toHaveBeenCalledTimes(3);
+    expect(readWorkspace).toHaveBeenCalledTimes(2);
+    expect(waitFor).toHaveBeenCalledTimes(3);
+    expect(isRetryableSkillHubSwitchError({ code: 'target_device_unavailable' })).toBe(true);
+    expect(isRetryableSkillHubSwitchError({ code: 'OWNER_MISMATCH' })).toBe(false);
+
+    await expect(waitForSkillHubWorkspaceAfterSwitch({
+      deviceId: 'alice-device',
+      getDevices: vi.fn().mockResolvedValue({ devices: [readyDevice] }),
+      readWorkspace: vi.fn().mockRejectedValue(
+        Object.assign(new Error('owner mismatch'), { code: 'OWNER_MISMATCH' }),
+      ),
+      waitFor: vi.fn().mockResolvedValue(undefined),
+      maxAttempts: 3,
+    })).rejects.toMatchObject({ code: 'OWNER_MISMATCH' });
+  });
+
+  it('classifies only transient device-list failures as retryable', () => {
+    expect(isRetryableSkillHubDeviceListError({ code: 'NETWORK_ERROR' })).toBe(true);
+    expect(isRetryableSkillHubDeviceListError({ code: 'REQUEST_TIMEOUT' })).toBe(true);
+    expect(isRetryableSkillHubDeviceListError({ status: 500 })).toBe(true);
+    expect(isRetryableSkillHubDeviceListError({ status: 502 })).toBe(true);
+    expect(isRetryableSkillHubDeviceListError({ status: 503 })).toBe(true);
+    expect(isRetryableSkillHubDeviceListError({ status: 504 })).toBe(true);
+    expect(isRetryableSkillHubDeviceListError({ status: 401 })).toBe(false);
+    expect(isRetryableSkillHubDeviceListError({ status: 403 })).toBe(false);
+    expect(isRetryableSkillHubDeviceListError({ status: 404 })).toBe(false);
+    expect(isRetryableSkillHubDeviceListError({ status: 501 })).toBe(false);
+    expect(isRetryableSkillHubDeviceListError({ code: 'REQUEST_ABORTED' })).toBe(false);
+    expect(isRetryableSkillHubDeviceListError({
+      code: 'NETWORK_ERROR',
+      status: 403,
+    })).toBe(false);
+  });
+
+  it('retries transient device-list failures before reading the workspace', async () => {
+    const readyDevice = {
+      deviceId: 'alice-device',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    };
+    const getDevices = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('offline'), { code: 'NETWORK_ERROR' }))
+      .mockRejectedValueOnce(Object.assign(new Error('unavailable'), { status: 503 }))
+      .mockResolvedValue({ devices: [readyDevice] });
+    const readWorkspace = vi.fn().mockResolvedValue({ bot_uid: '44' });
+    const waitFor = vi.fn().mockResolvedValue(undefined);
+
+    await expect(waitForSkillHubWorkspaceAfterSwitch({
+      deviceId: 'alice-device',
+      getDevices,
+      readWorkspace,
+      waitFor,
+      maxAttempts: 3,
+    })).resolves.toEqual({ bot_uid: '44' });
+    expect(getDevices).toHaveBeenCalledTimes(3);
+    expect(readWorkspace).toHaveBeenCalledTimes(1);
+    expect(waitFor).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([401, 403])('stops immediately when the device list returns HTTP %s', async (status) => {
+    const permanentError = Object.assign(new Error(`HTTP ${status}`), { status });
+    const getDevices = vi.fn().mockRejectedValue(permanentError);
+    const readWorkspace = vi.fn();
+    const waitFor = vi.fn().mockResolvedValue(undefined);
+
+    await expect(waitForSkillHubWorkspaceAfterSwitch({
+      deviceId: 'alice-device',
+      getDevices,
+      readWorkspace,
+      waitFor,
+      maxAttempts: 3,
+    })).rejects.toBe(permanentError);
+    expect(getDevices).toHaveBeenCalledTimes(1);
+    expect(readWorkspace).not.toHaveBeenCalled();
+    expect(waitFor).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops at the absolute deadline when the device list never settles', async () => {
+    vi.useFakeTimers();
+    const getDevices = vi.fn(() => new Promise(() => {}));
+    const readWorkspace = vi.fn();
+
+    const result = waitForSkillHubWorkspaceAfterSwitch({
+      deviceId: 'alice-device',
+      getDevices,
+      readWorkspace,
+      timeoutMs: 250,
+      initialDelayMs: 25,
+      retryDelayMs: 25,
+      deviceListTimeoutMs: 50,
+    }).catch((error) => error);
+
+    await vi.advanceTimersByTimeAsync(251);
+
+    await expect(result).resolves.toMatchObject({
+      code: 'skillhub_device_switch_timeout',
+      cause: { code: 'REQUEST_TIMEOUT' },
+    });
+    expect(getDevices).toHaveBeenCalledTimes(3);
+    expect(getDevices.mock.calls.map(([options]) => options.timeoutMs)).toEqual([50, 50, 50]);
+    expect(readWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('caps repeated workspace attempts to the remaining absolute deadline', async () => {
+    const readyDevice = {
+      deviceId: 'alice-device',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    };
+    let clock = 0;
+    const waitFor = vi.fn(async (delayMs) => { clock += delayMs; });
+    const readWorkspace = vi.fn(async (requestTimeoutMs) => {
+      clock += requestTimeoutMs;
+      throw Object.assign(new Error('workspace timeout'), { code: 'skillhub_device_timeout' });
+    });
+
+    await expect(waitForSkillHubWorkspaceAfterSwitch({
+      deviceId: 'alice-device',
+      getDevices: vi.fn().mockResolvedValue({ devices: [readyDevice] }),
+      readWorkspace,
+      waitFor,
+      timeoutMs: 103,
+      initialDelayMs: 10,
+      retryDelayMs: 10,
+      deviceListTimeoutMs: 20,
+      workspaceTimeoutMs: 20,
+      now: () => clock,
+    })).rejects.toMatchObject({
+      code: 'skillhub_device_switch_timeout',
+      cause: { code: 'skillhub_device_timeout' },
+    });
+    expect(readWorkspace.mock.calls.map(([requestTimeoutMs]) => requestTimeoutMs))
+      .toEqual([20, 20, 20, 3]);
+    expect(clock).toBe(103);
   });
 
   it('waits for an asynchronously published Skill when share initially returns only its ID', async () => {
@@ -737,6 +941,162 @@ describe('SkillHubView', () => {
 
     expect(container.textContent).toContain('bot-b/skill');
     expect(container.textContent).not.toContain('bot-a/skill');
+  });
+
+  it('restores the remembered Bot without treating page load as a switch request', async () => {
+    globalThis.localStorage.setItem('catsco.skillhub.selectedBot.7', '44');
+    api.getMyBots.mockResolvedValueOnce({
+      bots: [
+        { id: 42, display_name: 'Bot A', relation: 'owner' },
+        { id: 44, display_name: 'Bot B', relation: 'owner' },
+      ],
+    });
+    api.getBotDefinitionSkills.mockImplementation((uid) => Promise.resolve({
+      botId: String(uid),
+      revision: 1,
+      skills: [],
+    }));
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.cc-skillhub-bot-picker select').value).toBe('44');
+    expect(requestSkillHubDeviceTool).not.toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'skillhub.localBot.switch',
+    }));
+  });
+
+  it('does not switch the fallback Bot until the user explicitly requests it', async () => {
+    api.getDevices.mockResolvedValueOnce({
+      devices: [{
+        deviceId: 'alice-device',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockRejectedValue(
+      Object.assign(new Error('Bot is not active'), { code: 'BOT_NOT_ACTIVE' }),
+    );
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCustomSkills();
+
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'skillhub.localWorkspace.get',
+    }));
+    expect(requestSkillHubDeviceTool).not.toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'skillhub.localBot.switch',
+    }));
+    expect(container.textContent).toContain('当前 Bot 尚未在本地 XiaoBa 激活');
+  });
+
+  it('recovers a transient device route loss after an explicit Bot switch', async () => {
+    vi.useFakeTimers();
+    const readyDevice = {
+      deviceId: 'alice-device',
+      active: true,
+      routeConnected: true,
+      routable: true,
+      capabilities: [
+        'skillhub.localWorkspace.get',
+        'skillhub.localSkill.share',
+        'skillhub.localSkill.finalize',
+        'skillhub.localBot.switch',
+      ],
+    };
+    api.getMyBots.mockResolvedValueOnce({
+      bots: [
+        { id: 42, display_name: 'Bot A', relation: 'owner' },
+        { id: 44, display_name: 'Bot B', relation: 'owner' },
+      ],
+    });
+    api.getBotDefinitionSkills.mockImplementation((uid) => Promise.resolve({
+      botId: String(uid),
+      revision: 1,
+      skills: [],
+    }));
+    api.getDevices.mockResolvedValue({ devices: [readyDevice] });
+    let botBWorkspaceAttempts = 0;
+    requestSkillHubDeviceTool.mockImplementation(({ toolName, payload }) => {
+      if (toolName === 'skillhub.localWorkspace.get' && payload.bot_uid === '42') {
+        return Promise.resolve({
+          schema: 'xiaoba.skillhub.local_workspace.v1',
+          bot_uid: '42',
+          active_bot_uid: '42',
+          skills_path: 'C:\\xiaoba\\bot-a\\skills',
+          skills: [],
+        });
+      }
+      if (toolName === 'skillhub.localWorkspace.get' && payload.bot_uid === '44') {
+        botBWorkspaceAttempts += 1;
+        if (botBWorkspaceAttempts === 1) {
+          return Promise.reject(Object.assign(new Error('Bot is not active'), { code: 'BOT_NOT_ACTIVE' }));
+        }
+        if (botBWorkspaceAttempts === 2) {
+          return Promise.reject(Object.assign(new Error('no route'), { code: 'target_device_unavailable' }));
+        }
+        return Promise.resolve({
+          schema: 'xiaoba.skillhub.local_workspace.v1',
+          bot_uid: '44',
+          active_bot_uid: '44',
+          skills_path: 'C:\\xiaoba\\bot-b\\skills',
+          skills: [],
+        });
+      }
+      if (toolName === 'skillhub.localBot.switch') {
+        return Promise.resolve({
+          schema: 'xiaoba.skillhub.bot_switch.v1',
+          bot_uid: payload.bot_uid,
+          switching: true,
+        });
+      }
+      throw new Error(`unexpected tool ${toolName}`);
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCustomSkills();
+    const picker = container.querySelector('.cc-skillhub-bot-picker select');
+    await act(async () => {
+      picker.value = '44';
+      Simulate.change(picker);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'skillhub.localBot.switch',
+      payload: expect.objectContaining({ bot_uid: '44' }),
+    }));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(1_500);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('C:\\xiaoba\\bot-b\\skills');
+    expect(container.textContent).not.toContain('no route');
+    expect(globalThis.localStorage.getItem('catsco.skillhub.selectedBot.7')).toBe('44');
   });
 
   it('does not switch back to a stale Bot after a late BOT_NOT_ACTIVE response', async () => {
