@@ -265,6 +265,26 @@ export function isLocalSkillShared(skill, installedReference) {
   return skill?.canShare === false && hasPublishedIdentity;
 }
 
+export function resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference) {
+  const skillId = String(skill?.skillId || '').trim();
+  const details = catalogueByID?.get(skillId);
+  const candidate = localSkillsByReference?.get(skillId);
+  const candidateReference = candidate?.skillHub?.reference;
+  const localDetails = candidate
+    && (!skill?.version || candidateReference?.version === skill.version)
+    && (!skill?.contentHash || candidateReference?.contentHash === skill.contentHash)
+    ? candidate
+    : null;
+  const privateReference = isPrivateSkillHubReference(skillId);
+  return {
+    details,
+    localDetails,
+    privateReference,
+    label: details?.displayName || localDetails?.name || (privateReference ? '私有能力' : skillId),
+    description: details?.description || localDetails?.description || '此能力已添加到当前 Agent，可立即使用。',
+  };
+}
+
 export function upsertSkillRef(skills, nextRef, replacedSkillId = '') {
   const previousID = String(replacedSkillId || '').trim();
   return [...(skills || []).filter((skill) => (
@@ -513,9 +533,25 @@ export default function SkillHubView({ user }) {
     (definition.skills || []).map((skill) => [skill.skillId, skill]),
   ), [definition.skills]);
 
+  const localSkillsByReference = useMemo(() => {
+    const result = new Map();
+    for (const skill of localSkills) {
+      const skillId = String(skill?.skillHub?.reference?.skillId || '').trim();
+      if (skillId) result.set(skillId, skill);
+    }
+    return result;
+  }, [localSkills]);
+
   const catalogueByID = useMemo(() => new Map(
     catalogue.map((skill) => [skill.skillId, skill]),
   ), [catalogue]);
+
+  const addedSkillPresentationByID = useMemo(() => new Map(
+    (definition.skills || []).map((skill) => [
+      skill.skillId,
+      resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference),
+    ]),
+  ), [catalogueByID, definition.skills, localSkillsByReference]);
 
   const selectedAgent = useMemo(() => (
     bots.find((bot) => String(botUID(bot)) === selectedBotUID) || null
@@ -835,7 +871,7 @@ export default function SkillHubView({ user }) {
     if (!skillID || !definitionReady || saving || sharingSkill || skillAction) return;
     const requestedBotUID = selectedBotUIDRef.current;
     const agentName = botLabel(selectedAgent);
-    const skillName = catalogueByID.get(skillID)?.displayName || skillID;
+    const skillName = addedSkillPresentationByID.get(skillID)?.label || skillID;
     const confirmed = await feedback.confirm({
       title: `从“${agentName}”移除“${skillName}”？`,
       message: '该 Agent 将无法继续调用此能力。技能本身不会从 SkillHub 删除。',
@@ -858,8 +894,11 @@ export default function SkillHubView({ user }) {
   const copySkill = async (skillID) => {
     if (!skillID || !definitionReady || saving || sharingSkill || skillAction) return;
     const requestedBotUID = selectedBotUIDRef.current;
-    const details = catalogueByID.get(skillID);
-    const skillName = details?.displayName || skillID;
+    const presentation = addedSkillPresentationByID.get(skillID);
+    const details = presentation?.details || catalogueByID.get(skillID);
+    const skillName = presentation?.label || skillID;
+    const privateReference = presentation?.privateReference ?? isPrivateSkillHubReference(skillID);
+    const manualCopyHint = privateReference ? '私有能力引用' : 'SkillHub ID';
     const shareURL = String(details?.shareUrl || details?.share_url || details?.url || '').trim();
     const copiedValue = shareURL || skillID;
     setSkillAction({ type: 'copy', skillId: skillID });
@@ -870,11 +909,13 @@ export default function SkillHubView({ user }) {
       if (requestedBotUID === selectedBotUIDRef.current) {
         setActionNotice(shareURL
           ? `已复制 ${skillName} 的链接。`
-          : `已复制 ${skillName} 的 SkillHub ID。`);
+          : privateReference
+            ? `已复制 ${skillName} 的私有能力引用。`
+            : `已复制 ${skillName} 的 SkillHub ID。`);
       }
     } catch (error) {
       if (requestedBotUID === selectedBotUIDRef.current) {
-        setDefinitionError(`${error?.message || '复制失败'} 请手动复制 SkillHub ID：${skillID}`);
+        setDefinitionError(`${error?.message || '复制失败'} 请手动复制 ${manualCopyHint}：${skillID}`);
       }
     } finally {
       if (requestedBotUID === selectedBotUIDRef.current) setSkillAction(null);
@@ -1017,6 +1058,7 @@ export default function SkillHubView({ user }) {
   return <SkillHubContent
     actionNotice={actionNotice}
     activeSection={activeSection}
+    addedSkillPresentationByID={addedSkillPresentationByID}
     agentOptions={agentOptions}
     catalogue={catalogue}
     catalogueByID={catalogueByID}
@@ -1026,6 +1068,7 @@ export default function SkillHubView({ user }) {
     definitionReady={definitionReady}
     devices={devices}
     installedByID={installedByID}
+    isLocalSkillShared={isLocalSkillShared}
     isLocalEnabled={true}
     loadingBots={loadingBots}
     loadingCatalogue={loadingCatalogue}
