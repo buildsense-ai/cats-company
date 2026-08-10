@@ -26,7 +26,7 @@ func (s *botSkillsVisibilityTestStore) SetBotSkillsVisibility(_ int64, visibilit
 
 func TestSetBotSkillsVisibility(t *testing.T) {
 	db := &botSkillsVisibilityTestStore{ownerUID: 7}
-	handler := NewBotHandler(db, nil)
+	handler := NewBotHandler(db)
 	req := httptest.NewRequest(http.MethodPatch, "/api/bots/skills-visibility?uid=43&v=authorized", nil)
 	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
 	rec := httptest.NewRecorder()
@@ -51,7 +51,7 @@ func TestSetBotSkillsVisibilityRejectsInvalidValueAndNonOwner(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			db := &botSkillsVisibilityTestStore{ownerUID: tc.ownerUID}
-			handler := NewBotHandler(db, nil)
+			handler := NewBotHandler(db)
 			req := httptest.NewRequest(http.MethodPatch, "/api/bots/skills-visibility?"+tc.query, nil)
 			req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
 			rec := httptest.NewRecorder()
