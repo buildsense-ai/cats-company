@@ -270,6 +270,20 @@ class ProviderCircuitRecoveryTest(unittest.TestCase):
             ),
             17,
         )
+        self.assertEqual(
+            adapter.provider_cooldown_seconds(
+                {}, status=HTTPStatus.TOO_MANY_REQUESTS, error_code="rate_limit"
+            ),
+            adapter.PROVIDER_POOL_RATE_LIMIT_COOLDOWN_SECONDS,
+        )
+        self.assertTrue(
+            adapter.provider_failure_opens_circuit(
+                HTTPStatus.TOO_MANY_REQUESTS,
+                valid_payload=False,
+                payload=b"",
+                error_code="rate_limit",
+            )
+        )
         self.assertLessEqual(adapter.PROVIDER_POOL_RECOVERY_WAIT_SECONDS, 5.0)
 
     def test_all_cooling_pool_allows_only_one_coordinated_probe(self):
@@ -304,6 +318,29 @@ class ProviderCircuitRecoveryTest(unittest.TestCase):
         )
         self.assertNotEqual(candidates[0], "provider-b")
         self.assertEqual(candidates[-1], "provider-b")
+
+    def test_successful_half_open_probe_closes_the_circuit(self):
+        adapter.PROVIDER_POOL_UNAVAILABLE_UNTIL["provider-a"] = 100.0
+        lease = adapter.acquire_provider_pool_lease(
+            self.model,
+            "provider-a",
+            now=101.0,
+            deadline=105.0,
+        )
+        self.assertIsNotNone(lease)
+        assert lease is not None
+        self.assertTrue(lease.half_open_probe)
+
+        adapter.release_provider_pool_lease(lease)
+        adapter.record_provider_pool_result(
+            self.model,
+            "provider-a",
+            available=True,
+            lease=lease,
+        )
+
+        self.assertNotIn("provider-a", adapter.PROVIDER_POOL_UNAVAILABLE_UNTIL)
+        self.assertNotIn("provider-a", adapter.PROVIDER_POOL_HALF_OPEN_INFLIGHT)
 
 
 if __name__ == "__main__":
