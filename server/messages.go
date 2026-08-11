@@ -628,6 +628,9 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 			if actor.Username != "" {
 				actorMap["username"] = actor.Username
 			}
+			if actor.AvatarURL != "" {
+				actorMap["avatar_url"] = actor.AvatarURL
+			}
 		}
 	} else if h != nil && h.db != nil {
 		if actor, err := h.db.GetUser(actorUID); err == nil && actor != nil {
@@ -643,6 +646,9 @@ func (h *Hub) buildCatscoIdentityMetadata(actorUID int64, recipientUID int64, to
 			}
 			if actor.Username != "" {
 				actorMap["username"] = actor.Username
+			}
+			if actor.AvatarURL != "" {
+				actorMap["avatar_url"] = actor.AvatarURL
 			}
 		}
 	}

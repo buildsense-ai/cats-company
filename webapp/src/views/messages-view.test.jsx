@@ -374,6 +374,7 @@ describe('MessagesView composer draft isolation', () => {
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.clear();
+    sessionStorage.clear();
     api.getMessages.mockResolvedValue({ messages: [] });
     api.getFriends.mockResolvedValue({ friends: [] });
     api.getAgents.mockResolvedValue({ agents: [] });
@@ -935,6 +936,64 @@ describe('MessagesView composer draft isolation', () => {
     });
   });
 
+  it('reconciles an own echo that carries the legacy metadata client message id', async () => {
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 100,
+        seq_id: 100,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        role: 'assistant',
+        type: 'text',
+        content: '上一轮已经完成。',
+        created_at: '2026-08-11T10:00:00Z',
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '发送前的展示文本');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+    const clientMsgID = api.sendMessage.mock.calls[0][4];
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 101,
+          from: 'usr1',
+          type: 'text',
+          msg_type: 'text',
+          content: '服务端规范化后的展示文本',
+          metadata: { client_message_id: clientMsgID },
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageId,
+    )).toEqual(['100', '101']);
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101, client_msg_id: clientMsgID });
+      await flushPromises();
+    });
+  });
+
   it('reanchors an unresolved send after the loaded history', async () => {
     const historyResult = deferred();
     const sendResult = deferred();
@@ -1237,6 +1296,239 @@ describe('MessagesView composer draft isolation', () => {
     expect(message?.dataset.senderAvatar).toBe('/uploads/current-agent.png');
   });
 
+  it('keeps cached group member identity when a refresh response is empty', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 78,
+        seq_id: 78,
+        topic_id: 'grp_9',
+        from_uid: 2,
+        type: 'text',
+        content: 'Cached group member reply',
+      }],
+    });
+    api.getGroupInfo
+      .mockResolvedValueOnce({
+        group: { id: 9, name: 'Cached group' },
+        members: [{ user_id: 1, display_name: 'Me' }, {
+          user_id: 2,
+          display_name: 'Cached Group Agent',
+          avatar_url: '/uploads/cached-group-agent.png',
+          is_bot: true,
+        }],
+      })
+      .mockResolvedValueOnce({ group: null, members: [] });
+
+    await mountTopic(root, 'grp_9', {
+      isGroup: true,
+      groupId: 9,
+      topicName: '',
+      topicAvatarUrl: '',
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    let message = container.querySelector('.mock-chat-message[data-message-id="78"]');
+    expect(message?.dataset.senderName).toBe('Cached Group Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/cached-group-agent.png');
+
+    await act(async () => {
+      wsHandler({ pres: { topic: 'grp_9', what: 'group_updated' } });
+      await flushPromises();
+    });
+
+    message = container.querySelector('.mock-chat-message[data-message-id="78"]');
+    expect(message?.dataset.senderName).toBe('Cached Group Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/cached-group-agent.png');
+  });
+
+  it('keeps cached group member identity when a refresh has empty display fields', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 80,
+        seq_id: 80,
+        topic_id: 'grp_9',
+        from_uid: 2,
+        type: 'text',
+        content: 'Partial group member reply',
+      }],
+    });
+    api.getGroupInfo
+      .mockResolvedValueOnce({
+        group: { id: 9, name: 'Cached group', avatar_url: '/uploads/cached-group.png' },
+        members: [{ user_id: 1, display_name: 'Me' }, {
+          user_id: 2,
+          display_name: 'Cached Group Agent',
+          avatar_url: '/uploads/cached-group-agent.png',
+          is_bot: true,
+        }],
+      })
+      .mockResolvedValueOnce({
+        group: { id: 9, name: '', avatar_url: '' },
+        members: [{ user_id: 1, display_name: 'Me' }, {
+          user_id: 2,
+          display_name: '',
+          avatar_url: '',
+          is_bot: true,
+        }],
+      });
+
+    await mountTopic(root, 'grp_9', {
+      isGroup: true,
+      groupId: 9,
+      topicName: '',
+      topicAvatarUrl: '',
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    await act(async () => {
+      wsHandler({ pres: { topic: 'grp_9', what: 'group_updated' } });
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="80"]');
+    expect(message?.dataset.senderName).toBe('Cached Group Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/cached-group-agent.png');
+  });
+
+  it('keeps cached group sender identity when a refresh omits that member', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 85,
+        seq_id: 85,
+        topic_id: 'grp_9',
+        from_uid: 2,
+        type: 'text',
+        content: 'Omitted group member reply',
+      }],
+    });
+    api.getGroupInfo
+      .mockResolvedValueOnce({
+        group: { id: 9, name: 'Cached group' },
+        members: [{ user_id: 1, display_name: 'Me' }, {
+          user_id: 2,
+          display_name: 'Cached Group Agent',
+          avatar_url: '/uploads/cached-group-agent.png',
+          is_bot: true,
+        }],
+      })
+      .mockResolvedValueOnce({
+        group: { id: 9, name: 'Cached group' },
+        members: [{ user_id: 1, display_name: 'Me' }],
+      });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mountTopic(root, 'grp_9', {
+      isGroup: true,
+      groupId: 9,
+      topicName: '',
+      topicAvatarUrl: '',
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    await act(async () => {
+      wsHandler({ pres: { topic: 'grp_9', what: 'group_updated' } });
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="85"]');
+    expect(message?.dataset.senderName).toBe('Cached Group Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/cached-group-agent.png');
+  });
+
+  it('uses the Agent roster identity when the group member display fields are empty', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 81,
+        seq_id: 81,
+        topic_id: 'grp_9',
+        from_uid: 2,
+        type: 'text',
+        content: 'Roster fallback group reply',
+      }],
+    });
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 9, name: 'Roster fallback group' },
+      members: [{ user_id: 1, display_name: 'Me' }, {
+        user_id: 2,
+        display_name: '',
+        avatar_url: '',
+        is_bot: true,
+      }],
+    });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 2,
+        display_name: 'Roster Group Agent',
+        avatar_url: '/uploads/roster-group-agent.png',
+        is_bot: true,
+      }],
+    });
+
+    await mountTopic(root, 'grp_9', {
+      isGroup: true,
+      groupId: 9,
+      topicName: '',
+      topicAvatarUrl: '',
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="81"]');
+    expect(message?.dataset.senderName).toBe('Roster Group Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/roster-group-agent.png');
+  });
+
+  it('uses canonical message identity when group member lookups are unavailable', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 82,
+        seq_id: 82,
+        topic_id: 'grp_9',
+        from_uid: 2,
+        type: 'text',
+        content: 'Canonical group identity reply',
+        metadata: {
+          catsco_identity: {
+            actor: {
+              user_id: 'usr2',
+              display_name: 'Canonical Group Agent',
+              avatar_url: '/uploads/canonical-group-agent.png',
+              account_type: 'bot',
+              is_bot: true,
+            },
+          },
+        },
+      }],
+    });
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 9, name: 'Canonical identity group' },
+      members: [{ user_id: 1, display_name: 'Me' }],
+    });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mountTopic(root, 'grp_9', {
+      isGroup: true,
+      groupId: 9,
+      topicName: '',
+      topicAvatarUrl: '',
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="82"]');
+    expect(message?.dataset.senderName).toBe('Canonical Group Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/canonical-group-agent.png');
+    expect(message?.dataset.senderIsBot).toBe('true');
+  });
+
   it('uses the live Agent roster when the peer profile request has no result', async () => {
     const rosterAgent = {
       uid: 2,
@@ -1263,6 +1555,163 @@ describe('MessagesView composer draft isolation', () => {
     const message = container.querySelector('.mock-chat-message[data-message-id="76"]');
     expect(message?.dataset.senderName).toBe('Roster Agent');
     expect(message?.dataset.senderAvatar).toBe('/uploads/roster-agent.png');
+  });
+
+  it('uses canonical message identity after a cold peer refresh', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 83,
+        seq_id: 83,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: 'Canonical peer identity reply',
+        metadata: {
+          catsco_identity: {
+            actor: {
+              user_id: 'usr2',
+              display_name: 'Canonical Peer Agent',
+              avatar_url: '/uploads/canonical-peer-agent.png',
+              account_type: 'bot',
+              is_bot: true,
+            },
+          },
+        },
+      }],
+    });
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mountTopic(root, 'p2p_1_2', { topicName: '', topicAvatarUrl: '' });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="83"]');
+    expect(message?.dataset.senderName).toBe('Canonical Peer Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/canonical-peer-agent.png');
+    expect(message?.dataset.senderIsBot).toBe('true');
+  });
+
+  it('uses canonical message identity for an incomplete current-user profile', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 84,
+        seq_id: 84,
+        topic_id: 'p2p_1_2',
+        from_uid: 1,
+        type: 'text',
+        content: 'Canonical self identity reply',
+        metadata: {
+          catsco_identity: {
+            actor: {
+              user_id: 'usr1',
+              display_name: 'Canonical Me',
+              avatar_url: '/uploads/canonical-me.png',
+              account_type: 'human',
+              is_bot: false,
+            },
+          },
+        },
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2', {
+      user: { ...user, display_name: '', avatar_url: '' },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="84"]');
+    expect(message?.dataset.senderName).toBe('Canonical Me');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/canonical-me.png');
+    expect(message?.dataset.senderIsBot).toBe('false');
+  });
+
+  it('keeps peer identity when the live Agent roster has empty display fields', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 79,
+        seq_id: 79,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: 'Partial roster reply',
+      }],
+    });
+    api.getFriends.mockResolvedValue({
+      friends: [{
+        id: 2,
+        display_name: 'Complete Agent Profile',
+        avatar_url: '/uploads/complete-agent.png',
+        is_bot: true,
+      }],
+    });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 2,
+        display_name: '',
+        avatar_url: '',
+        is_bot: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2', { topicName: '', topicAvatarUrl: '' });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id="79"]');
+    expect(message?.dataset.senderName).toBe('Complete Agent Profile');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/complete-agent.png');
+  });
+
+  it('keeps cached peer identity after refresh when the profile lookup has no peer', async () => {
+    api.getMessages.mockResolvedValue({
+      messages: [{
+        id: 77,
+        seq_id: 77,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: 'Cached peer reply',
+      }],
+    });
+    api.getFriends
+      .mockResolvedValueOnce({
+        friends: [{
+          id: 2,
+          display_name: 'Cached Agent',
+          avatar_url: '/uploads/cached-agent.png',
+          is_bot: true,
+        }],
+      })
+      .mockResolvedValueOnce({ friends: [] });
+    api.getAgents.mockResolvedValue({ agents: [] });
+
+    await mountTopic(root, 'p2p_1_2', { topicName: '', topicAvatarUrl: '' });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    let message = container.querySelector('.mock-chat-message[data-message-id="77"]');
+    expect(message?.dataset.senderName).toBe('Cached Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/cached-agent.png');
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+
+    await mountTopic(root, 'p2p_1_2', { topicName: '', topicAvatarUrl: '' });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    message = container.querySelector('.mock-chat-message[data-message-id="77"]');
+    expect(message?.dataset.senderName).toBe('Cached Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/cached-agent.png');
   });
 
   it('does not restore a failed old-topic draft after the user has switched topics', async () => {

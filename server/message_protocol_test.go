@@ -374,7 +374,7 @@ func TestExtractPeerUIDRequiresSenderInTopic(t *testing.T) {
 func TestFanoutMessageAddsCanonicalCatscoIdentityForBotRecipient(t *testing.T) {
 	store := &identityMessageStore{
 		users: map[int64]*types.User{
-			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice", AvatarURL: "/uploads/alice.png"},
 			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
 		},
 	}
@@ -417,7 +417,7 @@ func TestFanoutMessageAddsCanonicalCatscoIdentityForBotRecipient(t *testing.T) {
 	if msg.Data.Metadata["keep"] != "yes" {
 		t.Fatalf("expected original metadata to be preserved: %#v", msg.Data.Metadata)
 	}
-	if actor["user_id"] != "usr7" || actor["display_name"] != "Alice" {
+	if actor["user_id"] != "usr7" || actor["display_name"] != "Alice" || actor["avatar_url"] != "/uploads/alice.png" {
 		t.Fatalf("unexpected actor identity: %#v", actor)
 	}
 	if actor["account_type"] != string(types.AccountHuman) || actor["is_bot"] != false {
@@ -482,7 +482,7 @@ func TestGroupFanoutAddsRecipientBotIdentity(t *testing.T) {
 func TestHistoryMessagesIncludeCanonicalCatscoIdentityForBotRecipient(t *testing.T) {
 	store := &identityMessageStore{
 		users: map[int64]*types.User{
-			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice", AvatarURL: "/uploads/alice-history.png"},
 			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
 		},
 		history: []*types.Message{{
@@ -514,9 +514,13 @@ func TestHistoryMessagesIncludeCanonicalCatscoIdentityForBotRecipient(t *testing
 	var msg ServerMessage
 	decodeQueuedServerMessage(t, botClient.send, &msg)
 	identity := metadataMapFromServerMessage(t, &msg, "catsco_identity")
+	actor := nestedMap(t, identity, "actor")
 	agent := nestedMap(t, identity, "agent")
 	topic := nestedMap(t, identity, "topic")
 
+	if actor["avatar_url"] != "/uploads/alice-history.png" {
+		t.Fatalf("unexpected history actor identity: %#v", actor)
+	}
 	if agent["agent_id"] != "usr42" || agent["body_id"] != "body-mac" {
 		t.Fatalf("unexpected history recipient agent identity: %#v", agent)
 	}
@@ -537,7 +541,7 @@ func TestHistoryMessagesIncludeCanonicalCatscoIdentityForBotRecipient(t *testing
 func TestHandleGetMessagesAuthorizesAndMarksReplayHistory(t *testing.T) {
 	store := &identityMessageStore{
 		users: map[int64]*types.User{
-			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice", AvatarURL: "/uploads/alice-history.png"},
 			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
 		},
 		history: []*types.Message{{
@@ -578,6 +582,10 @@ func TestHandleGetMessagesAuthorizesAndMarksReplayHistory(t *testing.T) {
 	identity, ok := metadata["catsco_identity"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("catsco_identity = %#v, want object", metadata["catsco_identity"])
+	}
+	actor, ok := identity["actor"].(map[string]interface{})
+	if !ok || actor["avatar_url"] != "/uploads/alice-history.png" {
+		t.Fatalf("unexpected replay actor identity: %#v", identity["actor"])
 	}
 	permissions, ok := identity["permissions"].(map[string]interface{})
 	if !ok || permissions["replay"] != true || permissions["device_access"] != "non_executable_history" {

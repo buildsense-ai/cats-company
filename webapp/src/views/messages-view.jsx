@@ -38,6 +38,21 @@ const STICK_TO_BOTTOM_THRESHOLD = 96;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
 const PENDING_HISTORY_MATCH_CLOCK_SKEW_MS = 5 * 60 * 1000;
+const PEER_IDENTITY_CACHE_STORAGE_PREFIX = 'cc_peer_identity_v1';
+const PEER_IDENTITY_CACHE_FIELDS = [
+  'id',
+  'uid',
+  'display_name',
+  'username',
+  'avatar_url',
+  'bot',
+  'is_bot',
+  'account_type',
+  'is_owner',
+  'relation',
+  'cloud_artifacts_enabled',
+];
+const IDENTITY_TEXT_FIELDS = ['display_name', 'username', 'avatar_url', 'name'];
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
   'members_invited',
   'member_left',
@@ -259,6 +274,97 @@ function historyCacheKey(userID, topic) {
   return `${userID || 'anonymous'}:${topic}`;
 }
 
+function hasIdentityText(value) {
+  return value != null && String(value).trim() !== '';
+}
+
+function mergeIdentityRecord(fallback, preferred) {
+  const fallbackRecord = fallback && typeof fallback === 'object' ? fallback : null;
+  const preferredRecord = preferred && typeof preferred === 'object' ? preferred : null;
+  if (!fallbackRecord && !preferredRecord) return null;
+
+  const merged = { ...(fallbackRecord || {}), ...(preferredRecord || {}) };
+  IDENTITY_TEXT_FIELDS.forEach((field) => {
+    if (!hasIdentityText(preferredRecord?.[field]) && hasIdentityText(fallbackRecord?.[field])) {
+      merged[field] = fallbackRecord[field];
+    }
+  });
+  return merged;
+}
+
+function messageActorIdentity(message) {
+  const actor = message?.metadata?.catsco_identity?.actor;
+  if (!actor || typeof actor !== 'object' || Array.isArray(actor)) return null;
+
+  const messageUID = parseUid(message?.from_uid || message?.from);
+  const actorUID = parseUid(actor.user_id || actor.uid || actor.id);
+  if (messageUID > 0 && actorUID !== messageUID) return null;
+  return actor;
+}
+
+function identityRecordUID(record) {
+  return parseUid(record?.user_id || record?.uid || record?.id);
+}
+
+function mergeGroupMemberIdentity(cachedMembers, members) {
+  const cachedByUID = new Map(
+    (cachedMembers || [])
+      .map((member) => [identityRecordUID(member), member])
+      .filter(([uid]) => uid > 0),
+  );
+  return members.map((member) => {
+    const uid = identityRecordUID(member);
+    return mergeIdentityRecord(cachedByUID.get(uid), member);
+  });
+}
+
+function cacheGroupMemberIdentities(cache, groupID, members) {
+  if (!groupID || !Array.isArray(members)) return;
+  const key = String(groupID);
+  const identities = cache.get(key) || new Map();
+  members.forEach((member) => {
+    const uid = identityRecordUID(member);
+    if (uid > 0) identities.set(uid, mergeIdentityRecord(identities.get(uid), member));
+  });
+  cache.set(key, identities);
+}
+
+function cachedGroupMemberIdentity(cache, groupID, uid) {
+  if (!groupID || uid <= 0) return null;
+  return cache.get(String(groupID))?.get(uid) || null;
+}
+
+function peerIdentityCacheKey(userID, topic) {
+  const normalizedUserID = parseUid(userID) || String(userID || 'anonymous');
+  return `${PEER_IDENTITY_CACHE_STORAGE_PREFIX}:${normalizedUserID}:${topic}`;
+}
+
+function readPeerIdentityCache(userID, topic) {
+  if (!topic || typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage?.getItem(peerIdentityCacheKey(userID, topic));
+    if (!raw) return null;
+    const profile = JSON.parse(raw);
+    return profile && typeof profile === 'object' && !Array.isArray(profile) ? profile : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePeerIdentityCache(userID, topic, profile) {
+  if (!topic || !profile || typeof window === 'undefined') return;
+  const cachedProfile = {};
+  PEER_IDENTITY_CACHE_FIELDS.forEach((field) => {
+    if (profile[field] != null) cachedProfile[field] = profile[field];
+  });
+  if (!IDENTITY_TEXT_FIELDS.some((field) => hasIdentityText(cachedProfile[field]))) return;
+  try {
+    window.sessionStorage?.setItem(peerIdentityCacheKey(userID, topic), JSON.stringify(cachedProfile));
+  } catch {
+    // The current profile remains available in memory when session storage is unavailable.
+  }
+}
+
 function artifactURLsInMessage(message) {
   if (message?._streaming) return [];
   const textBlocks = Array.isArray(message?.content_blocks)
@@ -387,6 +493,7 @@ export default function MessagesView({
   const activeArtifactAgentUIDRef = useRef(0);
   const historyCacheRef = useRef(new Map());
   const groupProfileCacheRef = useRef(new Map());
+  const groupMemberIdentityCacheRef = useRef(new Map());
   const hasMoreHistoryRef = useRef(false);
   const loadingOlderRef = useRef(false);
   const activeTopicRef = useRef(topic);
@@ -719,9 +826,10 @@ export default function MessagesView({
     const cachedGroupProfile = isGroup && groupId
       ? groupProfileCacheRef.current.get(String(groupId))
       : null;
+    const cachedPeerProfile = !isGroup ? readPeerIdentityCache(user.uid, topic) : null;
     setMembers(cachedGroupProfile?.members || []);
     setGroupInfo(cachedGroupProfile?.group || null);
-    setPeerProfile(null);
+    setPeerProfile(cachedPeerProfile);
     setHistoryLoaded(Boolean(cachedHistory));
     setHistoryError('');
     setOlderHistoryError('');
@@ -814,10 +922,13 @@ export default function MessagesView({
       const res = await api.getGroupInfo(requestGroupID);
       if (requestID !== groupMembersRequestRef.current || activeTopicRef.current !== requestTopic) return;
       const cachedProfile = groupProfileCacheRef.current.get(String(requestGroupID));
-      const nextMembers = Array.isArray(res.members)
-        ? res.members
-        : (cachedProfile?.members || []);
-      const nextGroup = res.group || cachedProfile?.group || null;
+      const cachedMembers = cachedProfile?.members || [];
+      cacheGroupMemberIdentities(groupMemberIdentityCacheRef.current, requestGroupID, cachedMembers);
+      const nextMembers = Array.isArray(res.members) && res.members.length > 0
+        ? mergeGroupMemberIdentity(cachedMembers, res.members)
+        : cachedMembers;
+      cacheGroupMemberIdentities(groupMemberIdentityCacheRef.current, requestGroupID, nextMembers);
+      const nextGroup = mergeIdentityRecord(cachedProfile?.group, res.group);
       groupProfileCacheRef.current.set(String(requestGroupID), {
         members: nextMembers,
         group: nextGroup,
@@ -844,9 +955,13 @@ export default function MessagesView({
       const agents = agentsRes.agents || [];
       const friendPeer = friends.find((friend) => sameUID(friend.id, peerId));
       const agentPeer = agents.find((agent) => sameUID(agent.uid || agent.id, peerId));
-      const peer = agentPeer ? { ...friendPeer, ...agentPeer } : friendPeer;
+      const peer = agentPeer ? mergeIdentityRecord(friendPeer, agentPeer) : friendPeer;
       if (requestID !== peerProfileRequestRef.current || activeTopicRef.current !== requestTopic) return;
-      if (peer) setPeerProfile(peer);
+      if (peer) {
+        const resolvedPeer = mergeIdentityRecord(readPeerIdentityCache(user.uid, requestTopic), peer);
+        writePeerIdentityCache(user.uid, requestTopic, resolvedPeer);
+        setPeerProfile(resolvedPeer);
+      }
     } catch (e) {
     }
   };
@@ -2163,8 +2278,21 @@ export default function MessagesView({
     if (!Number.isFinite(left) || !Number.isFinite(right)) return 0;
     return left === parseUid(user.uid) ? right : left;
   }, [isGroup, topic, user.uid]);
-  const rosterPeer = availableAgents.find((agent) => sameUID(agent.uid || agent.id, peerUID));
-  const resolvedPeerProfile = rosterPeer ? { ...peerProfile, ...rosterPeer } : peerProfile;
+  const rosterPeer = useMemo(
+    () => availableAgents.find((agent) => sameUID(agent.uid || agent.id, peerUID)) || null,
+    [availableAgents, peerUID],
+  );
+  const canonicalPeerIdentity = useMemo(() => {
+    if (isGroup || peerUID <= 0) return null;
+    return messages.reduce((identity, message) => {
+      if (!sameUID(message?.from_uid, peerUID)) return identity;
+      return mergeIdentityRecord(identity, messageActorIdentity(message));
+    }, null);
+  }, [isGroup, messages, peerUID]);
+  const resolvedPeerProfile = useMemo(() => mergeIdentityRecord(
+    canonicalPeerIdentity,
+    mergeIdentityRecord(peerProfile, rosterPeer),
+  ), [canonicalPeerIdentity, peerProfile, rosterPeer]);
   const peerIsBot = Boolean(rosterPeer)
     || resolvedPeerProfile?.bot === true
     || resolvedPeerProfile?.is_bot === true
@@ -2228,8 +2356,6 @@ export default function MessagesView({
         : (supportsTutorialTasks ? '输入消息，@机器人即可回复' : '输入消息')
     )
     : (peerIsBot ? '输入指令，我帮您完成' : '输入消息');
-  const displayName = isGroup ? (groupInfo?.name || topicName || topic) : (resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic);
-  const displayAvatarUrl = isGroup ? (groupInfo?.avatar_url || topicAvatarUrl) : (resolvedPeerProfile?.avatar_url || topicAvatarUrl);
   const canRegenerateAssistantMessages = !isGroup || isAgentTask;
   const groupAgentUID = parseUid(groupAgent?.uid || groupAgent?.id);
   const groupSupportsArtifacts = groupAgent?.cloud_artifacts_enabled === true
@@ -2535,17 +2661,28 @@ export default function MessagesView({
 
   const getSender = (msg) => {
     if (sameUID(msg.from_uid, user.uid)) {
+      const senderProfile = mergeIdentityRecord(messageActorIdentity(msg), user);
       return {
-        name: user.display_name || user.username,
-        avatarUrl: user.avatar_url,
-        isBot: user.account_type === 'bot',
+        name: senderProfile?.display_name || senderProfile?.username,
+        avatarUrl: senderProfile?.avatar_url,
+        isBot: senderProfile?.account_type === 'bot'
+          || senderProfile?.bot === true
+          || senderProfile?.is_bot === true,
       };
     }
     if (isGroup) {
       const senderUID = parseUid(msg.from_uid);
       const member = memberMap.get(senderUID);
       const rosterAgent = availableAgentByUID.get(senderUID);
-      const senderProfile = member || rosterAgent;
+      const cachedMember = cachedGroupMemberIdentity(
+        groupMemberIdentityCacheRef.current,
+        groupId,
+        senderUID,
+      );
+      const senderProfile = mergeIdentityRecord(
+        mergeIdentityRecord(messageActorIdentity(msg), cachedMember),
+        mergeIdentityRecord(rosterAgent, member),
+      );
       return {
         name: senderProfile?.display_name
           || senderProfile?.username
@@ -2556,15 +2693,27 @@ export default function MessagesView({
           member?.is_bot
           || member?.account_type === 'bot'
           || rosterAgent
+          || cachedMember?.bot === true
+          || cachedMember?.is_bot === true
+          || cachedMember?.account_type === 'bot'
+          || senderProfile?.bot === true
+          || senderProfile?.is_bot === true
+          || senderProfile?.account_type === 'bot'
           || inferredAgentUIDs.has(senderUID)
           || isAssistantAuthoredMessage(msg),
         ),
       };
     }
+    const senderProfile = mergeIdentityRecord(messageActorIdentity(msg), resolvedPeerProfile);
     return {
-      name: resolvedPeerProfile?.display_name || resolvedPeerProfile?.username || topicName || topic,
-      avatarUrl: displayAvatarUrl,
-      isBot: peerIsBot,
+      name: senderProfile?.display_name || senderProfile?.username || topicName || topic,
+      avatarUrl: senderProfile?.avatar_url || topicAvatarUrl,
+      isBot: Boolean(
+        peerIsBot
+        || senderProfile?.bot === true
+        || senderProfile?.is_bot === true
+        || senderProfile?.account_type === 'bot',
+      ),
     };
   };
 
@@ -2765,7 +2914,7 @@ export default function MessagesView({
     messages,
     peerIsBot,
     resolvedPeerProfile,
-    displayAvatarUrl,
+    groupId,
     topic,
     topicAvatarUrl,
     topicName,
@@ -4591,13 +4740,20 @@ function createClientMessageID() {
 }
 
 function messageClientMsgID(message) {
-  const value = message?.client_msg_id
-    ?? message?.clientMsgID
-    ?? message?.clientMsgId
-    ?? message?.metadata?.client_msg_id
-    ?? message?.metadata?.clientMsgID
-    ?? message?.metadata?.clientMessageId;
-  return value == null ? '' : String(value).trim();
+  const candidates = [
+    message?.client_msg_id,
+    message?.clientMsgID,
+    message?.clientMsgId,
+    message?.metadata?.client_msg_id,
+    message?.metadata?.clientMsgID,
+    message?.metadata?.clientMessageId,
+    message?.metadata?.client_message_id,
+  ];
+  for (const candidate of candidates) {
+    const value = candidate == null ? '' : String(candidate).trim();
+    if (value) return value;
+  }
+  return '';
 }
 
 function comparableContentBlocks(message) {
