@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, LoaderCircle } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -833,6 +833,7 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
   const statusContent = (
     <>
       {hasDetails && (open ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
+      {!complete && <LoaderCircle className="v3-working-spinner" size={14} strokeWidth={2.2} aria-hidden="true" />}
       <span className="v3-working-label">{statusLabel}</span>
       <span className="v3-working-summary">{summary}</span>
     </>

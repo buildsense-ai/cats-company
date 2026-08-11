@@ -1123,11 +1123,16 @@ describe('CatsCo shell styling', () => {
 
   it('gently pulses a working agent avatar without a clipped glow', () => {
     const workingAvatarRule = ruleFor('.v3-message.is-working .v3-avatar');
+    const workingSpinnerRule = ruleFor('.v3-working-spinner');
+    const reducedMotionSpinnerRule = '  .v3-working-spinner {\n    animation: none;\n  }';
 
     expect(workingAvatarRule).toContain('filter: brightness(0.86) saturate(0.9);');
     expect(workingAvatarRule).toContain('box-shadow: none;');
     expect(workingAvatarRule).toContain('animation: cc-agent-avatar-breathe 1800ms ease-in-out infinite;');
     expect(workingAvatarRule).toContain('will-change: opacity;');
+    expect(workingSpinnerRule).toContain('flex: 0 0 auto;');
+    expect(workingSpinnerRule).toContain('animation: catsco-spin 0.9s linear infinite;');
+    expect(css.indexOf(workingSpinnerRule)).toBeLessThan(css.indexOf(reducedMotionSpinnerRule));
     expect(css).not.toContain('@keyframes cc-agent-activity-halo');
     expect(css).toContain('@keyframes cc-agent-avatar-breathe');
     expect(css).toMatch(
@@ -1135,6 +1140,9 @@ describe('CatsCo shell styling', () => {
     );
     expect(css).toMatch(
       /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.v3-message\.is-working \.v3-avatar\s*\{[^}]*animation: none;/,
+    );
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.v3-working-spinner\s*\{[^}]*animation: none;/,
     );
   });
 

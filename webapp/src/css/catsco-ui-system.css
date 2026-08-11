@@ -3194,6 +3194,12 @@ html[data-theme="liquid"] .catsco-brand-mark {
   will-change: opacity;
 }
 
+.v3-working-spinner {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--v3-primary) 78%, var(--cc-text));
+  animation: catsco-spin 0.9s linear infinite;
+}
+
 @keyframes cc-agent-avatar-breathe {
   0%, 100% {
     opacity: 0.82;
@@ -3207,6 +3213,10 @@ html[data-theme="liquid"] .catsco-brand-mark {
   .v3-message.is-working .v3-avatar {
     animation: none;
     opacity: 0.88;
+  }
+
+  .v3-working-spinner {
+    animation: none;
   }
 }
 

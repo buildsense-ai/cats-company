@@ -275,6 +275,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(sections[0].dataset.messagePart).toBe('result');
     expect(sections[0].textContent).toBe('文件已经发送。');
     expect(container.querySelector('.v3-working-label')?.textContent).toBe('已完成');
+    expect(container.querySelector('.v3-working-spinner')).toBeNull();
     expect(container.querySelector('.v3-working-toggle')?.getAttribute('aria-expanded')).toBe('false');
 
     await act(async () => {
@@ -1360,6 +1361,8 @@ describe('ChatMessage rich file rendering', () => {
     const processToggle = container.querySelector('.v3-working-toggle');
     expect(message.classList.contains('is-working')).toBe(true);
     expect(container.querySelector('.v3-working-label')?.textContent).toBe('正在执行');
+    expect(container.querySelector('.v3-working-spinner.lucide-loader-circle')).not.toBeNull();
+    expect(container.querySelector('.v3-working-spinner')?.getAttribute('aria-hidden')).toBe('true');
     expect(processToggle.getAttribute('aria-expanded')).toBe('false');
     expect(processToggle.getAttribute('aria-label')).toContain('展开任务步骤');
     expect(processToggle.getAttribute('aria-controls')).toMatch(/^working-steps-/);
