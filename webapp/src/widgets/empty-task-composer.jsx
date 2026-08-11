@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, FileText, Image, Smartphone, X } from 'lucide-react';
 import { api } from '../api';
+import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import {
   IMAGE_UPLOAD_ACCEPT,
   MAX_ATTACHMENT_SIZE,
@@ -13,7 +14,6 @@ import QRCode from './qr-code';
 
 const MAX_DROPPED_FILES = 200;
 const PHONE_UPLOAD_POLL_INTERVAL_MS = 2000;
-const COMPOSER_MAX_HEIGHT = 200;
 
 export default function EmptyTaskComposer({
   className = 'cc-empty-composer-wrap',
@@ -21,6 +21,8 @@ export default function EmptyTaskComposer({
   initialAgent,
   onResolveAgentTopic,
   onActivateTopic,
+  voiceInputAvailable,
+  createVoiceSession,
 }) {
   const [input, setInput] = useState('');
   const initialAgentId = agentKey(initialAgent);
@@ -84,19 +86,6 @@ export default function EmptyTaskComposer({
     if (!attachments?.length) return;
     replaceAttachments([...pendingAttachmentsRef.current, ...attachments]);
   }, [replaceAttachments]);
-
-  const resizeTextarea = useCallback(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.style.height = '0px';
-    const nextHeight = Math.min(textarea.scrollHeight, COMPOSER_MAX_HEIGHT);
-    textarea.style.height = `${nextHeight}px`;
-    textarea.style.overflowY = textarea.scrollHeight > COMPOSER_MAX_HEIGHT ? 'auto' : 'hidden';
-  }, []);
-
-  useEffect(() => {
-    resizeTextarea();
-  }, [input, resizeTextarea]);
 
   useEffect(() => {
     let cancelled = false;
@@ -321,6 +310,18 @@ export default function EmptyTaskComposer({
     const value = event.target.value;
     inputValueRef.current = value;
     setInput(value);
+  }, []);
+
+  const handleVoiceFinal = useCallback((transcript, insertion) => {
+    const textarea = textareaRef.current;
+    const result = insertTranscriptAtSelection(transcript, insertion, textarea, inputValueRef.current);
+    if (!result) return;
+    inputValueRef.current = result.value;
+    setInput(result.value);
+    window.setTimeout(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(result.caret, result.caret);
+    }, 0);
   }, []);
 
   const handlePaste = useCallback(async (event) => {
@@ -585,6 +586,11 @@ export default function EmptyTaskComposer({
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
+        onVoiceFinal={handleVoiceFinal}
+        voiceInputAvailable={voiceInputAvailable}
+        createVoiceSession={createVoiceSession}
+        voiceInputDisabled={isSubmitting || isUploadingAttachment}
+        voiceSessionKey={`new-task:${selectedAgentId || ''}`}
         attachmentOpen={attachmentMenuOpen}
         attachmentDisabled={isUploadingAttachment || isSubmitting}
         onAttachmentToggle={() => {

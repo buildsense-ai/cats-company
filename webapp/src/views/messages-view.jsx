@@ -9,6 +9,7 @@ import QRCode from '../widgets/qr-code';
 import { TutorialEmptyState, TutorialTaskModal, TutorialTaskPicker, TUTORIAL_TASKS } from '../widgets/tutorial-tasks';
 import { attachmentFromContentBlock, attachmentIdentity, clearChatAttachmentDrag, hasChatAttachmentDrag, readChatAttachmentDrag } from '../chat-attachment-drag';
 import ChatComposer from '../widgets/chat-composer';
+import { insertTranscriptAtSelection } from '../utils/composer-transcript';
 import { IMAGE_UPLOAD_ACCEPT, MAX_ATTACHMENT_SIZE, MAX_ATTACHMENT_SIZE_MB, inferAttachmentType, validateImageUpload } from '../utils/upload-rules';
 import {
   artifactRefFromPreviewFile,
@@ -609,20 +610,6 @@ export default function MessagesView({
     setPreviewFile(null);
     setCloudArtifactsListOpen(true);
   }, [clearActiveArtifactFocus]);
-
-  const resizeComposerInput = useCallback(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    const maxHeight = 200;
-    textarea.style.height = 'auto';
-    const nextHeight = Math.min(Math.max(textarea.scrollHeight, 40), maxHeight);
-    textarea.style.height = `${nextHeight}px`;
-    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
-  }, []);
-
-  useEffect(() => {
-    resizeComposerInput();
-  }, [input, resizeComposerInput]);
 
   useEffect(() => {
     setTutorialDismissed(localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
@@ -1781,6 +1768,24 @@ export default function MessagesView({
     }
   };
 
+  const handleVoiceFinal = (transcript, insertion) => {
+    const textarea = textareaRef.current;
+    const result = insertTranscriptAtSelection(transcript, insertion, textarea, input);
+    if (!result) return;
+    const nextStructuredMentions = reconcileStructuredMentionSelections(
+      result.baseValue,
+      result.value,
+      structuredMentionDraftsRef.current.get(topic) || [],
+    );
+    setInput(result.value);
+    updateComposerDraft(topic, result.value);
+    updateStructuredMentionDraft(topic, nextStructuredMentions);
+    setTimeout(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(result.caret, result.caret);
+    }, 0);
+  };
+
   const insertMention = (member) => {
     const textarea = textareaRef.current;
     if (!textarea) return;
@@ -2823,7 +2828,6 @@ export default function MessagesView({
     setSelectedTutorialTask(null);
     window.setTimeout(() => {
       textareaRef.current?.focus();
-      resizeComposerInput();
     }, 0);
   };
 
@@ -2857,10 +2861,8 @@ export default function MessagesView({
       if (!textarea) return;
       textarea.focus();
       textarea.setSelectionRange(originalText.length, originalText.length);
-      resizeComposerInput();
     }, 0);
   }, [
-    resizeComposerInput,
     topic,
     updateAttachmentDraft,
     updateComposerDraft,
@@ -3303,6 +3305,9 @@ export default function MessagesView({
         onChange={handleInputChange}
         onKeyDown={handleKeyDown}
         onPaste={handlePaste}
+        onVoiceFinal={handleVoiceFinal}
+        voiceInputDisabled={isSendingMessage || isUploadingAttachment}
+        voiceSessionKey={topic}
         textareaProps={{
           'aria-controls': showMentionPicker ? 'mention-picker' : undefined,
           'aria-expanded': showMentionPicker,

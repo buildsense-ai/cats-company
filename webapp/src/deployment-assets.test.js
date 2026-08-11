@@ -47,6 +47,7 @@ describe('production asset caching', () => {
     );
 
     expectPrivateProxyLocation(nginxConfig, '/api/');
+    expectPrivateProxyLocation(nginxConfig, '/api/stt/realtime');
     expectPrivateProxyLocation(nginxConfig, '/v1/');
     expectPrivateProxyLocation(nginxConfig, '/uploads/');
     expectPrivateProxyLocation(nginxConfig, '/v0/channels');
@@ -56,11 +57,11 @@ describe('production asset caching', () => {
     const privateRoutesByConfig = new Map([
       [
         '../deploy/tencent/nginx/catscompany-app.conf',
-        ['/api/', '/v1/', '/uploads/', '/v0/channels'],
+        ['/api/', '/api/stt/realtime', '/v1/', '/uploads/', '/v0/channels'],
       ],
       [
         '../deploy/tencent/nginx/catscompany-api.conf',
-        ['/api/', '/v1/', '/v0/channels', '/advanced-reader/'],
+        ['/api/', '/api/stt/realtime', '/v1/', '/v0/channels', '/advanced-reader/'],
       ],
     ]);
 
