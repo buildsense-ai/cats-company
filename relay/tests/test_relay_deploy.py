@@ -18,6 +18,10 @@ ROLLBACK_SCRIPT = REPO_ROOT / "deploy" / "relay" / "remote-rollback.sh"
     "a native Unix bash is required for relay deployment integration tests",
 )
 class RelayDeploymentTest(unittest.TestCase):
+    PREVIOUS_REVISION = "a" * 40
+    NEW_REVISION = "b" * 40
+    FAILED_REVISION = "c" * 40
+
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.root = Path(self.tempdir.name) / "relay"
@@ -55,12 +59,15 @@ class RelayDeploymentTest(unittest.TestCase):
 
     def prepare_sources(self, revision: str):
         (self.root / "adapter" / "openai_adapter.py").write_text("VERSION = 'old'\n", encoding="utf-8")
+        (self.root / "CURRENT_ADAPTER_REVISION").write_text(
+            f"{self.PREVIOUS_REVISION}\n", encoding="utf-8"
+        )
         (self.root / "releases" / f"openai_adapter-{revision}.py").write_text(
             "VERSION = 'new'\n", encoding="utf-8"
         )
 
     def test_success_is_atomic_and_rollback_restores_previous_source(self):
-        revision = "test-revision"
+        revision = self.NEW_REVISION
         self.prepare_sources(revision)
 
         subprocess.run(
@@ -76,6 +83,10 @@ class RelayDeploymentTest(unittest.TestCase):
         self.assertEqual((self.root / "CURRENT_ADAPTER_REVISION").read_text().strip(), revision)
         rollback_source = Path((self.root / "ROLLBACK_ADAPTER_SOURCE").read_text().strip())
         self.assertEqual(rollback_source.read_text(encoding="utf-8"), "VERSION = 'old'\n")
+        self.assertEqual(
+            (self.root / "ROLLBACK_ADAPTER_REVISION").read_text().strip(),
+            self.PREVIOUS_REVISION,
+        )
 
         subprocess.run(
             ["bash", str(ROLLBACK_SCRIPT), str(self.root)],
@@ -85,9 +96,13 @@ class RelayDeploymentTest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(target.read_text(encoding="utf-8"), "VERSION = 'old'\n")
+        self.assertEqual(
+            (self.root / "CURRENT_ADAPTER_REVISION").read_text().strip(),
+            self.PREVIOUS_REVISION,
+        )
 
     def test_failed_health_check_restores_previous_source(self):
-        revision = "bad-revision"
+        revision = self.FAILED_REVISION
         self.prepare_sources(revision)
 
         result = subprocess.run(
@@ -101,7 +116,30 @@ class RelayDeploymentTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         target = self.root / "adapter" / "openai_adapter.py"
         self.assertEqual(target.read_text(encoding="utf-8"), "VERSION = 'old'\n")
-        self.assertFalse((self.root / "CURRENT_ADAPTER_REVISION").exists())
+        self.assertEqual(
+            (self.root / "CURRENT_ADAPTER_REVISION").read_text().strip(),
+            self.PREVIOUS_REVISION,
+        )
+
+    def test_invalid_revision_is_rejected_before_install(self):
+        revision = "not-a-git-sha"
+        self.prepare_sources(revision)
+
+        result = subprocess.run(
+            ["bash", str(DEPLOY_SCRIPT), str(self.root), revision],
+            check=False,
+            env=self.environment(),
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("40-character lowercase Git SHA", result.stderr)
+        self.assertEqual(
+            (self.root / "adapter" / "openai_adapter.py").read_text(encoding="utf-8"),
+            "VERSION = 'old'\n",
+        )
+        self.assertFalse(self.systemctl_log.exists())
 
 
 if __name__ == "__main__":

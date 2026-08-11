@@ -10,8 +10,9 @@ target_dir="$root/adapter"
 target_file="$target_dir/openai_adapter.py"
 rollback_file="$root/releases/openai_adapter-rollback-${revision}.py"
 
-if [ -z "$revision" ]; then
+if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
   echo "usage: $0 <relay-root> <revision>" >&2
+  echo "revision must be a 40-character lowercase Git SHA" >&2
   exit 1
 fi
 if [ ! -f "$source_file" ]; then
@@ -21,6 +22,11 @@ fi
 
 python3 -m py_compile "$source_file"
 mkdir -p "$target_dir" "$root/releases"
+
+previous_revision="unmanaged-baseline"
+if [ -s "$root/CURRENT_ADAPTER_REVISION" ]; then
+  previous_revision="$(cat "$root/CURRENT_ADAPTER_REVISION")"
+fi
 
 if [ -f "$target_file" ]; then
   cp -p "$target_file" "$rollback_file"
@@ -49,6 +55,7 @@ mv -f "$target_dir/.openai_adapter.py.${revision}.new" "$target_file"
 if restart_service && wait_for_health; then
   printf '%s\n' "$revision" > "$root/CURRENT_ADAPTER_REVISION"
   printf '%s\n' "$rollback_file" > "$root/ROLLBACK_ADAPTER_SOURCE"
+  printf '%s\n' "$previous_revision" > "$root/ROLLBACK_ADAPTER_REVISION"
   echo "deployed relay adapter revision $revision"
   exit 0
 fi
