@@ -2003,7 +2003,10 @@ func (h *Hub) isConversationNotificationsMuted(ctx context.Context, uid int64, t
 	muted, err := preferences.IsConversationNotificationsMuted(ctx, uid, topic)
 	if err != nil {
 		log.Printf("push notification: failed to load conversation preference for uid=%d topic=%q: %v", uid, topic, err)
-		return true
+		// Preference storage is an optional filter. If it is unavailable, keep
+		// the normal account-level delivery behavior instead of silently
+		// dropping every conversation notification for this user.
+		return false
 	}
 	return muted
 }

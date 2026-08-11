@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -582,6 +583,35 @@ func TestConversationsIncludeNotificationMuteState(t *testing.T) {
 	}
 	if muted, ok := byTopic["grp_9"]["notifications_muted"].(bool); !ok || muted {
 		t.Fatalf("group mute state = %#v, want false", byTopic["grp_9"])
+	}
+}
+
+func TestConversationsNotificationMuteLookupFailureFailsOpen(t *testing.T) {
+	store := &conversationTestStore{
+		friends:                   []*types.User{{ID: 8, Username: "alice", DisplayName: "Alice"}},
+		notificationPreferenceErr: errors.New("database unavailable"),
+	}
+	handler := NewConversationHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Conversations []*types.ConversationSummary `json:"conversations"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Conversations) != 1 {
+		t.Fatalf("conversation count=%d, want 1: %+v", len(body.Conversations), body.Conversations)
+	}
+	if body.Conversations[0].NotificationsMuted {
+		t.Fatalf("notification lookup failure must not mark conversation muted: %+v", body.Conversations[0])
 	}
 }
 

@@ -1195,7 +1195,7 @@ func TestConversationNotificationMuteControlsOfflinePushDelivery(t *testing.T) {
 	}{
 		{name: "muted conversation", muted: true},
 		{name: "unmuted conversation", wantDelivery: true},
-		{name: "preference lookup fails closed", preferenceErr: errors.New("database unavailable")},
+		{name: "preference lookup fails open", preferenceErr: errors.New("database unavailable"), wantDelivery: true},
 	}
 
 	for _, test := range tests {
