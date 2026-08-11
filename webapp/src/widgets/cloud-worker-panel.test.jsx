@@ -1,0 +1,195 @@
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import { Simulate } from 'react-dom/test-utils';
+
+import CloudWorkerPanel from './cloud-worker-panel';
+
+describe('CloudWorkerPanel', () => {
+  let container;
+  let root;
+
+  const quota = { enabled: true, total: 3, used: 1, remaining: 2 };
+
+  const worker = (overrides = {}) => ({
+    id: 91,
+    uid: 91,
+    tenant_name: 'tenant-a',
+    display_name: '云端审查助手',
+    username: 'bot-cloud-1',
+    cloud_status: 'running',
+    cloud_version: '1.4.8',
+    cloud_image_id: '79f5b7f4-c06e-4f97-90fa-d69566f23d63',
+    ...overrides,
+  });
+
+  const renderPanel = async (props = {}) => {
+    await act(async () => {
+      root.render(React.createElement(CloudWorkerPanel, {
+        quota,
+        quotaError: false,
+        workers: [],
+        actioning: null,
+        onCreate: vi.fn(),
+        onRollback: vi.fn(),
+        onReset: vi.fn(),
+        onDelete: vi.fn(),
+        ...props,
+      }));
+      await Promise.resolve();
+    });
+  };
+
+  beforeEach(() => {
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  test('shows quota usage and remaining capacity', async () => {
+    await renderPanel();
+    expect(container.textContent).toContain('云托管配额');
+    expect(container.textContent).toContain('1/3 已使用');
+    expect(container.textContent).toContain('还可创建 2 个云端虚拟员工');
+    const bar = container.querySelector('.cc-cloud-quota-bar i');
+    expect(bar).toBeTruthy();
+    expect(bar.style.width).toBe('33%');
+  });
+
+  test('shows quota fetch error state', async () => {
+    await renderPanel({ quotaError: true });
+    expect(container.textContent).toContain('云端状态查询失败，请稍后重试');
+  });
+
+  test('shows disabled state when cloud hosting is not enabled', async () => {
+    await renderPanel({ quota: { enabled: false, total: 0, used: 0, remaining: 0 } });
+    expect(container.textContent).toContain('云端部署当前未开放，请联系管理员开通');
+  });
+
+  test('blocks creation when quota is exhausted', async () => {
+    await renderPanel({ quota: { enabled: true, total: 1, used: 1, remaining: 0 } });
+    expect(container.querySelector('.cc-cloud-create-card input')).toBeNull();
+    expect(container.textContent).toContain('配额已用完或未开放，暂时无法继续创建。');
+  });
+
+  test('creates a cloud worker with the entered name', async () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    await renderPanel({ onCreate });
+
+    const input = container.querySelector('.cc-cloud-create-card input');
+    await act(async () => {
+      Simulate.change(input, { target: { value: '云端审查助手' } });
+    });
+    const button = Array.from(container.querySelectorAll('button'))
+      .find((el) => el.textContent.includes('创建云托管员工'));
+    expect(button.disabled).toBe(false);
+
+    await act(async () => {
+      Simulate.click(button);
+    });
+    expect(onCreate).toHaveBeenCalledTimes(1);
+    expect(onCreate).toHaveBeenCalledWith('云端审查助手');
+    // input cleared after success
+    expect(input.value).toBe('');
+  });
+
+  test('keeps button disabled while creating', async () => {
+    let resolveCreate;
+    const onCreate = vi.fn(() => new Promise((resolve) => { resolveCreate = resolve; }));
+    await renderPanel({ onCreate });
+
+    const input = container.querySelector('.cc-cloud-create-card input');
+    await act(async () => {
+      Simulate.change(input, { target: { value: '云端审查助手' } });
+    });
+    const button = Array.from(container.querySelectorAll('button'))
+      .find((el) => el.textContent.includes('创建云托管员工'));
+    await act(async () => {
+      Simulate.click(button);
+    });
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toContain('创建中...');
+
+    await act(async () => {
+      resolveCreate();
+      await Promise.resolve();
+    });
+    expect(button.disabled).toBe(true); // cleared name -> disabled again
+    expect(input.value).toBe('');
+  });
+
+  test('shows empty state when no cloud workers exist', async () => {
+    await renderPanel();
+    expect(container.textContent).toContain('还没有云托管员工');
+    expect(container.textContent).toContain('0 个');
+  });
+
+  test('renders cloud workers with version and status', async () => {
+    await renderPanel({
+      workers: [worker()],
+    });
+    expect(container.textContent).toContain('云端审查助手');
+    expect(container.textContent).toContain('@bot-cloud-1');
+    expect(container.textContent).toContain('运行中');
+    expect(container.textContent).toContain('版本 1.4.8');
+    expect(container.textContent).toContain('镜像 79f5b7f4');
+    expect(container.textContent).toContain('1 个');
+  });
+
+  test('maps unknown status to fallback label', async () => {
+    await renderPanel({
+      workers: [worker({ cloud_status: 'weird_state' })],
+    });
+    expect(container.textContent).toContain('未知');
+  });
+
+  test('calls rollback/reset/delete callbacks from worker actions', async () => {
+    const onRollback = vi.fn();
+    const onReset = vi.fn();
+    const onDelete = vi.fn();
+    await renderPanel({
+      workers: [worker()],
+      onRollback,
+      onReset,
+      onDelete,
+    });
+
+    const buttons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
+    const rollbackBtn = buttons.find((el) => el.textContent.includes('回滚'));
+    const resetBtn = buttons.find((el) => el.textContent.includes('重置'));
+    const deleteBtn = buttons[buttons.length - 1];
+
+    await act(async () => {
+      Simulate.click(rollbackBtn);
+    });
+    await act(async () => {
+      Simulate.click(resetBtn);
+    });
+    await act(async () => {
+      Simulate.click(deleteBtn);
+    });
+
+    expect(onRollback).toHaveBeenCalledTimes(1);
+    expect(onRollback).toHaveBeenCalledWith(expect.objectContaining({ tenant_name: 'tenant-a' }));
+    expect(onReset).toHaveBeenCalledTimes(1);
+    expect(onDelete).toHaveBeenCalledTimes(1);
+    expect(onDelete).toHaveBeenCalledWith(expect.objectContaining({ tenant_name: 'tenant-a' }));
+  });
+
+  test('disables worker actions while the worker is being acted on', async () => {
+    await renderPanel({
+      workers: [worker()],
+      actioning: 'tenant-a',
+    });
+    const actionButtons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
+    expect(actionButtons.length).toBeGreaterThan(0);
+    actionButtons.forEach((btn) => expect(btn.disabled).toBe(true));
+  });
+});

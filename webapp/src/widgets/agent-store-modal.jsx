@@ -25,6 +25,7 @@ import QRCode from './qr-code';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
 import CustomSelect from './custom-select';
+import CloudWorkerPanel from './cloud-worker-panel';
 
 const CREATE_MODES = {
   SELF_HOSTED: 'self_hosted',
@@ -193,6 +194,12 @@ export default function AgentStoreModal({
     };
   }, [bots]);
 
+  // Cloud-managed workers shown in the dedicated cloud panel (create tab).
+  const cloudWorkers = useMemo(
+    () => bots.filter((bot) => Boolean(bot.tenant_name)),
+    [bots],
+  );
+
   useEffect(() => {
     initialAgentAppliedRef.current = false;
     loadBots();
@@ -350,6 +357,27 @@ export default function AgentStoreModal({
       setError(e.message || t('error_server'));
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  // Cloud-managed creation from the dedicated cloud panel (create tab, managed mode).
+  // Stays on the panel and refreshes the worker list instead of jumping to the
+  // self-hosted API-key success screen.
+  const handleCloudCreate = async (displayName) => {
+    const trimmed = displayName.trim();
+    if (!trimmed) return;
+    const slug = trimmed.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').slice(0, 16);
+    const suffix = Math.floor(Math.random() * 9000) + 1000;
+    const username = `bot-${slug || 'bot'}-${suffix}`;
+    try {
+      setError('');
+      await api.createCloudWorker({ username, display_name: trimmed });
+      await loadBots({ silent: true });
+      if (onBotsChanged) onBotsChanged();
+      feedback.notify({ tone: 'success', message: '云托管员工创建成功，云端实例供给中…' });
+    } catch (e) {
+      setError(e.message || t('error_server'));
+      throw e;
     }
   };
 
@@ -745,63 +773,10 @@ export default function AgentStoreModal({
 
           {/* CREATE TAB */}
           {tab === 'create' && (
-            <form onSubmit={handleCreate} className="cc-agent-create-form">
+            <div className="cc-agent-create-tab">
               <div className="cc-agent-create-intro">
                 <h2>创建你的专属助手</h2>
                 <p>先定义助手身份，再配置运行方式。</p>
-              </div>
-
-              <div className="cc-agent-create-grid">
-                <section className="cc-agent-create-card cc-agent-basic-card">
-                  <h3><FileCheck2 size={17} />基本信息</h3>
-                  <label>
-                    <span>助手名称 <b>*</b></span>
-                    <input
-                      type="text"
-                      value={createForm.display_name}
-                      onChange={(e) => setCreateForm({ ...createForm, display_name: e.target.value })}
-                      placeholder="例如：代码审查助手"
-                      className="oc-auth-input"
-                      required
-                      disabled={isSubmitting}
-                    />
-                  </label>
-                  <label>
-                    <span>助手定位 <b>*</b></span>
-                    <div className="cc-agent-role-field">
-                      <CustomSelect
-                        ariaLabel="助手定位"
-                        className="cc-agent-role-select"
-                        value={createForm.role}
-                        disabled={isSubmitting}
-                        onValueChange={(role) => setCreateForm({ ...createForm, role })}
-                      >
-                        {ASSISTANT_ROLES.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
-                      </CustomSelect>
-                    </div>
-                  </label>
-                  <label>
-                    <span>用途说明 <small>选填</small></span>
-                    <textarea
-                      value={createForm.description}
-                      onChange={(e) => setCreateForm({ ...createForm, description: e.target.value.slice(0, 500) })}
-                      placeholder="说明这个助手解决什么问题，以及你希望它如何工作"
-                    />
-                    <em>{createForm.description.length}/500</em>
-                  </label>
-                </section>
-
-                <section className="cc-agent-create-card cc-agent-capability-card">
-                  <h3><Sparkles size={17} />能力预览</h3>
-                  <div className="cc-agent-capability-list">
-                    {ASSISTANT_CAPABILITIES.map(({ icon: Icon, title, detail }) => (
-                      <div className="cc-agent-capability-item" key={title}>
-                        <span><Icon size={18} /></span>
-                        <div><strong>{title}</strong><small>{detail}</small></div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
               </div>
 
               <fieldset className="cc-agent-hosting">
@@ -831,10 +806,78 @@ export default function AgentStoreModal({
                 </label>
               </fieldset>
 
-              <button type="submit" className="oc-btn oc-btn-primary cc-agent-create-submit" disabled={isSubmitting}>
-                {isSubmitting ? '创建中...' : '创建我的专属助手'}
-              </button>
-            </form>
+              {createMode === CREATE_MODES.MANAGED ? (
+                <CloudWorkerPanel
+                  quota={cloudQuota}
+                  quotaError={cloudQuotaError}
+                  workers={cloudWorkers}
+                  actioning={cloudActioning}
+                  onCreate={handleCloudCreate}
+                  onRollback={handleCloudRollback}
+                  onReset={handleCloudReset}
+                  onDelete={handleDelete}
+                />
+              ) : (
+                <form onSubmit={handleCreate} className="cc-agent-create-form">
+                  <div className="cc-agent-create-grid">
+                    <section className="cc-agent-create-card cc-agent-basic-card">
+                      <h3><FileCheck2 size={17} />基本信息</h3>
+                      <label>
+                        <span>助手名称 <b>*</b></span>
+                        <input
+                          type="text"
+                          value={createForm.display_name}
+                          onChange={(e) => setCreateForm({ ...createForm, display_name: e.target.value })}
+                          placeholder="例如：代码审查助手"
+                          className="oc-auth-input"
+                          required
+                          disabled={isSubmitting}
+                        />
+                      </label>
+                      <label>
+                        <span>助手定位 <b>*</b></span>
+                        <div className="cc-agent-role-field">
+                          <CustomSelect
+                            ariaLabel="助手定位"
+                            className="cc-agent-role-select"
+                            value={createForm.role}
+                            disabled={isSubmitting}
+                            onValueChange={(role) => setCreateForm({ ...createForm, role })}
+                          >
+                            {ASSISTANT_ROLES.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
+                          </CustomSelect>
+                        </div>
+                      </label>
+                      <label>
+                        <span>用途说明 <small>选填</small></span>
+                        <textarea
+                          value={createForm.description}
+                          onChange={(e) => setCreateForm({ ...createForm, description: e.target.value.slice(0, 500) })}
+                          placeholder="说明这个助手解决什么问题，以及你希望它如何工作"
+                        />
+                        <em>{createForm.description.length}/500</em>
+                      </label>
+                    </section>
+
+                    <section className="cc-agent-create-card cc-agent-capability-card">
+                      <h3><Sparkles size={17} />能力预览</h3>
+                      <div className="cc-agent-capability-list">
+                        {ASSISTANT_CAPABILITIES.map(({ icon: Icon, title, detail }) => (
+                          <div className="cc-agent-capability-item" key={title}>
+                            <span><Icon size={18} /></span>
+                            <div><strong>{title}</strong><small>{detail}</small></div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  </div>
+
+                  <button type="submit" className="oc-btn oc-btn-primary cc-agent-create-submit" disabled={isSubmitting}>
+                    {isSubmitting ? '创建中...' : '创建我的专属助手'}
+                  </button>
+                </form>
+              )}
+            </div>
           )}
 
           {/* SUCCESS (API KEY) TAB */}
