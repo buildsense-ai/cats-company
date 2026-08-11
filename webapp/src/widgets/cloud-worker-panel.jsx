@@ -8,7 +8,9 @@ import {
   RefreshCw,
   RotateCcw,
   Server,
+  ShieldAlert,
   Trash2,
+  Zap,
 } from 'lucide-react';
 
 const CLOUD_STATUS_META = {
@@ -30,23 +32,39 @@ const statusMeta = (status) => (
  * 聚合云托管配额、创建云端虚拟员工、以及已有云托管员工的管理
  * （版本/回滚/重置/删除），全部走云控制面。
  */
+const randomCode = () => String(Math.floor(1000 + Math.random() * 9000));
+
 export default function CloudWorkerPanel({
   quota,
   quotaError,
   workers = [],
+  images = [],
   actioning = null,
   onCreate,
   onRollback,
   onReset,
   onDelete,
+  onSwitchMode,
 }) {
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
+  // tenant_name -> selected image version ('' = latest)
+  const [versions, setVersions] = useState({});
+  // Reset captcha flow: tenant being confirmed / its code / typed input / mismatch
+  const [resetConfirming, setResetConfirming] = useState(null);
+  const [resetCodes, setResetCodes] = useState({});
+  const [resetInputs, setResetInputs] = useState({});
+  const [resetErrors, setResetErrors] = useState({});
 
   const canCreate = Boolean(quota && quota.enabled && quota.remaining > 0);
   const usedPct = quota && quota.total > 0
     ? Math.min(100, Math.round((quota.used / quota.total) * 100))
     : 0;
+
+  // Available image versions (deduplicated, order from the control plane).
+  const imageVersions = [...new Set(
+    (images || []).map((img) => img?.version).filter(Boolean),
+  )];
 
   const handleSubmit = async () => {
     const displayName = name.trim();
@@ -62,6 +80,31 @@ export default function CloudWorkerPanel({
     }
   };
 
+  const beginReset = (tenantName) => {
+    setResetErrors({});
+    setResetCodes((prev) => (prev[tenantName] ? prev : { ...prev, [tenantName]: randomCode() }));
+    setResetConfirming(tenantName);
+  };
+
+  const cancelReset = () => {
+    setResetConfirming(null);
+    setResetInputs({});
+    setResetErrors({});
+  };
+
+  const confirmReset = (worker) => {
+    const tenantName = worker.tenant_name;
+    const code = resetCodes[tenantName];
+    const input = (resetInputs[tenantName] || '').trim();
+    if (!code || input !== code) {
+      setResetErrors({ [tenantName]: true });
+      return;
+    }
+    const version = versions[tenantName] || imageVersions[0] || '';
+    onReset(worker, version, { verified: true });
+    cancelReset();
+  };
+
   const quotaNote = quotaError ? (
     <p className="cc-cloud-quota-err"><AlertCircle size={13} /> 云端状态查询失败，请稍后重试</p>
   ) : (!quota || !quota.enabled) ? (
@@ -75,6 +118,39 @@ export default function CloudWorkerPanel({
 
   return (
     <div className="cc-cloud-panel">
+      {/* 部署方式：云托管面板自带切换入口，切回自托管恢复原表单 */}
+      <fieldset className="cc-agent-hosting">
+        <legend><span><Zap size={16} /></span>部署方式 <small>高级设置</small></legend>
+        <label>
+          <input
+            type="radio"
+            name="hosting"
+            checked={false}
+            onChange={() => { if (onSwitchMode) onSwitchMode(); }}
+          />
+          <span><strong>自托管</strong><small>生成本地身份 Key，后续连接你的服务。</small></span>
+        </label>
+        <label className="active">
+          <input
+            type="radio"
+            name="hosting"
+            checked
+            readOnly
+            onChange={() => {}}
+          />
+          <span>
+            <strong>云托管</strong>
+            <small>
+              {quotaError
+                ? '云端状态查询失败，请稍后重试'
+                : (quota && quota.enabled
+                    ? `部署到云端虚拟员工（可创建 ${quota.remaining}/${quota.total}）`
+                    : '云端部署当前未开放，请联系管理员开通')}
+            </small>
+          </span>
+        </label>
+      </fieldset>
+
       {/* 配额与说明 */}
       <section className="cc-cloud-quota" aria-label="云托管配额">
         <div className="cc-cloud-quota-head">
@@ -167,24 +243,87 @@ export default function CloudWorkerPanel({
                   </div>
 
                   <div className="cc-cloud-worker-actions">
+                    <label className="cc-cloud-version-field">
+                      <span>目标版本</span>
+                      <select
+                        className="cc-cloud-version-select"
+                        value={versions[worker.tenant_name] || imageVersions[0] || ''}
+                        disabled={acting || imageVersions.length === 0}
+                        onChange={(e) => setVersions((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
+                        title={imageVersions.length === 0 ? '暂无可用镜像版本' : '回滚/重置使用的镜像版本'}
+                      >
+                        {imageVersions.length === 0 ? (
+                          <option value="">暂无可用版本</option>
+                        ) : (
+                          <>
+                            <option value="">最新版本</option>
+                            {imageVersions.map((v) => <option key={v} value={v}>{v}</option>)}
+                          </>
+                        )}
+                      </select>
+                    </label>
+
                     <button
                       type="button"
                       className="oc-btn oc-btn-default"
-                      onClick={() => onRollback(worker)}
-                      disabled={acting}
-                      title="回滚：切换到所选镜像版本，保留当前数据"
+                      onClick={() => onRollback(worker, versions[worker.tenant_name] || imageVersions[0] || '')}
+                      disabled={acting || imageVersions.length === 0}
+                      title={imageVersions.length === 0 ? '暂无可用镜像版本，无法回滚' : '回滚：切换到所选镜像版本，保留当前数据'}
                     >
                       {acting ? '处理中...' : <><RotateCcw size={13} /> 回滚</>}
                     </button>
-                    <button
-                      type="button"
-                      className="oc-btn oc-btn-default"
-                      onClick={() => onReset(worker)}
-                      disabled={acting}
-                      title="重置：销毁实例并从镜像重建，所有数据丢失"
-                    >
-                      {acting ? '处理中...' : <><RefreshCw size={13} /> 重置</>}
-                    </button>
+
+                    {resetConfirming === worker.tenant_name ? (
+                      <div className="cc-cloud-reset-confirm">
+                        <p className="cc-cloud-reset-confirm-title">
+                          <ShieldAlert size={13} /> 重置会清空数据，请输入验证码确认
+                        </p>
+                        <p className="cc-cloud-reset-confirm-code">
+                          验证码 <b>{resetCodes[worker.tenant_name]}</b>
+                        </p>
+                        <div className="cc-cloud-reset-confirm-input">
+                          <input
+                            type="text"
+                            value={resetInputs[worker.tenant_name] || ''}
+                            onChange={(e) => {
+                              setResetInputs((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }));
+                              setResetErrors({});
+                            }}
+                            placeholder="输入验证码"
+                            disabled={acting}
+                          />
+                          <button
+                            type="button"
+                            className="oc-btn oc-btn-primary"
+                            onClick={() => confirmReset(worker)}
+                            disabled={acting}
+                          >
+                            确认重置
+                          </button>
+                          <button
+                            type="button"
+                            className="oc-btn oc-btn-default"
+                            onClick={cancelReset}
+                          >
+                            取消
+                          </button>
+                        </div>
+                        {resetErrors[worker.tenant_name] && (
+                          <p className="cc-cloud-quota-err">验证码不正确，请重新输入</p>
+                        )}
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="oc-btn oc-btn-default"
+                        onClick={() => beginReset(worker.tenant_name)}
+                        disabled={acting}
+                        title="重置：销毁实例并从所选镜像版本重建，所有数据丢失（需验证码）"
+                      >
+                        {acting ? '处理中...' : <><RefreshCw size={13} /> 重置</>}
+                      </button>
+                    )}
+
                     <button
                       type="button"
                       className="oc-btn oc-btn-default cc-agent-card-delete"
@@ -203,7 +342,7 @@ export default function CloudWorkerPanel({
       </section>
 
       <p className="cc-cloud-footnote">
-        <CheckCircle2 size={13} /> 云托管员工由云端控制面统一管理，回滚保留数据，重置会清空数据。
+        <CheckCircle2 size={13} /> 云托管员工由云端控制面统一管理：回滚保留数据；重置会清空数据，需验证码确认。
       </p>
     </div>
   );

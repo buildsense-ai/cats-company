@@ -691,11 +691,10 @@ func TestCloudWorkerHandleRollbackResetSuccess(t *testing.T) {
 	}
 }
 
-// TestCloudWorkerHandleResetRejectsVersion guards the P2 contract gap: reset
-// always rebuilds from the latest image and must NOT forward a version
-// selector (the paired reset-worker.sh only accepts --image-id, so passing
-// --version would fail at argument parsing). Only rollback accepts a version.
-func TestCloudWorkerHandleResetRejectsVersion(t *testing.T) {
+// TestCloudWorkerHandleResetForwardsVersion asserts reset forwards an optional
+// version selector to reset-worker.sh (which maps it to the matching image id,
+// falling back to the latest image when omitted).
+func TestCloudWorkerHandleResetForwardsVersion(t *testing.T) {
 	cfg := workerScriptCfg(t, "7=5", map[string]string{
 		"rollback": writeWorkerOpScript(t, "ok"),
 		"reset":    writeWorkerOpScript(t, "ok"),
@@ -711,13 +710,17 @@ func TestCloudWorkerHandleResetRejectsVersion(t *testing.T) {
 	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", map[string]string{"version": "v1"})
 	rec := httptest.NewRecorder()
 	h.HandleSub(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("reset with version status=%d want 400 body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reset with version status=%d want 200 body=%s", rec.Code, rec.Body.String())
+	}
+	out := decodeCloudWorkerList(t, rec)
+	if out["status"] != "ok" {
+		t.Fatalf("reset status field=%v", out["status"])
 	}
 }
 
 // TestCloudWorkerHandleVersionForwarding asserts the exact argv passed to the
-// paired scripts: rollback receives --version <v>, reset receives no version.
+// paired scripts: rollback and reset both forward an optional --version <v>.
 func TestCloudWorkerHandleVersionForwarding(t *testing.T) {
 	dir := t.TempDir()
 	recordFile := filepath.Join(dir, "argv.txt")
@@ -761,8 +764,8 @@ func TestCloudWorkerHandleVersionForwarding(t *testing.T) {
 		t.Fatalf("rollback argv=%q want --version v1.4.7", argv)
 	}
 
-	// reset receives no version selector
-	req = cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", nil)
+	// reset forwards the version selector too
+	req = cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", map[string]string{"version": "v1.4.7"})
 	rec = httptest.NewRecorder()
 	h.HandleSub(rec, req)
 	if rec.Code != http.StatusOK {
@@ -772,8 +775,8 @@ func TestCloudWorkerHandleVersionForwarding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(argv), "--version") {
-		t.Fatalf("reset argv=%q should not contain --version (reset always rebuilds latest)", argv)
+	if !strings.Contains(string(argv), "--version") || !strings.Contains(string(argv), "v1.4.7") {
+		t.Fatalf("reset argv=%q want --version v1.4.7", argv)
 	}
 }
 

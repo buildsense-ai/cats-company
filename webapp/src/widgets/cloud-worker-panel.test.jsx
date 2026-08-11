@@ -28,11 +28,13 @@ describe('CloudWorkerPanel', () => {
         quota,
         quotaError: false,
         workers: [],
+        images: [],
         actioning: null,
         onCreate: vi.fn(),
         onRollback: vi.fn(),
         onReset: vi.fn(),
         onDelete: vi.fn(),
+        onSwitchMode: vi.fn(),
         ...props,
       }));
       await Promise.resolve();
@@ -154,8 +156,10 @@ describe('CloudWorkerPanel', () => {
     const onRollback = vi.fn();
     const onReset = vi.fn();
     const onDelete = vi.fn();
+    const images = [{ version: '1.4.8' }, { version: '1.4.7' }];
     await renderPanel({
       workers: [worker()],
+      images,
       onRollback,
       onReset,
       onDelete,
@@ -166,30 +170,154 @@ describe('CloudWorkerPanel', () => {
     const resetBtn = buttons.find((el) => el.textContent.includes('重置'));
     const deleteBtn = buttons[buttons.length - 1];
 
+    // rollback passes the default (latest available) version directly
     await act(async () => {
       Simulate.click(rollbackBtn);
     });
+    expect(onRollback).toHaveBeenCalledTimes(1);
+    expect(onRollback).toHaveBeenCalledWith(
+      expect.objectContaining({ tenant_name: 'tenant-a' }),
+      '1.4.8',
+    );
+
+    // reset opens the captcha confirmation; verify it before onReset fires
     await act(async () => {
       Simulate.click(resetBtn);
     });
+    const code = container.querySelector('.cc-cloud-reset-confirm-code b').textContent;
+    const captchaInput = container.querySelector('.cc-cloud-reset-confirm-input input');
+    await act(async () => {
+      Simulate.change(captchaInput, { target: { value: code } });
+    });
+    const confirmBtn = Array.from(container.querySelectorAll('.cc-cloud-reset-confirm-input button'))
+      .find((el) => el.textContent.includes('确认重置'));
+    await act(async () => {
+      Simulate.click(confirmBtn);
+    });
+    expect(onReset).toHaveBeenCalledTimes(1);
+    expect(onReset).toHaveBeenCalledWith(
+      expect.objectContaining({ tenant_name: 'tenant-a' }),
+      '1.4.8',
+      { verified: true },
+    );
+
+    // delete fires directly
     await act(async () => {
       Simulate.click(deleteBtn);
     });
-
-    expect(onRollback).toHaveBeenCalledTimes(1);
-    expect(onRollback).toHaveBeenCalledWith(expect.objectContaining({ tenant_name: 'tenant-a' }));
-    expect(onReset).toHaveBeenCalledTimes(1);
     expect(onDelete).toHaveBeenCalledTimes(1);
     expect(onDelete).toHaveBeenCalledWith(expect.objectContaining({ tenant_name: 'tenant-a' }));
+  });
+
+  test('reset requires the displayed captcha before calling onReset', async () => {
+    const onReset = vi.fn();
+    const images = [{ version: '1.4.8' }];
+    await renderPanel({
+      workers: [worker()],
+      images,
+      onReset,
+    });
+
+    const resetBtn = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'))
+      .find((el) => el.textContent.includes('重置'));
+    await act(async () => {
+      Simulate.click(resetBtn);
+    });
+
+    const code = container.querySelector('.cc-cloud-reset-confirm-code b').textContent;
+    const captchaInput = container.querySelector('.cc-cloud-reset-confirm-input input');
+    const confirmBtn = Array.from(container.querySelectorAll('.cc-cloud-reset-confirm-input button'))
+      .find((el) => el.textContent.includes('确认重置'));
+
+    // wrong code -> no call + inline error
+    await act(async () => {
+      Simulate.change(captchaInput, { target: { value: '0000' } });
+    });
+    await act(async () => {
+      Simulate.click(confirmBtn);
+    });
+    expect(onReset).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('验证码不正确，请重新输入');
+
+    // correct code -> onReset fires with verified flag
+    await act(async () => {
+      Simulate.change(captchaInput, { target: { value: code } });
+    });
+    await act(async () => {
+      Simulate.click(confirmBtn);
+    });
+    expect(onReset).toHaveBeenCalledTimes(1);
+    expect(onReset).toHaveBeenCalledWith(
+      expect.objectContaining({ tenant_name: 'tenant-a' }),
+      '1.4.8',
+      { verified: true },
+    );
+    // confirmation panel closes after a successful reset
+    expect(container.querySelector('.cc-cloud-reset-confirm')).toBeNull();
+  });
+
+  test('rollback passes a user-selected version from the dropdown', async () => {
+    const onRollback = vi.fn();
+    const images = [{ version: '1.4.8' }, { version: '1.4.7' }];
+    await renderPanel({
+      workers: [worker()],
+      images,
+      onRollback,
+    });
+
+    const select = container.querySelector('.cc-cloud-version-select');
+    expect(select.value).toBe('1.4.8'); // defaults to the latest available
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['', '1.4.8', '1.4.7']);
+
+    await act(async () => {
+      Simulate.change(select, { target: { value: '1.4.7' } });
+    });
+    const rollbackBtn = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'))
+      .find((el) => el.textContent.includes('回滚'));
+    await act(async () => {
+      Simulate.click(rollbackBtn);
+    });
+    expect(onRollback).toHaveBeenCalledWith(
+      expect.objectContaining({ tenant_name: 'tenant-a' }),
+      '1.4.7',
+    );
+  });
+
+  test('rollback is disabled when no image versions are available', async () => {
+    await renderPanel({
+      workers: [worker()],
+      images: [],
+    });
+    const rollbackBtn = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'))
+      .find((el) => el.textContent.includes('回滚'));
+    expect(rollbackBtn.disabled).toBe(true);
+    const select = container.querySelector('.cc-cloud-version-select');
+    expect(select.disabled).toBe(true);
   });
 
   test('disables worker actions while the worker is being acted on', async () => {
     await renderPanel({
       workers: [worker()],
+      images: [{ version: '1.4.8' }],
       actioning: 'tenant-a',
     });
     const actionButtons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
     expect(actionButtons.length).toBeGreaterThan(0);
     actionButtons.forEach((btn) => expect(btn.disabled).toBe(true));
+  });
+
+  test('switches back to self-hosted from the panel hosting radio', async () => {
+    const onSwitchMode = vi.fn();
+    await renderPanel({ onSwitchMode });
+
+    const radios = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]');
+    expect(radios.length).toBe(2);
+    // managed radio is active
+    expect(radios[1].checked).toBe(true);
+    // clicking the self-hosted radio asks the modal to switch mode
+    await act(async () => {
+      Simulate.change(radios[0], { target: { checked: true } });
+    });
+    expect(onSwitchMode).toHaveBeenCalledTimes(1);
   });
 });
