@@ -37,6 +37,7 @@ const HISTORY_AUTO_FILL_MAX_PAGES = 6;
 const STICK_TO_BOTTOM_THRESHOLD = 96;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
+const CONSECUTIVE_MESSAGE_WINDOW_MS = 5 * 60 * 1000;
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
   'members_invited',
   'member_left',
@@ -2581,8 +2582,10 @@ export default function MessagesView({
     let latestHumanPromptKey = '';
     let prevSenderUid = null;
     let prevTime = 0;
+    let prevAgentTurnKey = '';
     let prevVisibleSenderUid = null;
     let prevVisibleTime = 0;
+    let prevVisibleAgentTurnKey = '';
 
     const registerWorkingGroup = (group) => {
       if (group.explicitTurnKey) {
@@ -2630,7 +2633,6 @@ export default function MessagesView({
     messages.forEach((msg, index) => {
       const msgTime = new Date(msg.created_at || Date.now()).getTime();
       const senderUid = parseUid(msg.from_uid) || String(msg.from_uid || '');
-      const isConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
       const sender = getSender(msg);
       const assistantAuthored = isAssistantAuthoredMessage(msg, sender.isBot);
 
@@ -2639,6 +2641,15 @@ export default function MessagesView({
       }
 
       const turn = assistantWorkTurn(msg, sender.isBot, latestHumanPromptKey);
+      const agentTurnKey = turn.explicitTurnKey;
+      const isConsecutive = areMessagesConsecutive(
+        prevSenderUid,
+        prevTime,
+        prevAgentTurnKey,
+        senderUid,
+        msgTime,
+        agentTurnKey,
+      );
 
       if (isWorkingMessage(msg)) {
         let leadingNarrativeMessages = [];
@@ -2706,11 +2717,19 @@ export default function MessagesView({
         }
         prevSenderUid = senderUid;
         prevTime = msgTime;
+        prevAgentTurnKey = agentTurnKey;
       } else {
         flushCurrentWorking();
         const displayMessage = msg;
         // Recalculate isConsecutive in case a working block just processed
-        const textIsConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
+        const textIsConsecutive = areMessagesConsecutive(
+          prevSenderUid,
+          prevTime,
+          prevAgentTurnKey,
+          senderUid,
+          msgTime,
+          agentTurnKey,
+        );
         const previousGroup = groups[groups.length - 1];
         const previousSourceMessages = previousGroup?.type === 'text'
           ? (previousGroup.sourceMessages || [previousGroup.message])
@@ -2728,14 +2747,20 @@ export default function MessagesView({
           };
           prevSenderUid = senderUid;
           prevTime = msgTime;
+          prevAgentTurnKey = agentTurnKey;
           prevVisibleSenderUid = senderUid;
           prevVisibleTime = msgTime;
+          prevVisibleAgentTurnKey = agentTurnKey;
           return;
         }
 
-        const textIsConsecutiveWithoutWorking = (
-          prevVisibleSenderUid === senderUid
-          && (msgTime - prevVisibleTime < 5 * 60 * 1000)
+        const textIsConsecutiveWithoutWorking = areMessagesConsecutive(
+          prevVisibleSenderUid,
+          prevVisibleTime,
+          prevVisibleAgentTurnKey,
+          senderUid,
+          msgTime,
+          agentTurnKey,
         );
 
         groups.push({
@@ -2752,8 +2777,10 @@ export default function MessagesView({
         });
         prevSenderUid = senderUid;
         prevTime = msgTime;
+        prevAgentTurnKey = agentTurnKey;
         prevVisibleSenderUid = senderUid;
         prevVisibleTime = msgTime;
+        prevVisibleAgentTurnKey = agentTurnKey;
       }
     });
 
@@ -3993,6 +4020,26 @@ function assistantWorkTurn(message, senderIsBot, latestHumanPromptKey) {
   };
 }
 
+function areMessagesConsecutive(
+  previousSenderUid,
+  previousTime,
+  previousAgentTurnKey,
+  senderUid,
+  messageTime,
+  agentTurnKey,
+) {
+  if (previousSenderUid !== senderUid) return false;
+  const gap = messageTime - previousTime;
+  if (!Number.isFinite(gap) || gap < 0 || gap >= CONSECUTIVE_MESSAGE_WINDOW_MS) {
+    return false;
+  }
+
+  // An explicit Agent correlation key marks a new logical run, even if both
+  // messages arrive close together from the same sender.
+  if (!previousAgentTurnKey && !agentTurnKey) return true;
+  return previousAgentTurnKey === agentTurnKey;
+}
+
 function assistantProcessMessage(message) {
   const content = assistantOutputText(message);
   return {
@@ -4235,7 +4282,6 @@ function reorderAssistantTurnBundle(groups) {
     : [];
   const ordered = [...workingGroups, ...(mergedOutput ? [mergedOutput] : [])];
   let firstOutputFound = false;
-
   return ordered.map((group, index) => {
     const next = {
       ...group,

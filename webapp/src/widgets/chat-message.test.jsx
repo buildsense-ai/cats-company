@@ -1119,6 +1119,48 @@ describe('ChatMessage rich file rendering', () => {
     expect(peerMessage.querySelector('[data-testid="avatar"]')).not.toBeNull();
   });
 
+  it('renders the sender identity when a new Agent turn is not grouped', async () => {
+    await act(async () => {
+      root.render(
+        <>
+          <ChatMessage
+            message={{
+              id: 2603,
+              from_uid: 2,
+              content: '同一轮里的后续消息',
+              created_at: '2026-06-09T00:01:00Z',
+            }}
+            isSelf={false}
+            isGroup={false}
+            isConsecutive
+            senderName="CatsCo"
+          />
+          <ChatMessage
+            message={{
+              id: 2604,
+              from_uid: 2,
+              content: '新一轮的第一条消息',
+              created_at: '2026-06-09T00:01:01Z',
+            }}
+            isSelf={false}
+            isGroup={false}
+            isConsecutive={false}
+            senderName="CatsCo"
+          />
+        </>,
+      );
+      await Promise.resolve();
+    });
+
+    const [groupedMessage, newTurnMessage] = container.querySelectorAll('.v3-message.is-peer');
+    expect(groupedMessage.classList.contains('grouped')).toBe(true);
+    expect(groupedMessage.querySelector('[data-testid="avatar"]')).toBeNull();
+    expect(groupedMessage.querySelector('.v3-msg-header')).toBeNull();
+    expect(newTurnMessage.classList.contains('grouped')).toBe(false);
+    expect(newTurnMessage.querySelector('[data-testid="avatar"]')).not.toBeNull();
+    expect(newTurnMessage.querySelector('.v3-msg-name')?.textContent).toBe('CatsCo');
+  });
+
   it('keeps the larger current-user bubble shrink-wrapped with balanced padding', () => {
     expect(catscoUiSystemCss).toContain('.v3-message.is-self .v3-message-bubble');
     const messageRule = catscoUiSystemCss.match(

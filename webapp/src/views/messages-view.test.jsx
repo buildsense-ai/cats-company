@@ -589,6 +589,82 @@ describe('MessagesView composer draft isolation', () => {
     expect(message?.dataset.consecutive).toBe('false');
   });
 
+  it('keeps a new realtime Agent turn identifiable after another Agent turn', async () => {
+    const earlierReplyTime = new Date(Date.now() - 1_000).toISOString();
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 90,
+        seq_id: 90,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        type: 'text',
+        content: '上一轮的回复',
+        created_at: earlierReplyTime,
+        metadata: { turn_id: 'previous-turn' },
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq_id: 92,
+          from: 'usr2',
+          type: 'text',
+          msg_type: 'text',
+          content: '这是新一轮的回复',
+          metadata: { turn_id: 'next-turn' },
+        },
+      });
+      await flushPromises();
+    });
+
+    const reply = container.querySelector('.mock-chat-message[data-message-id="92"]');
+    expect(reply?.dataset.consecutive).toBe('false');
+  });
+
+  it('does not group messages when their timestamps move backward', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 93,
+          seq_id: 93,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '时间较晚的消息',
+          created_at: '2026-08-11T10:00:02Z',
+        },
+        {
+          id: 94,
+          seq_id: 94,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: '时间较早的消息',
+          created_at: '2026-08-11T10:00:01Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const reply = container.querySelector('.mock-chat-message[data-message-id="94"]');
+    expect(reply?.dataset.consecutive).toBe('false');
+  });
+
   it('ignores a stale group profile response after switching conversations', async () => {
     const firstGroupProfile = deferred();
     const secondGroupProfile = deferred();
@@ -1270,7 +1346,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.mock-chat-message[data-message-id="93"]')).not.toBeNull();
   });
 
-  it('orders one Agent turn as working trace, delivery files, then the final result', async () => {
+  it('keeps one Agent turn ordered as a work trace, delivery files, then the final result', async () => {
     mockTutorialAgentPeer();
     api.getMessages.mockResolvedValueOnce({
       messages: [
@@ -1686,6 +1762,7 @@ describe('MessagesView composer draft isolation', () => {
       .toBe('First run finished.');
     expect(container.querySelector('[data-message-id="111"]')?.dataset.messageContent)
       .toBe('Second run finished.');
+    expect(container.querySelector('[data-message-id="110"]')?.dataset.consecutive).toBe('false');
   });
 
   it('keeps separate assistant replies apart outside the fallback merge window', async () => {
