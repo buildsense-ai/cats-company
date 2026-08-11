@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -51,6 +52,7 @@ type pushHubConversationTitleStore struct {
 
 type mutedConversationPushStore struct {
 	pushHubUserStore
+	mu                        sync.RWMutex
 	mutedTopics               map[string]bool
 	notificationPreferenceErr error
 	preferenceChecked         chan struct{}
@@ -60,6 +62,8 @@ func (s *mutedConversationPushStore) ListMutedConversationTopics(_ context.Conte
 	if s.notificationPreferenceErr != nil {
 		return nil, s.notificationPreferenceErr
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	muted := make(map[string]bool)
 	for _, topicID := range topicIDs {
 		if s.mutedTopics[topicID] {
@@ -73,6 +77,8 @@ func (s *mutedConversationPushStore) SetConversationNotificationsMuted(_ context
 	if s.notificationPreferenceErr != nil {
 		return s.notificationPreferenceErr
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.mutedTopics == nil {
 		s.mutedTopics = make(map[string]bool)
 	}
@@ -94,6 +100,8 @@ func (s *mutedConversationPushStore) IsConversationNotificationsMuted(_ context.
 	if s.notificationPreferenceErr != nil {
 		return false, s.notificationPreferenceErr
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.mutedTopics[topicID], nil
 }
 
@@ -1237,6 +1245,67 @@ func TestConversationNotificationMuteControlsOfflinePushDelivery(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestConversationNotificationMuteSuppressesPushQueuedBeforeMute(t *testing.T) {
+	const (
+		uid     = int64(42)
+		topicID = "p2p_7_42"
+	)
+	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/subscription/queued-mute",
+		P256DH:   "p256dh",
+		Auth:     "auth",
+	}}}
+	service := enabledPushService(pushStore)
+	sendStarted := make(chan struct{}, maxConcurrentPushDeliveries+1)
+	releaseWorkers := make(chan struct{})
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		sendStarted <- struct{}{}
+		<-releaseWorkers
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	db := &mutedConversationPushStore{
+		pushHubUserStore: pushHubUserStore{users: map[int64]*types.User{
+			uid: {ID: uid, AccountType: types.AccountHuman},
+		}},
+		mutedTopics:       map[string]bool{},
+		preferenceChecked: make(chan struct{}, 1),
+	}
+	hub := NewHub(db, nil)
+	hub.SetPushNotificationService(service)
+
+	for index := 0; index < maxConcurrentPushDeliveries; index++ {
+		if !service.EnqueueToUser(uid, PushNotification{Title: "block worker"}) {
+			t.Fatalf("blocker %d was not queued", index)
+		}
+	}
+	for index := 0; index < maxConcurrentPushDeliveries; index++ {
+		select {
+		case <-sendStarted:
+		case <-time.After(time.Second):
+			t.Fatalf("blocker %d did not occupy a push worker", index)
+		}
+	}
+
+	if !hub.enqueueOfflineUserPush(uid, topicID, "task finished") {
+		t.Fatal("offline push was not queued")
+	}
+	if err := db.SetConversationNotificationsMuted(context.Background(), uid, topicID, true); err != nil {
+		t.Fatalf("mute queued conversation: %v", err)
+	}
+	close(releaseWorkers)
+
+	select {
+	case <-db.preferenceChecked:
+	case <-time.After(time.Second):
+		t.Fatal("queued push did not recheck the conversation notification preference")
+	}
+	select {
+	case <-sendStarted:
+		t.Fatal("push queued before mute was delivered")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
