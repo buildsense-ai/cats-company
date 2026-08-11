@@ -1143,15 +1143,8 @@ export default function MessagesView({
         ? res.has_more
         : rawMessages.length === PAGE_SIZE;
       const nextBeforeID = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
-      const newestHistoryID = rawMessages.reduce(
-        (latestID, message) => Math.max(latestID, historyMessageID(message)),
-        0,
-      );
       setMessages((current) => {
-        const newerMessages = rawMessages.length === 0
-          ? current.filter((message) => message._pending)
-          : current.filter((message) => message._pending || historyMessageID(message) > newestHistoryID);
-        return mergeMessages(visibleMessages, newerMessages);
+        return mergeHistoryWithCurrentMessages(visibleMessages, current);
       });
       historyOffsetRef.current = rawMessages.length;
       historyBeforeIDRef.current = nextBeforeID;
@@ -1555,18 +1548,15 @@ export default function MessagesView({
       if (!switchesTopic && activeTopicRef.current === topic) {
         optimisticMessageAdded = true;
         setMessages((prev) => mergeMessages(prev, [{
-          id: tempId,
-          seq_id: tempId,
-          topic_id: sendTopic,
-          from_uid: user.uid,
-          content: displayContent,
-          content_blocks: attachmentsToSend.length > 0 ? contentBlocks : undefined,
-          type: 'text',
-          msg_type: 'text',
-          reply_to: currentReplyTo ? currentReplyTo.id : 0,
-          created_at: new Date().toISOString(),
-          _pending: true,
-          _pending_after_seq: latestPersistedMessageSequence(prev),
+          ...createOptimisticUserMessage({
+            id: tempId,
+            topicId: sendTopic,
+            userUID: user.uid,
+            content: displayContent,
+            contentBlocks: attachmentsToSend.length > 0 ? contentBlocks : undefined,
+            replyToID: currentReplyTo ? currentReplyTo.id : 0,
+            pendingAfterSeq: latestPersistedMessageSequence(prev),
+          }),
         }]));
       }
 
@@ -1655,18 +1645,13 @@ export default function MessagesView({
     clearRuntimePlan();
     const tempId = Date.now();
     stickToBottomRef.current = true;
-    setMessages((current) => mergeMessages(current, [{
+    setMessages((current) => mergeMessages(current, [createOptimisticUserMessage({
       id: tempId,
-      seq_id: tempId,
-      topic_id: topic,
-      from_uid: user.uid,
+      topicId: topic,
+      userUID: user.uid,
       content: taskText,
-      type: 'text',
-      msg_type: 'text',
-      created_at: new Date().toISOString(),
-      _pending: true,
-      _pending_after_seq: latestPersistedMessageSequence(current),
-    }]));
+      pendingAfterSeq: latestPersistedMessageSequence(current),
+    })]));
 
     try {
       const artifactContext = await captureArtifactMessageContext();
@@ -4559,6 +4544,96 @@ function mergeMessages(primary, secondary) {
     byId.set(message.id, message);
   });
   return Array.from(byId.values()).sort(compareMessageSequence);
+}
+
+function createOptimisticUserMessage({
+  id,
+  topicId,
+  userUID,
+  content,
+  contentBlocks,
+  replyToID = 0,
+  pendingAfterSeq = 0,
+}) {
+  const message = {
+    id,
+    seq_id: id,
+    topic_id: topicId,
+    from_uid: userUID,
+    content,
+    type: 'text',
+    msg_type: 'text',
+    reply_to: replyToID,
+    created_at: new Date().toISOString(),
+    _pending: true,
+    _pending_after_seq: pendingAfterSeq,
+  };
+  if (Array.isArray(contentBlocks) && contentBlocks.length > 0) {
+    message.content_blocks = contentBlocks;
+  }
+  return message;
+}
+
+function pendingMatchesHistoryMessage(pending, historyMessage, usedHistoryIDs) {
+  const historyID = historyMessageID(historyMessage);
+  if (
+    historyID <= 0
+    || historyID <= pendingMessageAnchor(pending)
+    || usedHistoryIDs.has(historyID)
+    || historyMessage?._pending
+    || historyMessage?._streaming
+    || !sameUID(pending?.from_uid, historyMessage?.from_uid)
+    || getComparableContent(pending?.content) !== getComparableContent(historyMessage?.content)
+  ) {
+    return false;
+  }
+
+  const pendingReplyTo = Number(pending?.reply_to || 0);
+  const historyReplyTo = Number(historyMessage?.reply_to || 0);
+  return pendingReplyTo <= 0 || historyReplyTo <= 0 || pendingReplyTo === historyReplyTo;
+}
+
+function findHistoryMatchForPending(pending, historyMessages, usedHistoryIDs) {
+  return historyMessages
+    .filter((historyMessage) => pendingMatchesHistoryMessage(pending, historyMessage, usedHistoryIDs))
+    .sort((left, right) => historyMessageID(right) - historyMessageID(left))[0] || null;
+}
+
+function mergeHistoryWithCurrentMessages(historyMessages, currentMessages) {
+  const visibleMessages = Array.isArray(historyMessages) ? historyMessages : [];
+  const current = Array.isArray(currentMessages) ? currentMessages : [];
+  const newestHistoryID = visibleMessages.reduce(
+    (latestID, message) => Math.max(latestID, historyMessageID(message)),
+    0,
+  );
+  const historySequence = latestPersistedMessageSequence(visibleMessages);
+  const usedHistoryIDs = new Set();
+  const pendingToKeep = [];
+
+  current
+    .filter((message) => message?._pending)
+    .forEach((pending) => {
+      const historyMatch = findHistoryMatchForPending(pending, visibleMessages, usedHistoryIDs);
+      if (historyMatch) {
+        usedHistoryIDs.add(historyMessageID(historyMatch));
+        return;
+      }
+
+      pendingToKeep.push({
+        ...pending,
+        _pending_after_seq: Math.max(pendingMessageAnchor(pending), historySequence),
+      });
+    });
+
+  const pendingByID = new Map(pendingToKeep.map((pending) => [pending.id, pending]));
+  const newerMessages = current.flatMap((message) => {
+    if (message?._pending) {
+      const pending = pendingByID.get(message.id);
+      return pending ? [pending] : [];
+    }
+    return historyMessageID(message) > newestHistoryID ? [message] : [];
+  });
+  return mergeMessages(visibleMessages, newerMessages);
 }
 
 function latestPersistedMessageSequence(messages) {
