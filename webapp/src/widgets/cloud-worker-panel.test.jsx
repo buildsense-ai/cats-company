@@ -224,6 +224,10 @@ describe('CloudWorkerPanel', () => {
       Simulate.click(resetBtn);
     });
 
+    // 验证码确认区明确标注被重置的机器人
+    expect(container.querySelector('.cc-cloud-reset-confirm-title').textContent)
+      .toContain('重置「云端审查助手」');
+
     const code = container.querySelector('.cc-cloud-reset-confirm-code b').textContent;
     const captchaInput = container.querySelector('.cc-cloud-reset-confirm-input input');
     const confirmBtn = Array.from(container.querySelectorAll('.cc-cloud-reset-confirm-input button'))

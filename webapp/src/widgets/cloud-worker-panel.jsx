@@ -276,7 +276,7 @@ export default function CloudWorkerPanel({
                     {resetConfirming === worker.tenant_name ? (
                       <div className="cc-cloud-reset-confirm">
                         <p className="cc-cloud-reset-confirm-title">
-                          <ShieldAlert size={13} /> 重置会清空数据，请输入验证码确认
+                          <ShieldAlert size={13} /> 重置「{worker.display_name}」会清空数据，请输入验证码确认
                         </p>
                         <p className="cc-cloud-reset-confirm-code">
                           验证码 <b>{resetCodes[worker.tenant_name]}</b>
