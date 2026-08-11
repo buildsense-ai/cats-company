@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/openchat/openchat/server/store/types"
 )
 
 // RelayAdminProxyHandler exposes the relay usage-admin page to whitelisted
@@ -39,6 +41,11 @@ type RelayAdminProxyHandler struct {
 	rateByIP          map[string]*fixedWindowRateLimiter
 	rateMu            sync.Mutex
 	auditLogger       *log.Logger
+	managedBudgets    relayAdminManagedBudgetStore
+}
+
+type relayAdminManagedBudgetStore interface {
+	ListCommercialManagedRelayBudgets(uid int64) ([]*types.CommercialManagedRelayBudget, error)
 }
 
 const relayAdminRewritePrefix = "/api/admin/relay"
@@ -76,13 +83,16 @@ func relayAdminConfigFromEnv() relayAdminConfig {
 }
 
 // NewRelayAdminProxyHandler builds the handler with bounded client timeouts.
-func NewRelayAdminProxyHandler(cfg relayAdminConfig) *RelayAdminProxyHandler {
+func NewRelayAdminProxyHandler(cfg relayAdminConfig, managedBudgets ...relayAdminManagedBudgetStore) *RelayAdminProxyHandler {
 	h := &RelayAdminProxyHandler{
 		config:      cfg,
 		client:      &http.Client{Timeout: 15 * time.Second},
 		rateByUID:   map[int64]*fixedWindowRateLimiter{},
 		rateByIP:    map[string]*fixedWindowRateLimiter{},
 		auditLogger: nil,
+	}
+	if len(managedBudgets) > 0 {
+		h.managedBudgets = managedBudgets[0]
 	}
 	h.setRateLimit(30, 60)
 	return h
@@ -200,6 +210,21 @@ func (h *RelayAdminProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limited"})
 		return
 	}
+	if r.Method == http.MethodPost {
+		if targetUID, ok := relayAdminLimitsTargetUID(relayPath); ok && h.managedBudgets != nil {
+			managed, err := h.managedBudgets.ListCommercialManagedRelayBudgets(targetUID)
+			if err != nil {
+				h.audit(r, uid, http.StatusBadGateway, "commercial-budget-check-failed")
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to verify the commercial quota state"})
+				return
+			}
+			if len(managed) > 0 {
+				h.audit(r, uid, http.StatusConflict, "commercial-budget-managed")
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "该账号额度由商业套餐账本管理，请在账号后台的商业化页面调额"})
+				return
+			}
+		}
+	}
 
 	upstream := h.config.relayURL + relayPath
 	if q := relayAdminSanitizedQuery(r.URL.RawQuery); q != "" {
@@ -284,6 +309,16 @@ var relayAdminAllowedPrefixes = []string{
 }
 
 var relayAdminUserKeyPath = regexp.MustCompile(`^/local/users/[0-9]+/key/(state|limits|usage-reset)/?$`)
+var relayAdminUserKeyLimitsPath = regexp.MustCompile(`^/local/users/([0-9]+)/key/limits/?$`)
+
+func relayAdminLimitsTargetUID(path string) (int64, bool) {
+	matches := relayAdminUserKeyLimitsPath.FindStringSubmatch(path)
+	if len(matches) != 2 {
+		return 0, false
+	}
+	uid, err := strconv.ParseInt(matches[1], 10, 64)
+	return uid, err == nil && uid > 0
+}
 
 // relayAdminPathAllowed reports whether a relay path may be proxied.
 func relayAdminPathAllowed(rawPath string) bool {
