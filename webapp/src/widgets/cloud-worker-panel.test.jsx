@@ -117,7 +117,7 @@ describe('CloudWorkerPanel', () => {
       Simulate.click(button);
     });
     expect(button.disabled).toBe(true);
-    expect(button.textContent).toContain('创建中...');
+    expect(button.textContent).toContain('正在供给云端实例...');
 
     await act(async () => {
       resolveCreate();
@@ -337,6 +337,35 @@ describe('CloudWorkerPanel', () => {
     const actionButtons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
     expect(actionButtons.length).toBeGreaterThan(0);
     actionButtons.forEach((btn) => expect(btn.disabled).toBe(true));
+  });
+
+  test('shows the categorized failure message inline in the create card', async () => {
+    // 面板只显示按错误码分类后的提示（不显示后端具体技术原因）
+    const onCreate = vi.fn().mockRejectedValue(new Error('云端资源供给失败，请稍后重试或联系管理员'));
+    await renderPanel({ onCreate });
+
+    const input = container.querySelector('.cc-cloud-create-card input');
+    await act(async () => {
+      Simulate.change(input, { target: { value: '云端审查助手' } });
+    });
+    const button = Array.from(container.querySelectorAll('button'))
+      .find((el) => el.textContent.includes('创建云托管员工'));
+    await act(async () => {
+      Simulate.click(button);
+    });
+    expect(container.querySelector('.cc-cloud-create-error')).toBeTruthy();
+    expect(container.querySelector('.cc-cloud-create-error').textContent).toContain('云端资源供给失败');
+    expect(container.querySelector('.cc-cloud-create-error').textContent).not.toContain('Ecs.Order.ProcFailed');
+    // 输入保留，便于用户修改后重试
+    expect(input.value).toBe('云端审查助手');
+  });
+
+  test('hides the hosting switch when showHostingSwitch is false', async () => {
+    await renderPanel({ showHostingSwitch: false });
+    expect(container.querySelector('.cc-agent-hosting')).toBeNull();
+    // 面板其余部分仍在
+    expect(container.textContent).toContain('云托管配额');
+    expect(container.textContent).toContain('创建云托管员工');
   });
 
   test('switches back to self-hosted from the panel hosting radio', async () => {

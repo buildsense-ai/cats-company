@@ -2,9 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, getWebSocketURL } from '../api';
 import t from '../i18n';
 import {
+  ArrowLeft,
   Bot,
   Bug,
   CheckCircle,
+  Cloud,
   Code2,
   Copy,
   FileCheck2,
@@ -30,6 +32,28 @@ import CloudWorkerPanel from './cloud-worker-panel';
 const CREATE_MODES = {
   SELF_HOSTED: 'self_hosted',
   MANAGED: 'managed',
+};
+
+// Cloud worker creation failure → user-facing message, keyed by the backend
+// error code. Concrete technical reasons (e.g. cloud quota) stay in server
+// logs and are never surfaced to the UI.
+const cloudWorkerCreateMessage = (e) => {
+  switch (e?.data?.code) {
+    case 'cloud_worker_not_enabled':
+      return '云端部署尚未为你的账号开放';
+    case 'cloud_worker_quota_exhausted':
+      return '云端虚拟员工配额已用完';
+    case 'cloud_worker_provisioning_unconfigured':
+      return '云端供给服务暂不可用，请联系管理员';
+    case 'cloud_worker_provision_failed':
+      return '云端资源供给失败，请稍后重试或联系管理员';
+    case 'cloud_worker_provision_failed_pending_cleanup':
+      return '云端实例供给失败，可能有残留实例待清理，可在列表中删除';
+    case 'cloud_worker_invalid_username':
+    case 'cloud_worker_create_failed':
+    default:
+      return '云端资源创建失败，请稍后重试或联系管理员';
+  }
 };
 
 const CHANNEL_AGENT_ACCESS_MODES = {
@@ -160,6 +184,7 @@ export default function AgentStoreModal({
   const [bots, setBots] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('hub'); // 'hub', 'create', 'manage'
+  const [hubCloudView, setHubCloudView] = useState(false); // hub tab: show cloud manage panel instead of the roster
   const [createForm, setCreateForm] = useState(initialForm);
   const [createMode, setCreateMode] = useState(CREATE_MODES.SELF_HOSTED);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -387,8 +412,10 @@ export default function AgentStoreModal({
       if (onBotsChanged) onBotsChanged();
       feedback.notify({ tone: 'success', message: '云托管员工创建成功，云端实例供给中…' });
     } catch (e) {
-      setError(e.message || t('error_server'));
-      throw e;
+      // 按后端错误码区分提示；具体技术原因（如云资源配额）只进后端日志
+      const message = cloudWorkerCreateMessage(e);
+      setError(message);
+      throw new Error(message);
     }
   };
 
@@ -646,6 +673,30 @@ export default function AgentStoreModal({
 
           {/* HUB TAB */}
           {tab === 'hub' && (
+            hubCloudView ? (
+              <div className="cc-agent-cloud-manage">
+                <div className="cc-agent-cloud-manage-head">
+                  <button type="button" className="oc-btn oc-btn-default" onClick={() => setHubCloudView(false)}>
+                    <ArrowLeft size={15} /> 返回助手列表
+                  </button>
+                  <h3><Cloud size={16} /> 云托管管理</h3>
+                  <span>配额 · 创建 · 版本/回滚/重置/删除</span>
+                </div>
+                <CloudWorkerPanel
+                  quota={cloudQuota}
+                  quotaError={cloudQuotaError}
+                  workers={cloudWorkers}
+                  images={cloudImages}
+                  actioning={cloudActioning}
+                  showHostingSwitch={false}
+                  onCreate={handleCloudCreate}
+                  onRollback={handleCloudRollback}
+                  onReset={handleCloudReset}
+                  onDelete={handleDelete}
+                  onSwitchMode={() => setHubCloudView(false)}
+                />
+              </div>
+            ) : (
             <div className="cc-agent-hub">
               {loading ? (
                 <div className="cc-agent-hub-state">加载中...</div>
@@ -672,6 +723,19 @@ export default function AgentStoreModal({
                       <div><strong>{botOverview.selfHosted}</strong><span>自托管</span></div>
                     </div>
                   </section>
+
+                  {/* 云托管管理入口（云员工独有：有配额或已有云托管员工时显示） */}
+                  {(cloudQuota?.enabled || cloudWorkers.length > 0) && (
+                    <button
+                      type="button"
+                      className="cc-agent-cloud-manage-entry"
+                      onClick={() => setHubCloudView(true)}
+                    >
+                      <Cloud size={15} />
+                      <span>云托管管理</span>
+                      <small>{cloudWorkers.length > 0 ? `${cloudWorkers.length} 个员工` : '配额 · 版本 · 回滚/重置/删除'}</small>
+                    </button>
+                  )}
 
                   <div className="v3-agent-grid cc-agent-hub-grid">
                     {bots.map(bot => {
@@ -793,6 +857,7 @@ export default function AgentStoreModal({
                 </>
               )}
             </div>
+            )
           )}
 
           {/* CREATE TAB */}

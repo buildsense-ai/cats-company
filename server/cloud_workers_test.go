@@ -18,6 +18,26 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
+// TestTruncateWorkerOutput guards the server-log helper that bounds script
+// output written on provision/operation failures (details must stay in the
+// backend log, never echoed to the frontend).
+func TestTruncateWorkerOutput(t *testing.T) {
+	if got := truncateWorkerOutput("  ok  "); got != "ok" {
+		t.Fatalf("truncate(short)=%q want ok", got)
+	}
+	if got := truncateWorkerOutput(""); got != "" {
+		t.Fatalf("truncate(empty)=%q want empty", got)
+	}
+	long := strings.Repeat("x", 6000)
+	got := truncateWorkerOutput(long)
+	if len(got) > maxWorkerOutputLog+len("...(truncated)") {
+		t.Fatalf("truncate(long) too long: %d", len(got))
+	}
+	if !strings.HasSuffix(got, "...(truncated)") {
+		t.Fatalf("truncate(long) missing suffix: %q", got[len(got)-20:])
+	}
+}
+
 type cloudWorkerTestStore struct {
 	store.Store
 	ownerBots         []map[string]interface{}

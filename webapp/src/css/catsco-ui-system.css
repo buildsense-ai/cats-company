@@ -6880,8 +6880,38 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 .cc-cloud-create-card label { display: grid; gap: 6px; margin-bottom: 12px; }
 .cc-cloud-create-card label > span { font-size: 13px; color: var(--v3-text-name); }
 .cc-cloud-create-card label > span b { color: var(--v3-text-danger, #e5484d); }
-.cc-cloud-create-submit { width: 100%; min-height: 40px; padding: 0 16px; border-radius: 7px; font-size: 13px; }
+.cc-cloud-create-submit { width: 100%; min-height: 40px; padding: 0 16px; border-radius: 7px; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .cc-cloud-create-hint { margin: 0; font-size: 12px; color: var(--v3-text-muted); }
+.cc-cloud-create-error { margin: 0; display: flex; align-items: flex-start; gap: 5px; font-size: 12px; color: var(--v3-text-danger, #e5484d); background: color-mix(in srgb, #e5484d 7%, transparent); border: 1px solid color-mix(in srgb, #e5484d 35%, transparent); border-radius: 7px; padding: 8px 10px; line-height: 1.5; }
+.cc-cloud-create-error svg { flex: none; margin-top: 1px; }
+.cc-spin { animation: cc-spin 1s linear infinite; }
+@keyframes cc-spin { to { transform: rotate(360deg); } }
+
+/* ===== Cloud-managed manage view (hub tab entry) ===== */
+.cc-agent-cloud-manage { display: grid; gap: 14px; }
+.cc-agent-cloud-manage-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cc-agent-cloud-manage-head .oc-btn { min-height: 32px; padding: 0 12px; font-size: 12px; border-radius: 7px; display: inline-flex; align-items: center; gap: 5px; }
+.cc-agent-cloud-manage-head h3 { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 15px; color: var(--v3-text-name); }
+.cc-agent-cloud-manage-head h3 svg { color: var(--v3-primary); }
+.cc-agent-cloud-manage-head > span { font-size: 12px; color: var(--v3-text-muted); }
+.cc-agent-cloud-manage-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--v3-primary) 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--cc-accent) 6%, transparent);
+  color: var(--v3-text-name);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+.cc-agent-cloud-manage-entry:hover { border-color: var(--v3-primary); background: color-mix(in srgb, var(--cc-accent) 10%, transparent); }
+.cc-agent-cloud-manage-entry svg { color: var(--v3-primary); flex: none; }
+.cc-agent-cloud-manage-entry span { font-weight: 600; }
+.cc-agent-cloud-manage-entry small { color: var(--v3-text-muted); font-size: 12px; margin-left: auto; }
 .cc-cloud-workers-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .cc-cloud-workers-head h3 { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--v3-text-name); }
 .cc-cloud-workers-head h3 svg { color: var(--v3-primary); }

@@ -444,6 +444,115 @@ describe('AgentStoreModal', () => {
     expect(api.createCloudWorker).toHaveBeenCalledWith(expect.objectContaining({ display_name: '云端审查助手' }));
   });
 
+  test('opens the cloud manage view from the hub and returns to the roster', async () => {
+    api.getMyBots.mockResolvedValue({
+      bots: [{
+        id: 92,
+        uid: 92,
+        tenant_name: 'tenant-a',
+        username: 'bot-cloud-1',
+        display_name: '云端审查助手',
+        relation: 'owner',
+        is_owner: true,
+        visibility: 'public',
+      }],
+    });
+    api.getCloudWorkers.mockResolvedValue({
+      quota: { enabled: true, total: 3, used: 1, remaining: 2 },
+      workers: [{
+        tenant_name: 'tenant-a',
+        status: 'running',
+        version: '1.4.8',
+        image_id: '79f5b7f4-c06e-4f97-90fa-d69566f23d63',
+      }],
+    });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // hub 列表里有云托管管理入口（云员工独有）
+    const entry = Array.from(container.querySelectorAll('button'))
+      .find((b) => b.textContent.includes('云托管管理'));
+    expect(entry).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(entry);
+      await Promise.resolve();
+    });
+
+    // 云托管管理视图：配额 + 员工管理，无部署方式 radio
+    expect(container.textContent).toContain('云托管配额');
+    expect(container.textContent).toContain('云端审查助手');
+    expect(container.textContent).toContain('运行中');
+    expect(container.querySelector('.cc-agent-hosting')).toBeNull();
+    const back = Array.from(container.querySelectorAll('button'))
+      .find((b) => b.textContent.includes('返回助手列表'));
+    expect(back).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(back);
+      await Promise.resolve();
+    });
+
+    // 回到助手列表
+    expect(Array.from(container.querySelectorAll('button'))
+      .some((b) => b.textContent.includes('云托管管理'))).toBe(true);
+  });
+
+  test('maps cloud worker create errors to categorized messages', async () => {
+    api.getMyBots.mockResolvedValue({ bots: [] });
+    api.getCloudWorkers.mockResolvedValue({
+      quota: { enabled: true, total: 3, used: 1, remaining: 2 },
+      workers: [],
+    });
+    const err = new Error('cloud worker creation quota exhausted');
+    err.data = { code: 'cloud_worker_quota_exhausted' };
+    api.createCloudWorker.mockRejectedValue(err);
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const createTab = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('创建新助手'));
+    await act(async () => {
+      Simulate.click(createTab);
+    });
+    const managedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[1];
+    await act(async () => {
+      Simulate.change(managedRadio, { target: { checked: true } });
+      await Promise.resolve();
+    });
+
+    const input = container.querySelector('.cc-cloud-create-card input');
+    await act(async () => {
+      Simulate.change(input, { target: { value: '云端审查助手' } });
+    });
+    const createBtn = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('创建云托管员工'));
+    await act(async () => {
+      Simulate.click(createBtn);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // 配额不足 → 分类提示；不暴露后端原始错误
+    expect(container.querySelector('.cc-cloud-create-error')).toBeTruthy();
+    expect(container.querySelector('.cc-cloud-create-error').textContent).toContain('云端虚拟员工配额已用完');
+    expect(container.querySelector('.cc-cloud-create-error').textContent).not.toContain('quota exhausted');
+  });
+
   test('keeps the previous skill visibility and reports a save failure', async () => {
     api.setBotSkillsVisibility.mockRejectedValue(new Error('保存失败，请重试'));
     api.getMyBots.mockResolvedValue({

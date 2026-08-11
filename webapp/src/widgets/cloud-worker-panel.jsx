@@ -40,6 +40,7 @@ export default function CloudWorkerPanel({
   workers = [],
   images = [],
   actioning = null,
+  showHostingSwitch = true,
   onCreate,
   onRollback,
   onReset,
@@ -48,6 +49,7 @@ export default function CloudWorkerPanel({
 }) {
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState('');
   // tenant_name -> selected image version ('' = latest)
   const [versions, setVersions] = useState({});
   // Reset captcha flow: tenant being confirmed / its code / typed input / mismatch
@@ -70,11 +72,13 @@ export default function CloudWorkerPanel({
     const displayName = name.trim();
     if (!displayName || creating || !canCreate) return;
     setCreating(true);
+    setCreateError('');
     try {
       await onCreate(displayName);
       setName('');
-    } catch {
-      // 错误已由 modal 层反馈
+    } catch (e) {
+      // 显示按错误码分类后的提示（具体技术原因只在后端日志）
+      setCreateError(e?.message || '云端资源创建失败，请稍后重试或联系管理员');
     } finally {
       setCreating(false);
     }
@@ -118,38 +122,40 @@ export default function CloudWorkerPanel({
 
   return (
     <div className="cc-cloud-panel">
-      {/* 部署方式：云托管面板自带切换入口，切回自托管恢复原表单 */}
-      <fieldset className="cc-agent-hosting">
-        <legend><span><Zap size={16} /></span>部署方式 <small>高级设置</small></legend>
-        <label>
-          <input
-            type="radio"
-            name="hosting"
-            checked={false}
-            onChange={() => { if (onSwitchMode) onSwitchMode(); }}
-          />
-          <span><strong>自托管</strong><small>生成本地身份 Key，后续连接你的服务。</small></span>
-        </label>
-        <label className="active">
-          <input
-            type="radio"
-            name="hosting"
-            checked
-            readOnly
-            onChange={() => {}}
-          />
-          <span>
-            <strong>云托管</strong>
-            <small>
-              {quotaError
-                ? '云端状态查询失败，请稍后重试'
-                : (quota && quota.enabled
-                    ? `部署到云端虚拟员工（可创建 ${quota.remaining}/${quota.total}）`
-                    : '云端部署当前未开放，请联系管理员开通')}
-            </small>
-          </span>
-        </label>
-      </fieldset>
+      {/* 部署方式：云托管面板自带切换入口，切回自托管恢复原表单（管理视图可隐藏） */}
+      {showHostingSwitch && (
+        <fieldset className="cc-agent-hosting">
+          <legend><span><Zap size={16} /></span>部署方式 <small>高级设置</small></legend>
+          <label>
+            <input
+              type="radio"
+              name="hosting"
+              checked={false}
+              onChange={() => { if (onSwitchMode) onSwitchMode(); }}
+            />
+            <span><strong>自托管</strong><small>生成本地身份 Key，后续连接你的服务。</small></span>
+          </label>
+          <label className="active">
+            <input
+              type="radio"
+              name="hosting"
+              checked
+              readOnly
+              onChange={() => {}}
+            />
+            <span>
+              <strong>云托管</strong>
+              <small>
+                {quotaError
+                  ? '云端状态查询失败，请稍后重试'
+                  : (quota && quota.enabled
+                      ? `部署到云端虚拟员工（可创建 ${quota.remaining}/${quota.total}）`
+                      : '云端部署当前未开放，请联系管理员开通')}
+              </small>
+            </span>
+          </label>
+        </fieldset>
+      )}
 
       {/* 配额与说明 */}
       <section className="cc-cloud-quota" aria-label="云托管配额">
@@ -183,11 +189,21 @@ export default function CloudWorkerPanel({
               onClick={handleSubmit}
               disabled={creating || !name.trim()}
             >
-              {creating ? '创建中...' : '创建云托管员工'}
+              {creating ? <><RefreshCw size={14} className="cc-spin" /> 正在供给云端实例...</> : '创建云托管员工'}
             </button>
-            <p className="cc-cloud-create-hint">
-              创建后会供给一台云端虚拟员工并自动完成部署，无需配置身份 Key，可直接使用。
-            </p>
+            {creating && (
+              <p className="cc-cloud-create-hint">
+                正在创建云端实例并部署，通常需要 1-3 分钟，请稍候…
+              </p>
+            )}
+            {createError && (
+              <p className="cc-cloud-create-error"><AlertCircle size={13} /> {createError}</p>
+            )}
+            {!creating && !createError && (
+              <p className="cc-cloud-create-hint">
+                创建后会供给一台云端虚拟员工并自动完成部署，无需配置身份 Key，可直接使用。
+              </p>
+            )}
           </>
         ) : (
           <p className="cc-cloud-quota-err">
