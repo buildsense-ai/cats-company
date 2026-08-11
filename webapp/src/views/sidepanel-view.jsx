@@ -339,6 +339,7 @@ export default function ChatListView({
   const agentsRef = useRef(agents);
   const friendSyncPromiseRef = useRef(null);
   const friendSyncQueuedRef = useRef(false);
+  const conversationRequestPromiseRef = useRef(null);
   const sidebarListRef = useRef(null);
   const contactsSectionRef = useRef(null);
   const projectsSectionRef = useRef(null);
@@ -745,10 +746,25 @@ export default function ChatListView({
     }
   };
 
+  const requestConversations = () => {
+    if (conversationRequestPromiseRef.current) return conversationRequestPromiseRef.current;
+
+    const requestPromise = Promise.resolve()
+      .then(() => api.getConversations())
+      .finally(() => {
+        if (conversationRequestPromiseRef.current === requestPromise) {
+          conversationRequestPromiseRef.current = null;
+        }
+      });
+
+    conversationRequestPromiseRef.current = requestPromise;
+    return requestPromise;
+  };
+
   const loadAll = async () => {
     try {
       const [resC, resF, resG, resP, resA, resProjects] = await Promise.all([
-        api.getConversations().catch((error) => ({ error })),
+        requestConversations().catch((error) => ({ error })),
         api.getFriends().catch(()=>({})),
         api.getGroups().catch(()=>({})),
         api.getPendingRequests().catch(()=>({})),
@@ -778,6 +794,19 @@ export default function ChatListView({
     }
   };
 
+  const refreshConversations = () => {
+    return requestConversations()
+      .then((result) => {
+        if (!Array.isArray(result?.conversations)) {
+          throw new Error('conversation response is invalid');
+        }
+        setChats(result.conversations.map(conversationSummaryToChat));
+      })
+      .catch((error) => {
+        console.warn('Failed to refresh conversations after returning online:', error);
+      });
+  };
+
   useEffect(() => { loadAll(); }, []);
 
   useEffect(() => {
@@ -790,6 +819,7 @@ export default function ChatListView({
     const syncWhenVisible = () => {
       if (typeof document === 'undefined' || document.visibilityState === 'visible') {
         syncFriendState();
+        refreshConversations();
       }
     };
     const syncFromOtherTab = (event) => {
@@ -799,10 +829,14 @@ export default function ChatListView({
     };
     document.addEventListener('visibilitychange', syncWhenVisible);
     window.addEventListener('online', syncWhenVisible);
+    window.addEventListener('pageshow', syncWhenVisible);
+    window.addEventListener('focus', syncWhenVisible);
     window.addEventListener('storage', syncFromOtherTab);
     return () => {
       document.removeEventListener('visibilitychange', syncWhenVisible);
       window.removeEventListener('online', syncWhenVisible);
+      window.removeEventListener('pageshow', syncWhenVisible);
+      window.removeEventListener('focus', syncWhenVisible);
       window.removeEventListener('storage', syncFromOtherTab);
     };
   }, []);
@@ -812,6 +846,7 @@ export default function ChatListView({
       if (msg?._type === 'ws_open' || msg?.friend) {
         syncFriendState();
       }
+      if (msg?._type === 'ws_open') refreshConversations();
       if (msg.data) {
         const topicId = msg.data.topic;
         const seq = msg.data.seq;

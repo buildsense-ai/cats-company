@@ -1545,6 +1545,50 @@ describe('ChatListView sidebar sections', () => {
     expect(task.querySelector('.cc-chat-row-actions')).toBeTruthy();
   });
 
+  it('refreshes task status when a suspended PWA returns to the foreground', async () => {
+    api.getConversations
+      .mockResolvedValueOnce({
+        conversations: [{
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'PWA Task',
+          is_group: false,
+          is_bot: true,
+          last_time: '2026-08-11T04:00:00Z',
+        }],
+      })
+      .mockResolvedValueOnce({
+        conversations: [{
+          id: 'p2p_7_42',
+          friend_id: 42,
+          name: 'PWA Task',
+          is_group: false,
+          is_bot: true,
+          last_time: '2026-08-11T04:00:00Z',
+          task_status: {
+            topic_id: 'p2p_7_42',
+            run_id: 'run-pwa-resume',
+            state: 'running',
+            updated_at: '2026-08-11T04:00:05Z',
+          },
+        }],
+      });
+
+    await mount();
+
+    const task = container.querySelector('.cc-history-item');
+    expect(task.querySelector('.cc-task-row-status.running')).toBeFalsy();
+
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getConversations).toHaveBeenCalledTimes(2);
+    expect(task.querySelector('.cc-task-row-status.running')).toBeTruthy();
+  });
+
   it('changes a background running spinner into an unread completion dot', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{
