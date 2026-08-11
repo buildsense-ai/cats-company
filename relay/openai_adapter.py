@@ -1229,6 +1229,12 @@ def record_provider_pool_result(
                         provider,
                         bool(lease and lease.half_open_probe),
                     )
+                    log_provider_pool_event(
+                        "circuit_closed",
+                        model=model_key,
+                        provider=provider,
+                        probe=bool(lease and lease.half_open_probe),
+                    )
         else:
             current_time = time.monotonic() if now is None else now
             PROVIDER_POOL_FAILURE_GENERATION[provider] = (
@@ -1247,7 +1253,8 @@ def record_provider_pool_result(
                 if cooldown_seconds is None
                 else max(0.0, cooldown_seconds)
             )
-            PROVIDER_POOL_UNAVAILABLE_UNTIL[provider] = current_time + cooldown
+            cooldown_until = current_time + cooldown
+            PROVIDER_POOL_UNAVAILABLE_UNTIL[provider] = cooldown_until
             LOGGER.warning(
                 "provider circuit opened model=%s provider=%s failures=%s cooldown_seconds=%.3f fingerprint=%s",
                 model_key,
@@ -1255,6 +1262,16 @@ def record_provider_pool_result(
                 failures,
                 cooldown,
                 error_fingerprint or "unknown",
+            )
+            log_provider_pool_event(
+                "circuit_opened",
+                model=model_key,
+                provider=provider,
+                failures=failures,
+                cooldown_seconds=cooldown,
+                cooldown_until_monotonic=round(cooldown_until, 6),
+                fingerprint=error_fingerprint or "unknown",
+                probe=bool(lease and lease.half_open_probe),
             )
         PROVIDER_POOL_CONDITION.notify_all()
 
