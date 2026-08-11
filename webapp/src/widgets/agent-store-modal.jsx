@@ -34,6 +34,28 @@ const CREATE_MODES = {
   MANAGED: 'managed',
 };
 
+// Cloud worker creation failure → user-facing message, keyed by the backend
+// error code. Concrete technical reasons (e.g. cloud quota) stay in server
+// logs and are never surfaced to the UI.
+const cloudWorkerCreateMessage = (e) => {
+  switch (e?.data?.code) {
+    case 'cloud_worker_not_enabled':
+      return '云端部署尚未为你的账号开放';
+    case 'cloud_worker_quota_exhausted':
+      return '云端虚拟员工配额已用完';
+    case 'cloud_worker_provisioning_unconfigured':
+      return '云端供给服务暂不可用，请联系管理员';
+    case 'cloud_worker_provision_failed':
+      return '云端资源供给失败，请稍后重试或联系管理员';
+    case 'cloud_worker_provision_failed_pending_cleanup':
+      return '云端实例供给失败，可能有残留实例待清理，可在列表中删除';
+    case 'cloud_worker_invalid_username':
+    case 'cloud_worker_create_failed':
+    default:
+      return '云端资源创建失败，请稍后重试或联系管理员';
+  }
+};
+
 const CHANNEL_AGENT_ACCESS_MODES = {
   APPROVAL_REQUIRED: 'approval_required',
   PUBLIC: 'public',
@@ -390,8 +412,10 @@ export default function AgentStoreModal({
       if (onBotsChanged) onBotsChanged();
       feedback.notify({ tone: 'success', message: '云托管员工创建成功，云端实例供给中…' });
     } catch (e) {
-      setError(e.message || t('error_server'));
-      throw e;
+      // 按后端错误码区分提示；具体技术原因（如云资源配额）只进后端日志
+      const message = cloudWorkerCreateMessage(e);
+      setError(message);
+      throw new Error(message);
     }
   };
 

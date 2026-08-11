@@ -339,8 +339,9 @@ describe('CloudWorkerPanel', () => {
     actionButtons.forEach((btn) => expect(btn.disabled).toBe(true));
   });
 
-  test('shows the create failure inline in the create card', async () => {
-    const onCreate = vi.fn().mockRejectedValue(new Error('华南2资源池IP配额不足'));
+  test('shows the categorized failure message inline in the create card', async () => {
+    // 面板只显示按错误码分类后的提示（不显示后端具体技术原因）
+    const onCreate = vi.fn().mockRejectedValue(new Error('云端资源供给失败，请稍后重试或联系管理员'));
     await renderPanel({ onCreate });
 
     const input = container.querySelector('.cc-cloud-create-card input');
@@ -353,7 +354,8 @@ describe('CloudWorkerPanel', () => {
       Simulate.click(button);
     });
     expect(container.querySelector('.cc-cloud-create-error')).toBeTruthy();
-    expect(container.querySelector('.cc-cloud-create-error').textContent).toContain('华南2资源池IP配额不足');
+    expect(container.querySelector('.cc-cloud-create-error').textContent).toContain('云端资源供给失败');
+    expect(container.querySelector('.cc-cloud-create-error').textContent).not.toContain('Ecs.Order.ProcFailed');
     // 输入保留，便于用户修改后重试
     expect(input.value).toBe('云端审查助手');
   });

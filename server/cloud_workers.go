@@ -269,17 +269,23 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 
 	total := h.quota[uid]
 	if total <= 0 {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "cloud worker creation is not enabled for this account"})
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "cloud worker creation is not enabled for this account",
+			"code":  "cloud_worker_not_enabled",
+		})
 		return
 	}
 
 	workers, err := h.cloudWorkersOfOwner(uid)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list cloud workers"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list cloud workers", "code": "cloud_worker_create_failed"})
 		return
 	}
 	if len(workers) >= total {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "cloud worker creation quota exhausted"})
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "cloud worker creation quota exhausted",
+			"code":  "cloud_worker_quota_exhausted",
+		})
 		return
 	}
 
@@ -293,13 +299,14 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 	if !workerUsernameRe.MatchString(req.Username) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "invalid username: only [a-z0-9_-] allowed, 2-64 chars",
+			"code":  "cloud_worker_invalid_username",
 		})
 		return
 	}
 
 	result, status, err := h.bots.createBotAccount(uid, req)
 	if err != nil {
-		writeJSON(w, status, map[string]string{"error": err.Error()})
+		writeJSON(w, status, map[string]string{"error": err.Error(), "code": "cloud_worker_create_failed"})
 		return
 	}
 
@@ -313,7 +320,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
 			log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize cloud worker"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to finalize cloud worker", "code": "cloud_worker_create_failed"})
 		return
 	}
 
@@ -325,7 +332,10 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
 			log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
 		}
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "cloud worker provisioning is not configured"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "cloud worker provisioning is not configured",
+			"code":  "cloud_worker_provisioning_unconfigured",
+		})
 		return
 	}
 	// 创建者登录凭证（JWT）+ 身份信息：worker 以创建者登录态 + 新 bot 的连接凭证
@@ -337,15 +347,17 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		creatorName = creator.Username
 		creatorDisplay = creator.DisplayName
 	}
-	if _, err := h.runScript(h.provisionScript,
+	provOut, err := h.runScript(h.provisionScript,
 		"--name", tenantName,
 		"--login-token", creatorJWT,
 		"--api-key", result.APIKey,
 		"--bot-uid", strconv.FormatInt(result.UID, 10),
 		"--user-uid", strconv.FormatInt(uid, 10),
 		"--user-name", creatorName,
-		"--user-display", creatorDisplay); err != nil {
-		log.Printf("[cloud-worker] provision %s failed: %v", tenantName, err)
+		"--user-display", creatorDisplay)
+	if err != nil {
+		// 脚本的具体失败原因（如云资源配额不足）只写入服务器日志，不回显给前端。
+		log.Printf("[cloud-worker] provision %s failed: %v; output=%s", tenantName, err, truncateWorkerOutput(provOut))
 		// The provision script may have created the cloud instance before
 		// failing on a later step. Try to destroy any partially created
 		// instance so we do not leave a still-billed orphan behind (the
@@ -362,7 +374,10 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 			if rollbackErr := h.db.DeleteBot(result.UID); rollbackErr != nil {
 				log.Printf("[cloud-worker] rollback delete for uid %d failed: %v", result.UID, rollbackErr)
 			}
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to provision cloud worker"})
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error": "failed to provision cloud worker",
+				"code":  "cloud_worker_provision_failed",
+			})
 			return
 		}
 		// Destroy could not be confirmed: the instance may still exist and
@@ -372,6 +387,7 @@ func (h *CloudWorkerHandler) HandleCreate(w http.ResponseWriter, r *http.Request
 		// record is never lost while an instance might still be billed.
 		writeJSON(w, http.StatusBadGateway, map[string]string{
 			"error": "failed to provision cloud worker; the instance may still exist, retry delete to clean up",
+			"code":  "cloud_worker_provision_failed_pending_cleanup",
 		})
 		return
 	}
@@ -478,8 +494,9 @@ func (h *CloudWorkerHandler) handleWorkerAction(w http.ResponseWriter, r *http.R
 	h.opMu.Lock()
 	defer h.opMu.Unlock()
 
-	if _, err := h.runScript(script, args...); err != nil {
-		log.Printf("[cloud-worker] %s %s failed: %v", action, name, err)
+	out, err := h.runScript(script, args...)
+	if err != nil {
+		log.Printf("[cloud-worker] %s %s failed: %v; output=%s", action, name, err, truncateWorkerOutput(out))
 		// Script output stays in the server logs; never echo it back (the
 		// provision script receives an API key via argv).
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "cloud worker " + action + " failed"})
@@ -610,6 +627,19 @@ func (h *CloudWorkerHandler) runScriptTimeout(timeout time.Duration, script stri
 		return string(out), fmt.Errorf("script failed: %w", err)
 	}
 	return string(out), nil
+}
+
+// truncateWorkerOutput bounds script output before it is written to the server
+// log, so a verbose/rogue script cannot flood the log (and to keep any
+// incidental secrets out of unbounded log lines).
+const maxWorkerOutputLog = 4000
+
+func truncateWorkerOutput(out string) string {
+	out = strings.TrimSpace(out)
+	if len(out) > maxWorkerOutputLog {
+		out = out[:maxWorkerOutputLog] + "...(truncated)"
+	}
+	return out
 }
 
 // cloudImageSummary is one image row from the CATSCO_WORKER_IMAGES_SCRIPT

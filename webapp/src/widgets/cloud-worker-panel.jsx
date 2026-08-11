@@ -77,8 +77,8 @@ export default function CloudWorkerPanel({
       await onCreate(displayName);
       setName('');
     } catch (e) {
-      // 失败信息直接显示在创建卡片内（modal 底部全局错误不够明显）
-      setCreateError(e?.message || '创建失败，请稍后重试');
+      // 显示按错误码分类后的提示（具体技术原因只在后端日志）
+      setCreateError(e?.message || '云端资源创建失败，请稍后重试或联系管理员');
     } finally {
       setCreating(false);
     }

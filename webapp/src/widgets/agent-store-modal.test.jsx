@@ -505,6 +505,54 @@ describe('AgentStoreModal', () => {
       .some((b) => b.textContent.includes('云托管管理'))).toBe(true);
   });
 
+  test('maps cloud worker create errors to categorized messages', async () => {
+    api.getMyBots.mockResolvedValue({ bots: [] });
+    api.getCloudWorkers.mockResolvedValue({
+      quota: { enabled: true, total: 3, used: 1, remaining: 2 },
+      workers: [],
+    });
+    const err = new Error('cloud worker creation quota exhausted');
+    err.data = { code: 'cloud_worker_quota_exhausted' };
+    api.createCloudWorker.mockRejectedValue(err);
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const createTab = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('创建新助手'));
+    await act(async () => {
+      Simulate.click(createTab);
+    });
+    const managedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[1];
+    await act(async () => {
+      Simulate.change(managedRadio, { target: { checked: true } });
+      await Promise.resolve();
+    });
+
+    const input = container.querySelector('.cc-cloud-create-card input');
+    await act(async () => {
+      Simulate.change(input, { target: { value: '云端审查助手' } });
+    });
+    const createBtn = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('创建云托管员工'));
+    await act(async () => {
+      Simulate.click(createBtn);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // 配额不足 → 分类提示；不暴露后端原始错误
+    expect(container.querySelector('.cc-cloud-create-error')).toBeTruthy();
+    expect(container.querySelector('.cc-cloud-create-error').textContent).toContain('云端虚拟员工配额已用完');
+    expect(container.querySelector('.cc-cloud-create-error').textContent).not.toContain('quota exhausted');
+  });
+
   test('keeps the previous skill visibility and reports a save failure', async () => {
     api.setBotSkillsVisibility.mockRejectedValue(new Error('保存失败，请重试'));
     api.getMyBots.mockResolvedValue({
