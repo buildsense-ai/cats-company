@@ -857,3 +857,40 @@ describe('upload transport', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('conversation notification preferences', () => {
+  let apiModule;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    localStorage.clear();
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        topic_id: 'p2p_7_42',
+        notifications_muted: true,
+      }),
+    });
+    apiModule = await import('./api');
+    apiModule.setToken('preference-token');
+  });
+
+  afterEach(() => {
+    apiModule.disconnectWS();
+    vi.restoreAllMocks();
+  });
+
+  test('stores the selected conversation mute setting under the signed-in account', async () => {
+    await apiModule.api.setConversationNotificationsMuted('p2p_7_42', true);
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/conversations/notification-preferences',
+      expect.objectContaining({
+        method: 'PUT',
+        headers: expect.objectContaining({ Authorization: 'Bearer preference-token' }),
+        body: JSON.stringify({ topic_id: 'p2p_7_42', muted: true }),
+      }),
+    );
+  });
+});

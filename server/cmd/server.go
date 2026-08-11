@@ -609,6 +609,7 @@ func main() {
 		pushTestUserLimit,
 	))
 	mux.HandleFunc("/api/conversations", authWithDB(conversationHandler.Handle))
+	mux.HandleFunc("/api/conversations/notification-preferences", authWithDB(conversationHandler.HandleNotificationPreference))
 	mux.HandleFunc("/api/projects", authWithDB(projectHandler.HandleProjects))
 	mux.HandleFunc("/api/projects/topic", authWithDB(projectHandler.HandleProjectTopic))
 	mux.HandleFunc("/api/artifacts", jwtAuthWithDB(cloudArtifactHandler.Handle))

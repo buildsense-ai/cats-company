@@ -105,6 +105,7 @@ vi.mock('../api', () => ({
     disbandGroup: vi.fn(),
     updateGroup: vi.fn(),
     updateConversationTitle: vi.fn(),
+    setConversationNotificationsMuted: vi.fn(),
   },
   onWSMessage: vi.fn(() => vi.fn()),
   updateTopicSeq: vi.fn(),
@@ -178,6 +179,7 @@ describe('ChatListView sidebar sections', () => {
       group: { id: 77, name: 'New Agent Task', kind: 'agent_task', is_agent_task: true },
     });
     api.updateGroup.mockResolvedValue({ ok: true });
+    api.setConversationNotificationsMuted.mockResolvedValue({ notifications_muted: false });
     wsHandler = null;
     onWSMessage.mockImplementation((handler) => {
       wsHandler = handler;
@@ -1114,6 +1116,7 @@ describe('ChatListView sidebar sections', () => {
     expect(row.querySelector('[role="menu"] [aria-label="置顶任务 Review Task"]')).toBeNull();
     expect(row.querySelector('[aria-label="修改任务名称 Review Task"]')).toBeTruthy();
     expect(row.querySelector('[aria-label="加入项目 Review Task"]')).toBeTruthy();
+    expect(row.querySelector('[aria-label="静音此会话 Review Task"]')).toBeTruthy();
     expect(row.querySelector('[aria-label="Review Task 手机扫码"]')).toBeTruthy();
     expect(row.querySelector('[aria-label="Review Task 协作管理"]')).toBeTruthy();
     expect(row.querySelector('[aria-label="删除任务 Review Task"]')).toBeTruthy();
@@ -3863,5 +3866,46 @@ describe('ChatListView sidebar sections', () => {
     const offlineAgentTask = Array.from(container.querySelectorAll('[data-task-kind="collaboration"]'))
       .find((row) => row.textContent.includes('Multi Agent Review'));
     expect(offlineAgentTask?.querySelector('.cc-task-agent-icon.offline')?.getAttribute('title')).toBe('0/2 个 Agent 在线');
+  });
+
+  it('mutes a contact conversation and reflects the saved state in its menu and row', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [{
+        id: 'p2p_7_8',
+        friend_id: 8,
+        name: 'Alice',
+        is_group: false,
+        notifications_muted: false,
+      }],
+    });
+    api.getFriends.mockResolvedValue({
+      friends: [{ id: 8, username: 'alice', display_name: 'Alice' }],
+    });
+    api.getAgents.mockResolvedValue({ agents: [] });
+    api.setConversationNotificationsMuted.mockResolvedValue({
+      topic_id: 'p2p_7_8',
+      notifications_muted: true,
+    });
+
+    await mount();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Alice 联系人操作"]'));
+    });
+    const muteAction = container.querySelector('[aria-label="静音此会话 Alice"]');
+    expect(muteAction).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(muteAction);
+      await Promise.resolve();
+    });
+
+    expect(api.setConversationNotificationsMuted).toHaveBeenCalledWith('p2p_7_8', true);
+    expect(container.querySelector('[aria-label="Alice 已静音"]')).toBeTruthy();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Alice 联系人操作"]'));
+    });
+    expect(container.querySelector('[aria-label="开启此会话通知 Alice"]')).toBeTruthy();
   });
 });

@@ -2109,6 +2109,13 @@ html[data-theme="liquid"] .catsco-brand-mark {
   white-space: nowrap;
 }
 
+.cc-conversation-muted-indicator {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--cc-muted);
+}
+
 .cc-item-kind {
   display: inline-flex;
   height: 16px;

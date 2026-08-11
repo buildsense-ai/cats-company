@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -293,18 +294,24 @@ func TestConversationLess_MixedWithP2P(t *testing.T) {
 
 type conversationTestStore struct {
 	store.Store
-	friends       []*types.User
-	groups        []*types.Group
-	ownerBots     []map[string]interface{}
-	latestByTopic map[string]*types.Message
-	taskStatuses  map[string]*types.ConversationTaskStatus
-	projectTopics []*types.ProjectTopic
-	requestedIDs  []string
-	titles        map[string]string
-	allowRename   bool
-	renamedOwner  int64
-	renamedTopic  string
-	renamedTitle  string
+	friends                       []*types.User
+	groups                        []*types.Group
+	ownerBots                     []map[string]interface{}
+	latestByTopic                 map[string]*types.Message
+	taskStatuses                  map[string]*types.ConversationTaskStatus
+	projectTopics                 []*types.ProjectTopic
+	requestedIDs                  []string
+	titles                        map[string]string
+	allowRename                   bool
+	renamedOwner                  int64
+	renamedTopic                  string
+	renamedTitle                  string
+	mutedTopics                   map[string]bool
+	notificationPreferenceErr     error
+	notificationPreferenceOwner   int64
+	notificationPreferenceTopicID string
+	notificationPreferenceMuted   bool
+	groupMembership               map[int64]bool
 }
 
 func (s *conversationTestStore) GetFriends(uid int64) ([]*types.User, error) {
@@ -384,6 +391,48 @@ func (s *conversationTestStore) UpdateConversationTitle(ownerID int64, topicID, 
 	s.renamedTopic = topicID
 	s.renamedTitle = title
 	return s.allowRename, nil
+}
+
+func (s *conversationTestStore) ListMutedConversationTopics(_ context.Context, ownerID int64, topicIDs []string) (map[string]bool, error) {
+	if s.notificationPreferenceErr != nil {
+		return nil, s.notificationPreferenceErr
+	}
+	muted := make(map[string]bool)
+	for _, topicID := range topicIDs {
+		if s.mutedTopics[topicID] {
+			muted[topicID] = true
+		}
+	}
+	return muted, nil
+}
+
+func (s *conversationTestStore) SetConversationNotificationsMuted(_ context.Context, ownerID int64, topicID string, muted bool) error {
+	if s.notificationPreferenceErr != nil {
+		return s.notificationPreferenceErr
+	}
+	if s.mutedTopics == nil {
+		s.mutedTopics = make(map[string]bool)
+	}
+	s.notificationPreferenceOwner = ownerID
+	s.notificationPreferenceTopicID = topicID
+	s.notificationPreferenceMuted = muted
+	if muted {
+		s.mutedTopics[topicID] = true
+	} else {
+		delete(s.mutedTopics, topicID)
+	}
+	return nil
+}
+
+func (s *conversationTestStore) IsConversationNotificationsMuted(_ context.Context, _ int64, topicID string) (bool, error) {
+	if s.notificationPreferenceErr != nil {
+		return false, s.notificationPreferenceErr
+	}
+	return s.mutedTopics[topicID], nil
+}
+
+func (s *conversationTestStore) IsGroupMember(groupID, _ int64) (bool, error) {
+	return s.groupMembership[groupID], nil
 }
 
 func TestConversationsIncludeOwnedAgentsWithoutFriendRelationship(t *testing.T) {
@@ -497,6 +546,133 @@ func TestConversationTitleUpdateRejectsUnrelatedTask(t *testing.T) {
 	}
 	if store.renamedTopic != "" {
 		t.Fatalf("unexpected rename for unrelated task: %q", store.renamedTopic)
+	}
+}
+
+func TestConversationsIncludeNotificationMuteState(t *testing.T) {
+	store := &conversationTestStore{
+		friends: []*types.User{{ID: 8, Username: "alice", DisplayName: "Alice"}},
+		groups:  []*types.Group{{ID: 9, Name: "Muted group", OwnerID: 7}},
+		mutedTopics: map[string]bool{
+			"p2p_7_8": true,
+		},
+	}
+	handler := NewConversationHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Conversations []map[string]interface{} `json:"conversations"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	byTopic := make(map[string]map[string]interface{}, len(body.Conversations))
+	for _, conversation := range body.Conversations {
+		byTopic[conversation["id"].(string)] = conversation
+	}
+	if muted, ok := byTopic["p2p_7_8"]["notifications_muted"].(bool); !ok || !muted {
+		t.Fatalf("P2P mute state = %#v, want true", byTopic["p2p_7_8"])
+	}
+	if muted, ok := byTopic["grp_9"]["notifications_muted"].(bool); !ok || muted {
+		t.Fatalf("group mute state = %#v, want false", byTopic["grp_9"])
+	}
+}
+
+func TestConversationNotificationPreferenceUpdatesAccessibleConversation(t *testing.T) {
+	tests := []struct {
+		name            string
+		topicID         string
+		store           *conversationTestStore
+		muted           bool
+		wantStatus      int
+		wantStoredValue bool
+	}{
+		{
+			name:    "friend P2P conversation",
+			topicID: "p2p_7_8",
+			store: &conversationTestStore{
+				friends: []*types.User{{ID: 8, Username: "alice"}},
+			},
+			muted:           true,
+			wantStatus:      http.StatusOK,
+			wantStoredValue: true,
+		},
+		{
+			name:    "group membership",
+			topicID: "grp_9",
+			store: &conversationTestStore{
+				groupMembership: map[int64]bool{9: true},
+			},
+			muted:      false,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:    "unrelated P2P conversation",
+			topicID: "p2p_7_9",
+			store: &conversationTestStore{
+				friends: []*types.User{{ID: 8, Username: "alice"}},
+			},
+			muted:      true,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:    "nonmember group",
+			topicID: "grp_9",
+			store: &conversationTestStore{
+				groupMembership: map[int64]bool{9: false},
+			},
+			muted:      true,
+			wantStatus: http.StatusForbidden,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := NewConversationHandler(test.store, nil)
+			body := `{"topic_id":"` + test.topicID + `","muted":` + strconv.FormatBool(test.muted) + `}`
+			req := httptest.NewRequest(http.MethodPut, "/api/conversations/notification-preferences", strings.NewReader(body))
+			req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+			rec := httptest.NewRecorder()
+
+			handler.HandleNotificationPreference(rec, req)
+
+			if rec.Code != test.wantStatus {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if test.wantStatus != http.StatusOK {
+				if test.store.notificationPreferenceTopicID != "" {
+					t.Fatalf("inaccessible topic was persisted: %+v", test.store)
+				}
+				return
+			}
+			if test.store.notificationPreferenceOwner != 7 || test.store.notificationPreferenceTopicID != test.topicID || test.store.notificationPreferenceMuted != test.muted {
+				t.Fatalf("stored notification preference = owner=%d topic=%q muted=%t", test.store.notificationPreferenceOwner, test.store.notificationPreferenceTopicID, test.store.notificationPreferenceMuted)
+			}
+			if test.store.mutedTopics[test.topicID] != test.wantStoredValue {
+				t.Fatalf("stored muted state = %#v, want %t", test.store.mutedTopics, test.wantStoredValue)
+			}
+		})
+	}
+}
+
+func TestConversationNotificationPreferenceRequiresTopicAndMuted(t *testing.T) {
+	store := &conversationTestStore{}
+	handler := NewConversationHandler(store, nil)
+	req := httptest.NewRequest(http.MethodPut, "/api/conversations/notification-preferences", strings.NewReader(`{"topic_id":"p2p_7_8"}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleNotificationPreference(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

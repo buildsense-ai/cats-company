@@ -1988,9 +1988,24 @@ func (h *Hub) enqueueOfflineUserPush(uid int64, topic, body string) bool {
 		URL:   "/",
 		Tag:   "catsco-new-message",
 	}
-	return h.push.EnqueueToUserFiltered(uid, notification, func(subscription *types.PushSubscription) bool {
+	return h.push.EnqueueToUserWhen(uid, notification, func(ctx context.Context) bool {
+		return !h.isConversationNotificationsMuted(ctx, uid, topic)
+	}, func(subscription *types.PushSubscription) bool {
 		return !h.hasMessagingClientAttention(uid, pushSubscriptionID(subscription.Endpoint), topic)
 	})
+}
+
+func (h *Hub) isConversationNotificationsMuted(ctx context.Context, uid int64, topic string) bool {
+	preferences, ok := h.db.(store.ConversationNotificationPreferenceStore)
+	if !ok {
+		return false
+	}
+	muted, err := preferences.IsConversationNotificationsMuted(ctx, uid, topic)
+	if err != nil {
+		log.Printf("push notification: failed to load conversation preference for uid=%d topic=%q: %v", uid, topic, err)
+		return true
+	}
+	return muted
 }
 
 func (h *Hub) pushNotificationTitle(uid int64, topic string) string {

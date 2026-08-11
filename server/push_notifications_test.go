@@ -49,6 +49,54 @@ type pushHubConversationTitleStore struct {
 	titles map[string]string
 }
 
+type mutedConversationPushStore struct {
+	pushHubUserStore
+	mutedTopics               map[string]bool
+	notificationPreferenceErr error
+	preferenceChecked         chan struct{}
+}
+
+func (s *mutedConversationPushStore) ListMutedConversationTopics(_ context.Context, _ int64, topicIDs []string) (map[string]bool, error) {
+	if s.notificationPreferenceErr != nil {
+		return nil, s.notificationPreferenceErr
+	}
+	muted := make(map[string]bool)
+	for _, topicID := range topicIDs {
+		if s.mutedTopics[topicID] {
+			muted[topicID] = true
+		}
+	}
+	return muted, nil
+}
+
+func (s *mutedConversationPushStore) SetConversationNotificationsMuted(_ context.Context, _ int64, topicID string, muted bool) error {
+	if s.notificationPreferenceErr != nil {
+		return s.notificationPreferenceErr
+	}
+	if s.mutedTopics == nil {
+		s.mutedTopics = make(map[string]bool)
+	}
+	if muted {
+		s.mutedTopics[topicID] = true
+	} else {
+		delete(s.mutedTopics, topicID)
+	}
+	return nil
+}
+
+func (s *mutedConversationPushStore) IsConversationNotificationsMuted(_ context.Context, _ int64, topicID string) (bool, error) {
+	if s.preferenceChecked != nil {
+		select {
+		case s.preferenceChecked <- struct{}{}:
+		default:
+		}
+	}
+	if s.notificationPreferenceErr != nil {
+		return false, s.notificationPreferenceErr
+	}
+	return s.mutedTopics[topicID], nil
+}
+
 func (s pushHubUserStore) GetUser(uid int64) (*types.User, error) {
 	return s.users[uid], nil
 }
@@ -1124,6 +1172,68 @@ func TestEnqueueUserPushQueuesOnlyWhenNoVisibleHumanClient(t *testing.T) {
 			case <-time.After(100 * time.Millisecond):
 				if test.wantPush {
 					t.Fatal("expected push delivery")
+				}
+			}
+		})
+	}
+}
+
+func TestConversationNotificationMuteControlsOfflinePushDelivery(t *testing.T) {
+	tests := []struct {
+		name          string
+		muted         bool
+		preferenceErr error
+		wantDelivery  bool
+	}{
+		{name: "muted conversation", muted: true},
+		{name: "unmuted conversation", wantDelivery: true},
+		{name: "preference lookup fails closed", preferenceErr: errors.New("database unavailable")},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			const (
+				uid     = int64(42)
+				topicID = "p2p_7_42"
+			)
+			pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+				Endpoint: "https://push.example.test/subscription/muted-conversation",
+				P256DH:   "p256dh",
+				Auth:     "auth",
+			}}}
+			service := enabledPushService(pushStore)
+			delivered := make(chan struct{}, 1)
+			service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+				delivered <- struct{}{}
+				return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+			}
+			db := &mutedConversationPushStore{
+				pushHubUserStore: pushHubUserStore{users: map[int64]*types.User{
+					uid: {ID: uid, AccountType: types.AccountHuman},
+				}},
+				mutedTopics:               map[string]bool{topicID: test.muted},
+				notificationPreferenceErr: test.preferenceErr,
+				preferenceChecked:         make(chan struct{}, 1),
+			}
+			hub := NewHub(db, nil)
+			hub.SetPushNotificationService(service)
+
+			if !hub.enqueueOfflineUserPush(uid, topicID, "task finished") {
+				t.Fatal("offline push was not queued")
+			}
+			select {
+			case <-db.preferenceChecked:
+			case <-time.After(time.Second):
+				t.Fatal("push worker did not check the conversation notification preference")
+			}
+			select {
+			case <-delivered:
+				if !test.wantDelivery {
+					t.Fatal("muted conversation delivered a push notification")
+				}
+			case <-time.After(100 * time.Millisecond):
+				if test.wantDelivery {
+					t.Fatal("unmuted conversation did not deliver a push notification")
 				}
 			}
 		})
@@ -2240,6 +2350,44 @@ type aggregateTaskStatusPushStore struct {
 	aggregate *types.ConversationTaskStatus
 }
 
+type mutedAggregateTaskStatusPushStore struct {
+	*aggregateTaskStatusPushStore
+	mutedTopics       map[string]bool
+	preferenceChecked chan struct{}
+}
+
+func (s *mutedAggregateTaskStatusPushStore) ListMutedConversationTopics(_ context.Context, _ int64, topicIDs []string) (map[string]bool, error) {
+	muted := make(map[string]bool)
+	for _, topicID := range topicIDs {
+		if s.mutedTopics[topicID] {
+			muted[topicID] = true
+		}
+	}
+	return muted, nil
+}
+
+func (s *mutedAggregateTaskStatusPushStore) SetConversationNotificationsMuted(_ context.Context, _ int64, topicID string, muted bool) error {
+	if s.mutedTopics == nil {
+		s.mutedTopics = make(map[string]bool)
+	}
+	if muted {
+		s.mutedTopics[topicID] = true
+	} else {
+		delete(s.mutedTopics, topicID)
+	}
+	return nil
+}
+
+func (s *mutedAggregateTaskStatusPushStore) IsConversationNotificationsMuted(_ context.Context, _ int64, topicID string) (bool, error) {
+	if s.preferenceChecked != nil {
+		select {
+		case s.preferenceChecked <- struct{}{}:
+		default:
+		}
+	}
+	return s.mutedTopics[topicID], nil
+}
+
 func (s *aggregateTaskStatusPushStore) CreateTopic(string, string, int64) error {
 	return nil
 }
@@ -2336,6 +2484,76 @@ func TestAgentPushWaitsForMatchingTerminalTaskStatus(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("matching terminal task status did not notify the offline recipient")
+	}
+}
+
+func TestMutedAgentTaskTerminalStatusDoesNotDeliverPush(t *testing.T) {
+	for _, terminalState := range []string{"completed", "failed"} {
+		t.Run(terminalState, func(t *testing.T) {
+			const (
+				senderUID  int64 = 7
+				offlineUID int64 = 8
+				topicID          = "p2p_7_8"
+			)
+			db := &mutedAggregateTaskStatusPushStore{
+				aggregateTaskStatusPushStore: &aggregateTaskStatusPushStore{
+					identityMessageStore: &identityMessageStore{users: map[int64]*types.User{
+						senderUID:  {ID: senderUID, AccountType: types.AccountBot},
+						offlineUID: {ID: offlineUID, AccountType: types.AccountHuman},
+					}},
+					aggregate: &types.ConversationTaskStatus{
+						TopicID: topicID, RunID: "other-agent-run", State: "running", SourceUID: 99,
+					},
+				},
+				mutedTopics:       map[string]bool{topicID: true},
+				preferenceChecked: make(chan struct{}, 1),
+			}
+			pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+				Endpoint: "https://push.example.test/subscription/muted-agent-task",
+				P256DH:   "p256dh",
+				Auth:     "auth",
+			}}}
+			service := enabledPushService(pushStore)
+			delivered := make(chan struct{}, 1)
+			service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+				delivered <- struct{}{}
+				return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+			}
+			hub := NewHub(db, nil)
+			hub.SetPushNotificationService(service)
+			handler := NewMessageHandler(db, hub)
+
+			if _, err := handler.handleTaskStatus(senderUID, topicID, &normalizedMessagePayload{
+				DisplayType:         taskStatusType,
+				ExplicitDisplayType: true,
+				DisplayContent:      map[string]interface{}{"run_id": "run-1", "state": "running"},
+			}); err != nil {
+				t.Fatalf("publish running task status: %v", err)
+			}
+			hub.fanoutNormalizedMessage(senderUID, topicID, 0, &normalizedMessagePayload{
+				DisplayContent: "final answer",
+				DisplayType:    "text",
+				StoredType:     "text",
+			}, 1, nil)
+			if _, err := handler.handleTaskStatus(senderUID, topicID, &normalizedMessagePayload{
+				DisplayType:         taskStatusType,
+				ExplicitDisplayType: true,
+				DisplayContent:      map[string]interface{}{"run_id": "run-1", "state": terminalState},
+			}); err != nil {
+				t.Fatalf("publish %s task status: %v", terminalState, err)
+			}
+
+			select {
+			case <-db.preferenceChecked:
+			case <-time.After(time.Second):
+				t.Fatal("terminal task status did not check the conversation notification preference")
+			}
+			select {
+			case <-delivered:
+				t.Fatalf("muted task %s delivered a push notification", terminalState)
+			case <-time.After(100 * time.Millisecond):
+			}
+		})
 	}
 }
 

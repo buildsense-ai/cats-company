@@ -10,7 +10,7 @@ import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
 import Avatar from '../widgets/avatar';
 import { useFeedback } from '../components/feedback-system';
 import { formatSidebarTime } from '../utils/sidebar-time';
-import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, ClockAlert, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
+import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, Bell, BellOff, ClockAlert, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
 const DEFAULT_COLLAPSED_SECTIONS = { conversations: false, contacts: false, projects: false };
@@ -323,6 +323,7 @@ export default function ChatListView({
   const [editingHistoryTopicId, setEditingHistoryTopicId] = useState('');
   const [historyNameDraft, setHistoryNameDraft] = useState('');
   const [renamingTopicId, setRenamingTopicId] = useState('');
+  const [notificationPreferenceTopicId, setNotificationPreferenceTopicId] = useState('');
   const [sidebarTimeNowMs, setSidebarTimeNowMs] = useState(() => Date.now());
   const [compactHistoryPanel, setCompactHistoryPanel] = useState(null);
   const [compactHistoryTooltip, setCompactHistoryTooltip] = useState(null);
@@ -1883,6 +1884,60 @@ export default function ChatListView({
     }
   };
 
+  const toggleConversationNotifications = async (chat) => {
+    const topicId = String(chat?.id || '').trim();
+    if (!topicId || notificationPreferenceTopicId) return;
+
+    const muted = !Boolean(chat.notificationsMuted);
+    setOpenChatMenuKey('');
+    setOpenFriendMenuId('');
+    setNotificationPreferenceTopicId(topicId);
+    try {
+      await api.setConversationNotificationsMuted(topicId, muted);
+      setChats((previous) => previous.map((item) => (
+        item.id === topicId ? { ...item, notificationsMuted: muted } : item
+      )));
+      feedback.notify({
+        tone: 'success',
+        message: muted ? '已静音此会话' : '已开启此会话通知',
+      });
+    } catch (err) {
+      feedback.notify({
+        tone: 'error',
+        title: muted ? '静音失败' : '开启通知失败',
+        message: err.message || '请稍后重试',
+      });
+    } finally {
+      setNotificationPreferenceTopicId('');
+    }
+  };
+
+  const renderConversationNotificationMenuItem = (chat) => {
+    const muted = Boolean(chat.notificationsMuted);
+    const label = muted ? '开启此会话通知' : '静音此会话';
+    return (
+      <button
+        type="button"
+        role="menuitem"
+        aria-label={`${label} ${chat.name}`}
+        disabled={notificationPreferenceTopicId === chat.id}
+        onClick={() => toggleConversationNotifications(chat)}
+      >
+        {muted ? <Bell size={14} /> : <BellOff size={14} />}
+        <span>{label}</span>
+      </button>
+    );
+  };
+
+  const renderConversationMutedIndicator = (chat) => {
+    if (!chat.notificationsMuted) return null;
+    return (
+      <span className="cc-conversation-muted-indicator" role="img" aria-label={`${chat.name} 已静音`}>
+        <BellOff size={13} aria-hidden="true" />
+      </span>
+    );
+  };
+
   const renderTaskCopy = (chat, fallback = null, kindLabel = '') => (
     <div className="cc-chat-row-copy">
       {editingHistoryTopicId === chat.id ? (
@@ -1908,6 +1963,7 @@ export default function ChatListView({
         <>
           <span className="cc-chat-row-title">
             <span className="v3-chat-item-label">{chat.name}</span>
+            {renderConversationMutedIndicator(chat)}
             {kindLabel && <span className={`cc-item-kind cc-item-kind-${kindLabel === '群聊' || kindLabel === '群组' ? 'group' : kindLabel === '单聊' ? 'direct' : 'agent'}`}>{kindLabel}</span>}
           </span>
           {fallback && <span className="cc-chat-row-preview">{fallback}</span>}
@@ -2015,6 +2071,7 @@ export default function ChatListView({
                 <span>移出当前项目</span>
               </button>
             )}
+            {renderConversationNotificationMenuItem(chat)}
             <button type="button" role="menuitem" aria-label={`${chat.name} 手机扫码`} onClick={() => handleOpenMobileLink(chat, chat.isGroup)}>
               <Smartphone size={14} />
               <span>手机扫码</span>
@@ -2136,6 +2193,7 @@ export default function ChatListView({
                 <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
                 <span>{isPinned ? '取消置顶群聊' : '置顶群聊'}</span>
               </button>
+              {renderConversationNotificationMenuItem(chat)}
               <button type="button" role="menuitem" aria-label={`${chat.name} 移动端使用`} onClick={() => handleOpenMobileLink(chat, true)}>
                 <Smartphone size={14} />
                 <span>移动端使用</span>
@@ -2212,6 +2270,7 @@ export default function ChatListView({
           </SidebarRowTrailing>
           {openFriendMenuId === String(chat.friendId) && (
             <div className="v3-friend-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+              {renderConversationNotificationMenuItem(chat)}
               <button type="button" role="menuitem" onClick={() => handleFriendAction(chat, 'remove')}>
                 <UserX size={14} />
                 <span>删除好友</span>
@@ -2295,6 +2354,7 @@ export default function ChatListView({
                 <Pin size={14} fill={isPinned ? 'currentColor' : 'none'} />
                 <span>{isPinned ? '取消置顶群组' : '置顶群组'}</span>
               </button>
+              {renderConversationNotificationMenuItem(chat)}
               <button type="button" role="menuitem" aria-label={`${chat.name} 移动端使用`} onClick={() => handleOpenMobileLink(chat, true)}>
                 <Smartphone size={14} />
                 <span>移动端使用</span>
@@ -2358,6 +2418,7 @@ export default function ChatListView({
           <div className="cc-chat-row-copy">
             <span className="cc-chat-row-title">
               <span className="v3-chat-item-label">{chat.name}</span>
+              {renderConversationMutedIndicator(chat)}
             </span>
           </div>
           <SidebarRowTrailing
@@ -2386,6 +2447,7 @@ export default function ChatListView({
           </SidebarRowTrailing>
           {openFriendMenuId === String(chat.friendId) && (
             <div className="v3-friend-action-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+              {renderConversationNotificationMenuItem(chat)}
               <button type="button" role="menuitem" onClick={() => handleFriendAction(chat, 'remove')}>
                 <UserX size={14} />
                 <span>删除好友</span>
@@ -3492,6 +3554,7 @@ function conversationSummaryToChat(item) {
     agentIds: taskAgentIdsFromPayload(item),
     memberIds: normalizedEntityIds(item.member_ids || item.memberIds),
     isOnline: item.is_online,
+    notificationsMuted: Boolean(item.notifications_muted),
     seq: item.latest_seq || 0,
     taskStatus: normalizeTaskStatus(item.task_status),
     projectId: Number(item.project_id) > 0 ? Number(item.project_id) : 0,
@@ -3558,6 +3621,7 @@ function normalizeGroupListItem(item) {
     createdAtMs,
     seq: item.seq || 0,
     taskStatus: normalizeTaskStatus(item.taskStatus || item.task_status),
+    notificationsMuted: Boolean(item.notificationsMuted ?? item.notifications_muted),
   };
 }
 

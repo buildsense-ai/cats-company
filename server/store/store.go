@@ -48,6 +48,15 @@ type PushSubscriptionStore interface {
 	DeletePushSubscriptionsByRegistrationID(ctx context.Context, uid int64, registrationID string) error
 }
 
+// ConversationNotificationPreferenceStore persists a user's decision to mute
+// browser notifications for individual conversations. A missing row means the
+// conversation follows the account's normal device-level notification setting.
+type ConversationNotificationPreferenceStore interface {
+	ListMutedConversationTopics(ctx context.Context, userID int64, topicIDs []string) (map[string]bool, error)
+	SetConversationNotificationsMuted(ctx context.Context, userID int64, topicID string, muted bool) error
+	IsConversationNotificationsMuted(ctx context.Context, userID int64, topicID string) (bool, error)
+}
+
 // FriendStore contains friend relationship persistence operations.
 type FriendStore interface {
 	CreateFriendRequest(fromUID, toUID int64, message string) (int64, error)

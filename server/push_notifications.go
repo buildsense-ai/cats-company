@@ -97,6 +97,7 @@ type pushDialContextFunc func(context.Context, string, string) (net.Conn, error)
 type pushDeliveryJob struct {
 	uid                int64
 	notification       PushNotification
+	shouldDeliver      func(context.Context) bool
 	shouldSendToDevice func(*types.PushSubscription) bool
 	queuedAt           time.Time
 }
@@ -432,7 +433,7 @@ func (s *PushNotificationService) HandleTest(w http.ResponseWriter, r *http.Requ
 		Body:  "如果你看到这条通知，说明当前设备与浏览器可以接收 CatsCo 消息通知。",
 		URL:   "/",
 		Tag:   fmt.Sprintf("catsco-push-test-%d", time.Now().UnixNano()),
-	}, func(subscription *types.PushSubscription) bool {
+	}, nil, func(subscription *types.PushSubscription) bool {
 		return subscription.RegistrationID == registrationID
 	})
 	if result.Accepted > 0 {
@@ -671,11 +672,11 @@ func redactPushEndpointError(err error, endpoint string) error {
 // belonging to uid. Disabled service is a no-op, so Hub callers do not need
 // configuration checks.
 func (s *PushNotificationService) SendToUser(ctx context.Context, uid int64, notification PushNotification) error {
-	_, err := s.sendToUserFiltered(ctx, uid, notification, nil)
+	_, err := s.sendToUserFiltered(ctx, uid, notification, nil, nil)
 	return err
 }
 
-func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid int64, notification PushNotification, shouldSendToDevice func(*types.PushSubscription) bool) (pushDeliveryResult, error) {
+func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid int64, notification PushNotification, shouldDeliver func(context.Context) bool, shouldSendToDevice func(*types.PushSubscription) bool) (pushDeliveryResult, error) {
 	var result pushDeliveryResult
 	if !s.Enabled() {
 		return result, nil
@@ -685,6 +686,9 @@ func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid in
 	}
 	if uid <= 0 {
 		return result, errors.New("invalid push notification uid")
+	}
+	if shouldDeliver != nil && !shouldDeliver(ctx) {
+		return result, nil
 	}
 
 	payload, err := json.Marshal(notification)
@@ -803,7 +807,7 @@ func (s *PushNotificationService) runDeliveryWorkers() {
 		go func() {
 			for job := range s.deliveryQueue {
 				ctx, cancel := context.WithDeadline(context.Background(), job.queuedAt.Add(pushDeliveryTimeout))
-				if _, err := s.sendToUserFiltered(ctx, job.uid, job.notification, job.shouldSendToDevice); err != nil {
+				if _, err := s.sendToUserFiltered(ctx, job.uid, job.notification, job.shouldDeliver, job.shouldSendToDevice); err != nil {
 					s.logf("send offline push: uid=%d err=%v", job.uid, err)
 				}
 				cancel()
@@ -822,6 +826,17 @@ func (s *PushNotificationService) EnqueueToUser(uid int64, notification PushNoti
 // EnqueueToUserFiltered queues delivery to subscriptions accepted by shouldSendToDevice.
 // The filter runs in the delivery worker so it observes current device visibility.
 func (s *PushNotificationService) EnqueueToUserFiltered(uid int64, notification PushNotification, shouldSendToDevice func(*types.PushSubscription) bool) bool {
+	return s.enqueueToUser(uid, notification, nil, shouldSendToDevice)
+}
+
+// EnqueueToUserWhen queues a best-effort delivery that is accepted only when
+// shouldDeliver still holds in the worker. The predicate runs before loading
+// subscriptions so preference changes made while a job is queued take effect.
+func (s *PushNotificationService) EnqueueToUserWhen(uid int64, notification PushNotification, shouldDeliver func(context.Context) bool, shouldSendToDevice func(*types.PushSubscription) bool) bool {
+	return s.enqueueToUser(uid, notification, shouldDeliver, shouldSendToDevice)
+}
+
+func (s *PushNotificationService) enqueueToUser(uid int64, notification PushNotification, shouldDeliver func(context.Context) bool, shouldSendToDevice func(*types.PushSubscription) bool) bool {
 	if !s.Enabled() || uid <= 0 {
 		return false
 	}
@@ -830,6 +845,7 @@ func (s *PushNotificationService) EnqueueToUserFiltered(uid int64, notification 
 	case s.deliveryQueue <- pushDeliveryJob{
 		uid:                uid,
 		notification:       notification,
+		shouldDeliver:      shouldDeliver,
 		shouldSendToDevice: shouldSendToDevice,
 		queuedAt:           time.Now(),
 	}:
