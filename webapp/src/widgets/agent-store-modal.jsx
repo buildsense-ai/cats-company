@@ -2,9 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, getWebSocketURL } from '../api';
 import t from '../i18n';
 import {
+  ArrowLeft,
   Bot,
   Bug,
   CheckCircle,
+  Cloud,
   Code2,
   Copy,
   FileCheck2,
@@ -160,6 +162,7 @@ export default function AgentStoreModal({
   const [bots, setBots] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('hub'); // 'hub', 'create', 'manage'
+  const [hubCloudView, setHubCloudView] = useState(false); // hub tab: show cloud manage panel instead of the roster
   const [createForm, setCreateForm] = useState(initialForm);
   const [createMode, setCreateMode] = useState(CREATE_MODES.SELF_HOSTED);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -646,6 +649,30 @@ export default function AgentStoreModal({
 
           {/* HUB TAB */}
           {tab === 'hub' && (
+            hubCloudView ? (
+              <div className="cc-agent-cloud-manage">
+                <div className="cc-agent-cloud-manage-head">
+                  <button type="button" className="oc-btn oc-btn-default" onClick={() => setHubCloudView(false)}>
+                    <ArrowLeft size={15} /> 返回助手列表
+                  </button>
+                  <h3><Cloud size={16} /> 云托管管理</h3>
+                  <span>配额 · 创建 · 版本/回滚/重置/删除</span>
+                </div>
+                <CloudWorkerPanel
+                  quota={cloudQuota}
+                  quotaError={cloudQuotaError}
+                  workers={cloudWorkers}
+                  images={cloudImages}
+                  actioning={cloudActioning}
+                  showHostingSwitch={false}
+                  onCreate={handleCloudCreate}
+                  onRollback={handleCloudRollback}
+                  onReset={handleCloudReset}
+                  onDelete={handleDelete}
+                  onSwitchMode={() => setHubCloudView(false)}
+                />
+              </div>
+            ) : (
             <div className="cc-agent-hub">
               {loading ? (
                 <div className="cc-agent-hub-state">加载中...</div>
@@ -672,6 +699,19 @@ export default function AgentStoreModal({
                       <div><strong>{botOverview.selfHosted}</strong><span>自托管</span></div>
                     </div>
                   </section>
+
+                  {/* 云托管管理入口（云员工独有：有配额或已有云托管员工时显示） */}
+                  {(cloudQuota?.enabled || cloudWorkers.length > 0) && (
+                    <button
+                      type="button"
+                      className="cc-agent-cloud-manage-entry"
+                      onClick={() => setHubCloudView(true)}
+                    >
+                      <Cloud size={15} />
+                      <span>云托管管理</span>
+                      <small>{cloudWorkers.length > 0 ? `${cloudWorkers.length} 个员工` : '配额 · 版本 · 回滚/重置/删除'}</small>
+                    </button>
+                  )}
 
                   <div className="v3-agent-grid cc-agent-hub-grid">
                     {bots.map(bot => {
@@ -793,6 +833,7 @@ export default function AgentStoreModal({
                 </>
               )}
             </div>
+            )
           )}
 
           {/* CREATE TAB */}
