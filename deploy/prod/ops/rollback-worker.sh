@@ -3,7 +3,7 @@
 #
 # 保留 worker 数据（/srv/catsco-agent 不动），SSH 到实例把
 # /opt/catsco/current 软链切换到指定历史 release 版本并重启
-# catsco-agent.service。--version 缺省时列出镜像内可用版本。
+# catsco-agent.service。--version 缺省时回滚到实例内最新 release 版本。
 #
 # 用法：
 #   rollback-worker.sh --name <tenant> [--version <v>] [--dry-run]
@@ -98,15 +98,21 @@ ssh_run() {
   timeout -s TERM -k 15 60s ssh "${ssh_opts[@]}" "$@"
 }
 
-# --- 2. 无 --version：列出镜像内可用 release 版本 ---
+# --- 2. 无 --version：回滚到最新 release 版本 ---
+# （list 语义不再单独输出：空版本 = 按实例内已部署版本排序取最新并切换）
 if [[ -z "$VERSION" ]]; then
-  versions="$(ssh_run "root@$INSTANCE_IP" "ls -1d /opt/catsco/releases/*/ 2>/dev/null | xargs -n1 basename" 2>/dev/null || true)"
-  if [[ -z "$versions" ]]; then
-    echo "error: no releases found on instance" >&2
-    exit 1
+  target="$(ssh_run "root@$INSTANCE_IP" "ls -1d /opt/catsco/releases/*/ 2>/dev/null | xargs -n1 basename | sort -V | tail -n1" 2>/dev/null || true)"
+  [[ -n "$target" ]] || { echo "error: no releases found on instance" >&2; exit 1; }
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "{\"status\":\"dry-run\",\"instance_name\":\"$INSTANCE_NAME\",\"version\":\"$target\"}"
+    exit 0
   fi
-  json_versions="$(printf '%s\n' "$versions" | jq -R . | jq -s -c .)"
-  echo "{\"status\":\"list\",\"instance_name\":\"$INSTANCE_NAME\",\"versions\":$json_versions}"
+
+  ssh_run "root@$INSTANCE_IP" "ln -sfn /opt/catsco/releases/${target} /opt/catsco/current && systemctl restart catsco-agent.service && sleep 3 && systemctl is-active catsco-agent.service" >/dev/null 2>&1 \
+    || { echo "error: rollback to $target failed" >&2; exit 1; }
+
+  echo "{\"status\":\"rolled-back\",\"instance_name\":\"$INSTANCE_NAME\",\"version\":\"$target\"}"
   exit 0
 fi
 

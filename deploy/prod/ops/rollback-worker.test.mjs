@@ -53,7 +53,12 @@ state.sshCalls.push(cmd);
 if (cmd.includes("ls -1d /opt/catsco/releases")) {
   const releases = state.releases || ["v1.4.8-abc123", "v1.4.7-def456"];
   const m = cmd.match(/releases\\/([A-Za-z0-9._-]+)\\*/);
-  const hits = m ? releases.filter(r => r.startsWith(m[1])) : releases;
+  let hits = m ? releases.filter(r => r.startsWith(m[1])) : releases;
+  // 无 --version 时脚本在远端跑管道 sort -V | tail -n1 取最新 release
+  if (!m && cmd.includes("sort -V") && cmd.includes("tail -n1")) {
+    const sorted = [...hits].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+    hits = [sorted[sorted.length - 1]];
+  }
   process.stdout.write(hits.map(r => r + "\\n").join(""));
 } else if (cmd.includes("ln -sfn")) {
   const m = cmd.match(/\\/opt\\/catsco\\/releases\\/([^ ]+) \\/opt\\/catsco\\/current/);
@@ -178,13 +183,26 @@ test("rollback-worker: missing private key fails", () => {
   assert.match(r.stderr, /private key not found/);
 });
 
-test("rollback-worker: lists versions without --version", () => {
+test("rollback-worker: rolls back to latest release without --version", () => {
   const sb = setupSandbox({ instances: [INSTANCE], releases: ["v1.4.8-abc123", "v1.4.7-def456"] });
   const r = run(sb, ["--name", "bot-a"]);
   assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
-  assert.match(r.stdout, /"status":"list"/);
-  assert.match(r.stdout, /v1\.4\.8-abc123/);
-  assert.match(r.stdout, /v1\.4\.7-def456/);
+  assert.match(r.stdout, /"status":"rolled-back"/);
+  // sort -V 取最新 release = v1.4.8-abc123
+  assert.match(r.stdout, /"version":"v1\.4\.8-abc123"/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.equal(state.rolledBack, "v1.4.8-abc123");
+  assert.equal(state.serviceRestarted, true);
+});
+
+test("rollback-worker: latest release rollback honors --dry-run", () => {
+  const sb = setupSandbox({ instances: [INSTANCE], releases: ["v1.4.8-abc123", "v1.4.7-def456"] });
+  const r = run(sb, ["--name", "bot-a", "--dry-run"]);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.match(r.stdout, /"status":"dry-run"/);
+  assert.match(r.stdout, /"version":"v1\.4\.8-abc123"/);
+  const state = JSON.parse(fs.readFileSync(sb.statePath, "utf8"));
+  assert.ok(!state.rolledBack, "no rollback in dry-run");
 });
 
 test("rollback-worker: switches current and restarts service", () => {

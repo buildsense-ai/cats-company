@@ -464,23 +464,24 @@ export default function AgentStoreModal({
     }
   };
 
-  // Cloud-managed rollback. The cloud panel passes an explicit version; the hub
-  // card keeps the legacy prompt-based version picker when no version is given.
-  const handleCloudRollback = async (bot, version = '') => {
+  // Cloud-managed rollback. The cloud panel passes an explicit version (or '' =
+  // latest) with fromPanel:true; the hub card keeps the legacy prompt-based
+  // version picker when no version is given.
+  const handleCloudRollback = async (bot, version = '', opts = {}) => {
     const name = bot.tenant_name;
     if (!name) return;
     const confirmed = await feedback.confirm({
       title: `回滚“${bot.display_name}”？`,
       message: version
         ? `回滚会把云端虚拟员工切换到镜像版本 ${version}，但会保留当前数据。`
-        : '回滚会把云端虚拟员工切换到所选镜像版本，但会保留当前数据。',
+        : '回滚会把云端虚拟员工回滚到最新镜像版本，但会保留当前数据。',
       confirmLabel: '确认回滚',
       tone: 'default',
     });
     if (!confirmed) return;
     try {
-      if (!version) {
-        // 从控制面 meta 拉可用镜像版本供选择（镜像列表契约：TSV -> 结构化数组）
+      if (!version && !opts.fromPanel) {
+        // hub 卡片旧逻辑：从控制面 meta 拉可用镜像版本供选择
         let meta = null;
         try { meta = await api.getCloudWorkerMeta(); } catch { meta = null; }
         const versions = (meta?.images || []).map((img) => img?.version).filter(Boolean);

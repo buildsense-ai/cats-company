@@ -100,7 +100,7 @@ export default function CloudWorkerPanel({
       setResetErrors({ [tenantName]: true });
       return;
     }
-    const version = versions[tenantName] || imageVersions[0] || '';
+    const version = versions[tenantName] || '';
     onReset(worker, version, { verified: true });
     cancelReset();
   };
@@ -247,7 +247,7 @@ export default function CloudWorkerPanel({
                       <span>目标版本</span>
                       <select
                         className="cc-cloud-version-select"
-                        value={versions[worker.tenant_name] || imageVersions[0] || ''}
+                        value={versions[worker.tenant_name] || ''}
                         disabled={acting || imageVersions.length === 0}
                         onChange={(e) => setVersions((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
                         title={imageVersions.length === 0 ? '暂无可用镜像版本' : '回滚/重置使用的镜像版本'}
@@ -266,9 +266,9 @@ export default function CloudWorkerPanel({
                     <button
                       type="button"
                       className="oc-btn oc-btn-default"
-                      onClick={() => onRollback(worker, versions[worker.tenant_name] || imageVersions[0] || '')}
+                      onClick={() => onRollback(worker, versions[worker.tenant_name] || '', { fromPanel: true })}
                       disabled={acting || imageVersions.length === 0}
-                      title={imageVersions.length === 0 ? '暂无可用镜像版本，无法回滚' : '回滚：切换到所选镜像版本，保留当前数据'}
+                      title={imageVersions.length === 0 ? '暂无可用镜像版本，无法回滚' : '回滚：切换到所选镜像版本（最新版本=最新镜像），保留当前数据'}
                     >
                       {acting ? '处理中...' : <><RotateCcw size={13} /> 回滚</>}
                     </button>

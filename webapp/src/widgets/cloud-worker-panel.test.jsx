@@ -170,14 +170,15 @@ describe('CloudWorkerPanel', () => {
     const resetBtn = buttons.find((el) => el.textContent.includes('重置'));
     const deleteBtn = buttons[buttons.length - 1];
 
-    // rollback passes the default (latest available) version directly
+    // rollback with no explicit version passes '' (latest) + fromPanel flag
     await act(async () => {
       Simulate.click(rollbackBtn);
     });
     expect(onRollback).toHaveBeenCalledTimes(1);
     expect(onRollback).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '1.4.8',
+      '',
+      { fromPanel: true },
     );
 
     // reset opens the captcha confirmation; verify it before onReset fires
@@ -197,7 +198,7 @@ describe('CloudWorkerPanel', () => {
     expect(onReset).toHaveBeenCalledTimes(1);
     expect(onReset).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '1.4.8',
+      '',
       { verified: true },
     );
 
@@ -253,7 +254,7 @@ describe('CloudWorkerPanel', () => {
     expect(onReset).toHaveBeenCalledTimes(1);
     expect(onReset).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
-      '1.4.8',
+      '',
       { verified: true },
     );
     // confirmation panel closes after a successful reset
@@ -270,7 +271,7 @@ describe('CloudWorkerPanel', () => {
     });
 
     const select = container.querySelector('.cc-cloud-version-select');
-    expect(select.value).toBe('1.4.8'); // defaults to the latest available
+    expect(select.value).toBe(''); // defaults to '' (latest), not the first image
     expect(Array.from(select.options).map((o) => o.value)).toEqual(['', '1.4.8', '1.4.7']);
 
     await act(async () => {
@@ -284,6 +285,34 @@ describe('CloudWorkerPanel', () => {
     expect(onRollback).toHaveBeenCalledWith(
       expect.objectContaining({ tenant_name: 'tenant-a' }),
       '1.4.7',
+      { fromPanel: true },
+    );
+  });
+
+  test('latest version passes an empty version even when images are unordered', async () => {
+    // 无序镜像列表：选择「最新版本」必须传 ''，而不是镜像列表第一项
+    const onRollback = vi.fn();
+    const images = [{ version: '1.4.7' }, { version: '1.4.8' }, { version: '1.4.5' }];
+    await renderPanel({
+      workers: [worker()],
+      images,
+      onRollback,
+    });
+
+    const select = container.querySelector('.cc-cloud-version-select');
+    expect(select.value).toBe('');
+    await act(async () => {
+      Simulate.change(select, { target: { value: '' } }); // 明确选「最新版本」
+    });
+    const rollbackBtn = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'))
+      .find((el) => el.textContent.includes('回滚'));
+    await act(async () => {
+      Simulate.click(rollbackBtn);
+    });
+    expect(onRollback).toHaveBeenCalledWith(
+      expect.objectContaining({ tenant_name: 'tenant-a' }),
+      '',
+      { fromPanel: true },
     );
   });
 
