@@ -570,7 +570,7 @@ func main() {
 
 	// Relay usage admin portal (internal; session-cookie-first + JWT fallback,
 	// whitelist-only, guarded proxy)
-	relayAdminHandler := server.NewRelayAdminProxyHandler(server.RelayAdminConfigFromEnv())
+	relayAdminHandler := server.NewRelayAdminProxyHandler(server.RelayAdminConfigFromEnv(), commercialRelayManagedStore)
 	relayAdminAuth := relayAdminHandler.AuthMiddleware(jwtAuthWithDB)
 	mux.HandleFunc("/api/admin/relay/access", relayAdminAuth(relayAdminHandler.HandleAccess))
 	mux.HandleFunc("/api/admin/relay/", relayAdminAuth(relayAdminHandler.HandleProxy))

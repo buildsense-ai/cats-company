@@ -3,12 +3,24 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/openchat/openchat/server/store/types"
 )
+
+type relayAdminManagedBudgetTestStore struct {
+	budgets map[int64][]*types.CommercialManagedRelayBudget
+	err     error
+}
+
+func (s relayAdminManagedBudgetTestStore) ListCommercialManagedRelayBudgets(uid int64) ([]*types.CommercialManagedRelayBudget, error) {
+	return s.budgets[uid], s.err
+}
 
 func TestRelayAdminConfigFromEnv(t *testing.T) {
 	t.Setenv("CATSCO_ADMIN_UID_WHITELIST", "38, 2")
@@ -276,6 +288,72 @@ func TestRelayAdminPricingWriteMarker(t *testing.T) {
 	}
 	if !sawMarker {
 		t.Fatal("relay did not receive the local pricing write marker")
+	}
+}
+
+func TestRelayAdminLimitsWritePreservesBody(t *testing.T) {
+	const payload = `{"monthly_budget":321,"provider_configs":[]}`
+	var received string
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	}))
+	defer relay.Close()
+	h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}})
+	h.setRateLimit(1000, 60)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/relay/local/users/7/key/limits", strings.NewReader(payload))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+	h.HandleProxy(rec, req)
+	if rec.Code != http.StatusOK || received != payload {
+		t.Fatalf("status=%d received=%q body=%s", rec.Code, received, rec.Body.String())
+	}
+}
+
+func TestRelayAdminRejectsCommercialManagedLimitsWrite(t *testing.T) {
+	upstreamCalls := 0
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		fmt.Fprint(w, `{}`)
+	}))
+	defer relay.Close()
+	store := relayAdminManagedBudgetTestStore{budgets: map[int64][]*types.CommercialManagedRelayBudget{
+		38: {{UID: 38, Model: "deepseek-v4-flash"}},
+	}}
+	h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}}, store)
+	h.setRateLimit(1000, 60)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/relay/local/users/38/key/limits", strings.NewReader(`{}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+	h.HandleProxy(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "商业化页面") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("commercial-managed write reached relay %d time(s)", upstreamCalls)
+	}
+}
+
+func TestRelayAdminManagedBudgetCheckFailureDoesNotWrite(t *testing.T) {
+	upstreamCalls := 0
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		fmt.Fprint(w, `{}`)
+	}))
+	defer relay.Close()
+	h := NewRelayAdminProxyHandler(
+		relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}},
+		relayAdminManagedBudgetTestStore{err: fmt.Errorf("database unavailable")},
+	)
+	h.setRateLimit(1000, 60)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/relay/local/users/38/key/limits", strings.NewReader(`{}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+	h.HandleProxy(rec, req)
+	if rec.Code != http.StatusBadGateway || upstreamCalls != 0 {
+		t.Fatalf("status=%d upstreamCalls=%d body=%s", rec.Code, upstreamCalls, rec.Body.String())
 	}
 }
 
