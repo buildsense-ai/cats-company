@@ -374,6 +374,23 @@ describe('WebSocket connection recovery', () => {
     }));
   });
 
+  test('includes the client message id in REST sends', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ seq_id: 101, client_msg_id: 'web-send-1' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.api.sendMessage('p2p_1_2', 'hello', undefined, [], 'web-send-1');
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      topic_id: 'p2p_1_2',
+      type: 'text',
+      content: 'hello',
+      client_msg_id: 'web-send-1',
+    });
+  });
+
   test('can remove every tab registration for the current account endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

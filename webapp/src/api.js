@@ -532,7 +532,7 @@ export const api = {
     request('GET', `/api/users/search?q=${encodeURIComponent(q)}&mode=${encodeURIComponent(mode)}`),
 
   // Send message via REST
-  sendMessage: (topicId, content, replyTo, mentions = []) => {
+  sendMessage: (topicId, content, replyTo, mentions = [], clientMsgID = '') => {
     const payload = { topic_id: topicId };
 
     if (typeof content === 'string') {
@@ -560,6 +560,12 @@ export const api = {
 
     if (replyTo) payload.reply_to = replyTo;
     if (Array.isArray(mentions) && mentions.length > 0) payload.mentions = mentions;
+    const normalizedClientMsgID = String(
+      clientMsgID
+      || (content && typeof content === 'object' && content.client_msg_id)
+      || '',
+    ).trim();
+    if (normalizedClientMsgID) payload.client_msg_id = normalizedClientMsgID;
     return request('POST', '/api/messages/send', payload);
   },
 

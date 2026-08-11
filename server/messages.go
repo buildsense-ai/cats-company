@@ -184,9 +184,21 @@ func (h *MessageHandler) fanoutMessage(uid int64, topicID string, replyTo int, p
 	h.hub.fanoutNormalizedMessage(uid, topicID, replyTo, payload, msgID, nil)
 }
 
+func metadataWithClientMsgID(metadata map[string]interface{}, clientMsgID string) map[string]interface{} {
+	if clientMsgID == "" {
+		return metadata
+	}
+	next := make(map[string]interface{}, len(metadata)+1)
+	for key, value := range metadata {
+		next[key] = value
+	}
+	next["client_msg_id"] = clientMsgID
+	return next
+}
+
 func saveNormalizedMessage(db store.MessageStore, topicID string, uid int64, replyTo int, payload *normalizedMessagePayload) (*savedMessageResult, error) {
 	if metadataStore, ok := db.(store.MessageMetadataStore); ok {
-		id, duplicate, err := metadataStore.SaveMessageWithMetadata(topicID, uid, payload.StoredContent, payload.ContentBlocks, payload.Mode, payload.Role, payload.StoredType, int64(replyTo), payload.ClientMsgID, payload.Metadata)
+		id, duplicate, err := metadataStore.SaveMessageWithMetadata(topicID, uid, payload.StoredContent, payload.ContentBlocks, payload.Mode, payload.Role, payload.StoredType, int64(replyTo), payload.ClientMsgID, metadataWithClientMsgID(payload.Metadata, payload.ClientMsgID))
 		if err != nil {
 			return nil, err
 		}
@@ -333,6 +345,7 @@ func (h *Hub) messageForRecipient(uid int64, recipientUID int64, topicID string,
 			Topic:         topicID,
 			From:          formatUID(uid),
 			SeqID:         int(msgID),
+			ClientMsgID:   payload.ClientMsgID,
 			Content:       payload.DisplayContent,
 			Type:          payload.DisplayType,
 			MsgType:       payload.StoredType,
@@ -356,10 +369,12 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 	}
 	displayContent := decodeStoredContent(message.Content)
 	storedMetadata := artifactMetadataForRecipient(message.Metadata, recipientUID)
+	clientMsgID := firstMetadataString(message.Metadata, "client_msg_id", "clientMessageId", "client_message_id")
 	return &MsgServerData{
 		Topic:         message.TopicID,
 		From:          formatUID(message.FromUID),
 		SeqID:         int(message.ID),
+		ClientMsgID:   clientMsgID,
 		Content:       displayContent,
 		Type:          inferDisplayTypeFromStoredMessage(message.MsgType, message.Content, message.ContentBlocks),
 		MsgType:       message.MsgType,
@@ -392,6 +407,9 @@ func (h *Hub) historyAPIMessageForRecipient(recipientUID int64, message *types.M
 	}
 	if len(data.ContentBlocks) > 0 {
 		out["content_blocks"] = data.ContentBlocks
+	}
+	if data.ClientMsgID != "" {
+		out["client_msg_id"] = data.ClientMsgID
 	}
 	if data.Mode != "" {
 		out["mode"] = data.Mode
@@ -935,7 +953,7 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 		}
 	} else {
 		for _, message := range rawMsgs {
-			msgs = append(msgs, map[string]interface{}{
+			formatted := map[string]interface{}{
 				"id":         message.ID,
 				"seq_id":     message.ID,
 				"topic_id":   message.TopicID,
@@ -944,7 +962,11 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 				"type":       inferDisplayTypeFromStoredMessage(message.MsgType, message.Content, message.ContentBlocks),
 				"msg_type":   message.MsgType,
 				"created_at": message.CreatedAt,
-			})
+			}
+			if clientMsgID := firstMetadataString(message.Metadata, "client_msg_id", "clientMessageId", "client_message_id"); clientMsgID != "" {
+				formatted["client_msg_id"] = clientMsgID
+			}
+			msgs = append(msgs, formatted)
 		}
 	}
 

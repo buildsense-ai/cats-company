@@ -38,7 +38,6 @@ const STICK_TO_BOTTOM_THRESHOLD = 96;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
 const PENDING_HISTORY_MATCH_CLOCK_SKEW_MS = 5 * 60 * 1000;
-const PENDING_HISTORY_ORDER_CLOCK_SKEW_MS = 15 * 1000;
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
   'members_invited',
   'member_left',
@@ -933,6 +932,7 @@ export default function MessagesView({
           role: msg.data.role,
           type: msg.data.type,
           metadata: msg.data.metadata || null,
+          client_msg_id: msg.data.client_msg_id || '',
           msg_type: msg.data.msg_type || msg.data.type || 'text',
           reply_to: msg.data.reply_to || 0,
           created_at: new Date().toISOString(),
@@ -953,9 +953,8 @@ export default function MessagesView({
           if (prev.some((m) => m.id === serverMsg.id)) return prev;
           // If this is our own message echoed back, replace the optimistic entry
           if (sameUID(fromUid, user.uid)) {
-            const serverContentKey = getComparableContent(serverMsg.content);
             const pendingIdx = prev.findIndex((m) => (
-              m._pending && getComparableContent(m.content) === serverContentKey
+              m._pending && pendingMatchesHistoryMessage(m, serverMsg, new Set())
             ));
             if (pendingIdx !== -1) {
               const next = [...prev];
@@ -1465,6 +1464,7 @@ export default function MessagesView({
         ...next[idx],
         id: result.seq_id || result.id,
         seq_id: result.seq_id || result.id,
+        client_msg_id: result.client_msg_id || next[idx].client_msg_id || '',
         _pending: false,
       };
       return mergeMessages([], next);
@@ -1501,6 +1501,7 @@ export default function MessagesView({
       ? collectStructuredMentionTargets(input, originalStructuredMentions)
       : [];
     const tempId = Date.now();
+    const clientMsgID = createClientMessageID();
 
     try {
       if (!isGroup && selectedAgent && selectedAgent.topic_id !== topic && onResolveAgentTopic) {
@@ -1558,13 +1559,14 @@ export default function MessagesView({
             contentBlocks: attachmentsToSend.length > 0 ? contentBlocks : undefined,
             replyToID: currentReplyTo ? currentReplyTo.id : 0,
             pendingAfterSeq: latestPersistedMessageSequence(prev),
+            clientMsgID,
           }),
         }]));
       }
 
       const result = mentions.length > 0
-        ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions)
-        : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined);
+        ? await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, mentions, clientMsgID)
+        : await api.sendMessage(sendTopic, sendPayload, currentReplyTo ? currentReplyTo.id : undefined, undefined, clientMsgID);
       messageSent = true;
       if (switchesTopic) {
         if (activeTopicRef.current === topic) {
@@ -1646,6 +1648,7 @@ export default function MessagesView({
     setAwaitingAgentReply(true);
     clearRuntimePlan();
     const tempId = Date.now();
+    const clientMsgID = createClientMessageID();
     stickToBottomRef.current = true;
     setMessages((current) => mergeMessages(current, [createOptimisticUserMessage({
       id: tempId,
@@ -1653,6 +1656,7 @@ export default function MessagesView({
       userUID: user.uid,
       content: taskText,
       pendingAfterSeq: latestPersistedMessageSequence(current),
+      clientMsgID,
     })]));
 
     try {
@@ -1662,7 +1666,7 @@ export default function MessagesView({
         artifactContext.artifactRef,
         artifactContext.pageContext,
       );
-      const result = await api.sendMessage(topic, sendPayload, undefined);
+      const result = await api.sendMessage(topic, sendPayload, undefined, undefined, clientMsgID);
       finalizeOptimisticMessage(tempId, result);
     } catch (error) {
       removeOptimisticMessage(tempId);
@@ -3747,6 +3751,7 @@ function normalizeIncomingMessage(message) {
   const normalized = { ...message };
   normalized.content_blocks = contentBlocksFromMessage(message);
   normalized.metadata = message?.metadata || null;
+  normalized.client_msg_id = messageClientMsgID(message);
   normalized.msg_type = message?.msg_type || 'text';
 
   const runtimePlan = normalizeRuntimePlan(message?.content);
@@ -4556,6 +4561,7 @@ function createOptimisticUserMessage({
   contentBlocks,
   replyToID = 0,
   pendingAfterSeq = 0,
+  clientMsgID = '',
 }) {
   const message = {
     id,
@@ -4567,6 +4573,7 @@ function createOptimisticUserMessage({
     msg_type: 'text',
     reply_to: replyToID,
     created_at: new Date().toISOString(),
+    client_msg_id: clientMsgID,
     _pending: true,
     _pending_after_seq: pendingAfterSeq,
   };
@@ -4576,11 +4583,40 @@ function createOptimisticUserMessage({
   return message;
 }
 
+function createClientMessageID() {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return `web-${globalThis.crypto.randomUUID()}`;
+  }
+  return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function messageClientMsgID(message) {
+  const value = message?.client_msg_id
+    ?? message?.clientMsgID
+    ?? message?.clientMsgId
+    ?? message?.metadata?.client_msg_id
+    ?? message?.metadata?.clientMsgID
+    ?? message?.metadata?.clientMessageId;
+  return value == null ? '' : String(value).trim();
+}
+
+function comparableContentBlocks(message) {
+  const blocks = contentBlocksFromMessage(message);
+  return blocks.length > 0 ? getComparableContent(blocks) : '';
+}
+
 function pendingMatchesHistoryMessage(pending, historyMessage, usedHistoryIDs) {
   const historyID = historyMessageID(historyMessage);
   const pendingAnchor = pendingMessageAnchor(pending);
   const pendingCreatedAt = Date.parse(pending?.created_at || '');
   const historyCreatedAt = Date.parse(historyMessage?.created_at || '');
+  const pendingClientMsgID = messageClientMsgID(pending);
+  const historyClientMsgID = messageClientMsgID(historyMessage);
+  const hasStableClientMatch = Boolean(
+    pendingClientMsgID
+    && historyClientMsgID
+    && pendingClientMsgID === historyClientMsgID,
+  );
   if (
     historyID <= 0
     || historyID <= pendingAnchor
@@ -4588,12 +4624,14 @@ function pendingMatchesHistoryMessage(pending, historyMessage, usedHistoryIDs) {
     || historyMessage?._pending
     || historyMessage?._streaming
     || !sameUID(pending?.from_uid, historyMessage?.from_uid)
-    || getComparableContent(pending?.content) !== getComparableContent(historyMessage?.content)
+    || (historyClientMsgID && pendingClientMsgID && historyClientMsgID !== pendingClientMsgID)
+    || (!hasStableClientMatch && getComparableContent(pending?.content) !== getComparableContent(historyMessage?.content))
+    || (!hasStableClientMatch && comparableContentBlocks(pending) !== comparableContentBlocks(historyMessage))
     || (
-      pendingAnchor === 0
+      !hasStableClientMatch
       && Number.isFinite(pendingCreatedAt)
       && Number.isFinite(historyCreatedAt)
-      && historyCreatedAt + PENDING_HISTORY_MATCH_CLOCK_SKEW_MS < pendingCreatedAt
+      && Math.abs(historyCreatedAt - pendingCreatedAt) > PENDING_HISTORY_MATCH_CLOCK_SKEW_MS
     )
   ) {
     return false;
@@ -4607,7 +4645,16 @@ function pendingMatchesHistoryMessage(pending, historyMessage, usedHistoryIDs) {
 function findHistoryMatchForPending(pending, historyMessages, usedHistoryIDs) {
   return historyMessages
     .filter((historyMessage) => pendingMatchesHistoryMessage(pending, historyMessage, usedHistoryIDs))
-    .sort((left, right) => historyMessageID(right) - historyMessageID(left))[0] || null;
+    .sort((left, right) => {
+      const pendingClientMsgID = messageClientMsgID(pending);
+      const leftExact = Number(Boolean(
+        pendingClientMsgID && messageClientMsgID(left) === pendingClientMsgID,
+      ));
+      const rightExact = Number(Boolean(
+        pendingClientMsgID && messageClientMsgID(right) === pendingClientMsgID,
+      ));
+      return rightExact - leftExact || historyMessageID(left) - historyMessageID(right);
+    })[0] || null;
 }
 
 function persistedIDsAfterMessage(messages, messageIndex) {
@@ -4628,13 +4675,15 @@ function historySequenceBeforePending(historyMessages, currentMessages, pendingI
   return historyMessages.reduce((latest, message) => {
     const sequence = historyMessageID(message);
     const historyCreatedAt = Date.parse(message?.created_at || '');
-    const appearsAfterPending = Number.isFinite(pendingCreatedAt)
-      && Number.isFinite(historyCreatedAt)
-      && historyCreatedAt > pendingCreatedAt + PENDING_HISTORY_ORDER_CLOCK_SKEW_MS;
     if (
       sequence <= pendingAnchor
       || messagesAfterPending.has(sequence)
-      || appearsAfterPending
+      || pendingAnchor > 0
+      || (
+        Number.isFinite(pendingCreatedAt)
+        && Number.isFinite(historyCreatedAt)
+        && historyCreatedAt >= pendingCreatedAt
+      )
     ) return latest;
     return Math.max(latest, sequence);
   }, 0);

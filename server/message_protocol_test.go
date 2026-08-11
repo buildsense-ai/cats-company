@@ -309,6 +309,9 @@ func TestSaveNormalizedMessagePersistsMetadataThroughOptionalStore(t *testing.T)
 	if got := firstMetadataString(messageStore.metadata, "source_channel"); got != "feishu" {
 		t.Fatalf("persisted source_channel = %q, want feishu", got)
 	}
+	if got := firstMetadataString(messageStore.metadata, "client_msg_id"); got != "catsco-metadata-1" {
+		t.Fatalf("persisted client_msg_id = %q, want catsco-metadata-1", got)
+	}
 }
 
 func TestSaveNormalizedMessageRejectsArtifactMetadataWithoutPersistenceCapability(t *testing.T) {
@@ -386,8 +389,9 @@ func TestFanoutMessageAddsCanonicalCatscoIdentityForBotRecipient(t *testing.T) {
 	hub.addClient(botClient)
 
 	payload, err := normalizeMessageRequest(&SendMessageRequest{
-		TopicID: "p2p_7_42",
-		Content: json.RawMessage(`"hello"`),
+		TopicID:     "p2p_7_42",
+		ClientMsgID: "live-client-15",
+		Content:     json.RawMessage(`"hello"`),
 		Metadata: map[string]interface{}{
 			"keep":            "yes",
 			"catsco_identity": map[string]interface{}{"spoofed": true},
@@ -401,6 +405,9 @@ func TestFanoutMessageAddsCanonicalCatscoIdentityForBotRecipient(t *testing.T) {
 
 	var msg ServerMessage
 	decodeQueuedServerMessage(t, botClient.send, &msg)
+	if msg.Data.ClientMsgID != "live-client-15" {
+		t.Fatalf("live client_msg_id=%q, want live-client-15", msg.Data.ClientMsgID)
+	}
 	identity := metadataMapFromServerMessage(t, &msg, "catsco_identity")
 	actor := nestedMap(t, identity, "actor")
 	agent := nestedMap(t, identity, "agent")
@@ -479,11 +486,12 @@ func TestHistoryMessagesIncludeCanonicalCatscoIdentityForBotRecipient(t *testing
 			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
 		},
 		history: []*types.Message{{
-			ID:      31,
-			TopicID: "p2p_7_42",
-			FromUID: 7,
-			Content: "missed message",
-			MsgType: "text",
+			ID:       31,
+			TopicID:  "p2p_7_42",
+			FromUID:  7,
+			Content:  "missed message",
+			MsgType:  "text",
+			Metadata: map[string]interface{}{"client_msg_id": "history-client-31"},
 		}},
 	}
 	hub := NewHub(store, nil)
@@ -515,6 +523,9 @@ func TestHistoryMessagesIncludeCanonicalCatscoIdentityForBotRecipient(t *testing
 	if topic["topic_id"] != "p2p_7_42" || topic["type"] != "p2p" || topic["channel_seq"] != float64(31) {
 		t.Fatalf("unexpected history topic identity: %#v", topic)
 	}
+	if msg.Data.ClientMsgID != "history-client-31" {
+		t.Fatalf("history client_msg_id=%q, want history-client-31", msg.Data.ClientMsgID)
+	}
 
 	var ctrl ServerMessage
 	decodeQueuedServerMessage(t, botClient.send, &ctrl)
@@ -530,11 +541,12 @@ func TestHandleGetMessagesAuthorizesAndMarksReplayHistory(t *testing.T) {
 			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
 		},
 		history: []*types.Message{{
-			ID:      31,
-			TopicID: "p2p_7_42",
-			FromUID: 7,
-			Content: "missed message",
-			MsgType: "text",
+			ID:       31,
+			TopicID:  "p2p_7_42",
+			FromUID:  7,
+			Content:  "missed message",
+			MsgType:  "text",
+			Metadata: map[string]interface{}{"client_msg_id": "rest-client-31"},
 		}},
 	}
 	hub := NewHub(store, nil)
@@ -555,6 +567,9 @@ func TestHandleGetMessagesAuthorizesAndMarksReplayHistory(t *testing.T) {
 	}
 	if len(body.Messages) != 1 {
 		t.Fatalf("messages len=%d, want 1", len(body.Messages))
+	}
+	if body.Messages[0]["client_msg_id"] != "rest-client-31" {
+		t.Fatalf("client_msg_id=%#v, want rest-client-31", body.Messages[0]["client_msg_id"])
 	}
 	metadata, ok := body.Messages[0]["metadata"].(map[string]interface{})
 	if !ok {

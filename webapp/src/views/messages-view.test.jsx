@@ -619,7 +619,7 @@ describe('MessagesView composer draft isolation', () => {
       Simulate.click(container.querySelector('button[aria-label="发送"]'));
       await flushPromises();
     });
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '开始下一轮任务。', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '开始下一轮任务。', undefined, undefined, expect.any(String));
 
     await act(async () => {
       wsHandler({
@@ -793,7 +793,7 @@ describe('MessagesView composer draft isolation', () => {
             from_uid: 1,
             type: 'text',
             content: '历史加载期间发送的任务',
-            created_at: '2026-08-11T10:00:01Z',
+            created_at: new Date(Date.now() + 1000).toISOString(),
           },
           {
             id: 102,
@@ -872,6 +872,65 @@ describe('MessagesView composer draft isolation', () => {
 
     await act(async () => {
       sendResult.resolve({ seq_id: 101 });
+      await flushPromises();
+    });
+  });
+
+  it('uses client message id when history contains an older repeated prompt', async () => {
+    const historyResult = deferred();
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages.mockReturnValueOnce(historyResult.promise);
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '重复任务');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+    const clientMsgID = api.sendMessage.mock.calls[0][4];
+    expect(clientMsgID).toEqual(expect.any(String));
+
+    await act(async () => {
+      historyResult.resolve({
+        messages: [
+          {
+            id: 90,
+            seq_id: 90,
+            topic_id: 'p2p_1_2',
+            from_uid: 1,
+            type: 'text',
+            content: '重复任务',
+            created_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+          },
+          {
+            id: 101,
+            seq_id: 101,
+            topic_id: 'p2p_1_2',
+            from_uid: 1,
+            type: 'text',
+            content: '重复任务',
+            client_msg_id: clientMsgID,
+            created_at: new Date(Date.now() + 1000).toISOString(),
+          },
+        ],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageId,
+    )).toEqual(['90', '101']);
+    expect(container.querySelectorAll('[data-message-content="重复任务"]')).toHaveLength(2);
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101, client_msg_id: clientMsgID });
       await flushPromises();
     });
   });
@@ -1072,6 +1131,64 @@ describe('MessagesView composer draft isolation', () => {
     });
   });
 
+  it('keeps a fast history-only Agent reply after an unresolved user send', async () => {
+    const historyResult = deferred();
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages.mockReturnValueOnce(historyResult.promise);
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '快速回复任务');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    await act(async () => {
+      historyResult.resolve({
+        messages: [
+          {
+            id: 100,
+            seq_id: 100,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            role: 'assistant',
+            type: 'text',
+            content: '上一轮已经完成。',
+            created_at: new Date(Date.now() - 60 * 1000).toISOString(),
+          },
+          {
+            id: 102,
+            seq_id: 102,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            role: 'assistant',
+            type: 'text',
+            content: '快速回复结果。',
+            created_at: new Date(Date.now() + 2 * 1000).toISOString(),
+          },
+        ],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['上一轮已经完成。', '快速回复任务', '快速回复结果。']);
+    expect(container.querySelector('[data-message-id="102"]')?.dataset.consecutive).toBe('false');
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101 });
+      await flushPromises();
+    });
+  });
+
   it('ignores a stale group profile response after switching conversations', async () => {
     const firstGroupProfile = deferred();
     const secondGroupProfile = deferred();
@@ -1223,7 +1340,7 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '普通好友消息', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '普通好友消息', undefined, undefined, expect.any(String));
     expect(onOpenDesktopConnect).not.toHaveBeenCalled();
   });
 
@@ -2591,7 +2708,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '检查这段代码', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '检查这段代码', undefined, undefined, expect.any(String));
   });
 
   it('keeps a regenerated Agent reply separated when it arrives before the ACK', async () => {
@@ -2763,7 +2880,7 @@ describe('MessagesView composer draft isolation', () => {
           currently_visible: true,
         },
       },
-    }, undefined);
+    }, undefined, undefined, expect.any(String));
   });
 
   it('does not expose regenerate for bot replies in a standard group', async () => {
@@ -2855,7 +2972,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '再补充一个条件', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_2', '再补充一个条件', undefined, undefined, expect.any(String));
     expect(container.querySelector('button[aria-label="停止当前工作"]')).not.toBeNull();
   });
 
@@ -3165,6 +3282,7 @@ describe('MessagesView composer draft isolation', () => {
       '@所有人 一起处理',
       undefined,
       ['all'],
+      expect.any(String),
     );
   });
 
@@ -3180,7 +3298,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined, undefined, expect.any(String));
   });
 
   it('filters bot names and inserts the canonical uid mention with Enter', async () => {
@@ -3221,7 +3339,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined, ['usr43']);
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined, ['usr43'], expect.any(String));
   });
 
   it('does not send structured mentions after typing against the picker token boundary', async () => {
@@ -3256,7 +3374,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43x 请处理', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43x 请处理', undefined, undefined, expect.any(String));
   });
 
   it('restores picker provenance and original text after a send failure', async () => {
@@ -3294,7 +3412,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenNthCalledWith(1, 'grp_80', '@usr43 请处理', undefined, ['usr43']);
+    expect(api.sendMessage).toHaveBeenNthCalledWith(1, 'grp_80', '@usr43 请处理', undefined, ['usr43'], expect.any(String));
     expect(textarea.value).toBe('  @usr43 请处理  ');
 
     await act(async () => {
@@ -3302,7 +3420,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenNthCalledWith(2, 'grp_80', '@usr43 请处理', undefined, ['usr43']);
+    expect(api.sendMessage).toHaveBeenNthCalledWith(2, 'grp_80', '@usr43 请处理', undefined, ['usr43'], expect.any(String));
   });
 
   it('drops structured mention provenance after the picker token is removed', async () => {
@@ -3340,7 +3458,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_80', '@usr43 请处理', undefined, undefined, expect.any(String));
   });
 
   it('opens the bot picker from the toolbar and inserts at the cursor', async () => {
@@ -3837,7 +3955,7 @@ describe('MessagesView composer draft isolation', () => {
           currently_visible: true,
         },
       },
-    }, undefined);
+    }, undefined, undefined, expect.any(String));
     expect(container.textContent).not.toContain('lesson-game');
     expect(container.textContent).not.toContain('当前 Artifact');
   });
@@ -3944,7 +4062,7 @@ describe('MessagesView composer draft isolation', () => {
           controls: [{ type: 'checkbox', name: 'feedback', value: 'f12', checked: true }],
         },
       },
-    }, undefined);
+    }, undefined, undefined, expect.any(String));
   });
 
   it('drops a stale Artifact reference when the preview closes during page capture', async () => {
@@ -4033,7 +4151,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '分析这些', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '分析这些', undefined, undefined, expect.any(String));
   });
 
   it('does not rebind an in-flight message when the user switches to another Artifact', async () => {
@@ -4140,7 +4258,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '把这里改一下', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '把这里改一下', undefined, undefined, expect.any(String));
   });
 
   it('drops an in-flight Artifact snapshot when another topic uses the same Agent', async () => {
@@ -4259,7 +4377,7 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
-    expect(api.sendMessage).toHaveBeenCalledWith('grp_91', '分析这些', undefined);
+    expect(api.sendMessage).toHaveBeenCalledWith('grp_91', '分析这些', undefined, undefined, expect.any(String));
   });
 
   it('finds an agent file from history and opens it in the existing file preview', async () => {
