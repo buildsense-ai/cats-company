@@ -258,7 +258,7 @@ describe('StreamingSTTSession', () => {
     }
   });
 
-  it('acquires an authenticated session before requesting microphone capture', async () => {
+  it('starts microphone capture while session admission is in flight', async () => {
     const order = [];
     const session = new StreamingSTTSession({
       createSession: vi.fn(async () => {
@@ -281,17 +281,53 @@ describe('StreamingSTTSession', () => {
     session.cancel();
   });
 
-  it('does not request microphone capture when session admission fails', async () => {
+  it('captures early audio while session admission is pending and forwards it after ready', async () => {
+    let resolveSession;
+    let emitFrame;
+    let socket;
+    const frame = new Uint8Array([1, 2, 3, 4]).buffer;
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const createCapture = vi.fn(async ({ onFrame }) => {
+      emitFrame = onFrame;
+      return capture;
+    });
+    const session = new StreamingSTTSession({
+      createSession: vi.fn(() => new Promise((resolve) => { resolveSession = resolve; })),
+      createCapture,
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+    });
+
+    const starting = session.start();
+    await Promise.resolve();
+
+    expect(createCapture).toHaveBeenCalledTimes(1);
+    emitFrame(frame);
+
+    resolveSession({ ticket: 'ticket-early-audio' });
+    await starting;
+    socket.open();
+    socket.receive({ type: 'ready' });
+
+    expect(socket.sent[0]).toBe(frame);
+    session.cancel();
+  });
+
+  it('stops locally captured audio when session admission fails', async () => {
     const errors = [];
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
     const session = new StreamingSTTSession({
       createSession: vi.fn().mockRejectedValue(Object.assign(new Error('quota'), { status: 429 })),
-      createCapture: vi.fn(),
+      createCapture: vi.fn().mockResolvedValue(capture),
       onError: (error) => errors.push(error.message),
     });
 
     await session.start();
 
-    expect(session.createCapture).not.toHaveBeenCalled();
+    expect(session.createCapture).toHaveBeenCalledTimes(1);
+    expect(capture.stop).toHaveBeenCalledTimes(1);
     expect(errors).toEqual(['语音输入额度已用完，请稍后再试']);
   });
 
@@ -446,35 +482,41 @@ describe('StreamingSTTSession', () => {
     expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
   });
 
-  it('does not start capture when cancelled while session admission is pending', async () => {
+  it('stops capture when cancelled while session admission is pending', async () => {
     let resolveSession;
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
     const session = new StreamingSTTSession({
       createSession: vi.fn(() => new Promise((resolve) => { resolveSession = resolve; })),
-      createCapture: vi.fn(),
+      createCapture: vi.fn().mockResolvedValue(capture),
     });
 
     const starting = session.start();
+    await Promise.resolve();
     session.cancel();
     resolveSession({ ticket: 'unused-ticket' });
     await starting;
 
-    expect(session.createCapture).not.toHaveBeenCalled();
+    expect(session.createCapture).toHaveBeenCalledTimes(1);
+    expect(capture.stop).toHaveBeenCalledTimes(1);
     expect(session.state).toBe('cancelled');
   });
 
-  it('stops without opening microphone capture when hold-to-talk is released during admission', async () => {
+  it('stops local capture when hold-to-talk is released during admission', async () => {
     let resolveSession;
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
     const session = new StreamingSTTSession({
       createSession: vi.fn(() => new Promise((resolve) => { resolveSession = resolve; })),
-      createCapture: vi.fn(),
+      createCapture: vi.fn().mockResolvedValue(capture),
     });
 
     const starting = session.start();
+    await Promise.resolve();
     const stopping = session.stop();
     resolveSession({ ticket: 'unused-ticket' });
     await Promise.all([starting, stopping]);
 
-    expect(session.createCapture).not.toHaveBeenCalled();
+    expect(session.createCapture).toHaveBeenCalledTimes(1);
+    expect(capture.stop).toHaveBeenCalledTimes(1);
     expect(session.state).toBe('complete');
   });
 

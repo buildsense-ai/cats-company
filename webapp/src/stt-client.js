@@ -328,28 +328,22 @@ export class StreamingSTTSession {
       this.completeWithoutCapture();
       return;
     }
+    const sessionPromise = this.createSession();
+    const capturePromise = this.startCapture();
     try {
-      const session = await this.createSession();
-      if (this.terminal) return;
-      if (this.stopRequested || isPageHidden()) {
-        this.completeWithoutCapture();
-        return;
-      }
-      const capture = await this.createCapture({
-        onFrame: (frame) => this.handleFrame(frame),
-        onLevel: (rms) => this.publishAudioLevel(rms),
-        onSuspended: () => void this.stop(),
-      });
+      const [capture, session] = await Promise.all([capturePromise, sessionPromise]);
       if (this.terminal) {
-        await capture.stop();
         return;
       }
       if (this.stopRequested || isPageHidden()) {
-        await capture.stop();
+        if (this.capture === capture) {
+          this.capture = null;
+          await capture?.stop();
+        }
         this.completeWithoutCapture();
         return;
       }
-      this.capture = capture;
+      if (!capture) return;
       this.applyDurationLimit(session);
       this.setState('connecting');
       const socket = this.createWebSocket(this.resolveWebSocketURL(session.ticket));
@@ -365,8 +359,23 @@ export class StreamingSTTSession {
         this.completeWithoutCapture();
         return;
       }
+      if (this.terminal) return;
       this.fail(this.normalizeStartError(error));
     }
+  }
+
+  async startCapture() {
+    const capture = await this.createCapture({
+      onFrame: (frame) => this.handleFrame(frame),
+      onLevel: (rms) => this.publishAudioLevel(rms),
+      onSuspended: () => void this.stop(),
+    });
+    if (this.terminal || this.stopRequested || isPageHidden()) {
+      await capture.stop();
+      return null;
+    }
+    this.capture = capture;
+    return capture;
   }
 
   normalizeStartError(error) {
