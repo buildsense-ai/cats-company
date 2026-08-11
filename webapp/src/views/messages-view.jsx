@@ -37,6 +37,7 @@ const HISTORY_AUTO_FILL_MAX_PAGES = 6;
 const STICK_TO_BOTTOM_THRESHOLD = 96;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
+const PENDING_HISTORY_MATCH_CLOCK_SKEW_MS = 5 * 60 * 1000;
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
   'members_invited',
   'member_left',
@@ -4576,14 +4577,23 @@ function createOptimisticUserMessage({
 
 function pendingMatchesHistoryMessage(pending, historyMessage, usedHistoryIDs) {
   const historyID = historyMessageID(historyMessage);
+  const pendingAnchor = pendingMessageAnchor(pending);
+  const pendingCreatedAt = Date.parse(pending?.created_at || '');
+  const historyCreatedAt = Date.parse(historyMessage?.created_at || '');
   if (
     historyID <= 0
-    || historyID <= pendingMessageAnchor(pending)
+    || historyID <= pendingAnchor
     || usedHistoryIDs.has(historyID)
     || historyMessage?._pending
     || historyMessage?._streaming
     || !sameUID(pending?.from_uid, historyMessage?.from_uid)
     || getComparableContent(pending?.content) !== getComparableContent(historyMessage?.content)
+    || (
+      pendingAnchor === 0
+      && Number.isFinite(pendingCreatedAt)
+      && Number.isFinite(historyCreatedAt)
+      && historyCreatedAt + PENDING_HISTORY_MATCH_CLOCK_SKEW_MS < pendingCreatedAt
+    )
   ) {
     return false;
   }
@@ -4599,31 +4609,54 @@ function findHistoryMatchForPending(pending, historyMessages, usedHistoryIDs) {
     .sort((left, right) => historyMessageID(right) - historyMessageID(left))[0] || null;
 }
 
+function persistedIDsAfterMessage(messages, messageIndex) {
+  const ids = new Set();
+  for (let index = messageIndex + 1; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message?._pending || message?._streaming) continue;
+    const sequence = historyMessageID(message);
+    if (sequence > 0) ids.add(sequence);
+  }
+  return ids;
+}
+
+function historySequenceBeforePending(historyMessages, currentMessages, pendingIndex, pending) {
+  const messagesAfterPending = persistedIDsAfterMessage(currentMessages, pendingIndex);
+  const pendingAnchor = pendingMessageAnchor(pending);
+  return historyMessages.reduce((latest, message) => {
+    const sequence = historyMessageID(message);
+    if (sequence <= pendingAnchor || messagesAfterPending.has(sequence)) return latest;
+    return Math.max(latest, sequence);
+  }, 0);
+}
+
 function mergeHistoryWithCurrentMessages(historyMessages, currentMessages) {
   const visibleMessages = Array.isArray(historyMessages) ? historyMessages : [];
   const current = Array.isArray(currentMessages) ? currentMessages : [];
-  const newestHistoryID = visibleMessages.reduce(
-    (latestID, message) => Math.max(latestID, historyMessageID(message)),
-    0,
+  const historyIDs = new Set(
+    visibleMessages
+      .map((message) => historyMessageID(message))
+      .filter((sequence) => sequence > 0),
   );
-  const historySequence = latestPersistedMessageSequence(visibleMessages);
   const usedHistoryIDs = new Set();
   const pendingToKeep = [];
 
-  current
-    .filter((message) => message?._pending)
-    .forEach((pending) => {
-      const historyMatch = findHistoryMatchForPending(pending, visibleMessages, usedHistoryIDs);
-      if (historyMatch) {
-        usedHistoryIDs.add(historyMessageID(historyMatch));
-        return;
-      }
+  current.forEach((pending, pendingIndex) => {
+    if (!pending?._pending) return;
+    const historyMatch = findHistoryMatchForPending(pending, visibleMessages, usedHistoryIDs);
+    if (historyMatch) {
+      usedHistoryIDs.add(historyMessageID(historyMatch));
+      return;
+    }
 
-      pendingToKeep.push({
-        ...pending,
-        _pending_after_seq: Math.max(pendingMessageAnchor(pending), historySequence),
-      });
+    pendingToKeep.push({
+      ...pending,
+      _pending_after_seq: Math.max(
+        pendingMessageAnchor(pending),
+        historySequenceBeforePending(visibleMessages, current, pendingIndex, pending),
+      ),
     });
+  });
 
   const pendingByID = new Map(pendingToKeep.map((pending) => [pending.id, pending]));
   const newerMessages = current.flatMap((message) => {
@@ -4631,7 +4664,8 @@ function mergeHistoryWithCurrentMessages(historyMessages, currentMessages) {
       const pending = pendingByID.get(message.id);
       return pending ? [pending] : [];
     }
-    return historyMessageID(message) > newestHistoryID ? [message] : [];
+    const sequence = historyMessageID(message);
+    return sequence <= 0 || !historyIDs.has(sequence) ? [message] : [];
   });
   return mergeMessages(visibleMessages, newerMessages);
 }
