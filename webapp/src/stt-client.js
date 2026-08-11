@@ -1,7 +1,7 @@
 import PCM_WORKLET_URL from './stt-pcm-worklet.js?url&no-inline';
 
 const MAX_BUFFERED_AUDIO_BYTES = 160_000;
-const PARTIAL_RENDER_INTERVAL_MS = 120;
+const PARTIAL_RENDER_INTERVAL_MS = 80;
 const CAPTURE_FLUSH_TIMEOUT_MS = 300;
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
@@ -275,6 +275,7 @@ export class StreamingSTTSession {
     this.preconnectBytes = 0;
     this.partialTimer = null;
     this.pendingPartial = '';
+    this.lastPublishedPartial = '';
     this.lastPartialAt = 0;
     this.durationTimer = null;
     this.handleVisibilityChange = () => {
@@ -428,6 +429,7 @@ export class StreamingSTTSession {
         break;
       case 'final': {
         const text = String(message.text || '').trim();
+        this.flushPartial();
         this.terminal = true;
         this.clearPartialTimer();
         this.cleanup();
@@ -447,16 +449,23 @@ export class StreamingSTTSession {
     this.pendingPartial = text;
     const elapsed = Date.now() - this.lastPartialAt;
     if (elapsed >= PARTIAL_RENDER_INTERVAL_MS) {
-      this.lastPartialAt = Date.now();
-      this.onPartial(this.pendingPartial);
+      this.flushPartial();
       return;
     }
     if (this.partialTimer) return;
     this.partialTimer = window.setTimeout(() => {
-      this.partialTimer = null;
-      this.lastPartialAt = Date.now();
-      this.onPartial(this.pendingPartial);
+      this.flushPartial();
     }, PARTIAL_RENDER_INTERVAL_MS - elapsed);
+  }
+
+  flushPartial() {
+    this.clearPartialTimer();
+    const text = this.pendingPartial;
+    this.pendingPartial = '';
+    if (!text || text === this.lastPublishedPartial) return;
+    this.lastPublishedPartial = text;
+    this.lastPartialAt = Date.now();
+    this.onPartial(text);
   }
 
   clearPartialTimer() {

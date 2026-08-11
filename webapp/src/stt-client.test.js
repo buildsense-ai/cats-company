@@ -368,6 +368,32 @@ describe('StreamingSTTSession', () => {
     expect(capture.stop).toHaveBeenCalledTimes(1);
   });
 
+  it('flushes the newest coalesced partial before publishing the final transcript', async () => {
+    const partials = [];
+    const finals = [];
+    let socket;
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-flush', max_session_seconds: 90 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn() }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime?ticket=ticket-flush');
+        return socket;
+      },
+      onPartial: (text) => partials.push(text),
+      onFinal: (text) => finals.push(text),
+    });
+
+    await session.start();
+    socket.open();
+    socket.receive({ type: 'ready' });
+    socket.receive({ type: 'partial', text: '第一段' });
+    socket.receive({ type: 'partial', text: '最新的一段' });
+    socket.receive({ type: 'final', text: '最终文字' });
+
+    expect(partials).toEqual(['第一段', '最新的一段']);
+    expect(finals).toEqual(['最终文字']);
+  });
+
   it('maps capture RMS through the VoicePi-style decibel curve', async () => {
     let emitLevel;
     const levels = [];
