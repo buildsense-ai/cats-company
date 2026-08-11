@@ -1119,7 +1119,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(peerMessage.querySelector('[data-testid="avatar"]')).not.toBeNull();
   });
 
-  it('renders the sender identity when a new Agent turn is not grouped', async () => {
+  it('renders sender identity when message grouping is explicitly disabled', async () => {
     await act(async () => {
       root.render(
         <>
@@ -1127,7 +1127,7 @@ describe('ChatMessage rich file rendering', () => {
             message={{
               id: 2603,
               from_uid: 2,
-              content: '同一轮里的后续消息',
+              content: '同一组里的后续消息',
               created_at: '2026-06-09T00:01:00Z',
             }}
             isSelf={false}
@@ -1139,7 +1139,7 @@ describe('ChatMessage rich file rendering', () => {
             message={{
               id: 2604,
               from_uid: 2,
-              content: '新一轮的第一条消息',
+              content: '需要重新显示身份的消息',
               created_at: '2026-06-09T00:01:01Z',
             }}
             isSelf={false}
@@ -1152,13 +1152,13 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
 
-    const [groupedMessage, newTurnMessage] = container.querySelectorAll('.v3-message.is-peer');
+    const [groupedMessage, ungroupedMessage] = container.querySelectorAll('.v3-message.is-peer');
     expect(groupedMessage.classList.contains('grouped')).toBe(true);
     expect(groupedMessage.querySelector('[data-testid="avatar"]')).toBeNull();
     expect(groupedMessage.querySelector('.v3-msg-header')).toBeNull();
-    expect(newTurnMessage.classList.contains('grouped')).toBe(false);
-    expect(newTurnMessage.querySelector('[data-testid="avatar"]')).not.toBeNull();
-    expect(newTurnMessage.querySelector('.v3-msg-name')?.textContent).toBe('CatsCo');
+    expect(ungroupedMessage.classList.contains('grouped')).toBe(false);
+    expect(ungroupedMessage.querySelector('[data-testid="avatar"]')).not.toBeNull();
+    expect(ungroupedMessage.querySelector('.v3-msg-name')?.textContent).toBe('CatsCo');
   });
 
   it('keeps the larger current-user bubble shrink-wrapped with balanced padding', () => {

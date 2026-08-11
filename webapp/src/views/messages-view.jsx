@@ -37,7 +37,6 @@ const HISTORY_AUTO_FILL_MAX_PAGES = 6;
 const STICK_TO_BOTTOM_THRESHOLD = 96;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
-const CONSECUTIVE_MESSAGE_WINDOW_MS = 5 * 60 * 1000;
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
   'members_invited',
   'member_left',
@@ -959,7 +958,10 @@ export default function MessagesView({
             if (pendingIdx !== -1) {
               const next = [...prev];
               next[pendingIdx] = serverMsg;
-              return next;
+              // An Agent reply can arrive before our own server echo. Re-sort
+              // after replacing the provisional message so the user message
+              // remains between the previous and new Agent turns.
+              return mergeMessages([], next);
             }
           }
           return mergeMessages(prev, [serverMsg]);
@@ -1470,7 +1472,7 @@ export default function MessagesView({
         seq_id: result.seq_id || result.id,
         _pending: false,
       };
-      return next.sort((a, b) => (a.seq_id || a.id) - (b.seq_id || b.id));
+      return mergeMessages([], next);
     });
   }, []);
 
@@ -1564,6 +1566,7 @@ export default function MessagesView({
           reply_to: currentReplyTo ? currentReplyTo.id : 0,
           created_at: new Date().toISOString(),
           _pending: true,
+          _pending_after_seq: latestPersistedMessageSequence(prev),
         }]));
       }
 
@@ -1662,6 +1665,7 @@ export default function MessagesView({
       msg_type: 'text',
       created_at: new Date().toISOString(),
       _pending: true,
+      _pending_after_seq: latestPersistedMessageSequence(current),
     }]));
 
     try {
@@ -2582,10 +2586,8 @@ export default function MessagesView({
     let latestHumanPromptKey = '';
     let prevSenderUid = null;
     let prevTime = 0;
-    let prevAgentTurnKey = '';
     let prevVisibleSenderUid = null;
     let prevVisibleTime = 0;
-    let prevVisibleAgentTurnKey = '';
 
     const registerWorkingGroup = (group) => {
       if (group.explicitTurnKey) {
@@ -2633,6 +2635,7 @@ export default function MessagesView({
     messages.forEach((msg, index) => {
       const msgTime = new Date(msg.created_at || Date.now()).getTime();
       const senderUid = parseUid(msg.from_uid) || String(msg.from_uid || '');
+      const isConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
       const sender = getSender(msg);
       const assistantAuthored = isAssistantAuthoredMessage(msg, sender.isBot);
 
@@ -2641,15 +2644,6 @@ export default function MessagesView({
       }
 
       const turn = assistantWorkTurn(msg, sender.isBot, latestHumanPromptKey);
-      const agentTurnKey = turn.explicitTurnKey;
-      const isConsecutive = areMessagesConsecutive(
-        prevSenderUid,
-        prevTime,
-        prevAgentTurnKey,
-        senderUid,
-        msgTime,
-        agentTurnKey,
-      );
 
       if (isWorkingMessage(msg)) {
         let leadingNarrativeMessages = [];
@@ -2717,19 +2711,11 @@ export default function MessagesView({
         }
         prevSenderUid = senderUid;
         prevTime = msgTime;
-        prevAgentTurnKey = agentTurnKey;
       } else {
         flushCurrentWorking();
         const displayMessage = msg;
         // Recalculate isConsecutive in case a working block just processed
-        const textIsConsecutive = areMessagesConsecutive(
-          prevSenderUid,
-          prevTime,
-          prevAgentTurnKey,
-          senderUid,
-          msgTime,
-          agentTurnKey,
-        );
+        const textIsConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
         const previousGroup = groups[groups.length - 1];
         const previousSourceMessages = previousGroup?.type === 'text'
           ? (previousGroup.sourceMessages || [previousGroup.message])
@@ -2747,20 +2733,14 @@ export default function MessagesView({
           };
           prevSenderUid = senderUid;
           prevTime = msgTime;
-          prevAgentTurnKey = agentTurnKey;
           prevVisibleSenderUid = senderUid;
           prevVisibleTime = msgTime;
-          prevVisibleAgentTurnKey = agentTurnKey;
           return;
         }
 
-        const textIsConsecutiveWithoutWorking = areMessagesConsecutive(
-          prevVisibleSenderUid,
-          prevVisibleTime,
-          prevVisibleAgentTurnKey,
-          senderUid,
-          msgTime,
-          agentTurnKey,
+        const textIsConsecutiveWithoutWorking = (
+          prevVisibleSenderUid === senderUid
+          && (msgTime - prevVisibleTime < 5 * 60 * 1000)
         );
 
         groups.push({
@@ -2777,10 +2757,8 @@ export default function MessagesView({
         });
         prevSenderUid = senderUid;
         prevTime = msgTime;
-        prevAgentTurnKey = agentTurnKey;
         prevVisibleSenderUid = senderUid;
         prevVisibleTime = msgTime;
-        prevVisibleAgentTurnKey = agentTurnKey;
       }
     });
 
@@ -4020,26 +3998,6 @@ function assistantWorkTurn(message, senderIsBot, latestHumanPromptKey) {
   };
 }
 
-function areMessagesConsecutive(
-  previousSenderUid,
-  previousTime,
-  previousAgentTurnKey,
-  senderUid,
-  messageTime,
-  agentTurnKey,
-) {
-  if (previousSenderUid !== senderUid) return false;
-  const gap = messageTime - previousTime;
-  if (!Number.isFinite(gap) || gap < 0 || gap >= CONSECUTIVE_MESSAGE_WINDOW_MS) {
-    return false;
-  }
-
-  // An explicit Agent correlation key marks a new logical run, even if both
-  // messages arrive close together from the same sender.
-  if (!previousAgentTurnKey && !agentTurnKey) return true;
-  return previousAgentTurnKey === agentTurnKey;
-}
-
 function assistantProcessMessage(message) {
   const content = assistantOutputText(message);
   return {
@@ -4282,6 +4240,7 @@ function reorderAssistantTurnBundle(groups) {
     : [];
   const ordered = [...workingGroups, ...(mergedOutput ? [mergedOutput] : [])];
   let firstOutputFound = false;
+
   return ordered.map((group, index) => {
     const next = {
       ...group,
@@ -4599,12 +4558,44 @@ function mergeMessages(primary, secondary) {
   [...primary, ...secondary].forEach((message) => {
     byId.set(message.id, message);
   });
-  // Sort by seq_id (now unified for all messages)
-  return Array.from(byId.values()).sort((a, b) => {
-    const aSeq = a.seq_id || a.id;
-    const bSeq = b.seq_id || b.id;
-    return aSeq - bSeq;
-  });
+  return Array.from(byId.values()).sort(compareMessageSequence);
+}
+
+function latestPersistedMessageSequence(messages) {
+  return (messages || []).reduce((latest, message) => {
+    // Streaming rows use Date.now() only as a local display placeholder. They
+    // do not have a durable server sequence yet, so anchoring an optimistic
+    // user message after one would make every real reply look older.
+    if (message?._pending || message?._streaming) return latest;
+    return Math.max(latest, historyMessageID(message));
+  }, 0);
+}
+
+function pendingMessageAnchor(message) {
+  const anchor = Number(message?._pending_after_seq);
+  return Number.isFinite(anchor) && anchor >= 0 ? anchor : 0;
+}
+
+function compareMessageSequence(left, right) {
+  const leftPending = Boolean(left?._pending);
+  const rightPending = Boolean(right?._pending);
+  const leftSequence = historyMessageID(left);
+  const rightSequence = historyMessageID(right);
+
+  if (leftPending && !rightPending && rightSequence > 0) {
+    return rightSequence <= pendingMessageAnchor(left) ? 1 : -1;
+  }
+  if (rightPending && !leftPending && leftSequence > 0) {
+    return leftSequence <= pendingMessageAnchor(right) ? -1 : 1;
+  }
+  if (leftPending && rightPending) {
+    const anchorDifference = pendingMessageAnchor(left) - pendingMessageAnchor(right);
+    if (anchorDifference !== 0) return anchorDifference;
+  }
+  if (leftSequence > 0 && rightSequence > 0) {
+    return leftSequence - rightSequence;
+  }
+  return 0;
 }
 
 function getComparableContent(content) {
