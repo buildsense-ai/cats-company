@@ -784,7 +784,7 @@ describe('MessagesView composer draft isolation', () => {
             role: 'assistant',
             type: 'text',
             content: '上一轮已经完成。',
-            created_at: '2026-08-11T10:00:00Z',
+            created_at: new Date(Date.now() - 60 * 1000).toISOString(),
           },
           {
             id: 101,
@@ -803,7 +803,7 @@ describe('MessagesView composer draft isolation', () => {
             role: 'assistant',
             type: 'text',
             content: '新一轮的回复。',
-            created_at: '2026-08-11T10:00:02Z',
+            created_at: new Date(Date.now() + 60 * 1000).toISOString(),
           },
         ],
       });
@@ -905,7 +905,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: '上一轮已经完成。',
-          created_at: '2026-08-11T10:00:00Z',
+          created_at: new Date(Date.now() - 60 * 1000).toISOString(),
         }],
       });
       await flushPromises();
@@ -986,7 +986,7 @@ describe('MessagesView composer draft isolation', () => {
             role: 'assistant',
             type: 'text',
             content: '上一轮已经完成。',
-            created_at: '2026-08-11T10:00:00Z',
+            created_at: new Date(Date.now() - 60 * 1000).toISOString(),
           },
           {
             id: 102,
@@ -996,7 +996,7 @@ describe('MessagesView composer draft isolation', () => {
             role: 'assistant',
             type: 'text',
             content: '新一轮的回复。',
-            created_at: '2026-08-11T10:00:02Z',
+            created_at: new Date(Date.now() + 60 * 1000).toISOString(),
           },
         ],
       });
@@ -1006,6 +1006,64 @@ describe('MessagesView composer draft isolation', () => {
     expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
       (message) => message.dataset.messageContent,
     )).toEqual(['上一轮已经完成。', '等待历史返回的任务', '新一轮的回复。']);
+    expect(container.querySelector('[data-message-id="102"]')?.dataset.consecutive).toBe('false');
+
+    await act(async () => {
+      sendResult.resolve({ seq_id: 101 });
+      await flushPromises();
+    });
+  });
+
+  it('keeps a history-only Agent reply after an unresolved user send', async () => {
+    const historyResult = deferred();
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages.mockReturnValueOnce(historyResult.promise);
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '历史里已经出现新回复的任务');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    await act(async () => {
+      historyResult.resolve({
+        messages: [
+          {
+            id: 100,
+            seq_id: 100,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            role: 'assistant',
+            type: 'text',
+            content: '上一轮已经完成。',
+            created_at: new Date(Date.now() - 60 * 1000).toISOString(),
+          },
+          {
+            id: 102,
+            seq_id: 102,
+            topic_id: 'p2p_1_2',
+            from_uid: 2,
+            role: 'assistant',
+            type: 'text',
+            content: '新一轮的回复。',
+            created_at: new Date(Date.now() + 60 * 1000).toISOString(),
+          },
+        ],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['上一轮已经完成。', '历史里已经出现新回复的任务', '新一轮的回复。']);
     expect(container.querySelector('[data-message-id="102"]')?.dataset.consecutive).toBe('false');
 
     await act(async () => {

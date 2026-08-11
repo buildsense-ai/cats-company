@@ -38,6 +38,7 @@ const STICK_TO_BOTTOM_THRESHOLD = 96;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
 const PENDING_HISTORY_MATCH_CLOCK_SKEW_MS = 5 * 60 * 1000;
+const PENDING_HISTORY_ORDER_CLOCK_SKEW_MS = 15 * 1000;
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
   'members_invited',
   'member_left',
@@ -4623,9 +4624,18 @@ function persistedIDsAfterMessage(messages, messageIndex) {
 function historySequenceBeforePending(historyMessages, currentMessages, pendingIndex, pending) {
   const messagesAfterPending = persistedIDsAfterMessage(currentMessages, pendingIndex);
   const pendingAnchor = pendingMessageAnchor(pending);
+  const pendingCreatedAt = Date.parse(pending?.created_at || '');
   return historyMessages.reduce((latest, message) => {
     const sequence = historyMessageID(message);
-    if (sequence <= pendingAnchor || messagesAfterPending.has(sequence)) return latest;
+    const historyCreatedAt = Date.parse(message?.created_at || '');
+    const appearsAfterPending = Number.isFinite(pendingCreatedAt)
+      && Number.isFinite(historyCreatedAt)
+      && historyCreatedAt > pendingCreatedAt + PENDING_HISTORY_ORDER_CLOCK_SKEW_MS;
+    if (
+      sequence <= pendingAnchor
+      || messagesAfterPending.has(sequence)
+      || appearsAfterPending
+    ) return latest;
     return Math.max(latest, sequence);
   }, 0);
 }
