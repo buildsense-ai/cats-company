@@ -142,6 +142,13 @@ function setupSandbox(state, injectEnv) {
   writeCommand(bin, "ssh", FAKE_SSH);
   writeCommand(bin, "scp", "process.exit(0);");
   writeCommand(bin, "timeout", FAKE_TIMEOUT);
+  // Fake image list (TSV contract: imageID<TAB>name<TAB>version<TAB>commit<TAB>createdTime<TAB>status)
+  writeCommand(bin, "list-worker-images.sh", `
+process.stdout.write(
+  "img-178\\tcatsco-worker-1-4-8-f3f1f3e6\\t1.4.8\\tf3f1f3e6\\t1750000000000\\tactive\\n" +
+  "img-177\\tcatsco-worker-1-4-7-abc12345\\t1.4.7\\tabc12345\\t1750000000000\\tactive\\n"
+);
+`);
   const stateDir = path.join(sandbox, "state");
   fs.mkdirSync(stateDir, { recursive: true });
   if (injectEnv) {
@@ -280,4 +287,29 @@ test("reset-worker: falls back to inject.env snapshot for identity", () => {
   // 身份保持：BODY_ID/INSTALLATION_ID 从快照回退而非重新生成
   assert.match(state.injectedEnv, /CATSCO_BODY_ID=body-1/);
   assert.match(state.injectedEnv, /CATSCO_INSTALLATION_ID=inst-1/);
+});
+
+test("reset-worker: --version resolves the matching image id", () => {
+  const sb = setupSandbox({});
+  const r = run(sb, ["--name", "bot-a", "--login-token", "JWT", "--api-key", "KEY", "--version", "1.4.7"]);
+  if (r.status !== 0) {
+    const dbg = fs.readFileSync(sb.statePath, "utf8");
+    assert.equal(r.status, 0, `status=${r.status}\nSTDOUT:\n${r.stdout}\nSTDERR:\n${r.stderr}\nSTATE:\n${dbg}`);
+  }
+  // provision 输出里带解析出的 image_id（list TSV 里 version 1.4.7 -> img-177）
+  assert.match(r.stdout, /"image_id":"img-177"/);
+});
+
+test("reset-worker: --version without a matching image fails", () => {
+  const sb = setupSandbox({});
+  const r = run(sb, ["--name", "bot-a", "--login-token", "JWT", "--api-key", "KEY", "--version", "9.9.9"]);
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /no image found for version: 9\.9\.9/);
+});
+
+test("reset-worker: rejects invalid --version", () => {
+  const sb = setupSandbox({});
+  const r = run(sb, ["--name", "bot-a", "--login-token", "JWT", "--api-key", "KEY", "--version", "1.4.7/../x"]);
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /--version must match/);
 });

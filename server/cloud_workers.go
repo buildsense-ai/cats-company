@@ -404,10 +404,10 @@ func (h *CloudWorkerHandler) HandleRollback(w http.ResponseWriter, r *http.Reque
 
 // HandleReset handles POST /api/cloud-workers/{name}/reset — DESTROY the worker
 // instance and recreate from the selected image, DROPPING all worker data.
+// An optional "version" selector is forwarded to reset-worker.sh which maps it
+// to the matching image id (falling back to the latest image when omitted).
 func (h *CloudWorkerHandler) HandleReset(w http.ResponseWriter, r *http.Request) {
-	// reset always rebuilds from the latest image; it does not accept a
-	// version selector (paired reset-worker.sh only takes --image-id).
-	h.handleWorkerAction(w, r, h.resetScript, "reset", false)
+	h.handleWorkerAction(w, r, h.resetScript, "reset", true)
 }
 
 // handleWorkerAction guards a per-worker destructive action with ownership

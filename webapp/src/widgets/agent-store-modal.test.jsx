@@ -5,9 +5,15 @@ import { Simulate } from 'react-dom/test-utils';
 vi.mock('../api', () => ({
   api: {
     createBot: vi.fn(),
+    createCloudWorker: vi.fn(),
+    deleteCloudWorker: vi.fn(),
     getAgents: vi.fn(),
+    getCloudWorkerMeta: vi.fn(),
+    getCloudWorkers: vi.fn(),
     getFriends: vi.fn(),
     getMyBots: vi.fn(),
+    resetCloudWorker: vi.fn(),
+    rollbackCloudWorker: vi.fn(),
     setBotSkillsVisibility: vi.fn(),
     uploadFile: vi.fn(),
   },
@@ -25,9 +31,18 @@ describe('AgentStoreModal', () => {
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
     api.createBot.mockReset().mockResolvedValue({ uid: 91 });
+    api.createCloudWorker.mockReset().mockResolvedValue({ uid: 92, tenant_name: 'tenant-new' });
+    api.deleteCloudWorker.mockReset().mockResolvedValue({});
     api.getAgents.mockReset().mockResolvedValue({ agents: [] });
+    api.getCloudWorkerMeta.mockReset().mockResolvedValue({ images: [] });
+    api.getCloudWorkers.mockReset().mockResolvedValue({
+      quota: { enabled: true, total: 3, used: 1, remaining: 2 },
+      workers: [],
+    });
     api.getFriends.mockReset().mockResolvedValue({ friends: [] });
     api.getMyBots.mockReset().mockResolvedValue({ bots: [] });
+    api.resetCloudWorker.mockReset().mockResolvedValue({});
+    api.rollbackCloudWorker.mockReset().mockResolvedValue({});
     api.setBotSkillsVisibility.mockReset().mockResolvedValue({ skills_visibility: 'owner' });
     api.uploadFile.mockReset().mockResolvedValue({ url: '/uploads/avatar.png' });
     container = document.createElement('div');
@@ -311,6 +326,122 @@ describe('AgentStoreModal', () => {
     });
     expect(options[1].getAttribute('aria-pressed')).toBe('true');
     expect(options.every((button) => !button.disabled)).toBe(true);
+  });
+
+  test('switches to the dedicated cloud panel when managed hosting is selected', async () => {
+    api.getMyBots.mockResolvedValue({
+      bots: [{
+        id: 92,
+        uid: 92,
+        tenant_name: 'tenant-a',
+        username: 'bot-cloud-1',
+        display_name: '云端审查助手',
+        relation: 'owner',
+        is_owner: true,
+        visibility: 'public',
+      }],
+    });
+    api.getCloudWorkers.mockResolvedValue({
+      quota: { enabled: true, total: 3, used: 1, remaining: 2 },
+      workers: [{
+        tenant_name: 'tenant-a',
+        status: 'running',
+        version: '1.4.8',
+        image_id: '79f5b7f4-c06e-4f97-90fa-d69566f23d63',
+      }],
+    });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const createTab = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('创建新助手'));
+    await act(async () => {
+      Simulate.click(createTab);
+      await Promise.resolve();
+    });
+
+    // Self-hosted form is shown by default.
+    expect(Array.from(container.querySelectorAll('button'))
+      .some((button) => button.textContent.includes('创建我的专属助手'))).toBe(true);
+    expect(container.textContent).not.toContain('云托管配额');
+
+    // Select managed hosting -> the cloud panel replaces the self-hosted form.
+    const managedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[1];
+    await act(async () => {
+      Simulate.change(managedRadio, { target: { checked: true } });
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('云托管配额');
+    expect(container.textContent).toContain('1/3 已使用');
+    expect(Array.from(container.querySelectorAll('button'))
+      .some((button) => button.textContent.includes('创建云托管员工'))).toBe(true);
+    expect(container.textContent).toContain('云端审查助手');
+    expect(container.textContent).toContain('运行中');
+    // Self-hosted form is gone while managed is active.
+    expect(container.textContent).not.toContain('创建我的专属助手');
+
+    // Switching back to self-hosted restores the original form.
+    const selfHostedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[0];
+    await act(async () => {
+      Simulate.change(selfHostedRadio, { target: { checked: true } });
+      await Promise.resolve();
+    });
+    expect(Array.from(container.querySelectorAll('button'))
+      .some((button) => button.textContent.includes('创建我的专属助手'))).toBe(true);
+    expect(container.textContent).not.toContain('创建云托管员工');
+  });
+
+  test('creates a cloud worker from the managed panel', async () => {
+    api.getMyBots.mockResolvedValue({ bots: [] });
+    api.getCloudWorkers.mockResolvedValue({
+      quota: { enabled: true, total: 3, used: 1, remaining: 2 },
+      workers: [],
+    });
+    api.createCloudWorker.mockResolvedValue({ uid: 93, tenant_name: 'tenant-new' });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const createTab = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('创建新助手'));
+    await act(async () => {
+      Simulate.click(createTab);
+    });
+
+    const managedRadio = container.querySelectorAll('.cc-agent-hosting input[name="hosting"]')[1];
+    await act(async () => {
+      Simulate.change(managedRadio, { target: { checked: true } });
+      await Promise.resolve();
+    });
+
+    const input = container.querySelector('.cc-cloud-create-card input');
+    await act(async () => {
+      Simulate.change(input, { target: { value: '云端审查助手' } });
+    });
+    const createBtn = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('创建云托管员工'));
+    await act(async () => {
+      Simulate.click(createBtn);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.createCloudWorker).toHaveBeenCalledTimes(1);
+    expect(api.createCloudWorker).toHaveBeenCalledWith(expect.objectContaining({ display_name: '云端审查助手' }));
   });
 
   test('keeps the previous skill visibility and reports a save failure', async () => {

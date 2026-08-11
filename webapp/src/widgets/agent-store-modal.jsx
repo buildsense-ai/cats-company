@@ -25,6 +25,7 @@ import QRCode from './qr-code';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
 import CustomSelect from './custom-select';
+import CloudWorkerPanel from './cloud-worker-panel';
 
 const CREATE_MODES = {
   SELF_HOSTED: 'self_hosted',
@@ -169,6 +170,7 @@ export default function AgentStoreModal({
   const [copyingBotKey, setCopyingBotKey] = useState(null);
   const [cloudQuota, setCloudQuota] = useState(null); // {enabled,total,used,remaining}
   const [cloudQuotaError, setCloudQuotaError] = useState(false); // true when the quota fetch itself failed
+  const [cloudImages, setCloudImages] = useState([]); // available worker image versions from the control plane meta
   const [cloudActioning, setCloudActioning] = useState(null); // tenant_name being acted on
   const [editingBot, setEditingBot] = useState(null);
   const [entryBot, setEntryBot] = useState(null);
@@ -193,10 +195,26 @@ export default function AgentStoreModal({
     };
   }, [bots]);
 
+  // Cloud-managed workers shown in the dedicated cloud panel (create tab).
+  const cloudWorkers = useMemo(
+    () => bots.filter((bot) => Boolean(bot.tenant_name)),
+    [bots],
+  );
+
   useEffect(() => {
     initialAgentAppliedRef.current = false;
     loadBots();
   }, [initialAgentId]);
+
+  // Available worker image versions (used by the cloud panel for version
+  // selection on rollback/reset). Fetched once on mount; the list is stable.
+  useEffect(() => {
+    let cancelled = false;
+    api.getCloudWorkerMeta?.().then((meta) => {
+      if (!cancelled) setCloudImages(meta?.images || []);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     editingBotRef.current = editingBot;
@@ -353,6 +371,27 @@ export default function AgentStoreModal({
     }
   };
 
+  // Cloud-managed creation from the dedicated cloud panel (create tab, managed mode).
+  // Stays on the panel and refreshes the worker list instead of jumping to the
+  // self-hosted API-key success screen.
+  const handleCloudCreate = async (displayName) => {
+    const trimmed = displayName.trim();
+    if (!trimmed) return;
+    const slug = trimmed.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').slice(0, 16);
+    const suffix = Math.floor(Math.random() * 9000) + 1000;
+    const username = `bot-${slug || 'bot'}-${suffix}`;
+    try {
+      setError('');
+      await api.createCloudWorker({ username, display_name: trimmed });
+      await loadBots({ silent: true });
+      if (onBotsChanged) onBotsChanged();
+      feedback.notify({ tone: 'success', message: '云托管员工创建成功，云端实例供给中…' });
+    } catch (e) {
+      setError(e.message || t('error_server'));
+      throw e;
+    }
+  };
+
   const handleCopy = async (field, value) => {
     try {
       await navigator.clipboard.writeText(value);
@@ -425,31 +464,37 @@ export default function AgentStoreModal({
     }
   };
 
-  const handleCloudRollback = async (bot) => {
+  // Cloud-managed rollback. The cloud panel passes an explicit version (or '' =
+  // latest) with fromPanel:true; the hub card keeps the legacy prompt-based
+  // version picker when no version is given.
+  const handleCloudRollback = async (bot, version = '', opts = {}) => {
     const name = bot.tenant_name;
     if (!name) return;
     const confirmed = await feedback.confirm({
       title: `回滚“${bot.display_name}”？`,
-      message: '回滚会把云端虚拟员工切换到所选镜像版本，但会保留当前数据。',
-      confirmLabel: '选择版本…',
+      message: version
+        ? `回滚会把云端虚拟员工切换到镜像版本 ${version}，但会保留当前数据。`
+        : '回滚会把云端虚拟员工回滚到最新镜像版本，但会保留当前数据。',
+      confirmLabel: '确认回滚',
       tone: 'default',
     });
     if (!confirmed) return;
-    let version = '';
     try {
-      // 从控制面 meta 拉可用镜像版本供选择（镜像列表契约：TSV -> 结构化数组）
-      let meta = null;
-      try { meta = await api.getCloudWorkerMeta(); } catch { meta = null; }
-      const versions = (meta?.images || []).map((img) => img?.version).filter(Boolean);
-      if (versions.length > 1) {
-        const picked = window.prompt(
-          `可用版本：\n${versions.join('\n')}\n\n输入要回滚到的版本（留空=最新）：`,
-          '',
-        );
-        if (picked === null) return; // 用户取消
-        version = picked.trim();
-      } else if (versions.length === 1) {
-        version = versions[0];
+      if (!version && !opts.fromPanel) {
+        // hub 卡片旧逻辑：从控制面 meta 拉可用镜像版本供选择
+        let meta = null;
+        try { meta = await api.getCloudWorkerMeta(); } catch { meta = null; }
+        const versions = (meta?.images || []).map((img) => img?.version).filter(Boolean);
+        if (versions.length > 1) {
+          const picked = window.prompt(
+            `可用版本：\n${versions.join('\n')}\n\n输入要回滚到的版本（留空=最新）：`,
+            '',
+          );
+          if (picked === null) return; // 用户取消
+          version = picked.trim();
+        } else if (versions.length === 1) {
+          version = versions[0];
+        }
       }
       setCloudActioning(name);
       await api.rollbackCloudWorker(name, version ? { version } : {});
@@ -461,19 +506,26 @@ export default function AgentStoreModal({
     }
   };
 
-  const handleCloudReset = async (bot) => {
+  // Cloud-managed reset (destructive). The cloud panel performs a captcha
+  // confirmation in the card (verified=true); the hub card uses the confirm
+  // dialog. version is optional and defaults to the latest image.
+  const handleCloudReset = async (bot, version = '', opts = {}) => {
     const name = bot.tenant_name;
     if (!name) return;
-    const confirmed = await feedback.confirm({
-      title: `重置“${bot.display_name}”？`,
-      message: '重置会销毁该云端虚拟员工的实例并从镜像重建，所有数据将丢失且无法恢复！',
-      confirmLabel: '重置并清空数据',
-      tone: 'danger',
-    });
-    if (!confirmed) return;
+    if (!opts.verified) {
+      const confirmed = await feedback.confirm({
+        title: `重置“${bot.display_name}”？`,
+        message: version
+          ? `重置会销毁该云端虚拟员工的实例并从镜像版本 ${version} 重建，所有数据将丢失且无法恢复！`
+          : '重置会销毁该云端虚拟员工的实例并从镜像重建，所有数据将丢失且无法恢复！',
+        confirmLabel: '重置并清空数据',
+        tone: 'danger',
+      });
+      if (!confirmed) return;
+    }
     try {
       setCloudActioning(name);
-      await api.resetCloudWorker(name);
+      await api.resetCloudWorker(name, version ? { version } : {});
       feedback.notify({ tone: 'success', message: '重置已触发，稍后刷新查看状态' });
     } catch (e) {
       setError(e.message || t('error_server'));
@@ -745,96 +797,111 @@ export default function AgentStoreModal({
 
           {/* CREATE TAB */}
           {tab === 'create' && (
-            <form onSubmit={handleCreate} className="cc-agent-create-form">
-              <div className="cc-agent-create-intro">
-                <h2>创建你的专属助手</h2>
-                <p>先定义助手身份，再配置运行方式。</p>
-              </div>
+            createMode === CREATE_MODES.MANAGED ? (
+              <CloudWorkerPanel
+                quota={cloudQuota}
+                quotaError={cloudQuotaError}
+                workers={cloudWorkers}
+                images={cloudImages}
+                actioning={cloudActioning}
+                onCreate={handleCloudCreate}
+                onRollback={handleCloudRollback}
+                onReset={handleCloudReset}
+                onDelete={handleDelete}
+                onSwitchMode={() => setCreateMode(CREATE_MODES.SELF_HOSTED)}
+              />
+            ) : (
+              <form onSubmit={handleCreate} className="cc-agent-create-form">
+                <div className="cc-agent-create-intro">
+                  <h2>创建你的专属助手</h2>
+                  <p>先定义助手身份，再配置运行方式。</p>
+                </div>
 
-              <div className="cc-agent-create-grid">
-                <section className="cc-agent-create-card cc-agent-basic-card">
-                  <h3><FileCheck2 size={17} />基本信息</h3>
-                  <label>
-                    <span>助手名称 <b>*</b></span>
-                    <input
-                      type="text"
-                      value={createForm.display_name}
-                      onChange={(e) => setCreateForm({ ...createForm, display_name: e.target.value })}
-                      placeholder="例如：代码审查助手"
-                      className="oc-auth-input"
-                      required
-                      disabled={isSubmitting}
-                    />
-                  </label>
-                  <label>
-                    <span>助手定位 <b>*</b></span>
-                    <div className="cc-agent-role-field">
-                      <CustomSelect
-                        ariaLabel="助手定位"
-                        className="cc-agent-role-select"
-                        value={createForm.role}
+                <div className="cc-agent-create-grid">
+                  <section className="cc-agent-create-card cc-agent-basic-card">
+                    <h3><FileCheck2 size={17} />基本信息</h3>
+                    <label>
+                      <span>助手名称 <b>*</b></span>
+                      <input
+                        type="text"
+                        value={createForm.display_name}
+                        onChange={(e) => setCreateForm({ ...createForm, display_name: e.target.value })}
+                        placeholder="例如：代码审查助手"
+                        className="oc-auth-input"
+                        required
                         disabled={isSubmitting}
-                        onValueChange={(role) => setCreateForm({ ...createForm, role })}
-                      >
-                        {ASSISTANT_ROLES.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
-                      </CustomSelect>
-                    </div>
-                  </label>
-                  <label>
-                    <span>用途说明 <small>选填</small></span>
-                    <textarea
-                      value={createForm.description}
-                      onChange={(e) => setCreateForm({ ...createForm, description: e.target.value.slice(0, 500) })}
-                      placeholder="说明这个助手解决什么问题，以及你希望它如何工作"
-                    />
-                    <em>{createForm.description.length}/500</em>
-                  </label>
-                </section>
-
-                <section className="cc-agent-create-card cc-agent-capability-card">
-                  <h3><Sparkles size={17} />能力预览</h3>
-                  <div className="cc-agent-capability-list">
-                    {ASSISTANT_CAPABILITIES.map(({ icon: Icon, title, detail }) => (
-                      <div className="cc-agent-capability-item" key={title}>
-                        <span><Icon size={18} /></span>
-                        <div><strong>{title}</strong><small>{detail}</small></div>
+                      />
+                    </label>
+                    <label>
+                      <span>助手定位 <b>*</b></span>
+                      <div className="cc-agent-role-field">
+                        <CustomSelect
+                          ariaLabel="助手定位"
+                          className="cc-agent-role-select"
+                          value={createForm.role}
+                          disabled={isSubmitting}
+                          onValueChange={(role) => setCreateForm({ ...createForm, role })}
+                        >
+                          {ASSISTANT_ROLES.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
+                        </CustomSelect>
                       </div>
-                    ))}
-                  </div>
-                </section>
-              </div>
+                    </label>
+                    <label>
+                      <span>用途说明 <small>选填</small></span>
+                      <textarea
+                        value={createForm.description}
+                        onChange={(e) => setCreateForm({ ...createForm, description: e.target.value.slice(0, 500) })}
+                        placeholder="说明这个助手解决什么问题，以及你希望它如何工作"
+                      />
+                      <em>{createForm.description.length}/500</em>
+                    </label>
+                  </section>
 
-              <fieldset className="cc-agent-hosting">
-                <legend><span><Zap size={16} /></span>部署方式 <small>高级设置</small></legend>
-                <label className={createMode === CREATE_MODES.SELF_HOSTED ? 'active' : ''}>
-                  <input type="radio" name="hosting" checked={createMode === CREATE_MODES.SELF_HOSTED} onChange={() => setCreateMode(CREATE_MODES.SELF_HOSTED)} />
-                  <span><strong>自托管</strong><small>生成本地身份 Key，后续连接你的服务。</small></span>
-                </label>
-                <label className={createMode === CREATE_MODES.MANAGED ? 'active' : (cloudQuotaError || !cloudQuota || cloudQuota.remaining <= 0 ? 'disabled' : '')}>
-                  <input
-                    type="radio"
-                    name="hosting"
-                    checked={createMode === CREATE_MODES.MANAGED}
-                    disabled={cloudQuotaError || !cloudQuota || cloudQuota.remaining <= 0}
-                    onChange={() => setCreateMode(CREATE_MODES.MANAGED)}
-                  />
-                  <span>
-                    <strong>云托管</strong>
-                    <small>
-                      {cloudQuotaError
-                        ? '云端状态查询失败，请稍后重试'
-                        : (cloudQuota && cloudQuota.enabled
-                            ? `部署到云端虚拟员工（可创建 ${cloudQuota.remaining}/${cloudQuota.total}）`
-                            : '云端部署当前未开放，请联系管理员开通')}
-                    </small>
-                  </span>
-                </label>
-              </fieldset>
+                  <section className="cc-agent-create-card cc-agent-capability-card">
+                    <h3><Sparkles size={17} />能力预览</h3>
+                    <div className="cc-agent-capability-list">
+                      {ASSISTANT_CAPABILITIES.map(({ icon: Icon, title, detail }) => (
+                        <div className="cc-agent-capability-item" key={title}>
+                          <span><Icon size={18} /></span>
+                          <div><strong>{title}</strong><small>{detail}</small></div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                </div>
 
-              <button type="submit" className="oc-btn oc-btn-primary cc-agent-create-submit" disabled={isSubmitting}>
-                {isSubmitting ? '创建中...' : '创建我的专属助手'}
-              </button>
-            </form>
+                <fieldset className="cc-agent-hosting">
+                  <legend><span><Zap size={16} /></span>部署方式 <small>高级设置</small></legend>
+                  <label className={createMode === CREATE_MODES.SELF_HOSTED ? 'active' : ''}>
+                    <input type="radio" name="hosting" checked={createMode === CREATE_MODES.SELF_HOSTED} onChange={() => setCreateMode(CREATE_MODES.SELF_HOSTED)} />
+                    <span><strong>自托管</strong><small>生成本地身份 Key，后续连接你的服务。</small></span>
+                  </label>
+                  <label className={createMode === CREATE_MODES.MANAGED ? 'active' : (cloudQuotaError || !cloudQuota || cloudQuota.remaining <= 0 ? 'disabled' : '')}>
+                    <input
+                      type="radio"
+                      name="hosting"
+                      checked={createMode === CREATE_MODES.MANAGED}
+                      disabled={cloudQuotaError || !cloudQuota || cloudQuota.remaining <= 0}
+                      onChange={() => setCreateMode(CREATE_MODES.MANAGED)}
+                    />
+                    <span>
+                      <strong>云托管</strong>
+                      <small>
+                        {cloudQuotaError
+                          ? '云端状态查询失败，请稍后重试'
+                          : (cloudQuota && cloudQuota.enabled
+                              ? `部署到云端虚拟员工（可创建 ${cloudQuota.remaining}/${cloudQuota.total}）`
+                              : '云端部署当前未开放，请联系管理员开通')}
+                      </small>
+                    </span>
+                  </label>
+                </fieldset>
+
+                <button type="submit" className="oc-btn oc-btn-primary cc-agent-create-submit" disabled={isSubmitting}>
+                  {isSubmitting ? '创建中...' : '创建我的专属助手'}
+                </button>
+              </form>
+            )
           )}
 
           {/* SUCCESS (API KEY) TAB */}

@@ -9,9 +9,12 @@
 # $STATE_DIR/inject.env 的身份快照（同一 tenant 重建身份不变）。
 #
 # 用法：
-#   reset-worker.sh --name <tenant> [--image-id <id>] \
+#   reset-worker.sh --name <tenant> [--version <v> | --image-id <id>] \
 #     [--login-token <jwt>] [--api-key <key>] [--bot-uid <uid>] \
 #     [--user-uid <uid>] [--user-name <n>] [--user-display <d>] [--dry-run]
+#
+# --version 指定 bake 镜像版本（从 list-worker-images.sh 解析对应 image id），
+# 缺省使用最新镜像。
 #
 # 依赖：同 provision/destroy（ctyun-cli + jq + ssh + ssh-keygen + timeout）
 # 云环境：CTYUN_WORKER_REGION_ID / _PROJECT_ID / _AZ_NAME / _FLAVOR_ID /
@@ -19,6 +22,7 @@
 set -Eeuo pipefail
 
 NAME=""
+VERSION=""
 IMAGE_ID=""
 LOGIN_TOKEN=""
 BOT_API_KEY=""
@@ -37,6 +41,7 @@ usage() {
 while (($#)); do
   case "$1" in
     --name) NAME="${2:-}"; shift 2 ;;
+    --version) VERSION="${2:-}"; shift 2 ;;
     --image-id) IMAGE_ID="${2:-}"; shift 2 ;;
     --login-token) LOGIN_TOKEN="${2:-}"; shift 2 ;;
     --api-key) BOT_API_KEY="${2:-}"; shift 2 ;;
@@ -65,6 +70,26 @@ fi
 
 OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+
+# --- 版本 → 镜像映射（可选；显式 --image-id 优先） ---
+if [[ -n "$VERSION" ]]; then
+  if [[ ! "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "error: --version must match ^[A-Za-z0-9._-]+\$" >&2
+    exit 2
+  fi
+  if [[ -z "$IMAGE_ID" ]]; then
+    # 从 bake 通道镜像列表里找该版本的 imageID（list-worker-images.sh TSV：
+    # imageID<TAB>name<TAB>version<TAB>commit<TAB>createdTime<TAB>status）。
+    # PATH 优先（测试注入 fake），生产回退同目录脚本。
+    LIST_IMAGES_CMD="$(command -v list-worker-images.sh || true)"
+    [[ -n "$LIST_IMAGES_CMD" ]] || LIST_IMAGES_CMD="$OPS_DIR/list-worker-images.sh"
+    IMAGE_ID="$("$LIST_IMAGES_CMD" | awk -F'\t' -v v="$VERSION" '$3 == v { print $1; exit }')"
+    if [[ -z "$IMAGE_ID" ]]; then
+      echo "error: no image found for version: $VERSION" >&2
+      exit 2
+    fi
+  fi
+fi
 
 # --- 身份快照回退（命令行优先） ---
 if [[ -f "$STATE_DIR/inject.env" ]]; then
