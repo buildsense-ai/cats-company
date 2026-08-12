@@ -317,6 +317,15 @@ function activeEntitlements(summary) {
   return (summary?.entitlements || []).filter((item) => item.state === 'active');
 }
 
+function commercialEntitlementSourceLabel(source) {
+  return ({
+    order: '支付购买',
+    invite: '邀请码兑换',
+    trial: '体验领取',
+    manual: '管理员发放',
+  })[String(source || '').trim()] || '套餐发放';
+}
+
 function commercialModels(summary) {
   return [...(summary?.models || [])]
     .filter((model) => model && String(model).toLowerCase() !== 'gpt-5.6-luna')
@@ -788,10 +797,22 @@ export default function RelayAccessModal({ onClose }) {
     setInviteLoading(true);
     setError('');
     try {
+      const previousEntitlementIDs = new Set(
+        (commercial?.summary?.entitlements || []).map((item) => String(item?.id || '')).filter(Boolean),
+      );
       const data = await api.redeemRelayInvite(code);
       setCommercial({ ...(commercial || {}), enabled: true, summary: data.summary, note: data.note || commercial?.note });
       setInviteCode('');
       setCopied('invite');
+      const inviteEntitlements = (data?.summary?.entitlements || []).filter((item) => item?.source === 'invite');
+      const redeemed = inviteEntitlements.find((item) => item?.id && !previousEntitlementIDs.has(String(item.id)))
+        || [...inviteEntitlements].sort((left, right) => (
+          new Date(right?.starts_at || 0).getTime() - new Date(left?.starts_at || 0).getTime()
+        ))[0];
+      feedback.notify({
+        tone: 'success',
+        message: `${redeemed?.plan_name || '套餐'}已通过邀请码生效`,
+      });
       window.setTimeout(() => setCopied(''), 1400);
     } catch (err) {
       setError(err.message || '邀请码兑换失败');
@@ -1328,7 +1349,7 @@ export default function RelayAccessModal({ onClose }) {
                         <div className="relay-access-package-row" key={`${item.id || item.plan_id}-${item.source_ref || item.starts_at}`}>
                           <span>
                             <strong>{item.plan_name || item.plan_slug || '套餐'}</strong>
-                            <em>{item.starts_at ? `${formatShortDate(item.starts_at)} 生效` : '已生效'}</em>
+                            <em>{commercialEntitlementSourceLabel(item.source)} · {item.starts_at ? `${formatShortDate(item.starts_at)} 生效` : '已生效'}</em>
                           </span>
                           <strong>{formatShortDate(item.expires_at)} 到期</strong>
                         </div>
@@ -1347,7 +1368,7 @@ export default function RelayAccessModal({ onClose }) {
                 {commercialEnabled && activePackages.length === 0 && (
                   <div className="relay-access-token-note">
                     <Gift size={16} />
-                    <span>当前没有有效套餐。你可以选购套餐、兑换邀请码，或联系管理员发放额度。</span>
+                    <span>当前没有有效套餐。你可以选购套餐或兑换套餐邀请码；特殊灰度由管理员配置。</span>
                   </div>
                 )}
 
@@ -1475,7 +1496,7 @@ export default function RelayAccessModal({ onClose }) {
                       })}
                     </div>
                     {paymentChannels.length === 0 && (
-                      <div className="relay-access-period-note">支付通道暂未开放，当前套餐可通过邀请码或管理员发放。</div>
+                      <div className="relay-access-period-note">支付通道暂未开放，当前套餐可通过邀请码发放。</div>
                     )}
                   </div>
                 )}

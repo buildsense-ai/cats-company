@@ -1283,6 +1283,8 @@ async function handleApi(req, res) {
               plan_id: 21,
               plan_slug: 'catsco-personal',
               plan_name: '个人版',
+              source: 'invite',
+              source_ref: 'PERSONAL-PREVIEW',
               starts_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
               expires_at: new Date(Date.now() + 27 * 24 * 60 * 60 * 1000).toISOString(),
             }],

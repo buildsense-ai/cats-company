@@ -216,7 +216,9 @@ type relayCommercialPublicSummary struct {
 
 type relayCommercialPublicEntitlement struct {
 	PlanName  string     `json:"plan_name,omitempty"`
+	Source    string     `json:"source,omitempty"`
 	State     string     `json:"state"`
+	StartsAt  time.Time  `json:"starts_at"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
@@ -234,7 +236,9 @@ func publicCommercialSummary(summary *types.CommercialSummary) relayCommercialPu
 		}
 		out.Entitlements = append(out.Entitlements, relayCommercialPublicEntitlement{
 			PlanName:  entitlement.PlanName,
+			Source:    entitlement.Source,
 			State:     entitlement.State,
+			StartsAt:  entitlement.StartsAt,
 			ExpiresAt: entitlement.ExpiresAt,
 		})
 	}
@@ -874,6 +878,7 @@ func (h *AccountAdminHandler) HandleCommercialGrant(w http.ResponseWriter, r *ht
 		Model         string  `json:"model"`
 		AmountCNY     float64 `json:"amount_cny"`
 		ResetDuration string  `json:"reset_duration"`
+		ExpiresAt     string  `json:"expires_at"`
 		Note          string  `json:"note"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -888,12 +893,23 @@ func (h *AccountAdminHandler) HandleCommercialGrant(w http.ResponseWriter, r *ht
 		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "amount_cny must be positive"})
 		return
 	}
+	summary, err := store.GetCommercialSummary(req.UID)
+	if err != nil {
+		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load current package"})
+		return
+	}
+	model, expiresAt, err := resolveCommercialBonusGrant(summary, req.Model, req.ExpiresAt, time.Now().UTC())
+	if err != nil {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	grant, err := store.GrantCommercialQuota(&types.CommercialQuotaGrant{
 		UID:           req.UID,
-		GrantType:     "manual",
-		Model:         req.Model,
+		GrantType:     "bonus",
+		Model:         model,
 		AmountCNY:     req.AmountCNY,
 		ResetDuration: req.ResetDuration,
+		ExpiresAt:     &expiresAt,
 		Note:          req.Note,
 	})
 	if err != nil {
@@ -904,6 +920,68 @@ func (h *AccountAdminHandler) HandleCommercialGrant(w http.ResponseWriter, r *ht
 		h.commercialRelaySyncer.Enqueue(req.UID)
 	}
 	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "grant": grant})
+}
+
+func resolveCommercialBonusGrant(summary *types.CommercialSummary, requestedModel, requestedExpiry string, now time.Time) (string, time.Time, error) {
+	model := strings.TrimSpace(requestedModel)
+	if model == "" || model == "*" {
+		return "", time.Time{}, fmt.Errorf("model is required for a managed bonus")
+	}
+	if summary == nil {
+		return "", time.Time{}, fmt.Errorf("an active package is required before granting a bonus")
+	}
+
+	activeEntitlementsByPlan := map[int64][]*types.CommercialEntitlement{}
+	for _, entitlement := range summary.Entitlements {
+		if entitlement == nil || entitlement.State != "active" || entitlement.StartsAt.After(now) || entitlement.ExpiresAt == nil || !entitlement.ExpiresAt.After(now) {
+			continue
+		}
+		activeEntitlementsByPlan[entitlement.PlanID] = append(activeEntitlementsByPlan[entitlement.PlanID], entitlement)
+	}
+	if len(activeEntitlementsByPlan) == 0 {
+		return "", time.Time{}, fmt.Errorf("an active package with an expiry is required before granting a bonus")
+	}
+
+	canonicalModel := ""
+	var packageExpiry time.Time
+	for _, plan := range summary.Plans {
+		if plan == nil {
+			continue
+		}
+		entitlements := activeEntitlementsByPlan[plan.ID]
+		if len(entitlements) == 0 {
+			continue
+		}
+		for planModel, amount := range plan.ModelBudgets {
+			if amount > 0 && strings.EqualFold(strings.TrimSpace(planModel), model) {
+				canonicalModel = strings.TrimSpace(planModel)
+				for _, entitlement := range entitlements {
+					if entitlement.ExpiresAt.After(packageExpiry) {
+						packageExpiry = entitlement.ExpiresAt.UTC()
+					}
+				}
+			}
+		}
+	}
+	if canonicalModel == "" || packageExpiry.IsZero() {
+		return "", time.Time{}, fmt.Errorf("model is not included in the user's active package")
+	}
+
+	expiresAt := packageExpiry
+	if raw := strings.TrimSpace(requestedExpiry); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return "", time.Time{}, fmt.Errorf("expires_at must be RFC3339")
+		}
+		expiresAt = parsed.UTC()
+	}
+	if !expiresAt.After(now) {
+		return "", time.Time{}, fmt.Errorf("expires_at must be in the future")
+	}
+	if expiresAt.After(packageExpiry) {
+		return "", time.Time{}, fmt.Errorf("bonus expiry cannot exceed the current package expiry")
+	}
+	return canonicalModel, expiresAt, nil
 }
 
 func (h *AccountAdminHandler) HandleCommercialUserSummary(w http.ResponseWriter, r *http.Request) {

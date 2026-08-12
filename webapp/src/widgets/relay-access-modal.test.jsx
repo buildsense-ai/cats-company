@@ -200,7 +200,13 @@ describe('RelayAccessModal commercial rollout', () => {
         uid: 38,
         models: ['MiniMax-M3', 'deepseek-v4-flash', 'gpt-5.6-luna'],
         entitlements: [
-          { state: 'active', plan_name: '教师试用包', expires_at: '2026-07-29T00:00:00Z' },
+          {
+            state: 'active',
+            plan_name: '教师试用包',
+            source: 'invite',
+            starts_at: '2026-06-29T00:00:00Z',
+            expires_at: '2026-07-29T00:00:00Z',
+          },
           { state: 'expired', plan_name: '旧套餐' },
         ],
       },
@@ -221,6 +227,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).not.toContain('2 个模型额度可用');
     expect(container.textContent).not.toContain('gpt-5.6-luna');
     expect(container.textContent).toContain('教师试用包');
+    expect(container.textContent).toContain('邀请码兑换');
     expect(container.textContent).toContain('MiniMax-M3');
     expect(container.textContent).toContain('deepseek-v4-flash');
     expect(container.textContent).toContain('剩余 75%');
@@ -231,6 +238,44 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).not.toContain('￥');
     expect(container.textContent).not.toContain('禁用套餐');
     expect(container.querySelector('.relay-access-invite-form')).not.toBeNull();
+  });
+
+  it('turns an invite into its bound package instead of a separate invite product', async () => {
+    api.getRelayCommercial.mockResolvedValue({
+      enabled: true,
+      summary: { uid: 38, models: [], entitlements: [], plans: [] },
+    });
+    api.redeemRelayInvite.mockResolvedValue({
+      summary: {
+        uid: 38,
+        models: ['gpt-5.6-terra', 'gpt-5.6-sol'],
+        entitlements: [{
+          id: 12,
+          plan_id: 2,
+          plan_name: '个人版',
+          source: 'invite',
+          state: 'active',
+          starts_at: '2026-08-12T00:00:00Z',
+          expires_at: '2026-09-11T00:00:00Z',
+        }],
+      },
+    });
+
+    await renderModal();
+    const input = container.querySelector('input[placeholder="输入邀请码"]');
+    expect(input).not.toBeNull();
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      valueSetter.call(input, 'PERSONAL-2026');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await clickButton('兑换');
+
+    expect(api.redeemRelayInvite).toHaveBeenCalledWith('PERSONAL-2026');
+    expect(container.textContent).toContain('个人版');
+    expect(container.textContent).toContain('邀请码兑换');
+    expect(container.textContent).not.toContain('邀请码套餐');
   });
 
   it('shows explicit no-package state for enabled users without active entitlements', async () => {

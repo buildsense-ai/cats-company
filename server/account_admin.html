@@ -907,6 +907,7 @@
           <form id="commercial-invite-form">
             <input id="commercial-invite-code" autocomplete="off" placeholder="邀请码，例如 SCHOOL2026" />
             <select id="commercial-invite-plan"></select>
+            <div class="commercial-meta">邀请码是套餐的发放方式。用户兑换后会直接显示为这里选择的个人版、专业版或内部体验套餐，不会生成单独的“邀请码套餐”。</div>
             <input id="commercial-invite-max" inputmode="numeric" placeholder="最大兑换次数，默认 1" />
             <input id="commercial-invite-expire" autocomplete="off" placeholder="过期时间 RFC3339，可留空" />
             <input id="commercial-invite-note" autocomplete="off" placeholder="备注，例如 广州试点学校" />
@@ -917,20 +918,24 @@
         </div>
 
         <div class="commercial-panel">
-          <h3>人工发放额度</h3>
+          <h3>人工赠送额度</h3>
           <form id="commercial-grant-form">
             <input id="commercial-grant-uid" inputmode="numeric" placeholder="用户 UID" />
             <select id="commercial-grant-model">
-              <option value="">通用账本额度（暂不直接同步 relay）</option>
+              <option value="gpt-5.6-terra">GPT-5.6 套餐共享池（内部记入 Terra）</option>
+              <option value="gpt-5.6-sol">GPT-5.6 套餐共享池（内部记入 Sol）</option>
               <option value="MiniMax-M3">MiniMax-M3</option>
               <option value="MiniMax-M2.7">MiniMax-M2.7</option>
               <option value="deepseek-v4-flash">deepseek-v4-flash</option>
               <option value="glm-5.1">glm-5.1</option>
             </select>
             <input id="commercial-grant-amount" inputmode="decimal" placeholder="额度 CNY，例如 100" />
+            <input id="commercial-grant-expire" type="datetime-local" aria-label="赠送额度到期时间" />
+            <div class="commercial-meta">赠送额度只能发到用户当前有效套餐包含的模型。到期时间留空时跟随包含该模型的有效套餐最晚到期时间；填写时也不能超过该日期。</div>
             <input id="commercial-grant-note" autocomplete="off" placeholder="备注，例如 手工补发" />
-            <button id="commercial-grant-button" type="submit">发放额度</button>
+            <button id="commercial-grant-button" type="submit">赠送额度</button>
           </form>
+          <div class="commercial-meta" style="margin-top:10px;">商业托管生效后，请不要直接修改模型服务后台的同一模型限额；后续同步会以这里的套餐账本为准。临时补额统一从此处发放。</div>
           <div id="commercial-grant-error" class="error"></div>
           <div id="commercial-grant-result" class="commercial-summary"></div>
         </div>
@@ -1573,6 +1578,14 @@ http://127.0.0.1:26061/local/account-admin</code>
       return !model || model === '*' ? '通用额度' : model;
     }
 
+    function commercialEntitlementSourceName(source) {
+      return ({ order: '支付购买', invite: '邀请码兑换', trial: '体验领取', manual: '管理员发放' })[source] || source || '未知来源';
+    }
+
+    function commercialGrantTypeName(type) {
+      return ({ order: '支付套餐', invite: '邀请码发放', trial: '体验额度', bonus: '赠送额度', manual: '历史人工额度' })[type] || type || '未知来源';
+    }
+
     function updateCommercialStats() {
       const activePlans = commercialPlans.filter((plan) => Number(plan.state || 0) === 0).length;
       const activeInvites = commercialInvites.filter((invite) => Number(invite.state || 0) === 0).length;
@@ -1644,7 +1657,7 @@ http://127.0.0.1:26061/local/account-admin</code>
         }).join('');
       }
       commercialInvitePlan.innerHTML = commercialPlans.length
-        ? commercialPlans.map((plan) => `<option value="${escapeHTML(plan.id)}">${escapeHTML(plan.name || plan.slug)} (#${escapeHTML(plan.id)})</option>`).join('')
+        ? commercialPlans.map((plan) => `<option value="${escapeHTML(plan.id)}">${escapeHTML(plan.name || plan.slug)} (#${escapeHTML(plan.id)} · 兑换后显示此套餐)</option>`).join('')
         : '<option value="">请先创建套餐</option>';
       updateCommercialStats();
     }
@@ -1744,8 +1757,8 @@ http://127.0.0.1:26061/local/account-admin</code>
       }
       const totals = summary.totals_by_model || {};
       const budgetPills = Object.entries(totals).map(([model, amount]) => `<span class="commercial-pill">${escapeHTML(modelName(model))}：${escapeHTML(formatCNY(amount))}</span>`);
-      const entitlementLines = (summary.entitlements || []).map((item) => `<div class="commercial-meta">${escapeHTML(item.plan_name || item.plan_slug || '未知套餐')} · ${escapeHTML(item.source)} · ${escapeHTML(item.state)} · 到期 ${escapeHTML(formatCommercialTime(item.expires_at))}</div>`);
-      const grantLines = (summary.grants || []).slice(0, 8).map((item) => `<div class="commercial-meta">${escapeHTML(modelName(item.model))} · ${escapeHTML(formatCNY(item.amount_cny))} · ${escapeHTML(item.grant_type)} · ${escapeHTML(item.note || '-')}</div>`);
+      const entitlementLines = (summary.entitlements || []).map((item) => `<div class="commercial-meta">${escapeHTML(item.plan_name || item.plan_slug || '未知套餐')} · ${escapeHTML(commercialEntitlementSourceName(item.source))} · ${escapeHTML(item.state)} · 到期 ${escapeHTML(formatCommercialTime(item.expires_at))}</div>`);
+      const grantLines = (summary.grants || []).slice(0, 8).map((item) => `<div class="commercial-meta">${escapeHTML(modelName(item.model))} · ${escapeHTML(formatCNY(item.amount_cny))} · ${escapeHTML(commercialGrantTypeName(item.grant_type))} · 到期 ${escapeHTML(formatCommercialTime(item.expires_at))} · ${escapeHTML(item.note || '-')}</div>`);
       const ledgerLines = (summary.ledger || []).slice(0, 8).map((item) => `<div class="commercial-meta">${escapeHTML(formatCommercialTime(item.created_at))} · ${escapeHTML(modelName(item.model))} · ${escapeHTML(formatCNY(item.amount_cny))} · ${escapeHTML(item.entry_type)} · ${escapeHTML(item.source_type || '-')}</div>`);
       commercialSummaryResult.innerHTML = [
         `<strong>UID ${escapeHTML(summary.uid)} · 总额度 ${formatCNY(summary.total_cny)}</strong>`,
@@ -1912,10 +1925,16 @@ http://127.0.0.1:26061/local/account-admin</code>
       clearCommercialError(commercialGrantError);
       commercialGrantButton.disabled = true;
       try {
+        const expiresInput = document.querySelector('#commercial-grant-expire').value.trim();
+        const expiresAt = expiresInput ? new Date(expiresInput) : null;
+        if (expiresAt && Number.isNaN(expiresAt.getTime())) {
+          throw new Error('赠送额度到期时间无效。');
+        }
         const payload = {
           uid: Number(document.querySelector('#commercial-grant-uid').value || 0),
           model: document.querySelector('#commercial-grant-model').value.trim(),
           amount_cny: Number(document.querySelector('#commercial-grant-amount').value || 0),
+          expires_at: expiresAt ? expiresAt.toISOString() : '',
           note: document.querySelector('#commercial-grant-note').value.trim(),
         };
         const resp = await fetch('/local/account-admin/commercial/grants', {
@@ -1928,7 +1947,7 @@ http://127.0.0.1:26061/local/account-admin</code>
           showCommercialError(commercialGrantError, data.error || `发放失败：HTTP ${resp.status}`);
           return;
         }
-        commercialGrantResult.innerHTML = `<strong>已发放 ${formatCNY(data.grant.amount_cny)}</strong><div class="commercial-meta">UID ${escapeHTML(data.grant.uid)} · ${escapeHTML(modelName(data.grant.model))} · ${escapeHTML(data.grant.note || '-')}</div>`;
+        commercialGrantResult.innerHTML = `<strong>已赠送 ${formatCNY(data.grant.amount_cny)}</strong><div class="commercial-meta">UID ${escapeHTML(data.grant.uid)} · ${escapeHTML(modelName(data.grant.model))} · 到期 ${escapeHTML(formatCommercialTime(data.grant.expires_at))} · ${escapeHTML(data.grant.note || '-')}</div>`;
         document.querySelector('#commercial-summary-uid').value = String(data.grant.uid);
         document.querySelector('#commercial-dry-run-uid').value = String(data.grant.uid);
         clearCommercialError(commercialSummaryError);
