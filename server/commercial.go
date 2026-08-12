@@ -696,8 +696,10 @@ func parseCommercialBudgets(value map[string]float64) map[string]float64 {
 }
 
 func (h *AccountAdminHandler) requireCommercialStore(w http.ResponseWriter, r *http.Request) (CommercialStore, bool) {
-	if !h.requireLocal(w, r) {
-		return nil, false
+	if _, serviceAuthorized := commercialOpsServiceFromRequest(r); !serviceAuthorized {
+		if !h.requireLocal(w, r) {
+			return nil, false
+		}
 	}
 	if h.commercial == nil {
 		writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "commercial store unavailable"})
@@ -821,6 +823,7 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			Code           string `json:"code"`
 			PlanID         int64  `json:"plan_id"`
 			MaxRedemptions int    `json:"max_redemptions"`
+			State          int    `json:"state"`
 			ExpiresAt      string `json:"expires_at"`
 			Note           string `json:"note"`
 		}
@@ -837,6 +840,10 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "plan_id is required"})
 			return
 		}
+		if req.State != 0 && req.State != 1 {
+			writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported invite state"})
+			return
+		}
 		var expiresAt *time.Time
 		if strings.TrimSpace(req.ExpiresAt) != "" {
 			parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(req.ExpiresAt))
@@ -850,6 +857,7 @@ func (h *AccountAdminHandler) HandleCommercialInvites(w http.ResponseWriter, r *
 			Code:           code,
 			PlanID:         req.PlanID,
 			MaxRedemptions: req.MaxRedemptions,
+			State:          req.State,
 			ExpiresAt:      expiresAt,
 			Note:           req.Note,
 		})
@@ -1003,7 +1011,13 @@ func (h *AccountAdminHandler) HandleCommercialUserSummary(w http.ResponseWriter,
 		writeAccountAdminJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load commercial summary"})
 		return
 	}
-	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"summary": summary})
+	payload := map[string]interface{}{"summary": summary}
+	if h.users != nil {
+		if user, userErr := h.users.GetUser(uid); userErr == nil && user != nil {
+			payload["user"] = accountUserPayload(user)
+		}
+	}
+	writeAccountAdminJSON(w, http.StatusOK, payload)
 }
 
 func (h *AccountAdminHandler) HandleCommercialOrders(w http.ResponseWriter, r *http.Request) {

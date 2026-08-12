@@ -284,6 +284,10 @@ func main() {
 	if candidate, ok := db.(server.CommercialRelayManagedStore); ok {
 		commercialRelayManagedStore = candidate
 	}
+	var commercialOperationsStore server.CommercialOperationsStore
+	if candidate, ok := db.(server.CommercialOperationsStore); ok {
+		commercialOperationsStore = candidate
+	}
 	accountCenterHandler := server.NewAccountCenterHandler(db, accountServiceVerifier)
 	accountAdminHandler := server.NewAccountAdminHandler(db, accountServiceVerifier, db, commercialStore)
 	friendHandler := server.NewFriendHandler(db, hub)
@@ -389,6 +393,7 @@ func main() {
 		EnforceUIDs:    relayCommercialEnforceUIDs,
 		Syncer:         commercialRelaySyncer,
 	})
+	commercialOpsHandler := server.NewCommercialOpsHandler(accountAdminHandler, accountServiceVerifier, commercialOperationsStore)
 	paymentTestUIDs := envInt64Set("CATS_COMMERCIAL_TEST_PAYMENT_UIDS")
 	paymentProviders := []server.CommercialPaymentProvider{}
 	paymentSaleChannels := map[string]bool{}
@@ -546,6 +551,14 @@ func main() {
 	// Account center (service-to-service auth)
 	mux.HandleFunc("/api/account/introspect", accountCenterHandler.HandleIntrospect)
 	mux.HandleFunc("/api/account/users/", accountCenterHandler.HandleGetUser)
+	mux.HandleFunc("/api/account/commercial-ops/overview", commercialOpsHandler.HandleOverview)
+	mux.HandleFunc("/api/account/commercial-ops/plans", commercialOpsHandler.HandlePlans)
+	mux.HandleFunc("/api/account/commercial-ops/invites", commercialOpsHandler.HandleInvites)
+	mux.HandleFunc("/api/account/commercial-ops/grants", commercialOpsHandler.HandleGrants)
+	mux.HandleFunc("/api/account/commercial-ops/users", commercialOpsHandler.HandleUsers)
+	mux.HandleFunc("/api/account/commercial-ops/orders", commercialOpsHandler.HandleOrders)
+	mux.HandleFunc("/api/account/commercial-ops/relay-dry-run", commercialOpsHandler.HandleRelayDryRun)
+	mux.HandleFunc("/api/account/commercial-ops/relay-sync", commercialOpsHandler.HandleRelaySync)
 	mux.HandleFunc("/local/account-admin", accountAdminHandler.HandlePage)
 	mux.HandleFunc("/local/account-admin/", accountAdminHandler.HandlePage)
 	mux.HandleFunc("/local/account-admin/users", accountAdminHandler.HandleUserLookup)
