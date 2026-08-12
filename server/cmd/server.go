@@ -284,6 +284,10 @@ func main() {
 	if candidate, ok := db.(server.CommercialRelayManagedStore); ok {
 		commercialRelayManagedStore = candidate
 	}
+	var commercialOperationsStore server.CommercialOperationsStore
+	if candidate, ok := db.(server.CommercialOperationsStore); ok {
+		commercialOperationsStore = candidate
+	}
 	accountCenterHandler := server.NewAccountCenterHandler(db, accountServiceVerifier)
 	accountAdminHandler := server.NewAccountAdminHandler(db, accountServiceVerifier, db, commercialStore)
 	friendHandler := server.NewFriendHandler(db, hub)
@@ -341,6 +345,7 @@ func main() {
 	feedbackHandler := server.NewFeedbackHandler(db)
 	relayConfigHandler := server.NewRelayConfigHandler()
 	relayKeyHandler := server.NewRelayKeyHandlerFromEnv()
+	relayKeyHandler.SetCommercialStore(commercialStore)
 	relayKeyHandler.SetDeviceModelStatusResolver(func(uid int64) (server.DeviceModelStatus, bool) {
 		return server.LatestDeviceModelStatus(hub, uid)
 	})
@@ -388,6 +393,7 @@ func main() {
 		EnforceUIDs:    relayCommercialEnforceUIDs,
 		Syncer:         commercialRelaySyncer,
 	})
+	commercialOpsHandler := server.NewCommercialOpsHandler(accountAdminHandler, accountServiceVerifier, commercialOperationsStore)
 	paymentTestUIDs := envInt64Set("CATS_COMMERCIAL_TEST_PAYMENT_UIDS")
 	paymentProviders := []server.CommercialPaymentProvider{}
 	paymentSaleChannels := map[string]bool{}
@@ -502,6 +508,9 @@ func main() {
 	commercialOrderUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "commercial_order_user", Limit: 12, Window: 10 * time.Minute, Burst: 3,
 	})
+	commercialOrderCancelUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "commercial_order_cancel_user", Limit: 20, Window: 10 * time.Minute, Burst: 4,
+	})
 	commercialTrialUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "commercial_trial_user", Limit: 5, Window: time.Hour, Burst: 2,
 	})
@@ -542,6 +551,14 @@ func main() {
 	// Account center (service-to-service auth)
 	mux.HandleFunc("/api/account/introspect", accountCenterHandler.HandleIntrospect)
 	mux.HandleFunc("/api/account/users/", accountCenterHandler.HandleGetUser)
+	mux.HandleFunc("/api/account/commercial-ops/overview", commercialOpsHandler.HandleOverview)
+	mux.HandleFunc("/api/account/commercial-ops/plans", commercialOpsHandler.HandlePlans)
+	mux.HandleFunc("/api/account/commercial-ops/invites", commercialOpsHandler.HandleInvites)
+	mux.HandleFunc("/api/account/commercial-ops/grants", commercialOpsHandler.HandleGrants)
+	mux.HandleFunc("/api/account/commercial-ops/users", commercialOpsHandler.HandleUsers)
+	mux.HandleFunc("/api/account/commercial-ops/orders", commercialOpsHandler.HandleOrders)
+	mux.HandleFunc("/api/account/commercial-ops/relay-dry-run", commercialOpsHandler.HandleRelayDryRun)
+	mux.HandleFunc("/api/account/commercial-ops/relay-sync", commercialOpsHandler.HandleRelaySync)
 	mux.HandleFunc("/local/account-admin", accountAdminHandler.HandlePage)
 	mux.HandleFunc("/local/account-admin/", accountAdminHandler.HandlePage)
 	mux.HandleFunc("/local/account-admin/users", accountAdminHandler.HandleUserLookup)
@@ -647,6 +664,7 @@ func main() {
 	mux.HandleFunc("/api/relay/invite/redeem", ownerAuthWithDB(relayCommercialHandler.HandleRedeemInvite))
 	mux.HandleFunc("/api/relay/commercial/catalog", ownerAuthWithDB(commercialPaymentHandler.HandleCatalog))
 	mux.HandleFunc("/api/relay/commercial/orders", chainHTTP(commercialPaymentHandler.HandleOrders, ownerAuthWithDB, limitHTTPMethod(http.MethodPost, commercialOrderUserLimit)))
+	mux.HandleFunc("/api/relay/commercial/orders/cancel", chainHTTP(commercialPaymentHandler.HandleCancel, ownerAuthWithDB, commercialOrderCancelUserLimit))
 	mux.HandleFunc("/api/relay/commercial/orders/test-confirm", chainHTTP(commercialPaymentHandler.HandleTestConfirm, ownerAuthWithDB, commercialTestPaymentUserLimit))
 	mux.HandleFunc("/api/relay/commercial/trial/claim", chainHTTP(commercialPaymentHandler.HandleClaimTrial, ownerAuthWithDB, commercialTrialUserLimit))
 	mux.HandleFunc("/api/payments/alipay/notify", commercialNotifyIPLimit(commercialPaymentHandler.HandleAlipayNotify))

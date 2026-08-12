@@ -50,6 +50,9 @@ func TestRelayAdminPathWhitelist(t *testing.T) {
 		"/local/pricing-analytics/data?window=24h",
 		"/local/pricing-analytics/user?uid=2",
 		"/local/pricing-rules",
+		"/local/commercial-ops",
+		"/local/commercial-ops/api/overview",
+		"/local/commercial-ops/api/relay-sync?uid=38",
 		"/local/users/38/key/state",
 		"/local/users/38/key/limits",
 		"/local/users/38/key/usage-reset",
@@ -63,6 +66,8 @@ func TestRelayAdminPathWhitelist(t *testing.T) {
 		"/internal/usage/users", "/internal/keys/38",
 		"/public/me", "/public/session",
 		"/health", "/api/foo", "/local/other",
+		"/local/commercial-ops/api/unknown",
+		"/local/commercial-ops/private",
 	}
 	for _, p := range bad {
 		if relayAdminPathAllowed(p) {
@@ -288,6 +293,30 @@ func TestRelayAdminPricingWriteMarker(t *testing.T) {
 	}
 	if !sawMarker {
 		t.Fatal("relay did not receive the local pricing write marker")
+	}
+}
+
+func TestRelayAdminCommercialOpsWriteMarker(t *testing.T) {
+	var sawMarker bool
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/local/commercial-ops/api/grants" && r.Method == http.MethodPost {
+			sawMarker = r.Header.Get("X-Cats-Relay-Local-Write") == "commercial-ops"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{}`)
+	}))
+	defer relay.Close()
+	h := NewRelayAdminProxyHandler(relayAdminConfig{relayURL: relay.URL, allowedUIDs: []int64{38}})
+	h.setRateLimit(1000, 60)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/relay/local/commercial-ops/api/grants", strings.NewReader(`{"uid":38}`))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(38)))
+	rec := httptest.NewRecorder()
+	h.HandleProxy(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("commercial write status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !sawMarker {
+		t.Fatal("relay did not receive the local commercial write marker")
 	}
 }
 

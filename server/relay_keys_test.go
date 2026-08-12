@@ -297,6 +297,45 @@ func TestRelayUsageSummaryUsesRequestedModel(t *testing.T) {
 	}
 }
 
+func TestRelayTotalUsageDeduplicatesSharedPoolsAndIncludesFallbackUsage(t *testing.T) {
+	user := &commercialRelayUsageUser{
+		UID: 8, Configured: true,
+		Limits: commercialRelayLimits{ModelLimits: []commercialRelayModelLimit{
+			{
+				Provider: "provider-a", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra", "gpt-5.6-sol"}, SharedBudget: true,
+				Budget: commercialRelayBudget{MaxLimit: 300, CurrentUsage: 60, ResetDuration: "1M", LastReset: "2026-08-01T00:00:00Z"},
+			},
+			{
+				Provider: "provider-a", Model: "gpt-5.6-sol", AllowedModels: []string{"gpt-5.6-sol", "gpt-5.6-terra"}, SharedBudget: true,
+				Budget: commercialRelayBudget{MaxLimit: 300, CurrentUsage: 60, ResetDuration: "1M", LastReset: "2026-08-01T00:00:00Z"},
+			},
+			{
+				Provider: "provider-b", Model: "gpt-5.6-terra", AllowedModels: []string{"gpt-5.6-terra", "gpt-5.6-sol"}, SharedBudget: true,
+				Budget: commercialRelayBudget{MaxLimit: 300, CurrentUsage: 30, ResetDuration: "1M", LastReset: "2026-08-02T00:00:00Z"},
+			},
+			{
+				Provider: "deepseek", Model: "deepseek-v4-flash", AllowedModels: []string{"deepseek-v4-flash"},
+				Budget: commercialRelayBudget{MaxLimit: 100, CurrentUsage: 50, ResetDuration: "1M"},
+			},
+		}},
+	}
+	commercialSummary := &types.CommercialSummary{TotalsByModel: map[string]float64{
+		"gpt-5.6-terra": 100,
+		"gpt-5.6-sol":   200,
+	}}
+
+	out := buildRelayTotalUsageResponse(user, commercialSummary)
+	if !out.Configured || out.Summary == nil {
+		t.Fatalf("expected total usage summary, got %+v", out)
+	}
+	if out.Summary.Model != "套餐总额度" || out.Summary.LimitCNY != 300 || out.Summary.UsedCNY != 90 || out.Summary.Percent != 30 || out.Summary.RemainingPercent != 70 {
+		t.Fatalf("unexpected total usage summary: %+v", out.Summary)
+	}
+	if out.Summary.LastReset != "2026-08-02T00:00:00Z" {
+		t.Fatalf("expected newest reset metadata, got %+v", out.Summary)
+	}
+}
+
 func TestRelayUsageSummaryUsesCurrentDeviceModel(t *testing.T) {
 	oldSecret := append([]byte(nil), jwtSecret...)
 	defer func() { jwtSecret = oldSecret }()

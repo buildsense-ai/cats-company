@@ -43,13 +43,15 @@ const mockCommercialPlans = [
 function mockCommercialOrders(userId) {
   const now = Date.now();
   const at = daysAgo => new Date(now - daysAgo * 24 * 60 * 60 * 1000).toISOString();
-  return [
-    ...(commercialOrdersByUserId.get(userId) || []),
+  const mutableOrders = commercialOrdersByUserId.get(userId) || [];
+  const mutableOrderNos = new Set(mutableOrders.map(item => item.order_no));
+  const seededOrders = [
     { order_no: 'CC202608110001PREVIEW', plan_id: 22, plan_name: '专业版', amount_fen: 79900, currency: 'CNY', channel: 'alipay_page', status: 'pending', checkout_url: 'https://openapi.alipay.test/gateway.do', expires_at: at(-1), created_at: at(0), updated_at: at(0) },
     { order_no: 'CC202608080002PREVIEW', plan_id: 21, plan_name: '个人版', amount_fen: 39900, currency: 'CNY', channel: 'alipay_page', status: 'fulfilled', paid_at: at(3), fulfilled_at: at(3), created_at: at(3), updated_at: at(3) },
     { order_no: 'CC202607020003PREVIEW', plan_id: 2, plan_name: 'Plus−', amount_fen: 4900, currency: 'CNY', channel: 'alipay_page', status: 'refunded', paid_at: at(40), created_at: at(40), updated_at: at(36) },
     { order_no: 'CC202606120004PREVIEW', plan_id: 1, plan_name: '3天体验', amount_fen: 990, currency: 'CNY', channel: 'alipay_page', status: 'closed', created_at: at(60), updated_at: at(60) },
   ];
+  return [...mutableOrders, ...seededOrders.filter(item => !mutableOrderNos.has(item.order_no))];
 }
 
 const mockBotModels = [
@@ -1245,11 +1247,12 @@ async function handleApi(req, res) {
     if (req.method === 'GET' && url.pathname === '/api/relay/usage') {
       const user = requireUser(req, res);
       if (!user) return;
+      const totalScope = url.searchParams.get('scope') === 'total';
       return send(res, 200, {
         configured: true,
         summary: {
           source: 'relay',
-          model: String(url.searchParams.get('model') || 'MiniMax-M2.7'),
+          model: totalScope ? '套餐总额度' : String(url.searchParams.get('model') || 'MiniMax-M2.7'),
           quota_configured: true,
           used_cny: 3.2,
           limit_cny: 50,
@@ -1280,6 +1283,8 @@ async function handleApi(req, res) {
               plan_id: 21,
               plan_slug: 'catsco-personal',
               plan_name: '个人版',
+              source: 'invite',
+              source_ref: 'PERSONAL-PREVIEW',
               starts_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
               expires_at: new Date(Date.now() + 27 * 24 * 60 * 60 * 1000).toISOString(),
             }],
@@ -1322,6 +1327,7 @@ async function handleApi(req, res) {
       const plan = mockCommercialPlans.find(item => item.id === Number(body.plan_id));
       if (!plan) return send(res, 404, { error: 'plan not found' });
       const now = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
       const order = {
         order_no: `CCPREVIEW${Date.now()}`,
         plan_id: plan.id,
@@ -1331,11 +1337,36 @@ async function handleApi(req, res) {
         channel: String(body.channel || 'alipay_page'),
         status: 'pending',
         checkout_url: 'https://openapi.alipay.test/gateway.do',
+        expires_at: expiresAt,
         created_at: now,
         updated_at: now,
       };
       commercialOrdersByUserId.set(user.id, [order, ...(commercialOrdersByUserId.get(user.id) || [])]);
       return send(res, 201, { order });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/relay/commercial/orders/cancel') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const body = await readBody(req);
+      const orderNo = String(body.order_no || '').trim();
+      const order = mockCommercialOrders(user.id).find(item => item.order_no === orderNo);
+      if (!order) return send(res, 404, { error: 'order not found' });
+      if (!['created', 'pending', 'failed', 'closed'].includes(order.status)) {
+        return send(res, 409, { error: 'order can no longer be cancelled', order });
+      }
+      const closed = order.status === 'closed' ? order : {
+        ...order,
+        status: 'closed',
+        checkout_url: '',
+        closed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      commercialOrdersByUserId.set(user.id, [
+        closed,
+        ...(commercialOrdersByUserId.get(user.id) || []).filter(item => item.order_no !== orderNo),
+      ]);
+      return send(res, 200, { ok: true, order: closed });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/relay/key') {

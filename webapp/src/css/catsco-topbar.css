@@ -624,6 +624,12 @@
   background: var(--v3-bg-message-hover, var(--cc-hover, #f3f4f6));
 }
 
+.v3-relay-admin-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .v3-relay-admin-panel iframe {
   flex: 1;
   width: 100%;

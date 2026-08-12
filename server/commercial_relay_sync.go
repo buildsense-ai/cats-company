@@ -244,7 +244,7 @@ func validateCommercialRelayRequiredModels(summary *types.CommercialSummary, rel
 			}
 			model := strings.TrimSpace(grant.Model)
 			grantType := strings.ToLower(strings.TrimSpace(grant.GrantType))
-			if model != "" && model != "*" && (grantType == "order" || grantType == "trial") {
+			if model != "" && model != "*" && (grantType == "order" || grantType == "invite" || grantType == "trial" || grantType == "bonus") {
 				required[model] = true
 			}
 		}
