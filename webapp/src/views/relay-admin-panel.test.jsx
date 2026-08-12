@@ -59,6 +59,20 @@ describe('RelayAdminPanel', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('recreates the embedded page when reload is requested', async () => {
+    await renderPanel();
+    const before = container.querySelector('iframe');
+    const reload = container.querySelector('button[aria-label="重新载入模型用量管理"]');
+    expect(reload).toBeTruthy();
+
+    await act(async () => reload.click());
+
+    const after = container.querySelector('iframe');
+    expect(after).toBeTruthy();
+    expect(after).not.toBe(before);
+    expect(after?.getAttribute('src')).toBe('/api/admin/relay/local/usage-admin');
+  });
+
   it('renders a draggable resize handle on the left edge', async () => {
     await renderPanel();
     const handle = container.querySelector('.v3-relay-admin-resize-handle');
