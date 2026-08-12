@@ -55,3 +55,21 @@ It restores the recorded predecessor, verifies health, and updates
 `CURRENT_ADAPTER_REVISION` so status output remains accurate. The initial
 SHA-256 above records source provenance at import time; subsequent deployed
 versions are identified by their 40-character Git revision.
+
+## Responses streaming
+
+For `POST /v1/responses` with `stream=true`, the adapter preserves the OpenAI
+Responses SSE protocol end to end:
+
+- a successful upstream `text/event-stream` response is committed downstream
+  immediately, before the first model event;
+- SSE bytes and typed events are forwarded incrementally without rewriting;
+- terminal events and usage are observed for diagnostics without delaying
+  delivery;
+- provider failover remains available before an upstream success response is
+  committed, but streams are never spliced after downstream output begins;
+- a downstream disconnect closes the upstream response promptly.
+
+The upstream request uses `Accept-Encoding: identity` so intermediary content
+encoding cannot invalidate byte-for-byte forwarding. Reverse proxies are asked
+not to buffer the stream with `X-Accel-Buffering: no`.
