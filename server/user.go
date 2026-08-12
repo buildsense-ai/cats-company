@@ -215,7 +215,7 @@ func (h *UserHandler) HandleResetPassword(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired verification code"})
 		return
 	}
-	switch verificationCodeStatus(req.Email, req.Code, verificationPurposePasswordReset) {
+	switch consumeVerificationCode(req.Email, req.Code, verificationPurposePasswordReset) {
 	case codeStatusValid:
 		// fallthrough to reset the password
 	case codeStatusExpired:
@@ -303,7 +303,7 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch verificationCodeStatus(email, req.Code, verificationPurposeRegister) {
+	switch consumeVerificationCode(email, req.Code, verificationPurposeRegister) {
 	case codeStatusValid:
 		// fallthrough to create the account
 	case codeStatusExpired:

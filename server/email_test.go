@@ -66,13 +66,50 @@ func TestVerificationCodeStatus(t *testing.T) {
 		t.Fatalf("expected still valid after mismatch check, got %v", got)
 	}
 
-	// expired, and the stale entry is removed
+	// expired (read-only inspection; the entry stays until consumed)
 	storeVerificationCode(email, code, time.Now().Add(-time.Minute).Unix(), purpose)
 	if got := verificationCodeStatus(email, code, purpose); got != codeStatusExpired {
 		t.Fatalf("expected expired, got %v", got)
 	}
-	if got := verificationCodeStatus(email, code, purpose); got != codeStatusNotFound {
-		t.Fatalf("expected not found after expiry removal, got %v", got)
+}
+
+func TestConsumeVerificationCode(t *testing.T) {
+	email := "consume@example.com"
+	code := "135790"
+	purpose := verificationPurposePasswordReset
+
+	deleteVerificationCode(email, purpose)
+
+	// not found
+	if got := consumeVerificationCode(email, code, purpose); got != codeStatusNotFound {
+		t.Fatalf("expected not found, got %v", got)
+	}
+
+	// valid consumes the code
+	storeVerificationCode(email, code, time.Now().Add(time.Minute).Unix(), purpose)
+	if got := consumeVerificationCode(email, code, purpose); got != codeStatusValid {
+		t.Fatalf("expected valid, got %v", got)
+	}
+	if got := consumeVerificationCode(email, code, purpose); got != codeStatusNotFound {
+		t.Fatalf("expected not found after consume, got %v", got)
+	}
+
+	// mismatch does not consume
+	storeVerificationCode(email, code, time.Now().Add(time.Minute).Unix(), purpose)
+	if got := consumeVerificationCode(email, "000000", purpose); got != codeStatusMismatch {
+		t.Fatalf("expected mismatch, got %v", got)
+	}
+	if got := consumeVerificationCode(email, code, purpose); got != codeStatusValid {
+		t.Fatalf("expected valid after mismatch, got %v", got)
+	}
+
+	// expired consumes the stale entry
+	storeVerificationCode(email, code, time.Now().Add(-time.Minute).Unix(), purpose)
+	if got := consumeVerificationCode(email, code, purpose); got != codeStatusExpired {
+		t.Fatalf("expected expired, got %v", got)
+	}
+	if got := consumeVerificationCode(email, code, purpose); got != codeStatusNotFound {
+		t.Fatalf("expected not found after expired consume, got %v", got)
 	}
 }
 

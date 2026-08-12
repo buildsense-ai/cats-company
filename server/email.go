@@ -392,8 +392,9 @@ const (
 	codeStatusMismatch
 )
 
-// verificationCodeStatus distinguishes why a submitted code is rejected so the
-// API can tell users to request a fresh one vs. typo the latest one.
+// verificationCodeStatus is a read-only inspection of a submitted code. It is
+// NOT safe to use as the sole gate for handlers: successful validation must go
+// through consumeVerificationCode so the code is removed atomically.
 func verificationCodeStatus(email, code, purpose string) codeStatus {
 	codesMutex.RLock()
 	stored, exists := verificationCodes[verificationCodeKey(email, purpose)]
@@ -403,7 +404,6 @@ func verificationCodeStatus(email, code, purpose string) codeStatus {
 		return codeStatusNotFound
 	}
 	if time.Now().Unix() > stored.Expires {
-		deleteVerificationCode(email, purpose)
 		return codeStatusExpired
 	}
 	if stored.Code != code {
@@ -412,13 +412,31 @@ func verificationCodeStatus(email, code, purpose string) codeStatus {
 	return codeStatusValid
 }
 
-func verifyCodeForPurpose(email, code, purpose string) bool {
-	if verificationCodeStatus(email, code, purpose) != codeStatusValid {
-		return false
+// consumeVerificationCode validates a submitted code and, on success, removes
+// it in the same locked section. Codes stay single-use even under concurrent
+// requests: once consumed, a code cannot be replayed.
+func consumeVerificationCode(email, code, purpose string) codeStatus {
+	codesMutex.Lock()
+	defer codesMutex.Unlock()
+
+	key := verificationCodeKey(email, purpose)
+	stored, exists := verificationCodes[key]
+	if !exists {
+		return codeStatusNotFound
 	}
-	// codes are single-use: consume on success
-	deleteVerificationCode(email, purpose)
-	return true
+	if time.Now().Unix() > stored.Expires {
+		delete(verificationCodes, key)
+		return codeStatusExpired
+	}
+	if stored.Code != code {
+		return codeStatusMismatch
+	}
+	delete(verificationCodes, key)
+	return codeStatusValid
+}
+
+func verifyCodeForPurpose(email, code, purpose string) bool {
+	return consumeVerificationCode(email, code, purpose) == codeStatusValid
 }
 
 func sendVerificationCode(email string) (string, error) {
