@@ -7,6 +7,8 @@ const openchatCss = readFileSync(resolve(process.cwd(), 'src/css/openchat-theme.
   .replace(/\r\n?/g, '\n');
 const searchOverlayCss = readFileSync(resolve(process.cwd(), 'src/css/search-overlay.css'), 'utf8')
   .replace(/\r\n?/g, '\n');
+const liquidGreenCss = readFileSync(resolve(process.cwd(), 'src/css/catsco-liquid-green.css'), 'utf8')
+  .replace(/\r\n?/g, '\n');
 const brandAssetPath = resolve(process.cwd(), 'public/catsco-brand-mark.webp');
 
 const ruleIn = (source, selector) => source.match(
@@ -14,12 +16,52 @@ const ruleIn = (source, selector) => source.match(
 )?.[0] || '';
 const ruleFor = (selector) => ruleIn(css, selector);
 
+const propertyValue = (source, selector, property) => (selector ? ruleIn(source, selector) : source).match(
+  new RegExp(`${property}:\\s*([^;]+);`),
+)?.[1]?.trim();
+
 const hexToken = (rule, token) => rule.match(
   new RegExp(`${token}:\\s*(#[0-9a-fA-F]{6});`),
- )?.[1];
+)?.[1];
 
-const relativeLuminance = (hex) => {
-  const channels = hex.slice(1).match(/../g).map((channel) => parseInt(channel, 16) / 255);
+const parseCssColor = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized.startsWith('#')) {
+    const hex = normalized.slice(1);
+    const expanded = hex.length === 3
+      ? hex.split('').map((channel) => `${channel}${channel}`).join('')
+      : hex.slice(0, 6);
+    if (!/^[0-9a-f]{6}$/.test(expanded)) return null;
+    return {
+      r: parseInt(expanded.slice(0, 2), 16),
+      g: parseInt(expanded.slice(2, 4), 16),
+      b: parseInt(expanded.slice(4, 6), 16),
+      a: hex.length === 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1,
+    };
+  }
+  const match = normalized.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)$/);
+  if (!match) return null;
+  return {
+    r: Number(match[1]),
+    g: Number(match[2]),
+    b: Number(match[3]),
+    a: match[4] === undefined ? 1 : Number(match[4]),
+  };
+};
+
+const compositeColor = (foreground, background) => {
+  const alpha = Math.min(1, Math.max(0, foreground.a));
+  const remaining = 1 - alpha;
+  return {
+    r: (foreground.r * alpha) + (background.r * remaining),
+    g: (foreground.g * alpha) + (background.g * remaining),
+    b: (foreground.b * alpha) + (background.b * remaining),
+    a: 1,
+  };
+};
+
+const relativeLuminance = (color) => {
+  const channels = [color.r, color.g, color.b].map((channel) => channel / 255);
   const [red, green, blue] = channels.map((channel) => (
     channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
   ));
@@ -27,9 +69,16 @@ const relativeLuminance = (hex) => {
 };
 
 const contrastRatio = (foreground, background) => {
-  const [lighter, darker] = [relativeLuminance(foreground), relativeLuminance(background)].sort((a, b) => b - a);
+  const foregroundColor = typeof foreground === 'string' ? parseCssColor(foreground) : foreground;
+  const backgroundColor = typeof background === 'string' ? parseCssColor(background) : background;
+  if (!foregroundColor || !backgroundColor) return 0;
+  const [lighter, darker] = [relativeLuminance(foregroundColor), relativeLuminance(backgroundColor)].sort((a, b) => b - a);
   return (lighter + 0.05) / (darker + 0.05);
 };
+
+const cssColors = (value) => String(value || '').match(
+  /#[0-9a-f]{3,8}|rgba?\([^)]*\)/gi,
+) || [];
 
 const readLosslessWebpDimensions = (buffer) => {
   if (
@@ -756,6 +805,127 @@ describe('CatsCo shell styling', () => {
     });
   });
 
+  it('checks terminal dots against real sidebar gradients and interaction overlays', () => {
+    const root = ruleFor(':root');
+    const dark = ruleFor('html[data-theme="dark"]');
+    const liquid = ruleFor('html[data-theme="liquid"]');
+    const liquidSidebar = ruleFor('html[data-theme="liquid"] .v3-sidebar');
+    const liquidSection = ruleFor(
+      'html[data-theme="liquid"] .v3-chat-list > :is(.cc-contacts-section, .cc-project-section, .cc-conversation-section)',
+    );
+    const liquidActive = ruleFor('html[data-theme="liquid"] .v3-chat-item.active');
+    const green = ruleIn(
+      liquidGreenCss,
+      'html[data-theme="liquid"][data-liquid-variant="green"]',
+    );
+    const greenSidebar = liquidGreenCss.match(
+      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.v3-sidebar\s*\{[\s\S]*?\n\}/,
+    )?.[0] || '';
+    const greenSection = liquidGreenCss.match(
+      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.v3-chat-list > :is\([^)]*\)\s*\{[\s\S]*?\n\}/,
+    )?.[0] || '';
+    const greenActive = liquidGreenCss.match(
+      /html\[data-theme="liquid"\]\[data-liquid-variant="green"\] \.v3-chat-item\.active\s*\{[\s\S]*?\n\}/,
+    )?.[0] || '';
+    const statuses = [
+      hexToken(root, '--cc-success-text'),
+      hexToken(root, '--cc-danger'),
+      hexToken(root, '--cc-warning-text'),
+    ];
+    const darkStatuses = [
+      hexToken(dark, '--cc-success-text'),
+      hexToken(root, '--cc-danger'),
+      hexToken(dark, '--cc-warning-text'),
+    ];
+    const liquidStatuses = [
+      hexToken(liquid, '--cc-success-text'),
+      hexToken(root, '--cc-danger'),
+      hexToken(liquid, '--cc-warning-text'),
+    ];
+    const greenStatuses = [
+      hexToken(green, '--cc-success-text'),
+      hexToken(green, '--cc-danger') || hexToken(root, '--cc-danger'),
+      hexToken(green, '--cc-warning-text'),
+    ];
+    const lightSurfaces = [
+      { name: 'light sidebar', colors: [hexToken(root, '--cc-bg')] },
+      { name: 'light row hover', colors: [hexToken(root, '--cc-hover')] },
+      { name: 'light row active', colors: [hexToken(root, '--cc-selected')] },
+    ];
+    const darkSurfaces = [
+      { name: 'dark sidebar', colors: [hexToken(dark, '--cc-bg')] },
+      { name: 'dark row hover', colors: [hexToken(dark, '--cc-hover')] },
+      { name: 'dark row active', colors: [hexToken(dark, '--cc-selected')] },
+    ];
+    const liquidSurfaces = [
+      { name: 'liquid sidebar token', colors: [hexToken(liquid, '--cc-bg')] },
+      {
+        name: 'liquid sidebar gradient',
+        colors: cssColors(propertyValue(css, 'html[data-theme="liquid"] .v3-sidebar', 'background'))
+          .map((color) => compositeColor(parseCssColor(color), parseCssColor(hexToken(liquid, '--cc-bg')))),
+      },
+      {
+        name: 'liquid sidebar section',
+        colors: cssColors(propertyValue(css, 'html[data-theme="liquid"] .v3-chat-list > :is(.cc-contacts-section, .cc-project-section, .cc-conversation-section)', 'background')),
+      },
+      {
+        name: 'liquid active overlay',
+        colors: [compositeColor(
+          parseCssColor(cssColors(propertyValue(css, 'html[data-theme="liquid"] .v3-chat-item.active', 'background'))[0]),
+          parseCssColor('rgb(249, 251, 255)'),
+        )],
+      },
+      {
+        name: 'liquid history hover',
+        colors: [compositeColor(parseCssColor('rgba(86, 98, 217, 0.12)'), parseCssColor('#ffffff'))],
+      },
+    ];
+    const greenSurfaces = [
+      {
+        name: 'green sidebar gradient',
+        colors: cssColors(propertyValue(liquidGreenCss, 'html[data-theme="liquid"][data-liquid-variant="green"] .v3-sidebar', 'background')),
+      },
+      {
+        name: 'green sidebar section',
+        colors: cssColors(propertyValue(liquidGreenCss, 'html[data-theme="liquid"][data-liquid-variant="green"] .v3-chat-list > :is(.cc-contacts-section, .cc-project-section, .cc-conversation-section)', 'background')),
+      },
+      {
+        name: 'green active overlay',
+        colors: [compositeColor(
+          parseCssColor(cssColors(propertyValue(liquidGreenCss, 'html[data-theme="liquid"][data-liquid-variant="green"] .v3-chat-item.active', 'background'))[0]),
+          parseCssColor('rgb(18, 24, 22)'),
+        )],
+      },
+    ];
+
+    expect(liquidSidebar).toContain('background: linear-gradient(180deg');
+    expect(liquidSection).toContain('background: rgb(249, 251, 255);');
+    expect(liquidActive).toContain('background: rgba(233, 237, 255, 0.72);');
+    expect(greenSidebar).toContain('background: linear-gradient(180deg, #151b19 0%, #111714 58%, #0f1513 100%);');
+    expect(greenSection).toContain('background: rgb(18, 24, 22);');
+    expect(greenActive).toContain('background: rgba(255, 255, 255, 0.09);');
+    expect(statuses.every(Boolean)).toBe(true);
+    expect(darkStatuses.every(Boolean)).toBe(true);
+    expect(liquidStatuses.every(Boolean)).toBe(true);
+    expect(greenStatuses.every(Boolean)).toBe(true);
+
+    [
+      ['light', statuses, lightSurfaces],
+      ['dark', darkStatuses, darkSurfaces],
+      ['liquid', liquidStatuses, liquidSurfaces],
+      ['green liquid', greenStatuses, greenSurfaces],
+    ].forEach(([theme, colors, surfaces]) => {
+      surfaces.forEach(({ name, colors: backgrounds }) => {
+        backgrounds.forEach((background) => {
+          expect(background, `${theme} ${name} background`).toBeTruthy();
+          colors.forEach((foreground) => {
+            expect(contrastRatio(foreground, background), `${theme} ${name} ${foreground}`).toBeGreaterThanOrEqual(3);
+          });
+        });
+      });
+    });
+  });
+
   it('places the mobile composer closer to the safe-area edge', () => {
     expect(css).toContain(`  .v3-composer {
     padding: 8px 8px calc(12px + env(safe-area-inset-bottom));
@@ -979,6 +1149,8 @@ describe('CatsCo shell styling', () => {
     expect(historyItemRule).toContain('overflow: hidden;');
     expect(historyLabelRule).toContain('flex: 1 1 auto;');
     expect(historyLabelRule).toContain('text-overflow: ellipsis;');
+    expect(css).toContain('.cc-compact-task-status.cc-compact-history-status {');
+    expect(css).toContain('.cc-compact-task-status.cc-compact-history-status:not(.running) {');
     expect(historyTooltipRule).toContain('position: fixed;');
     expect(historyTooltipRule).toContain('background: var(--cc-history-panel-bg);');
     expect(historyTooltipRule).toContain('pointer-events: none;');

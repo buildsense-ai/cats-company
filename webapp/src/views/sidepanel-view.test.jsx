@@ -3125,6 +3125,73 @@ describe('ChatListView sidebar sections', () => {
     expect(onSelectTopic).toHaveBeenCalledWith(expect.objectContaining({ name: 'Completed task' }));
   });
 
+  it('exposes task status labels in compact history entries', async () => {
+    api.getConversations.mockResolvedValue({
+      conversations: [
+        {
+          id: 'grp_running',
+          name: 'Running history task',
+          is_group: true,
+          has_bot: true,
+          is_agent_task: true,
+          last_time: '2026-07-20T08:04:00Z',
+          task_status: { state: 'running', updated_at: '2026-07-20T08:04:00Z' },
+        },
+        {
+          id: 'grp_completed',
+          name: 'Completed history task',
+          is_group: true,
+          has_bot: true,
+          is_agent_task: true,
+          last_time: '2026-07-20T08:03:00Z',
+          task_status: { state: 'completed', updated_at: '2026-07-20T08:03:00Z' },
+        },
+        {
+          id: 'grp_failed',
+          name: 'Failed history task',
+          is_group: true,
+          has_bot: true,
+          is_agent_task: true,
+          last_time: '2026-07-20T08:02:00Z',
+          task_status: { state: 'failed', updated_at: '2026-07-20T08:02:00Z' },
+        },
+        {
+          id: 'grp_stale',
+          name: 'Stale history task',
+          is_group: true,
+          has_bot: true,
+          is_agent_task: true,
+          last_time: '2026-07-20T08:01:00Z',
+          task_status: { state: 'stale', updated_at: '2026-07-20T08:01:00Z' },
+        },
+        {
+          id: 'grp_cancelled',
+          name: 'Cancelled history task',
+          is_group: true,
+          has_bot: true,
+          is_agent_task: true,
+          last_time: '2026-07-20T08:00:00Z',
+          task_status: { state: 'cancelled', updated_at: '2026-07-20T08:00:00Z' },
+        },
+      ],
+    });
+
+    await mount({ compact: true });
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="历史任务"]'));
+    });
+
+    const statusFor = (name) => Array.from(document.body.querySelectorAll('.cc-compact-history-item'))
+      .find((button) => button.getAttribute('aria-label')?.endsWith(name))
+      ?.querySelector('[role="status"]');
+    expect(statusFor('Running history task')?.getAttribute('aria-label')).toBe('任务进行中');
+    expect(statusFor('Completed history task')?.getAttribute('aria-label')).toBe('任务已完成');
+    expect(statusFor('Failed history task')?.getAttribute('aria-label')).toBe('任务执行失败');
+    expect(statusFor('Stale history task')?.getAttribute('aria-label')).toBe('任务已自动中止');
+    expect(statusFor('Cancelled history task')?.getAttribute('aria-label')).toBe('任务已中止');
+    expect(statusFor('Cancelled history task')?.className).toContain('cancelled');
+  });
+
   it('collects contact creation actions in one accessible menu and closes it appropriately', async () => {
     await mount();
 

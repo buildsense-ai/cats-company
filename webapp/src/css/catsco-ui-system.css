@@ -677,6 +677,29 @@ html[data-theme="liquid"] .catsco-brand-mark {
   border-style: dotted;
 }
 
+.cc-compact-task-status.cc-compact-history-status {
+  position: relative;
+  inset: auto;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+
+.cc-compact-task-status.cc-compact-history-status:not(.running) {
+  right: auto;
+  bottom: auto;
+  width: 10px;
+  height: 10px;
+  box-shadow: none;
+}
+
+.cc-compact-task-status.cc-compact-history-status.running {
+  inset: auto;
+}
+
 .cc-compact-conversation:hover .oc-avatar,
 .cc-compact-conversation:focus-visible .oc-avatar {
   transform: scale(1.14);

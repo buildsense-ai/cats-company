@@ -66,6 +66,27 @@ function setMicrophoneTracksEnabled(stream, enabled) {
   });
 }
 
+function createMicrophoneAbortError() {
+  const error = new Error('麦克风会话已关闭');
+  error.name = 'AbortError';
+  error.code = 'STT_LIFECYCLE_ABORT';
+  return error;
+}
+
+function isMicrophoneLifecycleAbort(error) {
+  return error?.code === 'STT_LIFECYCLE_ABORT';
+}
+
+function isPageHidden() {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
+
+function assertMicrophoneCaptureActive(generation) {
+  if (generation !== microphoneRequestGeneration || isPageHidden()) {
+    throw createMicrophoneAbortError();
+  }
+}
+
 // Keep the authorized stream muted between foreground captures. Stopping the
 // track can make standalone PWAs show the platform microphone prompt again.
 export function releaseReusableMicrophoneStream() {
@@ -101,17 +122,23 @@ function rememberReusableMicrophoneStream(stream) {
 
 async function acquireReusableMicrophoneStream() {
   installMicrophoneLifecycleCleanup();
+  assertMicrophoneCaptureActive(microphoneRequestGeneration);
 
   if (hasLiveAudioTrack(reusableMicrophoneStream)) {
     setMicrophoneTracksEnabled(reusableMicrophoneStream, true);
     return reusableMicrophoneStream;
   }
   if (reusableMicrophoneStream) releaseReusableMicrophoneStream();
+
+  // Releasing an ended stream advances the lifecycle generation. Read it only
+  // after that cleanup so a fresh foreground request is not mistaken for the
+  // stale request that owned the ended stream.
+  const generation = microphoneRequestGeneration;
+  assertMicrophoneCaptureActive(generation);
   if (pendingMicrophoneRequest?.generation === microphoneRequestGeneration) {
     return pendingMicrophoneRequest.promise;
   }
 
-  const generation = microphoneRequestGeneration;
   const pendingRequest = { generation, promise: null };
   pendingRequest.promise = navigator.mediaDevices.getUserMedia({
     audio: {
@@ -123,9 +150,7 @@ async function acquireReusableMicrophoneStream() {
   }).then((stream) => {
     if (generation !== microphoneRequestGeneration) {
       stream.getTracks().forEach((track) => track.stop());
-      const error = new Error('麦克风会话已关闭');
-      error.name = 'AbortError';
-      throw error;
+      throw createMicrophoneAbortError();
     }
     if (!hasLiveAudioTrack(stream)) {
       stream.getTracks().forEach((track) => track.stop());
@@ -157,7 +182,12 @@ export async function createPCM16Capture({ onFrame, onLevel, onSuspended }) {
   if (!isStreamingSTTSupported()) {
     throw new Error('当前浏览器不支持流式语音输入');
   }
+  assertMicrophoneCaptureActive(microphoneRequestGeneration);
   const stream = await acquireReusableMicrophoneStream();
+  // acquireReusableMicrophoneStream() may release a stale ended stream and
+  // advance the generation before returning a fresh stream.
+  const generation = microphoneRequestGeneration;
+  assertMicrophoneCaptureActive(generation);
   retainReusableMicrophoneStream(stream);
   const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
   let context;
@@ -166,6 +196,7 @@ export async function createPCM16Capture({ onFrame, onLevel, onSuspended }) {
   try {
     context = new AudioContextClass({ latencyHint: 'interactive' });
     await context.audioWorklet.addModule(PCM_WORKLET_URL);
+    assertMicrophoneCaptureActive(generation);
     source = context.createMediaStreamSource(stream);
     worklet = new AudioWorkletNode(context, 'catsco-pcm16-capture', {
       numberOfInputs: 1,
@@ -182,7 +213,11 @@ export async function createPCM16Capture({ onFrame, onLevel, onSuspended }) {
     context.onstatechange = () => {
       if (context.state === 'suspended' || context.state === 'interrupted') onSuspended?.();
     };
-    if (context.state === 'suspended') await context.resume();
+    if (context.state === 'suspended') {
+      await context.resume();
+      assertMicrophoneCaptureActive(generation);
+    }
+    assertMicrophoneCaptureActive(generation);
 
     let stopPromise = null;
     return {
@@ -245,6 +280,22 @@ export class StreamingSTTSession {
     this.handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') void this.stop();
     };
+    this.handlePageHide = () => void this.stop();
+    this.lifecycleListenersInstalled = false;
+  }
+
+  installLifecycleListeners() {
+    if (this.lifecycleListenersInstalled) return;
+    this.lifecycleListenersInstalled = true;
+    document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    globalThis.addEventListener?.('pagehide', this.handlePageHide);
+  }
+
+  completeWithoutCapture() {
+    this.stopRequested = true;
+    this.terminal = true;
+    this.cleanup();
+    this.setState('complete');
   }
 
   setState(state) {
@@ -271,13 +322,16 @@ export class StreamingSTTSession {
   async start() {
     if (this.state !== 'idle') return;
     this.setState('starting');
+    this.installLifecycleListeners();
+    if (isPageHidden()) {
+      this.completeWithoutCapture();
+      return;
+    }
     try {
       const session = await this.createSession();
       if (this.terminal) return;
-      if (this.stopRequested) {
-        this.terminal = true;
-        this.cleanup();
-        this.setState('complete');
+      if (this.stopRequested || isPageHidden()) {
+        this.completeWithoutCapture();
         return;
       }
       const capture = await this.createCapture({
@@ -289,15 +343,12 @@ export class StreamingSTTSession {
         await capture.stop();
         return;
       }
-      if (this.stopRequested) {
+      if (this.stopRequested || isPageHidden()) {
         await capture.stop();
-        this.terminal = true;
-        this.cleanup();
-        this.setState('complete');
+        this.completeWithoutCapture();
         return;
       }
       this.capture = capture;
-      document.addEventListener('visibilitychange', this.handleVisibilityChange);
       this.applyDurationLimit(session);
       this.setState('connecting');
       const socket = this.createWebSocket(this.resolveWebSocketURL(session.ticket));
@@ -309,6 +360,10 @@ export class StreamingSTTSession {
         if (!this.terminal) this.fail(new Error('语音识别连接已断开'));
       };
     } catch (error) {
+      if (this.stopRequested || isMicrophoneLifecycleAbort(error)) {
+        this.completeWithoutCapture();
+        return;
+      }
       this.fail(this.normalizeStartError(error));
     }
   }
@@ -445,6 +500,8 @@ export class StreamingSTTSession {
     if (this.durationTimer) window.clearTimeout(this.durationTimer);
     this.durationTimer = null;
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+    globalThis.removeEventListener?.('pagehide', this.handlePageHide);
+    this.lifecycleListenersInstalled = false;
     this.capture?.stop();
     this.capture = null;
     const socket = this.socket;
