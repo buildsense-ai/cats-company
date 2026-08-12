@@ -135,8 +135,12 @@ func (h *RelayKeyHandler) HandleKey(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
 			_ = json.NewDecoder(r.Body).Decode(&req)
 		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			name = "CatsCo 模型服务 Key"
+		}
 		h.forward(w, r, http.MethodPost, uid, "", relayKeyProxyRequest{
-			Name:     strings.TrimSpace(req.Name),
+			Name:     name,
 			Username: UsernameFromContext(r.Context()),
 		})
 	case http.MethodDelete:

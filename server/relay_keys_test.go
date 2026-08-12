@@ -141,7 +141,7 @@ func TestRelayKeyCreateAndRotateProxy(t *testing.T) {
 	rotateHandler := OwnerMiddlewareWithDB(store)(keyHandler.HandleRotate)
 	revealHandler := OwnerMiddlewareWithDB(store)(keyHandler.HandleReveal)
 
-	createReq := httptest.NewRequest(http.MethodPost, "/api/relay/key", strings.NewReader(`{"name":"my key"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/api/relay/key", strings.NewReader(`{}`))
 	createReq.Header.Set("Authorization", "Bearer "+userToken)
 	createReq.Header.Set("Content-Type", "application/json")
 	createRec := httptest.NewRecorder()
@@ -151,7 +151,7 @@ func TestRelayKeyCreateAndRotateProxy(t *testing.T) {
 	if createRec.Code != http.StatusOK {
 		t.Fatalf("create status=%d body=%s", createRec.Code, createRec.Body.String())
 	}
-	if seenCreateBody.Name != "my key" || seenCreateBody.Username != "charlie" {
+	if seenCreateBody.Name != "CatsCo 模型服务 Key" || seenCreateBody.Username != "charlie" {
 		t.Fatalf("unexpected create body: %+v", seenCreateBody)
 	}
 	if !strings.Contains(createRec.Body.String(), "sk-bf-created") {

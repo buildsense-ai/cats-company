@@ -241,21 +241,21 @@ describe('LocalAssistantBar model selector', () => {
 
   it('shows the relay admin button when the parent grants access', async () => {
     await renderBar({ relayAdminAllowed: true });
-    const button = container.querySelector('button[aria-label="中转用量"]');
+    const button = container.querySelector('button[aria-label="模型用量"]');
     expect(button).toBeTruthy();
   });
 
   it('opens the relay admin panel when the button is clicked', async () => {
     const onOpenRelayAdmin = vi.fn();
     await renderBar({ relayAdminAllowed: true, onOpenRelayAdmin });
-    const button = container.querySelector('button[aria-label="中转用量"]');
+    const button = container.querySelector('button[aria-label="模型用量"]');
     await act(async () => button.click());
     expect(onOpenRelayAdmin).toHaveBeenCalledTimes(1);
   });
 
   it('hides the relay admin button when access is denied', async () => {
     await renderBar({ relayAdminAllowed: false });
-    expect(container.querySelector('button[aria-label="中转用量"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="模型用量"]')).toBeNull();
   });
 
   it('always renders the cloud button and enables it when an Agent resource handler is available', async () => {

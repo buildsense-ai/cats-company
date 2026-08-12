@@ -62,7 +62,7 @@ const mockBotModels = [
     reasoning_efforts: ['high', 'max', 'disabled'],
     default_reasoning_effort: 'high',
   },
-  ...['terra', 'sol', 'luna'].map((variant) => ({
+  ...['terra', 'sol'].map((variant) => ({
     id: `gpt-5.6-${variant}`,
     label: `GPT-5.6 ${variant[0].toUpperCase()}${variant.slice(1)}`,
     description: 'OpenAI Responses，支持精细推理强度',
@@ -1273,7 +1273,7 @@ async function handleApi(req, res) {
           note: '本地商业化界面演示',
           summary: {
             uid: user.id,
-            models: ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'],
+            models: ['gpt-5.6-sol', 'gpt-5.6-terra'],
             entitlements: [{
               id: 'preview-entitlement',
               state: 'active',

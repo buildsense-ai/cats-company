@@ -82,13 +82,13 @@ export default function RelayAdminPanel({ onClose }) {
   return (
     <aside
       className="v3-relay-admin-panel"
-      aria-label="中转用量管理"
+      aria-label="模型用量管理"
       style={{ '--v3-relay-admin-width': `${width}px` }}
     >
       <div
         className="v3-relay-admin-resize-handle"
         role="separator"
-        aria-label="调整中转用量面板宽度"
+        aria-label="调整模型用量面板宽度"
         aria-orientation="vertical"
         tabIndex={0}
         onPointerDown={handleResizePointerDown}
@@ -96,8 +96,8 @@ export default function RelayAdminPanel({ onClose }) {
         title="拖动调整面板宽度"
       />
       <div className="v3-relay-admin-header">
-        <span>中转用量管理</span>
-        <button type="button" onClick={onClose} aria-label="关闭中转用量管理" title="关闭">
+        <span>模型用量管理</span>
+        <button type="button" onClick={onClose} aria-label="关闭模型用量管理" title="关闭">
           <X size={16} />
         </button>
       </div>
@@ -107,7 +107,7 @@ export default function RelayAdminPanel({ onClose }) {
           proxy (uid whitelist + path whitelist + scoped cookie + rate limit),
           and only whitelisted uid can open this panel at all. */}
       <iframe
-        title="中转用量管理"
+        title="模型用量管理"
         src={api.relayAdminProxyURL('/local/usage-admin')}
         sandbox="allow-scripts allow-same-origin allow-forms"
       />

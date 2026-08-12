@@ -286,10 +286,16 @@ function modelBudgetLabel(model) {
   return model;
 }
 
+function modelServiceKeyName(name) {
+  const value = String(name || '').trim();
+  if (!value || /^catsco\s+relay\s+key$/i.test(value)) return 'CatsCo 模型服务 Key';
+  return value;
+}
+
 function summarizeCommercial(summary) {
   const models = commercialModels(summary);
   if (!models.length) return '暂无已发放额度';
-  return `${models.length} 个模型额度可用 · 具体容量按用量百分比展示`;
+  return `1 个共享额度池 · 覆盖 ${models.length} 个模型 · 各模型按自身倍率扣减`;
 }
 
 function commercialUsageTextForUser(plan, presentation) {
@@ -301,7 +307,9 @@ function activeEntitlements(summary) {
 }
 
 function commercialModels(summary) {
-  return [...(summary?.models || [])].filter(Boolean).sort((a, b) => a.localeCompare(b));
+  return [...(summary?.models || [])]
+    .filter((model) => model && String(model).toLowerCase() !== 'gpt-5.6-luna')
+    .sort((a, b) => a.localeCompare(b));
 }
 
 function modelUsageKey(model) {
@@ -410,7 +418,7 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
       className: 'loading',
       model: '读取中',
       title: '当前模型额度',
-      meta: '正在读取 relay 当前模型',
+      meta: '正在读取当前模型',
       detail: '等待后台同步',
       percent: 0,
       note: '会按 CatsCo 当前启动模型展示对应额度。',
@@ -421,7 +429,7 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
       className: 'inactive',
       model: fallbackModel,
       title: '当前模型额度',
-      meta: commercialEnabled ? 'relay 用量暂未同步' : '暂未接入套餐',
+      meta: commercialEnabled ? '模型用量暂未同步' : '暂未接入套餐',
       detail: commercialEnabled ? '暂无用量数据' : '套餐兑换后显示额度',
       percent: 0,
       note: commercialEnabled
@@ -463,11 +471,11 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
     className: overLimit ? 'danger' : high ? 'warning' : 'active',
     model: summary.model || fallbackModel,
     title: overLimit ? '当前模型已超额' : high ? '当前模型接近上限' : '当前模型额度',
-    meta: `${summary.provider ? `${summary.provider} · ` : ''}${usedLabel}`,
+    meta: usedLabel,
     detail: remainingLabel,
     percent,
     note: overLimit
-      ? '这组模型额度已超出，后续调用应被 relay 拦截；请联系管理员补额或重置。'
+      ? '共享模型额度已用完，后续调用将暂停；请联系管理员补额或等待额度重置。'
       : '按当前启动模型展示，切换模型后可能延迟几分钟刷新。',
   };
 }
@@ -475,11 +483,11 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
 function budgetUsageDisplay(model, usageByModel) {
   const { loading, summary: usage } = usageStateForModel(usageByModel, model);
   if (loading) return { label: '读取中', meta: '用量读取中' };
-  if (!usage) return { label: '待同步', meta: '未同步到 relay' };
+  if (!usage) return { label: '待同步', meta: '模型用量暂未同步' };
   if (usage.source === 'custom' || usage.status === 'custom') {
     return { label: '自备额度', meta: '自定义模型不计入模型服务套餐' };
   }
-  if (!usage.model || usage.quota_configured !== true) return { label: '待同步', meta: '未同步到 relay' };
+  if (!usage.model || usage.quota_configured !== true) return { label: '待同步', meta: '模型用量暂未同步' };
   const overLimit = usage.status === 'over_limit';
   const rawPercent = Number(usage.percent || 0);
   const percent = Math.min(100, Math.max(0, rawPercent));
@@ -1106,7 +1114,7 @@ export default function RelayAccessModal({ onClose }) {
         </div>
 
         <div className="relay-access-body">
-          {loading && <div className="oc-settings-secondary">正在读取中转配置...</div>}
+          {loading && <div className="oc-settings-secondary">正在读取模型服务配置...</div>}
           {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
           {warning && <InlineFeedback tone="warning">{warning}</InlineFeedback>}
 
@@ -1510,7 +1518,7 @@ export default function RelayAccessModal({ onClose }) {
                 {commercialEnabled && (
                   <div className="oc-settings-secondary">
                     {commercialEnforced
-                      ? '套餐用量会自动计入对应模型额度，切换模型后可能有几分钟延迟。'
+                      ? '套餐内模型共用同一额度池，并按各模型倍率扣减；切换模型后数据可能延迟几分钟。'
                       : (commercial?.note || '当前为内测账单，购买记录不会自动改变已有模型额度。')}
                   </div>
                 )}
@@ -1650,7 +1658,7 @@ export default function RelayAccessModal({ onClose }) {
                 <div className="relay-access-key-meta">
                   <div>
                     <span>名称</span>
-                    <strong>{relayKey.name || 'CatsCo relay key'}</strong>
+                    <strong>{modelServiceKeyName(relayKey.name)}</strong>
                   </div>
                   <div>
                     <span>前缀</span>

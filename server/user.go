@@ -59,7 +59,7 @@ func (h *UserHandler) SetRelayRegistrationProvisioning(admin *RelayAdminClient) 
 		}
 		var out relayKeyResponse
 		return admin.Do(ctx, http.MethodPost, fmt.Sprintf("/internal/users/%d/key", uid), relayKeyProxyRequest{
-			Name:     "CatsCo relay key",
+			Name:     "CatsCo 模型服务 Key",
 			Username: username,
 		}, &out)
 	}

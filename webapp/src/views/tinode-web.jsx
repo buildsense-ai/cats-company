@@ -1091,7 +1091,7 @@ function TinodeWebApp() {
               <Laptop size={16} style={{marginRight: 10}} /> 连接我的电脑助手
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowRelayModal(true); }}>
-              <KeyRound size={16} style={{marginRight: 10}} /> CatsCo 中转站
+              <KeyRound size={16} style={{marginRight: 10}} /> CatsCo 模型服务
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowProfileEditor(true); }}>
               <Settings size={16} style={{marginRight: 10}} /> 设置与资料
@@ -1243,7 +1243,7 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
       <EditableConversationTitle title={title} editable={Boolean(onRenameTitle)} onSave={onRenameTitle} />
       <div className="v3-shell-actions">
         {relayAdminAllowed && (
-          <button type="button" className="v3-action-btn" onClick={onOpenRelayAdmin} aria-label="中转用量" title="中转用量管理">
+          <button type="button" className="v3-action-btn" onClick={onOpenRelayAdmin} aria-label="模型用量" title="模型用量管理">
             <Settings2 size={17} />
           </button>
         )}

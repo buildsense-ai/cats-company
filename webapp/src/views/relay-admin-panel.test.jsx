@@ -53,7 +53,7 @@ describe('RelayAdminPanel', () => {
   it('renders a close button that invokes onClose', async () => {
     const onClose = vi.fn();
     await renderPanel({ onClose });
-    const close = container.querySelector('button[aria-label="关闭中转用量管理"]');
+    const close = container.querySelector('button[aria-label="关闭模型用量管理"]');
     expect(close).toBeTruthy();
     await act(async () => close.click());
     expect(onClose).toHaveBeenCalledTimes(1);

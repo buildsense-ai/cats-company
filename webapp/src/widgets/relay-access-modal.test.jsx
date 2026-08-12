@@ -59,7 +59,7 @@ describe('RelayAccessModal commercial rollout', () => {
       note: '套餐和邀请码仍在内部测试。',
       summary: {
         uid: 38,
-        models: ['MiniMax-M3', 'deepseek-v4-flash'],
+        models: ['MiniMax-M3', 'deepseek-v4-flash', 'gpt-5.6-luna'],
         entitlements: [],
         plans: [],
       },
@@ -123,6 +123,8 @@ describe('RelayAccessModal commercial rollout', () => {
     await clickButton('生成我的 Key');
 
     expect(api.createRelayKey).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('CatsCo 模型服务 Key');
+    expect(container.textContent).not.toContain('CatsCo relay key');
     expect(container.textContent).toContain('sk-bf-created-secret');
     await clickButton('复制 Key');
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('sk-bf-created-secret');
@@ -176,7 +178,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.querySelector('.relay-access-invite-form')).toBeNull();
   });
 
-  it('shows invite redemption and per-model budgets when commercial rollout is enabled', async () => {
+  it('shows invite redemption and shared-pool model coverage when commercial rollout is enabled', async () => {
     api.getRelayUsage.mockImplementation(({ model } = {}) => Promise.resolve({
       configured: true,
       summary: {
@@ -194,7 +196,7 @@ describe('RelayAccessModal commercial rollout', () => {
       enabled: true,
       summary: {
         uid: 38,
-        models: ['MiniMax-M3', 'deepseek-v4-flash'],
+        models: ['MiniMax-M3', 'deepseek-v4-flash', 'gpt-5.6-luna'],
         entitlements: [
           { state: 'active', plan_name: '教师试用包', expires_at: '2026-07-29T00:00:00Z' },
           { state: 'expired', plan_name: '旧套餐' },
@@ -213,6 +215,9 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).toContain('下次');
     expect(container.textContent).toContain('不是自然月');
     expect(container.textContent).toContain('当前权益');
+    expect(container.textContent).toContain('1 个共享额度池 · 覆盖 2 个模型');
+    expect(container.textContent).not.toContain('2 个模型额度可用');
+    expect(container.textContent).not.toContain('gpt-5.6-luna');
     expect(container.textContent).toContain('教师试用包');
     expect(container.textContent).toContain('MiniMax-M3');
     expect(container.textContent).toContain('deepseek-v4-flash');
@@ -279,7 +284,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).toContain('剩余 0%');
     expect(container.textContent).toContain('已用 100%+');
     expect(container.textContent).not.toContain('CNY');
-    expect(container.textContent).toContain('请联系管理员补额或重置');
+    expect(container.textContent).toContain('请联系管理员补额或等待额度重置');
   });
 
   it('does not present zero relay limit as a real remaining quota', async () => {
@@ -343,7 +348,7 @@ describe('RelayAccessModal commercial rollout', () => {
           description: '适合将 XiaoBa 作为日常个人助手。',
           price_fen: 39900,
           duration_days: 30,
-          model_budgets: { 'gpt-5.6-terra': 3500, 'gpt-5.6-sol': 3500, 'gpt-5.6-luna': 3500 },
+          model_budgets: { 'gpt-5.6-terra': 5250, 'gpt-5.6-sol': 5250 },
         },
         {
           id: 22,
@@ -352,7 +357,7 @@ describe('RelayAccessModal commercial rollout', () => {
           description: '适合高频、多任务并行或复杂工作。',
           price_fen: 79900,
           duration_days: 30,
-          model_budgets: { 'gpt-5.6-terra': 10500, 'gpt-5.6-sol': 10500, 'gpt-5.6-luna': 10500 },
+          model_budgets: { 'gpt-5.6-terra': 15750, 'gpt-5.6-sol': 15750 },
         },
       ],
     });
@@ -373,6 +378,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).not.toContain('200000000');
     expect(container.textContent).not.toContain('10500');
     expect(container.textContent).not.toContain('31500');
+    expect(container.textContent).not.toContain('gpt-5.6-luna');
     expect(container.querySelector('.relay-access-plan-row.recommended')?.textContent).toContain('专业版');
     expect(container.querySelectorAll('.relay-access-plan-row')).toHaveLength(3);
     expect(Array.from(container.querySelectorAll('.relay-access-plan-row button')).every((button) => button.disabled)).toBe(true);
