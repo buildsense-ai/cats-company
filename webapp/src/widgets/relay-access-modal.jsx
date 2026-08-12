@@ -31,14 +31,14 @@ const COMMERCIAL_PLAN_PRESENTATION = {
   },
   'catsco-pro': {
     kicker: 'CATSCO PRO',
-    tagline: '约 5 倍任务容量',
+    tagline: '约 3 倍任务容量',
     audience: '高频使用 · 复杂工作流',
     usageLabel: '专业版用量',
     recommended: true,
     pro: true,
     features: [
       '包含个人版全部能力',
-      '约为个人版 5 倍的任务容量',
+      '约为个人版 3 倍的任务容量',
       '更高并发与后台任务容量',
       '复杂任务优先获得更强执行能力',
       '高峰期更高响应优先级',

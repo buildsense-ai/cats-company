@@ -352,7 +352,7 @@ describe('RelayAccessModal commercial rollout', () => {
           description: '适合高频、多任务并行或复杂工作。',
           price_fen: 79900,
           duration_days: 30,
-          model_budgets: { 'gpt-5.6-terra': 17500, 'gpt-5.6-sol': 17500, 'gpt-5.6-luna': 17500 },
+          model_budgets: { 'gpt-5.6-terra': 10500, 'gpt-5.6-sol': 10500, 'gpt-5.6-luna': 10500 },
         },
       ],
     });
@@ -366,13 +366,13 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).toContain('¥0');
     expect(container.textContent).toContain('¥399');
     expect(container.textContent).toContain('¥799');
-    expect(container.textContent).toContain('约为个人版 5 倍的任务容量');
+    expect(container.textContent).toContain('约为个人版 3 倍的任务容量');
     expect(container.textContent).toContain('个人版用量 · 30 天有效');
     expect(container.textContent).toContain('专业版用量 · 30 天有效');
     expect(container.textContent).toContain('支付通道暂未开放');
     expect(container.textContent).not.toContain('200000000');
     expect(container.textContent).not.toContain('10500');
-    expect(container.textContent).not.toContain('52500');
+    expect(container.textContent).not.toContain('31500');
     expect(container.querySelector('.relay-access-plan-row.recommended')?.textContent).toContain('专业版');
     expect(container.querySelectorAll('.relay-access-plan-row')).toHaveLength(3);
     expect(Array.from(container.querySelectorAll('.relay-access-plan-row button')).every((button) => button.disabled)).toBe(true);

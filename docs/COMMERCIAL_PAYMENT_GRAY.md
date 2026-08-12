@@ -21,11 +21,11 @@
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | 无商业 plan | Free / 免费版 | ¥0 | 不额外发放 | 使用现有基础额度 | 长期 | - | 不进入订单目录 |
 | `catsco-personal` | Personal / 个人版 | ¥399 | 2 亿 | ¥10500 | 30 天 | 不限 | `test` |
-| `catsco-pro` | Pro / 专业版 | ¥799 | 10 亿 | ¥52500 | 30 天 | 不限 | `test`，用户侧标记推荐 |
+| `catsco-pro` | Pro / 专业版 | ¥799 | 6 亿 | ¥31500 | 30 天 | 不限 | `test`，用户侧标记推荐 |
 
 换算采用 `SOL 等价 token ÷ 1,000,000 × 7.5 USD × 7 CNY/USD`，即每 100 万 SOL 等价 token 对应 ¥52.5 Relay 额度。等价 token 已包含价差权重：普通输入 `1x`、输出 `6x`、缓存读取 `0.1x`、缓存写入 `0.2x`，不能再把缓存或输出重复加价。
 
-当前 GPT-5.6 Terra、Sol、Luna 共用 Relay provider budget。套餐预设将总额度平均记入三个模型账本，Relay 同步时按共享 provider 汇总为一份总上限：Personal 每模型记 ¥3500，汇总为 ¥10500；Pro 每模型记 ¥17500，汇总为 ¥52500。Pro 的内部等价 token 与 Relay 总额度均为 Personal 的 5 倍，对应官网“约 5 倍任务容量”的表达。若未来三个模型拆成独立 provider budget，必须同时迁移套餐额度分配规则。
+当前 GPT-5.6 Terra、Sol、Luna 共用 Relay provider budget。套餐预设将总额度平均记入三个模型账本，Relay 同步时按共享 provider 汇总为一份总上限：Personal 每模型记 ¥3500，汇总为 ¥10500；Pro 每模型记 ¥10500，汇总为 ¥31500。Pro 的内部等价 token 与 Relay 总额度均为 Personal 的 3 倍，对应官网“约 3 倍任务容量”的表达。若未来三个模型拆成独立 provider budget，必须同时迁移套餐额度分配规则。
 
 用户端只显示 Free / Personal / Pro、工作强度、已用百分比和剩余百分比，不显示 SOL 等价 token、CNY 执行额度、模型预算或内部成本。用户商业化接口也不返回套餐的 `internal_quota_tokens`、`model_budgets` 和 `monthly_budget_cny`。
 

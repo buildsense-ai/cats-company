@@ -873,7 +873,7 @@
             <button type="button" data-plan-preset="catsco-pro">专业版</button>
             <button type="button" data-plan-preset="blank">空白套餐</button>
           </div>
-          <div class="commercial-meta">Free 使用现有基础模型服务，不创建商业套餐。Personal 为 2 亿 SOL 等价 token / ¥10500 Relay 共享额度；Pro 为 10 亿 / ¥52500。内部数字不会展示给用户，保存后必须先 Dry-run 再开放。</div>
+          <div class="commercial-meta">Free 使用现有基础模型服务，不创建商业套餐。Personal 为 2 亿 SOL 等价 token / ¥10500 Relay 共享额度；Pro 为 6 亿 / ¥31500。内部数字不会展示给用户，保存后必须先 Dry-run 再开放。</div>
           <form id="commercial-plan-form">
             <input id="commercial-plan-slug" autocomplete="off" placeholder="套餐标识，例如 catsco-personal" />
             <input id="commercial-plan-name" autocomplete="off" placeholder="显示名称，例如 个人版" />
@@ -1542,18 +1542,18 @@ http://127.0.0.1:26061/local/account-admin</code>
       'catsco-pro': {
         slug: 'catsco-pro',
         name: '专业版',
-        description: '适合高频、多任务并行或复杂工作，提供约为个人版 5 倍的任务容量与更宽松的使用边界。',
+        description: '适合高频、多任务并行或复杂工作，提供约为个人版 3 倍的任务容量与更宽松的使用边界。',
         price_cny: 799,
         sale_state: 'test',
         purchase_limit: 0,
-        internal_quota_tokens: 1000000000,
+        internal_quota_tokens: 600000000,
         monthly_budget_cny: 0,
         duration_days: 30,
         sort_order: 30,
         model_budgets: {
-          'gpt-5.6-terra': 17500,
-          'gpt-5.6-sol': 17500,
-          'gpt-5.6-luna': 17500,
+          'gpt-5.6-terra': 10500,
+          'gpt-5.6-sol': 10500,
+          'gpt-5.6-luna': 10500,
         },
       },
       blank: {
