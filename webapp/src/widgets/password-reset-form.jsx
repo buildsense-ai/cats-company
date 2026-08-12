@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../api';
+import { isValidEmailFormat } from '../utils/email-format';
 
 function formatResetError(message) {
   const text = String(message || '');
@@ -34,8 +35,8 @@ export default function PasswordResetForm({ defaultEmail = '', onDone }) {
 
   const handleSendCode = async () => {
     const trimmedEmail = email.trim();
-    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
-      setError('请输入有效的邮箱地址');
+    if (!trimmedEmail || !isValidEmailFormat(trimmedEmail)) {
+      setError('请输入有效的邮箱地址（请检查域名拼写，如 qq.com）');
       return;
     }
 

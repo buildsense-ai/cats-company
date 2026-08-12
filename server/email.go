@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 type verificationCode struct {
@@ -35,6 +37,35 @@ var (
 
 func generateCode() string {
 	return fmt.Sprintf("%06d", rand.Intn(900000)+100000)
+}
+
+// isValidEmailFormat reports whether the email has a plausible, deliverable
+// shape: a non-empty local part, a dotted domain, and a recognizable public
+// suffix. Typos like "qq.cpm" (cpm is not a real TLD) are rejected before any
+// verification email is sent, so users are not silently left without a code.
+func isValidEmailFormat(email string) bool {
+	addr := strings.TrimSpace(email)
+	at := strings.IndexByte(addr, '@')
+	if at <= 0 || at == len(addr)-1 {
+		return false
+	}
+	local := addr[:at]
+	domain := strings.ToLower(addr[at+1:])
+	if local == "" || !strings.Contains(domain, ".") {
+		return false
+	}
+	eTLD, icann := publicsuffix.PublicSuffix(domain)
+	if eTLD == "" {
+		return false
+	}
+	// A single-label effective suffix means the domain's last label is not a
+	// known public suffix; it must at least be a real ICANN TLD. Multi-label
+	// suffixes (e.g. github.io, co.uk) are legitimate private/ccTLD entries
+	// and are allowed even when icann is false.
+	if !strings.Contains(eTLD, ".") && !icann {
+		return false
+	}
+	return true
 }
 
 func sendEmailViaResend(email, code, apiKey, subject string) error {

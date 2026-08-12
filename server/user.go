@@ -113,6 +113,10 @@ func (h *UserHandler) HandleSendCode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email required"})
 		return
 	}
+	if !isValidEmailFormat(req.Email) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid email format"})
+		return
+	}
 
 	// Check if email already registered
 	existingUser, err := h.db.GetUserByEmail(req.Email)
@@ -152,6 +156,10 @@ func (h *UserHandler) HandleResetPasswordSendCode(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email required"})
 		return
 	}
+	if !isValidEmailFormat(req.Email) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid email format"})
+		return
+	}
 
 	existingUser, err := h.db.GetUserByEmail(req.Email)
 	if err != nil {
@@ -187,6 +195,10 @@ func (h *UserHandler) HandleResetPassword(w http.ResponseWriter, r *http.Request
 
 	if req.Email == "" || req.Code == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email and code required"})
+		return
+	}
+	if !isValidEmailFormat(req.Email) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid email format"})
 		return
 	}
 	if len(req.Password) < 6 {
@@ -229,6 +241,10 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	if req.Email == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email required"})
+		return
+	}
+	if !isValidEmailFormat(req.Email) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid email format"})
 		return
 	}
 	if len(req.Password) < 6 {

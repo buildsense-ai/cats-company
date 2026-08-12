@@ -40,6 +40,35 @@ func TestVerificationCodePurposeIsolation(t *testing.T) {
 	}
 }
 
+func TestIsValidEmailFormat(t *testing.T) {
+	valid := []string{
+		"user@qq.com",
+		"user@example.com.cn",
+		"dev@github.io",
+		"a@sub.example.dev",
+		"UPPER@Example.COM",
+	}
+	for _, email := range valid {
+		if !isValidEmailFormat(email) {
+			t.Errorf("expected valid email %q to pass", email)
+		}
+	}
+
+	invalid := []string{
+		"user@qq.cpm",      // cpm is not a real TLD (the reported typo)
+		"user@example.c0m", // typo TLD
+		"user@localhost",   // no dotted domain
+		"@qq.com",          // missing local part
+		"no-at-sign",       // missing @
+		"user@com",         // domain without a dot
+	}
+	for _, email := range invalid {
+		if isValidEmailFormat(email) {
+			t.Errorf("expected invalid email %q to be rejected", email)
+		}
+	}
+}
+
 func TestPasswordResetEmailSubject(t *testing.T) {
 	if got := verificationEmailSubject(verificationPurposePasswordReset); got != "Cats Company 重置密码验证码" {
 		t.Fatalf("unexpected password reset subject: %s", got)

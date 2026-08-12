@@ -4,6 +4,7 @@ import { api, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPush
 import { enqueuePushOperation } from '../utils/push-operation';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import { cleanupPushForSession } from '../utils/push-session-cleanup';
+import { isValidEmailFormat } from '../utils/email-format';
 import t from '../i18n';
 import RelayAdminPanel from './relay-admin-panel';
 import ChatListView from './sidepanel-view';
@@ -1418,6 +1419,7 @@ function formatAuthError(message) {
   if (text.includes('invalid or expired verification code')) return '验证码无效或已过期';
   if (text.includes('username min 3')) return '登录名称至少 3 个字符';
   if (text.includes('password min 6')) return '密码至少 6 位';
+  if (text.includes('invalid email format')) return '邮箱格式无效，请检查域名拼写（如 qq.com）';
   if (text.includes('failed to send verification code')) return '发送验证码失败，请稍后再试';
   return message || '操作失败，请稍后再试';
 }
@@ -1441,8 +1443,8 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
   }, [countdown]);
 
   const handleSendCode = async () => {
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setError('请输入有效的邮箱地址');
+    if (!email || !isValidEmailFormat(email)) {
+      setError('请输入有效的邮箱地址（请检查域名拼写，如 qq.com）');
       return;
     }
     try {
