@@ -743,6 +743,15 @@ export const api = {
     request('GET', `/api/bots/model-config?uid=${uid}${includeUsage ? '&include_usage=1' : ''}`),
   updateBotModelConfig: (uid, modelConfig) => request('PATCH', `/api/bots/model-config?uid=${uid}`, modelConfig),
   getBotDefinitionSkills: (uid) => request('GET', `/api/bots/definition/skills?uid=${encodeURIComponent(uid)}`),
+  getBotDefinitionPrompt: (uid) => request(
+    'GET',
+    `/api/bots/definition?uid=${encodeURIComponent(uid)}`,
+  ),
+  updateBotDefinitionPrompt: (uid, revision, prompt) => request(
+    'PATCH',
+    `/api/bots/definition/prompt?uid=${encodeURIComponent(uid)}`,
+    { revision, prompt },
+  ),
   getAgentSkills: (uid) => request('GET', `/api/agents/skills?uid=${encodeURIComponent(uid)}`),
   updateBotDefinitionSkills: (uid, revision, skills) => request(
     'PATCH',

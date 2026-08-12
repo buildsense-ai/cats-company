@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 
 import {
   canOpenCloudArtifacts,
+  confirmSystemPromptNavigation,
   describeModelApplyError,
   describeModelConfigRequestError,
   LocalAssistantBar,
@@ -96,6 +97,52 @@ describe('preview user identity', () => {
       uid: 'theme-preview',
       username: 'preview',
     });
+  });
+});
+
+describe('system prompt navigation guard', () => {
+  it('requires confirmation only when leaving a dirty system prompt view', async () => {
+    const confirm = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+
+    await expect(confirmSystemPromptNavigation({
+      activeView: 'system-prompt',
+      dirty: true,
+      saving: false,
+      confirm,
+    })).resolves.toBe(false);
+    await expect(confirmSystemPromptNavigation({
+      activeView: 'system-prompt',
+      dirty: true,
+      saving: false,
+      confirm,
+    })).resolves.toBe(true);
+    await expect(confirmSystemPromptNavigation({
+      activeView: 'chats',
+      dirty: true,
+      saving: false,
+      confirm,
+    })).resolves.toBe(true);
+
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({
+      title: '放弃未保存的修改？',
+      confirmLabel: '放弃并离开',
+      tone: 'danger',
+    }));
+  });
+
+  it('blocks navigation without prompting while a system prompt save is in flight', async () => {
+    const confirm = vi.fn();
+
+    await expect(confirmSystemPromptNavigation({
+      activeView: 'system-prompt',
+      dirty: false,
+      saving: true,
+      confirm,
+    })).resolves.toBe(false);
+    expect(confirm).not.toHaveBeenCalled();
   });
 });
 
