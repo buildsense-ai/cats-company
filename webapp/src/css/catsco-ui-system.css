@@ -2277,9 +2277,12 @@ html[data-theme="liquid"] .catsco-brand-mark {
   color: var(--v3-primary);
 }
 
-.cc-task-status-icon {
+.cc-task-status-dot {
   display: block;
-  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
 }
 
 .cc-task-row-status.failed {
@@ -4693,7 +4696,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   }
 
   .v3-composer {
-    padding: 8px 8px calc(20px + env(safe-area-inset-bottom));
+    padding: 8px 8px calc(12px + env(safe-area-inset-bottom));
   }
 
   .v3-composer-row {
@@ -4746,7 +4749,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
     left: 0;
     z-index: 70;
     width: 100%;
-    padding: 8px 8px calc(20px + env(safe-area-inset-bottom));
+    padding: 8px 8px calc(12px + env(safe-area-inset-bottom));
     background: var(--cc-empty-task-bg);
   }
 

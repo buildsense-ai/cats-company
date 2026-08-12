@@ -1,4 +1,8 @@
-import { StreamingSTTSession } from './stt-client';
+import {
+  createPCM16Capture,
+  releaseReusableMicrophoneStream,
+  StreamingSTTSession,
+} from './stt-client';
 
 class FakeWebSocket {
   static CONNECTING = 0;
@@ -32,6 +36,130 @@ class FakeWebSocket {
 }
 
 describe('StreamingSTTSession', () => {
+  afterEach(() => {
+    releaseReusableMicrophoneStream();
+  });
+
+  it('reuses an authorized microphone stream for consecutive foreground captures', async () => {
+    const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
+    const originalAudioContext = globalThis.AudioContext;
+    const originalAudioWorkletNode = globalThis.AudioWorkletNode;
+    const track = {
+      enabled: true,
+      readyState: 'live',
+      stop: vi.fn(),
+      addEventListener: vi.fn(),
+    };
+    const stream = {
+      getAudioTracks: () => [track],
+      getTracks: () => [track],
+    };
+    const getUserMedia = vi.fn().mockResolvedValue(stream);
+    const contexts = [];
+
+    class FakeAudioContext {
+      constructor() {
+        this.state = 'running';
+        this.audioWorklet = { addModule: vi.fn().mockResolvedValue(undefined) };
+        this.close = vi.fn().mockResolvedValue(undefined);
+        this.source = { connect: vi.fn(), disconnect: vi.fn() };
+        contexts.push(this);
+      }
+
+      createMediaStreamSource() {
+        return this.source;
+      }
+    }
+
+    class FakeAudioWorkletNode {
+      constructor() {
+        this.port = {
+          onmessage: null,
+          postMessage: vi.fn((message) => {
+            if (message?.type === 'flush') this.port.onmessage?.({ data: { type: 'flushed' } });
+          }),
+        };
+        this.disconnect = vi.fn();
+      }
+    }
+
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    });
+    globalThis.AudioContext = FakeAudioContext;
+    globalThis.AudioWorkletNode = FakeAudioWorkletNode;
+
+    try {
+      const firstCapture = await createPCM16Capture({ onFrame: vi.fn() });
+      await firstCapture.stop();
+      expect(track.enabled).toBe(false);
+
+      const secondCapture = await createPCM16Capture({ onFrame: vi.fn() });
+      await secondCapture.stop();
+
+      expect(getUserMedia).toHaveBeenCalledTimes(1);
+      expect(contexts).toHaveLength(2);
+      expect(track.stop).not.toHaveBeenCalled();
+
+      window.dispatchEvent(new Event('pagehide'));
+      expect(track.stop).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseReusableMicrophoneStream();
+      if (originalMediaDevices) Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices);
+      else delete navigator.mediaDevices;
+      if (originalAudioContext === undefined) delete globalThis.AudioContext;
+      else globalThis.AudioContext = originalAudioContext;
+      if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+      else globalThis.AudioWorkletNode = originalAudioWorkletNode;
+    }
+  });
+
+  it('releases a microphone request that resolves after the PWA leaves the foreground', async () => {
+    const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
+    const originalAudioContext = globalThis.AudioContext;
+    const originalAudioWorkletNode = globalThis.AudioWorkletNode;
+    let resolveMicrophone;
+    const track = {
+      enabled: true,
+      readyState: 'live',
+      stop: vi.fn(),
+      addEventListener: vi.fn(),
+    };
+    const stream = {
+      getAudioTracks: () => [track],
+      getTracks: () => [track],
+    };
+
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn(() => new Promise((resolve) => { resolveMicrophone = resolve; })),
+      },
+    });
+    globalThis.AudioContext = class FakeAudioContext {};
+    globalThis.AudioWorkletNode = class FakeAudioWorkletNode {};
+
+    try {
+      const pendingCapture = createPCM16Capture({ onFrame: vi.fn() });
+      expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+
+      window.dispatchEvent(new Event('pagehide'));
+      resolveMicrophone(stream);
+
+      await expect(pendingCapture).rejects.toMatchObject({ name: 'AbortError' });
+      expect(track.stop).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseReusableMicrophoneStream();
+      if (originalMediaDevices) Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices);
+      else delete navigator.mediaDevices;
+      if (originalAudioContext === undefined) delete globalThis.AudioContext;
+      else globalThis.AudioContext = originalAudioContext;
+      if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+      else globalThis.AudioWorkletNode = originalAudioWorkletNode;
+    }
+  });
+
   it('acquires an authenticated session before requesting microphone capture', async () => {
     const order = [];
     const session = new StreamingSTTSession({

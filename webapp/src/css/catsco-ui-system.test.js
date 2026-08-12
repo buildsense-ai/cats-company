@@ -684,6 +684,28 @@ describe('CatsCo shell styling', () => {
     );
   });
 
+  it('uses filled semantic dots for terminal sidebar task states', () => {
+    const dotRule = ruleFor('.cc-task-status-dot');
+
+    expect(dotRule).toContain('width: 8px;');
+    expect(dotRule).toContain('height: 8px;');
+    expect(dotRule).toContain('border-radius: 999px;');
+    expect(dotRule).toContain('background: currentColor;');
+    expect(ruleFor('.cc-task-row-status.completed')).toContain('color: var(--v3-primary);');
+    expect(ruleFor('.cc-task-row-status.failed')).toContain('color: #ef5b5b;');
+    expect(css).toContain('.cc-task-row-status.cancelled,\n.cc-task-row-status.stale');
+    expect(css).not.toContain('.cc-task-status-icon');
+  });
+
+  it('places the mobile composer closer to the safe-area edge', () => {
+    expect(css).toContain(`  .v3-composer {
+    padding: 8px 8px calc(12px + env(safe-area-inset-bottom));
+  }`);
+    expect(css).toContain(`  .v3-composer.cc-empty-composer-wrap {
+    position: fixed;`);
+    expect(css).toContain('padding: 8px 8px calc(12px + env(safe-area-inset-bottom));');
+  });
+
   it('makes top-level sidebar section titles distinct from expanded items', () => {
     expect(ruleFor('.cc-top-level-section')).toContain('font-weight: 600;');
     expect(ruleFor('.cc-history-section')).toContain('font-weight: 500;');

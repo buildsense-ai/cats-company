@@ -5,6 +5,12 @@ const PARTIAL_RENDER_INTERVAL_MS = 120;
 const CAPTURE_FLUSH_TIMEOUT_MS = 300;
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 
+let reusableMicrophoneStream = null;
+let pendingMicrophoneRequest = null;
+let reusableMicrophoneConsumers = 0;
+let microphoneRequestGeneration = 0;
+let microphoneLifecycleCleanupInstalled = false;
+
 function normalizeAudioLevel(rms) {
   const decibels = 20 * Math.log10(Math.max(Number(rms) || 0, 0.00001));
   const linear = Math.min(1, Math.max(0, (decibels + 55) / 47));
@@ -50,24 +56,118 @@ export function resolveSTTWebSocketURL(ticket) {
   return url.toString();
 }
 
-export async function createPCM16Capture({ onFrame, onLevel, onSuspended }) {
-  if (!isStreamingSTTSupported()) {
-    throw new Error('当前浏览器不支持流式语音输入');
+function hasLiveAudioTrack(stream) {
+  return Boolean(stream?.getAudioTracks?.().some((track) => track.readyState !== 'ended'));
+}
+
+function setMicrophoneTracksEnabled(stream, enabled) {
+  stream?.getAudioTracks?.().forEach((track) => {
+    if (track.readyState !== 'ended') track.enabled = enabled;
+  });
+}
+
+// Keep the authorized stream muted between foreground captures. Stopping the
+// track can make standalone PWAs show the platform microphone prompt again.
+export function releaseReusableMicrophoneStream() {
+  microphoneRequestGeneration += 1;
+  reusableMicrophoneConsumers = 0;
+  const stream = reusableMicrophoneStream;
+  reusableMicrophoneStream = null;
+  stream?.getTracks?.().forEach((track) => track.stop?.());
+}
+
+function installMicrophoneLifecycleCleanup() {
+  if (microphoneLifecycleCleanupInstalled || typeof document === 'undefined') return;
+  microphoneLifecycleCleanupInstalled = true;
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') releaseReusableMicrophoneStream();
+  });
+  globalThis.addEventListener?.('pagehide', releaseReusableMicrophoneStream);
+}
+
+function rememberReusableMicrophoneStream(stream) {
+  reusableMicrophoneStream = stream;
+  reusableMicrophoneConsumers = 0;
+  const clearEndedStream = () => {
+    if (reusableMicrophoneStream !== stream || hasLiveAudioTrack(stream)) return;
+    reusableMicrophoneStream = null;
+    reusableMicrophoneConsumers = 0;
+  };
+  stream.getTracks?.().forEach((track) => {
+    track.addEventListener?.('ended', clearEndedStream, { once: true });
+  });
+}
+
+async function acquireReusableMicrophoneStream() {
+  installMicrophoneLifecycleCleanup();
+
+  if (hasLiveAudioTrack(reusableMicrophoneStream)) {
+    setMicrophoneTracksEnabled(reusableMicrophoneStream, true);
+    return reusableMicrophoneStream;
   }
-  const stream = await navigator.mediaDevices.getUserMedia({
+  if (reusableMicrophoneStream) releaseReusableMicrophoneStream();
+  if (pendingMicrophoneRequest?.generation === microphoneRequestGeneration) {
+    return pendingMicrophoneRequest.promise;
+  }
+
+  const generation = microphoneRequestGeneration;
+  const pendingRequest = { generation, promise: null };
+  pendingRequest.promise = navigator.mediaDevices.getUserMedia({
     audio: {
       channelCount: 1,
       echoCancellation: true,
       noiseSuppression: true,
       autoGainControl: true,
     },
+  }).then((stream) => {
+    if (generation !== microphoneRequestGeneration) {
+      stream.getTracks().forEach((track) => track.stop());
+      const error = new Error('麦克风会话已关闭');
+      error.name = 'AbortError';
+      throw error;
+    }
+    if (!hasLiveAudioTrack(stream)) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new Error('未获取到可用的麦克风音轨');
+    }
+    rememberReusableMicrophoneStream(stream);
+    setMicrophoneTracksEnabled(stream, true);
+    return stream;
+  }).finally(() => {
+    if (pendingMicrophoneRequest === pendingRequest) pendingMicrophoneRequest = null;
   });
+  pendingMicrophoneRequest = pendingRequest;
+  return pendingRequest.promise;
+}
+
+function retainReusableMicrophoneStream(stream) {
+  if (stream !== reusableMicrophoneStream) return;
+  reusableMicrophoneConsumers += 1;
+  setMicrophoneTracksEnabled(stream, true);
+}
+
+function releaseReusableMicrophoneConsumer(stream) {
+  if (stream !== reusableMicrophoneStream) return;
+  reusableMicrophoneConsumers = Math.max(0, reusableMicrophoneConsumers - 1);
+  if (reusableMicrophoneConsumers === 0) setMicrophoneTracksEnabled(stream, false);
+}
+
+export async function createPCM16Capture({ onFrame, onLevel, onSuspended }) {
+  if (!isStreamingSTTSupported()) {
+    throw new Error('当前浏览器不支持流式语音输入');
+  }
+  const stream = await acquireReusableMicrophoneStream();
+  retainReusableMicrophoneStream(stream);
   const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
-  const context = new AudioContextClass({ latencyHint: 'interactive' });
+  let context;
+  let source;
+  let worklet;
   try {
+    context = new AudioContextClass({ latencyHint: 'interactive' });
     await context.audioWorklet.addModule(PCM_WORKLET_URL);
-    const source = context.createMediaStreamSource(stream);
-    const worklet = new AudioWorkletNode(context, 'catsco-pcm16-capture', {
+    source = context.createMediaStreamSource(stream);
+    worklet = new AudioWorkletNode(context, 'catsco-pcm16-capture', {
       numberOfInputs: 1,
       numberOfOutputs: 0,
       channelCount: 1,
@@ -99,7 +199,7 @@ export async function createPCM16Capture({ onFrame, onLevel, onSuspended }) {
             context.onstatechange = null;
             source.disconnect();
             worklet.disconnect();
-            stream.getTracks().forEach((track) => track.stop());
+            releaseReusableMicrophoneConsumer(stream);
             void context.close();
             resolve();
           };
@@ -111,8 +211,10 @@ export async function createPCM16Capture({ onFrame, onLevel, onSuspended }) {
       },
     };
   } catch (error) {
-    stream.getTracks().forEach((track) => track.stop());
-    void context.close();
+    worklet?.disconnect?.();
+    source?.disconnect?.();
+    releaseReusableMicrophoneConsumer(stream);
+    void context?.close?.();
     throw error;
   }
 }
