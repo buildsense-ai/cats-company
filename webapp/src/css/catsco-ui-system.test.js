@@ -14,6 +14,23 @@ const ruleIn = (source, selector) => source.match(
 )?.[0] || '';
 const ruleFor = (selector) => ruleIn(css, selector);
 
+const hexToken = (rule, token) => rule.match(
+  new RegExp(`${token}:\\s*(#[0-9a-fA-F]{6});`),
+ )?.[1];
+
+const relativeLuminance = (hex) => {
+  const channels = hex.slice(1).match(/../g).map((channel) => parseInt(channel, 16) / 255);
+  const [red, green, blue] = channels.map((channel) => (
+    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+  ));
+  return (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
+};
+
+const contrastRatio = (foreground, background) => {
+  const [lighter, darker] = [relativeLuminance(foreground), relativeLuminance(background)].sort((a, b) => b - a);
+  return (lighter + 0.05) / (darker + 0.05);
+};
+
 const readLosslessWebpDimensions = (buffer) => {
   if (
     buffer.subarray(0, 4).toString('ascii') !== 'RIFF'
@@ -684,17 +701,59 @@ describe('CatsCo shell styling', () => {
     );
   });
 
-  it('uses filled semantic dots for terminal sidebar task states', () => {
+  it('uses filled terminal-state dots that remain distinguishable without color alone', () => {
     const dotRule = ruleFor('.cc-task-status-dot');
 
     expect(dotRule).toContain('width: 8px;');
     expect(dotRule).toContain('height: 8px;');
     expect(dotRule).toContain('border-radius: 999px;');
     expect(dotRule).toContain('background: currentColor;');
-    expect(ruleFor('.cc-task-row-status.completed')).toContain('color: var(--v3-primary);');
-    expect(ruleFor('.cc-task-row-status.failed')).toContain('color: #ef5b5b;');
-    expect(css).toContain('.cc-task-row-status.cancelled,\n.cc-task-row-status.stale');
+    expect(dotRule).toContain('position: relative;');
+    expect(ruleFor('.cc-task-row-status.completed')).toContain('color: var(--cc-success-text);');
+    expect(ruleFor('.cc-task-row-status.failed')).toContain('color: var(--cc-danger);');
+    expect(ruleFor('.cc-task-row-status.cancelled,\n.cc-task-row-status.stale'))
+      .toContain('color: var(--cc-warning-text);');
+    expect(css).toContain(`.cc-task-status-dot--failed::after,
+.cc-task-status-dot--cancelled::after,
+.cc-task-status-dot--stale::after {`);
+    expect(css).toContain(`.cc-task-status-dot--cancelled::after {
+  border-style: dashed;
+}`);
+    expect(css).toContain(`.cc-task-status-dot--stale::after {
+  border-style: dotted;
+}`);
     expect(css).not.toContain('.cc-task-status-icon');
+  });
+
+  it('keeps terminal state dots at least 3:1 against every sidebar theme', () => {
+    const root = ruleFor(':root');
+    const dark = ruleFor('html[data-theme="dark"]');
+    const liquid = ruleFor('html[data-theme="liquid"]');
+    const themes = [
+      { background: hexToken(root, '--cc-bg'), colors: [
+        hexToken(root, '--cc-success-text'),
+        hexToken(root, '--cc-danger'),
+        hexToken(root, '--cc-warning-text'),
+      ] },
+      { background: hexToken(dark, '--cc-bg'), colors: [
+        hexToken(dark, '--cc-success-text'),
+        hexToken(root, '--cc-danger'),
+        hexToken(dark, '--cc-warning-text'),
+      ] },
+      { background: hexToken(liquid, '--cc-bg'), colors: [
+        hexToken(liquid, '--cc-success-text'),
+        hexToken(root, '--cc-danger'),
+        hexToken(liquid, '--cc-warning-text'),
+      ] },
+    ];
+
+    themes.forEach(({ background, colors }) => {
+      expect(background).toBeTruthy();
+      colors.forEach((color) => {
+        expect(color).toBeTruthy();
+        expect(contrastRatio(color, background)).toBeGreaterThanOrEqual(3);
+      });
+    });
   });
 
   it('places the mobile composer closer to the safe-area edge', () => {
@@ -954,9 +1013,19 @@ describe('CatsCo shell styling', () => {
     expect(runningRule).toContain('justify-content: center;');
     expect(spinnerRule).toContain('animation: catsco-spin 0.9s linear infinite;');
     expect(spinnerRule).not.toContain('filter:');
-    expect(ruleFor('.cc-compact-task-status.completed')).toContain('color: var(--v3-primary);');
-    expect(ruleFor('.cc-compact-task-status.failed')).toContain('color: #ef5b5b;');
-    expect(css).toContain('.cc-compact-task-status.cancelled,\n.cc-compact-task-status.stale');
+    expect(ruleFor('.cc-compact-task-status.completed')).toContain('color: var(--cc-success-text);');
+    expect(ruleFor('.cc-compact-task-status.failed')).toContain('color: var(--cc-danger);');
+    expect(ruleFor('.cc-compact-task-status.cancelled,\n.cc-compact-task-status.stale'))
+      .toContain('color: var(--cc-warning-text);');
+    expect(css).toContain(`.cc-compact-task-status.failed::after,
+.cc-compact-task-status.cancelled::after,
+.cc-compact-task-status.stale::after {`);
+    expect(css).toContain(`.cc-compact-task-status.cancelled::after {
+  border-style: dashed;
+}`);
+    expect(css).toContain(`.cc-compact-task-status.stale::after {
+  border-style: dotted;
+}`);
     expect(css).toContain('.cc-task-row-status.running svg,\n  .cc-compact-task-status.running svg');
   });
 

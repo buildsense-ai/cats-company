@@ -1626,7 +1626,7 @@ describe('ChatListView sidebar sections', () => {
     });
 
     expect(task.querySelector('.cc-task-row-status.running')).toBeFalsy();
-    expect(task.querySelector('.cc-task-row-status.completed .cc-task-status-dot')).toBeTruthy();
+    expect(task.querySelector('.cc-task-row-status.completed .cc-task-status-dot--completed')).toBeTruthy();
     expect(task.querySelector('.cc-chat-row-time')).toBeFalsy();
   });
 
@@ -1651,7 +1651,7 @@ describe('ChatListView sidebar sections', () => {
     await mount();
 
     const task = container.querySelector('.cc-history-item');
-    expect(task.querySelector('.cc-task-row-status.completed .cc-task-status-dot')).toBeTruthy();
+    expect(task.querySelector('.cc-task-row-status.completed .cc-task-status-dot--completed')).toBeTruthy();
     expect(task.querySelector('.cc-chat-row-time')).toBeFalsy();
 
     await act(async () => {
@@ -1710,7 +1710,7 @@ describe('ChatListView sidebar sections', () => {
     await mount();
 
     const task = container.querySelector('.cc-history-item');
-    expect(task.querySelector('.cc-task-row-status.failed .cc-task-status-dot')).toBeTruthy();
+    expect(task.querySelector('.cc-task-row-status.failed .cc-task-status-dot--failed')).toBeTruthy();
     expect(task.querySelector('.cc-task-completed-dot')).toBeFalsy();
     expect(task.querySelector('.cc-chat-row-time')).toBeFalsy();
   });
@@ -1739,7 +1739,7 @@ describe('ChatListView sidebar sections', () => {
     await mount();
 
     const task = container.querySelector('.cc-history-item');
-    expect(task.querySelector(`.cc-task-row-status.${state} .cc-task-status-dot`)).toBeTruthy();
+    expect(task.querySelector(`.cc-task-row-status.${state} .cc-task-status-dot--${state}`)).toBeTruthy();
     expect(task.querySelector(`.cc-task-row-status.${state}`).getAttribute('aria-label')).toBe(label);
     expect(task.querySelector('.cc-chat-row-time')).toBeFalsy();
 

@@ -35,25 +35,52 @@ class FakeWebSocket {
   }
 }
 
+function createMicrophoneStreamFixture() {
+  const track = {
+    enabled: true,
+    readyState: 'live',
+    stop: vi.fn(),
+    addEventListener: vi.fn(),
+  };
+  return {
+    track,
+    stream: {
+      getAudioTracks: () => [track],
+      getTracks: () => [track],
+    },
+  };
+}
+
+function installMicrophoneTestRuntime({ getUserMedia, AudioContext, AudioWorkletNode }) {
+  const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
+  const originalAudioContext = globalThis.AudioContext;
+  const originalAudioWorkletNode = globalThis.AudioWorkletNode;
+
+  Object.defineProperty(navigator, 'mediaDevices', {
+    configurable: true,
+    value: { getUserMedia },
+  });
+  globalThis.AudioContext = AudioContext;
+  globalThis.AudioWorkletNode = AudioWorkletNode;
+
+  return () => {
+    releaseReusableMicrophoneStream();
+    if (originalMediaDevices) Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices);
+    else delete navigator.mediaDevices;
+    if (originalAudioContext === undefined) delete globalThis.AudioContext;
+    else globalThis.AudioContext = originalAudioContext;
+    if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+    else globalThis.AudioWorkletNode = originalAudioWorkletNode;
+  };
+}
+
 describe('StreamingSTTSession', () => {
   afterEach(() => {
     releaseReusableMicrophoneStream();
   });
 
   it('reuses an authorized microphone stream for consecutive foreground captures', async () => {
-    const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
-    const originalAudioContext = globalThis.AudioContext;
-    const originalAudioWorkletNode = globalThis.AudioWorkletNode;
-    const track = {
-      enabled: true,
-      readyState: 'live',
-      stop: vi.fn(),
-      addEventListener: vi.fn(),
-    };
-    const stream = {
-      getAudioTracks: () => [track],
-      getTracks: () => [track],
-    };
+    const { track, stream } = createMicrophoneStreamFixture();
     const getUserMedia = vi.fn().mockResolvedValue(stream);
     const contexts = [];
 
@@ -83,12 +110,11 @@ describe('StreamingSTTSession', () => {
       }
     }
 
-    Object.defineProperty(navigator, 'mediaDevices', {
-      configurable: true,
-      value: { getUserMedia },
+    const restoreRuntime = installMicrophoneTestRuntime({
+      getUserMedia,
+      AudioContext: FakeAudioContext,
+      AudioWorkletNode: FakeAudioWorkletNode,
     });
-    globalThis.AudioContext = FakeAudioContext;
-    globalThis.AudioWorkletNode = FakeAudioWorkletNode;
 
     try {
       const firstCapture = await createPCM16Capture({ onFrame: vi.fn() });
@@ -105,44 +131,24 @@ describe('StreamingSTTSession', () => {
       window.dispatchEvent(new Event('pagehide'));
       expect(track.stop).toHaveBeenCalledTimes(1);
     } finally {
-      releaseReusableMicrophoneStream();
-      if (originalMediaDevices) Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices);
-      else delete navigator.mediaDevices;
-      if (originalAudioContext === undefined) delete globalThis.AudioContext;
-      else globalThis.AudioContext = originalAudioContext;
-      if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
-      else globalThis.AudioWorkletNode = originalAudioWorkletNode;
+      restoreRuntime();
     }
   });
 
   it('releases a microphone request that resolves after the PWA leaves the foreground', async () => {
-    const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
-    const originalAudioContext = globalThis.AudioContext;
-    const originalAudioWorkletNode = globalThis.AudioWorkletNode;
     let resolveMicrophone;
-    const track = {
-      enabled: true,
-      readyState: 'live',
-      stop: vi.fn(),
-      addEventListener: vi.fn(),
-    };
-    const stream = {
-      getAudioTracks: () => [track],
-      getTracks: () => [track],
-    };
+    const { track, stream } = createMicrophoneStreamFixture();
 
-    Object.defineProperty(navigator, 'mediaDevices', {
-      configurable: true,
-      value: {
-        getUserMedia: vi.fn(() => new Promise((resolve) => { resolveMicrophone = resolve; })),
-      },
+    const getUserMedia = vi.fn(() => new Promise((resolve) => { resolveMicrophone = resolve; }));
+    const restoreRuntime = installMicrophoneTestRuntime({
+      getUserMedia,
+      AudioContext: class FakeAudioContext {},
+      AudioWorkletNode: class FakeAudioWorkletNode {},
     });
-    globalThis.AudioContext = class FakeAudioContext {};
-    globalThis.AudioWorkletNode = class FakeAudioWorkletNode {};
 
     try {
       const pendingCapture = createPCM16Capture({ onFrame: vi.fn() });
-      expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+      expect(getUserMedia).toHaveBeenCalledTimes(1);
 
       window.dispatchEvent(new Event('pagehide'));
       resolveMicrophone(stream);
@@ -150,13 +156,7 @@ describe('StreamingSTTSession', () => {
       await expect(pendingCapture).rejects.toMatchObject({ name: 'AbortError' });
       expect(track.stop).toHaveBeenCalledTimes(1);
     } finally {
-      releaseReusableMicrophoneStream();
-      if (originalMediaDevices) Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices);
-      else delete navigator.mediaDevices;
-      if (originalAudioContext === undefined) delete globalThis.AudioContext;
-      else globalThis.AudioContext = originalAudioContext;
-      if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
-      else globalThis.AudioWorkletNode = originalAudioWorkletNode;
+      restoreRuntime();
     }
   });
 
