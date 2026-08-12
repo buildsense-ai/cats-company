@@ -1492,12 +1492,9 @@ function RichContent({ content, onPreviewFile, activePreviewFile }) {
     case 'image':
       return <ImageContent payload={content.payload} />;
     case 'file':
-      return <FileContent payload={content.payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
     case 'audio':
     case 'voice':
-      return isInlineAudioFile(content.payload)
-        ? <AudioContent payload={content.payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />
-        : <FileContent payload={content.payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
+      return <FileContent payload={content.payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
     case 'link_preview':
       return <LinkPreviewContent payload={content.payload} />;
     case 'card':
@@ -1746,8 +1743,9 @@ function downloadableMediaURL(url) {
   if (!url) return '';
   try {
     const urlObj = new URL(url, window.location.origin);
-    const mediaOrigin = new URL(resolveMediaURL('/'), window.location.origin).origin;
-    if (urlObj.origin !== mediaOrigin || !urlObj.pathname.startsWith('/uploads/files/')) {
+    const mediaBase = new URL(resolveMediaURL('/'), window.location.origin);
+    const uploadFilesPath = `${mediaBase.pathname.replace(/\/+$/, '')}/uploads/files/`;
+    if (urlObj.origin !== mediaBase.origin || !urlObj.pathname.startsWith(uploadFilesPath)) {
       return url;
     }
     urlObj.searchParams.set('download', '1');
@@ -1904,7 +1902,7 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
         <FileContent
           actionRef={fallbackActionRef}
           activePreviewFile={activePreviewFile}
-          inlineVideo={false}
+          inlineMedia={false}
           onPreviewFile={onPreviewFile}
           payload={payload}
         />
@@ -2007,7 +2005,7 @@ function AudioContent({ payload, onPreviewFile, activePreviewFile }) {
         <FileContent
           actionRef={fallbackActionRef}
           activePreviewFile={activePreviewFile}
-          inlineVideo={false}
+          inlineMedia={false}
           onPreviewFile={onPreviewFile}
           payload={payload}
         />
@@ -2048,11 +2046,11 @@ function AudioContent({ payload, onPreviewFile, activePreviewFile }) {
   );
 }
 
-function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = true, actionRef = null }) {
-  if (inlineVideo && payload && isInlineVideoFile(payload)) {
+function FileContent({ payload, onPreviewFile, activePreviewFile, inlineMedia = true, actionRef = null }) {
+  if (inlineMedia && payload && isInlineVideoFile(payload)) {
     return <VideoContent payload={payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
   }
-  if (inlineVideo && payload && isInlineAudioFile(payload)) {
+  if (inlineMedia && payload && isInlineAudioFile(payload)) {
     return <AudioContent payload={payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
   }
   if (!payload) return null;

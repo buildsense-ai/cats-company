@@ -1,6 +1,9 @@
 package server
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestInferChannelMediaExtForAudioWithoutFilename(t *testing.T) {
 	testCases := []struct {
@@ -21,5 +24,28 @@ func TestInferChannelMediaExtForAudioWithoutFilename(t *testing.T) {
 				t.Fatalf("inferChannelMediaExt(%q) = %q, want %q", tc.contentType, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSaveChannelMediaUploadPreservesOggVideoMetadata(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	file, err := saveChannelMediaUploadFromReader(
+		"file",
+		"clip.ogg",
+		"video/ogg",
+		strings.NewReader("OggS video stream"),
+	)
+	if err != nil {
+		t.Fatalf("save channel media: %v", err)
+	}
+	if !strings.HasSuffix(file.FileKey, ".ogv") {
+		t.Fatalf("file key = %q, want .ogv suffix", file.FileKey)
+	}
+	if !strings.HasSuffix(file.URL, ".ogv") {
+		t.Fatalf("url = %q, want .ogv suffix", file.URL)
+	}
+	if file.MimeType != "video/ogg" {
+		t.Fatalf("mime type = %q, want video/ogg", file.MimeType)
 	}
 }

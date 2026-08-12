@@ -212,8 +212,10 @@ func (h *WeixinChannelHandler) handleEventPost(w http.ResponseWriter, r *http.Re
 		h.handleMediaMessage(w, r.Context(), &msg, "image")
 	case "file":
 		h.handleMediaMessage(w, r.Context(), &msg, "file")
+	case "voice":
+		h.handleMediaMessage(w, r.Context(), &msg, "file")
 	default:
-		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "当前微信入口先支持文本消息，图片和文件能力会在后续版本接入。")
+		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "当前微信入口支持文本、图片、文件和语音消息。")
 	}
 }
 
@@ -400,7 +402,7 @@ func (h *WeixinChannelHandler) handleMediaMessage(w http.ResponseWriter, ctx con
 	media, err := h.api.DownloadMedia(ctx, mediaID)
 	if err != nil {
 		log.Printf("download weixin media failed: %v", err)
-		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "读取微信图片或文件失败，请稍后重试。")
+		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "读取微信图片、文件或语音失败，请稍后重试。")
 		return
 	}
 	if media.FileName == "" {
@@ -409,7 +411,7 @@ func (h *WeixinChannelHandler) handleMediaMessage(w http.ResponseWriter, ctx con
 	file, err := saveChannelMediaUpload(uploadType, media)
 	if err != nil {
 		log.Printf("save weixin media failed: %v", err)
-		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "保存微信图片或文件失败，请稍后重试。")
+		writeWeixinTextReply(w, msg.FromUserName, msg.ToUserName, "保存微信图片、文件或语音失败，请稍后重试。")
 		return
 	}
 	metadata := h.weixinInboundMetadata(appID, openID, binding, msg)

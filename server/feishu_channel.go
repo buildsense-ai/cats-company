@@ -802,16 +802,16 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 	switch messageType {
 	case "text":
 		text = extractFeishuText(event.Message.Content)
-	case "image", "file":
+	case "image", "file", "audio":
 		var err error
 		media, err = extractFeishuInboundMedia(messageType, event.Message.Content)
 		if err != nil {
 			log.Printf("decode feishu media content failed: %v", err)
-			return h.replyToFeishu(ctx, replyIDType, replyID, "未能读取飞书图片或文件，请稍后重试。")
+			return h.replyToFeishu(ctx, replyIDType, replyID, "未能读取飞书图片、文件或语音，请稍后重试。")
 		}
 		text = media.Text
 	default:
-		return h.replyToFeishu(ctx, replyIDType, replyID, "当前飞书入口暂不支持这种消息类型，请发送文本、图片或文件。")
+		return h.replyToFeishu(ctx, replyIDType, replyID, "当前飞书入口暂不支持这种消息类型，请发送文本、图片、文件或语音。")
 	}
 	if strings.TrimSpace(text) == "" && media == nil {
 		return nil
@@ -892,7 +892,7 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		return h.replyToFeishu(ctx, replyIDType, replyID, "请先从 CatsCo 当前会话点击「移动端使用」并扫描飞书二维码。绑定完成后，我会把消息转到对应的虚拟员工或群聊。")
 	}
 	if chatType == "group" && cmd.Kind == "" && media != nil {
-		return h.replyToFeishu(ctx, replyIDType, replyID, "请先从 CatsCo 当前会话点击「移动端使用」并扫描飞书二维码，再发送图片或文件。")
+		return h.replyToFeishu(ctx, replyIDType, replyID, "请先从 CatsCo 当前会话点击「移动端使用」并扫描飞书二维码，再发送图片、文件或语音。")
 	}
 
 	binding, err := h.resolveCurrentFeishuBinding(appID, channelUserID, event.Message.ChatID, chatType, actorUID)
@@ -913,7 +913,7 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		download, err := h.api.DownloadMessageResource(ctx, event.Message.MessageID, media.ResourceKey, media.ResourceType)
 		if err != nil {
 			log.Printf("download feishu media failed: %v", err)
-			return h.replyToFeishu(ctx, replyIDType, replyID, "读取飞书图片或文件失败，请稍后重试。")
+			return h.replyToFeishu(ctx, replyIDType, replyID, "读取飞书图片、文件或语音失败，请稍后重试。")
 		}
 		if download.FileName == "" {
 			download.FileName = media.FileName
@@ -924,7 +924,7 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		file, err := saveChannelMediaUpload(media.UploadType, download)
 		if err != nil {
 			log.Printf("save feishu media failed: %v", err)
-			return h.replyToFeishu(ctx, replyIDType, replyID, "保存飞书图片或文件失败，请稍后重试。")
+			return h.replyToFeishu(ctx, replyIDType, replyID, "保存飞书图片、文件或语音失败，请稍后重试。")
 		}
 		return h.deliverInboundMessageToAgent(actorUID, binding.AgentUID, text, []uploadPayload{file}, "feishu:"+event.Message.MessageID, metadata)
 	}
@@ -1018,7 +1018,7 @@ func (h *FeishuChannelHandler) handleFeishuNativeGroupMessage(ctx context.Contex
 	metadata["channel_media_key"] = media.ResourceKey
 	download, err := h.api.DownloadMessageResource(ctx, event.Message.MessageID, media.ResourceKey, media.ResourceType)
 	if err != nil {
-		return true, h.replyToFeishu(ctx, "chat_id", chatID, "读取飞书图片或文件失败，请稍后重试。")
+		return true, h.replyToFeishu(ctx, "chat_id", chatID, "读取飞书图片、文件或语音失败，请稍后重试。")
 	}
 	if download.FileName == "" {
 		download.FileName = media.FileName
@@ -2329,6 +2329,19 @@ func extractFeishuInboundMedia(messageType, content string) (*feishuInboundMedia
 			ResourceType: "file",
 			UploadType:   "file",
 			FileName:     fileName,
+			ContentType:  strings.TrimSpace(parsed.ContentType),
+			Text:         strings.TrimSpace(parsed.Text),
+		}, nil
+	case "audio":
+		key := strings.TrimSpace(parsed.FileKey)
+		if key == "" {
+			return nil, errors.New("missing feishu audio key")
+		}
+		return &feishuInboundMedia{
+			ResourceKey:  key,
+			ResourceType: "file",
+			UploadType:   "file",
+			FileName:     firstNonEmpty(strings.TrimSpace(parsed.FileName), strings.TrimSpace(parsed.Name), "feishu-audio-"+key),
 			ContentType:  strings.TrimSpace(parsed.ContentType),
 			Text:         strings.TrimSpace(parsed.Text),
 		}, nil

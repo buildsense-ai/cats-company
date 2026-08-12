@@ -37,7 +37,7 @@ vi.mock('marked', () => ({
 }));
 
 vi.mock('../api', () => ({
-  resolveMediaURL: (url) => url,
+  resolveMediaURL: vi.fn((url) => url),
   getApiBaseURL: () => window.location.origin,
 }));
 
@@ -59,6 +59,7 @@ vi.mock('read-excel-file/browser', () => ({
 }));
 
 import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from './chat-message';
+import { resolveMediaURL } from '../api';
 import { markdownPreviewDocument } from './markdown-utils';
 import readExcelFile from 'read-excel-file/browser';
 
@@ -2971,6 +2972,39 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('audio.oc-rich-audio-player')).not.toBeNull();
     expect(container.querySelector('a.oc-rich-audio-download').getAttribute('href'))
       .toBe('/uploads/files/20260812_00112233445566778899aabbccddeeff.ogg?download=1');
+  });
+
+  it('keeps the forced-download query when the API uses a relative path prefix', async () => {
+    const originalImplementation = resolveMediaURL.getMockImplementation();
+    resolveMediaURL.mockImplementation((url) => `/api${url}`);
+    try {
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{
+              id: 1111,
+              from_uid: 2,
+              content: '[语音]',
+              content_blocks: [{
+                type: 'voice',
+                payload: {
+                  url: '/uploads/files/20260812_00112233445566778899aabbccddeeff.ogg',
+                  size: 4096,
+                  mime_type: 'audio/ogg; codecs=opus',
+                },
+              }],
+              created_at: '2026-08-12T00:00:00Z',
+            }}
+          />,
+        );
+        await Promise.resolve();
+      });
+
+      expect(container.querySelector('a.oc-rich-audio-download').getAttribute('href'))
+        .toBe('/api/uploads/files/20260812_00112233445566778899aabbccddeeff.ogg?download=1');
+    } finally {
+      resolveMediaURL.mockImplementation(originalImplementation);
+    }
   });
 
   it('falls back to a downloadable file card when audio playback fails', async () => {

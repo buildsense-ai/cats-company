@@ -79,7 +79,8 @@ var allowedFileExts = map[string]bool{
 	".zip": true, ".rar": true, ".7z": true,
 	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
 	".mp3": true, ".mp4": true, ".webm": true, ".ogg": true, ".ogv": true,
-	".m4v": true, ".mov": true, ".wav": true,
+	".m4v": true, ".mov": true, ".wav": true, ".amr": true, ".opus": true,
+	".aac": true, ".m4a": true, ".silk": true,
 	".csv": true, ".json": true, ".xml": true,
 	".html": true, ".htm": true,
 	".md": true, ".go": true, ".py": true, ".js": true,
@@ -607,6 +608,10 @@ func normalizedUploadMimeType(ext, headerType string) string {
 		if mediaType, _, err := mime.ParseMediaType(extType); err == nil && mediaType != "" {
 			return mediaType
 		}
+	}
+
+	if mediaType, _, err := mime.ParseMediaType(headerType); err == nil && strings.HasPrefix(strings.ToLower(mediaType), "audio/") {
+		return strings.ToLower(mediaType)
 	}
 
 	if mediaType, _, err := mime.ParseMediaType(headerType); err == nil && mediaType != "" {

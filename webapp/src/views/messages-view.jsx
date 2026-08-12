@@ -50,6 +50,7 @@ const PREVIEW_WIDTH_DEFAULT = 640;
 const PREVIEW_WIDTH_MAX = 980;
 const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 const ARTIFACT_REGISTRY_POLL_MS = 5000;
+const DELIVERY_ARTIFACT_TYPES = new Set(['file', 'image', 'audio', 'voice']);
 
 function artifactRefreshFileKey(file) {
   if (!file?.artifact_id || !file?.url) return '';
@@ -4003,9 +4004,13 @@ function assistantProcessMessage(message) {
   };
 }
 
+function isDeliveryArtifactType(type) {
+  return DELIVERY_ARTIFACT_TYPES.has(type);
+}
+
 function messageHasDeliveryArtifact(message) {
   if (Array.isArray(message?.content_blocks)) {
-    if (message.content_blocks.some((block) => ['file', 'image', 'audio', 'voice'].includes(block?.type))) {
+    if (message.content_blocks.some((block) => isDeliveryArtifactType(block?.type))) {
       return true;
     }
   }
@@ -4018,7 +4023,7 @@ function messageHasDeliveryArtifact(message) {
       return false;
     }
   }
-  return ['file', 'image', 'audio', 'voice'].includes(content?.type);
+  return isDeliveryArtifactType(content?.type);
 }
 
 function displayGroupHasDeliveryArtifact(group) {
@@ -4029,7 +4034,7 @@ function displayGroupHasDeliveryArtifact(group) {
 function deliveryArtifactBlocks(message) {
   if (Array.isArray(message?.content_blocks)) {
     const storedBlocks = message.content_blocks.filter(
-      (block) => ['file', 'image', 'audio', 'voice'].includes(block?.type),
+      (block) => isDeliveryArtifactType(block?.type),
     );
     if (storedBlocks.length > 0) return storedBlocks;
   }
@@ -4042,7 +4047,7 @@ function deliveryArtifactBlocks(message) {
       return [];
     }
   }
-  return ['file', 'image', 'audio', 'voice'].includes(content?.type) ? [content] : [];
+  return isDeliveryArtifactType(content?.type) ? [content] : [];
 }
 
 function hasAssistantBlockFormatting(value) {
@@ -4108,7 +4113,7 @@ function assistantOutputText(message) {
   if (content) {
     try {
       const parsed = JSON.parse(content);
-      if (['file', 'image', 'audio', 'voice'].includes(parsed?.type)) return '';
+      if (isDeliveryArtifactType(parsed?.type)) return '';
     } catch (error) {
       // Plain assistant text.
     }

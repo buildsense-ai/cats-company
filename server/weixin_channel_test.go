@@ -753,6 +753,62 @@ func TestWeixinImageMessageDeliversAttachmentBlocks(t *testing.T) {
 	}
 }
 
+func TestWeixinVoiceMessageDeliversAudioBlock(t *testing.T) {
+	t.Cleanup(func() { _ = os.RemoveAll("uploads") })
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: "weixin-alice", DisplayName: "Alice", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
+	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:       "weixin",
+		ChannelAppID:  "wx_app",
+		ChannelUserID: "openid-1",
+		ActorUID:      8,
+		CanonicalUID:  8,
+		OwnerUID:      7,
+		AgentUID:      43,
+		Status:        types.ChannelAgentBindingActive,
+	}); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	api := &fakeWeixinAPI{
+		appID: "wx_app",
+		media: map[string]fakeWeixinMedia{
+			"voice-1": {ContentType: "audio/amr", Body: "fake-amr"},
+		},
+	}
+	handler := NewWeixinChannelHandler(db, nil, WeixinChannelConfig{
+		AppID:      "wx_app",
+		EventToken: "token-1",
+	}, api)
+	body := `<xml><ToUserName><![CDATA[gh_app]]></ToUserName><FromUserName><![CDATA[openid-1]]></FromUserName><CreateTime>1</CreateTime><MsgType><![CDATA[voice]]></MsgType><MediaId><![CDATA[voice-1]]></MediaId><MsgId>msg-voice-1</MsgId></xml>`
+	req := httptest.NewRequest(http.MethodPost, "/api/channels/weixin/events?timestamp=1&nonce=2&signature="+weixinTestSignature("token-1", "1", "2"), strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.HandleEvents(rec, req)
+
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "success" {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(db.messages) != 1 {
+		t.Fatalf("messages=%d", len(db.messages))
+	}
+	msg := db.messages[0]
+	if msg.TopicID != "p2p_8_43" || msg.FromUID != 8 || msg.MsgType != "voice" {
+		t.Fatalf("message=%+v", msg)
+	}
+	if len(msg.ContentBlocks) != 1 || msg.ContentBlocks[0].Type != "audio" {
+		t.Fatalf("content blocks=%+v", msg.ContentBlocks)
+	}
+	payload := msg.ContentBlocks[0].Payload
+	name, _ := payload["name"].(string)
+	if payload["mime_type"] != "audio/amr" || !strings.HasSuffix(name, ".amr") {
+		t.Fatalf("payload=%+v", payload)
+	}
+}
+
 func TestWeixinTextMessageDeduplicatesRetry(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[8] = &types.User{ID: 8, Username: "weixin-alice", DisplayName: "Alice", AccountType: types.AccountHuman}
