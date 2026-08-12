@@ -46,6 +46,57 @@ The credentials remain on the server. An authenticated browser first calls
 `POST /api/stt/sessions` and receives a one-use, short-lived signed ticket. The
 ticket is then used only for `GET /api/stt/realtime?ticket=...`.
 
+## Browser session lifecycle
+
+The browser requests the authenticated session ticket and starts microphone
+capture in parallel. Until the CatsCo WebSocket emits `ready`, captured PCM
+frames remain only in the browser's bounded in-memory preconnect queue. The
+browser must then send those frames to CatsCo in FIFO order before sending
+newer live frames.
+
+The preconnect queue is part of the recording, not a best-effort preview. When
+the user performs a normal stop before the ticket request or WebSocket
+handshake finishes, the browser must stop local capture while retaining the
+already captured frames. Once the connection becomes ready, it must drain those
+frames in FIFO order, send the `stop` control message, and wait for the final
+transcript using the normal server timeout. This preserves short hold-to-talk
+utterances and speech spoken immediately after recording begins.
+
+`cancel` has different semantics from `stop`. Cancellation must discard queued
+preconnect PCM and must not establish or retain a connection solely to upload
+it. If admission or connection fails before a normal stop can be completed,
+the browser reports the error and discards the queue.
+
+A hidden page or suspended/interrupted audio context must stop local capture
+immediately. This requirement also applies while microphone setup is still
+awaiting: after capture initialization resolves, the browser must check the
+current page visibility before accepting or forwarding any PCM. No PCM sampled
+after the page becomes hidden or the audio context is suspended may be sent to
+CatsCo.
+
+Partial transcripts are presentation data only. The browser may coalesce them
+to at most one visible update every 80 ms, but it must retain and publish the
+newest partial. If a final result arrives while a newer partial is pending, the
+client must publish that partial first. The composer must give that published
+partial an opportunity to render before clearing it for the final transcript;
+state batching must not make the newest live transcription unobservable.
+
+The final transcript remains the only transcript inserted into the composer
+draft or persisted by later message submission.
+
+### Required browser regression coverage
+
+- Speech captured before the session ticket resolves is sent after `ready`.
+- Releasing hold-to-talk before `ready` sends the captured preconnect frames,
+  then `stop`, and can still produce a final transcript.
+- Cancelling before `ready` sends no queued PCM and does not open a socket only
+  to drain it.
+- Hiding the page while capture initialization is pending stops capture when it
+  resolves and sends no post-hide PCM.
+- A coalesced partial immediately followed by `final` has a renderer-level
+  assertion that the newest partial can be committed visibly before final state
+  replaces it.
+
 ## Limits
 
 Defaults can be overridden through environment variables:
@@ -61,8 +112,9 @@ Defaults can be overridden through environment variables:
 | `CATSCO_STT_CONNECT_TIMEOUT_MS` | 2000 | Volcengine WebSocket handshake timeout |
 | `CATSCO_STT_FINAL_TIMEOUT_MS` | 1200 | Wait for the final result after stop |
 
-Only one active session is permitted per user. Browser and server audio queues
-are capped at 160 KB. A hidden page or suspended audio context stops capture.
+Only one active session is permitted per user. Browser preconnect and server
+audio queues are capped at 160 KB. Exceeding either cap fails the session closed
+rather than silently dropping audio.
 
 The current concurrency and usage counters are process-local. Before running
 multiple CatsCo server replicas, move ticket replay protection and quota state
