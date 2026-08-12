@@ -209,10 +209,6 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
         || requestID !== loadRequestRef.current
         || selectedBotUIDRef.current !== requestedUID) return null;
       if (!silent) {
-        if (!options.preserveDraft) {
-          setRemote(null);
-          setLoadedBotUID('');
-        }
         setError(cause?.message || (options.preserveDraft
           ? '无法读取最新云端 revision，当前草稿仍保留'
           : '无法读取系统提示词配置'));
@@ -381,6 +377,19 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
             <Bot size={24} />
             <h2>暂无可管理的 Agent</h2>
             <p>创建或绑定属于你的 Agent 后，即可在这里设置系统提示词。</p>
+          </section>
+        ) : selectedBotUID && !ready ? (
+          <section className="cc-system-prompt-empty">
+            <AlertTriangle size={24} />
+            <h2>无法读取 Agent 配置</h2>
+            <p>请检查网络连接后重试。已有云端配置不会受到影响。</p>
+            <button
+              type="button"
+              className="cc-system-prompt-refresh"
+              onClick={() => loadPrompt(selectedBotUID)}
+            >
+              <RefreshCw size={15} /> 重试
+            </button>
           </section>
         ) : ready && !remote?.configured ? (
           <section className="cc-system-prompt-empty">

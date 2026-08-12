@@ -160,6 +160,49 @@ describe('SystemPromptView', () => {
     expect(container.textContent).toContain('已生效');
   });
 
+  it('recovers from an initial prompt load failure through the retry action', async () => {
+    api.getBotDefinitionPrompt
+      .mockRejectedValueOnce(new Error('network unavailable'))
+      .mockResolvedValueOnce(definition());
+    await renderView();
+
+    expect(container.textContent).toContain('无法读取 Agent 配置');
+    expect(container.textContent).toContain('network unavailable');
+    expect(container.querySelector('#cc-system-prompt-text')).toBeNull();
+
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button')]
+        .find((button) => button.textContent.includes('重试')));
+      await settle();
+    });
+
+    expect(api.getBotDefinitionPrompt).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('云端 revision3');
+    expect(container.querySelector('#cc-system-prompt-text')).not.toBeNull();
+    expect(container.textContent).not.toContain('network unavailable');
+  });
+
+  it('keeps the loaded editor visible when a manual refresh fails', async () => {
+    api.getBotDefinitionPrompt
+      .mockResolvedValueOnce(definition({
+        selected: 'custom',
+        customSystemPrompt: 'Keep this editor visible.',
+      }))
+      .mockRejectedValueOnce(new Error('refresh unavailable'));
+    await renderView();
+
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button')]
+        .find((button) => button.textContent.includes('刷新')));
+      await settle();
+    });
+
+    expect(container.textContent).toContain('refresh unavailable');
+    expect(container.textContent).toContain('云端 revision3');
+    expect(container.querySelector('#cc-system-prompt-text').value)
+      .toBe('Keep this editor visible.');
+  });
+
   it('saves custom content with the current BotDefinition revision', async () => {
     await renderView();
 
