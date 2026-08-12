@@ -450,7 +450,10 @@ func main() {
 		Name: "auth_login_ip", Limit: 60, Window: time.Minute, Burst: 10,
 	})
 	authLoginAccountLimit := httpLimiter.LimitJSONField(server.HTTPRateLimitConfig{
-		Name: "auth_login_account", Limit: 10, Window: 10 * time.Minute, Burst: 5,
+		// 10 attempts per rolling 5 minutes (was 10 minutes): the shorter window
+		// refills tokens twice as fast, so repeated login failures recover sooner
+		// and legitimate retries are less likely to trip the limit.
+		Name: "auth_login_account", Limit: 10, Window: 5 * time.Minute, Burst: 5,
 	}, "account")
 	authRegisterIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "auth_register_ip", Limit: 10, Window: time.Hour, Burst: 3,
