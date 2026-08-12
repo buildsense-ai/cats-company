@@ -3436,6 +3436,98 @@ button.catsco-download-action:disabled {
   background: rgba(0, 0, 0, 0.08);
 }
 
+.relay-access-purchase-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--v3-primary) 45%, var(--v3-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--v3-primary) 7%, var(--v3-panel));
+}
+
+.relay-access-purchase-confirm > div:first-child > span,
+.relay-access-purchase-confirm > div:first-child > strong,
+.relay-access-purchase-confirm > div:first-child > p {
+  display: block;
+}
+
+.relay-access-purchase-confirm > div:first-child > span {
+  color: var(--v3-accent);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.relay-access-purchase-confirm > div:first-child > strong {
+  margin-top: 3px;
+  color: var(--v3-text-name);
+  font-size: 18px;
+}
+
+.relay-access-purchase-confirm > div:first-child > p {
+  margin: 4px 0 0;
+  color: var(--v3-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.relay-access-purchase-confirm-actions,
+.relay-access-checkout-actions > div {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.relay-access-purchase-confirm-actions > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  border: 1px solid var(--v3-primary);
+  border-radius: 8px;
+  background: var(--v3-primary);
+  color: #071a14;
+  padding: 0 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.relay-access-purchase-confirm-actions > button.secondary {
+  border-color: var(--v3-border);
+  background: transparent;
+  color: var(--v3-text-main);
+}
+
+.relay-access-purchase-confirm-actions > button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.relay-access-model-coverage {
+  display: grid;
+  gap: 4px;
+  padding: 11px 12px;
+  border: 1px solid var(--v3-border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.relay-access-model-coverage > span,
+.relay-access-model-coverage > em {
+  color: var(--v3-text-muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.relay-access-model-coverage > strong {
+  color: var(--v3-text-name);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .relay-access-trial-row {
   display: flex;
   align-items: center;
@@ -4104,6 +4196,33 @@ button.catsco-download-action:disabled {
   cursor: pointer;
 }
 
+.relay-access-checkout-actions > div > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--v3-text-main);
+  padding: 0 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.relay-access-checkout-actions > div > button:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.relay-access-checkout-actions > div > button.danger {
+  color: #ff6b6b;
+}
+
+.relay-access-checkout-actions > div > button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .relay-access-checkout-actions > button:hover {
   background: rgba(255, 255, 255, 0.05);
 }
@@ -4609,7 +4728,24 @@ button.catsco-download-action:disabled {
 
   .relay-access-trial-row,
   .relay-access-storefront-head,
-  .relay-access-payment-redirect {
+  .relay-access-payment-redirect,
+  .relay-access-purchase-confirm {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .relay-access-purchase-confirm-actions,
+  .relay-access-checkout-actions,
+  .relay-access-checkout-actions > div {
+    width: 100%;
+  }
+
+  .relay-access-purchase-confirm-actions > button,
+  .relay-access-checkout-actions > div > button {
+    flex: 1 1 0;
+  }
+
+  .relay-access-checkout-actions {
     align-items: stretch;
     flex-direction: column;
   }

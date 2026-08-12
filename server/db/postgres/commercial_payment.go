@@ -364,6 +364,29 @@ func (a *Adapter) ListCommercialOrders(uid int64, limit int) ([]*types.Commercia
 	return orders, rows.Err()
 }
 
+func (a *Adapter) CancelCommercialOrder(uid int64, orderNo, reason string) (*types.CommercialOrder, bool, error) {
+	orderNo = strings.TrimSpace(orderNo)
+	if uid <= 0 || orderNo == "" {
+		return nil, false, fmt.Errorf("invalid commercial order cancellation")
+	}
+	order, err := scanCommercialOrder(a.db.QueryRow(`
+		UPDATE commercial_orders
+		SET status = 'closed', closed_at = CURRENT_TIMESTAMP, checkout_url = '', last_error = $3
+		WHERE order_no = $1 AND uid = $2 AND status IN ('created','pending','failed')
+		RETURNING `+commercialOrderColumns, orderNo, uid, truncateCommercialError(reason)))
+	if err == nil {
+		return order, true, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, false, fmt.Errorf("cancel commercial order: %w", err)
+	}
+	order, err = a.GetCommercialOrder(uid, orderNo)
+	if err != nil {
+		return nil, false, err
+	}
+	return order, false, nil
+}
+
 func (a *Adapter) CloseExpiredCommercialOrders(limit int) (int64, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100

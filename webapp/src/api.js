@@ -596,14 +596,16 @@ export const api = {
     channel,
     client_request_id: clientRequestId,
   }, options),
+  cancelCommercialOrder: (orderNo, options = {}) => request('POST', '/api/relay/commercial/orders/cancel', { order_no: orderNo }, options),
   confirmCommercialTestPayment: (orderNo) => request('POST', '/api/relay/commercial/orders/test-confirm', { order_no: orderNo }),
   claimCommercialTrial: () => request('POST', '/api/relay/commercial/trial/claim', {}),
   createRelaySession: () => request('POST', '/api/relay/session', {}),
   getRelayKey: (options = {}) => request('GET', '/api/relay/key', undefined, options),
-  getRelayUsage: ({ model, source } = {}) => {
+  getRelayUsage: ({ model, source, scope } = {}) => {
     const params = new URLSearchParams();
     if (model) params.set('model', model);
     if (source) params.set('source', source);
+    if (scope) params.set('scope', scope);
     const query = params.toString();
     return request('GET', `/api/relay/usage${query ? `?${query}` : ''}`);
   },

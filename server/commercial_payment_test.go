@@ -34,6 +34,8 @@ type queryCommercialPaymentProvider struct {
 	calls        int
 	intent       *CommercialPaymentIntent
 	createCalls  int
+	closeErr     error
+	closeCalls   int
 }
 
 func (p *queryCommercialPaymentProvider) Channel() string {
@@ -54,16 +56,23 @@ func (p *queryCommercialPaymentProvider) QueryPayment(context.Context, *types.Co
 	p.calls++
 	return p.confirmation, p.paid, nil
 }
+func (p *queryCommercialPaymentProvider) ClosePayment(context.Context, *types.CommercialOrder) error {
+	p.closeCalls++
+	return p.closeErr
+}
 
 type fakeAlipayPaymentClient struct {
 	pageURL          *url.URL
 	pageErr          error
 	query            *alipay.TradeQueryRsp
 	queryErr         error
+	close            *alipay.TradeCloseRsp
+	closeErr         error
 	notification     *alipay.Notification
 	notificationErr  error
 	lastPagePay      alipay.TradePagePay
 	lastQuery        alipay.TradeQuery
+	lastClose        alipay.TradeClose
 	lastNotification url.Values
 }
 
@@ -75,6 +84,11 @@ func (c *fakeAlipayPaymentClient) TradePagePay(request alipay.TradePagePay) (*ur
 func (c *fakeAlipayPaymentClient) TradeQuery(_ context.Context, request alipay.TradeQuery) (*alipay.TradeQueryRsp, error) {
 	c.lastQuery = request
 	return c.query, c.queryErr
+}
+
+func (c *fakeAlipayPaymentClient) TradeClose(_ context.Context, request alipay.TradeClose) (*alipay.TradeCloseRsp, error) {
+	c.lastClose = request
+	return c.close, c.closeErr
 }
 
 func (c *fakeAlipayPaymentClient) DecodeNotification(_ context.Context, values url.Values) (*alipay.Notification, error) {
@@ -187,6 +201,24 @@ func (s *commercialPaymentTestStore) ListCommercialOrders(uid int64, limit int) 
 		}
 	}
 	return orders, nil
+}
+
+func (s *commercialPaymentTestStore) CancelCommercialOrder(uid int64, orderNo, reason string) (*types.CommercialOrder, bool, error) {
+	order := s.orders[orderNo]
+	if order == nil || order.UID != uid {
+		return nil, false, nil
+	}
+	if order.Status != "created" && order.Status != "pending" && order.Status != "failed" {
+		copy := *order
+		return &copy, false, nil
+	}
+	now := time.Now().UTC()
+	order.Status = "closed"
+	order.ClosedAt = &now
+	order.CheckoutURL = ""
+	order.LastError = reason
+	copy := *order
+	return &copy, true, nil
 }
 
 func (s *commercialPaymentTestStore) CloseExpiredCommercialOrders(limit int) (int64, error) {
@@ -417,6 +449,73 @@ func TestCommercialPendingOrderQueriesAreThrottled(t *testing.T) {
 	}
 	if provider.calls != 1 {
 		t.Fatalf("expected one provider query inside throttle window, got %d", provider.calls)
+	}
+}
+
+func TestCommercialPendingOrderCanBeCancelled(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-CANCEL"] = &types.CommercialOrder{
+		OrderNo: "CC-CANCEL", UID: 38, AmountFen: 39900, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "pending", CheckoutURL: "https://openapi.alipay.test/pay",
+	}
+	provider := &queryCommercialPaymentProvider{}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{Providers: []CommercialPaymentProvider{provider}})
+	recorder := httptest.NewRecorder()
+	handler.HandleCancel(recorder, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders/cancel", `{"order_no":"CC-CANCEL"}`, 38))
+	if recorder.Code != http.StatusOK || store.orders["CC-CANCEL"].Status != "closed" || provider.closeCalls != 1 {
+		t.Fatalf("cancel status=%d body=%s order=%#v close_calls=%d", recorder.Code, recorder.Body.String(), store.orders["CC-CANCEL"], provider.closeCalls)
+	}
+	second := httptest.NewRecorder()
+	handler.HandleCancel(second, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders/cancel", `{"order_no":"CC-CANCEL"}`, 38))
+	if second.Code != http.StatusOK || provider.closeCalls != 1 {
+		t.Fatalf("repeat cancel was not idempotent: status=%d body=%s close_calls=%d", second.Code, second.Body.String(), provider.closeCalls)
+	}
+}
+
+func TestCommercialCancellationDoesNotOverrideCompletedPayment(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-CANCEL-PAID"] = &types.CommercialOrder{
+		OrderNo: "CC-CANCEL-PAID", UID: 38, AmountFen: 39900, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "pending",
+	}
+	provider := &queryCommercialPaymentProvider{
+		paid: true,
+		confirmation: &types.CommercialPaymentConfirmation{
+			Channel: commercialPaymentChannelAlipayPage, EventID: "ALI-CANCEL-PAID", ProviderTradeNo: "ALI-CANCEL-PAID",
+			AmountFen: 39900, Currency: "CNY", PaidAt: time.Now().UTC(),
+		},
+	}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{Providers: []CommercialPaymentProvider{provider}})
+	recorder := httptest.NewRecorder()
+	handler.HandleCancel(recorder, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders/cancel", `{"order_no":"CC-CANCEL-PAID"}`, 38))
+	if recorder.Code != http.StatusConflict || store.orders["CC-CANCEL-PAID"].Status != "fulfilled" || provider.closeCalls != 0 {
+		t.Fatalf("paid order was not protected: status=%d body=%s order=%#v close_calls=%d", recorder.Code, recorder.Body.String(), store.orders["CC-CANCEL-PAID"], provider.closeCalls)
+	}
+}
+
+func TestCommercialCancellationKeepsOrderPendingWhenProviderCloseFails(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-CANCEL-FAIL"] = &types.CommercialOrder{
+		OrderNo: "CC-CANCEL-FAIL", UID: 38, AmountFen: 39900, Currency: "CNY",
+		Channel: commercialPaymentChannelAlipayPage, Status: "pending",
+	}
+	provider := &queryCommercialPaymentProvider{closeErr: context.DeadlineExceeded}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{Providers: []CommercialPaymentProvider{provider}})
+	recorder := httptest.NewRecorder()
+	handler.HandleCancel(recorder, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders/cancel", `{"order_no":"CC-CANCEL-FAIL"}`, 38))
+	if recorder.Code != http.StatusBadGateway || store.orders["CC-CANCEL-FAIL"].Status != "pending" || provider.closeCalls != 1 {
+		t.Fatalf("provider close failure was unsafe: status=%d body=%s order=%#v", recorder.Code, recorder.Body.String(), store.orders["CC-CANCEL-FAIL"])
+	}
+}
+
+func TestCommercialCancellationIsOwnerScoped(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-OTHER-OWNER"] = &types.CommercialOrder{OrderNo: "CC-OTHER-OWNER", UID: 38, Status: "created"}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{})
+	recorder := httptest.NewRecorder()
+	handler.HandleCancel(recorder, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders/cancel", `{"order_no":"CC-OTHER-OWNER"}`, 39))
+	if recorder.Code != http.StatusNotFound || store.orders["CC-OTHER-OWNER"].Status != "created" {
+		t.Fatalf("cross-owner cancellation was not blocked: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -753,6 +852,38 @@ func TestAlipayPaymentCreatesExactPageIntent(t *testing.T) {
 	}
 	if trade.TimeExpire != expiresAt.In(alipayChinaLocation).Format(alipayTimeLayout) {
 		t.Fatalf("unexpected expiry %q", trade.TimeExpire)
+	}
+}
+
+func TestAlipayPaymentClosesUnpaidOrder(t *testing.T) {
+	fake := &fakeAlipayPaymentClient{close: &alipay.TradeCloseRsp{
+		Error:      alipay.Error{Code: alipay.CodeSuccess},
+		OutTradeNo: "CC-CLOSE-ALIPAY",
+	}}
+	provider := &alipayPagePaymentProvider{client: fake}
+	err := provider.ClosePayment(context.Background(), &types.CommercialOrder{OrderNo: "CC-CLOSE-ALIPAY"})
+	if err != nil || fake.lastClose.OutTradeNo != "CC-CLOSE-ALIPAY" {
+		t.Fatalf("close Alipay order: request=%#v err=%v", fake.lastClose, err)
+	}
+}
+
+func TestAlipayPaymentTreatsMissingTradeAsClosed(t *testing.T) {
+	fake := &fakeAlipayPaymentClient{close: &alipay.TradeCloseRsp{
+		Error: alipay.Error{Code: alipay.Code("40004"), SubCode: "ACQ.TRADE_NOT_EXIST"},
+	}}
+	provider := &alipayPagePaymentProvider{client: fake}
+	if err := provider.ClosePayment(context.Background(), &types.CommercialOrder{OrderNo: "CC-NOT-CREATED"}); err != nil {
+		t.Fatalf("missing Alipay trade should be locally closable: %v", err)
+	}
+}
+
+func TestAlipayPaymentRejectsFailedTradeClose(t *testing.T) {
+	fake := &fakeAlipayPaymentClient{close: &alipay.TradeCloseRsp{
+		Error: alipay.Error{Code: alipay.Code("40004"), SubCode: "ACQ.TRADE_STATUS_ERROR"},
+	}}
+	provider := &alipayPagePaymentProvider{client: fake}
+	if err := provider.ClosePayment(context.Background(), &types.CommercialOrder{OrderNo: "CC-PAID"}); err == nil {
+		t.Fatal("failed Alipay close response was accepted")
 	}
 }
 

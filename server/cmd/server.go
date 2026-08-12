@@ -341,6 +341,7 @@ func main() {
 	feedbackHandler := server.NewFeedbackHandler(db)
 	relayConfigHandler := server.NewRelayConfigHandler()
 	relayKeyHandler := server.NewRelayKeyHandlerFromEnv()
+	relayKeyHandler.SetCommercialStore(commercialStore)
 	relayKeyHandler.SetDeviceModelStatusResolver(func(uid int64) (server.DeviceModelStatus, bool) {
 		return server.LatestDeviceModelStatus(hub, uid)
 	})
@@ -502,6 +503,9 @@ func main() {
 	commercialOrderUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "commercial_order_user", Limit: 12, Window: 10 * time.Minute, Burst: 3,
 	})
+	commercialOrderCancelUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
+		Name: "commercial_order_cancel_user", Limit: 20, Window: 10 * time.Minute, Burst: 4,
+	})
 	commercialTrialUserLimit := httpLimiter.LimitUser(server.HTTPRateLimitConfig{
 		Name: "commercial_trial_user", Limit: 5, Window: time.Hour, Burst: 2,
 	})
@@ -647,6 +651,7 @@ func main() {
 	mux.HandleFunc("/api/relay/invite/redeem", ownerAuthWithDB(relayCommercialHandler.HandleRedeemInvite))
 	mux.HandleFunc("/api/relay/commercial/catalog", ownerAuthWithDB(commercialPaymentHandler.HandleCatalog))
 	mux.HandleFunc("/api/relay/commercial/orders", chainHTTP(commercialPaymentHandler.HandleOrders, ownerAuthWithDB, limitHTTPMethod(http.MethodPost, commercialOrderUserLimit)))
+	mux.HandleFunc("/api/relay/commercial/orders/cancel", chainHTTP(commercialPaymentHandler.HandleCancel, ownerAuthWithDB, commercialOrderCancelUserLimit))
 	mux.HandleFunc("/api/relay/commercial/orders/test-confirm", chainHTTP(commercialPaymentHandler.HandleTestConfirm, ownerAuthWithDB, commercialTestPaymentUserLimit))
 	mux.HandleFunc("/api/relay/commercial/trial/claim", chainHTTP(commercialPaymentHandler.HandleClaimTrial, ownerAuthWithDB, commercialTrialUserLimit))
 	mux.HandleFunc("/api/payments/alipay/notify", commercialNotifyIPLimit(commercialPaymentHandler.HandleAlipayNotify))

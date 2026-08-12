@@ -9,6 +9,7 @@ vi.mock('../api', () => ({
     getCommercialCatalog: vi.fn(),
     getCommercialOrders: vi.fn(),
     createCommercialOrder: vi.fn(),
+    cancelCommercialOrder: vi.fn(),
     confirmCommercialTestPayment: vi.fn(),
     claimCommercialTrial: vi.fn(),
     getRelayUsage: vi.fn(),
@@ -69,6 +70,7 @@ describe('RelayAccessModal commercial rollout', () => {
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
     });
     window.confirm = vi.fn(() => true);
+    window.open = vi.fn(() => null);
     api.getCommercialCatalog.mockResolvedValue({ enabled: false, plans: [], channels: [], trial_available: false });
     api.getCommercialOrders.mockResolvedValue({ orders: [] });
     container = document.createElement('div');
@@ -207,7 +209,7 @@ describe('RelayAccessModal commercial rollout', () => {
     await renderModal();
 
     expect(container.textContent).toContain('内测开放');
-    expect(container.textContent).toContain('当前模型用量');
+    expect(container.textContent).toContain('本周期总用量');
     expect(container.textContent).toContain('购买记录不会自动改变已有模型额度');
     expect(container.textContent).toContain('当前有效套餐');
     expect(container.textContent).toContain('套餐最近到期');
@@ -222,7 +224,8 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).toContain('MiniMax-M3');
     expect(container.textContent).toContain('deepseek-v4-flash');
     expect(container.textContent).toContain('剩余 75%');
-    expect(container.textContent).toContain('剩余 87.5%');
+    expect(api.getRelayUsage).toHaveBeenCalledWith({ scope: 'total' });
+    expect(api.getRelayUsage.mock.calls.every(([options]) => options?.scope === 'total' && !options?.model)).toBe(true);
     expect(container.textContent).not.toContain('CNY');
     expect(container.textContent).not.toContain('¥');
     expect(container.textContent).not.toContain('￥');
@@ -247,23 +250,26 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).toContain('当前没有有效套餐');
   });
 
-  it('shows custom model as outside relay package quota', async () => {
+  it('keeps the package total independent from a custom startup model', async () => {
     api.getRelayUsage.mockResolvedValue({
       configured: true,
       summary: {
-        source: 'custom',
-        model: '自定义模型',
-        status: 'custom',
+        source: 'relay',
+        model: '套餐总额度',
+        quota_configured: true,
+        percent: 30,
+        remaining_percent: 70,
+        status: 'normal',
       },
     });
 
     await renderModal();
 
-    expect(container.textContent).toContain('当前使用自定义模型');
-    expect(container.textContent).toContain('不消耗 CatsCo 套餐额度');
+    expect(container.textContent).toContain('套餐总额度');
+    expect(container.textContent).toContain('剩余 70%');
   });
 
-  it('shows explicit over-limit warning for the current relay model', async () => {
+  it('shows explicit over-limit warning for the total package quota', async () => {
     api.getRelayUsage.mockResolvedValue({
       configured: true,
       summary: {
@@ -280,11 +286,11 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
 
-    expect(container.textContent).toContain('当前模型已超额');
+    expect(container.textContent).toContain('套餐额度已超额');
     expect(container.textContent).toContain('剩余 0%');
     expect(container.textContent).toContain('已用 100%+');
     expect(container.textContent).not.toContain('CNY');
-    expect(container.textContent).toContain('请联系管理员补额或等待额度重置');
+    expect(container.textContent).toContain('请续购套餐或等待额度重置');
   });
 
   it('does not present zero relay limit as a real remaining quota', async () => {
@@ -302,8 +308,8 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
 
-    expect(container.textContent).toContain('当前模型未设置额度');
-    expect(container.textContent).toContain('等待模型限额同步');
+    expect(container.textContent).toContain('总额度待同步');
+    expect(container.textContent).toContain('等待套餐额度同步');
   });
 
   it('shows gray purchase plans and the configured payment channel', async () => {
@@ -460,6 +466,10 @@ describe('RelayAccessModal commercial rollout', () => {
       await Promise.resolve();
     });
 
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('确认购买');
+    await clickButton('确认购买');
+
     expect(api.createCommercialOrder).toHaveBeenCalledWith(9, 'test', expect.stringMatching(/^order_/), { timeoutMs: 40_000 });
     expect(container.textContent).toContain('待支付');
     const confirmButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('完成灰度测试支付'));
@@ -505,6 +515,13 @@ describe('RelayAccessModal commercial rollout', () => {
         created_at: '2026-07-14T06:00:00Z',
       },
     });
+    const paymentWindow = {
+      opener: window,
+      location: { replace: vi.fn() },
+      document: { title: '', body: { textContent: '' } },
+      close: vi.fn(),
+    };
+    window.open.mockReturnValue(paymentWindow);
 
     await renderModal();
     const purchaseButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('购买'));
@@ -514,7 +531,12 @@ describe('RelayAccessModal commercial rollout', () => {
       await Promise.resolve();
     });
 
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+    await clickButton('确认并前往支付宝');
+
     expect(api.createCommercialOrder).toHaveBeenCalledWith(10, 'alipay_page', expect.stringMatching(/^order_/), { timeoutMs: 40_000 });
+    expect(window.open).toHaveBeenCalledWith('about:blank', '_blank');
+    expect(paymentWindow.location.replace).toHaveBeenCalledWith('https://openapi.alipay.test/gateway.do');
     expect(container.textContent).toContain('支付宝支付 ¥9.9');
     const paymentLink = container.querySelector('.relay-access-payment-redirect a');
     expect(paymentLink?.getAttribute('href')).toBe('https://openapi.alipay.test/gateway.do');
@@ -589,12 +611,14 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
     await clickButton('购买');
+    await clickButton('确认购买');
     await act(async () => {
       root.unmount();
     });
     root = createRoot(container);
     await renderModal();
     await clickButton('购买');
+    await clickButton('确认购买');
 
     expect(api.createCommercialOrder).toHaveBeenCalledTimes(2);
     expect(api.createCommercialOrder.mock.calls[0][2]).toBe(api.createCommercialOrder.mock.calls[1][2]);
@@ -629,6 +653,7 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
     await clickButton('购买');
+    await clickButton('确认购买');
     await act(async () => {
       root.unmount();
     });
@@ -636,6 +661,7 @@ describe('RelayAccessModal commercial rollout', () => {
     api.getCommercialOrders.mockRejectedValue(new Error('temporary order list failure'));
     await renderModal();
     await clickButton('购买');
+    await clickButton('确认购买');
 
     expect(api.createCommercialOrder).toHaveBeenCalledTimes(2);
     expect(api.createCommercialOrder.mock.calls[0][2]).toBe(api.createCommercialOrder.mock.calls[1][2]);
@@ -675,6 +701,53 @@ describe('RelayAccessModal commercial rollout', () => {
 
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
     expect(container.textContent).toContain('CCRESUME0001');
+  });
+
+  it('shows the payment countdown and lets the user cancel an unpaid order', async () => {
+    const plan = {
+      id: 16,
+      slug: 'cancel-plan',
+      name: '可取消套餐',
+      price_fen: 39900,
+      currency: 'CNY',
+      sale_state: 'test',
+      duration_days: 30,
+    };
+    const pending = {
+      order_no: 'CCCANCELWEB0001',
+      plan_id: plan.id,
+      plan_name: plan.name,
+      amount_fen: plan.price_fen,
+      currency: 'CNY',
+      channel: 'alipay_page',
+      status: 'pending',
+      checkout_url: 'https://openapi.alipay.test/cancel-me',
+      expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      created_at: new Date().toISOString(),
+    };
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      test_mode: false,
+      channels: [{ id: 'alipay_page', label: '支付宝支付', test_mode: false }],
+      plans: [plan],
+    });
+    api.getCommercialOrders.mockResolvedValue({ orders: [pending] });
+    api.cancelCommercialOrder.mockResolvedValue({
+      ok: true,
+      order: { ...pending, status: 'closed', checkout_url: '', closed_at: new Date().toISOString() },
+    });
+
+    await renderModal();
+    await clickButton('继续支付');
+
+    expect(container.textContent).toMatch(/剩余 [45]:\d{2}/);
+    expect(container.textContent).toContain('支付剩余时间');
+    await clickButton('取消订单');
+
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('取消这笔订单'));
+    expect(api.cancelCommercialOrder).toHaveBeenCalledWith('CCCANCELWEB0001', { timeoutMs: 25_000 });
+    expect(container.textContent).toContain('已关闭');
+    expect(container.textContent).not.toContain('支付剩余时间');
   });
 
   it('actively recovers a recently closed Alipay order when the user opens it', async () => {
