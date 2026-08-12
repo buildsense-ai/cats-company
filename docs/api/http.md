@@ -218,6 +218,12 @@ X-CatsCo-File-Size: 12345
 **GET /api/agents/skills?uid={uid}**
 按技能可见范围返回脱敏技能列表。需要用户 JWT；响应不包含内容哈希或完整 Agent 配置。
 
+**GET /api/agents/skills/runtime?uid={uid}**
+按同一技能可见范围返回服务器 Agent 最近一次实际上报的运行时 Skills 清单。需要用户 JWT；响应只包含脱敏元数据（名称、描述、相对路径、调用标记和可选哈希），不包含服务器绝对路径、`SKILL.md` 内容或凭据。`runtime_status` 为 `unreported`、`reported` 或 `stale`；超过 15 分钟未收到服务端回执时为 `stale`。
+
+**POST /api/bot/skills/inventory**
+服务器 Agent 使用 Bot API Key 上报当前已加载的 Skills。服务端只接受 `xiaoba.bot-runtime-skills.v1` 清单，并在服务端写入接收时间；旧版 CatsCo 服务可返回 `404`、`405` 或 `501`，Agent 应继续运行并稍后重试。
+
 ### 管理员 API
 
 需要 admin 权限（OC_ADMIN_USERNAMES）

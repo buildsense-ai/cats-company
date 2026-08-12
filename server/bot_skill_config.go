@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -16,10 +17,15 @@ import (
 )
 
 const (
-	maxBotSkillConfigBodyBytes = 128 << 10
-	maxBotSkillRefs            = 256
-	maxBotSkillIDBytes         = 240
-	maxBotSkillVersionBytes    = 120
+	maxBotSkillConfigBodyBytes         = 128 << 10
+	maxBotSkillRefs                    = 256
+	maxBotSkillIDBytes                 = 240
+	maxBotSkillVersionBytes            = 120
+	maxBotRuntimeSkillEntries          = 256
+	maxBotRuntimeSkillNameBytes        = 240
+	maxBotRuntimeDescriptionBytes      = 4 << 10
+	maxBotRuntimePathBytes             = 512
+	botRuntimeSkillInventoryStaleAfter = 15 * time.Minute
 )
 
 type botDefinitionSkillsPatchRequest struct {
@@ -44,6 +50,26 @@ type botViewerSkillsResponse struct {
 	BotID            string                    `json:"botId"`
 	SkillsVisibility types.BotSkillsVisibility `json:"skills_visibility"`
 	Skills           []botViewerSkill          `json:"skills"`
+}
+
+type botRuntimeSkillsResponse struct {
+	BotID            string                    `json:"botId"`
+	SkillsVisibility types.BotSkillsVisibility `json:"skills_visibility"`
+	RuntimeStatus    string                    `json:"runtime_status"`
+	Stale            bool                      `json:"stale,omitempty"`
+	ObservedAt       string                    `json:"observedAt,omitempty"`
+	Skills           []types.BotRuntimeSkill   `json:"skills"`
+	Truncated        bool                      `json:"truncated,omitempty"`
+}
+
+const botSkillInventorySchema = "xiaoba.bot-runtime-skills.v1"
+
+type botSkillInventoryRequest struct {
+	Schema     string                  `json:"schema"`
+	BotID      string                  `json:"botId"`
+	ObservedAt string                  `json:"observedAt"`
+	Skills     []types.BotRuntimeSkill `json:"skills"`
+	Truncated  bool                    `json:"truncated,omitempty"`
 }
 
 type botSkillAccessStore interface {
@@ -156,6 +182,228 @@ func (h *BotDefinitionHandler) HandleViewerSkills(w http.ResponseWriter, r *http
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, response)
+}
+
+// HandleViewerRuntimeSkills exposes the last inventory reported by the
+// runtime, using the same owner/public/authorized policy as configured skills.
+func (h *BotDefinitionHandler) HandleViewerRuntimeSkills(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	viewerUID := UIDFromContext(r.Context())
+	if viewerUID <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	botUID, err := strconv.ParseInt(r.URL.Query().Get("uid"), 10, 64)
+	if err != nil || botUID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
+		return
+	}
+	access, ok := h.owners.(botSkillAccessStore)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "skill access policy is unavailable"})
+		return
+	}
+	config, err := access.GetBotConfig(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+		return
+	}
+	ownerUID, err := h.owners.GetBotOwner(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+		return
+	}
+	visibility := normalizeBotSkillsVisibility(config.SkillsVisibility)
+	allowed := viewerUID == ownerUID || visibility == types.BotSkillsPublic
+	if !allowed && visibility == types.BotSkillsAuthorized {
+		allowed, err = access.AreFriends(viewerUID, botUID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check Agent access"})
+			return
+		}
+	}
+	if !allowed {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "Agent 所有者未公开技能列表"})
+		return
+	}
+	if h == nil || h.definitions == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot definition is unavailable"})
+		return
+	}
+	record, err := h.loadDefinition(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load bot runtime skills"})
+		return
+	}
+	response := botRuntimeSkillsResponse{
+		BotID:            strconv.FormatInt(botUID, 10),
+		SkillsVisibility: visibility,
+		RuntimeStatus:    "unreported",
+		Skills:           []types.BotRuntimeSkill{},
+	}
+	if record != nil && record.Runtime.SkillInventory != nil {
+		inventory := record.Runtime.SkillInventory
+		response.RuntimeStatus = botRuntimeSkillInventoryStatus(inventory, time.Now().UTC())
+		response.Stale = response.RuntimeStatus == "stale"
+		response.ObservedAt = inventory.ObservedAt
+		response.Skills = append(response.Skills, inventory.Skills...)
+		response.Truncated = inventory.Truncated
+		if strings.TrimSpace(inventory.BotID) != "" {
+			response.BotID = strings.TrimSpace(inventory.BotID)
+		}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, response)
+}
+
+// HandleRuntimeSkillInventory accepts a sanitized snapshot from the Bot API
+// key. Validation happens before the store boundary so no server filesystem
+// path or skill content can be persisted accidentally.
+func (h *BotDefinitionHandler) HandleRuntimeSkillInventory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	botUID := UIDFromContext(r.Context())
+	if botUID <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if _, err := h.owners.GetBotOwner(botUID); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "bot api key required"})
+		return
+	}
+	var request botSkillInventoryRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBotSkillConfigBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	if err := validateBotSkillInventoryRequest(botUID, &request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	inventory := types.BotSkillInventory{
+		Schema: request.Schema, BotID: request.BotID, ObservedAt: request.ObservedAt,
+		ReportedAt: time.Now().UTC().Format(time.RFC3339),
+		Skills:     request.Skills, Truncated: request.Truncated,
+	}
+	if _, err := h.definitions.ReportBotSkillInventory(botUID, inventory); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save bot runtime skills"})
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"botId":      strconv.FormatInt(botUID, 10),
+		"observedAt": inventory.ObservedAt,
+		"skillCount": len(inventory.Skills),
+	})
+}
+
+func validateBotSkillInventoryRequest(botUID int64, request *botSkillInventoryRequest) error {
+	if request.Schema != botSkillInventorySchema {
+		return errors.New("invalid inventory schema")
+	}
+	if strings.TrimSpace(request.BotID) != strconv.FormatInt(botUID, 10) {
+		return errors.New("inventory botId does not match api key")
+	}
+	if strings.TrimSpace(request.ObservedAt) == "" || len(request.ObservedAt) > 80 || strings.ContainsAny(request.ObservedAt, "\r\n") {
+		return errors.New("invalid observedAt")
+	}
+	if _, err := time.Parse(time.RFC3339, request.ObservedAt); err != nil {
+		return errors.New("invalid observedAt")
+	}
+	if len(request.Skills) > maxBotRuntimeSkillEntries {
+		return errors.New("too many runtime skills")
+	}
+	seen := make(map[string]struct{}, len(request.Skills))
+	for index := range request.Skills {
+		skill := &request.Skills[index]
+		skill.Name = strings.TrimSpace(skill.Name)
+		skill.Description = strings.TrimSpace(skill.Description)
+		skill.RelativePath = strings.TrimSpace(skill.RelativePath)
+		skill.ContentHash = strings.TrimSpace(strings.ToLower(skill.ContentHash))
+		if !validBotRuntimeText(skill.Name, maxBotRuntimeSkillNameBytes, false) ||
+			!validBotRuntimeText(skill.Description, maxBotRuntimeDescriptionBytes, true) ||
+			!validBotRuntimeRelativePath(skill.RelativePath, maxBotRuntimePathBytes) {
+			return errors.New("invalid runtime skill metadata")
+		}
+		if skill.ContentHash != "" && !validBotSkillContentHash(skill.ContentHash) {
+			return errors.New("invalid runtime skill contentHash")
+		}
+		if _, exists := seen[skill.Name]; exists {
+			return errors.New("duplicate runtime skill name")
+		}
+		seen[skill.Name] = struct{}{}
+		if skill.SkillHub != nil {
+			skill.SkillHub.SkillID = strings.TrimSpace(skill.SkillHub.SkillID)
+			skill.SkillHub.Version = strings.TrimSpace(skill.SkillHub.Version)
+			skill.SkillHub.ContentHash = strings.TrimSpace(strings.ToLower(skill.SkillHub.ContentHash))
+			if !validBotSkillID(skill.SkillHub.SkillID) ||
+				!validBotSkillRefPart(skill.SkillHub.Version, maxBotSkillVersionBytes) ||
+				(skill.SkillHub.ContentHash != "" && !validBotSkillContentHash(skill.SkillHub.ContentHash)) {
+				return errors.New("invalid runtime SkillHub reference")
+			}
+		}
+	}
+	return nil
+}
+
+func validBotRuntimeText(value string, maxBytes int, allowEmpty bool) bool {
+	if (!allowEmpty && value == "") || !utf8.ValidString(value) || len(value) > maxBytes {
+		return false
+	}
+	for _, char := range value {
+		if unicode.IsControl(char) {
+			return false
+		}
+	}
+	return true
+}
+
+func validBotRuntimeRelativePath(value string, maxBytes int) bool {
+	if !validBotRuntimeText(value, maxBytes, false) || strings.HasPrefix(value, "/") || strings.Contains(value, `\`) {
+		return false
+	}
+	// Windows absolute paths can be serialized with forward slashes too
+	// (for example, C:/Users/agent/skills). Reject drive-qualified values
+	// before treating the path as a portable relative path.
+	if len(value) >= 2 && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) && value[1] == ':' {
+		return false
+	}
+	for _, part := range strings.Split(value, "/") {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func botRuntimeSkillInventoryStatus(inventory *types.BotSkillInventory, now time.Time) string {
+	if inventory == nil {
+		return "unreported"
+	}
+	freshnessAt := strings.TrimSpace(inventory.ReportedAt)
+	if freshnessAt == "" {
+		// Records written before ReportedAt existed are still readable, but a
+		// future client clock must never make them appear healthy indefinitely.
+		freshnessAt = inventory.ObservedAt
+	}
+	reportedAt, err := time.Parse(time.RFC3339, freshnessAt)
+	if err != nil || reportedAt.After(now) || now.Sub(reportedAt) > botRuntimeSkillInventoryStaleAfter {
+		return "stale"
+	}
+	return "reported"
 }
 
 // HandleRuntimeSkills is the bot API-key form of the same field-level API.

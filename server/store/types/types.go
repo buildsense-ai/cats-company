@@ -579,6 +579,40 @@ type BotSkillRef struct {
 	ContentHash string `json:"contentHash"`
 }
 
+// BotRuntimeSkillHubReference identifies the SkillHub package associated with
+// a skill that the runtime actually loaded. It intentionally carries metadata
+// only, never package contents or local credentials.
+type BotRuntimeSkillHubReference struct {
+	SkillID     string `json:"skillId"`
+	Version     string `json:"version"`
+	ContentHash string `json:"contentHash,omitempty"`
+}
+
+// BotRuntimeSkill is the redacted metadata for one skill observed by a Bot
+// runtime. RelativePath is relative to the runtime's Skills root.
+type BotRuntimeSkill struct {
+	Name          string                       `json:"name"`
+	Description   string                       `json:"description"`
+	RelativePath  string                       `json:"relativePath"`
+	UserInvocable bool                         `json:"userInvocable"`
+	ContentHash   string                       `json:"contentHash,omitempty"`
+	SkillHub      *BotRuntimeSkillHubReference `json:"skillHub,omitempty"`
+}
+
+// BotSkillInventory is the latest runtime-reported loaded Skills snapshot.
+// A non-nil empty Skills slice means the runtime reported successfully and
+// currently has no loaded Skills; nil means it has never reported.
+type BotSkillInventory struct {
+	Schema     string `json:"schema"`
+	BotID      string `json:"botId"`
+	ObservedAt string `json:"observedAt"`
+	// ReportedAt is assigned by CatsCo when it accepts the snapshot. Freshness
+	// must be based on this server clock, rather than a mutable Agent clock.
+	ReportedAt string            `json:"reportedAt,omitempty"`
+	Skills     []BotRuntimeSkill `json:"skills"`
+	Truncated  bool              `json:"truncated,omitempty"`
+}
+
 // BotDefinition is the deliberately small portable identity of a XiaoBa bot.
 // Device runtime material, sessions, quotas, and device identities do not
 // belong here. Skills are immutable SkillHub references rather than packages.
@@ -593,18 +627,19 @@ type BotDefinition struct {
 // BotDefinitionRuntime tracks application progress without polluting the
 // portable definition itself.
 type BotDefinitionRuntime struct {
-	DesiredRevision     int64  `json:"desiredRevision"`
-	UpdatedAt           string `json:"updatedAt,omitempty"`
-	RuntimeProtocol     string `json:"runtimeProtocol,omitempty"`
-	RuntimeProtocolSeen string `json:"runtimeProtocolSeenAt,omitempty"`
-	AppliedKind         string `json:"appliedKind,omitempty"`
-	AppliedModelID      string `json:"appliedModelId,omitempty"`
-	AppliedReasoning    string `json:"appliedReasoningEffort,omitempty"`
-	AppliedRevision     int64  `json:"appliedRevision,omitempty"`
-	AppliedAt           string `json:"appliedAt,omitempty"`
-	LastAttemptRevision int64  `json:"lastAttemptRevision,omitempty"`
-	LastAttemptAt       string `json:"lastAttemptAt,omitempty"`
-	LastError           string `json:"lastError,omitempty"`
+	DesiredRevision     int64              `json:"desiredRevision"`
+	UpdatedAt           string             `json:"updatedAt,omitempty"`
+	RuntimeProtocol     string             `json:"runtimeProtocol,omitempty"`
+	RuntimeProtocolSeen string             `json:"runtimeProtocolSeenAt,omitempty"`
+	AppliedKind         string             `json:"appliedKind,omitempty"`
+	AppliedModelID      string             `json:"appliedModelId,omitempty"`
+	AppliedReasoning    string             `json:"appliedReasoningEffort,omitempty"`
+	AppliedRevision     int64              `json:"appliedRevision,omitempty"`
+	AppliedAt           string             `json:"appliedAt,omitempty"`
+	LastAttemptRevision int64              `json:"lastAttemptRevision,omitempty"`
+	LastAttemptAt       string             `json:"lastAttemptAt,omitempty"`
+	LastError           string             `json:"lastError,omitempty"`
+	SkillInventory      *BotSkillInventory `json:"skillInventory,omitempty"`
 }
 
 // BotDefinitionSavedCustomModel keeps the encrypted alternate custom profile

@@ -737,11 +737,13 @@ func main() {
 	mux.HandleFunc("/api/bots/definition/skills", ownerAuthWithDB(botDefinitionHandler.HandleOwnerSkills))
 	mux.HandleFunc("/api/agents/prompt", jwtAuthWithDB(botDefinitionHandler.HandleViewerPrompt))
 	mux.HandleFunc("/api/agents/skills", jwtAuthWithDB(botDefinitionHandler.HandleViewerSkills))
+	mux.HandleFunc("/api/agents/skills/runtime", jwtAuthWithDB(botDefinitionHandler.HandleViewerRuntimeSkills))
 	mux.HandleFunc("/api/skillhub/skills", jwtAuthWithDB(skillHubProxyHandler.HandleSkills))
 	mux.HandleFunc("/api/skillhub/skills/", jwtAuthWithDB(skillHubProxyHandler.HandleSkill))
 	mux.HandleFunc("/api/bot/definition", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefinition))
 	mux.HandleFunc("/api/bot/definition/skills", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeSkills))
 	mux.HandleFunc("/api/bot/definition/default-prompt", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefaultPrompt))
+	mux.HandleFunc("/api/bot/skills/inventory", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeSkillInventory))
 	mux.HandleFunc("/api/bot/definition/ack", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeAck))
 
 	// Groups (require auth)

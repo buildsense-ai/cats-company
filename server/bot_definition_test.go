@@ -147,6 +147,16 @@ func (s *botDefinitionTestStore) ReportBotDefaultPrompt(
 	return cloneBotDefinitionRecord(record), true, nil
 }
 
+func (s *botDefinitionTestStore) ReportBotSkillInventory(
+	botUID int64,
+	inventory types.BotSkillInventory,
+) (*types.BotDefinitionRecord, error) {
+	record := s.ensure(botUID)
+	record.Runtime.SkillInventory = &inventory
+	record.Exists = true
+	return cloneBotDefinitionRecord(record), nil
+}
+
 func (s *botDefinitionTestStore) AckBotDefinition(
 	botUID, revision int64,
 	applyError string,

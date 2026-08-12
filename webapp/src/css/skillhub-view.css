@@ -783,6 +783,22 @@
 .cc-skillhub-content-header h2, .cc-skillhub-custom-header h2 { margin: 0 0 5px; color: var(--cc-text); font-size: 19px; font-weight: var(--cc-font-weight-semibold); letter-spacing: 0; }
 .cc-skillhub-content-header p, .cc-skillhub-custom-header p { margin: 0; color: var(--cc-muted); font-size: 13px; line-height: 1.5; }
 .cc-skillhub-added-list { display: grid; gap: 8px; padding: 12px 20px 20px; }
+.cc-skillhub-runtime-observation { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 0 20px 10px; color: var(--cc-muted); font-size: 11px; }
+.cc-skillhub-runtime-state { display: inline-flex; align-items: center; min-height: 22px; border-radius: 999px; padding: 0 8px; font-weight: var(--cc-font-weight-semibold); }
+.cc-skillhub-runtime-state.reported { background: color-mix(in srgb, var(--cc-success-text) 12%, transparent); color: var(--cc-success-text); }
+.cc-skillhub-runtime-state.stale { background: color-mix(in srgb, var(--cc-danger) 12%, transparent); color: var(--cc-danger); }
+.cc-skillhub-runtime-state.unreported { background: var(--cc-selected); color: var(--cc-muted); }
+.cc-skillhub-runtime-privacy-note { margin: 0; padding: 0 20px 14px; color: var(--cc-muted); font-size: 11px; line-height: 1.5; }
+.cc-skillhub-runtime-list { display: grid; gap: 8px; padding: 12px 20px 20px; }
+.cc-skillhub-runtime-item { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 12px; min-width: 0; border: 1px solid var(--cc-border); border-radius: var(--cc-radius-md); padding: 13px; background: var(--cc-panel-raised); }
+.cc-skillhub-runtime-item:hover { border-color: var(--cc-border-strong); background: var(--cc-hover); }
+.cc-skillhub-runtime-invocable { display: inline-flex; align-items: center; min-height: 20px; border-radius: 999px; padding: 0 7px; background: color-mix(in srgb, var(--cc-success-text) 12%, transparent); color: var(--cc-success-text); font-size: 10px; }
+.cc-skillhub-runtime-invocable.internal { background: var(--cc-selected); color: var(--cc-muted); }
+.cc-skillhub-runtime-meta { display: grid; gap: 4px; margin: 7px 0 0; }
+.cc-skillhub-runtime-meta > div { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 8px; min-width: 0; }
+.cc-skillhub-runtime-meta dt { color: var(--cc-muted); font-size: 11px; }
+.cc-skillhub-runtime-meta dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--cc-text-secondary); font-size: 11px; }
+.cc-skillhub-runtime-meta code { font-family: var(--cc-font-mono); }
 .cc-skillhub-added-item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; min-width: 0; border: 1px solid var(--cc-border); border-radius: var(--cc-radius-md); padding: 13px; background: var(--cc-panel-raised); transition: border-color 140ms ease, background 140ms ease; }
 .cc-skillhub-added-item:hover { border-color: var(--cc-border-strong); background: var(--cc-hover); }
 .cc-skillhub-added-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; color: var(--cc-accent); }
@@ -867,6 +883,7 @@
   .cc-skillhub-navigation { align-items: flex-start; flex-direction: column; gap: 4px; }
   .cc-skillhub-custom-entry { align-self: flex-end; margin-bottom: 6px; }
   .cc-skillhub-added-item { grid-template-columns: auto minmax(0, 1fr); }
+  .cc-skillhub-runtime-item { grid-template-columns: auto minmax(0, 1fr); }
   .cc-skillhub-added-actions { grid-column: 2; justify-content: space-between; gap: 8px; }
   .cc-skillhub-added-actions button { min-height: 44px; }
   .cc-skillhub-action-menu button { min-height: 44px; }

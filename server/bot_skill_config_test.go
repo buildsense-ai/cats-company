@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openchat/openchat/server/store/types"
 )
@@ -83,6 +84,125 @@ func TestBotDefinitionViewerSkillsRespectVisibilityAndRedactDefinition(t *testin
 				t.Fatalf("missing private-state message: %s", rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestRuntimeSkillInventoryReportsOnlySanitizedRuntimeMetadata(t *testing.T) {
+	handler, db := newBotSkillDefinitionTestHandler()
+	observedAt := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	request := httptest.NewRequest(http.MethodPost, "/api/bot/skills/inventory", strings.NewReader(`{
+		"schema":"xiaoba.bot-runtime-skills.v1",
+		"botId":"43",
+		"observedAt":"`+observedAt+`",
+		"skills":[{
+			"name":"review",
+			"description":"Review code changes",
+			"relativePath":"tools/review/SKILL.md",
+			"userInvocable":true,
+			"contentHash":"`+testSkillHash+`",
+			"skillHub":{"skillId":"tools/review","version":"1.0.0","contentHash":"`+testSkillHash+`"}
+		}]
+	}`))
+	request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(43)))
+	recorder := httptest.NewRecorder()
+
+	handler.HandleRuntimeSkillInventory(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	inventory := db.records[43].Runtime.SkillInventory
+	if inventory == nil || inventory.ObservedAt != observedAt || len(inventory.Skills) != 1 {
+		t.Fatalf("inventory=%+v", inventory)
+	}
+	if got := inventory.Skills[0]; got.RelativePath != "tools/review/SKILL.md" || got.SkillHub == nil || got.SkillHub.SkillID != "tools/review" {
+		t.Fatalf("skill=%+v", got)
+	}
+}
+
+func TestRuntimeSkillInventoryRejectsAbsolutePathAndOtherBot(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "absolute path",
+			body: `{"schema":"xiaoba.bot-runtime-skills.v1","botId":"43","observedAt":"2026-08-12T06:00:00Z","skills":[{"name":"review","description":"Review","relativePath":"/srv/skills/review/SKILL.md","userInvocable":true}]}`,
+		},
+		{
+			name: "windows drive path",
+			body: `{"schema":"xiaoba.bot-runtime-skills.v1","botId":"43","observedAt":"2026-08-12T06:00:00Z","skills":[{"name":"review","description":"Review","relativePath":"C:/xiaoba/skills/review/SKILL.md","userInvocable":true}]}`,
+		},
+		{
+			name: "different bot",
+			body: `{"schema":"xiaoba.bot-runtime-skills.v1","botId":"44","observedAt":"2026-08-12T06:00:00Z","skills":[]}`,
+		},
+		{
+			name: "trailing json",
+			body: `{"schema":"xiaoba.bot-runtime-skills.v1","botId":"43","observedAt":"2026-08-12T06:00:00Z","skills":[]}{}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, _ := newBotSkillDefinitionTestHandler()
+			request := httptest.NewRequest(http.MethodPost, "/api/bot/skills/inventory", strings.NewReader(tc.body))
+			request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(43)))
+			recorder := httptest.NewRecorder()
+			handler.HandleRuntimeSkillInventory(recorder, request)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestRuntimeSkillInventoryStatusUsesServerReceiptTime(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	if got := botRuntimeSkillInventoryStatus(&types.BotSkillInventory{
+		ObservedAt: now.Add(24 * time.Hour).Format(time.RFC3339),
+	}, now); got != "stale" {
+		t.Fatalf("legacy future observedAt status=%q, want stale", got)
+	}
+	if got := botRuntimeSkillInventoryStatus(&types.BotSkillInventory{
+		ObservedAt: now.Add(24 * time.Hour).Format(time.RFC3339),
+		ReportedAt: now.Add(-time.Minute).Format(time.RFC3339),
+	}, now); got != "reported" {
+		t.Fatalf("server-received inventory status=%q, want reported", got)
+	}
+}
+
+func TestViewerRuntimeSkillsUsesVisibilityAndDistinguishesUnreported(t *testing.T) {
+	handler, db := newBotSkillDefinitionTestHandler()
+	db.configs[43].SkillsVisibility = types.BotSkillsPublic
+	observedAt := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	request := httptest.NewRequest(http.MethodGet, "/api/agents/skills/runtime?uid=43", nil)
+	request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(8)))
+	recorder := httptest.NewRecorder()
+
+	handler.HandleViewerRuntimeSkills(recorder, request)
+
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"runtime_status":"unreported"`) || !strings.Contains(recorder.Body.String(), `"skills":[]`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	db.records[43].Runtime.SkillInventory = &types.BotSkillInventory{
+		Schema: "xiaoba.bot-runtime-skills.v1", BotID: "43", ObservedAt: observedAt,
+		Skills: []types.BotRuntimeSkill{{
+			Name: "review", Description: "Review code changes", RelativePath: "tools/review/SKILL.md", UserInvocable: true,
+		}},
+	}
+	recorder = httptest.NewRecorder()
+	handler.HandleViewerRuntimeSkills(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"runtime_status":"reported"`) ||
+		!strings.Contains(recorder.Body.String(), `"relativePath":"tools/review/SKILL.md"`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	db.configs[43].SkillsVisibility = types.BotSkillsOwner
+	recorder = httptest.NewRecorder()
+	handler.HandleViewerRuntimeSkills(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

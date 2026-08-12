@@ -136,6 +136,7 @@ func (a *Adapter) UpdateBotDefinitionSkills(
 	})
 }
 
+<<<<<<< HEAD
 func (a *Adapter) UpdateBotPromptVisibility(
 	botUID int64,
 	visibility types.BotPromptVisibility,
@@ -170,6 +171,18 @@ func (a *Adapter) ReportBotDefaultPrompt(
 		return nil
 	})
 	return record, changed, err
+}
+
+func (a *Adapter) ReportBotSkillInventory(
+	botUID int64,
+	inventory types.BotSkillInventory,
+) (*types.BotDefinitionRecord, error) {
+	return a.updateBotDefinition(botUID, func(record *types.BotDefinitionRecord, now string) error {
+		inventory.ReportedAt = now
+		record.Runtime.SkillInventory = &inventory
+		record.Exists = true
+		return nil
+	})
 }
 
 func (a *Adapter) AckBotDefinition(botUID, revision int64, applyError string) (*types.BotDefinitionRecord, error) {

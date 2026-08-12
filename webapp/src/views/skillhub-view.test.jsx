@@ -34,6 +34,7 @@ vi.mock('../api', () => ({
     getAgentSkills: vi.fn(),
     getMyBots: vi.fn(),
     getBotDefinitionSkills: vi.fn(),
+    getAgentRuntimeSkills: vi.fn(),
     updateBotDefinitionSkills: vi.fn(),
     searchSkillHubSkills: vi.fn(),
     getSkillHubSkill: vi.fn(),
@@ -86,6 +87,18 @@ describe('SkillHubView', () => {
       botId: '42',
       revision: 3,
       skills: [{ source: 'skillhub', skillId: 'tools/review', version: '1.0.0', contentHash: 'a'.repeat(64) }],
+    });
+    api.getAgentRuntimeSkills.mockResolvedValue({
+      botId: '42',
+      runtime_status: 'reported',
+      observedAt: new Date().toISOString(),
+      skills: [{
+        name: 'review',
+        description: 'Review code changes',
+        relativePath: 'tools/review/SKILL.md',
+        userInvocable: true,
+        skillHub: { skillId: 'tools/review', version: '1.0.0' },
+      }],
     });
     api.searchSkillHubSkills.mockResolvedValue({
       skills: [{
@@ -673,12 +686,14 @@ describe('SkillHubView', () => {
 
     expect(container.querySelector('h1')?.textContent).toBe('Agent 能力');
     expect(container.querySelector('#skillhub-added-tab')?.getAttribute('aria-selected')).toBe('true');
-    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(2);
+    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(3);
     expect(container.querySelector('.cc-skillhub-installed')).toBeNull();
     expect(container.textContent).toContain('本地工作区');
     expect(container.textContent).not.toContain('已开启');
     expect(container.querySelector('button[aria-label="复制 tools/review"]')).toBeTruthy();
     expect(container.querySelector('button[aria-label="更多操作 tools/review"]')).toBeTruthy();
+    expect(api.getAgentRuntimeSkills).toHaveBeenCalledWith('42');
+    expect(container.textContent).toContain('服务器运行时');
     expect(container.querySelector('button[aria-label="从当前 Agent 移除 tools/review"]')).toBeFalsy();
 
     await act(async () => {
@@ -709,6 +724,77 @@ describe('SkillHubView', () => {
     expect(api.getBotDefinitionSkills).toHaveBeenCalledWith('44');
     expect(container.querySelector('.cc-skillhub-agent-select-trigger')?.textContent)
       .toContain('Design Bot');
+  });
+
+  it('shows the server runtime inventory separately from configured and local skills', async () => {
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('#skillhub-runtime-tab'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('#skillhub-runtime-panel h2')?.textContent).toBe('服务器运行时已加载');
+    expect(container.querySelector('#skillhub-runtime-panel')?.textContent).toContain('tools/review');
+    expect(container.querySelector('#skillhub-runtime-panel')?.textContent).toContain('最近观测');
+    expect(container.querySelector('#skillhub-runtime-panel')?.textContent).not.toContain('C:\\xiaoba');
+  });
+
+  it('renders unreported and forbidden runtime inventory states without mixing local workspace state', async () => {
+    api.getAgentRuntimeSkills.mockRejectedValueOnce(Object.assign(new Error('forbidden'), { status: 403 }));
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('#skillhub-runtime-tab'));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('#skillhub-runtime-panel')?.textContent).toContain('无权查看');
+    expect(container.querySelector('#skillhub-runtime-panel')?.textContent).not.toContain('管理自定义能力');
+  });
+
+  it('ignores a late runtime inventory response after switching Agents', async () => {
+    const runtimeA = deferred();
+    const runtimeB = deferred();
+    api.getMyBots.mockResolvedValueOnce({
+      bots: [
+        { id: 42, display_name: 'Bot A', relation: 'owner' },
+        { id: 44, display_name: 'Bot B', relation: 'owner' },
+      ],
+    });
+    api.getBotDefinitionSkills.mockImplementation((uid) => Promise.resolve({
+      botId: String(uid), revision: 1, skills: [],
+    }));
+    api.getAgentRuntimeSkills.mockImplementation((uid) => String(uid) === '42' ? runtimeA.promise : runtimeB.promise);
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const picker = container.querySelector('.cc-skillhub-bot-picker select');
+    await act(async () => {
+      picker.value = '44';
+      Simulate.change(picker);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      runtimeB.resolve({ botId: '44', runtime_status: 'reported', observedAt: new Date().toISOString(), skills: [{ name: 'bot-b-skill', relativePath: 'bot-b/SKILL.md', description: '', userInvocable: true }] });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      runtimeA.resolve({ botId: '42', runtime_status: 'reported', observedAt: new Date().toISOString(), skills: [{ name: 'bot-a-late', relativePath: 'bot-a/SKILL.md', description: '', userInvocable: true }] });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('#skillhub-runtime-tab'));
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('bot-b-skill');
+    expect(container.textContent).not.toContain('bot-a-late');
   });
 
   it('copies an added SkillHub ability without opening the platform share action', async () => {

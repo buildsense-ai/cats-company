@@ -34,7 +34,7 @@ export default function SkillHubContent(props) {
                 {loadingDefinition ? `正在更新${selectedAgentName ? ` Agent“${selectedAgentName}”` : '当前 Agent'}的能力…` : skillAction?.type === 'remove' ? '正在移除能力…' : '正在添加能力…'}
               </div>
             )}
-            {activeSection === 'added' ? <AddedSkills {...props} /> : <Catalogue {...props} />}
+            {activeSection === 'added' ? <AddedSkills {...props} /> : activeSection === 'runtime' ? <RuntimeSkills {...props} /> : <Catalogue {...props} />}
           </>
         )}
       </div>
@@ -101,6 +101,9 @@ function SkillNavigation({ activeSection, addedCount, isLocalEnabled, onChangeSe
         <button type='button' id='skillhub-added-tab' role='tab' aria-selected={activeSection === 'added'} aria-controls='skillhub-added-panel' className={activeSection === 'added' ? 'active' : ''} onClick={() => onChangeSection('added')}>
           当前 Agent 能力 <span>{addedCount}</span>
         </button>
+        <button type='button' id='skillhub-runtime-tab' role='tab' aria-selected={activeSection === 'runtime'} aria-controls='skillhub-runtime-panel' className={activeSection === 'runtime' ? 'active' : ''} onClick={() => onChangeSection('runtime')}>
+          服务器运行时
+        </button>
         <button type='button' id='skillhub-catalogue-tab' role='tab' aria-selected={activeSection === 'catalogue'} aria-controls='skillhub-catalogue-panel' className={activeSection === 'catalogue' ? 'active' : ''} onClick={() => onChangeSection('catalogue')}>
           能力库
         </button>
@@ -112,6 +115,89 @@ function SkillNavigation({ activeSection, addedCount, isLocalEnabled, onChangeSe
       )}
     </nav>
   );
+}
+
+function RuntimeSkills(props) {
+  const {
+    loadingRuntimeSkills, onRefreshRuntimeSkills, runtimeObservedAt, runtimeSkills,
+    runtimeSkillsError, runtimeSkillsErrorStatus, runtimeStatus, runtimeTruncated,
+    selectedAgentName, selectedBotUID,
+  } = props;
+  const reported = runtimeStatus === 'reported';
+  const stale = runtimeStatus === 'stale';
+  const unavailableMessage = runtimeSkillsErrorStatus === 403
+    ? '当前账号无权查看这个 Agent 的运行时 Skills 清单。'
+    : runtimeSkillsErrorStatus === 404
+      ? '当前 CatsCo 服务尚未提供运行时 Skills 清单，请先升级服务端和 Agent。'
+      : runtimeSkillsError || '';
+  return (
+    <section id='skillhub-runtime-panel' className='cc-skillhub-surface cc-skillhub-runtime' role='tabpanel' aria-labelledby='skillhub-runtime-tab'>
+      <div className='cc-skillhub-content-header'>
+        <div>
+          <h2>服务器运行时已加载</h2>
+          <p>这是 {selectedAgentName ? `Agent“${selectedAgentName}”` : '当前 Agent'} 最近一次实际上报的已加载 Skills，不等同于“已添加能力”的配置引用。</p>
+        </div>
+        <button type='button' className='icon-button' aria-label='刷新服务器运行时 Skills' title='刷新服务器运行时 Skills' onClick={onRefreshRuntimeSkills} disabled={!selectedBotUID || loadingRuntimeSkills}>
+          <RefreshCw className={loadingRuntimeSkills ? 'is-spinning' : ''} size={15} aria-hidden='true' />
+        </button>
+      </div>
+      <div className='cc-skillhub-runtime-observation'>
+        <span className={`cc-skillhub-runtime-state ${stale ? 'stale' : reported ? 'reported' : 'unreported'}`}>
+          {stale ? '上报已过期' : reported ? '已上报' : '尚未上报'}
+        </span>
+        {runtimeObservedAt && <time dateTime={runtimeObservedAt}>最近观测：{formatRuntimeObservedAt(runtimeObservedAt)}</time>}
+        {runtimeTruncated && <span>清单已截断</span>}
+      </div>
+      <p className='cc-skillhub-runtime-privacy-note'>仅展示脱敏元数据，不展示服务器绝对路径、SKILL.md 内容或环境凭据。</p>
+      {unavailableMessage ? (
+        <div className='cc-skillhub-alert error' role='alert'>{unavailableMessage}</div>
+      ) : loadingRuntimeSkills ? (
+        <EmptyState icon={<RefreshCw className='is-spinning' size={20} />} title='正在读取服务器运行时 Skills' status />
+      ) : runtimeStatus === 'unreported' ? (
+        <EmptyState icon={<Bot size={21} />} title='Agent 尚未上报运行时 Skills' copy='请确认服务器上的 Agent 已升级并成功连接 CatsCo，随后刷新此页。' />
+      ) : (
+        <>
+          {stale && <div className='cc-skillhub-alert error' role='status'>这份清单超过 15 分钟未更新，Agent 当前已加载的 Skills 可能已变化。</div>}
+          {runtimeSkills.length === 0 ? (
+            <EmptyState icon={<Package size={21} />} title='服务器 Agent 当前没有已加载的 Skills' copy='这是一份成功上报的空清单。' />
+          ) : (
+            <div className='cc-skillhub-runtime-list'>
+              {runtimeSkills.map((skill) => <RuntimeSkillItem key={`${skill.name}:${skill.relativePath}`} skill={skill} />)}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function RuntimeSkillItem({ skill }) {
+  const reference = skill.skillHub;
+  return (
+    <article className='cc-skillhub-runtime-item'>
+      <span className='cc-skillhub-added-icon' aria-hidden='true'><Package size={17} /></span>
+      <div className='cc-skillhub-added-copy'>
+        <div className='cc-skillhub-added-title'>
+          <h3>{skill.name}</h3>
+          <span className={`cc-skillhub-runtime-invocable${skill.userInvocable ? '' : ' internal'}`}>{skill.userInvocable ? '可调用' : '仅内部'}</span>
+        </div>
+        <p>{skill.description || '这个 Skill 没有提供描述。'}</p>
+        <dl className='cc-skillhub-runtime-meta'>
+          <div><dt>相对路径</dt><dd><code translate='no'>{skill.relativePath || '未提供'}</code></dd></div>
+          {reference?.skillId && <div><dt>SkillHub</dt><dd><code translate='no'>{reference.skillId}{reference.version ? ` · v${reference.version}` : ''}</code></dd></div>}
+        </dl>
+      </div>
+    </article>
+  );
+}
+
+function formatRuntimeObservedAt(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('zh-CN', {
+    dateStyle: 'medium',
+    timeStyle: 'medium',
+  }).format(date);
 }
 
 function AddedSkills(props) {

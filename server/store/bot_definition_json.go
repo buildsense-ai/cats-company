@@ -197,6 +197,9 @@ func normalizeDefinitionRecord(record *types.BotDefinitionRecord, botUID int64) 
 	if record.Definition.Skills == nil {
 		record.Definition.Skills = []types.BotSkillRef{}
 	}
+	if record.Runtime.SkillInventory != nil && record.Runtime.SkillInventory.Skills == nil {
+		record.Runtime.SkillInventory.Skills = []types.BotRuntimeSkill{}
+	}
 	RememberBotDefinitionCustomModel(record, record.Definition.Model)
 	if record.Definition.Model.Kind != "custom" {
 		record.Definition.Model.APIKeyCiphertext = ""

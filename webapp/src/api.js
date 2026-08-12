@@ -800,6 +800,7 @@ export const api = {
     { prompt_visibility: visibility },
   ),
   getAgentSkills: (uid) => request('GET', `/api/agents/skills?uid=${encodeURIComponent(uid)}`),
+  getAgentRuntimeSkills: (uid) => request('GET', `/api/agents/skills/runtime?uid=${encodeURIComponent(uid)}`),
   updateBotDefinitionSkills: (uid, revision, skills) => request(
     'PATCH',
     `/api/bots/definition/skills?uid=${encodeURIComponent(uid)}`,

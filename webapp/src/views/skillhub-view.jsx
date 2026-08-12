@@ -321,6 +321,19 @@ export function normalizeLocalSkills(response) {
   })).filter((skill) => skill.name);
 }
 
+export function normalizeRuntimeSkills(response) {
+  const values = Array.isArray(response) ? response : (response?.skills || []);
+  return values.map((skill) => ({
+    ...skill,
+    name: String(skill?.name || '').trim(),
+    description: String(skill?.description || '').trim(),
+    relativePath: String(skill?.relativePath || skill?.relative_path || '').trim(),
+    userInvocable: skill?.userInvocable !== false && skill?.user_invocable !== false,
+    contentHash: String(skill?.contentHash || skill?.content_hash || '').trim().toLowerCase(),
+    skillHub: skill?.skillHub || skill?.skill_hub || null,
+  })).filter((skill) => skill.name);
+}
+
 export function isPrivateSkillHubReference(skillId) {
   const value = String(skillId || '');
   return value.startsWith('priv_') || value.startsWith('private/');
@@ -567,6 +580,13 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
   const [loadingCatalogue, setLoadingCatalogue] = useState(true);
   const [catalogueError, setCatalogueError] = useState('');
   const [definitionError, setDefinitionError] = useState('');
+  const [runtimeSkills, setRuntimeSkills] = useState([]);
+  const [runtimeStatus, setRuntimeStatus] = useState('unreported');
+  const [runtimeObservedAt, setRuntimeObservedAt] = useState('');
+  const [runtimeTruncated, setRuntimeTruncated] = useState(false);
+  const [runtimeSkillsError, setRuntimeSkillsError] = useState('');
+  const [runtimeSkillsErrorStatus, setRuntimeSkillsErrorStatus] = useState(0);
+  const [loadingRuntimeSkills, setLoadingRuntimeSkills] = useState(false);
   const [localSkills, setLocalSkills] = useState([]);
   const [localSkillsPath, setLocalSkillsPath] = useState('');
   const [localSkillsError, setLocalSkillsError] = useState('');
@@ -587,6 +607,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
   const selectedDeviceIDRef = useRef('');
   const definitionBotUIDRef = useRef('');
   const definitionRequestRef = useRef(0);
+  const runtimeRequestRef = useRef(0);
   const catalogueRequestRef = useRef(0);
   const localRequestRef = useRef(0);
   const saveRequestRef = useRef(0);
@@ -779,6 +800,60 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     }
   }, [bots]);
 
+  const loadRuntimeSkills = useCallback(async (botUID = selectedBotUIDRef.current) => {
+    const requestedBotUID = String(botUID || '');
+    const requestID = runtimeRequestRef.current + 1;
+    runtimeRequestRef.current = requestID;
+    if (!requestedBotUID) {
+      setRuntimeSkills([]);
+      setRuntimeStatus('unreported');
+      setRuntimeObservedAt('');
+      setRuntimeTruncated(false);
+      setRuntimeSkillsError('');
+      setRuntimeSkillsErrorStatus(0);
+      setLoadingRuntimeSkills(false);
+      return null;
+    }
+    setLoadingRuntimeSkills(true);
+    setRuntimeSkills([]);
+    setRuntimeStatus('unreported');
+    setRuntimeObservedAt('');
+    setRuntimeTruncated(false);
+    setRuntimeSkillsError('');
+    setRuntimeSkillsErrorStatus(0);
+    try {
+      const response = await api.getAgentRuntimeSkills(requestedBotUID);
+      if (
+        requestID !== runtimeRequestRef.current
+        || requestedBotUID !== selectedBotUIDRef.current
+      ) return null;
+      const next = {
+        skills: normalizeRuntimeSkills(response),
+        runtimeStatus: String(response?.runtime_status || response?.runtimeStatus || 'unreported').trim() || 'unreported',
+        observedAt: String(response?.observedAt || response?.observed_at || '').trim(),
+        truncated: response?.truncated === true,
+      };
+      setRuntimeSkills(next.skills);
+      setRuntimeStatus(next.runtimeStatus);
+      setRuntimeObservedAt(next.observedAt);
+      setRuntimeTruncated(next.truncated);
+      return next;
+    } catch (error) {
+      if (
+        requestID !== runtimeRequestRef.current
+        || requestedBotUID !== selectedBotUIDRef.current
+      ) return null;
+      setRuntimeSkillsError(error?.message || '无法读取服务器 Agent 的运行时 Skills。');
+      setRuntimeSkillsErrorStatus(Number(error?.status || 0));
+      return null;
+    } finally {
+      if (
+        requestID === runtimeRequestRef.current
+        && requestedBotUID === selectedBotUIDRef.current
+      ) setLoadingRuntimeSkills(false);
+    }
+  }, []);
+
   const searchCatalogue = useCallback(async (searchQuery = '') => {
     const requestID = catalogueRequestRef.current + 1;
     catalogueRequestRef.current = requestID;
@@ -960,6 +1035,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
 
   useEffect(() => {
     loadDefinition(selectedBotUID).catch(() => {});
+    loadRuntimeSkills(selectedBotUID).catch(() => {});
     if (isFriendBotUID(bots, selectedBotUID)) {
       localRequestRef.current += 1;
       setLocalSkills([]);
@@ -969,7 +1045,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       return;
     }
     loadLocalWorkspace(selectedBotUID, selectedDeviceID).catch(() => {});
-  }, [bots, loadDefinition, loadLocalWorkspace, selectedBotUID, selectedDeviceID]);
+  }, [loadDefinition, loadLocalWorkspace, loadRuntimeSkills, selectedBotUID, selectedDeviceID]);
 
   const saveSkills = async (skills, expected = {}) => {
     const requestedBotUID = expected.botUID || selectedBotUIDRef.current;
@@ -1380,6 +1456,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     loadingLocalSkills={loadingLocalSkills}
     loadingLibraryLocalSkills={loadingLibraryLocalSkills}
     libraryLocalError={libraryLocalError}
+    loadingRuntimeSkills={loadingRuntimeSkills}
     localNotice={localNotice}
     localSkills={localSkills}
     localSkillsError={localSkillsError}
@@ -1391,6 +1468,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     onInstallSkill={installLibrarySkill}
     onQueryChange={setQuery}
     onRefreshDefinition={() => loadDefinition()}
+    onRefreshRuntimeSkills={() => loadRuntimeSkills()}
     onRefreshLocal={() => loadLocalWorkspace(
       selectedBotUIDRef.current,
       selectedDeviceIDRef.current,
@@ -1413,6 +1491,12 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     }}
     onShareLocalSkill={shareLocalSkill}
     query={query}
+    runtimeObservedAt={runtimeObservedAt}
+    runtimeSkills={runtimeSkills}
+    runtimeSkillsError={runtimeSkillsError}
+    runtimeSkillsErrorStatus={runtimeSkillsErrorStatus}
+    runtimeStatus={runtimeStatus}
+    runtimeTruncated={runtimeTruncated}
     saving={saving}
     selectedAgentName={selectedAgent ? botLabel(selectedAgent) : ''}
     selectedAgentRelation={selectedAgent?.relation || 'owner'}

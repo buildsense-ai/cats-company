@@ -261,6 +261,7 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 | PATCH | `/api/bots/visibility` | 设置 Bot 可见性 | `{ "uid": 10, "visibility": "public" }` |
 | PATCH | `/api/bots/skills-visibility?uid={uid}&v={scope}` | 设置技能列表可见范围 | - |
 | GET | `/api/agents/skills?uid={uid}` | 按所有者权限读取脱敏技能列表 | - |
+| GET | `/api/agents/skills/runtime?uid={uid}` | 读取服务器 Agent 实际已加载的脱敏 Skills 清单 | - |
 
 #### POST /api/bots — 创建 Bot
 
@@ -338,6 +339,56 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 
 ```json
 { "error": "Agent 所有者未公开技能列表" }
+```
+
+#### GET /api/agents/skills/runtime — 读取服务器 Agent 运行时 Skills
+
+需要用户 JWT，并复用 `skills_visibility` 的 owner/authorized/public 权限。该接口读取的是服务器 Agent 最近一次通过 Bot API Key 上报的实际加载清单，不等同于 BotDefinition 的“已添加能力”引用，也不等同于本地 XiaoBa 工作区。
+
+响应只包含脱敏元数据，不返回服务器绝对路径、`SKILL.md` 内容、环境变量或凭据。`runtime_status` 取值为：
+
+- `unreported`：Agent 尚未成功上报。
+- `reported`：服务端最近 15 分钟内收到上报。
+- `stale`：上次服务端接收时间已超过 15 分钟。
+
+```json
+// Response 200
+{
+  "botId": "10",
+  "skills_visibility": "authorized",
+  "runtime_status": "reported",
+  "observedAt": "2026-08-12T08:00:00Z",
+  "skills": [
+    {
+      "name": "review",
+      "description": "Review code changes",
+      "relativePath": "tools/review/SKILL.md",
+      "userInvocable": true,
+      "contentHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "skillHub": { "skillId": "tools/review", "version": "1.0.0" }
+    }
+  ]
+}
+```
+
+#### POST /api/bot/skills/inventory — Agent 上报运行时 Skills
+
+需要 Bot API Key（`Authorization: ApiKey <bot_api_key>`）。请求体必须使用 `xiaoba.bot-runtime-skills.v1` schema；`botId` 必须与 API Key 对应的 Bot 一致，`relativePath` 必须是 Skills 根目录下的相对路径。服务端会限制清单大小并使用服务端接收时间判断新鲜度。
+
+```json
+{
+  "schema": "xiaoba.bot-runtime-skills.v1",
+  "botId": "10",
+  "observedAt": "2026-08-12T08:00:00Z",
+  "skills": [
+    {
+      "name": "review",
+      "description": "Review code changes",
+      "relativePath": "tools/review/SKILL.md",
+      "userInvocable": true
+    }
+  ]
+}
 ```
 
 #### GET /api/agents/{agentUid}/artifacts?status={active|deleted} — 读取 Agent 成果
