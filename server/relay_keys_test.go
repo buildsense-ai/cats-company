@@ -151,7 +151,7 @@ func TestRelayKeyCreateAndRotateProxy(t *testing.T) {
 	if createRec.Code != http.StatusOK {
 		t.Fatalf("create status=%d body=%s", createRec.Code, createRec.Body.String())
 	}
-	if seenCreateBody.Name != "CatsCo 模型服务 Key" || seenCreateBody.Username != "charlie" {
+	if seenCreateBody.Name != "CatsCo API Key" || seenCreateBody.Username != "charlie" {
 		t.Fatalf("unexpected create body: %+v", seenCreateBody)
 	}
 	if !strings.Contains(createRec.Body.String(), "sk-bf-created") {

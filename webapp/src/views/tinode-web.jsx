@@ -1091,7 +1091,7 @@ function TinodeWebApp() {
               <Laptop size={16} style={{marginRight: 10}} /> 连接我的电脑助手
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowRelayModal(true); }}>
-              <KeyRound size={16} style={{marginRight: 10}} /> CatsCo 模型服务
+              <KeyRound size={16} style={{marginRight: 10}} /> 套餐与权益
             </div>
             <div className="v3-popover-item" onClick={() => { setShowProfilePopover(false); setShowProfileEditor(true); }}>
               <Settings size={16} style={{marginRight: 10}} /> 设置与资料

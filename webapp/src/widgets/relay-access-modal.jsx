@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, BadgeCheck, CalendarDays, Check, Copy, CreditCard, ExternalLink, Gift, History, KeyRound, LayoutGrid, ReceiptText, RotateCcw, Server, Sparkles, Trash2, X } from 'lucide-react';
+import { AlertTriangle, BadgeCheck, CalendarDays, Check, Copy, CreditCard, ExternalLink, Gift, History, KeyRound, LayoutGrid, ReceiptText, RotateCcw, Sparkles, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 
@@ -288,7 +288,7 @@ function modelBudgetLabel(model) {
 
 function modelServiceKeyName(name) {
   const value = String(name || '').trim();
-  if (!value || /^catsco\s+relay\s+key$/i.test(value)) return 'CatsCo 模型服务 Key';
+  if (!value || /^catsco\s+(?:relay|模型服务)\s+key$/i.test(value)) return 'CatsCo API Key';
   return value;
 }
 
@@ -374,7 +374,7 @@ function usageResetInfo(summary) {
   if (summary.source === 'custom' || summary.status === 'custom') {
     return {
       title: '自定义模型',
-      detail: '不使用 CatsCo 模型服务额度',
+      detail: '不使用 CatsCo 套餐额度',
       note: '自定义模型的额度和重置时间由你自己的服务商决定。',
     };
   }
@@ -405,13 +405,6 @@ function usageStateForModel(usageByModel, model) {
   return { loading: false, summary: usageByModel[key] || null };
 }
 
-function currentModelText(summary, fallbackModel) {
-  if (typeof summary === 'undefined') return '当前模型读取中';
-  if (summary?.source === 'custom' || summary?.status === 'custom') return '当前使用自定义模型';
-  if (summary?.model) return `当前模型：${summary.model}`;
-  return `默认模型：${fallbackModel}`;
-}
-
 function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
   if (typeof summary === 'undefined') {
     return {
@@ -434,7 +427,7 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
       percent: 0,
       note: commercialEnabled
         ? '如果刚切换模型，数据可能延迟几分钟刷新。'
-        : '当前仍可使用管理员默认模型服务额度或自定义模型。',
+        : '当前仍可使用管理员发放的默认额度或自定义模型。',
     };
   }
   if (summary.source === 'custom' || summary.status === 'custom') {
@@ -442,10 +435,10 @@ function currentQuotaDisplay(summary, fallbackModel, commercialEnabled) {
       className: 'custom',
       model: '自定义模型',
       title: '当前使用自定义模型',
-      meta: '不消耗 CatsCo 模型服务套餐',
+      meta: '不消耗 CatsCo 套餐额度',
       detail: '额度由你自己的服务商决定',
       percent: 0,
-      note: '切回 CatsCo 模型服务后，这里会显示对应模型的剩余额度。',
+      note: '切回 CatsCo 套餐内模型后，这里会显示对应的剩余额度。',
     };
   }
 
@@ -485,7 +478,7 @@ function budgetUsageDisplay(model, usageByModel) {
   if (loading) return { label: '读取中', meta: '用量读取中' };
   if (!usage) return { label: '待同步', meta: '模型用量暂未同步' };
   if (usage.source === 'custom' || usage.status === 'custom') {
-    return { label: '自备额度', meta: '自定义模型不计入模型服务套餐' };
+    return { label: '自备额度', meta: '自定义模型不计入 CatsCo 套餐额度' };
   }
   if (!usage.model || usage.quota_configured !== true) return { label: '待同步', meta: '模型用量暂未同步' };
   const overLimit = usage.status === 'over_limit';
@@ -654,7 +647,7 @@ export default function RelayAccessModal({ onClose }) {
     const portalWindow = window.open('about:blank', '_blank');
     if (portalWindow) {
       portalWindow.opener = null;
-      portalWindow.document.title = '正在打开 CatsCo 模型服务';
+      portalWindow.document.title = '正在打开开发者接入';
     }
     const navigatePortal = (url) => {
       if (portalWindow) {
@@ -672,10 +665,10 @@ export default function RelayAccessModal({ onClose }) {
         navigatePortal(session.url);
         return;
       }
-      throw new Error('模型服务登录链接生成失败');
+      throw new Error('开发者接入登录链接生成失败');
     } catch (err) {
       const fallback = config.docs_url || config.base_url || FALLBACK_CONFIG.docs_url;
-      setError(err.message || '自动登录模型服务失败，已打开普通页面');
+      setError(err.message || '自动登录开发者接入失败，已打开普通页面');
       navigatePortal(fallback);
     } finally {
       setActionLoading('');
@@ -1101,12 +1094,8 @@ export default function RelayAccessModal({ onClose }) {
       <div className="oc-modal relay-access-modal" onClick={(event) => event.stopPropagation()}>
         <div className="oc-modal-header relay-access-header cc-settings-secondary-header">
           <div className="cc-settings-secondary-header-copy">
-            <h3>CatsCo 模型服务</h3>
-            <p>
-              {config.self_service_enabled
-                ? '生成并管理自己的模型服务 Key，接到第三方客户端或 CatsCo 自定义模型。'
-                : '查看模型服务连接地址，并使用管理员发放的访问凭证。'}
-            </p>
+            <h3>套餐与权益</h3>
+            <p>查看当前用量、套餐权益与订单记录。</p>
           </div>
           <button type="button" onClick={onClose} aria-label="关闭">
             <X size={18} />
@@ -1114,43 +1103,9 @@ export default function RelayAccessModal({ onClose }) {
         </div>
 
         <div className="relay-access-body">
-          {loading && <div className="oc-settings-secondary">正在读取模型服务配置...</div>}
+          {loading && <div className="oc-settings-secondary">正在读取套餐与权益...</div>}
           {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
           {warning && <InlineFeedback tone="warning">{warning}</InlineFeedback>}
-
-          <div className="relay-access-hero">
-            <div className="relay-access-hero-main">
-              <span className="relay-access-summary-icon"><Server size={18} /></span>
-              <div>
-                <div className="relay-access-eyebrow">模型服务</div>
-                <div className="relay-access-title">{config.base_url}</div>
-                <div className="oc-settings-secondary">{currentModelText(currentUsage, config.default_model)}</div>
-              </div>
-            </div>
-            <div className="relay-access-hero-actions">
-              <span className={`relay-access-state ${stateClass}`}>{stateText}</span>
-              <button
-                type="button"
-                className="relay-access-primary-btn"
-                onClick={() => copyText('snippet', snippet)}
-                title="复制快速配置"
-              >
-                {copied === 'snippet' ? <Check size={15} /> : <Copy size={15} />}
-                复制配置
-              </button>
-              {config.docs_url && (
-                <button
-                  type="button"
-                  className="relay-access-open-btn"
-                  onClick={openRelayPortal}
-                  disabled={actionLoading === 'portal'}
-                >
-                  {actionLoading === 'portal' ? '登录中...' : '打开模型服务'}
-                  <ExternalLink size={14} />
-                </button>
-              )}
-            </div>
-          </div>
 
           <section className="relay-access-commerce">
             <div className="relay-access-section-head">
@@ -1159,7 +1114,7 @@ export default function RelayAccessModal({ onClose }) {
                 <div className="oc-settings-secondary">
                   {commercialEnabled
                     ? summarizeCommercial(commercialSummary)
-                    : '套餐兑换暂未开放；当前仍使用默认模型服务额度和现有 Key。'}
+                    : '套餐兑换暂未开放；当前额度和 API Key 不受影响。'}
                 </div>
               </div>
               <span className={`relay-access-state ${commercialEnabled ? 'active' : 'inactive'}`}>
@@ -1512,7 +1467,7 @@ export default function RelayAccessModal({ onClose }) {
                 ) : (
                   <div className="relay-access-token-note">
                     <Gift size={16} />
-                    <span>{commercial?.note || '套餐和邀请码仍在内部测试。现在不影响你的默认模型服务额度、Key 和模型调用。'}</span>
+                    <span>{commercial?.note || '套餐和邀请码仍在内部测试。当前额度、API Key 和模型调用不受影响。'}</span>
                   </div>
                 )}
                 {commercialEnabled && (
@@ -1591,9 +1546,20 @@ export default function RelayAccessModal({ onClose }) {
           <div className="relay-access-connect">
             <div className="relay-access-section-head relay-access-section-head-compact">
               <div>
-                <div className="relay-access-title">连接地址</div>
-                <div className="oc-settings-secondary">按客户端 SDK 类型选择一个 Base URL。</div>
+                <div className="relay-access-title">开发者接入</div>
+                <div className="oc-settings-secondary">用于第三方客户端或 CatsCo 自定义模型。</div>
               </div>
+              {config.docs_url && (
+                <button
+                  type="button"
+                  className="relay-access-open-btn"
+                  onClick={openRelayPortal}
+                  disabled={actionLoading === 'portal'}
+                >
+                  {actionLoading === 'portal' ? '登录中...' : '打开开发者控制台'}
+                  <ExternalLink size={14} />
+                </button>
+              )}
             </div>
             <div className="relay-access-list">
               {config.endpoints.map((endpoint) => (
@@ -1622,7 +1588,7 @@ export default function RelayAccessModal({ onClose }) {
                 <div className="relay-access-title">我的 Key</div>
                 <div className="oc-settings-secondary">
                   {config.self_service_enabled
-                    ? '每个账号一把模型服务 Key，用于第三方客户端或 CatsCo 自定义模型。'
+                    ? '每个账号一把 API Key，用于第三方客户端或 CatsCo 自定义模型。'
                     : '如需访问凭证，请联系管理员发放或重置。'}
                 </div>
               </div>
@@ -1644,7 +1610,7 @@ export default function RelayAccessModal({ onClose }) {
               <div className="relay-access-empty-key">
                 <KeyRound size={18} />
                 <div>
-                  <div className="relay-access-title">还没有模型服务 Key</div>
+                  <div className="relay-access-title">还没有 API Key</div>
                   <div className="oc-settings-secondary">生成后只显示一次明文，请立刻复制到需要使用的客户端。</div>
                 </div>
                 <button type="button" className="relay-access-primary-btn" disabled={busy} onClick={createKey}>

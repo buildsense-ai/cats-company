@@ -123,7 +123,7 @@ describe('RelayAccessModal commercial rollout', () => {
     await clickButton('生成我的 Key');
 
     expect(api.createRelayKey).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain('CatsCo 模型服务 Key');
+    expect(container.textContent).toContain('CatsCo API Key');
     expect(container.textContent).not.toContain('CatsCo relay key');
     expect(container.textContent).toContain('sk-bf-created-secret');
     await clickButton('复制 Key');
@@ -164,7 +164,7 @@ describe('RelayAccessModal commercial rollout', () => {
     await clickButton('撤销');
     expect(window.confirm).toHaveBeenCalledTimes(2);
     expect(api.revokeRelayKey).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain('还没有模型服务 Key');
+    expect(container.textContent).toContain('还没有 API Key');
     expect(container.textContent).not.toContain('sk-bf-rotated-secret');
   });
 
@@ -173,7 +173,7 @@ describe('RelayAccessModal commercial rollout', () => {
 
     expect(container.textContent).toContain('套餐与账单');
     expect(container.textContent).toContain('未开放');
-    expect(container.textContent).toContain('当前仍使用默认模型服务额度和现有 Key');
+    expect(container.textContent).toContain('当前额度和 API Key 不受影响');
     expect(container.textContent).toContain('套餐和邀请码仍在内部测试');
     expect(container.querySelector('.relay-access-invite-form')).toBeNull();
   });
@@ -260,7 +260,7 @@ describe('RelayAccessModal commercial rollout', () => {
     await renderModal();
 
     expect(container.textContent).toContain('当前使用自定义模型');
-    expect(container.textContent).toContain('不消耗 CatsCo 模型服务套餐');
+    expect(container.textContent).toContain('不消耗 CatsCo 套餐额度');
   });
 
   it('shows explicit over-limit warning for the current relay model', async () => {

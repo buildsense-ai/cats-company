@@ -137,7 +137,7 @@ func (h *RelayKeyHandler) HandleKey(w http.ResponseWriter, r *http.Request) {
 		}
 		name := strings.TrimSpace(req.Name)
 		if name == "" {
-			name = "CatsCo 模型服务 Key"
+			name = "CatsCo API Key"
 		}
 		h.forward(w, r, http.MethodPost, uid, "", relayKeyProxyRequest{
 			Name:     name,
