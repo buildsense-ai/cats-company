@@ -254,6 +254,100 @@ func TestBotDefinitionRejectsStaleRevisionAndNonOwner(t *testing.T) {
 	}
 }
 
+func TestBotDefinitionPromptRequiresRevisionAndNormalizesWhitespaceBackup(t *testing.T) {
+	db := &botDefinitionTestStore{
+		owners: map[int64]int64{43: 7},
+		records: map[int64]*types.BotDefinitionRecord{
+			43: {
+				Definition: types.BotDefinition{
+					Schema: types.BotDefinitionSchema,
+					BotID:  "43",
+					Model:  types.BotDefinitionModel{Kind: "catalog", ModelID: "minimax-m3"},
+					Prompt: &types.BotPromptDefinition{Selected: "default"},
+				},
+				Runtime: types.BotDefinitionRuntime{DesiredRevision: 1},
+				Exists:  true,
+			},
+		},
+	}
+	models := &botModelConfigTestStore{owners: db.owners, models: map[int64]*types.BotModelConfig{}}
+	handler := NewBotDefinitionHandler(db, db, models, NewBotModelConfigHandler(db, models))
+
+	for _, body := range []string{
+		`{"prompt":{"selected":"default"}}`,
+		`{"revision":null,"prompt":{"selected":"default"}}`,
+		`{"revision":-1,"prompt":{"selected":"default"}}`,
+	} {
+		req := httptest.NewRequest(http.MethodPatch, "/api/bots/definition/prompt?uid=43", strings.NewReader(body))
+		req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+		rec := httptest.NewRecorder()
+		handler.HandleOwnerPrompt(rec, req)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "revision is required") {
+			t.Fatalf("body=%s status=%d response=%s", body, rec.Code, rec.Body.String())
+		}
+	}
+	if got := db.records[43].Runtime.DesiredRevision; got != 1 {
+		t.Fatalf("invalid revision requests changed desired revision to %d", got)
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/bots/definition/prompt?uid=43", strings.NewReader(
+		`{"revision":1,"prompt":{"selected":"default","customSystemPrompt":"  \n\t"}}`,
+	))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleOwnerPrompt(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("whitespace backup status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := db.records[43].Definition.Prompt.CustomSystemPrompt; got != "" {
+		t.Fatalf("whitespace backup was not normalized: %q", got)
+	}
+}
+
+func TestBotDefinitionPromptBodyLimitAllowsEscapedOneMiBPrompt(t *testing.T) {
+	db := &botDefinitionTestStore{
+		owners: map[int64]int64{43: 7},
+		records: map[int64]*types.BotDefinitionRecord{
+			43: {
+				Definition: types.BotDefinition{
+					Schema: types.BotDefinitionSchema,
+					BotID:  "43",
+					Model:  types.BotDefinitionModel{Kind: "catalog", ModelID: "minimax-m3"},
+					Prompt: &types.BotPromptDefinition{Selected: "default"},
+				},
+				Runtime: types.BotDefinitionRuntime{DesiredRevision: 1},
+				Exists:  true,
+			},
+		},
+	}
+	models := &botModelConfigTestStore{owners: db.owners, models: map[int64]*types.BotModelConfig{}}
+	handler := NewBotDefinitionHandler(db, db, models, NewBotModelConfigHandler(db, models))
+	body, err := json.Marshal(botDefinitionPromptPatchRequest{
+		Revision: func() *int64 { revision := int64(1); return &revision }(),
+		Prompt: types.BotPromptDefinition{
+			Selected:           "custom",
+			CustomSystemPrompt: strings.Repeat(`<`, maxCustomSystemPromptBytes),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) <= 5*maxCustomSystemPromptBytes {
+		t.Fatalf("escaped test body did not exercise the sixfold JSON expansion: %d", len(body))
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/bots/definition/prompt?uid=43", strings.NewReader(string(body)))
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+	handler.HandleOwnerPrompt(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := len([]byte(db.records[43].Definition.Prompt.CustomSystemPrompt)); got != maxCustomSystemPromptBytes {
+		t.Fatalf("stored prompt bytes=%d", got)
+	}
+}
+
 func TestRuntimeDefinitionAcknowledgementTracksApplyState(t *testing.T) {
 	db := &botDefinitionTestStore{
 		owners: map[int64]int64{43: 7},
@@ -472,7 +566,7 @@ func TestRuntimeDefinitionAcknowledgementRedactsCustomModelSecret(t *testing.T) 
 	ownerReq = ownerReq.WithContext(context.WithValue(ownerReq.Context(), uidKey, int64(7)))
 	ownerRec := httptest.NewRecorder()
 	handler.HandleOwnerDefinition(ownerRec, ownerReq)
-	if ownerRec.Code != http.StatusOK || !strings.Contains(ownerRec.Body.String(), `"lastError":"模型配置应用失败"`) {
+	if ownerRec.Code != http.StatusOK || !strings.Contains(ownerRec.Body.String(), `"lastError":"Bot 配置应用失败"`) {
 		t.Fatalf("owner status=%d body=%s", ownerRec.Code, ownerRec.Body.String())
 	}
 	for _, sensitive := range []string{"total_cny", "max_tokens", "request failed"} {
