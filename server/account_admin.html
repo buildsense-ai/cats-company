@@ -869,17 +869,14 @@
         <div class="commercial-panel">
           <h3>套餐</h3>
           <div class="commercial-model-actions" aria-label="套餐预设">
-            <button type="button" data-plan-preset="catsco-trial-3d">3天体验</button>
-            <button type="button" data-plan-preset="catsco-plus-minus">Plus−</button>
-            <button type="button" data-plan-preset="catsco-plus">Plus</button>
-            <button type="button" data-plan-preset="catsco-plus-plus">Plus+</button>
-            <button type="button" data-plan-preset="catsco-team-monthly">团队月卡</button>
+            <button type="button" data-plan-preset="catsco-personal">个人版</button>
+            <button type="button" data-plan-preset="catsco-pro">专业版</button>
             <button type="button" data-plan-preset="blank">空白套餐</button>
           </div>
-          <div class="commercial-meta">SOL 等价 token 仅作内部容量参考，不会展示给用户，也不会直接写入 Relay。填写真实成本额度并完成 Dry-run 后再开放；团队月卡在多人权益上线前保持隐藏。</div>
+          <div class="commercial-meta">Free 使用现有基础模型服务，不创建商业套餐。Personal 为 2 亿 SOL 等价 token / ¥10500 Relay 共享额度；Pro 为 10 亿 / ¥52500。内部数字不会展示给用户，保存后必须先 Dry-run 再开放。</div>
           <form id="commercial-plan-form">
-            <input id="commercial-plan-slug" autocomplete="off" placeholder="套餐标识，例如 catsco-plus" />
-            <input id="commercial-plan-name" autocomplete="off" placeholder="显示名称，例如 Plus" />
+            <input id="commercial-plan-slug" autocomplete="off" placeholder="套餐标识，例如 catsco-personal" />
+            <input id="commercial-plan-name" autocomplete="off" placeholder="显示名称，例如 个人版" />
             <textarea id="commercial-plan-description" placeholder="套餐介绍文案"></textarea>
             <input id="commercial-plan-price" inputmode="decimal" placeholder="售价 CNY，例如 99" />
             <select id="commercial-plan-sale-state">
@@ -1525,89 +1522,38 @@ http://127.0.0.1:26061/local/account-admin</code>
       clear: {},
     };
     const commercialPlanPresets = {
-      'catsco-trial-3d': {
-        slug: 'catsco-trial-3d',
-        name: '3天体验',
-        description: '用三天跑一遍真实任务，感受 CatsCo 如何理解需求、持续沟通并协助交付。适合第一次接触，低成本确认是否合拍。',
-        price_cny: 9.9,
-        sale_state: 'test',
-        purchase_limit: 1,
-        internal_quota_tokens: 5000000,
-        monthly_budget_cny: 0,
-        duration_days: 3,
-        sort_order: 10,
-        model_budgets: {
-          'gpt-5.6-terra': 87.5,
-          'gpt-5.6-sol': 87.5,
-          'gpt-5.6-luna': 87.5,
-        },
-      },
-      'catsco-plus-minus': {
-        slug: 'catsco-plus-minus',
-        name: 'Plus−',
-        description: '为偶尔使用和轻量任务留出从容空间。查资料、润色内容、梳理思路时，随时叫上你的 Agent。',
-        price_cny: 49,
-        sale_state: 'test',
-        purchase_limit: 0,
-        internal_quota_tokens: 25000000,
-        monthly_budget_cny: 0,
-        duration_days: 30,
-        sort_order: 20,
-        model_budgets: {
-          'gpt-5.6-terra': 437.5,
-          'gpt-5.6-sol': 437.5,
-          'gpt-5.6-luna': 437.5,
-        },
-      },
-      'catsco-plus': {
-        slug: 'catsco-plus',
-        name: 'Plus',
-        description: '覆盖多数人的日常协作节奏，让 Agent 更稳定地参与内容处理、信息整理和持续任务，是兼顾使用体验与价格的均衡选择。',
-        price_cny: 99,
-        sale_state: 'test',
-        purchase_limit: 0,
-        internal_quota_tokens: 50000000,
-        monthly_budget_cny: 0,
-        duration_days: 30,
-        sort_order: 30,
-        model_budgets: {
-          'gpt-5.6-terra': 875,
-          'gpt-5.6-sol': 875,
-          'gpt-5.6-luna': 875,
-        },
-      },
-      'catsco-plus-plus': {
-        slug: 'catsco-plus-plus',
-        name: 'Plus+',
-        description: '面向更长对话、更复杂任务与更高调用频率，让复杂项目连续推进，减少工作被频繁打断。',
-        price_cny: 199,
-        sale_state: 'test',
-        purchase_limit: 0,
-        internal_quota_tokens: 100000000,
-        monthly_budget_cny: 0,
-        duration_days: 30,
-        sort_order: 40,
-        model_budgets: {
-          'gpt-5.6-terra': 1750,
-          'gpt-5.6-sol': 1750,
-          'gpt-5.6-luna': 1750,
-        },
-      },
-      'catsco-team-monthly': {
-        slug: 'catsco-team-monthly',
-        name: '团队月卡',
-        description: '让更多成员共享稳定的 Agent 协作能力，适合团队协作、重度任务或多场景并行推进。',
+      'catsco-personal': {
+        slug: 'catsco-personal',
+        name: '个人版',
+        description: '适合将 XiaoBa 作为日常个人助手，覆盖稳定的日常工作、个人自动化与持续协作。',
         price_cny: 399,
-        sale_state: 'hidden',
+        sale_state: 'test',
         purchase_limit: 0,
         internal_quota_tokens: 200000000,
         monthly_budget_cny: 0,
         duration_days: 30,
-        sort_order: 50,
+        sort_order: 20,
         model_budgets: {
           'gpt-5.6-terra': 3500,
           'gpt-5.6-sol': 3500,
           'gpt-5.6-luna': 3500,
+        },
+      },
+      'catsco-pro': {
+        slug: 'catsco-pro',
+        name: '专业版',
+        description: '适合高频、多任务并行或复杂工作，提供约为个人版 5 倍的任务容量与更宽松的使用边界。',
+        price_cny: 799,
+        sale_state: 'test',
+        purchase_limit: 0,
+        internal_quota_tokens: 1000000000,
+        monthly_budget_cny: 0,
+        duration_days: 30,
+        sort_order: 30,
+        model_budgets: {
+          'gpt-5.6-terra': 17500,
+          'gpt-5.6-sol': 17500,
+          'gpt-5.6-luna': 17500,
         },
       },
       blank: {

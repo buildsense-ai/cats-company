@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CalendarDays, Check, Copy, CreditCard, ExternalLink, Gift, KeyRound, ReceiptText, RotateCcw, Server, Sparkles, Trash2, X } from 'lucide-react';
+import { AlertTriangle, BadgeCheck, CalendarDays, Check, Copy, CreditCard, ExternalLink, Gift, History, KeyRound, LayoutGrid, ReceiptText, RotateCcw, Server, Sparkles, Trash2, X } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 
@@ -16,6 +16,35 @@ const FALLBACK_CONFIG = {
 };
 
 const COMMERCIAL_PLAN_PRESENTATION = {
+  'catsco-personal': {
+    kicker: 'CATSCO PERSONAL',
+    tagline: '标准任务容量',
+    audience: '稳定日用 · 个人自动化',
+    usageLabel: '个人版用量',
+    features: [
+      '云端 XiaoBa 与持续会话',
+      '在授权设备、文件和工具间执行任务',
+      '后台任务与主动协作',
+      '个人 Skill 与使用偏好持续沉淀',
+      '常规响应优先级',
+    ],
+  },
+  'catsco-pro': {
+    kicker: 'CATSCO PRO',
+    tagline: '约 5 倍任务容量',
+    audience: '高频使用 · 复杂工作流',
+    usageLabel: '专业版用量',
+    recommended: true,
+    pro: true,
+    features: [
+      '包含个人版全部能力',
+      '约为个人版 5 倍的任务容量',
+      '更高并发与后台任务容量',
+      '复杂任务优先获得更强执行能力',
+      '高峰期更高响应优先级',
+      '更宽松的公平使用边界',
+    ],
+  },
   'catsco-trial-3d': {
     kicker: '先感受',
     tagline: '先跑一次真实任务',
@@ -49,6 +78,20 @@ const COMMERCIAL_PLAN_PRESENTATION = {
     wide: true,
   },
 };
+
+const FREE_PLAN_PRESENTATION = {
+  kicker: 'CATSCO FREE',
+  name: '免费版',
+  tagline: '基础体验范围',
+  description: '适合先体验 XiaoBa 的基础工作方式。',
+  features: [
+    '云端 XiaoBa 与基础会话',
+    '在授权范围内尝试基础任务',
+    '查看任务过程与交付结果',
+  ],
+};
+
+const CURRENT_COMMERCIAL_PLAN_SLUGS = new Set(['catsco-personal', 'catsco-pro']);
 
 function protocolLabel(protocol) {
   if (/anthropic/i.test(protocol)) return 'Anthropic SDK';
@@ -120,7 +163,11 @@ function formatShortDateTime(value) {
 }
 
 function formatPriceFen(value) {
-  return `¥${(Number(value || 0) / 100).toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+  return `¥${formatPriceAmountFen(value)}`;
+}
+
+function formatPriceAmountFen(value) {
+  return (Number(value || 0) / 100).toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
 function commercialPlanPresentation(plan) {
@@ -143,13 +190,27 @@ function commercialOrderStatus(status) {
   return {
     created: '创建中',
     pending: '待支付',
-    paid: '已支付',
-    fulfilled: '额度同步中',
+    paid: '支付成功',
+    fulfilled: '已生效',
     closed: '已关闭',
     failed: '创建失败',
     refunding: '退款中',
     refunded: '已退款',
+    cancelled: '已取消',
   }[status] || status || '未知状态';
+}
+
+function commercialOrderTone(status) {
+  if (status === 'fulfilled') return 'success';
+  if (['created', 'pending', 'paid', 'refunding'].includes(status)) return 'pending';
+  if (status === 'refunded') return 'refunded';
+  return 'muted';
+}
+
+function commercialOrderEventTime(order) {
+  if (order?.status === 'fulfilled') return order.fulfilled_at || order.paid_at || order.updated_at;
+  if (order?.status === 'paid') return order.paid_at || order.updated_at;
+  return order?.updated_at || order?.created_at;
 }
 
 function newCommercialClientRequestID() {
@@ -439,8 +500,8 @@ function nearestPackageExpiry(packages) {
 }
 
 function commercialRolloutLabel(commercial) {
-  if (commercial?.enforce_enabled) return '已接管';
-  if (commercial?.enabled) return '账本灰度';
+  if (commercial?.enforce_enabled) return '套餐已启用';
+  if (commercial?.enabled) return '内测开放';
   return '未开放';
 }
 
@@ -482,6 +543,9 @@ export default function RelayAccessModal({ onClose }) {
   const [commercial, setCommercial] = useState(null);
   const [commercialCatalog, setCommercialCatalog] = useState(null);
   const [commercialOrders, setCommercialOrders] = useState([]);
+  const [commercialView, setCommercialView] = useState('plans');
+  const [orderFilter, setOrderFilter] = useState('all');
+  const [showAllOrders, setShowAllOrders] = useState(false);
   const [paymentChannel, setPaymentChannel] = useState('');
   const [checkoutOrder, setCheckoutOrder] = useState(null);
   const [paymentLoading, setPaymentLoading] = useState('');
@@ -693,7 +757,11 @@ export default function RelayAccessModal({ onClose }) {
   const commercialSummary = commercial?.summary;
   const commercialEnabled = commercial?.enabled === true && commercialSummary;
   const commercialEnforced = commercial?.enforce_enabled === true;
-  const salePlans = Array.isArray(commercialCatalog?.plans) ? commercialCatalog.plans : [];
+  const catalogPlans = Array.isArray(commercialCatalog?.plans) ? commercialCatalog.plans : [];
+  const hasCurrentCommercialPlans = catalogPlans.some(plan => CURRENT_COMMERCIAL_PLAN_SLUGS.has(plan?.slug));
+  const salePlans = hasCurrentCommercialPlans
+    ? catalogPlans.filter(plan => CURRENT_COMMERCIAL_PLAN_SLUGS.has(plan?.slug))
+    : catalogPlans;
   const paymentChannels = Array.isArray(commercialCatalog?.channels) ? commercialCatalog.channels : [];
   const checkoutPaymentLabel = paymentChannelLabel(paymentChannels, checkoutOrder?.channel);
   const activePackages = activeEntitlements(commercialSummary);
@@ -702,6 +770,26 @@ export default function RelayAccessModal({ onClose }) {
   const packageExpiryText = activePackages.length > 0 ? formatShortDate(packageExpiry) : '无套餐';
   const currentResetInfo = usageResetInfo(currentUsage);
   const currentQuota = currentQuotaDisplay(currentUsage, config.default_model, commercialEnabled);
+  const openOrders = commercialOrders.filter(order => ['created', 'pending', 'paid'].includes(order.status));
+  const fulfilledOrders = commercialOrders.filter(order => order.status === 'fulfilled');
+  const closedOrders = commercialOrders.filter(order => (
+    ['closed', 'failed', 'refunding', 'refunded', 'cancelled'].includes(order.status)
+  ));
+  const orderFilters = [
+    { id: 'all', label: '全部', count: commercialOrders.length },
+    { id: 'open', label: '待处理', count: openOrders.length },
+    { id: 'fulfilled', label: '已生效', count: fulfilledOrders.length },
+    { id: 'closed', label: '退款 / 关闭', count: closedOrders.length },
+  ];
+  const filteredOrders = commercialOrders.filter((order) => {
+    if (orderFilter === 'open') return ['created', 'pending', 'paid'].includes(order.status);
+    if (orderFilter === 'fulfilled') return order.status === 'fulfilled';
+    if (orderFilter === 'closed') {
+      return ['closed', 'failed', 'refunding', 'refunded', 'cancelled'].includes(order.status);
+    }
+    return true;
+  });
+  const visibleOrders = showAllOrders ? filteredOrders : filteredOrders.slice(0, 8);
 
   useEffect(() => {
     let cancelled = false;
@@ -862,6 +950,32 @@ export default function RelayAccessModal({ onClose }) {
       }
     } catch (err) {
       setError(err.message || '测试支付失败');
+    } finally {
+      setPaymentLoading('');
+    }
+  };
+
+  const refreshCheckoutOrder = async () => {
+    if (!checkoutOrder?.order_no) return;
+    setPaymentLoading(`refresh:${checkoutOrder.order_no}`);
+    setPaymentPollError('');
+    setError('');
+    try {
+      const data = await api.getCommercialOrders(checkoutOrder.order_no, { timeoutMs: 20_000 });
+      if (!data?.order) throw new Error('暂未读取到订单状态');
+      setCheckoutOrder(data.order);
+      setCommercialOrders((current) => {
+        const next = (current || []).filter((item) => item.order_no !== data.order.order_no);
+        return [data.order, ...next];
+      });
+      if (!['created', 'pending'].includes(data.order.status)) {
+        clearCommercialPaymentRequestIDForOrder(paymentRequestIDs.current, data.order);
+      }
+      if (data.order.status === 'fulfilled') {
+        await refreshCommercialState({ timeoutMs: 20_000 });
+      }
+    } catch (err) {
+      setPaymentPollError(err.message || '订单状态刷新失败，请稍后重试。');
     } finally {
       setPaymentLoading('');
     }
@@ -1033,7 +1147,7 @@ export default function RelayAccessModal({ onClose }) {
           <section className="relay-access-commerce">
             <div className="relay-access-section-head">
               <div>
-                <div className="relay-access-title">套餐与邀请码</div>
+                <div className="relay-access-title">套餐与账单</div>
                 <div className="oc-settings-secondary">
                   {commercialEnabled
                     ? summarizeCommercial(commercialSummary)
@@ -1092,86 +1206,58 @@ export default function RelayAccessModal({ onClose }) {
             </div>
             <div className="relay-access-period-note">{currentResetInfo.note}</div>
 
-            {commercialCatalog?.trial_available && (
-              <div className="relay-access-trial-row">
-                <div>
-                  <strong>新用户体验包</strong>
-                  <span>领取后会直接加入当前模型额度，每个账号限一次。</span>
-                </div>
-                <button type="button" onClick={claimCommercialTrial} disabled={trialLoading}>
-                  {trialLoading ? '领取中...' : '领取体验包'}
-                </button>
-              </div>
-            )}
-
-            {salePlans.length > 0 && (
-              <div className="relay-access-storefront">
-                <div className="relay-access-storefront-head">
-                  <div>
-                    <div className="relay-access-mini-title">选一档，开始你的协作节奏</div>
-                    <span>先选与你当前节奏匹配的一档，需要更多时再升级。</span>
-                  </div>
-                  {paymentChannels.length > 1 ? (
-                    <select value={paymentChannel} onChange={(event) => setPaymentChannel(event.target.value)}>
-                      {paymentChannels.map((channel) => (
-                        <option value={channel.id} key={channel.id}>{channel.label}</option>
-                      ))}
-                    </select>
-                  ) : paymentChannels.length === 1 ? (
-                    <span className="relay-access-payment-channel">{paymentChannels[0].label}</span>
-                  ) : null}
-                </div>
-                <div className="relay-access-plan-list">
-                  {salePlans.map((plan) => {
-                    const presentation = commercialPlanPresentation(plan);
-                    return (
-                      <article
-                        className={`relay-access-plan-row${presentation.recommended ? ' recommended' : ''}${presentation.wide ? ' wide' : ''}`}
-                        key={plan.id}
-                      >
-                        <div className="relay-access-plan-heading">
-                          <span className="relay-access-plan-kicker">{presentation.kicker}</span>
-                          {presentation.recommended && <span className="relay-access-plan-badge">推荐</span>}
-                        </div>
-                        <strong className="relay-access-plan-name">{plan.name}</strong>
-                        <div className="relay-access-plan-price">
-                          <strong>{formatPriceFen(plan.price_fen)}</strong>
-                          <span>{commercialPlanCycle(plan)}</span>
-                        </div>
-                        <span className="relay-access-plan-tagline">{presentation.tagline}</span>
-                        <p>{plan.description || `${plan.duration_days} 天有效`}</p>
-                        <em>{commercialUsageTextForUser(plan, presentation)}</em>
-                        <span className="relay-access-plan-audience">适合：{presentation.audience}</span>
-                        <div className="relay-access-plan-action">
-                          <button
-                            type="button"
-                            onClick={() => createCommercialOrder(plan)}
-                            disabled={!paymentChannel || Boolean(paymentLoading)}
-                          >
-                            <CreditCard size={15} />
-                            {paymentLoading === `create:${plan.id}`
-                              ? '创建中...'
-                              : paymentChannels.length === 0 ? '暂未开放' : '购买'}
-                          </button>
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-                {paymentChannels.length === 0 && (
-                  <div className="relay-access-period-note">支付宝材料与支付通道仍在准备，当前套餐只能通过邀请码或后台发放。</div>
-                )}
-              </div>
-            )}
+            <div className="relay-access-billing-tabs" role="tablist" aria-label="套餐与账单">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={commercialView === 'plans'}
+                className={commercialView === 'plans' ? 'active' : ''}
+                onClick={() => setCommercialView('plans')}
+              >
+                <LayoutGrid size={15} />
+                套餐
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={commercialView === 'orders'}
+                className={commercialView === 'orders' ? 'active' : ''}
+                onClick={() => setCommercialView('orders')}
+              >
+                <History size={15} />
+                订单记录
+                {commercialOrders.length > 0 && <span>{commercialOrders.length}</span>}
+              </button>
+            </div>
 
             {checkoutOrder && (
               <div className={`relay-access-checkout ${checkoutOrder.status}`}>
                 <div className="relay-access-checkout-head">
                   <div>
                     <strong>{checkoutOrder.plan_name}</strong>
-                    <span>订单 {checkoutOrder.order_no}</span>
+                    <span className="relay-access-checkout-order-no">
+                      订单 {checkoutOrder.order_no}
+                      <button
+                        type="button"
+                        aria-label="复制订单号"
+                        title="复制订单号"
+                        onClick={() => copyText(`order:${checkoutOrder.order_no}`, checkoutOrder.order_no)}
+                      >
+                        {copied === `order:${checkoutOrder.order_no}` ? <Check size={12} /> : <Copy size={12} />}
+                      </button>
+                    </span>
                   </div>
-                  <em>{commercialOrderStatus(checkoutOrder.status)}</em>
+                  <div className="relay-access-checkout-head-actions">
+                    <em className={commercialOrderTone(checkoutOrder.status)}>{commercialOrderStatus(checkoutOrder.status)}</em>
+                    <button type="button" aria-label="关闭订单详情" title="关闭订单详情" onClick={() => setCheckoutOrder(null)}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                </div>
+                <div className="relay-access-checkout-meta">
+                  <span><strong>{formatPriceFen(checkoutOrder.amount_fen)}</strong>订单金额</span>
+                  <span><strong>{paymentChannelLabel(paymentChannels, checkoutOrder.channel)}</strong>支付方式</span>
+                  <span><strong>{formatShortDateTime(checkoutOrder.created_at) || '-'}</strong>创建时间</span>
                 </div>
                 {checkoutOrder.status === 'pending' && checkoutOrder.checkout_url && (
                   <div className="relay-access-payment-redirect">
@@ -1205,93 +1291,291 @@ export default function RelayAccessModal({ onClose }) {
                     {paymentLoading === `confirm:${checkoutOrder.order_no}` ? '入账中...' : '完成灰度测试支付'}
                   </button>
                 )}
+                {checkoutOrder.status === 'paid' && (
+                  <div className="relay-access-payment-success pending"><RotateCcw size={16} />支付已确认，正在发放套餐权益。</div>
+                )}
                 {checkoutOrder.status === 'fulfilled' && (
-                  <div className="relay-access-payment-success"><Check size={16} />支付成功，额度正在同步；如暂不可用请稍后刷新。</div>
+                  <div className="relay-access-payment-success"><BadgeCheck size={16} />支付成功，套餐已生效。用量数据可能延迟几分钟刷新。</div>
                 )}
                 {paymentPollError && <InlineFeedback tone="warning">{paymentPollError}</InlineFeedback>}
-              </div>
-            )}
-
-            {commercialOrders.length > 0 && (
-              <div className="relay-access-order-list">
-                <div className="relay-access-mini-title"><ReceiptText size={15} />最近订单</div>
-                {commercialOrders.slice(0, 5).map((order) => (
-                  <button type="button" key={order.order_no} onClick={() => {
-                    setPaymentPollError('');
-                    setCheckoutOrder(order);
-                  }}>
-                    <span>
-                      <strong>{order.plan_name}</strong>
-                      <em>{formatShortDateTime(order.created_at)}</em>
-                    </span>
-                    <span>
-                      <strong>{formatPriceFen(order.amount_fen)}</strong>
-                      <em>{commercialOrderStatus(order.status)}</em>
-                    </span>
+                <div className="relay-access-checkout-actions">
+                  <span>{formatShortDateTime(commercialOrderEventTime(checkoutOrder))}</span>
+                  <button
+                    type="button"
+                    onClick={refreshCheckoutOrder}
+                    disabled={Boolean(paymentLoading)}
+                  >
+                    <RotateCcw size={14} />
+                    {paymentLoading === `refresh:${checkoutOrder.order_no}` ? '刷新中...' : '刷新状态'}
                   </button>
-                ))}
+                </div>
               </div>
             )}
 
-            {commercialEnabled && activePackages.length > 0 && (
-              <div className="relay-access-package-list">
-                <div className="relay-access-mini-title">当前套餐</div>
-                {activePackages.map((item) => (
-                  <div className="relay-access-package-row" key={`${item.id || item.plan_id}-${item.source_ref || item.starts_at}`}>
-                    <span>{item.plan_name || item.plan_slug || '套餐'}</span>
-                    <strong>{formatShortDate(item.expires_at)}</strong>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {commercialEnabled && activePackages.length === 0 && (
-              <div className="relay-access-token-note">
-                <Gift size={16} />
-                <span>当前没有有效套餐。可以输入邀请码兑换，或联系管理员发放额度。</span>
-              </div>
-            )}
-
-            {commercialEnabled && packageModels.length > 0 && (
-              <div className="relay-access-budget-list">
-                {packageModels.map((model) => {
-                  const usageDisplay = budgetUsageDisplay(model, usageByModel);
-                  return (
-                    <div key={model}>
-                      <span>
-                        <strong>{modelBudgetLabel(model)}</strong>
-                        <em>{usageDisplay.meta}</em>
-                      </span>
-                      <strong>{usageDisplay.label}</strong>
+            {commercialView === 'plans' && (
+              <div className="relay-access-billing-panel" role="tabpanel">
+                {commercialEnabled && activePackages.length > 0 && (
+                  <div className="relay-access-entitlement-band">
+                    <div className="relay-access-mini-title"><BadgeCheck size={15} />当前权益</div>
+                    <div className="relay-access-package-list">
+                      {activePackages.map((item) => (
+                        <div className="relay-access-package-row" key={`${item.id || item.plan_id}-${item.source_ref || item.starts_at}`}>
+                          <span>
+                            <strong>{item.plan_name || item.plan_slug || '套餐'}</strong>
+                            <em>{item.starts_at ? `${formatShortDate(item.starts_at)} 生效` : '已生效'}</em>
+                          </span>
+                          <strong>{formatShortDate(item.expires_at)} 到期</strong>
+                        </div>
+                      ))}
                     </div>
-                  );
-                })}
+                    {packageModels.length > 0 && (
+                      <div className="relay-access-budget-list">
+                        {packageModels.map((model) => {
+                          const usageDisplay = budgetUsageDisplay(model, usageByModel);
+                          return (
+                            <div key={model}>
+                              <span>
+                                <strong>{modelBudgetLabel(model)}</strong>
+                                <em>{usageDisplay.meta}</em>
+                              </span>
+                              <strong>{usageDisplay.label}</strong>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {commercialEnabled && activePackages.length === 0 && (
+                  <div className="relay-access-token-note">
+                    <Gift size={16} />
+                    <span>当前没有有效套餐。你可以选购套餐、兑换邀请码，或联系管理员发放额度。</span>
+                  </div>
+                )}
+
+                {commercialCatalog?.trial_available && (
+                  <div className="relay-access-trial-row">
+                    <div>
+                      <strong>新用户体验包</strong>
+                      <span>领取后直接生效，每个账号限一次。</span>
+                    </div>
+                    <button type="button" onClick={claimCommercialTrial} disabled={trialLoading}>
+                      {trialLoading ? '领取中...' : '领取体验包'}
+                    </button>
+                  </div>
+                )}
+
+                {salePlans.length > 0 && (
+                  <div className="relay-access-storefront">
+                    <div className="relay-access-storefront-head">
+                      <div>
+                        {hasCurrentCommercialPlans && <span className="relay-access-storefront-eyebrow">个人方案</span>}
+                        <div className="relay-access-mini-title">
+                          {hasCurrentCommercialPlans ? '选择适合你的工作强度' : '选一档，开始你的协作节奏'}
+                        </div>
+                        <span>{hasCurrentCommercialPlans ? '按实际工作频率选择，套餐到期前不会自动续费。' : '按使用频率选择，套餐到期前不会自动续费。'}</span>
+                      </div>
+                      {paymentChannels.length > 1 ? (
+                        <select value={paymentChannel} onChange={(event) => setPaymentChannel(event.target.value)}>
+                          {paymentChannels.map((channel) => (
+                            <option value={channel.id} key={channel.id}>{channel.label}</option>
+                          ))}
+                        </select>
+                      ) : paymentChannels.length === 1 ? (
+                        <span className="relay-access-payment-channel">{paymentChannels[0].label}</span>
+                      ) : null}
+                    </div>
+                    <div className={`relay-access-plan-list${hasCurrentCommercialPlans ? ' current-catalog' : ''}`}>
+                      {hasCurrentCommercialPlans && (
+                        <article className="relay-access-plan-row official free">
+                          <div className="relay-access-plan-heading">
+                            <span className="relay-access-plan-kicker">{FREE_PLAN_PRESENTATION.kicker}</span>
+                          </div>
+                          <strong className="relay-access-plan-name">{FREE_PLAN_PRESENTATION.name}</strong>
+                          <div className="relay-access-plan-price">
+                            <span className="relay-access-plan-currency">¥</span>
+                            <strong>0</strong>
+                            <span>/ 月</span>
+                          </div>
+                          <span className="relay-access-plan-tagline">{FREE_PLAN_PRESENTATION.tagline}</span>
+                          <p>{FREE_PLAN_PRESENTATION.description}</p>
+                          <div className="relay-access-plan-action">
+                            <button type="button" className="secondary" disabled>无需购买</button>
+                          </div>
+                          <div className="relay-access-plan-divider" />
+                          <span className="relay-access-plan-includes">包含</span>
+                          <ul className="relay-access-plan-features">
+                            {FREE_PLAN_PRESENTATION.features.map(feature => (
+                              <li key={feature}><Check size={14} />{feature}</li>
+                            ))}
+                          </ul>
+                        </article>
+                      )}
+                      {salePlans.map((plan) => {
+                        const presentation = commercialPlanPresentation(plan);
+                        const pendingOrder = openOrders.find(order => order.plan_id === plan.id && order.channel === paymentChannel);
+                        const isActivePlan = activePackages.some(item => item.plan_slug === plan.slug);
+                        return (
+                          <article
+                            className={`relay-access-plan-row${hasCurrentCommercialPlans ? ' official' : ''}${presentation.recommended ? ' recommended' : ''}${presentation.pro ? ' pro' : ''}${presentation.wide ? ' wide' : ''}`}
+                            key={plan.id}
+                          >
+                            <div className="relay-access-plan-heading">
+                              <span className="relay-access-plan-kicker">{presentation.kicker}</span>
+                              {presentation.recommended && <span className="relay-access-plan-badge">推荐</span>}
+                            </div>
+                            <strong className="relay-access-plan-name">{plan.name}</strong>
+                            <div className="relay-access-plan-price">
+                              {hasCurrentCommercialPlans && <span className="relay-access-plan-currency">¥</span>}
+                              <strong>{hasCurrentCommercialPlans ? formatPriceAmountFen(plan.price_fen) : formatPriceFen(plan.price_fen)}</strong>
+                              <span>{commercialPlanCycle(plan)}</span>
+                            </div>
+                            <span className="relay-access-plan-tagline">{presentation.tagline}</span>
+                            <p>{plan.description || `${plan.duration_days} 天有效`}</p>
+                            <em>{commercialUsageTextForUser(plan, presentation)}</em>
+                            <span className="relay-access-plan-audience">适合：{presentation.audience}</span>
+                            <div className="relay-access-plan-action">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (pendingOrder) {
+                                    setPaymentPollError('');
+                                    setCheckoutOrder(pendingOrder);
+                                    return;
+                                  }
+                                  createCommercialOrder(plan);
+                                }}
+                                disabled={!paymentChannel || Boolean(paymentLoading)}
+                              >
+                                <CreditCard size={15} />
+                                {paymentLoading === `create:${plan.id}`
+                                  ? '创建中...'
+                                  : paymentChannels.length === 0
+                                    ? '暂未开放'
+                                    : pendingOrder?.status === 'paid'
+                                      ? '查看进度'
+                                      : pendingOrder
+                                        ? '继续支付'
+                                        : isActivePlan
+                                          ? '续购'
+                                          : hasCurrentCommercialPlans ? `选择${plan.name}` : '购买'}
+                              </button>
+                            </div>
+                            {Array.isArray(presentation.features) && presentation.features.length > 0 && (
+                              <>
+                                <div className="relay-access-plan-divider" />
+                                <span className="relay-access-plan-includes">包含</span>
+                                <ul className="relay-access-plan-features">
+                                  {presentation.features.map(feature => (
+                                    <li key={feature}><Check size={14} />{feature}</li>
+                                  ))}
+                                </ul>
+                              </>
+                            )}
+                          </article>
+                        );
+                      })}
+                    </div>
+                    {paymentChannels.length === 0 && (
+                      <div className="relay-access-period-note">支付通道暂未开放，当前套餐可通过邀请码或管理员发放。</div>
+                    )}
+                  </div>
+                )}
+
+                {commercialEnabled ? (
+                  <div className="relay-access-invite-section">
+                    <div>
+                      <strong>有邀请码？</strong>
+                      <span>兑换成功后，套餐权益会直接加入当前账号。</span>
+                    </div>
+                    <div className="relay-access-invite-form">
+                      <input
+                        value={inviteCode}
+                        onChange={(event) => setInviteCode(event.target.value)}
+                        placeholder="输入邀请码"
+                        disabled={inviteLoading}
+                      />
+                      <button type="button" disabled={inviteLoading} onClick={redeemInvite}>
+                        {inviteLoading ? '兑换中...' : copied === 'invite' ? '已兑换' : '兑换'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="relay-access-token-note">
+                    <Gift size={16} />
+                    <span>{commercial?.note || '套餐和邀请码仍在内部测试。现在不影响你的默认模型服务额度、Key 和模型调用。'}</span>
+                  </div>
+                )}
+                {commercialEnabled && (
+                  <div className="oc-settings-secondary">
+                    {commercialEnforced
+                      ? '套餐用量会自动计入对应模型额度，切换模型后可能有几分钟延迟。'
+                      : (commercial?.note || '当前为内测账单，购买记录不会自动改变已有模型额度。')}
+                  </div>
+                )}
               </div>
             )}
 
-            {commercialEnabled ? (
-              <div className="relay-access-invite-form">
-                <input
-                  value={inviteCode}
-                  onChange={(event) => setInviteCode(event.target.value)}
-                  placeholder="输入邀请码兑换套餐额度"
-                  disabled={inviteLoading}
-                />
-                <button type="button" disabled={inviteLoading} onClick={redeemInvite}>
-                  {inviteLoading ? '兑换中...' : copied === 'invite' ? '已兑换' : '兑换'}
-                </button>
-              </div>
-            ) : (
-              <div className="relay-access-token-note">
-                <Gift size={16} />
-                <span>{commercial?.note || '套餐和邀请码仍在内部测试。现在不影响你的默认模型服务额度、Key 和模型调用。'}</span>
-              </div>
-            )}
-            {commercialEnabled && (
-              <div className="oc-settings-secondary">
-                {commercialEnforced
-                  ? '套餐额度已接入模型限额；管理员仍可在后台手动调额或重置用量。'
-                  : (commercial?.note || '套餐额度先记录在账本里；需要管理员后台对账/同步后，才会成为 relay 真实模型限额。')}
+            {commercialView === 'orders' && (
+              <div className="relay-access-billing-panel" role="tabpanel">
+                <div className="relay-access-order-summary">
+                  <div><strong>{commercialOrders.length}</strong><span>全部订单</span></div>
+                  <div><strong>{openOrders.length}</strong><span>待处理</span></div>
+                  <div><strong>{fulfilledOrders.length}</strong><span>已生效</span></div>
+                </div>
+                <div className="relay-access-order-filters" role="group" aria-label="筛选订单">
+                  {orderFilters.map((filter) => (
+                    <button
+                      type="button"
+                      key={filter.id}
+                      className={orderFilter === filter.id ? 'active' : ''}
+                      onClick={() => {
+                        setOrderFilter(filter.id);
+                        setShowAllOrders(false);
+                      }}
+                    >
+                      {filter.label}
+                      <span>{filter.count}</span>
+                    </button>
+                  ))}
+                </div>
+                {visibleOrders.length > 0 ? (
+                  <div className="relay-access-order-list">
+                    {visibleOrders.map((order) => (
+                      <button
+                        type="button"
+                        key={order.order_no}
+                        className={checkoutOrder?.order_no === order.order_no ? 'active' : ''}
+                        onClick={() => {
+                          setPaymentPollError('');
+                          setCheckoutOrder(order);
+                        }}
+                      >
+                        <ReceiptText size={16} />
+                        <span>
+                          <strong>{order.plan_name}</strong>
+                          <em>{order.order_no} · {formatShortDateTime(order.created_at)}</em>
+                        </span>
+                        <span>
+                          <strong>{formatPriceFen(order.amount_fen)}</strong>
+                          <em className={commercialOrderTone(order.status)}>{commercialOrderStatus(order.status)}</em>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="relay-access-order-empty">
+                    <ReceiptText size={18} />
+                    <strong>{commercialOrders.length > 0 ? '没有符合筛选条件的订单' : '还没有购买记录'}</strong>
+                    <span>{commercialOrders.length > 0 ? '换一个状态看看。' : '购买套餐后，订单号、金额和状态会保存在这里。'}</span>
+                  </div>
+                )}
+                {filteredOrders.length > 8 && (
+                  <button type="button" className="relay-access-order-more" onClick={() => setShowAllOrders(value => !value)}>
+                    {showAllOrders ? '收起' : `查看其余 ${filteredOrders.length - 8} 条`}
+                  </button>
+                )}
               </div>
             )}
           </section>
