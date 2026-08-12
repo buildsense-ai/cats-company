@@ -3,7 +3,7 @@
 CatsCo exposes a dedicated backend WebSocket for browser voice input. The
 browser captures microphone audio, converts it to 16 kHz mono PCM16LE, and
 streams 100 ms frames to CatsCo. CatsCo forwards those frames to Volcengine and
-returns normalized `ready`, `partial`, `final`, and `error` events.
+returns normalized `ready`, `definite`, `partial`, `final`, and `error` events.
 
 Audio and partial transcripts are memory-only. They are not written to
 `/uploads`, message history, or the database. Only the final transcript is
@@ -49,10 +49,18 @@ ticket is then used only for `GET /api/stt/realtime?ticket=...`.
 ## Browser session lifecycle
 
 The browser requests the authenticated session ticket and starts microphone
-capture in parallel. Until the CatsCo WebSocket emits `ready`, captured PCM
-frames remain only in the browser's bounded in-memory preconnect queue. The
-browser must then send those frames to CatsCo in FIFO order before sending
-newer live frames.
+capture in parallel. On a touch or pen press, it may prepare capture before the
+280 ms hold threshold and keeps only the newest 500 ms of PCM in a local
+pre-roll ring. This prevents speech spoken immediately after a long press from
+being truncated. A short tap reuses the same prepared session for normal voice
+input; a cancelled gesture discards it.
+
+Until the CatsCo WebSocket emits `ready`, activated recording PCM remains only
+in the browser's bounded 160 KB in-memory preconnect queue. The browser must
+then send those frames to CatsCo in FIFO order before sending newer live
+frames. Capture initialization and browser WebSocket admission run in parallel:
+the browser must not wait for AudioWorklet setup before opening its CatsCo
+WebSocket.
 
 The preconnect queue is part of the recording, not a best-effort preview. When
 the user performs a normal stop before the ticket request or WebSocket
@@ -74,12 +82,27 @@ current page visibility before accepting or forwarding any PCM. No PCM sampled
 after the page becomes hidden or the audio context is suspended may be sent to
 CatsCo.
 
-Partial transcripts are presentation data only. The browser may coalesce them
-to at most one visible update every 80 ms, but it must retain and publish the
-newest partial. If a final result arrives while a newer partial is pending, the
-client must publish that partial first. The composer must give that published
-partial an opportunity to render before clearing it for the final transcript;
-state batching must not make the newest live transcription unobservable.
+Partial transcripts are presentation data only. The browser uses a latest-wins
+animation-frame update, so it performs at most one visible update per rendered
+frame without imposing an arbitrary 80 ms delay. If a final result arrives
+while a newer partial is pending, the client must publish that partial first.
+The composer must give that published partial an opportunity to render before
+clearing it for the final transcript; state batching must not make the newest
+live transcription unobservable. While a desktop composer preview exceeds its
+height cap, it follows the tail so new speech remains visible.
+
+With `enable_nonstream` enabled for the Doubao 2.0 provider, a response can
+mark an utterance as `definite`. Its complete `result.text` is then forwarded
+as one `definite` snapshot. The browser replaces its previous confirmed
+snapshot with that text and merges a later mutable `partial` tail for display.
+It is not a session final, and only `final` inserts text into the composer
+draft.
+
+Doubao can also revise punctuation or wording in a later cumulative snapshot.
+The browser replaces a snapshot that has a material common prefix with the
+stable preview, rather than appending it. A clearly separate next utterance is
+still joined at a safe boundary, so short Chinese segment transitions do not
+lose their first character.
 
 The final transcript remains the only transcript inserted into the composer
 draft or persisted by later message submission.
@@ -96,6 +119,12 @@ draft or persisted by later message submission.
 - A coalesced partial immediately followed by `final` has a renderer-level
   assertion that the newest partial can be committed visibly before final state
   replaces it.
+- A touch press prepares capture before the hold threshold, and the same
+  session is activated after the threshold without losing pre-roll audio.
+- A stable Doubao utterance reaches the browser as one complete `definite`
+  snapshot, without ending the session.
+- A revised cumulative Doubao snapshot replaces the live preview without
+  duplicating an already stable prefix.
 
 ## Limits
 
@@ -112,9 +141,10 @@ Defaults can be overridden through environment variables:
 | `CATSCO_STT_CONNECT_TIMEOUT_MS` | 2000 | Volcengine WebSocket handshake timeout |
 | `CATSCO_STT_FINAL_TIMEOUT_MS` | 1200 | Wait for the final result after stop |
 
-Only one active session is permitted per user. Browser preconnect and server
-audio queues are capped at 160 KB. Exceeding either cap fails the session closed
-rather than silently dropping audio.
+Only one active session is permitted per user. The inactive mobile pre-roll is
+capped at 16 KB (about 500 ms of 16 kHz PCM16); activated browser preconnect
+and server audio queues are capped at 160 KB. Exceeding an activated queue cap
+fails the session closed rather than silently dropping audio.
 
 The current concurrency and usage counters are process-local. Before running
 multiple CatsCo server replicas, move ticket replay protection and quota state

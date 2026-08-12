@@ -30,9 +30,10 @@ const (
 type STTEventType string
 
 const (
-	STTEventPartial STTEventType = "partial"
-	STTEventFinal   STTEventType = "final"
-	STTEventError   STTEventType = "error"
+	STTEventPartial  STTEventType = "partial"
+	STTEventDefinite STTEventType = "definite"
+	STTEventFinal    STTEventType = "final"
+	STTEventError    STTEventType = "error"
 )
 
 type STTEvent struct {
@@ -585,7 +586,20 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 				if firstPartialAt.IsZero() {
 					firstPartialAt = time.Now()
 				}
+				if event.Text == "" {
+					continue
+				}
 				if err := h.writeSTTJSON(conn, map[string]interface{}{"type": "partial", "text": event.Text}); err != nil {
+					return
+				}
+			case STTEventDefinite:
+				if firstPartialAt.IsZero() {
+					firstPartialAt = time.Now()
+				}
+				if event.Text == "" {
+					continue
+				}
+				if err := h.writeSTTJSON(conn, map[string]interface{}{"type": "definite", "text": event.Text}); err != nil {
 					return
 				}
 			case STTEventFinal:

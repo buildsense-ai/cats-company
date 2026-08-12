@@ -177,6 +177,7 @@ describe('ChatComposer', () => {
 	const onVoiceFinal = vi.fn();
 	let callbacks;
 	const voiceSession = {
+		prepare: vi.fn().mockResolvedValue(undefined),
 		start: vi.fn().mockResolvedValue(undefined),
 		stop: vi.fn(),
 		cancel: vi.fn(),
@@ -197,11 +198,14 @@ describe('ChatComposer', () => {
 		await Promise.resolve();
 	});
 
+	const textarea = container.querySelector('textarea.v3-composer-input');
+	Object.defineProperty(textarea, 'scrollHeight', { configurable: true, value: 320 });
 	await act(async () => {
 		callbacks.onState('recording');
 		callbacks.onPartial('正在识别的文字');
 	});
-	expect(container.querySelector('textarea.v3-composer-input').value).toBe('正在识别的文字');
+	expect(textarea.value).toBe('正在识别的文字');
+	expect(textarea.scrollTop).toBe(320);
 	expect(container.querySelector('.v3-voice-status')).toBeNull();
 	expect(onVoiceFinal).not.toHaveBeenCalled();
 
@@ -218,6 +222,135 @@ describe('ChatComposer', () => {
 		start: 0,
 		end: 0,
 	}));
+  });
+
+  it('begins microphone pre-roll on touch down before the long-hold threshold', async () => {
+    vi.useFakeTimers();
+    const voiceSession = {
+      prepare: vi.fn().mockResolvedValue(undefined),
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn(),
+      cancel: vi.fn(),
+    };
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: () => voiceSession,
+    });
+
+    const voiceButton = container.querySelector('button[aria-label="开始语音输入"]');
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        pointerId: 31,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      await Promise.resolve();
+    });
+    expect(voiceSession.prepare).toHaveBeenCalledTimes(1);
+    expect(voiceSession.start).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(279);
+      await Promise.resolve();
+    });
+    expect(voiceSession.start).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+      await Promise.resolve();
+    });
+    expect(voiceSession.start).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerup', {
+        bubbles: true,
+        pointerId: 31,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+    });
+    expect(voiceSession.stop).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('reuses touch pre-roll when a short tap starts normal voice input', async () => {
+    vi.useFakeTimers();
+    const sessions = [];
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: () => {
+        const session = {
+          prepare: vi.fn().mockResolvedValue(undefined),
+          start: vi.fn().mockResolvedValue(undefined),
+          stop: vi.fn(),
+          cancel: vi.fn(),
+        };
+        sessions.push(session);
+        return session;
+      },
+    });
+
+    const voiceButton = container.querySelector('button[aria-label="开始语音输入"]');
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        pointerId: 32,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      voiceButton.dispatchEvent(new PointerEvent('pointerup', {
+        bubbles: true,
+        pointerId: 32,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].prepare).toHaveBeenCalledTimes(1);
+    expect(sessions[0].cancel).not.toHaveBeenCalled();
+    expect(sessions[0].start).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('cancels an unactivated touch pre-roll when the gesture is interrupted', async () => {
+    vi.useFakeTimers();
+    const voiceSession = {
+      prepare: vi.fn().mockResolvedValue(undefined),
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn(),
+      cancel: vi.fn(),
+    };
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession: () => voiceSession,
+    });
+
+    const voiceButton = container.querySelector('button[aria-label="开始语音输入"]');
+    await act(async () => {
+      voiceButton.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        pointerId: 33,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      voiceButton.dispatchEvent(new PointerEvent('pointercancel', {
+        bubbles: true,
+        pointerId: 33,
+        pointerType: 'touch',
+        clientY: 420,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(voiceSession.cancel).toHaveBeenCalledTimes(1);
+    expect(voiceSession.start).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 
   it('shows the mobile hold overlay and stops recognition when touch is released', async () => {
