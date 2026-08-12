@@ -1416,7 +1416,9 @@ function formatAuthError(message) {
   if (text.includes('password mismatch')) return '密码错误，请重试';
   if (text.includes('username taken')) return '登录名称已被占用，请换一个';
   if (text.includes('email already')) return '该邮箱已经注册，请直接登录';
-  if (text.includes('invalid or expired verification code')) return '验证码无效或已过期';
+  if (text.includes('verification code expired')) return '验证码已过期，请重新获取';
+  if (text.includes('does not match')) return '验证码不正确，请使用最新邮件中的验证码';
+  if (text.includes('invalid or expired verification code')) return '验证码无效或已过期，请重新获取并使用最新验证码';
   if (text.includes('username min 3')) return '登录名称至少 3 个字符';
   if (text.includes('password min 6')) return '密码至少 6 位';
   if (text.includes('invalid email format')) return '邮箱格式无效，请检查域名拼写（如 qq.com）';
@@ -1434,6 +1436,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
   const [error, setError] = useState('');
   const [codeSent, setCodeSent] = useState(false);
   const [countdown, setCountdown] = useState(0);
+  const [sentHint, setSentHint] = useState('');
 
   useEffect(() => {
     if (countdown > 0) {
@@ -1452,7 +1455,9 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
       setCodeSent(true);
       setCountdown(60);
       setError('');
+      setSentHint('验证码已发送，请使用最新邮件中的验证码（旧验证码将失效）');
     } catch (err) {
+      setSentHint('');
       setError(err.message || '发送验证码失败，请稍后再试');
     }
   };
@@ -1548,6 +1553,9 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
               {countdown > 0 ? `${countdown}秒` : '发送验证码'}
             </button>
           </div>
+          {sentHint && (
+            <div className="oc-auth-hint" style={{ color: '#2e8b57', fontSize: 12, marginTop: 6 }}>{sentHint}</div>
+          )}
           <input
             className="oc-auth-input"
             placeholder="登录名称（可用于登录）"

@@ -40,6 +40,42 @@ func TestVerificationCodePurposeIsolation(t *testing.T) {
 	}
 }
 
+func TestVerificationCodeStatus(t *testing.T) {
+	email := "status@example.com"
+	code := "654321"
+	purpose := verificationPurposeRegister
+
+	deleteVerificationCode(email, purpose)
+
+	// not found
+	if got := verificationCodeStatus(email, code, purpose); got != codeStatusNotFound {
+		t.Fatalf("expected not found, got %v", got)
+	}
+
+	// valid
+	storeVerificationCode(email, code, time.Now().Add(time.Minute).Unix(), purpose)
+	if got := verificationCodeStatus(email, code, purpose); got != codeStatusValid {
+		t.Fatalf("expected valid, got %v", got)
+	}
+
+	// mismatch: status is read-only on failure, original code stays valid
+	if got := verificationCodeStatus(email, "000000", purpose); got != codeStatusMismatch {
+		t.Fatalf("expected mismatch, got %v", got)
+	}
+	if got := verificationCodeStatus(email, code, purpose); got != codeStatusValid {
+		t.Fatalf("expected still valid after mismatch check, got %v", got)
+	}
+
+	// expired, and the stale entry is removed
+	storeVerificationCode(email, code, time.Now().Add(-time.Minute).Unix(), purpose)
+	if got := verificationCodeStatus(email, code, purpose); got != codeStatusExpired {
+		t.Fatalf("expected expired, got %v", got)
+	}
+	if got := verificationCodeStatus(email, code, purpose); got != codeStatusNotFound {
+		t.Fatalf("expected not found after expiry removal, got %v", got)
+	}
+}
+
 func TestIsValidEmailFormat(t *testing.T) {
 	valid := []string{
 		"user@qq.com",

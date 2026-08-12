@@ -102,8 +102,8 @@ func TestHandleRegisterRequiresVerificationCode(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if got := responseError(t, rec); got != "invalid or expired verification code" {
-		t.Fatalf("error = %q, want %q", got, "invalid or expired verification code")
+	if got := responseError(t, rec); got != "verification code required" {
+		t.Fatalf("error = %q, want %q", got, "verification code required")
 	}
 	if len(db.createdUsers) != 0 {
 		t.Fatalf("created %d users without a verification code", len(db.createdUsers))

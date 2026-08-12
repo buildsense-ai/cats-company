@@ -383,24 +383,40 @@ func verifyCode(email, code string) bool {
 	return verifyCodeForPurpose(email, code, verificationPurposeRegister)
 }
 
-func verifyCodeForPurpose(email, code, purpose string) bool {
+type codeStatus int
+
+const (
+	codeStatusValid codeStatus = iota
+	codeStatusNotFound
+	codeStatusExpired
+	codeStatusMismatch
+)
+
+// verificationCodeStatus distinguishes why a submitted code is rejected so the
+// API can tell users to request a fresh one vs. typo the latest one.
+func verificationCodeStatus(email, code, purpose string) codeStatus {
 	codesMutex.RLock()
 	stored, exists := verificationCodes[verificationCodeKey(email, purpose)]
 	codesMutex.RUnlock()
 
 	if !exists {
-		return false
+		return codeStatusNotFound
 	}
-
 	if time.Now().Unix() > stored.Expires {
 		deleteVerificationCode(email, purpose)
-		return false
+		return codeStatusExpired
 	}
-
 	if stored.Code != code {
+		return codeStatusMismatch
+	}
+	return codeStatusValid
+}
+
+func verifyCodeForPurpose(email, code, purpose string) bool {
+	if verificationCodeStatus(email, code, purpose) != codeStatusValid {
 		return false
 	}
-
+	// codes are single-use: consume on success
 	deleteVerificationCode(email, purpose)
 	return true
 }

@@ -6,7 +6,9 @@ function formatResetError(message) {
   const text = String(message || '');
   if (text.includes('email required')) return '请输入邮箱地址';
   if (text.includes('email and code required')) return '请输入邮箱和验证码';
-  if (text.includes('invalid or expired verification code')) return '验证码无效或已过期';
+  if (text.includes('verification code expired')) return '验证码已过期，请重新获取';
+  if (text.includes('does not match')) return '验证码不正确，请使用最新邮件中的验证码';
+  if (text.includes('invalid or expired verification code')) return '验证码无效或已过期，请重新获取并使用最新验证码';
   if (text.includes('password min 6')) return '密码至少 6 位';
   if (text.includes('failed to send verification code')) return '发送验证码失败，请稍后再试';
   return message || '操作失败，请稍后再试';
@@ -46,7 +48,7 @@ export default function PasswordResetForm({ defaultEmail = '', onDone }) {
       await api.sendPasswordResetCode(trimmedEmail);
       setCodeSent(true);
       setCountdown(60);
-      setStatus('如果该邮箱已注册，验证码会发送到对应邮箱。');
+      setStatus('如果该邮箱已注册，验证码会发送到对应邮箱。请使用最新邮件中的验证码（旧验证码将失效）。');
     } catch (err) {
       setError(formatResetError(err.message));
     }

@@ -211,7 +211,20 @@ func (h *UserHandler) HandleResetPassword(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
 		return
 	}
-	if user == nil || !verifyCodeForPurpose(req.Email, req.Code, verificationPurposePasswordReset) {
+	if user == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired verification code"})
+		return
+	}
+	switch verificationCodeStatus(req.Email, req.Code, verificationPurposePasswordReset) {
+	case codeStatusValid:
+		// fallthrough to reset the password
+	case codeStatusExpired:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "verification code expired, please request a new one"})
+		return
+	case codeStatusMismatch:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "verification code does not match, please use the latest one"})
+		return
+	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired verification code"})
 		return
 	}
@@ -285,7 +298,23 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Code == "" || !verifyCode(email, req.Code) {
+	if req.Code == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "verification code required"})
+		return
+	}
+
+	switch verificationCodeStatus(email, req.Code, verificationPurposeRegister) {
+	case codeStatusValid:
+		// fallthrough to create the account
+	case codeStatusExpired:
+		fmt.Printf("[REGISTER_ERROR] Expired code for %s\n", email)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "verification code expired, please request a new one"})
+		return
+	case codeStatusMismatch:
+		fmt.Printf("[REGISTER_ERROR] Code mismatch for %s\n", email)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "verification code does not match, please use the latest one"})
+		return
+	default:
 		fmt.Printf("[REGISTER_ERROR] Invalid code for %s\n", email)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired verification code"})
 		return
