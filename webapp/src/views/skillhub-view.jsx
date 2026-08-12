@@ -142,9 +142,18 @@ export function resolvePreferredSkillHubBotUID(bots, userUid, storage = browserS
 }
 
 export function isRetryableSkillHubSwitchError(error) {
+  if (isSkillHubWorkspaceSwitchingError(error)) return true;
   if (RETRYABLE_SKILLHUB_SWITCH_ERRORS.has(String(error?.code || ''))) return true;
   return error?.code === 'skillhub_device_request_rejected'
     && [404, 409, 503].includes(Number(error?.status || 0));
+}
+
+export function isSkillHubWorkspaceSwitchingError(error) {
+  if (String(error?.code || '') === 'WORKSPACE_SWITCHING') return true;
+  return String(error?.code || '') === 'SKILLHUB_OPERATION_FAILED'
+    && /^Bot Skill workspace ownership is changing \([^\r\n]+\); retry the write\.$/i.test(
+      String(error?.message || '').trim(),
+    );
 }
 
 export function isRetryableSkillHubDeviceListError(error) {
@@ -683,9 +692,9 @@ export default function SkillHubView({ user }) {
       setLoadingLocalSkills(false);
       return;
     }
-    const allowBotSwitch = options.allowBotSwitch === true
-      || requestedBotSwitchRef.current === requestedBotUID;
-    if (requestedBotSwitchRef.current === requestedBotUID) requestedBotSwitchRef.current = '';
+    const explicitBotSwitch = requestedBotSwitchRef.current === requestedBotUID;
+    const allowBotSwitch = options.allowBotSwitch === true || explicitBotSwitch;
+    if (explicitBotSwitch) requestedBotSwitchRef.current = '';
     setLoadingLocalSkills(true);
     // Do not leave the previous Bot's cards actionable while XiaoBa switches
     // its active workspace. The local bridge reads the currently active
@@ -711,24 +720,69 @@ export default function SkillHubView({ user }) {
         { toolName, botUID: requestedBotUID },
       );
       let workspace;
-      try {
-        workspace = await invoke(SKILLHUB_DEVICE_TOOLS.workspace, {}, 20_000);
-      } catch (error) {
-        if (error?.code !== 'BOT_NOT_ACTIVE') throw error;
-        if (!isCurrentRequest()) return;
-        if (!allowBotSwitch) {
-          setLocalNotice('当前 Bot 尚未在本地 XiaoBa 激活。');
-          return;
-        }
+      let switchAccepted = false;
+      let recoverySwitchesAccepted = 0;
+      const requestBotSwitch = async ({ resubmit = false } = {}) => {
+        if (switchAccepted && !resubmit) return;
+        if (switchAccepted && resubmit && recoverySwitchesAccepted >= 1) return;
         await invoke(SKILLHUB_DEVICE_TOOLS.switchBot, {}, 10_000);
+        if (switchAccepted && resubmit) recoverySwitchesAccepted += 1;
+        switchAccepted = true;
+      };
+      const waitForWorkspace = () => waitForSkillHubWorkspaceAfterSwitch({
+        deviceId: requestedDeviceID,
+        readWorkspace: async (timeoutMs) => {
+          try {
+            return await invoke(SKILLHUB_DEVICE_TOOLS.workspace, {}, timeoutMs);
+          } catch (error) {
+            if (
+              error?.code === 'BOT_NOT_ACTIVE'
+              && allowBotSwitch
+              && isCurrentRequest()
+            ) {
+              // One newer intent can be lost with the connector process that
+              // an earlier switch restarts. Re-submit it once to the new
+              // connector, then only poll so a broken workspace cannot cause
+              // a restart loop.
+              await requestBotSwitch({ resubmit: true });
+            }
+            throw error;
+          }
+        },
+        isCurrent: isCurrentRequest,
+      });
+      if (explicitBotSwitch) {
+        try {
+          await requestBotSwitch();
+        } catch (error) {
+          if (!isRetryableSkillHubSwitchError(error)) throw error;
+        }
         if (!isCurrentRequest()) return;
         setLocalNotice('正在切换本地 Bot，等待 XiaoBa 重新连接…');
-        workspace = await waitForSkillHubWorkspaceAfterSwitch({
-          deviceId: requestedDeviceID,
-          readWorkspace: (timeoutMs) => invoke(SKILLHUB_DEVICE_TOOLS.workspace, {}, timeoutMs),
-          isCurrent: isCurrentRequest,
-        });
+        workspace = await waitForWorkspace();
         if (!workspace) return;
+      } else {
+        try {
+          workspace = await invoke(SKILLHUB_DEVICE_TOOLS.workspace, {}, 20_000);
+        } catch (error) {
+          if (!isCurrentRequest()) return;
+          if (error?.code === 'BOT_NOT_ACTIVE') {
+            if (!allowBotSwitch) {
+              setLocalNotice('当前 Bot 尚未在本地 XiaoBa 激活。');
+              return;
+            }
+            await requestBotSwitch();
+          } else if (
+            !isSkillHubWorkspaceSwitchingError(error)
+            && !(allowBotSwitch && isRetryableSkillHubSwitchError(error))
+          ) {
+            throw error;
+          }
+          if (!isCurrentRequest()) return;
+          setLocalNotice('正在切换本地 Bot，等待 XiaoBa 重新连接…');
+          workspace = await waitForWorkspace();
+          if (!workspace) return;
+        }
       }
       if (!isCurrentRequest()) return;
       if (String(workspace?.bot_uid || '') !== requestedBotUID) {
