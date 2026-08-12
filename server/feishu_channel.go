@@ -867,10 +867,7 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 		return err
 	} else if groupBinding != nil && groupBinding.Status == types.ChannelAgentBindingActive && !channelAgentRouteSelectedAfterGroup(agentRoute, groupBinding) {
 		groupText := strings.TrimSpace(text)
-		if groupText == "" {
-			return nil
-		}
-		return deliverInboundChannelTextToGroup(h.db, h.hub, groupBinding.CanonicalUID, groupBinding, groupText, "feishu-group:"+event.Message.MessageID, "feishu", map[string]interface{}{
+		metadata := map[string]interface{}{
 			"source_channel":            "feishu",
 			"channel_app_id":            appID,
 			"channel_user_id":           channelUserID,
@@ -878,10 +875,37 @@ func (h *FeishuChannelHandler) handleMessageEvent(ctx context.Context, env *feis
 			"channel_conversation_id":   event.Message.ChatID,
 			"channel_conversation_type": chatType,
 			"channel_message_id":        event.Message.MessageID,
+			"channel_message_type":      messageType,
 			"channel_identity_source":   "feishu.event",
 			"channel_identity_trust":    "feishu_event_callback",
 			"channel_group_binding_id":  groupBinding.ID,
-		})
+		}
+		clientMsgID := "feishu-group:" + event.Message.MessageID
+		if media == nil {
+			if groupText == "" {
+				return nil
+			}
+			return deliverInboundChannelTextToGroup(h.db, h.hub, groupBinding.CanonicalUID, groupBinding, groupText, clientMsgID, "feishu", metadata)
+		}
+
+		metadata["channel_media_key"] = media.ResourceKey
+		download, err := h.api.DownloadMessageResource(ctx, event.Message.MessageID, media.ResourceKey, media.ResourceType)
+		if err != nil {
+			log.Printf("download feishu group media failed: %v", err)
+			return h.replyToFeishu(ctx, replyIDType, replyID, "读取飞书图片、文件或语音失败，请稍后重试。")
+		}
+		if download.FileName == "" {
+			download.FileName = media.FileName
+		}
+		if download.ContentType == "" {
+			download.ContentType = media.ContentType
+		}
+		file, err := saveChannelMediaUpload(media.UploadType, download)
+		if err != nil {
+			log.Printf("save feishu group media failed: %v", err)
+			return h.replyToFeishu(ctx, replyIDType, replyID, "保存飞书图片、文件或语音失败，请稍后重试。")
+		}
+		return deliverInboundChannelMessageToGroup(h.db, h.hub, groupBinding.CanonicalUID, groupBinding, groupText, []uploadPayload{file}, clientMsgID, "feishu", metadata)
 	}
 
 	if chatType == "group" && !groupTriggered {

@@ -3072,6 +3072,39 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
   });
 
+  it.each([
+    ['legacy.opus', 'audio/opus'],
+    ['legacy.opus', 'audio/ogg'],
+    ['mislabelled.ogg', 'audio/opus'],
+  ])('keeps %s download-only when MIME is %s', async (name, mimeType) => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: `opus-${name}-${mimeType}`,
+            from_uid: 2,
+            content: `[语音] ${name}`,
+            content_blocks: [{
+              type: 'voice',
+              payload: {
+                name,
+                url: `/uploads/files/20260812_00112233445566778899aabbccddeeff.${name.split('.').pop()}`,
+                size: 4096,
+                mime_type: mimeType,
+              },
+            }],
+            created_at: '2026-08-12T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('audio.oc-rich-audio-player')).toBeNull();
+    expect(container.querySelector('.v3-attachment-name').textContent).toBe(name);
+    expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
+  });
+
   it('restores the video thumbnail when a reused attachment changes URL', async () => {
     const renderVideo = async (url) => {
       await act(async () => {

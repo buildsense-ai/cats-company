@@ -592,6 +592,13 @@ func normalizedUploadMimeType(ext, headerType string) string {
 	if audioMime, ok := inlineAudioMimeType(ext); ok {
 		return audioMime
 	}
+	// Opus is intentionally download-only in the web client. Do not let the
+	// host MIME table or an upstream audio/ogg response erase its extension
+	// distinction, otherwise the client could mistake it for a supported Ogg
+	// attachment and render a broken inline player.
+	if strings.EqualFold(ext, ".opus") {
+		return "audio/opus"
+	}
 
 	switch strings.ToLower(ext) {
 	case ".md":
@@ -604,14 +611,16 @@ func normalizedUploadMimeType(ext, headerType string) string {
 		return "application/xml"
 	}
 
+	// Preserve channel-provided audio types before consulting the host MIME
+	// database. Legacy formats can otherwise be mislabeled by that database.
+	if mediaType, _, err := mime.ParseMediaType(headerType); err == nil && strings.HasPrefix(strings.ToLower(mediaType), "audio/") {
+		return strings.ToLower(mediaType)
+	}
+
 	if extType := mime.TypeByExtension(strings.ToLower(ext)); extType != "" {
 		if mediaType, _, err := mime.ParseMediaType(extType); err == nil && mediaType != "" {
 			return mediaType
 		}
-	}
-
-	if mediaType, _, err := mime.ParseMediaType(headerType); err == nil && strings.HasPrefix(strings.ToLower(mediaType), "audio/") {
-		return strings.ToLower(mediaType)
 	}
 
 	if mediaType, _, err := mime.ParseMediaType(headerType); err == nil && mediaType != "" {
@@ -627,6 +636,13 @@ func normalizedUploadMetadata(ext, headerType string, file io.ReaderAt) (string,
 }
 
 func normalizedUploadExtension(ext, headerType string, file io.ReaderAt) string {
+	mediaType, _, _ := mime.ParseMediaType(headerType)
+	if strings.EqualFold(mediaType, "audio/opus") {
+		// The web client intentionally keeps Opus download-only. A channel may
+		// label such media as an Ogg file, but retaining .ogg would make the
+		// stored URL look previewable and serve it inline.
+		return ".opus"
+	}
 	if !strings.EqualFold(ext, ".ogg") {
 		return ext
 	}

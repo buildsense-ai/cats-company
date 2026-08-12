@@ -1639,7 +1639,13 @@ function isInlineVideoFile(payload, ext = fileExtension(payload)) {
 }
 
 function isInlineAudioFile(payload, ext = fileExtension(payload)) {
-  return INLINE_AUDIO_EXTENSIONS.has(ext) || INLINE_AUDIO_MIME_TYPES.has(fileMimeType(payload));
+  // A concrete extension is authoritative. This prevents an upstream MIME
+  // mislabel, such as .opus reported as audio/ogg, from turning an unsupported
+  // voice attachment into a broken native player. MIME remains useful only for
+  // legacy payloads with no usable file extension.
+  if (fileMimeType(payload) === 'audio/opus') return false;
+  return INLINE_AUDIO_EXTENSIONS.has(ext)
+    || (ext === 'FILE' && INLINE_AUDIO_MIME_TYPES.has(fileMimeType(payload)));
 }
 
 function isHtmlFile(payload, ext = fileExtension(payload)) {

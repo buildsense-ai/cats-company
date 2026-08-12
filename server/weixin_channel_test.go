@@ -809,6 +809,63 @@ func TestWeixinVoiceMessageDeliversAudioBlock(t *testing.T) {
 	}
 }
 
+func TestWeixinGroupMobileVoiceMessageDeliversAudioBlock(t *testing.T) {
+	t.Cleanup(func() { _ = os.RemoveAll("uploads") })
+	db := newChannelAgentTestStore()
+	db.users[85] = &types.User{ID: 85, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	db.users[453] = &types.User{ID: 453, Username: channelActorUsername("weixin", "wx_app", "openid-group-mobile"), DisplayName: "Weixin Mobile User", AccountType: types.AccountHuman}
+	db.groups[500] = &types.Group{ID: 500, Name: "Project Group", OwnerID: 85}
+	db.groupMembers[500] = map[int64]*types.GroupMember{
+		85: {GroupID: 500, UserID: 85, Role: "owner"},
+	}
+	if _, err := db.UpsertChannelGroupBinding(&types.ChannelGroupBinding{
+		Channel:                 "weixin",
+		ChannelAppID:            "wx_app",
+		ChannelUserID:           "openid-group-mobile",
+		ChannelConversationType: "p2p",
+		ActorUID:                453,
+		CanonicalUID:            85,
+		GroupID:                 500,
+		TopicID:                 "grp_500",
+		Status:                  types.ChannelAgentBindingActive,
+	}); err != nil {
+		t.Fatalf("seed group binding: %v", err)
+	}
+	api := &fakeWeixinAPI{
+		appID: "wx_app",
+		media: map[string]fakeWeixinMedia{
+			"voice-group-1": {ContentType: "audio/ogg", Body: "fake-ogg"},
+		},
+	}
+	handler := NewWeixinChannelHandler(db, nil, WeixinChannelConfig{
+		AppID:      "wx_app",
+		EventToken: "token-1",
+	}, api)
+	body := `<xml><ToUserName><![CDATA[gh_app]]></ToUserName><FromUserName><![CDATA[openid-group-mobile]]></FromUserName><CreateTime>1</CreateTime><MsgType><![CDATA[voice]]></MsgType><MediaId><![CDATA[voice-group-1]]></MediaId><MsgId>msg-group-voice-1</MsgId></xml>`
+	req := httptest.NewRequest(http.MethodPost, "/api/channels/weixin/events?timestamp=1&nonce=2&signature="+weixinTestSignature("token-1", "1", "2"), strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.HandleEvents(rec, req)
+
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "success" {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(db.messages) != 1 {
+		t.Fatalf("messages=%d", len(db.messages))
+	}
+	msg := db.messages[0]
+	if msg.TopicID != "grp_500" || msg.FromUID != 85 || msg.MsgType != "voice" {
+		t.Fatalf("message=%+v", msg)
+	}
+	if len(msg.ContentBlocks) != 1 || msg.ContentBlocks[0].Type != "audio" {
+		t.Fatalf("content blocks=%+v", msg.ContentBlocks)
+	}
+	payload := msg.ContentBlocks[0].Payload
+	name, _ := payload["name"].(string)
+	if payload["mime_type"] != "audio/ogg" || !strings.HasSuffix(name, ".ogg") {
+		t.Fatalf("payload=%+v", payload)
+	}
+}
+
 func TestWeixinTextMessageDeduplicatesRetry(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[8] = &types.User{ID: 8, Username: "weixin-alice", DisplayName: "Alice", AccountType: types.AccountHuman}

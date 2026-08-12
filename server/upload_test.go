@@ -157,6 +157,52 @@ func TestHandleUploadNormalizesBrowserAudioMIMETypes(t *testing.T) {
 	}
 }
 
+func TestHandleUploadPreservesOpusMIMEType(t *testing.T) {
+	for _, tc := range []struct {
+		fileName    string
+		contentType string
+	}{
+		{fileName: "voice.opus", contentType: "audio/opus"},
+		{fileName: "voice.opus", contentType: "application/octet-stream"},
+		{fileName: "voice.opus", contentType: "audio/ogg"},
+		{fileName: "voice.ogg", contentType: "audio/opus"},
+	} {
+		t.Run(tc.fileName+"/"+tc.contentType, func(t *testing.T) {
+			handler := NewUploadHandler(t.TempDir(), "/uploads")
+			req := buildUploadRequestWithPartContentType(t, "/api/upload?type=file", tc.fileName, tc.contentType, []byte("opus audio bytes"))
+			rec := httptest.NewRecorder()
+
+			handler.HandleUpload(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("upload status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			var body struct {
+				FileKey  string `json:"file_key"`
+				MimeType string `json:"mime_type"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode upload response: %v", err)
+			}
+			if body.MimeType != "audio/opus" {
+				t.Fatalf("mime_type = %q, want audio/opus", body.MimeType)
+			}
+			if !strings.HasSuffix(body.FileKey, ".opus") {
+				t.Fatalf("file_key = %q, want .opus suffix", body.FileKey)
+			}
+
+			serveRec := httptest.NewRecorder()
+			handler.HandleServeFile(serveRec, httptest.NewRequest(http.MethodGet, "/uploads/files/"+body.FileKey, nil))
+			if serveRec.Code != http.StatusOK {
+				t.Fatalf("serve status = %d, want %d", serveRec.Code, http.StatusOK)
+			}
+			if got := serveRec.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment") {
+				t.Fatalf("content-disposition = %q, want attachment", got)
+			}
+		})
+	}
+}
+
 func TestHandleUploadNormalizesOggVideoToOGV(t *testing.T) {
 	handler := NewUploadHandler(t.TempDir(), "/uploads")
 	req := buildUploadRequestWithPartContentType(t, "/api/upload?type=file", "demo.ogg", "video/ogg", []byte("ogg video bytes"))
