@@ -721,12 +721,17 @@ export default function SkillHubView({ user }) {
       );
       let workspace;
       let switchAccepted = false;
-      let recoverySwitchesAccepted = 0;
+      let recoverySwitchAttempted = false;
       const requestBotSwitch = async ({ resubmit = false } = {}) => {
         if (switchAccepted && !resubmit) return;
-        if (switchAccepted && resubmit && recoverySwitchesAccepted >= 1) return;
+        if (resubmit) {
+          if (recoverySwitchAttempted) return;
+          // The connector may accept a switch even when its response is lost
+          // or reports a transient state. Count the attempt before awaiting so
+          // workspace polling can never turn recovery into a restart loop.
+          recoverySwitchAttempted = true;
+        }
         await invoke(SKILLHUB_DEVICE_TOOLS.switchBot, {}, 10_000);
-        if (switchAccepted && resubmit) recoverySwitchesAccepted += 1;
         switchAccepted = true;
       };
       const waitForWorkspace = () => waitForSkillHubWorkspaceAfterSwitch({
