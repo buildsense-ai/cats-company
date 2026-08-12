@@ -4005,7 +4005,7 @@ function assistantProcessMessage(message) {
 
 function messageHasDeliveryArtifact(message) {
   if (Array.isArray(message?.content_blocks)) {
-    if (message.content_blocks.some((block) => block?.type === 'file' || block?.type === 'image')) {
+    if (message.content_blocks.some((block) => ['file', 'image', 'audio', 'voice'].includes(block?.type))) {
       return true;
     }
   }
@@ -4018,7 +4018,7 @@ function messageHasDeliveryArtifact(message) {
       return false;
     }
   }
-  return content?.type === 'file' || content?.type === 'image';
+  return ['file', 'image', 'audio', 'voice'].includes(content?.type);
 }
 
 function displayGroupHasDeliveryArtifact(group) {
@@ -4029,7 +4029,7 @@ function displayGroupHasDeliveryArtifact(group) {
 function deliveryArtifactBlocks(message) {
   if (Array.isArray(message?.content_blocks)) {
     const storedBlocks = message.content_blocks.filter(
-      (block) => block?.type === 'file' || block?.type === 'image',
+      (block) => ['file', 'image', 'audio', 'voice'].includes(block?.type),
     );
     if (storedBlocks.length > 0) return storedBlocks;
   }
@@ -4042,7 +4042,7 @@ function deliveryArtifactBlocks(message) {
       return [];
     }
   }
-  return content?.type === 'file' || content?.type === 'image' ? [content] : [];
+  return ['file', 'image', 'audio', 'voice'].includes(content?.type) ? [content] : [];
 }
 
 function hasAssistantBlockFormatting(value) {
@@ -4108,12 +4108,12 @@ function assistantOutputText(message) {
   if (content) {
     try {
       const parsed = JSON.parse(content);
-      if (parsed?.type === 'file' || parsed?.type === 'image') return '';
+      if (['file', 'image', 'audio', 'voice'].includes(parsed?.type)) return '';
     } catch (error) {
       // Plain assistant text.
     }
   }
-  if (/^\[(?:文件|图片)\]\s*[^\n]*$/u.test(content)) return '';
+  if (/^\[(?:文件|图片|语音)\]\s*[^\n]*$/u.test(content)) return '';
   return content;
 }
 

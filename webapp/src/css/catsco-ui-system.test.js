@@ -181,6 +181,21 @@ describe('CatsCo shell styling', () => {
     );
   });
 
+  it('keeps inline audio controls compact, focusable, and reduced-motion safe', () => {
+    const audioRule = ruleFor('.v3-message .oc-rich-audio');
+    const downloadRule = ruleFor('.v3-message .oc-rich-audio-download');
+
+    expect(audioRule).toContain('grid-template-columns: minmax(0, 1fr) auto;');
+    expect(audioRule).toContain('border: 1px solid var(--cc-border);');
+    expect(downloadRule).toContain('min-height: 34px;');
+    expect(downloadRule).toContain('text-decoration: none;');
+    expect(ruleFor('.v3-message .oc-rich-audio-download:focus-visible'))
+      .toContain('outline: 2px solid var(--cc-focus-ring);');
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.v3-message \.oc-rich-audio-download[\s\S]*?transition: none;/,
+    );
+  });
+
   it('keeps expanded chat images fully visible in the viewport', () => {
     const previewRule = ruleIn(openchatCss, '.oc-rich-image-preview');
     const imageRule = ruleIn(openchatCss, '.oc-rich-image-preview-media');

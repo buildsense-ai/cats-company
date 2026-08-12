@@ -139,6 +139,12 @@ func inferChannelMediaExt(uploadType, contentType string) string {
 		return ".xml"
 	case "application/zip":
 		return ".zip"
+	case "audio/ogg", "application/ogg":
+		return ".ogg"
+	case "audio/mpeg", "audio/mp3":
+		return ".mp3"
+	case "audio/wav", "audio/x-wav":
+		return ".wav"
 	}
 	if uploadType == "image" {
 		return ".jpg"
