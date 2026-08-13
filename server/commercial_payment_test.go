@@ -28,6 +28,33 @@ type commercialPaymentTestStore struct {
 	trialClaims map[int64]bool
 }
 
+type commercialRelaySyncTestStore struct {
+	summary  *types.CommercialSummary
+	managed  []*types.CommercialManagedRelayBudget
+	replaced []*types.CommercialManagedRelayBudget
+}
+
+func (s *commercialRelaySyncTestStore) GetCommercialSummary(int64) (*types.CommercialSummary, error) {
+	return s.summary, nil
+}
+
+func (s *commercialRelaySyncTestStore) ListCommercialManagedRelayBudgets(int64) ([]*types.CommercialManagedRelayBudget, error) {
+	return s.managed, nil
+}
+
+func (s *commercialRelaySyncTestStore) ReplaceCommercialManagedRelayBudgets(_ int64, budgets []*types.CommercialManagedRelayBudget) error {
+	s.replaced = budgets
+	return nil
+}
+
+func (s *commercialRelaySyncTestStore) CommercialRelaySyncRequired(int64) (bool, error) {
+	return true, nil
+}
+
+func (s *commercialRelaySyncTestStore) ListCommercialReconcileUIDs(int64, int) ([]int64, error) {
+	return nil, nil
+}
+
 type queryCommercialPaymentProvider struct {
 	paid         bool
 	confirmation *types.CommercialPaymentConfirmation
@@ -754,11 +781,157 @@ func TestCommercialRelayManagedPlanOnlyRemovesOwnedBudgets(t *testing.T) {
 		UID: 38, Model: "deepseek-v4-flash", Provider: "deepseek", AllowedModels: []string{"deepseek-v4-flash"}, MaxLimit: 100,
 	}}
 	updates, next := commercialRelayManagedPlan(38, &types.CommercialSummary{UID: 38, TotalsByModel: map[string]float64{}}, relayUser, managed)
-	if len(updates) != 1 || updates[0].Provider != "deepseek" || updates[0].MaxLimit != commercialRelayBlockedLimit {
-		t.Fatalf("unexpected removal updates: %#v", updates)
+	if len(updates) != 0 || len(next) != 0 {
+		t.Fatalf("scoped removal should drop the owned provider config: updates=%#v next=%#v", updates, next)
 	}
-	if len(next) != 1 || next[0].MaxLimit != commercialRelayBlockedLimit {
-		t.Fatalf("managed budget should retain the expiry block: %#v", next)
+	scopes := commercialRelayModelScopes(&types.CommercialSummary{UID: 38, TotalsByModel: map[string]float64{}}, relayUser, managed)
+	if len(scopes) != 1 || len(scopes[0].AllowedModels) != 0 || scopes[0].ManagedModels[0] != "deepseek-v4-flash" {
+		t.Fatalf("unexpected removal scope: %#v", scopes)
+	}
+}
+
+func TestCommercialRelayScopeExcludesUnpurchasedSharedAlias(t *testing.T) {
+	models := []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"}
+	available := []commercialRelayModelLimit{}
+	for _, model := range models {
+		available = append(available, commercialRelayModelLimit{
+			Provider: "gpt-upstream", Model: model, AllowedModels: models, SharedBudget: true,
+		})
+	}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		ModelLimits:          available,
+		AvailableModelLimits: available,
+	}}
+	summary := &types.CommercialSummary{
+		UID: 38,
+		TotalsByModel: map[string]float64{
+			"gpt-5.6-terra": 100,
+			"gpt-5.6-sol":   100,
+		},
+		Grants: []*types.CommercialQuotaGrant{
+			{GrantType: "order", Model: "gpt-5.6-terra", AmountCNY: 100},
+			{GrantType: "order", Model: "gpt-5.6-sol", AmountCNY: 100},
+		},
+	}
+
+	scopes := commercialRelayModelScopes(summary, relayUser, nil)
+	if len(scopes) != 1 || commercialRelayModelSetKey(scopes[0].ManagedModels) != commercialRelayModelSetKey(models) {
+		t.Fatalf("unexpected managed model family: %#v", scopes)
+	}
+	if got := commercialRelayModelSetKey(scopes[0].AllowedModels); got != commercialRelayModelSetKey(models[:2]) {
+		t.Fatalf("unpurchased Luna leaked into the scope: %#v", scopes)
+	}
+	updates, next := commercialRelayManagedPlan(38, summary, relayUser, nil)
+	if len(updates) != 1 || updates[0].MaxLimit != 200 || commercialRelayModelSetKey(updates[0].AllowedModels) != commercialRelayModelSetKey(models[:2]) {
+		t.Fatalf("shared provider was not narrowed: %#v", updates)
+	}
+	if len(next) != 2 {
+		t.Fatalf("expected one managed association per purchased model: %#v", next)
+	}
+	for _, item := range next {
+		if commercialRelayModelSetKey(item.AllowedModels) != commercialRelayModelSetKey(models[:2]) {
+			t.Fatalf("managed state retained Luna: %#v", next)
+		}
+	}
+}
+
+func TestCommercialRelayUsesAvailableCatalogAfterScopedConfigWasRemoved(t *testing.T) {
+	models := []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"}
+	relayUser := &commercialRelayUsageUser{Configured: true, Limits: commercialRelayLimits{
+		AvailableModelLimits: []commercialRelayModelLimit{
+			{Provider: "gpt-upstream", Model: "gpt-5.6-terra", AllowedModels: models},
+			{Provider: "gpt-upstream", Model: "gpt-5.6-sol", AllowedModels: models},
+			{Provider: "gpt-upstream", Model: "gpt-5.6-luna", AllowedModels: models},
+		},
+		ModelScopes: []commercialRelayModelScope{{ManagedModels: models, AllowedModels: []string{}}},
+	}}
+	if err := validateCommercialRelayModels(map[string]float64{"gpt-5.6-terra": 100}, relayUser); err != nil {
+		t.Fatalf("repurchase was blocked after scoped removal: %v", err)
+	}
+	summary := &types.CommercialSummary{
+		UID: 38, TotalsByModel: map[string]float64{"gpt-5.6-terra": 100},
+		Grants: []*types.CommercialQuotaGrant{{GrantType: "order", Model: "gpt-5.6-terra", AmountCNY: 100}},
+	}
+	updates, _ := commercialRelayManagedPlan(38, summary, relayUser, nil)
+	if len(updates) != 1 || commercialRelayModelSetKey(updates[0].AllowedModels) != commercialRelayModelSetKey([]string{"gpt-5.6-terra"}) {
+		t.Fatalf("removed provider config could not be rebuilt: %#v", updates)
+	}
+}
+
+func TestCommercialRelaySyncWritesScopeAndNarrowedBudgetTogether(t *testing.T) {
+	models := []string{"gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"}
+	available := make([]commercialRelayModelLimit, 0, len(models))
+	for _, model := range models {
+		available = append(available, commercialRelayModelLimit{
+			Provider: "gpt-upstream", Model: model, AllowedModels: models, SharedBudget: true,
+			Budget: commercialRelayBudget{MaxLimit: 5, ResetDuration: "1M"},
+		})
+	}
+	store := &commercialRelaySyncTestStore{summary: &types.CommercialSummary{
+		UID: 38,
+		TotalsByModel: map[string]float64{
+			"gpt-5.6-terra": 100,
+			"gpt-5.6-sol":   100,
+		},
+		Grants: []*types.CommercialQuotaGrant{
+			{GrantType: "order", Model: "gpt-5.6-terra", AmountCNY: 100},
+			{GrantType: "order", Model: "gpt-5.6-sol", AmountCNY: 100},
+		},
+	}}
+	var posted struct {
+		Budgets []commercialRelayProviderBudgetUpdate `json:"provider_config_budgets"`
+		Scopes  []commercialRelayModelScope           `json:"model_scopes"`
+	}
+	applied := false
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			active := available
+			scopes := []commercialRelayModelScope{}
+			if applied {
+				active = []commercialRelayModelLimit{
+					{Provider: "gpt-upstream", Model: "gpt-5.6-terra", AllowedModels: models[:2], SharedBudget: true, Budget: commercialRelayBudget{MaxLimit: 200, ResetDuration: "1M"}},
+					{Provider: "gpt-upstream", Model: "gpt-5.6-sol", AllowedModels: models[:2], SharedBudget: true, Budget: commercialRelayBudget{MaxLimit: 200, ResetDuration: "1M"}},
+				}
+				scopes = posted.Scopes
+			}
+			_ = json.NewEncoder(w).Encode(commercialRelayUsageUser{
+				Configured: true,
+				Key:        &commercialRelayKeySummary{State: "active"},
+				Limits: commercialRelayLimits{
+					ModelLimits: active, AvailableModelLimits: available, ModelScopes: scopes,
+				},
+			})
+		case http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+				t.Fatal(err)
+			}
+			applied = true
+			_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer relay.Close()
+
+	syncer := NewCommercialRelaySyncer(
+		store,
+		&RelayAdminClient{baseURL: relay.URL, token: "test-token", client: relay.Client()},
+		CommercialRelaySyncerOptions{EnforceUIDs: map[int64]bool{38: true}},
+	)
+	updates, err := syncer.SyncUID(context.Background(), 38)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 || len(posted.Budgets) != 1 || len(posted.Scopes) != 1 {
+		t.Fatalf("incomplete commercial relay write: updates=%#v posted=%#v", updates, posted)
+	}
+	if commercialRelayModelSetKey(posted.Budgets[0].AllowedModels) != commercialRelayModelSetKey(models[:2]) ||
+		commercialRelayModelSetKey(posted.Scopes[0].AllowedModels) != commercialRelayModelSetKey(models[:2]) {
+		t.Fatalf("Luna leaked into the synchronized policy: %#v", posted)
+	}
+	if len(store.replaced) != 2 {
+		t.Fatalf("managed relay state was not saved: %#v", store.replaced)
 	}
 }
 

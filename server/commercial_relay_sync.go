@@ -158,11 +158,15 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 		return nil, err
 	}
 	updates, nextManaged := commercialRelayManagedPlan(uid, summary, relayUser, managed)
-	if len(updates) > 0 {
+	modelScopes := commercialRelayModelScopes(summary, relayUser, managed)
+	scopesChanged := !commercialRelayModelScopesMatch(relayUser.Limits.ModelScopes, modelScopes)
+	if len(updates) > 0 || scopesChanged {
 		var response map[string]interface{}
-		if err := s.relayAdmin.Do(ctx, http.MethodPost, fmt.Sprintf("/internal/users/%d/key/limits", uid), map[string]interface{}{
-			"provider_config_budgets": updates,
-		}, &response); err != nil {
+		payload := map[string]interface{}{"provider_config_budgets": updates}
+		if scopesChanged {
+			payload["model_scopes"] = modelScopes
+		}
+		if err := s.relayAdmin.Do(ctx, http.MethodPost, fmt.Sprintf("/internal/users/%d/key/limits", uid), payload, &response); err != nil {
 			return nil, fmt.Errorf("write relay budgets: %w", err)
 		}
 		verified, err := fetchRelayLimitsForUID(ctx, s.relayAdmin, uid)
@@ -170,6 +174,9 @@ func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]comme
 			return nil, fmt.Errorf("verify relay budgets: %w", err)
 		}
 		if err := verifyCommercialRelayUpdates(updates, verified); err != nil {
+			return nil, err
+		}
+		if err := verifyCommercialRelayModelScopes(modelScopes, verified); err != nil {
 			return nil, err
 		}
 	}
@@ -222,7 +229,7 @@ func validateCommercialRelayModels(budgets map[string]float64, relayUser *commer
 			continue
 		}
 		matched := false
-		for _, limit := range relayUser.Limits.ModelLimits {
+		for _, limit := range commercialRelayCatalogLimits(relayUser) {
 			if strings.TrimSpace(limit.Model) == model && strings.TrimSpace(limit.Provider) != "" && len(limit.AllowedModels) > 0 {
 				matched = true
 				break
@@ -261,7 +268,7 @@ func validateCommercialRelayRequiredModels(summary *types.CommercialSummary, rel
 	for model := range required {
 		matched := false
 		if relayUser != nil {
-			for _, limit := range relayUser.Limits.ModelLimits {
+			for _, limit := range commercialRelayCatalogLimits(relayUser) {
 				if strings.TrimSpace(limit.Model) == model && strings.TrimSpace(limit.Provider) != "" && len(limit.AllowedModels) > 0 {
 					matched = true
 					break
@@ -302,54 +309,213 @@ func verifyCommercialRelayUpdates(updates []commercialRelayProviderBudgetUpdate,
 	return nil
 }
 
+func verifyCommercialRelayModelScopes(expected []commercialRelayModelScope, relayUser *commercialRelayUsageUser) error {
+	if relayUser == nil || !relayUser.Configured {
+		return fmt.Errorf("relay model scope verification failed: relay key is not configured")
+	}
+	if !commercialRelayModelScopesMatch(relayUser.Limits.ModelScopes, expected) {
+		return fmt.Errorf("relay model scope verification failed")
+	}
+	return nil
+}
+
+func commercialRelayCatalogLimits(relayUser *commercialRelayUsageUser) []commercialRelayModelLimit {
+	if relayUser == nil {
+		return nil
+	}
+	if len(relayUser.Limits.AvailableModelLimits) > 0 {
+		return relayUser.Limits.AvailableModelLimits
+	}
+	return relayUser.Limits.ModelLimits
+}
+
+func normalizedCommercialModels(models []string) []string {
+	seen := map[string]string{}
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" || model == "*" {
+			continue
+		}
+		key := strings.ToLower(model)
+		if seen[key] == "" {
+			seen[key] = model
+		}
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, seen[key])
+	}
+	return result
+}
+
+func commercialRelayModelSetKey(models []string) string {
+	normalized := normalizedCommercialModels(models)
+	for index := range normalized {
+		normalized[index] = strings.ToLower(normalized[index])
+	}
+	return strings.Join(normalized, "\x00")
+}
+
+func commercialRelayModelScopesMatch(actual, expected []commercialRelayModelScope) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	actualByKey := map[string]string{}
+	for _, scope := range actual {
+		actualByKey[commercialRelayModelSetKey(scope.ManagedModels)] = commercialRelayModelSetKey(scope.AllowedModels)
+	}
+	for _, scope := range expected {
+		if actualByKey[commercialRelayModelSetKey(scope.ManagedModels)] != commercialRelayModelSetKey(scope.AllowedModels) {
+			return false
+		}
+	}
+	return true
+}
+
+func commercialRelayModelScopes(summary *types.CommercialSummary, relayUser *commercialRelayUsageUser, managed []*types.CommercialManagedRelayBudget) []commercialRelayModelScope {
+	totals := map[string]float64{}
+	governed := map[string]bool{}
+	if summary != nil {
+		for model, amount := range summary.TotalsByModel {
+			model = strings.TrimSpace(model)
+			if model != "" && model != "*" && amount > 0 {
+				totals[strings.ToLower(model)] = amount
+			}
+		}
+		for _, grant := range summary.Grants {
+			if grant == nil || grant.AmountCNY <= 0 {
+				continue
+			}
+			grantType := strings.ToLower(strings.TrimSpace(grant.GrantType))
+			if grantType == "order" || grantType == "invite" || grantType == "trial" || grantType == "bonus" {
+				governed[strings.ToLower(strings.TrimSpace(grant.Model))] = true
+			}
+		}
+	}
+	for _, item := range managed {
+		if item != nil {
+			governed[strings.ToLower(strings.TrimSpace(item.Model))] = true
+		}
+	}
+
+	families := map[string][]string{}
+	if relayUser != nil {
+		for _, scope := range relayUser.Limits.ModelScopes {
+			models := normalizedCommercialModels(scope.ManagedModels)
+			if len(models) > 0 {
+				families[commercialRelayModelSetKey(models)] = models
+				for _, model := range models {
+					governed[strings.ToLower(model)] = true
+				}
+			}
+		}
+		for _, limit := range commercialRelayCatalogLimits(relayUser) {
+			models := normalizedCommercialModels(limit.AllowedModels)
+			if len(models) == 0 {
+				continue
+			}
+			owned := false
+			for _, model := range models {
+				if governed[strings.ToLower(model)] {
+					owned = true
+					break
+				}
+			}
+			if owned {
+				families[commercialRelayModelSetKey(models)] = models
+			}
+		}
+	}
+
+	scopes := make([]commercialRelayModelScope, 0, len(families))
+	for _, models := range families {
+		allowed := make([]string, 0, len(models))
+		for _, model := range models {
+			if totals[strings.ToLower(model)] > 0 {
+				allowed = append(allowed, model)
+			}
+		}
+		scopes = append(scopes, commercialRelayModelScope{ManagedModels: models, AllowedModels: allowed})
+	}
+	sort.Slice(scopes, func(i, j int) bool {
+		return commercialRelayModelSetKey(scopes[i].ManagedModels) < commercialRelayModelSetKey(scopes[j].ManagedModels)
+	})
+	return scopes
+}
+
+func commercialRelayScopedAllowedModels(models []string, totals map[string]float64) []string {
+	allowed := []string{}
+	for _, model := range normalizedCommercialModels(models) {
+		if totals[strings.ToLower(model)] > 0 {
+			allowed = append(allowed, model)
+		}
+	}
+	return allowed
+}
+
+func commercialRelayScopeOwnsModels(scopes []commercialRelayModelScope, models []string) bool {
+	wanted := map[string]bool{}
+	for _, model := range models {
+		wanted[strings.ToLower(strings.TrimSpace(model))] = true
+	}
+	for _, scope := range scopes {
+		for _, model := range scope.ManagedModels {
+			if wanted[strings.ToLower(strings.TrimSpace(model))] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func commercialRelayManagedPlan(uid int64, summary *types.CommercialSummary, relayUser *commercialRelayUsageUser, managed []*types.CommercialManagedRelayBudget) ([]commercialRelayProviderBudgetUpdate, []*types.CommercialManagedRelayBudget) {
 	totals := map[string]float64{}
+	normalizedTotals := map[string]float64{}
 	if summary != nil {
 		for model, amount := range summary.TotalsByModel {
 			model = strings.TrimSpace(model)
 			if model != "" && model != "*" && amount > 0 {
 				totals[model] = amount
+				normalizedTotals[strings.ToLower(model)] = amount
 			}
 		}
 	}
 	relayByModel := map[string][]commercialRelayModelLimit{}
 	if relayUser != nil {
-		for _, limit := range relayUser.Limits.ModelLimits {
+		for _, limit := range commercialRelayCatalogLimits(relayUser) {
 			model := strings.TrimSpace(limit.Model)
 			if model != "" && model != "*" && limit.Provider != "" && len(limit.AllowedModels) > 0 {
 				relayByModel[model] = append(relayByModel[model], limit)
 			}
 		}
 	}
-	managedByModel := map[string][]*types.CommercialManagedRelayBudget{}
-	for _, item := range managed {
-		if item != nil {
-			managedByModel[item.Model] = append(managedByModel[item.Model], item)
-		}
-	}
-
 	currentByKey := map[string]commercialRelayModelLimit{}
-	for _, limits := range relayByModel {
-		for _, limit := range limits {
+	if relayUser != nil {
+		for _, limit := range relayUser.Limits.ModelLimits {
 			currentByKey[commercialManagedBudgetKey(limit.Provider, limit.AllowedModels)] = limit
 		}
 	}
+	modelScopes := commercialRelayModelScopes(summary, relayUser, managed)
 	updatesByKey := map[string]commercialRelayProviderBudgetUpdate{}
 	nextByKey := map[string]*types.CommercialManagedRelayBudget{}
 	configByKey := map[string]*types.CommercialManagedRelayBudget{}
 	desiredByKey := map[string]float64{}
 	for model, amount := range totals {
 		candidateByKey := map[string]*types.CommercialManagedRelayBudget{}
-		for _, item := range managedByModel[model] {
-			if _, found := findCommercialRelayLimit(relayByModel[model], item.Provider, item.AllowedModels); found {
-				candidateByKey[commercialManagedBudgetKey(item.Provider, item.AllowedModels)] = item
-			}
-		}
 		for _, limit := range relayByModel[model] {
-			key := commercialManagedBudgetKey(limit.Provider, limit.AllowedModels)
+			allowedModels := commercialRelayScopedAllowedModels(limit.AllowedModels, normalizedTotals)
+			if len(allowedModels) == 0 {
+				continue
+			}
+			key := commercialManagedBudgetKey(limit.Provider, allowedModels)
 			if candidateByKey[key] == nil {
 				candidateByKey[key] = &types.CommercialManagedRelayBudget{
-					UID: uid, Model: model, Provider: limit.Provider, AllowedModels: append([]string(nil), limit.AllowedModels...),
+					UID: uid, Model: model, Provider: limit.Provider, AllowedModels: append([]string(nil), allowedModels...),
 					ResetDuration: defaultRelayResetDuration(limit.Budget.ResetDuration),
 				}
 			}
@@ -389,7 +555,10 @@ func commercialRelayManagedPlan(uid int64, summary *types.CommercialSummary, rel
 		if desiredByKey[key] > 0 {
 			continue
 		}
-		current, found := findCommercialRelayLimit(relayByModel[item.Model], item.Provider, item.AllowedModels)
+		if commercialRelayScopeOwnsModels(modelScopes, item.AllowedModels) {
+			continue
+		}
+		current, found := currentByKey[key]
 		if !found {
 			continue
 		}

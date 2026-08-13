@@ -281,9 +281,16 @@ type commercialRelayModelLimit struct {
 	Budget        commercialRelayBudget `json:"budget"`
 }
 
+type commercialRelayModelScope struct {
+	ManagedModels []string `json:"managed_models"`
+	AllowedModels []string `json:"allowed_models"`
+}
+
 type commercialRelayLimits struct {
-	MonthlyBudget commercialRelayBudget       `json:"monthly_budget"`
-	ModelLimits   []commercialRelayModelLimit `json:"model_limits"`
+	MonthlyBudget        commercialRelayBudget       `json:"monthly_budget"`
+	ModelLimits          []commercialRelayModelLimit `json:"model_limits"`
+	AvailableModelLimits []commercialRelayModelLimit `json:"available_model_limits,omitempty"`
+	ModelScopes          []commercialRelayModelScope `json:"model_scopes,omitempty"`
 }
 
 type commercialRelayKeySummary struct {
@@ -338,6 +345,7 @@ type commercialRelayDryRun struct {
 	Summary              *types.CommercialSummary              `json:"summary"`
 	Comparisons          []commercialRelayBudgetComparison     `json:"comparisons"`
 	ProposedUpdates      []commercialRelayProviderBudgetUpdate `json:"proposed_updates"`
+	ProposedModelScopes  []commercialRelayModelScope           `json:"proposed_model_scopes,omitempty"`
 	CanApply             bool                                  `json:"can_apply"`
 	Note                 string                                `json:"note"`
 }
@@ -425,7 +433,10 @@ func (h *AccountAdminHandler) HandleCommercialRelaySync(w http.ResponseWriter, r
 		r.Context(),
 		http.MethodPost,
 		fmt.Sprintf("/internal/users/%d/key/limits", req.UID),
-		map[string]interface{}{"provider_config_budgets": dryRun.ProposedUpdates},
+		map[string]interface{}{
+			"provider_config_budgets": dryRun.ProposedUpdates,
+			"model_scopes":            dryRun.ProposedModelScopes,
+		},
 		&relayResp,
 	)
 	if err != nil {
@@ -454,11 +465,19 @@ func (h *AccountAdminHandler) buildCommercialRelayDryRun(ctx context.Context, st
 		relayUser = user
 	}
 	dryRun := compareCommercialRelayBudgets(uid, summary, relayUser)
+	var managed []*types.CommercialManagedRelayBudget
+	var managedErr error
 	if managedStore, ok := store.(CommercialRelayManagedStore); ok {
-		managed, managedErr := managedStore.ListCommercialManagedRelayBudgets(uid)
+		managed, managedErr = managedStore.ListCommercialManagedRelayBudgets(uid)
 		if managedErr == nil {
+			plannedUpdates, _ := commercialRelayManagedPlan(uid, summary, relayUser, managed)
+			dryRun.ProposedUpdates = plannedUpdates
+			dryRun.ProposedModelScopes = commercialRelayModelScopes(summary, relayUser, managed)
 			for _, item := range managed {
 				if item == nil || summary.TotalsByModel[item.Model] > 0 {
+					continue
+				}
+				if commercialRelayScopeOwnsModels(dryRun.ProposedModelScopes, item.AllowedModels) {
 					continue
 				}
 				needsUpdate := true
@@ -480,7 +499,11 @@ func (h *AccountAdminHandler) buildCommercialRelayDryRun(ctx context.Context, st
 					})
 				}
 			}
-			dryRun.CanApply = len(dryRun.ProposedUpdates) > 0
+			var currentScopes []commercialRelayModelScope
+			if relayUser != nil {
+				currentScopes = relayUser.Limits.ModelScopes
+			}
+			dryRun.CanApply = len(dryRun.ProposedUpdates) > 0 || !commercialRelayModelScopesMatch(currentScopes, dryRun.ProposedModelScopes)
 		}
 	}
 	dryRun.EnforceEnabled = h.commercialRelayEnforcedFor(uid)
