@@ -48,8 +48,6 @@ server/cmd/uploads/
 .claude/
 CLAUDE.md
 packages/skills/scripts/__pycache__/
-__pycache__/
-*.py[cod]
 
 # 部署脚本（包含敏感信息）
 deploy/*.sh
