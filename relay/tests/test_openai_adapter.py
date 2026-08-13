@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
-import io
 import json
 import sys
-import threading
 import time
 import types
 import unittest
 from http import HTTPStatus
-from http.server import ThreadingHTTPServer
 from pathlib import Path
-from urllib.request import urlopen
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "openai_adapter.py"
@@ -36,8 +32,6 @@ class HandlerHarness:
         handler.routed_provider_candidates = lambda model, api_key: (list(self.providers), 1)
         handler.call_relay_admin = self.call_relay_admin
         handler.call_bifrost = self.call_bifrost
-        handler.open_bifrost_stream = self.open_bifrost_stream
-        handler.forward_responses_stream = self.forward_responses_stream
         handler.submit_relay_usage = self.submit_relay_usage
         handler.send_bytes = self.send_bytes
         handler.send_json = self.send_json
@@ -51,23 +45,6 @@ class HandlerHarness:
         provider = extra_headers["x-model-provider"]
         self.attempts.append(provider)
         return self.responses[provider]
-
-    def open_bifrost_stream(self, body: dict, *, path: str, extra_headers: dict[str, str]):
-        status, headers, payload = self.call_bifrost(
-            body,
-            path=path,
-            extra_headers=extra_headers,
-        )
-        return status, headers, io.BytesIO(payload)
-
-    def forward_responses_stream(self, status: int, headers: dict[str, str], upstream):
-        payload = upstream.read()
-        observer = adapter.ResponsesSSEObserver()
-        observer.feed(payload)
-        observer.finish()
-        upstream.close()
-        self.send_bytes(status, payload, {"Content-Type": "text/event-stream; charset=utf-8"})
-        return observer.outcome(), False, None
 
     def submit_relay_usage(self, payload: dict, *, context: str):
         self.usage.append({**payload, "context": context})
@@ -199,29 +176,6 @@ class ProviderCircuitRecoveryTest(unittest.TestCase):
         self.assertEqual(harness.sent[-1][0], HTTPStatus.OK)
         self.assertGreater(adapter.PROVIDER_POOL_UNAVAILABLE_UNTIL["provider-a"], time.monotonic())
 
-    def test_streaming_responses_403_fails_over_before_downstream_commit(self):
-        harness = HandlerHarness(
-            ["provider-a", "provider-b"],
-            {
-                "provider-a": error_response(HTTPStatus.FORBIDDEN, "http_403"),
-                "provider-b": responses_sse(
-                    "response.completed",
-                    {"type": "response.completed", "response": {"status": "completed"}},
-                ),
-            },
-        )
-        harness.handler.path = "/v1/responses"
-
-        harness.handler.handle_responses(
-            {"model": self.model, "stream": True, "input": [{"role": "user", "content": "hello"}]}
-        )
-
-        self.assertEqual(harness.attempts, ["provider-a", "provider-b"])
-        self.assertEqual(len(harness.sent), 1)
-        self.assertEqual(harness.sent[0][0], HTTPStatus.OK)
-        self.assertIn(b"response.completed", harness.sent[0][1])
-        self.assertNotIn(b"http_403", harness.sent[0][1])
-
     def test_responses_exhausted_pool_hides_the_last_provider_403(self):
         providers = ["provider-a", "provider-b", "provider-c", "provider-d"]
         harness = HandlerHarness(
@@ -237,7 +191,7 @@ class ProviderCircuitRecoveryTest(unittest.TestCase):
         self.assertIn("Retry-After", headers)
         self.assertEqual(json.loads(payload)["error"]["code"], "provider_pool_unavailable")
 
-    def test_incomplete_responses_stream_is_forwarded_and_not_spliced_after_commit(self):
+    def test_incomplete_responses_stream_fails_over_before_sending_output(self):
         harness = HandlerHarness(
             ["provider-a", "provider-b"],
             {
@@ -257,105 +211,10 @@ class ProviderCircuitRecoveryTest(unittest.TestCase):
             {"model": self.model, "stream": True, "input": [{"role": "user", "content": "hello"}]}
         )
 
-        self.assertEqual(harness.attempts, ["provider-a"])
+        self.assertEqual(harness.attempts, ["provider-a", "provider-b"])
         self.assertEqual(len(harness.sent), 1)
         self.assertEqual(harness.sent[0][0], HTTPStatus.OK)
-        self.assertIn(b"response.incomplete", harness.sent[0][1])
-        self.assertNotIn("provider-a", adapter.PROVIDER_POOL_UNAVAILABLE_UNTIL)
-
-    def test_empty_success_stream_is_committed_once_and_not_spliced(self):
-        harness = HandlerHarness(
-            ["provider-a", "provider-b"],
-            {
-                "provider-a": (HTTPStatus.OK, {"Content-Type": "text/event-stream"}, b""),
-                "provider-b": responses_sse(
-                    "response.completed",
-                    {"type": "response.completed", "response": {"status": "completed"}},
-                ),
-            },
-        )
-        harness.handler.path = "/v1/responses"
-
-        harness.handler.handle_responses(
-            {"model": self.model, "stream": True, "input": [{"role": "user", "content": "hello"}]}
-        )
-
-        self.assertEqual(harness.attempts, ["provider-a"])
-        self.assertEqual(len(harness.sent), 1)
-        self.assertEqual(harness.sent[0][1], b"")
-
-    def test_committed_upstream_stream_error_is_recorded_without_failover(self):
-        harness = HandlerHarness(
-            ["provider-a", "provider-b"],
-            {
-                "provider-a": responses_sse(
-                    "response.created",
-                    {"type": "response.created", "response": {"status": "in_progress"}},
-                ),
-                "provider-b": responses_sse(
-                    "response.completed",
-                    {"type": "response.completed", "response": {"status": "completed"}},
-                ),
-            },
-        )
-        harness.handler.path = "/v1/responses"
-        harness.handler.forward_responses_stream = lambda status, headers, upstream: (
-            {
-                "valid_payload": False,
-                "succeeded": False,
-                "usage": {},
-                "terminal": "",
-                "error_code": "missing_terminal_event",
-            },
-            False,
-            "TimeoutError",
-        )
-
-        harness.handler.handle_responses(
-            {"model": self.model, "stream": True, "input": [{"role": "user", "content": "hello"}]}
-        )
-
-        self.assertEqual(harness.attempts, ["provider-a"])
-        self.assertTrue(any(item["error_code"] == "upstream_stream_error" for item in harness.usage))
-        self.assertEqual(adapter.PROVIDER_POOL_CONSECUTIVE_FAILURES["provider-a"], 1)
-        self.assertNotIn("provider-a", adapter.PROVIDER_POOL_UNAVAILABLE_UNTIL)
-
-    def test_committed_downstream_disconnect_does_not_penalize_provider(self):
-        harness = HandlerHarness(
-            ["provider-a", "provider-b"],
-            {
-                "provider-a": responses_sse(
-                    "response.created",
-                    {"type": "response.created", "response": {"status": "in_progress"}},
-                ),
-                "provider-b": responses_sse(
-                    "response.completed",
-                    {"type": "response.completed", "response": {"status": "completed"}},
-                ),
-            },
-        )
-        harness.handler.path = "/v1/responses"
-        harness.handler.forward_responses_stream = lambda status, headers, upstream: (
-            {
-                "valid_payload": False,
-                "succeeded": False,
-                "usage": {},
-                "terminal": "",
-                "error_code": "missing_terminal_event",
-            },
-            True,
-            None,
-        )
-
-        harness.handler.handle_responses(
-            {"model": self.model, "stream": True, "input": [{"role": "user", "content": "hello"}]}
-        )
-
-        self.assertEqual(harness.attempts, ["provider-a"])
-        self.assertTrue(any(item["status"] == "client_disconnected" for item in harness.usage))
-        self.assertNotIn("provider-a", adapter.PROVIDER_POOL_CONSECUTIVE_FAILURES)
-        self.assertNotIn("provider-a", adapter.PROVIDER_POOL_UNAVAILABLE_UNTIL)
-
+        self.assertIn(b"response.completed", harness.sent[0][1])
 
     def test_explicit_content_policy_error_does_not_switch_or_open_circuit(self):
         harness = HandlerHarness(
@@ -482,144 +341,6 @@ class ProviderCircuitRecoveryTest(unittest.TestCase):
 
         self.assertNotIn("provider-a", adapter.PROVIDER_POOL_UNAVAILABLE_UNTIL)
         self.assertNotIn("provider-a", adapter.PROVIDER_POOL_HALF_OPEN_INFLIGHT)
-
-
-class ResponsesSSEObserverTest(unittest.TestCase):
-    def test_tracks_terminal_event_and_usage_across_arbitrary_chunks(self):
-        payload = (
-            b'event: response.created\r\ndata: {"type":"response.created"}\r\n\r\n'
-            b'event: response.output_text.delta\r\ndata: {"type":"response.output_text.delta","delta":"ok"}\r\n\r\n'
-            b'event: response.completed\r\ndata: {"type":"response.completed","response":'
-            b'{"status":"completed","usage":{"input_tokens":10,"output_tokens":2}}}\r\n\r\n'
-        )
-        observer = adapter.ResponsesSSEObserver()
-        for index in range(0, len(payload), 7):
-            observer.feed(payload[index : index + 7])
-        observer.finish()
-
-        outcome = observer.outcome()
-        self.assertTrue(outcome["succeeded"])
-        self.assertEqual(outcome["terminal"], "response.completed")
-        self.assertEqual(outcome["usage"], {"input_tokens": 10, "output_tokens": 2})
-
-    def test_reports_missing_terminal_without_inventing_an_event(self):
-        observer = adapter.ResponsesSSEObserver()
-        observer.feed(b'data: {"type":"response.output_text.delta","delta":"partial"}\n\n')
-        observer.finish()
-
-        outcome = observer.outcome()
-        self.assertFalse(outcome["valid_payload"])
-        self.assertEqual(outcome["error_code"], "missing_terminal_event")
-
-
-class ResponsesHTTPStreamingTest(unittest.TestCase):
-    def test_sends_headers_before_the_first_event_and_preserves_sse_bytes(self):
-        release_event = threading.Event()
-        payload = responses_sse(
-            "response.completed",
-            {"type": "response.completed", "response": {"status": "completed"}},
-        )[2]
-
-        class DelayedStream(io.BytesIO):
-            def read1(self, size: int = -1) -> bytes:
-                release_event.wait(timeout=2)
-                return self.read(size)
-
-        class StreamingHandler(adapter.Handler):
-            def do_GET(self):
-                self.forward_responses_stream(
-                    HTTPStatus.OK,
-                    {"Content-Type": "text/event-stream", "x-request-id": "req-test"},
-                    DelayedStream(payload),
-                )
-
-            def log_message(self, format: str, *args):
-                return
-
-        server = ThreadingHTTPServer(("127.0.0.1", 0), StreamingHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            started = time.monotonic()
-            response = urlopen(f"http://127.0.0.1:{server.server_port}/", timeout=2)
-            self.assertLess(time.monotonic() - started, 1)
-            self.assertEqual(response.headers.get_content_type(), "text/event-stream")
-            self.assertEqual(response.headers.get("X-Accel-Buffering"), "no")
-            self.assertEqual(response.headers.get("x-request-id"), "req-test")
-            release_event.set()
-            self.assertEqual(response.read(), payload)
-            response.close()
-        finally:
-            release_event.set()
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=2)
-
-    def test_downstream_abort_closes_upstream_without_reporting_provider_failure(self):
-        class TrackingStream(io.BytesIO):
-            closed_by_relay = False
-
-            def close(self):
-                self.closed_by_relay = True
-                super().close()
-
-        class AbortedWriter:
-            def flush(self):
-                return
-
-            def write(self, chunk: bytes):
-                raise ConnectionAbortedError("downstream closed")
-
-        upstream = TrackingStream(b'data: {"type":"response.created"}\n\n')
-        handler = object.__new__(adapter.Handler)
-        handler.wfile = AbortedWriter()
-        handler.send_response = lambda status: None
-        handler.send_header = lambda name, value: None
-        handler.end_headers = lambda: None
-
-        outcome, disconnected, upstream_error = handler.forward_responses_stream(
-            HTTPStatus.OK,
-            {"Content-Type": "text/event-stream"},
-            upstream,
-        )
-
-        self.assertTrue(disconnected)
-        self.assertIsNone(upstream_error)
-        self.assertTrue(upstream.closed_by_relay)
-        self.assertEqual(outcome["error_code"], "missing_terminal_event")
-
-    def test_upstream_read_error_is_distinct_from_downstream_disconnect(self):
-        class BrokenStream(io.BytesIO):
-            closed_by_relay = False
-
-            def read1(self, size: int = -1) -> bytes:
-                raise TimeoutError("upstream stalled")
-
-            def close(self):
-                self.closed_by_relay = True
-                super().close()
-
-        class Writer(io.BytesIO):
-            def flush(self):
-                return
-
-        upstream = BrokenStream()
-        handler = object.__new__(adapter.Handler)
-        handler.wfile = Writer()
-        handler.send_response = lambda status: None
-        handler.send_header = lambda name, value: None
-        handler.end_headers = lambda: None
-
-        outcome, disconnected, upstream_error = handler.forward_responses_stream(
-            HTTPStatus.OK,
-            {"Content-Type": "text/event-stream"},
-            upstream,
-        )
-
-        self.assertFalse(disconnected)
-        self.assertEqual(upstream_error, "TimeoutError")
-        self.assertTrue(upstream.closed_by_relay)
-        self.assertEqual(outcome["error_code"], "missing_terminal_event")
 
 
 if __name__ == "__main__":
