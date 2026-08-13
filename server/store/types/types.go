@@ -583,29 +583,33 @@ type BotSkillRef struct {
 // a skill that the runtime actually loaded. It intentionally carries metadata
 // only, never package contents or local credentials.
 type BotRuntimeSkillHubReference struct {
-	SkillID     string `json:"skillId"`
-	Version     string `json:"version"`
-	ContentHash string `json:"contentHash,omitempty"`
+	SkillID               string `json:"skillId"`
+	Version               string `json:"version"`
+	PackageChecksumSHA256 string `json:"packageChecksumSha256,omitempty"`
 }
 
 // BotRuntimeSkill is the redacted metadata for one skill observed by a Bot
 // runtime. RelativePath is relative to the runtime's Skills root.
 type BotRuntimeSkill struct {
-	Name          string                       `json:"name"`
-	Description   string                       `json:"description"`
-	RelativePath  string                       `json:"relativePath"`
-	UserInvocable bool                         `json:"userInvocable"`
-	ContentHash   string                       `json:"contentHash,omitempty"`
-	SkillHub      *BotRuntimeSkillHubReference `json:"skillHub,omitempty"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	RelativePath  string `json:"relativePath"`
+	UserInvocable bool   `json:"userInvocable"`
+	// FileHash is the SHA-256 of the loaded SKILL.md file. It is distinct from
+	// SkillHub.PackageChecksumSHA256, which identifies the installed package.
+	FileHash string                       `json:"fileHash,omitempty"`
+	SkillHub *BotRuntimeSkillHubReference `json:"skillHub,omitempty"`
 }
 
 // BotSkillInventory is the latest runtime-reported loaded Skills snapshot.
 // A non-nil empty Skills slice means the runtime reported successfully and
 // currently has no loaded Skills; nil means it has never reported.
 type BotSkillInventory struct {
-	Schema     string `json:"schema"`
-	BotID      string `json:"botId"`
-	ObservedAt string `json:"observedAt"`
+	Schema            string `json:"schema"`
+	BotID             string `json:"botId"`
+	ObservedAt        string `json:"observedAt"`
+	RuntimeInstanceID string `json:"runtimeInstanceId,omitempty"`
+	ReportSequence    uint64 `json:"reportSequence,omitempty"`
 	// ReportedAt is assigned by CatsCo when it accepts the snapshot. Freshness
 	// must be based on this server clock, rather than a mutable Agent clock.
 	ReportedAt string            `json:"reportedAt,omitempty"`

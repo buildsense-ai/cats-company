@@ -329,7 +329,6 @@ export function normalizeRuntimeSkills(response) {
     description: String(skill?.description || '').trim(),
     relativePath: String(skill?.relativePath || skill?.relative_path || '').trim(),
     userInvocable: skill?.userInvocable !== false && skill?.user_invocable !== false,
-    contentHash: String(skill?.contentHash || skill?.content_hash || '').trim().toLowerCase(),
     skillHub: skill?.skillHub || skill?.skill_hub || null,
   })).filter((skill) => skill.name);
 }

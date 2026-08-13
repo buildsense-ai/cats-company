@@ -178,6 +178,9 @@ func (a *Adapter) ReportBotSkillInventory(
 	inventory types.BotSkillInventory,
 ) (*types.BotDefinitionRecord, error) {
 	return a.updateBotDefinition(botUID, func(record *types.BotDefinitionRecord, now string) error {
+		if !store.ShouldReplaceBotSkillInventory(record.Runtime.SkillInventory, inventory) {
+			return nil
+		}
 		inventory.ReportedAt = now
 		record.Runtime.SkillInventory = &inventory
 		record.Exists = true

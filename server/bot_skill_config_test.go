@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +95,56 @@ func TestRuntimeSkillInventoryReportsOnlySanitizedRuntimeMetadata(t *testing.T) 
 		"schema":"xiaoba.bot-runtime-skills.v1",
 		"botId":"43",
 		"observedAt":"`+observedAt+`",
+		"runtimeInstanceId":"runtime-a",
+		"reportSequence":1,
+		"skills":[{
+			"name":"review",
+			"description":"Review code changes",
+			"relativePath":"tools/review/SKILL.md",
+			"userInvocable":true,
+			"fileHash":"`+testSkillHash+`",
+			"skillHub":{"skillId":"tools/review","version":"1.0.0","packageChecksumSha256":"`+testSkillHash+`"}
+		}]
+	}`))
+	request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(43)))
+	recorder := httptest.NewRecorder()
+
+	handler.HandleRuntimeSkillInventory(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	inventory := db.records[43].Runtime.SkillInventory
+	if inventory == nil || inventory.ObservedAt != observedAt || len(inventory.Skills) != 1 {
+		t.Fatalf("inventory=%+v", inventory)
+	}
+	if got := inventory.Skills[0]; got.RelativePath != "tools/review/SKILL.md" || got.SkillHub == nil || got.SkillHub.SkillID != "tools/review" {
+		t.Fatalf("skill=%+v", got)
+	}
+}
+
+func TestRuntimeSkillInventoryRejectsMissingSkillsArray(t *testing.T) {
+	for _, body := range []string{
+		`{"schema":"xiaoba.bot-runtime-skills.v1","botId":"43","observedAt":"2026-08-12T06:00:00Z"}`,
+		`{"schema":"xiaoba.bot-runtime-skills.v1","botId":"43","observedAt":"2026-08-12T06:00:00Z","skills":null}`,
+	} {
+		handler, _ := newBotSkillDefinitionTestHandler()
+		request := httptest.NewRequest(http.MethodPost, "/api/bot/skills/inventory", strings.NewReader(body))
+		request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(43)))
+		recorder := httptest.NewRecorder()
+		handler.HandleRuntimeSkillInventory(recorder, request)
+		if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "skills is required") {
+			t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func TestRuntimeSkillInventoryAcceptsLegacyHashAliases(t *testing.T) {
+	handler, db := newBotSkillDefinitionTestHandler()
+	request := httptest.NewRequest(http.MethodPost, "/api/bot/skills/inventory", strings.NewReader(`{
+		"schema":"xiaoba.bot-runtime-skills.v1",
+		"botId":"43",
+		"observedAt":"2026-08-12T06:00:00Z",
 		"skills":[{
 			"name":"review",
 			"description":"Review code changes",
@@ -111,12 +162,83 @@ func TestRuntimeSkillInventoryReportsOnlySanitizedRuntimeMetadata(t *testing.T) 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	inventory := db.records[43].Runtime.SkillInventory
-	if inventory == nil || inventory.ObservedAt != observedAt || len(inventory.Skills) != 1 {
-		t.Fatalf("inventory=%+v", inventory)
+	got := db.records[43].Runtime.SkillInventory.Skills[0]
+	if got.FileHash != testSkillHash || got.SkillHub == nil || got.SkillHub.PackageChecksumSHA256 != testSkillHash {
+		t.Fatalf("legacy hashes were not normalized: %+v", got)
 	}
-	if got := inventory.Skills[0]; got.RelativePath != "tools/review/SKILL.md" || got.SkillHub == nil || got.SkillHub.SkillID != "tools/review" {
-		t.Fatalf("skill=%+v", got)
+}
+
+func TestRuntimeSkillInventoryRejectsConflictingHashAliases(t *testing.T) {
+	handler, _ := newBotSkillDefinitionTestHandler()
+	request := httptest.NewRequest(http.MethodPost, "/api/bot/skills/inventory", strings.NewReader(`{
+		"schema":"xiaoba.bot-runtime-skills.v1",
+		"botId":"43",
+		"observedAt":"2026-08-12T06:00:00Z",
+		"skills":[{
+			"name":"review",
+			"description":"Review code changes",
+			"relativePath":"tools/review/SKILL.md",
+			"userInvocable":true,
+			"fileHash":"`+testSkillHash+`",
+			"contentHash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		}]
+	}`))
+	request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(43)))
+	recorder := httptest.NewRecorder()
+
+	handler.HandleRuntimeSkillInventory(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "conflicting runtime skill fileHash") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRuntimeSkillInventoryRejectsConflictingSkillHubHashAliases(t *testing.T) {
+	handler, _ := newBotSkillDefinitionTestHandler()
+	request := httptest.NewRequest(http.MethodPost, "/api/bot/skills/inventory", strings.NewReader(`{
+		"schema":"xiaoba.bot-runtime-skills.v1",
+		"botId":"43",
+		"observedAt":"2026-08-12T06:00:00Z",
+		"skills":[{
+			"name":"review",
+			"description":"Review code changes",
+			"relativePath":"tools/review/SKILL.md",
+			"userInvocable":true,
+			"skillHub":{
+				"skillId":"tools/review",
+				"version":"1.0.0",
+				"packageChecksumSha256":"`+testSkillHash+`",
+				"contentHash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+			}
+		}]
+	}`))
+	request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(43)))
+	recorder := httptest.NewRecorder()
+
+	handler.HandleRuntimeSkillInventory(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "conflicting runtime SkillHub packageChecksumSha256") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestRuntimeSkillInventoryRejectsOlderSequenceForSameRuntime(t *testing.T) {
+	handler, db := newBotSkillDefinitionTestHandler()
+	post := func(sequence uint64, observedAt string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/api/bot/skills/inventory", strings.NewReader(`{"schema":"xiaoba.bot-runtime-skills.v1","botId":"43","observedAt":"`+observedAt+`","runtimeInstanceId":"runtime-a","reportSequence":`+strconv.FormatUint(sequence, 10)+`,"skills":[]}`))
+		request = request.WithContext(context.WithValue(request.Context(), uidKey, int64(43)))
+		recorder := httptest.NewRecorder()
+		handler.HandleRuntimeSkillInventory(recorder, request)
+		return recorder
+	}
+	if recorder := post(2, "2026-08-12T06:02:00Z"); recorder.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder := post(1, "2026-08-12T06:03:00Z"); recorder.Code != http.StatusOK {
+		t.Fatalf("stale status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := db.records[43].Runtime.SkillInventory.ReportSequence; got != 2 {
+		t.Fatalf("stale report replaced current sequence: got=%d", got)
 	}
 }
 
@@ -189,6 +311,10 @@ func TestViewerRuntimeSkillsUsesVisibilityAndDistinguishesUnreported(t *testing.
 		Schema: "xiaoba.bot-runtime-skills.v1", BotID: "43", ObservedAt: observedAt,
 		Skills: []types.BotRuntimeSkill{{
 			Name: "review", Description: "Review code changes", RelativePath: "tools/review/SKILL.md", UserInvocable: true,
+			FileHash: testSkillHash,
+			SkillHub: &types.BotRuntimeSkillHubReference{
+				SkillID: "tools/review", Version: "1.0.0", PackageChecksumSHA256: testSkillHash,
+			},
 		}},
 	}
 	recorder = httptest.NewRecorder()
@@ -196,6 +322,9 @@ func TestViewerRuntimeSkillsUsesVisibilityAndDistinguishesUnreported(t *testing.
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"runtime_status":"reported"`) ||
 		!strings.Contains(recorder.Body.String(), `"relativePath":"tools/review/SKILL.md"`) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "fileHash") || strings.Contains(recorder.Body.String(), "packageChecksumSha256") {
+		t.Fatalf("viewer response leaked runtime hash metadata: %s", recorder.Body.String())
 	}
 
 	db.configs[43].SkillsVisibility = types.BotSkillsOwner
@@ -218,6 +347,9 @@ func TestBotDefinitionSkillsUseUnifiedRevisionAndCanonicalOrder(t *testing.T) {
 	handler.HandleRuntimeSkills(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"revision":3`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"contentHash":"`+testSkillHash+`"`) {
+		t.Fatalf("configured skill hash contract changed: %s", rec.Body.String())
 	}
 	want := []types.BotSkillRef{
 		{Source: "skillhub", SkillID: "a-skill", Version: "1.0.0", ContentHash: testSkillHash},

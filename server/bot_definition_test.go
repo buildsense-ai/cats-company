@@ -152,6 +152,9 @@ func (s *botDefinitionTestStore) ReportBotSkillInventory(
 	inventory types.BotSkillInventory,
 ) (*types.BotDefinitionRecord, error) {
 	record := s.ensure(botUID)
+	if !store.ShouldReplaceBotSkillInventory(record.Runtime.SkillInventory, inventory) {
+		return cloneBotDefinitionRecord(record), nil
+	}
 	record.Runtime.SkillInventory = &inventory
 	record.Exists = true
 	return cloneBotDefinitionRecord(record), nil

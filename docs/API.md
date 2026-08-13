@@ -364,7 +364,6 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
       "description": "Review code changes",
       "relativePath": "tools/review/SKILL.md",
       "userInvocable": true,
-      "contentHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       "skillHub": { "skillId": "tools/review", "version": "1.0.0" }
     }
   ]
@@ -380,16 +379,28 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
   "schema": "xiaoba.bot-runtime-skills.v1",
   "botId": "10",
   "observedAt": "2026-08-12T08:00:00Z",
+  "runtimeInstanceId": "d375f15e-2c89-4d1c-9dcc-7a777e8da21e",
+  "reportSequence": 42,
   "skills": [
     {
       "name": "review",
       "description": "Review code changes",
       "relativePath": "tools/review/SKILL.md",
-      "userInvocable": true
+      "userInvocable": true,
+      "fileHash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "skillHub": {
+        "skillId": "tools/review",
+        "version": "1.0.0",
+        "packageChecksumSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
     }
   ]
 }
 ```
+
+`runtimeInstanceId` 与 `reportSequence` 用于阻止同一 Agent 进程中延迟的旧快照覆盖新快照。为支持已部署的旧版 XiaoBa，服务端也接受运行时条目及其 `skillHub` 引用中的旧 `contentHash` 字段，并将其分别规范化为 `fileHash` 和 `packageChecksumSha256`；新客户端应只发送新字段。上述哈希不会通过读取接口返回。
+
+升级顺序：先部署 CatsCo 服务端，再部署 WebApp，最后升级 XiaoBa。新 XiaoBa 发送的新字段会被旧版 CatsCo 的严格 JSON 校验拒绝；旧版 XiaoBa 发送的 `contentHash` 字段则可被新版 CatsCo 兼容接收。旧服务端尚未升级时，XiaoBa 会将清单上报视为可选观测能力，不影响正常聊天。
 
 #### GET /api/agents/{agentUid}/artifacts?status={active|deleted} — 读取 Agent 成果
 
