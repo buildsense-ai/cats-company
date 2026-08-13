@@ -37,7 +37,7 @@ func TestShouldReplaceBotSkillInventory(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "legacy same-runtime report uses server receipt time",
+			name: "legacy report cannot reset a sequenced runtime",
 			incoming: types.BotSkillInventory{
 				ObservedAt: later, ReportedAt: "2026-08-12T06:02:00.000000001Z", RuntimeInstanceID: "runtime-a",
 			},
@@ -72,4 +72,25 @@ func TestShouldReplaceBotSkillInventory(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("legacy same-runtime reports use server receipt time", func(t *testing.T) {
+		legacyExisting := &types.BotSkillInventory{
+			ReportedAt:        "2026-08-12T06:02:00.000000002Z",
+			RuntimeInstanceID: "runtime-a",
+		}
+		olderReceipt := types.BotSkillInventory{
+			ReportedAt:        "2026-08-12T06:02:00.000000001Z",
+			RuntimeInstanceID: "runtime-a",
+		}
+		if ShouldReplaceBotSkillInventory(legacyExisting, olderReceipt) {
+			t.Fatal("older legacy receipt replaced the newer inventory")
+		}
+		newerReceipt := types.BotSkillInventory{
+			ReportedAt:        "2026-08-12T06:02:00.000000003Z",
+			RuntimeInstanceID: "runtime-a",
+		}
+		if !ShouldReplaceBotSkillInventory(legacyExisting, newerReceipt) {
+			t.Fatal("newer legacy receipt did not replace the older inventory")
+		}
+	})
 }
