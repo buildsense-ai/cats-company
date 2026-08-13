@@ -245,6 +245,7 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 	} else {
 		route.viewerRelation = relation
 	}
+	memberUploadsEnabled := memberArtifactUploadsEnabled(h.db, route.agentUID)
 	node, err := h.resolveArtifactNode(route.agentUID)
 	if err != nil {
 		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
@@ -262,6 +263,10 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 	switch route.action {
 	case "list":
 		if r.Method == http.MethodPost {
+			if route.viewerRelation != "owner" && !memberUploadsEnabled {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "member artifact uploads are disabled"})
+				return
+			}
 			if collectionURL == "" {
 				writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
 				return
@@ -290,7 +295,7 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 			h.handleNodePublicIndexList(w, r, status, node, route.agentUID, route.viewerRelation)
 			return
 		}
-		h.handleManagedList(w, r, status, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID, viewerUID, route.viewerRelation)
+		h.handleManagedList(w, r, status, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID, viewerUID, route.viewerRelation, memberUploadsEnabled)
 	case "delete":
 		if r.Method != http.MethodDelete {
 			w.Header().Set("Allow", http.MethodDelete)
@@ -368,7 +373,7 @@ func (h *CloudArtifactHandler) HandleList(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if h.managementURL != "" {
-		h.handleManagedList(w, r, status, h.managementURL, h.managementToken, "", 0, UIDFromContext(r.Context()), "owner")
+		h.handleManagedList(w, r, status, h.managementURL, h.managementToken, "", 0, UIDFromContext(r.Context()), "owner", true)
 		return
 	}
 	if status == "deleted" {
@@ -386,6 +391,7 @@ func (h *CloudArtifactHandler) handleManagedList(
 	agentUID int64,
 	viewerUID int64,
 	viewerRelation string,
+	memberUploadsEnabled bool,
 ) {
 	target := collectionURL + "?status=" + url.QueryEscape(status)
 	body, err := h.requestManagement(r, http.MethodGet, target, nil, managementToken)
@@ -413,6 +419,9 @@ func (h *CloudArtifactHandler) handleManagedList(
 		list.ViewerRelation = viewerRelation
 		list.Visibility = "agent_users"
 		list.CanPublish = list.CanPublish && list.PublishMode == "immediate"
+		if viewerRelation != "owner" && !memberUploadsEnabled {
+			list.CanPublish = false
+		}
 		if !list.CanPublish {
 			list.PublishMode = ""
 		}
@@ -429,6 +438,18 @@ func (h *CloudArtifactHandler) handleManagedList(
 	list.Count = len(list.Artifacts)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, list)
+}
+
+func memberArtifactUploadsEnabled(db store.Store, agentUID int64) bool {
+	if db == nil || agentUID <= 0 {
+		return true
+	}
+	policies, ok := db.(store.BotArtifactPolicyStore)
+	if !ok {
+		return true
+	}
+	enabled, err := policies.GetBotArtifactUploadPolicy(agentUID)
+	return err != nil || enabled
 }
 
 func (h *CloudArtifactHandler) enrichArtifactCreators(artifacts []cloudArtifact, fallbackAgentUID int64, assumeAgent bool) {

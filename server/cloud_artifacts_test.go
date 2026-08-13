@@ -465,6 +465,53 @@ func TestCloudArtifactHandlerPublishesForFriendWithoutApproval(t *testing.T) {
 	}
 }
 
+type artifactPolicyTestStore struct {
+	*agentTestStore
+	enabled bool
+}
+
+func (s *artifactPolicyTestStore) GetBotArtifactUploadPolicy(_ int64) (bool, error) {
+	return s.enabled, nil
+}
+
+func (s *artifactPolicyTestStore) UpdateBotArtifactUploadPolicy(_ int64, enabled bool) error {
+	s.enabled = enabled
+	return nil
+}
+
+func TestCloudArtifactHandlerRejectsFriendPublishWhenOwnerDisablesUploads(t *testing.T) {
+	var upstreamCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer upstream.Close()
+
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		upstream.URL+"/internal/artifacts",
+		"test-management-token-abcdefghijklmnopqrstuvwxyz",
+		upstream.Client(),
+	)
+	baseStore := managedArtifactAgentStore(8, 440, true)
+	baseStore.friendPairs[agentPairKey(7, 440)] = true
+	handler.SetStore(&artifactPolicyTestStore{agentTestStore: baseStore, enabled: false})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/agents/440/artifacts",
+		strings.NewReader(`{"title":"课堂网页","kind":"html","url":"https://example.com/uploads/files/result.html"}`),
+	).WithContext(context.WithValue(context.Background(), uidKey, int64(7)))
+	handler.HandleAgentArtifacts(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstream calls = %d", upstreamCalls)
+	}
+}
+
 func TestCloudArtifactHandlerRejectsClientSuppliedPublishIdentity(t *testing.T) {
 	handler := NewCloudArtifactManagementHandler(
 		"https://example.test/artifacts-index.json",

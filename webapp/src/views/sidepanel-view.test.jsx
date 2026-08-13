@@ -3227,7 +3227,7 @@ describe('ChatListView sidebar sections', () => {
     expect(menu).toBeTruthy();
     expect(container.querySelector('[aria-label="联系人更多操作"]').getAttribute('aria-expanded')).toBe('true');
     const menuItems = Array.from(menu.querySelectorAll('[role="menuitem"]'));
-    expect(menuItems.map((item) => item.textContent.trim())).toEqual(['添加好友', '创建群组', '创建Agent助手']);
+    expect(menuItems.map((item) => item.textContent.trim())).toEqual(['添加好友', '创建群组', 'Agent 助手']);
     expect(menuItems[0].querySelector('.lucide-user-plus')).toBeTruthy();
     expect(menuItems[1].querySelector('.lucide-users')).toBeTruthy();
     expect(menuItems[2].querySelector('.lucide-bot')).toBeTruthy();
@@ -3255,7 +3255,7 @@ describe('ChatListView sidebar sections', () => {
     });
     menu = container.querySelector('[role="menu"][aria-label="联系人操作"]');
     await act(async () => {
-      Simulate.click(Array.from(menu.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent.includes('创建Agent助手')));
+      Simulate.click(Array.from(menu.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent.includes('Agent 助手')));
     });
     expect(container.querySelector('[role="menu"][aria-label="联系人操作"]')).toBeNull();
     expect(document.body.querySelector('[data-testid="agent-store-modal"]')).toBeTruthy();

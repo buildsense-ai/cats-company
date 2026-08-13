@@ -287,6 +287,16 @@ function TinodeWebApp() {
       requestId: cloudArtifactsRequestSequenceRef.current,
     });
   }, [activeTopicId, displayedActiveAgent?.uid]);
+  const handleOpenManagedAgentArtifacts = useCallback((agentUid) => {
+    const normalizedAgentUid = Number(agentUid || 0);
+    if (!activeTopicId || normalizedAgentUid <= 0) return;
+    setActiveView('chats');
+    cloudArtifactsRequestSequenceRef.current += 1;
+    setCloudArtifactsRequest({
+      agentUid: normalizedAgentUid,
+      requestId: cloudArtifactsRequestSequenceRef.current,
+    });
+  }, [activeTopicId]);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
     appSidebarPreferredWidth,
@@ -1053,6 +1063,7 @@ function TinodeWebApp() {
               setActiveView('skillhub');
               setMobileSidebarOpen(false);
             }}
+            onOpenCloudArtifacts={activeTopicId ? handleOpenManagedAgentArtifacts : undefined}
             user={user}
             onlineUsers={onlineUsers}
             compact={appSidebarCollapsed}
@@ -1326,6 +1337,7 @@ function SidebarContent({
   additionalSidebarTools,
   onStartAgentTask,
   onOpenSkillHub,
+  onOpenCloudArtifacts,
   user,
   onlineUsers,
   compact,
@@ -1339,6 +1351,7 @@ function SidebarContent({
       additionalSidebarTools={additionalSidebarTools}
       onStartAgentTask={onStartAgentTask}
       onOpenSkillHub={onOpenSkillHub}
+      onOpenCloudArtifacts={onOpenCloudArtifacts}
       user={user}
       onlineUsers={onlineUsers}
       compact={compact}

@@ -1120,6 +1120,52 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.oc-group-name-input + .oc-group-member-count')).toContain('padding-left: 4px;');
   });
 
+  it('keeps variable-height dialogs anchored at the top while only the bottom edge changes', () => {
+    const anchoredModalRule = ruleFor('.oc-modal-overlay > .oc-modal:not(.cc-confirm-dialog)');
+
+    expect(anchoredModalRule).toContain('align-self: flex-start;');
+    expect(anchoredModalRule).toContain('max-height: min(760px, calc(100vh - 32px)) !important;');
+    expect(anchoredModalRule).toContain('margin-block-start: max(');
+    expect(css).toContain(`@keyframes cc-agent-manage-section-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}`);
+  });
+
+  it('uses quiet matching surfaces for Agent behavior settings', () => {
+    const positioningRule = ruleFor('.cc-agent-positioning-card');
+    const positioningControlRule = ruleFor('.cc-agent-positioning-control');
+    const behaviorRule = ruleFor('.cc-agent-manage-section-body .cc-agent-behavior-card');
+    const capabilityRule = ruleFor('.cc-agent-manage-section-body .cc-agent-capability-summary');
+
+    expect(positioningRule).toContain('background: transparent;');
+    expect(positioningRule).toContain('grid-template-columns: max-content minmax(160px, 200px);');
+    expect(positioningControlRule).toContain('width: min(100%, 200px);');
+    expect(behaviorRule).toContain('background: color-mix(in srgb, var(--cc-panel) 78%, transparent);');
+    expect(capabilityRule).toContain('background: color-mix(in srgb, var(--cc-panel) 78%, transparent);');
+    expect(behaviorRule).not.toContain('var(--v3-primary)');
+    expect(capabilityRule).not.toContain('var(--v3-primary)');
+  });
+
+  it('separates assistant-level actions from the compact settings navigation', () => {
+    const headerRule = ruleFor('.cc-agent-manager-header');
+    const actionRule = ruleFor('.cc-agent-manager-header-action');
+    const createActionRule = ruleFor('.cc-agent-hub-create');
+    const sectionsRule = ruleFor('.cc-agent-manage-sections');
+    const tabRule = ruleFor('.cc-agent-manage-section.is-tab .cc-agent-manage-section-trigger');
+    const tabLabelRule = ruleFor('.cc-agent-manage-section.is-tab .cc-agent-manage-section-copy strong');
+
+    expect(headerRule).toContain('min-height: 56px;');
+    expect(actionRule).toContain('font-size: 12px;');
+    expect(css).not.toContain('.cc-agent-manager-create-action');
+    expect(createActionRule).toContain('width: 100%;');
+    expect(createActionRule).toContain('background: var(--cc-accent);');
+    expect(createActionRule).toContain('color: #fff;');
+    expect(sectionsRule).toContain('grid-template-columns: repeat(4, minmax(0, 1fr));');
+    expect(tabRule).toContain('min-height: 42px;');
+    expect(tabLabelRule).toContain('font-size: 14px;');
+  });
+
   it('shows the narrow-screen sidebar shadow only while the drawer is open', () => {
     expect(css).toContain('.v3-sidebar:not(.collapsed) {\n    position: fixed;');
     expect(css).toContain('flex-basis: min(86vw, 300px);\n    box-shadow: none;');
@@ -1657,29 +1703,31 @@ describe('CatsCo shell styling', () => {
     expect(detailBodyRule).toContain('overscroll-behavior: contain;');
   });
 
-  it('keeps every assistant-manager tab stable and shows four assistants before the hub grid scrolls', () => {
+  it('keeps every assistant-manager tab stable and lets the hub grid use the remaining height', () => {
     const managerRule = ruleFor('.oc-modal.cc-agent-manager');
     const bodyRule = ruleFor('.cc-agent-manager-body');
+    const hubBodyRule = ruleFor('.cc-agent-manager-body.cc-agent-manager-hub-body');
     const hubRule = ruleFor('.cc-agent-hub');
+    const constrainedHubRule = ruleFor('.cc-agent-manager-hub-body .cc-agent-hub');
     const hubGridRule = ruleFor('.cc-agent-hub-grid');
 
     expect(managerRule).toContain('display: flex;');
     expect(managerRule).toContain('height: min(760px, calc(100vh - 32px));');
     expect(bodyRule).toContain('flex: 1 1 auto;');
     expect(bodyRule).toContain('min-height: 0;');
-    expect(hubRule).toContain('grid-template-rows: auto auto auto;');
-    expect(hubRule).toContain('align-content: start;');
+    expect(hubBodyRule).toContain('overflow: hidden;');
+    expect(hubRule).toContain('display: flex;');
+    expect(hubRule).toContain('flex-direction: column;');
     expect(hubRule).toContain('min-height: 0;');
     expect(hubRule).not.toContain('height: 100%;');
+    expect(constrainedHubRule).toContain('height: 100%;');
+    expect(hubGridRule).toContain('flex: 1 1 auto;');
     expect(hubGridRule).toContain('overflow-y: auto;');
-    expect(hubGridRule).toContain('max-height: min(460px, 56vh);');
+    expect(hubGridRule).toContain('max-height: 100%;');
     expect(ruleFor('.cc-agent-overview-stats strong'))
       .toContain('font-variant-numeric: tabular-nums;');
-    expect(css).toMatch(/\.cc-agent-usage-guide\s*\{[^}]*margin-top: 8px;/);
-    expect(css).toMatch(
-      /\.cc-agent-usage-heading\s*\{[^}]*justify-items: center;[^}]*text-align: center;/,
-    );
-    expect(ruleFor('.cc-agent-usage-items small')).toContain('font-size: 12px;');
+    expect(css).not.toContain('.cc-agent-usage-guide');
+    expect(css).not.toContain('.cc-agent-usage-items');
   });
 
   it('uses the existing narrow preview breakpoint and keeps the file preview sheet inside short viewports', () => {
@@ -1699,6 +1747,14 @@ describe('CatsCo shell styling', () => {
     const mainHoverRule = ruleIn(openchatCss, '.cloud-artifact-main:hover');
     const scopeWrapRule = ruleIn(openchatCss, '.cloud-artifacts-scope-select');
     const scopeRule = ruleIn(openchatCss, '.cloud-artifacts-scope-select .v3-custom-model-select-trigger');
+    const scopeActiveRule = ruleIn(
+      openchatCss,
+      '.cloud-artifacts-scope-select .v3-custom-model-select-trigger:hover,\n.cloud-artifacts-scope-select .v3-custom-model-select-trigger[aria-expanded="true"]',
+    );
+    const scopeFocusRule = ruleIn(
+      openchatCss,
+      '.cloud-artifacts-scope-select .v3-custom-model-select-trigger:focus-visible',
+    );
     const scopeOptionsRule = ruleIn(openchatCss, '.cloud-artifacts-scope-options');
     const scopeSelectedRule = ruleIn(
       openchatCss,
@@ -1711,8 +1767,13 @@ describe('CatsCo shell styling', () => {
     expect(scopeWrapRule).toContain('width: 96px;');
     expect(scopeWrapRule).toContain('min-width: 96px;');
     expect(scopeRule).toContain('width: 100%;');
-    expect(scopeRule).toContain('border: 1px solid var(--cc-text-secondary);');
-    expect(scopeRule).toContain('background: var(--cc-panel);');
+    expect(scopeRule).toContain('border: 1px solid transparent;');
+    expect(scopeRule).toContain('background: var(--cc-control-surface);');
+    expect(scopeActiveRule).toContain('border-color: transparent !important;');
+    expect(scopeActiveRule).toContain('background: var(--cc-selected) !important;');
+    expect(scopeFocusRule).toContain('border-color: transparent !important;');
+    expect(scopeFocusRule).toContain('background: var(--cc-selected) !important;');
+    expect(scopeFocusRule).toContain('box-shadow: none !important;');
     expect(scopeOptionsRule).toContain('min-width: 96px;');
     expect(scopeOptionsRule).toContain('border: 1px solid var(--cc-text-secondary);');
     expect(scopeOptionsRule).toContain('background: var(--cc-panel);');

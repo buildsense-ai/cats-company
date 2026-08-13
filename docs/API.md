@@ -268,6 +268,18 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 
 `visibility` 可选值：`"public"`（所有人可见）、`"private"`（仅创建者可见）。
 
+#### PATCH /api/bots?uid={uid} — 更新 Agent 设置
+
+仅 Agent 所有者可调用。除了名称、头像、定位模板和用途说明外，可通过
+`artifact_upload_enabled` 控制普通成员是否能直接发布共享成果。该字段默认为
+`true`；关闭后所有者仍可上传和管理成果，普通成员只能查看已有成果。
+
+```json
+{
+  "artifact_upload_enabled": false
+}
+```
+
 #### PATCH /api/bots/skills-visibility — 设置技能列表可见范围
 
 仅 Agent 所有者可调用。`v` 可选值：
@@ -357,6 +369,8 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 #### POST /api/agents/{agentUid}/artifacts — 直接发布 Agent 成果
 
 发布一个已上传到当前 CatsCo 实例的 HTML 网页或 ZIP 小应用。`url` 必须与当前 API 请求同源并位于 `/uploads/files/` 下，避免把任意外部地址注册为可信成果。CatsCo 根据 Bearer 登录态注入 `actor_uid`、`creator_type: "user"`、`creator_uid`、`uploader_uid` 和 `publish_mode: "immediate"`；客户端不得提交或覆盖这些身份字段。
+
+成员上传默认无需审批并直接展示。若 Agent 所有者关闭了成员上传权限，普通成员调用此接口返回 `403`；所有者不受该开关影响。
 
 ```json
 {

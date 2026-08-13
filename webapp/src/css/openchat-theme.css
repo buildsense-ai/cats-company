@@ -1479,23 +1479,25 @@ body {
 
 .cloud-artifacts-scope-select .v3-custom-model-select-trigger {
   width: 100%;
-  border: 1px solid var(--cc-text-secondary);
+  border: 1px solid transparent;
   color: var(--cc-text-secondary);
-  background: var(--cc-panel);
+  background: var(--cc-control-surface);
   font-weight: var(--cc-font-weight-medium);
 }
 
 .cloud-artifacts-scope-select .v3-custom-model-select-trigger:hover,
 .cloud-artifacts-scope-select .v3-custom-model-select-trigger[aria-expanded="true"] {
-  border-color: var(--cc-text);
+  border-color: transparent !important;
   color: var(--cc-text);
-  background: var(--cc-hover);
+  background: var(--cc-selected) !important;
 }
 
 .cloud-artifacts-scope-select .v3-custom-model-select-trigger:focus-visible {
-  border-color: var(--cc-text-secondary);
+  border-color: transparent !important;
   outline: none;
-  box-shadow: inset 0 0 0 1px var(--cc-border-strong);
+  color: var(--cc-text);
+  background: var(--cc-selected) !important;
+  box-shadow: none !important;
 }
 
 .cloud-artifacts-scope-options {
