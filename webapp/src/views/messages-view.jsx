@@ -942,6 +942,7 @@ export default function MessagesView({
               fromUid,
               content: delta,
               metadata: msg.data.metadata || null,
+              role: msg.data.role || 'assistant',
             }));
           }
           return;
@@ -3957,10 +3958,11 @@ function isAssistantAuthoredMessage(message, senderIsBot = false) {
 
 function assistantReplyTurnKey(message) {
   const metadata = message?.metadata || {};
-  // `run_id` identifies the durable execution. The remaining values can be
-  // scoped to a response or transport stream, so they are only fallbacks when
-  // a publisher has not supplied a run ID. This mirrors the server's task-run
-  // correlation rule and avoids compacting two runs that reuse a turn label.
+  // These identifiers describe the Agent execution that produced the row.
+  // `stream_id` is intentionally excluded: it is a transport/lifecycle
+  // identifier used to reconcile transient deltas, and a runtime may reuse it
+  // for a later round. Reusing it for visual grouping would hide the later
+  // row's avatar and name.
   const candidates = [
     ['run', metadata.run_id],
     ['run', metadata.runId],
@@ -3968,8 +3970,6 @@ function assistantReplyTurnKey(message) {
     ['turn', metadata.turnId],
     ['response', metadata.response_id],
     ['response', metadata.responseId],
-    ['stream', metadata.stream_id],
-    ['stream', message?._stream_id],
   ];
   for (const [kind, candidate] of candidates) {
     const value = candidate == null ? '' : String(candidate).trim();
@@ -4457,7 +4457,7 @@ function streamDeltaText(content) {
   return String(content);
 }
 
-function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, metadata }) {
+function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, metadata, role }) {
   const existingIdx = messages.findIndex((message) => message._stream_id === streamId);
   if (existingIdx !== -1) {
     const next = [...messages];
@@ -4470,6 +4470,7 @@ function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, m
         ...(metadata || {}),
         stream_id: streamId,
       },
+      role: role || existing.role || 'assistant',
       _streaming: true,
       _stream_id: streamId,
     };
@@ -4487,6 +4488,7 @@ function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, m
       content,
       type: 'text',
       msg_type: 'text',
+      role: role || 'assistant',
       metadata: {
         ...(metadata || {}),
         stream_id: streamId,

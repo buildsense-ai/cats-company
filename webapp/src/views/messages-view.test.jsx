@@ -32,6 +32,7 @@ vi.mock('../widgets/chat-message', () => ({
         data-sender-name={props.senderName || ''}
         data-sender-avatar={props.senderAvatarUrl || ''}
         data-sender-is-bot={String(Boolean(props.senderIsBot))}
+        data-message-role={props.message?.role || ''}
       >
         {props.onReply && (
           <button
@@ -1520,6 +1521,41 @@ describe('MessagesView composer draft isolation', () => {
     expect(message?.dataset.senderIsBot).toBe('true');
   });
 
+  it('renders a cold streaming reply with canonical identity and assistant role', async () => {
+    await mountTopic(root, 'p2p_1_2', { topicName: '', topicAvatarUrl: '' });
+    await act(async () => {
+      await flushPromises();
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '正在处理…',
+          metadata: {
+            stream_id: 'cold-stream-1',
+            catsco_identity: {
+              actor: {
+                user_id: 'usr2',
+                display_name: 'Canonical Stream Agent',
+                avatar_url: '/uploads/canonical-stream-agent.png',
+                account_type: 'bot',
+                is_bot: true,
+              },
+            },
+          },
+        },
+      });
+      await flushPromises();
+    });
+
+    const message = container.querySelector('.mock-chat-message[data-message-id^="stream:cold-stream-1"]');
+    expect(message?.dataset.senderName).toBe('Canonical Stream Agent');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/canonical-stream-agent.png');
+    expect(message?.dataset.senderIsBot).toBe('true');
+    expect(message?.dataset.messageRole).toBe('assistant');
+  });
+
   it('uses canonical message identity for an incomplete current-user profile', async () => {
     api.getMessages.mockResolvedValueOnce({
       messages: [{
@@ -2463,6 +2499,43 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('[data-message-id="111"]')?.dataset.consecutive)
       .toBe('false');
     expect(container.querySelector('[data-message-id="112"]')?.dataset.consecutive)
+      .toBe('false');
+  });
+
+  it('does not hide Agent identity when a transport stream id is reused', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 113,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'First response on the stream.',
+          metadata: { stream_id: 'reused-stream-1' },
+        },
+        {
+          id: 114,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'Later response reusing the stream id.',
+          metadata: { stream_id: 'reused-stream-1' },
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelectorAll('.mock-chat-message')).toHaveLength(2);
+    expect(container.querySelector('[data-message-id="113"]')?.dataset.consecutive)
+      .toBe('false');
+    expect(container.querySelector('[data-message-id="114"]')?.dataset.consecutive)
       .toBe('false');
   });
 

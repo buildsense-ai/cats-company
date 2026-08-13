@@ -81,16 +81,16 @@ func TestMessageHistoryReadsMetadataAndLegacyNull(t *testing.T) {
 			}
 			defer db.Close()
 			createdAt := time.Date(2026, time.August, 7, 0, 0, 0, 0, time.UTC)
-			rows := sqlmock.NewRows([]string{"id", "topic_id", "from_uid", "content", "msg_type", "created_at", "content_blocks", "mode", "role", "metadata"}).
-				AddRow(int64(1), "topic", int64(7), "hello", "text", createdAt, nil, "normal", "user", []byte(`{"source_channel":"feishu"}`)).
-				AddRow(int64(2), "topic", int64(7), "legacy", "text", createdAt, nil, nil, nil, nil)
+			rows := sqlmock.NewRows([]string{"id", "topic_id", "from_uid", "content", "msg_type", "created_at", "content_blocks", "mode", "role", "client_msg_id", "metadata"}).
+				AddRow(int64(1), "topic", int64(7), "hello", "text", createdAt, nil, "normal", "user", "history-client-1", []byte(`{"source_channel":"feishu"}`)).
+				AddRow(int64(2), "topic", int64(7), "legacy", "text", createdAt, nil, nil, nil, nil, nil)
 			mock.ExpectQuery(`(?s)SELECT .*metadata.*FROM`).WithArgs(test.args...).WillReturnRows(rows)
 			adapter := &Adapter{db: db}
 			messages, err := test.call(adapter)
 			if err != nil {
 				t.Fatalf("history read: %v", err)
 			}
-			if len(messages) != 2 || messages[0].Metadata["source_channel"] != "feishu" || messages[1].Metadata != nil {
+			if len(messages) != 2 || messages[0].Metadata["source_channel"] != "feishu" || messages[0].ClientMsgID != "history-client-1" || messages[1].Metadata != nil {
 				t.Fatalf("history metadata = %#v", messages)
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {

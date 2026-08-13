@@ -212,11 +212,11 @@ func (a *Adapter) GetMessagesAround(topicID string, messageID int64, limit int) 
 	beforeLimit := (limit + 1) / 2
 	afterLimit := limit - beforeLimit
 	rows, err := a.db.Query(`
-SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role FROM (
-  (SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata FROM (
+  (SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
    FROM messages WHERE topic_id = $1 AND id <= $2 ORDER BY id DESC LIMIT $3)
   UNION ALL
-  (SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+  (SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
    FROM messages WHERE topic_id = $1 AND id > $2 ORDER BY id ASC LIMIT $4)
 ) around_messages ORDER BY id ASC`, topicID, messageID, beforeLimit, afterLimit)
 	if err != nil {

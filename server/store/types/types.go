@@ -313,6 +313,7 @@ type Message struct {
 	ID            int64                  `json:"id"`
 	TopicID       string                 `json:"topic_id"`
 	FromUID       int64                  `json:"from_uid"`
+	ClientMsgID   string                 `json:"client_msg_id,omitempty"`
 	Content       string                 `json:"content,omitempty"`
 	ContentBlocks []ContentBlock         `json:"content_blocks,omitempty"`
 	Metadata      map[string]interface{} `json:"metadata,omitempty"`

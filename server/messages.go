@@ -369,7 +369,10 @@ func (h *Hub) historyMessageDataForRecipient(recipientUID int64, message *types.
 	}
 	displayContent := decodeStoredContent(message.Content)
 	storedMetadata := artifactMetadataForRecipient(message.Metadata, recipientUID)
-	clientMsgID := firstMetadataString(message.Metadata, "client_msg_id", "clientMessageId", "client_message_id")
+	clientMsgID := firstNonEmpty(
+		strings.TrimSpace(message.ClientMsgID),
+		firstMetadataString(message.Metadata, "client_msg_id", "clientMessageId", "client_message_id"),
+	)
 	return &MsgServerData{
 		Topic:         message.TopicID,
 		From:          formatUID(message.FromUID),
@@ -969,7 +972,10 @@ func (h *MessageHandler) HandleGetMessages(w http.ResponseWriter, r *http.Reques
 				"msg_type":   message.MsgType,
 				"created_at": message.CreatedAt,
 			}
-			if clientMsgID := firstMetadataString(message.Metadata, "client_msg_id", "clientMessageId", "client_message_id"); clientMsgID != "" {
+			if clientMsgID := firstNonEmpty(
+				strings.TrimSpace(message.ClientMsgID),
+				firstMetadataString(message.Metadata, "client_msg_id", "clientMessageId", "client_message_id"),
+			); clientMsgID != "" {
 				formatted["client_msg_id"] = clientMsgID
 			}
 			msgs = append(msgs, formatted)

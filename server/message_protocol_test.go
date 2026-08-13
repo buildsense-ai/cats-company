@@ -538,6 +538,64 @@ func TestHistoryMessagesIncludeCanonicalCatscoIdentityForBotRecipient(t *testing
 	}
 }
 
+func TestHistoryUsesStoredClientMessageIDWhenLegacyMetadataIsAbsent(t *testing.T) {
+	store := &identityMessageStore{
+		users: map[int64]*types.User{
+			7:  {ID: 7, Username: "alice", DisplayName: "Alice"},
+			42: {ID: 42, Username: "dev_agent", DisplayName: "Dev Agent", AccountType: types.AccountBot},
+		},
+		history: []*types.Message{{
+			ID:          32,
+			TopicID:     "p2p_7_42",
+			FromUID:     7,
+			ClientMsgID: "stored-client-32",
+			Content:     "persisted without metadata",
+			MsgType:     "text",
+		}},
+	}
+	hub := NewHub(store, nil)
+	botClient := &Client{uid: 42, accountType: types.AccountBot, send: make(chan []byte, 2)}
+	hub.addClient(botClient)
+
+	hub.handleGet(botClient, &MsgClientGet{ID: "history-client-id", Topic: "p2p_7_42", What: "history"})
+
+	var message ServerMessage
+	decodeQueuedServerMessage(t, botClient.send, &message)
+	if message.Data == nil || message.Data.ClientMsgID != "stored-client-32" {
+		t.Fatalf("history client_msg_id = %#v, want stored-client-32", message.Data)
+	}
+}
+
+func TestRESTHistoryUsesStoredClientMessageIDWithoutHub(t *testing.T) {
+	store := &identityMessageStore{history: []*types.Message{{
+		ID:          33,
+		TopicID:     "p2p_7_42",
+		FromUID:     7,
+		ClientMsgID: "stored-client-33",
+		Content:     "REST fallback",
+		MsgType:     "text",
+	}}}
+	handler := NewMessageHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/messages?topic_id=p2p_7_42", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(42)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleGetMessages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Messages []map[string]interface{} `json:"messages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode history response: %v", err)
+	}
+	if len(body.Messages) != 1 || body.Messages[0]["client_msg_id"] != "stored-client-33" {
+		t.Fatalf("history messages = %#v, want stored client id", body.Messages)
+	}
+}
+
 func TestHandleGetMessagesAuthorizesAndMarksReplayHistory(t *testing.T) {
 	store := &identityMessageStore{
 		users: map[int64]*types.User{

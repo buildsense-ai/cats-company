@@ -139,7 +139,7 @@ func (a *Adapter) GetMessagesSince(topicID string, sinceID int64, limit int) ([]
 		limit = 50
 	}
 	rows, err := a.db.Query(
-		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
+		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
 		 FROM messages WHERE topic_id = ? AND id > ?
 		 ORDER BY id ASC LIMIT ?`,
 		topicID, sinceID, limit,
@@ -158,7 +158,7 @@ func (a *Adapter) GetMessages(topicID string, limit, offset int) ([]*types.Messa
 		limit = 50
 	}
 	rows, err := a.db.Query(
-		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
+		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
 		 FROM messages WHERE topic_id = ?
 		 ORDER BY created_at ASC LIMIT ? OFFSET ?`,
 		topicID, limit, offset,
@@ -177,9 +177,9 @@ func (a *Adapter) GetLatestMessages(topicID string, limit, offset int) ([]*types
 		limit = 50
 	}
 	rows, err := a.db.Query(
-		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
+		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
 		 FROM (
-		   SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
+		   SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
 		 	FROM messages WHERE topic_id = ?
 		 	ORDER BY id DESC LIMIT ? OFFSET ?
 		 ) recent
@@ -204,9 +204,9 @@ func (a *Adapter) GetLatestMessagesBefore(topicID string, beforeID int64, limit 
 		return a.GetLatestMessages(topicID, limit, 0)
 	}
 	rows, err := a.db.Query(
-		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
-         FROM (
-           SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
+		`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
+	         FROM (
+		   SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
            FROM messages WHERE topic_id = ? AND id < ?
            ORDER BY id DESC LIMIT ?
          ) recent
@@ -237,7 +237,7 @@ func (a *Adapter) ListAgentFileMessages(agentUID int64, topicID string, beforeID
 	args = append(args, limit)
 	rows, err := a.db.Query(
 		fmt.Sprintf(
-			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
+			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
 			 FROM messages
 			 WHERE from_uid = ?
 			   AND topic_id = ?
@@ -276,7 +276,7 @@ func (a *Adapter) GetLatestMessagesForTopics(topicIDs []string) (map[string]*typ
 
 	rows, err := a.db.Query(
 		fmt.Sprintf(
-			`SELECT m.id, m.topic_id, m.from_uid, m.content, m.msg_type, m.created_at, m.content_blocks, m.mode, m.role, m.metadata
+			`SELECT m.id, m.topic_id, m.from_uid, m.content, m.msg_type, m.created_at, m.content_blocks, m.mode, m.role, m.client_msg_id, m.metadata
 			 FROM messages m
 			 JOIN (
 			 	SELECT topic_id, MAX(id) AS max_id
@@ -317,8 +317,8 @@ func scanMessages(rows interfaceRows, context string) ([]*types.Message, error) 
 	for rows.Next() {
 		m := &types.Message{}
 		var blocksJSON, metadataJSON []byte
-		var mode, role *string
-		if err := rows.Scan(&m.ID, &m.TopicID, &m.FromUID, &m.Content, &m.MsgType, &m.CreatedAt, &blocksJSON, &mode, &role, &metadataJSON); err != nil {
+		var mode, role, clientMsgID *string
+		if err := rows.Scan(&m.ID, &m.TopicID, &m.FromUID, &m.Content, &m.MsgType, &m.CreatedAt, &blocksJSON, &mode, &role, &clientMsgID, &metadataJSON); err != nil {
 			return nil, fmt.Errorf("%s: %w", context, err)
 		}
 		if len(blocksJSON) > 0 {
@@ -329,6 +329,9 @@ func scanMessages(rows interfaceRows, context string) ([]*types.Message, error) 
 		}
 		if role != nil {
 			m.Role = *role
+		}
+		if clientMsgID != nil {
+			m.ClientMsgID = *clientMsgID
 		}
 		if len(metadataJSON) > 0 {
 			if err := json.Unmarshal(metadataJSON, &m.Metadata); err != nil {

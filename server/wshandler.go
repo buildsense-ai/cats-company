@@ -1541,16 +1541,57 @@ func (h *Hub) fanoutStreamEvent(uid int64, topicID string, streamType string, co
 	if streamType == "" {
 		streamType = "stream_delta"
 	}
-	streamMetadata := map[string]interface{}{}
-	for key, value := range metadata {
-		streamMetadata[key] = value
+	if isGroupTopic(topicID) {
+		groupID := extractGroupID(topicID)
+		if groupID == 0 || h.db == nil {
+			return
+		}
+		members, err := h.db.GetGroupMembers(groupID)
+		if err != nil {
+			log.Printf("fanoutStreamEvent: failed to get members for group %d: %v", groupID, err)
+			return
+		}
+		channelManaged := h.isChannelManagedGroup(groupID)
+		for _, member := range members {
+			if member == nil || member.UserID == uid {
+				continue
+			}
+			if channelManaged {
+				isBot, err := h.db.IsUserBot(member.UserID)
+				if err != nil || !isBot {
+					continue
+				}
+			}
+			h.SendToUser(member.UserID, h.streamMessageForRecipient(uid, member.UserID, topicID, streamType, content, metadata))
+		}
+		return
 	}
-	streamMetadata["stream_event"] = strings.TrimPrefix(streamType, "stream_")
 
-	dataMsg := &ServerMessage{
+	peerUID := extractPeerUID(topicID, uid)
+	if peerUID == 0 {
+		return
+	}
+	h.SendToUserExcept(uid, h.streamMessageForRecipient(uid, uid, topicID, streamType, content, metadata), exclude)
+	h.SendToUser(peerUID, h.streamMessageForRecipient(uid, peerUID, topicID, streamType, content, metadata))
+}
+
+// streamMessageForRecipient keeps transient stream events on the same
+// recipient-specific identity path as persisted messages. A stream event is
+// not persisted and therefore has no durable sequence, but it still needs a
+// canonical actor snapshot when profile/roster data is cold on the client.
+func (h *Hub) streamMessageForRecipient(actorUID, recipientUID int64, topicID, streamType, content string, metadata map[string]interface{}) *ServerMessage {
+	streamMetadata := withCatscoIdentityMetadata(
+		metadata,
+		h.buildCatscoIdentityMetadata(actorUID, recipientUID, topicID, 0, normalizeContentText(content), catscoIdentityMetadataOptions{
+			OmitDeviceAccess: true,
+			SourceMetadata:   metadata,
+		}),
+	)
+	streamMetadata["stream_event"] = strings.TrimPrefix(streamType, "stream_")
+	return &ServerMessage{
 		Data: &MsgServerData{
 			Topic:    topicID,
-			From:     formatUID(uid),
+			From:     formatUID(actorUID),
 			SeqID:    0,
 			Content:  content,
 			Type:     streamType,
@@ -1560,22 +1601,6 @@ func (h *Hub) fanoutStreamEvent(uid int64, topicID string, streamType string, co
 			Role:     "assistant",
 		},
 	}
-
-	if isGroupTopic(topicID) {
-		groupID := extractGroupID(topicID)
-		if groupID == 0 {
-			return
-		}
-		h.broadcastToGroup(groupID, dataMsg, uid)
-		return
-	}
-
-	peerUID := extractPeerUID(topicID, uid)
-	if peerUID == 0 {
-		return
-	}
-	h.SendToUserExcept(uid, dataMsg, exclude)
-	h.SendToUser(peerUID, dataMsg)
 }
 
 // handleGroupPub handles publishing a message to a group topic.

@@ -203,14 +203,14 @@ func (a *Adapter) GetMessagesAround(topicID string, messageID int64, limit int) 
 	beforeLimit := (limit + 1) / 2
 	afterLimit := limit - beforeLimit
 	rows, err := a.db.Query(`
-SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role FROM (
+SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata FROM (
   SELECT * FROM (
-    SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+    SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
     FROM messages WHERE topic_id = ? AND id <= ? ORDER BY id DESC LIMIT ?
   ) before_messages
   UNION ALL
   SELECT * FROM (
-    SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role
+    SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, client_msg_id, metadata
     FROM messages WHERE topic_id = ? AND id > ? ORDER BY id ASC LIMIT ?
   ) after_messages
 ) around_messages ORDER BY id ASC`, topicID, messageID, beforeLimit, topicID, messageID, afterLimit)
@@ -225,10 +225,10 @@ func scanMySQLMessages(rows *sql.Rows, context string) ([]*types.Message, error)
 	messages := make([]*types.Message, 0)
 	for rows.Next() {
 		message := &types.Message{}
-		var blocksJSON []byte
-		var mode, role *string
+		var blocksJSON, metadataJSON []byte
+		var mode, role, clientMsgID *string
 		if err := rows.Scan(&message.ID, &message.TopicID, &message.FromUID, &message.Content, &message.MsgType,
-			&message.CreatedAt, &blocksJSON, &mode, &role); err != nil {
+			&message.CreatedAt, &blocksJSON, &mode, &role, &clientMsgID, &metadataJSON); err != nil {
 			return nil, fmt.Errorf("%s: %w", context, err)
 		}
 		if len(blocksJSON) > 0 {
@@ -239,6 +239,14 @@ func scanMySQLMessages(rows *sql.Rows, context string) ([]*types.Message, error)
 		}
 		if role != nil {
 			message.Role = *role
+		}
+		if clientMsgID != nil {
+			message.ClientMsgID = *clientMsgID
+		}
+		if len(metadataJSON) > 0 {
+			if err := json.Unmarshal(metadataJSON, &message.Metadata); err != nil {
+				return nil, fmt.Errorf("%s metadata: %w", context, err)
+			}
 		}
 		messages = append(messages, message)
 	}
