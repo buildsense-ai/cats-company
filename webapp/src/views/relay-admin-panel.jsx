@@ -121,7 +121,7 @@ export default function RelayAdminPanel({ onClose }) {
         key={reloadKey}
         title="模型用量管理"
         src={api.relayAdminProxyURL('/local/usage-admin')}
-        sandbox="allow-scripts allow-same-origin allow-forms"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
       />
     </aside>
   );
