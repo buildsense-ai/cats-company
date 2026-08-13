@@ -72,6 +72,86 @@ func TestHandleViewerPromptOwnerAndFriendOnlySeeActivePrompt(t *testing.T) {
 	}
 }
 
+func TestHandleViewerPromptIncludesSafeApplicationStatus(t *testing.T) {
+	db := &botDefinitionTestStore{
+		owners: map[int64]int64{40: 7, 41: 7, 42: 7, 43: 7, 44: 7},
+		records: map[int64]*types.BotDefinitionRecord{
+			40: {Definition: types.BotDefinition{Prompt: &types.BotPromptDefinition{Selected: "default"}}, Runtime: types.BotDefinitionRuntime{LastError: "stale legacy error"}, Exists: true},
+			41: {Definition: types.BotDefinition{Prompt: &types.BotPromptDefinition{Selected: "default"}}, Runtime: types.BotDefinitionRuntime{DesiredRevision: 4}, Exists: true},
+			42: {Definition: types.BotDefinition{Prompt: &types.BotPromptDefinition{Selected: "default"}}, Runtime: types.BotDefinitionRuntime{DesiredRevision: 4, AppliedRevision: 3, LastAttemptRevision: 3, LastAttemptAt: "2026-08-13T00:00:00Z"}, Exists: true},
+			43: {Definition: types.BotDefinition{Prompt: &types.BotPromptDefinition{Selected: "default"}}, Runtime: types.BotDefinitionRuntime{DesiredRevision: 4, AppliedRevision: 4, AppliedAt: "2026-08-13T00:00:00Z"}, Exists: true},
+			44: {Definition: types.BotDefinition{Prompt: &types.BotPromptDefinition{Selected: "default"}}, Runtime: types.BotDefinitionRuntime{DesiredRevision: 4, AppliedRevision: 3, LastAttemptRevision: 4, LastAttemptAt: "2026-08-13T00:00:00Z", LastError: "provider secret leaked"}, Exists: true},
+		},
+	}
+	handler := NewBotDefinitionHandler(db, db, nil, nil)
+	handler.SetPromptOnlineResolver(func(uid int64) bool { return uid == 40 || uid == 42 })
+	for _, tc := range []struct {
+		uid       int64
+		status    string
+		online    bool
+		desired   int64
+		applied   int64
+		lastError string
+	}{
+		{40, "saved", true, 0, 0, ""},
+		{41, "saved", false, 4, 0, ""},
+		{42, "pending", true, 4, 3, ""},
+		{43, "applied", false, 4, 4, ""},
+		{44, "failed", false, 4, 3, "Bot 配置应用失败"},
+	} {
+		t.Run(strconv.FormatInt(tc.uid, 10), func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.HandleViewerPrompt(rec, promptRequest(http.MethodGet, "/api/agents/prompt?uid="+strconv.FormatInt(tc.uid, 10), "", 7))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var body struct {
+				Application botPromptApplicationStatus `json:"application"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Application.Status != tc.status || body.Application.IsOnline != tc.online || body.Application.AppliedRevision != tc.applied || body.Application.LastError != tc.lastError {
+				t.Fatalf("application=%+v, want status=%s online=%v applied=%d error=%q", body.Application, tc.status, tc.online, tc.applied, tc.lastError)
+			}
+			if body.Application.DesiredRevision != tc.desired {
+				t.Fatalf("desired revision=%d, want=%d", body.Application.DesiredRevision, tc.desired)
+			}
+			if strings.Contains(rec.Body.String(), "provider secret leaked") {
+				t.Fatalf("raw runtime error leaked: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleViewerPromptFriendReceivesOnlySanitizedApplicationFailure(t *testing.T) {
+	db := &botDefinitionTestStore{
+		owners:  map[int64]int64{43: 7},
+		friends: map[[2]int64]bool{{8, 43}: true},
+		records: map[int64]*types.BotDefinitionRecord{43: {
+			Definition:       types.BotDefinition{Prompt: &types.BotPromptDefinition{Selected: "custom", CustomSystemPrompt: "shared"}},
+			PromptVisibility: types.BotPromptFriends,
+			Runtime: types.BotDefinitionRuntime{
+				DesiredRevision: 4, LastAttemptRevision: 4,
+				LastAttemptAt: "2026-08-13T00:00:00Z", LastError: "credential sk-private rejected",
+			},
+			Exists: true,
+		}},
+	}
+	rec := httptest.NewRecorder()
+	NewBotDefinitionHandler(db, db, nil, nil).HandleViewerPrompt(
+		rec,
+		promptRequest(http.MethodGet, "/api/agents/prompt?uid=43", "", 8),
+	)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"failed"`) ||
+		!strings.Contains(rec.Body.String(), `"last_error":"Bot 配置应用失败"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sk-private") || strings.Contains(rec.Body.String(), "credential") {
+		t.Fatalf("friend response leaked runtime failure detail: %s", rec.Body.String())
+	}
+}
+
 func TestHandleViewerPromptRequiresSharedVisibilityAndFriendship(t *testing.T) {
 	db := &botDefinitionTestStore{
 		owners: map[int64]int64{43: 7}, friends: map[[2]int64]bool{},

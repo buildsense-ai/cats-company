@@ -52,6 +52,20 @@ type botDefaultPromptSnapshotMetadata struct {
 	ReportedAt     string `json:"reportedAt"`
 }
 
+// botPromptApplicationStatus is the viewer-safe projection of the runtime
+// acknowledgement state. It deliberately contains no model, endpoint,
+// protocol, or raw runtime diagnostic fields.
+type botPromptApplicationStatus struct {
+	Status              string `json:"status"`
+	DesiredRevision     int64  `json:"desired_revision"`
+	AppliedRevision     int64  `json:"applied_revision"`
+	AppliedAt           string `json:"applied_at,omitempty"`
+	LastAttemptRevision int64  `json:"last_attempt_revision"`
+	LastAttemptAt       string `json:"last_attempt_at,omitempty"`
+	IsOnline            bool   `json:"is_online"`
+	LastError           string `json:"last_error,omitempty"`
+}
+
 type botViewerPromptResponse struct {
 	UID              int64                             `json:"uid"`
 	BotID            string                            `json:"botId"`
@@ -66,6 +80,7 @@ type botViewerPromptResponse struct {
 	DefaultSnapshot  *botDefaultPromptSnapshotMetadata `json:"default_snapshot,omitempty"`
 	DefaultContent   string                            `json:"default_content,omitempty"`
 	DefaultAvailable bool                              `json:"default_content_available"`
+	Application      botPromptApplicationStatus        `json:"application"`
 }
 
 // HandleOwnerPromptVisibility updates only the prompt read policy. It does not
@@ -173,6 +188,7 @@ func (h *BotDefinitionHandler) HandleViewerPrompt(w http.ResponseWriter, r *http
 		CanEdit:          canEdit,
 		Revision:         record.Runtime.DesiredRevision,
 		UpdatedAt:        record.Runtime.UpdatedAt,
+		Application:      h.promptApplicationStatus(botUID, record.Runtime),
 	}
 	response.ContentAvailable = false
 	response.DefaultAvailable = false
@@ -193,6 +209,52 @@ func (h *BotDefinitionHandler) HandleViewerPrompt(w http.ResponseWriter, r *http
 		}
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// promptApplicationStatus projects the whole BotDefinition runtime state into
+// a small, non-sensitive contract suitable for both owners and friends.
+// Runtime acknowledgements are optional during migration, so a revision with
+// no runtime evidence remains "saved" until the Agent is known to be online.
+func (h *BotDefinitionHandler) promptApplicationStatus(botUID int64, runtime types.BotDefinitionRuntime) botPromptApplicationStatus {
+	isOnline := false
+	if h != nil && h.promptOnlineResolver != nil {
+		isOnline = h.promptOnlineResolver(botUID)
+	}
+
+	status := "saved"
+	failed := runtime.DesiredRevision > 0 &&
+		runtime.LastError != "" &&
+		runtime.LastAttemptRevision == runtime.DesiredRevision
+	if failed {
+		status = "failed"
+	} else {
+		applied := runtime.DesiredRevision > 0 &&
+			runtime.AppliedRevision == runtime.DesiredRevision
+		if applied {
+			status = "applied"
+		} else {
+			knownRuntime := runtime.LastAttemptRevision > 0 ||
+				runtime.AppliedRevision > 0 ||
+				runtime.LastAttemptAt != "" || runtime.AppliedAt != ""
+			if runtime.DesiredRevision > 0 && (isOnline || knownRuntime) {
+				status = "pending"
+			}
+		}
+	}
+
+	result := botPromptApplicationStatus{
+		Status:              status,
+		DesiredRevision:     runtime.DesiredRevision,
+		AppliedRevision:     runtime.AppliedRevision,
+		AppliedAt:           runtime.AppliedAt,
+		LastAttemptRevision: runtime.LastAttemptRevision,
+		LastAttemptAt:       runtime.LastAttemptAt,
+		IsOnline:            isOnline,
+	}
+	if failed {
+		result.LastError = "Bot 配置应用失败"
+	}
+	return result
 }
 
 // HandleRuntimeDefaultPrompt accepts only a bot API-key-authenticated runtime.

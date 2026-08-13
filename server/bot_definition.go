@@ -22,6 +22,10 @@ type BotDefinitionHandler struct {
 	definitions store.BotDefinitionStore
 	models      store.BotModelConfigStore
 	modelConfig *BotModelConfigHandler
+	// promptOnlineResolver is optional so focused handlers and legacy callers
+	// remain independent from the process-local Hub. Production wiring sets it
+	// to the Hub's bot-body liveness check.
+	promptOnlineResolver func(botUID int64) bool
 }
 
 type botDefinitionModelPatchRequest struct {
@@ -60,6 +64,14 @@ func NewBotDefinitionHandler(
 ) *BotDefinitionHandler {
 	return &BotDefinitionHandler{
 		owners: owners, definitions: definitions, models: models, modelConfig: modelConfig,
+	}
+}
+
+// SetPromptOnlineResolver supplies the live Agent status used by the
+// viewer-safe System Prompt application indicator.
+func (h *BotDefinitionHandler) SetPromptOnlineResolver(resolver func(botUID int64) bool) {
+	if h != nil {
+		h.promptOnlineResolver = resolver
 	}
 }
 

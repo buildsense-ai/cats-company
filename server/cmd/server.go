@@ -311,6 +311,9 @@ func main() {
 	artifactRuntimeConfigHandler := server.NewArtifactRuntimeConfigHandlerFromEnv()
 	botDefinitionStore, _ := db.(store.BotDefinitionStore)
 	botDefinitionHandler := server.NewBotDefinitionHandler(db, botDefinitionStore, botModelStore, botModelConfigHandler)
+	botDefinitionHandler.SetPromptOnlineResolver(func(uid int64) bool {
+		return hub != nil && hub.BotBodyStatus(uid).Active
+	})
 	skillHubProxyHandler := server.NewSkillHubProxyHandlerFromEnv()
 	botModelCloudPublicEnabled := envBool("CATSCO_BOT_MODEL_CLOUD_ENABLED")
 	botModelCloudTestUIDs := envInt64Set("CATSCO_BOT_MODEL_CLOUD_TEST_UIDS")
