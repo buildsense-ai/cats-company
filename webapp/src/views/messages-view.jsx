@@ -2581,7 +2581,9 @@ export default function MessagesView({
 
   const getSender = (msg) => {
     if (sameUID(msg.from_uid, user.uid)) {
-      const senderProfile = mergeIdentityRecord(currentUserIdentity, messageActorIdentity(msg));
+      // The active account profile is authoritative for the current user. A
+      // persisted message identity only fills fields that have not loaded yet.
+      const senderProfile = mergeIdentityRecord(messageActorIdentity(msg), currentUserIdentity);
       return {
         name: senderProfile?.display_name || senderProfile?.username,
         avatarUrl: senderProfile?.avatar_url,

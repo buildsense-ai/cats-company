@@ -1565,6 +1565,16 @@ describe('MessagesView composer draft isolation', () => {
         from_uid: 1,
         type: 'text',
         content: 'A message sent before the profile refresh.',
+        metadata: {
+          catsco_identity: {
+            actor: {
+              user_id: 'usr1',
+              display_name: 'Old Me',
+              avatar_url: '/uploads/old-me.png',
+              account_type: 'human',
+            },
+          },
+        },
       }],
     });
     const incompleteUser = { ...user, display_name: '', avatar_url: '' };
@@ -1575,8 +1585,8 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     let message = container.querySelector('.mock-chat-message[data-message-id="86"]');
-    expect(message?.dataset.senderName).toBe('me');
-    expect(message?.dataset.senderAvatar).toBe('');
+    expect(message?.dataset.senderName).toBe('Old Me');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/old-me.png');
 
     await mountTopic(root, 'p2p_1_2', {
       user: {
