@@ -160,6 +160,55 @@ func TestHandleViewerPromptIncludesSafeApplicationStatus(t *testing.T) {
 	}
 }
 
+func TestHandleViewerPromptInitialRevisionIsPendingWhenRuntimeIsOnlineOnAnotherNode(t *testing.T) {
+	shared := newSharedMemoryRuntimeState()
+	hubA := NewHubWithRuntime(nil, nil, shared, "node-a")
+	hubB := NewHubWithRuntime(nil, nil, shared, "node-b")
+
+	if _, err := hubB.bodyLeases.acquire(42, "body-a", "conn-b"); err != nil {
+		t.Fatalf("node-b acquire failed: %v", err)
+	}
+	hubB.addRegisteredClient(&Client{
+		uid: 42, accountType: types.AccountBot, bodyID: "body-a",
+		connectionID: "conn-b", send: make(chan []byte, 1),
+	})
+
+	db := &botDefinitionTestStore{
+		owners: map[int64]int64{42: 7},
+		records: map[int64]*types.BotDefinitionRecord{42: {
+			Definition: types.BotDefinition{
+				Prompt: &types.BotPromptDefinition{Selected: "default"},
+			},
+			Runtime: types.BotDefinitionRuntime{DesiredRevision: 1},
+			Exists:  true,
+		}},
+	}
+	handler := NewBotDefinitionHandler(db, db, nil, nil)
+	handler.SetPromptOnlineResolver(hubA.BotRuntimeOnline)
+
+	rec := httptest.NewRecorder()
+	handler.HandleViewerPrompt(
+		rec,
+		promptRequest(http.MethodGet, "/api/agents/prompt?uid=42", "", 7),
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Application botPromptApplicationStatus `json:"application"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Application.Status != "pending" || !body.Application.IsOnline {
+		t.Fatalf("application=%+v, want pending status from node-b runtime", body.Application)
+	}
+	if body.Application.DesiredRevision != 1 || body.Application.AppliedRevision != 0 {
+		t.Fatalf("application revisions=%+v, want desired=1 applied=0", body.Application)
+	}
+}
+
 func TestHandleViewerPromptFriendReceivesOnlySanitizedApplicationFailure(t *testing.T) {
 	db := &botDefinitionTestStore{
 		owners:  map[int64]int64{43: 7},
