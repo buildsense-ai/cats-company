@@ -152,6 +152,9 @@ func (s *botDefinitionTestStore) ReportBotSkillInventory(
 	inventory types.BotSkillInventory,
 ) (*types.BotDefinitionRecord, error) {
 	record := s.ensure(botUID)
+	if inventory.ReportedAt == "" {
+		inventory.ReportedAt = "2026-08-13T00:00:00.000000001Z"
+	}
 	if !store.ShouldReplaceBotSkillInventory(record.Runtime.SkillInventory, inventory) {
 		return cloneBotDefinitionRecord(record), nil
 	}

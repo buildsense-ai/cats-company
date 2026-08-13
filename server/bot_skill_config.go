@@ -258,7 +258,7 @@ func (h *BotDefinitionHandler) HandleViewerRuntimeSkills(w http.ResponseWriter, 
 	}
 	visibility := normalizeBotSkillsVisibility(config.SkillsVisibility)
 	allowed := viewerUID == ownerUID || visibility == types.BotSkillsPublic
-	if !allowed && visibility == types.BotSkillsAuthorized {
+	if !allowed {
 		allowed, err = access.AreFriends(viewerUID, botUID)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check Agent access"})

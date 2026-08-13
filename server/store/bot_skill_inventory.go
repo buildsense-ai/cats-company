@@ -8,9 +8,11 @@ import (
 )
 
 // ShouldReplaceBotSkillInventory prevents an older in-flight runtime snapshot
-// from overwriting a newer one. New XiaoBa runtimes provide a per-process
-// instance ID and monotonic sequence. Legacy reporters are ordered by their
-// observed-at timestamp instead.
+// from overwriting a newer one. The database adapter calls this while holding
+// the bot-definition row lock, so a runtime-instance change is ordered by
+// server receipt order rather than an untrusted client clock. Within one
+// runtime instance, the monotonic report sequence remains the authoritative
+// ordering token.
 func ShouldReplaceBotSkillInventory(existing *types.BotSkillInventory, incoming types.BotSkillInventory) bool {
 	if existing == nil {
 		return true
@@ -22,19 +24,24 @@ func ShouldReplaceBotSkillInventory(existing *types.BotSkillInventory, incoming 
 		if incoming.ReportSequence > 0 || existing.ReportSequence > 0 {
 			return incoming.ReportSequence > existing.ReportSequence
 		}
+		// Legacy reports from the same instance have no monotonic token; the
+		// row-lock receipt order is the only safe ordering available.
+		return true
 	}
 
-	incomingObserved, incomingOK := parseInventoryTime(incoming.ObservedAt)
-	existingObserved, existingOK := parseInventoryTime(existing.ObservedAt)
+	// Different runtime instances (including legacy reports without an
+	// instance ID) are ordered by the server-side receipt time. Never compare
+	// ObservedAt here: it is supplied by the client and can be delayed or
+	// clock-skewed.
+	incomingReceipt, incomingOK := parseInventoryTime(incoming.ReportedAt)
+	existingReceipt, existingOK := parseInventoryTime(existing.ReportedAt)
 	if incomingOK && existingOK {
-		return incomingObserved.After(existingObserved)
+		return incomingReceipt.After(existingReceipt)
 	}
-	// The handler validates new observations. This fallback keeps malformed
-	// legacy records from permanently blocking the first valid new snapshot.
 	return true
 }
 
 func parseInventoryTime(value string) (time.Time, bool) {
-	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
 	return parsed, err == nil
 }

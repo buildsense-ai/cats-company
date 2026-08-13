@@ -13,6 +13,7 @@ func TestShouldReplaceBotSkillInventory(t *testing.T) {
 	)
 	existing := &types.BotSkillInventory{
 		ObservedAt:        later,
+		ReportedAt:        "2026-08-12T06:02:00.000000002Z",
 		RuntimeInstanceID: "runtime-a",
 		ReportSequence:    2,
 	}
@@ -36,23 +37,23 @@ func TestShouldReplaceBotSkillInventory(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "a later observation from a replacement runtime wins",
+			name: "a replacement runtime wins by server receipt order",
 			incoming: types.BotSkillInventory{
-				ObservedAt: "2026-08-12T06:02:00Z", RuntimeInstanceID: "runtime-b", ReportSequence: 1,
+				ObservedAt: "2026-08-12T05:00:00Z", RuntimeInstanceID: "runtime-b", ReportSequence: 1,
 			},
 			want: true,
 		},
 		{
-			name: "an older observation from a replacement runtime cannot overwrite",
+			name: "a delayed report from a replacement runtime still follows receipt order",
 			incoming: types.BotSkillInventory{
-				ObservedAt: earlier, RuntimeInstanceID: "runtime-b", ReportSequence: 1,
+				ObservedAt: later, ReportedAt: "2026-08-12T06:02:00.000000001Z", RuntimeInstanceID: "runtime-b", ReportSequence: 1,
 			},
 			want: false,
 		},
 		{
-			name: "a legacy reporter remains ordered by observation time",
+			name: "a legacy reporter follows server receipt order",
 			incoming: types.BotSkillInventory{
-				ObservedAt: "2026-08-12T06:02:00Z",
+				ObservedAt: earlier,
 			},
 			want: true,
 		},

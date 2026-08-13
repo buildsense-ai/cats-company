@@ -333,6 +333,12 @@ func TestViewerRuntimeSkillsUsesVisibilityAndDistinguishesUnreported(t *testing.
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
+	db.friends[[2]int64{8, 43}] = true
+	recorder = httptest.NewRecorder()
+	handler.HandleViewerRuntimeSkills(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("friend status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func TestBotDefinitionSkillsUseUnifiedRevisionAndCanonicalOrder(t *testing.T) {
