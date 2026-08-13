@@ -61,8 +61,13 @@ SUBNET_ID="${CTYUN_WORKER_SUBNET_ID:-}"
 SECURITY_GROUP_ID="${CTYUN_WORKER_SECURITY_GROUP_ID:-}"
 # 内网模式：0 = 不绑定公网 IP（NAT 跳板架构，默认 1 兼容旧行为）
 EXT_IP="${CTYUN_WORKER_EXT_IP:-1}"
-# SSH 跳板（ProxyJump）：SSH config 别名或 user@host；空 = 直连公网 IP
-JUMP_HOST="${CTYUN_JUMP_HOST:-}"
+# SSH 跳板（NAT 架构）：凭据一律来自服务器环境变量，仓库不硬编码任何 IP/密钥。
+# CTYUN_JUMP_IP：跳板机公网入口 IP；空 = 直连公网 IP（旧模式）
+# CTYUN_JUMP_PORT / CTYUN_JUMP_USER / CTYUN_JUMP_KEY：跳板机连接参数
+JUMP_IP="${CTYUN_JUMP_IP:-}"
+JUMP_PORT="${CTYUN_JUMP_PORT:-22}"
+JUMP_USER="${CTYUN_JUMP_USER:-root}"
+JUMP_KEY="${CTYUN_JUMP_KEY:-/var/lib/catsco-worker/jump_host_ed25519}"
 HTTP_BASE_URL="${CATSCO_WORKER_HTTP_BASE_URL:-https://app.catsco.cc}"
 SERVER_URL="${CATSCO_WORKER_SERVER_URL:-wss://app.catsco.cc/v0/channels}"
 
@@ -257,11 +262,14 @@ for _ in $(seq 1 60); do
 done
 [[ -n "$INSTANCE_IP" ]] || { echo "error: timed out waiting for instance to be running" >&2; exit 1; }
 
-# SSH 跳板（NAT 架构）：jump-host 别名走容器内 ~/.ssh/config（key 认证）
+# SSH 跳板（NAT 架构）：ProxyCommand 经跳板机转发，凭据全来自环境变量
+# （不依赖容器内 ~/.ssh/config，容器重建后无需手工恢复）
 ssh_opts=(-i "$PRIVATE_KEY" -o BatchMode=yes -o ConnectTimeout=10 \
   -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
   -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$STATE_DIR/known_hosts")
-[[ -n "$JUMP_HOST" ]] && ssh_opts+=(-J "$JUMP_HOST")
+if [[ -n "$JUMP_IP" ]]; then
+  ssh_opts+=(-o "ProxyCommand=ssh -i ${JUMP_KEY} -p ${JUMP_PORT} -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${STATE_DIR}/jump_known_hosts -W %h:%p ${JUMP_USER}@${JUMP_IP}")
+fi
 # ssh 统一走 timeout 限时（防挂死；与 bake 脚本一致）
 ssh_run() {
   timeout -s TERM -k 15 60s ssh "${ssh_opts[@]}" "$@"
