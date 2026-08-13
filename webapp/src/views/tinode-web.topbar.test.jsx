@@ -320,6 +320,18 @@ describe('LocalAssistantBar model selector', () => {
     expect(unavailableButton.disabled).toBe(true);
   });
 
+  it('offers conversation-share image generation only for an active conversation', async () => {
+    const onCreateConversationShare = vi.fn();
+    await renderBar({ onCreateConversationShare });
+    const button = container.querySelector('button[aria-label="制作对话分享图"]');
+    expect(button).toBeTruthy();
+    await act(async () => button.click());
+    expect(onCreateConversationShare).toHaveBeenCalledTimes(1);
+
+    await renderBar({ onCreateConversationShare: undefined });
+    expect(container.querySelector('button[aria-label="制作对话分享图"]')).toBeNull();
+  });
+
   it('keeps the current model and quota together in the header', async () => {
     await renderBar();
     const status = container.querySelector('.v3-local-assistant-status');

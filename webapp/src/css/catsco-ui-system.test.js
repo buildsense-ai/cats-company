@@ -1065,6 +1065,34 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.cc-project-task-option.is-selected .cc-project-task-selection-indicator svg')).toContain('color: #fff;');
   });
 
+  it('keeps conversation-share selection controls quiet and system-aligned', () => {
+    const toggleRule = ruleIn(openchatCss, '.cc-conversation-share-message-toggle');
+    const hoverToggleRule = ruleIn(openchatCss, '.cc-conversation-share-message-toggle:hover');
+    const indicatorRule = ruleIn(openchatCss, '.cc-conversation-share-message-toggle-indicator');
+    const selectedIndicatorRule = ruleIn(
+      openchatCss,
+      '.cc-conversation-share-message-toggle.is-selected .cc-conversation-share-message-toggle-indicator',
+    );
+    const selectedCardRule = ruleIn(openchatCss, '.cc-message-anchor.is-conversation-share-selected');
+
+    expect(toggleRule).toContain('width: 32px;');
+    expect(toggleRule).toContain('height: 32px;');
+    expect(toggleRule).toContain('border: 0;');
+    expect(toggleRule).toContain('background: transparent;');
+    expect(toggleRule).toContain('box-shadow: none;');
+    expect(hoverToggleRule).toContain('background: transparent;');
+    expect(openchatCss).toMatch(
+      /\.cc-conversation-share-message-toggle:hover \.cc-conversation-share-message-toggle-indicator\s*\{[^}]*border-color: var\(--cc-text-secondary\);/s,
+    );
+    expect(indicatorRule).toContain('width: 20px;');
+    expect(indicatorRule).toContain('height: 20px;');
+    expect(indicatorRule).toContain('border-radius: 6px;');
+    expect(selectedCardRule).toContain('background: color-mix(in srgb, var(--cc-conversation-share-accent) 10%, transparent);');
+    expect(openchatCss).toContain('--cc-conversation-share-accent: #41b798;');
+    expect(openchatCss).toContain('--cc-conversation-share-accent-hover: #2f977d;');
+    expect(selectedIndicatorRule).toContain('background: var(--cc-conversation-share-accent);');
+  });
+
   it('keeps project selection controls inside their scroll rail', () => {
     const listRule = ruleFor('.cc-new-task-agent-list');
     const optionRule = ruleFor('.cc-new-task-agent');
