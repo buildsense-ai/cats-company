@@ -405,6 +405,7 @@ export default function MessagesView({
   const historyOffsetRef = useRef(0);
   const historyBeforeIDRef = useRef(0);
   const historyRequestRef = useRef(0);
+  const streamEventSequenceRef = useRef(0);
   const historyLoadingRef = useRef(false);
   const historyAbortControllerRef = useRef(null);
   const olderHistoryAbortControllerRef = useRef(null);
@@ -910,10 +911,8 @@ export default function MessagesView({
       // New message from server
       if (msg.data && msg.data.topic === topic) {
         if (isStreamCancel(msg.data)) {
-          const streamId = getStreamId(msg.data);
-          if (streamId) {
-            setMessages((prev) => prev.filter((message) => message._stream_id !== streamId));
-          }
+          // A cancel packet identifies the control request, not the Agent's
+          // transient response stream, so it cannot safely reconcile a row.
           clearRuntimePlan();
           clearLiveWorking();
           clearTimeout(peerTypingTimer.current);
@@ -936,13 +935,16 @@ export default function MessagesView({
           const streamId = getStreamId(msg.data);
           const delta = streamDeltaText(msg.data.content);
           if (streamId && delta) {
+            const eventSequence = ++streamEventSequenceRef.current;
             setMessages((prev) => upsertStreamingMessage(prev, {
               streamId,
               topic,
               fromUid,
+              from: msg.data.from,
               content: delta,
               metadata: msg.data.metadata || null,
               role: msg.data.role || 'assistant',
+              eventSequence,
             }));
           }
           return;
@@ -969,24 +971,22 @@ export default function MessagesView({
         if (isWorkingMessage(serverMsg)) markLiveWorking(serverMsg);
 
         setMessages((prev) => {
-          const streamId = getStreamId(serverMsg);
-          if (streamId) {
-            const streamIdx = prev.findIndex((m) => m._stream_id === streamId);
-            if (streamIdx !== -1) {
-              const next = [...prev];
-              next[streamIdx] = serverMsg;
-              return mergeMessages([], next);
-            }
+          const streamIdx = findStreamingMessageForFinal(prev, serverMsg);
+          if (streamIdx !== -1) {
+            const next = [...prev];
+            next[streamIdx] = serverMsg;
+            return mergeMessages([], next);
           }
+          const current = removeStaleStreamingMessagesForFinal(prev, serverMsg);
           // Deduplicate by seq ID
-          if (prev.some((m) => m.id === serverMsg.id)) return prev;
+          if (current.some((m) => m.id === serverMsg.id)) return current;
           // If this is our own message echoed back, replace the optimistic entry
           if (sameUID(fromUid, user.uid)) {
-            const pendingIdx = prev.findIndex((m) => (
+            const pendingIdx = current.findIndex((m) => (
               m._pending && pendingMatchesHistoryMessage(m, serverMsg, new Set())
             ));
             if (pendingIdx !== -1) {
-              const next = [...prev];
+              const next = [...current];
               next[pendingIdx] = serverMsg;
               // An Agent reply can arrive before our own server echo. Re-sort
               // after replacing the provisional message so the user message
@@ -994,7 +994,7 @@ export default function MessagesView({
               return mergeMessages([], next);
             }
           }
-          return mergeMessages(prev, [serverMsg]);
+          return mergeMessages(current, [serverMsg]);
         });
         if (sameUID(fromUid, user.uid) && isFinalTextMessage(serverMsg)) {
           clearRuntimePlan();
@@ -1138,6 +1138,7 @@ export default function MessagesView({
 
   const loadHistory = async (targetTopic = topic, aroundId = 0) => {
     const requestID = ++historyRequestRef.current;
+    const streamEventCheckpoint = streamEventSequenceRef.current;
     historyAbortControllerRef.current?.abort();
     olderHistoryAbortControllerRef.current?.abort();
     const controller = new AbortController();
@@ -1174,7 +1175,7 @@ export default function MessagesView({
         : rawMessages.length === PAGE_SIZE;
       const nextBeforeID = Number(res.next_before_id) || oldestHistoryMessageID(rawMessages);
       setMessages((current) => {
-        return mergeHistoryWithCurrentMessages(visibleMessages, current);
+        return mergeHistoryWithCurrentMessages(visibleMessages, current, streamEventCheckpoint);
       });
       historyOffsetRef.current = rawMessages.length;
       historyBeforeIDRef.current = nextBeforeID;
@@ -4445,6 +4446,99 @@ function getStreamId(message) {
   return typeof id === 'string' && id.trim() ? id.trim() : '';
 }
 
+function streamSenderKey({ fromUid, from }) {
+  const parsedUID = parseUid(fromUid);
+  if (parsedUID > 0) return String(parsedUID);
+  const parsedFrom = parseUid(from);
+  if (parsedFrom > 0) return String(parsedFrom);
+  return String(from ?? fromUid ?? '').trim();
+}
+
+function streamMessageParts({ streamId, topic, fromUid, from }) {
+  const normalizedStreamID = typeof streamId === 'string' ? streamId.trim() : '';
+  const senderKey = streamSenderKey({ fromUid, from });
+  return normalizedStreamID && topic && senderKey
+    ? [topic, senderKey, normalizedStreamID]
+    : null;
+}
+
+function streamMessageBaseKey(message) {
+  const parts = streamMessageParts(message);
+  return parts ? JSON.stringify(parts) : '';
+}
+
+function streamMessageKey({ executionKey = '', ...message }) {
+  const parts = streamMessageParts(message);
+  const normalizedExecutionKey = typeof executionKey === 'string' ? executionKey.trim() : '';
+  return parts ? JSON.stringify([...parts, normalizedExecutionKey]) : '';
+}
+
+function streamPlaceholderKey(message) {
+  if (!message?._streaming) return '';
+  return message?._stream_key || streamMessageKey({
+    streamId: getStreamId(message),
+    topic: message?.topic_id,
+    fromUid: message?.from_uid,
+    from: message?.from,
+    executionKey: assistantReplyTurnKey(message),
+  });
+}
+
+function streamPlaceholderBaseKey(message) {
+  if (!message?._streaming) return '';
+  return streamMessageBaseKey({
+    streamId: getStreamId(message),
+    topic: message?.topic_id,
+    fromUid: message?.from_uid,
+    from: message?.from,
+  });
+}
+
+function findStreamingMessageForFinal(messages, finalMessage) {
+  const finalStreamID = getStreamId(finalMessage);
+  const finalTurnKey = assistantReplyTurnKey(finalMessage);
+  const finalSenderKey = messageSenderIdentity(finalMessage);
+  if (!finalSenderKey || (!finalStreamID && !finalTurnKey)) return -1;
+
+  const candidates = messages
+    .map((message, index) => ({ message, index }))
+    .filter(({ message }) => (
+      message?._streaming && messageSenderIdentity(message) === finalSenderKey
+    ));
+  if (finalTurnKey) {
+    const sameTurn = candidates.filter(({ message }) => (
+      assistantReplyTurnKey(message) === finalTurnKey
+    ));
+    if (sameTurn.length === 1) return sameTurn[0].index;
+
+    const uncorrelated = candidates.filter(({ message }) => (
+      !assistantReplyTurnKey(message)
+      && (!finalStreamID || getStreamId(message) === finalStreamID)
+    ));
+    return uncorrelated.length === 1 ? uncorrelated[0].index : -1;
+  }
+
+  const sameStream = candidates.filter(({ message }) => getStreamId(message) === finalStreamID);
+  return sameStream.length === 1 ? sameStream[0].index : -1;
+}
+
+function isUncorrelatedFinalReply(message) {
+  return isFinalTextMessage(message)
+    && !getStreamId(message)
+    && !assistantReplyTurnKey(message);
+}
+
+function removeStaleStreamingMessagesForFinal(messages, finalMessage) {
+  if (!isUncorrelatedFinalReply(finalMessage)) return messages;
+  const finalSenderKey = messageSenderIdentity(finalMessage);
+  if (!finalSenderKey) return messages;
+  const candidates = messages.filter((message) => (
+    message?._streaming && messageSenderIdentity(message) === finalSenderKey
+  ));
+  if (candidates.length !== 1) return messages;
+  return messages.filter((message) => message !== candidates[0]);
+}
+
 function isTimelineNearBottom(el) {
   if (!el) return true;
   return el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_TO_BOTTOM_THRESHOLD;
@@ -4457,11 +4551,38 @@ function streamDeltaText(content) {
   return String(content);
 }
 
-function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, metadata, role }) {
-  const existingIdx = messages.findIndex((message) => message._stream_id === streamId);
+function upsertStreamingMessage(messages, {
+  streamId,
+  topic,
+  fromUid,
+  from,
+  content,
+  metadata,
+  role,
+  eventSequence = 0,
+}) {
+  const executionKey = assistantReplyTurnKey({ metadata });
+  const streamKey = streamMessageKey({ streamId, topic, fromUid, from, executionKey });
+  if (!streamKey) return messages;
+  const streamBaseKey = streamMessageBaseKey({ streamId, topic, fromUid, from });
+  let existingIdx = messages.findIndex((message) => streamPlaceholderKey(message) === streamKey);
+  if (existingIdx === -1) {
+    const compatible = messages
+      .map((message, index) => ({ message, index }))
+      .filter(({ message }) => streamPlaceholderBaseKey(message) === streamBaseKey)
+      .filter(({ message }) => {
+        const existingExecutionKey = assistantReplyTurnKey(message);
+        return !executionKey || !existingExecutionKey;
+      });
+    if (compatible.length === 1) existingIdx = compatible[0].index;
+  }
   if (existingIdx !== -1) {
     const next = [...messages];
     const existing = next[existingIdx];
+    const existingExecutionKey = assistantReplyTurnKey(existing);
+    const nextStreamKey = existingExecutionKey && !executionKey
+      ? streamPlaceholderKey(existing)
+      : streamKey;
     next[existingIdx] = {
       ...existing,
       content: `${streamDeltaText(existing.content)}${content}`,
@@ -4473,6 +4594,8 @@ function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, m
       role: role || existing.role || 'assistant',
       _streaming: true,
       _stream_id: streamId,
+      _stream_key: nextStreamKey,
+      _stream_event_sequence: eventSequence,
     };
     return next;
   }
@@ -4481,10 +4604,11 @@ function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, m
   return [
     ...messages,
     normalizeIncomingMessage({
-      id: `stream:${streamId}`,
+      id: `stream:${streamId}:${streamSenderKey({ fromUid, from })}:${executionKey || 'uncorrelated'}`,
       seq_id: now,
       topic_id: topic,
       from_uid: fromUid,
+      from,
       content,
       type: 'text',
       msg_type: 'text',
@@ -4496,6 +4620,8 @@ function upsertStreamingMessage(messages, { streamId, topic, fromUid, content, m
       created_at: new Date(now).toISOString(),
       _streaming: true,
       _stream_id: streamId,
+      _stream_key: streamKey,
+      _stream_event_sequence: eventSequence,
     }),
   ];
 }
@@ -4747,7 +4873,7 @@ function historySequenceBeforePending(historyMessages, currentMessages, pendingI
   }, 0);
 }
 
-function mergeHistoryWithCurrentMessages(historyMessages, currentMessages) {
+function mergeHistoryWithCurrentMessages(historyMessages, currentMessages, streamEventCheckpoint = 0) {
   const visibleMessages = Array.isArray(historyMessages) ? historyMessages : [];
   const current = Array.isArray(currentMessages) ? currentMessages : [];
   const historyIDs = new Set(
@@ -4757,6 +4883,10 @@ function mergeHistoryWithCurrentMessages(historyMessages, currentMessages) {
   );
   const usedHistoryIDs = new Set();
   const pendingToKeep = [];
+  const streamingToKeep = current.filter((message) => (
+    message?._streaming
+    && Number(message?._stream_event_sequence) > streamEventCheckpoint
+  ));
 
   current.forEach((pending, pendingIndex) => {
     if (!pending?._pending) return;
@@ -4780,6 +4910,9 @@ function mergeHistoryWithCurrentMessages(historyMessages, currentMessages) {
     if (message?._pending) {
       const pending = pendingByID.get(message.id);
       return pending ? [pending] : [];
+    }
+    if (message?._streaming) {
+      return streamingToKeep.includes(message) ? [message] : [];
     }
     const sequence = historyMessageID(message);
     return sequence <= 0 || !historyIDs.has(sequence) ? [message] : [];

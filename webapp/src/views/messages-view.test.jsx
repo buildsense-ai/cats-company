@@ -828,6 +828,315 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('[data-message-id="102"]')?.dataset.consecutive).toBe('false');
   });
 
+  it('does not reuse a stale streamed reply after the next history refresh', async () => {
+    const refreshResult = deferred();
+    mockTutorialAgentPeer();
+    api.getMessages
+      .mockRejectedValueOnce(new Error('temporary history failure'))
+      .mockReturnValueOnce(refreshResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+    expect(container.querySelector('.v3-history-state')?.textContent).toContain('加载失败');
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '旧的临时文本',
+          metadata: { stream_id: 'reused-stream-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      const retryButton = container.querySelector('button.v3-history-retry');
+      expect(retryButton).not.toBeNull();
+      retryButton.click();
+      await flushPromises();
+    });
+
+    await act(async () => {
+      refreshResult.resolve({
+        messages: [{
+          id: 101,
+          seq_id: 101,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'text',
+          msg_type: 'text',
+          role: 'assistant',
+          content: '持久化的最终回复',
+        }],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['持久化的最终回复']);
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '下一轮的新文本',
+          metadata: { stream_id: 'reused-stream-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['持久化的最终回复', '下一轮的新文本']);
+  });
+
+  it('replaces a streamed reply when its final message has no correlation fields', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '即将被替换的临时文本',
+          metadata: { stream_id: 'uncorrelated-stream-1' },
+        },
+      });
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq_id: 101,
+          from: 'usr2',
+          type: 'text',
+          msg_type: 'text',
+          role: 'assistant',
+          content: '没有关联字段的最终回复',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['没有关联字段的最终回复']);
+  });
+
+  it('keeps execution turns separate when an Agent reuses a stream id', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第一轮的临时文本',
+          metadata: { stream_id: 'reused-stream-1', run_id: 'run-1' },
+        },
+      });
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第二轮的临时文本',
+          metadata: { stream_id: 'reused-stream-1', run_id: 'run-2' },
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['第一轮的临时文本', '第二轮的临时文本']);
+  });
+
+  it('keeps appending a stream when later deltas omit its execution key', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第一段',
+          metadata: { stream_id: 'sparse-stream-1', run_id: 'run-1' },
+        },
+      });
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第二段',
+          metadata: { stream_id: 'sparse-stream-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['第一段第二段']);
+  });
+
+  it('does not discard concurrent streamed replies for an uncorrelated final message', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第一条并行临时回复',
+          metadata: { stream_id: 'concurrent-stream-1', run_id: 'run-1' },
+        },
+      });
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第二条并行临时回复',
+          metadata: { stream_id: 'concurrent-stream-2', run_id: 'run-2' },
+        },
+      });
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq_id: 101,
+          from: 'usr2',
+          type: 'text',
+          msg_type: 'text',
+          role: 'assistant',
+          content: '无法关联的最终回复',
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual([
+      '无法关联的最终回复',
+      '第一条并行临时回复',
+      '第二条并行临时回复',
+    ]);
+  });
+
+  it('keeps a streamed reply that arrives while history is loading', async () => {
+    const historyResult = deferred();
+    api.getMessages.mockReturnValueOnce(historyResult.promise);
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '历史请求期间的新文本',
+          metadata: { stream_id: 'in-flight-stream-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    await act(async () => {
+      historyResult.resolve({
+        messages: [{
+          id: 100,
+          seq_id: 100,
+          topic_id: 'p2p_1_2',
+          from_uid: 1,
+          type: 'text',
+          content: '已有历史消息',
+        }],
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['已有历史消息', '历史请求期间的新文本']);
+  });
+
+  it('keeps stream placeholders separate when two senders reuse the same stream id', async () => {
+    api.getMessages.mockResolvedValueOnce({ messages: [] });
+    api.getGroupInfo.mockResolvedValueOnce({
+      group: { id: 9, name: 'Agent room' },
+      members: [
+        { user_id: 1, display_name: 'Me' },
+        { user_id: 2, display_name: 'Agent one', is_bot: true },
+        { user_id: 3, display_name: 'Agent two', is_bot: true },
+      ],
+    });
+
+    await mountTopic(root, 'grp_9', { isGroup: true, groupId: 9 });
+    await act(async () => {
+      await flushPromises();
+      wsHandler({
+        data: {
+          topic: 'grp_9',
+          from: 'usr2',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第一个 Agent 的文本',
+          metadata: { stream_id: 'shared-stream-1' },
+        },
+      });
+      wsHandler({
+        data: {
+          topic: 'grp_9',
+          from: 'usr3',
+          type: 'stream_delta',
+          role: 'assistant',
+          content: '第二个 Agent 的文本',
+          metadata: { stream_id: 'shared-stream-1' },
+        },
+      });
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageContent,
+    )).toEqual(['第一个 Agent 的文本', '第二个 Agent 的文本']);
+  });
+
   it('reconciles a pending send when the initial history already contains it', async () => {
     const historyResult = deferred();
     const sendResult = deferred();
