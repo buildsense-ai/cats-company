@@ -646,16 +646,58 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .cc-compact-task-status.completed {
-  color: var(--v3-primary);
+  color: var(--cc-success-text);
 }
 
 .cc-compact-task-status.failed {
-  color: #ef5b5b;
+  color: var(--cc-danger);
 }
 
 .cc-compact-task-status.cancelled,
 .cc-compact-task-status.stale {
-  color: #e7a93b;
+  color: var(--cc-warning-text);
+}
+
+.cc-compact-task-status.failed::after,
+.cc-compact-task-status.cancelled::after,
+.cc-compact-task-status.stale::after {
+  position: absolute;
+  inset: -2px;
+  border: 1px solid currentColor;
+  border-radius: inherit;
+  content: "";
+  pointer-events: none;
+}
+
+.cc-compact-task-status.cancelled::after {
+  border-style: dashed;
+}
+
+.cc-compact-task-status.stale::after {
+  border-style: dotted;
+}
+
+.cc-compact-task-status.cc-compact-history-status {
+  position: relative;
+  inset: auto;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+
+.cc-compact-task-status.cc-compact-history-status:not(.running) {
+  right: auto;
+  bottom: auto;
+  width: 10px;
+  height: 10px;
+  box-shadow: none;
+}
+
+.cc-compact-task-status.cc-compact-history-status.running {
+  inset: auto;
 }
 
 .cc-compact-conversation:hover .oc-avatar,
@@ -2274,21 +2316,44 @@ html[data-theme="liquid"] .catsco-brand-mark {
 }
 
 .cc-task-row-status.completed {
-  color: var(--v3-primary);
+  color: var(--cc-success-text);
 }
 
-.cc-task-status-icon {
+.cc-task-status-dot {
   display: block;
-  flex: 0 0 auto;
+  position: relative;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.cc-task-status-dot--failed::after,
+.cc-task-status-dot--cancelled::after,
+.cc-task-status-dot--stale::after {
+  position: absolute;
+  inset: -3px;
+  border: 1px solid currentColor;
+  border-radius: inherit;
+  content: "";
+  pointer-events: none;
+}
+
+.cc-task-status-dot--cancelled::after {
+  border-style: dashed;
+}
+
+.cc-task-status-dot--stale::after {
+  border-style: dotted;
 }
 
 .cc-task-row-status.failed {
-  color: #ef5b5b;
+  color: var(--cc-danger);
 }
 
 .cc-task-row-status.cancelled,
 .cc-task-row-status.stale {
-  color: #e7a93b;
+  color: var(--cc-warning-text);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -4693,7 +4758,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
   }
 
   .v3-composer {
-    padding: 8px 8px calc(20px + env(safe-area-inset-bottom));
+    padding: 8px 8px calc(12px + env(safe-area-inset-bottom));
   }
 
   .v3-composer-row {
@@ -4746,7 +4811,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
     left: 0;
     z-index: 70;
     width: 100%;
-    padding: 8px 8px calc(20px + env(safe-area-inset-bottom));
+    padding: 8px 8px calc(12px + env(safe-area-inset-bottom));
     background: var(--cc-empty-task-bg);
   }
 

@@ -1,4 +1,8 @@
-import { StreamingSTTSession } from './stt-client';
+import {
+  createPCM16Capture,
+  releaseReusableMicrophoneStream,
+  StreamingSTTSession,
+} from './stt-client';
 
 class FakeWebSocket {
   static CONNECTING = 0;
@@ -31,7 +35,229 @@ class FakeWebSocket {
   }
 }
 
+function createMicrophoneStreamFixture() {
+  const track = {
+    enabled: true,
+    readyState: 'live',
+    stop: vi.fn(),
+    addEventListener: vi.fn(),
+  };
+  return {
+    track,
+    stream: {
+      getAudioTracks: () => [track],
+      getTracks: () => [track],
+    },
+  };
+}
+
+function installMicrophoneTestRuntime({ getUserMedia, AudioContext, AudioWorkletNode }) {
+  const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
+  const originalAudioContext = globalThis.AudioContext;
+  const originalAudioWorkletNode = globalThis.AudioWorkletNode;
+
+  Object.defineProperty(navigator, 'mediaDevices', {
+    configurable: true,
+    value: { getUserMedia },
+  });
+  globalThis.AudioContext = AudioContext;
+  globalThis.AudioWorkletNode = AudioWorkletNode;
+
+  return () => {
+    releaseReusableMicrophoneStream();
+    if (originalMediaDevices) Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices);
+    else delete navigator.mediaDevices;
+    if (originalAudioContext === undefined) delete globalThis.AudioContext;
+    else globalThis.AudioContext = originalAudioContext;
+    if (originalAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+    else globalThis.AudioWorkletNode = originalAudioWorkletNode;
+  };
+}
+
+function setDocumentVisibility(state) {
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    value: state,
+  });
+}
+
 describe('StreamingSTTSession', () => {
+  beforeEach(() => {
+    setDocumentVisibility('visible');
+  });
+
+  afterEach(() => {
+    releaseReusableMicrophoneStream();
+  });
+
+  it('reuses an authorized microphone stream for consecutive foreground captures', async () => {
+    const { track, stream } = createMicrophoneStreamFixture();
+    const getUserMedia = vi.fn().mockResolvedValue(stream);
+    const contexts = [];
+
+    class FakeAudioContext {
+      constructor() {
+        this.state = 'running';
+        this.audioWorklet = { addModule: vi.fn().mockResolvedValue(undefined) };
+        this.close = vi.fn().mockResolvedValue(undefined);
+        this.source = { connect: vi.fn(), disconnect: vi.fn() };
+        contexts.push(this);
+      }
+
+      createMediaStreamSource() {
+        return this.source;
+      }
+    }
+
+    class FakeAudioWorkletNode {
+      constructor() {
+        this.port = {
+          onmessage: null,
+          postMessage: vi.fn((message) => {
+            if (message?.type === 'flush') this.port.onmessage?.({ data: { type: 'flushed' } });
+          }),
+        };
+        this.disconnect = vi.fn();
+      }
+    }
+
+    const restoreRuntime = installMicrophoneTestRuntime({
+      getUserMedia,
+      AudioContext: FakeAudioContext,
+      AudioWorkletNode: FakeAudioWorkletNode,
+    });
+
+    try {
+      const firstCapture = await createPCM16Capture({ onFrame: vi.fn() });
+      await firstCapture.stop();
+      expect(track.enabled).toBe(false);
+
+      const secondCapture = await createPCM16Capture({ onFrame: vi.fn() });
+      await secondCapture.stop();
+
+      expect(getUserMedia).toHaveBeenCalledTimes(1);
+      expect(contexts).toHaveLength(2);
+      expect(track.stop).not.toHaveBeenCalled();
+
+      window.dispatchEvent(new Event('pagehide'));
+      expect(track.stop).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreRuntime();
+    }
+  });
+
+  it('starts a fresh capture when a previously reusable track has ended', async () => {
+    const first = createMicrophoneStreamFixture();
+    const second = createMicrophoneStreamFixture();
+    const getUserMedia = vi.fn()
+      .mockResolvedValueOnce(first.stream)
+      .mockResolvedValueOnce(second.stream);
+
+    class FakeAudioContext {
+      constructor() {
+        this.state = 'running';
+        this.audioWorklet = { addModule: vi.fn().mockResolvedValue(undefined) };
+        this.close = vi.fn().mockResolvedValue(undefined);
+        this.source = { connect: vi.fn(), disconnect: vi.fn() };
+      }
+
+      createMediaStreamSource() {
+        return this.source;
+      }
+    }
+
+    class FakeAudioWorkletNode {
+      constructor() {
+        this.port = {
+          onmessage: null,
+          postMessage: vi.fn((message) => {
+            if (message?.type === 'flush') this.port.onmessage?.({ data: { type: 'flushed' } });
+          }),
+        };
+        this.disconnect = vi.fn();
+      }
+    }
+
+    const restoreRuntime = installMicrophoneTestRuntime({
+      getUserMedia,
+      AudioContext: FakeAudioContext,
+      AudioWorkletNode: FakeAudioWorkletNode,
+    });
+
+    try {
+      const firstCapture = await createPCM16Capture({ onFrame: vi.fn() });
+      await firstCapture.stop();
+      first.track.readyState = 'ended';
+
+      const secondCapture = await createPCM16Capture({ onFrame: vi.fn() });
+      await secondCapture.stop();
+
+      expect(getUserMedia).toHaveBeenCalledTimes(2);
+      expect(second.track.stop).not.toHaveBeenCalled();
+    } finally {
+      restoreRuntime();
+    }
+  });
+
+  it('releases a microphone request that resolves after the PWA leaves the foreground', async () => {
+    let resolveMicrophone;
+    const { track, stream } = createMicrophoneStreamFixture();
+
+    const getUserMedia = vi.fn(() => new Promise((resolve) => { resolveMicrophone = resolve; }));
+    const restoreRuntime = installMicrophoneTestRuntime({
+      getUserMedia,
+      AudioContext: class FakeAudioContext {},
+      AudioWorkletNode: class FakeAudioWorkletNode {},
+    });
+
+    try {
+      const pendingCapture = createPCM16Capture({ onFrame: vi.fn() });
+      expect(getUserMedia).toHaveBeenCalledTimes(1);
+
+      window.dispatchEvent(new Event('pagehide'));
+      resolveMicrophone(stream);
+
+      await expect(pendingCapture).rejects.toMatchObject({ name: 'AbortError' });
+      expect(track.stop).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreRuntime();
+    }
+  });
+
+  it('aborts when the PWA leaves the foreground during AudioWorklet initialization', async () => {
+    let resolveWorklet;
+    const { track, stream } = createMicrophoneStreamFixture();
+    const getUserMedia = vi.fn().mockResolvedValue(stream);
+
+    class DelayedAudioContext {
+      constructor() {
+        this.state = 'running';
+        this.audioWorklet = {
+          addModule: vi.fn(() => new Promise((resolve) => { resolveWorklet = resolve; })),
+        };
+        this.close = vi.fn().mockResolvedValue(undefined);
+      }
+    }
+
+    const restoreRuntime = installMicrophoneTestRuntime({
+      getUserMedia,
+      AudioContext: DelayedAudioContext,
+      AudioWorkletNode: class FakeAudioWorkletNode {},
+    });
+
+    try {
+      const pendingCapture = createPCM16Capture({ onFrame: vi.fn() });
+      await vi.waitFor(() => expect(resolveWorklet).toBeTypeOf('function'));
+      window.dispatchEvent(new Event('pagehide'));
+      resolveWorklet();
+
+      await expect(pendingCapture).rejects.toMatchObject({ name: 'AbortError' });
+      expect(track.stop).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreRuntime();
+    }
+  });
+
   it('acquires an authenticated session before requesting microphone capture', async () => {
     const order = [];
     const session = new StreamingSTTSession({
@@ -67,6 +293,37 @@ describe('StreamingSTTSession', () => {
 
     expect(session.createCapture).not.toHaveBeenCalled();
     expect(errors).toEqual(['语音输入额度已用完，请稍后再试']);
+  });
+
+  it('does not start capture when the PWA becomes hidden during session admission', async () => {
+    let resolveSession;
+    const session = new StreamingSTTSession({
+      createSession: vi.fn(() => new Promise((resolve) => { resolveSession = resolve; })),
+      createCapture: vi.fn(),
+    });
+
+    const starting = session.start();
+    setDocumentVisibility('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    resolveSession({ ticket: 'unused-ticket' });
+    await starting;
+
+    expect(session.createCapture).not.toHaveBeenCalled();
+    expect(session.state).toBe('complete');
+  });
+
+  it('surfaces a non-lifecycle AbortError from microphone capture', async () => {
+    const errors = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-abort-error' }),
+      createCapture: vi.fn().mockRejectedValue(Object.assign(new Error('设备初始化失败'), { name: 'AbortError' })),
+      onError: (error) => errors.push(error.message),
+    });
+
+    await session.start();
+
+    expect(session.state).toBe('error');
+    expect(errors).toEqual(['设备初始化失败']);
   });
 
   it('buffers PCM before ready and publishes only the final transcript', async () => {
