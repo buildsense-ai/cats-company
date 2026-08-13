@@ -61,6 +61,24 @@ SUBNET_ID="${CTYUN_WORKER_SUBNET_ID:-}"
 SECURITY_GROUP_ID="${CTYUN_WORKER_SECURITY_GROUP_ID:-}"
 # 内网模式：0 = 不绑定公网 IP（NAT 跳板架构，默认 1 兼容旧行为）
 EXT_IP="${CTYUN_WORKER_EXT_IP:-1}"
+# 计费模式（平台按月售卖，默认 month）：month = 包月 + 到期时间，ondemand = 按量
+# CTYUN_WORKER_CYCLE_COUNT：包月时长（月），默认 1
+# CTYUN_WORKER_AUTO_RENEW：1 = 创建后开自动续费（默认），0 = 不开
+BILLING_MODE="${CTYUN_WORKER_BILLING_MODE:-month}"
+CYCLE_COUNT="${CTYUN_WORKER_CYCLE_COUNT:-1}"
+AUTO_RENEW="${CTYUN_WORKER_AUTO_RENEW:-1}"
+if [[ "$BILLING_MODE" != "month" && "$BILLING_MODE" != "ondemand" ]]; then
+  echo "error: CTYUN_WORKER_BILLING_MODE must be month or ondemand" >&2
+  exit 2
+fi
+if [[ ! "$CYCLE_COUNT" =~ ^[0-9]+$ || "$CYCLE_COUNT" -lt 1 || "$CYCLE_COUNT" -gt 60 ]]; then
+  echo "error: CTYUN_WORKER_CYCLE_COUNT must be 1-60" >&2
+  exit 2
+fi
+if [[ "$AUTO_RENEW" != "1" && "$AUTO_RENEW" != "0" ]]; then
+  echo "error: CTYUN_WORKER_AUTO_RENEW must be 0 or 1" >&2
+  exit 2
+fi
 # SSH 跳板（NAT 架构）：凭据一律来自服务器环境变量，仓库不硬编码任何 IP/密钥。
 # CTYUN_JUMP_IP：跳板机公网入口 IP；空 = 直连公网 IP（旧模式）
 # CTYUN_JUMP_PORT / CTYUN_JUMP_USER / CTYUN_JUMP_KEY：跳板机连接参数
@@ -127,18 +145,30 @@ gen_uuid() {
   fi
 }
 
+delete_instance() {
+  # 按计费方式删除：包月（expiredTime 非空）→ 退订；按量 → 直接删除
+  # 实测（2026-08-07/08-13）：两个 API 都需 clientToken 且不接受 --projectID
+  local inst_json="$1"
+  local del_id=""
+  del_id="$(jq -r '.instanceID // ""' <<<"$inst_json")"
+  [[ -n "$del_id" ]] || return 1
+  if [[ -n "$(jq -r '.expiredTime // ""' <<<"$inst_json")" ]]; then
+    ctyun ecs UnsubscribeEcsInstance --regionID "$REGION_ID" \
+      --clientToken "$(gen_uuid)" --instanceID "$del_id" >/dev/null 2>&1
+  else
+    ctyun ecs DeleteEcsInstance --regionID "$REGION_ID" \
+      --clientToken "$(gen_uuid)" --instanceID "$del_id" >/dev/null 2>&1
+  fi
+}
+
 cleanup_failed() {
   # fail-closed：删除刚创建的实例 + key pair（尽力，聚合报错）
   local errors=""
   if [[ -n "${CREATED_INSTANCE_ID:-}" ]]; then
-    # 实测（2026-08-07）：DeleteEcsInstance 需 clientToken 且不接受 --projectID；
     # 实例 ID 用列表返回的 instanceID（UUID）优先，创建返回的 masterResourceID 兜底
-    local del_id="" inst
+    local inst
     inst="$(find_instance "$INSTANCE_NAME" 2>/dev/null || true)"
-    [[ -n "$inst" ]] && del_id="$(jq -r '.instanceID // ""' <<<"$inst")"
-    [[ -n "$del_id" ]] || del_id="$CREATED_INSTANCE_ID"
-    if ctyun ecs DeleteEcsInstance --regionID "$REGION_ID" \
-        --clientToken "$(gen_uuid)" --instanceID "$del_id" >/dev/null 2>&1; then
+    if [[ -n "$inst" ]] && delete_instance "$inst"; then
       : # ok
     else
       errors="instance delete failed; "
@@ -216,6 +246,7 @@ BODY_ID="${BODY_ID:-$(gen_uuid)}"
 INSTALLATION_ID="${INSTALLATION_ID:-$(gen_uuid)}"
 
 # extIP=0 时不传公网相关参数（带宽/线路/计费），API 会拒绝这些组合
+# 计费：month = 包月（--onDemand false + cycleType/cycleCount），ondemand = 按量
 create_args=(ecs CreateEcsInstance \
   --regionID "$REGION_ID" \
   --projectID "$PROJECT_ID" \
@@ -233,12 +264,17 @@ create_args=(ecs CreateEcsInstance \
   --networkCardList "[{\"isMaster\":true,\"subnetID\":\"$SUBNET_ID\"}]" \
   --secGroupList "[\"$SECURITY_GROUP_ID\"]" \
   --keyPairID "$keypair_id" \
-  --onDemand true \
   --extIP "$EXT_IP" \
   --monitorService false \
   --securityProduct false \
   --trustInstance false \
   --labelList "[{\"labelKey\":\"purpose\",\"labelValue\":\"catsco-worker\"},{\"labelKey\":\"tenant\",\"labelValue\":\"$NAME\"}]")
+if [[ "$BILLING_MODE" == "month" ]]; then
+  # 包月：onDemand=false 时 cycleType/cycleCount 生效（MONTH/YEAR）
+  create_args+=(--onDemand false --cycleType MONTH --cycleCount "$CYCLE_COUNT")
+else
+  create_args+=(--onDemand true)
+fi
 if [[ "$EXT_IP" == "1" ]]; then
   create_args+=(--bandwidth 10 --ipVersion ipv4 --lineType standalone --demandBillingType upflowc)
 fi
@@ -261,6 +297,20 @@ for _ in $(seq 1 60); do
   sleep 10
 done
 [[ -n "$INSTANCE_IP" ]] || { echo "error: timed out waiting for instance to be running" >&2; exit 1; }
+
+# --- 5.5 自动续费（仅 month 模式） ---
+# 平台按月售卖：实例包月到期自动续费，避免员工到期停机。
+# 失败不阻塞供给（仅警告）——实例已创建，不能因续费配置失败而触发清理删除。
+if [[ "$BILLING_MODE" == "month" && "$AUTO_RENEW" == "1" ]]; then
+  instance_uuid="$(jq -r '.instanceID // ""' <<<"$inst" 2>/dev/null || true)"
+  if [[ -n "$instance_uuid" ]] && ctyun ecs UpdateEcsAutoRenewConfig \
+      --regionID "$REGION_ID" --instanceIDList "$instance_uuid" \
+      --autoRenewStatus 1 --autoRenewCycleType MONTH --autoRenewCycleCount 1 >/dev/null 2>&1; then
+    : # ok
+  else
+    echo "warning: auto-renew configuration failed for $INSTANCE_NAME (manual renew needed)" >&2
+  fi
+fi
 
 # SSH 跳板（NAT 架构）：ProxyCommand 经跳板机转发，凭据全来自环境变量
 # （不依赖容器内 ~/.ssh/config，容器重建后无需手工恢复）
