@@ -130,6 +130,10 @@ func (h *CommercialOpsHandler) HandleOrders(w http.ResponseWriter, r *http.Reque
 	h.forward(w, r, "orders.read", "order", h.admin.HandleCommercialOrders)
 }
 
+func (h *CommercialOpsHandler) HandleOrderRefund(w http.ResponseWriter, r *http.Request) {
+	h.forward(w, r, "orders.refund", "order", h.admin.HandleCommercialOrderRefund)
+}
+
 func (h *CommercialOpsHandler) HandleRelayDryRun(w http.ResponseWriter, r *http.Request) {
 	h.forward(w, r, "relay.dry-run", "user", h.admin.HandleCommercialRelayDryRun)
 }

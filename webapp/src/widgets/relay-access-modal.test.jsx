@@ -180,7 +180,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.querySelector('.relay-access-invite-form')).toBeNull();
   });
 
-  it('shows invite redemption and shared-pool model coverage when commercial rollout is enabled', async () => {
+  it('shows invite redemption and shared-pool benefits without exposing model entitlements', async () => {
     api.getRelayUsage.mockImplementation(({ model } = {}) => Promise.resolve({
       configured: true,
       summary: {
@@ -223,13 +223,13 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).toContain('下次');
     expect(container.textContent).toContain('不是自然月');
     expect(container.textContent).toContain('当前权益');
-    expect(container.textContent).toContain('1 个共享额度池 · 覆盖 2 个模型');
+    expect(container.textContent).toContain('1 个共享额度池 · 按套餐权益统一扣减');
     expect(container.textContent).not.toContain('2 个模型额度可用');
     expect(container.textContent).not.toContain('gpt-5.6-luna');
     expect(container.textContent).toContain('教师试用包');
     expect(container.textContent).toContain('邀请码兑换');
     expect(container.textContent).toContain('MiniMax-M3');
-    expect(container.textContent).toContain('deepseek-v4-flash');
+    expect(container.textContent).not.toContain('deepseek-v4-flash');
     expect(container.textContent).toContain('剩余 75%');
     expect(api.getRelayUsage).toHaveBeenCalledWith({ scope: 'total' });
     expect(api.getRelayUsage.mock.calls.every(([options]) => options?.scope === 'total' && !options?.model)).toBe(true);

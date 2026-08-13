@@ -105,6 +105,8 @@ type CommercialOrder struct {
 	PaidAt            *time.Time         `json:"paid_at,omitempty"`
 	FulfilledAt       *time.Time         `json:"fulfilled_at,omitempty"`
 	ClosedAt          *time.Time         `json:"closed_at,omitempty"`
+	RefundRequestNo   string             `json:"refund_request_no,omitempty"`
+	RefundedAt        *time.Time         `json:"refunded_at,omitempty"`
 	LastError         string             `json:"-"`
 	CreatedAt         time.Time          `json:"created_at"`
 	UpdatedAt         time.Time          `json:"updated_at"`
@@ -119,6 +121,20 @@ type CommercialPaymentConfirmation struct {
 	AmountFen       int64
 	Currency        string
 	PaidAt          time.Time
+	PayloadHash     string
+}
+
+// CommercialRefundConfirmation is the normalized result of a provider-side
+// full refund. The request identifier is deterministic so retries remain
+// idempotent when the provider succeeds but the local transaction is retried.
+type CommercialRefundConfirmation struct {
+	Channel         string
+	EventID         string
+	ProviderTradeNo string
+	RefundRequestNo string
+	AmountFen       int64
+	Currency        string
+	RefundedAt      time.Time
 	PayloadHash     string
 }
 
@@ -189,11 +205,13 @@ type CommercialQuotaGrant struct {
 	PlanID        int64      `json:"plan_id,omitempty"`
 	InviteCodeID  int64      `json:"invite_code_id,omitempty"`
 	GrantType     string     `json:"grant_type"`
+	SourceRef     string     `json:"source_ref,omitempty"`
 	Model         string     `json:"model"`
 	AmountCNY     float64    `json:"amount_cny"`
 	ResetDuration string     `json:"reset_duration"`
 	EffectiveAt   time.Time  `json:"effective_at"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	RevokedAt     *time.Time `json:"revoked_at,omitempty"`
 	Note          string     `json:"note,omitempty"`
 	OperatorUID   int64      `json:"operator_uid,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`

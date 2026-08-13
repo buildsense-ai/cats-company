@@ -508,10 +508,12 @@ CREATE TABLE IF NOT EXISTS commercial_quota_grants (
     grant_type VARCHAR(32) NOT NULL DEFAULT 'manual',
     model VARCHAR(128) NOT NULL DEFAULT '*',
     amount_cny NUMERIC(14,6) NOT NULL,
-    reset_duration VARCHAR(16) NOT NULL DEFAULT '1M',
-    effective_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMPTZ DEFAULT NULL,
-    note TEXT NOT NULL DEFAULT '',
+	reset_duration VARCHAR(16) NOT NULL DEFAULT '1M',
+	effective_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	expires_at TIMESTAMPTZ DEFAULT NULL,
+	source_ref VARCHAR(128) NOT NULL DEFAULT '',
+	revoked_at TIMESTAMPTZ DEFAULT NULL,
+	note TEXT NOT NULL DEFAULT '',
     operator_uid BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_commercial_quota_grants_amount CHECK (amount_cny > 0)
@@ -555,6 +557,8 @@ CREATE TABLE IF NOT EXISTS commercial_orders (
 	paid_at TIMESTAMPTZ DEFAULT NULL,
 	fulfilled_at TIMESTAMPTZ DEFAULT NULL,
 	closed_at TIMESTAMPTZ DEFAULT NULL,
+	refund_request_no VARCHAR(64) NOT NULL DEFAULT '',
+	refunded_at TIMESTAMPTZ DEFAULT NULL,
 	last_error TEXT NOT NULL DEFAULT '',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -936,7 +940,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_entitlements_invite_once
     WHERE source = 'invite';
 CREATE INDEX IF NOT EXISTS idx_commercial_quota_grants_uid_model ON commercial_quota_grants (uid, model, effective_at);
 CREATE INDEX IF NOT EXISTS idx_commercial_quota_grants_expires ON commercial_quota_grants (expires_at);
+CREATE INDEX IF NOT EXISTS idx_commercial_quota_grants_source ON commercial_quota_grants (grant_type, source_ref);
 CREATE INDEX IF NOT EXISTS idx_commercial_quota_ledger_uid_created ON commercial_quota_ledger (uid, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_refund_ledger_grant
+	ON commercial_quota_ledger (source_type, source_id, entry_type)
+	WHERE source_type = 'refund' AND entry_type = 'revoke';
 CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_entitlements_order_once
 	ON commercial_entitlements (uid, source, source_ref)
 	WHERE source = 'order';
