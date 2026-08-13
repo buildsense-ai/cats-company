@@ -102,7 +102,14 @@ export function normalizeOwnedBots(response, userUid) {
 export function normalizeAccessibleBots(response, userUid) {
   const bots = Array.isArray(response) ? response : (response?.agents || response?.bots || []);
   return bots.filter((bot) => {
-    if (bot?.relation === 'owner' || bot?.relation === 'friend') return true;
+    if (bot?.relation === 'owner') return true;
+    // /api/bots is also used as a chat roster and may include a disclosed
+    // human friend. A SkillHub friend entry must identify a real Bot owner;
+    // otherwise /api/agents/skills cannot resolve a BotDefinition for it.
+    if (bot?.relation === 'friend') {
+      const botOwnerUID = Number(bot?.owner_id || bot?.owner_uid || 0);
+      return botOwnerUID > 0;
+    }
     if (bot?.is_owner !== undefined) return Boolean(bot.is_owner);
     const ownerUID = Number(bot?.owner_id || bot?.owner_uid || 0);
     return ownerUID > 0 && ownerUID === Number(userUid);

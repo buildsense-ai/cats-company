@@ -73,7 +73,7 @@ describe('SkillHubView', () => {
     api.getMyBots.mockResolvedValue({
       bots: [
         { uid: 42, display_name: 'Owner Bot', relation: 'owner', is_owner: true },
-        { uid: 43, display_name: 'Friend Bot', relation: 'friend', is_owner: false },
+        { uid: 43, display_name: 'Friend Bot', relation: 'friend', is_owner: false, owner_id: 99 },
       ],
     });
     api.getAgentSkills.mockResolvedValue({
@@ -119,7 +119,8 @@ describe('SkillHubView', () => {
   it('normalizes accessible owner and friend bots and merges local-only skills', () => {
     expect(normalizeAccessibleBots({ agents: [
       { uid: 42, relation: 'owner' },
-      { uid: 43, relation: 'friend' },
+      { uid: 43, relation: 'friend', owner_id: 99 },
+      { uid: 44, display_name: 'Human Friend', relation: 'friend', is_bot: true },
     ] }, 7).map((bot) => bot.relation)).toEqual(['owner', 'friend']);
     expect(buildCurrentAgentSkills([
       { skillId: 'tools/review', version: '1' },
