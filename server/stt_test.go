@@ -179,6 +179,77 @@ func TestSTTHandlerDoesNotPromotePartialWhenProviderCloses(t *testing.T) {
 	}
 }
 
+func TestSTTHandlerForwardsACompleteDefiniteSnapshotBeforeLaterPartial(t *testing.T) {
+	provider := &fakeSTTProvider{}
+	handler := NewSTTHandler(STTConfig{
+		Enabled:          true,
+		Provider:         "fake",
+		TicketTTL:        time.Minute,
+		MaxDuration:      90 * time.Second,
+		FinalTimeout:     time.Second,
+		MaxConcurrent:    4,
+		HourlyAudioLimit: 10 * time.Minute,
+		DailyAudioLimit:  time.Hour,
+	}, provider)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/stt/sessions", authenticatedSTTHandler(handler.HandleSession, 8))
+	mux.HandleFunc("/api/stt/realtime", handler.HandleRealtime)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ticket := issueSTTTicket(t, server.URL)
+	conn, _, err := websocket.DefaultDialer.Dial(
+		"ws"+strings.TrimPrefix(server.URL, "http")+"/api/stt/realtime?ticket="+ticket,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+
+	provider.mu.Lock()
+	stream := provider.sessions[0]
+	provider.mu.Unlock()
+	stream.events <- STTEvent{Type: STTEventDefinite, Text: "已经稳定的前半句。正在识别的后半句"}
+
+	var definite struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if _, payload, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	} else if err := json.Unmarshal(payload, &definite); err != nil {
+		t.Fatal(err)
+	}
+	if definite.Type != "definite" || definite.Text != "已经稳定的前半句。正在识别的后半句" {
+		t.Fatalf("definite=%#v", definite)
+	}
+
+	stream.events <- STTEvent{Type: STTEventPartial, Text: "已经稳定的前半句。正在识别的后半句，继续修订"}
+
+	var partial struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if _, payload, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	} else if err := json.Unmarshal(payload, &partial); err != nil {
+		t.Fatal(err)
+	}
+	if partial.Type != "partial" || partial.Text != "已经稳定的前半句。正在识别的后半句，继续修订" {
+		t.Fatalf("partial=%#v", partial)
+	}
+
+	stream.events <- STTEvent{Type: STTEventFinal, Text: "已经稳定的前半句。正在识别的后半句。"}
+	if _, _, err := conn.ReadMessage(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSTTHandlerStopsAfterSilentAudioIdleTimeout(t *testing.T) {
 	provider := &fakeSTTProvider{}
 	handler := NewSTTHandler(STTConfig{
