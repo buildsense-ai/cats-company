@@ -11,8 +11,8 @@ product-facing concerns for OpenAI-compatible clients:
   operator escape hatch for broken upstream providers;
 - run relay-admin model budget preflight;
 - record passthrough usage so CatsCo user pages can show OpenAI SDK usage;
-- turn stream=true into a one-shot OpenAI SSE stream after a non-stream
-  upstream call, matching the Anthropic adapter's reliability tradeoff.
+- proxy OpenAI Responses SSE incrementally so clients receive standard typed
+  events while the model is still generating.
 """
 
 from __future__ import annotations
@@ -34,13 +34,17 @@ from copy import deepcopy
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Iterable
+from typing import Any, BinaryIO, Callable, Iterable
 
 
 HOST = os.environ.get("CATS_OPENAI_ADAPTER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CATS_OPENAI_ADAPTER_PORT", "18091"))
 BIFROST_BASE_URL = os.environ.get("BIFROST_INTERNAL_URL", "http://127.0.0.1:18088")
 TIMEOUT = float(os.environ.get("CATS_OPENAI_ADAPTER_TIMEOUT", "300"))
+RESPONSES_STREAM_READ_SIZE = max(
+    1024,
+    int(os.environ.get("CATS_OPENAI_RESPONSES_STREAM_READ_SIZE", "16384")),
+)
 LOG_LEVEL = os.environ.get("CATS_OPENAI_ADAPTER_LOG_LEVEL", "INFO").upper()
 PROVIDER_POOL_COOLDOWN_SECONDS = max(
     0.0,
@@ -1561,6 +1565,77 @@ def iter_responses_sse_events(payload: bytes) -> Iterable[tuple[str, dict[str, A
             continue
         event_type = str(event.get("type") or event_name).strip().lower()
         yield event_type, event
+
+
+class ResponsesSSEObserver:
+    """Observe a forwarded Responses SSE stream without rewriting its bytes."""
+
+    TERMINAL_EVENTS = {
+        "response.completed",
+        "response.failed",
+        "response.incomplete",
+        "response.cancelled",
+        "response.error",
+        "error",
+    }
+
+    def __init__(self) -> None:
+        self.buffer = b""
+        self.usage: dict[str, Any] = {}
+        self.terminal = ""
+        self.error_code = ""
+
+    def feed(self, chunk: bytes) -> None:
+        self.buffer += chunk
+        while True:
+            match = re.search(br"\r\n\r\n|\n\n|\r\r", self.buffer)
+            if match is None:
+                return
+            block = self.buffer[: match.start()]
+            self.buffer = self.buffer[match.end() :]
+            self._observe(block)
+
+    def finish(self) -> None:
+        if self.buffer.strip():
+            self._observe(self.buffer)
+        self.buffer = b""
+
+    def _observe(self, block: bytes) -> None:
+        for event_type, event in iter_responses_sse_events(block + b"\n\n"):
+            candidate = event.get("usage")
+            response = event.get("response")
+            if not isinstance(candidate, dict) and isinstance(response, dict):
+                candidate = response.get("usage")
+            if isinstance(candidate, dict):
+                self.usage = candidate
+            if event_type in self.TERMINAL_EVENTS:
+                self.terminal = event_type
+                self.error_code = safe_error_code_from_object(event)
+
+    def outcome(self) -> dict[str, Any]:
+        if self.terminal == "response.completed":
+            return {
+                "valid_payload": True,
+                "succeeded": True,
+                "usage": self.usage,
+                "terminal": self.terminal,
+                "error_code": None,
+            }
+        if self.terminal:
+            return {
+                "valid_payload": True,
+                "succeeded": False,
+                "usage": self.usage,
+                "terminal": self.terminal,
+                "error_code": self.error_code or self.terminal.replace(".", "_"),
+            }
+        return {
+            "valid_payload": False,
+            "succeeded": False,
+            "usage": self.usage,
+            "terminal": "",
+            "error_code": "missing_terminal_event",
+        }
 
 
 def safe_error_code_from_payload(payload: bytes) -> str:
@@ -3153,6 +3228,15 @@ class Handler(BaseHTTPRequestHandler):
         stream = body.get("stream") is True
         valid_payload = False
         attempt = 0
+        response_committed = False
+        downstream_disconnected = False
+        outcome: dict[str, Any] = {
+            "valid_payload": False,
+            "succeeded": False,
+            "usage": {},
+            "terminal": "",
+            "error_code": "upstream_connection_error",
+        }
         provider_wait_deadline = (
             time.monotonic() + provider_pool_request_wait_seconds(model)
         )
@@ -3202,20 +3286,66 @@ class Handler(BaseHTTPRequestHandler):
                 attempt += 1
                 upstream_attempted = True
                 try:
-                    status, headers, payload = self.call_bifrost(
-                        upstream_body,
-                        path="/v1/responses",
-                        extra_headers={
-                            "x-bf-model-provider": provider,
-                            "x-model-provider": provider,
-                            "x-request-id": request_id,
-                        },
-                    )
+                    request_headers = {
+                        "x-bf-model-provider": provider,
+                        "x-model-provider": provider,
+                        "x-request-id": request_id,
+                    }
+                    if stream:
+                        status, headers, upstream_stream = self.open_bifrost_stream(
+                            upstream_body,
+                            path="/v1/responses",
+                            extra_headers=request_headers,
+                        )
+                        content_type = str(
+                            headers.get("Content-Type") or headers.get("content-type") or ""
+                        ).lower()
+                        if 200 <= status < 300 and "text/event-stream" in content_type:
+                            response_committed = True
+                            outcome, downstream_disconnected, upstream_stream_error = self.forward_responses_stream(
+                                status,
+                                headers,
+                                upstream_stream,
+                            )
+                            payload = b""
+                            if downstream_disconnected:
+                                LOGGER.info(
+                                    "openai responses downstream disconnected while streaming provider=%s request_id=%s",
+                                    provider,
+                                    request_id,
+                                )
+                            elif upstream_stream_error:
+                                status = HTTPStatus.BAD_GATEWAY
+                                outcome = {
+                                    **outcome,
+                                    "valid_payload": False,
+                                    "succeeded": False,
+                                    "error_code": "upstream_stream_error",
+                                }
+                                LOGGER.warning(
+                                    "openai responses upstream stream failed after downstream commit provider=%s request_id=%s exception=%s",
+                                    provider,
+                                    request_id,
+                                    upstream_stream_error,
+                                )
+                        else:
+                            try:
+                                payload = upstream_stream.read()
+                            finally:
+                                upstream_stream.close()
+                    else:
+                        status, headers, payload = self.call_bifrost(
+                            upstream_body,
+                            path="/v1/responses",
+                            extra_headers=request_headers,
+                        )
                 except Exception as exc:
                     LOGGER.exception(
                         "openai responses unexpected upstream exception provider=%s",
                         provider,
                     )
+                    if response_committed:
+                        return
                     status = HTTPStatus.BAD_GATEWAY
                     headers = {"Content-Type": "application/json"}
                     payload = json_bytes(
@@ -3232,7 +3362,8 @@ class Handler(BaseHTTPRequestHandler):
                     abandon_provider_pool_lease(lease)
             duration_ms = int((time.monotonic() - started) * 1000)
             try:
-                outcome = responses_outcome_from_payload(payload, stream=stream)
+                if not response_committed:
+                    outcome = responses_outcome_from_payload(payload, stream=stream)
             except Exception:
                 LOGGER.exception(
                     "openai responses failed to inspect upstream payload provider=%s",
@@ -3255,22 +3386,25 @@ class Handler(BaseHTTPRequestHandler):
                 }
             valid_payload = bool(outcome["valid_payload"])
             attempt_succeeded = 200 <= status < 300 and bool(outcome["succeeded"])
+            provider_payload_valid = valid_payload if response_committed else attempt_succeeded
             usage = outcome["usage"]
             error_code = None
             if not attempt_succeeded:
-                if status < 200 or status >= 300:
+                if response_committed and outcome.get("error_code"):
+                    error_code = outcome["error_code"]
+                elif status < 200 or status >= 300:
                     error_code = safe_error_code_from_payload(payload) or f"http_{status}"
                 else:
                     error_code = outcome["error_code"]
-            failover = should_failover_provider(
+            failover = not response_committed and not downstream_disconnected and should_failover_provider(
                 status,
-                valid_payload=attempt_succeeded,
+                valid_payload=provider_payload_valid,
                 payload=payload,
                 error_code=error_code,
             )
-            opens_circuit = provider_failure_opens_circuit(
+            opens_circuit = not downstream_disconnected and provider_failure_opens_circuit(
                 status,
-                valid_payload=attempt_succeeded,
+                valid_payload=provider_payload_valid,
                 payload=payload,
                 error_code=error_code,
             )
@@ -3302,6 +3436,9 @@ class Handler(BaseHTTPRequestHandler):
                 error_code=error_code,
                 fingerprint=provider_error_fingerprint(status, error_code) if error_code else None,
                 classification=(
+                    "client_disconnected"
+                    if downstream_disconnected
+                    else
                     "success"
                     if attempt_succeeded
                     else "explicit_request_error"
@@ -3336,7 +3473,13 @@ class Handler(BaseHTTPRequestHandler):
                     "error_code": error_code,
                     "provider": provider,
                     "model": model,
-                    "status": "success" if attempt_succeeded else "error",
+                    "status": (
+                        "client_disconnected"
+                        if downstream_disconnected
+                        else "success"
+                        if attempt_succeeded
+                        else "error"
+                    ),
                     "latency_ms": duration_ms,
                     "usage": usage,
                     "provider_pool": provider_pool,
@@ -3344,6 +3487,15 @@ class Handler(BaseHTTPRequestHandler):
                 },
                 context=f"responses/{provider}/{request_id}",
             )
+            if response_committed:
+                if not attempt_succeeded and not downstream_disconnected:
+                    LOGGER.warning(
+                        "openai responses committed stream ended unsuccessfully provider=%s terminal=%s error_code=%s",
+                        provider,
+                        outcome.get("terminal"),
+                        error_code,
+                    )
+                return
             if failover and attempt < len(providers):
                 log_upstream_error(
                     "openai_responses_failover",
@@ -3625,6 +3777,83 @@ class Handler(BaseHTTPRequestHandler):
             return HTTPStatus.BAD_GATEWAY, {"Content-Type": "application/json"}, json_bytes(
                 openai_error("upstream relay is unavailable", "server_error")
             )
+
+    def open_bifrost_stream(
+        self,
+        json_body: dict[str, Any],
+        *,
+        path: str,
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, str], BinaryIO]:
+        target = BIFROST_BASE_URL.rstrip("/") + path
+        headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_BY_HOP_HEADERS}
+        headers["Content-Type"] = "application/json"
+        headers["Accept-Encoding"] = "identity"
+        if extra_headers:
+            headers.update(extra_headers)
+        request = urllib.request.Request(
+            target,
+            data=json_bytes(json_body),
+            headers=headers,
+            method=self.command,
+        )
+        try:
+            response = urllib.request.urlopen(request, timeout=TIMEOUT)
+            return response.status, dict(response.headers.items()), response
+        except urllib.error.HTTPError as exc:
+            return exc.code, dict(exc.headers.items()), exc
+
+    def forward_responses_stream(
+        self,
+        status: int,
+        headers: dict[str, str],
+        upstream: BinaryIO,
+    ) -> tuple[dict[str, Any], bool, str | None]:
+        observer = ResponsesSSEObserver()
+        client_disconnected = False
+        upstream_stream_error: str | None = None
+        forwarded_headers = {name.lower(): value for name, value in headers.items()}
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            for name in ("x-request-id", "openai-request-id", "request-id"):
+                value = forwarded_headers.get(name)
+                if value:
+                    self.send_header(name, value)
+            self.end_headers()
+            self.wfile.flush()
+            while True:
+                try:
+                    chunk = self.read_stream_chunk(upstream)
+                except Exception as exc:
+                    upstream_stream_error = type(exc).__name__
+                    break
+                if not chunk:
+                    break
+                observer.feed(chunk)
+                try:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    client_disconnected = True
+                    break
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            client_disconnected = True
+        finally:
+            upstream.close()
+            self.close_connection = True
+        observer.finish()
+        return observer.outcome(), client_disconnected, upstream_stream_error
+
+    @staticmethod
+    def read_stream_chunk(upstream: BinaryIO) -> bytes:
+        read1 = getattr(upstream, "read1", None)
+        if callable(read1):
+            return read1(RESPONSES_STREAM_READ_SIZE)
+        return upstream.read(RESPONSES_STREAM_READ_SIZE)
 
     def call_relay_admin(
         self,
