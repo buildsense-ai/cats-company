@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { RefreshCw, X } from 'lucide-react';
 import { api } from '../api';
 
 export const RELAY_ADMIN_WIDTH_STORAGE_KEY = 'cc_relay_admin_width_v1';
@@ -32,6 +32,7 @@ export function saveRelayAdminWidth(width) {
 
 export default function RelayAdminPanel({ onClose }) {
   const [width, setWidth] = useState(() => loadRelayAdminWidth());
+  const [reloadKey, setReloadKey] = useState(0);
   const widthRef = useRef(width);
 
   useEffect(() => {
@@ -82,13 +83,13 @@ export default function RelayAdminPanel({ onClose }) {
   return (
     <aside
       className="v3-relay-admin-panel"
-      aria-label="中转用量管理"
+      aria-label="模型用量管理"
       style={{ '--v3-relay-admin-width': `${width}px` }}
     >
       <div
         className="v3-relay-admin-resize-handle"
         role="separator"
-        aria-label="调整中转用量面板宽度"
+        aria-label="调整模型用量面板宽度"
         aria-orientation="vertical"
         tabIndex={0}
         onPointerDown={handleResizePointerDown}
@@ -96,10 +97,20 @@ export default function RelayAdminPanel({ onClose }) {
         title="拖动调整面板宽度"
       />
       <div className="v3-relay-admin-header">
-        <span>中转用量管理</span>
-        <button type="button" onClick={onClose} aria-label="关闭中转用量管理" title="关闭">
-          <X size={16} />
-        </button>
+        <span>模型用量管理</span>
+        <div className="v3-relay-admin-header-actions">
+          <button
+            type="button"
+            onClick={() => setReloadKey((value) => value + 1)}
+            aria-label="重新载入模型用量管理"
+            title="重新载入"
+          >
+            <RefreshCw size={16} />
+          </button>
+          <button type="button" onClick={onClose} aria-label="关闭模型用量管理" title="关闭">
+            <X size={16} />
+          </button>
+        </div>
       </div>
       {/* The relay page needs scripts and same-origin fetches (path-rewritten
           through the guarded proxy). allow-same-origin + allow-scripts means the
@@ -107,9 +118,10 @@ export default function RelayAdminPanel({ onClose }) {
           proxy (uid whitelist + path whitelist + scoped cookie + rate limit),
           and only whitelisted uid can open this panel at all. */}
       <iframe
-        title="中转用量管理"
+        key={reloadKey}
+        title="模型用量管理"
         src={api.relayAdminProxyURL('/local/usage-admin')}
-        sandbox="allow-scripts allow-same-origin allow-forms"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
       />
     </aside>
   );

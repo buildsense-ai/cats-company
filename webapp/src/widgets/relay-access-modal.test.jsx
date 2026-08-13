@@ -9,6 +9,7 @@ vi.mock('../api', () => ({
     getCommercialCatalog: vi.fn(),
     getCommercialOrders: vi.fn(),
     createCommercialOrder: vi.fn(),
+    cancelCommercialOrder: vi.fn(),
     confirmCommercialTestPayment: vi.fn(),
     claimCommercialTrial: vi.fn(),
     getRelayUsage: vi.fn(),
@@ -59,7 +60,7 @@ describe('RelayAccessModal commercial rollout', () => {
       note: '套餐和邀请码仍在内部测试。',
       summary: {
         uid: 38,
-        models: ['MiniMax-M3', 'deepseek-v4-flash'],
+        models: ['MiniMax-M3', 'deepseek-v4-flash', 'gpt-5.6-luna'],
         entitlements: [],
         plans: [],
       },
@@ -69,6 +70,7 @@ describe('RelayAccessModal commercial rollout', () => {
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
     });
     window.confirm = vi.fn(() => true);
+    window.open = vi.fn(() => null);
     api.getCommercialCatalog.mockResolvedValue({ enabled: false, plans: [], channels: [], trial_available: false });
     api.getCommercialOrders.mockResolvedValue({ orders: [] });
     container = document.createElement('div');
@@ -123,6 +125,8 @@ describe('RelayAccessModal commercial rollout', () => {
     await clickButton('生成我的 Key');
 
     expect(api.createRelayKey).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('CatsCo API Key');
+    expect(container.textContent).not.toContain('CatsCo relay key');
     expect(container.textContent).toContain('sk-bf-created-secret');
     await clickButton('复制 Key');
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('sk-bf-created-secret');
@@ -162,21 +166,21 @@ describe('RelayAccessModal commercial rollout', () => {
     await clickButton('撤销');
     expect(window.confirm).toHaveBeenCalledTimes(2);
     expect(api.revokeRelayKey).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain('还没有模型服务 Key');
+    expect(container.textContent).toContain('还没有 API Key');
     expect(container.textContent).not.toContain('sk-bf-rotated-secret');
   });
 
   it('keeps invite redemption hidden while commercial rollout is disabled', async () => {
     await renderModal();
 
-    expect(container.textContent).toContain('套餐与邀请码');
+    expect(container.textContent).toContain('套餐与账单');
     expect(container.textContent).toContain('未开放');
-    expect(container.textContent).toContain('当前仍使用默认模型服务额度和现有 Key');
+    expect(container.textContent).toContain('当前额度和 API Key 不受影响');
     expect(container.textContent).toContain('套餐和邀请码仍在内部测试');
     expect(container.querySelector('.relay-access-invite-form')).toBeNull();
   });
 
-  it('shows invite redemption and per-model budgets when commercial rollout is enabled', async () => {
+  it('shows invite redemption and shared-pool model coverage when commercial rollout is enabled', async () => {
     api.getRelayUsage.mockImplementation(({ model } = {}) => Promise.resolve({
       configured: true,
       summary: {
@@ -194,9 +198,15 @@ describe('RelayAccessModal commercial rollout', () => {
       enabled: true,
       summary: {
         uid: 38,
-        models: ['MiniMax-M3', 'deepseek-v4-flash'],
+        models: ['MiniMax-M3', 'deepseek-v4-flash', 'gpt-5.6-luna'],
         entitlements: [
-          { state: 'active', plan_name: '教师试用包', expires_at: '2026-07-29T00:00:00Z' },
+          {
+            state: 'active',
+            plan_name: '教师试用包',
+            source: 'invite',
+            starts_at: '2026-06-29T00:00:00Z',
+            expires_at: '2026-07-29T00:00:00Z',
+          },
           { state: 'expired', plan_name: '旧套餐' },
         ],
       },
@@ -204,25 +214,68 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
 
-    expect(container.textContent).toContain('账本灰度');
-    expect(container.textContent).toContain('当前模型用量');
-    expect(container.textContent).toContain('需要管理员后台对账/同步后');
+    expect(container.textContent).toContain('内测开放');
+    expect(container.textContent).toContain('本周期总用量');
+    expect(container.textContent).toContain('购买记录不会自动改变已有模型额度');
     expect(container.textContent).toContain('当前有效套餐');
     expect(container.textContent).toContain('套餐最近到期');
     expect(container.textContent).toContain('每月重置');
     expect(container.textContent).toContain('下次');
     expect(container.textContent).toContain('不是自然月');
-    expect(container.textContent).toContain('当前套餐');
+    expect(container.textContent).toContain('当前权益');
+    expect(container.textContent).toContain('1 个共享额度池 · 覆盖 2 个模型');
+    expect(container.textContent).not.toContain('2 个模型额度可用');
+    expect(container.textContent).not.toContain('gpt-5.6-luna');
     expect(container.textContent).toContain('教师试用包');
+    expect(container.textContent).toContain('邀请码兑换');
     expect(container.textContent).toContain('MiniMax-M3');
     expect(container.textContent).toContain('deepseek-v4-flash');
     expect(container.textContent).toContain('剩余 75%');
-    expect(container.textContent).toContain('剩余 87.5%');
+    expect(api.getRelayUsage).toHaveBeenCalledWith({ scope: 'total' });
+    expect(api.getRelayUsage.mock.calls.every(([options]) => options?.scope === 'total' && !options?.model)).toBe(true);
     expect(container.textContent).not.toContain('CNY');
     expect(container.textContent).not.toContain('¥');
     expect(container.textContent).not.toContain('￥');
     expect(container.textContent).not.toContain('禁用套餐');
     expect(container.querySelector('.relay-access-invite-form')).not.toBeNull();
+  });
+
+  it('turns an invite into its bound package instead of a separate invite product', async () => {
+    api.getRelayCommercial.mockResolvedValue({
+      enabled: true,
+      summary: { uid: 38, models: [], entitlements: [], plans: [] },
+    });
+    api.redeemRelayInvite.mockResolvedValue({
+      summary: {
+        uid: 38,
+        models: ['gpt-5.6-terra', 'gpt-5.6-sol'],
+        entitlements: [{
+          id: 12,
+          plan_id: 2,
+          plan_name: '个人版',
+          source: 'invite',
+          state: 'active',
+          starts_at: '2026-08-12T00:00:00Z',
+          expires_at: '2026-09-11T00:00:00Z',
+        }],
+      },
+    });
+
+    await renderModal();
+    const input = container.querySelector('input[placeholder="输入邀请码"]');
+    expect(input).not.toBeNull();
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      valueSetter.call(input, 'PERSONAL-2026');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await clickButton('兑换');
+
+    expect(api.redeemRelayInvite).toHaveBeenCalledWith('PERSONAL-2026');
+    expect(container.textContent).toContain('个人版');
+    expect(container.textContent).toContain('邀请码兑换');
+    expect(container.textContent).not.toContain('邀请码套餐');
   });
 
   it('shows explicit no-package state for enabled users without active entitlements', async () => {
@@ -242,23 +295,26 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).toContain('当前没有有效套餐');
   });
 
-  it('shows custom model as outside relay package quota', async () => {
+  it('keeps the package total independent from a custom startup model', async () => {
     api.getRelayUsage.mockResolvedValue({
       configured: true,
       summary: {
-        source: 'custom',
-        model: '自定义模型',
-        status: 'custom',
+        source: 'relay',
+        model: '套餐总额度',
+        quota_configured: true,
+        percent: 30,
+        remaining_percent: 70,
+        status: 'normal',
       },
     });
 
     await renderModal();
 
-    expect(container.textContent).toContain('当前使用自定义模型');
-    expect(container.textContent).toContain('不消耗 CatsCo 模型服务套餐');
+    expect(container.textContent).toContain('套餐总额度');
+    expect(container.textContent).toContain('剩余 70%');
   });
 
-  it('shows explicit over-limit warning for the current relay model', async () => {
+  it('shows explicit over-limit warning for the total package quota', async () => {
     api.getRelayUsage.mockResolvedValue({
       configured: true,
       summary: {
@@ -275,11 +331,11 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
 
-    expect(container.textContent).toContain('当前模型已超额');
+    expect(container.textContent).toContain('套餐额度已超额');
     expect(container.textContent).toContain('剩余 0%');
     expect(container.textContent).toContain('已用 100%+');
     expect(container.textContent).not.toContain('CNY');
-    expect(container.textContent).toContain('请联系管理员补额或重置');
+    expect(container.textContent).toContain('请续购套餐或等待额度重置');
   });
 
   it('does not present zero relay limit as a real remaining quota', async () => {
@@ -297,8 +353,8 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
 
-    expect(container.textContent).toContain('当前模型未设置额度');
-    expect(container.textContent).toContain('等待模型限额同步');
+    expect(container.textContent).toContain('总额度待同步');
+    expect(container.textContent).toContain('等待套餐额度同步');
   });
 
   it('shows gray purchase plans and the configured payment channel', async () => {
@@ -329,7 +385,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).toContain('领取体验包');
   });
 
-  it('renders the CatsCo five-tier catalog with the reviewed pricing copy', async () => {
+  it('renders the current Free, Personal and Pro catalog without exposing internal quota values', async () => {
     api.getCommercialCatalog.mockResolvedValue({
       enabled: true,
       test_mode: true,
@@ -337,67 +393,80 @@ describe('RelayAccessModal commercial rollout', () => {
       channels: [],
       plans: [
         {
-          id: 1,
-          slug: 'catsco-trial-3d',
-          name: '3天体验',
-          description: '用三天跑一遍真实任务。',
-          price_fen: 990,
-          duration_days: 3,
-          model_budgets: { 'MiniMax-M3': 10 },
-        },
-        {
-          id: 2,
-          slug: 'catsco-plus-minus',
-          name: 'Plus−',
-          price_fen: 4900,
-          duration_days: 30,
-          model_budgets: { 'MiniMax-M3': 20 },
-        },
-        {
-          id: 3,
-          slug: 'catsco-plus',
-          name: 'Plus',
-          price_fen: 9900,
-          duration_days: 30,
-          model_budgets: { 'MiniMax-M3': 30 },
-        },
-        {
-          id: 4,
-          slug: 'catsco-plus-plus',
-          name: 'Plus+',
-          price_fen: 19900,
-          duration_days: 30,
-          model_budgets: { 'MiniMax-M3': 40 },
-        },
-        {
-          id: 5,
-          slug: 'catsco-team-monthly',
-          name: '团队月卡',
+          id: 21,
+          slug: 'catsco-personal',
+          name: '个人版',
+          description: '适合将 XiaoBa 作为日常个人助手。',
           price_fen: 39900,
           duration_days: 30,
-          model_budgets: { 'MiniMax-M3': 50 },
+          model_budgets: { 'gpt-5.6-terra': 5250, 'gpt-5.6-sol': 5250 },
+        },
+        {
+          id: 22,
+          slug: 'catsco-pro',
+          name: '专业版',
+          description: '适合高频、多任务并行或复杂工作。',
+          price_fen: 79900,
+          duration_days: 30,
+          model_budgets: { 'gpt-5.6-terra': 15750, 'gpt-5.6-sol': 15750 },
         },
       ],
     });
 
     await renderModal();
 
-    expect(container.textContent).toContain('选一档，开始你的协作节奏');
-    expect(container.textContent).toContain('¥9.9');
-    expect(container.textContent).toContain('¥49');
-    expect(container.textContent).toContain('¥99');
-    expect(container.textContent).toContain('¥199');
+    expect(container.textContent).toContain('选择适合你的工作强度');
+    expect(container.textContent).toContain('免费版');
+    expect(container.textContent).toContain('个人版');
+    expect(container.textContent).toContain('专业版');
+    expect(container.textContent).toContain('¥0');
     expect(container.textContent).toContain('¥399');
-    expect(container.textContent).toContain('首次体验 · 每位用户限购一次');
-    expect(container.textContent).toContain('稳定日用 · 默认推荐');
-    expect(container.textContent).toContain('体验用量 · 3 天有效');
-    expect(container.textContent).toContain('标准用量 · 30 天有效');
-    expect(container.textContent).toContain('支付宝材料与支付通道仍在准备');
-    expect(container.textContent).not.toContain('MiniMax-M3 10.00');
-    expect(container.textContent).not.toContain('MiniMax-M3 30.00');
-    expect(container.querySelector('.relay-access-plan-row.recommended')?.textContent).toContain('Plus');
-    expect(container.querySelector('.relay-access-plan-row.wide')?.textContent).toContain('团队月卡');
+    expect(container.textContent).toContain('¥799');
+    expect(container.textContent).toContain('约为个人版 3 倍的任务容量');
+    expect(container.textContent).toContain('个人版用量 · 30 天有效');
+    expect(container.textContent).toContain('专业版用量 · 30 天有效');
+    expect(container.textContent).toContain('支付通道暂未开放');
+    expect(container.textContent).not.toContain('200000000');
+    expect(container.textContent).not.toContain('10500');
+    expect(container.textContent).not.toContain('31500');
+    expect(container.textContent).not.toContain('gpt-5.6-luna');
+    expect(container.querySelector('.relay-access-plan-row.recommended')?.textContent).toContain('专业版');
+    expect(container.querySelectorAll('.relay-access-plan-row')).toHaveLength(3);
     expect(Array.from(container.querySelectorAll('.relay-access-plan-row button')).every((button) => button.disabled)).toBe(true);
+  });
+
+  it('shows a complete, filterable order history without hiding older orders', async () => {
+    const orders = [
+      { order_no: 'CCORDER01', plan_name: '待支付套餐', amount_fen: 9900, status: 'pending', created_at: '2026-08-10T01:00:00Z' },
+      { order_no: 'CCORDER02', plan_name: '已生效套餐 2', amount_fen: 4900, status: 'fulfilled', created_at: '2026-08-09T01:00:00Z' },
+      { order_no: 'CCORDER03', plan_name: '已生效套餐 3', amount_fen: 4900, status: 'fulfilled', created_at: '2026-08-08T01:00:00Z' },
+      { order_no: 'CCORDER04', plan_name: '已生效套餐 4', amount_fen: 4900, status: 'fulfilled', created_at: '2026-08-07T01:00:00Z' },
+      { order_no: 'CCORDER05', plan_name: '已生效套餐 5', amount_fen: 4900, status: 'fulfilled', created_at: '2026-08-06T01:00:00Z' },
+      { order_no: 'CCORDER06', plan_name: '已生效套餐 6', amount_fen: 4900, status: 'fulfilled', created_at: '2026-08-05T01:00:00Z' },
+      { order_no: 'CCORDER07', plan_name: '已生效套餐 7', amount_fen: 4900, status: 'fulfilled', created_at: '2026-08-04T01:00:00Z' },
+      { order_no: 'CCORDER08', plan_name: '已生效套餐 8', amount_fen: 4900, status: 'fulfilled', created_at: '2026-08-03T01:00:00Z' },
+      { order_no: 'CCORDER09', plan_name: '已退款套餐', amount_fen: 4900, status: 'refunded', created_at: '2026-08-02T01:00:00Z' },
+      { order_no: 'CCORDER10', plan_name: '已关闭套餐', amount_fen: 4900, status: 'closed', created_at: '2026-08-01T01:00:00Z' },
+    ];
+    api.getCommercialOrders.mockResolvedValue({ orders });
+
+    await renderModal();
+    await clickButton('订单记录');
+
+    expect(container.querySelectorAll('.relay-access-order-list > button')).toHaveLength(8);
+    expect(container.textContent).toContain('查看其余 2 条');
+    await clickButton('查看其余 2 条');
+    expect(container.querySelectorAll('.relay-access-order-list > button')).toHaveLength(10);
+
+    await clickButton('待处理');
+    const pendingRows = container.querySelectorAll('.relay-access-order-list > button');
+    expect(pendingRows).toHaveLength(1);
+    expect(pendingRows[0].textContent).toContain('待支付套餐');
+
+    await clickButton('退款 / 关闭');
+    expect(container.querySelectorAll('.relay-access-order-list > button')).toHaveLength(2);
+    expect(container.textContent).toContain('已退款套餐');
+    expect(container.textContent).toContain('已关闭套餐');
   });
 
   it('creates and confirms a gray payment from the user purchase flow', async () => {
@@ -442,6 +511,10 @@ describe('RelayAccessModal commercial rollout', () => {
       await Promise.resolve();
     });
 
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('确认购买');
+    await clickButton('确认购买');
+
     expect(api.createCommercialOrder).toHaveBeenCalledWith(9, 'test', expect.stringMatching(/^order_/), { timeoutMs: 40_000 });
     expect(container.textContent).toContain('待支付');
     const confirmButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('完成灰度测试支付'));
@@ -454,7 +527,7 @@ describe('RelayAccessModal commercial rollout', () => {
 
     expect(api.confirmCommercialTestPayment).toHaveBeenCalledWith('CCWEBTEST0001');
     expect(container.textContent).toContain('支付成功');
-    expect(container.textContent).toContain('额度正在同步');
+    expect(container.textContent).toContain('套餐已生效');
   });
 
   it('renders an Alipay page checkout without exposing the test confirmation action', async () => {
@@ -487,6 +560,13 @@ describe('RelayAccessModal commercial rollout', () => {
         created_at: '2026-07-14T06:00:00Z',
       },
     });
+    const paymentWindow = {
+      opener: window,
+      location: { replace: vi.fn() },
+      document: { title: '', body: { textContent: '' } },
+      close: vi.fn(),
+    };
+    window.open.mockReturnValue(paymentWindow);
 
     await renderModal();
     const purchaseButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent.includes('购买'));
@@ -496,13 +576,27 @@ describe('RelayAccessModal commercial rollout', () => {
       await Promise.resolve();
     });
 
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+    await clickButton('确认并前往支付宝');
+
     expect(api.createCommercialOrder).toHaveBeenCalledWith(10, 'alipay_page', expect.stringMatching(/^order_/), { timeoutMs: 40_000 });
+    expect(window.open).toHaveBeenCalledWith('about:blank', '_blank');
+    expect(paymentWindow.location.replace).toHaveBeenCalledWith('https://openapi.alipay.test/gateway.do');
     expect(container.textContent).toContain('支付宝支付 ¥9.9');
     const paymentLink = container.querySelector('.relay-access-payment-redirect a');
     expect(paymentLink?.getAttribute('href')).toBe('https://openapi.alipay.test/gateway.do');
     expect(paymentLink?.getAttribute('target')).toBe('_blank');
     expect(paymentLink?.getAttribute('rel')).toContain('noopener');
     expect(container.textContent).not.toContain('完成灰度测试支付');
+    expect(container.textContent).toContain('订单金额');
+    expect(container.textContent).toContain('支付方式');
+    expect(container.textContent).toContain('创建时间');
+    const copyOrderButton = container.querySelector('button[aria-label="复制订单号"]');
+    await act(async () => {
+      copyOrderButton.click();
+      await Promise.resolve();
+    });
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('CCALIPAYWEB0001');
   });
 
   it('keeps the Alipay label on a pending order after the channel is disabled', async () => {
@@ -527,13 +621,6 @@ describe('RelayAccessModal commercial rollout', () => {
     });
 
     await renderModal();
-    const orderButton = Array.from(container.querySelectorAll('button'))
-      .find(button => button.textContent.includes('历史支付宝订单'));
-    await act(async () => {
-      orderButton.click();
-      await Promise.resolve();
-    });
-
     expect(container.textContent).toContain('支付宝支付 ¥9.9');
   });
 
@@ -569,12 +656,14 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
     await clickButton('购买');
+    await clickButton('确认购买');
     await act(async () => {
       root.unmount();
     });
     root = createRoot(container);
     await renderModal();
     await clickButton('购买');
+    await clickButton('确认购买');
 
     expect(api.createCommercialOrder).toHaveBeenCalledTimes(2);
     expect(api.createCommercialOrder.mock.calls[0][2]).toBe(api.createCommercialOrder.mock.calls[1][2]);
@@ -609,6 +698,7 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
     await clickButton('购买');
+    await clickButton('确认购买');
     await act(async () => {
       root.unmount();
     });
@@ -616,6 +706,7 @@ describe('RelayAccessModal commercial rollout', () => {
     api.getCommercialOrders.mockRejectedValue(new Error('temporary order list failure'));
     await renderModal();
     await clickButton('购买');
+    await clickButton('确认购买');
 
     expect(api.createCommercialOrder).toHaveBeenCalledTimes(2);
     expect(api.createCommercialOrder.mock.calls[0][2]).toBe(api.createCommercialOrder.mock.calls[1][2]);
@@ -651,10 +742,57 @@ describe('RelayAccessModal commercial rollout', () => {
 
     await renderModal();
     expect(container.textContent).toContain('正在恢复支付宝收银台链接');
-    await clickButton('购买');
+    await clickButton('继续支付');
 
     expect(api.createCommercialOrder).not.toHaveBeenCalled();
     expect(container.textContent).toContain('CCRESUME0001');
+  });
+
+  it('shows the payment countdown and lets the user cancel an unpaid order', async () => {
+    const plan = {
+      id: 16,
+      slug: 'cancel-plan',
+      name: '可取消套餐',
+      price_fen: 39900,
+      currency: 'CNY',
+      sale_state: 'test',
+      duration_days: 30,
+    };
+    const pending = {
+      order_no: 'CCCANCELWEB0001',
+      plan_id: plan.id,
+      plan_name: plan.name,
+      amount_fen: plan.price_fen,
+      currency: 'CNY',
+      channel: 'alipay_page',
+      status: 'pending',
+      checkout_url: 'https://openapi.alipay.test/cancel-me',
+      expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      created_at: new Date().toISOString(),
+    };
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      test_mode: false,
+      channels: [{ id: 'alipay_page', label: '支付宝支付', test_mode: false }],
+      plans: [plan],
+    });
+    api.getCommercialOrders.mockResolvedValue({ orders: [pending] });
+    api.cancelCommercialOrder.mockResolvedValue({
+      ok: true,
+      order: { ...pending, status: 'closed', checkout_url: '', closed_at: new Date().toISOString() },
+    });
+
+    await renderModal();
+    await clickButton('继续支付');
+
+    expect(container.textContent).toMatch(/剩余 [45]:\d{2}/);
+    expect(container.textContent).toContain('支付剩余时间');
+    await clickButton('取消订单');
+
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('取消这笔订单'));
+    expect(api.cancelCommercialOrder).toHaveBeenCalledWith('CCCANCELWEB0001', { timeoutMs: 25_000 });
+    expect(container.textContent).toContain('已关闭');
+    expect(container.textContent).not.toContain('支付剩余时间');
   });
 
   it('actively recovers a recently closed Alipay order when the user opens it', async () => {
@@ -675,6 +813,7 @@ describe('RelayAccessModal commercial rollout', () => {
     ));
 
     await renderModal();
+    await clickButton('订单记录');
     await clickButton('关闭订单恢复包');
     await act(async () => {
       await Promise.resolve();
@@ -685,7 +824,7 @@ describe('RelayAccessModal commercial rollout', () => {
       signal: expect.any(AbortSignal),
       timeoutMs: 20_000,
     });
-    expect(container.textContent).toContain('额度同步中');
+    expect(container.textContent).toContain('已生效');
   });
 
   it('retries a recently closed Alipay order instead of stopping after one unchanged query', async () => {
@@ -706,6 +845,7 @@ describe('RelayAccessModal commercial rollout', () => {
       ));
 
       await renderModal();
+      await clickButton('订单记录');
       await clickButton('关闭订单重试包');
       await act(async () => {
         await Promise.resolve();
@@ -749,6 +889,6 @@ describe('RelayAccessModal commercial rollout', () => {
     const refreshOptions = api.getRelayCommercial.mock.calls.at(-1)[0];
     expect(refreshOptions.signal).toBeInstanceOf(AbortSignal);
     expect(refreshOptions.signal.aborted).toBe(false);
-    expect(container.textContent).toContain('额度同步中');
+    expect(container.textContent).toContain('已生效');
   });
 });

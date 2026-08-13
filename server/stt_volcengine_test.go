@@ -54,6 +54,12 @@ func TestVolcengineStreamingProviderAuthenticatesAndMapsTranscriptEvents(t *test
 		if requestOptions["model_name"] != "bigmodel" {
 			t.Errorf("request payload=%v", requestOptions)
 		}
+		if requestOptions["enable_nonstream"] != true {
+			t.Errorf("request payload must enable two-pass recognition: %v", requestOptions)
+		}
+		if requestOptions["show_utterances"] != true {
+			t.Errorf("request payload must expose stable utterances: %v", requestOptions)
+		}
 		audioOptions, _ := request["audio"].(map[string]interface{})
 		if audioOptions["sample_rate"] != float64(16000) {
 			t.Errorf("audio.sample_rate=%v", audioOptions["sample_rate"])
@@ -147,15 +153,18 @@ func TestVolcengineStreamingProviderRejectsNonDoubaoV2Configuration(t *testing.T
 	}
 }
 
-func TestVolcengineDefiniteUtteranceIsNotSessionFinalWithoutNegativeSequence(t *testing.T) {
+func TestVolcengineDefiniteUtteranceMapsTheCompleteResultToADefiniteSnapshot(t *testing.T) {
 	event, ok := parseVolcengineServerFrame(volcengineServerFrame(3, map[string]interface{}{
 		"code": 1000,
 		"result": map[string]interface{}{
-			"text":       "已经稳定的分句",
-			"utterances": []map[string]interface{}{{"text": "已经稳定的分句", "definite": true}},
+			"text": "已经稳定的分句。下一句仍在识别",
+			"utterances": []map[string]interface{}{
+				{"text": "已经稳定的分句。", "definite": true},
+				{"text": "下一句仍在识别", "definite": false},
+			},
 		},
 	}))
-	if !ok || event.Type != STTEventPartial {
+	if !ok || event.Type != STTEventDefinite || event.Text != "已经稳定的分句。下一句仍在识别" {
 		t.Fatalf("event=%#v ok=%v", event, ok)
 	}
 }

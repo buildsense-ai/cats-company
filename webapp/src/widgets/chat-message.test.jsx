@@ -37,7 +37,7 @@ vi.mock('marked', () => ({
 }));
 
 vi.mock('../api', () => ({
-  resolveMediaURL: (url) => url,
+  resolveMediaURL: vi.fn((url) => url),
   getApiBaseURL: () => window.location.origin,
 }));
 
@@ -59,6 +59,7 @@ vi.mock('read-excel-file/browser', () => ({
 }));
 
 import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from './chat-message';
+import { resolveMediaURL } from '../api';
 import { markdownPreviewDocument } from './markdown-utils';
 import readExcelFile from 'read-excel-file/browser';
 
@@ -2874,7 +2875,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-attachment-card')).toBeNull();
   });
 
-  it('keeps audio/ogg attachments as file cards', async () => {
+  it('plays browser-supported audio attachments inline and preserves an explicit download', async () => {
     await act(async () => {
       root.render(
         <PreviewHarness
@@ -2898,8 +2899,209 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
 
+    const player = container.querySelector('audio.oc-rich-audio-player');
+    const download = container.querySelector('a.oc-rich-audio-download');
+
     expect(container.querySelector('video.oc-rich-video-player')).toBeNull();
-    expect(container.querySelector('.v3-attachment-name').textContent).toBe('recording.ogg');
+    expect(player).not.toBeNull();
+    expect(player.getAttribute('src')).toBe('/uploads/files/20260727_00112233445566778899aabbccddeeff.ogg');
+    expect(player.controls).toBe(true);
+    expect(player.preload).toBe('metadata');
+    expect(player.getAttribute('aria-label')).toBe('播放音频 recording.ogg');
+    expect(container.querySelector('.oc-rich-audio-name').textContent).toBe('recording.ogg');
+    expect(download.getAttribute('href')).toContain('download=1');
+    expect(download.getAttribute('download')).toBe('recording.ogg');
+    expect(download.getAttribute('target')).toBe('_blank');
+    expect(download.getAttribute('rel')).toBe('noopener noreferrer');
+  });
+
+  it.each([
+    ['recording.mp3', 'audio/mpeg'],
+    ['recording.wav', 'audio/wav'],
+  ])('plays %s attachments inline', async (name, mimeType) => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: `audio-${name}`,
+            from_uid: 2,
+            content: `[文件] ${name}`,
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name,
+                url: `/uploads/files/20260812_00112233445566778899aabbccddeeff-${name}`,
+                size: 4096,
+                mime_type: mimeType,
+              },
+            }],
+            created_at: '2026-08-12T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('audio.oc-rich-audio-player')).not.toBeNull();
+    expect(container.querySelector('.v3-attachment-card')).toBeNull();
+  });
+
+  it('accepts explicit voice blocks for inline playback and forced download without a filename', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 111,
+            from_uid: 2,
+            content: '[语音]',
+            content_blocks: [{
+              type: 'voice',
+              payload: {
+                url: '/uploads/files/20260812_00112233445566778899aabbccddeeff.ogg',
+                size: 4096,
+                mime_type: 'audio/ogg; codecs=opus',
+              },
+            }],
+            created_at: '2026-08-12T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('audio.oc-rich-audio-player')).not.toBeNull();
+    expect(container.querySelector('a.oc-rich-audio-download').getAttribute('href'))
+      .toBe('/uploads/files/20260812_00112233445566778899aabbccddeeff.ogg?download=1');
+  });
+
+  it('keeps the forced-download query when the API uses a relative path prefix', async () => {
+    const originalImplementation = resolveMediaURL.getMockImplementation();
+    resolveMediaURL.mockImplementation((url) => `/api${url}`);
+    try {
+      await act(async () => {
+        root.render(
+          <PreviewHarness
+            message={{
+              id: 1111,
+              from_uid: 2,
+              content: '[语音]',
+              content_blocks: [{
+                type: 'voice',
+                payload: {
+                  url: '/uploads/files/20260812_00112233445566778899aabbccddeeff.ogg',
+                  size: 4096,
+                  mime_type: 'audio/ogg; codecs=opus',
+                },
+              }],
+              created_at: '2026-08-12T00:00:00Z',
+            }}
+          />,
+        );
+        await Promise.resolve();
+      });
+
+      expect(container.querySelector('a.oc-rich-audio-download').getAttribute('href'))
+        .toBe('/api/uploads/files/20260812_00112233445566778899aabbccddeeff.ogg?download=1');
+    } finally {
+      resolveMediaURL.mockImplementation(originalImplementation);
+    }
+  });
+
+  it('falls back to a downloadable file card when audio playback fails', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 112,
+            from_uid: 2,
+            content: '[文件] broken.ogg',
+            content_blocks: [{
+              type: 'file',
+              payload: {
+                name: 'broken.ogg',
+                url: '/uploads/files/20260812_ffeeddccbbaa99887766554433221100.ogg',
+                size: 4096,
+                mime_type: 'audio/ogg',
+              },
+            }],
+            created_at: '2026-08-12T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const player = container.querySelector('audio.oc-rich-audio-player');
+    await act(async () => {
+      Simulate.error(player);
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('audio.oc-rich-audio-player')).toBeNull();
+    expect(container.querySelector('[role="status"]').textContent).toContain('音频无法播放');
+    expect(container.querySelector('.v3-attachment-name').textContent).toBe('broken.ogg');
+    expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
+  });
+
+  it('keeps unsupported explicit voice formats as a download card', async () => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: 113,
+            from_uid: 2,
+            content: '[语音] legacy.amr',
+            content_blocks: [{
+              type: 'voice',
+              payload: {
+                name: 'legacy.amr',
+                url: '/uploads/files/20260812_00112233445566778899aabbccddeeff.amr',
+                size: 4096,
+                mime_type: 'audio/amr',
+              },
+            }],
+            created_at: '2026-08-12T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('audio.oc-rich-audio-player')).toBeNull();
+    expect(container.querySelector('.v3-attachment-name').textContent).toBe('legacy.amr');
+    expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
+  });
+
+  it.each([
+    ['legacy.opus', 'audio/opus'],
+    ['legacy.opus', 'audio/ogg'],
+    ['mislabelled.ogg', 'audio/opus'],
+  ])('keeps %s download-only when MIME is %s', async (name, mimeType) => {
+    await act(async () => {
+      root.render(
+        <PreviewHarness
+          message={{
+            id: `opus-${name}-${mimeType}`,
+            from_uid: 2,
+            content: `[语音] ${name}`,
+            content_blocks: [{
+              type: 'voice',
+              payload: {
+                name,
+                url: `/uploads/files/20260812_00112233445566778899aabbccddeeff.${name.split('.').pop()}`,
+                size: 4096,
+                mime_type: mimeType,
+              },
+            }],
+            created_at: '2026-08-12T00:00:00Z',
+          }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('audio.oc-rich-audio-player')).toBeNull();
+    expect(container.querySelector('.v3-attachment-name').textContent).toBe(name);
     expect(container.querySelector('a.v3-artifact-action').getAttribute('href')).toContain('download=1');
   });
 

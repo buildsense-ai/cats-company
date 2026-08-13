@@ -260,8 +260,8 @@ export default function ProfileEditor({
                 }}
               >
                 <div className="oc-settings-list-text">
-                  <div>CatsCo 中转站</div>
-                  <div className="oc-settings-secondary">查看 OpenAI / Anthropic 兼容接入地址。</div>
+                  <div>套餐与权益</div>
+                  <div className="oc-settings-secondary">查看当前权益、用量、套餐和订单记录。</div>
                 </div>
               </button>
             </div>

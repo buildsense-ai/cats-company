@@ -30,6 +30,7 @@ var alipayChinaLocation = time.FixedZone("CST", 8*60*60)
 type alipayPaymentClient interface {
 	TradePagePay(alipay.TradePagePay) (*url.URL, error)
 	TradeQuery(context.Context, alipay.TradeQuery) (*alipay.TradeQueryRsp, error)
+	TradeClose(context.Context, alipay.TradeClose) (*alipay.TradeCloseRsp, error)
 	DecodeNotification(context.Context, url.Values) (*alipay.Notification, error)
 }
 
@@ -209,6 +210,23 @@ func (p *alipayPagePaymentProvider) QueryPayment(ctx context.Context, order *typ
 		PaidAt:          paidAt,
 		PayloadHash:     paymentPayloadHash(payload),
 	}, true, nil
+}
+
+func (p *alipayPagePaymentProvider) ClosePayment(ctx context.Context, order *types.CommercialOrder) error {
+	if p == nil || p.client == nil || order == nil || strings.TrimSpace(order.OrderNo) == "" {
+		return fmt.Errorf("Alipay order close is unavailable")
+	}
+	response, err := p.client.TradeClose(ctx, alipay.TradeClose{OutTradeNo: strings.TrimSpace(order.OrderNo)})
+	if err != nil {
+		return fmt.Errorf("close Alipay order: %w", err)
+	}
+	if response == nil {
+		return fmt.Errorf("Alipay returned an empty close response")
+	}
+	if response.IsSuccess() || strings.EqualFold(strings.TrimSpace(response.SubCode), "ACQ.TRADE_NOT_EXIST") {
+		return nil
+	}
+	return fmt.Errorf("Alipay close failed: code=%s sub_code=%s", response.Code, response.SubCode)
 }
 
 func (p *alipayPagePaymentProvider) confirmationFromNotification(notification *alipay.Notification, payloadHash string) (string, *types.CommercialPaymentConfirmation, error) {

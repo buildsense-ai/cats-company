@@ -237,10 +237,11 @@ func (h *RelayAdminProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	upReq.Header.Set("Content-Type", r.Header.Get("Content-Type"))
-	// Local pricing write protection requires an explicit marker; we only add it
-	// for the whitelisted write route after auth/whitelist checks have passed.
-	if r.Method == http.MethodPost && relayAdminPathAllowed(relayPath) && relayPath == "/local/pricing-rules" {
-		upReq.Header.Set("X-Cats-Relay-Local-Write", "pricing-rules")
+	// Local write protection requires an explicit server-side marker. Browser
+	// headers are intentionally not forwarded; only authenticated, whitelisted
+	// proxy routes can receive one here.
+	if marker := relayAdminLocalWriteMarker(r.Method, relayPath); marker != "" {
+		upReq.Header.Set("X-Cats-Relay-Local-Write", marker)
 	}
 	// Deliberately do NOT forward Authorization/Cookie/Origin/other sensitive headers.
 
@@ -310,6 +311,8 @@ var relayAdminAllowedPrefixes = []string{
 
 var relayAdminUserKeyPath = regexp.MustCompile(`^/local/users/[0-9]+/key/(state|limits|usage-reset)/?$`)
 var relayAdminUserKeyLimitsPath = regexp.MustCompile(`^/local/users/([0-9]+)/key/limits/?$`)
+var relayAdminCommercialOpsPath = regexp.MustCompile(`^/local/commercial-ops(?:/api/(?:overview|plans|invites|grants|users|orders|relay-dry-run|relay-sync))?/?$`)
+var relayAdminCommercialOpsWritePath = regexp.MustCompile(`^/local/commercial-ops/api/(?:plans|invites|grants|relay-sync)/?$`)
 
 func relayAdminLimitsTargetUID(path string) (int64, bool) {
 	matches := relayAdminUserKeyLimitsPath.FindStringSubmatch(path)
@@ -318,6 +321,19 @@ func relayAdminLimitsTargetUID(path string) (int64, bool) {
 	}
 	uid, err := strconv.ParseInt(matches[1], 10, 64)
 	return uid, err == nil && uid > 0
+}
+
+func relayAdminLocalWriteMarker(method, path string) string {
+	if method != http.MethodPost {
+		return ""
+	}
+	if path == "/local/pricing-rules" {
+		return "pricing-rules"
+	}
+	if relayAdminCommercialOpsWritePath.MatchString(path) {
+		return "commercial-ops"
+	}
+	return ""
 }
 
 // relayAdminPathAllowed reports whether a relay path may be proxied.
@@ -329,6 +345,9 @@ func relayAdminPathAllowed(rawPath string) bool {
 		return false
 	}
 	if relayAdminUserKeyPath.MatchString(path) {
+		return true
+	}
+	if relayAdminCommercialOpsPath.MatchString(path) {
 		return true
 	}
 	for _, prefix := range relayAdminAllowedPrefixes {

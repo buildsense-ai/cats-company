@@ -12,7 +12,10 @@ import (
 	"github.com/openchat/openchat/server/store/types"
 )
 
-const maxCustomSystemPromptBytes = 1024 * 1024
+const (
+	maxCustomSystemPromptBytes      = 1024 * 1024
+	maxBotDefinitionPromptBodyBytes = 6*maxCustomSystemPromptBytes + 4096
+)
 
 type BotDefinitionHandler struct {
 	owners      botModelOwnershipStore
@@ -146,22 +149,25 @@ func (h *BotDefinitionHandler) HandleOwnerPrompt(w http.ResponseWriter, r *http.
 		return
 	}
 	var req botDefinitionPromptPatchRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCustomSystemPromptBytes+4096))
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBotDefinitionPromptBodyBytes))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
+	if req.Revision == nil || *req.Revision < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "revision is required"})
+		return
+	}
 	req.Prompt.Selected = strings.ToLower(strings.TrimSpace(req.Prompt.Selected))
+	if strings.TrimSpace(req.Prompt.CustomSystemPrompt) == "" {
+		req.Prompt.CustomSystemPrompt = ""
+	}
 	if err := validateBotPromptDefinition(req.Prompt); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	expected := int64(-1)
-	if req.Revision != nil {
-		expected = *req.Revision
-	}
-	record, err := h.definitions.UpdateBotDefinitionPrompt(botUID, expected, req.Prompt)
+	record, err := h.definitions.UpdateBotDefinitionPrompt(botUID, *req.Revision, req.Prompt)
 	if errors.Is(err, store.ErrStaleBotModelRevision) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "bot definition changed before it was saved"})
 		return
@@ -457,7 +463,7 @@ func (h *BotDefinitionHandler) definitionResponse(
 	}
 	runtime := record.Runtime
 	if ownerUID > 0 && runtime.LastError != "" {
-		runtime.LastError = "模型配置应用失败"
+		runtime.LastError = "Bot 配置应用失败"
 	}
 	response := map[string]interface{}{
 		"uid":        botUID,

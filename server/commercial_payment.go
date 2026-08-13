@@ -32,6 +32,7 @@ type CommercialPaymentStore interface {
 	FailCommercialOrder(orderNo, message string) error
 	GetCommercialOrder(uid int64, orderNo string) (*types.CommercialOrder, error)
 	ListCommercialOrders(uid int64, limit int) ([]*types.CommercialOrder, error)
+	CancelCommercialOrder(uid int64, orderNo, reason string) (*types.CommercialOrder, bool, error)
 	CloseExpiredCommercialOrders(limit int) (int64, error)
 	FulfillCommercialOrder(orderNo string, confirmation *types.CommercialPaymentConfirmation) (*types.CommercialOrder, bool, error)
 	ClaimCommercialTrial(uid int64, planSlug string) (*types.CommercialSummary, error)
@@ -52,6 +53,10 @@ type CommercialPaymentProvider interface {
 
 type CommercialPaymentQuerier interface {
 	QueryPayment(context.Context, *types.CommercialOrder) (*types.CommercialPaymentConfirmation, bool, error)
+}
+
+type CommercialPaymentCloser interface {
+	ClosePayment(context.Context, *types.CommercialOrder) error
 }
 
 type CommercialPaymentHandlerOptions struct {
@@ -288,6 +293,120 @@ func (h *CommercialPaymentHandler) HandleOrders(w http.ResponseWriter, r *http.R
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
+}
+
+func (h *CommercialPaymentHandler) HandleCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	uid := UIDFromContext(r.Context())
+	if h == nil || h.store == nil || uid <= 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "commercial payment is not available"})
+		return
+	}
+	var req struct {
+		OrderNo string `json:"order_no"`
+	}
+	if err := decodeCommercialJSON(r, &req); err != nil || strings.TrimSpace(req.OrderNo) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cancel request"})
+		return
+	}
+	req.OrderNo = strings.TrimSpace(req.OrderNo)
+	order, err := h.store.GetCommercialOrder(uid, req.OrderNo)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load order"})
+		return
+	}
+	if order == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "order not found"})
+		return
+	}
+	if order.Status == "closed" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "order": commercialOrderForUser(order)})
+		return
+	}
+	if order.Status != "created" && order.Status != "pending" && order.Status != "failed" {
+		writeJSON(w, http.StatusConflict, map[string]interface{}{
+			"error": "order can no longer be cancelled",
+			"order": commercialOrderForUser(order),
+		})
+		return
+	}
+
+	provider := h.providers[order.Channel]
+	if order.Status == "pending" {
+		if fulfilled := h.fulfillCommercialOrderIfPaid(r.Context(), order); fulfilled != nil {
+			writeJSON(w, http.StatusConflict, map[string]interface{}{
+				"error": "payment has already completed",
+				"order": commercialOrderForUser(fulfilled),
+			})
+			return
+		}
+		closer, ok := provider.(CommercialPaymentCloser)
+		if !ok {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "payment channel cannot close this order"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		err = closer.ClosePayment(ctx, order)
+		cancel()
+		if err != nil {
+			if fulfilled := h.fulfillCommercialOrderIfPaid(r.Context(), order); fulfilled != nil {
+				writeJSON(w, http.StatusConflict, map[string]interface{}{
+					"error": "payment has already completed",
+					"order": commercialOrderForUser(fulfilled),
+				})
+				return
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to close payment order"})
+			return
+		}
+	}
+
+	closed, changed, err := h.store.CancelCommercialOrder(uid, order.OrderNo, "cancelled by user")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to cancel order"})
+		return
+	}
+	if closed == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "order not found"})
+		return
+	}
+	if !changed && closed.Status != "closed" {
+		writeJSON(w, http.StatusConflict, map[string]interface{}{
+			"error": "order status changed while cancelling",
+			"order": commercialOrderForUser(closed),
+		})
+		return
+	}
+	h.clearCommercialPaymentQuery(order.OrderNo)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "order": commercialOrderForUser(closed)})
+}
+
+func (h *CommercialPaymentHandler) fulfillCommercialOrderIfPaid(ctx context.Context, order *types.CommercialOrder) *types.CommercialOrder {
+	if h == nil || order == nil {
+		return nil
+	}
+	querier, ok := h.providers[order.Channel].(CommercialPaymentQuerier)
+	if !ok {
+		return nil
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	confirmation, paid, err := querier.QueryPayment(queryCtx, order)
+	cancel()
+	if err != nil || !paid || confirmation == nil {
+		return nil
+	}
+	fulfilled, changed, err := h.store.FulfillCommercialOrder(order.OrderNo, confirmation)
+	if err != nil || fulfilled == nil {
+		return nil
+	}
+	h.clearCommercialPaymentQuery(order.OrderNo)
+	if changed {
+		h.enqueueRelaySync(fulfilled.UID)
+	}
+	return fulfilled
 }
 
 func (h *CommercialPaymentHandler) refreshPendingCommercialOrder(ctx context.Context, order *types.CommercialOrder) *types.CommercialOrder {
@@ -633,4 +752,8 @@ func (p *testCommercialPaymentProvider) CreatePayment(_ context.Context, order *
 
 func (p *testCommercialPaymentProvider) ParseNotification(context.Context, *http.Request) (string, *types.CommercialPaymentConfirmation, error) {
 	return "", nil, fmt.Errorf("test payment does not accept notifications")
+}
+
+func (p *testCommercialPaymentProvider) ClosePayment(context.Context, *types.CommercialOrder) error {
+	return nil
 }

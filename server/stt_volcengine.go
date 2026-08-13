@@ -24,6 +24,10 @@ type volcengineStreamingProvider struct {
 	dialer websocket.Dialer
 }
 
+type volcengineUtterance struct {
+	Definite bool `json:"definite"`
+}
+
 const (
 	volcengineDoubaoStreamingV2URL    = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
 	volcengineResourceDuration        = "volc.seedasr.sauc.duration"
@@ -108,11 +112,12 @@ func buildVolcengineInitialFrame(config VolcengineSTTConfig, request STTSessionR
 			"channel":     1,
 		},
 		"request": map[string]interface{}{
-			"model_name":      "bigmodel",
-			"show_utterances": true,
-			"result_type":     "full",
-			"enable_itn":      true,
-			"enable_punc":     true,
+			"model_name":       "bigmodel",
+			"show_utterances":  true,
+			"result_type":      "full",
+			"enable_itn":       true,
+			"enable_punc":      true,
+			"enable_nonstream": true,
 		},
 	}
 	encoded, err := json.Marshal(payload)
@@ -281,7 +286,7 @@ func parseVolcengineServerFrame(frame []byte) (STTEvent, bool) {
 		}
 		return STTEvent{Type: STTEventError, Code: strconv.Itoa(response.Code), Message: message}, true
 	}
-	text := volcengineResponseText(response.Result)
+	text, hasDefinite := volcengineResponseTextAndDefinite(response.Result)
 	isFinal := sequence < 0 || flags == volcengineFinalFlags
 	if text == "" {
 		if isFinal {
@@ -292,6 +297,8 @@ func parseVolcengineServerFrame(frame []byte) (STTEvent, bool) {
 	eventType := STTEventPartial
 	if isFinal {
 		eventType = STTEventFinal
+	} else if hasDefinite {
+		eventType = STTEventDefinite
 	}
 	return STTEvent{Type: eventType, Text: text}, true
 }
@@ -314,23 +321,36 @@ func volcengineErrorMessage(payload []byte) string {
 	return strings.TrimSpace(string(payload))
 }
 
-func volcengineResponseText(raw json.RawMessage) string {
+func volcengineResponseTextAndDefinite(raw json.RawMessage) (string, bool) {
 	if len(raw) == 0 || string(raw) == "null" {
-		return ""
+		return "", false
 	}
 	var current struct {
-		Text string `json:"text"`
+		Text       string                `json:"text"`
+		Utterances []volcengineUtterance `json:"utterances"`
 	}
+	text := ""
 	if json.Unmarshal(raw, &current) == nil {
-		if text := strings.TrimSpace(current.Text); text != "" {
-			return text
+		text = strings.TrimSpace(current.Text)
+		if text != "" || len(current.Utterances) > 0 {
+			return text, volcengineHasDefiniteUtterance(current.Utterances)
 		}
 	}
 	var legacy []struct {
-		Text string `json:"text"`
+		Text       string                `json:"text"`
+		Utterances []volcengineUtterance `json:"utterances"`
 	}
 	if json.Unmarshal(raw, &legacy) == nil && len(legacy) > 0 {
-		return strings.TrimSpace(legacy[0].Text)
+		return strings.TrimSpace(legacy[0].Text), volcengineHasDefiniteUtterance(legacy[0].Utterances)
 	}
-	return ""
+	return "", false
+}
+
+func volcengineHasDefiniteUtterance(utterances []volcengineUtterance) bool {
+	for _, utterance := range utterances {
+		if utterance.Definite {
+			return true
+		}
+	}
+	return false
 }

@@ -48,15 +48,30 @@ describe('RelayAdminPanel', () => {
     const iframe = container.querySelector('iframe');
     expect(iframe?.getAttribute('src')).toBe('/api/admin/relay/local/usage-admin');
     expect(iframe?.getAttribute('sandbox')).toContain('allow-scripts');
+    expect(iframe?.getAttribute('sandbox')).toContain('allow-modals');
   });
 
   it('renders a close button that invokes onClose', async () => {
     const onClose = vi.fn();
     await renderPanel({ onClose });
-    const close = container.querySelector('button[aria-label="关闭中转用量管理"]');
+    const close = container.querySelector('button[aria-label="关闭模型用量管理"]');
     expect(close).toBeTruthy();
     await act(async () => close.click());
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('recreates the embedded page when reload is requested', async () => {
+    await renderPanel();
+    const before = container.querySelector('iframe');
+    const reload = container.querySelector('button[aria-label="重新载入模型用量管理"]');
+    expect(reload).toBeTruthy();
+
+    await act(async () => reload.click());
+
+    const after = container.querySelector('iframe');
+    expect(after).toBeTruthy();
+    expect(after).not.toBe(before);
+    expect(after?.getAttribute('src')).toBe('/api/admin/relay/local/usage-admin');
   });
 
   it('renders a draggable resize handle on the left edge', async () => {

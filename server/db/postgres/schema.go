@@ -39,6 +39,7 @@ func (a *Adapter) CreateSchema() error {
 		createCommercialOrderRequestIDsTable,
 		createCommercialPaymentEventsTable,
 		createCommercialManagedRelayBudgetsTable,
+		createCommercialOperatorEventsTable,
 		createChannelAgentEntriesTable,
 		createChannelAgentAccessRequestsTable,
 		createChannelAgentBindingsTable,
@@ -619,6 +620,18 @@ CREATE TABLE IF NOT EXISTS commercial_managed_relay_budgets (
 );
 `
 
+const createCommercialOperatorEventsTable = `
+CREATE TABLE IF NOT EXISTS commercial_operator_events (
+	id BIGSERIAL PRIMARY KEY,
+	service VARCHAR(128) NOT NULL,
+	action VARCHAR(128) NOT NULL,
+	target_type VARCHAR(64) NOT NULL DEFAULT '',
+	target_ref VARCHAR(160) NOT NULL DEFAULT '',
+	status_code INT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+`
+
 const createChannelAgentEntriesTable = `
 CREATE TABLE IF NOT EXISTS channel_agent_entries (
     id BIGSERIAL PRIMARY KEY,
@@ -948,6 +961,7 @@ CREATE INDEX IF NOT EXISTS idx_commercial_orders_status_expires ON commercial_or
 CREATE INDEX IF NOT EXISTS idx_commercial_order_request_ids_order ON commercial_order_request_ids (order_no);
 CREATE INDEX IF NOT EXISTS idx_commercial_payment_events_order ON commercial_payment_events (order_no, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_commercial_managed_relay_uid ON commercial_managed_relay_budgets (uid);
+CREATE INDEX IF NOT EXISTS idx_commercial_operator_events_created ON commercial_operator_events (created_at DESC);
 `
 
 const createChannelAgentIndexes = `

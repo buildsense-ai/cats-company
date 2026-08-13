@@ -32,7 +32,27 @@ const showcaseByUserId = new Map();
 const projectsByUserId = new Map();
 const projectTopicsByUserId = new Map();
 const botModelConfigs = new Map();
+const commercialOrdersByUserId = new Map();
 let nextSeq = 1;
+
+const mockCommercialPlans = [
+  { id: 21, slug: 'catsco-personal', name: '个人版', description: '适合将 XiaoBa 作为日常个人助手。', price_fen: 39900, currency: 'CNY', sale_state: 'active', duration_days: 30 },
+  { id: 22, slug: 'catsco-pro', name: '专业版', description: '适合高频、多任务并行或复杂工作。', price_fen: 79900, currency: 'CNY', sale_state: 'active', duration_days: 30 },
+];
+
+function mockCommercialOrders(userId) {
+  const now = Date.now();
+  const at = daysAgo => new Date(now - daysAgo * 24 * 60 * 60 * 1000).toISOString();
+  const mutableOrders = commercialOrdersByUserId.get(userId) || [];
+  const mutableOrderNos = new Set(mutableOrders.map(item => item.order_no));
+  const seededOrders = [
+    { order_no: 'CC202608110001PREVIEW', plan_id: 22, plan_name: '专业版', amount_fen: 79900, currency: 'CNY', channel: 'alipay_page', status: 'pending', checkout_url: 'https://openapi.alipay.test/gateway.do', expires_at: at(-1), created_at: at(0), updated_at: at(0) },
+    { order_no: 'CC202608080002PREVIEW', plan_id: 21, plan_name: '个人版', amount_fen: 39900, currency: 'CNY', channel: 'alipay_page', status: 'fulfilled', paid_at: at(3), fulfilled_at: at(3), created_at: at(3), updated_at: at(3) },
+    { order_no: 'CC202607020003PREVIEW', plan_id: 2, plan_name: 'Plus−', amount_fen: 4900, currency: 'CNY', channel: 'alipay_page', status: 'refunded', paid_at: at(40), created_at: at(40), updated_at: at(36) },
+    { order_no: 'CC202606120004PREVIEW', plan_id: 1, plan_name: '3天体验', amount_fen: 990, currency: 'CNY', channel: 'alipay_page', status: 'closed', created_at: at(60), updated_at: at(60) },
+  ];
+  return [...mutableOrders, ...seededOrders.filter(item => !mutableOrderNos.has(item.order_no))];
+}
 
 const mockBotModels = [
   { id: 'minimax-m2.7', label: 'MiniMax M2.7', description: '标准额度，适合日常任务' },
@@ -44,7 +64,7 @@ const mockBotModels = [
     reasoning_efforts: ['high', 'max', 'disabled'],
     default_reasoning_effort: 'high',
   },
-  ...['terra', 'sol', 'luna'].map((variant) => ({
+  ...['terra', 'sol'].map((variant) => ({
     id: `gpt-5.6-${variant}`,
     label: `GPT-5.6 ${variant[0].toUpperCase()}${variant.slice(1)}`,
     description: 'OpenAI Responses，支持精细推理强度',
@@ -746,6 +766,14 @@ async function handleApi(req, res) {
       });
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/admin/relay/access') {
+      return send(res, 200, { allowed: false });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/push/config') {
+      return send(res, 200, { enabled: false });
+    }
+
     if (req.method === 'POST' && url.pathname === '/__mock/reset') {
       users.clear();
       tokens.clear();
@@ -759,6 +787,7 @@ async function handleApi(req, res) {
       showcaseByUserId.clear();
       projectsByUserId.clear();
       projectTopicsByUserId.clear();
+      commercialOrdersByUserId.clear();
       nextSeq = 1;
       nextUserId = 100;
       nextBotId = 200;
@@ -1218,16 +1247,21 @@ async function handleApi(req, res) {
     if (req.method === 'GET' && url.pathname === '/api/relay/usage') {
       const user = requireUser(req, res);
       if (!user) return;
+      const totalScope = url.searchParams.get('scope') === 'total';
       return send(res, 200, {
         configured: true,
         summary: {
           source: 'relay',
-          model: String(url.searchParams.get('model') || 'MiniMax-M2.7'),
+          model: totalScope ? '套餐总额度' : String(url.searchParams.get('model') || 'MiniMax-M2.7'),
+          quota_configured: true,
           used_cny: 3.2,
           limit_cny: 50,
           remaining_cny: 46.8,
           percent: 6.4,
+          remaining_percent: 93.6,
           status: 'normal',
+          reset_duration: '1M',
+          last_reset: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
         },
       });
     }
@@ -1235,7 +1269,104 @@ async function handleApi(req, res) {
     if (req.method === 'GET' && url.pathname === '/api/relay/commercial') {
       const user = requireUser(req, res);
       if (!user) return;
+      if (scenario === 'showcase') {
+        return send(res, 200, {
+          enabled: true,
+          enforce_enabled: true,
+          note: '本地商业化界面演示',
+          summary: {
+            uid: user.id,
+            models: ['gpt-5.6-sol', 'gpt-5.6-terra'],
+            entitlements: [{
+              id: 'preview-entitlement',
+              state: 'active',
+              plan_id: 21,
+              plan_slug: 'catsco-personal',
+              plan_name: '个人版',
+              source: 'invite',
+              source_ref: 'PERSONAL-PREVIEW',
+              starts_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
+              expires_at: new Date(Date.now() + 27 * 24 * 60 * 60 * 1000).toISOString(),
+            }],
+          },
+        });
+      }
       return send(res, 200, { enabled: false, packages: [], invite: null });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/relay/commercial/catalog') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      if (scenario !== 'showcase') return send(res, 200, { enabled: false, plans: [], channels: [], trial_available: false });
+      return send(res, 200, {
+        enabled: true,
+        test_mode: false,
+        trial_available: false,
+        channels: [{ id: 'alipay_page', label: '支付宝支付', test_mode: false }],
+        plans: mockCommercialPlans,
+      });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/relay/commercial/orders') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const orders = scenario === 'showcase' ? mockCommercialOrders(user.id) : [];
+      const orderNo = String(url.searchParams.get('order_no') || '').trim();
+      if (orderNo) {
+        const order = orders.find(item => item.order_no === orderNo);
+        return order ? send(res, 200, { order }) : send(res, 404, { error: 'order not found' });
+      }
+      return send(res, 200, { orders });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/relay/commercial/orders') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      if (scenario !== 'showcase') return send(res, 404, { error: 'commercial preview disabled' });
+      const body = await readBody(req);
+      const plan = mockCommercialPlans.find(item => item.id === Number(body.plan_id));
+      if (!plan) return send(res, 404, { error: 'plan not found' });
+      const now = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      const order = {
+        order_no: `CCPREVIEW${Date.now()}`,
+        plan_id: plan.id,
+        plan_name: plan.name,
+        amount_fen: plan.price_fen,
+        currency: plan.currency,
+        channel: String(body.channel || 'alipay_page'),
+        status: 'pending',
+        checkout_url: 'https://openapi.alipay.test/gateway.do',
+        expires_at: expiresAt,
+        created_at: now,
+        updated_at: now,
+      };
+      commercialOrdersByUserId.set(user.id, [order, ...(commercialOrdersByUserId.get(user.id) || [])]);
+      return send(res, 201, { order });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/relay/commercial/orders/cancel') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const body = await readBody(req);
+      const orderNo = String(body.order_no || '').trim();
+      const order = mockCommercialOrders(user.id).find(item => item.order_no === orderNo);
+      if (!order) return send(res, 404, { error: 'order not found' });
+      if (!['created', 'pending', 'failed', 'closed'].includes(order.status)) {
+        return send(res, 409, { error: 'order can no longer be cancelled', order });
+      }
+      const closed = order.status === 'closed' ? order : {
+        ...order,
+        status: 'closed',
+        checkout_url: '',
+        closed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      commercialOrdersByUserId.set(user.id, [
+        closed,
+        ...(commercialOrdersByUserId.get(user.id) || []).filter(item => item.order_no !== orderNo),
+      ]);
+      return send(res, 200, { ok: true, order: closed });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/relay/key') {

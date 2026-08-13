@@ -162,6 +162,13 @@ func TestCanonicalizeArtifactMessageMetadataSanitizesPageContext(t *testing.T) {
 				map[string]interface{}{"type": "checkbox", "name": "feedback", "value": "f12", "checked": true},
 				map[string]interface{}{"type": "password", "name": "secret", "value": "do-not-send"},
 			},
+			"semantic_context": map[string]interface{}{
+				"view":      "customer-comparison",
+				"selection": []interface{}{"c12", "c18"},
+				"filters":   map[string]interface{}{"region": "east"},
+				"ignored":   func() {},
+				"__proto__": map[string]interface{}{"polluted": true},
+			},
 			"local_storage": map[string]interface{}{"token": "forged"},
 		},
 	})
@@ -174,11 +181,139 @@ func TestCanonicalizeArtifactMessageMetadataSanitizesPageContext(t *testing.T) {
 	if len(controls) != 1 || controls[0].(map[string]interface{})["type"] != "checkbox" {
 		t.Fatalf("controls = %#v", controls)
 	}
+	semanticContext := pageContext["semantic_context"].(map[string]interface{})
+	if semanticContext["view"] != "customer-comparison" ||
+		!reflect.DeepEqual(semanticContext["selection"], []interface{}{"c12", "c18"}) {
+		t.Fatalf("semantic context = %#v", semanticContext)
+	}
+	if _, exists := semanticContext["ignored"]; exists {
+		t.Fatalf("unserializable semantic value leaked: %#v", semanticContext)
+	}
+	if _, exists := semanticContext["__proto__"]; exists {
+		t.Fatalf("unsafe semantic key leaked: %#v", semanticContext)
+	}
 	if _, exists := pageContext["local_storage"]; exists {
 		t.Fatalf("forged storage leaked: %#v", pageContext)
 	}
 	if _, exists := got[artifactPageContextMetadataKey]; exists {
 		t.Fatalf("raw page context leaked beside canonical context: %#v", got)
+	}
+}
+
+func TestCanonicalizeArtifactMessageMetadataDropsOversizedSemanticContextOnly(t *testing.T) {
+	store := &identityMessageStore{users: map[int64]*types.User{
+		7:   {ID: 7, AccountType: types.AccountHuman},
+		440: {ID: 440, AccountType: types.AccountBot},
+	}}
+	hub := NewHub(store, nil)
+	hub.SetArtifactContextResolver(artifactContextResolverFunc(func(_ context.Context, _ int64, artifactID string) (ArtifactContextRecord, error) {
+		return ArtifactContextRecord{
+			ID: artifactID, Title: "Lesson game", Kind: "html",
+			URL: "https://agent-440.artifacts.catsco.fun:19991/artifacts/lesson-game/latest/",
+		}, nil
+	}))
+
+	oversized := make(map[string]interface{}, 20)
+	for index := 0; index < 20; index++ {
+		oversized[fmt.Sprintf("field_%02d", index)] = strings.Repeat("x", artifactSemanticContextMaxString)
+	}
+	got := hub.canonicalizeArtifactMessageMetadata(context.Background(), 7, "p2p_7_440", map[string]interface{}{
+		artifactRefMetadataKey: map[string]interface{}{
+			"contract_version": artifactRefContract, "id": "lesson-game", "currently_visible": true,
+		},
+		artifactPageContextMetadataKey: map[string]interface{}{
+			"contract_version": artifactPageContextContract,
+			"observed_at":      "2026-08-07T12:00:00Z",
+			"selected_text":    "keep this",
+			"semantic_context": oversized,
+		},
+	})
+	contextValue := got[artifactContextMetadataKey].(map[string]interface{})
+	pageContext := contextValue["page_context"].(map[string]interface{})
+	if pageContext["selected_text"] != "keep this" {
+		t.Fatalf("generic observation was lost: %#v", pageContext)
+	}
+	if _, exists := pageContext["semantic_context"]; exists {
+		t.Fatalf("oversized semantic context was retained: %#v", pageContext)
+	}
+}
+
+func TestArtifactPageContextSemanticBoundsNestedJSON(t *testing.T) {
+	items := make([]interface{}, artifactSemanticContextMaxItems+10)
+	for index := range items {
+		items[index] = index
+	}
+	value, ok := artifactPageContextSemantic(map[string]interface{}{
+		"items": items,
+		"label": strings.Repeat("x", artifactSemanticContextMaxString-1) + "😀z",
+		"bad":   make(chan int),
+	})
+	if !ok {
+		t.Fatal("bounded semantic context was rejected")
+	}
+	record := value.(map[string]interface{})
+	if len(record["items"].([]interface{})) != artifactSemanticContextMaxItems {
+		t.Fatalf("semantic items = %d", len(record["items"].([]interface{})))
+	}
+	if len([]rune(record["label"].(string))) != artifactSemanticContextMaxString {
+		t.Fatalf("semantic label length = %d", len([]rune(record["label"].(string))))
+	}
+	if !strings.HasSuffix(record["label"].(string), "😀") {
+		t.Fatalf("semantic label split a Unicode character: %q", record["label"])
+	}
+	if _, exists := record["bad"]; exists {
+		t.Fatalf("unsupported semantic value leaked: %#v", record)
+	}
+	if _, ok := artifactPageContextSemantic(make(chan int)); ok {
+		t.Fatal("unsupported semantic root was accepted")
+	}
+}
+
+func TestArtifactPageContextSemanticBoundsTraversalWork(t *testing.T) {
+	var branching interface{} = map[string]interface{}{"leaf": true}
+	for depth := 0; depth < artifactSemanticContextMaxDepth; depth++ {
+		items := make([]interface{}, artifactSemanticContextMaxItems)
+		for index := range items {
+			items[index] = branching
+		}
+		branching = items
+	}
+	if _, ok := artifactPageContextSemantic(branching); ok {
+		t.Fatal("high-branch semantic context exceeded its bounded traversal budget")
+	}
+}
+
+func TestArtifactPageContextDropsSemanticWhenCombinedBudgetIsExceeded(t *testing.T) {
+	controls := make([]interface{}, 20)
+	for index := range controls {
+		controls[index] = map[string]interface{}{
+			"type":  "text",
+			"name":  fmt.Sprintf("field_%d", index),
+			"value": strings.Repeat("v", 512),
+			"text":  strings.Repeat("t", 128),
+		}
+	}
+	semanticContext := make(map[string]interface{}, 6)
+	for index := 0; index < 6; index++ {
+		semanticContext[fmt.Sprintf("section_%d", index)] = strings.Repeat("s", 1000)
+	}
+	pageContext, ok := parseArtifactPageContextCandidate(map[string]interface{}{
+		artifactPageContextMetadataKey: map[string]interface{}{
+			"contract_version": artifactPageContextContract,
+			"observed_at":      "2026-08-07T12:00:00Z",
+			"selected_text":    strings.Repeat("x", 1000),
+			"controls":         controls,
+			"semantic_context": semanticContext,
+		},
+	})
+	if !ok {
+		t.Fatal("generic page context was lost when only the combined budget was exceeded")
+	}
+	if len(pageContext["controls"].([]interface{})) != 20 {
+		t.Fatalf("generic controls were lost: %#v", pageContext)
+	}
+	if _, exists := pageContext["semantic_context"]; exists {
+		t.Fatalf("combined oversized semantic context was retained: %#v", pageContext)
 	}
 }
 

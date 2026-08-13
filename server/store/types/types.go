@@ -122,6 +122,20 @@ type CommercialPaymentConfirmation struct {
 	PayloadHash     string
 }
 
+// CommercialPaymentEvent is the operator-safe payment callback audit record.
+// Raw callback payloads and payment credentials are intentionally excluded.
+type CommercialPaymentEvent struct {
+	ID              int64     `json:"id"`
+	Channel         string    `json:"channel"`
+	EventID         string    `json:"event_id"`
+	OrderNo         string    `json:"order_no"`
+	ProviderTradeNo string    `json:"provider_trade_no,omitempty"`
+	EventType       string    `json:"event_type"`
+	Status          string    `json:"status"`
+	ErrorMessage    string    `json:"error_message,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
 // CommercialManagedRelayBudget records model budgets that CatsCompany owns.
 // Expiry reconciliation only removes entries present in this table.
 type CommercialManagedRelayBudget struct {
@@ -197,6 +211,41 @@ type CommercialLedgerEntry struct {
 	SourceID   int64     `json:"source_id,omitempty"`
 	Note       string    `json:"note,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+// CommercialOperatorEvent records privileged commercial operations without
+// retaining request bodies or payment credentials.
+type CommercialOperatorEvent struct {
+	ID         int64     `json:"id"`
+	Service    string    `json:"service"`
+	Action     string    `json:"action"`
+	TargetType string    `json:"target_type"`
+	TargetRef  string    `json:"target_ref,omitempty"`
+	StatusCode int       `json:"status_code"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// CommercialOperationsOverview is the compact internal control-plane view.
+// Aggregate counts are produced in one database query to keep dashboard reads
+// inexpensive even as order and ledger history grows.
+type CommercialOperationsOverview struct {
+	GeneratedAt                time.Time                  `json:"generated_at"`
+	PlansTotal                 int64                      `json:"plans_total"`
+	PlansOnSale                int64                      `json:"plans_on_sale"`
+	InvitesActive              int64                      `json:"invites_active"`
+	InviteRedemptions          int64                      `json:"invite_redemptions"`
+	InviteRedemptionsRemaining int64                      `json:"invite_redemptions_remaining"`
+	OrdersTotal                int64                      `json:"orders_total"`
+	OrdersByStatus             map[string]int64           `json:"orders_by_status"`
+	RevenueMonthFen            int64                      `json:"revenue_month_fen"`
+	ActiveEntitlements         int64                      `json:"active_entitlements"`
+	EntitlementsExpiring7D     int64                      `json:"entitlements_expiring_7d"`
+	ActiveGrants               int64                      `json:"active_grants"`
+	ManagedUsers               int64                      `json:"managed_users"`
+	RejectedPaymentEvents24H   int64                      `json:"rejected_payment_events_24h"`
+	RecentPaymentEvents        []*CommercialPaymentEvent  `json:"recent_payment_events,omitempty"`
+	RecentEntitlements         []*CommercialEntitlement   `json:"recent_entitlements,omitempty"`
+	RecentOperatorEvents       []*CommercialOperatorEvent `json:"recent_operator_events,omitempty"`
 }
 
 // CommercialSummary is the user/admin view of commercial relay allocation.

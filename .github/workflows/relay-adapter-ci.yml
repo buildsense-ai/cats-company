@@ -1,0 +1,33 @@
+name: Relay Adapter CI
+
+on:
+  pull_request:
+    paths:
+      - "relay/**"
+      - "deploy/relay/**"
+      - ".github/workflows/relay-adapter-*.yml"
+  push:
+    branches: [main]
+    paths:
+      - "relay/**"
+      - "deploy/relay/**"
+      - ".github/workflows/relay-adapter-*.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Compile adapter
+        run: python3 -m py_compile relay/openai_adapter.py
+      - name: Run relay tests
+        run: python3 -m unittest discover -s relay/tests -p 'test_*.py' -v
+      - name: Check deploy scripts
+        run: bash -n deploy/relay/remote-deploy.sh deploy/relay/remote-rollback.sh deploy/relay/remote-status.sh

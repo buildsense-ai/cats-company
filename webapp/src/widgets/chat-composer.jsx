@@ -238,14 +238,14 @@ export default function ChatComposer({
     transcript.scrollTop = transcript.scrollHeight;
   }, [voiceHoldActive, voiceHoldCancel, voicePartial, voiceState]);
 
-  const startVoiceInput = async ({ hold = false } = {}) => {
+  const createPreparedVoiceSession = () => {
+    if (voiceSessionRef.current) return voiceSessionRef.current;
     if (voiceActive) {
-      if (!hold) await voiceSessionRef.current?.stop();
-      return;
+      return null;
     }
     setVoiceError('');
     setVoicePartial('');
-    const textarea = textareaRef?.current;
+    const textarea = textareaRef?.current || inputRef.current;
     const baseValue = textarea ? textarea.value : String(value || '');
     const start = textarea ? textarea.selectionStart : baseValue.length;
     const end = textarea ? textarea.selectionEnd : start;
@@ -289,6 +289,29 @@ export default function ChatComposer({
       },
     });
     voiceSessionRef.current = session;
+    return session;
+  };
+
+  const prepareVoiceInput = () => {
+    const existingSession = voiceSessionRef.current;
+    const session = createPreparedVoiceSession();
+    if (session === existingSession) return session;
+    try {
+      const prepared = session?.prepare?.();
+      if (prepared?.catch) void prepared.catch(() => {});
+    } catch {
+      // start() publishes the normalized error once the gesture becomes active.
+    }
+    return session;
+  };
+
+  const startVoiceInput = async ({ hold = false } = {}) => {
+    if (voiceActive) {
+      if (!hold) await voiceSessionRef.current?.stop();
+      return;
+    }
+    const session = prepareVoiceInput();
+    if (!session) return;
     await session.start();
   };
 
@@ -336,8 +359,10 @@ export default function ChatComposer({
   }, []);
 
   useLayoutEffect(() => {
-    resizeInput();
-  }, [displayedValue, resizeInput]);
+    const textarea = inputRef.current;
+    resizeInput(textarea);
+    if (showVoicePreview && textarea) textarea.scrollTop = textarea.scrollHeight;
+  }, [displayedValue, resizeInput, showVoicePreview]);
 
   const finishVoiceHold = (event, cancelled = false) => {
     const gesture = voiceHoldGestureRef.current;
@@ -345,7 +370,15 @@ export default function ChatComposer({
     clearVoiceHoldTimer();
     voiceHoldGestureRef.current = null;
     voiceButtonRef.current?.releasePointerCapture?.(event.pointerId);
-    if (!gesture.triggered) return;
+    if (!gesture.triggered) {
+      if (cancelled) {
+        cancelVoiceInput();
+        return;
+      }
+      suppressVoiceClickRef.current = true;
+      void startVoiceInput();
+      return;
+    }
 
     event.preventDefault();
     suppressVoiceClickRef.current = true;
@@ -359,6 +392,7 @@ export default function ChatComposer({
     if ((event.pointerType !== 'touch' && event.pointerType !== 'pen') || voiceActive) return;
     suppressVoiceClickRef.current = false;
     clearVoiceHoldTimer();
+    prepareVoiceInput();
     voiceButtonRef.current?.setPointerCapture?.(event.pointerId);
     voiceHoldGestureRef.current = {
       pointerId: event.pointerId,

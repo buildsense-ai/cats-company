@@ -90,7 +90,7 @@ func TestHandleUploadAllowsWebMVideoAttachment(t *testing.T) {
 	}
 }
 
-func TestHandleUploadKeepsOggAudioAsAttachment(t *testing.T) {
+func TestHandleUploadServesOggAudioInline(t *testing.T) {
 	handler := NewUploadHandler(t.TempDir(), "/uploads")
 	req := buildUploadRequestWithPartContentType(t, "/api/upload?type=file", "demo.ogg", "audio/ogg", []byte("ogg audio bytes"))
 	rec := httptest.NewRecorder()
@@ -120,8 +120,86 @@ func TestHandleUploadKeepsOggAudioAsAttachment(t *testing.T) {
 	if serveRec.Code != http.StatusOK {
 		t.Fatalf("serve status = %d, want %d", serveRec.Code, http.StatusOK)
 	}
-	if got := serveRec.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment") {
-		t.Fatalf("content-disposition = %q, want attachment", got)
+	if got := serveRec.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "inline") {
+		t.Fatalf("content-disposition = %q, want inline", got)
+	}
+}
+
+func TestHandleUploadNormalizesBrowserAudioMIMETypes(t *testing.T) {
+	for _, tc := range []struct {
+		fileName    string
+		contentType string
+		wantMime    string
+	}{
+		{fileName: "demo.mp3", contentType: "application/octet-stream", wantMime: "audio/mpeg"},
+		{fileName: "demo.ogg", contentType: "application/ogg", wantMime: "audio/ogg"},
+		{fileName: "demo.wav", contentType: "application/octet-stream", wantMime: "audio/wav"},
+	} {
+		t.Run(tc.fileName, func(t *testing.T) {
+			handler := NewUploadHandler(t.TempDir(), "/uploads")
+			req := buildUploadRequestWithPartContentType(t, "/api/upload?type=file", tc.fileName, tc.contentType, []byte("audio bytes"))
+			rec := httptest.NewRecorder()
+
+			handler.HandleUpload(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("upload status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			var body struct {
+				MimeType string `json:"mime_type"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode upload response: %v", err)
+			}
+			if body.MimeType != tc.wantMime {
+				t.Fatalf("mime_type = %q, want %q", body.MimeType, tc.wantMime)
+			}
+		})
+	}
+}
+
+func TestHandleUploadPreservesOpusMIMEType(t *testing.T) {
+	for _, tc := range []struct {
+		fileName    string
+		contentType string
+	}{
+		{fileName: "voice.opus", contentType: "audio/opus"},
+		{fileName: "voice.opus", contentType: "application/octet-stream"},
+		{fileName: "voice.opus", contentType: "audio/ogg"},
+		{fileName: "voice.ogg", contentType: "audio/opus"},
+	} {
+		t.Run(tc.fileName+"/"+tc.contentType, func(t *testing.T) {
+			handler := NewUploadHandler(t.TempDir(), "/uploads")
+			req := buildUploadRequestWithPartContentType(t, "/api/upload?type=file", tc.fileName, tc.contentType, []byte("opus audio bytes"))
+			rec := httptest.NewRecorder()
+
+			handler.HandleUpload(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("upload status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			var body struct {
+				FileKey  string `json:"file_key"`
+				MimeType string `json:"mime_type"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode upload response: %v", err)
+			}
+			if body.MimeType != "audio/opus" {
+				t.Fatalf("mime_type = %q, want audio/opus", body.MimeType)
+			}
+			if !strings.HasSuffix(body.FileKey, ".opus") {
+				t.Fatalf("file_key = %q, want .opus suffix", body.FileKey)
+			}
+
+			serveRec := httptest.NewRecorder()
+			handler.HandleServeFile(serveRec, httptest.NewRequest(http.MethodGet, "/uploads/files/"+body.FileKey, nil))
+			if serveRec.Code != http.StatusOK {
+				t.Fatalf("serve status = %d, want %d", serveRec.Code, http.StatusOK)
+			}
+			if got := serveRec.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment") {
+				t.Fatalf("content-disposition = %q, want attachment", got)
+			}
+		})
 	}
 }
 
@@ -503,29 +581,48 @@ func TestHandleServeFileServesBrowserVideoFormatsInline(t *testing.T) {
 	}
 }
 
-func TestHandleServeFileServesOggFilesAsAttachments(t *testing.T) {
-	dir := t.TempDir()
-	fileName := "20260727_0123456789abcdef0123456789abcdef.ogg"
-	fullPath := filepath.Join(dir, "files", fileName)
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fullPath, []byte("ogg bytes"), 0644); err != nil {
-		t.Fatal(err)
+func TestHandleServeFileServesBrowserAudioFormatsInline(t *testing.T) {
+	testCases := []struct {
+		ext      string
+		mimeType string
+	}{
+		{ext: ".mp3", mimeType: "audio/mpeg"},
+		{ext: ".ogg", mimeType: "audio/ogg"},
+		{ext: ".wav", mimeType: "audio/wav"},
 	}
 
-	handler := NewUploadHandler(dir, "/uploads")
-	rec := httptest.NewRecorder()
-	handler.HandleServeFile(rec, httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName, nil))
+	for _, tc := range testCases {
+		t.Run(tc.ext, func(t *testing.T) {
+			dir := t.TempDir()
+			fileName := "20260812_0123456789abcdef0123456789abcdef" + tc.ext
+			fullPath := filepath.Join(dir, "files", fileName)
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(fullPath, []byte("audio bytes"), 0644); err != nil {
+				t.Fatal(err)
+			}
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-	if got := rec.Header().Get("Content-Type"); got != "audio/ogg" {
-		t.Fatalf("Content-Type = %q, want audio/ogg", got)
-	}
-	if got := rec.Header().Get("Content-Disposition"); !strings.Contains(got, "attachment") {
-		t.Fatalf("Content-Disposition = %q, want attachment", got)
+			handler := NewUploadHandler(dir, "/uploads")
+			rec := httptest.NewRecorder()
+			handler.HandleServeFile(rec, httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName, nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			if got := rec.Header().Get("Content-Type"); got != tc.mimeType {
+				t.Fatalf("Content-Type = %q, want %q", got, tc.mimeType)
+			}
+			if got := rec.Header().Get("Content-Disposition"); !strings.Contains(got, "inline") {
+				t.Fatalf("Content-Disposition = %q, want inline", got)
+			}
+
+			downloadRec := httptest.NewRecorder()
+			handler.HandleServeFile(downloadRec, httptest.NewRequest(http.MethodGet, "/uploads/files/"+fileName+"?download=1", nil))
+			if got := downloadRec.Header().Get("Content-Disposition"); got != "attachment" {
+				t.Fatalf("download Content-Disposition = %q, want attachment", got)
+			}
+		})
 	}
 }
 

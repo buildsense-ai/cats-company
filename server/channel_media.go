@@ -66,34 +66,59 @@ func saveChannelMediaUploadFromReader(uploadType, fileName, contentType string, 
 	if err := os.MkdirAll(filepath.Join(uploadDir, subDir), 0755); err != nil {
 		return uploadPayload{}, err
 	}
-	fileKey := generateFileKey(ext)
-	dstPath := filepath.Join(uploadDir, subDir, fileKey)
-	dst, err := os.Create(dstPath)
+	dstDir := filepath.Join(uploadDir, subDir)
+	temp, err := os.CreateTemp(dstDir, ".channel-media-*")
 	if err != nil {
 		return uploadPayload{}, err
 	}
+	tempPath := temp.Name()
+	defer func() {
+		_ = temp.Close()
+		if tempPath != "" {
+			_ = os.Remove(tempPath)
+		}
+	}()
 	limited := &io.LimitedReader{R: src, N: maxSize + 1}
-	written, copyErr := io.Copy(dst, limited)
-	closeErr := dst.Close()
+	written, copyErr := io.Copy(temp, limited)
 	if copyErr != nil {
-		_ = os.Remove(dstPath)
 		return uploadPayload{}, copyErr
 	}
-	if closeErr != nil {
-		_ = os.Remove(dstPath)
-		return uploadPayload{}, closeErr
-	}
 	if written > maxSize {
-		_ = os.Remove(dstPath)
 		return uploadPayload{}, fmt.Errorf("file too large; maximum supported size is %dMB", maxUploadSizeMB)
 	}
+
+	// Preserve the audio/video distinction for Ogg containers just as direct
+	// uploads do. In particular, a video/ogg download must be stored as .ogv
+	// instead of becoming an audio/ogg attachment because its original filename
+	// ended in .ogg.
+	storedExt, mimeType := normalizedUploadMetadata(ext, contentType, temp)
+	if uploadType == "image" {
+		if !allowedImageExts[storedExt] {
+			return uploadPayload{}, errors.New("invalid image type")
+		}
+	} else if !allowedFileExts[storedExt] {
+		return uploadPayload{}, errors.New("file type not allowed")
+	}
+	if err := temp.Chmod(0644); err != nil {
+		return uploadPayload{}, err
+	}
+	if err := temp.Close(); err != nil {
+		return uploadPayload{}, err
+	}
+
+	fileKey := generateFileKey(storedExt)
+	dstPath := filepath.Join(dstDir, fileKey)
+	if err := os.Rename(tempPath, dstPath); err != nil {
+		return uploadPayload{}, err
+	}
+	tempPath = ""
 	return uploadPayload{
 		FileKey:  fileKey,
 		URL:      fmt.Sprintf("/uploads/%s/%s", subDir, fileKey),
 		Name:     fileName,
 		Size:     written,
 		Type:     uploadType,
-		MimeType: normalizedUploadMimeType(ext, contentType),
+		MimeType: mimeType,
 	}, nil
 }
 
@@ -139,6 +164,24 @@ func inferChannelMediaExt(uploadType, contentType string) string {
 		return ".xml"
 	case "application/zip":
 		return ".zip"
+	case "video/ogg":
+		return ".ogv"
+	case "audio/ogg", "application/ogg":
+		return ".ogg"
+	case "audio/mpeg", "audio/mp3":
+		return ".mp3"
+	case "audio/wav", "audio/x-wav":
+		return ".wav"
+	case "audio/amr", "audio/amr-wb":
+		return ".amr"
+	case "audio/opus":
+		return ".opus"
+	case "audio/aac", "audio/x-aac":
+		return ".aac"
+	case "audio/mp4", "audio/x-m4a":
+		return ".m4a"
+	case "audio/silk":
+		return ".silk"
 	}
 	if uploadType == "image" {
 		return ".jpg"

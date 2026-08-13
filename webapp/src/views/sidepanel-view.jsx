@@ -10,7 +10,7 @@ import MobileChannelBindModal from '../widgets/mobile-channel-bind-modal';
 import Avatar from '../widgets/avatar';
 import { useFeedback } from '../components/feedback-system';
 import { formatSidebarTime } from '../utils/sidebar-time';
-import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, Bell, BellOff, ClockAlert, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
+import { Users, UserRound, UserPlus, Zap, Bot, Trash2, Smartphone, Settings2, Check, X, Pin, Pencil, ChevronRight, Plus, Search, History, MoreHorizontal, UserX, Ban, Bell, BellOff, LoaderCircle, Folder, FolderOpen, FolderPlus } from 'lucide-react';
 
 const SIDEBAR_COLLAPSED_STORAGE_PREFIX = 'cc_sidebar_collapsed_v1';
 const DEFAULT_COLLAPSED_SECTIONS = { conversations: false, contacts: false, projects: false };
@@ -2726,6 +2726,10 @@ export default function ChatListView({
                   onBlur={() => setCompactHistoryTooltip(null)}
                 >
                   <span className="cc-compact-history-label">{chat.name}</span>
+                  <CompactTaskStatusIndicator
+                    status={taskStatusForDisplay(chat)}
+                    className="cc-compact-history-status"
+                  />
                   {activeTopic === chat.id && <Check size={14} aria-hidden="true" />}
                 </button>
               ))}
@@ -3412,14 +3416,19 @@ function useUnexpiredTaskStatus(status) {
   return normalized;
 }
 
-function CompactTaskStatusIndicator({ status }) {
+function CompactTaskStatusIndicator({ status, className = '' }) {
   const normalized = useUnexpiredTaskStatus(status);
   if (!normalized) return null;
 
   const detail = normalized.summary || normalized.error;
+  const indicatorClassName = (state) => [
+    'cc-compact-task-status',
+    className,
+    state,
+  ].filter(Boolean).join(' ');
   if (normalized.state === 'running') {
     return (
-      <span className="cc-compact-task-status running" title={detail || '任务进行中'} aria-label="任务进行中" role="status">
+      <span className={indicatorClassName('running')} title={detail || '任务进行中'} aria-label="任务进行中" role="status">
         <LoaderCircle size={17} strokeWidth={2.4} />
       </span>
     );
@@ -3427,13 +3436,13 @@ function CompactTaskStatusIndicator({ status }) {
 
   if (normalized.state === 'completed') {
     return (
-      <span className="cc-compact-task-status completed" title={detail || '任务已完成'} aria-label="任务已完成" role="status" />
+      <span className={indicatorClassName('completed')} title={detail || '任务已完成'} aria-label="任务已完成" role="status" />
     );
   }
 
   if (normalized.state === 'failed') {
     return (
-      <span className="cc-compact-task-status failed" title={detail || '任务执行失败'} aria-label="任务执行失败" role="status" />
+      <span className={indicatorClassName('failed')} title={detail || '任务执行失败'} aria-label="任务执行失败" role="status" />
     );
   }
 
@@ -3441,7 +3450,7 @@ function CompactTaskStatusIndicator({ status }) {
     const isStale = normalized.state === 'stale';
     const label = isStale ? '任务已自动中止' : '任务已中止';
     return (
-      <span className={`cc-compact-task-status ${normalized.state}`} title={detail || label} aria-label={label} role="status" />
+      <span className={indicatorClassName(normalized.state)} title={detail || label} aria-label={label} role="status" />
     );
   }
 
@@ -3466,7 +3475,7 @@ function TaskRowStatusIndicator({ status, time, showTime }) {
   if (normalized.state === 'completed') {
     return (
       <span className="cc-task-row-status completed" title={detail || '任务已完成'} aria-label="任务已完成" role="status">
-        <Check className="cc-task-status-icon cc-task-completed-icon" size={15} strokeWidth={2.4} aria-hidden="true" />
+        <span className="cc-task-status-dot cc-task-status-dot--completed cc-task-completed-dot" />
       </span>
     );
   }
@@ -3474,7 +3483,7 @@ function TaskRowStatusIndicator({ status, time, showTime }) {
   if (normalized.state === 'failed') {
     return (
       <span className="cc-task-row-status failed" title={detail || '任务执行失败'} aria-label="任务执行失败" role="status">
-        <X className="cc-task-status-icon cc-task-failed-icon" size={15} strokeWidth={2.4} aria-hidden="true" />
+        <span className="cc-task-status-dot cc-task-status-dot--failed" />
       </span>
     );
   }
@@ -3484,9 +3493,7 @@ function TaskRowStatusIndicator({ status, time, showTime }) {
     const label = isStale ? '任务已自动中止' : '任务已中止';
     return (
       <span className={`cc-task-row-status ${normalized.state}`} title={detail || label} aria-label={label} role="status">
-        {isStale
-          ? <ClockAlert className="cc-task-status-icon cc-task-stale-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
-          : <Ban className="cc-task-status-icon cc-task-cancelled-icon" size={14} strokeWidth={2.2} aria-hidden="true" />}
+        <span className={`cc-task-status-dot cc-task-status-dot--${normalized.state}`} />
       </span>
     );
   }
