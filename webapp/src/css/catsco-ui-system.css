@@ -6999,6 +6999,7 @@ html[data-theme="liquid"] .cc-confirm-dialog {
 .cc-cloud-worker-status.info { background: color-mix(in srgb, var(--v3-primary) 12%, transparent); color: var(--v3-primary); }
 .cc-cloud-worker-status.warn { background: color-mix(in srgb, #f59e0b 14%, transparent); color: #b45309; }
 .cc-cloud-worker-status.danger { background: color-mix(in srgb, #e5484d 12%, transparent); color: #dc2626; }
+.cc-cloud-worker-status.muted { background: color-mix(in srgb, #6b7280 14%, transparent); color: #9ca3af; }
 .cc-cloud-worker-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--v3-text-muted); }
 .cc-cloud-worker-meta b { color: var(--v3-text-name); font-weight: 600; }
 .cc-cloud-worker-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
