@@ -70,6 +70,13 @@ Responses SSE protocol end to end:
   committed, but streams are never spliced after downstream output begins;
 - a downstream disconnect closes the upstream response promptly.
 
+If an upstream stream fails after commitment, the downstream stream ends
+without a fabricated terminal event so the OpenAI client can detect the
+incomplete response. The adapter records `upstream_stream_error` against that
+provider for circuit diagnostics, but never attempts to splice a replacement
+provider into the committed stream. Downstream disconnects are recorded
+separately and do not penalize provider health.
+
 The upstream request uses `Accept-Encoding: identity` so intermediary content
 encoding cannot invalidate byte-for-byte forwarding. Reverse proxies are asked
 not to buffer the stream with `X-Accel-Buffering: no`.

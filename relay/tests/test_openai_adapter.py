@@ -67,7 +67,7 @@ class HandlerHarness:
         observer.finish()
         upstream.close()
         self.send_bytes(status, payload, {"Content-Type": "text/event-stream; charset=utf-8"})
-        return observer.outcome(), False
+        return observer.outcome(), False, None
 
     def submit_relay_usage(self, payload: dict, *, context: str):
         self.usage.append({**payload, "context": context})
@@ -284,6 +284,78 @@ class ProviderCircuitRecoveryTest(unittest.TestCase):
         self.assertEqual(len(harness.sent), 1)
         self.assertEqual(harness.sent[0][1], b"")
 
+    def test_committed_upstream_stream_error_is_recorded_without_failover(self):
+        harness = HandlerHarness(
+            ["provider-a", "provider-b"],
+            {
+                "provider-a": responses_sse(
+                    "response.created",
+                    {"type": "response.created", "response": {"status": "in_progress"}},
+                ),
+                "provider-b": responses_sse(
+                    "response.completed",
+                    {"type": "response.completed", "response": {"status": "completed"}},
+                ),
+            },
+        )
+        harness.handler.path = "/v1/responses"
+        harness.handler.forward_responses_stream = lambda status, headers, upstream: (
+            {
+                "valid_payload": False,
+                "succeeded": False,
+                "usage": {},
+                "terminal": "",
+                "error_code": "missing_terminal_event",
+            },
+            False,
+            "TimeoutError",
+        )
+
+        harness.handler.handle_responses(
+            {"model": self.model, "stream": True, "input": [{"role": "user", "content": "hello"}]}
+        )
+
+        self.assertEqual(harness.attempts, ["provider-a"])
+        self.assertTrue(any(item["error_code"] == "upstream_stream_error" for item in harness.usage))
+        self.assertEqual(adapter.PROVIDER_POOL_CONSECUTIVE_FAILURES["provider-a"], 1)
+        self.assertNotIn("provider-a", adapter.PROVIDER_POOL_UNAVAILABLE_UNTIL)
+
+    def test_committed_downstream_disconnect_does_not_penalize_provider(self):
+        harness = HandlerHarness(
+            ["provider-a", "provider-b"],
+            {
+                "provider-a": responses_sse(
+                    "response.created",
+                    {"type": "response.created", "response": {"status": "in_progress"}},
+                ),
+                "provider-b": responses_sse(
+                    "response.completed",
+                    {"type": "response.completed", "response": {"status": "completed"}},
+                ),
+            },
+        )
+        harness.handler.path = "/v1/responses"
+        harness.handler.forward_responses_stream = lambda status, headers, upstream: (
+            {
+                "valid_payload": False,
+                "succeeded": False,
+                "usage": {},
+                "terminal": "",
+                "error_code": "missing_terminal_event",
+            },
+            True,
+            None,
+        )
+
+        harness.handler.handle_responses(
+            {"model": self.model, "stream": True, "input": [{"role": "user", "content": "hello"}]}
+        )
+
+        self.assertEqual(harness.attempts, ["provider-a"])
+        self.assertTrue(any(item["status"] == "client_disconnected" for item in harness.usage))
+        self.assertNotIn("provider-a", adapter.PROVIDER_POOL_CONSECUTIVE_FAILURES)
+        self.assertNotIn("provider-a", adapter.PROVIDER_POOL_UNAVAILABLE_UNTIL)
+
 
     def test_explicit_content_policy_error_does_not_switch_or_open_circuit(self):
         harness = HandlerHarness(
@@ -482,6 +554,72 @@ class ResponsesHTTPStreamingTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+    def test_downstream_abort_closes_upstream_without_reporting_provider_failure(self):
+        class TrackingStream(io.BytesIO):
+            closed_by_relay = False
+
+            def close(self):
+                self.closed_by_relay = True
+                super().close()
+
+        class AbortedWriter:
+            def flush(self):
+                return
+
+            def write(self, chunk: bytes):
+                raise ConnectionAbortedError("downstream closed")
+
+        upstream = TrackingStream(b'data: {"type":"response.created"}\n\n')
+        handler = object.__new__(adapter.Handler)
+        handler.wfile = AbortedWriter()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+
+        outcome, disconnected, upstream_error = handler.forward_responses_stream(
+            HTTPStatus.OK,
+            {"Content-Type": "text/event-stream"},
+            upstream,
+        )
+
+        self.assertTrue(disconnected)
+        self.assertIsNone(upstream_error)
+        self.assertTrue(upstream.closed_by_relay)
+        self.assertEqual(outcome["error_code"], "missing_terminal_event")
+
+    def test_upstream_read_error_is_distinct_from_downstream_disconnect(self):
+        class BrokenStream(io.BytesIO):
+            closed_by_relay = False
+
+            def read1(self, size: int = -1) -> bytes:
+                raise TimeoutError("upstream stalled")
+
+            def close(self):
+                self.closed_by_relay = True
+                super().close()
+
+        class Writer(io.BytesIO):
+            def flush(self):
+                return
+
+        upstream = BrokenStream()
+        handler = object.__new__(adapter.Handler)
+        handler.wfile = Writer()
+        handler.send_response = lambda status: None
+        handler.send_header = lambda name, value: None
+        handler.end_headers = lambda: None
+
+        outcome, disconnected, upstream_error = handler.forward_responses_stream(
+            HTTPStatus.OK,
+            {"Content-Type": "text/event-stream"},
+            upstream,
+        )
+
+        self.assertFalse(disconnected)
+        self.assertEqual(upstream_error, "TimeoutError")
+        self.assertTrue(upstream.closed_by_relay)
+        self.assertEqual(outcome["error_code"], "missing_terminal_event")
 
 
 if __name__ == "__main__":

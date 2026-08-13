@@ -3302,7 +3302,7 @@ class Handler(BaseHTTPRequestHandler):
                         ).lower()
                         if 200 <= status < 300 and "text/event-stream" in content_type:
                             response_committed = True
-                            outcome, downstream_disconnected = self.forward_responses_stream(
+                            outcome, downstream_disconnected, upstream_stream_error = self.forward_responses_stream(
                                 status,
                                 headers,
                                 upstream_stream,
@@ -3313,6 +3313,20 @@ class Handler(BaseHTTPRequestHandler):
                                     "openai responses downstream disconnected while streaming provider=%s request_id=%s",
                                     provider,
                                     request_id,
+                                )
+                            elif upstream_stream_error:
+                                status = HTTPStatus.BAD_GATEWAY
+                                outcome = {
+                                    **outcome,
+                                    "valid_payload": False,
+                                    "succeeded": False,
+                                    "error_code": "upstream_stream_error",
+                                }
+                                LOGGER.warning(
+                                    "openai responses upstream stream failed after downstream commit provider=%s request_id=%s exception=%s",
+                                    provider,
+                                    request_id,
+                                    upstream_stream_error,
                                 )
                         else:
                             try:
@@ -3376,11 +3390,13 @@ class Handler(BaseHTTPRequestHandler):
             usage = outcome["usage"]
             error_code = None
             if not attempt_succeeded:
-                if status < 200 or status >= 300:
+                if response_committed and outcome.get("error_code"):
+                    error_code = outcome["error_code"]
+                elif status < 200 or status >= 300:
                     error_code = safe_error_code_from_payload(payload) or f"http_{status}"
                 else:
                     error_code = outcome["error_code"]
-            failover = not downstream_disconnected and should_failover_provider(
+            failover = not response_committed and not downstream_disconnected and should_failover_provider(
                 status,
                 valid_payload=provider_payload_valid,
                 payload=payload,
@@ -3792,9 +3808,10 @@ class Handler(BaseHTTPRequestHandler):
         status: int,
         headers: dict[str, str],
         upstream: BinaryIO,
-    ) -> tuple[dict[str, Any], bool]:
+    ) -> tuple[dict[str, Any], bool, str | None]:
         observer = ResponsesSSEObserver()
         client_disconnected = False
+        upstream_stream_error: str | None = None
         forwarded_headers = {name.lower(): value for name, value in headers.items()}
         try:
             self.send_response(status)
@@ -3809,19 +3826,27 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.flush()
             while True:
-                chunk = self.read_stream_chunk(upstream)
+                try:
+                    chunk = self.read_stream_chunk(upstream)
+                except Exception as exc:
+                    upstream_stream_error = type(exc).__name__
+                    break
                 if not chunk:
                     break
                 observer.feed(chunk)
-                self.wfile.write(chunk)
-                self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
+                try:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    client_disconnected = True
+                    break
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             client_disconnected = True
         finally:
             upstream.close()
             self.close_connection = True
         observer.finish()
-        return observer.outcome(), client_disconnected
+        return observer.outcome(), client_disconnected, upstream_stream_error
 
     @staticmethod
     def read_stream_chunk(upstream: BinaryIO) -> bytes:
