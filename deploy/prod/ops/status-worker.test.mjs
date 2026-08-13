@@ -128,8 +128,8 @@ const inst = (name, status, imageID) => ({
   image: { imageID },
 });
 
-test("status-worker: emits TSV with version joined from bake images", () => {
-  const r = runScript(null, {
+test("status-worker: emits TSV with version joined from bake images", (t) => {
+  const r = runScript(t, {
     fakeState: {
       instances: [
         inst("worker-aaa", "running", "img-running-1"),
@@ -145,18 +145,18 @@ test("status-worker: emits TSV with version joined from bake images", () => {
   assert.equal(lines[1], "worker-bbb\tcreating\timg-old-2\t1.4.7");
 });
 
-test("status-worker: no workers yields empty output and exit 0", () => {
-  const r = runScript(null, { fakeState: { instances: [] } });
+test("status-worker: no workers yields empty output and exit 0", (t) => {
+  const r = runScript(t, { fakeState: { instances: [] } });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout.trim(), "");
 });
 
-test("status-worker: paginates across pages", () => {
+test("status-worker: paginates across pages", (t) => {
   const many = [];
   for (let i = 0; i < 120; i += 1) {
     many.push(inst(`worker-p${i}`, "running", "img-running-1"));
   }
-  const r = runScript(null, { fakeState: { instances: many } });
+  const r = runScript(t, { fakeState: { instances: many } });
   assert.equal(r.status, 0, r.stderr);
   const lines = r.stdout.trim().split("\n").filter(Boolean);
   assert.equal(lines.length, 120);
@@ -164,18 +164,18 @@ test("status-worker: paginates across pages", () => {
   assert.ok(lines[119].startsWith("worker-p119\trunning\t"));
 });
 
-test("status-worker: ctyun failure fails closed with non-zero exit", () => {
+test("status-worker: ctyun failure fails closed with non-zero exit", (t) => {
   const failing = FAKE_CTYUN.replace(
     'process.stdout.write(JSON.stringify({',
     'process.stderr.write("boom"); process.exit(3); process.stdout.write(JSON.stringify({',
   );
-  const r = runScript(null, { fakeState: { instances: [] }, ctyunBody: failing });
+  const r = runScript(t, { fakeState: { instances: [] }, ctyunBody: failing });
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /ctyun-cli failed|Tianyi Cloud API failed/);
 });
 
-test("status-worker: instance without imageID omits trailing empty columns", () => {
-  const r = runScript(null, {
+test("status-worker: instance without imageID omits trailing empty columns", (t) => {
+  const r = runScript(t, {
     fakeState: { instances: [inst("worker-noid", "running", "")] },
   });
   assert.equal(r.status, 0, r.stderr);
