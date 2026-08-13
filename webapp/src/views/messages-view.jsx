@@ -36,7 +36,6 @@ const HISTORY_REQUEST_TIMEOUT_MS = 15000;
 const HISTORY_AUTO_FILL_MAX_PAGES = 6;
 const STICK_TO_BOTTOM_THRESHOLD = 96;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
-const ASSISTANT_REPLY_MERGE_WINDOW_MS = 90 * 1000;
 const PENDING_HISTORY_MATCH_CLOCK_SKEW_MS = 5 * 60 * 1000;
 const PEER_IDENTITY_CACHE_STORAGE_PREFIX = 'cc_peer_identity_v1';
 const PEER_IDENTITY_CACHE_FIELDS = [
@@ -2290,8 +2289,8 @@ export default function MessagesView({
     }, null);
   }, [isGroup, messages, peerUID]);
   const resolvedPeerProfile = useMemo(() => mergeIdentityRecord(
-    canonicalPeerIdentity,
     mergeIdentityRecord(peerProfile, rosterPeer),
+    canonicalPeerIdentity,
   ), [canonicalPeerIdentity, peerProfile, rosterPeer]);
   const peerIsBot = Boolean(rosterPeer)
     || resolvedPeerProfile?.bot === true
@@ -2659,9 +2658,29 @@ export default function MessagesView({
     return map;
   }, [messages]);
 
+  // Keep the identity used by existing self-authored rows reactive without
+  // recomputing their display groups for unrelated parent-prop changes.
+  const currentUserIdentity = useMemo(() => ({
+    account_type: user.account_type,
+    avatar_url: user.avatar_url,
+    bot: user.bot,
+    display_name: user.display_name,
+    is_bot: user.is_bot,
+    name: user.name,
+    username: user.username,
+  }), [
+    user.account_type,
+    user.avatar_url,
+    user.bot,
+    user.display_name,
+    user.is_bot,
+    user.name,
+    user.username,
+  ]);
+
   const getSender = (msg) => {
     if (sameUID(msg.from_uid, user.uid)) {
-      const senderProfile = mergeIdentityRecord(messageActorIdentity(msg), user);
+      const senderProfile = mergeIdentityRecord(currentUserIdentity, messageActorIdentity(msg));
       return {
         name: senderProfile?.display_name || senderProfile?.username,
         avatarUrl: senderProfile?.avatar_url,
@@ -2680,8 +2699,11 @@ export default function MessagesView({
         senderUID,
       );
       const senderProfile = mergeIdentityRecord(
-        mergeIdentityRecord(messageActorIdentity(msg), cachedMember),
-        mergeIdentityRecord(rosterAgent, member),
+        mergeIdentityRecord(
+          mergeIdentityRecord(rosterAgent, member),
+          cachedMember,
+        ),
+        messageActorIdentity(msg),
       );
       return {
         name: senderProfile?.display_name
@@ -2704,7 +2726,7 @@ export default function MessagesView({
         ),
       };
     }
-    const senderProfile = mergeIdentityRecord(messageActorIdentity(msg), resolvedPeerProfile);
+    const senderProfile = mergeIdentityRecord(resolvedPeerProfile, messageActorIdentity(msg));
     return {
       name: senderProfile?.display_name || senderProfile?.username || topicName || topic,
       avatarUrl: senderProfile?.avatar_url || topicAvatarUrl,
@@ -2721,20 +2743,13 @@ export default function MessagesView({
   const groupedMessages = useMemo(() => {
     const groups = [];
     const workingByExplicitTurn = new Map();
-    const workingByFallbackTurn = new Map();
     let currentWorking = null;
-    let latestHumanPromptKey = '';
-    let prevSenderUid = null;
-    let prevTime = 0;
-    let prevVisibleSenderUid = null;
-    let prevVisibleTime = 0;
+    let previousDisplayContext = null;
+    let previousVisibleDisplayContext = null;
 
     const registerWorkingGroup = (group) => {
       if (group.explicitTurnKey) {
         workingByExplicitTurn.set(group.explicitTurnKey, group);
-      }
-      if (group.fallbackTurnKey) {
-        workingByFallbackTurn.set(group.fallbackTurnKey, group);
       }
     };
 
@@ -2745,45 +2760,22 @@ export default function MessagesView({
       currentWorking = null;
     };
 
-    const findWorkingGroup = ({ explicitTurnKey, fallbackTurnKey }) => {
-      if (explicitTurnKey) {
-        const explicitMatch = workingByExplicitTurn.get(explicitTurnKey);
-        if (explicitMatch) return explicitMatch;
-        const fallbackMatch = fallbackTurnKey
-          ? workingByFallbackTurn.get(fallbackTurnKey)
-          : null;
-        return fallbackMatch && !fallbackMatch.explicitTurnKey ? fallbackMatch : null;
-      }
-      return fallbackTurnKey ? workingByFallbackTurn.get(fallbackTurnKey) : null;
+    const findWorkingGroup = ({ explicitTurnKey }) => {
+      return explicitTurnKey ? workingByExplicitTurn.get(explicitTurnKey) || null : null;
     };
 
-    const belongsToCurrentWorking = ({ explicitTurnKey, fallbackTurnKey }) => {
+    const belongsToCurrentWorking = ({ explicitTurnKey }) => {
       if (!currentWorking) return false;
-      if (
-        currentWorking.explicitTurnKey
-        && explicitTurnKey
-        && currentWorking.explicitTurnKey !== explicitTurnKey
-      ) {
-        return false;
-      }
-      if (currentWorking.fallbackTurnKey && fallbackTurnKey) {
-        return currentWorking.fallbackTurnKey === fallbackTurnKey;
-      }
-      return true;
+      return hasSameExplicitExecutionKey(currentWorking, { explicitTurnKey });
     };
 
-    messages.forEach((msg, index) => {
-      const msgTime = new Date(msg.created_at || Date.now()).getTime();
-      const senderUid = parseUid(msg.from_uid) || String(msg.from_uid || '');
-      const isConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
+    messages.forEach((msg) => {
       const sender = getSender(msg);
       const assistantAuthored = isAssistantAuthoredMessage(msg, sender.isBot);
 
-      if (isFinalTextMessage(msg) && !assistantAuthored) {
-        latestHumanPromptKey = messageTurnIdentity(msg, index);
-      }
-
-      const turn = assistantWorkTurn(msg, sender.isBot, latestHumanPromptKey);
+      const displayContext = messageDisplayContext(msg, sender.isBot);
+      const { turn } = displayContext;
+      const isConsecutive = areMessagesConsecutive(previousDisplayContext, displayContext);
 
       if (isWorkingMessage(msg)) {
         let leadingNarrativeMessages = [];
@@ -2791,22 +2783,15 @@ export default function MessagesView({
           const previousGroup = groups[groups.length - 1];
           const previousMessage = previousGroup?.message;
           const sameSender = messageSenderIdentity(previousMessage) === messageSenderIdentity(msg);
-          const explicitTurnConflict = Boolean(
-            previousGroup?.explicitTurnKey
-            && turn.explicitTurnKey
-            && previousGroup.explicitTurnKey !== turn.explicitTurnKey
-          );
-          const fallbackTurnConflict = Boolean(
-            previousGroup?.fallbackTurnKey
-            && turn.fallbackTurnKey
-            && previousGroup.fallbackTurnKey !== turn.fallbackTurnKey
+          const canAdoptLeadingNarrative = hasSameExplicitExecutionKey(
+            previousGroup,
+            { explicitTurnKey: turn.explicitTurnKey },
           );
           if (
             previousGroup?.type === 'text'
             && previousGroup.assistantAuthored
             && sameSender
-            && !explicitTurnConflict
-            && !fallbackTurnConflict
+            && canAdoptLeadingNarrative
             && !displayGroupHasDeliveryArtifact(previousGroup)
           ) {
             const sourceMessages = previousGroup.sourceMessages || [previousGroup.message];
@@ -2821,22 +2806,10 @@ export default function MessagesView({
 
         if (currentWorking) {
           currentWorking.messages.push(...leadingNarrativeMessages, msg);
-          if (!currentWorking.explicitTurnKey && turn.explicitTurnKey) {
-            currentWorking.explicitTurnKey = turn.explicitTurnKey;
-          }
-          if (!currentWorking.fallbackTurnKey && turn.fallbackTurnKey) {
-            currentWorking.fallbackTurnKey = turn.fallbackTurnKey;
-          }
         } else {
           const existingWorking = findWorkingGroup(turn);
           if (existingWorking) {
             existingWorking.messages.push(...leadingNarrativeMessages, msg);
-            if (!existingWorking.explicitTurnKey && turn.explicitTurnKey) {
-              existingWorking.explicitTurnKey = turn.explicitTurnKey;
-            }
-            if (!existingWorking.fallbackTurnKey && turn.fallbackTurnKey) {
-              existingWorking.fallbackTurnKey = turn.fallbackTurnKey;
-            }
             registerWorkingGroup(existingWorking);
           } else {
             currentWorking = {
@@ -2845,17 +2818,14 @@ export default function MessagesView({
               sender,
               isConsecutive,
               explicitTurnKey: turn.explicitTurnKey,
-              fallbackTurnKey: turn.fallbackTurnKey,
             };
           }
         }
-        prevSenderUid = senderUid;
-        prevTime = msgTime;
+        previousDisplayContext = displayContext;
       } else {
         flushCurrentWorking();
         const displayMessage = msg;
-        // Recalculate isConsecutive in case a working block just processed
-        const textIsConsecutive = (prevSenderUid === senderUid && (msgTime - prevTime < 5 * 60 * 1000));
+        const textIsConsecutive = areMessagesConsecutive(previousDisplayContext, displayContext);
         const previousGroup = groups[groups.length - 1];
         const previousSourceMessages = previousGroup?.type === 'text'
           ? (previousGroup.sourceMessages || [previousGroup.message])
@@ -2868,19 +2838,17 @@ export default function MessagesView({
             ...previousGroup,
             message: mergeAssistantDisplayMessages(sourceMessages),
             sourceMessages,
+            sender,
             explicitTurnKey: previousGroup.explicitTurnKey || turn.explicitTurnKey,
-            fallbackTurnKey: previousGroup.fallbackTurnKey || turn.fallbackTurnKey,
           };
-          prevSenderUid = senderUid;
-          prevTime = msgTime;
-          prevVisibleSenderUid = senderUid;
-          prevVisibleTime = msgTime;
+          previousDisplayContext = displayContext;
+          previousVisibleDisplayContext = displayContext;
           return;
         }
 
-        const textIsConsecutiveWithoutWorking = (
-          prevVisibleSenderUid === senderUid
-          && (msgTime - prevVisibleTime < 5 * 60 * 1000)
+        const textIsConsecutiveWithoutWorking = areMessagesConsecutive(
+          previousVisibleDisplayContext,
+          displayContext,
         );
 
         groups.push({
@@ -2893,12 +2861,9 @@ export default function MessagesView({
           isConsecutiveWithoutWorking: textIsConsecutiveWithoutWorking,
           assistantAuthored,
           explicitTurnKey: turn.explicitTurnKey,
-          fallbackTurnKey: turn.fallbackTurnKey,
         });
-        prevSenderUid = senderUid;
-        prevTime = msgTime;
-        prevVisibleSenderUid = senderUid;
-        prevVisibleTime = msgTime;
+        previousDisplayContext = displayContext;
+        previousVisibleDisplayContext = displayContext;
       }
     });
 
@@ -2907,6 +2872,7 @@ export default function MessagesView({
     return reorderAssistantTurnGroups(groups);
   }, [
     availableAgentByUID,
+    currentUserIdentity,
     inferredAgentUIDs,
     isGroup,
     memberMap,
@@ -2955,6 +2921,9 @@ export default function MessagesView({
     user.account_type,
     user.uid,
   ]);
+  const runtimePlanSender = runtimePlan
+    ? getSender(runtimePlan.sourceMessage || { from_uid: runtimePlan.senderKey })
+    : null;
 
   const openTutorialTask = (task) => {
     setShowTutorialPicker(false);
@@ -3350,7 +3319,14 @@ export default function MessagesView({
             </div>
           );
         })}
-          {runtimePlan && !hasPersistedRuntimePlan && <RuntimePlanCard plan={runtimePlan} />}
+          {runtimePlan && !hasPersistedRuntimePlan && (
+            <RuntimePlanCard
+              plan={runtimePlan}
+              senderName={runtimePlanSender?.name}
+              senderAvatarUrl={runtimePlanSender?.avatarUrl}
+              senderIsBot={runtimePlanSender?.isBot}
+            />
+          )}
           {peerTyping && (
             <div className="v3-peer-typing" role="status">
               <span className="v3-peer-typing-label">{t('typing')}</span>
@@ -3949,6 +3925,11 @@ function runtimePlanFromMessage(data) {
     ...normalizedPlan,
     senderKey: messageSenderIdentity(data),
     turnKey: assistantReplyTurnKey(data),
+    sourceMessage: {
+      from_uid: data.from_uid ?? data.from,
+      from_name: data.from_name ?? data.from,
+      metadata: data.metadata || null,
+    },
   };
 }
 
@@ -4099,15 +4080,25 @@ function isAssistantAuthoredMessage(message, senderIsBot = false) {
 
 function assistantReplyTurnKey(message) {
   const metadata = message?.metadata || {};
-  const value = metadata.turn_id
-    ?? metadata.turnId
-    ?? metadata.response_id
-    ?? metadata.responseId
-    ?? metadata.run_id
-    ?? metadata.runId
-    ?? metadata.stream_id
-    ?? message?._stream_id;
-  return value == null ? '' : String(value).trim();
+  // `run_id` identifies the durable execution. The remaining values can be
+  // scoped to a response or transport stream, so they are only fallbacks when
+  // a publisher has not supplied a run ID. This mirrors the server's task-run
+  // correlation rule and avoids compacting two runs that reuse a turn label.
+  const candidates = [
+    ['run', metadata.run_id],
+    ['run', metadata.runId],
+    ['turn', metadata.turn_id],
+    ['turn', metadata.turnId],
+    ['response', metadata.response_id],
+    ['response', metadata.responseId],
+    ['stream', metadata.stream_id],
+    ['stream', message?._stream_id],
+  ];
+  for (const [kind, candidate] of candidates) {
+    const value = candidate == null ? '' : String(candidate).trim();
+    if (value) return `${kind}:${value}`;
+  }
+  return '';
 }
 
 function messageSenderIdentity(message) {
@@ -4116,27 +4107,56 @@ function messageSenderIdentity(message) {
   return parsedSender ? String(parsedSender) : String(rawSender).trim();
 }
 
-function messageTurnIdentity(message, index) {
-  const value = message?.id
-    ?? message?.seq_id
-    ?? message?.seq
-    ?? message?.client_msg_id
-    ?? message?.created_at
-    ?? index;
-  return String(value);
+function assistantExecutionKey(message) {
+  const senderKey = messageSenderIdentity(message);
+  const turnKey = assistantReplyTurnKey(message);
+  return senderKey && turnKey ? `${senderKey}:turn:${turnKey}` : '';
 }
 
-function assistantWorkTurn(message, senderIsBot, latestHumanPromptKey) {
+function explicitExecutionKey(value) {
+  if (typeof value === 'string') return value.trim();
+  return typeof value?.explicitTurnKey === 'string' ? value.explicitTurnKey.trim() : '';
+}
+
+function hasSameExplicitExecutionKey(previous, current) {
+  const previousKey = explicitExecutionKey(previous);
+  const currentKey = explicitExecutionKey(current);
+  return Boolean(previousKey && currentKey && previousKey === currentKey);
+}
+
+function assistantWorkTurn(message, senderIsBot) {
   if (!isWorkingMessage(message) && !isAssistantAuthoredMessage(message, senderIsBot)) {
-    return { explicitTurnKey: '', fallbackTurnKey: '' };
+    return { explicitTurnKey: '' };
   }
 
-  const senderKey = messageSenderIdentity(message) || 'agent';
-  const explicitTurn = assistantReplyTurnKey(message);
   return {
-    explicitTurnKey: explicitTurn ? `${senderKey}:turn:${explicitTurn}` : '',
-    fallbackTurnKey: latestHumanPromptKey ? `${senderKey}:prompt:${latestHumanPromptKey}` : '',
+    explicitTurnKey: assistantExecutionKey(message),
   };
+}
+
+function messageDisplayContext(message, senderIsBot) {
+  const senderKey = messageSenderIdentity(message);
+  const turn = assistantWorkTurn(message, senderIsBot);
+  return {
+    senderKey,
+    turn,
+    explicitTurnKey: turn.explicitTurnKey,
+    isAssistant: isWorkingMessage(message) || isAssistantAuthoredMessage(message, senderIsBot),
+  };
+}
+
+function areMessagesConsecutive(previousContext, currentContext) {
+  if (!previousContext || !currentContext) return false;
+  if (previousContext.senderKey !== currentContext.senderKey) return false;
+
+  // Identity is a navigation affordance, not expendable decoration. Only
+  // compact entries when both rows can be tied to the same Agent execution.
+  // A missing correlation key must fail open and show the sender again.
+  return Boolean(
+    previousContext.isAssistant
+    && currentContext.isAssistant
+    && hasSameExplicitExecutionKey(previousContext, currentContext),
+  );
 }
 
 function assistantProcessMessage(message) {
@@ -4271,6 +4291,11 @@ function assistantOutputText(message) {
 function mergeAssistantOutputGroups(groups) {
   if (groups.length === 0) return null;
 
+  const executionKey = explicitExecutionKey(groups[0]);
+  if (!executionKey || groups.some((group) => !hasSameExplicitExecutionKey(executionKey, group))) {
+    return null;
+  }
+
   const sourceMessages = groups.flatMap((group) => (
     group.sourceMessages || (group.message ? [group.message] : [])
   ));
@@ -4306,6 +4331,7 @@ function mergeAssistantOutputGroups(groups) {
     ...textBlocks,
   ];
   const lastGroup = groups[groups.length - 1];
+  const firstGroup = groups[0];
 
   return {
     ...lastGroup,
@@ -4315,10 +4341,11 @@ function mergeAssistantOutputGroups(groups) {
       content_blocks: contentBlocks,
     },
     sourceMessages,
-    sender: groups[0].sender || lastGroup.sender,
+    sender: lastGroup.sender || firstGroup.sender,
     replyMessage: lastGroup.replyMessage || null,
-    explicitTurnKey: lastGroup.explicitTurnKey || groups.find((group) => group.explicitTurnKey)?.explicitTurnKey || '',
-    fallbackTurnKey: lastGroup.fallbackTurnKey || groups.find((group) => group.fallbackTurnKey)?.fallbackTurnKey || '',
+    explicitTurnKey: executionKey,
+    isConsecutive: Boolean(firstGroup.isConsecutive),
+    isConsecutiveWithoutWorking: Boolean(firstGroup.isConsecutiveWithoutWorking),
     artifactsFirst: artifactBlocks.length > 0,
   };
 }
@@ -4351,6 +4378,11 @@ function reorderAssistantTurnBundle(groups) {
     return groups;
   }
 
+  const executionKey = explicitExecutionKey(groups[0]);
+  if (!executionKey || groups.some((group) => !hasSameExplicitExecutionKey(executionKey, group))) {
+    return groups;
+  }
+
   const firstIsConsecutive = Boolean(groups[0]?.isConsecutive);
   const sourceWorkingGroups = groups.filter((group) => group.type === 'working');
   const processGroupIndexes = new Set();
@@ -4375,8 +4407,8 @@ function reorderAssistantTurnBundle(groups) {
       ...sourceWorkingGroups[0],
       messages: executionMessages,
       workingComplete: Boolean(mergedOutput),
-      explicitTurnKey: [...sourceWorkingGroups].reverse().find((group) => group.explicitTurnKey)?.explicitTurnKey || '',
-      fallbackTurnKey: [...sourceWorkingGroups].reverse().find((group) => group.fallbackTurnKey)?.fallbackTurnKey || '',
+      sender: sourceWorkingGroups[sourceWorkingGroups.length - 1]?.sender || sourceWorkingGroups[0]?.sender,
+      explicitTurnKey: executionKey,
     }]
     : [];
   const ordered = [...workingGroups, ...(mergedOutput ? [mergedOutput] : [])];
@@ -4385,7 +4417,12 @@ function reorderAssistantTurnBundle(groups) {
   return ordered.map((group, index) => {
     const next = {
       ...group,
-      isConsecutive: index === 0 ? firstIsConsecutive : true,
+      // The working trace inherits its place relative to the preceding row.
+      // The final reply already carries an independently computed display
+      // context. Do not turn it into a grouped row merely because it was
+      // reordered after the trace: without a proven turn ID, that would hide
+      // the Agent avatar and name on a standalone reply.
+      isConsecutive: index === 0 ? firstIsConsecutive : Boolean(group.isConsecutive),
     };
     if (group.type !== 'working') {
       if (!firstOutputFound) {
@@ -4407,18 +4444,16 @@ function reorderAssistantSegment(groups) {
     const senderKey = messageSenderIdentity(
       group?.messages?.[0] || group?.message,
     ) || String(group?.sender?.name || '');
-    const turnKey = group?.fallbackTurnKey || group?.explicitTurnKey || '';
+    const explicitTurnKey = explicitExecutionKey(group);
     let bundle = entries[entries.length - 1];
-    const conflictsWithCurrentTurn = Boolean(
-      bundle?.turnKey
-      && turnKey
-      && bundle.turnKey !== turnKey
+    const canJoinBundle = Boolean(
+      bundle
+      && bundle.senderKey === senderKey
+      && hasSameExplicitExecutionKey(bundle, group),
     );
-    if (!bundle || bundle.senderKey !== senderKey || conflictsWithCurrentTurn) {
-      bundle = { type: 'bundle', senderKey, turnKey, groups: [] };
+    if (!canJoinBundle) {
+      bundle = { type: 'bundle', senderKey, explicitTurnKey, groups: [] };
       entries.push(bundle);
-    } else if (!bundle.turnKey && turnKey) {
-      bundle.turnKey = turnKey;
     }
     bundle.groups.push(group);
   }
@@ -4448,11 +4483,6 @@ function reorderAssistantTurnGroups(groups) {
   return ordered;
 }
 
-function messageCreatedAtMs(message) {
-  const timestamp = new Date(message?.created_at || '').getTime();
-  return Number.isFinite(timestamp) ? timestamp : null;
-}
-
 function hasRichMessageBlocks(message) {
   return Array.isArray(message?.content_blocks) && message.content_blocks.length > 0;
 }
@@ -4468,17 +4498,10 @@ function shouldMergeAssistantReply(previous, current, previousSender, currentSen
   if (previous._streaming || current._streaming) return false;
   if (hasRichMessageBlocks(previous) || hasRichMessageBlocks(current)) return false;
 
-  const previousTurnKey = assistantReplyTurnKey(previous);
-  const currentTurnKey = assistantReplyTurnKey(current);
-  if (previousTurnKey || currentTurnKey) {
-    return Boolean(previousTurnKey && currentTurnKey && previousTurnKey === currentTurnKey);
-  }
-
-  const previousTime = messageCreatedAtMs(previous);
-  const currentTime = messageCreatedAtMs(current);
-  if (previousTime == null || currentTime == null) return false;
-  const gap = currentTime - previousTime;
-  return gap >= 0 && gap <= ASSISTANT_REPLY_MERGE_WINDOW_MS;
+  return hasSameExplicitExecutionKey(
+    { explicitTurnKey: assistantExecutionKey(previous) },
+    { explicitTurnKey: assistantExecutionKey(current) },
+  );
 }
 
 function mergeAssistantDisplayMessages(sourceMessages) {
@@ -4493,7 +4516,7 @@ function mergeAssistantDisplayMessages(sourceMessages) {
   };
 }
 
-function RuntimePlanCard({ plan }) {
+function RuntimePlanCard({ plan, senderName = '', senderAvatarUrl = '', senderIsBot = false }) {
   const [open, setOpen] = useState(false);
   const stepsID = `runtime-plan-steps-${useId().replace(/:/g, '')}`;
   if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) return null;
@@ -4502,40 +4525,55 @@ function RuntimePlanCard({ plan }) {
   const current = plan.steps.find((step) => step.status === 'in_progress') || plan.steps.find((step) => step.status === 'pending');
 
   return (
-    <div className="v3-runtime-plan-card" role="status">
-      <button
-        className="v3-runtime-plan-toggle"
-        type="button"
-        aria-expanded={open}
-        aria-controls={stepsID}
-        onClick={() => setOpen(!open)}
-      >
-        {open
-          ? <ChevronDown size={14} aria-hidden="true" />
-          : <ChevronRight size={14} aria-hidden="true" />}
-        <span className="v3-runtime-plan-title">计划</span>
-        <span className="v3-runtime-plan-count">{completed}/{plan.steps.length}</span>
-        {!open && current && <span className="v3-runtime-plan-current">{current.text}</span>}
-      </button>
-      {open && (
-        <div
-          id={stepsID}
-          className="v3-runtime-plan-steps"
-          role="region"
-          aria-label="实时计划步骤"
-        >
-          {plan.steps.map((step, index) => (
-            <div className={`v3-runtime-plan-step ${step.status}`} key={`${index}-${step.text}`}>
-              {step.status === 'completed'
-                ? <CheckCircle2 size={14} />
-                : step.status === 'in_progress'
-                  ? <CircleDot size={14} />
-                  : <Circle size={14} />}
-              <span className="v3-runtime-plan-step-text">{step.text}</span>
-            </div>
-          ))}
+    <div className="v3-runtime-plan-row">
+      <div className="v3-runtime-plan-avatar-col">
+        <Avatar
+          name={senderName}
+          src={senderAvatarUrl}
+          size={36}
+          isBot={senderIsBot}
+          className={`v3-avatar ${senderIsBot ? 'bot' : ''}`}
+          style={{ borderRadius: 6 }}
+        />
+      </div>
+      <div className="v3-runtime-plan-card" role="status">
+        <div className="v3-runtime-plan-header">
+          <span className="v3-runtime-plan-name">{senderName}</span>
         </div>
-      )}
+        <button
+          className="v3-runtime-plan-toggle"
+          type="button"
+          aria-expanded={open}
+          aria-controls={stepsID}
+          onClick={() => setOpen(!open)}
+        >
+          {open
+            ? <ChevronDown size={14} aria-hidden="true" />
+            : <ChevronRight size={14} aria-hidden="true" />}
+          <span className="v3-runtime-plan-title">计划</span>
+          <span className="v3-runtime-plan-count">{completed}/{plan.steps.length}</span>
+          {!open && current && <span className="v3-runtime-plan-current">{current.text}</span>}
+        </button>
+        {open && (
+          <div
+            id={stepsID}
+            className="v3-runtime-plan-steps"
+            role="region"
+            aria-label="实时计划步骤"
+          >
+            {plan.steps.map((step, index) => (
+              <div className={`v3-runtime-plan-step ${step.status}`} key={`${index}-${step.text}`}>
+                {step.status === 'completed'
+                  ? <CheckCircle2 size={14} />
+                  : step.status === 'in_progress'
+                    ? <CircleDot size={14} />
+                    : <Circle size={14} />}
+                <span className="v3-runtime-plan-step-text">{step.text}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

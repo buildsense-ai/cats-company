@@ -150,8 +150,15 @@ vi.mock('../widgets/chat-message', () => ({
 }));
 
 vi.mock('../widgets/avatar', () => ({
-  default: function MockAvatar() {
-    return null;
+  default: function MockAvatar({ name, src, isBot }) {
+    return (
+      <div
+        className="mock-avatar"
+        data-name={name || ''}
+        data-src={src || ''}
+        data-is-bot={String(Boolean(isBot))}
+      />
+    );
   },
 }));
 
@@ -665,6 +672,71 @@ describe('MessagesView composer draft isolation', () => {
       sendResult.resolve({ seq_id: 101 });
       await flushPromises();
     });
+  });
+
+  it('keeps the Agent identity on a new execution turn when working events arrive before the user echo', async () => {
+    const sendResult = deferred();
+    mockTutorialAgentPeer();
+    api.sendMessage.mockReturnValueOnce(sendResult.promise);
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 100,
+        seq_id: 100,
+        topic_id: 'p2p_1_2',
+        from_uid: 2,
+        role: 'assistant',
+        type: 'text',
+        content: '上一轮已经完成。',
+        created_at: new Date(Date.now() - 1_000).toISOString(),
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    const textarea = container.querySelector('textarea.v3-composer-input');
+    await act(async () => {
+      typeDraft(textarea, '开始新的执行轮次。');
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 102,
+          from: 'usr2',
+          type: 'tool_use',
+          msg_type: 'tool_use',
+          content: 'execute_shell',
+          metadata: { id: 'tool-102' },
+        },
+      });
+      await flushPromises();
+    });
+
+    const workingMessage = container.querySelector('[data-working-only="true"]');
+    expect(workingMessage?.dataset.senderName).toBe('Tutorial Agent');
+    expect(workingMessage?.dataset.senderAvatar).toBe('');
+    expect(workingMessage?.dataset.consecutive).toBe('false');
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          topic: 'p2p_1_2',
+          seq: 101,
+          from: 'usr1',
+          type: 'text',
+          msg_type: 'text',
+          content: '开始新的执行轮次。',
+        },
+      });
+      await flushPromises();
+      sendResult.resolve({ seq_id: 101 });
+      await flushPromises();
+    });
+
+    expect(container.querySelector('[data-working-only="true"]')?.dataset.consecutive)
+      .toBe('false');
   });
 
   it('does not anchor a follow-up after a local streaming placeholder', async () => {
@@ -1629,6 +1701,44 @@ describe('MessagesView composer draft isolation', () => {
     expect(message?.dataset.senderIsBot).toBe('false');
   });
 
+  it('refreshes an existing self-authored row when the current-user profile changes', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [{
+        id: 86,
+        seq_id: 86,
+        topic_id: 'p2p_1_2',
+        from_uid: 1,
+        type: 'text',
+        content: 'A message sent before the profile refresh.',
+      }],
+    });
+    const incompleteUser = { ...user, display_name: '', avatar_url: '' };
+
+    await mountTopic(root, 'p2p_1_2', { user: incompleteUser });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    let message = container.querySelector('.mock-chat-message[data-message-id="86"]');
+    expect(message?.dataset.senderName).toBe('me');
+    expect(message?.dataset.senderAvatar).toBe('');
+
+    await mountTopic(root, 'p2p_1_2', {
+      user: {
+        ...incompleteUser,
+        display_name: 'Refreshed Me',
+        avatar_url: '/uploads/refreshed-me.png',
+      },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    message = container.querySelector('.mock-chat-message[data-message-id="86"]');
+    expect(message?.dataset.senderName).toBe('Refreshed Me');
+    expect(message?.dataset.senderAvatar).toBe('/uploads/refreshed-me.png');
+  });
+
   it('keeps peer identity when the live Agent roster has empty display fields', async () => {
     api.getMessages.mockResolvedValueOnce({
       messages: [{
@@ -1716,6 +1826,7 @@ describe('MessagesView composer draft isolation', () => {
 
   it('does not restore a failed old-topic draft after the user has switched topics', async () => {
     let rejectSend;
+    api.sendMessage.mockReset();
     api.sendMessage.mockImplementationOnce(() => new Promise((resolve, reject) => {
       rejectSend = reject;
     }));
@@ -1732,6 +1843,7 @@ describe('MessagesView composer draft isolation', () => {
     });
 
     expect(container.querySelector('textarea.v3-composer-input').value).toBe('');
+    expect(rejectSend).toEqual(expect.any(Function));
 
     await mountTopic(root, 'p2p_1_3');
 
@@ -2129,6 +2241,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: 'A provider supplies the service.',
+          metadata: { run_id: 'assistant-chunks-1' },
           created_at: '2026-07-20T09:24:00Z',
         },
         {
@@ -2139,6 +2252,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: 'The agent coordinates the work.',
+          metadata: { run_id: 'assistant-chunks-1' },
           created_at: '2026-07-20T09:24:12Z',
         },
         {
@@ -2149,6 +2263,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: 'The provider performs it.',
+          metadata: { run_id: 'assistant-chunks-1' },
           created_at: '2026-07-20T09:24:24Z',
         },
       ],
@@ -2188,6 +2303,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: '第一段。\n\n第二段。',
+          metadata: { run_id: 'assistant-paragraphs-1' },
           created_at: '2026-07-20T09:25:10Z',
         },
         {
@@ -2197,6 +2313,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: '- 保留列表一\n- 保留列表二',
+          metadata: { run_id: 'assistant-paragraphs-1' },
           created_at: '2026-07-20T09:25:20Z',
         },
         {
@@ -2206,6 +2323,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: '列表后的说明。',
+          metadata: { run_id: 'assistant-paragraphs-1' },
           created_at: '2026-07-20T09:25:30Z',
         },
       ],
@@ -2283,7 +2401,7 @@ describe('MessagesView composer draft isolation', () => {
           content: 'update_plan',
           metadata: {
             id: 'plan-2',
-            turn_id: 'retry-2',
+            turn_id: 'retry-1',
             input: {
               steps: [
                 { status: 'completed', step: '实现功能' },
@@ -2300,7 +2418,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 2,
           type: 'tool_result',
           content: '计划已更新：2/2 已完成',
-          metadata: { tool_use_id: 'plan-2', turn_id: 'retry-2' },
+          metadata: { tool_use_id: 'plan-2', turn_id: 'retry-1' },
           created_at: '2026-07-20T10:00:05Z',
         },
       ],
@@ -2339,6 +2457,7 @@ describe('MessagesView composer draft isolation', () => {
           content: 'update_plan',
           metadata: {
             id: 'plan-1',
+            run_id: 'run-order-1',
             input: {
               steps: [
                 { status: 'in_progress', step: '实现游戏' },
@@ -2354,7 +2473,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 2,
           type: 'tool_result',
           content: '计划已更新：0/2 已完成',
-          metadata: { tool_use_id: 'plan-1' },
+          metadata: { tool_use_id: 'plan-1', run_id: 'run-order-1' },
           created_at: '2026-07-20T11:00:02Z',
         },
         {
@@ -2364,6 +2483,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: 'AI文本:检查和压缩包验收都通过。',
+          metadata: { run_id: 'run-order-1' },
           created_at: '2026-07-20T11:00:03Z',
         },
         {
@@ -2381,6 +2501,7 @@ describe('MessagesView composer draft isolation', () => {
               mime_type: 'application/zip',
             },
           }),
+          metadata: { run_id: 'run-order-1' },
           created_at: '2026-07-20T11:00:04Z',
         },
         {
@@ -2390,6 +2511,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: '更新版现在发送，旧存档仍可继续使用。',
+          metadata: { run_id: 'run-order-1' },
           created_at: '2026-07-20T11:00:05Z',
         },
         {
@@ -2400,6 +2522,7 @@ describe('MessagesView composer draft isolation', () => {
           content: 'update_plan',
           metadata: {
             id: 'plan-2',
+            run_id: 'run-order-1',
             input: {
               steps: [
                 { status: 'completed', step: '实现游戏' },
@@ -2415,7 +2538,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 2,
           type: 'tool_result',
           content: '计划已更新：2/2 已完成',
-          metadata: { tool_use_id: 'plan-2' },
+          metadata: { tool_use_id: 'plan-2', run_id: 'run-order-1' },
           created_at: '2026-07-20T11:00:07Z',
         },
       ],
@@ -2444,6 +2567,224 @@ describe('MessagesView composer draft isolation', () => {
       '更新版现在发送，旧存档仍可继续使用。',
     );
 
+  });
+
+  it('keeps identity on a final reply replayed with uncorrelated working history', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 108,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'execute_shell',
+          metadata: { id: 'tool-108' },
+        },
+        {
+          id: 109,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_result',
+          content: 'done',
+          metadata: { tool_use_id: 'tool-108' },
+        },
+        {
+          id: 110,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'The independent reply is ready.',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelector('[data-working-only="true"]')?.dataset.consecutive)
+      .toBe('false');
+    expect(container.querySelector('[data-message-id="110"]')?.dataset.consecutive)
+      .toBe('false');
+  });
+
+  it('does not compact adjacent Agent history rows without a correlation key, even within seconds', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 111,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'First replayed reply.',
+          created_at: '2026-07-20T09:24:00Z',
+        },
+        {
+          id: 112,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'Second replayed reply.',
+          created_at: '2026-07-20T09:24:12Z',
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelectorAll('.mock-chat-message')).toHaveLength(2);
+    expect(container.querySelector('[data-message-id="111"]')?.dataset.consecutive)
+      .toBe('false');
+    expect(container.querySelector('[data-message-id="112"]')?.dataset.consecutive)
+      .toBe('false');
+  });
+
+  it('keeps uncorrelated Agent work and replayed replies as separate identity-bearing rows', async () => {
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 117,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          type: 'tool_use',
+          content: 'execute_shell',
+          metadata: { id: 'tool-117' },
+          created_at: '2026-07-20T09:30:00Z',
+        },
+        {
+          id: 118,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'A replayed result from a separate execution.',
+          created_at: '2026-07-20T09:32:00Z',
+          metadata: {
+            catsco_identity: {
+              actor: {
+                user_id: 'usr2',
+                display_name: 'Earlier Agent Identity',
+                avatar_url: '/uploads/earlier-agent.png',
+                account_type: 'bot',
+              },
+            },
+          },
+        },
+        {
+          id: 119,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'The new execution reply must keep its own identity.',
+          created_at: '2026-07-20T09:34:00Z',
+          metadata: {
+            catsco_identity: {
+              actor: {
+                user_id: 'usr2',
+                display_name: 'Current Agent Identity',
+                avatar_url: '/uploads/current-agent.png',
+                account_type: 'bot',
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2', { topicName: '', topicAvatarUrl: '' });
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(Array.from(container.querySelectorAll('.mock-chat-message')).map(
+      (message) => message.dataset.messageId,
+    )).toEqual(['117', '118', '119']);
+    expect(container.querySelector('[data-message-id="118"]')?.dataset.senderName)
+      .toBe('Earlier Agent Identity');
+    expect(container.querySelector('[data-message-id="119"]')?.dataset.senderName)
+      .toBe('Current Agent Identity');
+    expect(container.querySelector('[data-message-id="119"]')?.dataset.senderAvatar)
+      .toBe('/uploads/current-agent.png');
+    expect(container.querySelector('[data-message-id="119"]')?.dataset.consecutive)
+      .toBe('false');
+  });
+
+  it('keeps a new execution identifiable when a publisher reuses a turn label', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 113,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'The first execution finished.',
+          metadata: { turn_id: 'shared-turn', run_id: 'run-1' },
+        },
+        {
+          id: 114,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'The new execution started.',
+          metadata: { turn_id: 'shared-turn', run_id: 'run-2' },
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelector('[data-message-id="114"]')?.dataset.consecutive)
+      .toBe('false');
+  });
+
+  it('does not conflate identifiers from different execution scopes', async () => {
+    mockTutorialAgentPeer();
+    api.getMessages.mockResolvedValueOnce({
+      messages: [
+        {
+          id: 115,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'A response-level correlation key.',
+          metadata: { turn_id: 'shared-key' },
+        },
+        {
+          id: 116,
+          topic_id: 'p2p_1_2',
+          from_uid: 2,
+          role: 'assistant',
+          type: 'text',
+          content: 'A later execution with the same literal label.',
+          metadata: { run_id: 'shared-key' },
+        },
+      ],
+    });
+
+    await mountTopic(root, 'p2p_1_2');
+    await act(async () => {
+      await flushPromises();
+    });
+
+    expect(container.querySelector('[data-message-id="116"]')?.dataset.consecutive)
+      .toBe('false');
   });
 
   it('marks a tool trace complete when the same turn has a final reply without a plan', async () => {
@@ -2528,7 +2869,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 535,
           type: 'tool_use',
           content: 'execute_shell',
-          metadata: { id: 'tool-131' },
+          metadata: { id: 'tool-131', run_id: 'run-group-1' },
           created_at: '2026-07-20T12:00:01Z',
         },
         {
@@ -2537,7 +2878,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 535,
           type: 'tool_result',
           content: 'search complete',
-          metadata: { tool_use_id: 'tool-131' },
+          metadata: { tool_use_id: 'tool-131', run_id: 'run-group-1' },
           created_at: '2026-07-20T12:00:02Z',
         },
         {
@@ -2546,6 +2887,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 535,
           type: 'text',
           content: '已确认当前最近日期的赛事。',
+          metadata: { run_id: 'run-group-1' },
           created_at: '2026-07-20T12:00:03Z',
         },
         {
@@ -2554,7 +2896,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 535,
           type: 'tool_use',
           content: 'read_file',
-          metadata: { id: 'tool-134' },
+          metadata: { id: 'tool-134', run_id: 'run-group-1' },
           created_at: '2026-07-20T12:00:04Z',
         },
         {
@@ -2563,7 +2905,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 535,
           type: 'tool_result',
           content: 'file ready',
-          metadata: { tool_use_id: 'tool-134' },
+          metadata: { tool_use_id: 'tool-134', run_id: 'run-group-1' },
           created_at: '2026-07-20T12:00:05Z',
         },
         {
@@ -2580,6 +2922,7 @@ describe('MessagesView composer draft isolation', () => {
               mime_type: 'application/pdf',
             },
           },
+          metadata: { run_id: 'run-group-1' },
           created_at: '2026-07-20T12:00:06Z',
         },
         {
@@ -2588,6 +2931,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 535,
           type: 'text',
           content: '图文简报已发。',
+          metadata: { run_id: 'run-group-1' },
           created_at: '2026-07-20T12:00:07Z',
         },
       ],
@@ -2630,7 +2974,7 @@ describe('MessagesView composer draft isolation', () => {
           from_uid: 2,
           type: 'tool_use',
           content: 'write_file',
-          metadata: { id: 'write-121' },
+          metadata: { id: 'write-121', run_id: 'run-delivery-1' },
           created_at: '2026-07-20T11:02:01Z',
         },
         {
@@ -2640,6 +2984,7 @@ describe('MessagesView composer draft isolation', () => {
           role: 'assistant',
           type: 'text',
           content: '文件已经生成。',
+          metadata: { run_id: 'run-delivery-1' },
           created_at: '2026-07-20T11:02:02Z',
         },
         {
@@ -2657,6 +3002,7 @@ describe('MessagesView composer draft isolation', () => {
               mime_type: 'application/zip',
             },
           },
+          metadata: { run_id: 'run-delivery-1' },
           created_at: '2026-07-20T11:02:03Z',
         },
       ],
@@ -6530,6 +6876,49 @@ describe('MessagesView composer draft isolation', () => {
 
     expect(container.textContent).not.toContain('输入');
     expect(container.querySelector('.v3-peer-typing')).toBeNull();
+  });
+
+  it('keeps canonical sender identity on a transient runtime plan before peer lookups finish', async () => {
+    api.getFriends.mockResolvedValue({ friends: [] });
+    api.getAgents.mockResolvedValue({ agents: [] });
+    await mountTopic(root, 'p2p_1_2', { topicName: '', topicAvatarUrl: '' });
+
+    await act(async () => {
+      wsHandler({
+        data: {
+          seq_id: 23,
+          seq: 23,
+          topic: 'p2p_1_2',
+          from: 'usr2',
+          content: {
+            revision: 1,
+            updatedAt: Date.now(),
+            steps: [{ text: '定位头像显示问题', status: 'in_progress' }],
+          },
+          type: 'runtime_plan',
+          msg_type: 'runtime_plan',
+          metadata: {
+            catsco_identity: {
+              actor: {
+                user_id: 'usr2',
+                display_name: 'Runtime Plan Agent',
+                avatar_url: '/uploads/runtime-plan-agent.png',
+                account_type: 'bot',
+                is_bot: true,
+              },
+            },
+          },
+        },
+      });
+      await flushPromises();
+    });
+
+    const planRow = container.querySelector('.v3-runtime-plan-row');
+    expect(planRow?.querySelector('.v3-runtime-plan-name')?.textContent).toBe('Runtime Plan Agent');
+    const avatar = planRow?.querySelector('.v3-runtime-plan-avatar-col .mock-avatar');
+    expect(avatar?.dataset.name).toBe('Runtime Plan Agent');
+    expect(avatar?.dataset.src).toBe('/uploads/runtime-plan-agent.png');
+    expect(avatar?.dataset.isBot).toBe('true');
   });
 
   it('hides the transient runtime plan once the same plan is persisted in working messages', async () => {
