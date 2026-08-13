@@ -113,8 +113,13 @@ func (h *BotDefinitionHandler) HandleViewerSkills(w http.ResponseWriter, r *http
 		return
 	}
 	visibility := normalizeBotSkillsVisibility(config.SkillsVisibility)
+	// A friend may inspect the Bot's synchronized Skill inventory, including
+	// private SkillHub references. This endpoint is deliberately metadata-only:
+	// it never returns content, local paths, hashes, credentials, or mutation
+	// controls. The visibility setting still describes public catalogue sharing
+	// for non-friends, while friendship grants the safe read-only inventory view.
 	allowed := viewerUID == ownerUID || visibility == types.BotSkillsPublic
-	if !allowed && visibility == types.BotSkillsAuthorized {
+	if !allowed {
 		allowed, err = access.AreFriends(viewerUID, botUID)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check Agent access"})

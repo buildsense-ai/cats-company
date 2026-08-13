@@ -50,8 +50,9 @@ func TestBotDefinitionViewerSkillsRespectVisibilityAndRedactDefinition(t *testin
 		{name: "authorized friend", viewerUID: 8, visibility: types.BotSkillsAuthorized, friend: true, wantStatus: http.StatusOK},
 		{name: "authorized non-friend", viewerUID: 8, visibility: types.BotSkillsAuthorized, wantStatus: http.StatusForbidden},
 		{name: "public", viewerUID: 8, visibility: types.BotSkillsPublic, wantStatus: http.StatusOK},
-		{name: "owner only", viewerUID: 8, visibility: types.BotSkillsOwner, wantStatus: http.StatusForbidden},
-		{name: "missing legacy value defaults private", viewerUID: 8, visibility: "", wantStatus: http.StatusForbidden},
+		{name: "owner only friend still sees safe metadata", viewerUID: 8, visibility: types.BotSkillsOwner, friend: true, wantStatus: http.StatusOK},
+		{name: "owner only stranger", viewerUID: 8, visibility: types.BotSkillsOwner, wantStatus: http.StatusForbidden},
+		{name: "missing legacy value stranger", viewerUID: 8, visibility: "", wantStatus: http.StatusForbidden},
 	}
 
 	for _, tc := range tests {

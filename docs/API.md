@@ -256,7 +256,7 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 
 #### GET /api/agents/skills — 读取 Agent 技能列表
 
-需要用户 JWT 鉴权，并按 Agent 所有者设置的范围授权。响应只包含技能标识、来源和版本，不返回内容哈希、Bot definition、模型、提示词或密钥。
+需要用户 JWT 鉴权。Agent 所有者和好友可读取脱敏技能元数据；`skills_visibility=public` 还允许非好友用户读取。响应只包含已经同步到 BotDefinition 的技能标识、来源和版本，不返回内容哈希、Bot definition、模型、提示词、设备路径、技能源码或密钥。
 
 ```json
 // Response 200

@@ -7,6 +7,9 @@ import SkillHubView, {
   isRetryableSkillHubSwitchError,
   isSkillHubWorkspaceSwitchingError,
   normalizeOwnedBots,
+  normalizeAccessibleBots,
+  buildCurrentAgentSkills,
+  normalizeViewerSkills,
   normalizeSkillHubDevices,
   normalizeLocalSkills,
   normalizeSkillHubSkills,
@@ -27,6 +30,7 @@ import { FeedbackProvider } from '../components/feedback-system';
 
 vi.mock('../api', () => ({
   api: {
+    getAgentSkills: vi.fn(),
     getMyBots: vi.fn(),
     getBotDefinitionSkills: vi.fn(),
     updateBotDefinitionSkills: vi.fn(),
@@ -69,8 +73,13 @@ describe('SkillHubView', () => {
     api.getMyBots.mockResolvedValue({
       bots: [
         { uid: 42, display_name: 'Owner Bot', relation: 'owner', is_owner: true },
-        { uid: 43, display_name: 'Friend Bot', relation: 'friend', is_owner: false },
+        { uid: 43, display_name: 'Friend Bot', relation: 'friend', is_owner: false, owner_id: 99 },
       ],
+    });
+    api.getAgentSkills.mockResolvedValue({
+      botId: '43',
+      skills_visibility: 'owner',
+      skills: [{ source: 'skillhub', skillId: 'private/review', version: 'v2' }],
     });
     api.getBotDefinitionSkills.mockResolvedValue({
       botId: '42',
@@ -107,6 +116,23 @@ describe('SkillHubView', () => {
     root = createRoot(container);
   });
 
+  it('normalizes accessible owner and friend bots and merges local-only skills', () => {
+    expect(normalizeAccessibleBots({ agents: [
+      { uid: 42, relation: 'owner' },
+      { uid: 43, relation: 'friend', owner_id: 99 },
+      { uid: 44, display_name: 'Human Friend', relation: 'friend', is_bot: true },
+    ] }, 7).map((bot) => bot.relation)).toEqual(['owner', 'friend']);
+    expect(buildCurrentAgentSkills([
+      { skillId: 'tools/review', version: '1' },
+    ], [{ name: 'draft', localSkillId: 'draft' }])).toEqual(expect.arrayContaining([
+      expect.objectContaining({ skillId: 'tools/review', formal: true }),
+      expect.objectContaining({ skillId: 'local:draft', localOnly: true }),
+    ]));
+    expect(normalizeViewerSkills({ skills: [{ skillId: 'private/review', version: 'v2' }] })[0]).toMatchObject({
+      skillId: 'private/review', version: 'v2',
+    });
+  });
+
   afterEach(async () => {
     await act(async () => root.unmount());
     vi.useRealTimers();
@@ -131,7 +157,7 @@ describe('SkillHubView', () => {
   async function openCustomSkills() {
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('管理自定义能力')));
+        .find((button) => button.textContent.includes('本地工作区')));
       await Promise.resolve();
     });
   }
@@ -502,7 +528,7 @@ describe('SkillHubView', () => {
     expect(container.querySelector('#skillhub-added-tab')?.getAttribute('aria-selected')).toBe('true');
     expect(container.querySelectorAll('[role="tab"]')).toHaveLength(2);
     expect(container.querySelector('.cc-skillhub-installed')).toBeNull();
-    expect(container.textContent).toContain('管理自定义能力');
+    expect(container.textContent).toContain('本地工作区');
     expect(container.textContent).not.toContain('已开启');
     expect(container.querySelector('button[aria-label="复制 tools/review"]')).toBeTruthy();
     expect(container.querySelector('button[aria-label="更多操作 tools/review"]')).toBeTruthy();
@@ -741,9 +767,9 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelectorAll('.cc-skillhub-bot-picker:first-child option')).toHaveLength(1);
+    expect(container.querySelectorAll('.cc-skillhub-bot-picker:first-child option')).toHaveLength(2);
     expect(container.textContent).toContain('tools/review');
-    expect(container.textContent).not.toContain('Friend Bot');
+    expect(container.textContent).toContain('Friend Bot');
 
     await openCatalogue();
     const installButton = addButton(container);
@@ -760,6 +786,31 @@ describe('SkillHubView', () => {
         contentHash: 'b'.repeat(64),
       }),
     ]));
+  });
+
+  it('loads a friend Bot as read-only metadata without touching local devices', async () => {
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    api.getDevices.mockClear();
+    await act(async () => {
+      Simulate.change(container.querySelector('.cc-skillhub-agent-native-select'), {
+        target: { value: '43' },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.getAgentSkills).toHaveBeenCalledWith('43');
+    expect(api.getBotDefinitionSkills).toHaveBeenCalledWith('42');
+    expect(api.getDevices).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('私有能力');
+    expect(container.textContent).toContain('v2');
+    expect(container.textContent).toContain('只读查看');
+    expect(container.querySelector('.cc-skillhub-custom-entry')).toBeNull();
+    expect(container.querySelector('.cc-skillhub-copy-action')).toBeNull();
+    expect(container.querySelector('.cc-skillhub-more-action')).toBeNull();
   });
 
   it('loads a production local workspace and shares through the selected XiaoBa device', async () => {
