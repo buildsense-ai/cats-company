@@ -15,7 +15,6 @@ import AgentEntryBindView from './agent-entry-bind-view';
 import ChannelDeviceLinkView from './channel-device-link-view';
 import MobileUploadView from './mobile-upload-view';
 import SkillHubView from './skillhub-view';
-import SystemPromptView from './system-prompt-view';
 import EmptyTaskComposer from '../widgets/empty-task-composer';
 import SidebarResizeHandle, {
   MIN_APP_SIDEBAR_WIDTH,
@@ -66,7 +65,7 @@ import {
   syncThemeColor,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
-import { Cloud, Download, FileText, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import { Cloud, Download, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 import '../css/catsco-liquid-green.css';
@@ -119,18 +118,6 @@ export function resolveInitialUser({
   if (themePreview) return { ...DEV_PREVIEW_USER, uid: 'theme-preview' };
   if (previewEnabled || !token) return null;
   return null;
-}
-
-export async function confirmSystemPromptNavigation({ activeView, dirty, saving, confirm }) {
-  if (activeView !== 'system-prompt') return true;
-  if (saving) return false;
-  if (!dirty) return true;
-  return confirm({
-    title: '放弃未保存的修改？',
-    message: '离开系统提示词页面后，当前草稿不会保留。',
-    confirmLabel: '放弃并离开',
-    tone: 'danger',
-  });
 }
 
 function getInitialUser() {
@@ -201,8 +188,6 @@ function TinodeWebApp() {
   const [user, setUser] = useState(() => getInitialUser());
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
   const [activeView, setActiveView] = useState('chats');
-  const [systemPromptDirty, setSystemPromptDirty] = useState(false);
-  const [systemPromptSaving, setSystemPromptSaving] = useState(false);
   const [skillHubInitialAgent, setSkillHubInitialAgent] = useState(null);
   const [activeTopic, _setActiveTopic] = useState(() => (
     user?.uid ? readStoredTopic(user.uid) : null
@@ -232,18 +217,6 @@ function TinodeWebApp() {
       return normalized;
     });
   }, [user?.uid]);
-  const navigateFromSystemPrompt = useCallback(async (navigate) => {
-    const confirmed = await confirmSystemPromptNavigation({
-      activeView,
-      dirty: systemPromptDirty,
-      saving: systemPromptSaving,
-      confirm: feedback.confirm,
-    });
-    if (!confirmed) return false;
-    setSystemPromptDirty(false);
-    navigate();
-    return true;
-  }, [activeView, feedback, systemPromptDirty, systemPromptSaving]);
   const [authMode, setAuthMode] = useState('login');
   const [onlineUsers, setOnlineUsers] = useState({});
   const [wsStatus, setWsStatus] = useState(user ? 'connecting' : 'disconnected');
@@ -819,7 +792,7 @@ function TinodeWebApp() {
   };
 
   const handleLogout = () => {
-    navigateFromSystemPrompt(clearAuthenticatedSession);
+    clearAuthenticatedSession();
   };
 
   const handleUserUpdated = (nextUser) => {
@@ -910,20 +883,18 @@ function TinodeWebApp() {
   const handleStartAgentTask = useCallback((agent, options = {}) => {
     const agentUid = agent?.uid || agent?.id;
     if (!agentUid) return;
-    navigateFromSystemPrompt(() => {
-      const projectId = Number(options?.projectId || 0);
-      taskDraftSequenceRef.current += 1;
-      setActiveTopic(null);
-      setActiveView('chats');
-      setTaskDraft({
-        agent,
-        key: `${agentUid}:${taskDraftSequenceRef.current}`,
-        projectId: projectId > 0 ? projectId : 0,
-        projectName: projectId > 0 ? String(options?.projectName || '') : '',
-      });
-      setMobileSidebarOpen(false);
+    const projectId = Number(options?.projectId || 0);
+    taskDraftSequenceRef.current += 1;
+    setActiveTopic(null);
+    setActiveView('chats');
+    setTaskDraft({
+      agent,
+      key: `${agentUid}:${taskDraftSequenceRef.current}`,
+      projectId: projectId > 0 ? projectId : 0,
+      projectName: projectId > 0 ? String(options?.projectName || '') : '',
     });
-  }, [navigateFromSystemPrompt, setActiveTopic]);
+    setMobileSidebarOpen(false);
+  }, [setActiveTopic]);
 
   const createDraftAgentTaskTopic = useCallback((agent, draft = {}) => (
     createAgentTaskTopic(agent, {
@@ -959,27 +930,25 @@ function TinodeWebApp() {
 
   const handleSearchResultSelect = useCallback((result) => {
     if (!result?.topicId) return;
-    navigateFromSystemPrompt(() => {
-      const targetMessageId = Number(result.messageId) || 0;
-      messageLocationSequenceRef.current += 1;
-      setTaskDraft(null);
-      setActiveView('chats');
-      setActiveTopic({
-        topicId: result.topicId,
-        name: result.source || result.topicId,
-        isGroup: result.isGroup || result.topicId.startsWith('grp_'),
-        groupId: result.groupId,
-        avatar_url: result.avatarUrl,
-      });
-      setMessageLocationRequest(targetMessageId ? {
-        topicId: result.topicId,
-        messageId: targetMessageId,
-        requestId: messageLocationSequenceRef.current,
-      } : null);
-      setSearchOpen(false);
-      setMobileSidebarOpen(false);
+    const targetMessageId = Number(result.messageId) || 0;
+    messageLocationSequenceRef.current += 1;
+    setTaskDraft(null);
+    setActiveView('chats');
+    setActiveTopic({
+      topicId: result.topicId,
+      name: result.source || result.topicId,
+      isGroup: result.isGroup || result.topicId.startsWith('grp_'),
+      groupId: result.groupId,
+      avatar_url: result.avatarUrl,
     });
-  }, [navigateFromSystemPrompt, setActiveTopic]);
+    setMessageLocationRequest(targetMessageId ? {
+      topicId: result.topicId,
+      messageId: targetMessageId,
+      requestId: messageLocationSequenceRef.current,
+    } : null);
+    setSearchOpen(false);
+    setMobileSidebarOpen(false);
+  }, [setActiveTopic]);
 
   if ((channelDeviceLink || channelAccountLink) && user) {
     const params = new URLSearchParams(window.location.search);
@@ -1071,13 +1040,11 @@ function TinodeWebApp() {
           <SidebarContent
             activeTopic={activeTopic ? activeTopic.topicId : null}
             onSelectTopic={(topic) => {
-              navigateFromSystemPrompt(() => {
-                setTaskDraft(null);
-                setMessageLocationRequest(null);
-                setActiveView('chats');
-                setActiveTopic(topic);
-                setMobileSidebarOpen(false);
-              });
+              setTaskDraft(null);
+              setMessageLocationRequest(null);
+              setActiveView('chats');
+              setActiveTopic(topic);
+              setMobileSidebarOpen(false);
             }}
             onOpenSearch={() => setSearchOpen(true)}
             onStartAgentTask={handleStartAgentTask}
@@ -1094,17 +1061,8 @@ function TinodeWebApp() {
                 <SkillHubSidebarButton
                   active={activeView === 'skillhub'}
                   onClick={() => {
-                    navigateFromSystemPrompt(() => {
-                      setSkillHubInitialAgent(null);
-                      setActiveView('skillhub');
-                      setMobileSidebarOpen(false);
-                    });
-                  }}
-                />
-                <SystemPromptSidebarButton
-                  active={activeView === 'system-prompt'}
-                  onClick={() => {
-                    setActiveView('system-prompt');
+                    setSkillHubInitialAgent(null);
+                    setActiveView('skillhub');
                     setMobileSidebarOpen(false);
                   }}
                 />
@@ -1179,12 +1137,6 @@ function TinodeWebApp() {
           <div className="v3-main-content">
             {activeView === 'skillhub' ? (
               <SkillHubView user={user} initialAgent={skillHubInitialAgent} />
-            ) : activeView === 'system-prompt' ? (
-              <SystemPromptView
-                user={user}
-                onDirtyChange={setSystemPromptDirty}
-                onSavingChange={setSystemPromptSaving}
-              />
             ) : activeTopic ? (
               <MessagesView
                 topBar={localAssistantBar}
@@ -1407,22 +1359,6 @@ function SkillHubSidebarButton({ active, onClick }) {
     >
       <Package size={17} />
       <span>SkillHub</span>
-    </button>
-  );
-}
-
-function SystemPromptSidebarButton({ active, onClick }) {
-  return (
-    <button
-      type="button"
-      className={`cc-sidebar-primary cc-sidebar-system-prompt-entry${active ? ' active' : ''}`}
-      onClick={onClick}
-      aria-label="打开系统提示词"
-      aria-current={active ? 'page' : undefined}
-      title="系统提示词"
-    >
-      <FileText size={17} />
-      <span>系统提示词</span>
     </button>
   );
 }

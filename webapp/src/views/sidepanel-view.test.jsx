@@ -2966,16 +2966,13 @@ describe('ChatListView sidebar sections', () => {
           <button type="button" className="cc-sidebar-primary cc-sidebar-skillhub-entry">
             SkillHub
           </button>
-          <button type="button" className="cc-sidebar-primary cc-sidebar-system-prompt-entry">
-            系统提示词
-          </button>
         </>
       ),
     });
 
     const toolLabels = Array.from(container.querySelectorAll('.cc-sidebar-tools > button'))
       .map((button) => button.textContent.trim());
-    expect(toolLabels).toEqual(['新建任务', 'SkillHub', '系统提示词']);
+    expect(toolLabels).toEqual(['新建任务', 'SkillHub']);
   });
 
   it('shows the four compact navigation tools and recent Agent tasks in a history menu', async () => {

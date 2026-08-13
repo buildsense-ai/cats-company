@@ -35,6 +35,7 @@ import {
 } from '../utils/skillhub-entry';
 import CustomSelect from './custom-select';
 import CloudWorkerPanel from './cloud-worker-panel';
+import AgentSystemPromptCard from './agent-system-prompt-card';
 
 const CREATE_MODES = {
   SELF_HOSTED: 'self_hosted',
@@ -691,6 +692,12 @@ export default function AgentStoreModal({
   useEffect(() => {
     if (entryBot || skillPickerOpen || skillDetail) return undefined;
     const handleDialogKeyDown = (event) => {
+      if (
+        document.querySelector('.cc-agent-prompt-editor-overlay')
+        || (event.target instanceof Element && event.target.closest('.cc-agent-prompt-editor-dialog'))
+      ) {
+        return;
+      }
       if (event.key === 'Escape') {
         event.preventDefault();
         onClose();
@@ -1757,6 +1764,8 @@ export default function AgentStoreModal({
                   </button>
                 </div>
               </div>
+
+              <AgentSystemPromptCard agent={editingBot} />
 
               <section className="cc-agent-capability-summary" aria-labelledby="cc-agent-capability-summary-title">
                 <div className="cc-agent-capability-summary-icon" aria-hidden="true">

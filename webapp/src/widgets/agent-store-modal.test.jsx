@@ -10,6 +10,7 @@ vi.mock('../api', () => ({
     getAgents: vi.fn(),
     getCloudWorkerMeta: vi.fn(),
     getCloudWorkers: vi.fn(),
+    getBotDefinitionPrompt: vi.fn(),
     getBotDefinitionSkills: vi.fn(),
     getFriends: vi.fn(),
     getLocalSkills: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock('../api', () => ({
     shareLocalSkill: vi.fn(),
     setBotSkillsVisibility: vi.fn(),
     updateBotDefinitionSkills: vi.fn(),
+    updateBotDefinitionPrompt: vi.fn(),
     uploadFile: vi.fn(),
   },
   getWebSocketURL: vi.fn(() => 'wss://app.catsco.cc/v0/channels'),
@@ -45,6 +47,12 @@ describe('AgentStoreModal', () => {
       quota: { enabled: true, total: 3, used: 1, remaining: 2 },
       workers: [],
     });
+    api.getBotDefinitionPrompt.mockReset().mockResolvedValue({
+      configured: true,
+      revision: 2,
+      definition: { prompt: { selected: 'default' } },
+      runtime: { appliedRevision: 2, lastAttemptRevision: 2, appliedAt: '2026-08-13T08:00:00Z' },
+    });
     api.getBotDefinitionSkills.mockReset().mockResolvedValue({ revision: 0, skills: [] });
     api.getFriends.mockReset().mockResolvedValue({ friends: [] });
     api.getLocalSkills.mockReset().mockResolvedValue({ skills: [] });
@@ -56,6 +64,12 @@ describe('AgentStoreModal', () => {
     api.shareLocalSkill.mockReset();
     api.setBotSkillsVisibility.mockReset().mockResolvedValue({ skills_visibility: 'owner' });
     api.updateBotDefinitionSkills.mockReset().mockResolvedValue({ revision: 1, skills: [] });
+    api.updateBotDefinitionPrompt.mockReset().mockResolvedValue({
+      configured: true,
+      revision: 3,
+      definition: { prompt: { selected: 'custom', customSystemPrompt: 'Be precise.' } },
+      runtime: { appliedRevision: 2, lastAttemptRevision: 2 },
+    });
     api.uploadFile.mockReset().mockResolvedValue({ url: '/uploads/avatar.png' });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -68,6 +82,7 @@ describe('AgentStoreModal', () => {
     });
     document.body.querySelectorAll('.cc-agent-skill-picker-overlay').forEach((node) => node.remove());
     document.body.querySelectorAll('.cc-agent-skill-detail-overlay').forEach((node) => node.remove());
+    document.body.querySelectorAll('.cc-agent-prompt-editor-overlay').forEach((node) => node.remove());
     container.remove();
   });
 
@@ -828,6 +843,9 @@ describe('AgentStoreModal', () => {
     });
 
     const summary = container.querySelector('.cc-agent-capability-summary');
+    const behavior = container.querySelector('.cc-agent-behavior-card');
+    expect(behavior?.textContent).toContain('行为设定');
+    expect(behavior?.textContent).toContain('使用 XiaoBa 默认提示词');
     expect(summary?.textContent).toContain('能力配置');
     expect(summary?.textContent).toContain('已启用 2 个 Skill');
     expect(container.textContent).not.toContain('技能可见范围');
