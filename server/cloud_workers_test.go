@@ -149,6 +149,9 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 		case "tsv":
 			// 真实 list-worker-images.sh TSV 契约：imageID<TAB>name<TAB>version<TAB>commit<TAB>createdTime<TAB>status
 			body = "@echo off\r\necho 79f5b7f4-c06e-4f97-90fa-d69566f23d63\tcatsco-worker-1-4-8-f3f1f3e6\tv1.4.8\tf3f1f3e6\t1786066647\tactive\r\n"
+		case "status-tsv":
+			// 真实 status-worker.sh TSV 契约：instanceName<TAB>instanceStatus<TAB>imageID<TAB>version
+			body = "@echo off\r\necho worker-bot-bot-a\trunning\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\tv1.4.8\r\necho worker-bot-bot-b\tcreating\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\tv1.4.8\r\n"
 		case "require-identity":
 			// 校验 argv 含 --login-token 与 --bot-uid（弱校验：只查存在）
 			body = "@echo off\r\necho %* | findstr /C:\"--login-token\" >nul || exit /b 1\r\necho %* | findstr /C:\"--bot-uid\" >nul || exit /b 1\r\necho ok\r\n"
@@ -175,6 +178,9 @@ func writeWorkerOpScript(t *testing.T, behavior string) string {
 	case "tsv":
 		// 真实 list-worker-images.sh TSV 契约（printf 的 \\t 是字面 tab）
 		body = "#!/bin/sh\nprintf '79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tcatsco-worker-1-4-8-f3f1f3e6\\tv1.4.8\\tf3f1f3e6\\t1786066647\\tactive\\n'\n"
+	case "status-tsv":
+		// 真实 status-worker.sh TSV 契约：instanceName<TAB>instanceStatus<TAB>imageID<TAB>version
+		body = "#!/bin/sh\nprintf 'worker-bot-bot-a\\trunning\\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tv1.4.8\\nworker-bot-bot-b\\tcreating\\t79f5b7f4-c06e-4f97-90fa-d69566f23d63\\tv1.4.8\\n'\n"
 	case "require-identity":
 		// 校验 argv 含非空 --login-token/--bot-uid/--user-uid/--user-name/--user-display
 		// （模拟 provision-worker.sh 写 localConfig 的必填身份），缺则 fail
@@ -206,6 +212,9 @@ func workerScriptCfg(t *testing.T, quota string, scripts map[string]string) Clou
 	}
 	if p, ok := scripts["images"]; ok {
 		cfg.ImagesScript = p
+	}
+	if p, ok := scripts["status"]; ok {
+		cfg.StatusScript = p
 	}
 	return cfg
 }
@@ -284,6 +293,93 @@ func TestCloudWorkerHandleList(t *testing.T) {
 	quota := out["quota"].(map[string]interface{})
 	if quota["total"].(float64) != 5 || quota["used"].(float64) != 1 || quota["remaining"].(float64) != 4 {
 		t.Fatalf("quota=%v", quota)
+	}
+}
+
+func TestParseCloudWorkerStatusTSV(t *testing.T) {
+	out := "worker-aaa\trunning\timg-1\tv1.2.3\nworker-bbb\tcreating\timg-2\t\nother-instance\trunning\timg-1\tv1\n"
+	infos := parseCloudWorkerStatusTSV(out)
+	if len(infos) != 2 {
+		t.Fatalf("want 2 infos, got %d (%v)", len(infos), infos)
+	}
+	if got := infos["aaa"]; got.Status != "running" || got.ImageID != "img-1" || got.Version != "v1.2.3" {
+		t.Fatalf("aaa info = %+v", got)
+	}
+	if got := infos["bbb"]; got.Status != "creating" || got.ImageID != "img-2" || got.Version != "" {
+		t.Fatalf("bbb info = %+v", got)
+	}
+	if _, ok := infos["other-instance"]; ok {
+		t.Fatalf("non-worker- prefixed instance should be ignored")
+	}
+	// 空/畸形行不崩溃（worker-x 无 tab 列被忽略，worker-y 正常计入）
+	if got := parseCloudWorkerStatusTSV("\nworker-x\nworker-y\trunning\n"); len(got) != 1 {
+		t.Fatalf("lenient parse got %v", got)
+	}
+}
+
+func TestCloudWorkerHandleListFillsCloudStatus(t *testing.T) {
+	cfg := workerScriptCfg(t, "7=5", map[string]string{"status": writeWorkerOpScript(t, "status-tsv")})
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+		{"id": int64(2), "username": "bot-b", "display_name": "B", "tenant_name": "bot-bot-b"},
+		{"id": int64(3), "username": "bot-c", "display_name": "C", "tenant_name": "bot-bot-c"}, // 无实例行 → 保持 unknown
+	}
+
+	req := cloudWorkerRequest(7, http.MethodGet, "/api/cloud-workers", nil)
+	rec := httptest.NewRecorder()
+	h.HandleList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	out := decodeCloudWorkerList(t, rec)
+	workers, _ := out["workers"].([]interface{})
+	if len(workers) != 3 {
+		t.Fatalf("want 3 workers, got %d", len(workers))
+	}
+	byTenant := map[string]map[string]interface{}{}
+	for _, w := range workers {
+		m := w.(map[string]interface{})
+		byTenant[m["tenant_name"].(string)] = m
+	}
+	a := byTenant["bot-bot-a"]
+	if a["cloud_status"] != "running" || a["cloud_version"] != "v1.4.8" || a["cloud_image_id"] != "79f5b7f4-c06e-4f97-90fa-d69566f23d63" {
+		t.Fatalf("bot-a cloud facts = %v", a)
+	}
+	b := byTenant["bot-bot-b"]
+	if b["cloud_status"] != "creating" {
+		t.Fatalf("bot-b cloud_status = %v", b["cloud_status"])
+	}
+	c := byTenant["bot-bot-c"]
+	if _, ok := c["cloud_status"]; ok {
+		t.Fatalf("bot-c should keep unknown (no cloud_status key), got %v", c["cloud_status"])
+	}
+}
+
+func TestCloudWorkerHandleListStatusScriptFailureFallsBack(t *testing.T) {
+	// 状态脚本失败时列表仍返回，状态保持 unknown（不阻塞列表）
+	cfg := workerScriptCfg(t, "7=5", map[string]string{"status": writeWorkerOpScript(t, "fail")})
+	h, ts := newCloudWorkerTestHandlerCfg(cfg)
+	ts.ownerBots = []map[string]interface{}{
+		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
+	}
+
+	req := cloudWorkerRequest(7, http.MethodGet, "/api/cloud-workers", nil)
+	rec := httptest.NewRecorder()
+	h.HandleList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	out := decodeCloudWorkerList(t, rec)
+	workers, _ := out["workers"].([]interface{})
+	if len(workers) != 1 {
+		t.Fatalf("want 1 worker, got %d", len(workers))
+	}
+	first := workers[0].(map[string]interface{})
+	if _, ok := first["cloud_status"]; ok {
+		t.Fatalf("cloud_status should be absent on script failure, got %v", first["cloud_status"])
 	}
 }
 
