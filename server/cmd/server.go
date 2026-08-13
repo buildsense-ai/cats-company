@@ -431,6 +431,7 @@ func main() {
 		SaleChannels:  paymentSaleChannels,
 		Syncer:        commercialRelaySyncer,
 	})
+	accountAdminHandler.SetCommercialPaymentHandler(commercialPaymentHandler)
 	// usageHandler := server.NewUsageHandler(db)
 
 	authSendCodeIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
@@ -557,6 +558,7 @@ func main() {
 	mux.HandleFunc("/api/account/commercial-ops/grants", commercialOpsHandler.HandleGrants)
 	mux.HandleFunc("/api/account/commercial-ops/users", commercialOpsHandler.HandleUsers)
 	mux.HandleFunc("/api/account/commercial-ops/orders", commercialOpsHandler.HandleOrders)
+	mux.HandleFunc("/api/account/commercial-ops/order-refunds", commercialOpsHandler.HandleOrderRefund)
 	mux.HandleFunc("/api/account/commercial-ops/relay-dry-run", commercialOpsHandler.HandleRelayDryRun)
 	mux.HandleFunc("/api/account/commercial-ops/relay-sync", commercialOpsHandler.HandleRelaySync)
 	mux.HandleFunc("/local/account-admin", accountAdminHandler.HandlePage)
@@ -574,6 +576,7 @@ func main() {
 	mux.HandleFunc("/local/account-admin/commercial/relay-dry-run", accountAdminHandler.HandleCommercialRelayDryRun)
 	mux.HandleFunc("/local/account-admin/commercial/relay-sync", accountAdminHandler.HandleCommercialRelaySync)
 	mux.HandleFunc("/local/account-admin/commercial/orders", accountAdminHandler.HandleCommercialOrders)
+	mux.HandleFunc("/local/account-admin/commercial/order-refunds", accountAdminHandler.HandleCommercialOrderRefund)
 	mux.HandleFunc("/local/tutorial-admin", tutorialTaskHandler.HandleAdminPage)
 	mux.HandleFunc("/local/tutorial-admin/", tutorialTaskHandler.HandleAdminPage)
 	mux.HandleFunc("/local/tutorial-admin/tasks", tutorialTaskHandler.HandleAdminTasks)

@@ -36,6 +36,9 @@ type queryCommercialPaymentProvider struct {
 	createCalls  int
 	closeErr     error
 	closeCalls   int
+	refund       *types.CommercialRefundConfirmation
+	refundErr    error
+	refundCalls  int
 }
 
 func (p *queryCommercialPaymentProvider) Channel() string {
@@ -60,6 +63,10 @@ func (p *queryCommercialPaymentProvider) ClosePayment(context.Context, *types.Co
 	p.closeCalls++
 	return p.closeErr
 }
+func (p *queryCommercialPaymentProvider) RefundPayment(context.Context, *types.CommercialOrder, string, string) (*types.CommercialRefundConfirmation, error) {
+	p.refundCalls++
+	return p.refund, p.refundErr
+}
 
 type fakeAlipayPaymentClient struct {
 	pageURL          *url.URL
@@ -68,11 +75,14 @@ type fakeAlipayPaymentClient struct {
 	queryErr         error
 	close            *alipay.TradeCloseRsp
 	closeErr         error
+	refund           *alipay.TradeRefundRsp
+	refundErr        error
 	notification     *alipay.Notification
 	notificationErr  error
 	lastPagePay      alipay.TradePagePay
 	lastQuery        alipay.TradeQuery
 	lastClose        alipay.TradeClose
+	lastRefund       alipay.TradeRefund
 	lastNotification url.Values
 }
 
@@ -89,6 +99,11 @@ func (c *fakeAlipayPaymentClient) TradeQuery(_ context.Context, request alipay.T
 func (c *fakeAlipayPaymentClient) TradeClose(_ context.Context, request alipay.TradeClose) (*alipay.TradeCloseRsp, error) {
 	c.lastClose = request
 	return c.close, c.closeErr
+}
+
+func (c *fakeAlipayPaymentClient) TradeRefund(_ context.Context, request alipay.TradeRefund) (*alipay.TradeRefundRsp, error) {
+	c.lastRefund = request
+	return c.refund, c.refundErr
 }
 
 func (c *fakeAlipayPaymentClient) DecodeNotification(_ context.Context, values url.Values) (*alipay.Notification, error) {
@@ -238,6 +253,46 @@ func (s *commercialPaymentTestStore) FulfillCommercialOrder(orderNo string, conf
 	order.Status = "fulfilled"
 	order.PaidAt = &now
 	order.FulfilledAt = &now
+	copy := *order
+	return &copy, true, nil
+}
+
+func (s *commercialPaymentTestStore) BeginCommercialOrderRefund(orderNo, refundRequestNo string, _ time.Duration) (*types.CommercialOrder, bool, error) {
+	order := s.orders[orderNo]
+	if order == nil {
+		return nil, false, nil
+	}
+	if order.Status != "fulfilled" {
+		copy := *order
+		return &copy, false, nil
+	}
+	order.Status = "refunding"
+	order.RefundRequestNo = refundRequestNo
+	copy := *order
+	return &copy, true, nil
+}
+
+func (s *commercialPaymentTestStore) FailCommercialOrderRefund(orderNo, refundRequestNo, message string) error {
+	order := s.orders[orderNo]
+	if order != nil && order.Status == "refunding" && order.RefundRequestNo == refundRequestNo {
+		order.Status = "fulfilled"
+		order.LastError = message
+	}
+	return nil
+}
+
+func (s *commercialPaymentTestStore) CompleteCommercialOrderRefund(orderNo string, confirmation *types.CommercialRefundConfirmation) (*types.CommercialOrder, bool, error) {
+	order := s.orders[orderNo]
+	if order == nil || confirmation == nil || order.RefundRequestNo != confirmation.RefundRequestNo {
+		return nil, false, context.Canceled
+	}
+	if order.Status == "refunded" {
+		copy := *order
+		return &copy, false, nil
+	}
+	order.Status = "refunded"
+	refundedAt := confirmation.RefundedAt
+	order.RefundedAt = &refundedAt
 	copy := *order
 	return &copy, true, nil
 }
@@ -884,6 +939,108 @@ func TestAlipayPaymentRejectsFailedTradeClose(t *testing.T) {
 	provider := &alipayPagePaymentProvider{client: fake}
 	if err := provider.ClosePayment(context.Background(), &types.CommercialOrder{OrderNo: "CC-PAID"}); err == nil {
 		t.Fatal("failed Alipay close response was accepted")
+	}
+}
+
+func TestAlipayPaymentRefundsExactOrderAmount(t *testing.T) {
+	fake := &fakeAlipayPaymentClient{refund: &alipay.TradeRefundRsp{
+		Error:      alipay.Error{Code: alipay.CodeSuccess},
+		OutTradeNo: "CC-REFUND-ALIPAY",
+		TradeNo:    "2026081322000000000001",
+		RefundFee:  "399.00",
+		FundChange: "Y",
+	}}
+	provider := &alipayPagePaymentProvider{client: fake}
+	confirmation, err := provider.RefundPayment(context.Background(), &types.CommercialOrder{
+		OrderNo: "CC-REFUND-ALIPAY", ProviderTradeNo: fake.refund.TradeNo, AmountFen: 39900, Currency: "CNY",
+	}, "CCRF-CC-REFUND-ALIPAY", "user requested refund")
+	if err != nil || confirmation == nil {
+		t.Fatalf("refund Alipay order: confirmation=%#v err=%v", confirmation, err)
+	}
+	if fake.lastRefund.OutTradeNo != "CC-REFUND-ALIPAY" || fake.lastRefund.OutRequestNo != "CCRF-CC-REFUND-ALIPAY" || fake.lastRefund.RefundAmount != "399.00" {
+		t.Fatalf("unexpected Alipay refund request: %#v", fake.lastRefund)
+	}
+	if confirmation.AmountFen != 39900 || confirmation.ProviderTradeNo != fake.refund.TradeNo || confirmation.RefundRequestNo != fake.lastRefund.OutRequestNo {
+		t.Fatalf("unexpected refund confirmation: %#v", confirmation)
+	}
+}
+
+func TestAlipayPaymentRejectsRefundAmountMismatch(t *testing.T) {
+	fake := &fakeAlipayPaymentClient{refund: &alipay.TradeRefundRsp{
+		Error: alipay.Error{Code: alipay.CodeSuccess}, OutTradeNo: "CC-REFUND-MISMATCH", TradeNo: "trade-1", RefundFee: "0.01",
+	}}
+	provider := &alipayPagePaymentProvider{client: fake}
+	if _, err := provider.RefundPayment(context.Background(), &types.CommercialOrder{
+		OrderNo: "CC-REFUND-MISMATCH", ProviderTradeNo: "trade-1", AmountFen: 39900, Currency: "CNY",
+	}, "CCRF-CC-REFUND-MISMATCH", "test"); err == nil || !strings.Contains(err.Error(), "amount mismatch") {
+		t.Fatalf("expected refund amount mismatch, got %v", err)
+	}
+}
+
+func TestCommercialRefundIsIdempotentAndReleasesFailedClaim(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-REFUND-FLOW"] = &types.CommercialOrder{
+		OrderNo: "CC-REFUND-FLOW", UID: 38, Channel: commercialPaymentChannelAlipayPage,
+		Status: "fulfilled", ProviderTradeNo: "trade-refund-flow", AmountFen: 1, Currency: "CNY",
+	}
+	provider := &queryCommercialPaymentProvider{refund: &types.CommercialRefundConfirmation{
+		Channel: commercialPaymentChannelAlipayPage, EventID: "CCRF-CC-REFUND-FLOW",
+		ProviderTradeNo: "trade-refund-flow", RefundRequestNo: "CCRF-CC-REFUND-FLOW",
+		AmountFen: 1, Currency: "CNY", RefundedAt: time.Now().UTC(),
+	}}
+	handler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{Providers: []CommercialPaymentProvider{provider}})
+	refunded, changed, err := handler.RefundOrder(context.Background(), "CC-REFUND-FLOW", "test refund")
+	if err != nil || !changed || refunded == nil || refunded.Status != "refunded" || provider.refundCalls != 1 {
+		t.Fatalf("refund result=%#v changed=%v calls=%d err=%v", refunded, changed, provider.refundCalls, err)
+	}
+	refunded, changed, err = handler.RefundOrder(context.Background(), "CC-REFUND-FLOW", "repeat")
+	if err != nil || changed || refunded == nil || refunded.Status != "refunded" || provider.refundCalls != 1 {
+		t.Fatalf("repeated refund result=%#v changed=%v calls=%d err=%v", refunded, changed, provider.refundCalls, err)
+	}
+
+	store.orders["CC-REFUND-RETRY"] = &types.CommercialOrder{
+		OrderNo: "CC-REFUND-RETRY", UID: 38, Channel: commercialPaymentChannelAlipayPage,
+		Status: "fulfilled", ProviderTradeNo: "trade-refund-retry", AmountFen: 1, Currency: "CNY",
+	}
+	provider.refund = nil
+	provider.refundErr = context.DeadlineExceeded
+	if _, _, err := handler.RefundOrder(context.Background(), "CC-REFUND-RETRY", "retry test"); err == nil {
+		t.Fatal("provider refund failure was accepted")
+	}
+	if order := store.orders["CC-REFUND-RETRY"]; order.Status != "fulfilled" || order.LastError == "" {
+		t.Fatalf("failed refund claim was not released: %#v", order)
+	}
+}
+
+func TestCommercialAdminRefundRequiresExactOrderConfirmation(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.orders["CC-ADMIN-REFUND"] = &types.CommercialOrder{
+		OrderNo: "CC-ADMIN-REFUND", UID: 38, Channel: commercialPaymentChannelAlipayPage,
+		Status: "fulfilled", ProviderTradeNo: "trade-admin-refund", AmountFen: 1, Currency: "CNY",
+	}
+	provider := &queryCommercialPaymentProvider{refund: &types.CommercialRefundConfirmation{
+		Channel: commercialPaymentChannelAlipayPage, EventID: "CCRF-CC-ADMIN-REFUND",
+		ProviderTradeNo: "trade-admin-refund", RefundRequestNo: "CCRF-CC-ADMIN-REFUND",
+		AmountFen: 1, Currency: "CNY", RefundedAt: time.Now().UTC(),
+	}}
+	paymentHandler := NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{Providers: []CommercialPaymentProvider{provider}})
+	admin := NewAccountAdminHandler(nil, nil, nil, store)
+	admin.SetCommercialPaymentHandler(paymentHandler)
+
+	request := httptest.NewRequest(http.MethodPost, "/local/account-admin/commercial/order-refunds", strings.NewReader(`{"order_no":"CC-ADMIN-REFUND","confirm_order_no":"wrong"}`))
+	request.RemoteAddr = "127.0.0.1:40200"
+	recorder := httptest.NewRecorder()
+	admin.HandleCommercialOrderRefund(recorder, request)
+	if recorder.Code != http.StatusBadRequest || provider.refundCalls != 0 {
+		t.Fatalf("mismatched confirmation status=%d calls=%d body=%s", recorder.Code, provider.refundCalls, recorder.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/local/account-admin/commercial/order-refunds", strings.NewReader(`{"order_no":"CC-ADMIN-REFUND","confirm_order_no":"CC-ADMIN-REFUND","reason":"test"}`))
+	request.RemoteAddr = "127.0.0.1:40200"
+	recorder = httptest.NewRecorder()
+	admin.HandleCommercialOrderRefund(recorder, request)
+	if recorder.Code != http.StatusOK || provider.refundCalls != 1 || store.orders["CC-ADMIN-REFUND"].Status != "refunded" {
+		t.Fatalf("confirmed refund status=%d calls=%d order=%#v body=%s", recorder.Code, provider.refundCalls, store.orders["CC-ADMIN-REFUND"], recorder.Body.String())
 	}
 }
 

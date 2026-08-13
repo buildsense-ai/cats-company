@@ -1,6 +1,8 @@
 package postgres
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +10,41 @@ import (
 
 	"github.com/openchat/openchat/server/store/types"
 )
+
+func TestPostgresCommercialPaymentContract(t *testing.T) {
+	rawDSN := os.Getenv("CATS_PG_TEST_DSN")
+	if rawDSN == "" {
+		t.Skip("set CATS_PG_TEST_DSN to run PostgreSQL integration tests")
+	}
+	schemaName := fmt.Sprintf("cats_commercial_test_%d", time.Now().UnixNano())
+	base := &Adapter{}
+	if err := base.Open(rawDSN); err != nil {
+		t.Fatalf("open base postgres connection: %v", err)
+	}
+	defer base.Close()
+	if _, err := base.db.Exec(`CREATE SCHEMA ` + quoteIdent(schemaName)); err != nil {
+		t.Fatalf("create commercial test schema: %v", err)
+	}
+	defer base.db.Exec(`DROP SCHEMA ` + quoteIdent(schemaName) + ` CASCADE`)
+
+	db := &Adapter{}
+	if err := db.Open(dsnWithSearchPath(t, rawDSN, schemaName)); err != nil {
+		t.Fatalf("open commercial test postgres connection: %v", err)
+	}
+	defer db.Close()
+	if err := db.CreateSchema(); err != nil {
+		t.Fatalf("create commercial test schema objects: %v", err)
+	}
+	testPostgresMigrationFiles(t, db)
+	ownerID, err := db.CreateUser(&types.User{
+		Username: "commercial-owner", Email: "commercial-owner@example.test", DisplayName: "Commercial Owner",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-owner-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create commercial test owner: %v", err)
+	}
+	testCommercialPaymentContract(t, db, ownerID)
+}
 
 func TestTruncateCommercialErrorPreservesUTF8(t *testing.T) {
 	value := strings.Repeat("付", 200)
@@ -149,6 +186,45 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 		ExpiresAt:       &expiresAt,
 	}); err == nil || !strings.Contains(err.Error(), "purchase limit") {
 		t.Fatalf("expected purchase limit rejection, got %v", err)
+	}
+	refundRequestNo := "CCRF-" + created.OrderNo
+	refunding, claimed, err := db.BeginCommercialOrderRefund(created.OrderNo, refundRequestNo, 2*time.Minute)
+	if err != nil || !claimed || refunding.Status != "refunding" || refunding.RefundRequestNo != refundRequestNo {
+		t.Fatalf("begin commercial refund: order=%#v claimed=%v err=%v", refunding, claimed, err)
+	}
+	refunded, changed, err := db.CompleteCommercialOrderRefund(created.OrderNo, &types.CommercialRefundConfirmation{
+		Channel:         confirmation.Channel,
+		EventID:         refundRequestNo,
+		ProviderTradeNo: confirmation.ProviderTradeNo,
+		RefundRequestNo: refundRequestNo,
+		AmountFen:       confirmation.AmountFen,
+		Currency:        confirmation.Currency,
+		RefundedAt:      time.Now().UTC(),
+		PayloadHash:     strings.Repeat("b", 64),
+	})
+	if err != nil || !changed || refunded.Status != "refunded" || refunded.RefundedAt == nil {
+		t.Fatalf("complete commercial refund: order=%#v changed=%v err=%v", refunded, changed, err)
+	}
+	refundedAgain, changed, err := db.CompleteCommercialOrderRefund(created.OrderNo, &types.CommercialRefundConfirmation{
+		Channel: confirmation.Channel, EventID: refundRequestNo, ProviderTradeNo: confirmation.ProviderTradeNo,
+		RefundRequestNo: refundRequestNo, AmountFen: confirmation.AmountFen, Currency: confirmation.Currency,
+	})
+	if err != nil || changed || refundedAgain.Status != "refunded" {
+		t.Fatalf("duplicate commercial refund was not idempotent: order=%#v changed=%v err=%v", refundedAgain, changed, err)
+	}
+	refundedSummary, err := db.GetCommercialSummary(uid)
+	if err != nil || len(refundedSummary.Entitlements) != 0 || refundedSummary.TotalsByModel["MiniMax-M3"] != 0 {
+		t.Fatalf("refunded commercial summary retained quota: summary=%#v err=%v", refundedSummary, err)
+	}
+	var revokedGrants, reversalEntries int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE grant_type = 'order' AND source_ref = $1 AND revoked_at IS NOT NULL`, created.OrderNo).Scan(&revokedGrants); err != nil {
+		t.Fatalf("count revoked order grants: %v", err)
+	}
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_ledger WHERE source_type = 'refund' AND entry_type = 'revoke' AND amount_cny < 0`).Scan(&reversalEntries); err != nil {
+		t.Fatalf("count refund reversal entries: %v", err)
+	}
+	if revokedGrants != 1 || reversalEntries != 1 {
+		t.Fatalf("refund audit mismatch: revoked_grants=%d reversal_entries=%d", revokedGrants, reversalEntries)
 	}
 	if _, err := db.ClaimCommercialTrial(uid, "pg-paid-plan"); err == nil || !strings.Contains(err.Error(), "unavailable") {
 		t.Fatalf("expected paid plan to be rejected as a trial, got %v", err)

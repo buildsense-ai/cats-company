@@ -44,7 +44,7 @@ func (a *Adapter) GetCommercialOperationsOverview(now time.Time) (*types.Commerc
 			(SELECT COUNT(*) FROM commercial_entitlements
 			 WHERE state = 'active' AND starts_at <= $1 AND expires_at > $1 AND expires_at <= $1 + INTERVAL '7 days'),
 			(SELECT COUNT(*) FROM commercial_quota_grants
-			 WHERE effective_at <= $1 AND (expires_at IS NULL OR expires_at > $1)),
+			 WHERE revoked_at IS NULL AND effective_at <= $1 AND (expires_at IS NULL OR expires_at > $1)),
 			(SELECT COUNT(DISTINCT uid) FROM commercial_managed_relay_budgets),
 			(SELECT COUNT(*) FROM commercial_payment_events
 			 WHERE status = 'rejected' AND created_at >= $1 - INTERVAL '24 hours')`, now.UTC()).Scan(

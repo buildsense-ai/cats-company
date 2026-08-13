@@ -23,10 +23,17 @@ type AccountAdminHandler struct {
 	services                 AccountServiceVerifier
 	serviceStore             AccountAdminServiceStore
 	commercial               CommercialStore
+	commercialPayments       *CommercialPaymentHandler
 	relayAdmin               *RelayAdminClient
 	commercialRelaySyncer    *CommercialRelaySyncer
 	commercialEnforceEnabled bool
 	commercialEnforceUIDs    map[int64]bool
+}
+
+func (h *AccountAdminHandler) SetCommercialPaymentHandler(handler *CommercialPaymentHandler) {
+	if h != nil {
+		h.commercialPayments = handler
+	}
 }
 
 func (h *AccountAdminHandler) SetCommercialRelaySyncer(syncer *CommercialRelaySyncer) {
