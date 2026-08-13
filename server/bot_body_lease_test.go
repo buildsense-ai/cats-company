@@ -107,6 +107,30 @@ func TestSharedRuntimeBotBodyLeaseRejectsDifferentBodyAcrossHubs(t *testing.T) {
 	}
 }
 
+func TestBotRuntimeOnlineIncludesSharedLeaseOnAnotherHub(t *testing.T) {
+	shared := newSharedMemoryRuntimeState()
+	hubA := NewHubWithRuntime(nil, nil, shared, "node-a")
+	hubB := NewHubWithRuntime(nil, nil, shared, "node-b")
+
+	if _, err := hubB.bodyLeases.acquire(42, "body-a", "conn-b"); err != nil {
+		t.Fatalf("node-b acquire failed: %v", err)
+	}
+	hubB.addRegisteredClient(&Client{
+		uid: 42, accountType: types.AccountBot, bodyID: "body-a",
+		connectionID: "conn-b", send: make(chan []byte, 1),
+	})
+
+	if hubA.BotBodyStatus(42).Active {
+		t.Fatal("node-a must not expose node-b connection details as local body status")
+	}
+	if !hubA.BotRuntimeOnline(42) {
+		t.Fatal("node-a should project the valid node-b shared lease as online")
+	}
+	if !hubB.BotRuntimeOnline(42) {
+		t.Fatal("node-b should report its registered runtime as online")
+	}
+}
+
 func TestBotBodyLeaseStatus(t *testing.T) {
 	now := time.Date(2026, 5, 26, 10, 0, 0, 0, time.UTC)
 	leases := newBotBodyLeaseManager(time.Minute)

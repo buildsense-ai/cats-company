@@ -312,7 +312,7 @@ func main() {
 	botDefinitionStore, _ := db.(store.BotDefinitionStore)
 	botDefinitionHandler := server.NewBotDefinitionHandler(db, botDefinitionStore, botModelStore, botModelConfigHandler)
 	botDefinitionHandler.SetPromptOnlineResolver(func(uid int64) bool {
-		return hub != nil && hub.BotBodyStatus(uid).Active
+		return hub != nil && hub.BotRuntimeOnline(uid)
 	})
 	skillHubProxyHandler := server.NewSkillHubProxyHandlerFromEnv()
 	botModelCloudPublicEnabled := envBool("CATSCO_BOT_MODEL_CLOUD_ENABLED")

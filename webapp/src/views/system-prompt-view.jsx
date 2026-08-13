@@ -148,11 +148,13 @@ export function normalizePromptApplication(response) {
     ? explicitStatus
     : '';
   if (!status) {
-    if (desiredRevision > 0 && lastError && lastAttemptRevision === desiredRevision) {
-      status = 'failed';
-    } else if (desiredRevision > 0 && appliedRevision === desiredRevision
+    // Applied is authoritative for the desired revision. A later failed retry
+    // must not downgrade an already-applied configuration in legacy responses.
+    if (desiredRevision > 0 && appliedRevision === desiredRevision
       && (appliedAt || appliedRevision > 0)) {
       status = 'applied';
+    } else if (desiredRevision > 0 && lastError && lastAttemptRevision === desiredRevision) {
+      status = 'failed';
     } else if (desiredRevision > 0 && (
       isOnline === true
       || lastAttemptRevision === desiredRevision

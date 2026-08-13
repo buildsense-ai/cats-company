@@ -145,6 +145,16 @@ describe('SystemPromptView helpers', () => {
       runtime: { lastError: 'stale legacy error' },
       is_online: true,
     })).toMatchObject({ status: 'saved', desiredRevision: 0 });
+    expect(normalizePromptApplication({
+      revision: 4,
+      runtime: {
+        desiredRevision: 4,
+        appliedRevision: 4,
+        appliedAt: '2026-08-13T03:00:00Z',
+        lastAttemptRevision: 4,
+        lastError: 'transient retry failure',
+      },
+    })).toMatchObject({ status: 'applied', appliedRevision: 4 });
   });
 
   it('maps application states to user-facing status labels', () => {

@@ -161,7 +161,10 @@ func (h *BotDefinitionHandler) HandleViewerPrompt(w http.ResponseWriter, r *http
 			return
 		}
 	}
-	record, err := h.loadDefinition(botUID)
+	// Prompt viewing needs only the stored prompt projection. Do not run the
+	// owner migration path here: legacy custom-model decryption must never make
+	// a friend's otherwise readable prompt unavailable.
+	record, err := h.definitions.GetBotDefinition(botUID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load Agent prompt"})
 		return
@@ -222,23 +225,24 @@ func (h *BotDefinitionHandler) promptApplicationStatus(botUID int64, runtime typ
 	}
 
 	status := "saved"
-	failed := runtime.DesiredRevision > 0 &&
+	// A successful acknowledgement for the desired revision is authoritative.
+	// A later failed retry must not make an already-applied configuration look
+	// broken; only an unapplied desired revision can be failed.
+	applied := runtime.DesiredRevision > 0 &&
+		runtime.AppliedRevision == runtime.DesiredRevision
+	failed := !applied && runtime.DesiredRevision > 0 &&
 		runtime.LastError != "" &&
 		runtime.LastAttemptRevision == runtime.DesiredRevision
-	if failed {
+	if applied {
+		status = "applied"
+	} else if failed {
 		status = "failed"
 	} else {
-		applied := runtime.DesiredRevision > 0 &&
-			runtime.AppliedRevision == runtime.DesiredRevision
-		if applied {
-			status = "applied"
-		} else {
-			knownRuntime := runtime.LastAttemptRevision > 0 ||
-				runtime.AppliedRevision > 0 ||
-				runtime.LastAttemptAt != "" || runtime.AppliedAt != ""
-			if runtime.DesiredRevision > 0 && (isOnline || knownRuntime) {
-				status = "pending"
-			}
+		knownRuntime := runtime.LastAttemptRevision > 0 ||
+			runtime.AppliedRevision > 0 ||
+			runtime.LastAttemptAt != "" || runtime.AppliedAt != ""
+		if runtime.DesiredRevision > 0 && (isOnline || knownRuntime) {
+			status = "pending"
 		}
 	}
 
