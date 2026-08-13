@@ -9,7 +9,7 @@ import {
 export default function SkillHubContent(props) {
   const {
     actionNotice, activeSection, definition, definitionError, isLocalEnabled,
-    loadingDefinition, onChangeSection, saving, selectedAgentName, skillAction,
+    isReadOnly, loadingDefinition, onChangeSection, saving, selectedAgentName, selectedAgentRelation, skillAction,
   } = props;
   return (
     <main className='cc-skillhub-page'>
@@ -42,7 +42,7 @@ export default function SkillHubContent(props) {
 }
 
 function AgentContext({
-  agentOptions, loadingBots, onSelectAgent, saving, selectedBotUID, sharingSkill,
+  agentOptions, loadingBots, onSelectAgent, saving, selectedAgentRelation, selectedBotUID, sharingSkill,
 }) {
   const disabled = loadingBots || agentOptions.length === 0 || Boolean(sharingSkill) || saving;
   return (
@@ -56,6 +56,7 @@ function AgentContext({
           value={selectedBotUID}
         />
       </label>
+      {selectedAgentRelation === 'friend' && <span className='cc-skillhub-readonly-badge'><ShieldCheck size={13} aria-hidden='true' /> 只读查看</span>}
     </div>
   );
 }
@@ -196,7 +197,7 @@ function SkillNavigation({ activeSection, addedCount, isLocalEnabled, onChangeSe
     <nav className='cc-skillhub-navigation' aria-label='Agent 能力视图'>
       <div className='cc-skillhub-tabs' role='tablist' aria-label='能力管理'>
         <button type='button' id='skillhub-added-tab' role='tab' aria-selected={activeSection === 'added'} aria-controls='skillhub-added-panel' className={activeSection === 'added' ? 'active' : ''} onClick={() => onChangeSection('added')}>
-          已添加 <span>{addedCount}</span>
+          当前 Agent 能力 <span>{addedCount}</span>
         </button>
         <button type='button' id='skillhub-catalogue-tab' role='tab' aria-selected={activeSection === 'catalogue'} aria-controls='skillhub-catalogue-panel' className={activeSection === 'catalogue' ? 'active' : ''} onClick={() => onChangeSection('catalogue')}>
           能力库
@@ -204,7 +205,7 @@ function SkillNavigation({ activeSection, addedCount, isLocalEnabled, onChangeSe
       </div>
       {isLocalEnabled && (
         <button type='button' className='cc-skillhub-custom-entry' onClick={() => onChangeSection('custom')}>
-          <Wrench size={14} aria-hidden='true' /> 管理自定义能力
+          <Wrench size={14} aria-hidden='true' /> 本地工作区
         </button>
       )}
     </nav>
@@ -220,7 +221,7 @@ function AddedSkills(props) {
   return (
     <section id='skillhub-added-panel' className='cc-skillhub-surface cc-skillhub-added' role='tabpanel' aria-labelledby='skillhub-added-tab'>
       <div className='cc-skillhub-content-header'>
-        <div><h2>已添加能力</h2><p>这些能力当前可供 {selectedAgentName ? `Agent“${selectedAgentName}”` : '所选 Agent'} 使用。</p></div>
+        <div><h2>当前 Agent 能力</h2><p>同时展示正式启用能力和本地工作区能力，本地能力会明确标记为未正式启用。</p></div>
         <button type='button' className='icon-button' aria-label='刷新当前 Agent 的能力' title='刷新能力' onClick={onRefreshDefinition} disabled={!selectedBotUID || loadingDefinition || saving || Boolean(sharingSkill)}>
           <RefreshCw className={loadingDefinition ? 'is-spinning' : ''} size={15} aria-hidden='true' />
         </button>
@@ -244,7 +245,7 @@ function AddedSkills(props) {
   );
 }
 
-function AddedSkillItem({ addedSkillPresentationByID, definitionReady, onCopySkill, onRemoveSkill, saving, sharingSkill, skill, skillAction }) {
+function AddedSkillItem({ addedSkillPresentationByID, definitionReady, isReadOnly, onCopySkill, onRemoveSkill, saving, sharingSkill, skill, skillAction }) {
   const presentation = addedSkillPresentationByID.get(skill.skillId);
   const {
     description, details, label, localDetails, privateReference,
@@ -341,16 +342,16 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, onCopySki
       <span className='cc-skillhub-added-icon' aria-hidden='true'><Package size={17} /></span>
       <div className='cc-skillhub-added-copy'>
         <div className='cc-skillhub-added-title'>
-          <h3>{label}</h3><span className='cc-skillhub-availability'><Check size={12} aria-hidden='true' /> 可用</span>
+          <h3>{label}</h3><span className={`cc-skillhub-availability${skill.localOnly ? ' is-local-only' : ''}`}><Check size={12} aria-hidden='true' /> {skill.localOnly ? '仅本地' : '已启用'}</span>
         </div>
         <p>{description}</p>
-        <span className='cc-skillhub-version-note'><ShieldCheck size={12} aria-hidden='true' /> {privateReference ? '仅当前 Agent 可用' : '自动保持稳定版本'}</span>
+        <span className='cc-skillhub-version-note'><ShieldCheck size={12} aria-hidden='true' /> {skill.version ? (String(skill.version).startsWith('v') ? skill.version : `v${skill.version}`) : '版本未确认'}{(details?.author || skill.author) ? ` · ${details?.author || skill.author}` : ''}{skill.localOnly ? ' · 未正式启用' : (privateReference ? ' · Bot 私有 · 仅当前 Agent 可用' : '')}</span>
       </div>
       <div className='cc-skillhub-added-actions'>
-        <button type='button' className='subtle cc-skillhub-copy-action' aria-label={`复制 ${label}`} disabled={actionsDisabled} onClick={() => onCopySkill(skill.skillId)}>
+        {!isReadOnly && !skill.localOnly && <button type='button' className='subtle cc-skillhub-copy-action' aria-label={`复制 ${label}`} disabled={actionsDisabled} onClick={() => onCopySkill(skill.skillId)}>
           {copying ? '复制中…' : '复制'}
-        </button>
-        <button
+        </button>}
+        {!isReadOnly && !skill.localOnly && <button
           ref={triggerRef}
           type='button'
           className='subtle cc-skillhub-more-action'
@@ -371,7 +372,7 @@ function AddedSkillItem({ addedSkillPresentationByID, definitionReady, onCopySki
           }}
         >
           更多
-        </button>
+        </button>}
       </div>
       {menuOpen && menuPosition && createPortal(
         <div
@@ -490,7 +491,7 @@ function SkillDetailsDialog({ details, label, localDetails, onClose, privateRefe
 }
 
 function Catalogue(props) {
-  const { catalogue, catalogueError, loadingCatalogue, onQueryChange, onSearch, query } = props;
+  const { catalogue, catalogueError, isReadOnly, loadingCatalogue, onQueryChange, onSearch, query } = props;
   return (
     <section id='skillhub-catalogue-panel' className='cc-skillhub-surface cc-skillhub-catalogue' role='tabpanel' aria-labelledby='skillhub-catalogue-tab'>
       <div className='cc-skillhub-content-header cc-skillhub-catalogue-header'>
@@ -524,7 +525,7 @@ function Catalogue(props) {
   );
 }
 
-function CatalogueCard({ definitionReady, installedByID, onInstallSkill, saving, sharingSkill, skill, skillAction }) {
+function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSkill, saving, sharingSkill, skill, skillAction }) {
   const installed = installedByID.has(skill.skillId);
   const adding = skillAction?.type === 'add' && skillAction.skillId === skill.skillId;
   const stable = Boolean(skill.latestVersion && /^[0-9a-f]{64}$/.test(String(skill.contentHash || '')));
@@ -536,11 +537,11 @@ function CatalogueCard({ definitionReady, installedByID, onInstallSkill, saving,
       </div>
       <p>{skill.description || '这个能力暂时没有补充说明。'}</p>
       <div className='cc-skillhub-card-footer'>
-        <span className={stable ? 'verified' : ''}>{stable && <ShieldCheck size={13} aria-hidden='true' />}{stable ? '稳定版本' : '版本确认中'}</span>
-        <button type='button' className={installed ? 'added' : 'primary'} disabled={!definitionReady || installed || saving || Boolean(sharingSkill)} onClick={() => onInstallSkill(skill)}>
+        <span className={stable ? 'verified' : ''}>{stable && <ShieldCheck size={13} aria-hidden='true' />}{skill.latestVersion ? `v${skill.latestVersion}` : (stable ? '稳定版本' : '版本确认中')}{skill.author ? ` · ${skill.author}` : ''}</span>
+        {!isReadOnly && <button type='button' className={installed ? 'added' : 'primary'} disabled={!definitionReady || installed || saving || Boolean(sharingSkill)} onClick={() => onInstallSkill(skill)}>
           {installed ? <Check size={14} aria-hidden='true' /> : <Package size={14} aria-hidden='true' />}
           {installed ? '已添加' : adding ? '添加中…' : '添加'}
-        </button>
+        </button>}
       </div>
     </article>
   );

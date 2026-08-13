@@ -795,7 +795,8 @@
 .cc-skillhub-eyebrow { display: inline-flex; align-items: center; gap: 7px; color: var(--cc-accent-text); font-size: 12px; font-weight: var(--cc-font-weight-semibold); letter-spacing: 0; }
 .cc-skillhub-title-block h1 { margin: 10px 0 6px; }
 .cc-skillhub-title-block p { max-width: 560px; margin: 0; color: var(--cc-muted); font-size: 14px; line-height: 1.55; }
-.cc-skillhub-agent-context { display: grid; align-content: end; min-width: 164px; }
+.cc-skillhub-agent-context { display: flex; align-items: end; gap: 10px; min-width: 164px; }
+.cc-skillhub-readonly-badge { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 8px; border: 1px solid color-mix(in srgb, var(--cc-accent) 25%, var(--cc-border)); border-radius: 999px; color: var(--cc-accent-text); font-size: 11px; white-space: nowrap; }
 .cc-skillhub-agent-label { display: inline-flex; align-items: center; gap: 6px; color: var(--cc-muted); font-size: 12px; font-weight: var(--cc-font-weight-medium); }
 .cc-skillhub-agent-label svg { color: var(--cc-accent); }
 .cc-skillhub-navigation { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 16px; border-bottom: 1px solid var(--cc-border); }
@@ -820,6 +821,7 @@
 .cc-skillhub-added-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .cc-skillhub-added-title h3 { overflow: hidden; margin: 0; color: var(--cc-text); font-size: 14px; font-weight: var(--cc-font-weight-semibold); text-overflow: ellipsis; white-space: nowrap; }
 .cc-skillhub-added-availability, .cc-skillhub-availability { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; color: var(--cc-success-text); font-size: 11px; font-weight: var(--cc-font-weight-medium); }
+.cc-skillhub-availability.is-local-only { color: var(--cc-warning-text); }
 .cc-skillhub-added-copy p { margin: 4px 0 6px; overflow: hidden; color: var(--cc-text-secondary); font-size: 12px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .cc-skillhub-version-note { display: inline-flex; align-items: center; gap: 4px; color: var(--cc-muted); font-size: 11px; }
 .cc-skillhub-added-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
