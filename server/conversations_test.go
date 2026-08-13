@@ -692,7 +692,7 @@ func TestConversationNotificationPreferenceUpdatesAccessibleConversation(t *test
 	}
 }
 
-func TestConversationNotificationPreferenceRequiresTopicAndMuted(t *testing.T) {
+func TestConversationNotificationPreferenceRequiresMuted(t *testing.T) {
 	store := &conversationTestStore{}
 	handler := NewConversationHandler(store, nil)
 	req := httptest.NewRequest(http.MethodPut, "/api/conversations/notification-preferences", strings.NewReader(`{"topic_id":"p2p_7_8"}`))

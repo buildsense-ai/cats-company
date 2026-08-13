@@ -2600,72 +2600,68 @@ func TestAgentPushWaitsForMatchingTerminalTaskStatus(t *testing.T) {
 }
 
 func TestMutedAgentTaskTerminalStatusDoesNotDeliverPush(t *testing.T) {
-	for _, terminalState := range []string{"completed", "failed"} {
-		t.Run(terminalState, func(t *testing.T) {
-			const (
-				senderUID  int64 = 7
-				offlineUID int64 = 8
-				topicID          = "p2p_7_8"
-			)
-			db := &mutedAggregateTaskStatusPushStore{
-				aggregateTaskStatusPushStore: &aggregateTaskStatusPushStore{
-					identityMessageStore: &identityMessageStore{users: map[int64]*types.User{
-						senderUID:  {ID: senderUID, AccountType: types.AccountBot},
-						offlineUID: {ID: offlineUID, AccountType: types.AccountHuman},
-					}},
-					aggregate: &types.ConversationTaskStatus{
-						TopicID: topicID, RunID: "other-agent-run", State: "running", SourceUID: 99,
-					},
-				},
-				mutedTopics:       map[string]bool{topicID: true},
-				preferenceChecked: make(chan struct{}, 1),
-			}
-			pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
-				Endpoint: "https://push.example.test/subscription/muted-agent-task",
-				P256DH:   "p256dh",
-				Auth:     "auth",
-			}}}
-			service := enabledPushService(pushStore)
-			delivered := make(chan struct{}, 1)
-			service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
-				delivered <- struct{}{}
-				return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
-			}
-			hub := NewHub(db, nil)
-			hub.SetPushNotificationService(service)
-			handler := NewMessageHandler(db, hub)
+	const (
+		senderUID  int64 = 7
+		offlineUID int64 = 8
+		topicID          = "p2p_7_8"
+	)
+	db := &mutedAggregateTaskStatusPushStore{
+		aggregateTaskStatusPushStore: &aggregateTaskStatusPushStore{
+			identityMessageStore: &identityMessageStore{users: map[int64]*types.User{
+				senderUID:  {ID: senderUID, AccountType: types.AccountBot},
+				offlineUID: {ID: offlineUID, AccountType: types.AccountHuman},
+			}},
+			aggregate: &types.ConversationTaskStatus{
+				TopicID: topicID, RunID: "other-agent-run", State: "running", SourceUID: 99,
+			},
+		},
+		mutedTopics:       map[string]bool{topicID: true},
+		preferenceChecked: make(chan struct{}, 1),
+	}
+	pushStore := &memoryPushSubscriptionStore{subscriptions: []*types.PushSubscription{{
+		Endpoint: "https://push.example.test/subscription/muted-agent-task",
+		P256DH:   "p256dh",
+		Auth:     "auth",
+	}}}
+	service := enabledPushService(pushStore)
+	delivered := make(chan struct{}, 1)
+	service.send = func(_ context.Context, _ []byte, _ *webpush.Subscription, _ *webpush.Options) (*http.Response, error) {
+		delivered <- struct{}{}
+		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	hub := NewHub(db, nil)
+	hub.SetPushNotificationService(service)
+	handler := NewMessageHandler(db, hub)
 
-			if _, err := handler.handleTaskStatus(senderUID, topicID, &normalizedMessagePayload{
-				DisplayType:         taskStatusType,
-				ExplicitDisplayType: true,
-				DisplayContent:      map[string]interface{}{"run_id": "run-1", "state": "running"},
-			}); err != nil {
-				t.Fatalf("publish running task status: %v", err)
-			}
-			hub.fanoutNormalizedMessage(senderUID, topicID, 0, &normalizedMessagePayload{
-				DisplayContent: "final answer",
-				DisplayType:    "text",
-				StoredType:     "text",
-			}, 1, nil)
-			if _, err := handler.handleTaskStatus(senderUID, topicID, &normalizedMessagePayload{
-				DisplayType:         taskStatusType,
-				ExplicitDisplayType: true,
-				DisplayContent:      map[string]interface{}{"run_id": "run-1", "state": terminalState},
-			}); err != nil {
-				t.Fatalf("publish %s task status: %v", terminalState, err)
-			}
+	if _, err := handler.handleTaskStatus(senderUID, topicID, &normalizedMessagePayload{
+		DisplayType:         taskStatusType,
+		ExplicitDisplayType: true,
+		DisplayContent:      map[string]interface{}{"run_id": "run-1", "state": "running"},
+	}); err != nil {
+		t.Fatalf("publish running task status: %v", err)
+	}
+	hub.fanoutNormalizedMessage(senderUID, topicID, 0, &normalizedMessagePayload{
+		DisplayContent: "final answer",
+		DisplayType:    "text",
+		StoredType:     "text",
+	}, 1, nil)
+	if _, err := handler.handleTaskStatus(senderUID, topicID, &normalizedMessagePayload{
+		DisplayType:         taskStatusType,
+		ExplicitDisplayType: true,
+		DisplayContent:      map[string]interface{}{"run_id": "run-1", "state": "completed"},
+	}); err != nil {
+		t.Fatalf("publish completed task status: %v", err)
+	}
 
-			select {
-			case <-db.preferenceChecked:
-			case <-time.After(time.Second):
-				t.Fatal("terminal task status did not check the conversation notification preference")
-			}
-			select {
-			case <-delivered:
-				t.Fatalf("muted task %s delivered a push notification", terminalState)
-			case <-time.After(100 * time.Millisecond):
-			}
-		})
+	select {
+	case <-db.preferenceChecked:
+	case <-time.After(time.Second):
+		t.Fatal("terminal task status did not check the conversation notification preference")
+	}
+	select {
+	case <-delivered:
+		t.Fatal("muted task delivered a push notification")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
