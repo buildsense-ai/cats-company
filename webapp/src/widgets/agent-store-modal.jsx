@@ -1,21 +1,23 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api, getWebSocketURL } from '../api';
 import t from '../i18n';
 import {
   ArrowLeft,
   Bot,
-  Bug,
+  Check,
   CheckCircle,
   Cloud,
   Code2,
   Copy,
   FileCheck2,
-  Lightbulb,
+  Plus,
+  Puzzle,
   QrCode,
   RefreshCw,
+  Search,
   Settings2,
   Smartphone,
-  Sparkles,
   Trash2,
   Upload,
   X,
@@ -26,6 +28,11 @@ import Avatar from './avatar';
 import QRCode from './qr-code';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import { IMAGE_UPLOAD_ACCEPT, validateImageUpload } from '../utils/upload-rules';
+import {
+  normalizeLocalSkillHubSkills,
+  normalizeSkillHubSkills,
+  resolveSkillHubEntry,
+} from '../utils/skillhub-entry';
 import CustomSelect from './custom-select';
 import CloudWorkerPanel from './cloud-worker-panel';
 
@@ -65,30 +72,6 @@ const BOT_VISIBILITY = {
   PUBLIC: 'public',
   PRIVATE: 'private',
 };
-
-const BOT_SKILLS_VISIBILITY = {
-  OWNER: 'owner',
-  AUTHORIZED: 'authorized',
-  PUBLIC: 'public',
-};
-
-const SKILLS_VISIBILITY_OPTIONS = [
-  {
-    value: BOT_SKILLS_VISIBILITY.OWNER,
-    label: '仅自己',
-    description: '只有你能查看技能列表',
-  },
-  {
-    value: BOT_SKILLS_VISIBILITY.AUTHORIZED,
-    label: 'Agent 使用者',
-    description: '已添加该 Agent 的用户可查看',
-  },
-  {
-    value: BOT_SKILLS_VISIBILITY.PUBLIC,
-    label: '公开',
-    description: '所有已登录用户都可查看',
-  },
-];
 
 const CHANNEL_OPTIONS = [
   { value: 'weixin', label: '微信公众号', shortLabel: '公众号' },
@@ -132,19 +115,138 @@ const initialForm = {
 };
 
 const ASSISTANT_ROLES = [
-  { value: 'code_review', label: '代码审查助手' },
-  { value: 'debugging', label: '问题排查助手' },
-  { value: 'writing', label: '写作助手' },
-  { value: 'research', label: '研究助手' },
-  { value: 'general', label: '通用助手' },
+  {
+    value: 'code_review',
+    label: '代码审查助手',
+    description: '侧重阅读代码、发现问题和整理修改建议。',
+    skillQuery: 'code review',
+    skillKeywords: ['code review', 'code-review', 'reviewer', 'lint', 'static analysis', 'code quality', '代码审查', '代码质量'],
+  },
+  {
+    value: 'debugging',
+    label: '问题排查助手',
+    description: '侧重定位故障、分析原因和验证修复路径。',
+    skillQuery: 'debugging',
+    skillKeywords: ['debug', 'debugger', 'bug', 'error', 'diagnostic', 'troubleshoot', '排查', '调试', '故障'],
+  },
+  {
+    value: 'writing',
+    label: '写作助手',
+    description: '侧重内容整理、改写润色和结构化表达。',
+    skillQuery: 'writing',
+    skillKeywords: ['write', 'writing', 'author', 'editor', 'document', 'pdf', '写作', '编辑', '文档'],
+  },
+  {
+    value: 'research',
+    label: '研究助手',
+    description: '侧重收集资料、比较信息和形成研究结论。',
+    skillQuery: 'research',
+    skillKeywords: ['research', 'search', 'analysis', 'analyst', 'data', 'crawler', '研究', '检索', '资料', '分析'],
+  },
+  {
+    value: 'general',
+    label: '通用助手',
+    description: '适合跨场景任务，可通过 Skill 补充专用能力。',
+    skillQuery: '',
+    skillKeywords: ['general', 'assistant', 'workflow', 'productivity', 'prompt', '通用', '效率'],
+  },
 ];
 
-const ASSISTANT_CAPABILITIES = [
-  { icon: Code2, title: '阅读代码', detail: '理解代码结构与逻辑，快速定位功能' },
-  { icon: Bug, title: '分析 Bug', detail: '识别潜在问题，分析原因与影响' },
-  { icon: Lightbulb, title: '优化建议', detail: '提供可行的优化建议与最佳实践' },
-  { icon: FileCheck2, title: '生成方案', detail: '整理可执行的修改方案与代码片段' },
-];
+function scoreSkillForRole(skill, role) {
+  const identity = `${skill.skillId} ${skill.displayName}`.toLowerCase();
+  const description = String(skill.description || '').toLowerCase();
+  return role.skillKeywords.reduce((score, keyword) => {
+    const normalized = keyword.toLowerCase();
+    return score + (identity.includes(normalized) ? 4 : 0) + (description.includes(normalized) ? 1 : 0);
+  }, 0);
+}
+
+const SKILL_RECOMMENDATION_MIN_SCORE = 4;
+
+function rankSkillsForRole(skills, role) {
+  return skills
+    .map((skill, index) => ({ skill, index, score: scoreSkillForRole(skill, role) }))
+    .filter((entry) => entry.score >= SKILL_RECOMMENDATION_MIN_SCORE)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, 3)
+    .map((entry) => entry.skill);
+}
+
+const hasExactSkillHash = (value) => /^[0-9a-f]{64}$/.test(String(value || ''));
+
+async function resolveSkillBindingRef(skill) {
+  let resolved = resolveSkillHubEntry(skill, skill);
+  if (!resolved.latestVersion || !hasExactSkillHash(resolved.contentHash)) {
+    const detail = await api.getSkillHubSkill(skill.skillId);
+    resolved = resolveSkillHubEntry(skill, detail);
+  }
+  if (!resolved.latestVersion || !hasExactSkillHash(resolved.contentHash)) {
+    throw new Error(`${resolved.displayName || resolved.skillId} 暂时没有可绑定的稳定版本。`);
+  }
+  return {
+    source: 'skillhub',
+    skillId: resolved.skillId,
+    version: resolved.latestVersion,
+    contentHash: resolved.contentHash,
+  };
+}
+
+function sharedLocalSkillID(shared, fallback = '') {
+  return String(
+    shared?.skill?.id
+    || shared?.skill?.skillId
+    || shared?.skill?.skill_id
+    || shared?.upload?.skillId
+    || shared?.upload?.skill_id
+    || shared?.submission?.normalizedManifest?.id
+    || fallback,
+  ).trim();
+}
+
+async function resolveSharedLocalSkill(skill, shared) {
+  const skillId = sharedLocalSkillID(shared);
+  if (!skillId) throw new Error('SkillHub 没有返回已同步 Skill 的标识。');
+
+  const sharedVersion = String(
+    shared?.latestVersion
+    || shared?.latest_version
+    || shared?.version
+    || shared?.submission?.normalizedManifest?.version
+    || '',
+  ).trim();
+  const sharedHash = String(
+    shared?.contentHash
+    || shared?.content_hash
+    || shared?.upload?.contentHash
+    || shared?.upload?.content_hash
+    || shared?.submission?.contentHash
+    || shared?.submission?.content_hash
+    || '',
+  ).trim().toLowerCase();
+  let resolved = resolveSkillHubEntry({
+    ...skill,
+    skillId,
+    latestVersion: sharedVersion,
+    contentHash: sharedHash,
+  }, shared);
+
+  if (!resolved.latestVersion || !hasExactSkillHash(resolved.contentHash)) {
+    const detail = await api.getSkillHubSkill(skillId, { fresh: true });
+    resolved = resolveSkillHubEntry({ ...skill, skillId }, detail);
+  }
+  if (!resolved.latestVersion || !hasExactSkillHash(resolved.contentHash)) {
+    throw new Error('Skill 已上传，但 SkillHub 尚未生成可绑定的稳定版本。');
+  }
+
+  return {
+    ...skill,
+    ...resolved,
+    skillId,
+    cloudSkillId: skillId,
+    isLocalSkill: true,
+    canBind: true,
+  };
+}
 
 const isOwnedBot = (bot) => bot?.is_owner === true || bot?.relation === 'owner';
 
@@ -156,12 +258,6 @@ const editableBot = (bot) => ({
 
 const normalizeBotVisibility = (visibility) => (
   visibility === BOT_VISIBILITY.PRIVATE ? BOT_VISIBILITY.PRIVATE : BOT_VISIBILITY.PUBLIC
-);
-
-const normalizeBotSkillsVisibility = (visibility) => (
-  Object.values(BOT_SKILLS_VISIBILITY).includes(visibility)
-    ? visibility
-    : BOT_SKILLS_VISIBILITY.OWNER
 );
 
 const botVisibilityLabel = (visibility) => (
@@ -177,6 +273,7 @@ const botVisibilityDescription = (visibility) => (
 export default function AgentStoreModal({
   initialAgentId = null,
   onClose,
+  onOpenSkillHub,
   user,
   onBotsChanged,
 }) {
@@ -186,10 +283,28 @@ export default function AgentStoreModal({
   const [tab, setTab] = useState('hub'); // 'hub', 'create', 'manage'
   const [hubCloudView, setHubCloudView] = useState(false); // hub tab: show cloud manage panel instead of the roster
   const [createForm, setCreateForm] = useState(initialForm);
+  const [selectedSkills, setSelectedSkills] = useState([]);
+  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  const [skillQuery, setSkillQuery] = useState('');
+  const [skillCatalogue, setSkillCatalogue] = useState([]);
+  const [skillCatalogueLoading, setSkillCatalogueLoading] = useState(false);
+  const [skillCatalogueError, setSkillCatalogueError] = useState('');
+  const [localSkills, setLocalSkills] = useState([]);
+  const [localSkillsLoading, setLocalSkillsLoading] = useState(false);
+  const [localSkillsError, setLocalSkillsError] = useState('');
+  const [skillRecommendationCandidates, setSkillRecommendationCandidates] = useState([]);
+  const [skillRecommendationLoading, setSkillRecommendationLoading] = useState(false);
+  const [skillRecommendationError, setSkillRecommendationError] = useState('');
+  const [skillDetail, setSkillDetail] = useState(null);
+  const [skillSyncingID, setSkillSyncingID] = useState('');
+  const [skillSyncError, setSkillSyncError] = useState('');
+  const [skillSyncNotice, setSkillSyncNotice] = useState('');
+  const [skillPanelTab, setSkillPanelTab] = useState('available');
   const [createMode, setCreateMode] = useState(CREATE_MODES.SELF_HOSTED);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [createdBot, setCreatedBot] = useState(null);
+  const [createdSkillWarning, setCreatedSkillWarning] = useState('');
   const [createdMode, setCreatedMode] = useState(CREATE_MODES.SELF_HOSTED);
   const [copiedField, setCopiedField] = useState('');
   const [copyingBotKey, setCopyingBotKey] = useState(null);
@@ -198,13 +313,21 @@ export default function AgentStoreModal({
   const [cloudImages, setCloudImages] = useState([]); // available worker image versions from the control plane meta
   const [cloudActioning, setCloudActioning] = useState(null); // tenant_name being acted on
   const [editingBot, setEditingBot] = useState(null);
+  const [managedSkills, setManagedSkills] = useState({ count: 0, loading: false, error: '' });
   const [entryBot, setEntryBot] = useState(null);
   const avatarFileRef = useRef(null);
   const dialogRef = useRef(null);
   const dialogOpenerRef = useRef(null);
+  const skillPickerRef = useRef(null);
+  const skillPickerSearchRef = useRef(null);
+  const skillPickerOpenerRef = useRef(null);
+  const skillCatalogueRequestRef = useRef(0);
+  const skillDetailDialogRef = useRef(null);
+  const skillDetailCloseRef = useRef(null);
+  const skillDetailOpenerRef = useRef(null);
+  const skillDetailRequestRef = useRef(0);
   const editingBotRef = useRef(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
-  const [skillsVisibilitySaving, setSkillsVisibilitySaving] = useState('');
   const initialAgentAppliedRef = useRef(false);
   const botOverview = useMemo(() => {
     const online = bots.filter((bot) => bot.is_online === true || bot.online === true).length;
@@ -219,6 +342,163 @@ export default function AgentStoreModal({
       selfHosted: bots.length - managed,
     };
   }, [bots]);
+  const selectedRole = useMemo(
+    () => ASSISTANT_ROLES.find((role) => role.value === createForm.role) || ASSISTANT_ROLES[0],
+    [createForm.role],
+  );
+  const installedSkills = useMemo(() => {
+    const byID = new Map();
+    localSkills.forEach((skill) => byID.set(skill.skillId, skill));
+    selectedSkills.forEach((skill) => {
+      const installed = byID.get(skill.skillId);
+      byID.set(skill.skillId, installed ? { ...installed, ...skill, isLocalSkill: true } : skill);
+    });
+    return Array.from(byID.values());
+  }, [localSkills, selectedSkills]);
+  const availableSkills = useMemo(() => {
+    const byID = new Map();
+    skillRecommendationCandidates.slice(0, 3).forEach((skill) => {
+      byID.set(skill.skillId, { ...skill, isRecommended: true });
+    });
+    installedSkills.forEach((skill) => {
+      const recommendation = byID.get(skill.skillId);
+      byID.set(skill.skillId, recommendation
+        ? { ...recommendation, ...skill, isRecommended: true }
+        : { ...skill, isRecommended: false });
+    });
+    return Array.from(byID.values());
+  }, [installedSkills, skillRecommendationCandidates]);
+
+  const loadSkillCatalogue = useCallback(async (query) => {
+    const requestID = skillCatalogueRequestRef.current + 1;
+    skillCatalogueRequestRef.current = requestID;
+    setSkillCatalogueLoading(true);
+    setSkillCatalogueError('');
+    try {
+      const response = await api.searchSkillHubSkills(String(query || '').trim());
+      if (requestID !== skillCatalogueRequestRef.current) return;
+      setSkillCatalogue(normalizeSkillHubSkills(response));
+    } catch (loadError) {
+      if (requestID !== skillCatalogueRequestRef.current) return;
+      setSkillCatalogue([]);
+      setSkillCatalogueError(loadError?.message || '暂时无法读取 SkillHub，请稍后重试。');
+    } finally {
+      if (requestID === skillCatalogueRequestRef.current) setSkillCatalogueLoading(false);
+    }
+  }, []);
+
+  const openSkillPicker = () => {
+    skillPickerOpenerRef.current = document.activeElement;
+    setSkillPickerOpen(true);
+  };
+
+  const openCreateTab = () => {
+    setSkillPanelTab('available');
+    setTab('create');
+  };
+
+  const closeSkillPicker = useCallback(() => setSkillPickerOpen(false), []);
+
+  const toggleSelectedSkill = (skill) => {
+    setSelectedSkills((current) => (
+      current.some((item) => item.skillId === skill.skillId)
+        ? current.filter((item) => item.skillId !== skill.skillId)
+        : [...current, skill]
+    ));
+  };
+
+  const handleSkillPanelKeyDown = (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const nextTab = event.key === 'ArrowRight' || event.key === 'End'
+      ? 'available'
+      : 'selected';
+    setSkillPanelTab(nextTab);
+    event.currentTarget.parentElement
+      ?.querySelector(`[data-skill-panel-tab="${nextTab}"]`)
+      ?.focus();
+  };
+
+  const closeSkillDetails = useCallback(() => {
+    skillDetailRequestRef.current += 1;
+    setSkillSyncError('');
+    setSkillDetail(null);
+  }, []);
+
+  const openSkillDetails = async (skill) => {
+    const requestID = skillDetailRequestRef.current + 1;
+    skillDetailRequestRef.current = requestID;
+    skillDetailOpenerRef.current = document.activeElement;
+    if (skill.isLocalSkill && !skill.cloudSkillId) {
+      setSkillDetail({ skill, details: skill, loading: false, error: '' });
+      return;
+    }
+    setSkillDetail({ skill, details: skill, loading: true, error: '' });
+    try {
+      const response = await api.getSkillHubSkill(skill.skillId);
+      if (requestID !== skillDetailRequestRef.current) return;
+      setSkillDetail({
+        skill,
+        details: resolveSkillHubEntry(skill, response),
+        loading: false,
+        error: '',
+      });
+    } catch (detailError) {
+      if (requestID !== skillDetailRequestRef.current) return;
+      setSkillDetail({
+        skill,
+        details: skill,
+        loading: false,
+        error: detailError?.message || '暂时无法读取完整参数。',
+      });
+    }
+  };
+
+  const syncAndSelectLocalSkill = async (skill) => {
+    if (!skill?.isLocalSkill || skill.canBind !== false || skillSyncingID) return;
+    const localName = skill.localSkillId || skill.displayName;
+    setSkillSyncingID(skill.skillId);
+    setSkillSyncError('');
+    setSkillSyncNotice('');
+    try {
+      let shared = await api.shareLocalSkill(localName, '', user?.uid);
+      if (shared?.requiresConfirmation || shared?.requires_confirmation) {
+        const confirmed = globalThis.confirm?.(
+          `SkillHub 已存在“${skill.displayName}”。是否将当前本地内容发布为新版本？`,
+        );
+        if (!confirmed) return;
+        shared = await api.shareLocalSkill(localName, '', user?.uid, { confirmPublish: true });
+        if (shared?.requiresConfirmation || shared?.requires_confirmation) {
+          throw new Error('SkillHub 未接受新版本发布确认，请稍后重试。');
+        }
+      }
+      const syncedSkill = await resolveSharedLocalSkill(skill, shared);
+      setLocalSkills((current) => current.map((item) => (
+        item.skillId === skill.skillId || (
+          skill.localSkillId && item.localSkillId === skill.localSkillId
+        )
+          ? syncedSkill
+          : item
+      )));
+      setSelectedSkills((current) => [
+        ...current.filter((item) => (
+          item.skillId !== skill.skillId
+          && item.skillId !== syncedSkill.skillId
+          && (!skill.localSkillId || item.localSkillId !== skill.localSkillId)
+        )),
+        syncedSkill,
+      ]);
+      setSkillSyncNotice(`“${skill.displayName}”已同步并添加。`);
+      setSkillPanelTab('selected');
+      closeSkillDetails();
+    } catch (syncError) {
+      setSkillSyncError(
+        `${syncError?.message || '同步失败'} 当前 Skill 尚未添加到助手，可以稍后重试。`,
+      );
+    } finally {
+      setSkillSyncingID('');
+    }
+  };
 
   // Cloud-managed workers shown in the dedicated cloud panel (create tab).
   const cloudWorkers = useMemo(
@@ -246,6 +526,158 @@ export default function AgentStoreModal({
   }, [editingBot]);
 
   useEffect(() => {
+    const botId = editingBot?.id || editingBot?.uid;
+    let active = true;
+    if (!botId || tab !== 'manage') {
+      setManagedSkills({ count: 0, loading: false, error: '' });
+      return undefined;
+    }
+    setManagedSkills((current) => ({ ...current, loading: true, error: '' }));
+    api.getBotDefinitionSkills(botId)
+      .then((response) => {
+        if (!active) return;
+        setManagedSkills({
+          count: Array.isArray(response?.skills) ? response.skills.length : 0,
+          loading: false,
+          error: '',
+        });
+      })
+      .catch(() => {
+        if (!active) return;
+        setManagedSkills({ count: 0, loading: false, error: '暂时无法读取能力数量' });
+      });
+    return () => {
+      active = false;
+    };
+  }, [editingBot?.id, editingBot?.uid, tab]);
+
+  useEffect(() => {
+    if (tab !== 'create') return undefined;
+    let active = true;
+    setSkillRecommendationLoading(true);
+    setSkillRecommendationCandidates([]);
+    setSkillRecommendationError('');
+
+    const loadRecommendation = async () => {
+      try {
+        const directResponse = await api.searchSkillHubSkills(selectedRole.skillQuery);
+        if (!active) return;
+        let ranked = rankSkillsForRole(normalizeSkillHubSkills(directResponse), selectedRole);
+        if (ranked.length === 0 && selectedRole.skillQuery) {
+          const fallbackResponse = await api.searchSkillHubSkills('');
+          if (!active) return;
+          ranked = rankSkillsForRole(normalizeSkillHubSkills(fallbackResponse), selectedRole);
+        }
+        if (active) setSkillRecommendationCandidates(ranked);
+      } catch {
+        if (active) {
+          setSkillRecommendationCandidates([]);
+          setSkillRecommendationError('推荐服务暂时不可用，已安装的 Skill 仍可正常添加。');
+        }
+      } finally {
+        if (active) setSkillRecommendationLoading(false);
+      }
+    };
+
+    loadRecommendation();
+    return () => {
+      active = false;
+    };
+  }, [selectedRole, tab]);
+
+  useEffect(() => {
+    if (tab !== 'create') return undefined;
+    let active = true;
+    setLocalSkillsLoading(true);
+    setLocalSkillsError('');
+    const loadLocalSkills = async () => {
+      try {
+        const response = await api.getLocalSkills();
+        if (active) setLocalSkills(normalizeLocalSkillHubSkills(response));
+      } catch (loadError) {
+        if (!active) return;
+        setLocalSkills([]);
+        setLocalSkillsError(loadError?.message || '未连接本地 Skill 服务。');
+      } finally {
+        if (active) setLocalSkillsLoading(false);
+      }
+    };
+    loadLocalSkills();
+    return () => {
+      active = false;
+    };
+  }, [tab]);
+
+  useEffect(() => {
+    if (!skillPickerOpen) return undefined;
+    loadSkillCatalogue(skillQuery);
+    const frame = window.requestAnimationFrame(() => skillPickerSearchRef.current?.focus());
+    const handlePickerKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeSkillPicker();
+        return;
+      }
+      if (event.key !== 'Tab' || !skillPickerRef.current) return;
+      const focusable = Array.from(skillPickerRef.current.querySelectorAll(
+        'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      )).filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true');
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handlePickerKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener('keydown', handlePickerKeyDown);
+      if (skillPickerOpenerRef.current instanceof HTMLElement) {
+        skillPickerOpenerRef.current.focus();
+      }
+    };
+  }, [closeSkillPicker, loadSkillCatalogue, skillPickerOpen]);
+
+  useEffect(() => {
+    if (!skillDetail) return undefined;
+    const frame = window.requestAnimationFrame(() => skillDetailCloseRef.current?.focus());
+    const handleDetailKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeSkillDetails();
+        return;
+      }
+      if (event.key !== 'Tab' || !skillDetailDialogRef.current) return;
+      const focusable = Array.from(skillDetailDialogRef.current.querySelectorAll(
+        'button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+      )).filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true');
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleDetailKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener('keydown', handleDetailKeyDown);
+      if (skillDetailOpenerRef.current instanceof HTMLElement) {
+        skillDetailOpenerRef.current.focus();
+      }
+    };
+  }, [Boolean(skillDetail), closeSkillDetails]);
+
+  useEffect(() => {
     dialogOpenerRef.current = document.activeElement;
     const frame = window.requestAnimationFrame(() => {
       dialogRef.current?.querySelector('button:not(:disabled)')?.focus();
@@ -257,7 +689,7 @@ export default function AgentStoreModal({
   }, []);
 
   useEffect(() => {
-    if (entryBot) return undefined;
+    if (entryBot || skillPickerOpen || skillDetail) return undefined;
     const handleDialogKeyDown = (event) => {
       if (event.key === 'Escape') {
         event.preventDefault();
@@ -290,7 +722,7 @@ export default function AgentStoreModal({
     };
     document.addEventListener('keydown', handleDialogKeyDown);
     return () => document.removeEventListener('keydown', handleDialogKeyDown);
-  }, [entryBot, onClose]);
+  }, [entryBot, onClose, skillDetail, skillPickerOpen]);
 
   const loadBots = async ({ silent = false } = {}) => {
     try {
@@ -362,8 +794,10 @@ export default function AgentStoreModal({
     try {
       setError('');
       setCreatedBot(null);
+      setCreatedSkillWarning('');
       setIsSubmitting(true);
 
+      const skillRefs = await Promise.all(selectedSkills.map(resolveSkillBindingRef));
       // Cloud-managed workers go through the cloud control plane (quota-checked,
       // provisions a Tianyi cloud instance). Self-hosted bots use the normal path.
       const result = isManaged
@@ -380,6 +814,22 @@ export default function AgentStoreModal({
           console.log('[Agent Handshake] Instantly bound P2P topic for developer testing.');
         } catch (handshakeErr) {
           console.warn('[Agent Handshake Failed]:', handshakeErr);
+        }
+      }
+
+      if (skillRefs.length > 0) {
+        try {
+          const definition = await api.getBotDefinitionSkills(fullResult.uid);
+          await api.updateBotDefinitionSkills(
+            fullResult.uid,
+            Number(definition?.revision || 0),
+            skillRefs,
+          );
+        } catch (skillError) {
+          console.warn('[Agent Skill Binding Failed]:', skillError);
+          setCreatedSkillWarning(
+            `助手已创建，但 Skill 未全部添加：${skillError?.message || '请稍后在 SkillHub 中重试。'}`,
+          );
         }
       }
 
@@ -605,33 +1055,6 @@ export default function AgentStoreModal({
     }
   };
 
-  const handleSetSkillsVisibility = async (bot, visibility) => {
-    const botId = bot?.id || bot?.uid;
-    if (!botId || !isOwnedBot(bot) || skillsVisibilitySaving) return;
-    const nextVisibility = normalizeBotSkillsVisibility(visibility);
-    if (normalizeBotSkillsVisibility(bot.skills_visibility) === nextVisibility) return;
-    try {
-      setError('');
-      setSkillsVisibilitySaving(nextVisibility);
-      await api.setBotSkillsVisibility(botId, nextVisibility);
-      setBots(prev => prev.map(item => (
-        String(item.id || item.uid) === String(botId)
-          ? { ...item, skills_visibility: nextVisibility }
-          : item
-      )));
-      setEditingBot(prev => (
-        prev && String(prev.id || prev.uid) === String(botId)
-          ? { ...prev, skills_visibility: nextVisibility }
-          : prev
-      ));
-      if (onBotsChanged) onBotsChanged();
-    } catch (e) {
-      setError(e.message || '技能可见范围保存失败');
-    } finally {
-      setSkillsVisibilitySaving('');
-    }
-  };
-
   const wsUrl = getWebSocketURL();
 
   return (
@@ -649,7 +1072,7 @@ export default function AgentStoreModal({
         <div className="oc-modal-header cc-agent-manager-header">
           <div className="cc-agent-manager-nav">
             <h3 id="cc-agent-manager-title" className="cc-agent-manager-title">
-              <Zap size={17} /> AI 助手管理
+              <Bot size={17} /> AI 助手管理
             </h3>
             <div className="cc-agent-manager-tabs">
               <button
@@ -660,7 +1083,7 @@ export default function AgentStoreModal({
               </button>
               <button
                 className={tab === 'create' ? 'active' : ''}
-                onClick={() => setTab('create')}
+                onClick={openCreateTab}
               >
                 创建新助手
               </button>
@@ -707,7 +1130,7 @@ export default function AgentStoreModal({
                   <p>
                     已添加的助手会保留在左侧 AI 助手列表，可直接移动端使用或移除。
                   </p>
-                  <button className="oc-btn cc-agent-empty-action" onClick={() => setTab('create')}>创建第一个助手</button>
+                  <button className="oc-btn cc-agent-empty-action" onClick={openCreateTab}>创建第一个助手</button>
                 </div>
               ) : (
                 <>
@@ -882,59 +1305,224 @@ export default function AgentStoreModal({
                   <p>先定义助手身份，再配置运行方式。</p>
                 </div>
 
-                <div className="cc-agent-create-grid">
-                  <section className="cc-agent-create-card cc-agent-basic-card">
-                    <h3><FileCheck2 size={17} />基本信息</h3>
-                    <label>
-                      <span>助手名称 <b>*</b></span>
-                      <input
-                        type="text"
-                        value={createForm.display_name}
-                        onChange={(e) => setCreateForm({ ...createForm, display_name: e.target.value })}
-                        placeholder="例如：代码审查助手"
-                        className="oc-auth-input"
-                        required
+              <div className="cc-agent-create-grid">
+                <section className="cc-agent-create-card cc-agent-basic-card">
+                  <h3><FileCheck2 size={17} />基本信息</h3>
+                  <label>
+                    <span>助手名称 <b>*</b></span>
+                    <input
+                      type="text"
+                      value={createForm.display_name}
+                      onChange={(e) => setCreateForm({ ...createForm, display_name: e.target.value })}
+                      placeholder="例如：代码审查助手"
+                      className="oc-auth-input"
+                      required
+                      disabled={isSubmitting}
+                    />
+                  </label>
+                  <label>
+                    <span>助手定位 <b>*</b></span>
+                    <div className="cc-agent-role-field">
+                      <CustomSelect
+                        ariaLabel="助手定位"
+                        className="cc-agent-role-select"
+                        density="comfortable"
+                        menuClassName="cc-agent-role-options"
+                        value={createForm.role}
                         disabled={isSubmitting}
-                      />
-                    </label>
-                    <label>
-                      <span>助手定位 <b>*</b></span>
-                      <div className="cc-agent-role-field">
-                        <CustomSelect
-                          ariaLabel="助手定位"
-                          className="cc-agent-role-select"
-                          value={createForm.role}
-                          disabled={isSubmitting}
-                          onValueChange={(role) => setCreateForm({ ...createForm, role })}
-                        >
-                          {ASSISTANT_ROLES.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
-                        </CustomSelect>
-                      </div>
-                    </label>
-                    <label>
-                      <span>用途说明 <small>选填</small></span>
-                      <textarea
-                        value={createForm.description}
-                        onChange={(e) => setCreateForm({ ...createForm, description: e.target.value.slice(0, 500) })}
-                        placeholder="说明这个助手解决什么问题，以及你希望它如何工作"
-                      />
-                      <em>{createForm.description.length}/500</em>
-                    </label>
-                  </section>
-
-                  <section className="cc-agent-create-card cc-agent-capability-card">
-                    <h3><Sparkles size={17} />能力预览</h3>
-                    <div className="cc-agent-capability-list">
-                      {ASSISTANT_CAPABILITIES.map(({ icon: Icon, title, detail }) => (
-                        <div className="cc-agent-capability-item" key={title}>
-                          <span><Icon size={18} /></span>
-                          <div><strong>{title}</strong><small>{detail}</small></div>
-                        </div>
-                      ))}
+                        onValueChange={(role) => setCreateForm({ ...createForm, role })}
+                      >
+                        {ASSISTANT_ROLES.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}
+                      </CustomSelect>
+                      <small className="cc-agent-role-guidance">{selectedRole.description}</small>
                     </div>
-                  </section>
-                </div>
+                  </label>
+                  <label>
+                    <span>用途说明 <small>选填</small></span>
+                    <textarea
+                      value={createForm.description}
+                      onChange={(e) => setCreateForm({ ...createForm, description: e.target.value.slice(0, 500) })}
+                      placeholder="说明这个助手解决什么问题，以及你希望它如何工作"
+                    />
+                    <em>{createForm.description.length}/500</em>
+                  </label>
+                </section>
 
+                <section className="cc-agent-create-card cc-agent-skill-card">
+                  <div className="cc-agent-skill-card-heading">
+                    <h3><Puzzle size={17} />Skills</h3>
+                  </div>
+                  <div
+                    className="cc-agent-skill-tabs"
+                    role="tablist"
+                    aria-label="Skill 分类"
+                    data-active-tab={skillPanelTab}
+                  >
+                    <button
+                      id="cc-agent-skills-selected-tab"
+                      type="button"
+                      role="tab"
+                      data-skill-panel-tab="selected"
+                      aria-selected={skillPanelTab === 'selected'}
+                      aria-controls="cc-agent-skills-selected-panel"
+                      tabIndex={skillPanelTab === 'selected' ? 0 : -1}
+                      onClick={() => setSkillPanelTab('selected')}
+                      onKeyDown={handleSkillPanelKeyDown}
+                    >
+                      <span>已选</span>
+                      <span className="cc-agent-skill-tab-count">{selectedSkills.length}</span>
+                    </button>
+                    <button
+                      id="cc-agent-skills-available-tab"
+                      type="button"
+                      role="tab"
+                      data-skill-panel-tab="available"
+                      aria-selected={skillPanelTab === 'available'}
+                      aria-controls="cc-agent-skills-available-panel"
+                      tabIndex={skillPanelTab === 'available' ? 0 : -1}
+                      onClick={() => setSkillPanelTab('available')}
+                      onKeyDown={handleSkillPanelKeyDown}
+                    >
+                      <span>可用</span>
+                      <span className="cc-agent-skill-tab-count">{availableSkills.length}</span>
+                    </button>
+                  </div>
+                  <div className="cc-agent-skill-sections">
+                    {skillSyncNotice && (
+                      <div className="cc-agent-skill-sync-feedback" role="status">
+                        <CheckCircle size={14} aria-hidden="true" />
+                        <span>{skillSyncNotice}</span>
+                      </div>
+                    )}
+                    {skillPanelTab === 'selected' ? (
+                    <section
+                      id="cc-agent-skills-selected-panel"
+                      className="cc-agent-skill-group cc-agent-selected-group"
+                      role="tabpanel"
+                      aria-labelledby="cc-agent-skills-selected-tab"
+                    >
+                      {selectedSkills.length > 0 ? (
+                        <div className="cc-agent-selected-skills" aria-label="已选择的 Skills">
+                          {selectedSkills.map((skill) => (
+                            <div className="cc-agent-selected-skill" key={skill.skillId}>
+                              <button
+                                type="button"
+                                className="cc-agent-skill-detail-trigger"
+                                onClick={() => openSkillDetails(skill)}
+                                aria-label={`查看 Skill ${skill.displayName || skill.skillId} 详情`}
+                              >
+                                <span className="cc-agent-selected-skill-icon"><Puzzle size={16} /></span>
+                                <span className="cc-agent-selected-skill-copy">
+                                  <strong>{skill.displayName || skill.skillId}</strong>
+                                  <small>
+                                    {skill.author || (skill.isLocalSkill ? '本地 Skill' : 'SkillHub')}
+                                    {skill.latestVersion ? ` · v${skill.latestVersion}` : ''}
+                                  </small>
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                className="cc-agent-skill-row-action"
+                                aria-label={`从助手移除 Skill ${skill.displayName || skill.skillId}`}
+                                title="从助手移除"
+                                disabled={isSubmitting}
+                                onClick={() => toggleSelectedSkill(skill)}
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="cc-agent-skill-group-empty">
+                          <strong>还没有选择 Skill</strong>
+                          <small>从“可用”中添加这个助手需要的能力。</small>
+                        </div>
+                      )}
+                    </section>
+                    ) : (
+                    <section
+                      id="cc-agent-skills-available-panel"
+                      className="cc-agent-skill-group cc-agent-available-group"
+                      role="tabpanel"
+                      aria-labelledby="cc-agent-skills-available-tab"
+                    >
+                      {skillRecommendationLoading && (
+                        <div className="cc-agent-skill-recommendation-state" aria-live="polite">
+                          <strong>正在匹配推荐 Skill…</strong>
+                        </div>
+                      )}
+                      {skillRecommendationError && (
+                        <div className="cc-agent-skill-recommendation-state" role="status">
+                          <strong>推荐暂时不可用</strong>
+                          <small>已安装的 Skill 仍可正常添加。</small>
+                        </div>
+                      )}
+                      {availableSkills.length > 0 ? (
+                        <div className="cc-agent-selected-skills" aria-label="可用的 Skills">
+                          {availableSkills.map((skill) => {
+                            const selected = selectedSkills.some((item) => item.skillId === skill.skillId);
+                            const canAdd = skill.canBind !== false;
+                            return (
+                            <div className="cc-agent-selected-skill" key={skill.skillId}>
+                              <button
+                                type="button"
+                                className="cc-agent-skill-detail-trigger"
+                                onClick={() => openSkillDetails(skill)}
+                                aria-label={`查看 Skill ${skill.displayName || skill.skillId} 详情`}
+                              >
+                                <span className="cc-agent-selected-skill-icon"><Puzzle size={16} /></span>
+                                <span className="cc-agent-selected-skill-copy">
+                                  <span className="cc-agent-skill-name-row">
+                                    <strong title={skill.displayName || skill.skillId} translate="no">
+                                      {skill.displayName || skill.skillId}
+                                    </strong>
+                                    {skill.isRecommended && <span className="cc-agent-skill-recommended-badge">推荐</span>}
+                                  </span>
+                                  <small>
+                                    {skill.author || (skill.isLocalSkill ? '本地 Skill' : 'SkillHub')}
+                                    {skill.latestVersion ? ` · v${skill.latestVersion}` : ''}
+                                    {!canAdd ? ' · 仅本地' : ''}
+                                  </small>
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                className={`cc-agent-skill-row-action${selected ? ' is-selected' : ''}`}
+                                onClick={() => (canAdd ? toggleSelectedSkill(skill) : openSkillDetails(skill))}
+                                aria-label={selected
+                                  ? `取消选择 Skill ${skill.displayName || skill.skillId}`
+                                  : canAdd
+                                    ? `添加 Skill ${skill.displayName || skill.skillId} 到助手`
+                                    : `同步并添加 Skill ${skill.displayName || skill.skillId}`}
+                                title={selected ? '已选择，点击取消' : canAdd ? '添加到助手' : '同步并添加'}
+                                disabled={isSubmitting || skillSyncingID === skill.skillId}
+                              >
+                                {selected ? <Check size={15} aria-hidden="true" /> : <Plus size={15} aria-hidden="true" />}
+                              </button>
+                            </div>
+                            );
+                          })}
+                        </div>
+                      ) : !skillRecommendationLoading && !localSkillsLoading && (
+                        <div className="cc-agent-skill-group-empty">
+                          <strong>暂无可用 Skill</strong>
+                          <small>{localSkillsError ? '连接本地服务，或浏览 SkillHub 添加能力。' : '可以浏览完整目录并手动选择。'}</small>
+                        </div>
+                      )}
+                    </section>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="cc-agent-add-skill"
+                    onClick={openSkillPicker}
+                    disabled={isSubmitting}
+                  >
+                    <Search size={15} /> 浏览全部 Skills
+                  </button>
+                </section>
+              </div>
                 <fieldset className="cc-agent-hosting">
                   <legend><span><Zap size={16} /></span>部署方式 <small>高级设置</small></legend>
                   <label className={createMode === CREATE_MODES.SELF_HOSTED ? 'active' : ''}>
@@ -963,7 +1551,9 @@ export default function AgentStoreModal({
                 </fieldset>
 
                 <button type="submit" className="oc-btn oc-btn-primary cc-agent-create-submit" disabled={isSubmitting}>
-                  {isSubmitting ? '创建中...' : '创建我的专属助手'}
+                  {isSubmitting
+                    ? (selectedSkills.length > 0 ? '正在创建并添加 Skill...' : '创建中...')
+                    : '创建我的专属助手'}
                 </button>
               </form>
             )
@@ -975,6 +1565,11 @@ export default function AgentStoreModal({
               <div style={{ width: 64, height: 64, background: 'color-mix(in srgb, var(--v3-primary) 10%, transparent)', color: 'var(--v3-primary)', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32, margin: '0 auto 20px' }}>✓</div>
               <h2 style={{ margin: '0 0 8px 0', color: 'var(--v3-text-name)' }}>创建成功</h2>
               <p style={{ margin: '0 0 24px 0', color: 'var(--v3-text-muted)', fontSize: 14 }}>AI 助手 <b style={{color: 'var(--v3-text-name)'}}>{createdBot.display_name}</b> 已准备好连接。</p>
+              {createdSkillWarning && (
+                <div className="cc-agent-skill-binding-warning" role="status">
+                  {createdSkillWarning}
+                </div>
+              )}
 
               {createdMode === CREATE_MODES.MANAGED ? (
                 <div style={{ textAlign: 'left', background: 'var(--v3-bg-app)', border: '1px solid var(--v3-border)', borderRadius: 8, padding: 16, marginBottom: 24 }}>
@@ -1163,37 +1758,26 @@ export default function AgentStoreModal({
                 </div>
               </div>
 
-              <section className="cc-agent-skills-visibility" aria-labelledby="cc-agent-skills-visibility-title">
-                <div className="cc-agent-permission-heading">
-                  <div>
-                    <h3 id="cc-agent-skills-visibility-title">技能可见范围</h3>
-                    <p>控制其他用户能否在云文件中查看这个 Agent 使用的技能。技能内容和配置始终不会公开。</p>
-                  </div>
+              <section className="cc-agent-capability-summary" aria-labelledby="cc-agent-capability-summary-title">
+                <div className="cc-agent-capability-summary-icon" aria-hidden="true">
+                  <Puzzle size={18} />
+                </div>
+                <div className="cc-agent-capability-summary-copy">
+                  <h3 id="cc-agent-capability-summary-title">能力配置</h3>
+                  <p>这个 Agent 当前启用的 Skills 统一在 SkillHub 中管理。</p>
                   <span aria-live="polite">
-                    {skillsVisibilitySaving ? '保存中...' : '自动保存'}
+                    {managedSkills.loading
+                      ? '正在读取…'
+                      : managedSkills.error || `已启用 ${managedSkills.count} 个 Skill`}
                   </span>
                 </div>
-                <div className="cc-agent-permission-options" role="group" aria-label="技能可见范围">
-                  {SKILLS_VISIBILITY_OPTIONS.map((option) => {
-                    const selected = normalizeBotSkillsVisibility(editingBot.skills_visibility) === option.value;
-                    return (
-                      <button
-                        key={option.value}
-                        type="button"
-                        className={selected ? 'is-selected' : ''}
-                        aria-pressed={selected}
-                        disabled={Boolean(skillsVisibilitySaving)}
-                        onClick={() => handleSetSkillsVisibility(editingBot, option.value)}
-                      >
-                        <span className="cc-agent-permission-option-title">
-                          {selected && <CheckCircle size={15} aria-hidden="true" />}
-                          {option.label}
-                        </span>
-                        <small>{option.description}</small>
-                      </button>
-                    );
-                  })}
-                </div>
+                <button
+                  type="button"
+                  className="oc-btn oc-btn-default cc-agent-open-skillhub"
+                  onClick={() => onOpenSkillHub?.(editingBot.id || editingBot.uid, editingBot)}
+                >
+                  前往 SkillHub 管理
+                </button>
               </section>
 
               <div style={{ display: 'flex', gap: 12 }}>
@@ -1221,6 +1805,225 @@ export default function AgentStoreModal({
           copiedField={copiedField}
           onAccessChanged={() => loadBots({ silent: true })}
         />
+      )}
+      {skillDetail && typeof document !== 'undefined' && createPortal(
+        <div
+          className="oc-modal-overlay cc-agent-skill-detail-overlay"
+          onClick={(event) => {
+            event.stopPropagation();
+            if (event.target === event.currentTarget) closeSkillDetails();
+          }}
+        >
+          <section
+            ref={skillDetailDialogRef}
+            className="oc-modal cc-agent-skill-detail-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cc-agent-skill-detail-title"
+            aria-describedby="cc-agent-skill-detail-description"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="cc-agent-skill-detail-header">
+              <span aria-hidden="true"><Puzzle size={19} /></span>
+              <div>
+                <small>{skillDetail.skill.isLocalSkill ? '本地 Skill' : 'SkillHub Skill'}</small>
+                <h2 id="cc-agent-skill-detail-title" translate="no">
+                  {skillDetail.details?.displayName || skillDetail.skill.displayName || skillDetail.skill.skillId}
+                </h2>
+              </div>
+              <button
+                ref={skillDetailCloseRef}
+                type="button"
+                className="cc-dialog-close"
+                onClick={closeSkillDetails}
+                aria-label="关闭 Skill 详情"
+              >
+                <X size={18} />
+              </button>
+            </header>
+
+            <div className="cc-agent-skill-detail-body">
+              {skillDetail.loading && (
+                <div className="cc-agent-skill-detail-status" role="status">正在读取最新参数…</div>
+              )}
+              {skillDetail.error && (
+                <div className="cc-agent-skill-detail-status error" role="alert">{skillDetail.error}</div>
+              )}
+              {skillDetail.skill.isLocalSkill && skillDetail.skill.canBind === false && (
+                <div className="cc-agent-skill-sync-note">
+                  <strong>仅保存在本机</strong>
+                  <span>
+                    同步并添加会把这个 Skill 的可分享文件上传到 SkillHub。继续前请确认文件中不包含密钥或私密数据。
+                  </span>
+                </div>
+              )}
+              {skillSyncError && (
+                <div className="cc-agent-skill-detail-status error" role="alert">{skillSyncError}</div>
+              )}
+              <p id="cc-agent-skill-detail-description">
+                {skillDetail.details?.description || '该 Skill 暂无用途说明。'}
+              </p>
+              <dl>
+                <div>
+                  <dt>Skill ID</dt>
+                  <dd><code translate="no">{skillDetail.skill.skillId}</code></dd>
+                </div>
+                <div>
+                  <dt>推荐版本</dt>
+                  <dd>
+                    {skillDetail.details?.latestVersion
+                      ? <code translate="no">v{skillDetail.details.latestVersion}</code>
+                      : '待确认'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>发布者</dt>
+                  <dd>{skillDetail.details?.author || 'SkillHub'}</dd>
+                </div>
+              </dl>
+            </div>
+
+            <footer className="cc-agent-skill-detail-footer">
+              <button type="button" className="oc-btn oc-btn-default" onClick={closeSkillDetails}>关闭</button>
+              <button
+                type="button"
+                className="oc-btn oc-btn-primary"
+                disabled={
+                  selectedSkills.some((skill) => skill.skillId === skillDetail.skill.skillId)
+                  || skillSyncingID === skillDetail.skill.skillId
+                }
+                onClick={() => {
+                  if (skillDetail.skill.canBind === false) {
+                    syncAndSelectLocalSkill(skillDetail.skill);
+                  } else {
+                    toggleSelectedSkill(skillDetail.skill);
+                    closeSkillDetails();
+                  }
+                }}
+              >
+                {selectedSkills.some((skill) => skill.skillId === skillDetail.skill.skillId)
+                  ? '已添加'
+                  : skillDetail.skill.canBind === false
+                    ? skillSyncingID === skillDetail.skill.skillId
+                      ? '正在同步…'
+                      : '同步并添加'
+                    : '添加此 Skill'}
+              </button>
+            </footer>
+          </section>
+        </div>,
+        document.body,
+      )}
+      {skillPickerOpen && typeof document !== 'undefined' && createPortal(
+        <div
+          className="oc-modal-overlay cc-agent-skill-picker-overlay"
+          onClick={(event) => {
+            event.stopPropagation();
+            if (event.target === event.currentTarget) closeSkillPicker();
+          }}
+        >
+          <section
+            ref={skillPickerRef}
+            className="oc-modal cc-agent-skill-picker"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cc-agent-skill-picker-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="cc-agent-skill-picker-header">
+              <div>
+                <h2 id="cc-agent-skill-picker-title"><Puzzle size={18} />添加 Skills</h2>
+                <p>选择创建后立即绑定到助手的能力。</p>
+              </div>
+              <button
+                type="button"
+                className="cc-dialog-close"
+                onClick={closeSkillPicker}
+                aria-label="关闭 Skill 选择"
+              >
+                <X size={18} />
+              </button>
+            </header>
+
+            <form
+              className="cc-agent-skill-search"
+              onSubmit={(event) => {
+                event.preventDefault();
+                loadSkillCatalogue(skillQuery);
+              }}
+            >
+              <Search size={16} aria-hidden="true" />
+              <input
+                ref={skillPickerSearchRef}
+                type="search"
+                value={skillQuery}
+                onChange={(event) => setSkillQuery(event.target.value)}
+                placeholder="搜索 Skill 名称或用途"
+                aria-label="搜索 Skill"
+              />
+              <button type="submit" disabled={skillCatalogueLoading}>
+                {skillCatalogueLoading ? '搜索中' : '搜索'}
+              </button>
+            </form>
+
+            <div className="cc-agent-skill-results" aria-live="polite">
+              {skillCatalogueError ? (
+                <div className="cc-agent-skill-picker-state error" role="alert">
+                  <strong>无法读取 SkillHub</strong>
+                  <span>{skillCatalogueError}</span>
+                  <button type="button" onClick={() => loadSkillCatalogue(skillQuery)}>重试</button>
+                </div>
+              ) : skillCatalogueLoading ? (
+                <div className="cc-agent-skill-picker-state">
+                  <strong>正在读取 SkillHub…</strong>
+                  <span>稍等片刻，可用能力马上出现。</span>
+                </div>
+              ) : skillCatalogue.length === 0 ? (
+                <div className="cc-agent-skill-picker-state">
+                  <strong>没有找到匹配的 Skill</strong>
+                  <span>换个关键词，或清空搜索查看全部能力。</span>
+                </div>
+              ) : (
+                skillCatalogue.map((skill) => {
+                  const selected = selectedSkills.some((item) => item.skillId === skill.skillId);
+                  return (
+                    <button
+                      type="button"
+                      key={skill.skillId}
+                      className={`cc-agent-skill-option${selected ? ' is-selected' : ''}`}
+                      aria-pressed={selected}
+                      onClick={() => toggleSelectedSkill(skill)}
+                    >
+                      <span className="cc-agent-skill-option-icon"><Puzzle size={17} /></span>
+                      <span className="cc-agent-skill-option-copy">
+                        <strong>{skill.displayName || skill.skillId}</strong>
+                        <small>{skill.description || '暂无说明'}</small>
+                        <em>
+                          {skill.author || 'SkillHub'}
+                          {skill.latestVersion ? ` · v${skill.latestVersion}` : ''}
+                        </em>
+                      </span>
+                      <span className="cc-agent-skill-option-check" aria-hidden="true">
+                        {selected && <Check size={15} />}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            <footer className="cc-agent-skill-picker-footer">
+              <span>{selectedSkills.length > 0 ? `已选择 ${selectedSkills.length} 个 Skill` : '可以稍后再添加'}</span>
+              <div>
+                <button type="button" className="oc-btn oc-btn-default" onClick={closeSkillPicker}>取消</button>
+                <button type="button" className="oc-btn oc-btn-primary" onClick={closeSkillPicker}>
+                  完成{selectedSkills.length > 0 ? `（${selectedSkills.length}）` : ''}
+                </button>
+              </div>
+            </footer>
+          </section>
+        </div>,
+        document.body,
       )}
     </div>
   );

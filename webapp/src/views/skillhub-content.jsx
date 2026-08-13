@@ -1,10 +1,11 @@
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  ArrowLeft, Bot, Check, ChevronDown, Clipboard, FolderOpen, Info,
+  ArrowLeft, Bot, Check, Clipboard, FolderOpen, Info,
   Package, PackageMinus, RefreshCw, Search, Share2,
   ShieldCheck, Wrench, X,
 } from 'lucide-react';
+import CustomSelect from '../widgets/custom-select';
 
 export default function SkillHubContent(props) {
   const {
@@ -62,84 +63,10 @@ function AgentContext({
 }
 
 function AgentSelect({ agents, disabled, onChange, value }) {
-  const triggerRef = useRef(null);
-  const listRef = useRef(null);
-  const [open, setOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(() => Math.max(0, agents.findIndex((agent) => agent.value === value)));
-  const [placement, setPlacement] = useState(null);
-  const selectedIndex = Math.max(0, agents.findIndex((agent) => agent.value === value));
-  const selected = agents[selectedIndex] || null;
-
-  useEffect(() => {
-    setActiveIndex(selectedIndex);
-  }, [selectedIndex]);
-
-  useLayoutEffect(() => {
-    if (!open || !triggerRef.current) return undefined;
-    const updatePlacement = () => {
-      const rect = triggerRef.current.getBoundingClientRect();
-      const gutter = 8;
-      const width = Math.min(rect.width, Math.max(0, window.innerWidth - gutter * 2));
-      const maxHeight = Math.min(280, Math.max(120, window.innerHeight - rect.bottom - gutter));
-      const top = rect.bottom + gutter + maxHeight <= window.innerHeight
-        ? rect.bottom + gutter
-        : Math.max(gutter, rect.top - gutter - maxHeight);
-      const left = Math.min(Math.max(gutter, rect.left), Math.max(gutter, window.innerWidth - width - gutter));
-      setPlacement({ left, top, width, maxHeight });
-    };
-    updatePlacement();
-    window.addEventListener('resize', updatePlacement);
-    window.addEventListener('scroll', updatePlacement, true);
-    return () => {
-      window.removeEventListener('resize', updatePlacement);
-      window.removeEventListener('scroll', updatePlacement, true);
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return undefined;
-    const handlePointerDown = (event) => {
-      if (triggerRef.current?.contains(event.target) || listRef.current?.contains(event.target)) return;
-      setOpen(false);
-    };
-    document.addEventListener('pointerdown', handlePointerDown);
-    return () => document.removeEventListener('pointerdown', handlePointerDown);
-  }, [open]);
-
-  const selectAgent = (agent) => {
-    onChange(agent.value);
-    setOpen(false);
-    requestAnimationFrame(() => triggerRef.current?.focus());
-  };
-
-  const handleKeyDown = (event) => {
-    if (disabled) return;
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      if (!open) {
-        setActiveIndex(selectedIndex);
-        setOpen(true);
-        return;
-      }
-      const delta = event.key === 'ArrowDown' ? 1 : -1;
-      setActiveIndex((index) => (index + delta + agents.length) % agents.length);
-    } else if (event.key === 'Home' || event.key === 'End') {
-      event.preventDefault();
-      setActiveIndex(event.key === 'Home' ? 0 : Math.max(0, agents.length - 1));
-    } else if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      if (!open) setOpen(true);
-      else if (agents[activeIndex]) selectAgent(agents[activeIndex]);
-    } else if (event.key === 'Escape' && open) {
-      event.preventDefault();
-      setOpen(false);
-    }
-  };
-
   return (
     <span className='cc-skillhub-select-wrap'>
       <select
-        className='cc-skillhub-agent-native-select'
+        className='cc-skillhub-native-select cc-skillhub-agent-native-select'
         value={value}
         disabled={disabled}
         tabIndex={-1}
@@ -149,45 +76,20 @@ function AgentSelect({ agents, disabled, onChange, value }) {
         {agents.length === 0 && <option value=''>暂无自己拥有的 Agent</option>}
         {agents.map((agent) => <option key={agent.value} value={agent.value}>{agent.label}</option>)}
       </select>
-      <button
-        ref={triggerRef}
-        type='button'
-        className='cc-skillhub-agent-select-trigger'
+      <CustomSelect
+        ariaLabel='当前 Agent'
+        className='cc-skillhub-agent-select'
+        density='comfortable'
         disabled={disabled}
-        aria-haspopup='listbox'
-        aria-expanded={open}
-        aria-label='当前 Agent'
-        onClick={() => setOpen((current) => !current)}
-        onKeyDown={handleKeyDown}
+        listboxAriaLabel='Agent 列表'
+        menuClassName='cc-skillhub-agent-options'
+        triggerClassName='cc-skillhub-agent-select-trigger'
+        value={value}
+        onValueChange={onChange}
       >
-        <span>{selected?.label || (agents.length ? '选择 Agent' : '暂无自己拥有的 Agent')}</span>
-        <ChevronDown className='cc-skillhub-select-chevron' size={15} aria-hidden='true' />
-      </button>
-      {open && placement && createPortal(
-        <div
-          ref={listRef}
-          className='cc-skillhub-agent-options'
-          role='listbox'
-          aria-label='Agent 列表'
-          style={{ left: placement.left, top: placement.top, width: placement.width, maxHeight: placement.maxHeight }}
-        >
-          {agents.map((agent, index) => (
-            <button
-              key={agent.value}
-              type='button'
-              role='option'
-              aria-selected={agent.value === value}
-              className={index === activeIndex ? 'is-active' : ''}
-              onMouseEnter={() => setActiveIndex(index)}
-              onClick={() => selectAgent(agent)}
-            >
-              <span>{agent.label}</span>
-              {agent.value === value && <Check size={14} aria-hidden='true' />}
-            </button>
-          ))}
-        </div>,
-        document.body,
-      )}
+        {agents.length === 0 && <option value=''>暂无自己拥有的 Agent</option>}
+        {agents.map((agent) => <option key={agent.value} value={agent.value}>{agent.label}</option>)}
+      </CustomSelect>
     </span>
   );
 }
@@ -491,7 +393,11 @@ function SkillDetailsDialog({ details, label, localDetails, onClose, privateRefe
 }
 
 function Catalogue(props) {
-  const { catalogue, catalogueError, isReadOnly, loadingCatalogue, onQueryChange, onSearch, query } = props;
+  const {
+    catalogueError, isReadOnly, libraryLocalError, librarySkills, loadingCatalogue,
+    loadingLibraryLocalSkills, onQueryChange, onSearch, query,
+  } = props;
+  const loading = loadingCatalogue || loadingLibraryLocalSkills;
   return (
     <section id='skillhub-catalogue-panel' className='cc-skillhub-surface cc-skillhub-catalogue' role='tabpanel' aria-labelledby='skillhub-catalogue-tab'>
       <div className='cc-skillhub-content-header cc-skillhub-catalogue-header'>
@@ -510,16 +416,19 @@ function Catalogue(props) {
         </div>
         <button type='submit' disabled={loadingCatalogue}>{loadingCatalogue ? '搜索中…' : '搜索'}</button>
       </form>
-      {catalogueError ? (
-        <div className='cc-skillhub-alert error' role='alert'>{catalogueError}</div>
-      ) : loadingCatalogue ? (
+      {catalogueError && <div className='cc-skillhub-alert error' role='alert'>{catalogueError}</div>}
+      {libraryLocalError && <div className='cc-skillhub-alert error cc-skillhub-library-alert' role='alert'>{libraryLocalError}</div>}
+      {loading && librarySkills.length === 0 ? (
         <EmptyState icon={<RefreshCw className='is-spinning' size={20} />} title='正在读取能力库' status />
-      ) : catalogue.length === 0 ? (
+      ) : librarySkills.length === 0 ? (
         <EmptyState icon={<Search size={21} />} title='没有找到匹配的能力' copy='换一个更宽泛的关键词再试试。' />
       ) : (
-        <div className='cc-skillhub-grid'>
-          {catalogue.map((skill) => <CatalogueCard key={skill.skillId} skill={skill} {...props} />)}
-        </div>
+        <>
+          {loading && <div className='cc-skillhub-library-status' role='status'><RefreshCw className='is-spinning' size={13} aria-hidden='true' /> 正在更新能力…</div>}
+          <div className='cc-skillhub-grid'>
+            {librarySkills.map((skill) => <CatalogueCard key={skill.skillId} skill={skill} {...props} />)}
+          </div>
+        </>
       )}
     </section>
   );
@@ -528,7 +437,9 @@ function Catalogue(props) {
 function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSkill, saving, sharingSkill, skill, skillAction }) {
   const installed = installedByID.has(skill.skillId);
   const adding = skillAction?.type === 'add' && skillAction.skillId === skill.skillId;
-  const stable = Boolean(skill.latestVersion && /^[0-9a-f]{64}$/.test(String(skill.contentHash || '')));
+  const sharing = skill.isLocalSkill && sharingSkill === skill.localSkill?.name;
+  const unavailable = skill.isLocalSkill && !skill.canBind
+    && (!skill.localSkill?.canShare || skill.localSkill?.source === 'system');
   return (
     <article className={`cc-skillhub-card${installed ? ' is-added' : ''}`}>
       <div className='cc-skillhub-card-title'>
@@ -537,10 +448,10 @@ function CatalogueCard({ definitionReady, installedByID, isReadOnly, onInstallSk
       </div>
       <p>{skill.description || '这个能力暂时没有补充说明。'}</p>
       <div className='cc-skillhub-card-footer'>
-        <span className={stable ? 'verified' : ''}>{stable && <ShieldCheck size={13} aria-hidden='true' />}{skill.latestVersion ? `v${skill.latestVersion}` : (stable ? '稳定版本' : '版本确认中')}{skill.author ? ` · ${skill.author}` : ''}</span>
-        {!isReadOnly && <button type='button' className={installed ? 'added' : 'primary'} disabled={!definitionReady || installed || saving || Boolean(sharingSkill)} onClick={() => onInstallSkill(skill)}>
+        <span className={`cc-skillhub-card-source${skill.isLocalSkill ? ' is-local' : ''}`}>{skill.sourceLabel || '在线'}</span>
+        {!isReadOnly && <button type='button' className={installed ? 'added' : 'primary'} disabled={!definitionReady || installed || unavailable || saving || Boolean(sharingSkill)} title={unavailable ? '此能力暂时不能同步' : undefined} onClick={() => onInstallSkill(skill)}>
           {installed ? <Check size={14} aria-hidden='true' /> : <Package size={14} aria-hidden='true' />}
-          {installed ? '已添加' : adding ? '添加中…' : '添加'}
+          {installed ? '已添加' : adding || sharing ? '添加中…' : '添加'}
         </button>}
       </div>
     </article>
@@ -575,18 +486,33 @@ function CustomSkills(props) {
 function CustomToolbar({ devices = [], loadingDevices, loadingLocalSkills, localSkillsPath, onCopyLocalPath, onRefreshLocal, onSelectDevice, saving, selectedBotUID, selectedDeviceID, sharingSkill }) {
   return (
     <div className='cc-skillhub-custom-toolbar'>
-      <label className='cc-skillhub-device-picker'>
+      <div className='cc-skillhub-device-picker'>
         <span>本地 XiaoBa</span>
         <select
+          className='cc-skillhub-native-select'
           value={selectedDeviceID || ''}
           disabled={loadingDevices || devices.length === 0 || Boolean(sharingSkill)}
+          tabIndex={-1}
+          aria-hidden='true'
           onChange={(event) => onSelectDevice?.(event.target.value)}
         >
           {devices.length === 0 && <option value=''>暂无支持 SkillHub 的在线设备</option>}
           {devices.length > 1 && <option value=''>请选择要操作的设备</option>}
           {devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.displayName || device.deviceId}</option>)}
         </select>
-      </label>
+        <CustomSelect
+          ariaLabel='本地 XiaoBa'
+          className='cc-skillhub-device-select'
+          density='comfortable'
+          value={selectedDeviceID || ''}
+          disabled={loadingDevices || devices.length === 0 || Boolean(sharingSkill)}
+          onValueChange={(deviceID) => onSelectDevice?.(deviceID)}
+        >
+          {devices.length === 0 && <option value=''>暂无支持 SkillHub 的在线设备</option>}
+          {devices.length > 1 && <option value=''>请选择要操作的设备</option>}
+          {devices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.displayName || device.deviceId}</option>)}
+        </CustomSelect>
+      </div>
       <div className='cc-skillhub-local-path'><FolderOpen size={15} aria-hidden='true' /><code>{localSkillsPath || '尚未读取本地 Skills 目录'}</code></div>
       <div className='cc-skillhub-local-actions'>
         <button type='button' onClick={onCopyLocalPath} disabled={!localSkillsPath}><Clipboard size={14} aria-hidden='true' /> 复制路径</button>

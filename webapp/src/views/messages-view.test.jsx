@@ -98,7 +98,7 @@ vi.mock('../widgets/chat-message', () => ({
       >
         {file?.name || 'preview'}
         {onBack && (
-          <button type="button" aria-label="返回产物列表" onClick={onBack}>
+          <button type="button" aria-label="返回云文件" onClick={onBack}>
             back
           </button>
         )}
@@ -169,7 +169,7 @@ vi.mock('../api', () => ({
     getMobileUploadSession: vi.fn(),
     getTutorialTasks: vi.fn(),
     getCloudArtifacts: vi.fn(),
-    getAgentFiles: vi.fn(),
+    getTopicFiles: vi.fn(),
     deleteCloudArtifact: vi.fn(),
     restoreCloudArtifact: vi.fn(),
   },
@@ -383,7 +383,7 @@ describe('MessagesView composer draft isolation', () => {
     api.sendMessage.mockResolvedValue({ seq_id: 100 });
     api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
-    api.getAgentFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
+    api.getTopicFiles.mockResolvedValue({ files: [], has_more: false, next_before_id: 0 });
     api.uploadFile.mockResolvedValue({
       file_key: '20260610_default.jpg',
       url: '/uploads/images/20260610_default.jpg',
@@ -2165,7 +2165,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       const artifactsTab = [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '产物');
+        .find((button) => button.textContent === '成果');
       expect(artifactsTab).not.toBeNull();
       Simulate.click(artifactsTab);
       await flushPromises();
@@ -2887,15 +2887,14 @@ describe('MessagesView composer draft isolation', () => {
     const workspace = container.querySelector('.v3-message-workspace');
     expect(workspace.className).toContain('has-preview');
     expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
-    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
-      topicId: 'p2p_1_440',
+    expect(api.getTopicFiles).toHaveBeenCalledWith('p2p_1_440', {
       beforeId: 0,
       limit: 40,
     });
 
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '产物'));
+        .find((button) => button.textContent === '成果'));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -2942,7 +2941,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '产物'));
+        .find((button) => button.textContent === '成果'));
       await flushPromises();
     });
     await act(async () => {
@@ -3023,7 +3022,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '产物'));
+        .find((button) => button.textContent === '成果'));
       await flushPromises();
     });
     await act(async () => {
@@ -3107,7 +3106,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '产物'));
+        .find((button) => button.textContent === '成果'));
       await flushPromises();
     });
     await act(async () => {
@@ -3184,7 +3183,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '产物'));
+        .find((button) => button.textContent === '成果'));
       await flushPromises();
     });
     await act(async () => {
@@ -3236,7 +3235,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       const artifactsTab = [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '产物');
+        .find((button) => button.textContent === '成果');
       expect(artifactsTab).not.toBeNull();
       Simulate.click(artifactsTab);
       await Promise.resolve();
@@ -3336,7 +3335,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       const artifactsTab = [...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '产物');
+        .find((button) => button.textContent === '成果');
       expect(artifactsTab).not.toBeNull();
       Simulate.click(artifactsTab);
       await flushPromises();
@@ -3441,7 +3440,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '产物'));
+        .find((button) => button.textContent === '成果'));
       await flushPromises();
     });
     await act(async () => {
@@ -3541,7 +3540,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '产物'));
+        .find((button) => button.textContent === '成果'));
       await flushPromises();
     });
     await act(async () => {
@@ -3560,7 +3559,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(respondToFirstSnapshot).toEqual(expect.any(Function));
 
     await act(async () => {
-      Simulate.click(container.querySelector('button[aria-label="返回产物列表"]'));
+      Simulate.click(container.querySelector('button[aria-label="返回云文件"]'));
       await flushPromises();
     });
     await act(async () => {
@@ -3669,7 +3668,7 @@ describe('MessagesView composer draft isolation', () => {
     });
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button[role="tab"]')]
-        .find((button) => button.textContent === '产物'));
+        .find((button) => button.textContent === '成果'));
       await flushPromises();
     });
     await act(async () => {
@@ -3703,7 +3702,7 @@ describe('MessagesView composer draft isolation', () => {
       size: 728341,
       topic_name: '期末材料',
     };
-    api.getAgentFiles.mockResolvedValue({
+    api.getTopicFiles.mockResolvedValue({
       files: [historicalFile],
       has_more: false,
       next_before_id: 0,
@@ -3717,8 +3716,7 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
-      topicId: 'p2p_1_440',
+    expect(api.getTopicFiles).toHaveBeenCalledWith('p2p_1_440', {
       beforeId: 0,
       limit: 40,
     });
@@ -3733,7 +3731,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(preview?.getAttribute('data-url')).toBe(historicalFile.url);
 
     await act(async () => {
-      Simulate.click(container.querySelector('button[aria-label="返回产物列表"]'));
+      Simulate.click(container.querySelector('button[aria-label="返回云文件"]'));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -3742,7 +3740,7 @@ describe('MessagesView composer draft isolation', () => {
     expect([...container.querySelectorAll('button[role="tab"]')]
       .find((button) => button.textContent === '文件')
       ?.getAttribute('aria-selected')).toBe('true');
-    expect(api.getAgentFiles).toHaveBeenCalledTimes(2);
+    expect(api.getTopicFiles).toHaveBeenCalledTimes(2);
   });
 
   it('scopes the file panel request to the current group conversation', async () => {
@@ -3756,11 +3754,29 @@ describe('MessagesView composer draft isolation', () => {
       await Promise.resolve();
     });
 
-    expect(api.getAgentFiles).toHaveBeenCalledWith(440, {
-      topicId: 'grp_80',
+    expect(api.getTopicFiles).toHaveBeenCalledWith('grp_80', {
       beforeId: 0,
       limit: 40,
     });
+  });
+
+  it('opens conversation files without an Agent and hides the results tab', async () => {
+    await mountTopic(root, 'p2p_1_2', {
+      cloudArtifactsRequest: { agentUid: 0, requestId: 1 },
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getTopicFiles).toHaveBeenCalledWith('p2p_1_2', {
+      beforeId: 0,
+      limit: 40,
+    });
+    expect(container.querySelector('.cloud-artifacts-panel')).not.toBeNull();
+    expect([...container.querySelectorAll('button[role="tab"]')].map((button) => button.textContent))
+      .toEqual(['文件']);
+    expect(api.getCloudArtifacts).not.toHaveBeenCalled();
   });
 
   it('keeps a normal text paste in the composer without starting an upload', async () => {

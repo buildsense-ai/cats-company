@@ -199,7 +199,7 @@ describe('cloud artifact action visibility', () => {
     expect(canOpenCloudArtifacts({ topicId: 'p2p_7_440', isGroup: false }, doubao)).toBe(true);
     expect(canOpenCloudArtifacts({ topicId: 'grp_8', isGroup: true }, doubao)).toBe(true);
     expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, { uid: 441 })).toBe(true);
-    expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, null)).toBe(false);
+    expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, null)).toBe(true);
     expect(canOpenCloudArtifacts(null, doubao)).toBe(false);
   });
 });
@@ -315,7 +315,7 @@ describe('LocalAssistantBar model selector', () => {
     expect(onOpenCloudArtifacts).toHaveBeenCalledTimes(1);
 
     await renderBar({ onOpenCloudArtifacts: undefined });
-    const unavailableButton = container.querySelector('button[aria-label="云文件，需要先进入 Agent 会话"]');
+    const unavailableButton = container.querySelector('button[aria-label="云文件，需要先进入聊天"]');
     expect(unavailableButton).toBeTruthy();
     expect(unavailableButton.disabled).toBe(true);
   });

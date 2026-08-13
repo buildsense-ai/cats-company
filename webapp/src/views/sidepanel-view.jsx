@@ -274,6 +274,7 @@ export default function ChatListView({
   onStartAgentTask,
   onDeleteHistoryTask,
   onOpenMobileLink,
+  onOpenSkillHub,
 }) {
   const feedback = useFeedback();
   const [chats, setChats] = useState([]);
@@ -3201,6 +3202,11 @@ export default function ChatListView({
       {showAgentStore && createPortal(
         <AgentStoreModal
           initialAgentId={agentStoreInitialAgentId}
+          onOpenSkillHub={(agentId, agent) => {
+            setShowAgentStore(false);
+            setAgentStoreInitialAgentId(null);
+            onOpenSkillHub?.(agentId, agent);
+          }}
           onClose={() => {
             setShowAgentStore(false);
             setAgentStoreInitialAgentId(null);

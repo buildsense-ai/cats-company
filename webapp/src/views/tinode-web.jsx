@@ -203,6 +203,7 @@ function TinodeWebApp() {
   const [activeView, setActiveView] = useState('chats');
   const [systemPromptDirty, setSystemPromptDirty] = useState(false);
   const [systemPromptSaving, setSystemPromptSaving] = useState(false);
+  const [skillHubInitialAgent, setSkillHubInitialAgent] = useState(null);
   const [activeTopic, _setActiveTopic] = useState(() => (
     user?.uid ? readStoredTopic(user.uid) : null
   ));
@@ -306,13 +307,13 @@ function TinodeWebApp() {
   const showCloudArtifactsAction = canOpenCloudArtifacts(activeTopic, displayedActiveAgent);
   const handleOpenCloudArtifacts = useCallback(() => {
     const agentUid = Number(displayedActiveAgent?.uid || 0);
-    if (agentUid <= 0) return;
+    if (!activeTopicId) return;
     cloudArtifactsRequestSequenceRef.current += 1;
     setCloudArtifactsRequest({
       agentUid,
       requestId: cloudArtifactsRequestSequenceRef.current,
     });
-  }, [displayedActiveAgent?.uid]);
+  }, [activeTopicId, displayedActiveAgent?.uid]);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
     appSidebarPreferredWidth,
@@ -1080,6 +1081,11 @@ function TinodeWebApp() {
             }}
             onOpenSearch={() => setSearchOpen(true)}
             onStartAgentTask={handleStartAgentTask}
+            onOpenSkillHub={(agentId, agent) => {
+              setSkillHubInitialAgent(agent || { uid: agentId, id: agentId });
+              setActiveView('skillhub');
+              setMobileSidebarOpen(false);
+            }}
             user={user}
             onlineUsers={onlineUsers}
             compact={appSidebarCollapsed}
@@ -1089,6 +1095,7 @@ function TinodeWebApp() {
                   active={activeView === 'skillhub'}
                   onClick={() => {
                     navigateFromSystemPrompt(() => {
+                      setSkillHubInitialAgent(null);
                       setActiveView('skillhub');
                       setMobileSidebarOpen(false);
                     });
@@ -1171,7 +1178,7 @@ function TinodeWebApp() {
         <div className="v3-main-body">
           <div className="v3-main-content">
             {activeView === 'skillhub' ? (
-              <SkillHubView user={user} />
+              <SkillHubView user={user} initialAgent={skillHubInitialAgent} />
             ) : activeView === 'system-prompt' ? (
               <SystemPromptView
                 user={user}
@@ -1303,8 +1310,8 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
           className="v3-action-btn v3-cloud-action"
           onClick={onOpenCloudArtifacts}
           disabled={!onOpenCloudArtifacts}
-          aria-label={onOpenCloudArtifacts ? '打开云文件' : '云文件，需要先进入 Agent 会话'}
-          title={onOpenCloudArtifacts ? '云文件' : '请先进入 Agent 会话'}
+          aria-label={onOpenCloudArtifacts ? '打开云文件' : '云文件，需要先进入聊天'}
+          title={onOpenCloudArtifacts ? '云文件' : '请先进入聊天'}
         >
           <Cloud size={17} aria-hidden="true" />
         </button>
@@ -1319,7 +1326,7 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
 export { canOpenCloudArtifacts, describeModelApplyError, describeModelConfigRequestError, resolveDisplayedActiveAgent };
 
 function canOpenCloudArtifacts(activeTopic, activeAgent) {
-  return Boolean(Number(activeAgent?.uid || 0) > 0 && activeTopic?.topicId);
+  return Boolean(activeTopic?.topicId);
 }
 
 function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft) {
@@ -1366,6 +1373,7 @@ function SidebarContent({
   onOpenSearch,
   additionalSidebarTools,
   onStartAgentTask,
+  onOpenSkillHub,
   user,
   onlineUsers,
   compact,
@@ -1378,6 +1386,7 @@ function SidebarContent({
       onOpenSearch={onOpenSearch}
       additionalSidebarTools={additionalSidebarTools}
       onStartAgentTask={onStartAgentTask}
+      onOpenSkillHub={onOpenSkillHub}
       user={user}
       onlineUsers={onlineUsers}
       compact={compact}

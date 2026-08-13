@@ -16,9 +16,14 @@ export default function CustomSelect({
   ariaLabel,
   children,
   className = '',
+  density = 'default',
   disabled = false,
+  listboxAriaLabel,
+  menuClassName = '',
   onValueChange,
+  optionClassName = '',
   placement = 'bottom',
+  triggerClassName = '',
   value,
 }) {
   const rootRef = useRef(null);
@@ -38,6 +43,7 @@ export default function CustomSelect({
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(selectedIndex);
   const [floatingStyle, setFloatingStyle] = useState(null);
+  const [floatingPlacement, setFloatingPlacement] = useState(null);
 
   const enabledIndexFrom = (startIndex, direction, includeStart = false) => {
     if (options.length === 0) return -1;
@@ -79,6 +85,7 @@ export default function CustomSelect({
   const closeList = ({ restoreFocus = false } = {}) => {
     setOpen(false);
     setFloatingStyle(null);
+    setFloatingPlacement(null);
     if (restoreFocus) triggerRef.current?.focus();
   };
 
@@ -94,12 +101,48 @@ export default function CustomSelect({
     if (nextIndex >= 0) setActiveIndex(nextIndex);
   };
 
+  const closeAndMoveFocus = (backward) => {
+    const trigger = triggerRef.current;
+    const scope = trigger?.closest('[role="dialog"]') || document;
+    const focusable = Array.from(scope.querySelectorAll([
+      'a[href]',
+      'button:not(:disabled)',
+      'input:not(:disabled)',
+      'select:not(:disabled)',
+      'textarea:not(:disabled)',
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(','))).filter((element) => (
+      !element.hidden && element.getAttribute('aria-hidden') !== 'true'
+    )).sort((left, right) => (
+      left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+    ));
+    const triggerIndex = focusable.indexOf(trigger);
+    const target = triggerIndex >= 0
+      ? focusable[triggerIndex + (backward ? -1 : 1)]
+      : null;
+
+    closeList();
+    (target || trigger)?.focus();
+  };
+
   const handleTriggerKeyDown = (event) => {
-    if (disabled || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return;
-    event.preventDefault();
-    const direction = event.key === 'ArrowDown' ? 1 : -1;
-    const nextIndex = enabledIndexFrom(selectedIndex, direction);
-    openList(nextIndex);
+    if (disabled) return;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const direction = event.key === 'ArrowDown' ? 1 : -1;
+      const nextIndex = enabledIndexFrom(selectedIndex, direction);
+      openList(nextIndex);
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      const edgeIndex = event.key === 'Home'
+        ? enabledIndexFrom(0, 1, true)
+        : enabledIndexFrom(options.length - 1, -1, true);
+      openList(edgeIndex);
+    } else if (event.key === 'Escape' && open) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeList({ restoreFocus: true });
+    }
   };
 
   const handleListKeyDown = (event) => {
@@ -120,7 +163,8 @@ export default function CustomSelect({
       event.stopPropagation();
       closeList({ restoreFocus: true });
     } else if (event.key === 'Tab') {
-      closeList({ restoreFocus: true });
+      event.preventDefault();
+      closeAndMoveFocus(event.shiftKey);
     }
   };
 
@@ -134,7 +178,9 @@ export default function CustomSelect({
     const viewportHeight = window.innerHeight;
     const availableAbove = triggerRect.top - VIEWPORT_GUTTER - FLOATING_GAP;
     const availableBelow = viewportHeight - triggerRect.bottom - VIEWPORT_GUTTER - FLOATING_GAP;
-    const measuredHeight = Math.min(list.scrollHeight || MAX_OPTIONS_HEIGHT, MAX_OPTIONS_HEIGHT);
+    const estimatedOptionHeight = density === 'comfortable' ? 36 : density === 'compact' ? 30 : 32;
+    const estimatedHeight = (options.length * estimatedOptionHeight) + 8;
+    const measuredHeight = Math.min(list.scrollHeight || estimatedHeight, MAX_OPTIONS_HEIGHT);
     const minimumUsefulHeight = Math.min(measuredHeight, 120);
     let opensAbove = placement === 'top';
 
@@ -149,7 +195,7 @@ export default function CustomSelect({
       Math.floor(opensAbove ? availableAbove : availableBelow),
     );
     const maxHeight = Math.min(MAX_OPTIONS_HEIGHT, availableHeight);
-    const renderedHeight = Math.min(list.scrollHeight || maxHeight, maxHeight);
+    const renderedHeight = Math.min(list.scrollHeight || estimatedHeight, maxHeight);
     const width = Math.min(triggerRect.width, viewportWidth - (VIEWPORT_GUTTER * 2));
     const left = Math.min(
       Math.max(triggerRect.left, VIEWPORT_GUTTER),
@@ -162,6 +208,7 @@ export default function CustomSelect({
         triggerRect.bottom + FLOATING_GAP,
       );
 
+    setFloatingPlacement(opensAbove ? 'top' : 'bottom');
     setFloatingStyle({
       left,
       maxHeight,
@@ -170,7 +217,7 @@ export default function CustomSelect({
       visibility: 'visible',
       width,
     });
-  }, [open, placement]);
+  }, [density, open, options.length, placement]);
 
   useLayoutEffect(() => {
     if (!open) return undefined;
@@ -188,10 +235,11 @@ export default function CustomSelect({
     <div
       ref={listRef}
       id={listboxID}
-      className="v3-custom-model-select-options is-portal"
+      className={`v3-custom-model-select-options is-portal is-${density}${floatingPlacement ? ` is-${floatingPlacement}` : ''} ${menuClassName}`.trim()}
       role="listbox"
-      aria-label={ariaLabel}
+      aria-label={listboxAriaLabel || ariaLabel}
       aria-activedescendant={options[activeIndex]?.id}
+      data-placement={floatingPlacement || undefined}
       tabIndex={-1}
       style={floatingStyle || {
         left: 0,
@@ -208,9 +256,10 @@ export default function CustomSelect({
           type="button"
           id={option.id}
           key={option.key}
-          className={`v3-custom-model-select-option ${index === activeIndex ? 'is-active' : ''}`}
+          className={`v3-custom-model-select-option ${optionClassName} ${index === activeIndex ? 'is-active' : ''}`.trim()}
           role="option"
           aria-selected={option.value === String(value)}
+          aria-disabled={option.disabled || undefined}
           disabled={option.disabled}
           tabIndex={-1}
           onMouseEnter={() => {
@@ -229,12 +278,12 @@ export default function CustomSelect({
   return (
     <span
       ref={rootRef}
-      className={`v3-custom-model-select-wrap is-${placement} ${className}`.trim()}
+      className={`v3-custom-model-select-wrap is-${placement} is-${density} ${className}`.trim()}
     >
       <button
         ref={triggerRef}
         type="button"
-        className="v3-custom-model-select-trigger"
+        className={`v3-custom-model-select-trigger ${triggerClassName}`.trim()}
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}

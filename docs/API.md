@@ -144,6 +144,35 @@ REST 备用通道（推荐使用 WebSocket）。
 
 获取消息历史。
 
+#### GET /api/topics/{topicId}/files?limit={n}&before_id={messageId}
+
+读取当前聊天内的文件历史，结果包含该聊天中所有发送者产生的文件，不按 Agent 或发送者过滤。
+
+- 私聊仅允许双方读取。
+- 群聊仅允许当前群成员读取。
+- `before_id` 使用消息 ID 作为稳定的向前分页游标。
+
+```json
+{
+  "topic_id": "p2p_7_440",
+  "topic_name": "项目材料",
+  "count": 1,
+  "files": [
+    {
+      "id": "820:0",
+      "name": "需求说明.pdf",
+      "url": "/uploads/files/requirements.pdf",
+      "message_id": 820,
+      "topic_id": "p2p_7_440",
+      "created_at": "2026-08-12T02:20:00Z",
+      "block_index": 0
+    }
+  ],
+  "has_more": false,
+  "next_before_id": 0
+}
+```
+
 ### 2.6 群组接口（需要鉴权）
 
 | 方法 | 路径 | 说明 | 请求体 |
@@ -274,6 +303,101 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 ```json
 { "error": "Agent 所有者未公开技能列表" }
 ```
+
+#### GET /api/agents/{agentUid}/artifacts?status={active|deleted} — 读取 Agent 成果
+
+读取当前用户有权访问的 Agent 成果。成果可携带稳定的来源任务标识 `source_topic_id`，前端可据此在“当前任务”和“全部成果”之间筛选；当旧成果列表完全没有该字段时，界面会回退到“全部”以避免误导或隐藏已有成果。
+
+```json
+{
+  "status": "active",
+  "count": 1,
+  "viewer_relation": "owner",
+  "visibility": "agent_users",
+  "can_publish": true,
+  "publish_mode": "immediate",
+  "artifacts": [
+    {
+      "id": "lesson-game",
+      "title": "课堂小游戏",
+      "kind": "html",
+      "url": "https://example.test/lesson-game/latest/",
+      "status": "active",
+      "source_title": "课堂任务",
+      "source_topic_id": "p2p_7_440",
+      "creator_type": "user",
+      "creator_uid": "7",
+      "creator_name": "成员甲",
+      "uploader_uid": "7",
+      "uploader_name": "成员甲",
+      "uploaded_by_me": true,
+      "can_delete": true,
+      "updated_at": "2026-08-12T06:00:00Z"
+    }
+  ]
+}
+```
+
+成果使用“可信成员直接发布”模型：
+
+- Agent 所有者和已添加该 Agent 的成员都可直接发布，不进入待审核状态。
+- Agent 所有者可下架任意成员发布的成果。
+- 普通成员只能下架自己发布的成果。
+- 回收站及恢复操作暂仅向 Agent 所有者开放。
+- 旧成果缺少 `uploader_uid` 时，普通成员不能管理，避免错误授权。
+- 只有成果管理服务返回 `can_publish: true` 且 `publish_mode: "immediate"` 时，客户端才展示发布入口。
+
+成果来源统一使用 `creator_type`、`creator_uid` 和 `creator_name`：
+
+- `creator_type: "user"` 表示成员上传，界面显示“我上传”或成员名称。
+- `creator_type: "agent"` 表示 Agent 生成并发布，界面显示具体 Agent 名称和“生成”。
+- `creator_type: "unknown"` 表示历史记录无法证明创建者，界面显示“来源未知”，不得自动归属给 Agent 所有者。
+- `uploader_uid`、`uploader_name` 暂时保留用于成员下架权限和旧版成果服务兼容；CatsCo 会把它们规范化为用户创建者信息。
+
+#### POST /api/agents/{agentUid}/artifacts — 直接发布 Agent 成果
+
+发布一个已上传到当前 CatsCo 实例的 HTML 网页或 ZIP 小应用。`url` 必须与当前 API 请求同源并位于 `/uploads/files/` 下，避免把任意外部地址注册为可信成果。CatsCo 根据 Bearer 登录态注入 `actor_uid`、`creator_type: "user"`、`creator_uid`、`uploader_uid` 和 `publish_mode: "immediate"`；客户端不得提交或覆盖这些身份字段。
+
+```json
+{
+  "title": "课堂网页",
+  "kind": "html",
+  "url": "https://catsco.example/uploads/files/result.html",
+  "source_title": "课堂任务",
+  "source_topic_id": "p2p_7_440"
+}
+```
+
+成功返回 `201`，成果状态立即为 `active`：
+
+```json
+{
+  "ok": true,
+  "artifact": {
+    "id": "member-result",
+    "title": "课堂网页",
+    "kind": "html",
+    "url": "https://artifacts.example.com/by-agent/440/member-result/latest/",
+    "status": "active",
+    "agent_uid": "440",
+    "creator_type": "user",
+    "creator_uid": "7",
+    "creator_name": "成员甲",
+    "uploader_uid": "7",
+    "uploader_name": "成员甲",
+    "uploaded_by_me": true,
+    "can_delete": true,
+    "created_at": "2026-08-12T07:00:00Z",
+    "updated_at": "2026-08-12T07:00:00Z"
+  }
+}
+```
+
+成果管理服务需要负责导入或注册 CatsCo 上传 URL，并返回成果节点下的最终 URL。未实现该能力时应在列表中省略 `can_publish`，CatsCo 前端不会显示失效入口。
+
+#### DELETE /api/agents/{agentUid}/artifacts/{artifactId} — 下架成果
+
+Agent 所有者可以下架任意活跃成果；普通成员仅可下架 `uploader_uid` 与当前登录用户一致的成果。服务端会再次读取并验证成果归属，不依赖客户端的 `can_delete` 字段。
 
 #### 2.8.2 管理员 Bot 管理（需要管理员鉴权）
 

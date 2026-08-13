@@ -541,12 +541,20 @@ describe('CatsCo shell styling', () => {
 
   it('keeps question navigator hover backgrounds neutral across themes', () => {
     const hoverRule = ruleFor('.cc-question-list-item:hover');
+    const activeRule = ruleFor('.cc-question-list-item.is-active');
     const activeHoverRule = ruleFor('.cc-question-list-item.is-active:hover');
+    const activeIndexRule = ruleFor('.cc-question-list-item.is-active .cc-question-list-index');
 
     expect(hoverRule).toContain('background: color-mix(in srgb, var(--cc-text) 8%, transparent);');
+    expect(activeRule).toContain('color: var(--cc-text);');
+    expect(activeRule).toContain('background: color-mix(in srgb, var(--cc-text) 8%, transparent);');
     expect(activeHoverRule).toContain('background: color-mix(in srgb, var(--cc-text) 8%, transparent);');
+    expect(activeIndexRule).toContain('color: inherit;');
+    expect(activeIndexRule).toContain('background: color-mix(in srgb, var(--cc-text) 12%, transparent);');
     expect(hoverRule).not.toContain('var(--v3-primary)');
+    expect(activeRule).not.toContain('var(--v3-primary)');
     expect(activeHoverRule).not.toContain('var(--v3-primary)');
+    expect(activeIndexRule).not.toContain('var(--v3-primary)');
   });
 
   it('keeps the light liquid composer legible with restrained focus depth', () => {
@@ -1518,19 +1526,38 @@ describe('CatsCo shell styling', () => {
   });
 
   it('uses a fixed, aligned friend search-mode listbox with neutral option feedback', () => {
-    const triggerRule = ruleFor('.oc-friend-search-mode-trigger');
+    const rowRule = ruleFor('.oc-friend-search-row');
+    const controlRule = ruleFor('.oc-friend-search-control');
+    const submitRule = ruleFor('.oc-friend-search-submit');
+    const triggerRule = ruleFor('.oc-friend-search-mode-select .v3-custom-model-select-trigger');
+    const triggerLabelRule = ruleFor('.oc-friend-search-mode-select .v3-custom-model-select-trigger > span');
+    const searchFocusRule = ruleFor('.oc-friend-search-control:focus-within');
     const menuRule = ruleFor('.oc-friend-search-mode-menu');
-    const optionRule = ruleFor('.oc-friend-search-mode-option');
-    const optionHoverRule = ruleFor('.oc-friend-search-mode-option:is(:hover, .is-active)');
+    const optionRule = ruleFor('.oc-friend-search-mode-menu .v3-custom-model-select-option');
+    const optionCheckRule = ruleFor('.oc-friend-search-mode-menu .v3-custom-model-select-option svg');
 
-    expect(triggerRule).toContain('width: 100%;');
-    expect(triggerRule).toContain('padding: 0 14px 0 10px;');
-    expect(menuRule).toContain('position: fixed;');
-    expect(menuRule).toContain('z-index: 2600;');
+    const inputFocusRule = ruleFor(
+      '.oc-friend-search-input:focus,\n.oc-friend-search-input:focus-visible',
+    );
+    expect(rowRule).toContain('align-items: stretch;');
+    expect(submitRule).toContain('min-height: 0;');
+    expect(submitRule).toContain('align-self: stretch;');
+    expect(controlRule).toContain('grid-template-columns: minmax(0, 1fr) 70px;');
+    expect(triggerRule).toContain('width: 64px;');
+    expect(triggerRule).toContain('height: 28px;');
+    expect(triggerRule).toContain('border-radius: 999px;');
+    expect(triggerRule).toContain('padding: 0;');
+    expect(triggerLabelRule).toContain('font-size: 10px;');
+    expect(inputFocusRule).toContain('outline: 0;');
+    expect(inputFocusRule).toContain('box-shadow: none;');
+    expect(searchFocusRule).toContain('border-color: var(--cc-border-strong);');
+    expect(searchFocusRule).toContain('box-shadow: none;');
+    expect(searchFocusRule).not.toContain('var(--cc-focus-ring)');
     expect(menuRule).toContain('overflow: hidden;');
-    expect(menuRule).toContain('background: var(--cc-panel-raised);');
-    expect(optionRule).toContain('min-height: 34px;');
-    expect(optionHoverRule).toContain('background: var(--cc-hover);');
+    expect(optionRule).toContain('min-height: 28px;');
+    expect(optionRule).toContain('gap: 4px;');
+    expect(optionRule).toContain('font-size: 11px;');
+    expect(optionCheckRule).toContain('width: 10px;');
   });
 
   it('reserves the friend-request empty-state height while pending requests load', () => {
@@ -1544,10 +1571,90 @@ describe('CatsCo shell styling', () => {
     expect(ruleFor('.cc-agent-role-field')).toContain('position: relative;');
     expect(ruleFor('.cc-agent-basic-card .cc-agent-role-select .v3-custom-model-select-trigger'))
       .toContain('min-height: 40px;');
-    expect(ruleFor('.cc-agent-basic-card .cc-agent-role-select .v3-custom-model-select-options'))
+    expect(ruleFor('.cc-agent-role-options'))
       .toContain('padding: 5px;');
-    expect(ruleFor('.cc-agent-basic-card .cc-agent-role-select .v3-custom-model-select-option'))
+    expect(ruleFor('.cc-agent-role-options .v3-custom-model-select-option'))
       .toContain('min-height: 36px;');
+  });
+
+  it('uses one restrained focus treatment across assistant basic fields', () => {
+    const focusRule = ruleFor(
+      '.cc-agent-basic-card input:focus,\n'
+      + '.cc-agent-basic-card input:focus-visible,\n'
+      + '.cc-agent-basic-card select:focus,\n'
+      + '.cc-agent-basic-card select:focus-visible,\n'
+      + '.cc-agent-basic-card textarea:focus,\n'
+      + '.cc-agent-basic-card textarea:focus-visible',
+    );
+
+    expect(focusRule).toContain('border-color: var(--cc-border-strong);');
+    expect(focusRule).toContain('outline: 0;');
+    expect(focusRule).toContain('box-shadow: 0 0 0 3px var(--cc-accent-soft);');
+    expect(focusRule).not.toContain('border-color: var(--cc-focus-ring);');
+  });
+
+  it('keeps assistant Skill selection in a fixed portal while only its lists scroll', () => {
+    const sectionsRule = ruleFor('.cc-agent-skill-sections');
+    const selectedListRule = ruleFor('.cc-agent-selected-skills');
+    const skillTabsRule = ruleFor('.cc-agent-skill-tabs');
+    const skillTabsThumbRule = ruleFor('.cc-agent-skill-tabs::before');
+    const skillTabButtonRule = ruleFor('.cc-agent-skill-tabs > button');
+    const availableTabRule = ruleFor(".cc-agent-skill-tabs[data-active-tab='available']::before");
+    const skillTabFocusRule = ruleFor('.cc-agent-skill-tabs > button:focus-visible');
+    const overlayRule = ruleFor('.cc-agent-skill-picker-overlay');
+    const pickerRule = ruleFor('.oc-modal.cc-agent-skill-picker');
+    const resultsRule = ruleFor('.cc-agent-skill-results');
+    const searchFocusRule = ruleFor('.cc-agent-skill-search:focus-within');
+    const recommendationRule = ruleFor('.cc-agent-skill-recommendation');
+    const recommendationEntryRule = ruleFor('.cc-agent-selected-skill.is-recommendation');
+    const recommendationStateRule = ruleFor('.cc-agent-skill-recommendation-state');
+    const recommendationAddRule = ruleFor('.cc-agent-selected-skill > .cc-agent-skill-recommendation-add');
+    const skillCardRule = ruleFor('.cc-agent-skill-card');
+    const detailOverlayRule = ruleFor('.cc-agent-skill-detail-overlay');
+    const detailDialogRule = ruleFor('.oc-modal.cc-agent-skill-detail-dialog');
+    const detailBodyRule = ruleFor('.cc-agent-skill-detail-body');
+
+    expect(sectionsRule).toContain('flex: 1 1 auto;');
+    expect(sectionsRule).toContain('overflow-y: auto;');
+    expect(sectionsRule).toContain('overscroll-behavior: contain;');
+    expect(sectionsRule).toContain('scrollbar-gutter: stable;');
+    expect(sectionsRule).toContain('scrollbar-width: thin;');
+    expect(selectedListRule).toContain('align-content: start;');
+    expect(selectedListRule).not.toContain('overflow-y: auto;');
+    expect(skillTabsRule).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));');
+    expect(skillTabsRule).toContain('border-radius: 999px;');
+    expect(skillTabsRule).toContain('width: min(100%, 180px);');
+    expect(skillTabsRule).toContain('align-self: start;');
+    expect(skillTabsRule).toContain('padding: 1px;');
+    expect(skillTabsThumbRule).toContain('background: var(--cc-selected);');
+    expect(skillTabsThumbRule).toContain('transition: transform 160ms');
+    expect(skillTabButtonRule).toContain('min-height: 22px;');
+    expect(skillTabButtonRule).toContain('font-size: 10px;');
+    expect(availableTabRule).toContain('transform: translateX(100%);');
+    expect(skillTabFocusRule).toContain('var(--cc-focus-ring)');
+    expect(overlayRule).toContain('z-index: 2300;');
+    expect(pickerRule).toContain('height: min(600px, calc(100vh - 32px));');
+    expect(pickerRule).toContain('overflow: hidden !important;');
+    expect(resultsRule).toContain('flex: 1 1 auto;');
+    expect(resultsRule).toContain('overflow-y: auto;');
+    expect(resultsRule).toContain('overscroll-behavior: contain;');
+    expect(searchFocusRule).toContain('border-color: var(--cc-border-strong);');
+    expect(searchFocusRule).toContain('box-shadow: none;');
+    expect(searchFocusRule).not.toContain('var(--cc-accent-soft)');
+    expect(skillCardRule).toContain('align-self: stretch;');
+    expect(skillCardRule).toContain('max-height: 354px;');
+    expect(skillCardRule).toContain('overflow: hidden;');
+    expect(skillCardRule).toContain('gap: 10px;');
+    expect(recommendationRule).toContain('display: grid;');
+    expect(recommendationEntryRule).toContain('grid-template-columns: minmax(0, 1fr) 30px;');
+    expect(recommendationStateRule).toContain('min-height: 54px;');
+    expect(recommendationAddRule).toContain('width: 30px;');
+    expect(recommendationAddRule).toContain('padding: 0;');
+    expect(detailOverlayRule).toContain('z-index: 2400;');
+    expect(detailDialogRule).toContain('max-height: calc(100vh - 32px);');
+    expect(detailDialogRule).toContain('overflow: hidden !important;');
+    expect(detailBodyRule).toContain('overflow-y: auto;');
+    expect(detailBodyRule).toContain('overscroll-behavior: contain;');
   });
 
   it('keeps every assistant-manager tab stable and shows four assistants before the hub grid scrolls', () => {
@@ -1581,6 +1688,36 @@ describe('CatsCo shell styling', () => {
     expect(css).toContain('grid-template-rows: minmax(0, 1fr);');
     expect(css).toContain('height: min(68svh, 620px, calc(100svh - max(76px, env(safe-area-inset-top)) - max(10px, env(safe-area-inset-bottom))));');
     expect(css).not.toContain('min-height: 380px;');
+  });
+
+  it('keeps cloud result hover feedback unified across content and actions', () => {
+    const itemRule = ruleIn(openchatCss, '.cloud-artifact-item');
+    const hoverRule = ruleIn(
+      openchatCss,
+      '.cloud-artifact-item:hover,\n.cloud-artifact-item:focus-within',
+    );
+    const mainHoverRule = ruleIn(openchatCss, '.cloud-artifact-main:hover');
+    const scopeWrapRule = ruleIn(openchatCss, '.cloud-artifacts-scope-select');
+    const scopeRule = ruleIn(openchatCss, '.cloud-artifacts-scope-select .v3-custom-model-select-trigger');
+    const scopeOptionsRule = ruleIn(openchatCss, '.cloud-artifacts-scope-options');
+    const scopeSelectedRule = ruleIn(
+      openchatCss,
+      '.cloud-artifacts-scope-options .v3-custom-model-select-option:is(:hover, .is-active)',
+    );
+
+    expect(itemRule).toContain('transition: background-color 160ms ease;');
+    expect(hoverRule).toContain('background: var(--v3-bg-message-hover);');
+    expect(mainHoverRule).toContain('background: transparent;');
+    expect(scopeWrapRule).toContain('width: 96px;');
+    expect(scopeWrapRule).toContain('min-width: 96px;');
+    expect(scopeRule).toContain('width: 100%;');
+    expect(scopeRule).toContain('border: 1px solid var(--cc-text-secondary);');
+    expect(scopeRule).toContain('background: var(--cc-panel);');
+    expect(scopeOptionsRule).toContain('min-width: 96px;');
+    expect(scopeOptionsRule).toContain('border: 1px solid var(--cc-text-secondary);');
+    expect(scopeOptionsRule).toContain('background: var(--cc-panel);');
+    expect(scopeSelectedRule).toContain('background: var(--cc-hover);');
+    expect(scopeSelectedRule).not.toContain('var(--v3-accent');
   });
 
   it('removes file preview sheet dismissal transitions for reduced motion', () => {

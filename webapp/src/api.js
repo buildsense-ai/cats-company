@@ -355,13 +355,40 @@ async function localRequest(method, path, body, options = {}) {
   }
 }
 
-async function shareLocalSkillWithCatsCo(skillName, expectedBotUid, expectedUserUid) {
-  const body = { skillName, expectedBotUid, expectedUserUid };
+async function shareLocalSkillWithCatsCo(
+  skillName,
+  expectedBotUid,
+  expectedUserUid,
+  { confirmPublish = false } = {},
+) {
+  const body = {
+    skillName,
+    expectedBotUid,
+    expectedUserUid,
+    ...(confirmPublish ? { confirmPublish: true } : {}),
+  };
   // A valid local SkillHub cookie may belong to a previously signed-in
   // CatsCo user. Always exchange the current XiaoBa CatsCo identity before
   // publishing so a stale session cannot attribute the Skill to that user.
   await localRequest('POST', '/api/skillhub/auth/catsco', {});
   return localRequest('POST', '/api/skillhub/share-local-skill', body);
+}
+
+function hasUsableLocalSkillPayload(response) {
+  const skills = Array.isArray(response) ? response : (response?.skills || []);
+  return skills.length === 0 || skills.some((skill) => (
+    skill && typeof skill === 'object' && Object.keys(skill).length > 0
+  ));
+}
+
+async function getLocalSkillsWithFallback() {
+  try {
+    const response = await localRequest('GET', '/api/store');
+    if (hasUsableLocalSkillPayload(response)) return response;
+  } catch (error) {
+    if (error?.status !== 404) throw error;
+  }
+  return localRequest('GET', '/api/skills-all');
 }
 
 function statusMessage(status) {
@@ -769,7 +796,7 @@ export const api = {
   ),
   switchLocalBot: (botUid) => localRequest('POST', '/api/cats/switch-bot', { botUid }),
   getLocalCatsStatus: () => localRequest('GET', '/api/cats/status'),
-  getLocalSkills: () => localRequest('GET', '/api/store'),
+  getLocalSkills: getLocalSkillsWithFallback,
   getLocalStatusDetails: () => localRequest('GET', '/api/status/details'),
   shareLocalSkill: shareLocalSkillWithCatsCo,
   searchSkillHubSkills: (query = '', options = {}) => {
@@ -825,6 +852,14 @@ export const api = {
       undefined,
       options,
     ),
+  publishCloudArtifact: (agentUid, artifact) =>
+    request('POST', `/api/agents/${encodeURIComponent(agentUid)}/artifacts`, artifact),
+  getTopicFiles: (topicId, { beforeId = 0, limit = 40 } = {}) => {
+    const params = new URLSearchParams();
+    params.set('limit', String(limit));
+    if (beforeId > 0) params.set('before_id', String(beforeId));
+    return request('GET', `/api/topics/${encodeURIComponent(topicId)}/files?${params.toString()}`);
+  },
   getAgentFiles: (agentUid, { topicId, beforeId = 0, limit = 40 } = {}) => {
     const params = new URLSearchParams();
     params.set('topic_id', String(topicId || ''));

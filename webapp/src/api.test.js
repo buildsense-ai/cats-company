@@ -726,6 +726,97 @@ describe('local XiaoBa SkillHub bridge', () => {
       expectedUserUid: '85',
     });
   });
+
+  test('forwards explicit confirmation when publishing a new local Skill version', async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({ authenticated: true }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        json: vi.fn().mockResolvedValue({ ok: true, skill: { id: 'owner/demo' } }),
+      });
+
+    await apiModule.api.shareLocalSkill('demo', '', '85', { confirmPublish: true });
+
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body)).toEqual({
+      skillName: 'demo',
+      expectedBotUid: '',
+      expectedUserUid: '85',
+      confirmPublish: true,
+    });
+  });
+
+  test('falls back to the compatible local Skill list when Dashboard 1.4.6 returns empty objects', async () => {
+    const skills = [{ name: 'deep-research', source: 'user' }];
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue([{}, {}]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue(skills),
+      });
+
+    await expect(apiModule.api.getLocalSkills()).resolves.toEqual(skills);
+    expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([
+      '/local-xiaoba/api/store',
+      '/local-xiaoba/api/skills-all',
+    ]);
+  });
+
+  test('keeps using the primary local Skill store when it returns named entries', async () => {
+    const skills = [{ name: 'agent-browser', source: 'user' }];
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue(skills),
+    });
+
+    await expect(apiModule.api.getLocalSkills()).resolves.toEqual(skills);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch.mock.calls[0][0]).toBe('/local-xiaoba/api/store');
+  });
+
+  test('loads all files from the current conversation without an Agent scope', async () => {
+    await apiModule.api.getTopicFiles('grp_80', {
+      beforeId: 820,
+      limit: 40,
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/topics/grp_80/files?limit=40&before_id=820',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  test('publishes an Agent result through the immediate-publish endpoint', async () => {
+    await apiModule.api.publishCloudArtifact(440, {
+      title: '课堂网页',
+      kind: 'html',
+      url: 'https://app.example/uploads/files/result.html',
+      source_topic_id: 'p2p_7_440',
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/agents/440/artifacts',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          title: '课堂网页',
+          kind: 'html',
+          url: 'https://app.example/uploads/files/result.html',
+          source_topic_id: 'p2p_7_440',
+        }),
+      }),
+    );
+  });
 });
 
 describe('upload transport', () => {

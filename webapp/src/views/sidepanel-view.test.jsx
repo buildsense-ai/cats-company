@@ -57,9 +57,10 @@ vi.mock('../widgets/friend-request', () => ({
 }));
 
 vi.mock('../widgets/agent-store-modal', () => ({
-  default: function MockAgentStoreModal({ initialAgentId, onClose }) {
+  default: function MockAgentStoreModal({ initialAgentId, onClose, onOpenSkillHub }) {
     return (
       <div data-testid="agent-store-modal" data-initial-agent-id={initialAgentId ?? ''}>
+        <button type="button" onClick={() => onOpenSkillHub?.(initialAgentId)}>管理能力</button>
         <button type="button" onClick={onClose}>关闭助手管理</button>
       </div>
     );
@@ -945,6 +946,27 @@ describe('ChatListView sidebar sections', () => {
     expect(modal).toBeTruthy();
     expect(modal.dataset.initialAgentId).toBe('42');
     expect(onStartAgentTask).not.toHaveBeenCalled();
+  });
+
+  it('forwards the managed assistant to SkillHub and closes assistant management', async () => {
+    const onOpenSkillHub = vi.fn();
+    await mount({ onOpenSkillHub });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[aria-label="Dev Agent 任务操作"]'));
+    });
+    const actionMenu = document.body.querySelector('[role="menu"][aria-label="Dev Agent 任务操作"]');
+    await act(async () => {
+      Simulate.click(Array.from(actionMenu.querySelectorAll('[role="menuitem"]'))
+        .find((item) => item.textContent.includes('管理 Agent')));
+    });
+    await act(async () => {
+      Simulate.click(Array.from(document.body.querySelectorAll('[data-testid="agent-store-modal"] button'))
+        .find((button) => button.textContent.includes('管理能力')));
+    });
+
+    expect(onOpenSkillHub).toHaveBeenCalledWith(42, undefined);
+    expect(document.body.querySelector('[data-testid="agent-store-modal"]')).toBeNull();
   });
 
   it('portals the assistant task menu, supports arrow keys, and restores focus on Escape', async () => {
@@ -3242,7 +3264,8 @@ describe('ChatListView sidebar sections', () => {
     expect(document.body.querySelector('[data-testid="agent-store-modal"]')).toBeTruthy();
 
     await act(async () => {
-      Simulate.click(document.body.querySelector('[data-testid="agent-store-modal"] button'));
+      Simulate.click(Array.from(document.body.querySelectorAll('[data-testid="agent-store-modal"] button'))
+        .find((button) => button.textContent.includes('关闭助手管理')));
     });
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="联系人更多操作"]'));
