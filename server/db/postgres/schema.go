@@ -39,6 +39,7 @@ func (a *Adapter) CreateSchema() error {
 		createCommercialPaymentEventsTable,
 		createCommercialManagedRelayBudgetsTable,
 		createCommercialOperatorEventsTable,
+		migrateCommercialRefundColumns,
 		createChannelAgentEntriesTable,
 		createChannelAgentAccessRequestsTable,
 		createChannelAgentBindingsTable,
@@ -532,6 +533,26 @@ CREATE TABLE IF NOT EXISTS commercial_quota_ledger (
     note TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+`
+
+// Keep the application-managed schema path compatible with databases created
+// before refund support. SQL migration files are not executed by CreateSchema.
+const migrateCommercialRefundColumns = `
+ALTER TABLE commercial_orders
+	ADD COLUMN IF NOT EXISTS refund_request_no VARCHAR(64) NOT NULL DEFAULT '',
+	ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ DEFAULT NULL;
+
+ALTER TABLE commercial_quota_grants
+	ADD COLUMN IF NOT EXISTS source_ref VARCHAR(128) NOT NULL DEFAULT '',
+	ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ DEFAULT NULL;
+
+UPDATE commercial_quota_grants
+SET source_ref = substring(note FROM 7)
+WHERE grant_type = 'order' AND source_ref = '' AND note LIKE 'order %';
+
+UPDATE commercial_quota_grants
+SET source_ref = substring(note FROM 8)
+WHERE grant_type = 'invite' AND source_ref = '' AND note LIKE 'invite %';
 `
 
 const createCommercialOrdersTable = `
