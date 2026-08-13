@@ -1383,6 +1383,183 @@ func TestFeishuFileMessageDeliversAttachmentBlocks(t *testing.T) {
 	}
 }
 
+func TestFeishuAudioMessageDeliversAudioBlock(t *testing.T) {
+	os.RemoveAll("uploads")
+	t.Cleanup(func() { os.RemoveAll("uploads") })
+
+	db := newChannelAgentTestStore()
+	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}
+	db.users[8] = &types.User{ID: 8, Username: channelActorUsername("feishu", "cli_app", "ou_user"), DisplayName: "Alice", AccountType: types.AccountHuman}
+	db.users[43] = &types.User{ID: 43, Username: "contract-agent", DisplayName: "Contract Agent", AccountType: types.AccountBot}
+	db.owners[43] = 7
+	db.friends[friendKey(8, 43)] = types.FriendAccepted
+	db.friends[friendKey(43, 8)] = types.FriendAccepted
+	if _, err := db.UpsertChannelAgentBinding(&types.ChannelAgentBinding{
+		Channel:                 "feishu",
+		ChannelAppID:            "cli_app",
+		ChannelUserID:           "ou_user",
+		ChannelConversationID:   "oc_chat_1",
+		ChannelConversationType: "p2p",
+		ActorUID:                8,
+		CanonicalUID:            8,
+		OwnerUID:                7,
+		AgentUID:                43,
+		Status:                  types.ChannelAgentBindingActive,
+	}); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	if _, err := db.UpsertChannelAgentRoute(&types.ChannelAgentRoute{
+		Channel:                 "feishu",
+		ChannelAppID:            "cli_app",
+		ChannelUserID:           "ou_user",
+		ChannelConversationID:   "oc_chat_1",
+		ChannelConversationType: "p2p",
+		ActorUID:                8,
+		AgentUID:                43,
+		Source:                  "test",
+	}); err != nil {
+		t.Fatalf("seed route: %v", err)
+	}
+	api := &fakeFeishuAPI{
+		appID: "cli_app",
+		media: map[string]fakeFeishuMedia{
+			"audio-key-1": {
+				ContentType: "audio/ogg",
+				Body:        "fake-ogg",
+			},
+		},
+	}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{AppID: "cli_app"}, api)
+	content, _ := json.Marshal(map[string]interface{}{
+		"file_key": "audio-key-1",
+		"duration": 1200,
+	})
+	eventBody := map[string]interface{}{
+		"schema": "2.0",
+		"header": map[string]interface{}{
+			"event_type": "im.message.receive_v1",
+			"app_id":     "cli_app",
+		},
+		"event": map[string]interface{}{
+			"sender": map[string]interface{}{
+				"sender_type": "user",
+				"sender_id": map[string]interface{}{
+					"open_id": "ou_user",
+				},
+			},
+			"message": map[string]interface{}{
+				"message_id":   "om_audio_1",
+				"chat_id":      "oc_chat_1",
+				"chat_type":    "p2p",
+				"message_type": "audio",
+				"content":      string(content),
+			},
+		},
+	}
+	body, _ := json.Marshal(eventBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/channels/feishu/events", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.HandleEvents(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(db.messages) != 1 {
+		t.Fatalf("messages=%d", len(db.messages))
+	}
+	msg := db.messages[0]
+	if msg.TopicID != "p2p_8_43" || msg.FromUID != 8 || msg.MsgType != "voice" {
+		t.Fatalf("message=%+v", msg)
+	}
+	if len(msg.ContentBlocks) != 1 || msg.ContentBlocks[0].Type != "audio" {
+		t.Fatalf("content blocks=%+v", msg.ContentBlocks)
+	}
+	payload := msg.ContentBlocks[0].Payload
+	name, _ := payload["name"].(string)
+	if payload["mime_type"] != "audio/ogg" || !strings.HasSuffix(name, ".ogg") {
+		t.Fatalf("payload=%+v", payload)
+	}
+}
+
+func TestFeishuGroupMobileAudioMessageDeliversAudioBlock(t *testing.T) {
+	os.RemoveAll("uploads")
+	t.Cleanup(func() { os.RemoveAll("uploads") })
+
+	db := newChannelAgentTestStore()
+	db.users[85] = &types.User{ID: 85, Username: "owner", DisplayName: "Owner", AccountType: types.AccountHuman}
+	db.users[453] = &types.User{ID: 453, Username: channelActorUsername("feishu", "cli_app", "ou_group_mobile"), DisplayName: "Feishu Mobile User", AccountType: types.AccountHuman}
+	db.groups[500] = &types.Group{ID: 500, Name: "Project Group", OwnerID: 85}
+	db.groupMembers[500] = map[int64]*types.GroupMember{
+		85: {GroupID: 500, UserID: 85, Role: "owner"},
+	}
+	if _, err := db.UpsertChannelGroupBinding(&types.ChannelGroupBinding{
+		Channel:                 "feishu",
+		ChannelAppID:            "cli_app",
+		ChannelUserID:           "ou_group_mobile",
+		ChannelConversationType: "p2p",
+		ActorUID:                453,
+		CanonicalUID:            85,
+		GroupID:                 500,
+		TopicID:                 "grp_500",
+		Status:                  types.ChannelAgentBindingActive,
+	}); err != nil {
+		t.Fatalf("seed group binding: %v", err)
+	}
+	api := &fakeFeishuAPI{
+		appID: "cli_app",
+		media: map[string]fakeFeishuMedia{
+			"audio-key-group": {ContentType: "audio/ogg", Body: "fake-ogg"},
+		},
+	}
+	handler := NewFeishuChannelHandler(db, nil, FeishuChannelConfig{AppID: "cli_app"}, api)
+	content, _ := json.Marshal(map[string]interface{}{
+		"file_key": "audio-key-group",
+		"duration": 1200,
+	})
+	eventBody := map[string]interface{}{
+		"schema": "2.0",
+		"header": map[string]interface{}{
+			"event_type": "im.message.receive_v1",
+			"app_id":     "cli_app",
+		},
+		"event": map[string]interface{}{
+			"sender": map[string]interface{}{
+				"sender_type": "user",
+				"sender_id":   map[string]interface{}{"open_id": "ou_group_mobile"},
+			},
+			"message": map[string]interface{}{
+				"message_id":   "om_group_audio_1",
+				"chat_id":      "oc_p2p_1",
+				"chat_type":    "p2p",
+				"message_type": "audio",
+				"content":      string(content),
+			},
+		},
+	}
+	body, _ := json.Marshal(eventBody)
+	rec := httptest.NewRecorder()
+	handler.HandleEvents(rec, httptest.NewRequest(http.MethodPost, "/api/channels/feishu/events", bytes.NewReader(body)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(db.messages) != 1 {
+		t.Fatalf("messages=%d", len(db.messages))
+	}
+	msg := db.messages[0]
+	if msg.TopicID != "grp_500" || msg.FromUID != 85 || msg.MsgType != "voice" {
+		t.Fatalf("message=%+v", msg)
+	}
+	if len(msg.ContentBlocks) != 1 || msg.ContentBlocks[0].Type != "audio" {
+		t.Fatalf("content blocks=%+v", msg.ContentBlocks)
+	}
+	payload := msg.ContentBlocks[0].Payload
+	name, _ := payload["name"].(string)
+	if payload["mime_type"] != "audio/ogg" || !strings.HasSuffix(name, ".ogg") {
+		t.Fatalf("payload=%+v", payload)
+	}
+}
+
 func TestFeishuMessageEventRequiresSelectedAgent(t *testing.T) {
 	db := newChannelAgentTestStore()
 	db.users[7] = &types.User{ID: 7, Username: "annika", DisplayName: "Annika", AccountType: types.AccountHuman}

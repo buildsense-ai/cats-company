@@ -8441,10 +8441,113 @@ html[data-theme="liquid"] :is(
   transform: scale(0.96);
 }
 
+.v3-message .oc-rich-audio {
+  width: min(390px, 100%);
+  max-width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 9px;
+  border: 1px solid var(--cc-border);
+  border-radius: 11px;
+  background: var(--cc-panel);
+  color: var(--cc-text);
+}
+
+.v3-message .oc-rich-audio:hover {
+  border-color: var(--cc-border-strong);
+  background: var(--cc-panel-raised);
+}
+
+.v3-message .oc-rich-audio-header {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.v3-message .oc-rich-audio-icon {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--cc-border);
+  border-radius: 8px;
+  background: var(--cc-control-surface);
+  color: var(--cc-text-secondary);
+}
+
+.v3-message .oc-rich-audio-name,
+.v3-message .oc-rich-audio-size {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-message .oc-rich-audio-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.v3-message .oc-rich-audio-size {
+  color: var(--cc-muted);
+  font-size: 11px;
+}
+
+.v3-message .oc-rich-audio-player {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  align-self: center;
+}
+
+.v3-message .oc-rich-audio-download {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 9px;
+  border: 1px solid var(--cc-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--cc-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: border-color 140ms ease, background-color 140ms ease, color 140ms ease;
+}
+
+.v3-message .oc-rich-audio-download:hover {
+  border-color: var(--cc-border-strong);
+  background: var(--cc-hover);
+  color: var(--cc-text);
+}
+
+.v3-message .oc-rich-audio-download:focus-visible {
+  outline: 2px solid var(--cc-focus-ring);
+  outline-offset: 2px;
+}
+
+@media (max-width: 420px) {
+  .v3-message .oc-rich-audio {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .v3-message .oc-rich-audio-download {
+    justify-self: start;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .v3-message .oc-rich-video-play,
   .oc-rich-media-preview-close,
-  .oc-rich-video-preview-close {
+  .oc-rich-video-preview-close,
+  .v3-message .oc-rich-audio-download {
     transition: none;
   }
 

@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2 } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -224,6 +224,9 @@ function contentBlockCopyText(block) {
   }
   if (block.type === 'image') {
     return `[图片] ${payload.name || payload.url || '图片'}`;
+  }
+  if (block.type === 'audio' || block.type === 'voice') {
+    return `[语音] ${payload.name || payload.url || '语音消息'}`;
   }
   return '';
 }
@@ -937,7 +940,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
   }, [effectiveWorkingMessages, storedBlocks]);
   const workingPlanComplete = isPlanComplete(latestWorkingPlan(workingBlocks));
   const richBlocks = useMemo(() => (
-    storedBlocks.filter((block) => block.type === 'image' || block.type === 'file')
+    storedBlocks.filter((block) => ['image', 'file', 'audio', 'voice'].includes(block.type))
   ), [storedBlocks]);
   const storedTextBlocks = useMemo(() => (
     storedBlocks.filter(
@@ -963,7 +966,9 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     && !message._streaming
   );
   const hasFileOnly = !hasText && richBlocks.length > 0 && richBlocks.every(
-    (block) => block.type === 'file' && !isInlineVideoFile(block.payload),
+    (block) => (block.type === 'file' || block.type === 'audio' || block.type === 'voice')
+      && !isInlineVideoFile(block.payload)
+      && !isInlineAudioFile(block.payload),
   );
 
   const parsed = useMemo(() => {
@@ -1487,6 +1492,8 @@ function RichContent({ content, onPreviewFile, activePreviewFile }) {
     case 'image':
       return <ImageContent payload={content.payload} />;
     case 'file':
+    case 'audio':
+    case 'voice':
       return <FileContent payload={content.payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
     case 'link_preview':
       return <LinkPreviewContent payload={content.payload} />;
@@ -1618,8 +1625,27 @@ const INLINE_VIDEO_MIME_TYPES = new Set([
   'video/quicktime',
 ]);
 
+const INLINE_AUDIO_EXTENSIONS = new Set(['MP3', 'OGG', 'WAV']);
+const INLINE_AUDIO_MIME_TYPES = new Set([
+  'audio/mpeg',
+  'audio/mp3',
+  'audio/ogg',
+  'audio/wav',
+  'audio/x-wav',
+]);
+
 function isInlineVideoFile(payload, ext = fileExtension(payload)) {
   return INLINE_VIDEO_EXTENSIONS.has(ext) || INLINE_VIDEO_MIME_TYPES.has(fileMimeType(payload));
+}
+
+function isInlineAudioFile(payload, ext = fileExtension(payload)) {
+  // A concrete extension is authoritative. This prevents an upstream MIME
+  // mislabel, such as .opus reported as audio/ogg, from turning an unsupported
+  // voice attachment into a broken native player. MIME remains useful only for
+  // legacy payloads with no usable file extension.
+  if (fileMimeType(payload) === 'audio/opus') return false;
+  return INLINE_AUDIO_EXTENSIONS.has(ext)
+    || (ext === 'FILE' && INLINE_AUDIO_MIME_TYPES.has(fileMimeType(payload)));
 }
 
 function isHtmlFile(payload, ext = fileExtension(payload)) {
@@ -1719,12 +1745,13 @@ function fetchableMediaURL(url) {
   }
 }
 
-function downloadableMediaURL(url, fileName) {
-  if (!url || !fileName) return url || '';
+function downloadableMediaURL(url) {
+  if (!url) return '';
   try {
     const urlObj = new URL(url, window.location.origin);
-    const mediaOrigin = new URL(resolveMediaURL('/'), window.location.origin).origin;
-    if (urlObj.origin !== mediaOrigin || !urlObj.pathname.startsWith('/uploads/files/')) {
+    const mediaBase = new URL(resolveMediaURL('/'), window.location.origin);
+    const uploadFilesPath = `${mediaBase.pathname.replace(/\/+$/, '')}/uploads/files/`;
+    if (urlObj.origin !== mediaBase.origin || !urlObj.pathname.startsWith(uploadFilesPath)) {
       return url;
     }
     urlObj.searchParams.set('download', '1');
@@ -1796,7 +1823,7 @@ export function previewFileDescriptor(payload) {
     isSameOriginRemoteArtifact,
     spreadsheetKind,
     canPreview,
-    downloadURL: downloadableMediaURL(url, payload.name),
+    downloadURL: downloadableMediaURL(url),
     sizeStr: payload.size ? formatFileSize(payload.size) : '',
     key: `${url}|${payload.name || ''}|${payload.size || ''}`,
   };
@@ -1881,7 +1908,7 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
         <FileContent
           actionRef={fallbackActionRef}
           activePreviewFile={activePreviewFile}
-          inlineVideo={false}
+          inlineMedia={false}
           onPreviewFile={onPreviewFile}
           payload={payload}
         />
@@ -1949,9 +1976,88 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
   );
 }
 
-function FileContent({ payload, onPreviewFile, activePreviewFile, inlineVideo = true, actionRef = null }) {
-  if (inlineVideo && payload && isInlineVideoFile(payload)) {
+function AudioContent({ payload, onPreviewFile, activePreviewFile }) {
+  const [playbackFailed, setPlaybackFailed] = useState(false);
+  const fallbackActionRef = useRef(null);
+  const shouldFocusFallbackRef = useRef(false);
+  const src = resolveMediaURL(payload?.url);
+  const downloadURL = downloadableMediaURL(src);
+  const sizeStr = payload?.size ? formatFileSize(payload.size) : '';
+
+  useEffect(() => {
+    setPlaybackFailed(false);
+  }, [src]);
+
+  useEffect(() => {
+    if (!playbackFailed || !shouldFocusFallbackRef.current) return;
+    fallbackActionRef.current?.focus({ preventScroll: true });
+    shouldFocusFallbackRef.current = false;
+  }, [playbackFailed]);
+
+  const handlePlaybackError = () => {
+    shouldFocusFallbackRef.current = document.activeElement instanceof HTMLElement
+      && document.activeElement.matches('audio, audio *');
+    setPlaybackFailed(true);
+  };
+
+  if (!payload || !src || playbackFailed) {
+    return (
+      <div className="oc-rich-audio-fallback">
+        {playbackFailed && (
+          <span className="oc-visually-hidden" role="status">
+            音频无法播放，已显示下载选项。
+          </span>
+        )}
+        <FileContent
+          actionRef={fallbackActionRef}
+          activePreviewFile={activePreviewFile}
+          inlineMedia={false}
+          onPreviewFile={onPreviewFile}
+          payload={payload}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="oc-rich-audio">
+      <div className="oc-rich-audio-header">
+        <span className="oc-rich-audio-icon" aria-hidden="true"><Volume2 size={17} /></span>
+        <span className="oc-rich-audio-name" title={payload.name || '语音消息'}>{payload.name || '语音消息'}</span>
+        {sizeStr && <span className="oc-rich-audio-size">{sizeStr}</span>}
+      </div>
+      <audio
+        aria-label={`播放音频 ${payload.name || ''}`.trim()}
+        className="oc-rich-audio-player"
+        controls
+        controlsList="nodownload"
+        onError={handlePlaybackError}
+        preload="metadata"
+        src={src}
+      >
+        您的浏览器暂不支持音频播放。
+      </audio>
+      <PwaDownloadLink
+        className="oc-rich-audio-download"
+        download={payload.name || true}
+        href={downloadURL || undefined}
+        rel="noopener noreferrer"
+        target="_blank"
+        title="下载音频"
+      >
+        <Download size={15} />
+        <span>下载</span>
+      </PwaDownloadLink>
+    </div>
+  );
+}
+
+function FileContent({ payload, onPreviewFile, activePreviewFile, inlineMedia = true, actionRef = null }) {
+  if (inlineMedia && payload && isInlineVideoFile(payload)) {
     return <VideoContent payload={payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
+  }
+  if (inlineMedia && payload && isInlineAudioFile(payload)) {
+    return <AudioContent payload={payload} onPreviewFile={onPreviewFile} activePreviewFile={activePreviewFile} />;
   }
   if (!payload) return null;
   const descriptor = previewFileDescriptor(payload);

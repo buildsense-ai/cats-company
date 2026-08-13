@@ -79,7 +79,8 @@ var allowedFileExts = map[string]bool{
 	".zip": true, ".rar": true, ".7z": true,
 	".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
 	".mp3": true, ".mp4": true, ".webm": true, ".ogg": true, ".ogv": true,
-	".m4v": true, ".mov": true, ".wav": true,
+	".m4v": true, ".mov": true, ".wav": true, ".amr": true, ".opus": true,
+	".aac": true, ".m4a": true, ".silk": true,
 	".csv": true, ".json": true, ".xml": true,
 	".html": true, ".htm": true,
 	".md": true, ".go": true, ".py": true, ".js": true,
@@ -514,6 +515,8 @@ func (h *UploadHandler) HandleServeFile(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("Content-Disposition", contentDispositionForUploadFile(fileName, ext, forceDownload))
 		if videoMime, ok := inlineVideoMimeType(ext); ok {
 			w.Header().Set("Content-Type", videoMime)
+		} else if audioMime, ok := inlineAudioMimeType(ext); ok {
+			w.Header().Set("Content-Type", audioMime)
 		}
 		if isHTMLUploadExtension(ext) && !forceDownload {
 			// Uploaded HTML may contain active content. Let browsers render it for
@@ -529,7 +532,7 @@ func contentDispositionForUploadFile(fileName, ext string, forceDownload bool) s
 		return "attachment"
 	}
 	disposition := "attachment"
-	if strings.EqualFold(ext, ".pdf") || isHTMLUploadExtension(ext) || isInlineVideoExt(ext) {
+	if strings.EqualFold(ext, ".pdf") || isHTMLUploadExtension(ext) || isInlineVideoExt(ext) || isInlineAudioExt(ext) {
 		disposition = "inline"
 	}
 	return fmt.Sprintf("%s; filename=%q", disposition, fileName)
@@ -555,6 +558,24 @@ func inlineVideoMimeType(ext string) (string, bool) {
 	}
 }
 
+func isInlineAudioExt(ext string) bool {
+	_, ok := inlineAudioMimeType(ext)
+	return ok
+}
+
+func inlineAudioMimeType(ext string) (string, bool) {
+	switch strings.ToLower(ext) {
+	case ".mp3":
+		return "audio/mpeg", true
+	case ".ogg":
+		return "audio/ogg", true
+	case ".wav":
+		return "audio/wav", true
+	default:
+		return "", false
+	}
+}
+
 func isHTMLUploadExtension(ext string) bool {
 	switch strings.ToLower(ext) {
 	case ".html", ".htm":
@@ -568,8 +589,15 @@ func normalizedUploadMimeType(ext, headerType string) string {
 	if videoMime, ok := inlineVideoMimeType(ext); ok {
 		return videoMime
 	}
-	if strings.EqualFold(ext, ".ogg") {
-		return "audio/ogg"
+	if audioMime, ok := inlineAudioMimeType(ext); ok {
+		return audioMime
+	}
+	// Opus is intentionally download-only in the web client. Do not let the
+	// host MIME table or an upstream audio/ogg response erase its extension
+	// distinction, otherwise the client could mistake it for a supported Ogg
+	// attachment and render a broken inline player.
+	if strings.EqualFold(ext, ".opus") {
+		return "audio/opus"
 	}
 
 	switch strings.ToLower(ext) {
@@ -581,6 +609,12 @@ func normalizedUploadMimeType(ext, headerType string) string {
 		return "application/json"
 	case ".xml":
 		return "application/xml"
+	}
+
+	// Preserve channel-provided audio types before consulting the host MIME
+	// database. Legacy formats can otherwise be mislabeled by that database.
+	if mediaType, _, err := mime.ParseMediaType(headerType); err == nil && strings.HasPrefix(strings.ToLower(mediaType), "audio/") {
+		return strings.ToLower(mediaType)
 	}
 
 	if extType := mime.TypeByExtension(strings.ToLower(ext)); extType != "" {
@@ -602,6 +636,13 @@ func normalizedUploadMetadata(ext, headerType string, file io.ReaderAt) (string,
 }
 
 func normalizedUploadExtension(ext, headerType string, file io.ReaderAt) string {
+	mediaType, _, _ := mime.ParseMediaType(headerType)
+	if strings.EqualFold(mediaType, "audio/opus") {
+		// The web client intentionally keeps Opus download-only. A channel may
+		// label such media as an Ogg file, but retaining .ogg would make the
+		// stored URL look previewable and serve it inline.
+		return ".opus"
+	}
 	if !strings.EqualFold(ext, ".ogg") {
 		return ext
 	}
