@@ -37,20 +37,6 @@ const HISTORY_AUTO_FILL_MAX_PAGES = 6;
 const STICK_TO_BOTTOM_THRESHOLD = 96;
 const QUESTION_JUMP_RELEASE_DELAY = 240;
 const PENDING_HISTORY_MATCH_CLOCK_SKEW_MS = 5 * 60 * 1000;
-const PEER_IDENTITY_CACHE_STORAGE_PREFIX = 'cc_peer_identity_v1';
-const PEER_IDENTITY_CACHE_FIELDS = [
-  'id',
-  'uid',
-  'display_name',
-  'username',
-  'avatar_url',
-  'bot',
-  'is_bot',
-  'account_type',
-  'is_owner',
-  'relation',
-  'cloud_artifacts_enabled',
-];
 const IDENTITY_TEXT_FIELDS = ['display_name', 'username', 'avatar_url', 'name'];
 const GROUP_MEMBER_REFRESH_EVENTS = new Set([
   'members_invited',
@@ -301,69 +287,6 @@ function messageActorIdentity(message) {
   return actor;
 }
 
-function identityRecordUID(record) {
-  return parseUid(record?.user_id || record?.uid || record?.id);
-}
-
-function mergeGroupMemberIdentity(cachedMembers, members) {
-  const cachedByUID = new Map(
-    (cachedMembers || [])
-      .map((member) => [identityRecordUID(member), member])
-      .filter(([uid]) => uid > 0),
-  );
-  return members.map((member) => {
-    const uid = identityRecordUID(member);
-    return mergeIdentityRecord(cachedByUID.get(uid), member);
-  });
-}
-
-function cacheGroupMemberIdentities(cache, groupID, members) {
-  if (!groupID || !Array.isArray(members)) return;
-  const key = String(groupID);
-  const identities = cache.get(key) || new Map();
-  members.forEach((member) => {
-    const uid = identityRecordUID(member);
-    if (uid > 0) identities.set(uid, mergeIdentityRecord(identities.get(uid), member));
-  });
-  cache.set(key, identities);
-}
-
-function cachedGroupMemberIdentity(cache, groupID, uid) {
-  if (!groupID || uid <= 0) return null;
-  return cache.get(String(groupID))?.get(uid) || null;
-}
-
-function peerIdentityCacheKey(userID, topic) {
-  const normalizedUserID = parseUid(userID) || String(userID || 'anonymous');
-  return `${PEER_IDENTITY_CACHE_STORAGE_PREFIX}:${normalizedUserID}:${topic}`;
-}
-
-function readPeerIdentityCache(userID, topic) {
-  if (!topic || typeof window === 'undefined') return null;
-  try {
-    const raw = window.sessionStorage?.getItem(peerIdentityCacheKey(userID, topic));
-    if (!raw) return null;
-    const profile = JSON.parse(raw);
-    return profile && typeof profile === 'object' && !Array.isArray(profile) ? profile : null;
-  } catch {
-    return null;
-  }
-}
-
-function writePeerIdentityCache(userID, topic, profile) {
-  if (!topic || !profile || typeof window === 'undefined') return;
-  const cachedProfile = {};
-  PEER_IDENTITY_CACHE_FIELDS.forEach((field) => {
-    if (profile[field] != null) cachedProfile[field] = profile[field];
-  });
-  if (!IDENTITY_TEXT_FIELDS.some((field) => hasIdentityText(cachedProfile[field]))) return;
-  try {
-    window.sessionStorage?.setItem(peerIdentityCacheKey(userID, topic), JSON.stringify(cachedProfile));
-  } catch {
-    // The current profile remains available in memory when session storage is unavailable.
-  }
-}
-
 function artifactURLsInMessage(message) {
   if (message?._streaming) return [];
   const textBlocks = Array.isArray(message?.content_blocks)
@@ -492,7 +415,6 @@ export default function MessagesView({
   const activeArtifactAgentUIDRef = useRef(0);
   const historyCacheRef = useRef(new Map());
   const groupProfileCacheRef = useRef(new Map());
-  const groupMemberIdentityCacheRef = useRef(new Map());
   const hasMoreHistoryRef = useRef(false);
   const loadingOlderRef = useRef(false);
   const activeTopicRef = useRef(topic);
@@ -825,10 +747,9 @@ export default function MessagesView({
     const cachedGroupProfile = isGroup && groupId
       ? groupProfileCacheRef.current.get(String(groupId))
       : null;
-    const cachedPeerProfile = !isGroup ? readPeerIdentityCache(user.uid, topic) : null;
     setMembers(cachedGroupProfile?.members || []);
     setGroupInfo(cachedGroupProfile?.group || null);
-    setPeerProfile(cachedPeerProfile);
+    setPeerProfile(null);
     setHistoryLoaded(Boolean(cachedHistory));
     setHistoryError('');
     setOlderHistoryError('');
@@ -921,13 +842,10 @@ export default function MessagesView({
       const res = await api.getGroupInfo(requestGroupID);
       if (requestID !== groupMembersRequestRef.current || activeTopicRef.current !== requestTopic) return;
       const cachedProfile = groupProfileCacheRef.current.get(String(requestGroupID));
-      const cachedMembers = cachedProfile?.members || [];
-      cacheGroupMemberIdentities(groupMemberIdentityCacheRef.current, requestGroupID, cachedMembers);
-      const nextMembers = Array.isArray(res.members) && res.members.length > 0
-        ? mergeGroupMemberIdentity(cachedMembers, res.members)
-        : cachedMembers;
-      cacheGroupMemberIdentities(groupMemberIdentityCacheRef.current, requestGroupID, nextMembers);
-      const nextGroup = mergeIdentityRecord(cachedProfile?.group, res.group);
+      const nextMembers = Array.isArray(res.members)
+        ? res.members
+        : (cachedProfile?.members || []);
+      const nextGroup = res.group || cachedProfile?.group || null;
       groupProfileCacheRef.current.set(String(requestGroupID), {
         members: nextMembers,
         group: nextGroup,
@@ -956,11 +874,7 @@ export default function MessagesView({
       const agentPeer = agents.find((agent) => sameUID(agent.uid || agent.id, peerId));
       const peer = agentPeer ? mergeIdentityRecord(friendPeer, agentPeer) : friendPeer;
       if (requestID !== peerProfileRequestRef.current || activeTopicRef.current !== requestTopic) return;
-      if (peer) {
-        const resolvedPeer = mergeIdentityRecord(readPeerIdentityCache(user.uid, requestTopic), peer);
-        writePeerIdentityCache(user.uid, requestTopic, resolvedPeer);
-        setPeerProfile(resolvedPeer);
-      }
+      if (peer) setPeerProfile(peer);
     } catch (e) {
     }
   };
@@ -2277,21 +2191,8 @@ export default function MessagesView({
     if (!Number.isFinite(left) || !Number.isFinite(right)) return 0;
     return left === parseUid(user.uid) ? right : left;
   }, [isGroup, topic, user.uid]);
-  const rosterPeer = useMemo(
-    () => availableAgents.find((agent) => sameUID(agent.uid || agent.id, peerUID)) || null,
-    [availableAgents, peerUID],
-  );
-  const canonicalPeerIdentity = useMemo(() => {
-    if (isGroup || peerUID <= 0) return null;
-    return messages.reduce((identity, message) => {
-      if (!sameUID(message?.from_uid, peerUID)) return identity;
-      return mergeIdentityRecord(identity, messageActorIdentity(message));
-    }, null);
-  }, [isGroup, messages, peerUID]);
-  const resolvedPeerProfile = useMemo(() => mergeIdentityRecord(
-    mergeIdentityRecord(peerProfile, rosterPeer),
-    canonicalPeerIdentity,
-  ), [canonicalPeerIdentity, peerProfile, rosterPeer]);
+  const rosterPeer = availableAgents.find((agent) => sameUID(agent.uid || agent.id, peerUID));
+  const resolvedPeerProfile = mergeIdentityRecord(peerProfile, rosterPeer);
   const peerIsBot = Boolean(rosterPeer)
     || resolvedPeerProfile?.bot === true
     || resolvedPeerProfile?.is_bot === true
@@ -2693,16 +2594,8 @@ export default function MessagesView({
       const senderUID = parseUid(msg.from_uid);
       const member = memberMap.get(senderUID);
       const rosterAgent = availableAgentByUID.get(senderUID);
-      const cachedMember = cachedGroupMemberIdentity(
-        groupMemberIdentityCacheRef.current,
-        groupId,
-        senderUID,
-      );
       const senderProfile = mergeIdentityRecord(
-        mergeIdentityRecord(
-          mergeIdentityRecord(rosterAgent, member),
-          cachedMember,
-        ),
+        mergeIdentityRecord(rosterAgent, member),
         messageActorIdentity(msg),
       );
       return {
@@ -2715,9 +2608,6 @@ export default function MessagesView({
           member?.is_bot
           || member?.account_type === 'bot'
           || rosterAgent
-          || cachedMember?.bot === true
-          || cachedMember?.is_bot === true
-          || cachedMember?.account_type === 'bot'
           || senderProfile?.bot === true
           || senderProfile?.is_bot === true
           || senderProfile?.account_type === 'bot'
@@ -2880,7 +2770,6 @@ export default function MessagesView({
     messages,
     peerIsBot,
     resolvedPeerProfile,
-    groupId,
     topic,
     topicAvatarUrl,
     topicName,
@@ -2921,10 +2810,6 @@ export default function MessagesView({
     user.account_type,
     user.uid,
   ]);
-  const runtimePlanSender = runtimePlan
-    ? getSender(runtimePlan.sourceMessage || { from_uid: runtimePlan.senderKey })
-    : null;
-
   const openTutorialTask = (task) => {
     setShowTutorialPicker(false);
     setSelectedTutorialTask(task);
@@ -3320,12 +3205,7 @@ export default function MessagesView({
           );
         })}
           {runtimePlan && !hasPersistedRuntimePlan && (
-            <RuntimePlanCard
-              plan={runtimePlan}
-              senderName={runtimePlanSender?.name}
-              senderAvatarUrl={runtimePlanSender?.avatarUrl}
-              senderIsBot={runtimePlanSender?.isBot}
-            />
+            <RuntimePlanCard plan={runtimePlan} />
           )}
           {peerTyping && (
             <div className="v3-peer-typing" role="status">
@@ -3925,11 +3805,6 @@ function runtimePlanFromMessage(data) {
     ...normalizedPlan,
     senderKey: messageSenderIdentity(data),
     turnKey: assistantReplyTurnKey(data),
-    sourceMessage: {
-      from_uid: data.from_uid ?? data.from,
-      from_name: data.from_name ?? data.from,
-      metadata: data.metadata || null,
-    },
   };
 }
 
@@ -4516,7 +4391,7 @@ function mergeAssistantDisplayMessages(sourceMessages) {
   };
 }
 
-function RuntimePlanCard({ plan, senderName = '', senderAvatarUrl = '', senderIsBot = false }) {
+function RuntimePlanCard({ plan }) {
   const [open, setOpen] = useState(false);
   const stepsID = `runtime-plan-steps-${useId().replace(/:/g, '')}`;
   if (!plan || !Array.isArray(plan.steps) || plan.steps.length === 0) return null;
@@ -4525,55 +4400,40 @@ function RuntimePlanCard({ plan, senderName = '', senderAvatarUrl = '', senderIs
   const current = plan.steps.find((step) => step.status === 'in_progress') || plan.steps.find((step) => step.status === 'pending');
 
   return (
-    <div className="v3-runtime-plan-row">
-      <div className="v3-runtime-plan-avatar-col">
-        <Avatar
-          name={senderName}
-          src={senderAvatarUrl}
-          size={36}
-          isBot={senderIsBot}
-          className={`v3-avatar ${senderIsBot ? 'bot' : ''}`}
-          style={{ borderRadius: 6 }}
-        />
-      </div>
-      <div className="v3-runtime-plan-card" role="status">
-        <div className="v3-runtime-plan-header">
-          <span className="v3-runtime-plan-name">{senderName}</span>
-        </div>
-        <button
-          className="v3-runtime-plan-toggle"
-          type="button"
-          aria-expanded={open}
-          aria-controls={stepsID}
-          onClick={() => setOpen(!open)}
+    <div className="v3-runtime-plan-card" role="status">
+      <button
+        className="v3-runtime-plan-toggle"
+        type="button"
+        aria-expanded={open}
+        aria-controls={stepsID}
+        onClick={() => setOpen(!open)}
+      >
+        {open
+          ? <ChevronDown size={14} aria-hidden="true" />
+          : <ChevronRight size={14} aria-hidden="true" />}
+        <span className="v3-runtime-plan-title">计划</span>
+        <span className="v3-runtime-plan-count">{completed}/{plan.steps.length}</span>
+        {!open && current && <span className="v3-runtime-plan-current">{current.text}</span>}
+      </button>
+      {open && (
+        <div
+          id={stepsID}
+          className="v3-runtime-plan-steps"
+          role="region"
+          aria-label="实时计划步骤"
         >
-          {open
-            ? <ChevronDown size={14} aria-hidden="true" />
-            : <ChevronRight size={14} aria-hidden="true" />}
-          <span className="v3-runtime-plan-title">计划</span>
-          <span className="v3-runtime-plan-count">{completed}/{plan.steps.length}</span>
-          {!open && current && <span className="v3-runtime-plan-current">{current.text}</span>}
-        </button>
-        {open && (
-          <div
-            id={stepsID}
-            className="v3-runtime-plan-steps"
-            role="region"
-            aria-label="实时计划步骤"
-          >
-            {plan.steps.map((step, index) => (
-              <div className={`v3-runtime-plan-step ${step.status}`} key={`${index}-${step.text}`}>
-                {step.status === 'completed'
-                  ? <CheckCircle2 size={14} />
-                  : step.status === 'in_progress'
-                    ? <CircleDot size={14} />
-                    : <Circle size={14} />}
-                <span className="v3-runtime-plan-step-text">{step.text}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+          {plan.steps.map((step, index) => (
+            <div className={`v3-runtime-plan-step ${step.status}`} key={`${index}-${step.text}`}>
+              {step.status === 'completed'
+                ? <CheckCircle2 size={14} />
+                : step.status === 'in_progress'
+                  ? <CircleDot size={14} />
+                  : <Circle size={14} />}
+              <span className="v3-runtime-plan-step-text">{step.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
