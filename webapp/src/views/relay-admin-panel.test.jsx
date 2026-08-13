@@ -48,6 +48,7 @@ describe('RelayAdminPanel', () => {
     const iframe = container.querySelector('iframe');
     expect(iframe?.getAttribute('src')).toBe('/api/admin/relay/local/usage-admin');
     expect(iframe?.getAttribute('sandbox')).toContain('allow-scripts');
+    expect(iframe?.getAttribute('sandbox')).toContain('allow-modals');
   });
 
   it('renders a close button that invokes onClose', async () => {
