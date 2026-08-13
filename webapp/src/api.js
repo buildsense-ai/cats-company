@@ -747,10 +747,19 @@ export const api = {
     'GET',
     `/api/bots/definition?uid=${encodeURIComponent(uid)}`,
   ),
+  getAgentPrompt: (uid) => request(
+    'GET',
+    `/api/agents/prompt?uid=${encodeURIComponent(uid)}`,
+  ),
   updateBotDefinitionPrompt: (uid, revision, prompt) => request(
     'PATCH',
     `/api/bots/definition/prompt?uid=${encodeURIComponent(uid)}`,
     { revision, prompt },
+  ),
+  updateBotPromptVisibility: (uid, visibility) => request(
+    'PATCH',
+    `/api/bots/definition/prompt-visibility?uid=${encodeURIComponent(uid)}`,
+    { prompt_visibility: visibility },
   ),
   getAgentSkills: (uid) => request('GET', `/api/agents/skills?uid=${encodeURIComponent(uid)}`),
   updateBotDefinitionSkills: (uid, revision, skills) => request(

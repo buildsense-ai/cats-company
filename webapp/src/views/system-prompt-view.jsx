@@ -3,16 +3,16 @@ import {
   AlertTriangle,
   Bot,
   Check,
-  CheckCircle2,
   Cloud,
+  Eye,
   FileText,
   LoaderCircle,
+  Lock,
   RefreshCw,
   Save,
 } from 'lucide-react';
 import { api } from '../api';
 import { InlineFeedback, useFeedback } from '../components/feedback-system';
-import { normalizeOwnedBots } from '../utils/owned-bots';
 import '../css/system-prompt-view.css';
 
 export const MAX_SYSTEM_PROMPT_BYTES = 1024 * 1024;
@@ -45,31 +45,43 @@ export function promptByteLength(value) {
   return unescape(encodeURIComponent(text)).length;
 }
 
-export function normalizePromptDefinition(response) {
-  const prompt = response?.definition?.prompt || {};
-  const selected = prompt.selected === 'custom' ? 'custom' : 'default';
+export function normalizePromptBots(response) {
+  const agents = Array.isArray(response) ? response : (response?.agents || []);
+  return agents.filter((agent) => (
+    agent
+    && botUID(agent) !== ''
+    && agent?.is_bot !== false
+    && agent?.isBot !== false
+  ));
+}
+
+export function normalizeAgentPrompt(response) {
+  const selected = response?.selected === 'custom' ? 'custom' : 'default';
+  const visibility = response?.promptVisibility ?? response?.prompt_visibility;
+  const promptVisibility = visibility === 'friends' ? 'friends' : 'owner';
   return {
+    ...response,
+    canEdit: (response?.canEdit ?? response?.can_edit) === true,
+    content: String(response?.content || ''),
+    contentAvailable: (response?.contentAvailable ?? response?.content_available) !== false,
+    defaultContent: String(response?.defaultContent ?? response?.default_content ?? ''),
+    defaultContentAvailable: (
+      response?.defaultContentAvailable ?? response?.default_content_available
+    ) !== false,
+    defaultSnapshot: response?.defaultSnapshot || response?.default_snapshot || null,
+    promptVisibility,
+    relation: response?.relation === 'owner' ? 'owner' : 'friend',
+    revision: Number(response?.revision || 0),
     selected,
-    customSystemPrompt: String(prompt.customSystemPrompt || ''),
   };
 }
 
-export function resolvePromptApplyState(response) {
-  if (!response?.configured) return { kind: 'unconfigured', label: '等待初始化' };
-  const revision = Number(response?.revision || 0);
-  const runtime = response?.runtime || {};
-  const attemptedRevision = Number(runtime.lastAttemptRevision || 0);
-  const appliedRevision = Number(runtime.appliedRevision || 0);
-  const hasApplicationEvidence = Boolean(
-    runtime.appliedAt || runtime.appliedKind || runtime.appliedModelId,
-  );
-  if (attemptedRevision === revision && runtime.lastError) {
-    return { kind: 'error', label: '应用失败', detail: String(runtime.lastError) };
-  }
-  if (appliedRevision === revision && (revision > 0 || hasApplicationEvidence)) {
-    return { kind: 'applied', label: '已生效', detail: runtime.appliedAt || '' };
-  }
-  return { kind: 'pending', label: '待应用' };
+export function normalizePromptDefinition(response) {
+  const prompt = response?.definition?.prompt || {};
+  return {
+    selected: prompt.selected === 'custom' ? 'custom' : 'default',
+    customSystemPrompt: String(prompt.customSystemPrompt || ''),
+  };
 }
 
 function readRememberedBotUID(userUID, storage = browserStorage()) {
@@ -93,20 +105,16 @@ function rememberBotUID(userUID, uid, storage = browserStorage()) {
   }
 }
 
-function StatusBadge({ state }) {
-  const Icon = state.kind === 'applied'
-    ? CheckCircle2
-    : state.kind === 'error'
-      ? AlertTriangle
-      : state.kind === 'pending'
-        ? Cloud
-        : LoaderCircle;
-  return (
-    <span className={`cc-system-prompt-status is-${state.kind}`} role="status">
-      <Icon size={15} aria-hidden="true" />
-      <span>{state.label}</span>
-    </span>
-  );
+function formatReportedAt(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString();
+}
+
+function relationLabel(remote) {
+  if (remote?.canEdit) return '我创建的 Agent';
+  return '联系人 Agent';
 }
 
 export default function SystemPromptView({ user, onDirtyChange, onSavingChange }) {
@@ -115,12 +123,16 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
   const [selectedBotUID, setSelectedBotUID] = useState('');
   const [loadedBotUID, setLoadedBotUID] = useState('');
   const [remote, setRemote] = useState(null);
+  const [defaultPrompt, setDefaultPrompt] = useState('');
+  const [defaultSnapshot, setDefaultSnapshot] = useState(null);
   const [mode, setMode] = useState('default');
   const [customPrompt, setCustomPrompt] = useState('');
   const [loadingBots, setLoadingBots] = useState(true);
   const [loadingPrompt, setLoadingPrompt] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [visibilitySaving, setVisibilitySaving] = useState(false);
   const [error, setError] = useState('');
+  const [errorStatus, setErrorStatus] = useState(0);
   const [conflict, setConflict] = useState(false);
   const selectedBotUIDRef = useRef('');
   const dirtyRef = useRef(false);
@@ -136,23 +148,30 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
       loadRequestRef.current += 1;
       saveRequestRef.current += 1;
     };
-  }, [onDirtyChange]);
+  }, []);
 
   useEffect(() => {
     selectedBotUIDRef.current = selectedBotUID;
   }, [selectedBotUID]);
 
-  const savedPrompt = useMemo(() => normalizePromptDefinition(remote), [remote]);
-  const dirty = Boolean(loadedBotUID && loadedBotUID === selectedBotUID) && (
-    mode !== savedPrompt.selected
-    || customPrompt !== savedPrompt.customSystemPrompt
+  const canEdit = remote?.canEdit === true;
+  const savedMode = remote?.selected || 'default';
+  const savedCustomPrompt = String(remote?.customSystemPrompt || '');
+  const dirty = Boolean(canEdit && loadedBotUID && loadedBotUID === selectedBotUID) && (
+    mode !== savedMode
+    || customPrompt !== savedCustomPrompt
   );
   const byteCount = useMemo(() => promptByteLength(customPrompt), [customPrompt]);
   const promptTooLarge = byteCount > MAX_SYSTEM_PROMPT_BYTES;
   const customPromptEmpty = mode === 'custom' && !customPrompt.trim();
   const selectedBot = bots.find((bot) => String(botUID(bot)) === selectedBotUID) || null;
-  const applyState = resolvePromptApplyState(remote);
   const ready = Boolean(selectedBotUID && loadedBotUID === selectedBotUID && remote && !loadingPrompt);
+  const busySaving = saving || visibilitySaving;
+  const displayedContent = mode === 'default' ? defaultPrompt : customPrompt;
+  const snapshotMissing = mode === 'default'
+    && (remote?.defaultContentAvailable === false
+      || !defaultSnapshot
+      || !defaultPrompt);
   dirtyRef.current = dirty;
 
   useEffect(() => {
@@ -160,20 +179,22 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
   }, [dirty, onDirtyChange]);
 
   useEffect(() => {
-    onSavingChange?.(saving);
-  }, [onSavingChange, saving]);
+    onSavingChange?.(busySaving);
+  }, [busySaving, onSavingChange]);
 
   const applyRemote = useCallback((response, botUIDValue, { preserveDraft = false } = {}) => {
-    const normalized = normalizePromptDefinition(response);
+    const normalized = normalizeAgentPrompt(response);
     remoteVersionRef.current = {
       botUID: botUIDValue,
-      revision: Number(response?.revision || 0),
+      revision: normalized.revision,
     };
-    setRemote(response);
+    setRemote(normalized);
     setLoadedBotUID(botUIDValue);
+    setDefaultPrompt(String(normalized.defaultContent || ''));
+    setDefaultSnapshot(normalized.defaultSnapshot || null);
     if (!preserveDraft) {
       setMode(normalized.selected);
-      setCustomPrompt(normalized.customSystemPrompt);
+      setCustomPrompt(normalized.customSystemPrompt || '');
     }
   }, []);
 
@@ -192,26 +213,56 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
     if (!silent) {
       setLoadingPrompt(true);
       setError('');
+      setErrorStatus(0);
     }
     try {
-      const response = await api.getBotDefinitionPrompt(requestedUID);
+      const rosterBot = bots.find((bot) => String(botUID(bot)) === requestedUID);
+      const owner = rosterBot?.relation === 'owner';
+      const [viewerResponse, ownerResponse] = await Promise.all([
+        api.getAgentPrompt(requestedUID),
+        owner
+          ? api.getBotDefinitionPrompt(requestedUID).then(
+            (response) => ({ response }),
+            (error) => ({ error }),
+          )
+          : Promise.resolve(null),
+      ]);
       if (!mountedRef.current
         || requestID !== loadRequestRef.current
         || selectedBotUIDRef.current !== requestedUID) return null;
       if (silent && dirtyRef.current) return null;
+      const viewer = normalizeAgentPrompt(viewerResponse);
+      if (ownerResponse?.error) throw ownerResponse.error;
+      const ownerPayload = ownerResponse?.response || null;
+      const ownerDefinition = ownerPayload ? normalizePromptDefinition(ownerPayload) : null;
+      const normalized = {
+        ...viewer,
+        canEdit: owner ? viewer.canEdit : false,
+        revision: owner ? Number(ownerPayload?.revision || viewer.revision || 0) : viewer.revision,
+        selected: ownerDefinition?.selected || viewer.selected,
+        customSystemPrompt: owner
+          ? ownerDefinition?.customSystemPrompt || ''
+          : (viewer.selected === 'custom' ? viewer.content : ''),
+        defaultContent: viewer.defaultContent
+          || (viewer.selected === 'default' ? viewer.content : ''),
+        defaultContentAvailable: viewer.defaultSnapshot
+          ? viewer.defaultContentAvailable
+          : (viewer.selected === 'default' ? viewer.contentAvailable : false),
+      };
       const currentVersion = remoteVersionRef.current;
       if (currentVersion.botUID === requestedUID
-        && Number(response?.revision || 0) < currentVersion.revision) return null;
-      applyRemote(response, requestedUID, options);
-      return response;
+        && normalized.revision < currentVersion.revision) return null;
+      applyRemote(normalized, requestedUID, options);
+      return normalized;
     } catch (cause) {
       if (!mountedRef.current
         || requestID !== loadRequestRef.current
         || selectedBotUIDRef.current !== requestedUID) return null;
       if (!silent) {
+        setErrorStatus(Number(cause?.status || 0));
         setError(cause?.message || (options.preserveDraft
           ? '无法读取最新云端 revision，当前草稿仍保留'
-          : '无法读取系统提示词配置'));
+          : '无法读取系统提示词'));
       }
       return null;
     } finally {
@@ -222,24 +273,28 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
         setLoadingPrompt(false);
       }
     }
-  }, [applyRemote]);
+  }, [applyRemote, bots]);
 
   useEffect(() => {
     let active = true;
     setLoadingBots(true);
-    api.getMyBots()
+    api.getAgents()
       .then((response) => {
         if (!active) return;
-        const owned = normalizeOwnedBots(response, user?.uid);
-        setBots(owned);
+        const available = normalizePromptBots(response);
+        setBots(available);
         const remembered = readRememberedBotUID(user?.uid);
-        const preferred = remembered && owned.some((bot) => String(botUID(bot)) === remembered)
+        const preferred = remembered && available.some((bot) => String(botUID(bot)) === remembered)
           ? remembered
-          : String(botUID(owned[0]) || '');
+          : String(botUID(available[0]) || '');
         selectedBotUIDRef.current = preferred;
         setSelectedBotUID(preferred);
       })
-      .catch((cause) => active && setError(cause?.message || '无法读取 Agent 列表'))
+      .catch((cause) => {
+        if (!active) return;
+        setErrorStatus(Number(cause?.status || 0));
+        setError(cause?.message || '无法读取 Agent 列表');
+      })
       .finally(() => active && setLoadingBots(false));
     return () => {
       active = false;
@@ -261,23 +316,8 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
     return () => window.removeEventListener('beforeunload', preventClose);
   }, [dirty]);
 
-  useEffect(() => {
-    if (!ready || dirty || saving || applyState.kind !== 'pending') return undefined;
-    let cancelled = false;
-    let timer = null;
-    const poll = async () => {
-      await loadPrompt(selectedBotUID, { silent: true }).catch(() => {});
-      if (!cancelled) timer = window.setTimeout(poll, 4000);
-    };
-    timer = window.setTimeout(poll, 4000);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [applyState.kind, dirty, loadPrompt, ready, saving, selectedBotUID]);
-
   const chooseBot = async (nextUID) => {
-    if (saving || nextUID === selectedBotUID) return;
+    if (busySaving || nextUID === selectedBotUID) return;
     if (dirty) {
       const confirmed = await feedback.confirm({
         title: '放弃未保存的修改？',
@@ -294,28 +334,40 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
     setSelectedBotUID(nextUID);
   };
 
+  const chooseMode = (nextMode) => {
+    if (!canEdit || busySaving || nextMode === mode) return;
+    setMode(nextMode);
+  };
+
   const save = async () => {
-    if (!ready || saving || !dirty || promptTooLarge || customPromptEmpty) return;
+    if (!ready || !canEdit || busySaving || !dirty || promptTooLarge || customPromptEmpty) return;
     const requestedUID = selectedBotUIDRef.current;
     const expectedRevision = Number(remote?.revision || 0);
-    const draft = {
-      selected: mode,
-      ...(customPrompt.trim() ? { customSystemPrompt: customPrompt } : {}),
-    };
+    const draft = mode === 'custom'
+      ? { selected: 'custom', customSystemPrompt: customPrompt }
+      : {
+        selected: 'default',
+        ...(customPrompt.trim() ? { customSystemPrompt: customPrompt } : {}),
+      };
     const requestID = saveRequestRef.current + 1;
     saveRequestRef.current = requestID;
-    // Ignore status requests that started before this newer write.
     loadRequestRef.current += 1;
     setSaving(true);
     setError('');
+    setErrorStatus(0);
     setConflict(false);
     try {
-      const response = await api.updateBotDefinitionPrompt(requestedUID, expectedRevision, draft);
+      await api.updateBotDefinitionPrompt(requestedUID, expectedRevision, draft);
       if (!mountedRef.current
         || requestID !== saveRequestRef.current
         || requestedUID !== selectedBotUIDRef.current) return;
-      applyRemote(response, requestedUID);
-      feedback.notify({ tone: 'success', message: '系统提示词已保存，正在等待 XiaoBa 应用。' });
+      const refreshed = await loadPrompt(requestedUID);
+      if (!mountedRef.current || requestID !== saveRequestRef.current) return;
+      if (refreshed) {
+        feedback.notify({ tone: 'success', message: '系统提示词已保存，XiaoBa 将在新会话中使用最新配置。' });
+      } else {
+        setError('系统提示词已保存，但暂时无法读取保存后的云端内容，请刷新重试。');
+      }
     } catch (cause) {
       if (!mountedRef.current
         || requestID !== saveRequestRef.current
@@ -328,6 +380,7 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
           ? '云端配置已被其他操作更新。你的草稿仍保留，请核对后重新保存。'
           : '云端配置已更新，但暂时无法读取最新 revision。你的草稿仍保留，请稍后重新保存。');
       } else {
+        setErrorStatus(Number(cause?.status || 0));
         setError(cause?.message || '保存系统提示词失败');
       }
     } finally {
@@ -337,6 +390,33 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
     }
   };
 
+  const updateVisibility = async (nextVisibility) => {
+    if (!ready || !canEdit || busySaving || nextVisibility === remote?.promptVisibility) return;
+    const requestedUID = selectedBotUIDRef.current;
+    setVisibilitySaving(true);
+    setError('');
+    setErrorStatus(0);
+    try {
+      await api.updateBotPromptVisibility(requestedUID, nextVisibility);
+      if (!mountedRef.current || requestedUID !== selectedBotUIDRef.current) return;
+      setRemote((current) => ({ ...current, promptVisibility: nextVisibility }));
+      feedback.notify({
+        tone: 'success',
+        message: nextVisibility === 'friends'
+          ? '好友现在可以只读查看这个 Agent 的系统提示词。'
+          : '系统提示词已改为仅自己可见。',
+      });
+    } catch (cause) {
+      if (!mountedRef.current || requestedUID !== selectedBotUIDRef.current) return;
+      setErrorStatus(Number(cause?.status || 0));
+      setError(cause?.message || '提示词可见范围保存失败');
+    } finally {
+      if (mountedRef.current) setVisibilitySaving(false);
+    }
+  };
+
+  const accessDenied = !ready && (errorStatus === 403 || errorStatus === 404);
+
   return (
     <main className="cc-system-prompt-page">
       <div className="cc-system-prompt-shell">
@@ -344,25 +424,27 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
           <div>
             <span className="cc-system-prompt-kicker"><FileText size={14} /> Agent 配置</span>
             <h1>系统提示词</h1>
-            <p>设置 Agent 在每次新会话中遵循的长期行为与工作边界。</p>
+            <p>查看 Agent 当前使用的基础提示词；只有创建者可以修改。</p>
           </div>
           <label className="cc-system-prompt-agent-picker">
             <span><Bot size={15} /> Agent</span>
             <select
               value={selectedBotUID}
-              disabled={loadingBots || saving || bots.length === 0}
+              disabled={loadingBots || busySaving || bots.length === 0}
               onChange={(event) => chooseBot(event.target.value)}
-              aria-label="选择要配置的 Agent"
+              aria-label="选择要查看的 Agent"
             >
-              {bots.length === 0 && <option value="">暂无可管理的 Agent</option>}
+              {bots.length === 0 && <option value="">暂无联系人 Agent</option>}
               {bots.map((bot) => (
-                <option key={botUID(bot)} value={String(botUID(bot))}>{botLabel(bot)}</option>
+                <option key={botUID(bot)} value={String(botUID(bot))}>
+                  {botLabel(bot)}{bot?.relation === 'friend' ? ' · 联系人' : ''}
+                </option>
               ))}
             </select>
           </label>
         </header>
 
-        {error && (
+        {error && ready && (
           <InlineFeedback tone={conflict ? 'warning' : 'error'} title={conflict ? '检测到配置冲突' : '操作未完成'}>
             {error}
           </InlineFeedback>
@@ -370,38 +452,29 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
 
         {loadingBots || loadingPrompt ? (
           <div className="cc-system-prompt-loading" role="status">
-            <LoaderCircle className="spin" size={20} /> 正在读取配置
+            <LoaderCircle className="spin" size={20} /> 正在读取系统提示词
           </div>
         ) : bots.length === 0 ? (
           <section className="cc-system-prompt-empty">
             <Bot size={24} />
-            <h2>暂无可管理的 Agent</h2>
-            <p>创建或绑定属于你的 Agent 后，即可在这里设置系统提示词。</p>
+            <h2>暂无联系人 Agent</h2>
+            <p>创建 Agent 或添加机器人好友后，即可在这里查看其系统提示词。</p>
           </section>
         ) : selectedBotUID && !ready ? (
           <section className="cc-system-prompt-empty">
-            <AlertTriangle size={24} />
-            <h2>无法读取 Agent 配置</h2>
-            <p>请检查网络连接后重试。已有云端配置不会受到影响。</p>
+            {accessDenied ? <Lock size={24} /> : <AlertTriangle size={24} />}
+            <h2>{accessDenied ? '系统提示词未向好友开放' : '无法读取系统提示词'}</h2>
+            <p>
+              {accessDenied
+                ? '该 Agent 的创建者尚未允许好友查看系统提示词。'
+                : (error || '请检查网络连接后重试。')}
+            </p>
             <button
               type="button"
               className="cc-system-prompt-refresh"
               onClick={() => loadPrompt(selectedBotUID)}
             >
               <RefreshCw size={15} /> 重试
-            </button>
-          </section>
-        ) : ready && !remote?.configured ? (
-          <section className="cc-system-prompt-empty">
-            <Cloud size={24} />
-            <h2>Agent 配置尚未初始化</h2>
-            <p>请先启动这个 Agent 的 XiaoBa，待云端配置初始化后刷新再设置系统提示词。</p>
-            <button
-              type="button"
-              className="cc-system-prompt-refresh"
-              onClick={() => loadPrompt(selectedBotUID)}
-            >
-              <RefreshCw size={15} /> 刷新
             </button>
           </section>
         ) : ready ? (
@@ -412,28 +485,61 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
                 <strong>{botLabel(selectedBot)}</strong>
               </div>
               <div>
-                <span>云端 revision</span>
-                <strong>{Number(remote?.revision || 0)}</strong>
+                <span>访问权限</span>
+                <strong className="cc-system-prompt-access">
+                  {canEdit ? <Cloud size={14} /> : <Eye size={14} />}
+                  {relationLabel(remote)}
+                </strong>
               </div>
               <div>
-                <span>运行状态</span>
-                <StatusBadge state={applyState} />
+                <span>云端 revision</span>
+                <strong>{Number(remote?.revision || 0)}</strong>
               </div>
               <button
                 type="button"
                 className="cc-system-prompt-refresh"
                 onClick={() => loadPrompt(selectedBotUID)}
-                disabled={saving || dirty}
-                title={dirty ? '请先保存或放弃当前修改' : '刷新配置'}
+                disabled={busySaving || dirty}
+                title={dirty ? '请先保存或放弃当前修改' : '刷新提示词'}
               >
                 <RefreshCw size={15} /> 刷新
               </button>
             </div>
 
-            {applyState.kind === 'error' && (
-              <InlineFeedback tone="error" title="XiaoBa 未能应用当前 revision">
-                已保留上一个可用配置。请检查 XiaoBa 运行状态后重试。
+            {!canEdit && (
+              <InlineFeedback tone="info" title="只读查看">
+                这是联系人 Agent。只有创建者可以修改提示词和可见范围。
               </InlineFeedback>
+            )}
+
+            {canEdit && (
+              <section className="cc-system-prompt-visibility" aria-labelledby="cc-system-prompt-visibility-title">
+                <div>
+                  <h2 id="cc-system-prompt-visibility-title">提示词可见范围</h2>
+                  <p>好友只能查看当前启用的正文，不能修改，也不会看到未启用的自定义提示词。</p>
+                </div>
+                <div className="cc-system-prompt-visibility-options" role="group" aria-label="提示词可见范围">
+                  <button
+                    type="button"
+                    className={remote.promptVisibility === 'owner' ? 'is-selected' : ''}
+                    aria-pressed={remote.promptVisibility === 'owner'}
+                    disabled={busySaving}
+                    onClick={() => updateVisibility('owner')}
+                  >
+                    <Lock size={15} /> 仅自己
+                  </button>
+                  <button
+                    type="button"
+                    className={remote.promptVisibility === 'friends' ? 'is-selected' : ''}
+                    aria-pressed={remote.promptVisibility === 'friends'}
+                    disabled={busySaving}
+                    onClick={() => updateVisibility('friends')}
+                  >
+                    <Eye size={15} /> 好友可查看
+                  </button>
+                  {visibilitySaving && <span role="status"><LoaderCircle className="spin" size={14} /> 保存中</span>}
+                </div>
+              </section>
             )}
 
             <div className="cc-system-prompt-mode" role="radiogroup" aria-label="系统提示词模式">
@@ -442,60 +548,88 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
                 role="radio"
                 aria-checked={mode === 'default'}
                 className={mode === 'default' ? 'active' : ''}
-                disabled={saving}
-                onClick={() => setMode('default')}
+                disabled={!canEdit || busySaving}
+                onClick={() => chooseMode('default')}
               >
                 <span className="cc-system-prompt-mode-check">{mode === 'default' && <Check size={15} />}</span>
-                <span><strong>默认提示词</strong><small>使用当前 XiaoBa 版本内置的系统提示词</small></span>
+                <span><strong>默认提示词</strong><small>当前 XiaoBa 版本上报的默认基础提示词</small></span>
               </button>
               <button
                 type="button"
                 role="radio"
                 aria-checked={mode === 'custom'}
                 className={mode === 'custom' ? 'active' : ''}
-                disabled={saving}
-                onClick={() => setMode('custom')}
+                disabled={!canEdit || busySaving}
+                onClick={() => chooseMode('custom')}
               >
                 <span className="cc-system-prompt-mode-check">{mode === 'custom' && <Check size={15} />}</span>
-                <span><strong>自定义提示词</strong><small>为这个 Agent 保存独立的纯文本或 Markdown</small></span>
+                <span><strong>自定义提示词</strong><small>由创建者为这个 Agent 设置的独立正文</small></span>
               </button>
             </div>
 
-            <div className={`cc-system-prompt-editor${mode === 'default' ? ' is-disabled' : ''}`}>
+            <div className={`cc-system-prompt-editor${canEdit && mode === 'custom' ? '' : ' is-readonly'}`}>
               <div className="cc-system-prompt-editor-heading">
-                <label htmlFor="cc-system-prompt-text">自定义内容</label>
-                <span className={promptTooLarge ? 'is-error' : ''}>
-                  {byteCount.toLocaleString()} / {MAX_SYSTEM_PROMPT_BYTES.toLocaleString()} 字节
-                </span>
+                <label htmlFor="cc-system-prompt-text">
+                  {mode === 'default' ? '默认基础提示词' : '自定义提示词'}
+                </label>
+                {canEdit && mode === 'custom' && (
+                  <span className={promptTooLarge ? 'is-error' : ''}>
+                    {byteCount.toLocaleString()} / {MAX_SYSTEM_PROMPT_BYTES.toLocaleString()} 字节
+                  </span>
+                )}
               </div>
-              <textarea
-                id="cc-system-prompt-text"
-                value={customPrompt}
-                disabled={mode === 'default' || saving}
-                onChange={(event) => setCustomPrompt(event.target.value)}
-                placeholder="输入这个 Agent 在每次新会话中都应遵循的角色、边界与工作规则..."
-                spellCheck="false"
-              />
-              {mode === 'default' && <p>当前使用 XiaoBa 内置默认提示词，自定义内容不会参与运行。</p>}
-              {customPromptEmpty && <p className="is-error">自定义模式下提示词不能为空。</p>}
-              {promptTooLarge && <p className="is-error">内容超过后端允许的 1 MiB 限制。</p>}
+
+              {snapshotMissing ? (
+                <div className="cc-system-prompt-snapshot-empty" role="status">
+                  <Cloud size={22} />
+                  <strong>默认提示词尚未同步</strong>
+                  <span>请启动或升级该 Agent 的 XiaoBa，默认基础提示词会在运行时上报到云端。</span>
+                </div>
+              ) : (
+                <textarea
+                  id="cc-system-prompt-text"
+                  value={displayedContent}
+                  readOnly={!canEdit || mode === 'default'}
+                  disabled={busySaving}
+                  onChange={(event) => setCustomPrompt(event.target.value)}
+                  placeholder={mode === 'custom' ? '输入这个 Agent 在每次新会话中都应遵循的角色、边界与工作规则...' : ''}
+                  spellCheck="false"
+                />
+              )}
+
+              {mode === 'default' && remote?.defaultSnapshot && (
+                <div className="cc-system-prompt-snapshot-meta">
+                  <span>这是默认基础提示词，不包含日期、平台和设备等运行时上下文。</span>
+                  {remote.defaultSnapshot.xiaobaVersion && <span>XiaoBa {remote.defaultSnapshot.xiaobaVersion}</span>}
+                  {remote.defaultSnapshot.runtimeVersion && <span>Runtime {remote.defaultSnapshot.runtimeVersion}</span>}
+                  {remote.defaultSnapshot.reportedAt && <span>同步于 {formatReportedAt(remote.defaultSnapshot.reportedAt)}</span>}
+                </div>
+              )}
+              {customPromptEmpty && canEdit && <p className="is-error">自定义模式下提示词不能为空。</p>}
+              {promptTooLarge && canEdit && <p className="is-error">内容超过后端允许的 1 MiB 限制。</p>}
             </div>
 
-            <footer className="cc-system-prompt-actions">
-              <div>
-                <strong>{dirty ? '有未保存的修改' : '云端配置已同步'}</strong>
-                <span>{mode === 'custom' ? '保存后由 XiaoBa 拉取并应用到新会话。' : '保存后新会话将恢复使用内置默认提示词。'}</span>
-              </div>
-              <button
-                type="button"
-                className="primary"
-                onClick={save}
-                disabled={!dirty || saving || promptTooLarge || customPromptEmpty}
-              >
-                {saving ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}
-                {saving ? '保存中' : '保存修改'}
-              </button>
-            </footer>
+            {canEdit && (
+              <footer className="cc-system-prompt-actions">
+                <div>
+                  <strong>{dirty ? '有未保存的修改' : '云端配置已同步'}</strong>
+                  <span>
+                    {mode === 'custom'
+                      ? '保存后，好友只能看到这份当前启用的正文。'
+                      : '保存后，新会话将使用 XiaoBa 上报的默认基础提示词。'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={save}
+                  disabled={!dirty || busySaving || promptTooLarge || customPromptEmpty}
+                >
+                  {saving ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}
+                  {saving ? '保存中' : '保存修改'}
+                </button>
+              </footer>
+            )}
           </section>
         ) : null}
       </div>

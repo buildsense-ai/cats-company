@@ -54,6 +54,41 @@ func TestEncodeBotDefinitionJSONPreservesUnrelatedConfiguration(t *testing.T) {
 	}
 }
 
+func TestBotDefinitionJSONRoundTripsPromptSharingState(t *testing.T) {
+	record := defaultBotDefinitionRecord(43)
+	record.PromptVisibility = types.BotPromptFriends
+	record.DefaultPrompt = &types.BotDefaultPromptSnapshot{
+		Content: "bundled prompt", ContentHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		XiaoBaVersion: "1.2.3", RuntimeVersion: "node-24", ReportedAt: "2026-08-13T00:00:00Z",
+	}
+	raw, err := EncodeBotDefinitionJSON([]byte(`{"unrelated":true}`), record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeBotDefinitionJSON(raw, 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.PromptVisibility != types.BotPromptFriends || decoded.DefaultPrompt == nil ||
+		decoded.DefaultPrompt.Content != "bundled prompt" || decoded.DefaultPrompt.XiaoBaVersion != "1.2.3" {
+		t.Fatalf("decoded=%+v", decoded)
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &root); err != nil || string(root["unrelated"]) != "true" {
+		t.Fatalf("unrelated configuration was not preserved: %s", raw)
+	}
+}
+
+func TestBotDefinitionJSONDefaultsPromptVisibilityToOwner(t *testing.T) {
+	record, err := DecodeBotDefinitionJSON([]byte(`{"bot_definition":{"schema":"xiaoba.bot-definition.v1","botId":"43","model":{"kind":"local"}}}`), 43)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.PromptVisibility != types.BotPromptOwner {
+		t.Fatalf("visibility=%q", record.PromptVisibility)
+	}
+}
+
 func TestBotDefinitionJSONPreservesSavedCustomModelAcrossCatalogSwitch(t *testing.T) {
 	record := &types.BotDefinitionRecord{
 		Definition: types.BotDefinition{

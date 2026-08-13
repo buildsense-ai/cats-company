@@ -28,6 +28,18 @@ describe('System Prompt API', () => {
     );
   });
 
+  it('reads the field-level prompt viewer response for owners and friends', async () => {
+    await api.getAgentPrompt('bot 42');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/agents/prompt?uid=bot%2042',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({ Authorization: 'Bearer owner-token' }),
+      }),
+    );
+  });
+
   it('saves Prompt with the expected whole-definition revision', async () => {
     await api.updateBotDefinitionPrompt('42', 4, {
       selected: 'custom',
@@ -44,5 +56,14 @@ describe('System Prompt API', () => {
         customSystemPrompt: 'Stay precise.',
       },
     });
+  });
+
+  it('updates prompt visibility without changing the definition revision', async () => {
+    await api.updateBotPromptVisibility('42', 'friends');
+
+    const [url, options] = global.fetch.mock.calls[0];
+    expect(url).toBe('/api/bots/definition/prompt-visibility?uid=42');
+    expect(options.method).toBe('PATCH');
+    expect(JSON.parse(options.body)).toEqual({ prompt_visibility: 'friends' });
   });
 });
