@@ -1893,13 +1893,16 @@ export default function ChatListView({
     setOpenFriendMenuId('');
     setNotificationPreferenceTopicId(topicId);
     try {
-      await api.setConversationNotificationsMuted(topicId, muted);
+      const response = await api.setConversationNotificationsMuted(topicId, muted);
+      const savedMuted = typeof response?.notifications_muted === 'boolean'
+        ? response.notifications_muted
+        : muted;
       setChats((previous) => previous.map((item) => (
-        item.id === topicId ? { ...item, notificationsMuted: muted } : item
+        item.id === topicId ? { ...item, notificationsMuted: savedMuted } : item
       )));
       feedback.notify({
         tone: 'success',
-        message: muted ? '已静音此会话' : '已开启此会话通知',
+        message: savedMuted ? '已静音此会话' : '已开启此会话通知',
       });
     } catch (err) {
       feedback.notify({

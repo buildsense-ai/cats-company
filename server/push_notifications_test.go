@@ -1121,6 +1121,49 @@ func TestPushNotificationDeadlineCoversSubscriptionLookup(t *testing.T) {
 	}
 }
 
+func TestPushNotificationCanceledContextSkipsDeliveryPredicate(t *testing.T) {
+	service := enabledPushService(&memoryPushSubscriptionStore{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	predicateCalls := 0
+
+	_, err := service.sendToUserFiltered(ctx, 15, PushNotification{Title: "title"}, func(context.Context) bool {
+		predicateCalls++
+		return true
+	}, nil)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("sendToUserFiltered error = %v, want context canceled", err)
+	}
+	if predicateCalls != 0 {
+		t.Fatalf("delivery predicate calls = %d, want 0", predicateCalls)
+	}
+}
+
+func TestExpiredQueuedPushSkipsDeliveryPredicateAndLog(t *testing.T) {
+	service := enabledPushService(&memoryPushSubscriptionStore{})
+	predicateCalls := 0
+	logs := 0
+	service.logf = func(string, ...interface{}) { logs++ }
+
+	service.deliverQueuedJob(pushDeliveryJob{
+		uid:          15,
+		notification: PushNotification{Title: "title"},
+		queuedAt:     time.Now().Add(-pushDeliveryTimeout - time.Second),
+		shouldDeliver: func(context.Context) bool {
+			predicateCalls++
+			return true
+		},
+	})
+
+	if predicateCalls != 0 {
+		t.Fatalf("delivery predicate calls = %d, want 0", predicateCalls)
+	}
+	if logs != 0 {
+		t.Fatalf("delivery logs = %d, want 0", logs)
+	}
+}
+
 func TestPushSubscriptionIDMatchesBrowserGoldenVector(t *testing.T) {
 	const endpoint = "https://push.example.test/subscription/browser-profile"
 	const want = "WUIrC4yppUY8v9TxFnhjVvwOgkISFt0ZOdGvyL0nals"

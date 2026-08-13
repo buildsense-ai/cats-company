@@ -687,6 +687,9 @@ func (s *PushNotificationService) sendToUserFiltered(ctx context.Context, uid in
 	if uid <= 0 {
 		return result, errors.New("invalid push notification uid")
 	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	if shouldDeliver != nil && !shouldDeliver(ctx) {
 		return result, nil
 	}
@@ -806,13 +809,20 @@ func (s *PushNotificationService) runDeliveryWorkers() {
 	for range maxConcurrentPushDeliveries {
 		go func() {
 			for job := range s.deliveryQueue {
-				ctx, cancel := context.WithDeadline(context.Background(), job.queuedAt.Add(pushDeliveryTimeout))
-				if _, err := s.sendToUserFiltered(ctx, job.uid, job.notification, job.shouldDeliver, job.shouldSendToDevice); err != nil {
-					s.logf("send offline push: uid=%d err=%v", job.uid, err)
-				}
-				cancel()
+				s.deliverQueuedJob(job)
 			}
 		}()
+	}
+}
+
+func (s *PushNotificationService) deliverQueuedJob(job pushDeliveryJob) {
+	ctx, cancel := context.WithDeadline(context.Background(), job.queuedAt.Add(pushDeliveryTimeout))
+	defer cancel()
+	if ctx.Err() != nil {
+		return
+	}
+	if _, err := s.sendToUserFiltered(ctx, job.uid, job.notification, job.shouldDeliver, job.shouldSendToDevice); err != nil {
+		s.logf("send offline push: uid=%d err=%v", job.uid, err)
 	}
 }
 

@@ -3868,7 +3868,7 @@ describe('ChatListView sidebar sections', () => {
     expect(offlineAgentTask?.querySelector('.cc-task-agent-icon.offline')?.getAttribute('title')).toBe('0/2 个 Agent 在线');
   });
 
-  it('mutes a contact conversation and reflects the saved state in its menu and row', async () => {
+  it('uses the server-returned mute state for a contact conversation', async () => {
     api.getConversations.mockResolvedValue({
       conversations: [{
         id: 'p2p_7_8',
@@ -3884,7 +3884,7 @@ describe('ChatListView sidebar sections', () => {
     api.getAgents.mockResolvedValue({ agents: [] });
     api.setConversationNotificationsMuted.mockResolvedValue({
       topic_id: 'p2p_7_8',
-      notifications_muted: true,
+      notifications_muted: false,
     });
 
     await mount();
@@ -3901,11 +3901,11 @@ describe('ChatListView sidebar sections', () => {
     });
 
     expect(api.setConversationNotificationsMuted).toHaveBeenCalledWith('p2p_7_8', true);
-    expect(container.querySelector('[aria-label="Alice 已静音"]')).toBeTruthy();
+    expect(container.querySelector('[aria-label="Alice 已静音"]')).toBeFalsy();
 
     await act(async () => {
       Simulate.click(container.querySelector('[aria-label="Alice 联系人操作"]'));
     });
-    expect(container.querySelector('[aria-label="开启此会话通知 Alice"]')).toBeTruthy();
+    expect(container.querySelector('[aria-label="静音此会话 Alice"]')).toBeTruthy();
   });
 });
