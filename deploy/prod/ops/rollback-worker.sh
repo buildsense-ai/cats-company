@@ -36,8 +36,11 @@ done
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
 PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
 STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
-# SSH 跳板（ProxyJump）：SSH config 别名或 user@host；空 = 直连公网 IP
-JUMP_HOST="${CTYUN_JUMP_HOST:-}"
+# SSH 跳板（NAT 架构）：凭据一律来自服务器环境变量，仓库不硬编码任何 IP/密钥。
+JUMP_IP="${CTYUN_JUMP_IP:-}"
+JUMP_PORT="${CTYUN_JUMP_PORT:-22}"
+JUMP_USER="${CTYUN_JUMP_USER:-root}"
+JUMP_KEY="${CTYUN_JUMP_KEY:-/var/lib/catsco-worker/jump_host_ed25519}"
 
 # --- 校验 ---
 if [[ -z "$NAME" ]]; then
@@ -97,7 +100,9 @@ PRIVATE_KEY="$STATE_DIR/id_rsa"
 ssh_opts=(-i "$PRIVATE_KEY" -o BatchMode=yes -o ConnectTimeout=10 \
   -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
   -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$STATE_DIR/known_hosts")
-[[ -n "$JUMP_HOST" ]] && ssh_opts+=(-J "$JUMP_HOST")
+if [[ -n "$JUMP_IP" ]]; then
+  ssh_opts+=(-o "ProxyCommand=ssh -i ${JUMP_KEY} -p ${JUMP_PORT} -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${STATE_DIR}/jump_known_hosts -W %h:%p ${JUMP_USER}@${JUMP_IP}")
+fi
 ssh_run() {
   timeout -s TERM -k 15 60s ssh "${ssh_opts[@]}" "$@"
 }
