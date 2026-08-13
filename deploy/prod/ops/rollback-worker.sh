@@ -36,6 +36,8 @@ done
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
 PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
 STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+# SSH 跳板（ProxyJump）：SSH config 别名或 user@host；空 = 直连公网 IP
+JUMP_HOST="${CTYUN_JUMP_HOST:-}"
 
 # --- 校验 ---
 if [[ -z "$NAME" ]]; then
@@ -86,14 +88,16 @@ find_instance() {
 # --- 1. 找实例 + IP ---
 inst="$(find_instance "$INSTANCE_NAME")"
 [[ -n "$inst" ]] || { echo "error: instance worker-${NAME} not found" >&2; exit 1; }
-INSTANCE_IP="$(jq -r '.floatingIP // .publicIP // ""' <<<"$inst")"
-[[ -n "$INSTANCE_IP" ]] || { echo "error: instance has no public IP" >&2; exit 1; }
+# 内网模式：fixedIPList[0] 是 VPC 内网 IP；公网模式回退 floatingIP
+INSTANCE_IP="$(jq -r '(.fixedIPList[0] // .privateIP // .floatingIP // .publicIP // "")' <<<"$inst")"
+[[ -n "$INSTANCE_IP" ]] || { echo "error: instance has no IP" >&2; exit 1; }
 PRIVATE_KEY="$STATE_DIR/id_rsa"
 [[ -f "$PRIVATE_KEY" ]] || { echo "error: private key not found at $PRIVATE_KEY (was the worker provisioned here?)" >&2; exit 1; }
 
 ssh_opts=(-i "$PRIVATE_KEY" -o BatchMode=yes -o ConnectTimeout=10 \
   -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
   -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$STATE_DIR/known_hosts")
+[[ -n "$JUMP_HOST" ]] && ssh_opts+=(-J "$JUMP_HOST")
 ssh_run() {
   timeout -s TERM -k 15 60s ssh "${ssh_opts[@]}" "$@"
 }
