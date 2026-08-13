@@ -1,0 +1,42 @@
+package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestStaticRoutesServeAuthenticationPathsAsSPA(t *testing.T) {
+	staticDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("CatsCo application shell"), 0o644); err != nil {
+		t.Fatalf("write index.html: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerStaticRoutes(mux, staticDir)
+
+	for _, path := range []string{
+		"/e/invite-1",
+		"/mobile-upload/session-1",
+		"/login?next=%2Fe%2Finvite-1",
+		"/login/",
+		"/register",
+		"/register/",
+		"/reset-password",
+		"/reset-password/",
+	} {
+		t.Run(path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("GET %s status = %d, want %d", path, recorder.Code, http.StatusOK)
+			}
+			if body := recorder.Body.String(); body != "CatsCo application shell" {
+				t.Fatalf("GET %s body = %q, want application shell", path, body)
+			}
+		})
+	}
+}

@@ -204,6 +204,34 @@ func limitHTTPMethod(method string, middleware func(http.HandlerFunc) http.Handl
 	}
 }
 
+func registerStaticRoutes(mux *http.ServeMux, staticDir string) {
+	if staticDir == "" {
+		return
+	}
+
+	fs := http.FileServer(http.Dir(staticDir))
+	serveSPAIndex := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			server.WriteJSONPublic(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		http.ServeFile(w, r, filepath.Join(staticDir, "index.html"))
+	}
+	for _, path := range []string{
+		"/e/",
+		"/mobile-upload/",
+		"/login",
+		"/login/",
+		"/register",
+		"/register/",
+		"/reset-password",
+		"/reset-password/",
+	} {
+		mux.HandleFunc(path, serveSPAIndex)
+	}
+	mux.Handle("/", fs)
+}
+
 func useRedisRuntime(cfg RuntimeConfig) bool {
 	store := strings.ToLower(strings.TrimSpace(cfg.Store))
 	return store == "redis" || (store == "" && strings.TrimSpace(cfg.RedisURL) != "")
@@ -795,19 +823,7 @@ func main() {
 	})
 
 	// Static files
-	if cfg.Static.Dir != "" {
-		fs := http.FileServer(http.Dir(cfg.Static.Dir))
-		serveSPAIndex := func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet {
-				server.WriteJSONPublic(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-				return
-			}
-			http.ServeFile(w, r, filepath.Join(cfg.Static.Dir, "index.html"))
-		}
-		mux.HandleFunc("/e/", serveSPAIndex)
-		mux.HandleFunc("/mobile-upload/", serveSPAIndex)
-		mux.Handle("/", fs)
-	}
+	registerStaticRoutes(mux, cfg.Static.Dir)
 
 	// Start HTTP server
 	// Note: no ReadTimeout/WriteTimeout here — WebSocket connections are long-lived.

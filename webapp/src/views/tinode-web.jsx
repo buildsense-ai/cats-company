@@ -66,6 +66,13 @@ import {
   syncThemeColor,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
+import {
+  authModeForPathname,
+  authPathForMode,
+  authenticationRedirectPath,
+  navigateBrowserPath,
+  postAuthenticationPathFromSearch,
+} from '../utils/auth-routes';
 import { Cloud, Download, FileText, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
@@ -177,27 +184,29 @@ function findConnectedLocalAgent(agents) {
   return (agents || []).find((agent) => agent.relation === 'owner' && agent.is_online);
 }
 
-export default function TinodeWeb() {
-  const mobileUploadMatch = window.location.pathname.match(/^\/mobile-upload\/([^/]+)$/);
+export default function TinodeWeb({ location = window.location } = {}) {
+  const { pathname = '/', search = '' } = location;
+  const mobileUploadMatch = pathname.match(/^\/mobile-upload\/([^/]+)$/);
   if (mobileUploadMatch) {
     return <MobileUploadView sessionId={decodeURIComponent(mobileUploadMatch[1])} />;
   }
 
-  const demoParams = new URLSearchParams(window.location.search);
+  const demoParams = new URLSearchParams(search);
   const showWorkflowDemo = demoParams.get('workflow_demo') === '1';
   if (showWorkflowDemo) {
     return <WorkflowRichMediaDemo />;
   }
 
-  return <TinodeWebApp />;
+  return <TinodeWebApp location={location} />;
 }
 
-function TinodeWebApp() {
+function TinodeWebApp({ location }) {
   const feedback = useFeedback();
-  const entryMatch = window.location.pathname.match(/^\/e\/([^/]+)$/);
+  const { pathname = '/', search = '', hash = '' } = location;
+  const entryMatch = pathname.match(/^\/e\/([^/]+)$/);
   const entrySceneKey = entryMatch ? decodeURIComponent(entryMatch[1]) : '';
-  const channelDeviceLink = window.location.pathname === '/channel-device-link';
-  const channelAccountLink = window.location.pathname === '/channel-account-link';
+  const channelDeviceLink = pathname === '/channel-device-link';
+  const channelAccountLink = pathname === '/channel-account-link';
   const [user, setUser] = useState(() => getInitialUser());
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
   const [activeView, setActiveView] = useState('chats');
@@ -243,7 +252,7 @@ function TinodeWebApp() {
     navigate();
     return true;
   }, [activeView, feedback, systemPromptDirty, systemPromptSaving]);
-  const [authMode, setAuthMode] = useState('login');
+  const authMode = authModeForPathname(pathname);
   const [onlineUsers, setOnlineUsers] = useState({});
   const [wsStatus, setWsStatus] = useState(user ? 'connecting' : 'disconnected');
   const [showProfileEditor, setShowProfileEditor] = useState(false);
@@ -256,13 +265,27 @@ function TinodeWebApp() {
   const [showRelayModal, setShowRelayModal] = useState(false);
   const [relayAdminAllowed, setRelayAdminAllowed] = useState(false);
   const [relayAdminOpen, setRelayAdminOpen] = useState(false);
+
+  useEffect(() => {
+    const redirectPath = authenticationRedirectPath({
+      authenticated: Boolean(user),
+      location: { pathname, search, hash },
+    });
+    if (redirectPath) navigateBrowserPath(redirectPath, { replace: true });
+  }, [hash, pathname, search, user]);
+
+  const navigateToAuthMode = useCallback((mode) => {
+    navigateBrowserPath(authPathForMode(mode, postAuthenticationPathFromSearch(search)));
+  }, [search]);
+
   useEffect(() => {
     let cancelled = false;
+    if (!user) return undefined;
     api.getRelayAdminAccess()
       .then((res) => { if (!cancelled) setRelayAdminAllowed(Boolean(res?.allowed)); })
       .catch(() => { /* non-whitelisted users just see no button */ });
     return () => { cancelled = true; };
-  }, []);
+  }, [user?.uid]);
   const [cloudArtifactsRequest, setCloudArtifactsRequest] = useState(null);
   const cloudArtifactsRequestSequenceRef = useRef(0);
   const [managedGroup, setManagedGroup] = useState(null);
@@ -556,6 +579,7 @@ function TinodeWebApp() {
     setTaskDraft(null);
     setActiveView('chats');
     setActiveTopic(null);
+    navigateBrowserPath('/login', { replace: true });
   }, [setActiveTopic]);
 
   // WebSocket message handler
@@ -762,7 +786,7 @@ function TinodeWebApp() {
   useEffect(() => {
     if (!user?.uid) return;
 
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(search);
     if (params.get('relay_login') !== '1') return;
 
     let cancelled = false;
@@ -770,7 +794,7 @@ function TinodeWebApp() {
       params.delete('relay_login');
       const nextSearch = params.toString();
       const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
-      window.history.replaceState(null, '', nextUrl);
+      navigateBrowserPath(nextUrl, { replace: true });
       setShowRelayModal(true);
     };
 
@@ -792,12 +816,13 @@ function TinodeWebApp() {
     return () => {
       cancelled = true;
     };
-  }, [user?.uid]);
+  }, [search, user?.uid]);
 
   const handleLogin = async (account, password) => {
     const res = await api.login({ account, password });
     setToken(res.token);
     persistUser(normalizeUserProfile(res));
+    navigateBrowserPath(postAuthenticationPathFromSearch(search), { replace: true });
   };
 
   const handleRegister = async (email, password, loginName, code) => {
@@ -992,7 +1017,15 @@ function TinodeWebApp() {
   }
 
   if (!user) {
-    return <AuthView mode={authMode} setMode={setAuthMode} onLogin={handleLogin} onRegister={handleRegister} />;
+    return (
+      <AuthView
+        mode={authMode}
+        nextPath={postAuthenticationPathFromSearch(search)}
+        onNavigate={navigateToAuthMode}
+        onLogin={handleLogin}
+        onRegister={handleRegister}
+      />
+    );
   }
 
   if (entrySceneKey) {
@@ -1492,7 +1525,7 @@ function formatAuthError(message) {
   return message || '操作失败，请稍后再试';
 }
 
-function AuthView({ mode, setMode, onLogin, onRegister }) {
+export function AuthView({ mode, nextPath = '/', onNavigate, onLogin, onRegister }) {
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -1549,6 +1582,15 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
     </div>
   );
 
+  const authPath = (nextMode) => authPathForMode(nextMode, nextPath);
+  const handleAuthLink = (event, nextMode) => {
+    if (event.defaultPrevented || event.button !== 0
+      || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey
+      || typeof onNavigate !== 'function') return;
+    event.preventDefault();
+    onNavigate?.(nextMode);
+  };
+
   if (mode === 'reset') {
     return authShell(
       <div className="oc-auth-card">
@@ -1558,7 +1600,10 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
         </div>
         <PasswordResetForm />
         <div className="oc-auth-link">
-          <span>想起密码了？<a href="#" onClick={(e) => { e.preventDefault(); setMode('login'); }}>返回登录</a></span>
+          <span>
+            想起密码了？
+            <a href={authPath('login')} onClick={(event) => handleAuthLink(event, 'login')}>返回登录</a>
+          </span>
         </div>
       </div>
     );
@@ -1653,13 +1698,19 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
       <div className="oc-auth-link">
         {mode === 'login' ? (
           <>
-            <span>还没有账号？<a href="#" onClick={(e) => { e.preventDefault(); setMode('register'); }}>立即注册</a></span>
+            <span>
+              还没有账号？
+              <a href={authPath('register')} onClick={(event) => handleAuthLink(event, 'register')}>立即注册</a>
+            </span>
             <span style={{ marginLeft: 12 }}>
-              <a href="#" onClick={(e) => { e.preventDefault(); setMode('reset'); }}>忘记密码？</a>
+              <a href={authPath('reset')} onClick={(event) => handleAuthLink(event, 'reset')}>忘记密码？</a>
             </span>
           </>
         ) : (
-          <span>已有账号？<a href="#" onClick={(e) => { e.preventDefault(); setMode('login'); }}>立即登录</a></span>
+          <span>
+            已有账号？
+            <a href={authPath('login')} onClick={(event) => handleAuthLink(event, 'login')}>立即登录</a>
+          </span>
         )}
       </div>
     </form>
