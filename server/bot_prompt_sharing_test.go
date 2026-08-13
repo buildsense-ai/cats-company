@@ -207,7 +207,7 @@ func TestHandleRuntimeDefaultPromptValidatesHashAndDeduplicates(t *testing.T) {
 }
 
 func TestHandleRuntimeDefaultPromptRejectsOversizedJSONBody(t *testing.T) {
-	content := strings.Repeat("p", maxCustomSystemPromptBytes+8192)
+	content := strings.Repeat("p", 6*maxCustomSystemPromptBytes+8192)
 	digest := sha256.Sum256([]byte(content))
 	body := `{"content":"` + content + `","contentHash":"` + hex.EncodeToString(digest[:]) + `","xiaobaVersion":"1.2.3","runtimeVersion":"` + strings.Repeat("v", maxPromptVersionBytes) + `"}`
 	if len(body) <= maxBotDefaultPromptBodyBytes {
@@ -227,6 +227,30 @@ func TestHandleRuntimeDefaultPromptRejectsOversizedJSONBody(t *testing.T) {
 	}
 	if db.records[43].DefaultPrompt != nil {
 		t.Fatalf("oversized body was persisted: %+v", db.records[43].DefaultPrompt)
+	}
+}
+
+func TestHandleRuntimeDefaultPromptAcceptsEscapedPromptAtDecodedLimit(t *testing.T) {
+	content := strings.Repeat("<", maxCustomSystemPromptBytes)
+	digest := sha256.Sum256([]byte(content))
+	body := `{"content":"` + strings.Repeat(`\u003c`, maxCustomSystemPromptBytes) + `","contentHash":"` + hex.EncodeToString(digest[:]) + `"}`
+	if len(body) <= maxCustomSystemPromptBytes+4096 {
+		t.Fatalf("escaped body=%d bytes, want it to exceed the old wire limit=%d", len(body), maxCustomSystemPromptBytes+4096)
+	}
+	if len(body) >= maxBotDefaultPromptBodyBytes {
+		t.Fatalf("escaped body=%d bytes, want it to fit the expanded wire limit=%d", len(body), maxBotDefaultPromptBodyBytes)
+	}
+	db := &botDefinitionTestStore{owners: map[int64]int64{43: 7}, records: map[int64]*types.BotDefinitionRecord{43: {Exists: true}}}
+	rec := httptest.NewRecorder()
+	NewBotDefinitionHandler(db, db, nil, nil).HandleRuntimeDefaultPrompt(
+		rec,
+		promptRequest(http.MethodPost, "/api/bot/definition/default-prompt", body, 43),
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := db.records[43].DefaultPrompt; got == nil || got.Content != content {
+		t.Fatalf("escaped prompt was not decoded and persisted: %+v", got)
 	}
 }
 

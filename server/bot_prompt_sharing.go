@@ -15,7 +15,9 @@ import (
 )
 
 const (
-	maxBotDefaultPromptBodyBytes = maxCustomSystemPromptBytes + 4096
+	// Keep the wire limit larger than the decoded prompt limit. JSON escaping
+	// can expand a valid one MiB prompt (for example, '<' becomes \u003c).
+	maxBotDefaultPromptBodyBytes = maxBotDefinitionPromptBodyBytes
 	maxPromptVersionBytes        = 128
 )
 
