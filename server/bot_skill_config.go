@@ -354,7 +354,7 @@ func (h *BotDefinitionHandler) HandleRuntimeSkillInventory(w http.ResponseWriter
 	inventory := types.BotSkillInventory{
 		Schema: request.Schema, BotID: request.BotID, ObservedAt: request.ObservedAt,
 		RuntimeInstanceID: request.RuntimeInstanceID, ReportSequence: request.ReportSequence,
-		ReportedAt: time.Now().UTC().Format(time.RFC3339),
+		ReportedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		Skills:     skills, Truncated: request.Truncated,
 	}
 	if _, err := h.definitions.ReportBotSkillInventory(botUID, inventory); err != nil {
@@ -500,7 +500,7 @@ func botRuntimeSkillInventoryStatus(inventory *types.BotSkillInventory, now time
 		// future client clock must never make them appear healthy indefinitely.
 		freshnessAt = inventory.ObservedAt
 	}
-	reportedAt, err := time.Parse(time.RFC3339, freshnessAt)
+	reportedAt, err := time.Parse(time.RFC3339Nano, freshnessAt)
 	if err != nil || reportedAt.After(now) || now.Sub(reportedAt) > botRuntimeSkillInventoryStaleAfter {
 		return "stale"
 	}

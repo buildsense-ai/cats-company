@@ -37,6 +37,13 @@ func TestShouldReplaceBotSkillInventory(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "legacy same-runtime report uses server receipt time",
+			incoming: types.BotSkillInventory{
+				ObservedAt: later, ReportedAt: "2026-08-12T06:02:00.000000001Z", RuntimeInstanceID: "runtime-a",
+			},
+			want: false,
+		},
+		{
 			name: "a replacement runtime wins by server receipt order",
 			incoming: types.BotSkillInventory{
 				ObservedAt: "2026-08-12T05:00:00Z", RuntimeInstanceID: "runtime-b", ReportSequence: 1,

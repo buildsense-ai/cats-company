@@ -24,8 +24,13 @@ func ShouldReplaceBotSkillInventory(existing *types.BotSkillInventory, incoming 
 		if incoming.ReportSequence > 0 || existing.ReportSequence > 0 {
 			return incoming.ReportSequence > existing.ReportSequence
 		}
-		// Legacy reports from the same instance have no monotonic token; the
-		// row-lock receipt order is the only safe ordering available.
+		// Legacy reports from the same instance have no monotonic token; use
+		// server receipt time when both snapshots carry it.
+		incomingReceipt, incomingOK := parseInventoryTime(incoming.ReportedAt)
+		existingReceipt, existingOK := parseInventoryTime(existing.ReportedAt)
+		if incomingOK && existingOK {
+			return incomingReceipt.After(existingReceipt)
+		}
 		return true
 	}
 
