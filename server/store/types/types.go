@@ -528,6 +528,26 @@ type BotPromptDefinition struct {
 	CustomSystemPrompt string `json:"customSystemPrompt,omitempty"`
 }
 
+// BotPromptVisibility controls who may inspect the currently selected system
+// prompt. Editing remains owner-only regardless of this value.
+type BotPromptVisibility string
+
+const (
+	BotPromptOwner   BotPromptVisibility = "owner"
+	BotPromptFriends BotPromptVisibility = "friends"
+)
+
+// BotDefaultPromptSnapshot is runtime-observed state, kept separate from the
+// owner-managed definition so reporting a bundled default never changes the
+// desired revision or overwrites an owner's selection.
+type BotDefaultPromptSnapshot struct {
+	Content        string `json:"content"`
+	ContentHash    string `json:"contentHash"`
+	XiaoBaVersion  string `json:"xiaobaVersion,omitempty"`
+	RuntimeVersion string `json:"runtimeVersion,omitempty"`
+	ReportedAt     string `json:"reportedAt"`
+}
+
 // BotSkillRef identifies one exact, immutable SkillHub package version.
 // Package content and display metadata remain owned by SkillHub.
 type BotSkillRef struct {
@@ -575,6 +595,8 @@ type BotDefinitionRecord struct {
 	Definition       BotDefinition
 	Runtime          BotDefinitionRuntime
 	SavedCustomModel *BotDefinitionSavedCustomModel
+	PromptVisibility BotPromptVisibility
+	DefaultPrompt    *BotDefaultPromptSnapshot
 	Exists           bool
 }
 

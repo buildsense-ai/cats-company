@@ -174,6 +174,35 @@ func TestHandleListAgentsIncludesOwnedAndFriendBots(t *testing.T) {
 	}
 }
 
+func TestHandleListAgentsExcludesDisclosedHumanFriends(t *testing.T) {
+	store := &agentTestStore{
+		friends: []*types.User{
+			{ID: 43, Username: "friend-agent", DisplayName: "Friend Agent", AccountType: types.AccountBot},
+			{ID: 44, Username: "disclosed-human", DisplayName: "Disclosed Human", AccountType: types.AccountHuman, BotDisclose: true},
+			{ID: 45, Username: "service", DisplayName: "Service", AccountType: types.AccountService, BotDisclose: true},
+		},
+	}
+	handler := NewAgentHandler(store, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/agents", nil)
+	req = req.WithContext(context.WithValue(req.Context(), uidKey, int64(7)))
+	rec := httptest.NewRecorder()
+
+	handler.HandleListAgents(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Agents []AgentSummary `json:"agents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Agents) != 1 || body.Agents[0].UID != 43 || !body.Agents[0].IsBot {
+		t.Fatalf("unexpected disclosed-human roster: %+v", body.Agents)
+	}
+}
+
 func TestHandleListAgentsEnablesCloudArtifactsForAllBots(t *testing.T) {
 	store := &agentTestStore{
 		ownerBots: []map[string]interface{}{
