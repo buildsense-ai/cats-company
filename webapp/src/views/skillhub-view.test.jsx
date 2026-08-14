@@ -176,10 +176,12 @@ describe('SkillHubView', () => {
       name: 'local-demo',
       relative_path: 'local-demo',
       skill_hub: { version: '1.0.0' },
+      share_error: 'Skill contains sensitive material.',
     }] })[0]).toMatchObject({
       name: 'local-demo',
       relativePath: 'local-demo',
       skillHub: { version: '1.0.0' },
+      shareError: 'Skill contains sensitive material.',
     });
     expect(isLocalSkillShared({
       canShare: true,
@@ -208,7 +210,16 @@ describe('SkillHubView', () => {
           contentHash: 'a'.repeat(64),
         },
       },
+    }, {
+      skillId: 'alice/local-demo',
+      version: '1.0.0',
+      contentHash: 'a'.repeat(64),
     })).toBe(true);
+    expect(isLocalSkillShared({
+      canShare: false,
+      shareError: 'Skill contains sensitive material.',
+      skillHub: { author: 'alice', version: '1.0.0' },
+    })).toBe(false);
     expect(upsertSkillRef([{ skillId: 'a', version: '1' }], { skillId: 'b', version: '2' }))
       .toEqual([{ skillId: 'a', version: '1' }, { skillId: 'b', version: '2' }]);
     expect(resolveSkillHubEntry(
@@ -964,6 +975,62 @@ describe('SkillHubView', () => {
         uploaded_at: '2026-08-05T00:00:00.000Z',
       }),
     }));
+  });
+
+  it('shows a blocked local Skill without falsely marking it as published', async () => {
+    api.getDevices.mockResolvedValue({
+      devices: [{
+        deviceId: 'alice-device',
+        displayName: 'Alice Laptop',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockResolvedValue({
+      schema: 'xiaoba.skillhub.local_workspace.v1',
+      bot_uid: '42',
+      active_bot_uid: '42',
+      skills_path: 'C:\\xiaoba\\skills',
+      skills: [{
+        local_skill_id: 'blocked-1',
+        name: 'cloud-html-artifact',
+        description: 'Publish HTML artifacts',
+        relative_path: 'cloud-html-artifact',
+        source: 'user',
+        can_share: false,
+        share_error: 'Skill contains sensitive material and cannot be uploaded: scripts/publish-html-directory.mjs',
+        skill_hub: {
+          author: 'alice',
+          version: '1.0.0',
+          uploaded_at: '2026-08-05T00:00:00.000Z',
+        },
+      }],
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCustomSkills();
+
+    const card = container.querySelector('.cc-skillhub-local-card');
+    expect(card.textContent).toContain('cloud-html-artifact');
+    expect(card.textContent).toContain('无法发布');
+    expect(card.textContent).toContain('scripts/publish-html-directory.mjs');
+    expect(card.textContent).not.toContain('已发布到团队');
+    expect(card.querySelector('.cc-skillhub-validation-error')).not.toBeNull();
+    expect(card.querySelector('button').disabled).toBe(true);
+    expect(card.querySelector('button').textContent).toContain('请先修复此 Skill');
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledTimes(1);
   });
 
   it('retries a version share only after confirmation and sends confirm_publish', async () => {

@@ -644,6 +644,17 @@
   color: var(--cc-success-text);
 }
 
+.cc-skillhub-status.blocked {
+  border-color: color-mix(in srgb, var(--cc-danger) 24%, var(--cc-border));
+  background: color-mix(in srgb, var(--cc-danger) 10%, transparent);
+  color: var(--cc-danger);
+}
+
+.cc-skillhub-local-card p.cc-skillhub-validation-error {
+  color: var(--cc-danger);
+  overflow-wrap: anywhere;
+}
+
 .cc-skillhub-installed-list {
   display: grid;
   gap: 7px;
