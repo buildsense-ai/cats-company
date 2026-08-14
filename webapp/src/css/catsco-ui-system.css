@@ -8296,11 +8296,15 @@ html[data-theme="liquid"] :is(
   }
 }
 
-/* Inline videos use the same compact footprint as images and open into a focused preview. */
+/* Ultra-wide video thumbnails favor the useful center frame; previews keep every source pixel. */
 .v3-message .oc-rich-video {
   width: fit-content;
   max-width: 100%;
   margin: 0;
+}
+
+.v3-message .oc-rich-video.is-ultrawide {
+  width: min(240px, 100%);
 }
 
 .oc-visually-hidden {
@@ -8331,6 +8335,11 @@ html[data-theme="liquid"] :is(
   cursor: pointer;
 }
 
+.v3-message .oc-rich-video.is-ultrawide .oc-rich-video-trigger {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+}
+
 .v3-message .oc-rich-video-trigger:focus-visible {
   outline: 2px solid var(--cc-accent);
   outline-offset: 3px;
@@ -8352,6 +8361,15 @@ html[data-theme="liquid"] :is(
   max-width: min(240px, 100%);
   max-height: 240px;
   object-fit: contain;
+}
+
+.v3-message .oc-rich-video.is-ultrawide .oc-rich-video-thumb {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: cover;
+  object-position: center;
 }
 
 .v3-message .oc-rich-video-play {

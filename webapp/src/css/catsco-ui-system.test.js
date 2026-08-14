@@ -247,6 +247,27 @@ describe('CatsCo shell styling', () => {
     );
   });
 
+  it('crops only ultra-wide video thumbnails to a compact, centered viewport while previews retain the source', () => {
+    const videoContainerRule = ruleFor('.v3-message .oc-rich-video');
+    const croppedVideoContainerRule = ruleFor('.v3-message .oc-rich-video.is-ultrawide');
+    const triggerRule = ruleFor('.v3-message .oc-rich-video-trigger');
+    const croppedTriggerRule = ruleFor('.v3-message .oc-rich-video.is-ultrawide .oc-rich-video-trigger');
+    const thumbnailRule = ruleFor('.v3-message .oc-rich-video-thumb');
+    const croppedThumbnailRule = ruleFor('.v3-message .oc-rich-video.is-ultrawide .oc-rich-video-thumb');
+
+    expect(videoContainerRule).toContain('width: fit-content;');
+    expect(croppedVideoContainerRule).toContain('width: min(240px, 100%);');
+    expect(triggerRule).toContain('width: fit-content;');
+    expect(croppedTriggerRule).toContain('width: 100%;');
+    expect(croppedTriggerRule).toContain('aspect-ratio: 16 / 9;');
+    expect(thumbnailRule).toContain('object-fit: contain;');
+    expect(croppedThumbnailRule).toContain('width: 100%;');
+    expect(croppedThumbnailRule).toContain('height: 100%;');
+    expect(croppedThumbnailRule).toContain('object-fit: cover;');
+    expect(croppedThumbnailRule).toContain('object-position: center;');
+    expect(ruleFor('.oc-rich-video-preview .oc-rich-video-player')).toContain('object-fit: contain;');
+  });
+
   it('keeps inline audio controls compact, focusable, and reduced-motion safe', () => {
     const audioRule = ruleFor('.v3-message .oc-rich-audio');
     const downloadRule = ruleFor('.v3-message .oc-rich-audio-download');
