@@ -1364,12 +1364,17 @@ describe('CatsCo shell styling', () => {
 
   it('aligns peer messages and typing status to the unchanged composer rail', () => {
     const noticeRule = ruleFor('.v3-composer-notices .v3-live-input-status');
+    const messageOverflowMenuRule = ruleFor('.v3-message-footer .v3-message-more-actions .v3-message-action-menu');
 
     expect(ruleFor('.v3-timeline')).toContain('padding: 18px 20px 140px;');
     expect(ruleFor('.v3-timeline-inner')).toContain('max-width: 760px;');
     expect(ruleFor('.v3-message.is-peer .v3-avatar-col')).toContain('margin-right: 10px;');
     expect(ruleFor('.v3-message.is-peer .v3-message-bubble')).toContain('padding: 8px 0 14px;');
     expect(ruleFor('.v3-message.is-peer .v3-message-footer')).toContain('padding: 0;');
+    expect(messageOverflowMenuRule).toContain('top: calc(100% + 6px);');
+    expect(messageOverflowMenuRule).toContain('right: 0;');
+    expect(messageOverflowMenuRule).toContain('bottom: auto;');
+    expect(messageOverflowMenuRule).toContain('left: auto;');
     expect(ruleFor('.v3-peer-typing')).toContain('width: min(760px, 100%);');
     expect(ruleFor('.v3-peer-typing')).toContain('margin: 4px auto;');
     expect(ruleFor('.v3-peer-typing')).toContain('padding: 8px 0 14px;');
