@@ -133,10 +133,10 @@ Defaults can be overridden through environment variables:
 | Setting | Default | Meaning |
 |---|---:|---|
 | `CATSCO_STT_TICKET_TTL_SECONDS` | 45 | Ticket validity before WebSocket upgrade |
-| `CATSCO_STT_MAX_SESSION_SECONDS` | 90 | Maximum audio duration per session |
+| `CATSCO_STT_MAX_SESSION_SECONDS` | 150 | Maximum audio duration per session |
 | `CATSCO_STT_IDLE_TIMEOUT_MS` | 15000 | Stop after this much time without voiced PCM |
 | `CATSCO_STT_MAX_CONCURRENT` | 40 | Active sessions per server instance |
-| `CATSCO_STT_MAX_HOURLY_SECONDS` | 600 | Audio seconds per user in a rolling hour |
+| `CATSCO_STT_MAX_HOURLY_SECONDS` | 1440 | Audio seconds per user in a rolling hour |
 | `CATSCO_STT_MAX_DAILY_SECONDS` | 3600 | Audio seconds per user in rolling 24 hours |
 | `CATSCO_STT_CONNECT_TIMEOUT_MS` | 2000 | Volcengine WebSocket handshake timeout |
 | `CATSCO_STT_FINAL_TIMEOUT_MS` | 1200 | Wait for the final result after stop |

@@ -97,11 +97,11 @@ func STTConfigFromEnv() STTConfig {
 		Enabled:          sttEnvBool("CATSCO_STT_ENABLED", false),
 		Provider:         sttEnvString("CATSCO_STT_PROVIDER", STTProviderVolcengineDoubaoStreamingV2),
 		TicketTTL:        sttEnvDurationSeconds("CATSCO_STT_TICKET_TTL_SECONDS", 45*time.Second),
-		MaxDuration:      sttEnvDurationSeconds("CATSCO_STT_MAX_SESSION_SECONDS", 90*time.Second),
+		MaxDuration:      sttEnvDurationSeconds("CATSCO_STT_MAX_SESSION_SECONDS", 150*time.Second),
 		IdleTimeout:      sttEnvDurationMilliseconds("CATSCO_STT_IDLE_TIMEOUT_MS", 15*time.Second),
 		FinalTimeout:     sttEnvDurationMilliseconds("CATSCO_STT_FINAL_TIMEOUT_MS", 1200*time.Millisecond),
 		MaxConcurrent:    sttEnvInt("CATSCO_STT_MAX_CONCURRENT", 40),
-		HourlyAudioLimit: sttEnvDurationSeconds("CATSCO_STT_MAX_HOURLY_SECONDS", 10*time.Minute),
+		HourlyAudioLimit: sttEnvDurationSeconds("CATSCO_STT_MAX_HOURLY_SECONDS", 24*time.Minute),
 		DailyAudioLimit:  sttEnvDurationSeconds("CATSCO_STT_MAX_DAILY_SECONDS", time.Hour),
 		Volcengine: VolcengineSTTConfig{
 			WebSocketURL:   sttEnvString("VOLCENGINE_STT_WS_URL", volcengineDoubaoStreamingV2URL),
@@ -151,8 +151,27 @@ type sttTicketClaims struct {
 }
 
 type sttUsageEntry struct {
-	at       time.Time
-	duration time.Duration
+	startedAt time.Time
+	duration  time.Duration
+}
+
+func sttUsageOverlap(entry sttUsageEntry, windowStart, windowEnd time.Time) time.Duration {
+	if entry.duration <= 0 || !windowEnd.After(windowStart) {
+		return 0
+	}
+	entryEnd := entry.startedAt.Add(entry.duration)
+	if !entryEnd.After(windowStart) || !entry.startedAt.Before(windowEnd) {
+		return 0
+	}
+	start := entry.startedAt
+	if start.Before(windowStart) {
+		start = windowStart
+	}
+	end := entryEnd
+	if end.After(windowEnd) {
+		end = windowEnd
+	}
+	return end.Sub(start)
 }
 
 type sttLimiter struct {
@@ -181,8 +200,10 @@ var (
 	errSTTQuota      = errors.New("STT audio quota exhausted")
 )
 
-func (l *sttLimiter) acquire(uid int64, maxDuration time.Duration) (time.Duration, func(time.Duration), error) {
+func (l *sttLimiter) acquire(uid int64, maxDuration time.Duration) (time.Duration, func(sttUsageEntry), error) {
 	now := time.Now()
+	hourStart := now.Add(-time.Hour)
+	dayStart := now.Add(-24 * time.Hour)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if _, exists := l.activeUsers[uid]; exists {
@@ -196,14 +217,12 @@ func (l *sttLimiter) acquire(uid int64, maxDuration time.Duration) (time.Duratio
 	kept := entries[:0]
 	var hourly, daily time.Duration
 	for _, entry := range entries {
-		if now.Sub(entry.at) >= 24*time.Hour {
+		if !entry.startedAt.Add(entry.duration).After(dayStart) {
 			continue
 		}
 		kept = append(kept, entry)
-		daily += entry.duration
-		if now.Sub(entry.at) < time.Hour {
-			hourly += entry.duration
-		}
+		hourly += sttUsageOverlap(entry, hourStart, now)
+		daily += sttUsageOverlap(entry, dayStart, now)
 	}
 	l.usage[uid] = kept
 	remaining := maxDuration
@@ -223,7 +242,7 @@ func (l *sttLimiter) acquire(uid int64, maxDuration time.Duration) (time.Duratio
 	l.active++
 	l.activeUsers[uid] = struct{}{}
 	var once sync.Once
-	release := func(accepted time.Duration) {
+	release := func(usage sttUsageEntry) {
 		once.Do(func() {
 			l.mu.Lock()
 			defer l.mu.Unlock()
@@ -231,8 +250,13 @@ func (l *sttLimiter) acquire(uid int64, maxDuration time.Duration) (time.Duratio
 			if l.active > 0 {
 				l.active--
 			}
-			if accepted > 0 {
-				l.usage[uid] = append(l.usage[uid], sttUsageEntry{at: time.Now(), duration: accepted})
+			if usage.duration > 0 {
+				recordedAt := time.Now()
+				if usage.startedAt.IsZero() || usage.startedAt.Add(usage.duration).After(recordedAt) {
+					// A burst sender must not defer accepted audio into a future quota window.
+					usage.startedAt = recordedAt.Add(-usage.duration)
+				}
+				l.usage[uid] = append(l.usage[uid], usage)
 			}
 		})
 	}
@@ -345,7 +369,7 @@ func (h *STTHandler) HandleSession(w http.ResponseWriter, r *http.Request) {
 		"ticket":              signed,
 		"provider":            h.provider.ID(),
 		"expires_in_seconds":  int(h.config.TicketTTL / time.Second),
-		"max_session_seconds": int(h.config.MaxDuration / time.Second),
+		"max_session_seconds": sttDurationSecondsCeil(h.config.MaxDuration),
 		"max_session_ms":      h.config.MaxDuration.Milliseconds(),
 	})
 }
@@ -387,6 +411,19 @@ type sttBrowserMessage struct {
 	err         error
 }
 
+func sttAdmissionError(err error) (code, message string) {
+	switch {
+	case errors.Is(err, errSTTUserActive):
+		return "session_active", "已有语音输入正在进行"
+	case errors.Is(err, errSTTGlobalFull):
+		return "capacity_full", "语音输入服务繁忙，请稍后再试"
+	case errors.Is(err, errSTTQuota):
+		return "quota_exhausted", "语音输入额度已用完，请稍后再试"
+	default:
+		return "admission_failed", "语音输入暂时无法开始，请稍后再试"
+	}
+}
+
 func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -401,27 +438,28 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired STT ticket"})
 		return
 	}
-	allowedDuration, release, err := h.limiter.acquire(claims.UID, h.config.MaxDuration)
-	if err != nil {
-		status := http.StatusTooManyRequests
-		if errors.Is(err, errSTTUserActive) {
-			status = http.StatusConflict
-		} else if errors.Is(err, errSTTGlobalFull) {
-			status = http.StatusServiceUnavailable
-		}
-		writeJSON(w, status, map[string]string{"error": err.Error()})
-		return
-	}
-	acceptedBytes := int64(0)
-	defer func() {
-		release(time.Duration(acceptedBytes) * time.Second / sttPCMBytesPerSecond)
-	}()
-
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
+
+	// Browser WebSocket APIs hide HTTP bodies from failed upgrades. Admit after
+	// the upgrade so quota and capacity failures remain actionable to callers.
+	allowedDuration, release, err := h.limiter.acquire(claims.UID, h.config.MaxDuration)
+	if err != nil {
+		code, message := sttAdmissionError(err)
+		_ = h.writeSTTJSON(conn, map[string]string{"type": "error", "code": code, "message": message})
+		return
+	}
+	acceptedBytes := int64(0)
+	var firstAcceptedAt time.Time
+	defer func() {
+		release(sttUsageEntry{
+			startedAt: firstAcceptedAt,
+			duration:  time.Duration(acceptedBytes) * time.Second / sttPCMBytesPerSecond,
+		})
+	}()
 
 	sessionStartedAt := time.Now()
 	requestID := newSTTRequestID()
@@ -543,6 +581,9 @@ func (h *STTHandler) HandleRealtime(w http.ResponseWriter, r *http.Request) {
 					errorCode = "provider_send_failed"
 					_ = h.writeSTTJSON(conn, map[string]interface{}{"type": "error", "code": "provider_send_failed", "message": "语音数据发送失败"})
 					return
+				}
+				if firstAcceptedAt.IsZero() {
+					firstAcceptedAt = time.Now()
 				}
 				acceptedBytes += int64(len(message.payload))
 				if sttPCMHasVoice(message.payload) {

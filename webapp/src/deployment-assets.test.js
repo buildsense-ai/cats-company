@@ -28,6 +28,12 @@ function expectPrivateProxyLocation(config, path) {
   expect(block).toContain('proxy_cache_bypass 1;');
 }
 
+function expectSTTWebSocketTimeout(config) {
+  const block = nginxLocationBlock(config, '/api/stt/realtime');
+  expect(block).toContain('proxy_read_timeout 180s;');
+  expect(block).toContain('proxy_send_timeout 180s;');
+}
+
 describe('production asset caching', () => {
   it('immutably caches the Vite asset directory and the legacy static directory', () => {
     const nginxConfig = readFileSync(
@@ -71,6 +77,16 @@ describe('production asset caching', () => {
       for (const route of privateRoutes) {
         expectPrivateProxyLocation(nginxConfig, route);
       }
+    }
+  });
+
+  it('keeps STT websocket proxy timeouts above the 150 second session limit', () => {
+    for (const configPath of [
+      '../deploy/nginx/nginx.conf',
+      '../deploy/tencent/nginx/catscompany-app.conf',
+      '../deploy/tencent/nginx/catscompany-api.conf',
+    ]) {
+      expectSTTWebSocketTimeout(readFileSync(resolve(process.cwd(), configPath), 'utf8'));
     }
   });
 });
