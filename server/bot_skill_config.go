@@ -152,51 +152,8 @@ func (h *BotDefinitionHandler) HandleViewerSkills(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	viewerUID := UIDFromContext(r.Context())
-	if viewerUID <= 0 {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-		return
-	}
-	botUID, err := strconv.ParseInt(r.URL.Query().Get("uid"), 10, 64)
-	if err != nil || botUID <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
-		return
-	}
-	access, ok := h.owners.(botSkillAccessStore)
+	botUID, visibility, ok := h.authorizeViewerSkillAccess(w, r)
 	if !ok {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "skill access policy is unavailable"})
-		return
-	}
-	config, err := access.GetBotConfig(botUID)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
-		return
-	}
-	ownerUID, err := h.owners.GetBotOwner(botUID)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
-		return
-	}
-	visibility := normalizeBotSkillsVisibility(config.SkillsVisibility)
-	// A friend may inspect the Bot's synchronized Skill inventory, including
-	// private SkillHub references. This endpoint is deliberately metadata-only:
-	// it never returns content, local paths, hashes, credentials, or mutation
-	// controls. The visibility setting still describes public catalogue sharing
-	// for non-friends, while friendship grants the safe read-only inventory view.
-	allowed := viewerUID == ownerUID || visibility == types.BotSkillsPublic
-	if !allowed {
-		allowed, err = access.AreFriends(viewerUID, botUID)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check Agent access"})
-			return
-		}
-	}
-	if !allowed {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "Agent 所有者未公开技能列表"})
-		return
-	}
-	if h == nil || h.definitions == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot definition is unavailable"})
 		return
 	}
 	record, err := h.loadDefinition(botUID)
@@ -231,46 +188,8 @@ func (h *BotDefinitionHandler) HandleViewerRuntimeSkills(w http.ResponseWriter, 
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	viewerUID := UIDFromContext(r.Context())
-	if viewerUID <= 0 {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-		return
-	}
-	botUID, err := strconv.ParseInt(r.URL.Query().Get("uid"), 10, 64)
-	if err != nil || botUID <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
-		return
-	}
-	access, ok := h.owners.(botSkillAccessStore)
+	botUID, visibility, ok := h.authorizeViewerSkillAccess(w, r)
 	if !ok {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "skill access policy is unavailable"})
-		return
-	}
-	config, err := access.GetBotConfig(botUID)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
-		return
-	}
-	ownerUID, err := h.owners.GetBotOwner(botUID)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
-		return
-	}
-	visibility := normalizeBotSkillsVisibility(config.SkillsVisibility)
-	allowed := viewerUID == ownerUID || visibility == types.BotSkillsPublic
-	if !allowed {
-		allowed, err = access.AreFriends(viewerUID, botUID)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check Agent access"})
-			return
-		}
-	}
-	if !allowed {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "Agent 所有者未公开技能列表"})
-		return
-	}
-	if h == nil || h.definitions == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot definition is unavailable"})
 		return
 	}
 	record, err := h.loadDefinition(botUID)
@@ -299,6 +218,59 @@ func (h *BotDefinitionHandler) HandleViewerRuntimeSkills(w http.ResponseWriter, 
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, response)
+}
+
+// authorizeViewerSkillAccess keeps the configured-Skills and runtime-Skills
+// endpoints under one visibility policy. A friend may inspect this metadata
+// even when it is not public; neither endpoint exposes content, absolute local
+// paths, hashes, credentials, or mutation controls.
+func (h *BotDefinitionHandler) authorizeViewerSkillAccess(
+	w http.ResponseWriter,
+	r *http.Request,
+) (int64, types.BotSkillsVisibility, bool) {
+	viewerUID := UIDFromContext(r.Context())
+	if viewerUID <= 0 {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return 0, "", false
+	}
+	botUID, err := strconv.ParseInt(r.URL.Query().Get("uid"), 10, 64)
+	if err != nil || botUID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid uid"})
+		return 0, "", false
+	}
+	access, ok := h.owners.(botSkillAccessStore)
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "skill access policy is unavailable"})
+		return 0, "", false
+	}
+	config, err := access.GetBotConfig(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+		return 0, "", false
+	}
+	ownerUID, err := h.owners.GetBotOwner(botUID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bot not found"})
+		return 0, "", false
+	}
+	visibility := normalizeBotSkillsVisibility(config.SkillsVisibility)
+	allowed := viewerUID == ownerUID || visibility == types.BotSkillsPublic
+	if !allowed {
+		allowed, err = access.AreFriends(viewerUID, botUID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to check Agent access"})
+			return 0, "", false
+		}
+	}
+	if !allowed {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "Agent 所有者未公开技能列表"})
+		return 0, "", false
+	}
+	if h == nil || h.definitions == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "bot definition is unavailable"})
+		return 0, "", false
+	}
+	return botUID, visibility, true
 }
 
 func redactBotRuntimeSkill(skill types.BotRuntimeSkill) botViewerRuntimeSkill {
