@@ -53,6 +53,23 @@ export CATS_MIGRATION_DATABASE_URL='postgres://USER:PASSWORD@HOST:5432/DB?sslmod
 2. 不要在 `CreateSchema()` 重复同一个数据转换。
 3. 生产执行前仍需备份，先记录 `version` / `dirty`，再执行 `up`。
 
+## 发布门禁
+
+2026-08-13 曾发生“测试环境部署成功、生产历史库启动失败”的事故。根因是新索引依赖的列只存在于全新 schema 和 SQL migration 中，而生产启动路径没有在创建索引前执行该 migration。完整复盘见：
+
+- [`docs/incidents/2026-08-13-commercial-refund-schema-prod-502.md`](incidents/2026-08-13-commercial-refund-schema-prod-502.md)
+
+此后所有 PostgreSQL schema 变更必须满足：
+
+1. 默认通过 PR 合并，不直接推送 `main`。
+2. 同时测试空数据库创建和生产历史 schema 升级。
+3. 升级测试必须重复执行一次，验证幂等性。
+4. DDL 顺序必须是：表 -> 列 -> 数据回填 -> 约束/索引/trigger。
+5. 如果生产仍由 `CreateSchema()` 启动建表，仅添加 SQL migration 文件不代表生产会自动执行；必须同步保证 `CreateSchema()` 兼容旧库，或先修改部署流程让 migration 在应用启动前执行。
+6. PostgreSQL 集成测试不得因为缺少测试 DSN 而在发布流水线中静默跳过。
+
+测试环境当前 schema 已经包含目标列时，只能证明新版本可以在“较新 schema”上启动，不能证明生产历史库可升级。涉及 schema 的 PR 描述中必须写明使用的历史基线和升级验证结果。
+
 ## 服务器执行
 
 `scripts/db-migrate.sh` 会优先使用本机 `migrate` CLI；如果没有，会回退到 Docker 镜像 `migrate/migrate`。如果希望直接安装 CLI：
