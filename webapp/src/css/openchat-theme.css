@@ -2400,9 +2400,14 @@ body {
   cursor: not-allowed;
 }
 
+.v3-message-more-actions {
+  position: relative;
+  display: flex;
+}
+
 .v3-message-action-menu {
   position: absolute;
-  top: 36px;
+  top: calc(100% + 6px);
   right: 0;
   min-width: 128px;
   padding: 6px;
@@ -2411,6 +2416,25 @@ body {
   background: var(--v3-bg-app);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
   z-index: 8;
+  transform-origin: top right;
+  animation: v3-message-action-menu-enter 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes v3-message-action-menu-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v3-message-action-menu {
+    animation: none;
+  }
 }
 
 .v3-message-action-menu button {

@@ -1254,7 +1254,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
               </button>
             )}
             {onCreateConversationShare && (
-              <>
+              <div className="v3-message-more-actions">
                 <button
                   ref={moreActionsTriggerRef}
                   className="v3-action-btn"
@@ -1287,7 +1287,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                     </button>
                   </div>
                 )}
-              </>
+              </div>
             )}
           </div>
           <time className="v3-msg-time" dateTime={message.created_at || undefined}>{timeString}</time>

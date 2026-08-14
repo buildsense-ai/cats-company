@@ -848,8 +848,8 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-msg-header .v3-msg-time')).toBeNull();
     expect(footer.querySelector('time.v3-msg-time')?.getAttribute('datetime')).toBe('2026-06-09T00:00:00Z');
 
-    const directActions = Array.from(footer.querySelectorAll(':scope > .v3-message-actions > .v3-action-btn'));
-    expect(directActions.map((button) => button.getAttribute('aria-label'))).toEqual([
+    const actionButtons = Array.from(footer.querySelectorAll(':scope > .v3-message-actions .v3-action-btn'));
+    expect(actionButtons.map((button) => button.getAttribute('aria-label'))).toEqual([
       '复制',
       '重新生成',
       '回复',
@@ -886,6 +886,8 @@ describe('ChatMessage rich file rendering', () => {
     expect(moreActionsButton.getAttribute('aria-expanded')).toBe('true');
     expect(moreActionsMenu?.getAttribute('role')).toBe('menu');
     expect(moreActionsMenu?.textContent).toContain('制作分享图');
+    expect(moreActionsButton.parentElement?.classList.contains('v3-message-more-actions')).toBe(true);
+    expect(moreActionsMenu?.parentElement).toBe(moreActionsButton.parentElement);
 
     await act(async () => {
       Simulate.click(moreActionsMenu.querySelector('[role="menuitem"]'));
