@@ -6997,6 +6997,22 @@ button.catsco-download-action:disabled {
   font-size: 12px;
 }
 
+.cc-conversation-share-preview-page-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 16px 0;
+  color: var(--cc-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-conversation-share-preview-page-nav .v3-tool {
+  width: 30px;
+  height: 30px;
+}
+
 .cc-conversation-share-preview-canvas {
   min-height: 0;
   padding: 20px;
@@ -7016,6 +7032,7 @@ button.catsco-download-action:disabled {
 
 .cc-conversation-share-preview-actions {
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 13px 16px;
   border-top: 1px solid var(--cc-border);
@@ -7059,6 +7076,10 @@ button.catsco-download-action:disabled {
 
   .cc-conversation-share-preview-canvas {
     padding: 12px;
+  }
+
+  .cc-conversation-share-preview-actions button {
+    flex: 1 1 auto;
   }
 }
 .v3-attachment-name {

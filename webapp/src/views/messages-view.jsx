@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
+import { ArrowLeft, Check, CheckCircle2, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, Circle, CircleDot, Download, FileText, Image, ImageDown, LoaderCircle, RefreshCw, Smartphone, Users, X } from 'lucide-react';
 import { api, wsSendMessage, wsSendStreamCancel, wsSendTyping, wsSendRead, onWSMessage, updateTopicSeq } from '../api';
 import t from '../i18n';
 import ChatMessage, { createCloudArtifactPreviewFile, FilePreviewPanel } from '../widgets/chat-message';
@@ -22,6 +22,7 @@ import {
   conversationShareMessageKey,
   conversationShareText,
   downloadConversationShareImage,
+  downloadConversationShareImages,
   renderConversationShareImage,
 } from '../utils/conversation-share-image';
 
@@ -364,9 +365,11 @@ export default function MessagesView({
   const [conversationShareMode, setConversationShareMode] = useState(false);
   const [conversationShareSelectedKeys, setConversationShareSelectedKeys] = useState([]);
   const [conversationSharePreviewOpen, setConversationSharePreviewOpen] = useState(false);
-  const [conversationShareImageUrl, setConversationShareImageUrl] = useState('');
+  const [conversationShareImages, setConversationShareImages] = useState([]);
+  const [conversationSharePreviewPage, setConversationSharePreviewPage] = useState(0);
   const [conversationShareGenerating, setConversationShareGenerating] = useState(false);
   const [conversationShareError, setConversationShareError] = useState('');
+  const conversationSharePreviewImage = conversationShareImages[conversationSharePreviewPage] || null;
   const sidePanelOpen = Boolean(previewFile || (cloudArtifactsListOpen && cloudArtifactsAgentUID > 0));
   const bottomRef = useRef(null);
   const chatColumnRef = useRef(null);
@@ -423,6 +426,9 @@ export default function MessagesView({
   const phoneUploadSyncRef = useRef(null);
   const sendInFlightRef = useRef(false);
   const handledConversationShareRequestRef = useRef(0);
+  const conversationShareGenerateButtonRef = useRef(null);
+  const conversationSharePreviewRef = useRef(null);
+  const conversationSharePreviewCloseRef = useRef(null);
 
   if (artifactTopicRef.current !== topic) {
     artifactTopicRef.current = topic;
@@ -2814,22 +2820,26 @@ export default function MessagesView({
   ), [conversationShareCandidates, conversationShareSelectedKeys]);
   const canOpenConversationShare = historyLoaded && (messages.length > 0 || !historyError);
 
+  const resetConversationSharePreview = useCallback(() => {
+    setConversationSharePreviewOpen(false);
+    setConversationShareImages([]);
+    setConversationSharePreviewPage(0);
+  }, []);
+
   const closeConversationShare = useCallback(() => {
     setConversationShareMode(false);
     setConversationShareSelectedKeys([]);
-    setConversationSharePreviewOpen(false);
-    setConversationShareImageUrl('');
+    resetConversationSharePreview();
     setConversationShareError('');
-  }, []);
+  }, [resetConversationSharePreview]);
 
   useEffect(() => {
     setConversationShareMode(false);
     setConversationShareSelectedKeys([]);
-    setConversationSharePreviewOpen(false);
-    setConversationShareImageUrl('');
+    resetConversationSharePreview();
     setConversationShareError('');
     handledConversationShareRequestRef.current = 0;
-  }, [topic]);
+  }, [resetConversationSharePreview, topic]);
 
   const toggleConversationShareMessage = useCallback((candidate) => {
     if (!candidate?.key) return;
@@ -2864,7 +2874,14 @@ export default function MessagesView({
         topicName: displayName || topicName || topic || '对话',
         theme,
       });
-      setConversationShareImageUrl(result.dataUrl);
+      const pages = Array.isArray(result.pages) && result.pages.length > 0
+        ? result.pages
+        : [result];
+      if (!pages.every((page) => page?.dataUrl)) {
+        throw new Error('生成分享图失败，请重试。');
+      }
+      setConversationShareImages(pages);
+      setConversationSharePreviewPage(0);
       setConversationSharePreviewOpen(true);
     } catch (error) {
       setConversationShareError(error?.message || '生成分享图失败，请重试。');
@@ -2884,8 +2901,7 @@ export default function MessagesView({
     }
     handledConversationShareRequestRef.current = conversationShareRequest.requestId;
     setConversationShareMode(true);
-    setConversationSharePreviewOpen(false);
-    setConversationShareImageUrl('');
+    resetConversationSharePreview();
     setConversationShareError('');
     setConversationShareSelectedKeys([]);
     if (!historyError && conversationShareCandidates.length === 0) {
@@ -2898,6 +2914,7 @@ export default function MessagesView({
     historyError,
     historyLoaded,
     onConversationShareRequestHandled,
+    resetConversationSharePreview,
     topic,
   ]);
 
@@ -2910,11 +2927,47 @@ export default function MessagesView({
 
   useEffect(() => {
     if (!conversationSharePreviewOpen) return undefined;
-    const handleEscape = (event) => {
-      if (event.key === 'Escape') setConversationSharePreviewOpen(false);
+    const previousActiveElement = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const focusableSelector = [
+      'a[href]',
+      'button:not([disabled])',
+      'input:not([disabled])',
+      'select:not([disabled])',
+      'textarea:not([disabled])',
+      '[tabindex]:not([tabindex="-1"])',
+    ].join(',');
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setConversationSharePreviewOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(
+        conversationSharePreviewRef.current?.querySelectorAll(focusableSelector) || [],
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!focusable.includes(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
-    document.addEventListener('keydown', handleEscape);
-    return () => document.removeEventListener('keydown', handleEscape);
+    conversationSharePreviewCloseRef.current?.focus();
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      if (previousActiveElement?.isConnected) previousActiveElement.focus();
+    };
   }, [conversationSharePreviewOpen]);
 
   const hasPersistedRuntimePlan = useMemo(() => {
@@ -3229,6 +3282,7 @@ export default function MessagesView({
                       取消
                     </button>
                     <button
+                      ref={conversationShareGenerateButtonRef}
                       type="button"
                       className="cc-conversation-share-primary"
                       disabled={!canOpenConversationShare || conversationShareGenerating || selectedConversationShareItems.length === 0}
@@ -3718,43 +3772,96 @@ export default function MessagesView({
           onOpenDesktopConnect={onOpenDesktopConnect}
         />
       )}
-      {conversationSharePreviewOpen && conversationShareImageUrl && typeof document !== 'undefined' && createPortal(
+      {conversationSharePreviewOpen && conversationSharePreviewImage && typeof document !== 'undefined' && createPortal(
         <div
           className="cc-conversation-share-preview-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-label="对话分享图预览"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) setConversationSharePreviewOpen(false);
           }}
         >
-          <section className="cc-conversation-share-preview" onMouseDown={(event) => event.stopPropagation()}>
+          <section
+            ref={conversationSharePreviewRef}
+            className="cc-conversation-share-preview"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="conversation-share-preview-title"
+            aria-describedby="conversation-share-preview-description"
+            tabIndex={-1}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
             <header className="cc-conversation-share-preview-header">
               <div>
                 <span className="catsco-brand-mark" aria-hidden="true" />
                 <div>
-                  <strong>对话分享图已生成</strong>
-                  <span>已保留 {selectedConversationShareItems.length} 条选中消息</span>
+                  <strong id="conversation-share-preview-title">对话分享图已生成</strong>
+                  <span id="conversation-share-preview-description">
+                    已保留 {selectedConversationShareItems.length} 条选中消息
+                    {conversationShareImages.length > 1 ? `，共 ${conversationShareImages.length} 张` : ''}
+                  </span>
                 </div>
               </div>
-              <button type="button" className="v3-tool" aria-label="关闭分享图预览" onClick={() => setConversationSharePreviewOpen(false)}>
+              <button ref={conversationSharePreviewCloseRef} type="button" className="v3-tool" aria-label="关闭分享图预览" onClick={() => setConversationSharePreviewOpen(false)}>
                 <X size={17} aria-hidden="true" />
               </button>
             </header>
+            {conversationShareImages.length > 1 && (
+              <div className="cc-conversation-share-preview-page-nav" aria-label="分享图分页">
+                <button
+                  type="button"
+                  className="v3-tool"
+                  aria-label="查看上一张分享图"
+                  disabled={conversationSharePreviewPage === 0}
+                  onClick={() => setConversationSharePreviewPage((current) => Math.max(0, current - 1))}
+                >
+                  <ChevronLeft size={17} aria-hidden="true" />
+                </button>
+                <span aria-live="polite">第 {conversationSharePreviewPage + 1} / {conversationShareImages.length} 张</span>
+                <button
+                  type="button"
+                  className="v3-tool"
+                  aria-label="查看下一张分享图"
+                  disabled={conversationSharePreviewPage >= conversationShareImages.length - 1}
+                  onClick={() => setConversationSharePreviewPage((current) => Math.min(conversationShareImages.length - 1, current + 1))}
+                >
+                  <ChevronRight size={17} aria-hidden="true" />
+                </button>
+              </div>
+            )}
             <div className="cc-conversation-share-preview-canvas">
-              <img src={conversationShareImageUrl} alt={`${displayName || topicName || '对话'}的 CatsCo 分享图`} />
+              <img
+                src={conversationSharePreviewImage.dataUrl}
+                alt={`${displayName || topicName || '对话'}的 CatsCo 分享图，第 ${conversationSharePreviewPage + 1} 张，共 ${conversationShareImages.length} 张`}
+              />
             </div>
             <footer className="cc-conversation-share-preview-actions">
               <button type="button" className="cc-conversation-share-secondary" onClick={() => setConversationSharePreviewOpen(false)}>
                 返回选择
               </button>
+              {conversationShareImages.length > 1 && (
+                <button
+                  type="button"
+                  className="cc-conversation-share-secondary"
+                  onClick={() => downloadConversationShareImage(
+                    conversationSharePreviewImage.dataUrl,
+                    `catsco-conversation-share-${String(conversationSharePreviewPage + 1).padStart(2, '0')}.png`,
+                  )}
+                >
+                  下载当前 PNG
+                </button>
+              )}
               <button
                 type="button"
                 className="cc-conversation-share-primary"
-                onClick={() => downloadConversationShareImage(conversationShareImageUrl)}
+                onClick={() => {
+                  if (conversationShareImages.length > 1) {
+                    downloadConversationShareImages(conversationShareImages.map((image) => image.dataUrl));
+                  } else {
+                    downloadConversationShareImage(conversationSharePreviewImage.dataUrl);
+                  }
+                }}
               >
                 <Download size={16} aria-hidden="true" />
-                下载 PNG
+                {conversationShareImages.length > 1 ? '下载全部 PNG' : '下载 PNG'}
               </button>
             </footer>
           </section>

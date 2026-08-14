@@ -89,7 +89,7 @@ describe('conversation share image helpers', () => {
     expect(context.fillText).toHaveBeenCalledWith(expect.stringMatching(/…$/), 344, 94);
   });
 
-  it('supports a 50-message share by fitting the raster scale to a long canvas', async () => {
+  it('paginates a long 50-message share instead of rejecting the selection', async () => {
     const originalCreateElement = document.createElement.bind(document);
     const context = {
       arcTo: vi.fn(),
@@ -118,15 +118,16 @@ describe('conversation share image helpers', () => {
     const result = await renderConversationShareImage({
       logoUrl: '',
       items: Array.from({ length: 50 }, (_, index) => ({
-        message: { id: index + 1, content: `消息 ${index + 1}` },
+        message: { id: index + 1, content: '消息内容'.repeat(63) },
         senderName: index % 2 === 0 ? 'Me' : 'CatsCo',
         isSelf: index % 2 === 0,
       })),
     });
 
     expect(result.dataUrl).toBe('data:image/png;base64:long-share');
-    expect(result.height).toBeLessThanOrEqual(9600);
+    expect(result.pages).toHaveLength(2);
+    expect(result.pages.every((page) => page.height <= 9600)).toBe(true);
     expect(context.scale).toHaveBeenCalledWith(expect.any(Number), expect.any(Number));
-    expect(context.scale.mock.calls.at(-1)[0]).toBeLessThan(1.5);
+    expect(context.scale.mock.calls.some(([outputScale]) => outputScale < 1.5)).toBe(true);
   });
 });

@@ -270,108 +270,151 @@ export async function renderConversationShareImage({
     return { ...item, lines, bubbleWidth, bubbleHeight };
   });
   const gap = 28;
-  const height = headerHeight + footerHeight + layouts.reduce((sum, item) => sum + item.bubbleHeight + gap, 0) + padding * 2;
   const requestedScale = Number.isFinite(scale) && scale > 0 ? scale : DEFAULT_SCALE;
-  const outputScale = Math.min(
+  const heightForLayouts = (pageLayouts) => (
+    headerHeight
+    + footerHeight
+    + pageLayouts.reduce((sum, item) => sum + item.bubbleHeight + gap, 0)
+    + padding * 2
+  );
+  const outputScaleForHeight = (height) => Math.min(
     requestedScale,
     MAX_OUTPUT_HEIGHT / height,
     Math.sqrt(MAX_OUTPUT_PIXELS / (width * height)),
   );
-  if (!Number.isFinite(outputScale) || outputScale < MIN_OUTPUT_SCALE) {
-    throw new Error('选择内容较多，请减少消息数量后重试。');
-  }
-  const outputWidth = Math.max(1, Math.round(width * outputScale));
-  const outputHeight = Math.max(1, Math.round(height * outputScale));
-  canvas.width = outputWidth;
-  canvas.height = outputHeight;
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
-  ctx.scale(outputScale, outputScale);
 
-  ctx.fillStyle = palette.canvas;
-  ctx.fillRect(0, 0, width, height);
-  roundedRect(ctx, padding / 2, padding / 2, width - padding, height - padding, 28, palette.panel, palette.border, 1);
-
-  const contentX = padding;
-  const logoWidth = 64;
-  const logoHeight = 24;
-  if (logo) {
-    ctx.save();
-    if (theme === 'liquid') {
-      ctx.filter = 'hue-rotate(68deg) saturate(1.05) brightness(0.78)';
-    }
-    ctx.drawImage(logo, contentX, padding + 18, logoWidth, logoHeight);
-    ctx.restore();
-  } else {
-    drawLogoFallback(ctx, contentX, padding + 10, 40, palette);
-  }
-  ctx.fillStyle = palette.text;
-  ctx.font = '600 30px "Inter Variable", "Noto Sans SC", sans-serif';
-  ctx.fillText('CatsCo', contentX + 76, padding + 42);
-  ctx.fillStyle = palette.muted;
-  ctx.font = '400 18px "Inter Variable", "Noto Sans SC", sans-serif';
-  ctx.fillText('对话分享', contentX + 76, padding + 70);
-  ctx.textAlign = 'right';
-  ctx.fillStyle = palette.text;
-  ctx.font = '600 22px "Inter Variable", "Noto Sans SC", sans-serif';
-  ctx.fillText(fitText(ctx, topicName || '对话', width * 0.42), width - padding, padding + 38);
-  ctx.fillStyle = palette.muted;
-  ctx.font = '400 16px "Inter Variable", "Noto Sans SC", sans-serif';
-  ctx.fillText(`${normalizedItems.length} 条消息`, width - padding, padding + 66);
-  ctx.textAlign = 'left';
-
-  let y = padding + headerHeight;
+  // Keep every page within the browser-safe canvas bounds. Long selections remain
+  // complete by becoming a small sequence of share images instead of failing.
+  const layoutPages = [];
+  let currentPageLayouts = [];
   layouts.forEach((item) => {
-    const bubbleX = item.isSelf ? width - padding - item.bubbleWidth : padding;
-    roundedRect(
-      ctx,
-      bubbleX,
-      y,
-      item.bubbleWidth,
-      item.bubbleHeight,
-      18,
-      item.isSelf ? palette.selfBubble : palette.peerBubble,
-      item.isSelf ? palette.accent : palette.border,
-      1,
-    );
-    ctx.fillStyle = item.isSelf ? palette.accentText : palette.text;
-    ctx.font = '600 17px "Inter Variable", "Noto Sans SC", sans-serif';
-    const timeWidth = ctx.measureText(item.time).width;
-    const senderMaxWidth = Math.max(
-      64,
-      item.bubbleWidth - bubblePaddingX * 2 - (item.time ? timeWidth + 12 : 0),
-    );
-    ctx.fillText(fitText(ctx, item.senderName, senderMaxWidth), bubbleX + bubblePaddingX, y + 29);
-    ctx.fillStyle = palette.muted;
-    ctx.font = '400 15px "Inter Variable", "Noto Sans SC", sans-serif';
-    if (item.time) ctx.fillText(item.time, bubbleX + item.bubbleWidth - bubblePaddingX - timeWidth, y + 29);
-    ctx.fillStyle = palette.text;
-    ctx.font = '400 22px "Inter Variable", "Noto Sans SC", sans-serif';
-    item.lines.forEach((line, lineIndex) => {
-      ctx.fillText(line, bubbleX + bubblePaddingX, y + 68 + lineIndex * bodyLineHeight);
-    });
-    y += item.bubbleHeight + gap;
+    const nextPageLayouts = [...currentPageLayouts, item];
+    if (
+      currentPageLayouts.length > 0
+      && outputScaleForHeight(heightForLayouts(nextPageLayouts)) < MIN_OUTPUT_SCALE
+    ) {
+      layoutPages.push(currentPageLayouts);
+      currentPageLayouts = [item];
+      return;
+    }
+    currentPageLayouts = nextPageLayouts;
   });
+  if (currentPageLayouts.length > 0) layoutPages.push(currentPageLayouts);
 
-  ctx.strokeStyle = palette.border;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(padding, height - padding - footerHeight + 16);
-  ctx.lineTo(width - padding, height - padding - footerHeight + 16);
-  ctx.stroke();
-  ctx.fillStyle = palette.muted;
-  ctx.font = '400 16px "Inter Variable", "Noto Sans SC", sans-serif';
-  ctx.fillText('由 CatsCo 生成 · 保留对话上下文', padding, height - padding - 20);
-  ctx.textAlign = 'right';
-  ctx.fillStyle = palette.accentText;
-  ctx.font = '600 17px "Inter Variable", "Noto Sans SC", sans-serif';
-  ctx.fillText('CatsCo', width - padding, height - padding - 20);
-  ctx.textAlign = 'left';
+  const renderPage = (pageLayouts, pageIndex) => {
+    const height = heightForLayouts(pageLayouts);
+    const outputScale = outputScaleForHeight(height);
+    if (!Number.isFinite(outputScale) || outputScale < MIN_OUTPUT_SCALE) {
+      throw new Error('单条消息内容较长，请缩短后重试。');
+    }
+    const pageCanvas = pageIndex === 0 ? canvas : document.createElement('canvas');
+    const pageCtx = pageIndex === 0 ? ctx : pageCanvas.getContext('2d');
+    if (!pageCtx) throw new Error('当前浏览器不支持 Canvas');
 
+    const outputWidth = Math.max(1, Math.round(width * outputScale));
+    const outputHeight = Math.max(1, Math.round(height * outputScale));
+    pageCanvas.width = outputWidth;
+    pageCanvas.height = outputHeight;
+    pageCanvas.style.width = `${width}px`;
+    pageCanvas.style.height = `${height}px`;
+    pageCtx.scale(outputScale, outputScale);
+
+    pageCtx.fillStyle = palette.canvas;
+    pageCtx.fillRect(0, 0, width, height);
+    roundedRect(pageCtx, padding / 2, padding / 2, width - padding, height - padding, 28, palette.panel, palette.border, 1);
+
+    const contentX = padding;
+    const logoWidth = 64;
+    const logoHeight = 24;
+    if (logo) {
+      pageCtx.save();
+      if (theme === 'liquid') {
+        pageCtx.filter = 'hue-rotate(68deg) saturate(1.05) brightness(0.78)';
+      }
+      pageCtx.drawImage(logo, contentX, padding + 18, logoWidth, logoHeight);
+      pageCtx.restore();
+    } else {
+      drawLogoFallback(pageCtx, contentX, padding + 10, 40, palette);
+    }
+    pageCtx.fillStyle = palette.text;
+    pageCtx.font = '600 30px "Inter Variable", "Noto Sans SC", sans-serif';
+    pageCtx.fillText('CatsCo', contentX + 76, padding + 42);
+    pageCtx.fillStyle = palette.muted;
+    pageCtx.font = '400 18px "Inter Variable", "Noto Sans SC", sans-serif';
+    pageCtx.fillText('对话分享', contentX + 76, padding + 70);
+    pageCtx.textAlign = 'right';
+    pageCtx.fillStyle = palette.text;
+    pageCtx.font = '600 22px "Inter Variable", "Noto Sans SC", sans-serif';
+    pageCtx.fillText(fitText(pageCtx, topicName || '对话', width * 0.42), width - padding, padding + 38);
+    pageCtx.fillStyle = palette.muted;
+    pageCtx.font = '400 16px "Inter Variable", "Noto Sans SC", sans-serif';
+    const pageLabel = layoutPages.length > 1
+      ? `${normalizedItems.length} 条消息 · ${pageIndex + 1}/${layoutPages.length}`
+      : `${normalizedItems.length} 条消息`;
+    pageCtx.fillText(pageLabel, width - padding, padding + 66);
+    pageCtx.textAlign = 'left';
+
+    let y = padding + headerHeight;
+    pageLayouts.forEach((item) => {
+      const bubbleX = item.isSelf ? width - padding - item.bubbleWidth : padding;
+      roundedRect(
+        pageCtx,
+        bubbleX,
+        y,
+        item.bubbleWidth,
+        item.bubbleHeight,
+        18,
+        item.isSelf ? palette.selfBubble : palette.peerBubble,
+        item.isSelf ? palette.accent : palette.border,
+        1,
+      );
+      pageCtx.fillStyle = item.isSelf ? palette.accentText : palette.text;
+      pageCtx.font = '600 17px "Inter Variable", "Noto Sans SC", sans-serif';
+      const timeWidth = pageCtx.measureText(item.time).width;
+      const senderMaxWidth = Math.max(
+        64,
+        item.bubbleWidth - bubblePaddingX * 2 - (item.time ? timeWidth + 12 : 0),
+      );
+      pageCtx.fillText(fitText(pageCtx, item.senderName, senderMaxWidth), bubbleX + bubblePaddingX, y + 29);
+      pageCtx.fillStyle = palette.muted;
+      pageCtx.font = '400 15px "Inter Variable", "Noto Sans SC", sans-serif';
+      if (item.time) pageCtx.fillText(item.time, bubbleX + item.bubbleWidth - bubblePaddingX - timeWidth, y + 29);
+      pageCtx.fillStyle = palette.text;
+      pageCtx.font = '400 22px "Inter Variable", "Noto Sans SC", sans-serif';
+      item.lines.forEach((line, lineIndex) => {
+        pageCtx.fillText(line, bubbleX + bubblePaddingX, y + 68 + lineIndex * bodyLineHeight);
+      });
+      y += item.bubbleHeight + gap;
+    });
+
+    pageCtx.strokeStyle = palette.border;
+    pageCtx.lineWidth = 1;
+    pageCtx.beginPath();
+    pageCtx.moveTo(padding, height - padding - footerHeight + 16);
+    pageCtx.lineTo(width - padding, height - padding - footerHeight + 16);
+    pageCtx.stroke();
+    pageCtx.fillStyle = palette.muted;
+    pageCtx.font = '400 16px "Inter Variable", "Noto Sans SC", sans-serif';
+    pageCtx.fillText('由 CatsCo 生成 · 保留对话上下文', padding, height - padding - 20);
+    pageCtx.textAlign = 'right';
+    pageCtx.fillStyle = palette.accentText;
+    pageCtx.font = '600 17px "Inter Variable", "Noto Sans SC", sans-serif';
+    pageCtx.fillText('CatsCo', width - padding, height - padding - 20);
+    pageCtx.textAlign = 'left';
+
+    return {
+      dataUrl: pageCanvas.toDataURL('image/png'),
+      width: pageCanvas.width,
+      height: pageCanvas.height,
+      page: pageIndex + 1,
+      total: layoutPages.length,
+    };
+  };
+
+  const pages = layoutPages.map(renderPage);
   return {
-    dataUrl: canvas.toDataURL('image/png'),
-    width: canvas.width,
-    height: canvas.height,
+    ...pages[0],
+    pages,
   };
 }
 
@@ -386,4 +429,13 @@ export function downloadConversationShareImage(dataUrl, filename = 'catsco-conve
   link.click();
   link.remove();
   return true;
+}
+
+export function downloadConversationShareImages(dataUrls, filenamePrefix = 'catsco-conversation-share') {
+  const urls = Array.isArray(dataUrls) ? dataUrls.filter(Boolean) : [];
+  if (urls.length === 0) return false;
+  return urls.every((dataUrl, index) => {
+    const suffix = urls.length > 1 ? `-${String(index + 1).padStart(2, '0')}` : '';
+    return downloadConversationShareImage(dataUrl, `${filenamePrefix}${suffix}.png`);
+  });
 }
