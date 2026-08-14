@@ -63,6 +63,16 @@ vi.mock('../widgets/chat-message', () => ({
             edit
           </button>
         )}
+        {props.onCreateConversationShare && (
+          <button
+            type="button"
+            className="mock-create-conversation-share"
+            data-message-id={props.message?.id}
+            onClick={props.onCreateConversationShare}
+          >
+            制作分享图
+          </button>
+        )}
         {fileBlock && (
           <button
             type="button"
@@ -506,7 +516,6 @@ describe('MessagesView composer draft isolation', () => {
         },
       ],
     });
-    const onConversationShareRequestHandled = vi.fn();
     const previousTheme = document.documentElement.dataset.theme;
     const previousLiquidVariant = document.documentElement.dataset.liquidVariant;
     document.documentElement.dataset.theme = 'liquid';
@@ -515,24 +524,24 @@ describe('MessagesView composer draft isolation', () => {
     try {
       await mountTopic(root, 'p2p_1_2', {
         topicName: '项目周报',
-        conversationShareRequest: { topicId: 'p2p_1_2', requestId: 1 },
-        onConversationShareRequestHandled,
       });
       await act(async () => { await flushPromises(); });
 
+      const shareTrigger = container.querySelector('.mock-chat-message[data-message-id="102"] .mock-create-conversation-share');
+      await act(async () => {
+        shareTrigger.click();
+        await Promise.resolve();
+      });
+
       const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
-      expect(toolbar?.textContent).toContain('已选 0 条');
-      expect(onConversationShareRequestHandled).toHaveBeenCalledWith(1);
+      expect(toolbar?.textContent).toContain('已选 1 条');
       expect(container.querySelectorAll('.cc-message-search-hit')).toHaveLength(0);
 
       const selectableCards = container.querySelectorAll('.cc-message-anchor.is-conversation-share-selectable');
       expect(selectableCards).toHaveLength(2);
-      expect(selectableCards[1].classList.contains('is-conversation-share-selected')).toBe(false);
-      const selectableToggles = container.querySelectorAll('button[aria-label^="选择消息"]');
-      expect(selectableToggles).toHaveLength(2);
-      await act(async () => selectableToggles[1].click());
-      expect(toolbar?.textContent).toContain('已选 1 条');
       expect(selectableCards[1].classList.contains('is-conversation-share-selected')).toBe(true);
+      const selectableToggles = container.querySelectorAll('button[aria-label^="选择消息"]');
+      expect(selectableToggles).toHaveLength(1);
 
       const generateButton = [...toolbar.querySelectorAll('button')]
         .find((button) => button.textContent.includes('生成分享图'));
@@ -596,17 +605,20 @@ describe('MessagesView composer draft isolation', () => {
         content: `消息 ${index + 1}`,
       })),
     });
-    await mountTopic(root, 'p2p_1_2', {
-      conversationShareRequest: { topicId: 'p2p_1_2', requestId: 2 },
-    });
+    await mountTopic(root, 'p2p_1_2');
     await act(async () => { await flushPromises(); });
+
+    await act(async () => {
+      container.querySelector('.mock-chat-message[data-message-id="1"] .mock-create-conversation-share').click();
+      await Promise.resolve();
+    });
 
     const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
     const toggles = container.querySelectorAll('.cc-conversation-share-message-toggle');
     expect(toggles).toHaveLength(51);
 
     await act(async () => {
-      for (let index = 0; index < 50; index += 1) {
+      for (let index = 1; index < 50; index += 1) {
         toggles[index].click();
       }
     });
@@ -636,13 +648,11 @@ describe('MessagesView composer draft isolation', () => {
       ],
     });
 
-    await mountTopic(root, 'p2p_1_2', {
-      conversationShareRequest: { topicId: 'p2p_1_2', requestId: 3 },
-    });
+    await mountTopic(root, 'p2p_1_2');
     await act(async () => { await flushPromises(); });
 
-    const toggle = container.querySelector('.cc-conversation-share-message-toggle');
-    await act(async () => toggle.click());
+    const shareTrigger = container.querySelector('.mock-create-conversation-share');
+    await act(async () => shareTrigger.click());
     const toolbar = container.querySelector('[aria-label="对话分享图选择"]');
     const generateButton = [...toolbar.querySelectorAll('button')]
       .find((button) => button.textContent.includes('生成分享图'));

@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2 } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Terminal, Brain, MessageSquareText, FileText, FileCode2, Download, ExternalLink, CornerUpLeft, Pencil, X, Eye, Copy, RotateCcw, CheckCircle2, CircleDot, Circle, Play, Volume2, ImageDown, MoreHorizontal } from 'lucide-react';
 import t from '../i18n';
 import Avatar from './avatar';
 import { resolveMediaURL } from '../api';
@@ -923,9 +923,13 @@ function WorkingProcess({ blocks, complete: completeOverride = false }) {
   );
 }
 
-function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [] }) {
+function ChatMessageComponent({ message, workingMessages = null, workingOnly = false, workingComplete = false, artifactsFirst = false, isSelf, isGroup, senderName, senderAvatarUrl, senderIsBot, replyMessage, questionAnchorKey, onReply, onEdit, onRegenerate, onCreateConversationShare, showThinking = true, isConsecutive, onPreviewFile, activePreviewFile, knownArtifacts = [] }) {
   const [copyState, setCopyState] = useState('');
   const [regenerateState, setRegenerateState] = useState('');
+  const [moreActionsOpen, setMoreActionsOpen] = useState(false);
+  const moreActionsTriggerRef = useRef(null);
+  const moreActionsMenuRef = useRef(null);
+  const moreActionsMenuId = `message-more-actions-${useId().replace(/:/g, '')}`;
   const content = message.content;
   const effectiveWorkingMessages = workingMessages || message._working || [];
   const storedBlocks = useMemo(() => Array.isArray(message.content_blocks) ? message.content_blocks : [], [message.content_blocks]);
@@ -1071,6 +1075,45 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
     }
   };
 
+  const handleMoreActionsToggle = (event) => {
+    event.stopPropagation();
+    setMoreActionsOpen((current) => !current);
+  };
+
+  const handleCreateConversationShareClick = (event) => {
+    event.stopPropagation();
+    setMoreActionsOpen(false);
+    onCreateConversationShare?.();
+  };
+
+  useEffect(() => {
+    if (!moreActionsOpen) return undefined;
+
+    const closeOnOutsidePointer = (event) => {
+      const target = event.target;
+      if (
+        target instanceof Node
+        && (moreActionsMenuRef.current?.contains(target) || moreActionsTriggerRef.current?.contains(target))
+      ) {
+        return;
+      }
+      setMoreActionsOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setMoreActionsOpen(false);
+      moreActionsTriggerRef.current?.focus({ preventScroll: true });
+    };
+
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [moreActionsOpen]);
+
   if (!hasText && richBlocks.length === 0 && workingBlocks.length === 0) return null;
 
   return (
@@ -1163,7 +1206,7 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
 
         {!workingOnly && <div className="v3-message-footer">
           <div
-            className="v3-message-actions"
+            className={`v3-message-actions${moreActionsOpen ? ' open' : ''}`}
             onClick={(event) => event.stopPropagation()}
           >
             <button
@@ -1210,6 +1253,42 @@ function ChatMessageComponent({ message, workingMessages = null, workingOnly = f
                 <Pencil size={14} />
               </button>
             )}
+            {onCreateConversationShare && (
+              <>
+                <button
+                  ref={moreActionsTriggerRef}
+                  className="v3-action-btn"
+                  onClick={handleMoreActionsToggle}
+                  aria-label="更多操作"
+                  aria-haspopup="menu"
+                  aria-expanded={moreActionsOpen}
+                  aria-controls={moreActionsOpen ? moreActionsMenuId : undefined}
+                  title="更多操作"
+                  type="button"
+                >
+                  <MoreHorizontal size={18} />
+                </button>
+                {moreActionsOpen && (
+                  <div
+                    ref={moreActionsMenuRef}
+                    id={moreActionsMenuId}
+                    className="v3-message-action-menu"
+                    role="menu"
+                    aria-label="消息更多操作"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={handleCreateConversationShareClick}
+                    >
+                      <ImageDown size={15} aria-hidden="true" />
+                      <span>制作分享图</span>
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
           </div>
           <time className="v3-msg-time" dateTime={message.created_at || undefined}>{timeString}</time>
         </div>}
@@ -1233,6 +1312,7 @@ const ChatMessage = memo(ChatMessageComponent, (prevProps, nextProps) => {
     prevProps.questionAnchorKey === nextProps.questionAnchorKey &&
     prevProps.onEdit === nextProps.onEdit &&
     prevProps.onRegenerate === nextProps.onRegenerate &&
+    prevProps.onCreateConversationShare === nextProps.onCreateConversationShare &&
     prevProps.showThinking === nextProps.showThinking &&
     prevProps.isConsecutive === nextProps.isConsecutive &&
     prevProps.onPreviewFile === nextProps.onPreviewFile &&

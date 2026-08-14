@@ -304,8 +304,6 @@ export default function MessagesView({
   cloudArtifactsRequest,
   messageLocationRequest,
   onBackToSearch,
-  conversationShareRequest,
-  onConversationShareRequestHandled,
 }) {
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]);
@@ -425,7 +423,6 @@ export default function MessagesView({
   const phoneUploadTopicRef = useRef('');
   const phoneUploadSyncRef = useRef(null);
   const sendInFlightRef = useRef(false);
-  const handledConversationShareRequestRef = useRef(0);
   const conversationShareGenerateButtonRef = useRef(null);
   const conversationSharePreviewRef = useRef(null);
   const conversationSharePreviewCloseRef = useRef(null);
@@ -2826,20 +2823,28 @@ export default function MessagesView({
     setConversationSharePreviewPage(0);
   }, []);
 
-  const closeConversationShare = useCallback(() => {
-    setConversationShareMode(false);
-    setConversationShareSelectedKeys([]);
+  const transitionConversationShare = useCallback(({ mode, selectedKeys = [] }) => {
+    setConversationShareMode(mode);
+    setConversationShareSelectedKeys(selectedKeys);
     resetConversationSharePreview();
     setConversationShareError('');
   }, [resetConversationSharePreview]);
 
+  const closeConversationShare = useCallback(() => {
+    transitionConversationShare({ mode: false });
+  }, [transitionConversationShare]);
+
+  const startConversationShareFromMessage = useCallback((candidate) => {
+    if (!candidate?.key) return;
+    transitionConversationShare({
+      mode: true,
+      selectedKeys: [candidate.key],
+    });
+  }, [transitionConversationShare]);
+
   useEffect(() => {
-    setConversationShareMode(false);
-    setConversationShareSelectedKeys([]);
-    resetConversationSharePreview();
-    setConversationShareError('');
-    handledConversationShareRequestRef.current = 0;
-  }, [resetConversationSharePreview, topic]);
+    closeConversationShare();
+  }, [closeConversationShare, topic]);
 
   const toggleConversationShareMessage = useCallback((candidate) => {
     if (!candidate?.key) return;
@@ -2889,34 +2894,6 @@ export default function MessagesView({
       setConversationShareGenerating(false);
     }
   }, [displayName, selectedConversationShareItems, topic, topicName]);
-
-  useEffect(() => {
-    if (
-      !conversationShareRequest?.requestId
-      || conversationShareRequest.topicId !== topic
-      || handledConversationShareRequestRef.current === conversationShareRequest.requestId
-      || !historyLoaded
-    ) {
-      return;
-    }
-    handledConversationShareRequestRef.current = conversationShareRequest.requestId;
-    setConversationShareMode(true);
-    resetConversationSharePreview();
-    setConversationShareError('');
-    setConversationShareSelectedKeys([]);
-    if (!historyError && conversationShareCandidates.length === 0) {
-      setConversationShareError('当前会话没有可生成的文本或附件消息。');
-    }
-    onConversationShareRequestHandled?.(conversationShareRequest.requestId);
-  }, [
-    conversationShareCandidates,
-    conversationShareRequest,
-    historyError,
-    historyLoaded,
-    onConversationShareRequestHandled,
-    resetConversationSharePreview,
-    topic,
-  ]);
 
   useEffect(() => {
     if (!conversationShareMode) return;
@@ -3439,6 +3416,9 @@ export default function MessagesView({
                   && !sameUID(group.message.from_uid, user.uid)
                   && isAssistantAuthoredMessage(group.message, group.sender.isBot)
                   ? handleRegenerateMessage
+                  : undefined}
+                onCreateConversationShare={candidate && !conversationShareMode
+                  ? () => startConversationShareFromMessage(candidate)
                   : undefined}
                 showThinking={showThinking}
                 isConsecutive={showThinking

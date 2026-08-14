@@ -65,7 +65,7 @@ import {
   syncThemeColor,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
-import { Cloud, Download, FileText, Frown, ImageDown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import { Cloud, Download, FileText, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 import '../css/catsco-liquid-green.css';
@@ -264,8 +264,6 @@ function TinodeWebApp() {
   }, []);
   const [cloudArtifactsRequest, setCloudArtifactsRequest] = useState(null);
   const cloudArtifactsRequestSequenceRef = useRef(0);
-  const [conversationShareRequest, setConversationShareRequest] = useState(null);
-  const conversationShareRequestSequenceRef = useRef(0);
   const [managedGroup, setManagedGroup] = useState(null);
   const appShellRef = useRef(null);
   const [appSidebarCollapsed, setAppSidebarCollapsed] = useState(() => loadAppSidebarCollapsed());
@@ -981,16 +979,6 @@ function TinodeWebApp() {
     });
   }, [navigateFromSystemPrompt, setActiveTopic]);
 
-  const handleOpenConversationShare = useCallback(() => {
-    const topicId = activeTopic?.topicId;
-    if (!topicId) return;
-    conversationShareRequestSequenceRef.current += 1;
-    setConversationShareRequest({
-      topicId,
-      requestId: conversationShareRequestSequenceRef.current,
-    });
-  }, [activeTopic?.topicId]);
-
   if ((channelDeviceLink || channelAccountLink) && user) {
     const params = new URLSearchParams(window.location.search);
     return (
@@ -1017,7 +1005,6 @@ function TinodeWebApp() {
       currentModelName={currentModelName}
       onDownload={() => setShowDownloadModal(true)}
       onOpenCloudArtifacts={showCloudArtifactsAction ? handleOpenCloudArtifacts : undefined}
-      onCreateConversationShare={activeTopic ? handleOpenConversationShare : undefined}
       title={activeTopic?.name || taskDraftTitle(taskDraft)}
       onRenameTitle={activeTopic ? handleRenameActiveTopic : undefined}
       relayAdminAllowed={relayAdminAllowed}
@@ -1206,14 +1193,8 @@ function TinodeWebApp() {
                 onResolveAgentTopic={resolveAgentTopic}
                 onActivateTopic={activateResolvedTopic}
                 cloudArtifactsRequest={cloudArtifactsRequest}
-                conversationShareRequest={conversationShareRequest}
                 messageLocationRequest={messageLocationRequest}
                 onBackToSearch={() => setSearchOpen(true)}
-                onConversationShareRequestHandled={(requestId) => {
-                  setConversationShareRequest((current) => (
-                    current?.requestId === requestId ? null : current
-                  ));
-                }}
               />
             ) : (
               <>
@@ -1299,7 +1280,7 @@ function TinodeWebApp() {
   );
 }
 
-export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, onCreateConversationShare, title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin }) {
+export function LocalAssistantBar({ agentModelState, activeAgent, currentModelName, onDownload, onOpenCloudArtifacts, title, onRenameTitle, relayAdminAllowed = false, onOpenRelayAdmin }) {
   return (
     <header className="v3-local-assistant-bar">
       <div className="v3-model-select">
@@ -1326,11 +1307,6 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
         >
           <Cloud size={17} aria-hidden="true" />
         </button>
-        {onCreateConversationShare && (
-          <button type="button" className="v3-action-btn" onClick={onCreateConversationShare} aria-label="制作对话分享图" title="制作对话分享图">
-            <ImageDown size={17} />
-          </button>
-        )}
         <button type="button" className="v3-action-btn" onClick={onDownload} aria-label="下载桌面端">
           <Download size={17} />
         </button>

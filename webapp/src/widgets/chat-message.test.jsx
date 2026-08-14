@@ -815,6 +815,7 @@ describe('ChatMessage rich file rendering', () => {
   it('renders message actions at the lower left and time at the lower right', async () => {
     const onReply = vi.fn();
     const onRegenerate = vi.fn(() => Promise.resolve());
+    const onCreateConversationShare = vi.fn();
     await act(async () => {
       root.render(
         <ChatMessage
@@ -829,6 +830,7 @@ describe('ChatMessage rich file rendering', () => {
           senderName="CatsCo"
           onReply={onReply}
           onRegenerate={onRegenerate}
+          onCreateConversationShare={onCreateConversationShare}
         />,
       );
       await Promise.resolve();
@@ -851,6 +853,7 @@ describe('ChatMessage rich file rendering', () => {
       '复制',
       '重新生成',
       '回复',
+      '更多操作',
     ]);
 
     await act(async () => {
@@ -873,7 +876,22 @@ describe('ChatMessage rich file rendering', () => {
       await Promise.resolve();
     });
     expect(onReply).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[aria-label="更多操作"]')).toBeNull();
+
+    const moreActionsButton = container.querySelector('[aria-label="更多操作"]');
+    await act(async () => {
+      Simulate.click(moreActionsButton);
+      await Promise.resolve();
+    });
+    const moreActionsMenu = container.querySelector('.v3-message-action-menu');
+    expect(moreActionsButton.getAttribute('aria-expanded')).toBe('true');
+    expect(moreActionsMenu?.getAttribute('role')).toBe('menu');
+    expect(moreActionsMenu?.textContent).toContain('制作分享图');
+
+    await act(async () => {
+      Simulate.click(moreActionsMenu.querySelector('[role="menuitem"]'));
+      await Promise.resolve();
+    });
+    expect(onCreateConversationShare).toHaveBeenCalledTimes(1);
     expect(container.querySelector('.v3-message-action-menu')).toBeNull();
   });
 
