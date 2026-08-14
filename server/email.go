@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 type verificationCode struct {
@@ -35,6 +37,35 @@ var (
 
 func generateCode() string {
 	return fmt.Sprintf("%06d", rand.Intn(900000)+100000)
+}
+
+// isValidEmailFormat reports whether the email has a plausible, deliverable
+// shape: a non-empty local part, a dotted domain, and a recognizable public
+// suffix. Typos like "qq.cpm" (cpm is not a real TLD) are rejected before any
+// verification email is sent, so users are not silently left without a code.
+func isValidEmailFormat(email string) bool {
+	addr := strings.TrimSpace(email)
+	at := strings.IndexByte(addr, '@')
+	if at <= 0 || at == len(addr)-1 {
+		return false
+	}
+	local := addr[:at]
+	domain := strings.ToLower(addr[at+1:])
+	if local == "" || !strings.Contains(domain, ".") {
+		return false
+	}
+	eTLD, icann := publicsuffix.PublicSuffix(domain)
+	if eTLD == "" {
+		return false
+	}
+	// A single-label effective suffix means the domain's last label is not a
+	// known public suffix; it must at least be a real ICANN TLD. Multi-label
+	// suffixes (e.g. github.io, co.uk) are legitimate private/ccTLD entries
+	// and are allowed even when icann is false.
+	if !strings.Contains(eTLD, ".") && !icann {
+		return false
+	}
+	return true
 }
 
 func sendEmailViaResend(email, code, apiKey, subject string) error {
@@ -352,26 +383,60 @@ func verifyCode(email, code string) bool {
 	return verifyCodeForPurpose(email, code, verificationPurposeRegister)
 }
 
-func verifyCodeForPurpose(email, code, purpose string) bool {
+type codeStatus int
+
+const (
+	codeStatusValid codeStatus = iota
+	codeStatusNotFound
+	codeStatusExpired
+	codeStatusMismatch
+)
+
+// verificationCodeStatus is a read-only inspection of a submitted code. It is
+// NOT safe to use as the sole gate for handlers: successful validation must go
+// through consumeVerificationCode so the code is removed atomically.
+func verificationCodeStatus(email, code, purpose string) codeStatus {
 	codesMutex.RLock()
 	stored, exists := verificationCodes[verificationCodeKey(email, purpose)]
 	codesMutex.RUnlock()
 
 	if !exists {
-		return false
+		return codeStatusNotFound
 	}
-
 	if time.Now().Unix() > stored.Expires {
-		deleteVerificationCode(email, purpose)
-		return false
+		return codeStatusExpired
 	}
-
 	if stored.Code != code {
-		return false
+		return codeStatusMismatch
 	}
+	return codeStatusValid
+}
 
-	deleteVerificationCode(email, purpose)
-	return true
+// consumeVerificationCode validates a submitted code and, on success, removes
+// it in the same locked section. Codes stay single-use even under concurrent
+// requests: once consumed, a code cannot be replayed.
+func consumeVerificationCode(email, code, purpose string) codeStatus {
+	codesMutex.Lock()
+	defer codesMutex.Unlock()
+
+	key := verificationCodeKey(email, purpose)
+	stored, exists := verificationCodes[key]
+	if !exists {
+		return codeStatusNotFound
+	}
+	if time.Now().Unix() > stored.Expires {
+		delete(verificationCodes, key)
+		return codeStatusExpired
+	}
+	if stored.Code != code {
+		return codeStatusMismatch
+	}
+	delete(verificationCodes, key)
+	return codeStatusValid
+}
+
+func verifyCodeForPurpose(email, code, purpose string) bool {
+	return consumeVerificationCode(email, code, purpose) == codeStatusValid
 }
 
 func sendVerificationCode(email string) (string, error) {
