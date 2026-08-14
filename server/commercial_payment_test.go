@@ -34,6 +34,7 @@ type commercialRelaySyncTestStore struct {
 	replaced      []*types.CommercialManagedRelayBudget
 	reconcileUIDs []int64
 	replacedCh    chan struct{}
+	replacedUIDCh chan int64
 }
 
 func (s *commercialRelaySyncTestStore) GetCommercialSummary(int64) (*types.CommercialSummary, error) {
@@ -44,11 +45,17 @@ func (s *commercialRelaySyncTestStore) ListCommercialManagedRelayBudgets(int64) 
 	return s.managed, nil
 }
 
-func (s *commercialRelaySyncTestStore) ReplaceCommercialManagedRelayBudgets(_ int64, budgets []*types.CommercialManagedRelayBudget) error {
+func (s *commercialRelaySyncTestStore) ReplaceCommercialManagedRelayBudgets(uid int64, budgets []*types.CommercialManagedRelayBudget) error {
 	s.replaced = budgets
 	if s.replacedCh != nil {
 		select {
 		case s.replacedCh <- struct{}{}:
+		default:
+		}
+	}
+	if s.replacedUIDCh != nil {
+		select {
+		case s.replacedUIDCh <- uid:
 		default:
 		}
 	}

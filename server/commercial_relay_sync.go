@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/openchat/openchat/server/store/types"
@@ -30,19 +31,29 @@ type CommercialRelaySyncerOptions struct {
 }
 
 type commercialRelaySyncRequest struct {
-	uid     int64
-	attempt int
+	uid        int64
+	generation uint64
+	attempt    int
+}
+
+type commercialRelayPendingState struct {
+	generation   uint64
+	queued       bool
+	inFlight     bool
+	retryWaiting bool
 }
 
 type CommercialRelaySyncer struct {
-	store             CommercialRelayManagedStore
-	relayAdmin        *RelayAdminClient
-	enforceEnabled    bool
-	enforceUIDs       map[int64]bool
-	interval          time.Duration
-	retryDelays       []time.Duration
-	queue             chan commercialRelaySyncRequest
-	reconcileAfterUID int64
+	store          CommercialRelayManagedStore
+	relayAdmin     *RelayAdminClient
+	enforceEnabled bool
+	enforceUIDs    map[int64]bool
+	interval       time.Duration
+	retryDelays    []time.Duration
+	queue          chan commercialRelaySyncRequest
+	reconcileQueue chan struct{}
+	pendingMu      sync.Mutex
+	pendingUIDs    map[int64]*commercialRelayPendingState
 }
 
 func NewCommercialRelaySyncer(store CommercialRelayManagedStore, relayAdmin *RelayAdminClient, opts CommercialRelaySyncerOptions) *CommercialRelaySyncer {
@@ -63,6 +74,8 @@ func NewCommercialRelaySyncer(store CommercialRelayManagedStore, relayAdmin *Rel
 		interval:       interval,
 		retryDelays:    retryDelays,
 		queue:          make(chan commercialRelaySyncRequest, 256),
+		reconcileQueue: make(chan struct{}, 1),
+		pendingUIDs:    map[int64]*commercialRelayPendingState{},
 	}
 }
 
@@ -74,10 +87,9 @@ func (s *CommercialRelaySyncer) Enqueue(uid int64) {
 	if s == nil || uid <= 0 || s.store == nil || s.relayAdmin == nil {
 		return
 	}
-	select {
-	case s.queue <- commercialRelaySyncRequest{uid: uid}:
-	default:
+	if !s.notifyAndQueue(context.Background(), uid, false) {
 		log.Printf("commercial relay sync queue is full; uid=%d will be retried by reconciliation", uid)
+		s.requestReconciliation()
 	}
 }
 
@@ -86,91 +98,283 @@ func (s *CommercialRelaySyncer) Start(ctx context.Context) {
 		return
 	}
 	go s.run(ctx)
+	go s.runReconciliation(ctx)
+	s.requestReconciliation()
 }
 
 func (s *CommercialRelaySyncer) run(ctx context.Context) {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
-	startupReconcile := time.NewTimer(0)
-	defer startupReconcile.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case request := <-s.queue:
-			if err := s.syncWithTimeout(ctx, request.uid); err != nil {
-				log.Printf("commercial relay sync failed uid=%d attempt=%d: %v", request.uid, request.attempt+1, err)
-				s.scheduleRetry(ctx, request)
+			generation, attempt, ok := s.beginSync(request)
+			if !ok {
+				continue
 			}
-		case <-startupReconcile.C:
-			s.reconcile(ctx)
+			if err := s.syncWithTimeout(ctx, request.uid); err != nil {
+				log.Printf("commercial relay sync failed uid=%d attempt=%d: %v", request.uid, attempt+1, err)
+				s.finishFailedSync(ctx, request.uid, generation, attempt)
+			} else {
+				s.finishSuccessfulSync(ctx, request.uid, generation)
+			}
 		case <-ticker.C:
-			s.reconcile(ctx)
+			s.requestReconciliation()
 		}
 	}
 }
 
-func (s *CommercialRelaySyncer) scheduleRetry(ctx context.Context, request commercialRelaySyncRequest) {
-	if request.attempt >= len(s.retryDelays) {
+func (s *CommercialRelaySyncer) notifyAndQueue(ctx context.Context, uid int64, wait bool) bool {
+	s.pendingMu.Lock()
+	pending := s.pendingUIDs[uid]
+	if pending == nil {
+		pending = &commercialRelayPendingState{}
+		s.pendingUIDs[uid] = pending
+	}
+	pending.generation++
+	if pending.queued || pending.inFlight || pending.retryWaiting {
+		s.pendingMu.Unlock()
+		return true
+	}
+	pending.queued = true
+	request := commercialRelaySyncRequest{uid: uid, generation: pending.generation}
+	s.pendingMu.Unlock()
+	return s.dispatchRequest(ctx, request, wait)
+}
+
+func (s *CommercialRelaySyncer) ensureQueued(ctx context.Context, uid int64, wait bool) bool {
+	s.pendingMu.Lock()
+	pending := s.pendingUIDs[uid]
+	if pending == nil {
+		pending = &commercialRelayPendingState{generation: 1}
+		s.pendingUIDs[uid] = pending
+	}
+	if pending.queued || pending.inFlight || pending.retryWaiting {
+		s.pendingMu.Unlock()
+		return true
+	}
+	pending.queued = true
+	request := commercialRelaySyncRequest{uid: uid, generation: pending.generation}
+	s.pendingMu.Unlock()
+	return s.dispatchRequest(ctx, request, wait)
+}
+
+func (s *CommercialRelaySyncer) dispatchRequest(ctx context.Context, request commercialRelaySyncRequest, wait bool) bool {
+	if wait {
+		select {
+		case <-ctx.Done():
+			s.markDispatchFailed(request.uid)
+			return false
+		case s.queue <- request:
+			return true
+		}
+	}
+	select {
+	case s.queue <- request:
+		return true
+	default:
+		s.markDispatchFailed(request.uid)
+		return false
+	}
+}
+
+func (s *CommercialRelaySyncer) markDispatchFailed(uid int64) {
+	s.pendingMu.Lock()
+	if pending := s.pendingUIDs[uid]; pending != nil {
+		pending.queued = false
+	}
+	s.pendingMu.Unlock()
+}
+
+func (s *CommercialRelaySyncer) beginSync(request commercialRelaySyncRequest) (uint64, int, bool) {
+	s.pendingMu.Lock()
+	pending := s.pendingUIDs[request.uid]
+	if pending == nil {
+		s.pendingMu.Unlock()
+		return 0, 0, false
+	}
+	pending.queued = false
+	pending.inFlight = true
+	generation := pending.generation
+	attempt := request.attempt
+	if request.generation != generation {
+		attempt = 0
+	}
+	s.pendingMu.Unlock()
+	return generation, attempt, true
+}
+
+func (s *CommercialRelaySyncer) finishSuccessfulSync(ctx context.Context, uid int64, generation uint64) {
+	s.pendingMu.Lock()
+	pending := s.pendingUIDs[uid]
+	if pending == nil {
+		s.pendingMu.Unlock()
 		return
 	}
-	delay := s.retryDelays[request.attempt]
+	pending.inFlight = false
+	if pending.generation == generation {
+		delete(s.pendingUIDs, uid)
+		s.pendingMu.Unlock()
+		return
+	}
+	pending.queued = true
+	request := commercialRelaySyncRequest{uid: uid, generation: pending.generation}
+	s.pendingMu.Unlock()
+
+	if !s.dispatchRequest(ctx, request, false) {
+		log.Printf("commercial relay follow-up queue is full; uid=%d will be retried by reconciliation", uid)
+		s.requestReconciliation()
+	}
+}
+
+func (s *CommercialRelaySyncer) finishFailedSync(ctx context.Context, uid int64, generation uint64, attempt int) {
+	s.pendingMu.Lock()
+	pending := s.pendingUIDs[uid]
+	if pending == nil {
+		s.pendingMu.Unlock()
+		return
+	}
+	pending.inFlight = false
+	if pending.generation != generation {
+		pending.queued = true
+		request := commercialRelaySyncRequest{uid: uid, generation: pending.generation}
+		s.pendingMu.Unlock()
+		if !s.dispatchRequest(ctx, request, false) {
+			log.Printf("commercial relay fresh-update queue is full; uid=%d will be retried by reconciliation", uid)
+			s.requestReconciliation()
+		}
+		return
+	}
+	if attempt >= len(s.retryDelays) {
+		delete(s.pendingUIDs, uid)
+		s.pendingMu.Unlock()
+		return
+	}
+	pending.retryWaiting = true
+	delay := s.retryDelays[attempt]
 	if delay <= 0 {
 		delay = time.Millisecond
 	}
-	request.attempt++
+	nextAttempt := attempt + 1
+	s.pendingMu.Unlock()
+	s.scheduleRetry(ctx, uid, generation, nextAttempt, delay)
+}
+
+func (s *CommercialRelaySyncer) scheduleRetry(ctx context.Context, uid int64, generation uint64, attempt int, delay time.Duration) {
 	go func() {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
+			s.clearRetryWaiting(uid)
 			return
 		case <-timer.C:
 		}
-		select {
-		case <-ctx.Done():
-		case s.queue <- request:
-		default:
-			log.Printf("commercial relay retry queue is full; uid=%d will be retried by reconciliation", request.uid)
+
+		s.pendingMu.Lock()
+		pending := s.pendingUIDs[uid]
+		if pending == nil || !pending.retryWaiting {
+			s.pendingMu.Unlock()
+			return
+		}
+		pending.retryWaiting = false
+		if pending.generation != generation {
+			attempt = 0
+		}
+		pending.queued = true
+		request := commercialRelaySyncRequest{uid: uid, generation: pending.generation, attempt: attempt}
+		s.pendingMu.Unlock()
+		if !s.dispatchRequest(ctx, request, true) && ctx.Err() == nil {
+			s.requestReconciliation()
 		}
 	}()
 }
 
-func (s *CommercialRelaySyncer) reconcile(ctx context.Context) {
-	uids, err := s.store.ListCommercialReconcileUIDs(s.reconcileAfterUID, 50)
-	if err != nil {
-		log.Printf("commercial relay reconciliation list failed: %v", err)
-		return
+func (s *CommercialRelaySyncer) clearRetryWaiting(uid int64) {
+	s.pendingMu.Lock()
+	if pending := s.pendingUIDs[uid]; pending != nil && pending.retryWaiting {
+		delete(s.pendingUIDs, uid)
 	}
-	for _, uid := range uids {
-		if !s.EnforcedFor(uid) {
-			managed, managedErr := s.store.ListCommercialManagedRelayBudgets(uid)
-			if managedErr != nil {
-				log.Printf("commercial relay reconciliation state failed uid=%d: %v", uid, managedErr)
-				continue
-			}
-			required, requiredErr := s.store.CommercialRelaySyncRequired(uid)
-			if requiredErr != nil {
-				log.Printf("commercial relay entitlement state failed uid=%d: %v", uid, requiredErr)
-				continue
-			}
-			if len(managed) == 0 && !required {
-				continue
-			}
-		}
+	s.pendingMu.Unlock()
+}
+
+func (s *CommercialRelaySyncer) requestReconciliation() {
+	select {
+	case s.reconcileQueue <- struct{}{}:
+	default:
+	}
+}
+
+func (s *CommercialRelaySyncer) runReconciliation(ctx context.Context) {
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		case s.queue <- commercialRelaySyncRequest{uid: uid}:
-		default:
-			log.Printf("commercial relay reconciliation queue is full; uid=%d will be retried later", uid)
+		case <-s.reconcileQueue:
+			s.reconcileAll(ctx)
 		}
 	}
-	if len(uids) < 50 {
-		s.reconcileAfterUID = 0
-	} else {
-		s.reconcileAfterUID = uids[len(uids)-1]
+}
+
+func (s *CommercialRelaySyncer) reconcileAll(ctx context.Context) {
+	if !s.queueIdlePending(ctx) {
+		return
 	}
+	var afterUID int64
+	for {
+		uids, err := s.store.ListCommercialReconcileUIDs(afterUID, 50)
+		if err != nil {
+			log.Printf("commercial relay reconciliation list failed: %v", err)
+			return
+		}
+		for _, uid := range uids {
+			if !s.EnforcedFor(uid) {
+				managed, managedErr := s.store.ListCommercialManagedRelayBudgets(uid)
+				if managedErr != nil {
+					log.Printf("commercial relay reconciliation state failed uid=%d: %v", uid, managedErr)
+					continue
+				}
+				required, requiredErr := s.store.CommercialRelaySyncRequired(uid)
+				if requiredErr != nil {
+					log.Printf("commercial relay entitlement state failed uid=%d: %v", uid, requiredErr)
+					continue
+				}
+				if len(managed) == 0 && !required {
+					continue
+				}
+			}
+			if !s.ensureQueued(ctx, uid, true) && ctx.Err() != nil {
+				return
+			}
+		}
+		if len(uids) < 50 {
+			return
+		}
+		afterUID = uids[len(uids)-1]
+	}
+}
+
+func (s *CommercialRelaySyncer) queueIdlePending(ctx context.Context) bool {
+	s.pendingMu.Lock()
+	requests := make([]commercialRelaySyncRequest, 0, len(s.pendingUIDs))
+	for uid, pending := range s.pendingUIDs {
+		if pending == nil || pending.queued || pending.inFlight || pending.retryWaiting {
+			continue
+		}
+		pending.queued = true
+		requests = append(requests, commercialRelaySyncRequest{uid: uid, generation: pending.generation})
+	}
+	s.pendingMu.Unlock()
+
+	sort.Slice(requests, func(i, j int) bool { return requests[i].uid < requests[j].uid })
+	for _, request := range requests {
+		if !s.dispatchRequest(ctx, request, true) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *CommercialRelaySyncer) syncWithTimeout(parent context.Context, uid int64) error {

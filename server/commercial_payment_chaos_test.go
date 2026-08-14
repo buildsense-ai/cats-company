@@ -41,6 +41,20 @@ type failOnceOrderLookupStore struct {
 	failLookup bool
 }
 
+type staleRefundRestartStore struct {
+	*commercialPaymentTestStore
+}
+
+func (s *staleRefundRestartStore) BeginCommercialOrderRefund(orderNo, refundRequestNo string, staleAfter time.Duration) (*types.CommercialOrder, bool, error) {
+	order := s.orders[orderNo]
+	if order != nil && order.Status == "refunding" {
+		order.RefundRequestNo = refundRequestNo
+		copy := *order
+		return &copy, true, nil
+	}
+	return s.commercialPaymentTestStore.BeginCommercialOrderRefund(orderNo, refundRequestNo, staleAfter)
+}
+
 func (s *failOnceOrderLookupStore) GetCommercialOrder(uid int64, orderNo string) (*types.CommercialOrder, error) {
 	if s.failLookup {
 		s.failLookup = false
@@ -213,6 +227,9 @@ type commercialDeployRelayServer struct {
 	mu           sync.Mutex
 	applied      bool
 	scopes       []commercialRelayModelScope
+	blockFirst   atomic.Bool
+	firstStarted chan struct{}
+	firstRelease chan struct{}
 }
 
 func newCommercialDeployRelayServer(t *testing.T, failures int32) *commercialDeployRelayServer {
@@ -227,6 +244,10 @@ func newCommercialDeployRelayServer(t *testing.T, failures int32) *commercialDep
 func (s *commercialDeployRelayServer) handle(w http.ResponseWriter, r *http.Request) {
 	s.requestCount.Add(1)
 	if r.Method == http.MethodGet {
+		if s.blockFirst.CompareAndSwap(true, false) {
+			close(s.firstStarted)
+			<-s.firstRelease
+		}
 		for {
 			remaining := s.failures.Load()
 			if remaining <= 0 {
@@ -292,7 +313,8 @@ func newCommercialDeploySyncStore(reconcile bool) *commercialRelaySyncTestStore 
 				GrantType: "order", Model: "gpt-5.6-terra", AmountCNY: 100,
 			}},
 		},
-		replacedCh: make(chan struct{}, 1),
+		replacedCh:    make(chan struct{}, 1),
+		replacedUIDCh: make(chan int64, 128),
 	}
 	if reconcile {
 		store.reconcileUIDs = []int64{38}
@@ -349,6 +371,11 @@ func TestCommercialPurchaseSurvivesRelayAndWebDeployWindow(t *testing.T) {
 	}
 
 	relay.failures.Store(1)
+	retryDuringRelayDeploy := httptest.NewRecorder()
+	newHandler().HandleOrders(retryDuringRelayDeploy, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders", body, 38))
+	if retryDuringRelayDeploy.Code != http.StatusServiceUnavailable || len(store.orders) != 1 || provider.createCalls != 1 || relay.failures.Load() != 0 {
+		t.Fatalf("relay deploy retry was unsafe: status=%d orders=%d calls=%d failures=%d body=%s", retryDuringRelayDeploy.Code, len(store.orders), provider.createCalls, relay.failures.Load(), retryDuringRelayDeploy.Body.String())
+	}
 	refreshedPage := httptest.NewRecorder()
 	newHandler().HandleOrders(refreshedPage, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders", "", 38))
 	if refreshedPage.Code != http.StatusOK || !strings.Contains(refreshedPage.Body.String(), pendingOrderNo) {
@@ -399,15 +426,50 @@ func TestCommercialCallbackCommitsWhileRelayDeploysAndRetriesSync(t *testing.T) 
 func TestCommercialRelayStartupReconcilesQueueLostDuringRestart(t *testing.T) {
 	relay := newCommercialDeployRelayServer(t, 0)
 	store := newCommercialDeploySyncStore(true)
+	store.reconcileUIDs = make([]int64, 75)
+	for index := range store.reconcileUIDs {
+		store.reconcileUIDs[index] = int64(index + 1)
+	}
 	syncer := newCommercialDeploySyncer(store, relay)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	syncer.Start(ctx)
 
+	reconciled := map[int64]bool{}
+	deadline := time.After(3 * time.Second)
+	for len(reconciled) < len(store.reconcileUIDs) {
+		select {
+		case uid := <-store.replacedUIDCh:
+			reconciled[uid] = true
+		case <-deadline:
+			t.Fatalf("a restarted service reconciled only %d/%d users before the periodic interval", len(reconciled), len(store.reconcileUIDs))
+		}
+	}
+}
+
+func TestCommercialRelayRequeuesOverflowedUIDOutsideDatabaseCandidates(t *testing.T) {
+	relay := newCommercialDeployRelayServer(t, 0)
+	store := newCommercialDeploySyncStore(false)
+	syncer := newCommercialDeploySyncer(store, relay)
+	for index := 0; index < cap(syncer.queue); index++ {
+		syncer.queue <- commercialRelaySyncRequest{uid: int64(10_000 + index)}
+	}
+
+	syncer.Enqueue(38)
+	if pending := syncer.pendingUIDs[38]; pending == nil || pending.queued {
+		t.Fatalf("overflowed UID was not retained as idle pending state: %#v", pending)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	syncer.Start(ctx)
 	select {
-	case <-store.replacedCh:
-	case <-time.After(time.Second):
-		t.Fatal("a restarted service did not immediately reconcile the lost in-memory sync queue")
+	case uid := <-store.replacedUIDCh:
+		if uid != 38 {
+			t.Fatalf("unexpected reconciled UID: %d", uid)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("overflowed UID outside database candidates was not requeued")
 	}
 }
 
@@ -418,7 +480,9 @@ func TestCommercialRelayDeployRetriesAreBounded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	syncer.Start(ctx)
-	syncer.Enqueue(38)
+	for range 100 {
+		syncer.Enqueue(38)
+	}
 
 	deadline := time.Now().Add(time.Second)
 	for relay.requestCount.Load() < 3 && time.Now().Before(deadline) {
@@ -430,6 +494,81 @@ func TestCommercialRelayDeployRetriesAreBounded(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if requests := relay.requestCount.Load(); requests != 3 {
 		t.Fatalf("permanent relay outage caused unbounded retries: requests=%d", requests)
+	}
+}
+
+func TestCommercialRelayDeduplicatesAndReplaysUpdateDuringActiveSync(t *testing.T) {
+	relay := newCommercialDeployRelayServer(t, 0)
+	relay.firstStarted = make(chan struct{})
+	relay.firstRelease = make(chan struct{})
+	relay.blockFirst.Store(true)
+	store := newCommercialDeploySyncStore(false)
+	syncer := newCommercialDeploySyncer(store, relay)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	syncer.Start(ctx)
+	syncer.Enqueue(38)
+
+	select {
+	case <-relay.firstStarted:
+	case <-time.After(time.Second):
+		close(relay.firstRelease)
+		t.Fatal("first relay sync did not start")
+	}
+	for range 100 {
+		syncer.Enqueue(38)
+	}
+	close(relay.firstRelease)
+
+	completed := 0
+	deadline := time.After(2 * time.Second)
+	for completed < 2 {
+		select {
+		case <-store.replacedUIDCh:
+			completed++
+		case <-deadline:
+			t.Fatalf("an update arriving during sync was lost; completed=%d", completed)
+		}
+	}
+	time.Sleep(30 * time.Millisecond)
+	if requests := relay.requestCount.Load(); requests != 4 {
+		t.Fatalf("duplicate notifications were not coalesced into one follow-up sync: requests=%d", requests)
+	}
+}
+
+func TestCommercialRelayReplaysNewGenerationAfterActiveSyncFails(t *testing.T) {
+	relay := newCommercialDeployRelayServer(t, 100)
+	relay.firstStarted = make(chan struct{})
+	relay.firstRelease = make(chan struct{})
+	relay.blockFirst.Store(true)
+	store := newCommercialDeploySyncStore(false)
+	syncer := newCommercialDeploySyncer(store, relay)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	syncer.Start(ctx)
+	syncer.Enqueue(38)
+
+	select {
+	case <-relay.firstStarted:
+	case <-time.After(time.Second):
+		close(relay.firstRelease)
+		t.Fatal("first relay sync did not start")
+	}
+	for range 100 {
+		syncer.Enqueue(38)
+	}
+	close(relay.firstRelease)
+
+	deadline := time.Now().Add(time.Second)
+	for relay.requestCount.Load() < 4 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if requests := relay.requestCount.Load(); requests != 4 {
+		t.Fatalf("new generation was lost after the active sync failed: requests=%d", requests)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if requests := relay.requestCount.Load(); requests != 4 {
+		t.Fatalf("new generation caused unbounded retries: requests=%d", requests)
 	}
 }
 
@@ -488,6 +627,33 @@ func TestCommercialRefundRecoversWhenProviderSucceededBeforeLocalCommit(t *testi
 	_, changed, err = handler.RefundOrder(context.Background(), "CC-REFUND-COMMIT-RETRY", "duplicate retry")
 	if err != nil || changed || provider.refundCalls != 2 {
 		t.Fatalf("duplicate retry changed=%v calls=%d err=%v", changed, provider.refundCalls, err)
+	}
+}
+
+func TestCommercialRefundResumesAfterProcessStopsBeforeLocalCommit(t *testing.T) {
+	base := newCommercialPaymentTestStore()
+	base.orders["CC-REFUND-RESTART"] = &types.CommercialOrder{
+		OrderNo: "CC-REFUND-RESTART", UID: 38, Channel: commercialPaymentChannelAlipayPage,
+		Status: "refunding", RefundRequestNo: "CCRF-CC-REFUND-RESTART",
+		ProviderTradeNo: "trade-refund-restart", AmountFen: 1, Currency: "CNY",
+	}
+	store := &staleRefundRestartStore{commercialPaymentTestStore: base}
+	provider := &queryCommercialPaymentProvider{refund: &types.CommercialRefundConfirmation{
+		Channel: commercialPaymentChannelAlipayPage, EventID: "CCRF-CC-REFUND-RESTART",
+		ProviderTradeNo: "trade-refund-restart", RefundRequestNo: "CCRF-CC-REFUND-RESTART",
+		AmountFen: 1, Currency: "CNY", RefundedAt: time.Now().UTC(),
+	}}
+	newHandler := func() *CommercialPaymentHandler {
+		return NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{Providers: []CommercialPaymentProvider{provider}})
+	}
+
+	refunded, changed, err := newHandler().RefundOrder(context.Background(), "CC-REFUND-RESTART", "resume after deploy")
+	if err != nil || !changed || refunded == nil || refunded.Status != "refunded" || provider.refundCalls != 1 {
+		t.Fatalf("stale refund did not recover: order=%#v changed=%v calls=%d err=%v", refunded, changed, provider.refundCalls, err)
+	}
+	refunded, changed, err = newHandler().RefundOrder(context.Background(), "CC-REFUND-RESTART", "duplicate after deploy")
+	if err != nil || changed || refunded == nil || refunded.Status != "refunded" || provider.refundCalls != 1 {
+		t.Fatalf("recovered refund was not idempotent: order=%#v changed=%v calls=%d err=%v", refunded, changed, provider.refundCalls, err)
 	}
 }
 
