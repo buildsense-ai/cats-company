@@ -1836,7 +1836,6 @@ function spreadsheetPreviewTooLargeMessage() {
 function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
   const [playbackFailed, setPlaybackFailed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [cropThumbnail, setCropThumbnail] = useState(false);
   const previewRef = useRef(null);
   const triggerRef = useRef(null);
   const closeButtonRef = useRef(null);
@@ -1847,7 +1846,6 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
   useEffect(() => {
     setPlaybackFailed(false);
     setPreviewOpen(false);
-    setCropThumbnail(false);
   }, [src]);
 
   useEffect(() => {
@@ -1899,11 +1897,6 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
     setPlaybackFailed(true);
   };
 
-  const handleThumbnailMetadata = (event) => {
-    const { videoHeight, videoWidth } = event.currentTarget;
-    setCropThumbnail(videoHeight > 0 && videoWidth / videoHeight > 2.2);
-  };
-
   if (!payload || !src || playbackFailed) {
     return (
       <div className="oc-rich-video-fallback">
@@ -1924,7 +1917,7 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
   }
 
   return (
-    <div className={`oc-rich-image oc-rich-video${cropThumbnail ? ' is-ultrawide' : ''}`}>
+    <div className="oc-rich-image oc-rich-video">
       <button
         aria-label={`预览视频 ${payload.name || ''}`.trim()}
         className="oc-rich-video-trigger"
@@ -1937,7 +1930,6 @@ function VideoContent({ payload, onPreviewFile, activePreviewFile }) {
           className="oc-rich-video-thumb"
           muted
           onError={handlePlaybackError}
-          onLoadedMetadata={handleThumbnailMetadata}
           playsInline
           preload="metadata"
           src={src}

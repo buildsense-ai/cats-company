@@ -2663,7 +2663,7 @@ describe('ChatMessage rich file rendering', () => {
       thumbnail.dispatchEvent(new Event('loadedmetadata', { bubbles: true }));
       await Promise.resolve();
     });
-    expect(container.querySelector('.oc-rich-video').classList.contains('is-ultrawide')).toBe(true);
+    expect(container.querySelector('.oc-rich-video').classList.contains('is-ultrawide')).toBe(false);
 
     trigger.focus();
     await act(async () => {
