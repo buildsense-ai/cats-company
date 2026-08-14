@@ -113,10 +113,6 @@ func (h *UserHandler) HandleSendCode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email required"})
 		return
 	}
-	if !isValidEmailFormat(req.Email) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid email format"})
-		return
-	}
 
 	// Check if email already registered
 	existingUser, err := h.db.GetUserByEmail(req.Email)
@@ -156,10 +152,6 @@ func (h *UserHandler) HandleResetPasswordSendCode(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email required"})
 		return
 	}
-	if !isValidEmailFormat(req.Email) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid email format"})
-		return
-	}
 
 	existingUser, err := h.db.GetUserByEmail(req.Email)
 	if err != nil {
@@ -197,10 +189,6 @@ func (h *UserHandler) HandleResetPassword(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email and code required"})
 		return
 	}
-	if !isValidEmailFormat(req.Email) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid email format"})
-		return
-	}
 	if len(req.Password) < 6 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password min 6 chars"})
 		return
@@ -211,20 +199,7 @@ func (h *UserHandler) HandleResetPassword(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "database error"})
 		return
 	}
-	if user == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired verification code"})
-		return
-	}
-	switch consumeVerificationCode(req.Email, req.Code, verificationPurposePasswordReset) {
-	case codeStatusValid:
-		// fallthrough to reset the password
-	case codeStatusExpired:
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "verification code expired, please request a new one"})
-		return
-	case codeStatusMismatch:
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "verification code does not match, please use the latest one"})
-		return
-	default:
+	if user == nil || !verifyCodeForPurpose(req.Email, req.Code, verificationPurposePasswordReset) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired verification code"})
 		return
 	}
@@ -254,10 +229,6 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	if req.Email == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email required"})
-		return
-	}
-	if !isValidEmailFormat(req.Email) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid email format"})
 		return
 	}
 	if len(req.Password) < 6 {
@@ -298,23 +269,7 @@ func (h *UserHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Code == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "verification code required"})
-		return
-	}
-
-	switch consumeVerificationCode(email, req.Code, verificationPurposeRegister) {
-	case codeStatusValid:
-		// fallthrough to create the account
-	case codeStatusExpired:
-		fmt.Printf("[REGISTER_ERROR] Expired code for %s\n", email)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "verification code expired, please request a new one"})
-		return
-	case codeStatusMismatch:
-		fmt.Printf("[REGISTER_ERROR] Code mismatch for %s\n", email)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "verification code does not match, please use the latest one"})
-		return
-	default:
+	if req.Code == "" || !verifyCode(email, req.Code) {
 		fmt.Printf("[REGISTER_ERROR] Invalid code for %s\n", email)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired verification code"})
 		return
