@@ -409,9 +409,9 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		}
 		var grantID int64
 		if err := tx.QueryRow(`
-			INSERT INTO commercial_quota_grants(uid, plan_id, invite_code_id, grant_type, model, amount_cny, reset_duration, effective_at, expires_at, note)
-			VALUES ($1, $2, $3, 'invite', $4, $5, '1M', $6, $7, $8)
-			RETURNING id`, uid, planID, inviteID, model, amount, startsAt, entitlementExpires, "invite "+code).Scan(&grantID); err != nil {
+			INSERT INTO commercial_quota_grants(uid, plan_id, invite_code_id, grant_type, model, amount_cny, reset_duration, effective_at, expires_at, source_ref, note)
+			VALUES ($1, $2, $3, 'invite', $4, $5, '1M', $6, $7, $8, $9)
+			RETURNING id`, uid, planID, inviteID, model, amount, startsAt, entitlementExpires, code, "invite "+code).Scan(&grantID); err != nil {
 			return nil, fmt.Errorf("create invite quota grant: %w", err)
 		}
 		if _, err := tx.Exec(`
@@ -463,11 +463,13 @@ func scanCommercialQuotaGrant(rows *sql.Rows) (*types.CommercialQuotaGrant, erro
 		&item.PlanID,
 		&item.InviteCodeID,
 		&item.GrantType,
+		&item.SourceRef,
 		&item.Model,
 		&item.AmountCNY,
 		&item.ResetDuration,
 		&item.EffectiveAt,
 		&expiresAt,
+		&item.RevokedAt,
 		&item.Note,
 		&item.OperatorUID,
 		&item.CreatedAt,
@@ -528,11 +530,12 @@ func (a *Adapter) GetCommercialSummary(uid int64) (*types.CommercialSummary, err
 	}
 
 	grantRows, err := a.db.Query(`
-		SELECT id, uid, COALESCE(plan_id, 0), COALESCE(invite_code_id, 0), grant_type, model, amount_cny,
-		       reset_duration, effective_at, expires_at, note, COALESCE(operator_uid, 0), created_at
+		SELECT id, uid, COALESCE(plan_id, 0), COALESCE(invite_code_id, 0), grant_type, source_ref, model, amount_cny,
+		       reset_duration, effective_at, expires_at, revoked_at, note, COALESCE(operator_uid, 0), created_at
 		FROM commercial_quota_grants
 		WHERE uid = $1
 		  AND effective_at <= CURRENT_TIMESTAMP
+		  AND revoked_at IS NULL
 		  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
 		ORDER BY created_at DESC`, uid)
 	if err != nil {

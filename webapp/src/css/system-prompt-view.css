@@ -116,7 +116,7 @@
 
 .cc-system-prompt-summary {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) 120px 140px auto;
+  grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr) minmax(110px, 1fr) minmax(180px, 1.3fr) auto;
   align-items: center;
   gap: 20px;
   border-top: 1px solid var(--cc-border);
@@ -144,19 +144,31 @@
   white-space: nowrap;
 }
 
+.cc-system-prompt-access {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .cc-system-prompt-status {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  width: max-content;
+  width: auto;
+  max-width: 100%;
   color: var(--cc-muted);
   font-size: 12px;
   font-weight: var(--cc-font-weight-semibold);
+  line-height: 1.35;
 }
 
+.cc-system-prompt-status > span { min-width: 0; }
+
 .cc-system-prompt-status.is-applied { color: var(--cc-success-text); }
+.cc-system-prompt-status.is-failed,
 .cc-system-prompt-status.is-error { color: var(--cc-danger); }
 .cc-system-prompt-status.is-pending { color: var(--cc-warning-text); }
+.cc-system-prompt-status.is-saved { color: var(--cc-muted); }
 
 .cc-system-prompt-refresh,
 .cc-system-prompt-actions button {
@@ -279,7 +291,112 @@
 }
 
 .cc-system-prompt-editor textarea::placeholder { color: var(--cc-muted); }
-.cc-system-prompt-editor.is-disabled textarea { min-height: 220px; opacity: 0.62; }
+.cc-system-prompt-editor.is-readonly textarea {
+  min-height: 220px;
+  background: var(--cc-panel);
+  opacity: 0.88;
+}
+
+.cc-system-prompt-snapshot-empty {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+  min-height: 180px;
+  box-sizing: border-box;
+  border: 1px dashed var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  padding: 22px;
+  background: var(--cc-panel);
+  color: var(--cc-muted);
+}
+
+.cc-system-prompt-snapshot-empty strong {
+  color: var(--cc-text);
+  font-size: 14px;
+}
+
+.cc-system-prompt-snapshot-empty span {
+  max-width: 620px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.cc-system-prompt-snapshot-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  color: var(--cc-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.cc-system-prompt-visibility {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid var(--cc-border);
+  border-radius: var(--cc-radius-md);
+  padding: 14px;
+  background: var(--cc-panel);
+}
+
+.cc-system-prompt-visibility h2 {
+  margin: 0 0 4px;
+  color: var(--cc-text);
+  font-size: 13px;
+}
+
+.cc-system-prompt-visibility p {
+  margin: 0;
+  color: var(--cc-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.cc-system-prompt-visibility-options {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.cc-system-prompt-visibility-options button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid var(--cc-border-strong);
+  border-radius: var(--cc-radius-md);
+  padding: 0 10px;
+  background: var(--cc-control-surface);
+  color: var(--cc-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: var(--cc-font-weight-semibold);
+}
+
+.cc-system-prompt-visibility-options button:hover:not(:disabled),
+.cc-system-prompt-visibility-options button.is-selected {
+  border-color: var(--cc-accent);
+  background: var(--cc-selected);
+  color: var(--cc-text);
+}
+
+.cc-system-prompt-visibility-options button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.cc-system-prompt-visibility-options > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--cc-muted);
+  font-size: 11px;
+}
 
 .cc-system-prompt-editor > p {
   margin: 0;
@@ -325,8 +442,18 @@
   .cc-system-prompt-refresh { width: 100%; }
   .cc-system-prompt-mode { grid-template-columns: 1fr; }
   .cc-system-prompt-editor textarea { min-height: 300px; }
+  .cc-system-prompt-visibility { align-items: stretch; flex-direction: column; }
+  .cc-system-prompt-visibility-options { justify-content: flex-start; }
   .cc-system-prompt-actions { position: static; align-items: stretch; flex-direction: column; }
   .cc-system-prompt-actions button.primary { width: 100%; }
+}
+
+@media (min-width: 761px) and (max-width: 1020px) {
+  .cc-system-prompt-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cc-system-prompt-summary .cc-system-prompt-refresh { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

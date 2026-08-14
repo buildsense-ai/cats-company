@@ -13,6 +13,10 @@ from typing import BinaryIO
 
 ENABLED_KEY = "CATSCO_STT_ENABLED"
 API_KEY = "VOLCENGINE_STT_API_KEY"
+LIMIT_MIGRATIONS = {
+    "CATSCO_STT_MAX_SESSION_SECONDS": ("90", "150"),
+    "CATSCO_STT_MAX_HOURLY_SECONDS": ("600", "1440"),
+}
 LEGACY_KEYS = (
     "VOLCENGINE_STT_APP_ID",
     "VOLCENGINE_STT_ACCESS_TOKEN",
@@ -64,12 +68,25 @@ def render(source: str, api_key: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def migrate_legacy_limits(source: str) -> str:
+    lines: list[str] = []
+    for raw_line in source.replace("\ufeff", "").replace("\r\n", "\n").splitlines():
+        line = raw_line
+        if "=" in line and not line.lstrip().startswith("#"):
+            key, _, value = line.partition("=")
+            migration = LIMIT_MIGRATIONS.get(key)
+            if migration and value == migration[0]:
+                line = f"{key}={migration[1]}"
+        lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
 def update_file(env_file: Path, api_key: str) -> None:
     value = normalize_value(api_key)
     if not env_file.is_file():
         raise FileNotFoundError(f"missing env file: {env_file}")
     source = env_file.read_text(encoding="utf-8", errors="replace")
-    rendered = render(source, value or "")
+    rendered = migrate_legacy_limits(render(source, value or ""))
 
     temporary: Path | None = None
     try:

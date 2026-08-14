@@ -323,9 +323,13 @@ func TestRelayAdminCommercialOpsWriteMarker(t *testing.T) {
 func TestRelayAdminLimitsWritePreservesBody(t *testing.T) {
 	const payload = `{"monthly_budget":321,"provider_configs":[]}`
 	var received string
+	var contentLength int64
+	var transferEncoding []string
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		received = string(body)
+		contentLength = r.ContentLength
+		transferEncoding = append([]string(nil), r.TransferEncoding...)
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{}`)
 	}))
@@ -338,6 +342,12 @@ func TestRelayAdminLimitsWritePreservesBody(t *testing.T) {
 	h.HandleProxy(rec, req)
 	if rec.Code != http.StatusOK || received != payload {
 		t.Fatalf("status=%d received=%q body=%s", rec.Code, received, rec.Body.String())
+	}
+	if contentLength != int64(len(payload)) {
+		t.Fatalf("content length=%d want=%d", contentLength, len(payload))
+	}
+	if len(transferEncoding) != 0 {
+		t.Fatalf("unexpected transfer encoding: %v", transferEncoding)
 	}
 }
 

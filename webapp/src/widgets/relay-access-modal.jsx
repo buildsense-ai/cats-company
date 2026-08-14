@@ -292,11 +292,6 @@ function formatPercent(value) {
   return `${Math.max(0, number).toFixed(number > 0 && number < 1 ? 2 : 1).replace(/\.0$/, '')}%`;
 }
 
-function modelBudgetLabel(model) {
-  if (!model || model === '*') return '通用额度';
-  return model;
-}
-
 function modelServiceKeyName(name) {
   const value = String(name || '').trim();
   if (!value || /^catsco\s+(?:relay|模型服务)\s+key$/i.test(value)) return 'CatsCo API Key';
@@ -304,9 +299,8 @@ function modelServiceKeyName(name) {
 }
 
 function summarizeCommercial(summary) {
-  const models = commercialModels(summary);
-  if (!models.length) return '暂无已发放额度';
-  return `1 个共享额度池 · 覆盖 ${models.length} 个模型 · 各模型按自身倍率扣减`;
+  if (!activeEntitlements(summary).length && !(summary?.models || []).length) return '暂无已发放额度';
+  return '1 个共享额度池 · 按套餐权益统一扣减';
 }
 
 function commercialUsageTextForUser(plan, presentation) {
@@ -324,12 +318,6 @@ function commercialEntitlementSourceLabel(source) {
     trial: '体验领取',
     manual: '管理员发放',
   })[String(source || '').trim()] || '套餐发放';
-}
-
-function commercialModels(summary) {
-  return [...(summary?.models || [])]
-    .filter((model) => model && String(model).toLowerCase() !== 'gpt-5.6-luna')
-    .sort((a, b) => a.localeCompare(b));
 }
 
 function resetDurationLabel(value) {
@@ -747,7 +735,6 @@ export default function RelayAccessModal({ onClose }) {
   const paymentChannels = Array.isArray(commercialCatalog?.channels) ? commercialCatalog.channels : [];
   const checkoutPaymentLabel = paymentChannelLabel(paymentChannels, checkoutOrder?.channel);
   const activePackages = activeEntitlements(commercialSummary);
-  const packageModels = commercialModels(commercialSummary);
   const packageExpiry = nearestPackageExpiry(activePackages);
   const packageExpiryText = activePackages.length > 0 ? formatShortDate(packageExpiry) : '无套餐';
   const currentResetInfo = usageResetInfo(currentUsage);
@@ -786,7 +773,7 @@ export default function RelayAccessModal({ onClose }) {
     return () => {
       cancelled = true;
     };
-  }, [relayKey?.prefix, JSON.stringify(commercial?.summary?.models || [])]);
+  }, [relayKey?.prefix, JSON.stringify(commercial?.summary?.entitlements || [])]);
 
   const redeemInvite = async () => {
     const code = inviteCode.trim();
@@ -1355,13 +1342,6 @@ export default function RelayAccessModal({ onClose }) {
                         </div>
                       ))}
                     </div>
-                    {packageModels.length > 0 && (
-                      <div className="relay-access-model-coverage">
-                        <span>套餐可用模型</span>
-                        <strong>{packageModels.map(modelBudgetLabel).join('、')}</strong>
-                        <em>共用上方总额度，各模型按自身倍率扣减。</em>
-                      </div>
-                    )}
                   </div>
                 )}
 

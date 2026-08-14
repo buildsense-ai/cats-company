@@ -50,6 +50,7 @@ type CloudWorkerHandler struct {
 	rollbackScript  string
 	destroyScript   string
 	imagesScript    string
+	statusScript    string
 
 	scriptTimeout time.Duration
 
@@ -72,6 +73,7 @@ type CloudWorkerConfig struct {
 	RollbackScript  string // CATSCO_WORKER_ROLLBACK_SCRIPT
 	DestroyScript   string // CATSCO_WORKER_DESTROY_SCRIPT
 	ImagesScript    string // CATSCO_WORKER_IMAGES_SCRIPT
+	StatusScript    string // CATSCO_WORKER_STATUS_SCRIPT (batch instance status TSV; empty = status stays "unknown")
 }
 
 // CloudWorkerConfigFromEnv reads configuration from the environment.
@@ -83,6 +85,7 @@ func CloudWorkerConfigFromEnv() CloudWorkerConfig {
 		RollbackScript:  strings.TrimSpace(os.Getenv("CATSCO_WORKER_ROLLBACK_SCRIPT")),
 		DestroyScript:   strings.TrimSpace(os.Getenv("CATSCO_WORKER_DESTROY_SCRIPT")),
 		ImagesScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_IMAGES_SCRIPT")),
+		StatusScript:    strings.TrimSpace(os.Getenv("CATSCO_WORKER_STATUS_SCRIPT")),
 	}
 }
 
@@ -97,6 +100,7 @@ func NewCloudWorkerHandler(db store.Store, bots *BotHandler, cfg CloudWorkerConf
 		rollbackScript:  cfg.RollbackScript,
 		destroyScript:   cfg.DestroyScript,
 		imagesScript:    cfg.ImagesScript,
+		statusScript:    cfg.StatusScript,
 		scriptTimeout:   10 * time.Minute,
 	}
 }
@@ -132,6 +136,11 @@ type cloudWorkerSummary struct {
 	Version     string `json:"version,omitempty"`
 	ImageID     string `json:"image_id,omitempty"`
 	CreatedTime string `json:"created_time,omitempty"`
+
+	// Cloud-side facts resolved via the status script (empty = unknown).
+	CloudStatus  string `json:"cloud_status,omitempty"`
+	CloudVersion string `json:"cloud_version,omitempty"`
+	CloudImageID string `json:"cloud_image_id,omitempty"`
 }
 
 // cloudWorkersOfOwner returns the cloud-managed workers owned by uid
@@ -195,6 +204,24 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// 填云侧事实（实例状态/版本/镜像）。状态脚本未配置或失败时保持 unknown，
+	// 不影响列表返回（状态降级而非报错）。
+	if h.statusScript != "" {
+		const statusTimeout = 20 * time.Second
+		if out, statusErr := h.runScriptTimeout(statusTimeout, h.statusScript); statusErr == nil {
+			infos := parseCloudWorkerStatusTSV(out)
+			for i := range workers {
+				info, ok := infos[workers[i].TenantName]
+				if !ok {
+					continue
+				}
+				workers[i].CloudStatus = info.Status
+				workers[i].CloudImageID = info.ImageID
+				workers[i].CloudVersion = info.Version
+			}
+		}
+	}
+
 	total, remaining := h.quotaInfo(uid, len(workers))
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"workers": workers,
@@ -205,6 +232,37 @@ func (h *CloudWorkerHandler) HandleList(w http.ResponseWriter, r *http.Request) 
 			"remaining": remaining,
 		},
 	})
+}
+
+// cloudInstanceInfo is one worker instance's cloud-side fact set.
+type cloudInstanceInfo struct {
+	Status  string
+	ImageID string
+	Version string
+}
+
+// parseCloudWorkerStatusTSV parses status-worker.sh output lines of the form
+// "instanceName<TAB>instanceStatus<TAB>imageID<TAB>version" keyed by tenant
+// name (instanceName minus the "worker-" prefix). Malformed lines are ignored.
+func parseCloudWorkerStatusTSV(out string) map[string]cloudInstanceInfo {
+	infos := map[string]cloudInstanceInfo{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		parts := strings.Split(line, "\t")
+		if len(parts) < 2 {
+			continue
+		}
+		name := strings.TrimSpace(parts[0])
+		if !strings.HasPrefix(name, "worker-") {
+			continue
+		}
+		info := cloudInstanceInfo{Status: strings.ToLower(strings.TrimSpace(parts[1]))}
+		if len(parts) >= 4 {
+			info.ImageID = strings.TrimSpace(parts[2])
+			info.Version = strings.TrimSpace(parts[3])
+		}
+		infos[strings.TrimPrefix(name, "worker-")] = info
+	}
+	return infos
 }
 
 // HandleMeta handles GET /api/cloud-workers/meta — quota + available images.

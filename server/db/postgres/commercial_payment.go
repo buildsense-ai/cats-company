@@ -44,7 +44,7 @@ func scanCommercialOrder(scanner interface {
 }) (*types.CommercialOrder, error) {
 	var order types.CommercialOrder
 	var budgets []byte
-	var expiresAt, paidAt, fulfilledAt, closedAt sql.NullTime
+	var expiresAt, paidAt, fulfilledAt, closedAt, refundedAt sql.NullTime
 	if err := scanner.Scan(
 		&order.ID,
 		&order.OrderNo,
@@ -67,6 +67,8 @@ func scanCommercialOrder(scanner interface {
 		&paidAt,
 		&fulfilledAt,
 		&closedAt,
+		&order.RefundRequestNo,
+		&refundedAt,
 		&order.LastError,
 		&order.CreatedAt,
 		&order.UpdatedAt,
@@ -78,13 +80,14 @@ func scanCommercialOrder(scanner interface {
 	order.PaidAt = nullableTime(paidAt)
 	order.FulfilledAt = nullableTime(fulfilledAt)
 	order.ClosedAt = nullableTime(closedAt)
+	order.RefundedAt = nullableTime(refundedAt)
 	return &order, nil
 }
 
 const commercialOrderColumns = `id, order_no, uid, plan_id, plan_slug, plan_name, plan_description,
 	plan_duration_days, plan_monthly_budget_cny, plan_model_budgets, amount_fen, currency, channel,
 	status, provider_trade_no, checkout_url, client_request_id, expires_at, paid_at, fulfilled_at,
-	closed_at, last_error, created_at, updated_at`
+	closed_at, refund_request_no, refunded_at, last_error, created_at, updated_at`
 
 func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.CommercialOrder, error) {
 	if order == nil || order.UID <= 0 || order.PlanID <= 0 || strings.TrimSpace(order.OrderNo) == "" || strings.TrimSpace(order.ClientRequestID) == "" {
@@ -491,6 +494,159 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	return fulfilled, true, nil
 }
 
+func (a *Adapter) BeginCommercialOrderRefund(orderNo, refundRequestNo string, staleAfter time.Duration) (*types.CommercialOrder, bool, error) {
+	orderNo = strings.TrimSpace(orderNo)
+	refundRequestNo = strings.TrimSpace(refundRequestNo)
+	if orderNo == "" || refundRequestNo == "" {
+		return nil, false, fmt.Errorf("invalid commercial refund claim")
+	}
+	if staleAfter <= 0 {
+		staleAfter = 2 * time.Minute
+	}
+	staleBefore := time.Now().UTC().Add(-staleAfter)
+	order, err := scanCommercialOrder(a.db.QueryRow(`
+		UPDATE commercial_orders
+		SET status = 'refunding', refund_request_no = $2, last_error = ''
+		WHERE order_no = $1
+		  AND (status = 'fulfilled' OR (status = 'refunding' AND updated_at < $3))
+		RETURNING `+commercialOrderColumns, orderNo, refundRequestNo, staleBefore))
+	if err == nil {
+		return order, true, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, false, fmt.Errorf("claim commercial refund: %w", err)
+	}
+	order, err = a.GetCommercialOrder(0, orderNo)
+	if err != nil {
+		return nil, false, err
+	}
+	return order, false, nil
+}
+
+func (a *Adapter) FailCommercialOrderRefund(orderNo, refundRequestNo, message string) error {
+	_, err := a.db.Exec(`
+		UPDATE commercial_orders
+		SET status = 'fulfilled', last_error = $3
+		WHERE order_no = $1 AND status = 'refunding' AND refund_request_no = $2`,
+		strings.TrimSpace(orderNo), strings.TrimSpace(refundRequestNo), truncateCommercialError(message))
+	if err != nil {
+		return fmt.Errorf("release failed commercial refund: %w", err)
+	}
+	return nil
+}
+
+func (a *Adapter) CompleteCommercialOrderRefund(orderNo string, confirmation *types.CommercialRefundConfirmation) (*types.CommercialOrder, bool, error) {
+	if confirmation == nil || strings.TrimSpace(confirmation.EventID) == "" || strings.TrimSpace(confirmation.RefundRequestNo) == "" {
+		return nil, false, fmt.Errorf("invalid refund confirmation")
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return nil, false, fmt.Errorf("begin commercial refund completion: %w", err)
+	}
+	defer tx.Rollback()
+
+	order, err := scanCommercialOrder(tx.QueryRow(`SELECT `+commercialOrderColumns+` FROM commercial_orders WHERE order_no = $1 FOR UPDATE`, strings.TrimSpace(orderNo)))
+	if err == sql.ErrNoRows {
+		return nil, false, fmt.Errorf("commercial order not found")
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("lock commercial refund order: %w", err)
+	}
+	if order.Status == "refunded" {
+		return order, false, nil
+	}
+	if order.Status != "refunding" || order.RefundRequestNo != strings.TrimSpace(confirmation.RefundRequestNo) {
+		return nil, false, fmt.Errorf("commercial refund claim mismatch")
+	}
+	if order.Channel != strings.TrimSpace(confirmation.Channel) || order.AmountFen != confirmation.AmountFen || !strings.EqualFold(order.Currency, confirmation.Currency) {
+		return nil, false, fmt.Errorf("commercial refund payment mismatch")
+	}
+	if strings.TrimSpace(order.ProviderTradeNo) != "" && strings.TrimSpace(order.ProviderTradeNo) != strings.TrimSpace(confirmation.ProviderTradeNo) {
+		return nil, false, fmt.Errorf("commercial refund trade mismatch")
+	}
+	refundedAt := confirmation.RefundedAt.UTC()
+	if refundedAt.IsZero() {
+		refundedAt = time.Now().UTC()
+	}
+	result, err := tx.Exec(`
+		INSERT INTO commercial_payment_events(channel, event_id, order_no, provider_trade_no, event_type, payload_hash, status)
+		VALUES ($1, $2, $3, $4, 'refund_success', $5, 'processed')
+		ON CONFLICT(channel, event_id) DO NOTHING`,
+		confirmation.Channel,
+		confirmation.EventID,
+		order.OrderNo,
+		strings.TrimSpace(confirmation.ProviderTradeNo),
+		strings.TrimSpace(confirmation.PayloadHash),
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("record refund event: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, false, fmt.Errorf("read refund event result: %w", err)
+	}
+	if affected == 0 {
+		return nil, false, fmt.Errorf("refund event was already used")
+	}
+	if _, err := tx.Exec(`
+		UPDATE commercial_entitlements
+		SET state = 'revoked'
+		WHERE uid = $1 AND source = 'order' AND source_ref = $2 AND state <> 'revoked'`, order.UID, order.OrderNo); err != nil {
+		return nil, false, fmt.Errorf("revoke refunded entitlement: %w", err)
+	}
+	grantRows, err := tx.Query(`
+		SELECT id, model, amount_cny
+		FROM commercial_quota_grants
+		WHERE uid = $1 AND grant_type = 'order' AND source_ref = $2 AND revoked_at IS NULL
+		FOR UPDATE`, order.UID, order.OrderNo)
+	if err != nil {
+		return nil, false, fmt.Errorf("lock refunded quota grants: %w", err)
+	}
+	type refundGrant struct {
+		id     int64
+		model  string
+		amount float64
+	}
+	var grants []refundGrant
+	for grantRows.Next() {
+		var grant refundGrant
+		if err := grantRows.Scan(&grant.id, &grant.model, &grant.amount); err != nil {
+			grantRows.Close()
+			return nil, false, fmt.Errorf("scan refunded quota grant: %w", err)
+		}
+		grants = append(grants, grant)
+	}
+	if err := grantRows.Close(); err != nil {
+		return nil, false, fmt.Errorf("close refunded quota grants: %w", err)
+	}
+	for _, grant := range grants {
+		if _, err := tx.Exec(`
+			INSERT INTO commercial_quota_ledger(uid, model, amount_cny, entry_type, source_type, source_id, note)
+			VALUES ($1, $2, $3, 'revoke', 'refund', $4, $5)
+			ON CONFLICT DO NOTHING`, order.UID, grant.model, -grant.amount, grant.id, "refund "+order.OrderNo); err != nil {
+			return nil, false, fmt.Errorf("record refunded quota reversal: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`
+		UPDATE commercial_quota_grants
+		SET revoked_at = $3, expires_at = LEAST(COALESCE(expires_at, $3), $3)
+		WHERE uid = $1 AND grant_type = 'order' AND source_ref = $2 AND revoked_at IS NULL`, order.UID, order.OrderNo, refundedAt); err != nil {
+		return nil, false, fmt.Errorf("revoke refunded quota grants: %w", err)
+	}
+	refunded, err := scanCommercialOrder(tx.QueryRow(`
+		UPDATE commercial_orders
+		SET status = 'refunded', refunded_at = $2, checkout_url = '', last_error = ''
+		WHERE order_no = $1
+		RETURNING `+commercialOrderColumns, order.OrderNo, refundedAt))
+	if err != nil {
+		return nil, false, fmt.Errorf("complete refunded commercial order: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("commit commercial refund: %w", err)
+	}
+	return refunded, true, nil
+}
+
 func createCommercialPlanGrants(tx *sql.Tx, uid, planID, inviteID int64, source, sourceRef, planName string, monthlyBudget float64, budgets map[string]float64, startsAt, expiresAt time.Time) error {
 	modelBudgets := map[string]float64{}
 	for model, amount := range budgets {
@@ -506,9 +662,9 @@ func createCommercialPlanGrants(tx *sql.Tx, uid, planID, inviteID int64, source,
 		}
 		var grantID int64
 		if err := tx.QueryRow(`
-			INSERT INTO commercial_quota_grants(uid, plan_id, invite_code_id, grant_type, model, amount_cny, reset_duration, effective_at, expires_at, note)
-			VALUES ($1, $2, NULLIF($3, 0), $4, $5, $6, '1M', $7, $8, $9)
-			RETURNING id`, uid, planID, inviteID, source, model, amount, startsAt, expiresAt, source+" "+sourceRef).Scan(&grantID); err != nil {
+			INSERT INTO commercial_quota_grants(uid, plan_id, invite_code_id, grant_type, model, amount_cny, reset_duration, effective_at, expires_at, source_ref, note)
+			VALUES ($1, $2, NULLIF($3, 0), $4, $5, $6, '1M', $7, $8, $9, $10)
+			RETURNING id`, uid, planID, inviteID, source, model, amount, startsAt, expiresAt, sourceRef, source+" "+sourceRef).Scan(&grantID); err != nil {
 			return fmt.Errorf("create %s quota grant: %w", source, err)
 		}
 		if _, err := tx.Exec(`
@@ -675,7 +831,7 @@ func (a *Adapter) ListCommercialReconcileUIDs(afterUID int64, limit int) ([]int6
 			SELECT DISTINCT uid FROM commercial_managed_relay_budgets
 			UNION
 			SELECT DISTINCT uid FROM commercial_quota_grants
-			WHERE effective_at <= CURRENT_TIMESTAMP AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+			WHERE revoked_at IS NULL AND effective_at <= CURRENT_TIMESTAMP AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
 		) candidates
 		WHERE uid > $1
 		ORDER BY uid

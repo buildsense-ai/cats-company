@@ -311,6 +311,9 @@ func main() {
 	artifactRuntimeConfigHandler := server.NewArtifactRuntimeConfigHandlerFromEnv()
 	botDefinitionStore, _ := db.(store.BotDefinitionStore)
 	botDefinitionHandler := server.NewBotDefinitionHandler(db, botDefinitionStore, botModelStore, botModelConfigHandler)
+	botDefinitionHandler.SetPromptOnlineResolver(func(uid int64) bool {
+		return hub != nil && hub.BotRuntimeOnline(uid)
+	})
 	skillHubProxyHandler := server.NewSkillHubProxyHandlerFromEnv()
 	botModelCloudPublicEnabled := envBool("CATSCO_BOT_MODEL_CLOUD_ENABLED")
 	botModelCloudTestUIDs := envInt64Set("CATSCO_BOT_MODEL_CLOUD_TEST_UIDS")
@@ -339,6 +342,7 @@ func main() {
 	readerHandler := server.NewReaderProxyHandlerFromEnv()
 	cloudArtifactHandler := server.NewCloudArtifactHandlerFromEnv()
 	cloudArtifactHandler.SetStore(db)
+	cloudArtifactHandler.SetUploadSourceValidator(uploadHandler)
 	hub.SetArtifactContextResolver(cloudArtifactHandler)
 	imageGenerationHandler := server.NewImageGenerationProxyHandlerFromEnv()
 	sttHandler := server.NewSTTHandlerFromEnv()
@@ -431,6 +435,7 @@ func main() {
 		SaleChannels:  paymentSaleChannels,
 		Syncer:        commercialRelaySyncer,
 	})
+	accountAdminHandler.SetCommercialPaymentHandler(commercialPaymentHandler)
 	// usageHandler := server.NewUsageHandler(db)
 
 	authSendCodeIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
@@ -455,7 +460,10 @@ func main() {
 		Name: "auth_login_ip", Limit: 60, Window: time.Minute, Burst: 10,
 	})
 	authLoginAccountLimit := httpLimiter.LimitJSONField(server.HTTPRateLimitConfig{
-		Name: "auth_login_account", Limit: 10, Window: 10 * time.Minute, Burst: 5,
+		// 10 attempts per rolling 5 minutes (was 10 minutes): the shorter window
+		// refills tokens twice as fast, so repeated login failures recover sooner
+		// and legitimate retries are less likely to trip the limit.
+		Name: "auth_login_account", Limit: 10, Window: 5 * time.Minute, Burst: 5,
 	}, "account")
 	authRegisterIPLimit := httpLimiter.LimitIP(server.HTTPRateLimitConfig{
 		Name: "auth_register_ip", Limit: 10, Window: time.Hour, Burst: 3,
@@ -557,6 +565,7 @@ func main() {
 	mux.HandleFunc("/api/account/commercial-ops/grants", commercialOpsHandler.HandleGrants)
 	mux.HandleFunc("/api/account/commercial-ops/users", commercialOpsHandler.HandleUsers)
 	mux.HandleFunc("/api/account/commercial-ops/orders", commercialOpsHandler.HandleOrders)
+	mux.HandleFunc("/api/account/commercial-ops/order-refunds", commercialOpsHandler.HandleOrderRefund)
 	mux.HandleFunc("/api/account/commercial-ops/relay-dry-run", commercialOpsHandler.HandleRelayDryRun)
 	mux.HandleFunc("/api/account/commercial-ops/relay-sync", commercialOpsHandler.HandleRelaySync)
 	mux.HandleFunc("/local/account-admin", accountAdminHandler.HandlePage)
@@ -574,6 +583,7 @@ func main() {
 	mux.HandleFunc("/local/account-admin/commercial/relay-dry-run", accountAdminHandler.HandleCommercialRelayDryRun)
 	mux.HandleFunc("/local/account-admin/commercial/relay-sync", accountAdminHandler.HandleCommercialRelaySync)
 	mux.HandleFunc("/local/account-admin/commercial/orders", accountAdminHandler.HandleCommercialOrders)
+	mux.HandleFunc("/local/account-admin/commercial/order-refunds", accountAdminHandler.HandleCommercialOrderRefund)
 	mux.HandleFunc("/local/tutorial-admin", tutorialTaskHandler.HandleAdminPage)
 	mux.HandleFunc("/local/tutorial-admin/", tutorialTaskHandler.HandleAdminPage)
 	mux.HandleFunc("/local/tutorial-admin/tasks", tutorialTaskHandler.HandleAdminTasks)
@@ -633,6 +643,7 @@ func main() {
 	mux.HandleFunc("/api/artifacts/", jwtAuthWithDB(cloudArtifactHandler.Handle))
 	mux.HandleFunc("/api/agents", jwtAuthWithDB(agentHandler.HandleListAgents))
 	mux.HandleFunc("/api/agents/", jwtAuthWithDB(cloudArtifactHandler.HandleAgentArtifacts))
+	mux.HandleFunc("/api/topics/", jwtAuthWithDB(cloudArtifactHandler.HandleTopicFiles))
 	mux.HandleFunc("/api/agents/quota", jwtAuthWithDB(agentHandler.HandleAgentQuota))
 	mux.HandleFunc("/api/agents/open", jwtAuthWithDB(agentHandler.HandleOpenAgent))
 	mux.HandleFunc("GET /api/cloud-workers", jwtAuthWithDB(cloudWorkerHandler.HandleList))
@@ -722,12 +733,15 @@ func main() {
 	mux.HandleFunc("/api/bots/definition", ownerAuthWithDB(botDefinitionHandler.HandleOwnerDefinition))
 	mux.HandleFunc("/api/bots/definition/model", ownerAuthWithDB(botDefinitionHandler.HandleOwnerModel))
 	mux.HandleFunc("/api/bots/definition/prompt", ownerAuthWithDB(botDefinitionHandler.HandleOwnerPrompt))
+	mux.HandleFunc("/api/bots/definition/prompt-visibility", ownerAuthWithDB(botDefinitionHandler.HandleOwnerPromptVisibility))
 	mux.HandleFunc("/api/bots/definition/skills", ownerAuthWithDB(botDefinitionHandler.HandleOwnerSkills))
+	mux.HandleFunc("/api/agents/prompt", jwtAuthWithDB(botDefinitionHandler.HandleViewerPrompt))
 	mux.HandleFunc("/api/agents/skills", jwtAuthWithDB(botDefinitionHandler.HandleViewerSkills))
 	mux.HandleFunc("/api/skillhub/skills", jwtAuthWithDB(skillHubProxyHandler.HandleSkills))
 	mux.HandleFunc("/api/skillhub/skills/", jwtAuthWithDB(skillHubProxyHandler.HandleSkill))
 	mux.HandleFunc("/api/bot/definition", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefinition))
 	mux.HandleFunc("/api/bot/definition/skills", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeSkills))
+	mux.HandleFunc("/api/bot/definition/default-prompt", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeDefaultPrompt))
 	mux.HandleFunc("/api/bot/definition/ack", botAPIKeyAuthWithDB(botDefinitionHandler.HandleRuntimeAck))
 
 	// Groups (require auth)

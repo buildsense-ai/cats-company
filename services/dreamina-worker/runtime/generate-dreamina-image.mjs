@@ -263,6 +263,17 @@ function dreaminaModelVersion(references) {
   return modelVersion;
 }
 
+function dreaminaResolutionType(request) {
+  const size = typeof request?.size === "string" ? request.size : "auto";
+  if (size === "auto") return "2k";
+
+  const match = /^(\d+)x(\d+)$/.exec(size);
+  if (!match) return "2k";
+
+  const longestEdge = Math.max(Number(match[1]), Number(match[2]));
+  return longestEdge >= 3_840 ? "4k" : "2k";
+}
+
 function buildSubmitArgs(request, prompt, references) {
   const args = [references.length ? "image2image" : "text2image"];
   for (const reference of references) args.push(`--images=${reference.resolvedPath}`);
@@ -271,8 +282,9 @@ function buildSubmitArgs(request, prompt, references) {
   if (modelVersion) args.push(`--model_version=${modelVersion}`);
   const ratio = dreaminaRatio(request);
   if (ratio) args.push(`--ratio=${ratio}`);
-  args.push("--resolution_type=2k", "--generate_num=1", "--poll=0");
-  return { args, ratio, modelVersion };
+  const resolutionType = dreaminaResolutionType(request);
+  args.push(`--resolution_type=${resolutionType}`, "--generate_num=1", "--poll=0");
+  return { args, ratio, modelVersion, resolutionType };
 }
 
 function dreaminaModelLabel(task) {
@@ -539,6 +551,7 @@ async function runMain(options) {
       prompt,
       prompt_compaction: promptSelection,
       model_version: submit.modelVersion,
+      resolution_type: submit.resolutionType,
     }, null, 2)}\n`);
     return;
   }

@@ -12,6 +12,8 @@ const (
 	botDefinitionJSONKey            = "bot_definition"
 	botDefinitionRuntimeJSONKey     = "bot_definition_runtime"
 	botDefinitionSavedCustomJSONKey = "bot_definition_saved_custom_model"
+	botPromptVisibilityJSONKey      = "bot_prompt_visibility"
+	botDefaultPromptSnapshotJSONKey = "bot_default_prompt_snapshot"
 	legacyBotSkillsJSONKey          = "bot_skills"
 )
 
@@ -25,6 +27,7 @@ func DecodeBotDefinitionJSON(raw []byte, botUID int64) (*types.BotDefinitionReco
 		return nil, err
 	}
 	record := &types.BotDefinitionRecord{}
+	record.PromptVisibility = types.BotPromptOwner
 	if value := root[botDefinitionJSONKey]; len(value) > 0 {
 		if err := json.Unmarshal(value, &record.Definition); err != nil {
 			return nil, err
@@ -43,6 +46,20 @@ func DecodeBotDefinitionJSON(raw []byte, botUID int64) (*types.BotDefinitionReco
 		}
 		if strings.TrimSpace(saved.APIKeyCiphertext) != "" {
 			record.SavedCustomModel = &saved
+		}
+	}
+	if value := root[botPromptVisibilityJSONKey]; len(value) > 0 {
+		if err := json.Unmarshal(value, &record.PromptVisibility); err != nil {
+			return nil, err
+		}
+	}
+	if value := root[botDefaultPromptSnapshotJSONKey]; len(value) > 0 {
+		var snapshot types.BotDefaultPromptSnapshot
+		if err := json.Unmarshal(value, &snapshot); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(snapshot.ContentHash) != "" {
+			record.DefaultPrompt = &snapshot
 		}
 	}
 	if value := root[botModelConfigJSONKey]; len(value) > 0 {
@@ -92,6 +109,24 @@ func EncodeBotDefinitionJSON(raw []byte, record *types.BotDefinitionRecord) ([]b
 	}
 	root[botDefinitionJSONKey] = definition
 	root[botDefinitionRuntimeJSONKey] = runtime
+	visibility := record.PromptVisibility
+	if visibility != types.BotPromptFriends {
+		visibility = types.BotPromptOwner
+	}
+	visibilityJSON, err := json.Marshal(visibility)
+	if err != nil {
+		return nil, err
+	}
+	root[botPromptVisibilityJSONKey] = visibilityJSON
+	if record.DefaultPrompt != nil && strings.TrimSpace(record.DefaultPrompt.ContentHash) != "" {
+		snapshot, err := json.Marshal(record.DefaultPrompt)
+		if err != nil {
+			return nil, err
+		}
+		root[botDefaultPromptSnapshotJSONKey] = snapshot
+	} else {
+		delete(root, botDefaultPromptSnapshotJSONKey)
+	}
 	if record.SavedCustomModel != nil &&
 		strings.TrimSpace(record.SavedCustomModel.APIKeyCiphertext) != "" {
 		saved, err := json.Marshal(record.SavedCustomModel)
@@ -124,7 +159,8 @@ func defaultBotDefinitionRecord(botUID int64) *types.BotDefinitionRecord {
 			Prompt: &types.BotPromptDefinition{Selected: "default"},
 			Skills: []types.BotSkillRef{},
 		},
-		Exists: true,
+		PromptVisibility: types.BotPromptOwner,
+		Exists:           true,
 	}
 }
 
@@ -139,6 +175,9 @@ func decodeBotConfigRoot(raw []byte) (map[string]json.RawMessage, error) {
 }
 
 func normalizeDefinitionRecord(record *types.BotDefinitionRecord, botUID int64) {
+	if record.PromptVisibility != types.BotPromptFriends {
+		record.PromptVisibility = types.BotPromptOwner
+	}
 	if record.Definition.Schema == "" {
 		record.Definition.Schema = types.BotDefinitionSchema
 	}

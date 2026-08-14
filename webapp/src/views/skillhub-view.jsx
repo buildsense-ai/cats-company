@@ -1,8 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, requestSkillHubDeviceTool } from '../api';
 import { useFeedback } from '../components/feedback-system';
+import {
+  normalizeLocalSkillHubSkills,
+  normalizeSkillHubSkills,
+  resolveSkillHubEntry,
+} from '../utils/skillhub-entry';
 import SkillHubContent from './skillhub-content';
 import '../css/skillhub-view.css';
+
+export { normalizeSkillHubSkills, resolveSkillHubEntry } from '../utils/skillhub-entry';
 
 const SKILLHUB_DEVICE_TOOLS = {
   workspace: 'skillhub.localWorkspace.get',
@@ -97,6 +104,68 @@ export function normalizeOwnedBots(response, userUid) {
     const ownerUID = Number(bot?.owner_id || bot?.owner_uid || 0);
     return ownerUID > 0 && ownerUID === Number(userUid);
   });
+}
+
+export function normalizeAccessibleBots(response, userUid) {
+  const bots = Array.isArray(response) ? response : (response?.agents || response?.bots || []);
+  return bots.filter((bot) => {
+    if (bot?.relation === 'owner') return true;
+    // /api/bots is also used as a chat roster and may include a disclosed
+    // human friend. A SkillHub friend entry must identify a real Bot owner;
+    // otherwise /api/agents/skills cannot resolve a BotDefinition for it.
+    if (bot?.relation === 'friend') {
+      const botOwnerUID = Number(bot?.owner_id || bot?.owner_uid || 0);
+      return botOwnerUID > 0;
+    }
+    if (bot?.is_owner !== undefined) return Boolean(bot.is_owner);
+    const ownerUID = Number(bot?.owner_id || bot?.owner_uid || 0);
+    return ownerUID > 0 && ownerUID === Number(userUid);
+  }).map((bot) => ({
+    ...bot,
+    uid: botUID(bot),
+    relation: bot?.relation === 'friend' ? 'friend' : 'owner',
+  }));
+}
+
+function isFriendBot(bot) {
+  return bot?.relation === 'friend' || bot?.is_owner === false;
+}
+
+function isFriendBotUID(bots, uid) {
+  const bot = bots.find((candidate) => String(botUID(candidate)) === String(uid || ''));
+  return Boolean(bot && isFriendBot(bot));
+}
+
+export function buildCurrentAgentSkills(formalSkills = [], localSkills = []) {
+  const formal = Array.isArray(formalSkills) ? formalSkills : [];
+  const localByReference = new Map((Array.isArray(localSkills) ? localSkills : []).map((local) => [
+    String(local?.skillHub?.reference?.skillId || '').trim(), local,
+  ]).filter(([skillId]) => skillId));
+  const formalIDs = new Set(formal.map((skill) => String(skill?.skillId || '').trim()).filter(Boolean));
+  const result = formal.map((skill) => {
+    const localDetails = localByReference.get(String(skill?.skillId || '').trim()) || null;
+    return { ...skill, formal: true, local: Boolean(localDetails), localDetails };
+  });
+  for (const local of (Array.isArray(localSkills) ? localSkills : [])) {
+    const reference = local?.skillHub?.reference;
+    const skillId = String(reference?.skillId || '').trim();
+    if (skillId && formalIDs.has(skillId)) continue;
+    const localID = String(local?.localSkillId || local?.relativePath || local?.name || '').trim();
+    if (!localID) continue;
+    result.push({
+      source: 'local',
+      skillId: `local:${localID}`,
+      version: String(reference?.version || '').trim(),
+      contentHash: String(reference?.contentHash || '').trim().toLowerCase(),
+      formal: false,
+      local: true,
+      localOnly: true,
+      localName: local.name,
+      displayName: local.name,
+      description: local.description,
+    });
+  }
+  return result;
 }
 
 function selectedBotStorageKey(userUid) {
@@ -223,21 +292,19 @@ export async function waitForSkillHubWorkspaceAfterSwitch({
   throw error;
 }
 
-export function normalizeSkillHubSkills(response) {
-  const values = Array.isArray(response)
-    ? response
-    : (response?.skills || response?.items || response?.results || []);
+export function normalizeViewerSkills(response) {
+  const values = Array.isArray(response) ? response : (response?.skills || []);
   return values.map((skill) => ({
     ...skill,
+    source: String(skill?.source || 'skillhub').trim().toLowerCase(),
     skillId: String(skill?.skillId || skill?.skill_id || skill?.id || '').trim(),
-    displayName: String(skill?.displayName || skill?.display_name || skill?.name || skill?.skillId || skill?.id || '').trim(),
+    version: String(skill?.version || '').trim(),
+    displayName: String(skill?.displayName || skill?.display_name || skill?.name || '').trim(),
     description: String(skill?.description || '').trim(),
-    author: String(skill?.author?.displayName || skill?.author?.name || skill?.author || skill?.publisher || '').trim(),
-    latestVersion: String(skill?.latestVersion || skill?.latest_version || skill?.version || '').trim(),
-    contentHash: String(skill?.contentHash || skill?.content_hash || skill?.sha256 || '').trim().toLowerCase(),
+    author: String(skill?.author || skill?.publisher || '').trim(),
+    public: skill?.public ?? skill?.is_public ?? false,
   })).filter((skill) => skill.skillId);
 }
-
 export function normalizeLocalSkills(response) {
   const values = Array.isArray(response) ? response : (response?.skills || []);
   return values.map((skill) => ({
@@ -250,6 +317,7 @@ export function normalizeLocalSkills(response) {
     skillHub: skill?.skillHub || skill?.skill_hub || null,
     localSkillId: String(skill?.localSkillId || skill?.local_skill_id || '').trim(),
     canShare: skill?.canShare ?? skill?.can_share ?? true,
+    shareError: String(skill?.shareError || skill?.share_error || '').trim(),
   })).filter((skill) => skill.name);
 }
 
@@ -259,19 +327,17 @@ export function isPrivateSkillHubReference(skillId) {
 }
 
 export function isLocalSkillShared(skill, installedReference) {
+  if (skill?.shareError) return false;
   const reference = skill?.skillHub?.reference;
   const isPublicReference = reference?.skillId
     && !isPrivateSkillHubReference(reference.skillId);
-  const hasPublishedIdentity = Boolean(
-    (skill?.skillHub?.author && skill?.skillHub?.version)
-    || (
-      isPublicReference
-      && installedReference
-      && reference.version === installedReference.version
-      && reference.contentHash === installedReference.contentHash
-    )
+  const matchesInstalledReference = Boolean(
+    isPublicReference
+    && installedReference
+    && reference.version === installedReference.version
+    && reference.contentHash === installedReference.contentHash
   );
-  return skill?.canShare === false && hasPublishedIdentity;
+  return skill?.canShare === false && matchesInstalledReference;
 }
 
 export function resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference) {
@@ -289,8 +355,8 @@ export function resolveAddedSkillPresentation(skill, catalogueByID, localSkillsB
     details,
     localDetails,
     privateReference,
-    label: details?.displayName || localDetails?.name || (privateReference ? '私有能力' : skillId),
-    description: details?.description || localDetails?.description || '此能力已添加到当前 Agent，可立即使用。',
+    label: details?.displayName || skill?.displayName || skill?.localName || localDetails?.name || (privateReference ? '私有能力' : skillId),
+    description: details?.description || skill?.description || localDetails?.description || '此能力已添加到当前 Agent，可立即使用。',
   };
 }
 
@@ -302,36 +368,41 @@ export function upsertSkillRef(skills, nextRef, replacedSkillId = '') {
     .sort((left, right) => left.skillId.localeCompare(right.skillId));
 }
 
-function botUID(bot) {
-  return bot?.uid ?? bot?.id ?? '';
+export function buildSkillLibrary({ catalogue = [], installedByID = new Map(), localSkills = [], query = '' }) {
+  const normalizedLocal = normalizeLocalSkillHubSkills(localSkills).map((skill) => {
+    const localSkill = localSkills.find((candidate) => (
+      candidate.localSkillId === skill.localSkillId
+      || candidate.name === skill.displayName
+    )) || skill;
+    const installedReference = skill.cloudSkillId ? installedByID.get(skill.cloudSkillId) : null;
+    const canBind = Boolean(
+      (skill.canBind === true || isLocalSkillShared(localSkill, installedReference))
+      && skill.cloudSkillId
+      && !isPrivateSkillHubReference(skill.cloudSkillId)
+      && skill.latestVersion
+      && isExactHash(skill.contentHash),
+    );
+    return {
+      ...skill,
+      skillId: canBind ? skill.cloudSkillId : `local:${skill.localSkillId || skill.displayName}`,
+      canBind,
+      localSkill,
+      sourceLabel: '本机',
+    };
+  });
+  const localCloudIDs = new Set(normalizedLocal.map((skill) => skill.cloudSkillId).filter(Boolean));
+  const normalizedQuery = String(query || '').trim().toLocaleLowerCase();
+  const visibleLocal = normalizedQuery
+    ? normalizedLocal.filter((skill) => `${skill.displayName} ${skill.description}`.toLocaleLowerCase().includes(normalizedQuery))
+    : normalizedLocal;
+  const online = catalogue
+    .filter((skill) => !localCloudIDs.has(skill.skillId))
+    .map((skill) => ({ ...skill, sourceLabel: '在线' }));
+  return [...visibleLocal, ...online];
 }
 
-export function resolveSkillHubEntry(skill, detail) {
-  const nested = detail?.skill || detail?.version || detail || {};
-  const base = normalizeSkillHubSkills([{
-    ...skill,
-    ...nested,
-    skillId: nested?.skillId || nested?.skill_id || nested?.id || skill?.skillId,
-    latestVersion: nested?.latestVersion
-      || nested?.latest_version
-      || nested?.version
-      || detail?.latestVersion
-      || detail?.latest_version
-      || skill?.latestVersion,
-    contentHash: nested?.contentHash
-      || nested?.content_hash
-      || nested?.sha256
-      || detail?.contentHash
-      || detail?.content_hash
-      || skill?.contentHash,
-  }])[0] || skill;
-  if (base?.latestVersion && isExactHash(base?.contentHash)) return base;
-  const versions = normalizeSkillHubSkills(detail?.versions || []);
-  const versionEntry = versions.find((entry) => (
-    base?.latestVersion && entry.latestVersion === base.latestVersion
-  )) || versions.find((entry) => entry.isLatest === true || entry.is_latest === true)
-    || (versions.length === 1 ? versions[0] : null);
-  return versionEntry ? { ...base, ...versionEntry, skillId: base.skillId || skill.skillId } : base;
+function botUID(bot) {
+  return bot?.uid ?? bot?.id ?? '';
 }
 
 export async function waitForPublishedSkillHubEntry({
@@ -482,11 +553,12 @@ async function copyText(value) {
   }
 }
 
-export default function SkillHubView({ user }) {
+export default function SkillHubView({ user, initialAgent = null, initialAgentId = null }) {
   const feedback = useFeedback();
   const [bots, setBots] = useState([]);
   const [selectedBotUID, setSelectedBotUID] = useState('');
   const [definition, setDefinition] = useState({ skills: [], revision: 0 });
+  const [viewerSkills, setViewerSkills] = useState([]);
   const [definitionBotUID, setDefinitionBotUID] = useState('');
   const [query, setQuery] = useState('');
   const [catalogue, setCatalogue] = useState([]);
@@ -500,6 +572,9 @@ export default function SkillHubView({ user }) {
   const [localSkillsError, setLocalSkillsError] = useState('');
   const [localNotice, setLocalNotice] = useState('');
   const [loadingLocalSkills, setLoadingLocalSkills] = useState(false);
+  const [libraryLocalSkills, setLibraryLocalSkills] = useState([]);
+  const [libraryLocalError, setLibraryLocalError] = useState('');
+  const [loadingLibraryLocalSkills, setLoadingLibraryLocalSkills] = useState(true);
   const [sharingSkill, setSharingSkill] = useState('');
   const [saving, setSaving] = useState(false);
   const [activeSection, setActiveSection] = useState('added');
@@ -538,6 +613,8 @@ export default function SkillHubView({ user }) {
     && !loadingDefinition,
   );
 
+  const selectedAgentIsFriend = isFriendBotUID(bots, selectedBotUID);
+
   const installedByID = useMemo(() => new Map(
     (definition.skills || []).map((skill) => [skill.skillId, skill]),
   ), [definition.skills]);
@@ -550,17 +627,36 @@ export default function SkillHubView({ user }) {
     }
     return result;
   }, [localSkills]);
+  const librarySkills = useMemo(() => buildSkillLibrary({
+    catalogue,
+    installedByID,
+    localSkills: libraryLocalSkills,
+    query,
+  }), [catalogue, installedByID, libraryLocalSkills, query]);
 
-  const catalogueByID = useMemo(() => new Map(
-    catalogue.map((skill) => [skill.skillId, skill]),
-  ), [catalogue]);
+  const catalogueByID = useMemo(() => new Map([
+    ...viewerSkills.map((skill) => [skill.skillId, skill]),
+    ...librarySkills.flatMap((skill) => {
+      const entries = [[skill.skillId, skill]];
+      if (skill.cloudSkillId) entries.push([skill.cloudSkillId, skill]);
+      return entries;
+    }),
+  ]), [librarySkills, viewerSkills]);
 
   const addedSkillPresentationByID = useMemo(() => new Map(
-    (definition.skills || []).map((skill) => [
+    buildCurrentAgentSkills(
+      selectedAgentIsFriend ? viewerSkills : definition.skills,
+      selectedAgentIsFriend ? [] : localSkills,
+    ).map((skill) => [
       skill.skillId,
       resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference),
     ]),
-  ), [catalogueByID, definition.skills, localSkillsByReference]);
+  ), [catalogueByID, definition.skills, localSkills, localSkillsByReference, selectedAgentIsFriend, viewerSkills]);
+
+  const displaySkills = useMemo(() => buildCurrentAgentSkills(
+    selectedAgentIsFriend ? viewerSkills : definition.skills,
+    selectedAgentIsFriend ? [] : localSkills,
+  ), [definition.skills, localSkills, selectedAgentIsFriend, viewerSkills]);
 
   const selectedAgent = useMemo(() => (
     bots.find((bot) => String(botUID(bot)) === selectedBotUID) || null
@@ -568,7 +664,7 @@ export default function SkillHubView({ user }) {
 
   const agentOptions = useMemo(() => bots.map((bot) => ({
     value: String(botUID(bot)),
-    label: botLabel(bot),
+    label: `${botLabel(bot)}${isFriendBot(bot) ? '（好友）' : ''}`,
   })), [bots]);
   const loadDevices = useCallback(async () => {
     setLoadingDevices(true);
@@ -596,19 +692,40 @@ export default function SkillHubView({ user }) {
   }, []);
 
   const loadBots = useCallback(async () => {
+    const requestedUID = String(initialAgentId || botUID(initialAgent) || '');
+    const requestedAgent = requestedUID ? {
+      ...initialAgent,
+      id: initialAgent?.id || requestedUID,
+      uid: initialAgent?.uid || requestedUID,
+      display_name: initialAgent?.display_name || initialAgent?.username || `Agent ${requestedUID}`,
+      relation: 'owner',
+      is_owner: true,
+    } : null;
     setLoadingBots(true);
     try {
       const response = await api.getMyBots();
-      const owned = normalizeOwnedBots(response, user?.uid);
-      setBots(owned);
+      const accessible = normalizeAccessibleBots(response, user?.uid);
+      if (requestedUID && !accessible.some((bot) => String(botUID(bot)) === requestedUID)) {
+        accessible.push(requestedAgent);
+      }
+      setBots(accessible);
       setSelectedBotUID((current) => {
-        if (current && owned.some((bot) => String(botUID(bot)) === current)) return current;
-        return resolvePreferredSkillHubBotUID(owned, user?.uid);
+        if (requestedUID && accessible.some((bot) => String(botUID(bot)) === requestedUID)) {
+          return requestedUID;
+        }
+        if (current && accessible.some((bot) => String(botUID(bot)) === current)) return current;
+        return resolvePreferredSkillHubBotUID(accessible, user?.uid);
       });
+    } catch (error) {
+      if (requestedAgent) {
+        setBots([requestedAgent]);
+        setSelectedBotUID(requestedUID);
+      }
+      throw error;
     } finally {
       setLoadingBots(false);
     }
-  }, [user?.uid]);
+  }, [initialAgent, initialAgentId, user?.uid]);
 
   const loadDefinition = useCallback(async (botUID = selectedBotUIDRef.current) => {
     const requestedBotUID = String(botUID || '');
@@ -629,16 +746,20 @@ export default function SkillHubView({ user }) {
     setLoadingDefinition(true);
     setDefinitionError('');
     try {
-      const response = await api.getBotDefinitionSkills(requestedBotUID);
+      const friend = isFriendBotUID(bots, requestedBotUID);
+      const response = friend
+        ? await api.getAgentSkills(requestedBotUID)
+        : await api.getBotDefinitionSkills(requestedBotUID);
       if (
         requestID !== definitionRequestRef.current
         || requestedBotUID !== selectedBotUIDRef.current
       ) return null;
       const next = {
         ...response,
-        skills: Array.isArray(response?.skills) ? response.skills : [],
+        skills: friend ? normalizeViewerSkills(response) : (Array.isArray(response?.skills) ? response.skills : []),
         revision: Number(response?.revision || 0),
       };
+      setViewerSkills(friend ? next.skills : []);
       setDefinition(next);
       definitionBotUIDRef.current = requestedBotUID;
       setDefinitionBotUID(requestedBotUID);
@@ -656,7 +777,7 @@ export default function SkillHubView({ user }) {
         && requestedBotUID === selectedBotUIDRef.current
       ) setLoadingDefinition(false);
     }
-  }, []);
+  }, [bots]);
 
   const searchCatalogue = useCallback(async (searchQuery = '') => {
     const requestID = catalogueRequestRef.current + 1;
@@ -673,6 +794,19 @@ export default function SkillHubView({ user }) {
       setCatalogueError(error?.message || 'SkillHub 暂时无法访问');
     } finally {
       if (requestID === catalogueRequestRef.current) setLoadingCatalogue(false);
+    }
+  }, []);
+
+  const loadLibraryLocalSkills = useCallback(async () => {
+    setLoadingLibraryLocalSkills(true);
+    setLibraryLocalError('');
+    try {
+      setLibraryLocalSkills(normalizeLocalSkillHubSkills(await api.getLocalSkills()));
+    } catch (error) {
+      setLibraryLocalSkills([]);
+      setLibraryLocalError(error?.message || '暂时无法读取本机能力。');
+    } finally {
+      setLoadingLibraryLocalSkills(false);
     }
   }, []);
 
@@ -809,19 +943,40 @@ export default function SkillHubView({ user }) {
   useEffect(() => {
     loadBots().catch((error) => setDefinitionError(error?.message || '无法读取 Agent 列表'));
     searchCatalogue('').catch(() => {});
+    loadLibraryLocalSkills().catch(() => {});
+  }, [loadBots, loadLibraryLocalSkills, searchCatalogue]);
+
+  useEffect(() => {
+    if (!selectedBotUID || selectedAgentIsFriend) {
+      localRequestRef.current += 1;
+      selectedDeviceIDRef.current = '';
+      setDevices([]);
+      setSelectedDeviceID('');
+      setLoadingDevices(false);
+      return;
+    }
     loadDevices().catch(() => {});
-  }, [loadBots, loadDevices, searchCatalogue]);
+  }, [loadDevices, selectedAgentIsFriend, selectedBotUID]);
 
   useEffect(() => {
     loadDefinition(selectedBotUID).catch(() => {});
+    if (isFriendBotUID(bots, selectedBotUID)) {
+      localRequestRef.current += 1;
+      setLocalSkills([]);
+      setLocalSkillsPath('');
+      setLocalSkillsError('');
+      setLoadingLocalSkills(false);
+      return;
+    }
     loadLocalWorkspace(selectedBotUID, selectedDeviceID).catch(() => {});
-  }, [loadDefinition, loadLocalWorkspace, selectedBotUID, selectedDeviceID]);
+  }, [bots, loadDefinition, loadLocalWorkspace, selectedBotUID, selectedDeviceID]);
 
   const saveSkills = async (skills, expected = {}) => {
     const requestedBotUID = expected.botUID || selectedBotUIDRef.current;
     const requestedRevision = expected.revision ?? definition.revision;
     if (
       !requestedBotUID
+      || selectedAgentIsFriend
       || requestedBotUID !== selectedBotUIDRef.current
       || definitionBotUID !== requestedBotUID
       || loadingDefinition
@@ -877,6 +1032,7 @@ export default function SkillHubView({ user }) {
     const initiatingBotUID = selectedBotUIDRef.current;
     if (
       !initiatingBotUID
+      || selectedAgentIsFriend
       || definitionBotUID !== initiatingBotUID
       || loadingDefinition
     ) return;
@@ -927,7 +1083,7 @@ export default function SkillHubView({ user }) {
   };
 
   const removeSkill = async (skillID) => {
-    if (!skillID || !definitionReady || saving || sharingSkill || skillAction) return;
+    if (!skillID || selectedAgentIsFriend || !definitionReady || saving || sharingSkill || skillAction) return;
     const requestedBotUID = selectedBotUIDRef.current;
     const agentName = botLabel(selectedAgent);
     const skillName = addedSkillPresentationByID.get(skillID)?.label || skillID;
@@ -951,7 +1107,7 @@ export default function SkillHubView({ user }) {
   };
 
   const copySkill = async (skillID) => {
-    if (!skillID || !definitionReady || saving || sharingSkill || skillAction) return;
+    if (!skillID || selectedAgentIsFriend || !definitionReady || saving || sharingSkill || skillAction) return;
     const requestedBotUID = selectedBotUIDRef.current;
     const presentation = addedSkillPresentationByID.get(skillID);
     const details = presentation?.details || catalogueByID.get(skillID);
@@ -984,7 +1140,7 @@ export default function SkillHubView({ user }) {
   const shareLocalSkill = async (localSkill) => {
     const requestedBotUID = selectedBotUIDRef.current;
     const requestedDeviceID = selectedDeviceID;
-    if (!requestedBotUID || !requestedDeviceID || !definitionReady || saving || sharingSkill) return;
+    if (!requestedBotUID || selectedAgentIsFriend || !requestedDeviceID || !definitionReady || saving || sharingSkill) return;
     const requestedRevision = definition.revision;
     const requestedSkills = definition.skills;
     setSharingSkill(localSkill.name);
@@ -1104,6 +1260,93 @@ export default function SkillHubView({ user }) {
     }
   };
 
+  const syncLocalLibrarySkill = async (skill) => {
+    const requestedBotUID = selectedBotUIDRef.current;
+    if (!requestedBotUID || !definitionReady || saving || sharingSkill) return;
+    const requestedRevision = definition.revision;
+    const requestedSkills = definition.skills;
+    const localName = skill.localSkillId || skill.displayName;
+    setSharingSkill(localName);
+    setLibraryLocalError('');
+    setActionNotice('');
+    let synced = false;
+    try {
+      let shared = await api.shareLocalSkill(localName, '', user?.uid);
+      if (shared?.requiresConfirmation || shared?.requires_confirmation) {
+        const confirmed = await feedback.confirm({
+          title: `更新“${skill.displayName}”？`,
+          message: '你的账号中已有这个能力。继续后会把本机内容同步为新版本。',
+          confirmLabel: '继续同步',
+        });
+        if (!confirmed || requestedBotUID !== selectedBotUIDRef.current) return;
+        shared = await api.shareLocalSkill(localName, '', user?.uid, { confirmPublish: true });
+        if (shared?.requiresConfirmation || shared?.requires_confirmation) {
+          throw new Error('SkillHub 未接受本次同步确认，请稍后重试。');
+        }
+      }
+      const sharedSkillID = String(
+        shared?.skill?.id
+        || shared?.skill?.skillId
+        || shared?.skill?.skill_id
+        || shared?.upload?.skillId
+        || shared?.upload?.skill_id
+        || shared?.submission?.normalizedManifest?.id
+        || '',
+      ).trim();
+      if (!sharedSkillID) throw new Error('SkillHub 没有返回已同步能力的标识。');
+      const resolved = await waitForPublishedSkillHubEntry({ skillId: sharedSkillID, shared });
+      synced = true;
+      if (requestedBotUID !== selectedBotUIDRef.current) return;
+      const saved = await saveSkills(upsertSkillRef(requestedSkills, {
+        source: 'skillhub',
+        skillId: sharedSkillID,
+        version: resolved.latestVersion,
+        contentHash: resolved.contentHash,
+      }, skill.cloudSkillId), {
+        botUID: requestedBotUID,
+        revision: requestedRevision,
+      });
+      if (!saved?.ok) throw new Error('当前 Agent 的能力配置暂时无法更新。');
+      await Promise.all([loadLibraryLocalSkills(), searchCatalogue(query)]);
+      if (requestedBotUID === selectedBotUIDRef.current) {
+        setActionNotice(`已同步并为 Agent“${botLabel(selectedAgent)}”添加 ${skill.displayName}。`);
+      }
+    } catch (error) {
+      if (requestedBotUID === selectedBotUIDRef.current) {
+        setLibraryLocalError(synced
+          ? `“${skill.displayName}”已同步到你的账号，但未添加到当前 Agent。${error?.message || '请稍后再次点击添加。'}`
+          : `“${skill.displayName}”同步失败，尚未添加到当前 Agent。${error?.message || '请检查连接后再次点击添加。'}`);
+      }
+    } finally {
+      if (requestedBotUID === selectedBotUIDRef.current) setSharingSkill('');
+    }
+  };
+
+  const installLibrarySkill = async (skill) => {
+    setLibraryLocalError('');
+    if (!skill?.isLocalSkill) {
+      await installSkill(skill);
+      return;
+    }
+    if (skill.canBind) {
+      await installSkill(skill);
+      return;
+    }
+    const localSkill = skill.localSkill;
+    if (!localSkill?.canShare || localSkill?.source === 'system') {
+      setLibraryLocalError(`“${skill.displayName}”暂时不能同步，因此还不能添加到当前 Agent。`);
+      return;
+    }
+    const requestedBotUID = selectedBotUIDRef.current;
+    const confirmed = await feedback.confirm({
+      title: `添加“${skill.displayName}”？`,
+      message: '此能力目前只在本机。添加到 Agent 前，需要同步到你的账号。',
+      confirmLabel: '继续添加',
+    });
+    if (!confirmed || requestedBotUID !== selectedBotUIDRef.current) return;
+    await syncLocalLibrarySkill(skill);
+  };
+
   const copyLocalSkillsPath = async () => {
     if (!localSkillsPath) return;
     try {
@@ -1122,18 +1365,21 @@ export default function SkillHubView({ user }) {
     catalogue={catalogue}
     catalogueByID={catalogueByID}
     catalogueError={catalogueError}
-    definition={definition}
+    definition={{ ...definition, skills: displaySkills }}
     definitionError={definitionError}
     definitionReady={definitionReady}
     devices={devices}
     installedByID={installedByID}
     isLocalSkillShared={isLocalSkillShared}
-    isLocalEnabled={true}
+    isLocalEnabled={!selectedAgentIsFriend}
+    isReadOnly={selectedAgentIsFriend}
     loadingBots={loadingBots}
     loadingCatalogue={loadingCatalogue}
     loadingDefinition={loadingDefinition}
     loadingDevices={loadingDevices}
     loadingLocalSkills={loadingLocalSkills}
+    loadingLibraryLocalSkills={loadingLibraryLocalSkills}
+    libraryLocalError={libraryLocalError}
     localNotice={localNotice}
     localSkills={localSkills}
     localSkillsError={localSkillsError}
@@ -1141,7 +1387,8 @@ export default function SkillHubView({ user }) {
     onChangeSection={setActiveSection}
     onCopySkill={copySkill}
     onCopyLocalPath={copyLocalSkillsPath}
-    onInstallSkill={installSkill}
+    librarySkills={librarySkills}
+    onInstallSkill={installLibrarySkill}
     onQueryChange={setQuery}
     onRefreshDefinition={() => loadDefinition()}
     onRefreshLocal={() => loadLocalWorkspace(
@@ -1168,6 +1415,7 @@ export default function SkillHubView({ user }) {
     query={query}
     saving={saving}
     selectedAgentName={selectedAgent ? botLabel(selectedAgent) : ''}
+    selectedAgentRelation={selectedAgent?.relation || 'owner'}
     selectedBotUID={selectedBotUID}
     selectedDeviceID={selectedDeviceID}
     sharingSkill={sharingSkill}

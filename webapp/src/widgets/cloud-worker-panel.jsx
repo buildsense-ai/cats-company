@@ -14,17 +14,20 @@ import {
 } from 'lucide-react';
 
 const CLOUD_STATUS_META = {
-  provisioning: { label: '供给中', tone: 'info' },
+  provisioning: { label: '实例创建中', tone: 'info' },
+  creating: { label: '实例创建中', tone: 'info' },
   running: { label: '运行中', tone: 'ok' },
   online: { label: '在线', tone: 'ok' },
   stopped: { label: '已停止', tone: 'warn' },
+  missing: { label: '实例不存在', tone: 'danger' },
   error: { label: '异常', tone: 'danger' },
   failed: { label: '异常', tone: 'danger' },
+  unknown: { label: '状态同步中', tone: 'muted' },
 };
 
 const statusMeta = (status) => (
   CLOUD_STATUS_META[String(status || '').toLowerCase()]
-  || { label: '未知', tone: 'warn' }
+  || CLOUD_STATUS_META.unknown
 );
 
 /**
@@ -254,7 +257,11 @@ export default function CloudWorkerPanel({
                       <span>镜像 <b>{worker.cloud_image_id.slice(0, 8)}</b></span>
                     )}
                     {!worker.cloud_version && !worker.cloud_image_id && (
-                      <span>状态信息同步中…</span>
+                      <span>
+                        {worker.cloud_status && worker.cloud_status !== 'unknown'
+                          ? '版本信息收集中…'
+                          : '状态信息同步中…'}
+                      </span>
                     )}
                   </div>
 

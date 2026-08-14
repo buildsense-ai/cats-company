@@ -206,6 +206,9 @@ X-CatsCo-File-Size: 12345
 **POST /api/bots**
 创建 Bot
 
+**PATCH /api/bots?uid={uid}**
+更新 Agent 基本信息与协作设置。`artifact_upload_enabled` 用于控制普通成员能否直接发布共享成果；默认开启，关闭后所有者仍可上传和管理。
+
 **PATCH /api/bots/visibility**
 设置 Bot 可见性
 

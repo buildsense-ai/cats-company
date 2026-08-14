@@ -330,7 +330,9 @@ func (h *AgentHandler) visibleAgents(uid int64) ([]AgentSummary, error) {
 		if _, ok := seen[friend.ID]; ok {
 			continue
 		}
-		if friend.AccountType != types.AccountBot && !friend.BotDisclose {
+		// BotDisclose also marks human accounts whose identity may be shown in
+		// conversations; they are not agents and must not enter this roster.
+		if friend.AccountType != types.AccountBot {
 			continue
 		}
 		agent := h.agentFromUser(uid, friend, "friend")
@@ -451,7 +453,7 @@ func (h *AgentHandler) agentRuntimeOnline(uid int64) bool {
 	if h == nil || h.hub == nil {
 		return false
 	}
-	return h.hub.BotBodyStatus(uid).Active
+	return h.hub.BotRuntimeOnline(uid)
 }
 
 func mapString(value interface{}) string {

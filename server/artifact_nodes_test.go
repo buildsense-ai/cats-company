@@ -162,6 +162,9 @@ func TestCloudArtifactHandlerListsMappedPublicIndexNode(t *testing.T) {
 	if artifact.AgentUID != "440" || artifact.CanDelete || artifact.CanRestore {
 		t.Fatalf("public artifact projection = %+v", artifact)
 	}
+	if artifact.CreatorType != "agent" || artifact.CreatorUID != "440" || artifact.CreatorName != "managed-agent" {
+		t.Fatalf("public artifact creator = %+v", artifact)
+	}
 
 	deleted := httptest.NewRecorder()
 	handler.HandleAgentArtifacts(

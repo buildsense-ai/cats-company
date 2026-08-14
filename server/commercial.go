@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -280,9 +281,16 @@ type commercialRelayModelLimit struct {
 	Budget        commercialRelayBudget `json:"budget"`
 }
 
+type commercialRelayModelScope struct {
+	ManagedModels []string `json:"managed_models"`
+	AllowedModels []string `json:"allowed_models"`
+}
+
 type commercialRelayLimits struct {
-	MonthlyBudget commercialRelayBudget       `json:"monthly_budget"`
-	ModelLimits   []commercialRelayModelLimit `json:"model_limits"`
+	MonthlyBudget        commercialRelayBudget       `json:"monthly_budget"`
+	ModelLimits          []commercialRelayModelLimit `json:"model_limits"`
+	AvailableModelLimits []commercialRelayModelLimit `json:"available_model_limits,omitempty"`
+	ModelScopes          []commercialRelayModelScope `json:"model_scopes,omitempty"`
 }
 
 type commercialRelayKeySummary struct {
@@ -337,6 +345,7 @@ type commercialRelayDryRun struct {
 	Summary              *types.CommercialSummary              `json:"summary"`
 	Comparisons          []commercialRelayBudgetComparison     `json:"comparisons"`
 	ProposedUpdates      []commercialRelayProviderBudgetUpdate `json:"proposed_updates"`
+	ProposedModelScopes  []commercialRelayModelScope           `json:"proposed_model_scopes,omitempty"`
 	CanApply             bool                                  `json:"can_apply"`
 	Note                 string                                `json:"note"`
 }
@@ -424,7 +433,10 @@ func (h *AccountAdminHandler) HandleCommercialRelaySync(w http.ResponseWriter, r
 		r.Context(),
 		http.MethodPost,
 		fmt.Sprintf("/internal/users/%d/key/limits", req.UID),
-		map[string]interface{}{"provider_config_budgets": dryRun.ProposedUpdates},
+		map[string]interface{}{
+			"provider_config_budgets": dryRun.ProposedUpdates,
+			"model_scopes":            dryRun.ProposedModelScopes,
+		},
 		&relayResp,
 	)
 	if err != nil {
@@ -453,11 +465,19 @@ func (h *AccountAdminHandler) buildCommercialRelayDryRun(ctx context.Context, st
 		relayUser = user
 	}
 	dryRun := compareCommercialRelayBudgets(uid, summary, relayUser)
+	var managed []*types.CommercialManagedRelayBudget
+	var managedErr error
 	if managedStore, ok := store.(CommercialRelayManagedStore); ok {
-		managed, managedErr := managedStore.ListCommercialManagedRelayBudgets(uid)
+		managed, managedErr = managedStore.ListCommercialManagedRelayBudgets(uid)
 		if managedErr == nil {
+			plannedUpdates, _ := commercialRelayManagedPlan(uid, summary, relayUser, managed)
+			dryRun.ProposedUpdates = plannedUpdates
+			dryRun.ProposedModelScopes = commercialRelayModelScopes(summary, relayUser, managed)
 			for _, item := range managed {
 				if item == nil || summary.TotalsByModel[item.Model] > 0 {
+					continue
+				}
+				if commercialRelayScopeOwnsModels(dryRun.ProposedModelScopes, item.AllowedModels) {
 					continue
 				}
 				needsUpdate := true
@@ -479,7 +499,11 @@ func (h *AccountAdminHandler) buildCommercialRelayDryRun(ctx context.Context, st
 					})
 				}
 			}
-			dryRun.CanApply = len(dryRun.ProposedUpdates) > 0
+			var currentScopes []commercialRelayModelScope
+			if relayUser != nil {
+				currentScopes = relayUser.Limits.ModelScopes
+			}
+			dryRun.CanApply = len(dryRun.ProposedUpdates) > 0 || !commercialRelayModelScopesMatch(currentScopes, dryRun.ProposedModelScopes)
 		}
 	}
 	dryRun.EnforceEnabled = h.commercialRelayEnforcedFor(uid)
@@ -1065,11 +1089,79 @@ func (h *AccountAdminHandler) HandleCommercialOrders(w http.ResponseWriter, r *h
 			"provider_trade_no": order.ProviderTradeNo,
 			"paid_at":           order.PaidAt,
 			"fulfilled_at":      order.FulfilledAt,
+			"expires_at":        order.ExpiresAt,
+			"closed_at":         order.ClosedAt,
+			"refund_request_no": order.RefundRequestNo,
+			"refunded_at":       order.RefundedAt,
 			"last_error":        order.LastError,
 			"created_at":        order.CreatedAt,
 		})
 	}
 	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{"orders": adminOrders})
+}
+
+func (h *AccountAdminHandler) HandleCommercialOrderRefund(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.requireCommercialStore(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeAccountAdminJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if h.commercialPayments == nil {
+		writeAccountAdminJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "commercial refund service unavailable"})
+		return
+	}
+	var req struct {
+		OrderNo        string `json:"order_no"`
+		ConfirmOrderNo string `json:"confirm_order_no"`
+		Reason         string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid refund request"})
+		return
+	}
+	req.OrderNo = strings.TrimSpace(req.OrderNo)
+	req.ConfirmOrderNo = strings.TrimSpace(req.ConfirmOrderNo)
+	req.Reason = strings.TrimSpace(req.Reason)
+	if req.OrderNo == "" || req.ConfirmOrderNo != req.OrderNo {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "confirm_order_no must exactly match order_no"})
+		return
+	}
+	if len([]byte(req.Reason)) > 256 {
+		writeAccountAdminJSON(w, http.StatusBadRequest, map[string]string{"error": "refund reason is too long"})
+		return
+	}
+	if req.Reason == "" {
+		req.Reason = "CatsCo operator approved full refund"
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	order, changed, err := h.commercialPayments.RefundOrder(ctx, req.OrderNo, req.Reason)
+	if err != nil {
+		status := http.StatusBadGateway
+		switch {
+		case errors.Is(err, errCommercialRefundInvalid):
+			status = http.StatusBadRequest
+		case errors.Is(err, errCommercialRefundNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, errCommercialRefundConflict):
+			status = http.StatusConflict
+		case errors.Is(err, errCommercialRefundUnavailable):
+			status = http.StatusServiceUnavailable
+		}
+		writeAccountAdminJSON(w, status, map[string]interface{}{
+			"error":  "commercial refund failed",
+			"detail": err.Error(),
+			"order":  order,
+		})
+		return
+	}
+	writeAccountAdminJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"changed": changed,
+		"order":   order,
+	})
 }
 
 func strconvParsePositiveInt64(raw string) (int64, error) {

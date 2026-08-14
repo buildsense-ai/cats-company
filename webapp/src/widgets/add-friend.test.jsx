@@ -148,7 +148,7 @@ describe('AddFriend search mode', () => {
     expect(listbox.dataset.placement).toBe('bottom');
     expect(listbox.style.position).toBe('fixed');
     expect(listbox.style.left).toBe('32px');
-    expect(listbox.style.top).toBe('82px');
+    expect(listbox.style.top).toBe('86px');
     expect(listbox.style.width).toBe('96px');
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
     expect(trigger.getAttribute('aria-controls')).toBe(listbox.id);
@@ -161,7 +161,7 @@ describe('AddFriend search mode', () => {
     expect(trigger.textContent).toContain('按 UID');
     expect(trigger.getAttribute('aria-label')).toBe('搜索方式：按 UID');
     expect(document.activeElement).toBe(trigger);
-    expect(container.querySelector('.oc-friend-search-input').placeholder).toBe('输入对方 UID');
+    expect(container.querySelector('.oc-friend-search-input').placeholder).toBe('搜索联系人');
   });
 
   it('supports keyboard navigation and Escape with focus restoration', async () => {
@@ -201,8 +201,8 @@ describe('AddFriend search mode', () => {
     await mount();
 
     const trigger = container.querySelector('.oc-friend-search-mode-trigger');
-    const closeButton = container.querySelector('.oc-modal-close');
     const searchInput = container.querySelector('.oc-friend-search-input');
+    const searchSubmit = container.querySelector('.oc-friend-search-submit');
     const dialogFocusOrder = Array.from(container.querySelector('[role="dialog"]').querySelectorAll([
       'a[href]',
       'button:not(:disabled)',
@@ -213,8 +213,8 @@ describe('AddFriend search mode', () => {
     ].join(','))).sort((left, right) => (
       left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
     ));
-    expect(dialogFocusOrder[dialogFocusOrder.indexOf(trigger) + 1]).toBe(searchInput);
-    expect(dialogFocusOrder[dialogFocusOrder.indexOf(trigger) - 1]).toBe(closeButton);
+    expect(dialogFocusOrder[dialogFocusOrder.indexOf(trigger) + 1]).toBe(searchSubmit);
+    expect(dialogFocusOrder[dialogFocusOrder.indexOf(trigger) - 1]).toBe(searchInput);
     trigger.getBoundingClientRect = () => mockRect({
       bottom: 82,
       height: 42,
@@ -233,7 +233,7 @@ describe('AddFriend search mode', () => {
 
     await act(async () => Simulate.keyDown(listbox, { key: 'Tab' }));
     expect(document.body.querySelector('.oc-friend-search-mode-menu')).toBeNull();
-    expect(document.activeElement).toBe(searchInput);
+    expect(document.activeElement).toBe(searchSubmit);
 
     await act(async () => {
       trigger.focus();
@@ -243,7 +243,7 @@ describe('AddFriend search mode', () => {
 
     await act(async () => Simulate.keyDown(listbox, { key: 'Tab', shiftKey: true }));
     expect(document.body.querySelector('.oc-friend-search-mode-menu')).toBeNull();
-    expect(document.activeElement).toBe(closeButton);
+    expect(document.activeElement).toBe(searchInput);
   });
 
   it('flips above in a constrained viewport and closes on outside pointer', async () => {
@@ -272,9 +272,9 @@ describe('AddFriend search mode', () => {
     const listbox = document.body.querySelector('.oc-friend-search-mode-menu');
     expect(listbox.dataset.placement).toBe('top');
     expect(listbox.style.left).toBe('24px');
-    expect(listbox.style.top).toBe('696px');
+    expect(listbox.style.top).toBe('708px');
     expect(listbox.style.width).toBe('96px');
-    expect(listbox.style.overflowY).toBe('auto');
+    expect(listbox.style.overflowY).toBe('');
 
     await act(async () => {
       document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));

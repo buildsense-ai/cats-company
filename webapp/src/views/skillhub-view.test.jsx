@@ -6,7 +6,11 @@ import SkillHubView, {
   isRetryableSkillHubDeviceListError,
   isRetryableSkillHubSwitchError,
   isSkillHubWorkspaceSwitchingError,
+  buildSkillLibrary,
   normalizeOwnedBots,
+  normalizeAccessibleBots,
+  buildCurrentAgentSkills,
+  normalizeViewerSkills,
   normalizeSkillHubDevices,
   normalizeLocalSkills,
   normalizeSkillHubSkills,
@@ -27,6 +31,7 @@ import { FeedbackProvider } from '../components/feedback-system';
 
 vi.mock('../api', () => ({
   api: {
+    getAgentSkills: vi.fn(),
     getMyBots: vi.fn(),
     getBotDefinitionSkills: vi.fn(),
     updateBotDefinitionSkills: vi.fn(),
@@ -69,8 +74,13 @@ describe('SkillHubView', () => {
     api.getMyBots.mockResolvedValue({
       bots: [
         { uid: 42, display_name: 'Owner Bot', relation: 'owner', is_owner: true },
-        { uid: 43, display_name: 'Friend Bot', relation: 'friend', is_owner: false },
+        { uid: 43, display_name: 'Friend Bot', relation: 'friend', is_owner: false, owner_id: 99 },
       ],
+    });
+    api.getAgentSkills.mockResolvedValue({
+      botId: '43',
+      skills_visibility: 'owner',
+      skills: [{ source: 'skillhub', skillId: 'private/review', version: 'v2' }],
     });
     api.getBotDefinitionSkills.mockResolvedValue({
       botId: '42',
@@ -102,9 +112,28 @@ describe('SkillHubView', () => {
       },
     });
     api.getDevices.mockResolvedValue({ devices: [] });
+    api.getLocalSkills.mockResolvedValue({ skills: [] });
+    api.shareLocalSkill.mockResolvedValue({});
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
+  });
+
+  it('normalizes accessible owner and friend bots and merges local-only skills', () => {
+    expect(normalizeAccessibleBots({ agents: [
+      { uid: 42, relation: 'owner' },
+      { uid: 43, relation: 'friend', owner_id: 99 },
+      { uid: 44, display_name: 'Human Friend', relation: 'friend', is_bot: true },
+    ] }, 7).map((bot) => bot.relation)).toEqual(['owner', 'friend']);
+    expect(buildCurrentAgentSkills([
+      { skillId: 'tools/review', version: '1' },
+    ], [{ name: 'draft', localSkillId: 'draft' }])).toEqual(expect.arrayContaining([
+      expect.objectContaining({ skillId: 'tools/review', formal: true }),
+      expect.objectContaining({ skillId: 'local:draft', localOnly: true }),
+    ]));
+    expect(normalizeViewerSkills({ skills: [{ skillId: 'private/review', version: 'v2' }] })[0]).toMatchObject({
+      skillId: 'private/review', version: 'v2',
+    });
   });
 
   afterEach(async () => {
@@ -131,7 +160,7 @@ describe('SkillHubView', () => {
   async function openCustomSkills() {
     await act(async () => {
       Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('管理自定义能力')));
+        .find((button) => button.textContent.includes('本地工作区')));
       await Promise.resolve();
     });
   }
@@ -150,10 +179,12 @@ describe('SkillHubView', () => {
       name: 'local-demo',
       relative_path: 'local-demo',
       skill_hub: { version: '1.0.0' },
+      share_error: 'Skill contains sensitive material.',
     }] })[0]).toMatchObject({
       name: 'local-demo',
       relativePath: 'local-demo',
       skillHub: { version: '1.0.0' },
+      shareError: 'Skill contains sensitive material.',
     });
     expect(isLocalSkillShared({
       canShare: true,
@@ -182,7 +213,16 @@ describe('SkillHubView', () => {
           contentHash: 'a'.repeat(64),
         },
       },
+    }, {
+      skillId: 'alice/local-demo',
+      version: '1.0.0',
+      contentHash: 'a'.repeat(64),
     })).toBe(true);
+    expect(isLocalSkillShared({
+      canShare: false,
+      shareError: 'Skill contains sensitive material.',
+      skillHub: { author: 'alice', version: '1.0.0' },
+    })).toBe(false);
     expect(upsertSkillRef([{ skillId: 'a', version: '1' }], { skillId: 'b', version: '2' }))
       .toEqual([{ skillId: 'a', version: '1' }, { skillId: 'b', version: '2' }]);
     expect(resolveSkillHubEntry(
@@ -454,6 +494,139 @@ describe('SkillHubView', () => {
     expect(clock).toBe(103);
   });
 
+  it('builds one library with local abilities first and simple source labels', () => {
+    const library = buildSkillLibrary({
+      catalogue: [{
+        skillId: 'online/writer',
+        displayName: 'Online Writer',
+        description: 'Cloud ability',
+        latestVersion: '1.0.0',
+        contentHash: 'b'.repeat(64),
+      }],
+      localSkills: [{
+        localSkillId: 'local-writer',
+        name: 'Local Writer',
+        description: 'Local ability',
+        source: 'user',
+        canShare: true,
+      }],
+    });
+
+    expect(library.map((skill) => skill.displayName)).toEqual(['Local Writer', 'Online Writer']);
+    expect(library.map((skill) => skill.sourceLabel)).toEqual(['本机', '在线']);
+    expect(library[0]).toMatchObject({ isLocalSkill: true, canBind: false });
+  });
+
+  it('explains account sync before adding a local-only ability from the library', async () => {
+    api.getLocalSkills.mockResolvedValue({
+      skills: [{
+        local_skill_id: 'local-writer',
+        name: 'Local Writer',
+        description: 'Local ability',
+        source: 'user',
+      }],
+    });
+    api.getDevices.mockResolvedValue({
+      devices: [{
+        deviceId: 'alice-device',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockResolvedValue({
+      schema: 'xiaoba.skillhub.local_workspace.v1',
+      bot_uid: '42',
+      active_bot_uid: '42',
+      skills_path: 'C:\\xiaoba\\skills',
+      skills: [{
+        local_skill_id: 'local-writer',
+        name: 'Local Writer',
+        description: 'Local ability',
+        source: 'user',
+        can_share: true,
+      }],
+    });
+
+    await act(async () => {
+      root.render(<FeedbackProvider><SkillHubView user={{ uid: 7 }} /></FeedbackProvider>);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCatalogue();
+
+    const cards = [...container.querySelectorAll('.cc-skillhub-card')];
+    expect(cards[0].textContent).toContain('Local Writer');
+    expect(cards[0].textContent).toContain('本机');
+    expect(cards[1].textContent).toContain('在线');
+
+    await act(async () => {
+      Simulate.click(cards[0].querySelector('button'));
+      await Promise.resolve();
+    });
+
+    const confirmation = document.body.querySelector('[role="alertdialog"]');
+    expect(confirmation?.textContent).toContain('此能力目前只在本机');
+    expect(confirmation?.textContent).toContain('需要同步到你的账号');
+    expect(confirmation?.textContent).toContain('继续添加');
+    expect(requestSkillHubDeviceTool.mock.calls.filter(([request]) => request.toolName === 'skillhub.localSkill.share')).toHaveLength(0);
+
+    await act(async () => {
+      Simulate.click(confirmation.querySelector('.cc-confirm-cancel'));
+      await Promise.resolve();
+    });
+  });
+
+  it('keeps local abilities visible and explains a sync failure', async () => {
+    api.getLocalSkills.mockResolvedValue({
+      skills: [{
+        local_skill_id: 'local-writer',
+        name: 'Local Writer',
+        description: 'Local ability',
+        source: 'user',
+        can_share: true,
+      }],
+    });
+    api.shareLocalSkill.mockRejectedValue(new Error('无法连接本地 Skill 服务。'));
+
+    await act(async () => {
+      root.render(<FeedbackProvider><SkillHubView user={{ uid: 7 }} /></FeedbackProvider>);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCatalogue();
+
+    const localCard = [...container.querySelectorAll('.cc-skillhub-card')]
+      .find((card) => card.textContent.includes('Local Writer'));
+    await act(async () => {
+      Simulate.click(localCard.querySelector('button'));
+      await Promise.resolve();
+    });
+    const confirmation = document.body.querySelector('[role="alertdialog"]');
+    await act(async () => {
+      Simulate.click([...confirmation.querySelectorAll('button')]
+        .find((button) => button.textContent === '继续添加'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const alert = container.querySelector('.cc-skillhub-library-alert');
+    expect(alert?.textContent).toContain('“Local Writer”同步失败');
+    expect(alert?.textContent).toContain('尚未添加到当前 Agent');
+    expect(alert?.textContent).toContain('无法连接本地 Skill 服务');
+    expect(container.textContent).toContain('Local Writer');
+    expect(localCard.querySelector('button').disabled).toBe(false);
+    expect(api.updateBotDefinitionSkills).not.toHaveBeenCalled();
+  });
+
   it('waits for an asynchronously published Skill when share initially returns only its ID', async () => {
     const getSkill = vi.fn()
       .mockRejectedValueOnce(Object.assign(new Error('not found'), { status: 404 }))
@@ -502,7 +675,7 @@ describe('SkillHubView', () => {
     expect(container.querySelector('#skillhub-added-tab')?.getAttribute('aria-selected')).toBe('true');
     expect(container.querySelectorAll('[role="tab"]')).toHaveLength(2);
     expect(container.querySelector('.cc-skillhub-installed')).toBeNull();
-    expect(container.textContent).toContain('管理自定义能力');
+    expect(container.textContent).toContain('本地工作区');
     expect(container.textContent).not.toContain('已开启');
     expect(container.querySelector('button[aria-label="复制 tools/review"]')).toBeTruthy();
     expect(container.querySelector('button[aria-label="更多操作 tools/review"]')).toBeTruthy();
@@ -514,6 +687,28 @@ describe('SkillHubView', () => {
     });
     expect(container.querySelector('#skillhub-custom-title')?.textContent).toBe('管理自定义能力');
     expect(container.textContent).toContain('本地 Skills 目录');
+  });
+
+  it('opens with the Agent requested by the management summary', async () => {
+    api.getMyBots.mockResolvedValue({
+      bots: [
+        { uid: 42, display_name: 'Owner Bot', relation: 'owner', is_owner: true },
+        { uid: 44, display_name: 'Design Bot', relation: 'owner', is_owner: true },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView
+        user={{ uid: 7 }}
+        initialAgent={{ uid: 44, display_name: 'Design Bot' }}
+      />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getBotDefinitionSkills).toHaveBeenCalledWith('44');
+    expect(container.querySelector('.cc-skillhub-agent-select-trigger')?.textContent)
+      .toContain('Design Bot');
   });
 
   it('copies an added SkillHub ability without opening the platform share action', async () => {
@@ -741,9 +936,9 @@ describe('SkillHubView', () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelectorAll('.cc-skillhub-bot-picker:first-child option')).toHaveLength(1);
+    expect(container.querySelectorAll('.cc-skillhub-bot-picker:first-child option')).toHaveLength(2);
     expect(container.textContent).toContain('tools/review');
-    expect(container.textContent).not.toContain('Friend Bot');
+    expect(container.textContent).toContain('Friend Bot');
 
     await openCatalogue();
     const installButton = addButton(container);
@@ -760,6 +955,31 @@ describe('SkillHubView', () => {
         contentHash: 'b'.repeat(64),
       }),
     ]));
+  });
+
+  it('loads a friend Bot as read-only metadata without touching local devices', async () => {
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    api.getDevices.mockClear();
+    await act(async () => {
+      Simulate.change(container.querySelector('.cc-skillhub-agent-native-select'), {
+        target: { value: '43' },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.getAgentSkills).toHaveBeenCalledWith('43');
+    expect(api.getBotDefinitionSkills).toHaveBeenCalledWith('42');
+    expect(api.getDevices).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('私有能力');
+    expect(container.textContent).toContain('v2');
+    expect(container.textContent).toContain('只读查看');
+    expect(container.querySelector('.cc-skillhub-custom-entry')).toBeNull();
+    expect(container.querySelector('.cc-skillhub-copy-action')).toBeNull();
+    expect(container.querySelector('.cc-skillhub-more-action')).toBeNull();
   });
 
   it('loads a production local workspace and shares through the selected XiaoBa device', async () => {
@@ -913,6 +1133,62 @@ describe('SkillHubView', () => {
         uploaded_at: '2026-08-05T00:00:00.000Z',
       }),
     }));
+  });
+
+  it('shows a blocked local Skill without falsely marking it as published', async () => {
+    api.getDevices.mockResolvedValue({
+      devices: [{
+        deviceId: 'alice-device',
+        displayName: 'Alice Laptop',
+        active: true,
+        routeConnected: true,
+        routable: true,
+        capabilities: [
+          'skillhub.localWorkspace.get',
+          'skillhub.localSkill.share',
+          'skillhub.localSkill.finalize',
+          'skillhub.localBot.switch',
+        ],
+      }],
+    });
+    requestSkillHubDeviceTool.mockResolvedValue({
+      schema: 'xiaoba.skillhub.local_workspace.v1',
+      bot_uid: '42',
+      active_bot_uid: '42',
+      skills_path: 'C:\\xiaoba\\skills',
+      skills: [{
+        local_skill_id: 'blocked-1',
+        name: 'cloud-html-artifact',
+        description: 'Publish HTML artifacts',
+        relative_path: 'cloud-html-artifact',
+        source: 'user',
+        can_share: false,
+        share_error: 'Skill contains sensitive material and cannot be uploaded: scripts/publish-html-directory.mjs',
+        skill_hub: {
+          author: 'alice',
+          version: '1.0.0',
+          uploaded_at: '2026-08-05T00:00:00.000Z',
+        },
+      }],
+    });
+
+    await act(async () => {
+      root.render(<SkillHubView user={{ uid: 7 }} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await openCustomSkills();
+
+    const card = container.querySelector('.cc-skillhub-local-card');
+    expect(card.textContent).toContain('cloud-html-artifact');
+    expect(card.textContent).toContain('无法发布');
+    expect(card.textContent).toContain('scripts/publish-html-directory.mjs');
+    expect(card.textContent).not.toContain('已发布到团队');
+    expect(card.querySelector('.cc-skillhub-validation-error')).not.toBeNull();
+    expect(card.querySelector('button').disabled).toBe(true);
+    expect(card.querySelector('button').textContent).toContain('请先修复此 Skill');
+    expect(requestSkillHubDeviceTool).toHaveBeenCalledTimes(1);
   });
 
   it('retries a version share only after confirmation and sends confirm_publish', async () => {

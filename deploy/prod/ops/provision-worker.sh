@@ -59,6 +59,15 @@ FLAVOR_ID="${CTYUN_WORKER_FLAVOR_ID:-}"
 VPC_ID="${CTYUN_WORKER_VPC_ID:-}"
 SUBNET_ID="${CTYUN_WORKER_SUBNET_ID:-}"
 SECURITY_GROUP_ID="${CTYUN_WORKER_SECURITY_GROUP_ID:-}"
+# 内网模式：0 = 不绑定公网 IP（NAT 跳板架构，默认 1 兼容旧行为）
+EXT_IP="${CTYUN_WORKER_EXT_IP:-1}"
+# SSH 跳板（NAT 架构）：凭据一律来自服务器环境变量，仓库不硬编码任何 IP/密钥。
+# CTYUN_JUMP_IP：跳板机公网入口 IP；空 = 直连公网 IP（旧模式）
+# CTYUN_JUMP_PORT / CTYUN_JUMP_USER / CTYUN_JUMP_KEY：跳板机连接参数
+JUMP_IP="${CTYUN_JUMP_IP:-}"
+JUMP_PORT="${CTYUN_JUMP_PORT:-22}"
+JUMP_USER="${CTYUN_JUMP_USER:-root}"
+JUMP_KEY="${CTYUN_JUMP_KEY:-/var/lib/catsco-worker/jump_host_ed25519}"
 HTTP_BASE_URL="${CATSCO_WORKER_HTTP_BASE_URL:-https://app.catsco.cc}"
 SERVER_URL="${CATSCO_WORKER_SERVER_URL:-wss://app.catsco.cc/v0/channels}"
 
@@ -206,7 +215,8 @@ fi
 BODY_ID="${BODY_ID:-$(gen_uuid)}"
 INSTALLATION_ID="${INSTALLATION_ID:-$(gen_uuid)}"
 
-create_resp="$(ctyun ecs CreateEcsInstance \
+# extIP=0 时不传公网相关参数（带宽/线路/计费），API 会拒绝这些组合
+create_args=(ecs CreateEcsInstance \
   --regionID "$REGION_ID" \
   --projectID "$PROJECT_ID" \
   --clientToken "$(gen_uuid)" \
@@ -224,15 +234,15 @@ create_resp="$(ctyun ecs CreateEcsInstance \
   --secGroupList "[\"$SECURITY_GROUP_ID\"]" \
   --keyPairID "$keypair_id" \
   --onDemand true \
-  --extIP 1 \
-  --bandwidth 10 \
-  --ipVersion ipv4 \
-  --lineType standalone \
-  --demandBillingType upflowc \
+  --extIP "$EXT_IP" \
   --monitorService false \
   --securityProduct false \
   --trustInstance false \
-  --labelList "[{\"labelKey\":\"purpose\",\"labelValue\":\"catsco-worker\"},{\"labelKey\":\"tenant\",\"labelValue\":\"$NAME\"}]")"
+  --labelList "[{\"labelKey\":\"purpose\",\"labelValue\":\"catsco-worker\"},{\"labelKey\":\"tenant\",\"labelValue\":\"$NAME\"}]")
+if [[ "$EXT_IP" == "1" ]]; then
+  create_args+=(--bandwidth 10 --ipVersion ipv4 --lineType standalone --demandBillingType upflowc)
+fi
+create_resp="$(ctyun "${create_args[@]}")"
 CREATED_INSTANCE_ID="$(jq -r '.returnObj.masterResourceID // empty' <<<"$create_resp")"
 [[ -n "$CREATED_INSTANCE_ID" ]] || { echo "error: CreateEcsInstance did not return masterResourceID" >&2; exit 1; }
 
@@ -242,7 +252,8 @@ for _ in $(seq 1 60); do
   inst="$(find_instance "$INSTANCE_NAME")"
   if [[ -n "$inst" ]]; then
     state="$(jq -r '.instanceStatus // .state // .status // ""' <<<"$inst")"
-    ip="$(jq -r '.floatingIP // .publicIP // ""' <<<"$inst")"
+    # 内网模式：fixedIPList[0] 是 VPC 内网 IP；公网模式回退 floatingIP
+    ip="$(jq -r '(.fixedIPList[0] // .privateIP // .floatingIP // .publicIP // "")' <<<"$inst")"
     if [[ "$state" == "running" || "$state" == "active" ]]; then
       [[ -n "$ip" ]] && { INSTANCE_IP="$ip"; break; }
     fi
@@ -251,9 +262,14 @@ for _ in $(seq 1 60); do
 done
 [[ -n "$INSTANCE_IP" ]] || { echo "error: timed out waiting for instance to be running" >&2; exit 1; }
 
+# SSH 跳板（NAT 架构）：ProxyCommand 经跳板机转发，凭据全来自环境变量
+# （不依赖容器内 ~/.ssh/config，容器重建后无需手工恢复）
 ssh_opts=(-i "$PRIVATE_KEY" -o BatchMode=yes -o ConnectTimeout=10 \
   -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
   -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$STATE_DIR/known_hosts")
+if [[ -n "$JUMP_IP" ]]; then
+  ssh_opts+=(-o "ProxyCommand=ssh -i ${JUMP_KEY} -p ${JUMP_PORT} -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${STATE_DIR}/jump_known_hosts -W %h:%p ${JUMP_USER}@${JUMP_IP}")
+fi
 # ssh 统一走 timeout 限时（防挂死；与 bake 脚本一致）
 ssh_run() {
   timeout -s TERM -k 15 60s ssh "${ssh_opts[@]}" "$@"

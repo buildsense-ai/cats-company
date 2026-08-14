@@ -623,6 +623,28 @@ describe('StreamingSTTSession', () => {
     }
   });
 
+  it('publishes an empty final so the composer can release the terminal session', async () => {
+    const finals = [];
+    let socket;
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-empty-final', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onFinal: (text) => finals.push(text),
+    });
+
+    await session.start();
+    socket.open();
+    socket.receive({ type: 'ready', max_session_ms: 150_000 });
+    socket.receive({ type: 'final', text: '' });
+
+    expect(session.state).toBe('complete');
+    expect(finals).toEqual(['']);
+  });
+
   it('maps capture RMS through the VoicePi-style decibel curve', async () => {
     let emitLevel;
     const levels = [];
@@ -849,5 +871,86 @@ describe('StreamingSTTSession', () => {
     expect(socket.sent).toContain(JSON.stringify({ type: 'stop' }));
     session.cancel();
     vi.useRealTimers();
+  });
+
+  it('keeps the session duration when an older ready event omits duration fields', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-legacy-ready', max_session_ms: 25 }),
+      createCapture: vi.fn().mockResolvedValue(capture),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready' });
+      await vi.advanceTimersByTimeAsync(25);
+
+      expect(session.state).toBe('finalizing');
+      expect(capture.stop).toHaveBeenCalledTimes(1);
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails and releases the session when finalizing never reaches a terminal event', async () => {
+    vi.useFakeTimers();
+    let socket;
+    const errors = [];
+    const capture = { stop: vi.fn().mockResolvedValue(undefined) };
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-stalled-final', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue(capture),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onError: (error) => errors.push(error.message),
+    });
+
+    try {
+      await session.start();
+      socket.open();
+      socket.receive({ type: 'ready', max_session_ms: 150_000 });
+      await session.stop();
+
+      expect(session.state).toBe('finalizing');
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(session.state).toBe('error');
+      expect(errors).toEqual(['语音识别结束超时，请重试']);
+      expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+    } finally {
+      session.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('maps structured websocket admission errors to actionable messages', async () => {
+    let socket;
+    const errors = [];
+    const session = new StreamingSTTSession({
+      createSession: vi.fn().mockResolvedValue({ ticket: 'ticket-admission', max_session_ms: 150_000 }),
+      createCapture: vi.fn().mockResolvedValue({ stop: vi.fn().mockResolvedValue(undefined) }),
+      createWebSocket: () => {
+        socket = new FakeWebSocket('wss://app.catsco.cc/api/stt/realtime');
+        return socket;
+      },
+      onError: (error) => errors.push(error.message),
+    });
+
+    await session.start();
+    socket.open();
+    socket.receive({ type: 'error', code: 'quota_exhausted', message: 'internal detail' });
+
+    expect(session.state).toBe('error');
+    expect(errors).toEqual(['语音输入额度已用完，请稍后再试']);
   });
 });

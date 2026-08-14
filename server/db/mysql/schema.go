@@ -55,6 +55,9 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddSkillsVisibility,
 		migrateBotConfigAddTenantName,
 		migrateBotConfigAddBodyID,
+		migrateBotConfigAddProfileRole,
+		migrateBotConfigAddProfileDescription,
+		migrateBotConfigAddArtifactUploadPolicy,
 		migrateMessagesAddCodeMode,
 		migrateMessagesAddClientMsgID,
 		migrateMessagesAddClientMsgIDIndex,
@@ -351,6 +354,9 @@ CREATE TABLE IF NOT EXISTS bot_config (
     config JSON DEFAULT NULL,
     skills_visibility ENUM('owner','authorized','public') NOT NULL DEFAULT 'owner',
     body_id VARCHAR(128) DEFAULT NULL,
+    role VARCHAR(32) NOT NULL DEFAULT 'general',
+    description TEXT NULL,
+    artifact_upload_enabled TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -744,6 +750,18 @@ ALTER TABLE bot_config ADD COLUMN tenant_name VARCHAR(128) DEFAULT NULL;
 // Migration: add persistent bot body binding.
 const migrateBotConfigAddBodyID = `
 ALTER TABLE bot_config ADD COLUMN body_id VARCHAR(128) DEFAULT NULL;
+`
+
+const migrateBotConfigAddProfileRole = `
+ALTER TABLE bot_config ADD COLUMN role VARCHAR(32) NOT NULL DEFAULT 'general';
+`
+
+const migrateBotConfigAddProfileDescription = `
+ALTER TABLE bot_config ADD COLUMN description TEXT NULL;
+`
+
+const migrateBotConfigAddArtifactUploadPolicy = `
+ALTER TABLE bot_config ADD COLUMN artifact_upload_enabled TINYINT(1) NOT NULL DEFAULT 1;
 `
 
 // Migration: add code mode support to messages table.

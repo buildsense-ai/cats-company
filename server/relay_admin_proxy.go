@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -230,8 +231,25 @@ func (h *RelayAdminProxyHandler) HandleProxy(w http.ResponseWriter, r *http.Requ
 	if q := relayAdminSanitizedQuery(r.URL.RawQuery); q != "" {
 		upstream += "?" + q
 	}
-	limitedBody := http.MaxBytesReader(w, r.Body, 16<<20)
-	upReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstream, limitedBody)
+	var upstreamBody io.Reader
+	if r.Body != nil && r.Body != http.NoBody {
+		limitedBody := http.MaxBytesReader(w, r.Body, 16<<20)
+		requestBody, readErr := io.ReadAll(limitedBody)
+		if readErr != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(readErr, &maxBytesErr) {
+				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "request body too large"})
+				return
+			}
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		// Buffering gives the upstream request an explicit Content-Length. The
+		// relay admin's lightweight HTTP server does not decode chunked request
+		// bodies, so forwarding the original stream would silently submit {}.
+		upstreamBody = bytes.NewReader(requestBody)
+	}
+	upReq, err := http.NewRequestWithContext(r.Context(), r.Method, upstream, upstreamBody)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
 		return

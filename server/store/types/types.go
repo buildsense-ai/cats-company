@@ -105,6 +105,8 @@ type CommercialOrder struct {
 	PaidAt            *time.Time         `json:"paid_at,omitempty"`
 	FulfilledAt       *time.Time         `json:"fulfilled_at,omitempty"`
 	ClosedAt          *time.Time         `json:"closed_at,omitempty"`
+	RefundRequestNo   string             `json:"refund_request_no,omitempty"`
+	RefundedAt        *time.Time         `json:"refunded_at,omitempty"`
 	LastError         string             `json:"-"`
 	CreatedAt         time.Time          `json:"created_at"`
 	UpdatedAt         time.Time          `json:"updated_at"`
@@ -119,6 +121,20 @@ type CommercialPaymentConfirmation struct {
 	AmountFen       int64
 	Currency        string
 	PaidAt          time.Time
+	PayloadHash     string
+}
+
+// CommercialRefundConfirmation is the normalized result of a provider-side
+// full refund. The request identifier is deterministic so retries remain
+// idempotent when the provider succeeds but the local transaction is retried.
+type CommercialRefundConfirmation struct {
+	Channel         string
+	EventID         string
+	ProviderTradeNo string
+	RefundRequestNo string
+	AmountFen       int64
+	Currency        string
+	RefundedAt      time.Time
 	PayloadHash     string
 }
 
@@ -189,11 +205,13 @@ type CommercialQuotaGrant struct {
 	PlanID        int64      `json:"plan_id,omitempty"`
 	InviteCodeID  int64      `json:"invite_code_id,omitempty"`
 	GrantType     string     `json:"grant_type"`
+	SourceRef     string     `json:"source_ref,omitempty"`
 	Model         string     `json:"model"`
 	AmountCNY     float64    `json:"amount_cny"`
 	ResetDuration string     `json:"reset_duration"`
 	EffectiveAt   time.Time  `json:"effective_at"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	RevokedAt     *time.Time `json:"revoked_at,omitempty"`
 	Note          string     `json:"note,omitempty"`
 	OperatorUID   int64      `json:"operator_uid,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
@@ -474,15 +492,18 @@ const (
 
 // BotConfig holds configuration for a registered bot.
 type BotConfig struct {
-	UserID           int64               `json:"user_id"`
-	OwnerID          int64               `json:"owner_id"`
-	APIEndpoint      string              `json:"api_endpoint,omitempty"`
-	Model            string              `json:"model,omitempty"`
-	Enabled          bool                `json:"enabled"`
-	Visibility       BotVisibility       `json:"visibility"`
-	SkillsVisibility BotSkillsVisibility `json:"skills_visibility"`
-	BodyID           string              `json:"body_id,omitempty"`
-	Config           map[string]string   `json:"config,omitempty"`
+	UserID                int64               `json:"user_id"`
+	OwnerID               int64               `json:"owner_id"`
+	APIEndpoint           string              `json:"api_endpoint,omitempty"`
+	Model                 string              `json:"model,omitempty"`
+	Enabled               bool                `json:"enabled"`
+	Visibility            BotVisibility       `json:"visibility"`
+	SkillsVisibility      BotSkillsVisibility `json:"skills_visibility"`
+	BodyID                string              `json:"body_id,omitempty"`
+	Role                  string              `json:"role,omitempty"`
+	Description           string              `json:"description,omitempty"`
+	ArtifactUploadEnabled *bool               `json:"artifact_upload_enabled,omitempty"`
+	Config                map[string]string   `json:"config,omitempty"`
 }
 
 // BotModelConfig stores the cloud-selected model and the latest device apply
@@ -527,6 +548,26 @@ type BotDefinitionModel struct {
 type BotPromptDefinition struct {
 	Selected           string `json:"selected"`
 	CustomSystemPrompt string `json:"customSystemPrompt,omitempty"`
+}
+
+// BotPromptVisibility controls who may inspect the currently selected system
+// prompt. Editing remains owner-only regardless of this value.
+type BotPromptVisibility string
+
+const (
+	BotPromptOwner   BotPromptVisibility = "owner"
+	BotPromptFriends BotPromptVisibility = "friends"
+)
+
+// BotDefaultPromptSnapshot is runtime-observed state, kept separate from the
+// owner-managed definition so reporting a bundled default never changes the
+// desired revision or overwrites an owner's selection.
+type BotDefaultPromptSnapshot struct {
+	Content        string `json:"content"`
+	ContentHash    string `json:"contentHash"`
+	XiaoBaVersion  string `json:"xiaobaVersion,omitempty"`
+	RuntimeVersion string `json:"runtimeVersion,omitempty"`
+	ReportedAt     string `json:"reportedAt"`
 }
 
 // BotSkillRef identifies one exact, immutable SkillHub package version.
@@ -576,6 +617,8 @@ type BotDefinitionRecord struct {
 	Definition       BotDefinition
 	Runtime          BotDefinitionRuntime
 	SavedCustomModel *BotDefinitionSavedCustomModel
+	PromptVisibility BotPromptVisibility
+	DefaultPrompt    *BotDefaultPromptSnapshot
 	Exists           bool
 }
 

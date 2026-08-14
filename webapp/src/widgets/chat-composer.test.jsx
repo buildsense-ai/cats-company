@@ -224,6 +224,45 @@ describe('ChatComposer', () => {
 	}));
   });
 
+  it('allows another voice session immediately after a terminal recognition error', async () => {
+    const sessions = [];
+    const callbacks = [];
+    const createVoiceSession = vi.fn((options) => {
+      callbacks.push(options);
+      const session = {
+        prepare: vi.fn().mockResolvedValue(undefined),
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn(),
+        cancel: vi.fn(),
+      };
+      sessions.push(session);
+      return session;
+    });
+    await renderComposer({
+      onVoiceFinal: vi.fn(),
+      voiceInputAvailable: true,
+      createVoiceSession,
+    });
+
+    await act(async () => {
+      container.querySelector('button[aria-label="开始语音输入"]').click();
+      await Promise.resolve();
+      callbacks[0].onState('finalizing');
+      callbacks[0].onError(new Error('语音识别结束超时，请重试'));
+    });
+
+    expect(container.querySelector('.v3-composer-hint')?.textContent).toContain('语音识别结束超时，请重试');
+    expect(container.querySelector('button[aria-label="开始语音输入"]')).not.toBeNull();
+
+    await act(async () => {
+      container.querySelector('button[aria-label="开始语音输入"]').click();
+      await Promise.resolve();
+    });
+
+    expect(createVoiceSession).toHaveBeenCalledTimes(2);
+    expect(sessions[1].start).toHaveBeenCalledTimes(1);
+  });
+
   it('begins microphone pre-roll on touch down before the long-hold threshold', async () => {
     vi.useFakeTimers();
     const voiceSession = {

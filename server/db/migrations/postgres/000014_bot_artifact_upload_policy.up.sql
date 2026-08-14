@@ -1,0 +1,2 @@
+ALTER TABLE bot_config
+    ADD COLUMN IF NOT EXISTS artifact_upload_enabled BOOLEAN NOT NULL DEFAULT TRUE;

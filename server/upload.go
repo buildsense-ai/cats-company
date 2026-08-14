@@ -94,6 +94,45 @@ type UploadHandler struct {
 	mobileMu       sync.Mutex
 }
 
+// ValidateArtifactSourcePath confirms that path names an existing regular file
+// in this instance's uploaded-file storage.
+func (h *UploadHandler) ValidateArtifactSourcePath(value string) error {
+	const prefix = "/uploads/files/"
+	if h == nil || !strings.HasPrefix(value, prefix) {
+		return errors.New("artifact source is not an uploaded file")
+	}
+	fileName := strings.TrimPrefix(value, prefix)
+	if !uploadFileNamePattern.MatchString(fileName) || !allowedFileExts[strings.ToLower(filepath.Ext(fileName))] {
+		return errors.New("artifact source file key is invalid")
+	}
+
+	baseDir, err := filepath.Abs(filepath.Join(h.baseDir, "files"))
+	if err != nil {
+		return errors.New("artifact upload storage is unavailable")
+	}
+	fullPath, err := filepath.Abs(filepath.Join(baseDir, fileName))
+	if err != nil || !strings.HasPrefix(fullPath, baseDir+string(os.PathSeparator)) {
+		return errors.New("artifact source file path is invalid")
+	}
+	info, err := os.Lstat(fullPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return errors.New("artifact source file does not exist")
+	}
+	realBaseDir, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		return errors.New("artifact upload storage is unavailable")
+	}
+	realPath, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		return errors.New("artifact source file does not exist")
+	}
+	relative, err := filepath.Rel(realBaseDir, realPath)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return errors.New("artifact source file escapes upload storage")
+	}
+	return nil
+}
+
 type mobileUploadSession struct {
 	ID        string          `json:"session_id"`
 	Topic     string          `json:"topic"`

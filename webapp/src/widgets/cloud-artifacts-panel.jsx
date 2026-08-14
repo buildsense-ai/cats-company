@@ -8,15 +8,17 @@ import {
   ExternalLink,
   FileCode2,
   FileText,
-  Package,
   RefreshCw,
   RotateCcw,
+  Upload,
+  UsersRound,
   Trash2,
   X,
 } from 'lucide-react';
-import { api } from '../api';
+import { api, resolveMediaURL } from '../api';
 import { previewFileDescriptor } from './chat-message';
 import PwaDownloadLink from './pwa-download-link';
+import CustomSelect from './custom-select';
 
 const CLOUD_ARTIFACTS_CHANGED_EVENT = 'cc:cloud-artifacts-changed';
 
@@ -40,11 +42,33 @@ function formatUpdatedAt(value) {
 function artifactMeta(artifact) {
   const items = [artifact.kind === 'mini_app' ? '小应用' : '网页'];
   if (artifact.publish_version) items.push('发布 v' + artifact.publish_version);
-  if (artifact.agent_name) items.push(artifact.agent_name);
+  const creatorType = String(artifact.creator_type || '').trim();
+  const creatorName = String(artifact.creator_name || '').trim();
+  const uploaderName = String(artifact.uploader_name || '').trim();
+  const agentName = String(artifact.agent_name || '').trim();
+  if (creatorType === 'user' || (!creatorType && (artifact.uploader_uid || uploaderName))) {
+    if (artifact.uploaded_by_me) items.push('我上传');
+    else items.push(creatorName || uploaderName || '未知上传者');
+  } else if (creatorType === 'agent' || (!creatorType && agentName)) {
+    items.push((creatorName || agentName || 'Agent') + ' 生成');
+  } else {
+    items.push('来源未知');
+  }
   if (artifact.source_title) items.push(artifact.source_title);
   const time = formatUpdatedAt(artifact.status === 'deleted' ? artifact.deleted_at : artifact.updated_at);
   if (time) items.push(artifact.status === 'deleted' ? '删除于 ' + time : time);
   return items;
+}
+
+function publishArtifactKind(file) {
+  const name = String(file?.name || '').toLowerCase();
+  if (name.endsWith('.html') || name.endsWith('.htm')) return 'html';
+  if (name.endsWith('.zip')) return 'mini_app';
+  return '';
+}
+
+function publishArtifactTitle(file) {
+  return String(file?.name || '新成果').replace(/\.(?:html?|zip)$/i, '') || '新成果';
 }
 
 function fileExtension(file) {
@@ -84,7 +108,8 @@ export default function CloudArtifactsPanel({
   const tab = controlledTab ?? localTab;
   const [artifacts, setArtifacts] = useState([]);
   const [files, setFiles] = useState([]);
-  const [skills, setSkills] = useState([]);
+  const [viewerRelation, setViewerRelation] = useState('');
+  const [canPublish, setCanPublish] = useState(false);
   const [fileCursor, setFileCursor] = useState(0);
   const [fileHasMore, setFileHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -92,7 +117,9 @@ export default function CloudArtifactsPanel({
   const [copiedID, setCopiedID] = useState('');
   const [pendingID, setPendingID] = useState('');
   const [confirmArtifact, setConfirmArtifact] = useState(null);
+  const [artifactScope, setArtifactScope] = useState('current');
   const requestSequenceRef = useRef(0);
+  const publishInputRef = useRef(null);
 
   const selectTab = (nextTab) => {
     if (controlledTab == null) setLocalTab(nextTab);
@@ -107,7 +134,7 @@ export default function CloudArtifactsPanel({
     setError('');
     try {
       if (tab === 'files') {
-        const result = await api.getAgentFiles(agentUid, { topicId, beforeId, limit: 40 });
+        const result = await api.getTopicFiles(topicId, { beforeId, limit: 40 });
         if (!isCurrentRequest()) return;
         const nextFiles = Array.isArray(result?.files) ? result.files : [];
         setFiles((current) => append ? [...current, ...nextFiles] : nextFiles);
@@ -115,28 +142,14 @@ export default function CloudArtifactsPanel({
         setFileHasMore(Boolean(result?.has_more));
         return;
       }
-      if (tab === 'skills') {
-        const result = await api.getAgentSkills(agentUid);
-        if (!isCurrentRequest()) return;
-        setSkills(Array.isArray(result?.skills) ? result.skills : []);
-        return;
-      }
       const result = await api.getCloudArtifacts(agentUid, tab);
       if (!isCurrentRequest()) return;
       setArtifacts(Array.isArray(result?.artifacts) ? result.artifacts : []);
+      setViewerRelation(String(result?.viewer_relation || ''));
+      setCanPublish(Boolean(result?.can_publish) && result?.publish_mode === 'immediate');
     } catch (err) {
       if (!isCurrentRequest()) return;
-      setError(
-        tab === 'skills' && err.status === 403 && !err.message
-          ? '当前账号无法查看这个 Agent 的技能配置'
-          : err.message || (
-            tab === 'files'
-              ? '历史文件读取失败'
-              : tab === 'skills'
-                ? '技能配置读取失败'
-                : '云端产物读取失败'
-          ),
-      );
+      setError(err.message || (tab === 'files' ? '聊天文件读取失败' : '成果读取失败'));
     } finally {
       if (isCurrentRequest()) setLoading(false);
     }
@@ -145,7 +158,8 @@ export default function CloudArtifactsPanel({
   useEffect(() => {
     setArtifacts([]);
     setFiles([]);
-    setSkills([]);
+    setViewerRelation('');
+    setCanPublish(false);
     setFileCursor(0);
     setFileHasMore(false);
     loadContent();
@@ -153,6 +167,10 @@ export default function CloudArtifactsPanel({
       requestSequenceRef.current += 1;
     };
   }, [loadContent]);
+
+  useEffect(() => {
+    setArtifactScope('current');
+  }, [agentUid, topicId]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -185,7 +203,42 @@ export default function CloudArtifactsPanel({
       setConfirmArtifact(null);
       notifyArtifactsChanged(agentUid);
     } catch (err) {
-      setError(err.message || '删除失败，请稍后重试');
+      setError(err.message || '下架失败，请稍后重试');
+    } finally {
+      setPendingID('');
+    }
+  };
+
+  const publishArtifact = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || pendingID) return;
+    const kind = publishArtifactKind(file);
+    if (!kind) {
+      setError('当前支持发布 HTML 网页或 ZIP 小应用');
+      return;
+    }
+    setPendingID('__publish__');
+    setError('');
+    try {
+      const uploaded = await api.uploadFile(file, 'file');
+      const operation = await api.publishCloudArtifact(agentUid, {
+        title: publishArtifactTitle(file),
+        kind,
+        url: new URL(resolveMediaURL(uploaded?.url), window.location.origin).toString(),
+        source_topic_id: String(topicId || ''),
+      });
+      if (operation?.artifact) {
+        setArtifacts((current) => [operation.artifact, ...current.filter(
+          (artifact) => artifact.id !== operation.artifact.id,
+        )]);
+      } else {
+        await loadContent();
+      }
+      setArtifactScope('current');
+      notifyArtifactsChanged(agentUid);
+    } catch (err) {
+      setError(err.message || '成果发布失败，请稍后重试');
     } finally {
       setPendingID('');
     }
@@ -206,19 +259,39 @@ export default function CloudArtifactsPanel({
     }
   };
 
+  const canFilterArtifactsByTask = artifacts.length === 0 || artifacts.some(
+    (artifact) => String(artifact?.source_topic_id || '').trim(),
+  );
+  const effectiveArtifactScope = canFilterArtifactsByTask ? artifactScope : 'all';
+  const scopedArtifacts = tab === 'active' && effectiveArtifactScope === 'current'
+    ? artifacts.filter((artifact) => {
+        const sourceTopicID = String(artifact?.source_topic_id || '').trim();
+        return !sourceTopicID || sourceTopicID === String(topicId || '').trim();
+      })
+    : artifacts;
   const emptyText = tab === 'active'
-    ? '还没有已部署的网页'
+    ? effectiveArtifactScope === 'current'
+      ? '当前任务还没有共享成果'
+      : '这个 Agent 还没有共享成果'
     : tab === 'files'
-      ? '当前会话还没有这个 Bot 生成的文件'
-      : tab === 'skills'
-        ? '这个 Agent 还没有添加技能'
-        : '回收站是空的';
+      ? '当前聊天还没有文件'
+      : '回收站是空的';
   const visibleCount = tab === 'files'
     ? files.length
-    : tab === 'skills'
-      ? skills.length
-      : artifacts.length;
+    : scopedArtifacts.length;
   const artifactTabSelected = tab === 'active' || tab === 'deleted';
+  const isOwner = viewerRelation === 'owner';
+  const artifactRoleLabel = isOwner ? '所有者' : viewerRelation ? '成员' : '';
+  const artifactAccessText = !viewerRelation
+    ? '正在读取成果权限…'
+    : isOwner
+      ? canPublish
+        ? '成员可查看和上传 · 你可管理全部成果'
+        : '成员可查看 · 你可管理全部成果'
+      : canPublish
+        ? '你可以查看和上传成果'
+        : '你可以查看成果';
+  const hasAgent = Number(agentUid || 0) > 0;
 
   return (
     <>
@@ -246,33 +319,48 @@ export default function CloudArtifactsPanel({
             >
               文件
             </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={artifactTabSelected}
-              className={artifactTabSelected ? 'active' : ''}
-              onClick={() => selectTab('active')}
-            >
-              产物
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'skills'}
-              className={tab === 'skills' ? 'active' : ''}
-              onClick={() => selectTab('skills')}
-            >
-              技能
-            </button>
+            {hasAgent && (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={artifactTabSelected}
+                className={artifactTabSelected ? 'active' : ''}
+                onClick={() => selectTab('active')}
+              >
+                成果
+              </button>
+            )}
           </div>
           <div className="cloud-artifacts-header-actions">
-            {tab === 'active' && (
+            {tab === 'active' && canPublish && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => publishInputRef.current?.click()}
+                  disabled={Boolean(pendingID)}
+                  aria-label="上传成果"
+                  title="上传成果"
+                >
+                  <Upload size={18} className={pendingID === '__publish__' ? 'is-publishing' : ''} />
+                </button>
+                <input
+                  ref={publishInputRef}
+                  className="cloud-artifacts-publish-input"
+                  type="file"
+                  accept=".html,.htm,.zip,text/html,application/zip"
+                  onChange={publishArtifact}
+                  tabIndex={-1}
+                  aria-hidden="true"
+                />
+              </>
+            )}
+            {tab === 'active' && isOwner && (
               <button type="button" onClick={() => selectTab('deleted')} aria-label="打开回收站" title="回收站">
                 <Trash2 size={18} />
               </button>
             )}
             {tab === 'deleted' && (
-              <button type="button" onClick={() => selectTab('active')} aria-label="返回产物列表" title="返回产物">
+              <button type="button" onClick={() => selectTab('active')} aria-label="返回成果列表" title="返回成果">
                 <ArrowLeft size={18} />
               </button>
             )}
@@ -286,13 +374,30 @@ export default function CloudArtifactsPanel({
         </header>
 
         <div className="cloud-artifacts-body">
+          {artifactTabSelected && tab !== 'deleted' && (
+            <div className="cloud-artifacts-context-note">
+              <UsersRound size={17} aria-hidden="true" />
+              <div className="cloud-artifacts-context-copy">
+                <div className="cloud-artifacts-context-title">
+                  <strong>共享成果</strong>
+                  {artifactRoleLabel && (
+                    <span className="cloud-artifacts-role-badge">{artifactRoleLabel}</span>
+                  )}
+                </div>
+                <span>{artifactAccessText}</span>
+              </div>
+              <ArtifactScopeSelect
+                value={effectiveArtifactScope}
+                canSelectCurrent={canFilterArtifactsByTask}
+                onChange={setArtifactScope}
+              />
+            </div>
+          )}
           {loading && visibleCount === 0 && (
             <div className="cloud-artifacts-status" role="status" aria-live="polite">
               {tab === 'files'
                 ? '正在读取文件…'
-                : tab === 'skills'
-                  ? '正在读取技能…'
-                  : '正在读取产物…'}
+                : '正在读取成果…'}
             </div>
           )}
           {!loading && error && (
@@ -327,16 +432,9 @@ export default function CloudArtifactsPanel({
               )}
             </>
           )}
-          {tab === 'skills' && skills.length > 0 && (
+          {artifactTabSelected && scopedArtifacts.length > 0 && (
             <div className="cloud-artifacts-list">
-              {skills.map((skill) => (
-                <SkillItem skill={skill} key={skill.skillId + ':' + (skill.version || '')} />
-              ))}
-            </div>
-          )}
-          {artifactTabSelected && artifacts.length > 0 && (
-            <div className="cloud-artifacts-list">
-              {artifacts.map((artifact) => (
+              {scopedArtifacts.map((artifact) => (
                 <article className="cloud-artifact-item" key={artifact.id}>
                   {tab === 'active' ? (
                     <button
@@ -371,8 +469,8 @@ export default function CloudArtifactsPanel({
                             className="danger"
                             onClick={() => setConfirmArtifact(artifact)}
                             disabled={pendingID === artifact.id}
-                            aria-label={'删除 ' + artifact.title}
-                            title="删除"
+                            aria-label={'下架 ' + artifact.title}
+                            title="下架"
                           >
                             <Trash2 size={17} />
                           </button>
@@ -403,17 +501,17 @@ export default function CloudArtifactsPanel({
               className="cloud-artifact-confirm"
               role="alertdialog"
               aria-modal="true"
-              aria-label="确认删除云端产物"
+              aria-label="确认下架成果"
               onClick={(event) => event.stopPropagation()}
             >
-              <h4>删除“{confirmArtifact.title}”？</h4>
-              <p>这个链接会立即失效，之后可以从回收站恢复。</p>
+              <h4>下架“{confirmArtifact.title}”？</h4>
+              <p>下架后其他成员将无法打开，Agent 所有者可以从回收站恢复。</p>
               <div className="cloud-artifact-confirm-actions">
                 <button type="button" onClick={() => setConfirmArtifact(null)} disabled={Boolean(pendingID)}>
                   取消
                 </button>
                 <button type="button" className="danger" onClick={deleteArtifact} disabled={Boolean(pendingID)}>
-                  {pendingID ? '正在删除...' : '删除'}
+                  {pendingID ? '正在下架...' : '下架'}
                 </button>
               </div>
             </div>
@@ -421,6 +519,25 @@ export default function CloudArtifactsPanel({
         )}
       </section>
     </>
+  );
+}
+
+function ArtifactScopeSelect({ value, canSelectCurrent, onChange }) {
+  return (
+    <div className="cloud-artifacts-scope">
+      <CustomSelect
+        ariaLabel="筛选成果范围"
+        className="cloud-artifacts-scope-select"
+        density="compact"
+        menuClassName="cloud-artifacts-scope-options"
+        triggerClassName="cloud-artifacts-scope-trigger"
+        value={value}
+        onValueChange={onChange}
+      >
+        <option value="current" disabled={!canSelectCurrent}>当前任务</option>
+        <option value="all">全部</option>
+      </CustomSelect>
+    </div>
   );
 }
 
@@ -455,29 +572,6 @@ function FileSummary({ file }) {
         </p>
       </div>
     </>
-  );
-}
-
-function SkillItem({ skill }) {
-  const skillID = String(skill?.skillId || '').trim() || '未命名技能';
-  const version = String(skill?.version || '').trim();
-  const source = skill?.source === 'skillhub' ? 'SkillHub' : '本地技能';
-
-  return (
-    <article className="cloud-artifact-item cloud-skill-item">
-      <div className="cloud-artifact-main is-static">
-        <span className="cloud-artifact-kind-icon skill" aria-hidden="true">
-          <Package size={18} />
-        </span>
-        <div className="cloud-artifact-copy">
-          <h4 translate="no">{skillID}</h4>
-          <p>
-            <span>{source}</span>
-            {version && <span translate="no">版本 {version}</span>}
-          </p>
-        </div>
-      </div>
-    </article>
   );
 }
 

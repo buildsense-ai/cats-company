@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,13 @@ import (
 const (
 	commercialPaymentChannelTest       = "test"
 	commercialPaymentChannelAlipayPage = "alipay_page"
+)
+
+var (
+	errCommercialRefundInvalid     = errors.New("invalid commercial refund request")
+	errCommercialRefundNotFound    = errors.New("commercial order not found")
+	errCommercialRefundConflict    = errors.New("commercial refund conflict")
+	errCommercialRefundUnavailable = errors.New("commercial refund unavailable")
 )
 
 type CommercialPaymentStore interface {
@@ -37,6 +45,13 @@ type CommercialPaymentStore interface {
 	FulfillCommercialOrder(orderNo string, confirmation *types.CommercialPaymentConfirmation) (*types.CommercialOrder, bool, error)
 	ClaimCommercialTrial(uid int64, planSlug string) (*types.CommercialSummary, error)
 	HasCommercialTrial(uid int64, planSlug string) (bool, error)
+}
+
+type CommercialRefundStore interface {
+	CommercialPaymentStore
+	BeginCommercialOrderRefund(orderNo, refundRequestNo string, staleAfter time.Duration) (*types.CommercialOrder, bool, error)
+	FailCommercialOrderRefund(orderNo, refundRequestNo, message string) error
+	CompleteCommercialOrderRefund(orderNo string, confirmation *types.CommercialRefundConfirmation) (*types.CommercialOrder, bool, error)
 }
 
 type CommercialPaymentIntent struct {
@@ -57,6 +72,10 @@ type CommercialPaymentQuerier interface {
 
 type CommercialPaymentCloser interface {
 	ClosePayment(context.Context, *types.CommercialOrder) error
+}
+
+type CommercialPaymentRefunder interface {
+	RefundPayment(context.Context, *types.CommercialOrder, string, string) (*types.CommercialRefundConfirmation, error)
 }
 
 type CommercialPaymentHandlerOptions struct {
@@ -184,6 +203,7 @@ func commercialOrderForUser(order *types.CommercialOrder) *types.CommercialOrder
 	copy := *order
 	copy.PlanMonthlyBudget = 0
 	copy.PlanModelBudgets = nil
+	copy.RefundRequestNo = ""
 	return &copy
 }
 
@@ -407,6 +427,71 @@ func (h *CommercialPaymentHandler) fulfillCommercialOrderIfPaid(ctx context.Cont
 		h.enqueueRelaySync(fulfilled.UID)
 	}
 	return fulfilled
+}
+
+// RefundOrder performs a provider-side full refund and then atomically revokes
+// the order entitlement and its quota grants. A deterministic provider request
+// number makes a retry safe if the provider succeeds before the local commit.
+func (h *CommercialPaymentHandler) RefundOrder(ctx context.Context, orderNo, reason string) (*types.CommercialOrder, bool, error) {
+	orderNo = strings.TrimSpace(orderNo)
+	reason = strings.TrimSpace(reason)
+	if h == nil || orderNo == "" {
+		return nil, false, errCommercialRefundInvalid
+	}
+	store, ok := h.store.(CommercialRefundStore)
+	if !ok {
+		return nil, false, errCommercialRefundUnavailable
+	}
+	order, err := store.GetCommercialOrder(0, orderNo)
+	if err != nil {
+		return nil, false, fmt.Errorf("load commercial refund order: %w", err)
+	}
+	if order == nil {
+		return nil, false, errCommercialRefundNotFound
+	}
+	if order.Status == "refunded" {
+		return order, false, nil
+	}
+	if order.Status != "fulfilled" && order.Status != "refunding" {
+		return order, false, fmt.Errorf("%w: order status is %s", errCommercialRefundConflict, order.Status)
+	}
+	provider := h.providers[order.Channel]
+	refunder, ok := provider.(CommercialPaymentRefunder)
+	if !ok {
+		return order, false, fmt.Errorf("%w: payment channel does not support refunds", errCommercialRefundUnavailable)
+	}
+	refundRequestNo := commercialRefundRequestNo(order.OrderNo)
+	claimedOrder, claimed, err := store.BeginCommercialOrderRefund(order.OrderNo, refundRequestNo, 2*time.Minute)
+	if err != nil {
+		return order, false, fmt.Errorf("begin commercial refund: %w", err)
+	}
+	if claimedOrder != nil {
+		order = claimedOrder
+	}
+	if !claimed {
+		if order.Status == "refunded" {
+			return order, false, nil
+		}
+		return order, false, fmt.Errorf("%w: refund is already in progress", errCommercialRefundConflict)
+	}
+	confirmation, err := refunder.RefundPayment(ctx, order, refundRequestNo, reason)
+	if err != nil {
+		_ = store.FailCommercialOrderRefund(order.OrderNo, refundRequestNo, err.Error())
+		return order, false, fmt.Errorf("refund payment: %w", err)
+	}
+	refunded, changed, err := store.CompleteCommercialOrderRefund(order.OrderNo, confirmation)
+	if err != nil {
+		_ = store.FailCommercialOrderRefund(order.OrderNo, refundRequestNo, err.Error())
+		return order, false, fmt.Errorf("complete commercial refund: %w", err)
+	}
+	if changed && refunded != nil {
+		h.enqueueRelaySync(refunded.UID)
+	}
+	return refunded, changed, nil
+}
+
+func commercialRefundRequestNo(orderNo string) string {
+	return "CCRF-" + strings.TrimSpace(orderNo)
 }
 
 func (h *CommercialPaymentHandler) refreshPendingCommercialOrder(ctx context.Context, order *types.CommercialOrder) *types.CommercialOrder {

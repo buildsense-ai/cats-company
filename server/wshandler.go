@@ -201,6 +201,17 @@ func (h *Hub) BotBodyStatus(botUID int64) BotBodyStatus {
 	return status
 }
 
+// BotRuntimeOnline reports cluster-wide runtime presence. BotBodyStatus is
+// intentionally scoped to this hub's registered WebSocket clients because it
+// exposes connection details; callers that only need a presence signal must
+// also account for a valid lease held by another node.
+func (h *Hub) BotRuntimeOnline(botUID int64) bool {
+	if h == nil || botUID <= 0 {
+		return false
+	}
+	return h.BotBodyStatus(botUID).Active || h.botOnlineElsewhere(botUID)
+}
+
 func (h *Hub) hasRegisteredBotBodyClient(lease botBodyLease) bool {
 	if h == nil || lease.botUID <= 0 || lease.bodyID == "" || lease.connectionID == "" {
 		return false

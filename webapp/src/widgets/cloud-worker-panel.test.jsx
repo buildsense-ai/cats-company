@@ -149,7 +149,21 @@ describe('CloudWorkerPanel', () => {
     await renderPanel({
       workers: [worker({ cloud_status: 'weird_state' })],
     });
-    expect(container.textContent).toContain('未知');
+    expect(container.textContent).toContain('状态同步中');
+  });
+
+  test('labels creating / stopped / missing cloud states distinctly', async () => {
+    await renderPanel({
+      workers: [
+        worker({ cloud_status: 'creating', tenant_name: 'bot-t1' }),
+        worker({ cloud_status: 'stopped', tenant_name: 'bot-t2' }),
+        worker({ cloud_status: 'missing', tenant_name: 'bot-t3' }),
+      ],
+    });
+    const text = container.textContent;
+    expect(text).toContain('实例创建中');
+    expect(text).toContain('已停止');
+    expect(text).toContain('实例不存在');
   });
 
   test('calls rollback/reset/delete callbacks from worker actions', async () => {

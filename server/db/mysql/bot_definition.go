@@ -136,6 +136,42 @@ func (a *Adapter) UpdateBotDefinitionSkills(
 	})
 }
 
+func (a *Adapter) UpdateBotPromptVisibility(
+	botUID int64,
+	visibility types.BotPromptVisibility,
+) (*types.BotDefinitionRecord, error) {
+	return a.updateBotDefinition(botUID, func(record *types.BotDefinitionRecord, _ string) error {
+		record.PromptVisibility = visibility
+		return nil
+	})
+}
+
+func (a *Adapter) ReportBotDefaultPrompt(
+	botUID int64,
+	snapshot types.BotDefaultPromptSnapshot,
+) (*types.BotDefinitionRecord, bool, error) {
+	changed := false
+	record, err := a.updateBotDefinition(botUID, func(record *types.BotDefinitionRecord, now string) error {
+		if !store.ShouldReplaceBotDefaultPrompt(record.DefaultPrompt, snapshot) {
+			// Runtime reports are observational and should remain idempotent. An
+			// older client must not downgrade the stored snapshot, but it should
+			// still receive a successful response so startup is not disrupted.
+			return nil
+		}
+		if record.DefaultPrompt != nil &&
+			record.DefaultPrompt.ContentHash == snapshot.ContentHash &&
+			record.DefaultPrompt.XiaoBaVersion == snapshot.XiaoBaVersion &&
+			record.DefaultPrompt.RuntimeVersion == snapshot.RuntimeVersion {
+			return nil
+		}
+		snapshot.ReportedAt = now
+		record.DefaultPrompt = &snapshot
+		changed = true
+		return nil
+	})
+	return record, changed, err
+}
+
 func (a *Adapter) AckBotDefinition(botUID, revision int64, applyError string) (*types.BotDefinitionRecord, error) {
 	return a.updateBotDefinition(botUID, func(record *types.BotDefinitionRecord, now string) error {
 		if revision != record.Runtime.DesiredRevision {

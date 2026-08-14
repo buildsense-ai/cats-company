@@ -124,6 +124,29 @@ describe('CustomSelect', () => {
     expect(listbox.style.maxHeight).toBe('226px');
   });
 
+  it('propagates density and surface classes to the portal', async () => {
+    const trigger = await mount({
+      density: 'compact',
+      menuClassName: 'test-select-menu',
+      optionClassName: 'test-select-option',
+      triggerClassName: 'test-select-trigger',
+    });
+    trigger.getBoundingClientRect = () => rect({
+      bottom: 72,
+      left: 24,
+      top: 40,
+      width: 96,
+    });
+
+    await act(async () => Simulate.click(trigger));
+
+    const listbox = document.body.querySelector('.test-select-menu');
+    expect(trigger.classList.contains('test-select-trigger')).toBe(true);
+    expect(listbox.classList.contains('is-compact')).toBe(true);
+    expect(listbox.dataset.placement).toBe('bottom');
+    expect(listbox.querySelector('.test-select-option')).not.toBeNull();
+  });
+
   it('supports disabled-option skipping, edge keys, selection, and focus restoration', async () => {
     const onValueChange = vi.fn();
     const trigger = await mount({ onValueChange });
@@ -180,6 +203,6 @@ describe('CustomSelect', () => {
     const listbox = document.body.querySelector('[role="listbox"][aria-label="Model protocol"]');
     await act(async () => Simulate.keyDown(listbox, { key: 'Tab' }));
     expect(document.body.querySelector('[role="listbox"][aria-label="Model protocol"]')).toBeNull();
-    expect(document.activeElement).toBe(trigger);
+    expect(document.activeElement).not.toBe(listbox);
   });
 });

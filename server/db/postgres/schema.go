@@ -40,6 +40,7 @@ func (a *Adapter) CreateSchema() error {
 		createCommercialPaymentEventsTable,
 		createCommercialManagedRelayBudgetsTable,
 		createCommercialOperatorEventsTable,
+		migrateCommercialRefundColumns,
 		createChannelAgentEntriesTable,
 		createChannelAgentAccessRequestsTable,
 		createChannelAgentBindingsTable,
@@ -63,6 +64,9 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddSkillsVisibility,
 		migrateBotConfigAddTenantName,
 		migrateBotConfigAddBodyID,
+		migrateBotConfigAddRole,
+		migrateBotConfigAddDescription,
+		migrateBotConfigAddArtifactUploadPolicy,
 		migrateChannelAgentEntriesAddAppID,
 		migrateChannelAgentEntriesAddAccessMode,
 		migrateChannelAgentEntriesDefaultAccessMode,
@@ -321,6 +325,9 @@ CREATE TABLE IF NOT EXISTS bot_config (
 	 skills_visibility VARCHAR(16) NOT NULL DEFAULT 'owner' CHECK (skills_visibility IN ('owner','authorized','public')),
     tenant_name VARCHAR(128) DEFAULT NULL,
     body_id VARCHAR(128) DEFAULT NULL,
+    role VARCHAR(32) NOT NULL DEFAULT 'general',
+    description TEXT NOT NULL DEFAULT '',
+    artifact_upload_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -520,10 +527,12 @@ CREATE TABLE IF NOT EXISTS commercial_quota_grants (
     grant_type VARCHAR(32) NOT NULL DEFAULT 'manual',
     model VARCHAR(128) NOT NULL DEFAULT '*',
     amount_cny NUMERIC(14,6) NOT NULL,
-    reset_duration VARCHAR(16) NOT NULL DEFAULT '1M',
-    effective_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMPTZ DEFAULT NULL,
-    note TEXT NOT NULL DEFAULT '',
+	reset_duration VARCHAR(16) NOT NULL DEFAULT '1M',
+	effective_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	expires_at TIMESTAMPTZ DEFAULT NULL,
+	source_ref VARCHAR(128) NOT NULL DEFAULT '',
+	revoked_at TIMESTAMPTZ DEFAULT NULL,
+	note TEXT NOT NULL DEFAULT '',
     operator_uid BIGINT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_commercial_quota_grants_amount CHECK (amount_cny > 0)
@@ -542,6 +551,26 @@ CREATE TABLE IF NOT EXISTS commercial_quota_ledger (
     note TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+`
+
+// Keep the application-managed schema path compatible with databases created
+// before refund support. SQL migration files are not executed by CreateSchema.
+const migrateCommercialRefundColumns = `
+ALTER TABLE commercial_orders
+	ADD COLUMN IF NOT EXISTS refund_request_no VARCHAR(64) NOT NULL DEFAULT '',
+	ADD COLUMN IF NOT EXISTS refunded_at TIMESTAMPTZ DEFAULT NULL;
+
+ALTER TABLE commercial_quota_grants
+	ADD COLUMN IF NOT EXISTS source_ref VARCHAR(128) NOT NULL DEFAULT '',
+	ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ DEFAULT NULL;
+
+UPDATE commercial_quota_grants
+SET source_ref = substring(note FROM 7)
+WHERE grant_type = 'order' AND source_ref = '' AND note LIKE 'order %';
+
+UPDATE commercial_quota_grants
+SET source_ref = substring(note FROM 8)
+WHERE grant_type = 'invite' AND source_ref = '' AND note LIKE 'invite %';
 `
 
 const createCommercialOrdersTable = `
@@ -567,6 +596,8 @@ CREATE TABLE IF NOT EXISTS commercial_orders (
 	paid_at TIMESTAMPTZ DEFAULT NULL,
 	fulfilled_at TIMESTAMPTZ DEFAULT NULL,
 	closed_at TIMESTAMPTZ DEFAULT NULL,
+	refund_request_no VARCHAR(64) NOT NULL DEFAULT '',
+	refunded_at TIMESTAMPTZ DEFAULT NULL,
 	last_error TEXT NOT NULL DEFAULT '',
 	created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -847,6 +878,9 @@ const migrateBotConfigAddVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT 
 const migrateBotConfigAddSkillsVisibility = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS skills_visibility VARCHAR(16) NOT NULL DEFAULT 'owner';`
 const migrateBotConfigAddTenantName = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS tenant_name VARCHAR(128) DEFAULT NULL;`
 const migrateBotConfigAddBodyID = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS body_id VARCHAR(128) DEFAULT NULL;`
+const migrateBotConfigAddRole = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'general';`
+const migrateBotConfigAddDescription = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';`
+const migrateBotConfigAddArtifactUploadPolicy = `ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS artifact_upload_enabled BOOLEAN NOT NULL DEFAULT TRUE;`
 const migrateChannelAgentEntriesAddAppID = `ALTER TABLE channel_agent_entries ADD COLUMN IF NOT EXISTS channel_app_id VARCHAR(128) NOT NULL DEFAULT '';`
 const migrateChannelAgentEntriesAddAccessMode = `ALTER TABLE channel_agent_entries ADD COLUMN IF NOT EXISTS access_mode VARCHAR(32) NOT NULL DEFAULT 'approval_required';`
 const migrateChannelAgentEntriesDefaultAccessMode = `ALTER TABLE channel_agent_entries ALTER COLUMN access_mode SET DEFAULT 'approval_required';`
@@ -948,7 +982,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_entitlements_invite_once
     WHERE source = 'invite';
 CREATE INDEX IF NOT EXISTS idx_commercial_quota_grants_uid_model ON commercial_quota_grants (uid, model, effective_at);
 CREATE INDEX IF NOT EXISTS idx_commercial_quota_grants_expires ON commercial_quota_grants (expires_at);
+CREATE INDEX IF NOT EXISTS idx_commercial_quota_grants_source ON commercial_quota_grants (grant_type, source_ref);
 CREATE INDEX IF NOT EXISTS idx_commercial_quota_ledger_uid_created ON commercial_quota_ledger (uid, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_refund_ledger_grant
+	ON commercial_quota_ledger (source_type, source_id, entry_type)
+	WHERE source_type = 'refund' AND entry_type = 'revoke';
 CREATE UNIQUE INDEX IF NOT EXISTS uk_commercial_entitlements_order_once
 	ON commercial_entitlements (uid, source, source_ref)
 	WHERE source = 'order';

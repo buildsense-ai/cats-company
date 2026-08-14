@@ -117,6 +117,36 @@ func (s *botDefinitionTestStore) UpdateBotDefinitionSkills(
 	return cloneBotDefinitionRecord(record), nil
 }
 
+func (s *botDefinitionTestStore) UpdateBotPromptVisibility(
+	botUID int64,
+	visibility types.BotPromptVisibility,
+) (*types.BotDefinitionRecord, error) {
+	record := s.ensure(botUID)
+	record.PromptVisibility = visibility
+	return cloneBotDefinitionRecord(record), nil
+}
+
+func (s *botDefinitionTestStore) ReportBotDefaultPrompt(
+	botUID int64,
+	snapshot types.BotDefaultPromptSnapshot,
+) (*types.BotDefinitionRecord, bool, error) {
+	record := s.ensure(botUID)
+	if !store.ShouldReplaceBotDefaultPrompt(record.DefaultPrompt, snapshot) {
+		return cloneBotDefinitionRecord(record), false, nil
+	}
+	if record.DefaultPrompt != nil &&
+		record.DefaultPrompt.ContentHash == snapshot.ContentHash &&
+		record.DefaultPrompt.XiaoBaVersion == snapshot.XiaoBaVersion &&
+		record.DefaultPrompt.RuntimeVersion == snapshot.RuntimeVersion {
+		return cloneBotDefinitionRecord(record), false, nil
+	}
+	if snapshot.ReportedAt == "" {
+		snapshot.ReportedAt = "2026-08-13T00:00:00Z"
+	}
+	record.DefaultPrompt = &snapshot
+	return cloneBotDefinitionRecord(record), true, nil
+}
+
 func (s *botDefinitionTestStore) AckBotDefinition(
 	botUID, revision int64,
 	applyError string,

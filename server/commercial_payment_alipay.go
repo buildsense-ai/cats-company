@@ -31,6 +31,7 @@ type alipayPaymentClient interface {
 	TradePagePay(alipay.TradePagePay) (*url.URL, error)
 	TradeQuery(context.Context, alipay.TradeQuery) (*alipay.TradeQueryRsp, error)
 	TradeClose(context.Context, alipay.TradeClose) (*alipay.TradeCloseRsp, error)
+	TradeRefund(context.Context, alipay.TradeRefund) (*alipay.TradeRefundRsp, error)
 	DecodeNotification(context.Context, url.Values) (*alipay.Notification, error)
 }
 
@@ -227,6 +228,53 @@ func (p *alipayPagePaymentProvider) ClosePayment(ctx context.Context, order *typ
 		return nil
 	}
 	return fmt.Errorf("Alipay close failed: code=%s sub_code=%s", response.Code, response.SubCode)
+}
+
+func (p *alipayPagePaymentProvider) RefundPayment(ctx context.Context, order *types.CommercialOrder, refundRequestNo, reason string) (*types.CommercialRefundConfirmation, error) {
+	if p == nil || p.client == nil || order == nil || strings.TrimSpace(order.OrderNo) == "" {
+		return nil, fmt.Errorf("Alipay order refund is unavailable")
+	}
+	refundRequestNo = strings.TrimSpace(refundRequestNo)
+	if refundRequestNo == "" || order.AmountFen <= 0 || !strings.EqualFold(strings.TrimSpace(order.Currency), "CNY") {
+		return nil, fmt.Errorf("Alipay refund request is invalid")
+	}
+	response, err := p.client.TradeRefund(ctx, alipay.TradeRefund{
+		OutTradeNo:   strings.TrimSpace(order.OrderNo),
+		RefundAmount: formatCNYFen(order.AmountFen),
+		RefundReason: truncateUTF8Bytes(strings.TrimSpace(reason), 256),
+		OutRequestNo: refundRequestNo,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("refund Alipay order: %w", err)
+	}
+	if response == nil {
+		return nil, fmt.Errorf("Alipay returned an empty refund response")
+	}
+	if !response.IsSuccess() {
+		return nil, fmt.Errorf("Alipay refund failed: code=%s sub_code=%s", response.Code, response.SubCode)
+	}
+	if strings.TrimSpace(response.OutTradeNo) != strings.TrimSpace(order.OrderNo) {
+		return nil, fmt.Errorf("Alipay refunded order mismatch")
+	}
+	tradeNo := strings.TrimSpace(response.TradeNo)
+	if tradeNo == "" || (strings.TrimSpace(order.ProviderTradeNo) != "" && tradeNo != strings.TrimSpace(order.ProviderTradeNo)) {
+		return nil, fmt.Errorf("Alipay refunded trade mismatch")
+	}
+	amountFen, err := parseCNYFen(response.RefundFee)
+	if err != nil || amountFen != order.AmountFen {
+		return nil, fmt.Errorf("Alipay refunded amount mismatch")
+	}
+	payload, _ := json.Marshal(response)
+	return &types.CommercialRefundConfirmation{
+		Channel:         commercialPaymentChannelAlipayPage,
+		EventID:         refundRequestNo,
+		ProviderTradeNo: tradeNo,
+		RefundRequestNo: refundRequestNo,
+		AmountFen:       amountFen,
+		Currency:        "CNY",
+		RefundedAt:      time.Now().UTC(),
+		PayloadHash:     paymentPayloadHash(payload),
+	}, nil
 }
 
 func (p *alipayPagePaymentProvider) confirmationFromNotification(notification *alipay.Notification, payloadHash string) (string, *types.CommercialPaymentConfirmation, error) {

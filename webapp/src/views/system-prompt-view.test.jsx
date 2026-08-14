@@ -3,31 +3,66 @@ import { createRoot } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 import SystemPromptView, {
   MAX_SYSTEM_PROMPT_BYTES,
-  normalizePromptDefinition,
+  normalizeAgentPrompt,
+  normalizePromptApplication,
+  normalizePromptBots,
   promptByteLength,
-  resolvePromptApplyState,
+  resolvePromptApplicationState,
 } from './system-prompt-view';
 import { api } from '../api';
 import { FeedbackProvider } from '../components/feedback-system';
 
 vi.mock('../api', () => ({
   api: {
-    getMyBots: vi.fn(),
+    getAgents: vi.fn(),
+    getAgentPrompt: vi.fn(),
     getBotDefinitionPrompt: vi.fn(),
     updateBotDefinitionPrompt: vi.fn(),
+    updateBotPromptVisibility: vi.fn(),
   },
 }));
 
-function definition({
+function viewerPrompt({
+  uid = 42,
+  relation = 'owner',
+  canEdit = relation === 'owner',
+  selected = 'default',
+  content = selected === 'custom' ? 'Active custom prompt' : 'Bundled default prompt',
+  contentAvailable = true,
+  defaultContent = 'Bundled default prompt',
+  defaultAvailable = true,
+  visibility = 'owner',
+  revision = 3,
+  application,
+} = {}) {
+  return {
+    uid,
+    botId: String(uid),
+    relation,
+    can_edit: canEdit,
+    prompt_visibility: visibility,
+    selected,
+    content,
+    content_available: contentAvailable,
+    default_content: defaultAvailable ? defaultContent : '',
+    default_content_available: defaultAvailable,
+    revision,
+    ...(application ? { application } : {}),
+    ...(defaultAvailable ? {
+      default_snapshot: {
+        contentHash: 'abc123',
+        xiaobaVersion: '1.2.3',
+        runtimeVersion: 'node-24',
+        reportedAt: '2026-08-13T03:00:00Z',
+      },
+    } : {}),
+  };
+}
+
+function ownerDefinition({
   revision = 3,
   selected = 'default',
-  customSystemPrompt = '',
-  appliedRevision = revision,
-  lastAttemptRevision = revision,
-  lastError = '',
-  appliedAt = '',
-  appliedKind = '',
-  appliedModelId = '',
+  customSystemPrompt = 'Saved custom backup',
 } = {}) {
   return {
     configured: true,
@@ -35,33 +70,12 @@ function definition({
     definition: {
       schema: 'xiaoba.bot-definition.v1',
       botId: '42',
-      model: { kind: 'catalog', modelId: 'minimax-m3' },
       prompt: {
         selected,
         ...(customSystemPrompt ? { customSystemPrompt } : {}),
       },
-      skills: [],
-    },
-    runtime: {
-      desiredRevision: revision,
-      appliedRevision,
-      lastAttemptRevision,
-      lastError,
-      appliedAt,
-      appliedKind,
-      appliedModelId,
     },
   };
-}
-
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, reject, resolve };
 }
 
 async function settle() {
@@ -70,35 +84,92 @@ async function settle() {
 }
 
 describe('SystemPromptView helpers', () => {
-  it('counts UTF-8 bytes and normalizes missing prompt fields to default', () => {
+  it('counts UTF-8 bytes and keeps every bot in the Agent roster', () => {
     expect(promptByteLength('CatsCo')).toBe(6);
     expect(promptByteLength('小八')).toBe(6);
     expect(promptByteLength('a'.repeat(MAX_SYSTEM_PROMPT_BYTES))).toBe(MAX_SYSTEM_PROMPT_BYTES);
-    expect(normalizePromptDefinition({ definition: {} })).toEqual({
-      selected: 'default',
-      customSystemPrompt: '',
+    expect(normalizePromptBots({
+      agents: [
+        { uid: 42, relation: 'owner', is_bot: true },
+        { uid: 43, relation: 'friend', is_bot: true },
+        { uid: 44, relation: 'friend', is_bot: false },
+      ],
+    }).map((agent) => agent.uid)).toEqual([42, 43]);
+  });
+
+  it('normalizes the server snake_case viewer contract', () => {
+    expect(normalizeAgentPrompt(viewerPrompt({ relation: 'friend', visibility: 'friends' })))
+      .toMatchObject({
+        canEdit: false,
+        content: 'Bundled default prompt',
+        defaultContent: 'Bundled default prompt',
+        promptVisibility: 'friends',
+        relation: 'friend',
+        selected: 'default',
+      });
+  });
+
+  it('normalizes application status fields and falls back to runtime acknowledgements', () => {
+    expect(normalizePromptApplication({
+      revision: 4,
+      application: {
+        status: 'applied',
+        desired_revision: 4,
+        applied_revision: 4,
+        applied_at: '2026-08-13T03:00:00Z',
+        is_online: true,
+      },
+    })).toMatchObject({
+      status: 'applied',
+      desiredRevision: 4,
+      appliedRevision: 4,
+      isOnline: true,
     });
-  });
-
-  it('distinguishes pending, applied, and failed runtime revisions', () => {
-    expect(resolvePromptApplyState(definition({ appliedRevision: 2, lastAttemptRevision: 2 })))
-      .toMatchObject({ kind: 'pending', label: '待应用' });
-    expect(resolvePromptApplyState(definition()))
-      .toMatchObject({ kind: 'applied', label: '已生效' });
-    expect(resolvePromptApplyState(definition({
-      appliedRevision: 2,
-      lastAttemptRevision: 3,
-      lastError: 'Bot 配置应用失败',
-    }))).toMatchObject({ kind: 'error', label: '应用失败' });
-  });
-
-  it('requires runtime acknowledgement evidence before treating revision zero as applied', () => {
-    expect(resolvePromptApplyState(definition({ revision: 0 })))
-      .toMatchObject({ kind: 'pending', label: '待应用' });
-    expect(resolvePromptApplyState(definition({
+    expect(normalizePromptApplication({
+      configured: true,
+      revision: 7,
+      runtime: {
+        desiredRevision: 7,
+        appliedRevision: 6,
+        lastAttemptRevision: 7,
+        lastAttemptAt: '2026-08-13T03:00:00Z',
+      },
+    })).toMatchObject({
+      status: 'pending',
+      desiredRevision: 7,
+      appliedRevision: 6,
+      lastAttemptRevision: 7,
+    });
+    expect(normalizePromptApplication({
       revision: 0,
-      appliedAt: '2026-08-12T10:00:00Z',
-    }))).toMatchObject({ kind: 'applied', label: '已生效' });
+      runtime: { lastError: 'stale legacy error' },
+      is_online: true,
+    })).toMatchObject({ status: 'saved', desiredRevision: 0 });
+    expect(normalizePromptApplication({
+      revision: 4,
+      runtime: {
+        desiredRevision: 4,
+        appliedRevision: 4,
+        appliedAt: '2026-08-13T03:00:00Z',
+        lastAttemptRevision: 4,
+        lastError: 'transient retry failure',
+      },
+    })).toMatchObject({ status: 'applied', appliedRevision: 4 });
+  });
+
+  it('maps application states to user-facing status labels', () => {
+    expect(resolvePromptApplicationState({
+      application: { status: 'saved', desired_revision: 3 },
+    })).toMatchObject({ kind: 'saved', label: '已保存到云端' });
+    expect(resolvePromptApplicationState({
+      application: { status: 'pending', desired_revision: 3 },
+    })).toMatchObject({ kind: 'pending', label: '等待 Agent 应用' });
+    expect(resolvePromptApplicationState({
+      application: { status: 'applied', applied_revision: 3 },
+    })).toMatchObject({ kind: 'applied', label: 'Agent 已应用 revision 3' });
+    expect(resolvePromptApplicationState({
+      application: { status: 'failed', desired_revision: 3 },
+    })).toMatchObject({ kind: 'failed', label: '应用失败，请重启或检查 Agent' });
   });
 });
 
@@ -109,27 +180,22 @@ describe('SystemPromptView', () => {
   beforeEach(() => {
     Object.values(api).forEach((mock) => mock.mockReset());
     globalThis.localStorage?.clear();
-    api.getMyBots.mockResolvedValue({
-      bots: [
-        { uid: 42, display_name: 'Owner Bot', relation: 'owner' },
-        { uid: 43, display_name: 'Friend Bot', relation: 'friend' },
+    api.getAgents.mockResolvedValue({
+      agents: [
+        { uid: 42, display_name: 'Owner Bot', relation: 'owner', is_bot: true },
+        { uid: 43, display_name: 'Friend Bot', relation: 'friend', is_bot: true },
       ],
     });
-    api.getBotDefinitionPrompt.mockResolvedValue(definition());
-    api.updateBotDefinitionPrompt.mockResolvedValue(definition({
-      revision: 4,
-      selected: 'custom',
-      customSystemPrompt: 'Be precise.',
-      appliedRevision: 3,
-      lastAttemptRevision: 3,
-    }));
+    api.getAgentPrompt.mockResolvedValue(viewerPrompt());
+    api.getBotDefinitionPrompt.mockResolvedValue(ownerDefinition());
+    api.updateBotDefinitionPrompt.mockResolvedValue({});
+    api.updateBotPromptVisibility.mockResolvedValue({ prompt_visibility: 'friends' });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
   });
 
   afterEach(async () => {
-    vi.useRealTimers();
     await act(async () => root.unmount());
     container.remove();
   });
@@ -145,139 +211,212 @@ describe('SystemPromptView', () => {
     });
   }
 
+  function findButton(label) {
+    return [...container.querySelectorAll('button')]
+      .find((button) => button.textContent.includes(label));
+  }
+
   function modeButton(label) {
     return [...container.querySelectorAll('.cc-system-prompt-mode button')]
       .find((button) => button.textContent.includes(label));
   }
 
-  it('shows only owner Bots and loads the canonical prompt revision', async () => {
+  it('lists owner and friend Agents and combines both owner prompt sources', async () => {
     await renderView();
 
     const options = [...container.querySelectorAll('.cc-system-prompt-agent-picker option')];
-    expect(options.map((option) => option.textContent)).toEqual(['Owner Bot']);
+    expect(options.map((option) => option.textContent)).toEqual([
+      'Owner Bot',
+      'Friend Bot · 联系人',
+    ]);
+    expect(api.getAgentPrompt).toHaveBeenCalledWith('42');
     expect(api.getBotDefinitionPrompt).toHaveBeenCalledWith('42');
-    expect(container.textContent).toContain('云端 revision3');
-    expect(container.textContent).toContain('已生效');
+    expect(container.querySelector('#cc-system-prompt-text').value).toBe('Bundled default prompt');
+
+    await act(async () => Simulate.click(modeButton('自定义提示词')));
+    expect(container.querySelector('#cc-system-prompt-text').value).toBe('Saved custom backup');
   });
 
-  it('recovers from an initial prompt load failure through the retry action', async () => {
-    api.getBotDefinitionPrompt
-      .mockRejectedValueOnce(new Error('network unavailable'))
-      .mockResolvedValueOnce(definition());
-    await renderView();
-
-    expect(container.textContent).toContain('无法读取 Agent 配置');
-    expect(container.textContent).toContain('network unavailable');
-    expect(container.querySelector('#cc-system-prompt-text')).toBeNull();
-
-    await act(async () => {
-      Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('重试')));
-      await settle();
-    });
-
-    expect(api.getBotDefinitionPrompt).toHaveBeenCalledTimes(2);
-    expect(container.textContent).toContain('云端 revision3');
-    expect(container.querySelector('#cc-system-prompt-text')).not.toBeNull();
-    expect(container.textContent).not.toContain('network unavailable');
-  });
-
-  it('keeps the loaded editor visible when a manual refresh fails', async () => {
-    api.getBotDefinitionPrompt
-      .mockResolvedValueOnce(definition({
-        selected: 'custom',
-        customSystemPrompt: 'Keep this editor visible.',
-      }))
-      .mockRejectedValueOnce(new Error('refresh unavailable'));
-    await renderView();
-
-    await act(async () => {
-      Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('刷新')));
-      await settle();
-    });
-
-    expect(container.textContent).toContain('refresh unavailable');
-    expect(container.textContent).toContain('云端 revision3');
-    expect(container.querySelector('#cc-system-prompt-text').value)
-      .toBe('Keep this editor visible.');
-  });
-
-  it('saves custom content with the current BotDefinition revision', async () => {
-    await renderView();
-
-    await act(async () => {
-      Simulate.click(modeButton('自定义提示词'));
-      Simulate.change(container.querySelector('#cc-system-prompt-text'), {
-        target: { value: 'Be precise.' },
-      });
-    });
-    await act(async () => {
-      Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('保存修改')));
-      await settle();
-    });
-
-    expect(api.updateBotDefinitionPrompt).toHaveBeenCalledWith('42', 3, {
+  it('lets an owner with active custom content preview the default snapshot', async () => {
+    api.getAgentPrompt.mockResolvedValueOnce(viewerPrompt({ selected: 'custom' }));
+    api.getBotDefinitionPrompt.mockResolvedValueOnce(ownerDefinition({
       selected: 'custom',
-      customSystemPrompt: 'Be precise.',
-    });
-    expect(container.textContent).toContain('待应用');
-  });
-
-  it('retains the custom text when saving the default mode', async () => {
-    api.getBotDefinitionPrompt.mockResolvedValueOnce(definition({
-      selected: 'custom',
-      customSystemPrompt: 'Keep this for later.',
+      customSystemPrompt: 'Active custom prompt',
     }));
-    api.updateBotDefinitionPrompt.mockResolvedValueOnce(definition({
-      revision: 4,
+    await renderView();
+
+    expect(container.querySelector('#cc-system-prompt-text').value).toBe('Active custom prompt');
+    await act(async () => Simulate.click(modeButton('默认提示词')));
+    expect(container.querySelector('#cc-system-prompt-text').value).toBe('Bundled default prompt');
+    expect(container.textContent).toContain('不包含日期、平台和设备等运行时上下文');
+  });
+
+  it('keeps a friend read-only and never requests or reveals the owner definition', async () => {
+    api.getAgents.mockResolvedValueOnce({
+      agents: [{ uid: 43, display_name: 'Friend Bot', relation: 'friend', is_bot: true }],
+    });
+    api.getAgentPrompt.mockResolvedValueOnce(viewerPrompt({
+      uid: 43,
+      relation: 'friend',
       selected: 'default',
-      customSystemPrompt: 'Keep this for later.',
-      appliedRevision: 3,
-      lastAttemptRevision: 3,
+      visibility: 'friends',
     }));
+    api.getBotDefinitionPrompt.mockResolvedValueOnce(ownerDefinition({
+      customSystemPrompt: 'INACTIVE OWNER BACKUP',
+    }));
+    await renderView();
+
+    expect(api.getAgentPrompt).toHaveBeenCalledWith('43');
+    expect(api.getBotDefinitionPrompt).not.toHaveBeenCalled();
+    expect(container.querySelector('#cc-system-prompt-text').readOnly).toBe(true);
+    expect([...container.querySelectorAll('.cc-system-prompt-mode button')]
+      .every((button) => button.disabled)).toBe(true);
+    expect(container.textContent).toContain('只有创建者可以修改');
+    expect(container.textContent).not.toContain('INACTIVE OWNER BACKUP');
+    expect(findButton('保存修改')).toBeUndefined();
+    expect(container.querySelector('.cc-system-prompt-visibility')).toBeNull();
+  });
+
+  it('shows only the active custom prompt to a friend', async () => {
+    api.getAgents.mockResolvedValueOnce({
+      agents: [{ uid: 43, display_name: 'Friend Bot', relation: 'friend', is_bot: true }],
+    });
+    api.getAgentPrompt.mockResolvedValueOnce(viewerPrompt({
+      uid: 43,
+      relation: 'friend',
+      selected: 'custom',
+      content: 'Friend-visible active custom prompt',
+      defaultAvailable: false,
+      visibility: 'friends',
+    }));
+    await renderView();
+
+    expect(container.querySelector('#cc-system-prompt-text').value)
+      .toBe('Friend-visible active custom prompt');
+    expect(modeButton('自定义提示词').getAttribute('aria-checked')).toBe('true');
+    expect(api.getBotDefinitionPrompt).not.toHaveBeenCalled();
+  });
+
+  it('trusts server can_edit instead of the roster relation for editing access', async () => {
+    api.getAgentPrompt.mockResolvedValueOnce(viewerPrompt({ canEdit: false }));
+    await renderView();
+
+    expect(api.getBotDefinitionPrompt).toHaveBeenCalledWith('42');
+    expect([...container.querySelectorAll('.cc-system-prompt-mode button')]
+      .every((button) => button.disabled)).toBe(true);
+    expect(findButton('保存修改')).toBeUndefined();
+  });
+
+  it('shows an explicit state when the default snapshot has not synced', async () => {
+    api.getAgentPrompt.mockResolvedValueOnce(viewerPrompt({
+      content: '',
+      contentAvailable: false,
+      defaultAvailable: false,
+    }));
+    await renderView();
+
+    expect(container.textContent).toContain('默认提示词尚未同步');
+    expect(container.textContent).toContain('启动或升级该 Agent 的 XiaoBa');
+    expect(container.querySelector('#cc-system-prompt-text')).toBeNull();
+  });
+
+  it.each([
+    ['saved', '已保存到云端'],
+    ['pending', '等待 Agent 应用'],
+    ['applied', 'Agent 已应用 revision 3'],
+    ['failed', '应用失败，请重启或检查 Agent'],
+  ])('shows the %s Agent application state', async (status, label) => {
+    api.getAgentPrompt.mockResolvedValueOnce(viewerPrompt({
+      application: {
+        status,
+        desired_revision: 3,
+        applied_revision: status === 'applied' ? 3 : 0,
+      },
+    }));
+    await renderView();
+
+    expect(container.querySelector('.cc-system-prompt-status')).not.toBeNull();
+    expect(container.querySelector('.cc-system-prompt-status').textContent).toContain(label);
+    if (status === 'failed') {
+      expect(container.textContent).toContain('重启或检查该 Agent');
+    }
+  });
+
+  it('prefers the viewer application projection over the owner runtime fallback', async () => {
+    api.getAgentPrompt.mockResolvedValueOnce(viewerPrompt({
+      revision: 4,
+      application: {
+        status: 'pending',
+        desired_revision: 4,
+        applied_revision: 3,
+      },
+    }));
+    api.getBotDefinitionPrompt.mockResolvedValueOnce({
+      ...ownerDefinition({ revision: 4 }),
+      runtime: {
+        desiredRevision: 4,
+        appliedRevision: 4,
+        appliedAt: '2026-08-13T03:00:00Z',
+      },
+    });
+    await renderView();
+
+    expect(container.querySelector('.cc-system-prompt-status').textContent)
+      .toContain('等待 Agent 应用');
+  });
+
+  it('saves visibility independently from the prompt revision', async () => {
+    await renderView();
+
+    await act(async () => {
+      Simulate.click(findButton('好友可查看'));
+      await settle();
+    });
+
+    expect(api.updateBotPromptVisibility).toHaveBeenCalledWith('42', 'friends');
+    expect(findButton('好友可查看').getAttribute('aria-pressed')).toBe('true');
+    expect(api.updateBotDefinitionPrompt).not.toHaveBeenCalled();
+  });
+
+  it('retains the inactive custom backup when switching to default', async () => {
+    api.getAgentPrompt
+      .mockResolvedValueOnce(viewerPrompt({ selected: 'custom' }))
+      .mockResolvedValueOnce(viewerPrompt({ selected: 'default', revision: 4 }));
+    api.getBotDefinitionPrompt
+      .mockResolvedValueOnce(ownerDefinition({
+        selected: 'custom',
+        customSystemPrompt: 'Keep this backup',
+      }))
+      .mockResolvedValueOnce(ownerDefinition({
+        revision: 4,
+        selected: 'default',
+        customSystemPrompt: 'Keep this backup',
+      }));
     await renderView();
 
     await act(async () => Simulate.click(modeButton('默认提示词')));
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('保存修改')));
+      Simulate.click(findButton('保存修改'));
       await settle();
     });
 
     expect(api.updateBotDefinitionPrompt).toHaveBeenCalledWith('42', 3, {
       selected: 'default',
-      customSystemPrompt: 'Keep this for later.',
+      customSystemPrompt: 'Keep this backup',
     });
+    expect(container.querySelector('#cc-system-prompt-text').value).toBe('Bundled default prompt');
   });
 
-  it('omits a whitespace-only custom backup when saving the default mode', async () => {
-    await renderView();
-
-    await act(async () => {
-      Simulate.click(modeButton('自定义提示词'));
-      Simulate.change(container.querySelector('#cc-system-prompt-text'), {
-        target: { value: '   \n' },
-      });
-      Simulate.click(modeButton('默认提示词'));
-    });
-    await act(async () => {
-      Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('保存修改')));
-      await settle();
-    });
-
-    expect(api.updateBotDefinitionPrompt).toHaveBeenCalledWith('42', 3, {
-      selected: 'default',
-    });
-  });
-
-  it('tracks edits to the inactive custom backup before switching modes', async () => {
-    api.getBotDefinitionPrompt.mockResolvedValueOnce(definition({
-      selected: 'default',
-      customSystemPrompt: 'Original backup',
-    }));
+  it('tracks edits to a custom backup after switching back to the active default', async () => {
+    api.getAgentPrompt
+      .mockResolvedValueOnce(viewerPrompt())
+      .mockResolvedValueOnce(viewerPrompt({ revision: 4 }));
+    api.getBotDefinitionPrompt
+      .mockResolvedValueOnce(ownerDefinition({ customSystemPrompt: 'Original backup' }))
+      .mockResolvedValueOnce(ownerDefinition({
+        revision: 4,
+        customSystemPrompt: 'Updated backup',
+      }));
     await renderView();
 
     await act(async () => Simulate.click(modeButton('自定义提示词')));
@@ -287,12 +426,10 @@ describe('SystemPromptView', () => {
       });
       Simulate.click(modeButton('默认提示词'));
     });
+    expect(findButton('保存修改').disabled).toBe(false);
 
-    const saveButton = [...container.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('保存修改'));
-    expect(saveButton.disabled).toBe(false);
     await act(async () => {
-      Simulate.click(saveButton);
+      Simulate.click(findButton('保存修改'));
       await settle();
     });
     expect(api.updateBotDefinitionPrompt).toHaveBeenCalledWith('42', 3, {
@@ -301,196 +438,81 @@ describe('SystemPromptView', () => {
     });
   });
 
-  it('keeps the local draft after a 409 and retries with the refreshed revision', async () => {
-    const conflict = Object.assign(new Error('conflict'), { status: 409 });
-    api.updateBotDefinitionPrompt
-      .mockRejectedValueOnce(conflict)
-      .mockResolvedValueOnce(definition({
-        revision: 5,
+  it('validates and saves a custom prompt with the owner revision', async () => {
+    api.getAgentPrompt
+      .mockResolvedValueOnce(viewerPrompt())
+      .mockResolvedValueOnce(viewerPrompt({
         selected: 'custom',
-        customSystemPrompt: 'My draft',
-        appliedRevision: 4,
-        lastAttemptRevision: 4,
+        content: 'Be precise.',
+        revision: 4,
       }));
     api.getBotDefinitionPrompt
-      .mockResolvedValueOnce(definition())
-      .mockResolvedValueOnce(definition({
+      .mockResolvedValueOnce(ownerDefinition({ customSystemPrompt: '' }))
+      .mockResolvedValueOnce(ownerDefinition({
         revision: 4,
         selected: 'custom',
-        customSystemPrompt: 'Changed elsewhere',
+        customSystemPrompt: 'Be precise.',
       }));
     await renderView();
 
     await act(async () => {
       Simulate.click(modeButton('自定义提示词'));
       Simulate.change(container.querySelector('#cc-system-prompt-text'), {
-        target: { value: 'My draft' },
+        target: { value: 'Be precise.' },
       });
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('保存修改')));
+      Simulate.click(findButton('保存修改'));
       await settle();
     });
 
-    expect(container.querySelector('#cc-system-prompt-text').value).toBe('My draft');
-    expect(container.textContent).toContain('检测到配置冲突');
-    expect(container.textContent).toContain('云端 revision4');
-
-    await act(async () => {
-      Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('保存修改')));
-      await settle();
-    });
-    expect(api.updateBotDefinitionPrompt).toHaveBeenLastCalledWith('42', 4, {
+    expect(api.updateBotDefinitionPrompt).toHaveBeenCalledWith('42', 3, {
       selected: 'custom',
-      customSystemPrompt: 'My draft',
+      customSystemPrompt: 'Be precise.',
     });
+    expect(container.querySelector('#cc-system-prompt-text').value).toBe('Be precise.');
   });
 
-  it('blocks empty and oversized custom prompts before sending a request', async () => {
-    await renderView();
-
-    await act(async () => Simulate.click(modeButton('自定义提示词')));
-    let saveButton = [...container.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('保存修改'));
-    expect(saveButton.disabled).toBe(true);
-    expect(container.textContent).toContain('自定义模式下提示词不能为空');
-
-    await act(async () => {
-      Simulate.change(container.querySelector('#cc-system-prompt-text'), {
-        target: { value: 'a'.repeat(MAX_SYSTEM_PROMPT_BYTES + 1) },
-      });
-    });
-    saveButton = [...container.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('保存修改'));
-    expect(saveButton.disabled).toBe(true);
-    expect(container.textContent).toContain('内容超过后端允许的 1 MiB 限制');
-    expect(api.updateBotDefinitionPrompt).not.toHaveBeenCalled();
-  });
-
-  it('locks the Agent picker and all editing controls while a save is in flight', async () => {
-    const pendingSave = deferred();
-    const onSavingChange = vi.fn();
-    api.updateBotDefinitionPrompt.mockReturnValueOnce(pendingSave.promise);
-    await renderView({ onSavingChange });
-
-    await act(async () => {
-      Simulate.click(modeButton('自定义提示词'));
-      Simulate.change(container.querySelector('#cc-system-prompt-text'), {
-        target: { value: 'Wait for this save.' },
-      });
-    });
-    await act(async () => {
-      Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('保存修改')));
-      await settle();
-    });
-
-    expect(container.querySelector('.cc-system-prompt-agent-picker select').disabled).toBe(true);
-    expect([...container.querySelectorAll('.cc-system-prompt-mode button')]
-      .every((button) => button.disabled)).toBe(true);
-    expect(container.querySelector('#cc-system-prompt-text').disabled).toBe(true);
-    expect(onSavingChange).toHaveBeenLastCalledWith(true);
-
-    await act(async () => {
-      pendingSave.resolve(definition({
-        revision: 4,
-        selected: 'custom',
-        customSystemPrompt: 'Wait for this save.',
-        appliedRevision: 3,
-        lastAttemptRevision: 3,
-      }));
-      await settle();
-    });
-    expect(container.querySelector('.cc-system-prompt-agent-picker select').disabled).toBe(false);
-    expect([...container.querySelectorAll('.cc-system-prompt-mode button')]
-      .every((button) => !button.disabled)).toBe(true);
-    expect(container.querySelector('#cc-system-prompt-text').disabled).toBe(false);
-    expect(onSavingChange).toHaveBeenLastCalledWith(false);
-  });
-
-  it('ignores a pending status response that started before a successful save', async () => {
-    vi.useFakeTimers();
-    const stalePoll = deferred();
-    api.getBotDefinitionPrompt
-      .mockResolvedValueOnce(definition({ appliedRevision: 2, lastAttemptRevision: 2 }))
-      .mockReturnValueOnce(stalePoll.promise);
-    await renderView();
-
-    await act(async () => {
-      vi.advanceTimersByTime(4000);
-      await settle();
-      Simulate.click(modeButton('自定义提示词'));
-      Simulate.change(container.querySelector('#cc-system-prompt-text'), {
-        target: { value: 'Newest prompt' },
-      });
-    });
-    await act(async () => {
-      Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('保存修改')));
-      await settle();
-    });
-    expect(container.textContent).toContain('云端 revision4');
-
-    await act(async () => {
-      stalePoll.resolve(definition({ appliedRevision: 3, lastAttemptRevision: 3 }));
-      await settle();
-    });
-
-    expect(container.textContent).toContain('云端 revision4');
-    expect(container.textContent).toContain('待应用');
-    vi.useRealTimers();
-  });
-
-  it('preserves a retryable draft when the conflict refresh fails', async () => {
+  it('preserves a retryable local draft after a revision conflict', async () => {
     const conflict = Object.assign(new Error('conflict'), { status: 409 });
     api.updateBotDefinitionPrompt.mockRejectedValueOnce(conflict);
+    api.getAgentPrompt
+      .mockResolvedValueOnce(viewerPrompt())
+      .mockResolvedValueOnce(viewerPrompt({ revision: 4 }));
     api.getBotDefinitionPrompt
-      .mockResolvedValueOnce(definition())
-      .mockRejectedValueOnce(new Error('refresh unavailable'));
+      .mockResolvedValueOnce(ownerDefinition())
+      .mockResolvedValueOnce(ownerDefinition({ revision: 4 }));
     await renderView();
 
     await act(async () => {
       Simulate.click(modeButton('自定义提示词'));
       Simulate.change(container.querySelector('#cc-system-prompt-text'), {
-        target: { value: 'Keep my retryable draft' },
+        target: { value: 'My local draft' },
       });
     });
     await act(async () => {
-      Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('保存修改')));
+      Simulate.click(findButton('保存修改'));
       await settle();
     });
 
-    expect(container.querySelector('#cc-system-prompt-text').value).toBe('Keep my retryable draft');
-    expect(container.textContent).toContain('云端 revision3');
+    expect(container.querySelector('#cc-system-prompt-text').value).toBe('My local draft');
     expect(container.textContent).toContain('检测到配置冲突');
-    expect([...container.querySelectorAll('button')]
-      .find((button) => button.textContent.includes('保存修改')).disabled).toBe(false);
+    expect(container.textContent).toContain('云端 revision4');
+    expect(findButton('保存修改').disabled).toBe(false);
   });
 
-  it('reports dirty state and keeps an unconfigured Bot read-only', async () => {
-    const onDirtyChange = vi.fn();
-    api.getBotDefinitionPrompt.mockResolvedValueOnce({ configured: false, revision: 0 });
-    await renderView({ onDirtyChange });
-
-    expect(container.textContent).toContain('Agent 配置尚未初始化');
-    expect(container.querySelector('#cc-system-prompt-text')).toBeNull();
-    expect(api.updateBotDefinitionPrompt).not.toHaveBeenCalled();
-
-    api.getBotDefinitionPrompt.mockResolvedValueOnce(definition());
-    await act(async () => {
-      Simulate.click([...container.querySelectorAll('button')]
-        .find((button) => button.textContent.includes('刷新')));
-      await settle();
+  it('explains when a friend-visible Agent has not shared its prompt', async () => {
+    const forbidden = Object.assign(new Error('Agent owner has not shared this prompt'), {
+      status: 403,
     });
-    await act(async () => {
-      Simulate.click(modeButton('自定义提示词'));
-      Simulate.change(container.querySelector('#cc-system-prompt-text'), {
-        target: { value: 'Draft' },
-      });
+    api.getAgents.mockResolvedValueOnce({
+      agents: [{ uid: 43, display_name: 'Private Friend Bot', relation: 'friend', is_bot: true }],
     });
-    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    api.getAgentPrompt.mockRejectedValueOnce(forbidden);
+    await renderView();
+
+    expect(container.textContent).toContain('系统提示词未向好友开放');
+    expect(container.textContent).toContain('创建者尚未允许好友查看');
+    expect(api.getBotDefinitionPrompt).not.toHaveBeenCalled();
   });
 });

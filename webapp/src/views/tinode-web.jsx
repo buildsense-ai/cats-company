@@ -4,6 +4,7 @@ import { api, setToken, getToken, getAuthRevision, isCurrentAuthSession, getPush
 import { enqueuePushOperation } from '../utils/push-operation';
 import { pushTabCoordinator } from '../utils/push-tab-coordination';
 import { cleanupPushForSession } from '../utils/push-session-cleanup';
+import { isValidEmailFormat } from '../utils/email-format';
 import t from '../i18n';
 import RelayAdminPanel from './relay-admin-panel';
 import ChatListView from './sidepanel-view';
@@ -14,7 +15,6 @@ import AgentEntryBindView from './agent-entry-bind-view';
 import ChannelDeviceLinkView from './channel-device-link-view';
 import MobileUploadView from './mobile-upload-view';
 import SkillHubView from './skillhub-view';
-import SystemPromptView from './system-prompt-view';
 import EmptyTaskComposer from '../widgets/empty-task-composer';
 import SidebarResizeHandle, {
   MIN_APP_SIDEBAR_WIDTH,
@@ -65,7 +65,7 @@ import {
   syncThemeColor,
   verifyLiquidThemePassword,
 } from '../utils/theme-access';
-import { Cloud, Download, FileText, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import { Cloud, Download, Frown, KeyRound, Laptop, Package, Settings, Settings2, LogOut, Eye, EyeOff, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import '../css/openchat-theme.css';
 import '../css/catsco-ui-system.css';
 import '../css/catsco-liquid-green.css';
@@ -118,18 +118,6 @@ export function resolveInitialUser({
   if (themePreview) return { ...DEV_PREVIEW_USER, uid: 'theme-preview' };
   if (previewEnabled || !token) return null;
   return null;
-}
-
-export async function confirmSystemPromptNavigation({ activeView, dirty, saving, confirm }) {
-  if (activeView !== 'system-prompt') return true;
-  if (saving) return false;
-  if (!dirty) return true;
-  return confirm({
-    title: '放弃未保存的修改？',
-    message: '离开系统提示词页面后，当前草稿不会保留。',
-    confirmLabel: '放弃并离开',
-    tone: 'danger',
-  });
 }
 
 function getInitialUser() {
@@ -200,8 +188,7 @@ function TinodeWebApp() {
   const [user, setUser] = useState(() => getInitialUser());
   const [activeTab, setActiveTab] = useState(TABS.CHATS);
   const [activeView, setActiveView] = useState('chats');
-  const [systemPromptDirty, setSystemPromptDirty] = useState(false);
-  const [systemPromptSaving, setSystemPromptSaving] = useState(false);
+  const [skillHubInitialAgent, setSkillHubInitialAgent] = useState(null);
   const [activeTopic, _setActiveTopic] = useState(() => (
     user?.uid ? readStoredTopic(user.uid) : null
   ));
@@ -230,18 +217,6 @@ function TinodeWebApp() {
       return normalized;
     });
   }, [user?.uid]);
-  const navigateFromSystemPrompt = useCallback(async (navigate) => {
-    const confirmed = await confirmSystemPromptNavigation({
-      activeView,
-      dirty: systemPromptDirty,
-      saving: systemPromptSaving,
-      confirm: feedback.confirm,
-    });
-    if (!confirmed) return false;
-    setSystemPromptDirty(false);
-    navigate();
-    return true;
-  }, [activeView, feedback, systemPromptDirty, systemPromptSaving]);
   const [authMode, setAuthMode] = useState('login');
   const [onlineUsers, setOnlineUsers] = useState({});
   const [wsStatus, setWsStatus] = useState(user ? 'connecting' : 'disconnected');
@@ -305,13 +280,23 @@ function TinodeWebApp() {
   const showCloudArtifactsAction = canOpenCloudArtifacts(activeTopic, displayedActiveAgent);
   const handleOpenCloudArtifacts = useCallback(() => {
     const agentUid = Number(displayedActiveAgent?.uid || 0);
-    if (agentUid <= 0) return;
+    if (!activeTopicId) return;
     cloudArtifactsRequestSequenceRef.current += 1;
     setCloudArtifactsRequest({
       agentUid,
       requestId: cloudArtifactsRequestSequenceRef.current,
     });
-  }, [displayedActiveAgent?.uid]);
+  }, [activeTopicId, displayedActiveAgent?.uid]);
+  const handleOpenManagedAgentArtifacts = useCallback((agentUid) => {
+    const normalizedAgentUid = Number(agentUid || 0);
+    if (!activeTopicId || normalizedAgentUid <= 0) return;
+    setActiveView('chats');
+    cloudArtifactsRequestSequenceRef.current += 1;
+    setCloudArtifactsRequest({
+      agentUid: normalizedAgentUid,
+      requestId: cloudArtifactsRequestSequenceRef.current,
+    });
+  }, [activeTopicId]);
   const appSidebarMaxWidth = getSidebarMaxWidth(sidebarViewportWidth);
   const appSidebarWidth = clampSidebarWidth(
     appSidebarPreferredWidth,
@@ -817,7 +802,7 @@ function TinodeWebApp() {
   };
 
   const handleLogout = () => {
-    navigateFromSystemPrompt(clearAuthenticatedSession);
+    clearAuthenticatedSession();
   };
 
   const handleUserUpdated = (nextUser) => {
@@ -908,20 +893,18 @@ function TinodeWebApp() {
   const handleStartAgentTask = useCallback((agent, options = {}) => {
     const agentUid = agent?.uid || agent?.id;
     if (!agentUid) return;
-    navigateFromSystemPrompt(() => {
-      const projectId = Number(options?.projectId || 0);
-      taskDraftSequenceRef.current += 1;
-      setActiveTopic(null);
-      setActiveView('chats');
-      setTaskDraft({
-        agent,
-        key: `${agentUid}:${taskDraftSequenceRef.current}`,
-        projectId: projectId > 0 ? projectId : 0,
-        projectName: projectId > 0 ? String(options?.projectName || '') : '',
-      });
-      setMobileSidebarOpen(false);
+    const projectId = Number(options?.projectId || 0);
+    taskDraftSequenceRef.current += 1;
+    setActiveTopic(null);
+    setActiveView('chats');
+    setTaskDraft({
+      agent,
+      key: `${agentUid}:${taskDraftSequenceRef.current}`,
+      projectId: projectId > 0 ? projectId : 0,
+      projectName: projectId > 0 ? String(options?.projectName || '') : '',
     });
-  }, [navigateFromSystemPrompt, setActiveTopic]);
+    setMobileSidebarOpen(false);
+  }, [setActiveTopic]);
 
   const createDraftAgentTaskTopic = useCallback((agent, draft = {}) => (
     createAgentTaskTopic(agent, {
@@ -957,27 +940,25 @@ function TinodeWebApp() {
 
   const handleSearchResultSelect = useCallback((result) => {
     if (!result?.topicId) return;
-    navigateFromSystemPrompt(() => {
-      const targetMessageId = Number(result.messageId) || 0;
-      messageLocationSequenceRef.current += 1;
-      setTaskDraft(null);
-      setActiveView('chats');
-      setActiveTopic({
-        topicId: result.topicId,
-        name: result.source || result.topicId,
-        isGroup: result.isGroup || result.topicId.startsWith('grp_'),
-        groupId: result.groupId,
-        avatar_url: result.avatarUrl,
-      });
-      setMessageLocationRequest(targetMessageId ? {
-        topicId: result.topicId,
-        messageId: targetMessageId,
-        requestId: messageLocationSequenceRef.current,
-      } : null);
-      setSearchOpen(false);
-      setMobileSidebarOpen(false);
+    const targetMessageId = Number(result.messageId) || 0;
+    messageLocationSequenceRef.current += 1;
+    setTaskDraft(null);
+    setActiveView('chats');
+    setActiveTopic({
+      topicId: result.topicId,
+      name: result.source || result.topicId,
+      isGroup: result.isGroup || result.topicId.startsWith('grp_'),
+      groupId: result.groupId,
+      avatar_url: result.avatarUrl,
     });
-  }, [navigateFromSystemPrompt, setActiveTopic]);
+    setMessageLocationRequest(targetMessageId ? {
+      topicId: result.topicId,
+      messageId: targetMessageId,
+      requestId: messageLocationSequenceRef.current,
+    } : null);
+    setSearchOpen(false);
+    setMobileSidebarOpen(false);
+  }, [setActiveTopic]);
 
   if ((channelDeviceLink || channelAccountLink) && user) {
     const params = new URLSearchParams(window.location.search);
@@ -1069,16 +1050,20 @@ function TinodeWebApp() {
           <SidebarContent
             activeTopic={activeTopic ? activeTopic.topicId : null}
             onSelectTopic={(topic) => {
-              navigateFromSystemPrompt(() => {
-                setTaskDraft(null);
-                setMessageLocationRequest(null);
-                setActiveView('chats');
-                setActiveTopic(topic);
-                setMobileSidebarOpen(false);
-              });
+              setTaskDraft(null);
+              setMessageLocationRequest(null);
+              setActiveView('chats');
+              setActiveTopic(topic);
+              setMobileSidebarOpen(false);
             }}
             onOpenSearch={() => setSearchOpen(true)}
             onStartAgentTask={handleStartAgentTask}
+            onOpenSkillHub={(agentId, agent) => {
+              setSkillHubInitialAgent(agent || { uid: agentId, id: agentId });
+              setActiveView('skillhub');
+              setMobileSidebarOpen(false);
+            }}
+            onOpenCloudArtifacts={activeTopicId ? handleOpenManagedAgentArtifacts : undefined}
             user={user}
             onlineUsers={onlineUsers}
             compact={appSidebarCollapsed}
@@ -1087,16 +1072,8 @@ function TinodeWebApp() {
                 <SkillHubSidebarButton
                   active={activeView === 'skillhub'}
                   onClick={() => {
-                    navigateFromSystemPrompt(() => {
-                      setActiveView('skillhub');
-                      setMobileSidebarOpen(false);
-                    });
-                  }}
-                />
-                <SystemPromptSidebarButton
-                  active={activeView === 'system-prompt'}
-                  onClick={() => {
-                    setActiveView('system-prompt');
+                    setSkillHubInitialAgent(null);
+                    setActiveView('skillhub');
                     setMobileSidebarOpen(false);
                   }}
                 />
@@ -1170,13 +1147,7 @@ function TinodeWebApp() {
         <div className="v3-main-body">
           <div className="v3-main-content">
             {activeView === 'skillhub' ? (
-              <SkillHubView user={user} />
-            ) : activeView === 'system-prompt' ? (
-              <SystemPromptView
-                user={user}
-                onDirtyChange={setSystemPromptDirty}
-                onSavingChange={setSystemPromptSaving}
-              />
+              <SkillHubView user={user} initialAgent={skillHubInitialAgent} />
             ) : activeTopic ? (
               <MessagesView
                 topBar={localAssistantBar}
@@ -1302,8 +1273,8 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
           className="v3-action-btn v3-cloud-action"
           onClick={onOpenCloudArtifacts}
           disabled={!onOpenCloudArtifacts}
-          aria-label={onOpenCloudArtifacts ? '打开云文件' : '云文件，需要先进入 Agent 会话'}
-          title={onOpenCloudArtifacts ? '云文件' : '请先进入 Agent 会话'}
+          aria-label={onOpenCloudArtifacts ? '打开云文件' : '云文件，需要先进入聊天'}
+          title={onOpenCloudArtifacts ? '云文件' : '请先进入聊天'}
         >
           <Cloud size={17} aria-hidden="true" />
         </button>
@@ -1318,7 +1289,7 @@ export function LocalAssistantBar({ agentModelState, activeAgent, currentModelNa
 export { canOpenCloudArtifacts, describeModelApplyError, describeModelConfigRequestError, resolveDisplayedActiveAgent };
 
 function canOpenCloudArtifacts(activeTopic, activeAgent) {
-  return Boolean(Number(activeAgent?.uid || 0) > 0 && activeTopic?.topicId);
+  return Boolean(activeTopic?.topicId);
 }
 
 function resolveDisplayedActiveAgent(activeTopicId, activeAgentState, taskDraft) {
@@ -1365,6 +1336,8 @@ function SidebarContent({
   onOpenSearch,
   additionalSidebarTools,
   onStartAgentTask,
+  onOpenSkillHub,
+  onOpenCloudArtifacts,
   user,
   onlineUsers,
   compact,
@@ -1377,6 +1350,8 @@ function SidebarContent({
       onOpenSearch={onOpenSearch}
       additionalSidebarTools={additionalSidebarTools}
       onStartAgentTask={onStartAgentTask}
+      onOpenSkillHub={onOpenSkillHub}
+      onOpenCloudArtifacts={onOpenCloudArtifacts}
       user={user}
       onlineUsers={onlineUsers}
       compact={compact}
@@ -1397,22 +1372,6 @@ function SkillHubSidebarButton({ active, onClick }) {
     >
       <Package size={17} />
       <span>SkillHub</span>
-    </button>
-  );
-}
-
-function SystemPromptSidebarButton({ active, onClick }) {
-  return (
-    <button
-      type="button"
-      className={`cc-sidebar-primary cc-sidebar-system-prompt-entry${active ? ' active' : ''}`}
-      onClick={onClick}
-      aria-label="打开系统提示词"
-      aria-current={active ? 'page' : undefined}
-      title="系统提示词"
-    >
-      <FileText size={17} />
-      <span>系统提示词</span>
     </button>
   );
 }
@@ -1481,9 +1440,12 @@ function formatAuthError(message) {
   if (text.includes('password mismatch')) return '密码错误，请重试';
   if (text.includes('username taken')) return '登录名称已被占用，请换一个';
   if (text.includes('email already')) return '该邮箱已经注册，请直接登录';
-  if (text.includes('invalid or expired verification code')) return '验证码无效或已过期';
+  if (text.includes('verification code expired')) return '验证码已过期，请重新获取';
+  if (text.includes('does not match')) return '验证码不正确，请使用最新邮件中的验证码';
+  if (text.includes('invalid or expired verification code')) return '验证码无效或已过期，请重新获取并使用最新验证码';
   if (text.includes('username min 3')) return '登录名称至少 3 个字符';
   if (text.includes('password min 6')) return '密码至少 6 位';
+  if (text.includes('invalid email format')) return '邮箱格式无效，请检查域名拼写（如 qq.com）';
   if (text.includes('failed to send verification code')) return '发送验证码失败，请稍后再试';
   return message || '操作失败，请稍后再试';
 }
@@ -1498,6 +1460,7 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
   const [error, setError] = useState('');
   const [codeSent, setCodeSent] = useState(false);
   const [countdown, setCountdown] = useState(0);
+  const [sentHint, setSentHint] = useState('');
 
   useEffect(() => {
     if (countdown > 0) {
@@ -1507,8 +1470,8 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
   }, [countdown]);
 
   const handleSendCode = async () => {
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setError('请输入有效的邮箱地址');
+    if (!email || !isValidEmailFormat(email)) {
+      setError('请输入有效的邮箱地址（请检查域名拼写，如 qq.com）');
       return;
     }
     try {
@@ -1516,7 +1479,9 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
       setCodeSent(true);
       setCountdown(60);
       setError('');
+      setSentHint('验证码已发送，请使用最新邮件中的验证码（旧验证码将失效）');
     } catch (err) {
+      setSentHint('');
       setError(err.message || '发送验证码失败，请稍后再试');
     }
   };
@@ -1612,6 +1577,9 @@ function AuthView({ mode, setMode, onLogin, onRegister }) {
               {countdown > 0 ? `${countdown}秒` : '发送验证码'}
             </button>
           </div>
+          {sentHint && (
+            <div className="oc-auth-hint" style={{ color: '#2e8b57', fontSize: 12, marginTop: 6 }}>{sentHint}</div>
+          )}
           <input
             className="oc-auth-input"
             placeholder="登录名称（可用于登录）"
