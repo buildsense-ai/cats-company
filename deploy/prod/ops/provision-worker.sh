@@ -108,8 +108,13 @@ for v in "$REGION_ID" "$AZ_NAME" "$FLAVOR_ID" "$VPC_ID" "$SUBNET_ID" "$SECURITY_
 done
 
 INSTANCE_NAME="worker-${NAME}"
-# 供私钥/known_hosts 持久化（生产应为挂载卷；测试/本地可覆盖）
-STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+# 供私钥/known_hosts/身份快照持久化。生产使用 STATE_ROOT 按 tenant
+# 隔离；STATE_DIR 保留为测试和旧运维命令的精确目录覆盖。
+if [[ -n "${CTYUN_WORKER_STATE_ROOT:-}" ]]; then
+  STATE_DIR="${CTYUN_WORKER_STATE_ROOT%/}/${NAME}"
+else
+  STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+fi
 
 # --- 工具 ---
 ctyun() {

@@ -164,8 +164,10 @@ services:
       CATSCO_WORKER_PROVISION_SCRIPT: "${CATSCO_WORKER_PROVISION_SCRIPT:-}"
       CATSCO_WORKER_DESTROY_SCRIPT: "${CATSCO_WORKER_DESTROY_SCRIPT:-}"
       CATSCO_WORKER_RESET_SCRIPT: "${CATSCO_WORKER_RESET_SCRIPT:-}"
+      CATSCO_WORKER_UPDATE_SCRIPT: "${CATSCO_WORKER_UPDATE_SCRIPT:-}"
       CATSCO_WORKER_ROLLBACK_SCRIPT: "${CATSCO_WORKER_ROLLBACK_SCRIPT:-}"
       CATSCO_WORKER_IMAGES_SCRIPT: "${CATSCO_WORKER_IMAGES_SCRIPT:-}"
+      CATSCO_WORKER_STATUS_SCRIPT: "${CATSCO_WORKER_STATUS_SCRIPT:-}"
       CTYUN_AK: "${CTYUN_AK:-}"
       CTYUN_SK: "${CTYUN_SK:-}"
       CTYUN_WORKER_REGION_ID: "${CTYUN_WORKER_REGION_ID:-}"
@@ -175,7 +177,9 @@ services:
       CTYUN_WORKER_VPC_ID: "${CTYUN_WORKER_VPC_ID:-}"
       CTYUN_WORKER_SUBNET_ID: "${CTYUN_WORKER_SUBNET_ID:-}"
       CTYUN_WORKER_SECURITY_GROUP_ID: "${CTYUN_WORKER_SECURITY_GROUP_ID:-}"
-      CTYUN_WORKER_STATE_DIR: "${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker}"
+      CTYUN_WORKER_STATE_ROOT: "${CTYUN_WORKER_STATE_ROOT:-/var/lib/catsco-worker}"
+      CATSCO_WORKER_ARTIFACT_BASE_URL: "${CATSCO_WORKER_ARTIFACT_BASE_URL:-https://github-release.tos-cn-guangzhou.volces.com/update/worker}"
+      CATSCO_WORKER_ARTIFACT_CACHE_DIR: "${CATSCO_WORKER_ARTIFACT_CACHE_DIR:-/var/lib/catsco-worker/.artifacts}"
       CATSCO_WORKER_HTTP_BASE_URL: "${CATSCO_WORKER_HTTP_BASE_URL:-}"
       CATSCO_WORKER_SERVER_URL: "${CATSCO_WORKER_SERVER_URL:-}"
       CATS_COMMERCIAL_TEST_PAYMENT_ENABLED: "${CATS_COMMERCIAL_TEST_PAYMENT_ENABLED:-0}"
@@ -199,9 +203,8 @@ services:
       - "${TEST_STACK_ROOT}/data/uploads:/app/uploads"
       - "${TEST_STACK_ROOT}/compose/tinode.test.conf:/app/tinode.conf:ro"
       - "${TEST_STACK_ROOT}/secrets:/run/catsco-secrets:ro"
-      # Mirrors prod: container-side target follows CTYUN_WORKER_STATE_DIR so
-      # an override never escapes the persistent volume.
-      - "${TEST_STACK_ROOT}/data/catsco-worker:${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker}"
+      # Mirrors prod: one persistent root with a tenant-isolated subdirectory.
+      - "${TEST_STACK_ROOT}/data/catsco-worker:${CTYUN_WORKER_STATE_ROOT:-/var/lib/catsco-worker}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

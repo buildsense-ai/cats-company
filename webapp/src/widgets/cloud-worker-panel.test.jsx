@@ -17,6 +17,7 @@ describe('CloudWorkerPanel', () => {
     display_name: '云端审查助手',
     username: 'bot-cloud-1',
     cloud_status: 'running',
+    app_version: '1.4.9',
     cloud_version: '1.4.8',
     cloud_image_id: '79f5b7f4-c06e-4f97-90fa-d69566f23d63',
     ...overrides,
@@ -31,6 +32,7 @@ describe('CloudWorkerPanel', () => {
         images: [],
         actioning: null,
         onCreate: vi.fn(),
+        onUpdate: vi.fn(),
         onRollback: vi.fn(),
         onReset: vi.fn(),
         onDelete: vi.fn(),
@@ -140,7 +142,8 @@ describe('CloudWorkerPanel', () => {
     expect(container.textContent).toContain('云端审查助手');
     expect(container.textContent).toContain('@bot-cloud-1');
     expect(container.textContent).toContain('运行中');
-    expect(container.textContent).toContain('版本 1.4.8');
+    expect(container.textContent).toContain('应用 1.4.9');
+    expect(container.textContent).toContain('基础镜像 1.4.8');
     expect(container.textContent).toContain('镜像 79f5b7f4');
     expect(container.textContent).toContain('1 个');
   });
@@ -166,7 +169,8 @@ describe('CloudWorkerPanel', () => {
     expect(text).toContain('实例不存在');
   });
 
-  test('calls rollback/reset/delete callbacks from worker actions', async () => {
+  test('calls update/rollback/reset/delete callbacks from worker actions', async () => {
+    const onUpdate = vi.fn();
     const onRollback = vi.fn();
     const onReset = vi.fn();
     const onDelete = vi.fn();
@@ -174,15 +178,25 @@ describe('CloudWorkerPanel', () => {
     await renderPanel({
       workers: [worker()],
       images,
+      onUpdate,
       onRollback,
       onReset,
       onDelete,
     });
 
     const buttons = Array.from(container.querySelectorAll('.cc-cloud-worker-actions button'));
+    const updateBtn = buttons.find((el) => el.textContent.includes('更新'));
     const rollbackBtn = buttons.find((el) => el.textContent.includes('回滚'));
     const resetBtn = buttons.find((el) => el.textContent.includes('重置'));
     const deleteBtn = buttons[buttons.length - 1];
+
+    await act(async () => {
+      Simulate.click(updateBtn);
+    });
+    expect(onUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ tenant_name: 'tenant-a' }),
+      '',
+    );
 
     // rollback with no explicit version passes '' (latest) + fromPanel flag
     await act(async () => {

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   AlertCircle,
+  ArrowUpCircle,
   Bot,
   CheckCircle2,
   Cloud,
@@ -33,7 +34,7 @@ const statusMeta = (status) => (
 /**
  * 云托管专属面板 —— 当创建助手的「部署方式」选中云托管时替换自托管表单。
  * 聚合云托管配额、创建云端虚拟员工、以及已有云托管员工的管理
- * （版本/回滚/重置/删除），全部走云控制面。
+ * （版本/更新/回滚/重置/删除），全部走云控制面。
  */
 const randomCode = () => String(Math.floor(1000 + Math.random() * 9000));
 
@@ -45,6 +46,7 @@ export default function CloudWorkerPanel({
   actioning = null,
   showHostingSwitch = true,
   onCreate,
+  onUpdate,
   onRollback,
   onReset,
   onDelete,
@@ -53,7 +55,7 @@ export default function CloudWorkerPanel({
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
-  // tenant_name -> selected image version ('' = latest)
+  // tenant_name -> selected target version ('' = latest)
   const [versions, setVersions] = useState({});
   // Reset captcha flow: tenant being confirmed / its code / typed input / mismatch
   const [resetConfirming, setResetConfirming] = useState(null);
@@ -250,13 +252,16 @@ export default function CloudWorkerPanel({
                   </div>
 
                   <div className="cc-cloud-worker-meta">
+                    {worker.app_version && (
+                      <span>应用 <b>{worker.app_version}</b></span>
+                    )}
                     {worker.cloud_version && (
-                      <span>版本 <b>{worker.cloud_version}</b></span>
+                      <span>基础镜像 <b>{worker.cloud_version}</b></span>
                     )}
                     {worker.cloud_image_id && (
                       <span>镜像 <b>{worker.cloud_image_id.slice(0, 8)}</b></span>
                     )}
-                    {!worker.cloud_version && !worker.cloud_image_id && (
+                    {!worker.app_version && !worker.cloud_version && !worker.cloud_image_id && (
                       <span>
                         {worker.cloud_status && worker.cloud_status !== 'unknown'
                           ? '版本信息收集中…'
@@ -273,7 +278,7 @@ export default function CloudWorkerPanel({
                         value={versions[worker.tenant_name] || ''}
                         disabled={acting || imageVersions.length === 0}
                         onChange={(e) => setVersions((prev) => ({ ...prev, [worker.tenant_name]: e.target.value }))}
-                        title={imageVersions.length === 0 ? '暂无可用镜像版本' : '回滚/重置使用的镜像版本'}
+                        title={imageVersions.length === 0 ? '暂无可用版本' : '更新、回滚或重置使用的目标版本'}
                       >
                         {imageVersions.length === 0 ? (
                           <option value="">暂无可用版本</option>
@@ -288,10 +293,20 @@ export default function CloudWorkerPanel({
 
                     <button
                       type="button"
+                      className="oc-btn oc-btn-primary"
+                      onClick={() => onUpdate(worker, versions[worker.tenant_name] || '')}
+                      disabled={acting || imageVersions.length === 0}
+                      title={imageVersions.length === 0 ? '暂无可用版本，无法更新' : '更新应用到所选版本，保留当前数据'}
+                    >
+                      {acting ? '处理中...' : <><ArrowUpCircle size={13} /> 更新</>}
+                    </button>
+
+                    <button
+                      type="button"
                       className="oc-btn oc-btn-default"
                       onClick={() => onRollback(worker, versions[worker.tenant_name] || '', { fromPanel: true })}
                       disabled={acting || imageVersions.length === 0}
-                      title={imageVersions.length === 0 ? '暂无可用镜像版本，无法回滚' : '回滚：切换到所选镜像版本（最新版本=最新镜像），保留当前数据'}
+                      title={imageVersions.length === 0 ? '暂无可用版本，无法回滚' : '回滚应用到所选版本，保留当前数据'}
                     >
                       {acting ? '处理中...' : <><RotateCcw size={13} /> 回滚</>}
                     </button>
@@ -365,7 +380,7 @@ export default function CloudWorkerPanel({
       </section>
 
       <p className="cc-cloud-footnote">
-        <CheckCircle2 size={13} /> 云托管员工由云端控制面统一管理：回滚保留数据；重置会清空数据，需验证码确认。
+        <CheckCircle2 size={13} /> 更新与回滚只切换应用并保留数据；重置会按所选镜像重建并清空数据。
       </p>
     </div>
   );

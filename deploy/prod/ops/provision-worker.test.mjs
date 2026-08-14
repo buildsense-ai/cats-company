@@ -300,6 +300,20 @@ test("provision-worker: happy path creates instance, injects env, enables servic
   assert.ok((state.keypairs || []).some(k => k.keyPairName === "worker-key-bot-a"), "key pair created");
 });
 
+test("provision-worker: state root isolates credentials by tenant", () => {
+  const sb = setupSandbox({});
+  const stateRoot = path.join(sb.sandbox, "tenant-state");
+  const result = run(
+    sb,
+    ["--name", "bot-a", "--login-token", "USERJWT", "--api-key", "BOTKEY", "--image-id", "img-1"],
+    { CTYUN_WORKER_STATE_ROOT: toMsys(stateRoot), CTYUN_WORKER_STATE_DIR: "" },
+  );
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.ok(fs.existsSync(path.join(stateRoot, "bot-a", "id_rsa")));
+  assert.ok(fs.existsSync(path.join(stateRoot, "bot-a", "inject.env")));
+  assert.equal(fs.existsSync(path.join(stateRoot, "inject.env")), false, "identity snapshot must never be shared at the root");
+});
+
 test("provision-worker: create failure fails closed and cleans up", () => {
   const sb = setupSandbox({ failCreate: true });
   const r = run(sb, ["--name", "bot-a", "--login-token", "t", "--api-key", "k", "--image-id", "img-1"]);

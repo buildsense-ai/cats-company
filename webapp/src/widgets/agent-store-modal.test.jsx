@@ -17,6 +17,7 @@ vi.mock('../api', () => ({
     getFriends: vi.fn(),
     getLocalSkills: vi.fn(),
     getMyBots: vi.fn(),
+    updateCloudWorker: vi.fn(),
     resetCloudWorker: vi.fn(),
     rollbackCloudWorker: vi.fn(),
     getSkillHubSkill: vi.fn(),
@@ -70,6 +71,7 @@ describe('AgentStoreModal', () => {
     api.getFriends.mockReset().mockResolvedValue({ friends: [] });
     api.getLocalSkills.mockReset().mockResolvedValue({ skills: [] });
     api.getMyBots.mockReset().mockResolvedValue({ bots: [] });
+    api.updateCloudWorker.mockReset().mockResolvedValue({});
     api.resetCloudWorker.mockReset().mockResolvedValue({});
     api.rollbackCloudWorker.mockReset().mockResolvedValue({});
     api.getSkillHubSkill.mockReset().mockResolvedValue({});

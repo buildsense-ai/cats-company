@@ -767,6 +767,8 @@ export const api = {
   getCloudWorkerMeta: () => request('GET', '/api/cloud-workers/meta'),
   createCloudWorker: ({ username, display_name, role, description }) =>
     request('POST', '/api/cloud-workers', { username, display_name, role, description }),
+  updateCloudWorker: (name, payload = {}) =>
+    request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/update`, payload),
   rollbackCloudWorker: (name, payload = {}) =>
     request('POST', `/api/cloud-workers/${encodeURIComponent(name)}/rollback`, payload),
   resetCloudWorker: (name, payload = {}) =>

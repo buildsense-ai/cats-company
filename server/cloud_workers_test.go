@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -47,6 +48,9 @@ type cloudWorkerTestStore struct {
 	friendPairs       map[string]bool
 	setTenantNameFail bool
 	creatorUser       *types.User
+	botAPIKeys        map[int64]string
+	botBodyIDs        map[int64]string
+	botDefinitions    map[int64]*types.BotDefinitionRecord
 }
 
 func (s *cloudWorkerTestStore) GetUser(id int64) (*types.User, error) {
@@ -54,6 +58,24 @@ func (s *cloudWorkerTestStore) GetUser(id int64) (*types.User, error) {
 		return s.creatorUser, nil
 	}
 	return &types.User{Username: "creator", DisplayName: "Creator"}, nil
+}
+
+func (s *cloudWorkerTestStore) GetBotAPIKey(botUID int64) (string, error) {
+	if value := s.botAPIKeys[botUID]; value != "" {
+		return value, nil
+	}
+	return "test-bot-api-key", nil
+}
+
+func (s *cloudWorkerTestStore) GetBotBodyID(botUID int64) (string, error) {
+	return s.botBodyIDs[botUID], nil
+}
+
+func (s *cloudWorkerTestStore) GetBotDefinition(botUID int64) (*types.BotDefinitionRecord, error) {
+	if definition := s.botDefinitions[botUID]; definition != nil {
+		return definition, nil
+	}
+	return nil, errors.New("not found")
 }
 
 func (s *cloudWorkerTestStore) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, error) {
@@ -204,6 +226,9 @@ func workerScriptCfg(t *testing.T, quota string, scripts map[string]string) Clou
 	if p, ok := scripts["reset"]; ok {
 		cfg.ResetScript = p
 	}
+	if p, ok := scripts["update"]; ok {
+		cfg.UpdateScript = p
+	}
 	if p, ok := scripts["rollback"]; ok {
 		cfg.RollbackScript = p
 	}
@@ -225,6 +250,7 @@ func cloudWorkerRequest(uid int64, method, path string, body interface{}) *http.
 		json.NewEncoder(&buf).Encode(body)
 	}
 	req := httptest.NewRequest(method, path, &buf)
+	req.Header.Set("Authorization", "Bearer test-owner-token")
 	return req.WithContext(context.WithValue(req.Context(), uidKey, uid))
 }
 
@@ -273,6 +299,9 @@ func TestCloudWorkerHandleList(t *testing.T) {
 		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
 		{"id": int64(2), "username": "bot-b", "display_name": "B"}, // self-hosted, excluded
 	}
+	ts.botDefinitions = map[int64]*types.BotDefinitionRecord{
+		1: {DefaultPrompt: &types.BotDefaultPromptSnapshot{XiaoBaVersion: "1.4.9"}},
+	}
 
 	req := cloudWorkerRequest(7, http.MethodGet, "/api/cloud-workers", nil)
 	rec := httptest.NewRecorder()
@@ -289,6 +318,9 @@ func TestCloudWorkerHandleList(t *testing.T) {
 	first := workers[0].(map[string]interface{})
 	if first["tenant_name"] != "bot-bot-a" {
 		t.Fatalf("tenant_name=%v", first["tenant_name"])
+	}
+	if first["app_version"] != "1.4.9" {
+		t.Fatalf("app_version=%v want 1.4.9", first["app_version"])
 	}
 	quota := out["quota"].(map[string]interface{})
 	if quota["total"].(float64) != 5 || quota["used"].(float64) != 1 || quota["remaining"].(float64) != 4 {
@@ -573,6 +605,20 @@ func TestCloudWorkerHandleMetaWithImagesScript(t *testing.T) {
 	}
 }
 
+func TestParseImageLinesKeepsNewestSix(t *testing.T) {
+	lines := []string{}
+	for i := 1; i <= 8; i++ {
+		lines = append(lines, fmt.Sprintf("img-%d\tworker-%d\t1.4.%d\tcommit-%d\t%d\tactive", i, i, i, i, i*100))
+	}
+	images := parseImageLines(strings.Join(lines, "\n"))
+	if len(images) != 6 {
+		t.Fatalf("len(images)=%d want 6", len(images))
+	}
+	if images[0].Version != "1.4.8" || images[5].Version != "1.4.3" {
+		t.Fatalf("versions=%v want newest 1.4.8..1.4.3", images)
+	}
+}
+
 func TestParseImageLines(t *testing.T) {
 	// 真实 list-worker-images.sh TSV 契约（配对小仓 B4-1 bash 脚本）
 	out := "79f5b7f4-c06e-4f97-90fa-d69566f23d63\tcatsco-worker-1-4-8-f3f1f3e6\tv1.4.8\tf3f1f3e6\t1786066647\tactive\n" +
@@ -772,9 +818,10 @@ func TestCloudWorkerHandleCreateSetTenantFails(t *testing.T) {
 func TestCloudWorkerHandleRollbackResetSuccess(t *testing.T) {
 	cfg := workerScriptCfg(t, "7=5", map[string]string{
 		"rollback": writeWorkerOpScript(t, "ok"),
+		"update":   writeWorkerOpScript(t, "ok"),
 		"reset":    writeWorkerOpScript(t, "ok"),
 	})
-	if cfg.RollbackScript == "" || cfg.ResetScript == "" {
+	if cfg.RollbackScript == "" || cfg.UpdateScript == "" || cfg.ResetScript == "" {
 		t.Skip("no POSIX shell")
 	}
 	h, ts := newCloudWorkerTestHandlerCfg(cfg)
@@ -782,8 +829,9 @@ func TestCloudWorkerHandleRollbackResetSuccess(t *testing.T) {
 		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
 	}
 
-	// rollback forwards the optional version selector
+	// update and rollback forward the optional version selector.
 	for _, path := range []string{
+		"/api/cloud-workers/bot-bot-a/update",
 		"/api/cloud-workers/bot-bot-a/rollback",
 	} {
 		req := cloudWorkerRequest(7, http.MethodPost, path, map[string]string{"version": "v1"})
@@ -836,7 +884,8 @@ func TestCloudWorkerHandleResetForwardsVersion(t *testing.T) {
 }
 
 // TestCloudWorkerHandleVersionForwarding asserts the exact argv passed to the
-// paired scripts: rollback and reset both forward an optional --version <v>.
+// scripts: update, rollback and reset all forward --version <v>; reset also
+// receives a fresh, worker-specific identity from the database/request.
 func TestCloudWorkerHandleVersionForwarding(t *testing.T) {
 	dir := t.TempDir()
 	recordFile := filepath.Join(dir, "argv.txt")
@@ -857,6 +906,7 @@ func TestCloudWorkerHandleVersionForwarding(t *testing.T) {
 		return script
 	}
 	cfg := workerScriptCfg(t, "7=5", map[string]string{
+		"update":   writeArgv("update-op.sh"),
 		"rollback": writeArgv("rollback-op.sh"),
 		"reset":    writeArgv("reset-op.sh"),
 	})
@@ -864,15 +914,33 @@ func TestCloudWorkerHandleVersionForwarding(t *testing.T) {
 	ts.ownerBots = []map[string]interface{}{
 		{"id": int64(1), "username": "bot-a", "display_name": "A", "tenant_name": "bot-bot-a"},
 	}
+	ts.botAPIKeys = map[int64]string{1: "worker-specific-key"}
+	ts.botBodyIDs = map[int64]string{1: "worker-body-id"}
+	ts.creatorUser = &types.User{Username: "owner-name", DisplayName: "Owner Display"}
+
+	// update forwards the selected target.
+	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/update", map[string]string{"version": "v1.4.9"})
+	rec := httptest.NewRecorder()
+	h.HandleSub(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	argv, err := os.ReadFile(recordFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(argv), "--version") || !strings.Contains(string(argv), "v1.4.9") {
+		t.Fatalf("update argv=%q want --version v1.4.9", argv)
+	}
 
 	// rollback forwards the version selector
-	req := cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/rollback", map[string]string{"version": "v1.4.7"})
-	rec := httptest.NewRecorder()
+	req = cloudWorkerRequest(7, http.MethodPost, "/api/cloud-workers/bot-bot-a/rollback", map[string]string{"version": "v1.4.7"})
+	rec = httptest.NewRecorder()
 	h.HandleSub(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("rollback status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	argv, err := os.ReadFile(recordFile)
+	argv, err = os.ReadFile(recordFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -893,6 +961,15 @@ func TestCloudWorkerHandleVersionForwarding(t *testing.T) {
 	}
 	if !strings.Contains(string(argv), "--version") || !strings.Contains(string(argv), "v1.4.7") {
 		t.Fatalf("reset argv=%q want --version v1.4.7", argv)
+	}
+	for _, expected := range []string{
+		"--login-token", "test-owner-token", "--api-key", "worker-specific-key",
+		"--bot-uid", "1", "--user-uid", "7", "--user-name", "owner-name",
+		"--user-display", "Owner Display", "--body-id", "worker-body-id",
+	} {
+		if !strings.Contains(string(argv), expected) {
+			t.Fatalf("reset argv=%q missing %q", argv, expected)
+		}
 	}
 }
 
@@ -1022,6 +1099,7 @@ func TestCloudWorkerMuxRouting(t *testing.T) {
 	// must hit HandleCreate, not the GET-only HandleList.
 	cfg := workerScriptCfg(t, "7=5", map[string]string{
 		"provision": writeWorkerOpScript(t, "ok"),
+		"update":    writeWorkerOpScript(t, "ok"),
 		"rollback":  writeWorkerOpScript(t, "ok"),
 		"reset":     writeWorkerOpScript(t, "ok"),
 		"destroy":   writeWorkerOpScript(t, "ok"),
@@ -1047,6 +1125,7 @@ func TestCloudWorkerMuxRouting(t *testing.T) {
 		{http.MethodGet, "/api/cloud-workers", nil, http.StatusOK},
 		{http.MethodPost, "/api/cloud-workers", map[string]string{"username": "bot-x", "display_name": "X"}, http.StatusCreated},
 		{http.MethodGet, "/api/cloud-workers/meta", nil, http.StatusOK},
+		{http.MethodPost, "/api/cloud-workers/bot-bot-a/update", map[string]string{"version": "v1.4.9"}, http.StatusOK},
 		{http.MethodPost, "/api/cloud-workers/bot-bot-a/rollback", nil, http.StatusOK},
 		{http.MethodPost, "/api/cloud-workers/bot-bot-a/reset", nil, http.StatusOK},
 		{http.MethodDelete, "/api/cloud-workers/bot-bot-a", nil, http.StatusOK},

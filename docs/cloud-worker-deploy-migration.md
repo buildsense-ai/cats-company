@@ -24,10 +24,26 @@
 
 ## 迁移路径
 
-1. 配置新控制面所需脚本（见 `.env.example`）：`CATSCO_WORKER_PROVISION_SCRIPT`、`CATSCO_WORKER_RESET_SCRIPT`、`CATSCO_WORKER_ROLLBACK_SCRIPT`、`CATSCO_WORKER_DESTROY_SCRIPT`、`CATSCO_WORKER_IMAGES_SCRIPT`。
+1. 配置新控制面所需脚本（见 `.env.example`）：`CATSCO_WORKER_PROVISION_SCRIPT`、`CATSCO_WORKER_UPDATE_SCRIPT`、`CATSCO_WORKER_RESET_SCRIPT`、`CATSCO_WORKER_ROLLBACK_SCRIPT`、`CATSCO_WORKER_DESTROY_SCRIPT`、`CATSCO_WORKER_IMAGES_SCRIPT`。
 2. 新 worker 一律通过云托管入口创建（配额 `CATSCO_WORKER_CREATE_QUOTA` 控制）。
 3. 存量旧托管 bot：需要保留的，在新控制面可见并可用 rollback/reset 管理；不再需要的，配置 destroy 脚本后删除。
 4. 旧 gauz-platform 部署服务确认无调用后下线，清理其环境变量与面向当前使用的文档、界面文案；本文档保留旧链路名称，作为迁移和回滚审计记录。
+
+## 版本化运维契约
+
+- **更新**：安装并切换到所选应用版本，保留 `/srv/catsco-agent`。
+- **回滚**：切换到所选历史应用版本，保留 `/srv/catsco-agent`。目标版本不在
+  worker 本地时，复用更新脚本下载该版本。
+- **重置**：使用所选镜像销毁并重建 worker，数据会丢失。控制面必须从当前
+  数据库和请求重新传入该机器人的 API key、拥有者身份及登录凭证，不信任旧
+  `inject.env` 作为主要来源。
+- 控制面只展示最近 6 个镜像版本。worker 已安装版本保留在
+  `/opt/catsco/releases`，再次选择时不下载。
+- `CATSCO_WORKER_ARTIFACT_CACHE_DIR` 是 CatsCompany 控制服务器上的共享制品
+  下载缓存：它只让不同 worker 复用同一个 tar.gz，worker 仍然是一台云服务器
+  对应一个虚拟员工。缓存文件每次按发布 manifest 的 SHA256 校验，损坏时重下。
+- `CTYUN_WORKER_STATE_ROOT/<tenant>` 分开保存每个 worker 的 SSH key、known_hosts
+  和身份快照，禁止多个 tenant 共用同一个状态目录。
 
 ## 回滚方案
 

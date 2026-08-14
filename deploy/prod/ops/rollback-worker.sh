@@ -18,6 +18,8 @@ set -Eeuo pipefail
 NAME=""
 VERSION=""
 DRY_RUN=0
+OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPLOY_VERSION_SCRIPT="${CATSCO_WORKER_UPDATE_SCRIPT:-$OPS_DIR/deploy-worker-version.sh}"
 
 usage() {
   sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
@@ -35,7 +37,11 @@ done
 
 REGION_ID="${CTYUN_WORKER_REGION_ID:-}"
 PROJECT_ID="${CTYUN_WORKER_PROJECT_ID:-0}"
-STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+if [[ -n "${CTYUN_WORKER_STATE_ROOT:-}" ]]; then
+  STATE_DIR="${CTYUN_WORKER_STATE_ROOT%/}/${NAME}"
+else
+  STATE_DIR="${CTYUN_WORKER_STATE_DIR:-/var/lib/catsco-worker/${NAME}}"
+fi
 # SSH 跳板（NAT 架构）：凭据一律来自服务器环境变量，仓库不硬编码任何 IP/密钥。
 JUMP_IP="${CTYUN_JUMP_IP:-}"
 JUMP_PORT="${CTYUN_JUMP_PORT:-22}"
@@ -127,8 +133,17 @@ fi
 
 # --- 3. 切换 current 软链到目标版本并重启 service ---
 # 前缀匹配 <version>-<sha> 的 release 目录（glob 受上面正则约束）
-target="$(ssh_run "root@$INSTANCE_IP" "ls -1d /opt/catsco/releases/${VERSION}*/ 2>/dev/null | head -n1 | xargs -n1 basename" 2>/dev/null || true)"
-[[ -n "$target" ]] || { echo "error: release $VERSION not found on instance" >&2; exit 1; }
+NORMALIZED_VERSION="${VERSION#v}"
+target="$(ssh_run "root@$INSTANCE_IP" "ls -1d /opt/catsco/releases/${NORMALIZED_VERSION}*/ 2>/dev/null | head -n1 | xargs -n1 basename" 2>/dev/null || true)"
+if [[ -z "$target" && "$NORMALIZED_VERSION" != "$VERSION" ]]; then
+  target="$(ssh_run "root@$INSTANCE_IP" "ls -1d /opt/catsco/releases/${VERSION}*/ 2>/dev/null | head -n1 | xargs -n1 basename" 2>/dev/null || true)"
+fi
+if [[ -z "$target" ]]; then
+  [[ -x "$DEPLOY_VERSION_SCRIPT" ]] || { echo "error: release $VERSION not found locally and published artifact installer is unavailable" >&2; exit 1; }
+  deploy_args=(--name "$NAME" --version "$VERSION")
+  [[ $DRY_RUN -eq 1 ]] && deploy_args+=(--dry-run)
+  exec "$DEPLOY_VERSION_SCRIPT" "${deploy_args[@]}"
+fi
 
 if [[ $DRY_RUN -eq 1 ]]; then
   echo "{\"status\":\"dry-run\",\"instance_name\":\"$INSTANCE_NAME\",\"version\":\"$target\"}"

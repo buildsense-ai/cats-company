@@ -856,7 +856,13 @@ export default function AgentStoreModal({
         setBots(prev => prev.map(bot => {
           const cloud = cloudWorkers.find(w => w.tenant_name === bot.tenant_name);
           return cloud
-            ? { ...bot, cloud_status: cloud.status, cloud_version: cloud.version, cloud_image_id: cloud.image_id }
+            ? {
+                ...bot,
+                cloud_status: cloud.cloud_status || cloud.status,
+                app_version: cloud.app_version,
+                cloud_version: cloud.cloud_version || cloud.version,
+                cloud_image_id: cloud.cloud_image_id || cloud.image_id,
+              }
             : bot;
         }));
       }
@@ -1068,6 +1074,29 @@ export default function AgentStoreModal({
     }
   };
 
+  const handleCloudUpdate = async (bot, version = '') => {
+    const name = bot.tenant_name;
+    if (!name) return;
+    const target = version || '最新版本';
+    const confirmed = await feedback.confirm({
+      title: `更新“${bot.display_name}”？`,
+      message: `将应用更新到 ${target}，会保留会话、文件和本地配置。更新期间员工会短暂重启。`,
+      confirmLabel: '确认更新',
+      tone: 'default',
+    });
+    if (!confirmed) return;
+    try {
+      setCloudActioning(name);
+      await api.updateCloudWorker(name, version ? { version } : {});
+      await loadBots({ silent: true });
+      feedback.notify({ tone: 'success', message: '应用更新完成' });
+    } catch (e) {
+      setError(e.message || '云端员工更新失败');
+    } finally {
+      setCloudActioning(null);
+    }
+  };
+
   // Cloud-managed rollback. The cloud panel passes an explicit version (or '' =
   // latest) with fromPanel:true; the hub card keeps the legacy prompt-based
   // version picker when no version is given.
@@ -1240,6 +1269,7 @@ export default function AgentStoreModal({
                   actioning={cloudActioning}
                   showHostingSwitch={false}
                   onCreate={handleCloudCreate}
+                  onUpdate={handleCloudUpdate}
                   onRollback={handleCloudRollback}
                   onReset={handleCloudReset}
                   onDelete={handleDelete}
@@ -1351,26 +1381,14 @@ export default function AgentStoreModal({
                           </button>
                         )}
                         {owned && bot.tenant_name && (
-                          <>
-                            <button
-                              type="button"
-                              className="oc-btn oc-btn-default cc-agent-card-action"
-                              onClick={() => handleCloudRollback(bot)}
-                              disabled={cloudActioning === bot.tenant_name}
-                              title="回滚：切换镜像版本，保留数据"
-                            >
-                              {cloudActioning === bot.tenant_name ? '处理中...' : '回滚'}
-                            </button>
-                            <button
-                              type="button"
-                              className="oc-btn oc-btn-default cc-agent-card-action cc-agent-card-delete"
-                              onClick={() => handleCloudReset(bot)}
-                              disabled={cloudActioning === bot.tenant_name}
-                              title="重置：销毁并从镜像重建，数据会丢失"
-                            >
-                              {cloudActioning === bot.tenant_name ? '处理中...' : '重置'}
-                            </button>
-                          </>
+                          <button
+                            type="button"
+                            className="oc-btn oc-btn-default cc-agent-card-action"
+                            onClick={() => setHubCloudView(true)}
+                            title="选择版本并更新、回滚或重置"
+                          >
+                            <Cloud size={14} aria-hidden="true" /> 云托管管理
+                          </button>
                         )}
                         <button
                           type="button"
@@ -1406,6 +1424,7 @@ export default function AgentStoreModal({
                 images={cloudImages}
                 actioning={cloudActioning}
                 onCreate={handleCloudCreate}
+                onUpdate={handleCloudUpdate}
                 onRollback={handleCloudRollback}
                 onReset={handleCloudReset}
                 onDelete={handleDelete}
