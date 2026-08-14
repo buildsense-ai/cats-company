@@ -1066,6 +1066,8 @@ describe('CatsCo shell styling', () => {
   });
 
   it('keeps conversation-share selection controls quiet and system-aligned', () => {
+    const primaryRule = ruleIn(openchatCss, '.cc-conversation-share-primary');
+    const primaryHoverRule = ruleIn(openchatCss, '.cc-conversation-share-primary:hover:not(:disabled)');
     const toggleRule = ruleIn(openchatCss, '.cc-conversation-share-message-toggle');
     const hoverToggleRule = ruleIn(openchatCss, '.cc-conversation-share-message-toggle:hover');
     const indicatorRule = ruleIn(openchatCss, '.cc-conversation-share-message-toggle-indicator');
@@ -1089,8 +1091,14 @@ describe('CatsCo shell styling', () => {
     expect(indicatorRule).toContain('border-radius: 6px;');
     expect(selectedCardRule).toContain('background: color-mix(in srgb, var(--cc-conversation-share-accent) 10%, transparent);');
     expect(openchatCss).toContain('--cc-conversation-share-accent: #3ab292;');
-    expect(openchatCss).toContain('--cc-conversation-share-accent-hover: #2f977d;');
-    expect(selectedIndicatorRule).toContain('background: var(--cc-conversation-share-accent);');
+    expect(openchatCss).toContain('--cc-conversation-share-accent-hover: color-mix(in srgb, var(--cc-conversation-share-accent) 24%, var(--cc-panel));');
+    expect(openchatCss).toContain('--cc-conversation-share-accent-border: color-mix(in srgb, var(--cc-conversation-share-accent) 64%, var(--cc-border-strong));');
+    expect(openchatCss).toContain('--cc-conversation-share-accent-text: color-mix(in srgb, var(--cc-conversation-share-accent) 72%, var(--cc-text));');
+    expect(primaryRule).toContain('color: var(--cc-conversation-share-accent-text);');
+    expect(primaryRule).toContain('background: color-mix(in srgb, var(--cc-conversation-share-accent) 18%, var(--cc-panel));');
+    expect(primaryHoverRule).toContain('background: var(--cc-conversation-share-accent-hover);');
+    expect(selectedIndicatorRule).toContain('border-color: var(--cc-conversation-share-accent-border);');
+    expect(selectedIndicatorRule).toContain('background: color-mix(in srgb, var(--cc-conversation-share-accent) 18%, var(--cc-panel));');
   });
 
   it('keeps project selection controls inside their scroll rail', () => {
