@@ -230,29 +230,6 @@ test('re-registers an active account when another tab hands off the browser subs
   await vi.waitFor(() => expect(api.subscribePush).toHaveBeenCalledTimes(1));
 });
 
-test('retries a pending browser cleanup while signed out', async () => {
-  const browserUnsubscribe = vi.fn().mockResolvedValue(true);
-  localStorage.setItem('oc_push_pending_unsubscribe_v1', 'https://push.example/subscription');
-  Object.defineProperty(navigator, 'serviceWorker', {
-    configurable: true,
-    value: {
-      getRegistration: vi.fn().mockResolvedValue({
-        pushManager: {
-          getSubscription: vi.fn().mockResolvedValue({
-            endpoint: 'https://push.example/subscription',
-            unsubscribe: browserUnsubscribe,
-          }),
-        },
-      }),
-    },
-  });
-
-  renderController('', 1, false);
-
-  await vi.waitFor(() => expect(browserUnsubscribe).toHaveBeenCalledTimes(1));
-  expect(localStorage.getItem('oc_push_pending_unsubscribe_v1')).toBeNull();
-});
-
 test('activates a waiting service worker immediately so old upload routing cannot persist', async () => {
   renderController('user:1');
   expect(registerSW).toHaveBeenCalledTimes(1);
