@@ -16,6 +16,7 @@ func (a *Adapter) CreateSchema() error {
 		createProjectsTable,
 		createProjectTopicsTable,
 		createConversationTitlesTable,
+		createConversationNotificationMutesTable,
 		createMessagesTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
@@ -229,6 +230,17 @@ CREATE TABLE IF NOT EXISTS conversation_titles (
     topic_id VARCHAR(64) NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
     title VARCHAR(80) NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, topic_id)
+);
+`
+
+const createConversationNotificationMutesTable = `
+CREATE TABLE IF NOT EXISTS conversation_notification_mutes (
+    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- A P2P topic is created on its first message, while a user may mute the
+    -- visible conversation before then.
+    topic_id VARCHAR(64) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, topic_id)
 );
 `

@@ -550,6 +550,7 @@ function conversationFromTopic(
     has_bot: Boolean(hasBot),
     member_count: Number(memberCount) || 0,
     is_online: isBot || friendId === 301,
+    notifications_muted: false,
     latest_seq: latest?.seq || 0,
   };
 }
@@ -691,7 +692,7 @@ function send(res, status, payload) {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-API-Key, X-CatsCo-Body-ID, X-CatsCo-Installation-ID',
-    'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
   });
   res.end(JSON.stringify(payload));
 }
@@ -1408,6 +1409,25 @@ async function handleApi(req, res) {
       const user = requireUser(req, res);
       if (!user) return;
       return send(res, 200, { conversations: showcaseByUserId.get(user.id)?.conversations || [] });
+    }
+
+    // Showcase-only in-memory implementation for per-conversation notification preferences.
+    if (req.method === 'PUT' && url.pathname === '/api/conversations/notification-preferences') {
+      const user = requireUser(req, res);
+      if (!user) return;
+      const body = await readBody(req);
+      const topicId = String(body.topic_id || '').trim();
+      if (!topicId || typeof body.muted !== 'boolean') {
+        return send(res, 400, { error: 'topic_id and muted are required' });
+      }
+      const conversation = (showcaseByUserId.get(user.id)?.conversations || [])
+        .find((item) => item.id === topicId);
+      if (!conversation) return send(res, 404, { error: 'conversation not found' });
+      conversation.notifications_muted = body.muted;
+      return send(res, 200, {
+        topic_id: topicId,
+        notifications_muted: conversation.notifications_muted,
+      });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/projects') {

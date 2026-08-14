@@ -606,6 +606,11 @@ export const api = {
       options,
     ),
   getConversations: () => request('GET', '/api/conversations'),
+  setConversationNotificationsMuted: (topicId, muted) => request(
+    'PUT',
+    '/api/conversations/notification-preferences',
+    { topic_id: topicId, muted: Boolean(muted) },
+  ),
   getProjects: () => request('GET', '/api/projects'),
   createProject: (name) => request('POST', '/api/projects', { name }),
   renameProject: (projectId, name) => request('PATCH', '/api/projects', { project_id: projectId, name }),
