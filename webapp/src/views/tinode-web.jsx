@@ -563,7 +563,6 @@ function TinodeWebApp({ location }) {
     setTaskDraft(null);
     setActiveView('chats');
     setActiveTopic(null);
-    navigateBrowserPath('/login', { replace: true });
   }, [setActiveTopic]);
 
   // WebSocket message handler

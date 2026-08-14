@@ -49,7 +49,7 @@ export function App() {
     return () => window.removeEventListener('popstate', handleHistoryChange);
   }, []);
 
-  const mountPwa = auth.loggedIn && shouldMountPwaForPathname(browserLocation.pathname);
+  const mountPwa = shouldMountPwaForPathname(browserLocation.pathname);
 
   return (
     <FeedbackProvider>
