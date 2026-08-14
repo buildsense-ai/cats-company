@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
@@ -45,6 +46,26 @@ func TestPostgresCommercialPaymentContract(t *testing.T) {
 		t.Fatalf("create commercial test owner: %v", err)
 	}
 	testCommercialPaymentContract(t, db, ownerID)
+	testCommercialOfficialPlanUpgradeUsers(t, db)
+}
+
+func testCommercialOfficialPlanUpgradeUsers(t *testing.T, db *Adapter) {
+	t.Helper()
+	paidUpgradeUID, err := db.CreateUser(&types.User{
+		Username: "commercial-paid-upgrade", Email: "commercial-paid-upgrade@example.test", DisplayName: "Paid Upgrade",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-paid-upgrade-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create paid upgrade user: %v", err)
+	}
+	inviteUpgradeUID, err := db.CreateUser(&types.User{
+		Username: "commercial-invite-upgrade", Email: "commercial-invite-upgrade@example.test", DisplayName: "Invite Upgrade",
+		AccountType: types.AccountHuman, PassHash: []byte("commercial-invite-upgrade-hash"),
+	})
+	if err != nil {
+		t.Fatalf("create invite upgrade user: %v", err)
+	}
+	testCommercialOfficialPlanUpgrade(t, db, paidUpgradeUID, inviteUpgradeUID)
 }
 
 func TestTruncateCommercialErrorPreservesUTF8(t *testing.T) {
@@ -302,6 +323,134 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	}
 
 	testConcurrentCommercialOpenOrderCoalescing(t, db, uid)
+}
+
+func testCommercialOfficialPlanUpgrade(t *testing.T, db *Adapter, paidUID, inviteUID int64) {
+	t.Helper()
+	personalID, err := db.CreateCommercialPlan(&types.CommercialPlan{
+		Slug: commercialPersonalPlanSlug, Name: "个人版", PriceFen: 39900, Currency: "CNY", SaleState: "test",
+		ModelBudgets: map[string]float64{"gpt-5.6-terra": 100}, DurationDays: 30,
+	})
+	if err != nil {
+		t.Fatalf("create personal plan: %v", err)
+	}
+	proID, err := db.CreateCommercialPlan(&types.CommercialPlan{
+		Slug: commercialProPlanSlug, Name: "专业版", PriceFen: 79900, Currency: "CNY", SaleState: "test",
+		ModelBudgets: map[string]float64{"gpt-5.6-terra": 300}, DurationDays: 30,
+	})
+	if err != nil {
+		t.Fatalf("create pro plan: %v", err)
+	}
+
+	personalOrder := createAndFulfillCommercialTestOrder(t, db, paidUID, personalID, "CCTIERPERSONAL", "tier_personal_request", "tier-personal-event")
+	if _, err := db.CreateCommercialOrder(&types.CommercialOrder{
+		OrderNo: "CCTIERPERSONALREPEAT", UID: paidUID, PlanID: personalID, Channel: "test",
+		ClientRequestID: "tier_personal_repeat_request",
+	}); err == nil || !strings.Contains(err.Error(), "already active") {
+		t.Fatalf("active personal plan could be repurchased: %v", err)
+	}
+	bonusExpiry := time.Now().UTC().Add(7 * 24 * time.Hour)
+	bonus, err := db.GrantCommercialQuota(&types.CommercialQuotaGrant{
+		UID: paidUID, PlanID: personalID, GrantType: "bonus", Model: "gpt-5.6-terra",
+		AmountCNY: 25, ExpiresAt: &bonusExpiry,
+	})
+	if err != nil {
+		t.Fatalf("create personal plan bonus before upgrade: %v", err)
+	}
+
+	createAndFulfillCommercialTestOrder(t, db, paidUID, proID, "CCTIERPRO", "tier_pro_request", "tier-pro-event")
+	summary, err := db.GetCommercialSummary(paidUID)
+	if err != nil || len(summary.Entitlements) != 1 || summary.Entitlements[0].PlanSlug != commercialProPlanSlug || summary.TotalsByModel["gpt-5.6-terra"] != 325 {
+		t.Fatalf("paid upgrade did not replace personal quota: summary=%#v err=%v", summary, err)
+	}
+	var bonusRevokedAt sql.NullTime
+	if err := db.db.QueryRow(`SELECT revoked_at FROM commercial_quota_grants WHERE id = $1`, bonus.ID).Scan(&bonusRevokedAt); err != nil || bonusRevokedAt.Valid {
+		t.Fatalf("independent bonus was revoked during upgrade: revoked_at=%v err=%v", bonusRevokedAt, err)
+	}
+	var revokedPersonalGrants, upgradeLedger int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_grants WHERE uid = $1 AND plan_id = $2 AND revoked_at IS NOT NULL`, paidUID, personalID).Scan(&revokedPersonalGrants); err != nil {
+		t.Fatalf("count revoked personal grants: %v", err)
+	}
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_quota_ledger WHERE uid = $1 AND source_type = 'upgrade' AND entry_type = 'revoke'`, paidUID).Scan(&upgradeLedger); err != nil {
+		t.Fatalf("count upgrade ledger entries: %v", err)
+	}
+	if revokedPersonalGrants != 1 || upgradeLedger != 1 {
+		t.Fatalf("paid upgrade audit mismatch: revoked=%d ledger=%d", revokedPersonalGrants, upgradeLedger)
+	}
+	var personalState string
+	if err := db.db.QueryRow(`SELECT state FROM commercial_entitlements WHERE uid = $1 AND source_ref = $2`, paidUID, personalOrder.OrderNo).Scan(&personalState); err != nil || personalState != "revoked" {
+		t.Fatalf("personal entitlement was not revoked: state=%q err=%v", personalState, err)
+	}
+	for _, blocked := range []struct {
+		planID int64
+		want   string
+	}{
+		{personalID, "below active plan"},
+		{proID, "already active"},
+	} {
+		if _, err := db.CreateCommercialOrder(&types.CommercialOrder{
+			OrderNo: fmt.Sprintf("CCTIERBLOCKED%d", blocked.planID), UID: paidUID, PlanID: blocked.planID, Channel: "test",
+			ClientRequestID: fmt.Sprintf("tier_blocked_request_%d", blocked.planID),
+		}); err == nil || !strings.Contains(err.Error(), blocked.want) {
+			t.Fatalf("plan tier purchase was not blocked: plan=%d err=%v", blocked.planID, err)
+		}
+	}
+
+	personalInvite := &types.CommercialInviteCode{Code: "TIER-PERSONAL", PlanID: personalID, MaxRedemptions: 1}
+	if _, err := db.CreateCommercialInviteCode(personalInvite); err != nil {
+		t.Fatalf("create personal invite: %v", err)
+	}
+	proInvite := &types.CommercialInviteCode{Code: "TIER-PRO", PlanID: proID, MaxRedemptions: 1}
+	if _, err := db.CreateCommercialInviteCode(proInvite); err != nil {
+		t.Fatalf("create pro invite: %v", err)
+	}
+	pendingExpiresAt := time.Now().UTC().Add(20 * time.Minute)
+	pendingPersonal, err := db.CreateCommercialOrder(&types.CommercialOrder{
+		OrderNo: "CCTIERINVITEPENDING", UID: inviteUID, PlanID: personalID, Channel: "test",
+		ClientRequestID: "tier_invite_pending_request", ExpiresAt: &pendingExpiresAt,
+	})
+	if err != nil {
+		t.Fatalf("create pending order before invite: %v", err)
+	}
+	if _, err := db.CreateCommercialOrder(&types.CommercialOrder{
+		OrderNo: "CCTIERCROSSPENDING", UID: inviteUID, PlanID: proID, Channel: "test",
+		ClientRequestID: "tier_cross_pending_request", ExpiresAt: &pendingExpiresAt,
+	}); err == nil || !strings.Contains(err.Error(), "already pending") {
+		t.Fatalf("cross-tier pending order was not blocked: %v", err)
+	}
+	if _, err := db.RedeemCommercialInvite(inviteUID, personalInvite.Code); err == nil || !strings.Contains(err.Error(), "already pending") {
+		t.Fatalf("invite redemption ignored pending payment order: %v", err)
+	}
+	if _, changed, err := db.CancelCommercialOrder(inviteUID, pendingPersonal.OrderNo, "continue tier test"); err != nil || !changed {
+		t.Fatalf("cancel pending order before invite: changed=%v err=%v", changed, err)
+	}
+	if _, err := db.RedeemCommercialInvite(inviteUID, personalInvite.Code); err != nil {
+		t.Fatalf("redeem personal invite: %v", err)
+	}
+	inviteSummary, err := db.RedeemCommercialInvite(inviteUID, proInvite.Code)
+	if err != nil || len(inviteSummary.Entitlements) != 1 || inviteSummary.Entitlements[0].PlanSlug != commercialProPlanSlug || inviteSummary.TotalsByModel["gpt-5.6-terra"] != 300 {
+		t.Fatalf("invite upgrade did not replace personal quota: summary=%#v err=%v", inviteSummary, err)
+	}
+}
+
+func createAndFulfillCommercialTestOrder(t *testing.T, db *Adapter, uid, planID int64, orderNo, requestID, eventID string) *types.CommercialOrder {
+	t.Helper()
+	expiresAt := time.Now().UTC().Add(20 * time.Minute)
+	order, err := db.CreateCommercialOrder(&types.CommercialOrder{
+		OrderNo: orderNo, UID: uid, PlanID: planID, Channel: "test", ClientRequestID: requestID, ExpiresAt: &expiresAt,
+	})
+	if err != nil {
+		t.Fatalf("create tier order %s: %v", orderNo, err)
+	}
+	confirmation := &types.CommercialPaymentConfirmation{
+		Channel: "test", EventID: eventID, ProviderTradeNo: "trade-" + eventID,
+		AmountFen: order.AmountFen, Currency: order.Currency, PaidAt: time.Now().UTC(), PayloadHash: strings.Repeat("c", 64),
+	}
+	fulfilled, changed, err := db.FulfillCommercialOrder(order.OrderNo, confirmation)
+	if err != nil || !changed || fulfilled.Status != "fulfilled" {
+		t.Fatalf("fulfill tier order %s: order=%#v changed=%v err=%v", orderNo, fulfilled, changed, err)
+	}
+	return fulfilled
 }
 
 func testConcurrentCommercialOpenOrderCoalescing(t *testing.T, db *Adapter, uid int64) {

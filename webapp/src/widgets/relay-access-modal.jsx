@@ -92,6 +92,27 @@ const FREE_PLAN_PRESENTATION = {
 };
 
 const CURRENT_COMMERCIAL_PLAN_SLUGS = new Set(['catsco-personal', 'catsco-pro']);
+const COMMERCIAL_PLAN_TIERS = {
+  'catsco-personal': 1,
+  'catsco-pro': 2,
+};
+
+function commercialPlanTier(slug) {
+  return COMMERCIAL_PLAN_TIERS[slug] || 0;
+}
+
+function entitlementMatchesPlan(entitlement, plan) {
+  if (!entitlement || !plan) return false;
+  if (entitlement.plan_slug && entitlement.plan_slug === plan.slug) return true;
+  return Number(entitlement.plan_id || 0) > 0 && Number(entitlement.plan_id) === Number(plan.id);
+}
+
+function activeCommercialPlanTier(entitlements, plans) {
+  return entitlements.reduce((highest, entitlement) => {
+    const matchedPlan = plans.find(plan => entitlementMatchesPlan(entitlement, plan));
+    return Math.max(highest, commercialPlanTier(entitlement.plan_slug || matchedPlan?.slug));
+  }, 0);
+}
 
 function protocolLabel(protocol) {
   if (/anthropic/i.test(protocol)) return 'Anthropic SDK';
@@ -453,7 +474,7 @@ function currentQuotaDisplay(summary, commercialEnabled) {
     detail: remainingLabel,
     percent,
     note: overLimit
-      ? '套餐总额度已用完，后续调用将暂停；请续购套餐或等待额度重置。'
+      ? '套餐总额度已用完，后续调用将暂停；请等待额度重置或联系管理员。'
       : '所有套餐内模型共用总额度，并按各自倍率扣减；数据可能延迟几分钟。',
   };
 }
@@ -736,6 +757,7 @@ export default function RelayAccessModal({ onClose }) {
   const paymentChannels = Array.isArray(commercialCatalog?.channels) ? commercialCatalog.channels : [];
   const checkoutPaymentLabel = paymentChannelLabel(paymentChannels, checkoutOrder?.channel);
   const activePackages = activeEntitlements(commercialSummary);
+  const activeOfficialPlanTier = activeCommercialPlanTier(activePackages, salePlans);
   const packageExpiry = nearestPackageExpiry(activePackages);
   const packageExpiryText = activePackages.length > 0 ? formatShortDate(packageExpiry) : '无套餐';
   const currentResetInfo = usageResetInfo(currentUsage);
@@ -761,6 +783,9 @@ export default function RelayAccessModal({ onClose }) {
     return true;
   });
   const visibleOrders = showAllOrders ? filteredOrders : filteredOrders.slice(0, 8);
+  const purchaseIsUpgrade = Boolean(
+    purchasePlan && activeOfficialPlanTier > 0 && commercialPlanTier(purchasePlan.slug) > activeOfficialPlanTier,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1238,7 +1263,9 @@ export default function RelayAccessModal({ onClose }) {
                 <div>
                   <span>确认购买</span>
                   <strong>{purchasePlan.name}</strong>
-                  <p>{formatPriceFen(purchasePlan.price_fen)}，有效期 {Number(purchasePlan.duration_days || 30)} 天。套餐到期前不会自动续费。</p>
+                  <p>{purchaseIsUpgrade
+                    ? `${formatPriceFen(purchasePlan.price_fen)}，升级后立即生效，额度按新套餐重置，不叠加。`
+                    : `${formatPriceFen(purchasePlan.price_fen)}，有效期 ${Number(purchasePlan.duration_days || 30)} 天。套餐到期前不会自动续费。`}</p>
                 </div>
                 <div className="relay-access-purchase-confirm-actions">
                   <button type="button" className="secondary" onClick={() => setPurchasePlan(null)} disabled={Boolean(paymentLoading)}>返回</button>
@@ -1422,8 +1449,14 @@ export default function RelayAccessModal({ onClose }) {
                       )}
                       {salePlans.map((plan) => {
                         const presentation = commercialPlanPresentation(plan);
-                        const pendingOrder = openOrders.find(order => order.plan_id === plan.id && order.channel === paymentChannel);
-                        const isActivePlan = activePackages.some(item => item.plan_slug === plan.slug);
+                        const planTier = commercialPlanTier(plan.slug);
+                        const isActivePlan = planTier > 0
+                          ? activeOfficialPlanTier === planTier
+                          : activePackages.some(item => entitlementMatchesPlan(item, plan));
+                        const isIncludedPlan = planTier > 0 && activeOfficialPlanTier > planTier;
+                        const isUpgradePlan = planTier > activeOfficialPlanTier && activeOfficialPlanTier > 0;
+                        const purchaseBlocked = isActivePlan || isIncludedPlan;
+                        const pendingOrder = purchaseBlocked ? null : openOrders.find(order => order.plan_id === plan.id && order.channel === paymentChannel);
                         return (
                           <article
                             className={`relay-access-plan-row${hasCurrentCommercialPlans ? ' official' : ''}${presentation.recommended ? ' recommended' : ''}${presentation.pro ? ' pro' : ''}${presentation.wide ? ' wide' : ''}`}
@@ -1454,20 +1487,24 @@ export default function RelayAccessModal({ onClose }) {
                                   setCheckoutOrder(null);
                                   setPurchasePlan(plan);
                                 }}
-                                disabled={!paymentChannel || Boolean(paymentLoading)}
+                                disabled={!paymentChannel || Boolean(paymentLoading) || purchaseBlocked}
                               >
                                 <CreditCard size={15} />
-                                {paymentLoading === `create:${plan.id}`
-                                  ? '创建中...'
-                                  : paymentChannels.length === 0
-                                    ? '暂未开放'
-                                    : pendingOrder?.status === 'paid'
-                                      ? '查看进度'
-                                      : pendingOrder
-                                        ? '继续支付'
-                                        : isActivePlan
-                                          ? '续购'
-                                          : hasCurrentCommercialPlans ? `选择${plan.name}` : '购买'}
+                                {isActivePlan
+                                  ? '当前套餐'
+                                  : isIncludedPlan
+                                    ? '已包含'
+                                    : paymentLoading === `create:${plan.id}`
+                                      ? '创建中...'
+                                      : paymentChannels.length === 0
+                                        ? '暂未开放'
+                                        : pendingOrder?.status === 'paid'
+                                          ? '查看进度'
+                                          : pendingOrder
+                                            ? '继续支付'
+                                            : isUpgradePlan
+                                              ? `升级至${plan.name}`
+                                              : hasCurrentCommercialPlans ? `选择${plan.name}` : '购买'}
                               </button>
                             </div>
                             {Array.isArray(presentation.features) && presentation.features.length > 0 && (
@@ -1485,6 +1522,9 @@ export default function RelayAccessModal({ onClose }) {
                         );
                       })}
                     </div>
+                    {activeOfficialPlanTier === COMMERCIAL_PLAN_TIERS['catsco-personal'] && (
+                      <div className="relay-access-period-note">升级后立即切换套餐，额度按专业版重置，不与个人版叠加。</div>
+                    )}
                     {paymentChannels.length === 0 && (
                       <div className="relay-access-period-note">支付通道暂未开放，当前套餐可通过邀请码发放。</div>
                     )}

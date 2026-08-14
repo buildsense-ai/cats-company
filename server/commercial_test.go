@@ -33,6 +33,23 @@ func newCommercialTestStore() *commercialTestStore {
 	}
 }
 
+func TestPublicCommercialSummaryIncludesPlanIdentity(t *testing.T) {
+	startsAt := time.Now().UTC()
+	summary := publicCommercialSummary(&types.CommercialSummary{
+		Entitlements: []*types.CommercialEntitlement{{
+			PlanID: 7, PlanSlug: "catsco-pro", PlanName: "专业版", Source: "invite",
+			State: "active", StartsAt: startsAt,
+		}},
+	})
+	if len(summary.Entitlements) != 1 {
+		t.Fatalf("unexpected public entitlements: %#v", summary.Entitlements)
+	}
+	got := summary.Entitlements[0]
+	if got.PlanID != 7 || got.PlanSlug != "catsco-pro" || got.PlanName != "专业版" {
+		t.Fatalf("public entitlement lost plan identity: %#v", got)
+	}
+}
+
 func (s *commercialTestStore) next() int64 {
 	id := s.nextID
 	s.nextID++

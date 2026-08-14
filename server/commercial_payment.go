@@ -628,7 +628,16 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		message := "failed to create commercial order"
 		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "purchase limit") {
+		if strings.Contains(err.Error(), "already active") {
+			message = "当前套餐已生效，不能重复购买"
+			status = http.StatusConflict
+		} else if strings.Contains(err.Error(), "below active plan") {
+			message = "当前套餐已包含该套餐，不能降级购买"
+			status = http.StatusConflict
+		} else if strings.Contains(err.Error(), "already pending") {
+			message = "已有待支付套餐订单，请先完成或取消"
+			status = http.StatusConflict
+		} else if strings.Contains(err.Error(), "purchase limit") {
 			message = "purchase limit reached"
 			status = http.StatusConflict
 		} else if strings.Contains(err.Error(), "not purchasable") || strings.Contains(err.Error(), "not found") {
