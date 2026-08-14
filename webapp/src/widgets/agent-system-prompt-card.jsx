@@ -17,8 +17,9 @@ import { InlineFeedback, useFeedback } from '../components/feedback-system';
 import {
   MAX_SYSTEM_PROMPT_BYTES,
   normalizePromptDefinition,
+  normalizePromptApplication,
   promptByteLength,
-  resolvePromptApplyState,
+  resolvePromptApplicationState,
 } from '../utils/system-prompt';
 
 function agentUID(agent) {
@@ -28,7 +29,7 @@ function agentUID(agent) {
 function PromptStatus({ state }) {
   const Icon = state.kind === 'applied'
     ? CheckCircle2
-    : state.kind === 'error'
+    : state.kind === 'failed'
       ? AlertTriangle
       : state.kind === 'pending'
         ? Cloud
@@ -57,7 +58,7 @@ export default function AgentSystemPromptCard({ agent }) {
   const editorOpenerRef = useRef(null);
 
   const savedPrompt = useMemo(() => normalizePromptDefinition(remote), [remote]);
-  const applyState = resolvePromptApplyState(remote);
+  const applyState = resolvePromptApplicationState(remote);
   const byteCount = useMemo(() => promptByteLength(draft), [draft]);
   const promptTooLarge = byteCount > MAX_SYSTEM_PROMPT_BYTES;
   const customPromptEmpty = !draft.trim();
@@ -86,8 +87,17 @@ export default function AgentSystemPromptCard({ agent }) {
       setError('');
     }
     try {
-      const response = await api.getBotDefinitionPrompt(uid);
+      const [viewerResponse, ownerResponse] = await Promise.all([
+        api.getAgentPrompt(uid),
+        api.getBotDefinitionPrompt(uid),
+      ]);
       if (!mountedRef.current || requestID !== requestRef.current) return null;
+      const response = {
+        ...ownerResponse,
+        application: normalizePromptApplication(
+          viewerResponse?.application ? viewerResponse : ownerResponse,
+        ),
+      };
       setRemote(response);
       return response;
     } catch (cause) {
@@ -123,12 +133,20 @@ export default function AgentSystemPromptCard({ agent }) {
     setSaving(true);
     setError('');
     try {
-      const response = await api.updateBotDefinitionPrompt(
+      const ownerResponse = await api.updateBotDefinitionPrompt(
         uid,
         Number(remote?.revision || 0),
         prompt,
       );
       if (!mountedRef.current || requestID !== requestRef.current) return false;
+      const viewerResponse = await api.getAgentPrompt(uid).catch(() => null);
+      if (!mountedRef.current || requestID !== requestRef.current) return false;
+      const response = {
+        ...ownerResponse,
+        application: normalizePromptApplication(
+          viewerResponse?.application ? viewerResponse : ownerResponse,
+        ),
+      };
       setRemote(response);
       feedback.notify({
         tone: 'success',

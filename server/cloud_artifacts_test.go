@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -468,10 +469,11 @@ func TestCloudArtifactHandlerPublishesForFriendWithoutApproval(t *testing.T) {
 type artifactPolicyTestStore struct {
 	*agentTestStore
 	enabled bool
+	err     error
 }
 
 func (s *artifactPolicyTestStore) GetBotArtifactUploadPolicy(_ int64) (bool, error) {
-	return s.enabled, nil
+	return s.enabled, s.err
 }
 
 func (s *artifactPolicyTestStore) UpdateBotArtifactUploadPolicy(_ int64, enabled bool) error {
@@ -505,6 +507,43 @@ func TestCloudArtifactHandlerRejectsFriendPublishWhenOwnerDisablesUploads(t *tes
 	handler.HandleAgentArtifacts(rec, req)
 
 	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstream calls = %d", upstreamCalls)
+	}
+}
+
+func TestCloudArtifactHandlerRejectsFriendPublishWhenUploadPolicyReadFails(t *testing.T) {
+	var upstreamCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer upstream.Close()
+
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		upstream.URL+"/internal/artifacts",
+		"test-management-token-abcdefghijklmnopqrstuvwxyz",
+		upstream.Client(),
+	)
+	baseStore := managedArtifactAgentStore(8, 440, true)
+	baseStore.friendPairs[agentPairKey(7, 440)] = true
+	handler.SetStore(&artifactPolicyTestStore{
+		agentTestStore: baseStore,
+		enabled:        false,
+		err:            errors.New("temporary policy store failure"),
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/agents/440/artifacts",
+		strings.NewReader(`{"title":"课堂网页","kind":"html","url":"https://example.com/uploads/files/result.html"}`),
+	).WithContext(context.WithValue(context.Background(), uidKey, int64(7)))
+	handler.HandleAgentArtifacts(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if upstreamCalls != 0 {

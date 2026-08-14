@@ -7511,8 +7511,10 @@ html[data-theme="liquid"] :is(
 }
 
 .cc-agent-prompt-status.is-applied { color: var(--cc-success-text); }
+.cc-agent-prompt-status.is-failed,
 .cc-agent-prompt-status.is-error { color: var(--cc-danger); }
 .cc-agent-prompt-status.is-pending { color: var(--cc-warning-text); }
+.cc-agent-prompt-status.is-saved { color: var(--cc-muted); }
 
 .cc-agent-behavior-card > .cc-inline-feedback {
   margin: 0;

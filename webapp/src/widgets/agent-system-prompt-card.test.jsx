@@ -4,6 +4,7 @@ import { Simulate } from 'react-dom/test-utils';
 
 vi.mock('../api', () => ({
   api: {
+    getAgentPrompt: vi.fn(),
     getBotDefinitionPrompt: vi.fn(),
     updateBotDefinitionPrompt: vi.fn(),
   },
@@ -48,6 +49,14 @@ describe('AgentSystemPromptCard', () => {
 
   beforeEach(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
+    api.getAgentPrompt.mockReset().mockResolvedValue({
+      application: {
+        status: 'applied',
+        desired_revision: 3,
+        applied_revision: 3,
+        applied_at: '2026-08-13T08:00:00Z',
+      },
+    });
     api.getBotDefinitionPrompt.mockReset().mockResolvedValue(definition());
     api.updateBotDefinitionPrompt.mockReset();
     container = document.createElement('div');
@@ -79,9 +88,29 @@ describe('AgentSystemPromptCard', () => {
     expect(api.getBotDefinitionPrompt).toHaveBeenCalledWith('42');
     expect(container.querySelector('.cc-agent-behavior-card')?.textContent).toContain('行为设定');
     expect(container.textContent).toContain('使用 XiaoBa 默认提示词');
-    expect(container.textContent).toContain('已生效');
+    expect(container.textContent).toContain('Agent 已应用 revision 3');
     expect(container.querySelector('select')).toBeNull();
     expect(document.body.querySelector('.cc-agent-prompt-editor-overlay')).toBeNull();
+  });
+
+  test('prefers the application projection over an applied runtime fallback', async () => {
+    api.getAgentPrompt.mockResolvedValue({
+      application: {
+        status: 'pending',
+        desired_revision: 4,
+        applied_revision: 3,
+      },
+    });
+    api.getBotDefinitionPrompt.mockResolvedValue(definition({
+      revision: 4,
+      appliedRevision: 4,
+      lastAttemptRevision: 4,
+    }));
+
+    await renderCard();
+
+    expect(container.textContent).toContain('等待 Agent 应用');
+    expect(container.textContent).not.toContain('Agent 已应用 revision 4');
   });
 
   test('finishes loading when React strict mode replays mount effects', async () => {

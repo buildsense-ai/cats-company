@@ -11,6 +11,7 @@ vi.mock('../api', () => ({
     getCloudWorkerMeta: vi.fn(),
     getCloudWorkers: vi.fn(),
     getCloudArtifacts: vi.fn(),
+    getAgentPrompt: vi.fn(),
     getBotDefinitionPrompt: vi.fn(),
     getBotDefinitionSkills: vi.fn(),
     getFriends: vi.fn(),
@@ -51,6 +52,14 @@ describe('AgentStoreModal', () => {
       workers: [],
     });
     api.getCloudArtifacts.mockReset().mockResolvedValue({ artifacts: [] });
+    api.getAgentPrompt.mockReset().mockResolvedValue({
+      application: {
+        status: 'applied',
+        desired_revision: 2,
+        applied_revision: 2,
+        applied_at: '2026-08-13T08:00:00Z',
+      },
+    });
     api.getBotDefinitionPrompt.mockReset().mockResolvedValue({
       configured: true,
       revision: 2,

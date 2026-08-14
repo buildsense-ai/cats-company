@@ -245,7 +245,11 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 	} else {
 		route.viewerRelation = relation
 	}
-	memberUploadsEnabled := memberArtifactUploadsEnabled(h.db, route.agentUID)
+	memberUploadsEnabled := true
+	var memberUploadsErr error
+	if route.viewerRelation != "owner" {
+		memberUploadsEnabled, memberUploadsErr = memberArtifactUploadsEnabled(h.db, route.agentUID)
+	}
 	node, err := h.resolveArtifactNode(route.agentUID)
 	if err != nil {
 		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
@@ -263,9 +267,15 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 	switch route.action {
 	case "list":
 		if r.Method == http.MethodPost {
-			if route.viewerRelation != "owner" && !memberUploadsEnabled {
-				writeJSON(w, http.StatusForbidden, map[string]string{"error": "member artifact uploads are disabled"})
-				return
+			if route.viewerRelation != "owner" {
+				if memberUploadsErr != nil {
+					writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+					return
+				}
+				if !memberUploadsEnabled {
+					writeJSON(w, http.StatusForbidden, map[string]string{"error": "member artifact uploads are disabled"})
+					return
+				}
 			}
 			if collectionURL == "" {
 				writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
@@ -440,16 +450,19 @@ func (h *CloudArtifactHandler) handleManagedList(
 	writeJSON(w, http.StatusOK, list)
 }
 
-func memberArtifactUploadsEnabled(db store.Store, agentUID int64) bool {
+func memberArtifactUploadsEnabled(db store.Store, agentUID int64) (bool, error) {
 	if db == nil || agentUID <= 0 {
-		return true
+		return false, errors.New("artifact upload policy is unavailable")
 	}
 	policies, ok := db.(store.BotArtifactPolicyStore)
 	if !ok {
-		return true
+		return true, nil
 	}
 	enabled, err := policies.GetBotArtifactUploadPolicy(agentUID)
-	return err != nil || enabled
+	if err != nil {
+		return false, fmt.Errorf("get bot artifact upload policy: %w", err)
+	}
+	return enabled, nil
 }
 
 func (h *CloudArtifactHandler) enrichArtifactCreators(artifacts []cloudArtifact, fallbackAgentUID int64, assumeAgent bool) {
