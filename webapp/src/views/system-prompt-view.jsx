@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Bot,
   Check,
+  CheckCircle2,
   Cloud,
   Eye,
   FileText,
@@ -69,11 +70,137 @@ export function normalizeAgentPrompt(response) {
       response?.defaultContentAvailable ?? response?.default_content_available
     ) !== false,
     defaultSnapshot: response?.defaultSnapshot || response?.default_snapshot || null,
+    application: normalizePromptApplication(response),
     promptVisibility,
     relation: response?.relation === 'owner' ? 'owner' : 'friend',
     revision: Number(response?.revision || 0),
     selected,
   };
+}
+
+function numberOrZero(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
+function firstValue(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '') ?? '';
+}
+
+/**
+ * Normalize the viewer application contract while retaining a fallback for
+ * older BotDefinition responses that expose only the runtime acknowledgement.
+ */
+export function normalizePromptApplication(response) {
+  const application = response?.application
+    || response?.applyStatus
+    || response?.apply_status
+    || {};
+  const runtime = response?.runtime || {};
+  const desiredRevision = numberOrZero(firstValue(
+    application.desired_revision,
+    application.desiredRevision,
+    response?.desired_revision,
+    response?.desiredRevision,
+    runtime.desiredRevision,
+    response?.revision,
+  ));
+  const appliedRevision = numberOrZero(firstValue(
+    application.applied_revision,
+    application.appliedRevision,
+    runtime.appliedRevision,
+  ));
+  const lastAttemptRevision = numberOrZero(firstValue(
+    application.last_attempt_revision,
+    application.lastAttemptRevision,
+    runtime.lastAttemptRevision,
+  ));
+  const appliedAt = String(firstValue(
+    application.applied_at,
+    application.appliedAt,
+    runtime.appliedAt,
+  ));
+  const lastAttemptAt = String(firstValue(
+    application.last_attempt_at,
+    application.lastAttemptAt,
+    runtime.lastAttemptAt,
+  ));
+  const lastError = String(firstValue(
+    application.last_error,
+    application.lastError,
+    runtime.lastError,
+  ));
+  const onlineValue = firstValue(
+    application.is_online,
+    application.isOnline,
+    response?.is_online,
+    response?.isOnline,
+  );
+  const isOnline = onlineValue === true || onlineValue === false ? onlineValue : null;
+  const explicitStatus = String(firstValue(
+    application.status,
+    application.state,
+    response?.application_status,
+    response?.applicationStatus,
+  )).trim().toLowerCase();
+
+  let status = ['saved', 'pending', 'applied', 'failed'].includes(explicitStatus)
+    ? explicitStatus
+    : '';
+  if (!status) {
+    // Applied is authoritative for the desired revision. A later failed retry
+    // must not downgrade an already-applied configuration in legacy responses.
+    if (desiredRevision > 0 && appliedRevision === desiredRevision
+      && (appliedAt || appliedRevision > 0)) {
+      status = 'applied';
+    } else if (desiredRevision > 0 && lastError && lastAttemptRevision === desiredRevision) {
+      status = 'failed';
+    } else if (desiredRevision > 0 && (
+      isOnline === true
+      || lastAttemptRevision === desiredRevision
+      || Boolean(lastAttemptAt)
+    )) {
+      status = 'pending';
+    } else {
+      status = 'saved';
+    }
+  }
+
+  return {
+    status,
+    desiredRevision,
+    appliedRevision,
+    lastAttemptRevision,
+    appliedAt,
+    lastAttemptAt,
+    isOnline,
+    lastError,
+  };
+}
+
+export function resolvePromptApplicationState(response) {
+  const application = normalizePromptApplication(response);
+  const status = application.status || 'saved';
+  switch (status) {
+    case 'applied': {
+      const revision = application.appliedRevision || application.desiredRevision;
+      return {
+        ...application,
+        kind: 'applied',
+        label: revision > 0 ? `Agent 已应用 revision ${revision}` : 'Agent 已应用',
+      };
+    }
+    case 'pending':
+      return { ...application, kind: 'pending', label: '等待 Agent 应用' };
+    case 'failed':
+      return {
+        ...application,
+        kind: 'failed',
+        label: '应用失败，请重启或检查 Agent',
+      };
+    default:
+      return { ...application, kind: 'saved', label: '已保存到云端' };
+  }
 }
 
 export function normalizePromptDefinition(response) {
@@ -115,6 +242,27 @@ function formatReportedAt(value) {
 function relationLabel(remote) {
   if (remote?.canEdit) return '我创建的 Agent';
   return '联系人 Agent';
+}
+
+function StatusBadge({ state }) {
+  const Icon = state.kind === 'applied'
+    ? CheckCircle2
+    : state.kind === 'failed'
+      ? AlertTriangle
+      : state.kind === 'pending'
+        ? LoaderCircle
+        : Cloud;
+  return (
+    <span
+      className={`cc-system-prompt-status is-${state.kind}`}
+      role="status"
+      aria-label={state.label}
+      title={state.lastAttemptAt || state.appliedAt || undefined}
+    >
+      <Icon className={state.kind === 'pending' ? 'spin' : undefined} size={15} aria-hidden="true" />
+      <span>{state.label}</span>
+    </span>
+  );
 }
 
 export default function SystemPromptView({ user, onDirtyChange, onSavingChange }) {
@@ -165,6 +313,7 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
   const promptTooLarge = byteCount > MAX_SYSTEM_PROMPT_BYTES;
   const customPromptEmpty = mode === 'custom' && !customPrompt.trim();
   const selectedBot = bots.find((bot) => String(botUID(bot)) === selectedBotUID) || null;
+  const applicationState = resolvePromptApplicationState(remote || {});
   const ready = Boolean(selectedBotUID && loadedBotUID === selectedBotUID && remote && !loadingPrompt);
   const busySaving = saving || visibilitySaving;
   const displayedContent = mode === 'default' ? defaultPrompt : customPrompt;
@@ -248,6 +397,13 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
         defaultContentAvailable: viewer.defaultSnapshot
           ? viewer.defaultContentAvailable
           : (viewer.selected === 'default' ? viewer.contentAvailable : false),
+        application: viewerResponse?.application
+          ? viewer.application
+          : normalizePromptApplication({
+            revision: owner ? ownerPayload?.revision : viewer.revision,
+            runtime: owner ? ownerPayload?.runtime : viewerResponse?.runtime,
+            is_online: rosterBot?.is_online ?? rosterBot?.isOnline,
+          }),
       };
       const currentVersion = remoteVersionRef.current;
       if (currentVersion.botUID === requestedUID
@@ -495,6 +651,10 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
                 <span>云端 revision</span>
                 <strong>{Number(remote?.revision || 0)}</strong>
               </div>
+              <div>
+                <span>Agent 应用状态</span>
+                <StatusBadge state={applicationState} />
+              </div>
               <button
                 type="button"
                 className="cc-system-prompt-refresh"
@@ -505,6 +665,12 @@ export default function SystemPromptView({ user, onDirtyChange, onSavingChange }
                 <RefreshCw size={15} /> 刷新
               </button>
             </div>
+
+            {applicationState.kind === 'failed' && (
+              <InlineFeedback tone="error" title="Agent 尚未应用当前 revision">
+                云端配置仍然保留。请重启或检查该 Agent，恢复后再刷新此页面确认应用状态。
+              </InlineFeedback>
+            )}
 
             {!canEdit && (
               <InlineFeedback tone="info" title="只读查看">

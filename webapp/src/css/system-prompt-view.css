@@ -116,7 +116,7 @@
 
 .cc-system-prompt-summary {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) minmax(150px, 1fr) 120px auto;
+  grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr) minmax(110px, 1fr) minmax(180px, 1.3fr) auto;
   align-items: center;
   gap: 20px;
   border-top: 1px solid var(--cc-border);
@@ -154,15 +154,21 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  width: max-content;
+  width: auto;
+  max-width: 100%;
   color: var(--cc-muted);
   font-size: 12px;
   font-weight: var(--cc-font-weight-semibold);
+  line-height: 1.35;
 }
 
+.cc-system-prompt-status > span { min-width: 0; }
+
 .cc-system-prompt-status.is-applied { color: var(--cc-success-text); }
+.cc-system-prompt-status.is-failed,
 .cc-system-prompt-status.is-error { color: var(--cc-danger); }
 .cc-system-prompt-status.is-pending { color: var(--cc-warning-text); }
+.cc-system-prompt-status.is-saved { color: var(--cc-muted); }
 
 .cc-system-prompt-refresh,
 .cc-system-prompt-actions button {
@@ -440,6 +446,14 @@
   .cc-system-prompt-visibility-options { justify-content: flex-start; }
   .cc-system-prompt-actions { position: static; align-items: stretch; flex-direction: column; }
   .cc-system-prompt-actions button.primary { width: 100%; }
+}
+
+@media (min-width: 761px) and (max-width: 1020px) {
+  .cc-system-prompt-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cc-system-prompt-summary .cc-system-prompt-refresh { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
