@@ -82,11 +82,38 @@ Authorization: ApiKey <api_key>
       "preview": "最后一条消息",
       "latest_seq": 123,
       "last_time": "2026-03-05T10:00:00Z",
-      "is_online": true
+      "is_online": true,
+      "notifications_muted": false
     }
   ]
 }
 ```
+
+`notifications_muted` 是当前账户针对该会话的浏览器通知屏蔽状态，未设置时为 `false`。
+
+**PUT /api/conversations/notification-preferences**
+
+设置或取消屏蔽当前账户对某个会话的浏览器通知。当前用户必须能访问该 P2P 会话或属于
+该群组。
+
+请求：
+```json
+{
+  "topic_id": "p2p_3_5",
+  "muted": true
+}
+```
+
+返回 200：
+```json
+{
+  "topic_id": "p2p_3_5",
+  "notifications_muted": true
+}
+```
+
+缺少字段返回 400，会话不可访问返回 403，存储操作失败返回 500；服务未实现会话通知偏好
+能力时返回 501。
 
 ### 消息
 

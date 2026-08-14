@@ -338,24 +338,25 @@ type ContentBlock struct {
 
 // ConversationSummary is the lightweight chat-list payload for a topic.
 type ConversationSummary struct {
-	ID          string                  `json:"id"`
-	Name        string                  `json:"name"`
-	Preview     string                  `json:"preview,omitempty"`
-	IsGroup     bool                    `json:"is_group"`
-	GroupID     int64                   `json:"group_id,omitempty"`
-	FriendID    int64                   `json:"friend_id,omitempty"`
-	AvatarURL   string                  `json:"avatar_url,omitempty"`
-	IsBot       bool                    `json:"is_bot,omitempty"`
-	HasBot      bool                    `json:"has_bot,omitempty"`
-	IsAgentTask bool                    `json:"is_agent_task,omitempty"`
-	MemberCount int                     `json:"member_count,omitempty"`
-	AgentIDs    []int64                 `json:"agent_ids,omitempty"`
-	IsOnline    bool                    `json:"is_online,omitempty"`
-	LastTime    *time.Time              `json:"last_time,omitempty"`
-	LatestSeq   int64                   `json:"latest_seq,omitempty"`
-	ProjectID   int64                   `json:"project_id,omitempty"`
-	ProjectName string                  `json:"project_name,omitempty"`
-	TaskStatus  *ConversationTaskStatus `json:"task_status,omitempty"`
+	ID                 string                  `json:"id"`
+	Name               string                  `json:"name"`
+	Preview            string                  `json:"preview,omitempty"`
+	IsGroup            bool                    `json:"is_group"`
+	GroupID            int64                   `json:"group_id,omitempty"`
+	FriendID           int64                   `json:"friend_id,omitempty"`
+	AvatarURL          string                  `json:"avatar_url,omitempty"`
+	IsBot              bool                    `json:"is_bot,omitempty"`
+	HasBot             bool                    `json:"has_bot,omitempty"`
+	IsAgentTask        bool                    `json:"is_agent_task,omitempty"`
+	MemberCount        int                     `json:"member_count,omitempty"`
+	AgentIDs           []int64                 `json:"agent_ids,omitempty"`
+	IsOnline           bool                    `json:"is_online,omitempty"`
+	LastTime           *time.Time              `json:"last_time,omitempty"`
+	LatestSeq          int64                   `json:"latest_seq,omitempty"`
+	ProjectID          int64                   `json:"project_id,omitempty"`
+	ProjectName        string                  `json:"project_name,omitempty"`
+	TaskStatus         *ConversationTaskStatus `json:"task_status,omitempty"`
+	NotificationsMuted bool                    `json:"notifications_muted"`
 }
 
 // ConversationTaskStatus is the latest persisted task/run state for a topic.
