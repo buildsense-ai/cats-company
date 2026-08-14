@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +34,19 @@ func (p *retryableCommercialPaymentProvider) ParseNotification(context.Context, 
 type failOnceRefundCompletionStore struct {
 	*commercialPaymentTestStore
 	failCompletion bool
+}
+
+type failOnceOrderLookupStore struct {
+	*commercialPaymentTestStore
+	failLookup bool
+}
+
+func (s *failOnceOrderLookupStore) GetCommercialOrder(uid int64, orderNo string) (*types.CommercialOrder, error) {
+	if s.failLookup {
+		s.failLookup = false
+		return nil, context.DeadlineExceeded
+	}
+	return s.commercialPaymentTestStore.GetCommercialOrder(uid, orderNo)
 }
 
 func (s *failOnceRefundCompletionStore) CompleteCommercialOrderRefund(orderNo string, confirmation *types.CommercialRefundConfirmation) (*types.CommercialOrder, bool, error) {
@@ -110,6 +126,310 @@ func TestCommercialPaymentIntentFailureRetriesWithoutDuplicateOrder(t *testing.T
 	handler.HandleOrders(third, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders", body, 38))
 	if third.Code != http.StatusOK || len(store.orders) != 1 || provider.createCalls != 2 {
 		t.Fatalf("idempotent retry status=%d orders=%d calls=%d body=%s", third.Code, len(store.orders), provider.createCalls, third.Body.String())
+	}
+}
+
+func TestCommercialOrderResponseLostAcrossWebDeployReturnsSameOrder(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.plans = []*types.CommercialPlan{commercialChaosPlan()}
+	provider := &retryableCommercialPaymentProvider{intent: &CommercialPaymentIntent{
+		CheckoutURL: "https://openapi.alipay.test/pay",
+		ExpiresAt:   time.Now().UTC().Add(20 * time.Minute),
+	}}
+	newHandler := func() *CommercialPaymentHandler {
+		return NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+			TestUIDs: map[int64]bool{38: true}, TestPayments: map[int64]bool{38: true},
+			Providers: []CommercialPaymentProvider{provider},
+		})
+	}
+	body := `{"plan_id":71,"channel":"test","client_request_id":"deploy_lost_response_0001"}`
+
+	lostResponse := httptest.NewRecorder()
+	newHandler().HandleOrders(lostResponse, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders", body, 38))
+	if lostResponse.Code != http.StatusOK {
+		t.Fatalf("pre-deploy status=%d body=%s", lostResponse.Code, lostResponse.Body.String())
+	}
+
+	recoveredResponse := httptest.NewRecorder()
+	newHandler().HandleOrders(recoveredResponse, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders", body, 38))
+	if recoveredResponse.Code != http.StatusOK || len(store.orders) != 1 || provider.createCalls != 1 {
+		t.Fatalf("post-deploy status=%d orders=%d provider_calls=%d body=%s", recoveredResponse.Code, len(store.orders), provider.createCalls, recoveredResponse.Body.String())
+	}
+	var first, second struct {
+		Order *types.CommercialOrder `json:"order"`
+	}
+	if err := json.Unmarshal(lostResponse.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(recoveredResponse.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if first.Order == nil || second.Order == nil || first.Order.OrderNo != second.Order.OrderNo || second.Order.Status != "pending" {
+		t.Fatalf("lost response created a second order: first=%#v second=%#v", first.Order, second.Order)
+	}
+}
+
+func TestCommercialAlipayCallbackRetriesAcrossServiceRestart(t *testing.T) {
+	base := newCommercialPaymentTestStore()
+	base.orders["CC-DEPLOY-CALLBACK"] = &types.CommercialOrder{
+		OrderNo: "CC-DEPLOY-CALLBACK", UID: 38, Channel: commercialPaymentChannelAlipayPage,
+		Status: "pending", AmountFen: 1, Currency: "CNY",
+	}
+	store := &failOnceOrderLookupStore{commercialPaymentTestStore: base, failLookup: true}
+	fake := &fakeAlipayPaymentClient{notification: &alipay.Notification{
+		AppId: "2026000000000001", SellerId: "2088000000000001",
+		NotifyType: alipay.NotifyTypeTradeStatusSync, TradeStatus: alipay.TradeStatusSuccess,
+		OutTradeNo: "CC-DEPLOY-CALLBACK", TradeNo: "2026081422000000000010", TotalAmount: "0.01",
+	}}
+	newHandler := func() *CommercialPaymentHandler {
+		provider := &alipayPagePaymentProvider{appID: fake.notification.AppId, sellerID: fake.notification.SellerId, client: fake}
+		return NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{Providers: []CommercialPaymentProvider{provider}})
+	}
+	notify := func(handler *CommercialPaymentHandler) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader("notify_type=trade_status_sync"))
+		handler.HandleAlipayNotify(recorder, request)
+		return recorder
+	}
+
+	first := notify(newHandler())
+	if first.Code != http.StatusServiceUnavailable || first.Body.String() != "failure" {
+		t.Fatalf("transient database outage status=%d body=%q", first.Code, first.Body.String())
+	}
+	second := notify(newHandler())
+	third := notify(newHandler())
+	if second.Code != http.StatusOK || second.Body.String() != "success" || third.Code != http.StatusOK || third.Body.String() != "success" {
+		t.Fatalf("callback replay did not recover: second=%d/%q third=%d/%q", second.Code, second.Body.String(), third.Code, third.Body.String())
+	}
+	if order := base.orders["CC-DEPLOY-CALLBACK"]; order.Status != "fulfilled" || order.PaidAt == nil {
+		t.Fatalf("callback replay did not fulfill the order: %#v", order)
+	}
+}
+
+type commercialDeployRelayServer struct {
+	server       *httptest.Server
+	failures     atomic.Int32
+	requestCount atomic.Int32
+	mu           sync.Mutex
+	applied      bool
+	scopes       []commercialRelayModelScope
+}
+
+func newCommercialDeployRelayServer(t *testing.T, failures int32) *commercialDeployRelayServer {
+	t.Helper()
+	relay := &commercialDeployRelayServer{}
+	relay.failures.Store(failures)
+	relay.server = httptest.NewServer(http.HandlerFunc(relay.handle))
+	t.Cleanup(relay.server.Close)
+	return relay
+}
+
+func (s *commercialDeployRelayServer) handle(w http.ResponseWriter, r *http.Request) {
+	s.requestCount.Add(1)
+	if r.Method == http.MethodGet {
+		for {
+			remaining := s.failures.Load()
+			if remaining <= 0 {
+				break
+			}
+			if s.failures.CompareAndSwap(remaining, remaining-1) {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"relay is deploying"}`))
+				return
+			}
+		}
+	}
+
+	models := []string{"gpt-5.6-terra"}
+	available := []commercialRelayModelLimit{{
+		Provider: "gpt-upstream", Model: models[0], AllowedModels: models, SharedBudget: true,
+		Budget: commercialRelayBudget{MaxLimit: 5, ResetDuration: "1M"},
+	}}
+	switch r.Method {
+	case http.MethodGet:
+		s.mu.Lock()
+		applied := s.applied
+		scopes := append([]commercialRelayModelScope(nil), s.scopes...)
+		s.mu.Unlock()
+		active := available
+		if applied {
+			active = []commercialRelayModelLimit{{
+				Provider: "gpt-upstream", Model: models[0], AllowedModels: models, SharedBudget: true,
+				Budget: commercialRelayBudget{MaxLimit: 100, ResetDuration: "1M"},
+			}}
+		}
+		_ = json.NewEncoder(w).Encode(commercialRelayUsageUser{
+			Configured: true,
+			Key:        &commercialRelayKeySummary{State: "active"},
+			Limits: commercialRelayLimits{
+				ModelLimits: active, AvailableModelLimits: available, ModelScopes: scopes,
+			},
+		})
+	case http.MethodPost:
+		var payload struct {
+			Scopes []commercialRelayModelScope `json:"model_scopes"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		s.mu.Lock()
+		s.applied = true
+		s.scopes = append([]commercialRelayModelScope(nil), payload.Scopes...)
+		s.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func newCommercialDeploySyncStore(reconcile bool) *commercialRelaySyncTestStore {
+	store := &commercialRelaySyncTestStore{
+		summary: &types.CommercialSummary{
+			UID:           38,
+			TotalsByModel: map[string]float64{"gpt-5.6-terra": 100},
+			Grants: []*types.CommercialQuotaGrant{{
+				GrantType: "order", Model: "gpt-5.6-terra", AmountCNY: 100,
+			}},
+		},
+		replacedCh: make(chan struct{}, 1),
+	}
+	if reconcile {
+		store.reconcileUIDs = []int64{38}
+	}
+	return store
+}
+
+func newCommercialDeploySyncer(store *commercialRelaySyncTestStore, relay *commercialDeployRelayServer) *CommercialRelaySyncer {
+	return NewCommercialRelaySyncer(
+		store,
+		&RelayAdminClient{baseURL: relay.server.URL, token: "test-token", client: relay.server.Client()},
+		CommercialRelaySyncerOptions{
+			EnforceUIDs: map[int64]bool{38: true}, Interval: time.Hour,
+			RetryDelays: []time.Duration{5 * time.Millisecond, 10 * time.Millisecond},
+		},
+	)
+}
+
+func TestCommercialPurchaseSurvivesRelayAndWebDeployWindow(t *testing.T) {
+	store := newCommercialPaymentTestStore()
+	store.plans = []*types.CommercialPlan{commercialChaosPlan()}
+	relay := newCommercialDeployRelayServer(t, 1)
+	syncStore := newCommercialDeploySyncStore(false)
+	provider := &queryCommercialPaymentProvider{intent: &CommercialPaymentIntent{
+		CheckoutURL: "https://openapi.alipay.test/pay",
+		ExpiresAt:   time.Now().UTC().Add(20 * time.Minute),
+	}}
+	newHandler := func() *CommercialPaymentHandler {
+		return NewCommercialPaymentHandler(store, CommercialPaymentHandlerOptions{
+			TestUIDs:  map[int64]bool{38: true},
+			Providers: []CommercialPaymentProvider{provider},
+			SaleChannels: map[string]bool{
+				commercialPaymentChannelAlipayPage: true,
+			},
+			Syncer: newCommercialDeploySyncer(syncStore, relay),
+		})
+	}
+	body := `{"plan_id":71,"channel":"alipay_page","client_request_id":"deploy_relay_0001"}`
+
+	whileRelayDeploys := httptest.NewRecorder()
+	newHandler().HandleOrders(whileRelayDeploys, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders", body, 38))
+	if whileRelayDeploys.Code != http.StatusServiceUnavailable || len(store.orders) != 0 || provider.createCalls != 0 {
+		t.Fatalf("relay deploy created an unsafe order: status=%d orders=%d calls=%d body=%s", whileRelayDeploys.Code, len(store.orders), provider.createCalls, whileRelayDeploys.Body.String())
+	}
+
+	afterDeploy := httptest.NewRecorder()
+	newHandler().HandleOrders(afterDeploy, commercialPaymentRequest(http.MethodPost, "/api/relay/commercial/orders", body, 38))
+	if afterDeploy.Code != http.StatusOK || len(store.orders) != 1 || provider.createCalls != 1 {
+		t.Fatalf("relay recovery status=%d orders=%d calls=%d body=%s", afterDeploy.Code, len(store.orders), provider.createCalls, afterDeploy.Body.String())
+	}
+	var pendingOrderNo string
+	for orderNo := range store.orders {
+		pendingOrderNo = orderNo
+	}
+
+	relay.failures.Store(1)
+	refreshedPage := httptest.NewRecorder()
+	newHandler().HandleOrders(refreshedPage, commercialPaymentRequest(http.MethodGet, "/api/relay/commercial/orders", "", 38))
+	if refreshedPage.Code != http.StatusOK || !strings.Contains(refreshedPage.Body.String(), pendingOrderNo) {
+		t.Fatalf("web deploy could not restore the pending order: status=%d body=%s", refreshedPage.Code, refreshedPage.Body.String())
+	}
+}
+
+func TestCommercialCallbackCommitsWhileRelayDeploysAndRetriesSync(t *testing.T) {
+	paymentStore := newCommercialPaymentTestStore()
+	paymentStore.orders["CC-RELAY-DEPLOY-CALLBACK"] = &types.CommercialOrder{
+		OrderNo: "CC-RELAY-DEPLOY-CALLBACK", UID: 38, Channel: commercialPaymentChannelAlipayPage,
+		Status: "pending", AmountFen: 1, Currency: "CNY",
+	}
+	relay := newCommercialDeployRelayServer(t, 1)
+	syncStore := newCommercialDeploySyncStore(false)
+	syncer := newCommercialDeploySyncer(syncStore, relay)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	syncer.Start(ctx)
+	fake := &fakeAlipayPaymentClient{notification: &alipay.Notification{
+		AppId: "2026000000000001", SellerId: "2088000000000001",
+		NotifyType: alipay.NotifyTypeTradeStatusSync, TradeStatus: alipay.TradeStatusSuccess,
+		OutTradeNo: "CC-RELAY-DEPLOY-CALLBACK", TradeNo: "2026081422000000000011", TotalAmount: "0.01",
+	}}
+	provider := &alipayPagePaymentProvider{appID: fake.notification.AppId, sellerID: fake.notification.SellerId, client: fake}
+	handler := NewCommercialPaymentHandler(paymentStore, CommercialPaymentHandlerOptions{
+		Providers: []CommercialPaymentProvider{provider}, Syncer: syncer,
+	})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/payments/alipay/notify", strings.NewReader("notify_type=trade_status_sync"))
+	handler.HandleAlipayNotify(recorder, request)
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "success" {
+		t.Fatalf("relay deploy blocked payment confirmation: status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if order := paymentStore.orders["CC-RELAY-DEPLOY-CALLBACK"]; order.Status != "fulfilled" {
+		t.Fatalf("payment was not committed before relay sync: %#v", order)
+	}
+	select {
+	case <-syncStore.replacedCh:
+	case <-time.After(time.Second):
+		t.Fatal("relay sync did not recover after the deploy window")
+	}
+	if relay.requestCount.Load() < 4 {
+		t.Fatalf("relay retry/verification path was incomplete: requests=%d", relay.requestCount.Load())
+	}
+}
+
+func TestCommercialRelayStartupReconcilesQueueLostDuringRestart(t *testing.T) {
+	relay := newCommercialDeployRelayServer(t, 0)
+	store := newCommercialDeploySyncStore(true)
+	syncer := newCommercialDeploySyncer(store, relay)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	syncer.Start(ctx)
+
+	select {
+	case <-store.replacedCh:
+	case <-time.After(time.Second):
+		t.Fatal("a restarted service did not immediately reconcile the lost in-memory sync queue")
+	}
+}
+
+func TestCommercialRelayDeployRetriesAreBounded(t *testing.T) {
+	relay := newCommercialDeployRelayServer(t, 100)
+	store := newCommercialDeploySyncStore(false)
+	syncer := newCommercialDeploySyncer(store, relay)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	syncer.Start(ctx)
+	syncer.Enqueue(38)
+
+	deadline := time.Now().Add(time.Second)
+	for relay.requestCount.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if requests := relay.requestCount.Load(); requests != 3 {
+		t.Fatalf("expected one attempt and two retries, got %d requests", requests)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if requests := relay.requestCount.Load(); requests != 3 {
+		t.Fatalf("permanent relay outage caused unbounded retries: requests=%d", requests)
 	}
 }
 

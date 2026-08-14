@@ -26,6 +26,12 @@ type CommercialRelaySyncerOptions struct {
 	EnforceEnabled bool
 	EnforceUIDs    map[int64]bool
 	Interval       time.Duration
+	RetryDelays    []time.Duration
+}
+
+type commercialRelaySyncRequest struct {
+	uid     int64
+	attempt int
 }
 
 type CommercialRelaySyncer struct {
@@ -34,7 +40,8 @@ type CommercialRelaySyncer struct {
 	enforceEnabled    bool
 	enforceUIDs       map[int64]bool
 	interval          time.Duration
-	queue             chan int64
+	retryDelays       []time.Duration
+	queue             chan commercialRelaySyncRequest
 	reconcileAfterUID int64
 }
 
@@ -43,13 +50,19 @@ func NewCommercialRelaySyncer(store CommercialRelayManagedStore, relayAdmin *Rel
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
+	retryDelays := opts.RetryDelays
+	if retryDelays == nil {
+		retryDelays = []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second}
+	}
+	retryDelays = append([]time.Duration(nil), retryDelays...)
 	return &CommercialRelaySyncer{
 		store:          store,
 		relayAdmin:     relayAdmin,
 		enforceEnabled: opts.EnforceEnabled,
 		enforceUIDs:    copyCommercialUIDSet(opts.EnforceUIDs),
 		interval:       interval,
-		queue:          make(chan int64, 256),
+		retryDelays:    retryDelays,
+		queue:          make(chan commercialRelaySyncRequest, 256),
 	}
 }
 
@@ -62,7 +75,7 @@ func (s *CommercialRelaySyncer) Enqueue(uid int64) {
 		return
 	}
 	select {
-	case s.queue <- uid:
+	case s.queue <- commercialRelaySyncRequest{uid: uid}:
 	default:
 		log.Printf("commercial relay sync queue is full; uid=%d will be retried by reconciliation", uid)
 	}
@@ -78,51 +91,93 @@ func (s *CommercialRelaySyncer) Start(ctx context.Context) {
 func (s *CommercialRelaySyncer) run(ctx context.Context) {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
+	startupReconcile := time.NewTimer(0)
+	defer startupReconcile.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case uid := <-s.queue:
-			s.syncWithTimeout(ctx, uid)
+		case request := <-s.queue:
+			if err := s.syncWithTimeout(ctx, request.uid); err != nil {
+				log.Printf("commercial relay sync failed uid=%d attempt=%d: %v", request.uid, request.attempt+1, err)
+				s.scheduleRetry(ctx, request)
+			}
+		case <-startupReconcile.C:
+			s.reconcile(ctx)
 		case <-ticker.C:
-			uids, err := s.store.ListCommercialReconcileUIDs(s.reconcileAfterUID, 50)
-			if err != nil {
-				log.Printf("commercial relay reconciliation list failed: %v", err)
-				continue
-			}
-			for _, uid := range uids {
-				if !s.EnforcedFor(uid) {
-					managed, managedErr := s.store.ListCommercialManagedRelayBudgets(uid)
-					if managedErr != nil {
-						log.Printf("commercial relay reconciliation state failed uid=%d: %v", uid, managedErr)
-						continue
-					}
-					required, requiredErr := s.store.CommercialRelaySyncRequired(uid)
-					if requiredErr != nil {
-						log.Printf("commercial relay entitlement state failed uid=%d: %v", uid, requiredErr)
-						continue
-					}
-					if len(managed) == 0 && !required {
-						continue
-					}
-				}
-				s.syncWithTimeout(ctx, uid)
-			}
-			if len(uids) < 50 {
-				s.reconcileAfterUID = 0
-			} else {
-				s.reconcileAfterUID = uids[len(uids)-1]
-			}
+			s.reconcile(ctx)
 		}
 	}
 }
 
-func (s *CommercialRelaySyncer) syncWithTimeout(parent context.Context, uid int64) {
+func (s *CommercialRelaySyncer) scheduleRetry(ctx context.Context, request commercialRelaySyncRequest) {
+	if request.attempt >= len(s.retryDelays) {
+		return
+	}
+	delay := s.retryDelays[request.attempt]
+	if delay <= 0 {
+		delay = time.Millisecond
+	}
+	request.attempt++
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		select {
+		case <-ctx.Done():
+		case s.queue <- request:
+		default:
+			log.Printf("commercial relay retry queue is full; uid=%d will be retried by reconciliation", request.uid)
+		}
+	}()
+}
+
+func (s *CommercialRelaySyncer) reconcile(ctx context.Context) {
+	uids, err := s.store.ListCommercialReconcileUIDs(s.reconcileAfterUID, 50)
+	if err != nil {
+		log.Printf("commercial relay reconciliation list failed: %v", err)
+		return
+	}
+	for _, uid := range uids {
+		if !s.EnforcedFor(uid) {
+			managed, managedErr := s.store.ListCommercialManagedRelayBudgets(uid)
+			if managedErr != nil {
+				log.Printf("commercial relay reconciliation state failed uid=%d: %v", uid, managedErr)
+				continue
+			}
+			required, requiredErr := s.store.CommercialRelaySyncRequired(uid)
+			if requiredErr != nil {
+				log.Printf("commercial relay entitlement state failed uid=%d: %v", uid, requiredErr)
+				continue
+			}
+			if len(managed) == 0 && !required {
+				continue
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case s.queue <- commercialRelaySyncRequest{uid: uid}:
+		default:
+			log.Printf("commercial relay reconciliation queue is full; uid=%d will be retried later", uid)
+		}
+	}
+	if len(uids) < 50 {
+		s.reconcileAfterUID = 0
+	} else {
+		s.reconcileAfterUID = uids[len(uids)-1]
+	}
+}
+
+func (s *CommercialRelaySyncer) syncWithTimeout(parent context.Context, uid int64) error {
 	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
-	if _, err := s.SyncUID(ctx, uid); err != nil {
-		log.Printf("commercial relay sync failed uid=%d: %v", uid, err)
-	}
+	_, err := s.SyncUID(ctx, uid)
+	return err
 }
 
 func (s *CommercialRelaySyncer) SyncUID(ctx context.Context, uid int64) ([]commercialRelayProviderBudgetUpdate, error) {

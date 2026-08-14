@@ -793,7 +793,11 @@ func (h *CommercialPaymentHandler) HandleAlipayNotify(w http.ResponseWriter, r *
 		return
 	}
 	order, err := h.store.GetCommercialOrder(0, orderNo)
-	if err != nil || order == nil {
+	if err != nil {
+		writeAlipayNotifyResponse(w, http.StatusServiceUnavailable, false)
+		return
+	}
+	if order == nil {
 		writeAlipayNotifyResponse(w, http.StatusNotFound, false)
 		return
 	}

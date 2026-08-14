@@ -29,9 +29,11 @@ type commercialPaymentTestStore struct {
 }
 
 type commercialRelaySyncTestStore struct {
-	summary  *types.CommercialSummary
-	managed  []*types.CommercialManagedRelayBudget
-	replaced []*types.CommercialManagedRelayBudget
+	summary       *types.CommercialSummary
+	managed       []*types.CommercialManagedRelayBudget
+	replaced      []*types.CommercialManagedRelayBudget
+	reconcileUIDs []int64
+	replacedCh    chan struct{}
 }
 
 func (s *commercialRelaySyncTestStore) GetCommercialSummary(int64) (*types.CommercialSummary, error) {
@@ -44,6 +46,12 @@ func (s *commercialRelaySyncTestStore) ListCommercialManagedRelayBudgets(int64) 
 
 func (s *commercialRelaySyncTestStore) ReplaceCommercialManagedRelayBudgets(_ int64, budgets []*types.CommercialManagedRelayBudget) error {
 	s.replaced = budgets
+	if s.replacedCh != nil {
+		select {
+		case s.replacedCh <- struct{}{}:
+		default:
+		}
+	}
 	return nil
 }
 
@@ -51,8 +59,18 @@ func (s *commercialRelaySyncTestStore) CommercialRelaySyncRequired(int64) (bool,
 	return true, nil
 }
 
-func (s *commercialRelaySyncTestStore) ListCommercialReconcileUIDs(int64, int) ([]int64, error) {
-	return nil, nil
+func (s *commercialRelaySyncTestStore) ListCommercialReconcileUIDs(afterUID int64, limit int) ([]int64, error) {
+	uids := make([]int64, 0, len(s.reconcileUIDs))
+	for _, uid := range s.reconcileUIDs {
+		if uid <= afterUID {
+			continue
+		}
+		uids = append(uids, uid)
+		if len(uids) == limit {
+			break
+		}
+	}
+	return uids, nil
 }
 
 type queryCommercialPaymentProvider struct {
