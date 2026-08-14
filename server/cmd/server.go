@@ -342,6 +342,7 @@ func main() {
 	readerHandler := server.NewReaderProxyHandlerFromEnv()
 	cloudArtifactHandler := server.NewCloudArtifactHandlerFromEnv()
 	cloudArtifactHandler.SetStore(db)
+	cloudArtifactHandler.SetUploadSourceValidator(uploadHandler)
 	hub.SetArtifactContextResolver(cloudArtifactHandler)
 	imageGenerationHandler := server.NewImageGenerationProxyHandlerFromEnv()
 	sttHandler := server.NewSTTHandlerFromEnv()

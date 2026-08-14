@@ -368,7 +368,7 @@ Raw 上传在应用层只在实际读取超过限制时返回 `upload_too_large`
 
 #### POST /api/agents/{agentUid}/artifacts — 直接发布 Agent 成果
 
-发布一个已上传到当前 CatsCo 实例的 HTML 网页或 ZIP 小应用。`url` 必须与当前 API 请求同源并位于 `/uploads/files/` 下，避免把任意外部地址注册为可信成果。CatsCo 根据 Bearer 登录态注入 `actor_uid`、`creator_type: "user"`、`creator_uid`、`uploader_uid` 和 `publish_mode: "immediate"`；客户端不得提交或覆盖这些身份字段。
+发布一个已上传到当前 CatsCo 实例的 HTML 网页或 ZIP 小应用。`url` 必须使用服务端 `CATSCO_PUBLIC_BASE_URL` 配置的 HTTPS 来源、位于 `/uploads/files/` 下，并对应本实例上传目录中真实存在的普通文件；请求 `Host` 不参与来源判断。CatsCo 根据 Bearer 登录态注入 `actor_uid`、`creator_type: "user"`、`creator_uid`、`uploader_uid` 和 `publish_mode: "immediate"`；客户端不得提交或覆盖这些身份字段。
 
 成员上传默认无需审批并直接展示。若 Agent 所有者关闭了成员上传权限，普通成员调用此接口返回 `403`；所有者不受该开关影响。
 

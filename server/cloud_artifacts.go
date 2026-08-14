@@ -43,6 +43,9 @@ type CloudArtifactHandler struct {
 	managementToken   string
 	httpClient        *http.Client
 	db                store.Store
+	publishOrigin     artifactURLOrigin
+	publishOriginErr  error
+	uploadSource      ArtifactUploadSourceValidator
 	configErr         error
 	managementErr     error
 	nodeRegistry      *artifactNodeRegistry
@@ -55,6 +58,12 @@ type CloudArtifactHandler struct {
 	artifactContextCacheTTL                time.Duration
 	artifactContextExactMutationGeneration map[artifactContextCacheKey]uint64
 	artifactContextIDMutationGeneration    map[string]uint64
+}
+
+// ArtifactUploadSourceValidator verifies that a published source belongs to
+// this CatsCo instance's upload storage.
+type ArtifactUploadSourceValidator interface {
+	ValidateArtifactSourcePath(string) error
 }
 
 type cloudArtifactIndex struct {
@@ -129,8 +138,16 @@ func (h *CloudArtifactHandler) SetStore(db store.Store) {
 	}
 }
 
+// SetUploadSourceValidator enables server-side validation of artifact source files.
+func (h *CloudArtifactHandler) SetUploadSourceValidator(validator ArtifactUploadSourceValidator) {
+	if h != nil {
+		h.uploadSource = validator
+	}
+}
+
 func newCloudArtifactHandler(indexURL, managementURL, managementToken string, client *http.Client) *CloudArtifactHandler {
 	h := &CloudArtifactHandler{httpClient: client}
+	h.publishOrigin, h.publishOriginErr = configuredArtifactPublishOrigin()
 	if h.httpClient == nil {
 		h.httpClient = &http.Client{Timeout: artifactUpstreamTimeout}
 	}
@@ -742,7 +759,12 @@ func (h *CloudArtifactHandler) handlePublish(
 	request.URL = strings.TrimSpace(request.URL)
 	request.SourceTitle = strings.TrimSpace(request.SourceTitle)
 	request.SourceTopicID = strings.TrimSpace(request.SourceTopicID)
-	if validateCloudArtifactPublishRequest(request, r.Host) != nil {
+	if h.publishOriginErr != nil || h.uploadSource == nil {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return
+	}
+	sourcePath, err := validateCloudArtifactPublishRequest(request, h.publishOrigin)
+	if err != nil || h.uploadSource.ValidateArtifactSourcePath(sourcePath) != nil {
 		writeArtifactError(w, http.StatusBadRequest, "artifact_publish_request_invalid")
 		return
 	}
@@ -1034,20 +1056,36 @@ type agentArtifactAPIRoute struct {
 	viewerRelation string
 }
 
-func validateCloudArtifactPublishRequest(request cloudArtifactPublishRequest, requestHost string) error {
+func configuredArtifactPublishOrigin() (artifactURLOrigin, error) {
+	raw := strings.TrimSpace(os.Getenv("CATSCO_PUBLIC_BASE_URL"))
+	parsed, err := url.Parse(raw)
+	if err != nil || raw == "" || parsed.Scheme != "https" || parsed.Host == "" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawPath != "" ||
+		(parsed.Path != "" && parsed.Path != "/") {
+		return artifactURLOrigin{}, errors.New("CATSCO_PUBLIC_BASE_URL must be a public HTTPS origin")
+	}
+	return parseArtifactURLOrigin(raw)
+}
+
+func validateCloudArtifactPublishRequest(request cloudArtifactPublishRequest, expectedOrigin artifactURLOrigin) (string, error) {
 	if request.Title == "" || len(request.Title) > 160 ||
 		(request.Kind != "html" && request.Kind != "mini_app") ||
 		len(request.SourceTitle) > 240 || len(request.SourceTopicID) > 160 {
-		return errors.New("invalid artifact publish request")
+		return "", errors.New("invalid artifact publish request")
 	}
 	artifactURL, err := url.Parse(request.URL)
-	if err != nil || artifactURL.Host == "" || artifactURL.User != nil ||
-		(artifactURL.Scheme != "http" && artifactURL.Scheme != "https") ||
-		!strings.EqualFold(artifactURL.Host, strings.TrimSpace(requestHost)) ||
+	artifactOrigin, originErr := parseArtifactURLOrigin(request.URL)
+	if err != nil || originErr != nil || artifactURL.Scheme != "https" || artifactURL.Host == "" ||
+		artifactURL.User != nil || artifactURL.RawQuery != "" || artifactURL.Fragment != "" ||
+		artifactURL.RawPath != "" || artifactOrigin != expectedOrigin ||
 		!strings.HasPrefix(artifactURL.Path, "/uploads/files/") {
-		return errors.New("invalid artifact publish URL")
+		return "", errors.New("invalid artifact publish URL")
 	}
-	return nil
+	fileName := strings.TrimPrefix(artifactURL.Path, "/uploads/files/")
+	if fileName == "" || strings.Contains(fileName, "/") {
+		return "", errors.New("invalid artifact publish URL")
+	}
+	return artifactURL.Path, nil
 }
 
 type cloudArtifactPublishRequest struct {

@@ -7,11 +7,30 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/openchat/openchat/server/store/types"
 )
+
+const testArtifactUploadFileName = "20260814_0123456789abcdef0123456789abcdef.html"
+
+func artifactUploadSourceForTest(t *testing.T) (*UploadHandler, string) {
+	t.Helper()
+	t.Setenv("CATSCO_PUBLIC_BASE_URL", "https://app.example")
+	baseDir := t.TempDir()
+	fileDir := filepath.Join(baseDir, "files")
+	if err := os.MkdirAll(fileDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fileDir, testArtifactUploadFileName), []byte("<!doctype html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return NewUploadHandler(baseDir, "/uploads"),
+		"https://app.example/uploads/files/" + testArtifactUploadFileName
+}
 
 func TestCloudArtifactHandlerListsValidatedIndex(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -402,6 +421,7 @@ func TestCloudArtifactHandlerRejectsFriendRemovingAnotherMembersArtifact(t *test
 
 func TestCloudArtifactHandlerPublishesForFriendWithoutApproval(t *testing.T) {
 	const token = "test-management-token-abcdefghijklmnopqrstuvwxyz"
+	uploadHandler, sourceURL := artifactUploadSourceForTest(t)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/internal/agents/440/artifacts" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
@@ -444,6 +464,7 @@ func TestCloudArtifactHandlerPublishesForFriendWithoutApproval(t *testing.T) {
 		token,
 		upstream.Client(),
 	)
+	handler.SetUploadSourceValidator(uploadHandler)
 	friendStore := managedArtifactAgentStore(8, 440, true)
 	friendStore.friendPairs[agentPairKey(7, 440)] = true
 	handler.SetStore(friendStore)
@@ -451,8 +472,9 @@ func TestCloudArtifactHandlerPublishesForFriendWithoutApproval(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"/api/agents/440/artifacts",
-		strings.NewReader(`{"title":"课堂网页","kind":"html","url":"https://example.com/uploads/files/result.html","source_topic_id":"p2p_7_440"}`),
+		strings.NewReader(`{"title":"课堂网页","kind":"html","url":"`+sourceURL+`","source_topic_id":"p2p_7_440"}`),
 	).WithContext(context.WithValue(context.Background(), uidKey, int64(7)))
+	req.Host = "attacker.example"
 	handler.HandleAgentArtifacts(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -463,6 +485,75 @@ func TestCloudArtifactHandlerPublishesForFriendWithoutApproval(t *testing.T) {
 		!strings.Contains(rec.Body.String(), `"can_delete":true`) ||
 		strings.Contains(rec.Body.String(), "pending") {
 		t.Fatalf("publish response = %s", rec.Body.String())
+	}
+}
+
+func TestCloudArtifactHandlerRejectsPublishFromClientControlledHost(t *testing.T) {
+	uploadHandler, _ := artifactUploadSourceForTest(t)
+	var upstreamCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer upstream.Close()
+
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		upstream.URL+"/internal/artifacts",
+		"test-management-token-abcdefghijklmnopqrstuvwxyz",
+		upstream.Client(),
+	)
+	handler.SetStore(managedArtifactAgentStore(7, 440, true))
+	handler.SetUploadSourceValidator(uploadHandler)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/agents/440/artifacts",
+		strings.NewReader(`{"title":"local import","kind":"html","url":"http://127.0.0.1/uploads/files/`+testArtifactUploadFileName+`"}`),
+	).WithContext(context.WithValue(context.Background(), uidKey, int64(7)))
+	request.Host = "127.0.0.1"
+
+	handler.HandleAgentArtifacts(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstream calls = %d", upstreamCalls)
+	}
+}
+
+func TestCloudArtifactHandlerRejectsMissingCanonicalUpload(t *testing.T) {
+	uploadHandler, _ := artifactUploadSourceForTest(t)
+	var upstreamCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer upstream.Close()
+
+	handler := NewCloudArtifactManagementHandler(
+		"https://example.test/artifacts-index.json",
+		upstream.URL+"/internal/artifacts",
+		"test-management-token-abcdefghijklmnopqrstuvwxyz",
+		upstream.Client(),
+	)
+	handler.SetStore(managedArtifactAgentStore(7, 440, true))
+	handler.SetUploadSourceValidator(uploadHandler)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/agents/440/artifacts",
+		strings.NewReader(`{"title":"missing import","kind":"html","url":"https://app.example/uploads/files/20260814_abcdefabcdefabcdefabcdefabcdefab.html"}`),
+	).WithContext(context.WithValue(context.Background(), uidKey, int64(7)))
+
+	handler.HandleAgentArtifacts(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstream calls = %d", upstreamCalls)
 	}
 }
 
