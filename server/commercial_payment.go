@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -674,9 +675,23 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 }
 
 func decodeCommercialJSON(r *http.Request, target interface{}) error {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 64<<10))
+	payload, err := readLimitedBody(r.Body, 64<<10)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
-	return decoder.Decode(target)
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("request body contains multiple JSON values")
+		}
+		return err
+	}
+	return nil
 }
 
 func newCommercialOrderNo() string {
@@ -778,7 +793,11 @@ func (h *CommercialPaymentHandler) HandleAlipayNotify(w http.ResponseWriter, r *
 		return
 	}
 	order, err := h.store.GetCommercialOrder(0, orderNo)
-	if err != nil || order == nil {
+	if err != nil {
+		writeAlipayNotifyResponse(w, http.StatusServiceUnavailable, false)
+		return
+	}
+	if order == nil {
 		writeAlipayNotifyResponse(w, http.StatusNotFound, false)
 		return
 	}

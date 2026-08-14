@@ -527,6 +527,7 @@ export default function RelayAccessModal({ onClose }) {
   const [warning, setWarning] = useState('');
   const [copied, setCopied] = useState('');
   const paymentRequestIDs = useRef(loadCommercialPaymentRequestIDs());
+  const purchaseSubmittingRef = useRef(false);
   const purchaseConfirmRef = useRef(null);
   const checkoutRef = useRef(null);
 
@@ -889,8 +890,10 @@ export default function RelayAccessModal({ onClose }) {
   };
 
   const confirmCommercialPurchase = async () => {
-    if (!purchasePlan || !paymentChannel) return;
+    if (!purchasePlan || !paymentChannel || purchaseSubmittingRef.current) return;
+    purchaseSubmittingRef.current = true;
     let paymentWindow = null;
+    let popupBlocked = false;
     if (paymentChannel === 'alipay_page') {
       paymentWindow = window.open('about:blank', '_blank');
       if (paymentWindow) {
@@ -902,11 +905,18 @@ export default function RelayAccessModal({ onClose }) {
           // The checkout still opens even when the placeholder document cannot be styled.
         }
       } else {
-        setWarning('浏览器拦截了新窗口。订单创建后可点击“前往支付宝付款”继续。');
+        popupBlocked = true;
       }
     }
-    const order = await createCommercialOrder(purchasePlan, paymentWindow);
-    if (order) setPurchasePlan(null);
+    try {
+      const order = await createCommercialOrder(purchasePlan, paymentWindow);
+      if (order) {
+        setPurchasePlan(null);
+        if (popupBlocked) setWarning('浏览器拦截了新窗口。请点击“前往支付宝付款”继续。');
+      }
+    } finally {
+      purchaseSubmittingRef.current = false;
+    }
   };
 
   const openCommercialOrder = (order) => {

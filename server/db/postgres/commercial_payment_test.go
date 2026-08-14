@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -188,9 +189,17 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 		t.Fatalf("expected purchase limit rejection, got %v", err)
 	}
 	refundRequestNo := "CCRF-" + created.OrderNo
-	refunding, claimed, err := db.BeginCommercialOrderRefund(created.OrderNo, refundRequestNo, 2*time.Minute)
+	const testRefundClaimTTL = 10 * time.Millisecond
+	refunding, claimed, err := db.BeginCommercialOrderRefund(created.OrderNo, refundRequestNo, testRefundClaimTTL)
 	if err != nil || !claimed || refunding.Status != "refunding" || refunding.RefundRequestNo != refundRequestNo {
 		t.Fatalf("begin commercial refund: order=%#v claimed=%v err=%v", refunding, claimed, err)
+	}
+	if duplicateClaim, claimedAgain, claimErr := db.BeginCommercialOrderRefund(created.OrderNo, refundRequestNo, testRefundClaimTTL); claimErr != nil || claimedAgain || duplicateClaim.Status != "refunding" {
+		t.Fatalf("active refund claim was not exclusive: order=%#v claimed=%v err=%v", duplicateClaim, claimedAgain, claimErr)
+	}
+	time.Sleep(25 * time.Millisecond)
+	if reclaimed, reclaimedClaim, reclaimErr := db.BeginCommercialOrderRefund(created.OrderNo, refundRequestNo, testRefundClaimTTL); reclaimErr != nil || !reclaimedClaim || reclaimed.Status != "refunding" {
+		t.Fatalf("stale refund claim was not recoverable: order=%#v claimed=%v err=%v", reclaimed, reclaimedClaim, reclaimErr)
 	}
 	refunded, changed, err := db.CompleteCommercialOrderRefund(created.OrderNo, &types.CommercialRefundConfirmation{
 		Channel:         confirmation.Channel,
@@ -226,6 +235,38 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	if revokedGrants != 1 || reversalEntries != 1 {
 		t.Fatalf("refund audit mismatch: revoked_grants=%d reversal_entries=%d", revokedGrants, reversalEntries)
 	}
+
+	replayOrder, err := db.CreateCommercialOrder(&types.CommercialOrder{
+		OrderNo:         "CCPGREPLAY0001",
+		UID:             uid,
+		PlanID:          paidPlanID,
+		Channel:         "test",
+		ClientRequestID: "pg_replay_request_0001",
+		ExpiresAt:       &expiresAt,
+	})
+	if err != nil {
+		t.Fatalf("create payment-event replay order: %v", err)
+	}
+	replayOrder, claimed, err = db.BeginCommercialOrderPayment(replayOrder.OrderNo, expiresAt)
+	if err != nil || !claimed || replayOrder.Status != "pending" {
+		t.Fatalf("begin payment-event replay order: order=%#v claimed=%v err=%v", replayOrder, claimed, err)
+	}
+	replayedConfirmation := *confirmation
+	replayedConfirmation.ProviderTradeNo = "PG-TRADE-REPLAY"
+	if _, _, err := db.FulfillCommercialOrder(replayOrder.OrderNo, &replayedConfirmation); err == nil || !strings.Contains(err.Error(), "event was already used") {
+		t.Fatalf("payment event replay was not rejected: %v", err)
+	}
+	replayOrder, err = db.GetCommercialOrder(uid, replayOrder.OrderNo)
+	if err != nil || replayOrder.Status != "pending" {
+		t.Fatalf("event replay changed the target order: order=%#v err=%v", replayOrder, err)
+	}
+	var replayEntitlements int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_entitlements WHERE source = 'order' AND source_ref = $1`, replayOrder.OrderNo).Scan(&replayEntitlements); err != nil || replayEntitlements != 0 {
+		t.Fatalf("event replay created entitlement: count=%d err=%v", replayEntitlements, err)
+	}
+	if closed, changed, err := db.CancelCommercialOrder(uid, replayOrder.OrderNo, "cleanup replay test"); err != nil || !changed || closed.Status != "closed" {
+		t.Fatalf("close payment-event replay order: order=%#v changed=%v err=%v", closed, changed, err)
+	}
 	if _, err := db.ClaimCommercialTrial(uid, "pg-paid-plan"); err == nil || !strings.Contains(err.Error(), "unavailable") {
 		t.Fatalf("expected paid plan to be rejected as a trial, got %v", err)
 	}
@@ -258,5 +299,76 @@ func testCommercialPaymentContract(t *testing.T, db *Adapter, uid int64) {
 	storedManaged, err := db.ListCommercialManagedRelayBudgets(uid)
 	if err != nil || len(storedManaged) != 1 || storedManaged[0].Provider != "minimax" || storedManaged[0].MaxLimit != 30 {
 		t.Fatalf("managed relay budget mismatch: budgets=%#v err=%v", storedManaged, err)
+	}
+
+	testConcurrentCommercialOpenOrderCoalescing(t, db, uid)
+}
+
+func testConcurrentCommercialOpenOrderCoalescing(t *testing.T, db *Adapter, uid int64) {
+	t.Helper()
+	planID, err := db.CreateCommercialPlan(&types.CommercialPlan{
+		Slug: "pg-concurrent-plan", Name: "PostgreSQL 并发下单包", PriceFen: 100, Currency: "CNY",
+		SaleState: "test", ModelBudgets: map[string]float64{"gpt-5.6-terra": 1}, DurationDays: 30,
+	})
+	if err != nil {
+		t.Fatalf("create concurrent commercial plan: %v", err)
+	}
+
+	const workers = 16
+	expiresAt := time.Now().UTC().Add(20 * time.Minute)
+	start := make(chan struct{})
+	orderNos := make(chan string, workers)
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := range workers {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			<-start
+			order, createErr := db.CreateCommercialOrder(&types.CommercialOrder{
+				OrderNo:         fmt.Sprintf("CCPGCONCURRENT%04d", index),
+				UID:             uid,
+				PlanID:          planID,
+				Channel:         "test",
+				ClientRequestID: fmt.Sprintf("pg_concurrent_request_%04d", index),
+				ExpiresAt:       &expiresAt,
+			})
+			if createErr != nil {
+				errs <- createErr
+				return
+			}
+			orderNos <- order.OrderNo
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(orderNos)
+	close(errs)
+	for createErr := range errs {
+		if createErr != nil {
+			t.Fatalf("concurrent commercial order failed: %v", createErr)
+		}
+	}
+	var canonical string
+	for orderNo := range orderNos {
+		if canonical == "" {
+			canonical = orderNo
+		}
+		if orderNo != canonical {
+			t.Fatalf("concurrent requests produced multiple open orders: first=%s other=%s", canonical, orderNo)
+		}
+	}
+	if canonical == "" {
+		t.Fatal("concurrent requests returned no order")
+	}
+	var openOrders, aliases int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_orders WHERE uid = $1 AND plan_id = $2 AND status IN ('created','pending')`, uid, planID).Scan(&openOrders); err != nil {
+		t.Fatalf("count concurrent open orders: %v", err)
+	}
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM commercial_order_request_ids WHERE uid = $1 AND order_no = $2`, uid, canonical).Scan(&aliases); err != nil {
+		t.Fatalf("count concurrent request aliases: %v", err)
+	}
+	if openOrders != 1 || aliases != workers {
+		t.Fatalf("concurrent order coalescing mismatch: open_orders=%d aliases=%d", openOrders, aliases)
 	}
 }

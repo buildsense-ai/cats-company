@@ -599,6 +599,92 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('CCALIPAYWEB0001');
   });
 
+  it('keeps a usable payment link when the browser blocks the Alipay popup', async () => {
+    const plan = {
+      id: 18,
+      slug: 'popup-blocked-plan',
+      name: '弹窗拦截测试包',
+      price_fen: 100,
+      currency: 'CNY',
+      sale_state: 'test',
+      duration_days: 30,
+    };
+    const checkoutURL = 'https://openapi.alipay.test/popup-blocked';
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      test_mode: false,
+      channels: [{ id: 'alipay_page', label: '支付宝支付', test_mode: false }],
+      plans: [plan],
+    });
+    api.createCommercialOrder.mockResolvedValue({
+      order: {
+        order_no: 'CCPOPUPBLOCKED0001',
+        plan_id: plan.id,
+        plan_name: plan.name,
+        amount_fen: plan.price_fen,
+        currency: 'CNY',
+        channel: 'alipay_page',
+        status: 'pending',
+        checkout_url: checkoutURL,
+        created_at: new Date().toISOString(),
+      },
+    });
+    window.open.mockReturnValue(null);
+
+    await renderModal();
+    await clickButton('购买');
+    await clickButton('确认并前往支付宝');
+
+    expect(api.createCommercialOrder).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('浏览器拦截了新窗口');
+    const paymentLink = container.querySelector('.relay-access-payment-redirect a');
+    expect(paymentLink?.getAttribute('href')).toBe(checkoutURL);
+    expect(paymentLink?.textContent).toContain('前往支付宝付款');
+  });
+
+  it('suppresses rapid duplicate purchase confirmation clicks', async () => {
+    const plan = {
+      id: 19,
+      slug: 'rapid-click-plan',
+      name: '连续点击测试包',
+      price_fen: 100,
+      currency: 'CNY',
+      sale_state: 'test',
+      duration_days: 30,
+    };
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      test_mode: true,
+      channels: [{ id: 'test', label: '灰度测试支付', test_mode: true }],
+      plans: [plan],
+    });
+    let resolveCreate;
+    api.createCommercialOrder.mockReturnValue(new Promise((resolve) => {
+      resolveCreate = resolve;
+    }));
+
+    await renderModal();
+    await clickButton('购买');
+    const confirmButton = findButton('确认购买');
+    await act(async () => {
+      confirmButton.click();
+      confirmButton.click();
+      await Promise.resolve();
+    });
+
+    expect(api.createCommercialOrder).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveCreate({
+        order: {
+          order_no: 'CCRAPIDCLICK0001', plan_id: plan.id, plan_name: plan.name,
+          amount_fen: plan.price_fen, currency: 'CNY', channel: 'test', status: 'pending',
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  });
+
   it('keeps the Alipay label on a pending order after the channel is disabled', async () => {
     api.getCommercialCatalog.mockResolvedValue({
       enabled: true,
