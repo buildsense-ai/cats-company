@@ -1309,6 +1309,10 @@ body {
   gap: 6px;
 }
 
+.cloud-artifacts-header-actions {
+  gap: 8px;
+}
+
 .cloud-artifacts-header-actions button,
 .cloud-artifact-actions button,
 .cloud-artifact-actions a {
@@ -1332,9 +1336,33 @@ body {
   background: var(--v3-bg-message-hover);
 }
 
+.cloud-artifacts-header-actions button {
+  width: 32px;
+  height: 32px;
+  border-color: var(--cc-border-strong);
+  border-radius: 8px;
+  background: var(--cc-panel);
+  transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease;
+}
+
+.cloud-artifacts-header-actions button:hover {
+  border-color: color-mix(in srgb, var(--cc-text-secondary) 48%, var(--cc-border-strong));
+  background: var(--cc-hover);
+}
+
 .cloud-artifacts-header-actions button:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+
+.cloud-artifacts-publish-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .cloud-artifacts-tabs {
@@ -1374,12 +1402,17 @@ body {
 }
 
 .cloud-artifacts-tabs button:focus-visible,
-.cloud-artifacts-header-actions button:focus-visible,
 .cloud-artifact-actions button:focus-visible,
 .cloud-artifact-actions a:focus-visible,
 .cloud-artifacts-status button:focus-visible,
 .cloud-artifacts-load-more:focus-visible {
   outline: 2px solid var(--v3-accent, #30b775);
+  outline-offset: 2px;
+}
+
+.cloud-artifacts-header-actions button:focus-visible {
+  border-color: var(--cc-text-secondary);
+  outline: 2px solid color-mix(in srgb, var(--cc-text-secondary) 38%, transparent);
   outline-offset: 2px;
 }
 
@@ -1389,6 +1422,120 @@ body {
   max-height: none;
   padding: 12px;
   overflow-y: auto;
+}
+
+.cloud-artifacts-context-note {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--v3-border);
+  border-radius: 8px;
+  color: var(--v3-text-muted);
+  background: var(--v3-bg-message-hover);
+}
+
+.cloud-artifacts-context-note > svg {
+  flex: 0 0 auto;
+}
+
+.cloud-artifacts-context-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.cloud-artifacts-context-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.cloud-artifacts-role-badge {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--v3-border);
+  border-radius: 999px;
+  color: var(--v3-text-muted);
+  background: var(--cc-panel);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.cloud-artifacts-scope {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.cloud-artifacts-scope-select {
+  width: 96px;
+  min-width: 96px;
+}
+
+.cloud-artifacts-scope-select .v3-custom-model-select-trigger {
+  width: 100%;
+  border: 1px solid transparent;
+  color: var(--cc-text-secondary);
+  background: var(--cc-control-surface);
+  font-weight: var(--cc-font-weight-medium);
+}
+
+.cloud-artifacts-scope-select .v3-custom-model-select-trigger:hover,
+.cloud-artifacts-scope-select .v3-custom-model-select-trigger[aria-expanded="true"] {
+  border-color: transparent !important;
+  color: var(--cc-text);
+  background: var(--cc-selected) !important;
+}
+
+.cloud-artifacts-scope-select .v3-custom-model-select-trigger:focus-visible {
+  border-color: transparent !important;
+  outline: none;
+  color: var(--cc-text);
+  background: var(--cc-selected) !important;
+  box-shadow: none !important;
+}
+
+.cloud-artifacts-scope-options {
+  min-width: 96px;
+  border: 1px solid var(--cc-text-secondary);
+  color: var(--cc-text-secondary);
+  background: var(--cc-panel);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.08);
+}
+
+.cloud-artifacts-scope-options .v3-custom-model-select-option {
+  color: var(--cc-text-secondary);
+  font-weight: var(--cc-font-weight-medium);
+}
+
+.cloud-artifacts-scope-options .v3-custom-model-select-option:is(:hover, .is-active) {
+  color: var(--cc-text);
+  background: var(--cc-hover);
+}
+
+.cloud-artifacts-scope-options .v3-custom-model-select-option[aria-selected="true"] {
+  color: var(--cc-accent-text);
+}
+
+.cloud-artifacts-context-copy strong {
+  color: var(--v3-text-main);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cloud-artifacts-context-copy span {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.cloud-artifacts-context-copy .cloud-artifacts-role-badge {
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .cloud-artifacts-list {
@@ -1405,6 +1552,12 @@ body {
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.025);
   overflow: hidden;
+  transition: background-color 160ms ease;
+}
+
+.cloud-artifact-item:hover,
+.cloud-artifact-item:focus-within {
+  background: var(--v3-bg-message-hover);
 }
 
 .cloud-artifact-main {
@@ -1426,7 +1579,7 @@ body {
 }
 
 .cloud-artifact-main:hover {
-  background: var(--v3-bg-message-hover);
+  background: transparent;
 }
 
 .cloud-artifact-main.is-deleted {
@@ -1457,7 +1610,8 @@ body {
   stroke-width: 1.8;
 }
 
-.cloud-artifact-main:hover .cloud-artifact-kind-icon {
+.cloud-artifact-item:hover .cloud-artifact-kind-icon,
+.cloud-artifact-item:focus-within .cloud-artifact-kind-icon {
   color: var(--v3-text-main);
 }
 
@@ -1657,6 +1811,10 @@ body {
   animation: cloud-artifact-spin 0.9s linear infinite;
 }
 
+.is-publishing {
+  animation: cloud-artifact-spin 0.9s linear infinite;
+}
+
 @keyframes cloud-artifact-spin {
   to { transform: rotate(360deg); }
 }
@@ -1669,6 +1827,14 @@ body {
 
   .cloud-artifact-main {
     grid-template-columns: 38px minmax(0, 1fr) auto;
+  }
+
+  .cloud-artifacts-context-note {
+    align-items: center;
+  }
+
+  .cloud-artifacts-context-copy > span {
+    display: none;
   }
 }
 

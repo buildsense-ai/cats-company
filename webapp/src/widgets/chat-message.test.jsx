@@ -1913,7 +1913,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(panel.querySelector('a[download]')).toBeNull();
 
     await act(async () => {
-      Simulate.click(panel.querySelector('button[aria-label="返回产物列表"]'));
+      Simulate.click(panel.querySelector('button[aria-label="返回云文件"]'));
     });
     expect(onBack).toHaveBeenCalledTimes(1);
     expect(onClose).not.toHaveBeenCalled();

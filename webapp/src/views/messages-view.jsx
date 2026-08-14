@@ -313,6 +313,7 @@ export default function MessagesView({
   const [previewFile, setPreviewFile] = useState(null);
   const [cloudArtifactsAgentUID, setCloudArtifactsAgentUID] = useState(0);
   const [cloudArtifactsListOpen, setCloudArtifactsListOpen] = useState(false);
+  const [cloudArtifactsReturnOpen, setCloudArtifactsReturnOpen] = useState(false);
   const [cloudArtifactsTab, setCloudArtifactsTab] = useState('files');
   const [artifactRegistryState, setArtifactRegistryState] = useState({ agentUID: 0, artifacts: [] });
   const [artifactRegistryRefreshEpoch, setArtifactRegistryRefreshEpoch] = useState(0);
@@ -351,7 +352,7 @@ export default function MessagesView({
     const saved = localStorage.getItem('cc_show_thinking');
     return saved === null ? true : saved === 'true';
   });
-  const sidePanelOpen = Boolean(previewFile || (cloudArtifactsListOpen && cloudArtifactsAgentUID > 0));
+  const sidePanelOpen = Boolean(previewFile || cloudArtifactsListOpen);
   const bottomRef = useRef(null);
   const chatColumnRef = useRef(null);
   const lastTypingSent = useRef(0);
@@ -543,6 +544,7 @@ export default function MessagesView({
   const openFilePreview = useCallback((file) => {
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
+    setCloudArtifactsReturnOpen(false);
     setPendingArtifactRefresh(null);
     setPreviewFileWithFocus(file);
   }, [setPreviewFileWithFocus]);
@@ -553,6 +555,7 @@ export default function MessagesView({
     setPreviewFile(null);
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
+    setCloudArtifactsReturnOpen(false);
     setCloudArtifactsTab('files');
   }, [clearActiveArtifactFocus]);
 
@@ -563,6 +566,7 @@ export default function MessagesView({
       agent_uid: artifact?.agent_uid || cloudArtifactsAgentUID,
     }));
     setCloudArtifactsListOpen(false);
+    setCloudArtifactsReturnOpen(true);
   }, [cloudArtifactsAgentUID, setPreviewFileWithFocus]);
 
   const captureArtifactMessageContext = useCallback(async () => {
@@ -603,6 +607,7 @@ export default function MessagesView({
       size: file.size,
     });
     setCloudArtifactsListOpen(false);
+    setCloudArtifactsReturnOpen(true);
   }, [setPreviewFileWithFocus]);
 
   const returnToCloudArtifacts = useCallback(() => {
@@ -610,7 +615,22 @@ export default function MessagesView({
     clearActiveArtifactFocus();
     setPreviewFile(null);
     setCloudArtifactsListOpen(true);
+    setCloudArtifactsReturnOpen(false);
   }, [clearActiveArtifactFocus]);
+
+  const resizeComposerInput = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const maxHeight = 200;
+    textarea.style.height = 'auto';
+    const nextHeight = Math.min(Math.max(textarea.scrollHeight, 40), maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, []);
+
+  useEffect(() => {
+    resizeComposerInput();
+  }, [input, resizeComposerInput]);
 
   useEffect(() => {
     setTutorialDismissed(localStorage.getItem(tutorialDismissStorageKey(user.uid, topic)) === '1');
@@ -714,6 +734,7 @@ export default function MessagesView({
     setPreviewFile(null);
     setCloudArtifactsAgentUID(0);
     setCloudArtifactsListOpen(false);
+    setCloudArtifactsReturnOpen(false);
     setCloudArtifactsTab('files');
     const cachedGroupProfile = isGroup && groupId
       ? groupProfileCacheRef.current.get(String(groupId))
@@ -772,12 +793,13 @@ export default function MessagesView({
 
   useEffect(() => {
     const agentUID = Number(cloudArtifactsRequest?.agentUid || 0);
-    if (agentUID <= 0 || !cloudArtifactsRequest?.requestId) return;
+    if (!cloudArtifactsRequest?.requestId) return;
     clearActiveArtifactFocus();
     setPreviewFile(null);
     setCloudArtifactsAgentUID(agentUID);
     setCloudArtifactsTab('files');
     setCloudArtifactsListOpen(true);
+    setCloudArtifactsReturnOpen(false);
   }, [clearActiveArtifactFocus, cloudArtifactsRequest]);
 
   useEffect(() => {
@@ -3480,7 +3502,7 @@ export default function MessagesView({
               onKeyDown={handlePreviewResizeKeyDown}
               title="拖动调整预览宽度"
             />
-            {cloudArtifactsListOpen && cloudArtifactsAgentUID > 0 ? (
+            {cloudArtifactsListOpen ? (
               <CloudArtifactsPanel
                 agentUid={cloudArtifactsAgentUID}
                 topicId={topic}
@@ -3494,7 +3516,7 @@ export default function MessagesView({
               <FilePreviewPanel
                 file={previewFile}
                 pendingRemoteArtifactFile={pendingArtifactRefresh}
-                onBack={cloudArtifactsAgentUID > 0 ? returnToCloudArtifacts : undefined}
+                onBack={cloudArtifactsReturnOpen ? returnToCloudArtifacts : undefined}
                 onClose={closeSidePanel}
                 backgroundRef={chatColumnRef}
                 onRemoteArtifactRefreshReady={handleArtifactRefreshReady}

@@ -259,6 +259,19 @@ type BotSkillsVisibilityStore interface {
 	SetBotSkillsVisibility(botUID int64, visibility string) error
 }
 
+// BotProfileStore persists owner-defined assistant identity metadata without
+// widening focused Store test doubles that do not exercise profile editing.
+type BotProfileStore interface {
+	UpdateBotProfile(botUID int64, role, description *string) error
+}
+
+// BotArtifactPolicyStore persists whether regular Agent members may publish
+// shared artifacts. Owners remain able to publish and manage artifacts.
+type BotArtifactPolicyStore interface {
+	GetBotArtifactUploadPolicy(botUID int64) (bool, error)
+	UpdateBotArtifactUploadPolicy(botUID int64, enabled bool) error
+}
+
 // BotModelConfigStore is optional so existing narrow Store test doubles do not
 // need cloud-model methods. Production database adapters implement it.
 type BotModelConfigStore interface {

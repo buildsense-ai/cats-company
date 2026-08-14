@@ -491,15 +491,18 @@ const (
 
 // BotConfig holds configuration for a registered bot.
 type BotConfig struct {
-	UserID           int64               `json:"user_id"`
-	OwnerID          int64               `json:"owner_id"`
-	APIEndpoint      string              `json:"api_endpoint,omitempty"`
-	Model            string              `json:"model,omitempty"`
-	Enabled          bool                `json:"enabled"`
-	Visibility       BotVisibility       `json:"visibility"`
-	SkillsVisibility BotSkillsVisibility `json:"skills_visibility"`
-	BodyID           string              `json:"body_id,omitempty"`
-	Config           map[string]string   `json:"config,omitempty"`
+	UserID                int64               `json:"user_id"`
+	OwnerID               int64               `json:"owner_id"`
+	APIEndpoint           string              `json:"api_endpoint,omitempty"`
+	Model                 string              `json:"model,omitempty"`
+	Enabled               bool                `json:"enabled"`
+	Visibility            BotVisibility       `json:"visibility"`
+	SkillsVisibility      BotSkillsVisibility `json:"skills_visibility"`
+	BodyID                string              `json:"body_id,omitempty"`
+	Role                  string              `json:"role,omitempty"`
+	Description           string              `json:"description,omitempty"`
+	ArtifactUploadEnabled *bool               `json:"artifact_upload_enabled,omitempty"`
+	Config                map[string]string   `json:"config,omitempty"`
 }
 
 // BotModelConfig stores the cloud-selected model and the latest device apply
