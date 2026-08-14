@@ -2655,6 +2655,16 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('.v3-attachment-card')).toBeNull();
     expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
 
+    Object.defineProperties(thumbnail, {
+      videoHeight: { configurable: true, value: 540 },
+      videoWidth: { configurable: true, value: 1920 },
+    });
+    await act(async () => {
+      thumbnail.dispatchEvent(new Event('loadedmetadata', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.oc-rich-video').classList.contains('is-ultrawide')).toBe(false);
+
     trigger.focus();
     await act(async () => {
       Simulate.click(trigger);

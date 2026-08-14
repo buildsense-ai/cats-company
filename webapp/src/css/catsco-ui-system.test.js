@@ -247,6 +247,21 @@ describe('CatsCo shell styling', () => {
     );
   });
 
+  it('renders video thumbnails in a compact, centered viewport while previews retain the source', () => {
+    const videoContainerRule = ruleFor('.v3-message .oc-rich-video');
+    const triggerRule = ruleFor('.v3-message .oc-rich-video-trigger');
+    const thumbnailRule = ruleFor('.v3-message .oc-rich-video-thumb');
+
+    expect(videoContainerRule).toContain('width: min(240px, 100%);');
+    expect(triggerRule).toContain('width: 100%;');
+    expect(triggerRule).toContain('aspect-ratio: 16 / 9;');
+    expect(thumbnailRule).toContain('width: 100%;');
+    expect(thumbnailRule).toContain('height: 100%;');
+    expect(thumbnailRule).toContain('object-fit: cover;');
+    expect(thumbnailRule).toContain('object-position: center;');
+    expect(ruleFor('.oc-rich-video-preview .oc-rich-video-player')).toContain('object-fit: contain;');
+  });
+
   it('keeps inline audio controls compact, focusable, and reduced-motion safe', () => {
     const audioRule = ruleFor('.v3-message .oc-rich-audio');
     const downloadRule = ruleFor('.v3-message .oc-rich-audio-download');
