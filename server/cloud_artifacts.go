@@ -43,6 +43,9 @@ type CloudArtifactHandler struct {
 	managementToken   string
 	httpClient        *http.Client
 	db                store.Store
+	publishOrigin     artifactURLOrigin
+	publishOriginErr  error
+	uploadSource      ArtifactUploadSourceValidator
 	configErr         error
 	managementErr     error
 	nodeRegistry      *artifactNodeRegistry
@@ -57,6 +60,12 @@ type CloudArtifactHandler struct {
 	artifactContextIDMutationGeneration    map[string]uint64
 }
 
+// ArtifactUploadSourceValidator verifies that a published source belongs to
+// this CatsCo instance's upload storage.
+type ArtifactUploadSourceValidator interface {
+	ValidateArtifactSourcePath(string) error
+}
+
 type cloudArtifactIndex struct {
 	ContractVersion string          `json:"contract_version"`
 	UpdatedAt       string          `json:"updated_at,omitempty"`
@@ -68,6 +77,10 @@ type cloudArtifactManagementList struct {
 	Status          string          `json:"status"`
 	Count           int             `json:"count"`
 	Artifacts       []cloudArtifact `json:"artifacts"`
+	ViewerRelation  string          `json:"viewer_relation,omitempty"`
+	Visibility      string          `json:"visibility,omitempty"`
+	CanPublish      bool            `json:"can_publish,omitempty"`
+	PublishMode     string          `json:"publish_mode,omitempty"`
 }
 
 type cloudArtifactOperation struct {
@@ -87,6 +100,13 @@ type cloudArtifact struct {
 	AgentUID       string `json:"agent_uid,omitempty"`
 	AgentName      string `json:"agent_name,omitempty"`
 	SourceTitle    string `json:"source_title,omitempty"`
+	SourceTopicID  string `json:"source_topic_id,omitempty"`
+	CreatorType    string `json:"creator_type,omitempty"`
+	CreatorUID     string `json:"creator_uid,omitempty"`
+	CreatorName    string `json:"creator_name,omitempty"`
+	UploaderUID    string `json:"uploader_uid,omitempty"`
+	UploaderName   string `json:"uploader_name,omitempty"`
+	UploadedByMe   bool   `json:"uploaded_by_me,omitempty"`
 	DeletedAt      string `json:"deleted_at,omitempty"`
 	CanDelete      bool   `json:"can_delete,omitempty"`
 	CanRestore     bool   `json:"can_restore,omitempty"`
@@ -118,8 +138,16 @@ func (h *CloudArtifactHandler) SetStore(db store.Store) {
 	}
 }
 
+// SetUploadSourceValidator enables server-side validation of artifact source files.
+func (h *CloudArtifactHandler) SetUploadSourceValidator(validator ArtifactUploadSourceValidator) {
+	if h != nil {
+		h.uploadSource = validator
+	}
+}
+
 func newCloudArtifactHandler(indexURL, managementURL, managementToken string, client *http.Client) *CloudArtifactHandler {
 	h := &CloudArtifactHandler{httpClient: client}
+	h.publishOrigin, h.publishOriginErr = configuredArtifactPublishOrigin()
 	if h.httpClient == nil {
 		h.httpClient = &http.Client{Timeout: artifactUpstreamTimeout}
 	}
@@ -199,9 +227,9 @@ func (h *CloudArtifactHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case action == "delete" && r.Method == http.MethodDelete:
-		h.handleMutation(w, r, artifactID, "", uid, h.managementURL, h.managementToken, "", 0)
+		h.handleMutation(w, r, artifactID, "", uid, "owner", h.managementURL, h.managementToken, "", 0)
 	case action == "restore" && r.Method == http.MethodPost:
-		h.handleMutation(w, r, artifactID, "/restore", uid, h.managementURL, h.managementToken, "", 0)
+		h.handleMutation(w, r, artifactID, "/restore", uid, "owner", h.managementURL, h.managementToken, "", 0)
 	default:
 		w.Header().Set("Allow", allowedArtifactMethod(action))
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -228,9 +256,16 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
 		return
 	}
-	if _, _, status, err := accessibleAgentUser(h.db, viewerUID, route.agentUID); err != nil {
+	if _, relation, status, err := accessibleAgentUser(h.db, viewerUID, route.agentUID); err != nil {
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
+	} else {
+		route.viewerRelation = relation
+	}
+	memberUploadsEnabled := true
+	var memberUploadsErr error
+	if route.viewerRelation != "owner" {
+		memberUploadsEnabled, memberUploadsErr = memberArtifactUploadsEnabled(h.db, route.agentUID)
 	}
 	node, err := h.resolveArtifactNode(route.agentUID)
 	if err != nil {
@@ -248,8 +283,26 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 
 	switch route.action {
 	case "list":
+		if r.Method == http.MethodPost {
+			if route.viewerRelation != "owner" {
+				if memberUploadsErr != nil {
+					writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+					return
+				}
+				if !memberUploadsEnabled {
+					writeJSON(w, http.StatusForbidden, map[string]string{"error": "member artifact uploads are disabled"})
+					return
+				}
+			}
+			if collectionURL == "" {
+				writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+				return
+			}
+			h.handlePublish(w, r, viewerUID, route.viewerRelation, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID)
+			return
+		}
 		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
+			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
@@ -261,11 +314,15 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 			writeArtifactError(w, http.StatusBadRequest, "artifact_status_invalid")
 			return
 		}
-		if collectionURL == "" {
-			h.handleNodePublicIndexList(w, r, status, node, route.agentUID)
+		if status == "deleted" && route.viewerRelation != "owner" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact management requires agent owner"})
 			return
 		}
-		h.handleManagedList(w, r, status, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID)
+		if collectionURL == "" {
+			h.handleNodePublicIndexList(w, r, status, node, route.agentUID, route.viewerRelation)
+			return
+		}
+		h.handleManagedList(w, r, status, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID, viewerUID, route.viewerRelation, memberUploadsEnabled)
 	case "delete":
 		if r.Method != http.MethodDelete {
 			w.Header().Set("Allow", http.MethodDelete)
@@ -276,7 +333,18 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 			writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
 			return
 		}
-		h.handleMutation(w, r, route.artifactID, "", viewerUID, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID)
+		if route.viewerRelation != "owner" {
+			allowed, err := h.memberCanDeleteArtifact(r, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID, viewerUID, route.artifactID)
+			if err != nil {
+				writeArtifactUpstreamError(w, err)
+				return
+			}
+			if !allowed {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "members can only remove their own artifacts"})
+				return
+			}
+		}
+		h.handleMutation(w, r, route.artifactID, "", viewerUID, route.viewerRelation, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID)
 	case "restore":
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -287,7 +355,11 @@ func (h *CloudArtifactHandler) HandleAgentArtifacts(w http.ResponseWriter, r *ht
 			writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
 			return
 		}
-		h.handleMutation(w, r, route.artifactID, "/restore", viewerUID, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID)
+		if route.viewerRelation != "owner" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "artifact management requires agent owner"})
+			return
+		}
+		h.handleMutation(w, r, route.artifactID, "/restore", viewerUID, route.viewerRelation, collectionURL, node.managementToken, node.publicBaseURL, route.agentUID)
 	default:
 		writeArtifactError(w, http.StatusNotFound, "artifact_not_found")
 	}
@@ -328,7 +400,7 @@ func (h *CloudArtifactHandler) HandleList(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if h.managementURL != "" {
-		h.handleManagedList(w, r, status, h.managementURL, h.managementToken, "", 0)
+		h.handleManagedList(w, r, status, h.managementURL, h.managementToken, "", 0, UIDFromContext(r.Context()), "owner", true)
 		return
 	}
 	if status == "deleted" {
@@ -344,6 +416,9 @@ func (h *CloudArtifactHandler) handleManagedList(
 	status, collectionURL string,
 	managementToken, publicBaseURL string,
 	agentUID int64,
+	viewerUID int64,
+	viewerRelation string,
+	memberUploadsEnabled bool,
 ) {
 	target := collectionURL + "?status=" + url.QueryEscape(status)
 	body, err := h.requestManagement(r, http.MethodGet, target, nil, managementToken)
@@ -367,9 +442,117 @@ func (h *CloudArtifactHandler) handleManagedList(
 	if list.Artifacts == nil {
 		list.Artifacts = []cloudArtifact{}
 	}
+	if agentUID > 0 {
+		list.ViewerRelation = viewerRelation
+		list.Visibility = "agent_users"
+		list.CanPublish = list.CanPublish && list.PublishMode == "immediate"
+		if viewerRelation != "owner" && !memberUploadsEnabled {
+			list.CanPublish = false
+		}
+		if !list.CanPublish {
+			list.PublishMode = ""
+		}
+		h.enrichArtifactCreators(list.Artifacts, agentUID, false)
+		for i := range list.Artifacts {
+			list.Artifacts[i].UploadedByMe = list.Artifacts[i].UploaderUID != "" &&
+				list.Artifacts[i].UploaderUID == strconv.FormatInt(viewerUID, 10)
+			if viewerRelation != "owner" {
+				list.Artifacts[i].CanDelete = list.Artifacts[i].Status == "active" && list.Artifacts[i].UploadedByMe
+				list.Artifacts[i].CanRestore = false
+			}
+		}
+	}
 	list.Count = len(list.Artifacts)
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, list)
+}
+
+func memberArtifactUploadsEnabled(db store.Store, agentUID int64) (bool, error) {
+	if db == nil || agentUID <= 0 {
+		return false, errors.New("artifact upload policy is unavailable")
+	}
+	policies, ok := db.(store.BotArtifactPolicyStore)
+	if !ok {
+		return true, nil
+	}
+	enabled, err := policies.GetBotArtifactUploadPolicy(agentUID)
+	if err != nil {
+		return false, fmt.Errorf("get bot artifact upload policy: %w", err)
+	}
+	return enabled, nil
+}
+
+func (h *CloudArtifactHandler) enrichArtifactCreators(artifacts []cloudArtifact, fallbackAgentUID int64, assumeAgent bool) {
+	if h == nil {
+		return
+	}
+
+	names := make(map[int64]string)
+	resolved := make(map[int64]bool)
+	resolveName := func(uidValue string) string {
+		if h.db == nil {
+			return ""
+		}
+		uid, err := strconv.ParseInt(strings.TrimSpace(uidValue), 10, 64)
+		if err != nil || uid <= 0 {
+			return ""
+		}
+		if resolved[uid] {
+			return names[uid]
+		}
+		resolved[uid] = true
+		user, err := h.db.GetUser(uid)
+		if err != nil || user == nil {
+			return ""
+		}
+		name := strings.TrimSpace(user.DisplayName)
+		if name == "" {
+			name = strings.TrimSpace(user.Username)
+		}
+		names[uid] = name
+		return name
+	}
+
+	for i := range artifacts {
+		artifact := &artifacts[i]
+		if artifact.UploaderUID != "" {
+			if strings.TrimSpace(artifact.UploaderName) == "" {
+				artifact.UploaderName = resolveName(artifact.UploaderUID)
+			}
+			artifact.CreatorType = "user"
+			artifact.CreatorUID = artifact.UploaderUID
+			artifact.CreatorName = artifact.UploaderName
+			continue
+		}
+
+		if artifact.CreatorType == "" {
+			if assumeAgent {
+				artifact.CreatorType = "agent"
+			} else {
+				artifact.CreatorType = "unknown"
+			}
+		}
+		if artifact.CreatorType != "agent" && artifact.CreatorType != "user" {
+			artifact.CreatorUID = ""
+			artifact.CreatorName = ""
+			continue
+		}
+
+		if artifact.CreatorType == "agent" && artifact.CreatorUID == "" && fallbackAgentUID > 0 {
+			artifact.CreatorUID = strconv.FormatInt(fallbackAgentUID, 10)
+		}
+		if strings.TrimSpace(artifact.CreatorName) == "" {
+			artifact.CreatorName = resolveName(artifact.CreatorUID)
+		}
+		if artifact.CreatorType == "agent" {
+			if artifact.AgentName == "" {
+				artifact.AgentName = artifact.CreatorName
+			}
+		} else if artifact.CreatorType == "user" {
+			artifact.UploaderUID = artifact.CreatorUID
+			artifact.UploaderName = artifact.CreatorName
+		}
+	}
 }
 
 func (h *CloudArtifactHandler) handlePublicIndexList(w http.ResponseWriter, r *http.Request) {
@@ -387,11 +570,15 @@ func (h *CloudArtifactHandler) handleNodePublicIndexList(
 	status string,
 	node artifactNode,
 	agentUID int64,
+	viewerRelation string,
 ) {
 	list := cloudArtifactManagementList{
 		ContractVersion: artifactManagementContract,
 		Status:          status,
 		Artifacts:       []cloudArtifact{},
+		ViewerRelation:  viewerRelation,
+		Visibility:      "agent_users",
+		CanPublish:      false,
 	}
 	if status == "deleted" {
 		w.Header().Set("Cache-Control", "no-store")
@@ -429,6 +616,7 @@ func (h *CloudArtifactHandler) handleNodePublicIndexList(
 	}
 
 	list.Artifacts = append(list.Artifacts, index.Artifacts...)
+	h.enrichArtifactCreators(list.Artifacts, agentUID, true)
 	for i := range list.Artifacts {
 		list.Artifacts[i].Status = "active"
 		list.Artifacts[i].AgentUID = agentID
@@ -513,6 +701,7 @@ func (h *CloudArtifactHandler) handleMutation(
 	r *http.Request,
 	artifactID, suffix string,
 	uid int64,
+	viewerRelation string,
 	collectionURL string,
 	managementToken, publicBaseURL string,
 	agentUID int64,
@@ -542,8 +731,107 @@ func (h *CloudArtifactHandler) handleMutation(
 		return
 	}
 	h.invalidateArtifactContextCache(agentUID, artifactID)
+	artifacts := []cloudArtifact{operation.Artifact}
+	h.enrichArtifactCreators(artifacts, agentUID, false)
+	operation.Artifact = artifacts[0]
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, operation)
+}
+
+func (h *CloudArtifactHandler) handlePublish(
+	w http.ResponseWriter,
+	r *http.Request,
+	viewerUID int64,
+	viewerRelation string,
+	collectionURL string,
+	managementToken, publicBaseURL string,
+	agentUID int64,
+) {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024))
+	decoder.DisallowUnknownFields()
+	var request cloudArtifactPublishRequest
+	if err := decoder.Decode(&request); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		writeArtifactError(w, http.StatusBadRequest, "artifact_publish_request_invalid")
+		return
+	}
+	request.Title = strings.TrimSpace(request.Title)
+	request.Kind = strings.TrimSpace(request.Kind)
+	request.URL = strings.TrimSpace(request.URL)
+	request.SourceTitle = strings.TrimSpace(request.SourceTitle)
+	request.SourceTopicID = strings.TrimSpace(request.SourceTopicID)
+	if h.publishOriginErr != nil || h.uploadSource == nil {
+		writeArtifactError(w, http.StatusServiceUnavailable, "artifact_management_unavailable")
+		return
+	}
+	sourcePath, err := validateCloudArtifactPublishRequest(request, h.publishOrigin)
+	if err != nil || h.uploadSource.ValidateArtifactSourcePath(sourcePath) != nil {
+		writeArtifactError(w, http.StatusBadRequest, "artifact_publish_request_invalid")
+		return
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"title":           request.Title,
+		"kind":            request.Kind,
+		"url":             request.URL,
+		"source_title":    request.SourceTitle,
+		"source_topic_id": request.SourceTopicID,
+		"actor_uid":       strconv.FormatInt(viewerUID, 10),
+		"actor_relation":  viewerRelation,
+		"creator_type":    "user",
+		"creator_uid":     strconv.FormatInt(viewerUID, 10),
+		"uploader_uid":    strconv.FormatInt(viewerUID, 10),
+		"publish_mode":    "immediate",
+	})
+	body, err := h.requestManagement(r, http.MethodPost, collectionURL, payload, managementToken)
+	if err != nil {
+		writeArtifactUpstreamError(w, err)
+		return
+	}
+	var operation cloudArtifactOperation
+	if err := json.Unmarshal(body, &operation); err != nil || !operation.OK || validateManagedArtifact(operation.Artifact) != nil {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return
+	}
+	if operation.Artifact.Status != "active" ||
+		operation.Artifact.AgentUID != strconv.FormatInt(agentUID, 10) ||
+		operation.Artifact.UploaderUID != strconv.FormatInt(viewerUID, 10) ||
+		validateArtifactNodeURL(operation.Artifact.URL, publicBaseURL, agentUID) != nil {
+		writeArtifactError(w, http.StatusBadGateway, "artifact_response_invalid")
+		return
+	}
+	operation.Artifact.UploadedByMe = true
+	operation.Artifact.CanDelete = true
+	operation.Artifact.CanRestore = false
+	artifacts := []cloudArtifact{operation.Artifact}
+	h.enrichArtifactCreators(artifacts, agentUID, false)
+	operation.Artifact = artifacts[0]
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusCreated, operation)
+}
+
+func (h *CloudArtifactHandler) memberCanDeleteArtifact(
+	r *http.Request,
+	collectionURL, managementToken, publicBaseURL string,
+	agentUID, viewerUID int64,
+	artifactID string,
+) (bool, error) {
+	body, err := h.requestManagement(r, http.MethodGet, collectionURL+"?status=active", nil, managementToken)
+	if err != nil {
+		return false, err
+	}
+	var list cloudArtifactManagementList
+	if err := json.Unmarshal(body, &list); err != nil ||
+		validateManagedArtifactList(list, "active") != nil ||
+		validateManagedArtifactAgentUIDs(list.Artifacts, agentUID) != nil ||
+		validateManagedArtifactNodeURLs(list.Artifacts, publicBaseURL, agentUID) != nil {
+		return false, &artifactUpstreamError{status: http.StatusBadGateway, code: "artifact_response_invalid"}
+	}
+	viewer := strconv.FormatInt(viewerUID, 10)
+	for _, artifact := range list.Artifacts {
+		if artifact.ID == artifactID {
+			return artifact.UploaderUID != "" && artifact.UploaderUID == viewer, nil
+		}
+	}
+	return false, &artifactUpstreamError{status: http.StatusNotFound, code: "artifact_not_found"}
 }
 
 func agentManagementCollectionURL(managementURL string, agentUID int64) (string, error) {
@@ -721,6 +1009,24 @@ func validateArtifactIdentity(artifact cloudArtifact) error {
 	if artifact.Kind != "html" && artifact.Kind != "mini_app" {
 		return errors.New("invalid artifact kind")
 	}
+	if len(artifact.CreatorName) > 240 {
+		return errors.New("invalid artifact creator name")
+	}
+	switch artifact.CreatorType {
+	case "", "user", "agent":
+		if artifact.CreatorUID != "" {
+			uid, err := strconv.ParseInt(artifact.CreatorUID, 10, 64)
+			if err != nil || uid <= 0 {
+				return errors.New("invalid artifact creator UID")
+			}
+		}
+	case "unknown":
+		if artifact.CreatorUID != "" || artifact.CreatorName != "" {
+			return errors.New("unknown artifact creator must not contain identity")
+		}
+	default:
+		return errors.New("invalid artifact creator type")
+	}
 	return nil
 }
 
@@ -744,9 +1050,50 @@ func parseArtifactAPIPath(value string) (string, string, bool) {
 }
 
 type agentArtifactAPIRoute struct {
-	agentUID   int64
-	artifactID string
-	action     string
+	agentUID       int64
+	artifactID     string
+	action         string
+	viewerRelation string
+}
+
+func configuredArtifactPublishOrigin() (artifactURLOrigin, error) {
+	raw := strings.TrimSpace(os.Getenv("CATSCO_PUBLIC_BASE_URL"))
+	parsed, err := url.Parse(raw)
+	if err != nil || raw == "" || parsed.Scheme != "https" || parsed.Host == "" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawPath != "" ||
+		(parsed.Path != "" && parsed.Path != "/") {
+		return artifactURLOrigin{}, errors.New("CATSCO_PUBLIC_BASE_URL must be a public HTTPS origin")
+	}
+	return parseArtifactURLOrigin(raw)
+}
+
+func validateCloudArtifactPublishRequest(request cloudArtifactPublishRequest, expectedOrigin artifactURLOrigin) (string, error) {
+	if request.Title == "" || len(request.Title) > 160 ||
+		(request.Kind != "html" && request.Kind != "mini_app") ||
+		len(request.SourceTitle) > 240 || len(request.SourceTopicID) > 160 {
+		return "", errors.New("invalid artifact publish request")
+	}
+	artifactURL, err := url.Parse(request.URL)
+	artifactOrigin, originErr := parseArtifactURLOrigin(request.URL)
+	if err != nil || originErr != nil || artifactURL.Scheme != "https" || artifactURL.Host == "" ||
+		artifactURL.User != nil || artifactURL.RawQuery != "" || artifactURL.Fragment != "" ||
+		artifactURL.RawPath != "" || artifactOrigin != expectedOrigin ||
+		!strings.HasPrefix(artifactURL.Path, "/uploads/files/") {
+		return "", errors.New("invalid artifact publish URL")
+	}
+	fileName := strings.TrimPrefix(artifactURL.Path, "/uploads/files/")
+	if fileName == "" || strings.Contains(fileName, "/") {
+		return "", errors.New("invalid artifact publish URL")
+	}
+	return artifactURL.Path, nil
+}
+
+type cloudArtifactPublishRequest struct {
+	Title         string `json:"title"`
+	Kind          string `json:"kind"`
+	URL           string `json:"url"`
+	SourceTitle   string `json:"source_title,omitempty"`
+	SourceTopicID string `json:"source_topic_id,omitempty"`
 }
 
 func parseAgentArtifactAPIPath(value string) (agentArtifactAPIRoute, bool) {
@@ -823,7 +1170,8 @@ func parseArtifactUpstreamError(status int, body []byte) error {
 func allowedArtifactErrorCode(code string) bool {
 	switch code {
 	case "artifact_not_found", "artifact_already_deleted", "artifact_not_deleted",
-		"artifact_path_invalid", "artifact_operation_conflict":
+		"artifact_path_invalid", "artifact_operation_conflict",
+		"artifact_publish_unsupported", "artifact_publish_invalid":
 		return true
 	default:
 		return false
@@ -845,18 +1193,21 @@ func writeArtifactUpstreamError(w http.ResponseWriter, err error) {
 
 func writeArtifactError(w http.ResponseWriter, status int, code string) {
 	messages := map[string]string{
-		"artifact_not_found":              "产物不存在",
-		"artifact_already_deleted":        "产物已在回收站中",
-		"artifact_not_deleted":            "产物不在回收站中",
-		"artifact_path_invalid":           "产物标识无效",
-		"artifact_operation_conflict":     "产物状态已变化，请刷新后重试",
-		"artifact_status_invalid":         "产物列表状态无效",
-		"artifact_agent_required":         "请从具体虚拟员工的生成物入口访问",
-		"artifact_management_unavailable": "产物管理服务暂不可用",
-		"artifact_index_unavailable":      "产物列表暂不可用",
-		"artifact_response_invalid":       "产物服务返回了无效数据",
-		"artifact_request_failed":         "产物请求创建失败",
-		"artifact_service_unavailable":    "产物服务暂不可用",
+		"artifact_not_found":               "产物不存在",
+		"artifact_already_deleted":         "产物已在回收站中",
+		"artifact_not_deleted":             "产物不在回收站中",
+		"artifact_path_invalid":            "产物标识无效",
+		"artifact_operation_conflict":      "产物状态已变化，请刷新后重试",
+		"artifact_status_invalid":          "产物列表状态无效",
+		"artifact_agent_required":          "请从具体虚拟员工的生成物入口访问",
+		"artifact_management_unavailable":  "产物管理服务暂不可用",
+		"artifact_index_unavailable":       "产物列表暂不可用",
+		"artifact_response_invalid":        "产物服务返回了无效数据",
+		"artifact_request_failed":          "产物请求创建失败",
+		"artifact_service_unavailable":     "产物服务暂不可用",
+		"artifact_publish_request_invalid": "成果发布信息无效",
+		"artifact_publish_unsupported":     "当前成果服务还不支持成员发布",
+		"artifact_publish_invalid":         "成果服务无法导入这个文件",
 	}
 	message := messages[code]
 	if message == "" {

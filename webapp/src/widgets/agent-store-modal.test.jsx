@@ -10,11 +10,23 @@ vi.mock('../api', () => ({
     getAgents: vi.fn(),
     getCloudWorkerMeta: vi.fn(),
     getCloudWorkers: vi.fn(),
+    getCloudArtifacts: vi.fn(),
+    getAgentPrompt: vi.fn(),
+    getBotDefinitionPrompt: vi.fn(),
+    getBotDefinitionSkills: vi.fn(),
     getFriends: vi.fn(),
+    getLocalSkills: vi.fn(),
     getMyBots: vi.fn(),
     resetCloudWorker: vi.fn(),
     rollbackCloudWorker: vi.fn(),
+    getSkillHubSkill: vi.fn(),
+    searchSkillHubSkills: vi.fn(),
+    shareLocalSkill: vi.fn(),
     setBotSkillsVisibility: vi.fn(),
+    setBotVisibility: vi.fn(),
+    updateBot: vi.fn(),
+    updateBotDefinitionSkills: vi.fn(),
+    updateBotDefinitionPrompt: vi.fn(),
     uploadFile: vi.fn(),
   },
   getWebSocketURL: vi.fn(() => 'wss://app.catsco.cc/v0/channels'),
@@ -39,11 +51,40 @@ describe('AgentStoreModal', () => {
       quota: { enabled: true, total: 3, used: 1, remaining: 2 },
       workers: [],
     });
+    api.getCloudArtifacts.mockReset().mockResolvedValue({ artifacts: [] });
+    api.getAgentPrompt.mockReset().mockResolvedValue({
+      application: {
+        status: 'applied',
+        desired_revision: 2,
+        applied_revision: 2,
+        applied_at: '2026-08-13T08:00:00Z',
+      },
+    });
+    api.getBotDefinitionPrompt.mockReset().mockResolvedValue({
+      configured: true,
+      revision: 2,
+      definition: { prompt: { selected: 'default' } },
+      runtime: { appliedRevision: 2, lastAttemptRevision: 2, appliedAt: '2026-08-13T08:00:00Z' },
+    });
+    api.getBotDefinitionSkills.mockReset().mockResolvedValue({ revision: 0, skills: [] });
     api.getFriends.mockReset().mockResolvedValue({ friends: [] });
+    api.getLocalSkills.mockReset().mockResolvedValue({ skills: [] });
     api.getMyBots.mockReset().mockResolvedValue({ bots: [] });
     api.resetCloudWorker.mockReset().mockResolvedValue({});
     api.rollbackCloudWorker.mockReset().mockResolvedValue({});
+    api.getSkillHubSkill.mockReset().mockResolvedValue({});
+    api.searchSkillHubSkills.mockReset().mockResolvedValue({ skills: [] });
+    api.shareLocalSkill.mockReset();
     api.setBotSkillsVisibility.mockReset().mockResolvedValue({ skills_visibility: 'owner' });
+    api.setBotVisibility.mockReset().mockResolvedValue({ visibility: 'public' });
+    api.updateBot.mockReset().mockResolvedValue({ status: 'updated' });
+    api.updateBotDefinitionSkills.mockReset().mockResolvedValue({ revision: 1, skills: [] });
+    api.updateBotDefinitionPrompt.mockReset().mockResolvedValue({
+      configured: true,
+      revision: 3,
+      definition: { prompt: { selected: 'custom', customSystemPrompt: 'Be precise.' } },
+      runtime: { appliedRevision: 2, lastAttemptRevision: 2 },
+    });
     api.uploadFile.mockReset().mockResolvedValue({ url: '/uploads/avatar.png' });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -54,6 +95,9 @@ describe('AgentStoreModal', () => {
     await act(async () => {
       root.unmount();
     });
+    document.body.querySelectorAll('.cc-agent-skill-picker-overlay').forEach((node) => node.remove());
+    document.body.querySelectorAll('.cc-agent-skill-detail-overlay').forEach((node) => node.remove());
+    document.body.querySelectorAll('.cc-agent-prompt-editor-overlay').forEach((node) => node.remove());
     container.remove();
   });
 
@@ -69,6 +113,9 @@ describe('AgentStoreModal', () => {
     const createTab = Array.from(container.querySelectorAll('button'))
       .find((button) => button.textContent.includes('创建新助手'));
 
+    expect(container.querySelector('.cc-agent-manager-title .lucide-bot')).not.toBeNull();
+    expect(container.querySelector('.cc-agent-manager-title .lucide-zap')).toBeNull();
+
     await act(async () => {
       Simulate.click(createTab);
     });
@@ -77,7 +124,7 @@ describe('AgentStoreModal', () => {
     const nameInput = form.querySelector('input[type="text"]');
     const description = form.querySelector('textarea');
     const submit = form.querySelector('button[type="submit"]');
-    const roleSelect = form.querySelector('.v3-custom-model-select-trigger[aria-label="助手定位"]');
+    const roleSelect = form.querySelector('.v3-custom-model-select-trigger[aria-label="定位模板"]');
 
     expect(description.required).toBe(false);
     expect(submit.disabled).toBe(false);
@@ -91,18 +138,18 @@ describe('AgentStoreModal', () => {
 
     const roleOptions = Array.from(document.body.querySelectorAll('.v3-custom-model-select-option'));
     expect(roleOptions.map((option) => option.textContent)).toEqual([
-      '代码审查助手',
-      '问题排查助手',
-      '写作助手',
-      '研究助手',
-      '通用助手',
+      '代码审查',
+      '问题排查',
+      '写作',
+      '研究',
+      '通用',
     ]);
 
     await act(async () => {
       Simulate.click(roleOptions[2]);
     });
     expect(roleSelect.dataset.value).toBe('writing');
-    expect(roleSelect.textContent).toContain('写作助手');
+    expect(roleSelect.textContent).toContain('写作');
 
     await act(async () => {
       Simulate.change(nameInput, { target: { value: '测试助手' } });
@@ -115,8 +162,516 @@ describe('AgentStoreModal', () => {
     });
 
     expect(api.createBot).toHaveBeenCalledWith(
-      expect.objectContaining({ display_name: '测试助手' }),
+      expect.objectContaining({ display_name: '测试助手', role: 'writing', description: '' }),
     );
+  });
+
+  test('recommends a SkillHub ability when the assistant role changes', async () => {
+    api.getSkillHubSkill.mockResolvedValue({
+      skill: {
+        id: 'pdf-author-editor',
+        name: 'PDF Author Editor',
+        description: 'Detailed PDF authoring parameters.',
+        author: 'CatsCo',
+        latest_version: '1.0.0',
+        content_hash: 'b'.repeat(64),
+      },
+    });
+    api.searchSkillHubSkills.mockImplementation(async (query) => (
+      query === 'writing'
+        ? {
+          skills: [{
+            id: 'pdf-author-editor',
+            name: 'PDF Author Editor',
+            description: 'Create and edit structured PDF documents.',
+            author: 'CatsCo',
+            latest_version: '1.0.0',
+            content_hash: 'b'.repeat(64),
+          }, {
+            id: 'structured-document-editor',
+            name: 'Structured Document Editor',
+            description: 'Edit long documents and writing projects.',
+            author: 'CatsCo',
+            latest_version: '1.1.0',
+            content_hash: 'c'.repeat(64),
+          }, {
+            id: 'writing-workflow',
+            name: 'Writing Workflow',
+            description: 'A workflow for professional writing.',
+            author: 'CatsCo',
+            latest_version: '2.0.0',
+            content_hash: 'd'.repeat(64),
+          }],
+        }
+        : { skills: [] }
+    ));
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent.includes('创建新助手')));
+      await Promise.resolve();
+    });
+
+    const roleSelect = container.querySelector('.cc-agent-role-select .v3-custom-model-select-trigger');
+    await act(async () => {
+      Simulate.click(roleSelect);
+    });
+    const roleOptions = Array.from(document.body.querySelectorAll('.v3-custom-model-select-option'));
+    await act(async () => {
+      Simulate.click(roleOptions[2]);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const skillTabs = Array.from(container.querySelectorAll('.cc-agent-skill-tabs [role="tab"]'));
+    expect(skillTabs.map((button) => button.textContent)).toEqual(['已选0', '可用3']);
+    expect(skillTabs[0].getAttribute('aria-selected')).toBe('false');
+    expect(skillTabs[1].getAttribute('aria-selected')).toBe('true');
+    await act(async () => {
+      Simulate.keyDown(skillTabs[1], { key: 'ArrowLeft' });
+    });
+    expect(skillTabs[0].getAttribute('aria-selected')).toBe('true');
+    expect(skillTabs[1].getAttribute('aria-selected')).toBe('false');
+    await act(async () => {
+      Simulate.click(skillTabs[1]);
+    });
+
+    const recommendation = container.querySelector('.cc-agent-available-group .cc-agent-selected-skills');
+    expect(recommendation.querySelectorAll('.cc-agent-selected-skill')).toHaveLength(3);
+    expect(recommendation?.textContent).toContain('PDF Author Editor');
+    expect(recommendation.querySelectorAll('.cc-agent-skill-recommended-badge')).toHaveLength(3);
+    expect(recommendation.querySelector('.cc-agent-selected-skill-icon')).not.toBeNull();
+    expect(recommendation.querySelector('.cc-agent-selected-skill-copy strong')?.textContent)
+      .toBe('PDF Author Editor');
+    expect(recommendation.querySelector('.cc-agent-selected-skill-copy small')?.textContent)
+      .toBe('CatsCo · v1.0.0');
+    expect(container.querySelector('.cc-agent-add-skill')?.textContent).toContain('浏览全部 Skills');
+    expect(api.searchSkillHubSkills).toHaveBeenCalledWith('writing');
+
+    const addButton = recommendation.querySelector('.cc-agent-skill-row-action');
+    expect(addButton.textContent).toBe('');
+    expect(addButton.querySelector('.lucide-plus')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(recommendation.querySelector('.cc-agent-skill-detail-trigger'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const detailDialog = document.body.querySelector('.cc-agent-skill-detail-dialog');
+    expect(detailDialog?.textContent).toContain('Detailed PDF authoring parameters.');
+    expect(detailDialog?.textContent).toContain('pdf-author-editor');
+    expect(detailDialog?.textContent).toContain('v1.0.0');
+    expect(detailDialog?.textContent).not.toContain('内容哈希');
+    expect(detailDialog?.textContent).not.toContain('b'.repeat(64));
+
+    await act(async () => {
+      Simulate.click(detailDialog.querySelector('.cc-dialog-close'));
+    });
+    expect(document.body.querySelector('.cc-agent-skill-detail-dialog')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(addButton);
+    });
+    expect(container.querySelector('.cc-agent-available-group')?.textContent)
+      .toContain('PDF Author Editor');
+    expect(container.querySelector('.cc-agent-available-group')?.textContent)
+      .toContain('Structured Document Editor');
+    expect(addButton.querySelector('.lucide-check')).not.toBeNull();
+    expect(skillTabs[0].textContent).toBe('已选1');
+    await act(async () => {
+      Simulate.click(skillTabs[0]);
+    });
+    expect(container.querySelector('.cc-agent-selected-group .cc-agent-selected-skill')?.textContent)
+      .toContain('PDF Author Editor');
+    expect(container.querySelector('.cc-agent-selected-group .cc-agent-skill-group-empty')).toBeNull();
+  });
+
+  test('shows personal and computer Skills in the available list', async () => {
+    api.getLocalSkills.mockResolvedValue({
+      skills: [{
+        local_skill_id: 'mine-1',
+        name: 'My Private Review',
+        description: 'A review Skill created by the user.',
+        source: 'user',
+        skill_hub: {
+          reference: {
+            skillId: 'priv_mine1',
+            version: 'sha256-private',
+            contentHash: 'e'.repeat(64),
+          },
+        },
+      }, {
+        local_skill_id: 'computer-1',
+        name: 'Computer Formatter',
+        description: 'Installed on this computer.',
+        source: 'system',
+        skill_hub: {
+          reference: {
+            skillId: 'tools/computer-formatter',
+            version: '1.0.0',
+            contentHash: 'f'.repeat(64),
+          },
+        },
+      }, {
+        local_skill_id: 'draft-1',
+        name: 'Local Draft Skill',
+        description: 'Not synchronized yet.',
+        source: 'user',
+      }],
+    });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent.includes('创建新助手')));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const installedGroup = container.querySelector('.cc-agent-available-group');
+    expect(installedGroup.querySelectorAll('.cc-agent-selected-skill')).toHaveLength(3);
+    expect(installedGroup.textContent).toContain('My Private Review');
+    expect(installedGroup.textContent).toContain('我的 Skill');
+    expect(installedGroup.textContent).toContain('Computer Formatter');
+    expect(installedGroup.textContent).toContain('本地 Skill');
+
+    const localDraftRow = Array.from(installedGroup.querySelectorAll('.cc-agent-selected-skill'))
+      .find((row) => row.textContent.includes('Local Draft Skill'));
+    expect(localDraftRow.textContent).toContain('仅本地');
+    expect(localDraftRow.querySelector('.cc-agent-skill-row-action').disabled).toBe(false);
+    expect(localDraftRow.querySelector('.cc-agent-skill-row-action').title).toBe('同步并添加');
+
+    await act(async () => {
+      Simulate.click(localDraftRow.querySelector('.cc-agent-skill-row-action'));
+    });
+    const localDetail = document.body.querySelector('.cc-agent-skill-detail-dialog');
+    expect(localDetail?.textContent).toContain('仅保存在本机');
+    expect(localDetail?.textContent).toContain('不包含密钥或私密数据');
+    expect(Array.from(localDetail.querySelectorAll('button'))
+      .some((button) => button.textContent.includes('同步并添加'))).toBe(true);
+    await act(async () => {
+      Simulate.click(localDetail.querySelector('.cc-dialog-close'));
+    });
+
+    const privateRow = Array.from(installedGroup.querySelectorAll('.cc-agent-selected-skill'))
+      .find((row) => row.textContent.includes('My Private Review'));
+    await act(async () => {
+      Simulate.click(privateRow.querySelector('.cc-agent-skill-row-action'));
+    });
+    expect(container.querySelector('[data-skill-panel-tab="selected"]')?.textContent).toBe('已选1');
+    expect(privateRow.querySelector('.lucide-check')).not.toBeNull();
+  });
+
+  test('syncs a local Skill with consent, selects it, and binds it after creation', async () => {
+    const contentHash = '9'.repeat(64);
+    api.getLocalSkills.mockResolvedValue({
+      skills: [{
+        local_skill_id: 'draft-1',
+        name: 'Local Draft Skill',
+        description: 'Not synchronized yet.',
+        source: 'user',
+      }],
+    });
+    api.shareLocalSkill.mockResolvedValue({
+      skill: { id: 'alice/local-draft' },
+      latestVersion: '1.0.0',
+      contentHash,
+    });
+    api.getBotDefinitionSkills.mockResolvedValue({ revision: 2, skills: [] });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent.includes('创建新助手')));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const localRow = Array.from(container.querySelectorAll('.cc-agent-available-group .cc-agent-selected-skill'))
+      .find((row) => row.textContent.includes('Local Draft Skill'));
+    await act(async () => {
+      Simulate.click(localRow.querySelector('.cc-agent-skill-row-action'));
+    });
+    const detail = document.body.querySelector('.cc-agent-skill-detail-dialog');
+    await act(async () => {
+      Simulate.click(Array.from(detail.querySelectorAll('button'))
+        .find((button) => button.textContent.includes('同步并添加')));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.shareLocalSkill).toHaveBeenCalledWith('draft-1', '', 7);
+    expect(document.body.querySelector('.cc-agent-skill-detail-dialog')).toBeNull();
+    expect(container.querySelector('[data-skill-panel-tab="selected"]')?.textContent).toBe('已选1');
+    expect(container.querySelector('.cc-agent-skill-sync-feedback')?.textContent)
+      .toContain('已同步并添加');
+
+    const form = container.querySelector('.cc-agent-create-form');
+    await act(async () => {
+      Simulate.change(form.querySelector('input[type="text"]'), { target: { value: '本地能力助手' } });
+    });
+    await act(async () => {
+      Simulate.submit(form);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.updateBotDefinitionSkills).toHaveBeenCalledWith(91, 2, [{
+      source: 'skillhub',
+      skillId: 'alice/local-draft',
+      version: '1.0.0',
+      contentHash,
+    }]);
+    expect(container.textContent).toContain('创建成功');
+  });
+
+  test('keeps a local Skill unselected and offers retry when synchronization fails', async () => {
+    api.getLocalSkills.mockResolvedValue({
+      skills: [{
+        local_skill_id: 'private-notes',
+        name: 'Private Notes',
+        source: 'user',
+      }],
+    });
+    api.shareLocalSkill.mockRejectedValue(new Error('SkillHub fetch failed'));
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent.includes('创建新助手')));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const localRow = container.querySelector('.cc-agent-available-group .cc-agent-selected-skill');
+    await act(async () => {
+      Simulate.click(localRow.querySelector('.cc-agent-skill-row-action'));
+    });
+    const detail = document.body.querySelector('.cc-agent-skill-detail-dialog');
+    const syncButton = Array.from(detail.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('同步并添加'));
+    await act(async () => {
+      Simulate.click(syncButton);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(detail.querySelector('[role="alert"]')?.textContent).toContain('SkillHub fetch failed');
+    expect(detail.querySelector('[role="alert"]')?.textContent).toContain('可以稍后重试');
+    expect(syncButton.disabled).toBe(false);
+    expect(container.querySelector('[data-skill-panel-tab="selected"]')?.textContent).toBe('已选0');
+  });
+
+  test('does not recommend a weakly related SkillHub result', async () => {
+    api.searchSkillHubSkills.mockResolvedValue({
+      skills: [{
+        id: 'catsco-prompt-editor',
+        name: 'catsco-prompt-editor',
+        description: 'Safely inspect and apply prompt changes.',
+      }],
+    });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent.includes('创建新助手')));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.cc-agent-skill-recommended-badge')).toBeNull();
+    expect(container.querySelector('.cc-agent-skill-group-empty')?.textContent)
+      .toContain('暂无可用 Skill');
+  });
+
+  test('distinguishes an unavailable recommendation service from no matching Skill', async () => {
+    api.searchSkillHubSkills.mockRejectedValue(new Error('fetch failed'));
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent.includes('创建新助手')));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const recommendationState = container.querySelector('.cc-agent-available-group .cc-agent-skill-recommendation-state');
+    expect(recommendationState?.textContent).toContain('推荐暂时不可用');
+    expect(recommendationState?.textContent).toContain('已安装的 Skill 仍可正常添加');
+    expect(recommendationState?.textContent).not.toContain('暂无可用 Skill');
+  });
+
+  test('selects SkillHub abilities in a portal and binds them after creating the assistant', async () => {
+    const contentHash = 'a'.repeat(64);
+    api.searchSkillHubSkills.mockResolvedValue({
+      skills: [{
+        id: 'code-review',
+        name: '代码审查',
+        description: '检查代码质量与潜在问题',
+        author: 'CatsCo',
+        latest_version: '1.2.0',
+        content_hash: contentHash,
+      }],
+    });
+    api.getBotDefinitionSkills.mockResolvedValue({ revision: 4, skills: [] });
+    api.updateBotDefinitionSkills.mockResolvedValue({ revision: 5, skills: [] });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Simulate.click(Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent.includes('创建新助手')));
+    });
+
+    const form = container.querySelector('.cc-agent-create-form');
+    expect(form.querySelector('.cc-agent-skill-recommended-badge')).not.toBeNull();
+
+    await act(async () => {
+      Simulate.click(form.querySelector('.cc-agent-add-skill'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const picker = document.body.querySelector('.cc-agent-skill-picker');
+    expect(picker).not.toBeNull();
+    expect(picker.getAttribute('aria-modal')).toBe('true');
+    const skillOption = picker.querySelector('.cc-agent-skill-option');
+    expect(skillOption.textContent).toContain('代码审查');
+
+    await act(async () => Simulate.click(skillOption));
+    expect(skillOption.getAttribute('aria-pressed')).toBe('true');
+
+    await act(async () => {
+      Simulate.click(Array.from(picker.querySelectorAll('button'))
+        .find((button) => button.textContent.includes('完成')));
+    });
+    expect(document.body.querySelector('.cc-agent-skill-picker')).toBeNull();
+    await act(async () => {
+      Simulate.click(form.querySelector('[data-skill-panel-tab="selected"]'));
+    });
+    expect(form.querySelector('.cc-agent-selected-skill')?.textContent).toContain('代码审查');
+
+    await act(async () => {
+      Simulate.change(form.querySelector('input[type="text"]'), { target: { value: '审查助手' } });
+    });
+    await act(async () => {
+      Simulate.submit(form);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getBotDefinitionSkills).toHaveBeenCalledWith(91);
+    expect(api.updateBotDefinitionSkills).toHaveBeenCalledWith(91, 4, [{
+      source: 'skillhub',
+      skillId: 'code-review',
+      version: '1.2.0',
+      contentHash,
+    }]);
+    expect(container.textContent).toContain('创建成功');
+    expect(container.querySelector('.cc-agent-success-layout')).not.toBeNull();
+    expect(container.querySelector('.cc-agent-manager-body').classList.contains('cc-agent-manager-success-body')).toBe(true);
+    expect(container.querySelectorAll('.cc-agent-capability-sector')).toHaveLength(5);
+    expect(container.querySelectorAll('.cc-agent-capability-bar')).toHaveLength(5);
+    expect(container.querySelector('.cc-agent-success-summary')?.textContent).toContain('API Key');
+    expect(container.textContent).toContain('可切换模型提高 Agent 能力');
+  });
+
+  test('keeps the assistant when post-create Skill binding fails', async () => {
+    const contentHash = 'b'.repeat(64);
+    api.searchSkillHubSkills.mockResolvedValue({
+      skills: [{
+        id: 'research',
+        name: '研究整理',
+        latest_version: '2.0.0',
+        content_hash: contentHash,
+      }],
+    });
+    api.updateBotDefinitionSkills.mockRejectedValue(new Error('版本冲突'));
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent.includes('创建新助手')));
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('.cc-agent-add-skill'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Simulate.click(document.body.querySelector('.cc-agent-skill-option'));
+    });
+    await act(async () => {
+      Simulate.click(Array.from(document.body.querySelectorAll('.cc-agent-skill-picker button'))
+        .find((button) => button.textContent.includes('完成')));
+    });
+    await act(async () => {
+      Simulate.change(container.querySelector('.cc-agent-create-form input[type="text"]'), {
+        target: { value: '研究助手' },
+      });
+    });
+    await act(async () => {
+      Simulate.submit(container.querySelector('.cc-agent-create-form'));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.createBot).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('.cc-agent-skill-binding-warning')?.textContent)
+      .toContain('助手已创建，但 Skill 未全部添加：版本冲突');
   });
 
   test('opens a requested owned assistant directly in the management view', async () => {
@@ -130,6 +685,8 @@ describe('AgentStoreModal', () => {
         relation: 'owner',
         is_owner: true,
         visibility: 'public',
+        role: 'writing',
+        description: '整理、改写并输出结构清晰的内容。',
       }],
     });
 
@@ -143,13 +700,56 @@ describe('AgentStoreModal', () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelector('.cc-agent-manager-body h2')?.textContent).toBe('管理助手');
+    const settingTriggers = Array.from(container.querySelectorAll('button.cc-agent-manage-section-trigger'));
+    expect(settingTriggers).toHaveLength(4);
+    expect(container.querySelector('.cc-agent-manager-tabs')).toBeNull();
+    expect(container.querySelectorAll('.cc-agent-manager-header-action')).toHaveLength(0);
+    expect(container.querySelector('.cc-agent-manage-context')).toBeNull();
+    const basicTrigger = settingTriggers.find((button) => button.textContent.includes('基本信息'));
+    expect(basicTrigger?.getAttribute('aria-expanded')).toBe('true');
+    expect(basicTrigger?.querySelector('.cc-agent-manage-section-icon')).toBeNull();
+    expect(settingTriggers.filter((button) => button.getAttribute('aria-expanded') === 'true')).toHaveLength(1);
+    expect(container.querySelector('.cc-agent-capability-viz.is-compact')).not.toBeNull();
     expect(container.querySelector('.cc-agent-manager-body input[type="text"]')?.value).toBe('Dev Agent');
+    expect(container.querySelector('.cc-agent-manage-role-select')).toBeNull();
+    expect(container.querySelector('.cc-agent-manage-description')?.value)
+      .toBe('整理、改写并输出结构清晰的内容。');
     expect(
       Array.from(container.querySelectorAll('.cc-agent-manager-body .oc-form-group > label'))
         .map((label) => label.textContent),
-    ).toEqual(['头像', '名称']);
+    ).toEqual(['头像', '名称', '用途说明 选填']);
+    expect(container.querySelectorAll('.cc-agent-capability-viz.is-compact .cc-agent-capability-bar')).toHaveLength(5);
     expect(container.textContent).not.toContain('还没有你创建的 AI 助手');
+
+    await act(async () => {
+      Simulate.change(container.querySelector('.cc-agent-manage-description'), {
+        target: { value: '检索资料并形成可靠结论。' },
+      });
+    });
+
+    const behaviorTrigger = settingTriggers.find((button) => button.textContent.includes('行为与能力'));
+    await act(async () => Simulate.click(behaviorTrigger));
+    const positioningCard = container.querySelector('.cc-agent-positioning-card');
+    expect(positioningCard?.querySelector('h3')?.textContent).toBe('定位模板');
+    expect(positioningCard?.querySelector('.cc-agent-positioning-select')).not.toBeNull();
+    expect(positioningCard?.querySelector('p')).toBeNull();
+    expect(positioningCard?.querySelector('.cc-agent-manage-role-guidance')).toBeNull();
+    await act(async () => {
+      Simulate.click(container.querySelector('.cc-agent-positioning-select .v3-custom-model-select-trigger'));
+    });
+    const researchOption = Array.from(document.body.querySelectorAll('[role="option"]'))
+      .find((option) => option.textContent.includes('研究'));
+    await act(async () => Simulate.click(researchOption));
+    await act(async () => {
+      Simulate.submit(container.querySelector('.cc-agent-manage-form'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.updateBot).toHaveBeenCalledWith(42, expect.objectContaining({
+      display_name: 'Dev Agent',
+      role: 'research',
+      description: '检索资料并形成可靠结论。',
+    }));
   });
 
   test('uses the stable hub height for live overview data and practical usage guidance', async () => {
@@ -197,15 +797,23 @@ describe('AgentStoreModal', () => {
     const stats = Array.from(container.querySelectorAll('.cc-agent-overview-stats > div'))
       .map((item) => item.textContent);
     expect(stats).toEqual(['2全部助手', '1当前在线', '1公开可搜索', '1自托管']);
+    expect(container.querySelector('.cc-agent-overview-heading span')).toBeNull();
+    expect(container.querySelector('.cc-agent-overview-heading strong')?.textContent).toBe('助手概览');
     expect(container.querySelector('.cc-agent-hub-grid')).not.toBeNull();
     expect(container.querySelectorAll('.cc-agent-hub-grid .v3-agent-card')).toHaveLength(2);
-    expect(container.querySelector('.cc-agent-card-manage')?.textContent).toBe('管理');
+    expect(container.querySelector('.cc-agent-manager-create-action')).toBeNull();
+    expect(container.querySelector('.cc-agent-hub-create')?.textContent).toContain('创建新助手');
+    expect(Array.from(container.querySelectorAll('.cc-agent-card-title-row .v3-agent-visibility-badge'))
+      .map((badge) => badge.textContent)).toEqual(expect.arrayContaining(['公开', '私有']));
+    const manageButton = container.querySelector('.cc-agent-card-manage');
+    const entryButton = Array.from(container.querySelectorAll('.cc-agent-card-action'))
+      .find((button) => button.textContent.includes('入口码'));
+    expect(manageButton?.textContent).toBe('管理');
+    expect(manageButton?.classList.contains('oc-btn-default')).toBe(true);
+    expect(entryButton?.classList.contains('oc-btn-default')).toBe(true);
+    expect(manageButton?.querySelector('.lucide-settings-2')).not.toBeNull();
     expect(container.querySelector('[aria-label="删除助手 Review Agent"]')?.textContent).toBe('');
-    expect(container.querySelector('.cc-agent-usage-guide')?.textContent).toContain('管理');
-    expect(container.querySelector('.cc-agent-usage-guide')?.textContent).toContain('入口码');
-    expect(container.querySelector('.cc-agent-usage-guide')?.textContent).toContain('移动端使用');
-    expect(container.querySelector('.cc-agent-usage-guide')?.textContent)
-      .not.toContain('三个入口分别负责配置、分享与移动端连接');
+    expect(container.querySelector('.cc-agent-usage-guide')).toBeNull();
   });
 
   test('does not apply a completed avatar upload to a different managed assistant', async () => {
@@ -260,7 +868,9 @@ describe('AgentStoreModal', () => {
     });
     expect(api.uploadFile).toHaveBeenCalledTimes(1);
 
-    await act(async () => Simulate.click(container.querySelector('.cc-agent-manager-tabs button')));
+    const cancelManageButton = Array.from(container.querySelectorAll('.cc-agent-manage-actions button'))
+      .find((button) => button.textContent.includes('取消'));
+    await act(async () => Simulate.click(cancelManageButton));
     const betaCard = Array.from(container.querySelectorAll('.v3-agent-card'))
       .find((card) => card.textContent.includes('Beta Agent'));
     await act(async () => Simulate.click(betaCard.querySelector('.cc-agent-card-manage')));
@@ -276,11 +886,15 @@ describe('AgentStoreModal', () => {
       .toBe('/uploads/beta.png');
   });
 
-  test('defaults skill visibility to owner and saves a selected audience', async () => {
-    let resolveVisibility;
-    api.setBotSkillsVisibility.mockReturnValue(new Promise((resolve) => {
-      resolveVisibility = resolve;
-    }));
+  test('summarizes the current capability configuration and opens SkillHub', async () => {
+    const onOpenSkillHub = vi.fn();
+    api.getBotDefinitionSkills.mockResolvedValue({
+      revision: 3,
+      skills: [
+        { source: 'skillhub', skillId: 'tools/review', version: '1.0.0' },
+        { source: 'skillhub', skillId: 'tools/pdf', version: '2.0.0' },
+      ],
+    });
     api.getMyBots.mockResolvedValue({
       bots: [{
         id: 42,
@@ -296,6 +910,7 @@ describe('AgentStoreModal', () => {
     await act(async () => {
       root.render(React.createElement(AgentStoreModal, {
         initialAgentId: 42,
+        onOpenSkillHub,
         onClose: vi.fn(),
         user: { uid: 7 },
       }));
@@ -303,29 +918,93 @@ describe('AgentStoreModal', () => {
       await Promise.resolve();
     });
 
-    const options = [...container.querySelectorAll('.cc-agent-permission-options > button')];
-    expect(options.map((button) => button.textContent)).toEqual([
-      '仅自己只有你能查看技能列表',
-      'Agent 使用者已添加该 Agent 的用户可查看',
-      '公开所有已登录用户都可查看',
-    ]);
-    expect(options[0].getAttribute('aria-pressed')).toBe('true');
-
+    const behaviorTrigger = Array.from(container.querySelectorAll('.cc-agent-manage-section-trigger'))
+      .find((button) => button.textContent.includes('行为与能力'));
+    expect(behaviorTrigger?.getAttribute('aria-expanded')).toBe('false');
     await act(async () => {
-      Simulate.click(options[1]);
-      await Promise.resolve();
-    });
-    expect(api.setBotSkillsVisibility).toHaveBeenCalledWith(42, 'authorized');
-    expect(options.every((button) => button.disabled)).toBe(true);
-    expect(container.querySelector('.cc-agent-permission-heading > span')?.textContent).toBe('保存中...');
-
-    await act(async () => {
-      resolveVisibility({ skills_visibility: 'authorized' });
+      Simulate.click(behaviorTrigger);
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(options[1].getAttribute('aria-pressed')).toBe('true');
-    expect(options.every((button) => !button.disabled)).toBe(true);
+    const summary = container.querySelector('.cc-agent-capability-summary');
+    const behavior = container.querySelector('.cc-agent-behavior-card');
+    expect(behaviorTrigger?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('.cc-agent-manager-body input[type="text"]')).toBeNull();
+    expect(behavior?.textContent).toContain('行为设定');
+    expect(behavior?.textContent).toContain('使用 XiaoBa 默认提示词');
+    expect(summary?.textContent).toContain('能力配置');
+    expect(summary?.textContent).toContain('已启用 2 个 Skill');
+    expect(container.textContent).not.toContain('技能可见范围');
+
+    await act(async () => {
+      Simulate.click(summary.querySelector('.cc-agent-open-skillhub'));
+    });
+    expect(onOpenSkillHub).toHaveBeenCalledWith(42, expect.objectContaining({ display_name: 'Dev Agent' }));
+  });
+
+  test('shows shared artifact governance and saves the member upload policy', async () => {
+    const onOpenCloudArtifacts = vi.fn();
+    api.getCloudArtifacts.mockResolvedValue({
+      artifacts: [
+        { id: 'a1', creator_type: 'user', uploader_uid: '7', uploader_name: 'Cycren' },
+        { id: 'a2', creator_type: 'user', uploader_uid: '9', uploader_name: 'Uma' },
+        { id: 'a3', creator_type: 'agent', creator_uid: '42', creator_name: 'Dev Agent' },
+      ],
+    });
+    api.getMyBots.mockResolvedValue({
+      bots: [{
+        id: 42,
+        uid: 42,
+        username: 'dev-agent',
+        display_name: 'Dev Agent',
+        relation: 'owner',
+        is_owner: true,
+        visibility: 'public',
+        artifact_upload_enabled: true,
+      }],
+    });
+
+    await act(async () => {
+      root.render(React.createElement(AgentStoreModal, {
+        initialAgentId: 42,
+        onOpenCloudArtifacts,
+        onClose: vi.fn(),
+        user: { uid: 7 },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const collaborationTrigger = Array.from(container.querySelectorAll('.cc-agent-manage-section-trigger'))
+      .find((button) => button.textContent.includes('使用与协作'));
+    await act(async () => {
+      Simulate.click(collaborationTrigger);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('共享成果');
+    expect(container.textContent).toContain('共 3 项成果 · 2 位上传者');
+    expect(container.textContent).toContain('成员上传后直接展示，无需审批');
+
+    const manageArtifacts = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('管理成果'));
+    await act(async () => Simulate.click(manageArtifacts));
+    expect(onOpenCloudArtifacts).toHaveBeenCalledWith(42, expect.objectContaining({ display_name: 'Dev Agent' }));
+
+    const uploadSwitch = container.querySelector('[role="switch"][aria-label="允许成员上传共享成果"]');
+    expect(uploadSwitch.getAttribute('aria-checked')).toBe('true');
+    await act(async () => Simulate.click(uploadSwitch));
+    expect(uploadSwitch.getAttribute('aria-checked')).toBe('false');
+
+    await act(async () => {
+      Simulate.submit(container.querySelector('.cc-agent-manage-form'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(api.updateBot).toHaveBeenCalledWith(42, expect.objectContaining({
+      artifact_upload_enabled: false,
+    }));
   });
 
   test('switches to the dedicated cloud panel when managed hosting is selected', async () => {
@@ -553,8 +1232,8 @@ describe('AgentStoreModal', () => {
     expect(container.querySelector('.cc-cloud-create-error').textContent).not.toContain('quota exhausted');
   });
 
-  test('keeps the previous skill visibility and reports a save failure', async () => {
-    api.setBotSkillsVisibility.mockRejectedValue(new Error('保存失败，请重试'));
+  test('keeps the SkillHub entry available when the capability count cannot load', async () => {
+    api.getBotDefinitionSkills.mockRejectedValue(new Error('读取失败'));
     api.getMyBots.mockResolvedValue({
       bots: [{
         id: 42,
@@ -564,7 +1243,6 @@ describe('AgentStoreModal', () => {
         relation: 'owner',
         is_owner: true,
         visibility: 'public',
-        skills_visibility: 'public',
       }],
     });
 
@@ -577,15 +1255,15 @@ describe('AgentStoreModal', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    const options = [...container.querySelectorAll('.cc-agent-permission-options > button')];
-
+    const behaviorTrigger = Array.from(container.querySelectorAll('.cc-agent-manage-section-trigger'))
+      .find((button) => button.textContent.includes('行为与能力'));
     await act(async () => {
-      Simulate.click(options[0]);
+      Simulate.click(behaviorTrigger);
       await Promise.resolve();
       await Promise.resolve();
     });
-
-    expect(options[2].getAttribute('aria-pressed')).toBe('true');
-    expect(container.querySelector('.cc-agent-inline-feedback')?.textContent).toContain('保存失败，请重试');
+    const summary = container.querySelector('.cc-agent-capability-summary');
+    expect(summary?.textContent).toContain('暂时无法读取能力数量');
+    expect(summary?.querySelector('.cc-agent-open-skillhub')).not.toBeNull();
   });
 });

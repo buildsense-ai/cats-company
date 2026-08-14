@@ -274,6 +274,8 @@ export default function ChatListView({
   onStartAgentTask,
   onDeleteHistoryTask,
   onOpenMobileLink,
+  onOpenSkillHub,
+  onOpenCloudArtifacts,
 }) {
   const feedback = useFeedback();
   const [chats, setChats] = useState([]);
@@ -2792,7 +2794,7 @@ export default function ChatListView({
                 }}
               >
                 <Bot size={14} />
-                <span>创建Agent助手</span>
+                <span>Agent 助手</span>
               </button>
             </div>
           )}
@@ -3201,6 +3203,16 @@ export default function ChatListView({
       {showAgentStore && createPortal(
         <AgentStoreModal
           initialAgentId={agentStoreInitialAgentId}
+          onOpenSkillHub={(agentId, agent) => {
+            setShowAgentStore(false);
+            setAgentStoreInitialAgentId(null);
+            onOpenSkillHub?.(agentId, agent);
+          }}
+          onOpenCloudArtifacts={(agentId, agent) => {
+            setShowAgentStore(false);
+            setAgentStoreInitialAgentId(null);
+            onOpenCloudArtifacts?.(agentId, agent);
+          }}
           onClose={() => {
             setShowAgentStore(false);
             setAgentStoreInitialAgentId(null);

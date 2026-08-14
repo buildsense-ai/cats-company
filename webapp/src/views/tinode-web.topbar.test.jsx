@@ -5,7 +5,6 @@ import { resolve } from 'node:path';
 
 import {
   canOpenCloudArtifacts,
-  confirmSystemPromptNavigation,
   describeModelApplyError,
   describeModelConfigRequestError,
   LocalAssistantBar,
@@ -100,52 +99,6 @@ describe('preview user identity', () => {
   });
 });
 
-describe('system prompt navigation guard', () => {
-  it('requires confirmation only when leaving a dirty system prompt view', async () => {
-    const confirm = vi.fn()
-      .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce(true);
-
-    await expect(confirmSystemPromptNavigation({
-      activeView: 'system-prompt',
-      dirty: true,
-      saving: false,
-      confirm,
-    })).resolves.toBe(false);
-    await expect(confirmSystemPromptNavigation({
-      activeView: 'system-prompt',
-      dirty: true,
-      saving: false,
-      confirm,
-    })).resolves.toBe(true);
-    await expect(confirmSystemPromptNavigation({
-      activeView: 'chats',
-      dirty: true,
-      saving: false,
-      confirm,
-    })).resolves.toBe(true);
-
-    expect(confirm).toHaveBeenCalledTimes(2);
-    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({
-      title: '放弃未保存的修改？',
-      confirmLabel: '放弃并离开',
-      tone: 'danger',
-    }));
-  });
-
-  it('blocks navigation without prompting while a system prompt save is in flight', async () => {
-    const confirm = vi.fn();
-
-    await expect(confirmSystemPromptNavigation({
-      activeView: 'system-prompt',
-      dirty: false,
-      saving: true,
-      confirm,
-    })).resolves.toBe(false);
-    expect(confirm).not.toHaveBeenCalled();
-  });
-});
-
 describe('model reasoning menu placement', () => {
   it('keeps reasoning choices attached to the right side of their model at every viewport size', () => {
     expect(topbarCss).toMatch(
@@ -199,7 +152,7 @@ describe('cloud artifact action visibility', () => {
     expect(canOpenCloudArtifacts({ topicId: 'p2p_7_440', isGroup: false }, doubao)).toBe(true);
     expect(canOpenCloudArtifacts({ topicId: 'grp_8', isGroup: true }, doubao)).toBe(true);
     expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, { uid: 441 })).toBe(true);
-    expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, null)).toBe(false);
+    expect(canOpenCloudArtifacts({ topicId: 'p2p_7_441', isGroup: false }, null)).toBe(true);
     expect(canOpenCloudArtifacts(null, doubao)).toBe(false);
   });
 });
@@ -315,7 +268,7 @@ describe('LocalAssistantBar model selector', () => {
     expect(onOpenCloudArtifacts).toHaveBeenCalledTimes(1);
 
     await renderBar({ onOpenCloudArtifacts: undefined });
-    const unavailableButton = container.querySelector('button[aria-label="云文件，需要先进入 Agent 会话"]');
+    const unavailableButton = container.querySelector('button[aria-label="云文件，需要先进入聊天"]');
     expect(unavailableButton).toBeTruthy();
     expect(unavailableButton.disabled).toBe(true);
   });

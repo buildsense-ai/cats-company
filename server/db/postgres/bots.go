@@ -43,15 +43,17 @@ func (a *Adapter) SaveBotConfigWithOwner(uid, ownerID int64, apiEndpoint, model 
 func (a *Adapter) GetBotConfig(uid int64) (*types.BotConfig, error) {
 	bc := &types.BotConfig{}
 	var visibility, skillsVisibility string
+	var artifactUploadEnabled bool
 	err := a.db.QueryRow(
-		`SELECT user_id, COALESCE(owner_id, 0), api_endpoint, model, enabled, COALESCE(visibility, 'public'), COALESCE(skills_visibility, 'owner'), COALESCE(body_id, '')
+		`SELECT user_id, COALESCE(owner_id, 0), api_endpoint, model, enabled, COALESCE(visibility, 'public'), COALESCE(skills_visibility, 'owner'), COALESCE(body_id, ''), COALESCE(role, 'general'), COALESCE(description, ''), COALESCE(artifact_upload_enabled, true)
 		 FROM bot_config WHERE user_id = $1`, uid,
-	).Scan(&bc.UserID, &bc.OwnerID, &bc.APIEndpoint, &bc.Model, &bc.Enabled, &visibility, &skillsVisibility, &bc.BodyID)
+	).Scan(&bc.UserID, &bc.OwnerID, &bc.APIEndpoint, &bc.Model, &bc.Enabled, &visibility, &skillsVisibility, &bc.BodyID, &bc.Role, &bc.Description, &artifactUploadEnabled)
 	if err != nil {
 		return nil, fmt.Errorf("get bot config: %w", err)
 	}
 	bc.Visibility = types.BotVisibility(visibility)
 	bc.SkillsVisibility = types.BotSkillsVisibility(skillsVisibility)
+	bc.ArtifactUploadEnabled = &artifactUploadEnabled
 	return bc, nil
 }
 
@@ -216,7 +218,10 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 		        COALESCE(b.enabled, true) as enabled,
 		        COALESCE(b.visibility, 'public') as visibility,
 		        COALESCE(b.skills_visibility, 'owner') as skills_visibility,
-		        b.tenant_name
+		        b.tenant_name,
+		        COALESCE(b.role, 'general') as role,
+		        COALESCE(b.description, '') as description,
+		        COALESCE(b.artifact_upload_enabled, true) as artifact_upload_enabled
 		 FROM users u LEFT JOIN bot_config b ON u.id = b.user_id
 		 WHERE u.account_type = 'bot' AND b.owner_id = $1
 		 ORDER BY u.created_at`,
@@ -230,25 +235,28 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 	var bots []map[string]interface{}
 	for rows.Next() {
 		var id int64
-		var username, displayName, avatarURL, apiEndpoint, model, visibility, skillsVisibility string
+		var username, displayName, avatarURL, apiEndpoint, model, visibility, skillsVisibility, role, description string
 		var tenantName *string
 		var state int
-		var enabled bool
+		var enabled, artifactUploadEnabled bool
 		if err := rows.Scan(&id, &username, &displayName, &avatarURL, &state,
-			&apiEndpoint, &model, &enabled, &visibility, &skillsVisibility, &tenantName); err != nil {
+			&apiEndpoint, &model, &enabled, &visibility, &skillsVisibility, &tenantName, &role, &description, &artifactUploadEnabled); err != nil {
 			return nil, err
 		}
 		bot := map[string]interface{}{
-			"id":                id,
-			"username":          username,
-			"display_name":      displayName,
-			"avatar_url":        avatarURL,
-			"state":             state,
-			"api_endpoint":      apiEndpoint,
-			"model":             model,
-			"enabled":           enabled,
-			"visibility":        visibility,
-			"skills_visibility": skillsVisibility,
+			"id":                      id,
+			"username":                username,
+			"display_name":            displayName,
+			"avatar_url":              avatarURL,
+			"state":                   state,
+			"api_endpoint":            apiEndpoint,
+			"model":                   model,
+			"enabled":                 enabled,
+			"visibility":              visibility,
+			"skills_visibility":       skillsVisibility,
+			"role":                    role,
+			"description":             description,
+			"artifact_upload_enabled": artifactUploadEnabled,
 		}
 		if tenantName != nil {
 			bot["tenant_name"] = *tenantName
@@ -256,6 +264,37 @@ func (a *Adapter) ListBotsByOwner(ownerID int64) ([]map[string]interface{}, erro
 		bots = append(bots, bot)
 	}
 	return bots, rows.Err()
+}
+
+// UpdateBotProfile updates owner-defined assistant identity metadata. Nil
+// values preserve the existing field so PATCH requests can be partial.
+func (a *Adapter) UpdateBotProfile(botUID int64, role, description *string) error {
+	_, err := a.db.Exec(
+		`UPDATE bot_config
+		 SET role = COALESCE($1, role), description = COALESCE($2, description)
+		 WHERE user_id = $3`,
+		role, description, botUID,
+	)
+	return err
+}
+
+func (a *Adapter) UpdateBotArtifactUploadPolicy(botUID int64, enabled bool) error {
+	_, err := a.db.Exec(
+		`UPDATE bot_config SET artifact_upload_enabled = $1 WHERE user_id = $2`,
+		enabled, botUID,
+	)
+	return err
+}
+
+func (a *Adapter) GetBotArtifactUploadPolicy(botUID int64) (bool, error) {
+	var enabled bool
+	if err := a.db.QueryRow(
+		`SELECT COALESCE(artifact_upload_enabled, true) FROM bot_config WHERE user_id = $1`,
+		botUID,
+	).Scan(&enabled); err != nil {
+		return false, fmt.Errorf("get bot artifact upload policy: %w", err)
+	}
+	return enabled, nil
 }
 
 // GetBotOwner returns the owner_id for a bot.

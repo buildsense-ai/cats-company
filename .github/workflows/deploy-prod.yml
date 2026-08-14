@@ -57,6 +57,8 @@ jobs:
           cp deploy/prod/remote-status.sh "${tmpdir}/compose/"
           cp deploy/prod/ensure-image-timeout-nginx.sh "${tmpdir}/compose/"
           cp deploy/prod/update-nginx-v1-timeout.py "${tmpdir}/compose/"
+          cp deploy/prod/ensure-stt-websocket-nginx.sh "${tmpdir}/compose/"
+          cp deploy/prod/update-nginx-stt-websocket.py "${tmpdir}/compose/"
           cp deploy/prod/sync-artifact-node-env.py "${tmpdir}/compose/"
           cp deploy/sync-vapid-env.py "${tmpdir}/compose/"
           cp deploy/sync-stt-env.py "${tmpdir}/compose/"
@@ -120,10 +122,11 @@ jobs:
             mv "$artifact_nodes_temp" "$root/secrets/artifact-nodes.json"
             export CATSCO_ARTIFACT_NODES_FILE=/run/catsco-secrets/artifact-nodes.json
           fi
-          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh" "$root/compose/ensure-image-timeout-nginx.sh"
+          chmod +x "$root/compose/remote-build-source.sh" "$root/compose/remote-deploy.sh" "$root/compose/remote-rollback.sh" "$root/compose/remote-status.sh" "$root/compose/ensure-image-timeout-nginx.sh" "$root/compose/ensure-stt-websocket-nginx.sh"
           "$root/compose/remote-build-source.sh" "$root" "$revision" "$owner"
           export SKIP_IMAGE_PULL=1
           "$root/compose/remote-deploy.sh" "$root" "$revision"
+          sudo "$root/compose/ensure-stt-websocket-nginx.sh" /etc/nginx/sites-available/catscompany-app
           sudo "$root/compose/ensure-image-timeout-nginx.sh" /etc/nginx/sites-available/catscompany-app 580
           "$root/compose/remote-status.sh" "$root"
           EOF
