@@ -606,15 +606,20 @@ function CustomCard({ definitionReady, installedByID, isLocalSkillShared, loadin
   const reference = skill.skillHub?.reference;
   const installedReference = reference?.skillId ? installedByID.get(reference.skillId) : null;
   const shared = isLocalSkillShared(skill, installedReference);
-  const canShare = skill.canShare !== false && skill.source !== 'system' && !shared;
+  const blocked = Boolean(skill.shareError);
+  const canShare = !blocked && skill.canShare !== false && skill.source !== 'system' && !shared;
+  const statusClass = blocked ? 'blocked' : shared ? 'synced' : 'local';
+  const statusLabel = blocked ? '无法发布' : shared ? '已发布' : '未发布';
   return (
     <article className='cc-skillhub-local-card'>
-      <div className='cc-skillhub-local-card-heading'><strong>{skill.name}</strong><span className={`cc-skillhub-status ${shared ? 'synced' : 'local'}`}>{shared ? '已发布' : '未发布'}</span></div>
-      <p>{skill.description || '这个自定义能力暂时没有补充说明。'}</p>
+      <div className='cc-skillhub-local-card-heading'><strong>{skill.name}</strong><span className={`cc-skillhub-status ${statusClass}`}>{statusLabel}</span></div>
+      <p className={blocked ? 'cc-skillhub-validation-error' : undefined} title={skill.shareError || skill.description || undefined}>
+        {skill.shareError || skill.description || '这个自定义能力暂时没有补充说明。'}
+      </p>
       <code>{skill.relativePath || skill.path}</code>
-      <button type='button' className={shared ? 'added' : 'primary'} disabled={!canShare || !selectedDeviceID || !definitionReady || loadingLocalSkills || saving || Boolean(sharingSkill)} onClick={() => onShareLocalSkill(skill)}>
-        {shared ? <Check size={14} aria-hidden='true' /> : <Share2 size={14} aria-hidden='true' />}
-        {shared ? '已发布到团队' : sharingSkill === skill.name ? '发布并添加中…' : '发布并添加'}
+      <button type='button' className={shared ? 'added' : 'primary'} disabled={!canShare || !selectedDeviceID || !definitionReady || loadingLocalSkills || saving || Boolean(sharingSkill)} onClick={() => onShareLocalSkill(skill)} title={blocked ? skill.shareError : undefined}>
+        {blocked ? <Info size={14} aria-hidden='true' /> : shared ? <Check size={14} aria-hidden='true' /> : <Share2 size={14} aria-hidden='true' />}
+        {blocked ? '请先修复此 Skill' : shared ? '已发布到团队' : sharingSkill === skill.name ? '发布并添加中…' : '发布并添加'}
       </button>
     </article>
   );

@@ -326,6 +326,7 @@ export function normalizeLocalSkills(response) {
     skillHub: skill?.skillHub || skill?.skill_hub || null,
     localSkillId: String(skill?.localSkillId || skill?.local_skill_id || '').trim(),
     canShare: skill?.canShare ?? skill?.can_share ?? true,
+    shareError: String(skill?.shareError || skill?.share_error || '').trim(),
   })).filter((skill) => skill.name);
 }
 
@@ -335,19 +336,17 @@ export function isPrivateSkillHubReference(skillId) {
 }
 
 export function isLocalSkillShared(skill, installedReference) {
+  if (skill?.shareError) return false;
   const reference = skill?.skillHub?.reference;
   const isPublicReference = reference?.skillId
     && !isPrivateSkillHubReference(reference.skillId);
-  const hasPublishedIdentity = Boolean(
-    (skill?.skillHub?.author && skill?.skillHub?.version)
-    || (
-      isPublicReference
-      && installedReference
-      && reference.version === installedReference.version
-      && reference.contentHash === installedReference.contentHash
-    )
+  const matchesInstalledReference = Boolean(
+    isPublicReference
+    && installedReference
+    && reference.version === installedReference.version
+    && reference.contentHash === installedReference.contentHash
   );
-  return skill?.canShare === false && hasPublishedIdentity;
+  return skill?.canShare === false && matchesInstalledReference;
 }
 
 export function resolveAddedSkillPresentation(skill, catalogueByID, localSkillsByReference) {
