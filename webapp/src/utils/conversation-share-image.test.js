@@ -85,7 +85,7 @@ describe('conversation share image helpers', () => {
     expect(canvas.toDataURL).toHaveBeenCalledWith('image/png');
     expect(context.scale).toHaveBeenCalledWith(2, 2);
     expect(fillStyles).toContain('#151718');
-    expect(strokeStyles).toContain('#41b798');
+    expect(strokeStyles).toContain('#3ab292');
     expect(context.fillText).toHaveBeenCalledWith(expect.stringMatching(/…$/), 344, 94);
   });
 

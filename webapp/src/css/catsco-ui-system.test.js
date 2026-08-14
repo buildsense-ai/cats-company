@@ -1088,7 +1088,7 @@ describe('CatsCo shell styling', () => {
     expect(indicatorRule).toContain('height: 20px;');
     expect(indicatorRule).toContain('border-radius: 6px;');
     expect(selectedCardRule).toContain('background: color-mix(in srgb, var(--cc-conversation-share-accent) 10%, transparent);');
-    expect(openchatCss).toContain('--cc-conversation-share-accent: #41b798;');
+    expect(openchatCss).toContain('--cc-conversation-share-accent: #3ab292;');
     expect(openchatCss).toContain('--cc-conversation-share-accent-hover: #2f977d;');
     expect(selectedIndicatorRule).toContain('background: var(--cc-conversation-share-accent);');
   });

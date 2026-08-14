@@ -6766,9 +6766,9 @@ button.catsco-download-action:disabled {
 /* Conversation share image: selection lives in the timeline so people retain
  * the context they are publishing instead of moving into a disconnected flow. */
 :root {
-  --cc-conversation-share-accent: #41b798;
+  --cc-conversation-share-accent: #3ab292;
   --cc-conversation-share-accent-hover: #2f977d;
-  --cc-conversation-share-accent-soft: rgba(65, 183, 152, 0.14);
+  --cc-conversation-share-accent-soft: rgba(58, 178, 146, 0.14);
   --cc-conversation-share-accent-text: #267a65;
   --cc-conversation-share-accent-contrast: #0b332b;
 }
