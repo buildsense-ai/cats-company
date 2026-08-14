@@ -1,9 +1,11 @@
 export const ARTIFACT_REF_CONTRACT = 'catsco.artifact-ref.v1';
+export const ARTIFACT_CONTEXT_REF_CONTRACT = 'catsco.artifact-context-ref.v1';
 export const ARTIFACT_PAGE_CONTEXT_CONTRACT = 'catsco.artifact-page-context.v1';
 export const ARTIFACT_CONTEXT_REQUEST_TYPE = 'catsco.artifact.context.request.v1';
 export const ARTIFACT_CONTEXT_RESPONSE_TYPE = 'catsco.artifact.context.response.v1';
 
 const ARTIFACT_ID_PATTERN = /^[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$/;
+const ARTIFACT_CONTEXT_REF_PATTERN = /^acr_[A-Za-z0-9_-]{43}$/;
 const ARTIFACT_ID_MAX_LENGTH = 64;
 const PAGE_CONTEXT_TIMEOUT_MS = 250;
 const PAGE_CONTEXT_MAX_BYTES = 16 * 1024;
@@ -79,11 +81,16 @@ export function artifactURLForVersion(value, version) {
   }
 }
 
-export function withArtifactRef(payload, artifactRef, pageContext = null) {
-  if (!artifactRef) return payload;
-  const metadata = { artifact_ref: artifactRef };
-  const normalizedPageContext = normalizeArtifactPageContext(pageContext);
-  if (normalizedPageContext) metadata.artifact_page_context = normalizedPageContext;
+export function artifactContextRefFromSnapshot(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  if (value.contract_version !== ARTIFACT_CONTEXT_REF_CONTRACT) return '';
+  const contextRef = String(value.context_ref || '');
+  return ARTIFACT_CONTEXT_REF_PATTERN.test(contextRef) ? contextRef : '';
+}
+
+export function withArtifactContextRef(payload, contextRef) {
+  if (!ARTIFACT_CONTEXT_REF_PATTERN.test(String(contextRef || ''))) return payload;
+  const metadata = { artifact_context_ref: contextRef };
   if (typeof payload === 'string') {
     return {
       type: 'text',

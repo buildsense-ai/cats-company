@@ -35,33 +35,35 @@ const (
 
 // Hub maintains the set of active clients and broadcasts messages.
 type Hub struct {
-	mu                      sync.RWMutex
-	clients                 map[int64]map[*Client]struct{}
-	clientsByConn           map[string]*Client
-	register                chan *Client
-	unregister              chan *Client
-	presence                chan presenceEvent
-	db                      store.Store
-	rateLimiter             *RateLimiter
-	botStats                *BotStats
-	botConvo                botConvoTracker
-	nodeID                  string
-	sharedRuntime           sharedRuntimeState
-	bodyLeases              *botBodyLeaseManager
-	userDevices             *userDeviceRegistry
-	deviceAudit             *deviceAuditLog
-	deviceRevokes           *deviceConnectorRevocationList
-	deviceClients           map[int64]map[string]*Client
-	deviceRPC               *deviceRPCRouter
-	thinToolRPC             *thinToolRPCRouter
-	botRuntimeCredentials   *botRuntimeCredentialSigner
-	skillMutationGrants     *skillMutationGrantSigner
-	channelOut              *ChannelOutboundDispatcher
-	groupTurns              *groupAgentTurnTracker
-	artifactContextResolver ArtifactContextResolver
-	push                    *PushNotificationService
-	agentPush               *agentPushTurnCoordinator
-	taskGrace               time.Duration
+	mu                       sync.RWMutex
+	clients                  map[int64]map[*Client]struct{}
+	clientsByConn            map[string]*Client
+	register                 chan *Client
+	unregister               chan *Client
+	presence                 chan presenceEvent
+	db                       store.Store
+	rateLimiter              *RateLimiter
+	botStats                 *BotStats
+	botConvo                 botConvoTracker
+	nodeID                   string
+	sharedRuntime            sharedRuntimeState
+	bodyLeases               *botBodyLeaseManager
+	userDevices              *userDeviceRegistry
+	deviceAudit              *deviceAuditLog
+	deviceRevokes            *deviceConnectorRevocationList
+	deviceClients            map[int64]map[string]*Client
+	deviceRPC                *deviceRPCRouter
+	thinToolRPC              *thinToolRPCRouter
+	botRuntimeCredentials    *botRuntimeCredentialSigner
+	skillMutationGrants      *skillMutationGrantSigner
+	channelOut               *ChannelOutboundDispatcher
+	groupTurns               *groupAgentTurnTracker
+	artifactContextResolver  ArtifactContextResolver
+	artifactContextSnapshots *artifactContextSnapshotStore
+	push                     *PushNotificationService
+	agentPush                *agentPushTurnCoordinator
+	taskGrace                time.Duration
+}
 	// taskReaperInterval is how often the disconnected-task recovery reaper
 	// scans durable rows. It complements the per-disconnect time.AfterFunc so
 	// a crashed/restarted process or transient DB error cannot permanently
@@ -116,6 +118,7 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 	runtimeCredentialSigner, _ := newBotRuntimeCredentialSigner(jwtSecret, time.Now)
 	grantSigner, _ := newSkillMutationGrantSigner(jwtSecret, time.Now)
 	hub := &Hub{
+<<<<<<< HEAD
 		clients:               make(map[int64]map[*Client]struct{}),
 		clientsByConn:         make(map[string]*Client),
 		register:              make(chan *Client, 256),
@@ -141,6 +144,36 @@ func NewHubWithRuntime(db store.Store, rl *RateLimiter, shared sharedRuntimeStat
 		taskGrace:             90 * time.Second,
 		taskReaperInterval:    30 * time.Second,
 		botConnectionEpochs:   make(map[int64]uint64),
+=======
+		clients:       make(map[int64]map[*Client]struct{}),
+		clientsByConn: make(map[string]*Client),
+		register:      make(chan *Client, 256),
+		unregister:    make(chan *Client, 256),
+		presence:      make(chan presenceEvent, 256),
+		db:            db,
+		rateLimiter:   rl,
+		botStats:      NewBotStats(),
+		botConvo:      botConvoTracker{counters: make(map[string]*botConvoCount)},
+		nodeID:        nodeID,
+		sharedRuntime: shared,
+		bodyLeases:    newBotBodyLeaseManager(defaultBotBodyLeaseTTL).withSharedRuntime(shared, nodeID),
+		userDevices:   newUserDeviceRegistry(defaultUserDeviceTTL).withSharedRuntime(shared),
+		deviceAudit:   newDeviceAuditLog(),
+		deviceRevokes: newDeviceConnectorRevocationList(),
+		deviceClients: make(map[int64]map[string]*Client),
+		deviceRPC:     newDeviceRPCRouter(defaultDeviceRPCTTL).withSharedRuntime(shared),
+		thinToolRPC:   newThinToolRPCRouter(defaultThinToolRPCTTL),
+		groupTurns:    newGroupAgentTurnTracker(defaultGroupAgentTurnTTL),
+		artifactContextSnapshots: newArtifactContextSnapshotStore(
+			artifactContextSnapshotTTLDefault,
+			artifactContextTombstoneTTLDefault,
+			artifactContextSnapshotMaxEntries,
+		),
+		agentPush:           newAgentPushTurnCoordinator(),
+		taskGrace:           90 * time.Second,
+		taskReaperInterval:  30 * time.Second,
+		botConnectionEpochs: make(map[int64]uint64),
+>>>>>>> 4099e5c (feat: add pull-based artifact context snapshots)
 	}
 	if shared != nil {
 		shared.registerRuntimeNode(nodeID, hub)
@@ -1388,7 +1421,7 @@ func (h *Hub) handlePub(client *Client, msg *MsgClientPub) {
 		})
 		return
 	}
-	payload.Metadata = h.canonicalizeArtifactMessageMetadata(context.Background(), uid, topic, payload.Metadata)
+	payload.Metadata, payload.ArtifactContextRef = h.extractArtifactContextDelivery(uid, topic, payload.Metadata)
 
 	// Route based on topic type
 	if isGroupTopic(topic) {
@@ -1574,7 +1607,7 @@ func (h *Hub) fanoutStreamEvent(uid int64, topicID string, streamType string, co
 		streamType = "stream_delta"
 	}
 	streamMetadata := map[string]interface{}{}
-	for key, value := range metadata {
+	for key, value := range metadataWithoutArtifactContext(metadata) {
 		streamMetadata[key] = value
 	}
 	streamMetadata["stream_event"] = strings.TrimPrefix(streamType, "stream_")
@@ -1744,6 +1777,7 @@ func cloneDataMessageWithMetadata(msg *ServerMessage, metadata map[string]interf
 		Info:                     msg.Info,
 		Friend:                   msg.Friend,
 		suppressPushNotification: msg.suppressPushNotification,
+		artifactContextRef:       msg.artifactContextRef,
 	}
 }
 
@@ -2264,7 +2298,11 @@ func (h *Hub) broadcastToGroupWithMentions(groupID int64, msg *ServerMessage, ex
 				h.buildCatscoIdentityMetadata(senderUID, m.UserID, msg.Data.Topic, int64(msg.Data.SeqID), normalizeContentText(msg.Data.Content), catscoIdentityMetadataOptions{SourceMetadata: msg.Data.Metadata}),
 			)
 			metadata = withXiaobaRuntimeMetadata(metadata, h.buildXiaobaRuntimeMetadata(senderUID, m.UserID, msg.Data.Topic))
-			metadata = artifactMetadataForRecipient(metadata, m.UserID)
+			metadata = withArtifactContextDeliveryRef(
+				metadataWithoutArtifactContext(metadata),
+				h.validatedArtifactContextDeliveryRef(senderUID, msg.Data.Topic, msg.artifactContextRef, m.UserID),
+				m.UserID,
+			)
 			out = cloneDataMessageWithMetadata(
 				msg,
 				metadata,

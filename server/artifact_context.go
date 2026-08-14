@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -22,10 +21,9 @@ const (
 	artifactRefMetadataKey           = "artifact_ref"
 	artifactContextMetadataKey       = "artifact_context"
 	artifactPageContextMetadataKey   = "artifact_page_context"
+	artifactContextRefMetadataKey    = "artifact_context_ref"
 	artifactRefContract              = "catsco.artifact-ref.v1"
-	artifactContextContract          = "catsco.artifact-context.v1"
 	artifactPageContextContract      = "catsco.artifact-page-context.v1"
-	artifactContextResolutionMaxErr  = 240
 	artifactContextResolutionTimeout = 1500 * time.Millisecond
 	artifactContextCacheTTLDefault   = 2 * time.Second
 	artifactPageContextMaxBytes      = 16 * 1024
@@ -104,61 +102,6 @@ func (h *Hub) SetArtifactContextResolver(resolver ArtifactContextResolver) {
 	h.artifactContextResolver = resolver
 }
 
-func (h *Hub) canonicalizeArtifactMessageMetadata(ctx context.Context, actorUID int64, topicID string, metadata map[string]interface{}) map[string]interface{} {
-	next := metadataWithoutArtifactContext(metadata)
-	candidate, ok := parseArtifactRefCandidate(metadata)
-	if !ok || h == nil || h.artifactContextResolver == nil {
-		return next
-	}
-
-	agentUID, ok := h.artifactAgentForTopic(actorUID, topicID)
-	if !ok {
-		return next
-	}
-	resolutionCtx, cancel := context.WithTimeout(ctx, artifactContextResolutionTimeout)
-	defer cancel()
-	record, err := h.artifactContextResolver.ResolveActiveArtifact(resolutionCtx, agentUID, candidate.ID)
-	if err != nil {
-		message := strings.TrimSpace(err.Error())
-		if len(message) > artifactContextResolutionMaxErr {
-			message = message[:artifactContextResolutionMaxErr]
-		}
-		logArtifactContextDrop(topicID, actorUID, agentUID, candidate.ID, message)
-		return next
-	}
-	if record.ID != candidate.ID || !validArtifactID(record.ID) ||
-		strings.TrimSpace(record.Title) == "" || (record.Kind != "html" && record.Kind != "mini_app") ||
-		!validArtifactContextURL(record.URL) {
-		logArtifactContextDrop(topicID, actorUID, agentUID, candidate.ID, "resolver returned an invalid artifact")
-		return next
-	}
-
-	contextValue := map[string]interface{}{
-		"contract_version":  artifactContextContract,
-		"id":                record.ID,
-		"agent_uid":         strconv.FormatInt(agentUID, 10),
-		"title":             strings.TrimSpace(record.Title),
-		"kind":              record.Kind,
-		"url":               strings.TrimSpace(record.URL),
-		"currently_visible": true,
-		"topic_id":          topicID,
-	}
-	if record.PublishVersion > 0 {
-		contextValue["latest_version"] = record.PublishVersion
-		if candidate.DisplayedVersion > 0 && candidate.DisplayedVersion <= int64(record.PublishVersion) {
-			contextValue["displayed_version"] = candidate.DisplayedVersion
-		}
-	}
-	if pageContext, ok := parseArtifactPageContextCandidate(metadata); ok {
-		contextValue["page_context"] = pageContext
-	}
-	if next == nil {
-		next = make(map[string]interface{}, 1)
-	}
-	next[artifactContextMetadataKey] = contextValue
-	return next
-}
-
 func (h *Hub) artifactAgentForTopic(actorUID int64, topicID string) (int64, bool) {
 	if h == nil || h.db == nil || actorUID <= 0 || strings.TrimSpace(topicID) == "" {
 		return 0, false
@@ -170,7 +113,10 @@ func (h *Hub) artifactAgentForTopic(actorUID int64, topicID string) (int64, bool
 
 	if !isGroupTopic(topicID) {
 		peerUID := extractPeerUID(topicID, actorUID)
-		if peerUID <= 0 || !h.isBotUser(peerUID) {
+		if peerUID <= 0 {
+			return 0, false
+		}
+		if _, _, status, accessErr := accessibleAgentUser(h.db, actorUID, peerUID); accessErr != nil || status != 0 {
 			return 0, false
 		}
 		return peerUID, true
@@ -178,6 +124,10 @@ func (h *Hub) artifactAgentForTopic(actorUID int64, topicID string) (int64, bool
 
 	groupID := extractGroupID(topicID)
 	if groupID <= 0 {
+		return 0, false
+	}
+	isMember, err := h.db.IsGroupMember(groupID, actorUID)
+	if err != nil || !isMember {
 		return 0, false
 	}
 	group, err := h.db.GetGroup(groupID)
@@ -244,34 +194,11 @@ func metadataWithoutArtifactContext(metadata map[string]interface{}) map[string]
 	}
 	next := make(map[string]interface{}, len(metadata))
 	for key, value := range metadata {
-		if key == artifactRefMetadataKey || key == artifactContextMetadataKey || key == artifactPageContextMetadataKey {
+		if key == artifactRefMetadataKey || key == artifactContextMetadataKey ||
+			key == artifactPageContextMetadataKey || key == artifactContextRefMetadataKey {
 			continue
 		}
 		next[key] = value
-	}
-	if len(next) == 0 {
-		return nil
-	}
-	return next
-}
-
-func artifactMetadataForRecipient(metadata map[string]interface{}, recipientUID int64) map[string]interface{} {
-	if metadata == nil {
-		return nil
-	}
-	next := make(map[string]interface{}, len(metadata))
-	for key, value := range metadata {
-		if key == artifactRefMetadataKey || key == artifactContextMetadataKey || key == artifactPageContextMetadataKey {
-			continue
-		}
-		next[key] = value
-	}
-	if raw, ok := metadata[artifactContextMetadataKey]; ok && recipientUID > 0 {
-		if contextValue, ok := raw.(map[string]interface{}); ok &&
-			firstMetadataInt64(contextValue, "agent_uid") == recipientUID &&
-			firstMetadataString(contextValue, "contract_version") == artifactContextContract {
-			next[artifactContextMetadataKey] = contextValue
-		}
 	}
 	if len(next) == 0 {
 		return nil
@@ -535,13 +462,6 @@ func validArtifactContextURL(value string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(value))
 	return err == nil && parsed.User == nil && parsed.Host != "" &&
 		(parsed.Scheme == "http" || parsed.Scheme == "https")
-}
-
-func logArtifactContextDrop(topicID string, actorUID, agentUID int64, artifactID, reason string) {
-	if reason == "" {
-		reason = "resolution failed"
-	}
-	log.Printf("[artifact_context] dropped topic=%s actor=%s agent=%s artifact=%s reason=%s", topicID, formatUID(actorUID), formatUID(agentUID), artifactID, reason)
 }
 
 // ResolveActiveArtifact implements ArtifactContextResolver using the same

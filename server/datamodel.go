@@ -42,6 +42,9 @@ type ServerMessage struct {
 	// suppressPushNotification is server-only provenance. It must never be
 	// serialized to a web client or be set from client-provided metadata.
 	suppressPushNotification bool
+	// artifactContextRef is an in-memory, recipient-scoped delivery capability.
+	// It is never serialized directly and never persisted with a message.
+	artifactContextRef *artifactContextDeliveryRef
 }
 
 // --- Client messages ---

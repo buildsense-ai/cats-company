@@ -193,6 +193,8 @@ vi.mock('../api', () => ({
     getAgentQuota: vi.fn(),
     getGroupInfo: vi.fn(),
     createChannelIdentityMobileLink: vi.fn(),
+    createArtifactContextSnapshot: vi.fn(),
+    invalidateArtifactContextSnapshot: vi.fn(),
     sendMessage: vi.fn(),
     uploadFile: vi.fn(),
     createMobileUploadSession: vi.fn(),
@@ -411,6 +413,13 @@ describe('MessagesView composer draft isolation', () => {
     api.getAgentQuota.mockResolvedValue({ configured: false, shared: true });
     api.createChannelIdentityMobileLink.mockResolvedValue({ qr_value: 'https://app.catsco.cc/mobile-link' });
     api.getGroupInfo.mockResolvedValue({ members: [], group: null });
+    api.createArtifactContextSnapshot.mockResolvedValue({
+      contract_version: 'catsco.artifact-context-ref.v1',
+      context_ref: `acr_${'x'.repeat(43)}`,
+      expires_at: '2026-08-14T12:05:00Z',
+      revision: 1,
+    });
+    api.invalidateArtifactContextSnapshot.mockResolvedValue({ ok: true });
     api.sendMessage.mockResolvedValue({ seq_id: 100 });
     api.getTutorialTasks.mockResolvedValue({ tasks: [], limit: 6 });
     api.getCloudArtifacts.mockResolvedValue({ artifacts: [] });
@@ -2403,16 +2412,20 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
+    expect(api.createArtifactContextSnapshot).toHaveBeenCalledWith({
+      topic_id: 'p2p_1_440',
+      artifact_ref: {
+        contract_version: 'catsco.artifact-ref.v1',
+        id: 'lesson-game',
+        displayed_version: 2,
+        currently_visible: true,
+      },
+    }, { timeoutMs: 2200 });
     expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', {
       type: 'text',
       content: '调整这个页面',
       metadata: {
-        artifact_ref: {
-          contract_version: 'catsco.artifact-ref.v1',
-          id: 'lesson-game',
-          displayed_version: 2,
-          currently_visible: true,
-        },
+        artifact_context_ref: `acr_${'x'.repeat(43)}`,
       },
     }, undefined);
   });
@@ -3423,7 +3436,7 @@ describe('MessagesView composer draft isolation', () => {
     expect(container.querySelector('.mock-file-preview')?.getAttribute('data-pending-url')).toBe('');
   });
 
-  it('silently attaches the visible artifact reference to the next message', async () => {
+  it('stores the visible Artifact snapshot separately and attaches only its opaque ref', async () => {
     const artifact = {
       id: 'lesson-game',
       agent_uid: '440',
@@ -3476,23 +3489,145 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
+    expect(api.createArtifactContextSnapshot).toHaveBeenCalledWith({
+      topic_id: 'p2p_1_440',
+      artifact_ref: {
+        contract_version: 'catsco.artifact-ref.v1',
+        id: 'lesson-game',
+        displayed_version: 2,
+        currently_visible: true,
+      },
+    }, { timeoutMs: 2200 });
     expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', {
       type: 'text',
       content: '把右边标题改短一点',
       metadata: {
-        artifact_ref: {
-          contract_version: 'catsco.artifact-ref.v1',
-          id: 'lesson-game',
-          displayed_version: 2,
-          currently_visible: true,
-        },
+        artifact_context_ref: `acr_${'x'.repeat(43)}`,
       },
     }, undefined);
     expect(container.textContent).not.toContain('lesson-game');
     expect(container.textContent).not.toContain('当前 Artifact');
   });
 
-  it('attaches the latest bounded iframe observation to the same message', async () => {
+  it('sends the ordinary message when snapshot creation fails', async () => {
+    const artifact = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+    api.createArtifactContextSnapshot.mockRejectedValueOnce(new Error('snapshot unavailable'));
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '产物'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '正常发送');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await flushPromises();
+    });
+
+    expect(api.createArtifactContextSnapshot).toHaveBeenCalledTimes(1);
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '正常发送', undefined);
+  });
+
+  it('invalidates a snapshot that finishes after the preview has closed', async () => {
+    let finishSnapshot;
+    api.createArtifactContextSnapshot.mockImplementationOnce(() => new Promise((resolve) => {
+      finishSnapshot = resolve;
+    }));
+    const artifact = {
+      id: 'lesson-game',
+      agent_uid: '440',
+      title: '课堂小游戏',
+      kind: 'html',
+      url: 'https://artifacts.example.test/by-agent/440/lesson-game/latest/',
+      status: 'active',
+      publish_version: 2,
+      can_delete: true,
+    };
+    api.getCloudArtifacts.mockResolvedValue({ artifacts: [artifact] });
+    api.getAgents.mockResolvedValue({
+      agents: [{
+        uid: 440,
+        username: 'artifact-agent',
+        display_name: 'Artifact Agent',
+        is_bot: true,
+        cloud_artifacts_enabled: true,
+      }],
+    });
+
+    await mountTopic(root, 'p2p_1_440', {
+      cloudArtifactsRequest: { agentUid: 440, requestId: 1 },
+    });
+    await act(async () => {
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click([...container.querySelectorAll('button[role="tab"]')]
+        .find((button) => button.textContent === '产物'));
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="预览 课堂小游戏"]'));
+      await flushPromises();
+    });
+    await act(async () => {
+      typeDraft(container.querySelector('textarea.v3-composer-input'), '不要绑定旧页面');
+      await flushPromises();
+    });
+    await act(async () => {
+      Simulate.click(container.querySelector('button[aria-label="发送"]'));
+      await Promise.resolve();
+    });
+    expect(finishSnapshot).toEqual(expect.any(Function));
+
+    await act(async () => {
+      Simulate.click(container.querySelector('.mock-close-preview'));
+      finishSnapshot({
+        contract_version: 'catsco.artifact-context-ref.v1',
+        context_ref: `acr_${'z'.repeat(43)}`,
+      });
+      await flushPromises();
+    });
+
+    expect(api.invalidateArtifactContextSnapshot).toHaveBeenCalledWith(
+      `acr_${'z'.repeat(43)}`,
+      { timeoutMs: 2200 },
+    );
+    expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', '不要绑定旧页面', undefined);
+  });
+
+  it('stores the latest bounded iframe observation outside the chat message', async () => {
     const origin = 'https://artifacts.example.test';
     const frameWindow = {
       postMessage(message, targetOrigin) {
@@ -3577,22 +3712,26 @@ describe('MessagesView composer draft isolation', () => {
       await flushPromises();
     });
 
+    expect(api.createArtifactContextSnapshot).toHaveBeenCalledWith({
+      topic_id: 'p2p_1_440',
+      artifact_ref: {
+        contract_version: 'catsco.artifact-ref.v1',
+        id: 'lesson-game',
+        displayed_version: 2,
+        currently_visible: true,
+      },
+      page_context: {
+        contract_version: 'catsco.artifact-page-context.v1',
+        observed_at: '2026-08-07T12:00:00Z',
+        selected_text: '企业客户',
+        controls: [{ type: 'checkbox', name: 'feedback', value: 'f12', checked: true }],
+      },
+    }, { timeoutMs: 2200 });
     expect(api.sendMessage).toHaveBeenCalledWith('p2p_1_440', {
       type: 'text',
       content: '分析这些',
       metadata: {
-        artifact_ref: {
-          contract_version: 'catsco.artifact-ref.v1',
-          id: 'lesson-game',
-          displayed_version: 2,
-          currently_visible: true,
-        },
-        artifact_page_context: {
-          contract_version: 'catsco.artifact-page-context.v1',
-          observed_at: '2026-08-07T12:00:00Z',
-          selected_text: '企业客户',
-          controls: [{ type: 'checkbox', name: 'feedback', value: 'f12', checked: true }],
-        },
+        artifact_context_ref: `acr_${'x'.repeat(43)}`,
       },
     }, undefined);
   });
