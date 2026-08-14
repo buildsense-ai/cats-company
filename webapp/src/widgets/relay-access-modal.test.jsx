@@ -335,7 +335,7 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.textContent).toContain('剩余 0%');
     expect(container.textContent).toContain('已用 100%+');
     expect(container.textContent).not.toContain('CNY');
-    expect(container.textContent).toContain('请续购套餐或等待额度重置');
+    expect(container.textContent).toContain('请等待额度重置或联系管理员');
   });
 
   it('does not present zero relay limit as a real remaining quota', async () => {
@@ -433,6 +433,78 @@ describe('RelayAccessModal commercial rollout', () => {
     expect(container.querySelector('.relay-access-plan-row.recommended')?.textContent).toContain('专业版');
     expect(container.querySelectorAll('.relay-access-plan-row')).toHaveLength(3);
     expect(Array.from(container.querySelectorAll('.relay-access-plan-row button')).every((button) => button.disabled)).toBe(true);
+  });
+
+  it('marks an active Pro plan and blocks both repeat and lower-tier purchases', async () => {
+    const plans = [
+      { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 100 } },
+      { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 79900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 300 } },
+    ];
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      channels: [{ id: 'alipay_page', label: '支付宝支付' }],
+      plans,
+    });
+    api.getRelayCommercial.mockResolvedValue({
+      enabled: true,
+      summary: {
+        uid: 38,
+        models: ['gpt-5.6-terra'],
+        entitlements: [{
+          plan_id: 22, plan_name: '专业版', source: 'invite', state: 'active',
+          starts_at: '2026-08-14T00:00:00Z', expires_at: '2026-09-13T00:00:00Z',
+        }],
+      },
+    });
+
+    await renderModal();
+
+    const rows = Array.from(container.querySelectorAll('.relay-access-plan-row'));
+    const personalButton = rows.find(row => row.textContent.includes('个人版'))?.querySelector('button');
+    const proButton = rows.find(row => row.textContent.includes('专业版'))?.querySelector('button');
+    expect(personalButton?.textContent).toContain('已包含');
+    expect(proButton?.textContent).toContain('当前套餐');
+    expect(personalButton?.disabled).toBe(true);
+    expect(proButton?.disabled).toBe(true);
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
+  });
+
+  it('offers Personal users an immediate Pro upgrade with concise reset copy', async () => {
+    const plans = [
+      { id: 21, slug: 'catsco-personal', name: '个人版', price_fen: 39900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 100 } },
+      { id: 22, slug: 'catsco-pro', name: '专业版', price_fen: 79900, duration_days: 30, model_budgets: { 'gpt-5.6-terra': 300 } },
+    ];
+    api.getCommercialCatalog.mockResolvedValue({
+      enabled: true,
+      channels: [{ id: 'alipay_page', label: '支付宝支付' }],
+      plans,
+    });
+    api.getRelayCommercial.mockResolvedValue({
+      enabled: true,
+      summary: {
+        uid: 38,
+        models: ['gpt-5.6-terra'],
+        entitlements: [{
+          plan_id: 21, plan_slug: 'catsco-personal', plan_name: '个人版', source: 'order', state: 'active',
+          starts_at: '2026-08-14T00:00:00Z', expires_at: '2026-09-13T00:00:00Z',
+        }],
+      },
+    });
+
+    await renderModal();
+
+    expect(container.textContent).toContain('升级后立即切换套餐，额度按专业版重置，不与个人版叠加。');
+    const rows = Array.from(container.querySelectorAll('.relay-access-plan-row'));
+    const personalButton = rows.find(row => row.textContent.includes('个人版'))?.querySelector('button');
+    const proButton = rows.find(row => row.textContent.includes('专业版'))?.querySelector('button');
+    expect(personalButton?.textContent).toContain('当前套餐');
+    expect(personalButton?.disabled).toBe(true);
+    expect(proButton?.textContent).toContain('升级至专业版');
+    expect(proButton?.disabled).toBe(false);
+
+    await clickButton('升级至专业版');
+    expect(container.querySelector('.relay-access-purchase-confirm')?.textContent).toContain('升级后立即生效，额度按新套餐重置，不叠加。');
+    expect(api.createCommercialOrder).not.toHaveBeenCalled();
   });
 
   it('shows a complete, filterable order history without hiding older orders', async () => {
