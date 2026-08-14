@@ -56,6 +56,7 @@ type UserDevice struct {
 	OS                string                 `json:"os"`
 	BodyID            string                 `json:"bodyId,omitempty"`
 	InstallationID    string                 `json:"installationId,omitempty"`
+	RuntimeRole       string                 `json:"runtimeRole,omitempty"`
 	Status            string                 `json:"status"`
 	Active            bool                   `json:"active"`
 	RouteConnected    bool                   `json:"routeConnected"`
@@ -170,6 +171,7 @@ type RegisterUserDeviceRequest struct {
 	OS             string             `json:"os,omitempty"`
 	BodyID         string             `json:"body_id,omitempty"`
 	InstallationID string             `json:"installation_id,omitempty"`
+	RuntimeRole    string             `json:"runtime_role,omitempty"`
 	Status         string             `json:"status,omitempty"`
 	Capabilities   []string           `json:"capabilities,omitempty"`
 	ModelStatus    *DeviceModelStatus `json:"model_status,omitempty"`
@@ -232,6 +234,7 @@ func (r *userDeviceRegistry) register(ownerUID int64, req RegisterUserDeviceRequ
 		OS:             normalizeDeviceOS(req.OS),
 		BodyID:         normalizeDeviceText(req.BodyID),
 		InstallationID: normalizeDeviceText(req.InstallationID),
+		RuntimeRole:    normalizeDeviceRuntimeRole(req.RuntimeRole),
 		Status:         normalizeDeviceStatus(req.Status),
 		Capabilities:   normalizeDeviceCapabilities(req.Capabilities),
 		ModelStatus:    normalizeDeviceModelStatus(req.ModelStatus, now),
@@ -912,6 +915,17 @@ func normalizeUserDeviceID(value string) (string, error) {
 
 func normalizeDeviceText(value string) string {
 	return strings.TrimSpace(value)
+}
+
+func normalizeDeviceRuntimeRole(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "desktop":
+		return "desktop"
+	case "server":
+		return "server"
+	default:
+		return ""
+	}
 }
 
 func normalizeDeviceStatus(value string) string {

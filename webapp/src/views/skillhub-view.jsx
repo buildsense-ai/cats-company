@@ -88,12 +88,18 @@ function skillHubWorkspaceTimeoutError() {
 export function normalizeSkillHubDevices(response) {
   const devices = Array.isArray(response) ? response : (response?.devices || []);
   return devices.filter((device) => (
-    device?.active === true
+    device?.runtimeRole === 'desktop'
+    && device?.active === true
     && device?.routeConnected === true
     && device?.routable === true
     && Array.isArray(device?.capabilities)
     && SKILLHUB_DEVICE_CAPABILITIES.every((capability) => device.capabilities.includes(capability))
   ));
+}
+
+export function resolveAutomaticSkillHubDeviceID(devices) {
+  if (!Array.isArray(devices) || devices.length !== 1) return '';
+  return String(devices[0]?.deviceId || '');
 }
 
 export function normalizeOwnedBots(response, userUid) {
@@ -666,18 +672,21 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     value: String(botUID(bot)),
     label: `${botLabel(bot)}${isFriendBot(bot) ? '（好友）' : ''}`,
   })), [bots]);
-  const loadDevices = useCallback(async () => {
+  const loadDevices = useCallback(async (options = {}) => {
     setLoadingDevices(true);
     try {
       const capable = normalizeSkillHubDevices(await api.getDevices());
+      const next = resolveAutomaticSkillHubDeviceID(capable);
       setDevices(capable);
-      setSelectedDeviceID((current) => {
-        const next = current && capable.some((device) => String(device.deviceId || '') === current)
-          ? current
-          : (capable.length === 1 ? String(capable[0].deviceId || '') : '');
-        selectedDeviceIDRef.current = next;
-        return next;
-      });
+      if (
+        options.allowBotSwitchOnChange === true
+        && next
+        && next !== selectedDeviceIDRef.current
+      ) {
+        requestedBotSwitchRef.current = selectedBotUIDRef.current;
+      }
+      selectedDeviceIDRef.current = next;
+      setSelectedDeviceID(next);
       return capable;
     } catch (error) {
       setDevices([]);
@@ -939,6 +948,22 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       if (isCurrentRequest()) setLoadingLocalSkills(false);
     }
   }, [selectedDeviceID, user?.uid]);
+
+  const refreshLocalWorkspace = useCallback(async () => {
+    const previousDeviceID = selectedDeviceIDRef.current;
+    const capable = await loadDevices({ allowBotSwitchOnChange: true });
+    const deviceID = resolveAutomaticSkillHubDeviceID(capable);
+    if (!deviceID) return;
+    // A newly discovered desktop changes selectedDeviceID and the normal
+    // effect below will load it once. Only refresh directly when the route did
+    // not change, avoiding duplicate RPCs on offline -> online recovery.
+    if (deviceID !== previousDeviceID) return;
+    await loadLocalWorkspace(
+      selectedBotUIDRef.current,
+      deviceID,
+      { allowBotSwitch: true },
+    );
+  }, [loadDevices, loadLocalWorkspace]);
 
   useEffect(() => {
     loadBots().catch((error) => setDefinitionError(error?.message || '无法读取 Agent 列表'));
@@ -1391,11 +1416,7 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
     onInstallSkill={installLibrarySkill}
     onQueryChange={setQuery}
     onRefreshDefinition={() => loadDefinition()}
-    onRefreshLocal={() => loadLocalWorkspace(
-      selectedBotUIDRef.current,
-      selectedDeviceIDRef.current,
-      { allowBotSwitch: true },
-    )}
+    onRefreshLocal={refreshLocalWorkspace}
     onRemoveSkill={removeSkill}
     onSearch={searchCatalogue}
     onSelectAgent={(nextBotUID) => {
@@ -1404,12 +1425,6 @@ export default function SkillHubView({ user, initialAgent = null, initialAgentId
       rememberSkillHubBotUID(user?.uid, nextBotUID);
       localRequestRef.current += 1;
       setSelectedBotUID(nextBotUID);
-    }}
-    onSelectDevice={(deviceID) => {
-      selectedDeviceIDRef.current = deviceID;
-      localRequestRef.current += 1;
-      if (!deviceID) setLocalSkillsError('');
-      setSelectedDeviceID(deviceID);
     }}
     onShareLocalSkill={shareLocalSkill}
     query={query}
