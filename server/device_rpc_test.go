@@ -727,12 +727,17 @@ func TestHiCanBindLiveDeviceConnection(t *testing.T) {
 			DisplayName:    "Alice Laptop",
 			BodyID:         "body-device",
 			InstallationID: "install-device",
+			RuntimeRole:    "desktop",
 			Capabilities:   []string{"read_file"},
 		},
 	})
 
 	if got := hub.getDeviceClient(7, "alice-laptop"); got != client {
 		t.Fatalf("bound device client = %#v, want current client", got)
+	}
+	devices := hub.userDevices.list(7)
+	if len(devices) != 1 || devices[0].RuntimeRole != "desktop" {
+		t.Fatalf("registered runtime role = %#v, want desktop", devices)
 	}
 	var ack ServerMessage
 	decodeQueuedServerMessage(t, client.send, &ack)

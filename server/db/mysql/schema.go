@@ -16,6 +16,7 @@ func (a *Adapter) CreateSchema() error {
 		createProjectsTable,
 		createProjectTopicsTable,
 		createConversationTitlesTable,
+		createConversationNotificationMutesTable,
 		createMessagesTable,
 		createConversationTaskStatusesTable,
 		createConversationTaskStatusSourcesTable,
@@ -54,6 +55,9 @@ func (a *Adapter) CreateSchema() error {
 		migrateBotConfigAddSkillsVisibility,
 		migrateBotConfigAddTenantName,
 		migrateBotConfigAddBodyID,
+		migrateBotConfigAddProfileRole,
+		migrateBotConfigAddProfileDescription,
+		migrateBotConfigAddArtifactUploadPolicy,
 		migrateMessagesAddCodeMode,
 		migrateMessagesAddClientMsgID,
 		migrateMessagesAddClientMsgIDIndex,
@@ -264,6 +268,18 @@ CREATE TABLE IF NOT EXISTS conversation_titles (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `
 
+const createConversationNotificationMutesTable = `
+CREATE TABLE IF NOT EXISTS conversation_notification_mutes (
+    user_id BIGINT NOT NULL,
+    topic_id VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, topic_id),
+    -- A P2P topic is created on its first message, while a user may mute the
+    -- visible conversation before then.
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`
+
 const createMessagesTable = `
 CREATE TABLE IF NOT EXISTS messages (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -338,6 +354,9 @@ CREATE TABLE IF NOT EXISTS bot_config (
     config JSON DEFAULT NULL,
     skills_visibility ENUM('owner','authorized','public') NOT NULL DEFAULT 'owner',
     body_id VARCHAR(128) DEFAULT NULL,
+    role VARCHAR(32) NOT NULL DEFAULT 'general',
+    description TEXT NULL,
+    artifact_upload_enabled TINYINT(1) NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -731,6 +750,18 @@ ALTER TABLE bot_config ADD COLUMN tenant_name VARCHAR(128) DEFAULT NULL;
 // Migration: add persistent bot body binding.
 const migrateBotConfigAddBodyID = `
 ALTER TABLE bot_config ADD COLUMN body_id VARCHAR(128) DEFAULT NULL;
+`
+
+const migrateBotConfigAddProfileRole = `
+ALTER TABLE bot_config ADD COLUMN role VARCHAR(32) NOT NULL DEFAULT 'general';
+`
+
+const migrateBotConfigAddProfileDescription = `
+ALTER TABLE bot_config ADD COLUMN description TEXT NULL;
+`
+
+const migrateBotConfigAddArtifactUploadPolicy = `
+ALTER TABLE bot_config ADD COLUMN artifact_upload_enabled TINYINT(1) NOT NULL DEFAULT 1;
 `
 
 // Migration: add code mode support to messages table.

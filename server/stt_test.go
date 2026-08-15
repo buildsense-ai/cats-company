@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -80,16 +81,119 @@ func issueSTTTicket(t *testing.T, baseURL string) string {
 	return payload.Ticket
 }
 
+func TestSTTConfigDefaultsMatchProductLimits(t *testing.T) {
+	for _, name := range []string{
+		"CATSCO_STT_MAX_SESSION_SECONDS",
+		"CATSCO_STT_MAX_HOURLY_SECONDS",
+		"CATSCO_STT_MAX_DAILY_SECONDS",
+	} {
+		t.Setenv(name, "")
+	}
+
+	config := STTConfigFromEnv()
+	if config.MaxDuration != 150*time.Second {
+		t.Fatalf("MaxDuration=%s, want 2m30s", config.MaxDuration)
+	}
+	if config.HourlyAudioLimit != 24*time.Minute {
+		t.Fatalf("HourlyAudioLimit=%s, want 24m", config.HourlyAudioLimit)
+	}
+	if config.DailyAudioLimit != time.Hour {
+		t.Fatalf("DailyAudioLimit=%s, want 1h", config.DailyAudioLimit)
+	}
+}
+
+func TestSTTLimiterReturnsRemainingConfiguredQuota(t *testing.T) {
+	limiter := newSTTLimiter(STTConfig{
+		MaxConcurrent:    1,
+		HourlyAudioLimit: 24 * time.Minute,
+		DailyAudioLimit:  time.Hour,
+	})
+
+	remaining, release, err := limiter.acquire(42, 150*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 150*time.Second {
+		t.Fatalf("first remaining=%s, want 2m30s", remaining)
+	}
+	release(sttUsageEntry{
+		startedAt: time.Now().Add(-23 * time.Minute),
+		duration:  23 * time.Minute,
+	})
+
+	remaining, release, err = limiter.acquire(42, 150*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remaining != time.Minute {
+		t.Fatalf("hourly remaining=%s, want 1m", remaining)
+	}
+	release(sttUsageEntry{startedAt: time.Now().Add(-time.Minute), duration: time.Minute})
+}
+
+func TestSTTLimiterCountsOnlyAudioOverlappingRollingWindows(t *testing.T) {
+	now := time.Now()
+	limiter := newSTTLimiter(STTConfig{
+		MaxConcurrent:    1,
+		HourlyAudioLimit: 30 * time.Second,
+		DailyAudioLimit:  35 * time.Second,
+	})
+
+	_, releaseDaily, err := limiter.acquire(42, 150*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseDaily(sttUsageEntry{
+		startedAt: now.Add(-24*time.Hour - 10*time.Second),
+		duration:  20 * time.Second,
+	})
+
+	_, releaseHourly, err := limiter.acquire(42, 150*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseHourly(sttUsageEntry{
+		startedAt: now.Add(-time.Hour - 10*time.Second),
+		duration:  20 * time.Second,
+	})
+
+	allowed, release, err := limiter.acquire(42, 150*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release(sttUsageEntry{})
+	if allowed < 4*time.Second || allowed > 6*time.Second {
+		t.Fatalf("allowed duration=%s, want about 5s after window overlap", allowed)
+	}
+}
+
+func TestSTTLimiterChargesBurstAudioImmediately(t *testing.T) {
+	limiter := newSTTLimiter(STTConfig{
+		MaxConcurrent:    1,
+		HourlyAudioLimit: 30 * time.Second,
+		DailyAudioLimit:  time.Minute,
+	})
+	_, release, err := limiter.acquire(42, 150*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release(sttUsageEntry{startedAt: time.Now(), duration: 30 * time.Second})
+
+	if _, _, err := limiter.acquire(42, 150*time.Second); !errors.Is(err, errSTTQuota) {
+		t.Fatalf("burst audio quota error=%v, want %v", err, errSTTQuota)
+	}
+}
+
 func TestSTTHandlerAllowsOnlyOneActiveSessionPerUser(t *testing.T) {
 	provider := &fakeSTTProvider{}
 	handler := NewSTTHandler(STTConfig{
 		Enabled:          true,
 		Provider:         "fake",
 		TicketTTL:        time.Minute,
-		MaxDuration:      90 * time.Second,
+		MaxDuration:      150 * time.Second,
 		FinalTimeout:     time.Second,
 		MaxConcurrent:    4,
-		HourlyAudioLimit: 10 * time.Minute,
+		HourlyAudioLimit: 24 * time.Minute,
 		DailyAudioLimit:  time.Hour,
 	}, provider)
 
@@ -120,11 +224,57 @@ func TestSTTHandlerAllowsOnlyOneActiveSessionPerUser(t *testing.T) {
 
 	secondTicket := issueSTTTicket(t, server.URL)
 	second, response, err := websocket.DefaultDialer.Dial(wsBase+"/api/stt/realtime?ticket="+secondTicket, nil)
-	if second != nil {
-		second.Close()
-	}
-	if err == nil || response == nil || response.StatusCode != http.StatusConflict {
+	if err != nil {
 		t.Fatalf("second dial err=%v status=%v", err, sttResponseStatus(response))
+	}
+	defer second.Close()
+	_, denied, err := second.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(denied), `"type":"error"`) || !strings.Contains(string(denied), `"code":"session_active"`) {
+		t.Fatalf("admission error=%s", denied)
+	}
+}
+
+func TestSTTHandlerReturnsStructuredQuotaErrorAfterWebSocketUpgrade(t *testing.T) {
+	provider := &fakeSTTProvider{}
+	handler := NewSTTHandler(STTConfig{
+		Enabled:          true,
+		Provider:         "fake",
+		TicketTTL:        time.Minute,
+		MaxDuration:      150 * time.Second,
+		FinalTimeout:     time.Second,
+		MaxConcurrent:    4,
+		HourlyAudioLimit: 30 * time.Second,
+		DailyAudioLimit:  time.Hour,
+	}, provider)
+	handler.limiter.usage[42] = []sttUsageEntry{{
+		startedAt: time.Now().Add(-45 * time.Second),
+		duration:  45 * time.Second,
+	}}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/stt/sessions", authenticatedSTTHandler(handler.HandleSession, 42))
+	mux.HandleFunc("/api/stt/realtime", handler.HandleRealtime)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ticket := issueSTTTicket(t, server.URL)
+	conn, response, err := websocket.DefaultDialer.Dial(
+		"ws"+strings.TrimPrefix(server.URL, "http")+"/api/stt/realtime?ticket="+ticket,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("dial err=%v status=%v", err, sttResponseStatus(response))
+	}
+	defer conn.Close()
+	_, denied, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(denied), `"type":"error"`) || !strings.Contains(string(denied), `"code":"quota_exhausted"`) {
+		t.Fatalf("admission error=%s", denied)
 	}
 }
 
@@ -134,10 +284,10 @@ func TestSTTHandlerDoesNotPromotePartialWhenProviderCloses(t *testing.T) {
 		Enabled:          true,
 		Provider:         "fake",
 		TicketTTL:        time.Minute,
-		MaxDuration:      90 * time.Second,
+		MaxDuration:      150 * time.Second,
 		FinalTimeout:     time.Second,
 		MaxConcurrent:    4,
-		HourlyAudioLimit: 10 * time.Minute,
+		HourlyAudioLimit: 24 * time.Minute,
 		DailyAudioLimit:  time.Hour,
 	}, provider)
 
@@ -185,10 +335,10 @@ func TestSTTHandlerForwardsACompleteDefiniteSnapshotBeforeLaterPartial(t *testin
 		Enabled:          true,
 		Provider:         "fake",
 		TicketTTL:        time.Minute,
-		MaxDuration:      90 * time.Second,
+		MaxDuration:      150 * time.Second,
 		FinalTimeout:     time.Second,
 		MaxConcurrent:    4,
-		HourlyAudioLimit: 10 * time.Minute,
+		HourlyAudioLimit: 24 * time.Minute,
 		DailyAudioLimit:  time.Hour,
 	}, provider)
 
@@ -256,11 +406,11 @@ func TestSTTHandlerStopsAfterSilentAudioIdleTimeout(t *testing.T) {
 		Enabled:          true,
 		Provider:         "fake",
 		TicketTTL:        time.Minute,
-		MaxDuration:      90 * time.Second,
+		MaxDuration:      150 * time.Second,
 		IdleTimeout:      80 * time.Millisecond,
 		FinalTimeout:     time.Second,
 		MaxConcurrent:    4,
-		HourlyAudioLimit: 10 * time.Minute,
+		HourlyAudioLimit: 24 * time.Minute,
 		DailyAudioLimit:  time.Hour,
 	}, provider)
 

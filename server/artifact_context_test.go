@@ -622,6 +622,7 @@ func TestCloudArtifactHandlerMutationInvalidatesArtifactContextCache(t *testing.
 		"lesson-game",
 		"",
 		7,
+		"owner",
 		server.URL+"/internal/agents/440/artifacts",
 		token,
 		server.URL,
@@ -704,7 +705,7 @@ func TestCloudArtifactHandlerMutationRejectsInflightStaleResolution(t *testing.T
 	handler.handleMutation(
 		recorder,
 		httptest.NewRequest(http.MethodDelete, "/api/agents/440/artifacts/lesson-game", nil),
-		"lesson-game", "", 7,
+		"lesson-game", "", 7, "owner",
 		server.URL+"/internal/agents/440/artifacts", token, server.URL, 440,
 	)
 	if recorder.Code != http.StatusOK {

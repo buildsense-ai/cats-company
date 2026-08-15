@@ -72,6 +72,171 @@ func TestHandleViewerPromptOwnerAndFriendOnlySeeActivePrompt(t *testing.T) {
 	}
 }
 
+func TestHandleViewerPromptDoesNotRequireLegacyCustomModelDecryption(t *testing.T) {
+	db := &botDefinitionTestStore{
+		owners:  map[int64]int64{43: 7},
+		friends: map[[2]int64]bool{{8, 43}: true},
+		records: map[int64]*types.BotDefinitionRecord{43: {
+			Definition: types.BotDefinition{
+				Model: types.BotDefinitionModel{
+					Kind: "custom", APIKeyCiphertext: "legacy-ciphertext",
+				},
+				Prompt: &types.BotPromptDefinition{
+					Selected: "custom", CustomSystemPrompt: "shared prompt",
+				},
+			},
+			PromptVisibility: types.BotPromptFriends,
+			Exists:           false,
+		}},
+	}
+
+	rec := httptest.NewRecorder()
+	// A nil model handler would panic if HandleViewerPrompt called the owner
+	// migration path and attempted to decrypt this legacy custom model.
+	NewBotDefinitionHandler(db, db, nil, nil).HandleViewerPrompt(
+		rec,
+		promptRequest(http.MethodGet, "/api/agents/prompt?uid=43", "", 8),
+	)
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"content":"shared prompt"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "legacy-ciphertext") {
+		t.Fatalf("viewer response leaked model ciphertext: %s", rec.Body.String())
+	}
+}
+
+func TestHandleViewerPromptIncludesSafeApplicationStatus(t *testing.T) {
+	db := &botDefinitionTestStore{
+		owners: map[int64]int64{40: 7, 41: 7, 42: 7, 43: 7, 44: 7, 45: 7},
+		records: map[int64]*types.BotDefinitionRecord{
+			40: {Definition: types.BotDefinition{Prompt: &types.BotPromptDefinition{Selected: "default"}}, Runtime: types.BotDefinitionRuntime{LastError: "stale legacy error"}, Exists: true},
+			41: {Definition: types.BotDefinition{Prompt: &types.BotPromptDefinition{Selected: "default"}}, Runtime: types.BotDefinitionRuntime{DesiredRevision: 4}, Exists: true},
+			42: {Definition: types.BotDefinition{Prompt: &types.BotPromptDefinition{Selected: "default"}}, Runtime: types.BotDefinitionRuntime{DesiredRevision: 4, AppliedRevision: 3, LastAttemptRevision: 3, LastAttemptAt: "2026-08-13T00:00:00Z"}, Exists: true},
+			43: {Definition: types.BotDefinition{Prompt: &types.BotPromptDefinition{Selected: "default"}}, Runtime: types.BotDefinitionRuntime{DesiredRevision: 4, AppliedRevision: 4, AppliedAt: "2026-08-13T00:00:00Z"}, Exists: true},
+			44: {Definition: types.BotDefinition{Prompt: &types.BotPromptDefinition{Selected: "default"}}, Runtime: types.BotDefinitionRuntime{DesiredRevision: 4, AppliedRevision: 3, LastAttemptRevision: 4, LastAttemptAt: "2026-08-13T00:00:00Z", LastError: "provider secret leaked"}, Exists: true},
+			45: {Definition: types.BotDefinition{Prompt: &types.BotPromptDefinition{Selected: "default"}}, Runtime: types.BotDefinitionRuntime{DesiredRevision: 4, AppliedRevision: 4, AppliedAt: "2026-08-13T00:00:00Z", LastAttemptRevision: 4, LastAttemptAt: "2026-08-13T00:01:00Z", LastError: "transient retry failure"}, Exists: true},
+		},
+	}
+	handler := NewBotDefinitionHandler(db, db, nil, nil)
+	handler.SetPromptOnlineResolver(func(uid int64) bool { return uid == 40 || uid == 42 })
+	for _, tc := range []struct {
+		uid       int64
+		status    string
+		online    bool
+		desired   int64
+		applied   int64
+		lastError string
+	}{
+		{40, "saved", true, 0, 0, ""},
+		{41, "saved", false, 4, 0, ""},
+		{42, "pending", true, 4, 3, ""},
+		{43, "applied", false, 4, 4, ""},
+		{45, "applied", false, 4, 4, ""},
+		{44, "failed", false, 4, 3, "Bot 配置应用失败"},
+	} {
+		t.Run(strconv.FormatInt(tc.uid, 10), func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.HandleViewerPrompt(rec, promptRequest(http.MethodGet, "/api/agents/prompt?uid="+strconv.FormatInt(tc.uid, 10), "", 7))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var body struct {
+				Application botPromptApplicationStatus `json:"application"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Application.Status != tc.status || body.Application.IsOnline != tc.online || body.Application.AppliedRevision != tc.applied || body.Application.LastError != tc.lastError {
+				t.Fatalf("application=%+v, want status=%s online=%v applied=%d error=%q", body.Application, tc.status, tc.online, tc.applied, tc.lastError)
+			}
+			if body.Application.DesiredRevision != tc.desired {
+				t.Fatalf("desired revision=%d, want=%d", body.Application.DesiredRevision, tc.desired)
+			}
+			if strings.Contains(rec.Body.String(), "provider secret leaked") {
+				t.Fatalf("raw runtime error leaked: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleViewerPromptInitialRevisionIsPendingWhenRuntimeIsOnlineOnAnotherNode(t *testing.T) {
+	shared := newSharedMemoryRuntimeState()
+	hubA := NewHubWithRuntime(nil, nil, shared, "node-a")
+	hubB := NewHubWithRuntime(nil, nil, shared, "node-b")
+
+	if _, err := hubB.bodyLeases.acquire(42, "body-a", "conn-b"); err != nil {
+		t.Fatalf("node-b acquire failed: %v", err)
+	}
+	hubB.addRegisteredClient(&Client{
+		uid: 42, accountType: types.AccountBot, bodyID: "body-a",
+		connectionID: "conn-b", send: make(chan []byte, 1),
+	})
+
+	db := &botDefinitionTestStore{
+		owners: map[int64]int64{42: 7},
+		records: map[int64]*types.BotDefinitionRecord{42: {
+			Definition: types.BotDefinition{
+				Prompt: &types.BotPromptDefinition{Selected: "default"},
+			},
+			Runtime: types.BotDefinitionRuntime{DesiredRevision: 1},
+			Exists:  true,
+		}},
+	}
+	handler := NewBotDefinitionHandler(db, db, nil, nil)
+	handler.SetPromptOnlineResolver(hubA.BotRuntimeOnline)
+
+	rec := httptest.NewRecorder()
+	handler.HandleViewerPrompt(
+		rec,
+		promptRequest(http.MethodGet, "/api/agents/prompt?uid=42", "", 7),
+	)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var body struct {
+		Application botPromptApplicationStatus `json:"application"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Application.Status != "pending" || !body.Application.IsOnline {
+		t.Fatalf("application=%+v, want pending status from node-b runtime", body.Application)
+	}
+	if body.Application.DesiredRevision != 1 || body.Application.AppliedRevision != 0 {
+		t.Fatalf("application revisions=%+v, want desired=1 applied=0", body.Application)
+	}
+}
+
+func TestHandleViewerPromptFriendReceivesOnlySanitizedApplicationFailure(t *testing.T) {
+	db := &botDefinitionTestStore{
+		owners:  map[int64]int64{43: 7},
+		friends: map[[2]int64]bool{{8, 43}: true},
+		records: map[int64]*types.BotDefinitionRecord{43: {
+			Definition:       types.BotDefinition{Prompt: &types.BotPromptDefinition{Selected: "custom", CustomSystemPrompt: "shared"}},
+			PromptVisibility: types.BotPromptFriends,
+			Runtime: types.BotDefinitionRuntime{
+				DesiredRevision: 4, LastAttemptRevision: 4,
+				LastAttemptAt: "2026-08-13T00:00:00Z", LastError: "credential sk-private rejected",
+			},
+			Exists: true,
+		}},
+	}
+	rec := httptest.NewRecorder()
+	NewBotDefinitionHandler(db, db, nil, nil).HandleViewerPrompt(
+		rec,
+		promptRequest(http.MethodGet, "/api/agents/prompt?uid=43", "", 8),
+	)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"failed"`) ||
+		!strings.Contains(rec.Body.String(), `"last_error":"Bot 配置应用失败"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sk-private") || strings.Contains(rec.Body.String(), "credential") {
+		t.Fatalf("friend response leaked runtime failure detail: %s", rec.Body.String())
+	}
+}
+
 func TestHandleViewerPromptRequiresSharedVisibilityAndFriendship(t *testing.T) {
 	db := &botDefinitionTestStore{
 		owners: map[int64]int64{43: 7}, friends: map[[2]int64]bool{},

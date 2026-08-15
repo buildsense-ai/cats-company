@@ -142,6 +142,12 @@ func (a *Adapter) CreateCommercialOrder(order *types.CommercialOrder) (*types.Co
 	if plan.State != 0 || plan.PriceFen <= 0 || plan.DurationDays <= 0 || plan.MonthlyBudget > 0 || !commercialPlanHasPositiveModelBudget(plan) {
 		return nil, fmt.Errorf("commercial plan is not purchasable")
 	}
+	if err := validateCommercialOfficialPlanPurchase(tx, order.UID, plan.Slug, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	if err := validateCommercialOfficialOpenOrder(tx, order.UID, plan.ID, channel, plan.Slug, time.Now().UTC()); err != nil {
+		return nil, err
+	}
 	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, fmt.Sprintf("commercial_open_order:%d:%d:%s", order.UID, plan.ID, channel)); err != nil {
 		return nil, fmt.Errorf("lock commercial open order: %w", err)
 	}
@@ -468,6 +474,9 @@ func (a *Adapter) FulfillCommercialOrder(orderNo string, confirmation *types.Com
 	}
 	if affected == 0 {
 		return nil, false, fmt.Errorf("payment event was already used")
+	}
+	if err := activateCommercialOfficialPlan(tx, order.UID, order.PlanSlug, paidAt); err != nil {
+		return nil, false, err
 	}
 
 	expiresAt := paidAt.AddDate(0, 0, order.PlanDurationDays)

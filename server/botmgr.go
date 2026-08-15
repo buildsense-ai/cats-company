@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -52,6 +53,25 @@ type BotRegisterRequest struct {
 	Password    string `json:"password"`
 	Model       string `json:"model,omitempty"`
 	APIEndpoint string `json:"api_endpoint,omitempty"`
+	Role        string `json:"role,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+var supportedBotRoles = map[string]struct{}{
+	"code_review": {},
+	"debugging":   {},
+	"writing":     {},
+	"research":    {},
+	"general":     {},
+}
+
+func normalizeBotRole(value string) (string, bool) {
+	role := strings.TrimSpace(value)
+	if role == "" {
+		return "general", true
+	}
+	_, ok := supportedBotRoles[role]
+	return role, ok
 }
 
 // HandleRegisterBot handles POST /api/admin/bots - register a new bot account.
@@ -233,6 +253,14 @@ func (h *BotHandler) createBotAccount(ownerUID int64, req BotRegisterRequest) (*
 	if len(req.Username) < 3 {
 		return nil, http.StatusBadRequest, fmt.Errorf("username min 3 chars")
 	}
+	role, validRole := normalizeBotRole(req.Role)
+	if !validRole {
+		return nil, http.StatusBadRequest, fmt.Errorf("invalid assistant role")
+	}
+	description := strings.TrimSpace(req.Description)
+	if len([]rune(description)) > 500 {
+		return nil, http.StatusBadRequest, fmt.Errorf("description max 500 chars")
+	}
 
 	existing, err := h.db.GetUserByUsername(req.Username)
 	if err != nil {
@@ -268,6 +296,11 @@ func (h *BotHandler) createBotAccount(ownerUID int64, req BotRegisterRequest) (*
 	if err := h.db.SaveBotConfigWithOwner(uid, ownerUID, req.APIEndpoint, req.Model); err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("config save failed")
 	}
+	if profiles, ok := h.db.(store.BotProfileStore); ok {
+		if err := profiles.UpdateBotProfile(uid, &role, &description); err != nil {
+			return nil, http.StatusInternalServerError, fmt.Errorf("profile save failed")
+		}
+	}
 
 	apiKey := GenerateAPIKey(uid)
 	if err := h.db.SaveAPIKey(uid, apiKey); err != nil {
@@ -301,13 +334,16 @@ func (h *BotHandler) HandleCreateBot(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
+	role, _ := normalizeBotRole(req.Role)
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"uid":      result.UID,
-		"username": result.Username,
-		"type":     "bot",
-		"owner_id": ownerUID,
-		"api_key":  result.APIKey,
+		"uid":         result.UID,
+		"username":    result.Username,
+		"type":        "bot",
+		"owner_id":    ownerUID,
+		"api_key":     result.APIKey,
+		"role":        role,
+		"description": strings.TrimSpace(req.Description),
 	})
 }
 
@@ -752,8 +788,11 @@ func (h *BotHandler) HandleUpdateBot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		DisplayName string `json:"display_name"`
-		AvatarURL   string `json:"avatar_url"`
+		DisplayName           string  `json:"display_name"`
+		AvatarURL             string  `json:"avatar_url"`
+		Role                  *string `json:"role"`
+		Description           *string `json:"description"`
+		ArtifactUploadEnabled *bool   `json:"artifact_upload_enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
@@ -768,6 +807,43 @@ func (h *BotHandler) HandleUpdateBot(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.AvatarURL != "" {
 		if err := h.db.UpdateUserAvatar(botUID, req.AvatarURL); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "update failed"})
+			return
+		}
+	}
+	if req.Role != nil || req.Description != nil {
+		role := req.Role
+		if role != nil {
+			normalized, ok := normalizeBotRole(*role)
+			if !ok {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid assistant role"})
+				return
+			}
+			role = &normalized
+		}
+		description := req.Description
+		if description != nil {
+			trimmed := strings.TrimSpace(*description)
+			if len([]rune(trimmed)) > 500 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "description max 500 chars"})
+				return
+			}
+			description = &trimmed
+		}
+		if profiles, ok := h.db.(store.BotProfileStore); ok {
+			if err := profiles.UpdateBotProfile(botUID, role, description); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "update failed"})
+				return
+			}
+		}
+	}
+	if req.ArtifactUploadEnabled != nil {
+		policies, ok := h.db.(store.BotArtifactPolicyStore)
+		if !ok {
+			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "artifact upload policy is unavailable"})
+			return
+		}
+		if err := policies.UpdateBotArtifactUploadPolicy(botUID, *req.ArtifactUploadEnabled); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "update failed"})
 			return
 		}

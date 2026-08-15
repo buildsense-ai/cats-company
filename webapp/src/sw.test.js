@@ -11,7 +11,12 @@ vi.mock('workbox-precaching', () => ({
 
 vi.mock('workbox-routing', () => ({
   registerRoute,
-  NavigationRoute: class NavigationRoute {},
+  NavigationRoute: class NavigationRoute {
+    constructor(handler, options) {
+      this.handler = handler;
+      this.options = options;
+    }
+  },
 }));
 
 vi.mock('workbox-strategies', () => ({
@@ -46,5 +51,20 @@ describe('service worker API routing', () => {
       .map((call) => call[2])
       .filter(Boolean);
     expect(registeredMethods).toEqual(['GET']);
+  });
+
+  test('leaves authentication navigations out of the app navigation cache', async () => {
+    await import('./sw');
+
+    const navigationRoute = registerRoute.mock.calls
+      .map(([route]) => route)
+      .find((route) => Array.isArray(route?.options?.denylist));
+    const denylist = navigationRoute?.options?.denylist || [];
+
+    expect(denylist.some((pattern) => pattern.test('/login'))).toBe(true);
+    expect(denylist.some((pattern) => pattern.test('/login?next=%2Fe%2Finvite-1'))).toBe(true);
+    expect(denylist.some((pattern) => pattern.test('/register/'))).toBe(true);
+    expect(denylist.some((pattern) => pattern.test('/reset-password'))).toBe(true);
+    expect(denylist.some((pattern) => pattern.test('/login///'))).toBe(true);
   });
 });

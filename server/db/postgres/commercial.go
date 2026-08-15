@@ -390,6 +390,12 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 	}
 
 	startsAt := time.Now().UTC()
+	if err := validateNoOpenCommercialOfficialOrder(tx, uid, startsAt); err != nil {
+		return nil, err
+	}
+	if err := activateCommercialOfficialPlan(tx, uid, planSlug, startsAt); err != nil {
+		return nil, err
+	}
 	entitlementExpires := startsAt.AddDate(0, 0, durationDays)
 	var entitlementID int64
 	if err := tx.QueryRow(`
@@ -427,7 +433,6 @@ func (a *Adapter) RedeemCommercialInvite(uid int64, code string) (*types.Commerc
 		return nil, fmt.Errorf("commit invite redemption: %w", err)
 	}
 	_ = entitlementID
-	_ = planSlug
 	return a.GetCommercialSummary(uid)
 }
 

@@ -4,8 +4,10 @@ import { Simulate } from 'react-dom/test-utils';
 import SystemPromptView, {
   MAX_SYSTEM_PROMPT_BYTES,
   normalizeAgentPrompt,
+  normalizePromptApplication,
   normalizePromptBots,
   promptByteLength,
+  resolvePromptApplicationState,
 } from './system-prompt-view';
 import { api } from '../api';
 import { FeedbackProvider } from '../components/feedback-system';
@@ -31,6 +33,7 @@ function viewerPrompt({
   defaultAvailable = true,
   visibility = 'owner',
   revision = 3,
+  application,
 } = {}) {
   return {
     uid,
@@ -44,6 +47,7 @@ function viewerPrompt({
     default_content: defaultAvailable ? defaultContent : '',
     default_content_available: defaultAvailable,
     revision,
+    ...(application ? { application } : {}),
     ...(defaultAvailable ? {
       default_snapshot: {
         contentHash: 'abc123',
@@ -103,6 +107,69 @@ describe('SystemPromptView helpers', () => {
         relation: 'friend',
         selected: 'default',
       });
+  });
+
+  it('normalizes application status fields and falls back to runtime acknowledgements', () => {
+    expect(normalizePromptApplication({
+      revision: 4,
+      application: {
+        status: 'applied',
+        desired_revision: 4,
+        applied_revision: 4,
+        applied_at: '2026-08-13T03:00:00Z',
+        is_online: true,
+      },
+    })).toMatchObject({
+      status: 'applied',
+      desiredRevision: 4,
+      appliedRevision: 4,
+      isOnline: true,
+    });
+    expect(normalizePromptApplication({
+      configured: true,
+      revision: 7,
+      runtime: {
+        desiredRevision: 7,
+        appliedRevision: 6,
+        lastAttemptRevision: 7,
+        lastAttemptAt: '2026-08-13T03:00:00Z',
+      },
+    })).toMatchObject({
+      status: 'pending',
+      desiredRevision: 7,
+      appliedRevision: 6,
+      lastAttemptRevision: 7,
+    });
+    expect(normalizePromptApplication({
+      revision: 0,
+      runtime: { lastError: 'stale legacy error' },
+      is_online: true,
+    })).toMatchObject({ status: 'saved', desiredRevision: 0 });
+    expect(normalizePromptApplication({
+      revision: 4,
+      runtime: {
+        desiredRevision: 4,
+        appliedRevision: 4,
+        appliedAt: '2026-08-13T03:00:00Z',
+        lastAttemptRevision: 4,
+        lastError: 'transient retry failure',
+      },
+    })).toMatchObject({ status: 'applied', appliedRevision: 4 });
+  });
+
+  it('maps application states to user-facing status labels', () => {
+    expect(resolvePromptApplicationState({
+      application: { status: 'saved', desired_revision: 3 },
+    })).toMatchObject({ kind: 'saved', label: '已保存到云端' });
+    expect(resolvePromptApplicationState({
+      application: { status: 'pending', desired_revision: 3 },
+    })).toMatchObject({ kind: 'pending', label: '等待 Agent 应用' });
+    expect(resolvePromptApplicationState({
+      application: { status: 'applied', applied_revision: 3 },
+    })).toMatchObject({ kind: 'applied', label: 'Agent 已应用 revision 3' });
+    expect(resolvePromptApplicationState({
+      application: { status: 'failed', desired_revision: 3 },
+    })).toMatchObject({ kind: 'failed', label: '应用失败，请重启或检查 Agent' });
   });
 });
 
@@ -251,6 +318,51 @@ describe('SystemPromptView', () => {
     expect(container.textContent).toContain('默认提示词尚未同步');
     expect(container.textContent).toContain('启动或升级该 Agent 的 XiaoBa');
     expect(container.querySelector('#cc-system-prompt-text')).toBeNull();
+  });
+
+  it.each([
+    ['saved', '已保存到云端'],
+    ['pending', '等待 Agent 应用'],
+    ['applied', 'Agent 已应用 revision 3'],
+    ['failed', '应用失败，请重启或检查 Agent'],
+  ])('shows the %s Agent application state', async (status, label) => {
+    api.getAgentPrompt.mockResolvedValueOnce(viewerPrompt({
+      application: {
+        status,
+        desired_revision: 3,
+        applied_revision: status === 'applied' ? 3 : 0,
+      },
+    }));
+    await renderView();
+
+    expect(container.querySelector('.cc-system-prompt-status')).not.toBeNull();
+    expect(container.querySelector('.cc-system-prompt-status').textContent).toContain(label);
+    if (status === 'failed') {
+      expect(container.textContent).toContain('重启或检查该 Agent');
+    }
+  });
+
+  it('prefers the viewer application projection over the owner runtime fallback', async () => {
+    api.getAgentPrompt.mockResolvedValueOnce(viewerPrompt({
+      revision: 4,
+      application: {
+        status: 'pending',
+        desired_revision: 4,
+        applied_revision: 3,
+      },
+    }));
+    api.getBotDefinitionPrompt.mockResolvedValueOnce({
+      ...ownerDefinition({ revision: 4 }),
+      runtime: {
+        desiredRevision: 4,
+        appliedRevision: 4,
+        appliedAt: '2026-08-13T03:00:00Z',
+      },
+    });
+    await renderView();
+
+    expect(container.querySelector('.cc-system-prompt-status').textContent)
+      .toContain('等待 Agent 应用');
   });
 
   it('saves visibility independently from the prompt revision', async () => {

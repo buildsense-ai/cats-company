@@ -54,8 +54,16 @@ const navigationHandler = new NetworkFirst({
   }],
 });
 
+const authenticationNavigation = /^\/(?:login|register|reset-password)\/*(?:\?.*)?$/;
+
 registerRoute(new NavigationRoute(navigationHandler, {
-  denylist: [/^\/api(?:\/|$)/, /^\/v1(?:\/|$)/, /^\/local(?:\/|$)/, /^\/uploads(?:\/|$)/],
+  denylist: [
+    /^\/api(?:\/|$)/,
+    /^\/v1(?:\/|$)/,
+    /^\/local(?:\/|$)/,
+    /^\/uploads(?:\/|$)/,
+    authenticationNavigation,
+  ],
 }));
 
 function notificationFromEvent(event) {

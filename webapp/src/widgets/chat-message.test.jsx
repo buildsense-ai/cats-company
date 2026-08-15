@@ -1933,7 +1933,7 @@ describe('ChatMessage rich file rendering', () => {
     expect(panel.querySelector('a[download]')).toBeNull();
 
     await act(async () => {
-      Simulate.click(panel.querySelector('button[aria-label="返回产物列表"]'));
+      Simulate.click(panel.querySelector('button[aria-label="返回云文件"]'));
     });
     expect(onBack).toHaveBeenCalledTimes(1);
     expect(onClose).not.toHaveBeenCalled();
@@ -2674,6 +2674,16 @@ describe('ChatMessage rich file rendering', () => {
     expect(container.querySelector('video.oc-rich-video-player')).toBeNull();
     expect(container.querySelector('.v3-attachment-card')).toBeNull();
     expect(container.querySelector('.v3-file-preview-panel')).toBeNull();
+
+    Object.defineProperties(thumbnail, {
+      videoHeight: { configurable: true, value: 540 },
+      videoWidth: { configurable: true, value: 1920 },
+    });
+    await act(async () => {
+      thumbnail.dispatchEvent(new Event('loadedmetadata', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.oc-rich-video').classList.contains('is-ultrawide')).toBe(false);
 
     trigger.focus();
     await act(async () => {

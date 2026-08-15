@@ -567,6 +567,7 @@ func TestPostgresStoreContract(t *testing.T) {
 	}
 
 	testCommercialPaymentContract(t, db, ownerID)
+	testCommercialOfficialPlanUpgradeUsers(t, db)
 }
 
 func testPostgresMigrationFiles(t *testing.T, db *Adapter) {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -627,7 +628,16 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		message := "failed to create commercial order"
 		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "purchase limit") {
+		if strings.Contains(err.Error(), "already active") {
+			message = "当前套餐已生效，不能重复购买"
+			status = http.StatusConflict
+		} else if strings.Contains(err.Error(), "below active plan") {
+			message = "当前套餐已包含该套餐，不能降级购买"
+			status = http.StatusConflict
+		} else if strings.Contains(err.Error(), "already pending") {
+			message = "已有待支付套餐订单，请先完成或取消"
+			status = http.StatusConflict
+		} else if strings.Contains(err.Error(), "purchase limit") {
 			message = "purchase limit reached"
 			status = http.StatusConflict
 		} else if strings.Contains(err.Error(), "not purchasable") || strings.Contains(err.Error(), "not found") {
@@ -674,9 +684,23 @@ func (h *CommercialPaymentHandler) createOrder(w http.ResponseWriter, r *http.Re
 }
 
 func decodeCommercialJSON(r *http.Request, target interface{}) error {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 64<<10))
+	payload, err := readLimitedBody(r.Body, 64<<10)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
-	return decoder.Decode(target)
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("request body contains multiple JSON values")
+		}
+		return err
+	}
+	return nil
 }
 
 func newCommercialOrderNo() string {
@@ -778,7 +802,11 @@ func (h *CommercialPaymentHandler) HandleAlipayNotify(w http.ResponseWriter, r *
 		return
 	}
 	order, err := h.store.GetCommercialOrder(0, orderNo)
-	if err != nil || order == nil {
+	if err != nil {
+		writeAlipayNotifyResponse(w, http.StatusServiceUnavailable, false)
+		return
+	}
+	if order == nil {
 		writeAlipayNotifyResponse(w, http.StatusNotFound, false)
 		return
 	}

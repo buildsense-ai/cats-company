@@ -278,6 +278,43 @@ func (a *Adapter) ListAgentFileMessages(agentUID int64, topicID string, beforeID
 	return scanMessages(rows, "scan agent file message")
 }
 
+// ListTopicFileMessages returns newest file-bearing messages from all senders in one conversation.
+func (a *Adapter) ListTopicFileMessages(topicID string, beforeID int64, limit int) ([]*types.Message, error) {
+	if topicID == "" {
+		return []*types.Message{}, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	args := []interface{}{topicID}
+	beforeClause := ""
+	nextPlaceholder := 2
+	if beforeID > 0 {
+		beforeClause = fmt.Sprintf(" AND id < $%d", nextPlaceholder)
+		args = append(args, beforeID)
+		nextPlaceholder++
+	}
+	args = append(args, limit)
+	rows, err := a.db.Query(
+		fmt.Sprintf(
+			`SELECT id, topic_id, from_uid, content, msg_type, created_at, content_blocks, mode, role, metadata
+			 FROM messages
+			 WHERE topic_id = $1
+			   AND (msg_type = 'file' OR content_blocks @> '[{"type":"file"}]'::jsonb)%s
+			 ORDER BY id DESC
+			 LIMIT $%d`,
+			beforeClause,
+			nextPlaceholder,
+		),
+		args...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list topic file messages: %w", err)
+	}
+	defer rows.Close()
+	return scanMessages(rows, "scan topic file message")
+}
+
 // GetLatestMessagesForTopics returns the newest persisted message for each topic.
 func (a *Adapter) GetLatestMessagesForTopics(topicIDs []string) (map[string]*types.Message, error) {
 	if len(topicIDs) == 0 {

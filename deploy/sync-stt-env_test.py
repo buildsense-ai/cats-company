@@ -56,6 +56,12 @@ class SyncSttEnvTest(unittest.TestCase):
             self.assertIn(command, workflow)
             self.assertLess(workflow.index(bootstrap), workflow.index(command))
 
+    def test_prod_workflow_reconciles_the_host_stt_websocket_route(self) -> None:
+        workflow = (WORKFLOWS_DIR / "deploy-prod.yml").read_text(encoding="utf-8")
+        self.assertIn('cp deploy/prod/ensure-stt-websocket-nginx.sh "${tmpdir}/compose/"', workflow)
+        self.assertIn('cp deploy/prod/update-nginx-stt-websocket.py "${tmpdir}/compose/"', workflow)
+        self.assertIn('sudo "$root/compose/ensure-stt-websocket-nginx.sh" /etc/nginx/sites-available/catscompany-app', workflow)
+
     def test_reads_exactly_one_nul_delimited_key(self) -> None:
         self.assertEqual(sync.read_value(io.BytesIO(b"api-key\0")), "api-key")
         with self.assertRaisesRegex(ValueError, "exactly one"):
@@ -73,6 +79,27 @@ class SyncSttEnvTest(unittest.TestCase):
     def test_empty_key_disables_stt_and_removes_stale_values(self) -> None:
         rendered = sync.render("CATSCO_STT_ENABLED=1\nVOLCENGINE_STT_API_KEY=old\n", "")
         self.assertEqual(rendered, "CATSCO_STT_ENABLED=0\n")
+
+    def test_migrates_only_the_previous_default_audio_limits(self) -> None:
+        source = (
+            "CATSCO_STT_MAX_SESSION_SECONDS=90\n"
+            "CATSCO_STT_MAX_HOURLY_SECONDS=600\n"
+            "CATSCO_STT_MAX_DAILY_SECONDS=3600\n"
+            "CATSCO_STT_MAX_CONCURRENT=17\n"
+        )
+        self.assertEqual(
+            sync.migrate_legacy_limits(source),
+            (
+                "CATSCO_STT_MAX_SESSION_SECONDS=150\n"
+                "CATSCO_STT_MAX_HOURLY_SECONDS=1440\n"
+                "CATSCO_STT_MAX_DAILY_SECONDS=3600\n"
+                "CATSCO_STT_MAX_CONCURRENT=17\n"
+            ),
+        )
+
+    def test_preserves_custom_audio_limits(self) -> None:
+        source = "CATSCO_STT_MAX_SESSION_SECONDS=120\nCATSCO_STT_MAX_HOURLY_SECONDS=900\n"
+        self.assertEqual(sync.migrate_legacy_limits(source), source)
 
     def test_rejects_multiline_and_nul_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
